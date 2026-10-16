@@ -304,7 +304,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(grpc_client_request_duration_seconds_count{grpc_code!=\"OK\"}[5m])) or vector(0)",
+          "expr": "sum(increase(grpc_client_errors_total[5m])) or vector(0)",
           "legendFormat": "Errors",
           "refId": "A"
         }
@@ -1418,7 +1418,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by(service) (rate(grpc_client_request_duration_seconds_count{grpc_code!=\"OK\"}[1m]))",
+          "expr": "sum by(service) (rate(grpc_client_errors_total[1m]))",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -1605,8 +1605,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by(service, method, grpc_code) (rate(grpc_client_request_duration_seconds_count{grpc_code!=\"OK\"}[5m]))",
-          "legendFormat": "{{service}}/{{method}} ({{grpc_code}})",
+          "expr": "sum by(service, method, code) (rate(grpc_client_errors_total[5m]))",
+          "legendFormat": "{{service}}/{{method}} ({{code}})",
           "refId": "A"
         }
       ],

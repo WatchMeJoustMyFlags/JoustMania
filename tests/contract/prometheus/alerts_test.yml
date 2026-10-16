@@ -5,8 +5,7 @@
 #     -v $PWD/tests/contract/prometheus:/tests:ro prom/prometheus:<compose tag> \
 #     test rules /tests/alerts_test.yml
 #
-# Not covered here on purpose: LowGameLoopHz (being changed by #1379 / #1353),
-# GameCrashRate and ServiceUpdatePending (dead, #1275).
+# Not covered here on purpose: GameCrashRate and ServiceUpdatePending (dead, #1275).
 rule_files:
   - /rules/alerts.yml
 
@@ -211,3 +210,70 @@ tests:
             exp_annotations:
               summary: "High input latency detected"
               description: "P95 age of controller samples sent on the gameplay stream is 0.0975s (>50ms threshold): the poll loop or a backend is stalling, or Bluetooth congestion is delaying frames."
+
+  # LowGameLoopHz (#1353): relative to the configured rate
+  # (game_current_update_frequency_hz from game_loop.update_frequency_hz), primary
+  # games only. A loop on target at the documented 15 / 30 Hz settings stays quiet.
+  - interval: 30s
+    input_series:
+      - series: 'game_current_update_frequency_hz{job="game-coordinator"}'
+        values: '30x20'
+      - series: 'game_actual_update_frequency_hz{job="game-coordinator",game_kind="primary",game_id="game_a"}'
+        values: '29.8x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LowGameLoopHz
+        exp_alerts: []
+  - interval: 30s
+    input_series:
+      - series: 'game_current_update_frequency_hz{job="game-coordinator"}'
+        values: '15x20'
+      - series: 'game_actual_update_frequency_hz{job="game-coordinator",game_kind="primary",game_id="game_a"}'
+        values: '14.9x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LowGameLoopHz
+        exp_alerts: []
+  # Below 90 % of the configured 30 Hz: fires for the primary game only.
+  - interval: 30s
+    input_series:
+      - series: 'game_current_update_frequency_hz{job="game-coordinator"}'
+        values: '30x20'
+      - series: 'game_actual_update_frequency_hz{job="game-coordinator",game_kind="primary",game_id="game_a"}'
+        values: '24x20'
+      - series: 'game_actual_update_frequency_hz{job="game-coordinator",game_kind="shadow",game_id="game_s"}'
+        values: '12x20'
+    alert_rule_test:
+      - eval_time: 15s
+        alertname: LowGameLoopHz
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: LowGameLoopHz
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: game-coordinator
+              game_kind: primary
+              game_id: game_a
+            exp_annotations:
+              summary: "Game loop running below its configured rate"
+              description: "Game game_a (primary) loop is running at 24Hz, below 90% of the configured game_loop.update_frequency_hz."
+  # Still fires at the 60 Hz default when the loop drops to 50 Hz.
+  - interval: 30s
+    input_series:
+      - series: 'game_current_update_frequency_hz{job="game-coordinator"}'
+        values: '60x20'
+      - series: 'game_actual_update_frequency_hz{job="game-coordinator",game_kind="primary",game_id="game_a"}'
+        values: '50x20'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: LowGameLoopHz
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: game-coordinator
+              game_kind: primary
+              game_id: game_a
+            exp_annotations:
+              summary: "Game loop running below its configured rate"
+              description: "Game game_a (primary) loop is running at 50Hz, below 90% of the configured game_loop.update_frequency_hz."

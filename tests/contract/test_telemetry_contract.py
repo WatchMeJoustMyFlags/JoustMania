@@ -55,12 +55,7 @@ CONSUMED_METRIC_KNOWN_GAPS = {
 }
 
 # (b) (metric, label) matchers on a Python metric that does not carry that label.
-CONSUMED_LABEL_KNOWN_GAPS = {
-    (
-        "grpc_client_request_duration_seconds",
-        "grpc_code",
-    ): "#1353 (service-health-overview error panels)",
-}
+CONSUMED_LABEL_KNOWN_GAPS: dict[tuple[str, str], str] = {}  # empty since #1353
 
 # Python metric definitions that nothing records (no consumer depends on them).
 DEAD_DEFINITION_KNOWN_GAPS = {
