@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from services.menu.handlers.base import ButtonDebouncer, ControllerState
+from services.menu.utils.settings import get_next_game_mode
 
 if TYPE_CHECKING:
     from services.menu.state_manager import StateManager
@@ -112,21 +113,12 @@ class ConnectedHandler:
         if self._state_manager is None:
             return
 
-        # Cycle to next game mode
-        next_mode = self._state_manager.settings.get_next_game_mode(
-            self._state_manager.current_game_mode,
-            forward=True,
-        )
-        self._state_manager.set_game_mode(next_mode)
-
-        # Save setting
-        await self._state_manager.settings.save_current_game(next_mode)
-
-        # Publish event
-        await self._state_manager.publish_event(
-            "selection_changed",
-            {"game_name": next_mode.name, "source": "controller", "serial": serial},
-        )
+        # Cycle to next playable game mode and apply it through the same path as
+        # admin Cross / web select (servicer selection + state manager + persisted
+        # current_game + selection_changed event). #1272: this used to call a
+        # non-existent ``state_manager.settings`` and crash the button stream.
+        next_mode = get_next_game_mode(self._state_manager.current_game_mode, forward=True)
+        await self._state_manager.select_game_mode(next_mode, source="controller", serial=serial)
 
         # Play voice announcement
         await self._state_manager.audio.play_game_mode_voice(next_mode.name)

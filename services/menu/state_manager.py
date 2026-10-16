@@ -34,6 +34,7 @@ class StateManager:
         game_settings_client=None,
         agent_settings_client=None,
         interventions_client=None,
+        select_game_mode: Callable[..., Coroutine] | None = None,
     ):
         """
         Initialize state manager.
@@ -53,6 +54,11 @@ class StateManager:
             interventions_client: read-only OpenFeature client for the
                 "interventions" domain, used to surface active agent overrides
                 (e.g. global_sensitivity_override) in the admin display (#818).
+            select_game_mode: async ``(game_name, *, source, serial)`` callback that
+                applies a game-mode selection everywhere the menu reads it (the
+                servicer's ``current_selection``, this manager's mode, the persisted
+                ``current_game`` preference) and publishes ``selection_changed``.
+                Provided by the servicer (#1272).
         """
         self.led = led
         self.audio = audio
@@ -63,6 +69,7 @@ class StateManager:
         self.agent_settings_client = agent_settings_client
         self.interventions_client = interventions_client
         self.publish_event = publish_event
+        self._select_game_mode = select_game_mode
 
         # Controller state tracking - single source of truth
         # Keys = connected controllers, values = their current state
@@ -296,6 +303,32 @@ class StateManager:
             game_mode: Games enum value
         """
         self.current_game_mode = game_mode
+
+    async def select_game_mode(self, game_mode: Games, *, source: str, serial: str | None = None) -> None:
+        """
+        Select a game mode for the next game and persist it (#1272).
+
+        Delegates to the servicer callback so the controller SELECT path lands in
+        the same state as admin Cross / web ``select_game`` (the coordinator start
+        path reads the servicer's ``current_selection``). Without a callback
+        (standalone use), updates the local mode, persists ``current_game`` and
+        publishes ``selection_changed`` directly.
+
+        Args:
+            game_mode: Games enum value to select
+            source: Who made the selection (e.g. "controller", "admin", "web")
+            serial: Controller serial that made the selection, if any
+        """
+        if self._select_game_mode is not None:
+            await self._select_game_mode(game_mode.name, source=source, serial=serial)
+            return
+
+        self.set_game_mode(game_mode)
+        self.user_prefs_writer.update_default_variant("current_game", game_mode.name)
+        payload = {"game_name": game_mode.name, "source": source}
+        if serial is not None:
+            payload["serial"] = serial
+        await self.publish_event("selection_changed", payload)
 
     async def reset(self) -> list[str]:
         """

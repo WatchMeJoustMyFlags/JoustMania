@@ -136,6 +136,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             agent_settings_client=self.agent_settings_client,
             interventions_client=self.interventions_client,
             publish_event=self.event_publisher.publish,
+            select_game_mode=self.select_game_mode,
         )
 
         # Register handlers with state manager
@@ -195,23 +196,26 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """Get list of available game options (AdminModeCallbacks)."""
         return list(self.game_options)
 
-    async def select_game_mode(self, game_name: str) -> None:
-        """Select a game mode by name (AdminModeCallbacks).
+    async def select_game_mode(self, game_name: str, *, source: str = "admin", serial: str | None = None) -> None:
+        """Select a game mode by name (AdminModeCallbacks, StateManager callback).
 
-        Mirrors the web/controller select path so admin Cross cycling lands in
-        the SAME state the coordinator start path reads (#1030): it updates the
+        Shared by admin Cross cycling and lobby SELECT (#1272) so every path lands
+        in the SAME state the coordinator start path reads (#1030): it updates the
         servicer's ``current_selection``, the state_manager's game mode (the
         value the admin handler displays), and persists the choice to flagd.
         """
         game_mode = Games.from_name(game_name)
         if game_mode is None or game_name not in GAME_MODES:
-            logger.warning(f"Admin selected unknown game mode: {game_name}")
+            logger.warning(f"Unknown game mode selected via {source}: {game_name}")
             return
         self.current_selection = game_mode
         self.state_manager.set_game_mode(game_mode)
-        await self.event_publisher.publish("selection_changed", {"game_name": game_mode.name, "source": "admin"})
+        payload = {"game_name": game_mode.name, "source": source}
+        if serial is not None:
+            payload["serial"] = serial
+        await self.event_publisher.publish("selection_changed", payload)
         self.user_prefs_writer.update_default_variant("current_game", game_mode.name)
-        logger.info(f"Game selected via admin: {game_mode.name}")
+        logger.info(f"Game selected via {source}: {game_mode.name}")
 
     async def start_game(self, serial: str, source: str, controllers: list[str] | None = None) -> None:
         """Start a coordinator game (AdminModeCallbacks).

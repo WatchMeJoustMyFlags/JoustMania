@@ -1,7 +1,7 @@
 """Unit tests for ControllerEventLoop."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -381,3 +381,98 @@ class TestStreamReconnected:
         # and is called in isolation
         await event_loop_instance._callbacks.on_stream_reconnected()
         mock_callbacks.on_stream_reconnected.assert_called_once()
+
+
+def _button_event(serial: str, button: int) -> MagicMock:
+    """Build a button-press ButtonEvent stand-in."""
+    event = MagicMock()
+    event.serial = serial
+    event.event_type = 0  # EVENT_BUTTON
+    event.action = controller_manager_pb2.ACTION_PRESS
+    event.button = button
+    event.battery = 0
+    event.connected_serials = []
+    return event
+
+
+class _FakeStream:
+    """Async-iterable stand-in for the StreamButtonEvents call."""
+
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __aiter__(self):
+        return self._iter()
+
+    async def _iter(self):
+        for event in self._events:
+            yield event
+
+
+class TestHandlerErrorIsolation:
+    """#1272: one handler exception must not drop the stream or wipe the lobby."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_safely_swallows_and_counts(self, event_loop_instance, mock_callbacks, mock_metrics):
+        """A raising callback is logged and counted, not propagated."""
+        mock_callbacks.on_button.side_effect = AttributeError("boom")
+
+        await event_loop_instance._dispatch_event_safely(_button_event("serial1", controller_manager_pb2.BUTTON_SELECT))
+
+        mock_metrics.button_event_errors_total.labels.assert_called_once_with(event_type="button")
+        mock_metrics.button_event_errors_total.labels.return_value.inc.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handler_exception_keeps_stream_and_ready_state(self, mock_metrics):
+        """A handler raising mid-stream leaves the stream up and READY controllers READY.
+
+        Before #1272 the exception escaped to ``_run``, which reconnected; the
+        reconnect called ``on_stream_reconnected`` and cleared every controller.
+        """
+        from services.menu.handlers.base import ControllerState
+        from services.menu.state_manager import StateManager
+
+        state_manager = StateManager(MagicMock(), MagicMock(), MagicMock(), MagicMock(), AsyncMock())
+        broken_handler = MagicMock()
+        broken_handler.state = ControllerState.CONNECTED
+        broken_handler.on_enter = AsyncMock()
+        broken_handler.on_exit = AsyncMock()
+        broken_handler.handle_button = AsyncMock(side_effect=[AttributeError("boom"), None])
+        state_manager.register_handler(broken_handler)
+
+        callbacks = MagicMock()
+        callbacks.get_menu_state = MagicMock(return_value=1)  # RUNNING
+        callbacks.on_button = state_manager.handle_button_event
+
+        async def reconnect_and_populate():
+            # Real reconnect clears the lobby; the backend then replays the
+            # connected controllers. Model that as one CONNECTED + one READY.
+            await state_manager.on_stream_reconnected()
+            await state_manager.on_controller_connected("lobby1")
+            state_manager.controller_states["ready1"] = ControllerState.READY
+
+        reconnects = AsyncMock(side_effect=reconnect_and_populate)
+        callbacks.on_stream_reconnected = reconnects
+
+        loop = ControllerEventLoop(MagicMock(), MagicMock(), callbacks, mock_metrics)
+        loop._running = True
+
+        events = [
+            _button_event("lobby1", controller_manager_pb2.BUTTON_SELECT),  # handler raises
+            _button_event("lobby1", controller_manager_pb2.BUTTON_SELECT),  # still processed
+        ]
+        stub = MagicMock()
+        stub.StreamButtonEvents.return_value = _FakeStream(events)
+
+        with patch(
+            "services.menu.controller_events.controller_manager_pb2_grpc.ControllerManagerServiceStub",
+            return_value=stub,
+        ):
+            retry_delay = await loop._run_stream_connection()
+
+        assert retry_delay == 1.0
+        reconnects.assert_awaited_once()  # only the initial connect, no error-driven reconnect
+        assert broken_handler.handle_button.await_count == 2
+        assert state_manager.ready_controllers == {"ready1"}
+        assert state_manager.get_controller_state("lobby1") == ControllerState.CONNECTED
+        mock_metrics.button_event_errors_total.labels.assert_called_once_with(event_type="button")
