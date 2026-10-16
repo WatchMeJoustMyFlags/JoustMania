@@ -106,6 +106,18 @@ observability), `.ci.yml` (CI flag dir, profiles), `.ci-rust.yml`, `.dev.yml` (s
 | `RemoveController` | unary | `RemoveControllerRequest` → `RemoveControllerResponse` | Remove a mock controller | `proto/controller_manager_mock.proto:40` |
 | `AddControllers` | unary | `AddControllersRequest` → `AddControllersResponse` | Add multiple mock controllers at once | `proto/controller_manager_mock.proto:43` |
 
+Planned for pattern games (#1258, [UC-046](../use_cases/UC-046.md); not on `main`). The proto change needs
+`make protos` and `make protos-agent` (committed Go stubs in `services/agent/gen`); the mock proto's `go_package`
+is the connect-proxy gen, so the `Build connect-proxy` CI job must compile it, but no forwarding method is needed
+because connect-proxy forwards no `MockControllerService` RPC.
+
+| Change | Kind | Fields | Behaviour | Status |
+|---|---|---|---|---|
+| `GetMotionPatternSet` | new unary RPC | `GetMotionPatternSetRequest{name}` → `GetMotionPatternSetResponse{found, valid, set_id, version, description, slot_count, stream_rate_hz, max_game_seconds, repeated validation_errors}` | Loads `services/controller_manager/patterns/<name>.json` and runs the validation rules (UC-046 BR-003); the agent calls it to resolve and pin an experiment's selection | Open (#1258, FR-101, FR-102, FR-105) |
+| `AddControllersRequest.pattern_set` | new field 4 (string) | set id, empty = no pattern (today's noise) | Validates the set, requires `count` = its slot count, installs slot i on the i-th returned serial, pins the gameplay stream of these controllers to the set's `stream_rate_hz`, and refuses `SimulateMovement` / `SimulateDeath` for them | Open (#1258, FR-100, FR-103, FR-104) |
+| `AddControllersResponse` | new fields 4 to 7 | `pattern_set_id`, `pattern_set_version`, `stream_rate_hz`, `max_game_seconds` | Echo of the installed set; `success=false` with the failed rules when the set is unknown or invalid | Open (#1258) |
+| `RemoveControllerResponse` | new fields 3 to 6 | `pattern_slot`, `frames_delivered` (uint64), `signal_hash` (fixed64), `frame_overruns` (uint32) | For a pattern controller: the replay record of UC-046 step 8 (signal hash definition in [telemetry.md §9](telemetry.md#9-planned-pattern-games-1258)) | Open (#1258, FR-108, FR-109) |
+
 ### `joustmania.game_coordinator.GameCoordinatorService` (proto/game_coordinator.proto)
 
 | RPC | Kind | Request → Response | Description | Line |
@@ -200,6 +212,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - Backend set from the `backend` flag at **startup** (default `python,rust`; `mock` in the CI flag set); `mock` is always added with zero controllers. Per controller, one adapter wins: per-serial `bluetooth_backend` targeting, then the rollout router, then the flag default (`multiplexer/multiplexer_backend.py:235-291`).
 - Loops: state 100 Hz, discovery 1 Hz (full enumeration at most every 0.5 s, forced every 10 s), LED batch 20 Hz (send on change or 2 s keep-alive), battery metrics every 30 s, `controller.bluetooth_health` span ~1 Hz (`discovery_loop.py`).
 - Gameplay stream rate: client-requested, overridden by `game_loop.update_frequency_hz` (clamp 1..100), fallback 30 Hz.
+- Planned (#1258, FR-103): a stream whose controllers carry a motion pattern runs at the set's pinned `stream_rate_hz` and ignores the flag override; the pattern's frame index advances once per frame delivered on that stream (the hook that drains the #926 death latch today, `servicer.py:379-393`).
 - `UnstableAdapter` (≈ 8.3 Hz, 10 % drops) is registered alongside python for the rollout demo; real adapters are always wrapped in `ChaosAdapter` (D-C2).
 - Mock serials `MOCK%04d`; reserved mock controllers are hidden from the roster.
 
@@ -224,6 +237,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - Environment: see `docker-compose.yml:685-783`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214). Still env: API keys, `AGENT_INFERENCE_*`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`, `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
 - Writes: `interventions.json` (action sink), `rollout.json` (`current_controller_count`), `game.json` (experiment targeting; autonomous real default when enabled). Never `agent.json` (code guard in `experiment/gate.go`; the mount is read-write).
 - Persistent volume `agent-experiments` for the experiment journal and autonomous-revert snapshots.
+- Planned (#1258, UC-046): pattern games. The one-shot runner gains `SHADOW_GAME_SEED`; for a pattern game the runner sends no `SimulateMovement` / `SimulateDeath` and awaits the game for `max_game_seconds` + 15 s before force-ending it.
 - Decision backends: jev (main in-game backend, TypeSafe System One), claude (in-game backup by manual flip; also retro / proposer), openai-compatible, rules (automatic floor) (C-018). Contract: [decide-contract.md](decide-contract.md).
 
 ### connect-proxy

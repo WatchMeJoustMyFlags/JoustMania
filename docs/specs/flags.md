@@ -151,6 +151,18 @@ The agent's governor: existence (`enabled`), actuation gates, allow-list, policy
 
 **Traceability:** FR-019, FR-040 to FR-052, FR-056 to FR-066, FR-071, FR-072 / UC-013, UC-040 to UC-045, UC-050, UC-051 / `services/agent/flags/flags.go`, `services/agent/flags/decision_backend.go`, `services/game_coordinator/runtime_config.py`, `services/game_coordinator/interventions.py` / `services/agent/flags/*_test.go`, `tests/integration/test_decide_backend_e2e.py`, `tests/integration/test_admin_flow.py`.
 
+### 3.1 Planned agent flags
+
+Not on `main`; not counted in the totals above. Each row carries its issue and moves into the table above when it ships.
+
+| Key | Type | Variants | Default | Targeting | Read by (planned) | Written by | Reload | Status |
+|---|---|---|---|---|---|---|---|---|
+| `experiment.mock_pattern_set` | string | none="" (today's random noise and scripted kills), plus one variant per agreed selection: a single set id (`ladder_v1`, for replay runs) or a comma-separated list of distinct set ids (`ladder_v1,burst_v1,mixed_v1,fade_v1,calm_v1`, for experiments; a comma-separated string, not a JSON array, because flagd rejects array variants by schema, #1221; precedent: `interventions_allowed`) | `none` = "" | N | agent: experiment registry at the first shadow spawn of each experiment, which resolves every id with the controller manager (`GetMotionPatternSet`) and pins the list in the journal; one-shot shadow runner (`AGENT_SHADOW_GAME`) at its spawn | manual edit only | per-experiment (read at the experiment's first spawn, then pinned; a later change applies only to experiments that have not spawned yet) | Open (#1258, FR-105, FR-106, UC-046) |
+
+Semantics: pair p of an experiment runs set p of the pinned list, both arms with identical inputs; an experiment spawns at most one pair per set; a list with fewer distinct ids than `verdict_min_pairs` (or with a duplicate) discards the experiment with reason `pattern_selection_too_small`; an unknown or invalid id discards it with `pattern_set_invalid` (UC-046 A2 to A4). An unreachable flagd resolves to `none` (no pattern games). Related env for the one-shot runner (planned): `SHADOW_GAME_SEED` (default: FNV-1a/64 of the set id).
+
+**Traceability:** FR-105, FR-106, FR-110, C-020 / UC-046, UC-043 A7 / `services/agent/experiment/`, `services/agent/gamerunner/` (planned) / none yet.
+
 ## 4. `game`
 
 File: [`services/flagd/game.json`](../../services/flagd/game.json). 31 flags.

@@ -37,6 +37,12 @@ erDiagram
     GAME_SESSION ||--o| RETRO : "is reviewed by"
     ROLLOUT ||--o{ ROLLOUT_STAGE : "advances through"
     ROLLOUT_STAGE }o--o{ CONTROLLER : "routes"
+    MOTION_PATTERN_SET ||--|{ CONTROLLER_PATTERN : "defines one per slot"
+    CONTROLLER_PATTERN ||--|{ PATTERN_SEGMENT : "is composed of"
+    CONTROLLER_PATTERN |o--o{ CONTROLLER : "drives"
+    EXPERIMENT ||--o{ PATTERN_PAIR_ASSIGNMENT : "pins"
+    MOTION_PATTERN_SET ||--o{ PATTERN_PAIR_ASSIGNMENT : "is run by"
+    MOTION_PATTERN_SET |o--o{ GAME_SESSION : "drives"
 ```
 
 ### CONTROLLER
@@ -54,6 +60,8 @@ A physical or mock PS Move controller tracked by the controller manager (`proto/
 | rssi | Signal strength in dBm (controller manager always reports 0; RSSI comes from the pairing daemon metric) | Integer | 4 | Optional, Min: -100, Max: 0 |
 | adapter | I/O adapter currently routing this controller | String | 10 | Not Null, Values: python, rust, mock, unstable |
 | reserved | Mock controller reserved for a shadow game (hidden from the lobby roster) | Boolean | 1 | Not Null |
+| pattern_set_id | Parameter set installed on this mock controller, planned (#1258) | String | 60 | Optional, Foreign Key (MOTION_PATTERN_SET.set_id) |
+| pattern_slot | Slot of the installed set this controller plays (its index in the reservation order), planned (#1258) | Integer | 1 | Optional, Min: 0, Max: 7 |
 
 ### LOBBY_ENTRY
 
@@ -97,6 +105,9 @@ One running or finished game in the game coordinator (`services/game_coordinator
 | experiment_id | Experiment the shadow game belongs to | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of the experiment | String | 12 | Optional, Values: experimental, control |
 | rng_seed | Shared seed for paired (CRN) shadow games; 0 = entropy | Long | 19 | Optional, Min: 0 |
+| pattern_set_id | Parameter set that drives the game's controllers (pattern game), planned (#1258) | String | 60 | Optional, Foreign Key (MOTION_PATTERN_SET.set_id) |
+| replay_exact | Whether the pattern game qualifies for replay comparison (UC-046 BR-008), planned (#1258) | Boolean | 1 | Optional |
+| non_exact_reasons | Why a pattern game is not exact, planned (#1258) | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, no_termination |
 | start_time | Start timestamp (ms) | DateTime | - | Not Null |
 
 **Constraints:**
@@ -353,6 +364,71 @@ A stage of a progressive rollout: how many controllers (first N by sorted serial
 | fitness_passed | Last infrastructure fitness result | Boolean | 1 | Not Null |
 
 **Constraints:** per-serial `bluetooth_backend` targeting (manual canary) wins over the rollout; mock-only controllers are not routed.
+
+### MOTION_PATTERN_SET
+
+A named, immutable parameter set that defines one motion function per controller slot of a pattern game; one JSON file per set under `services/controller_manager/patterns/`, planned (#1258, [UC-046](use_cases/UC-046.md)).
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| set_id | `<name>_v<version>`; file name without `.json` and the value used in `experiment.mock_pattern_set` | String | 60 | Primary Key, Format: [a-z][a-z0-9_]*_v[1-9][0-9]* |
+| name | Family name | String | 50 | Not Null, Format: [a-z][a-z0-9_]* |
+| version | Version within the family; a change is a new version, never an edit | Integer | 4 | Not Null, Min: 1 |
+| description | What the set exercises (for example "amplitude ladder, slot 3 survives") | String | 500 | Not Null |
+| stream_rate_hz | Pinned gameplay stream rate r of games driven by the set | Integer | 2 | Not Null, Values: 15, 30, 60 |
+| max_game_seconds | Game-time horizon T: termination is validated before it, and the agent force-ends the game at T + 15 s | Integer | 2 | Not Null, Min: 10, Max: 60 |
+| slot_count | Number of slots N (= players of the game) | Integer | 1 | Not Null, Min: 2, Max: 8 |
+
+**Constraints:** immutable once merged (C-019). Valid only if UC-046 BR-003 V1 to V9 hold: in particular at least N−1 slots are terminating (f ≥ 4.0 g on every frame from some point at least 1 s before T up to T) and the death windows at the default calibration are at least 0.5 s apart.
+
+### CONTROLLER_PATTERN
+
+The motion function of one slot of a parameter set: an ordered list of segments that gives the acceleration magnitude f(t) in g at game time t = k / r (part of the set file, planned #1258).
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| set_id | Set the slot belongs to | String | 60 | Primary Key, Foreign Key (MOTION_PATTERN_SET.set_id) |
+| slot_index | Slot i: position in the reservation order, never a serial | Integer | 1 | Primary Key, Min: 0, Max: 7 |
+| terminating | Derived at validation: f stays ≥ 4.0 g from some frame at least 1 s before T up to T | Boolean | 1 | Not Null |
+| death_window_start_s | Derived at validation: game time at which the EMA (weight 4, default calibration) first exceeds 1.8 g | Decimal | 6,3 | Optional, Min: 0 |
+| death_window_end_s | Derived at validation: game time at which the EMA first exceeds 2.8 g, or T | Decimal | 6,3 | Optional, Min: 0 |
+
+**Constraints:** f(k / r) is finite and within 0.0 to 10.0 g for every frame k ≤ ⌈T · r⌉, and equals 1.0 g for t < 4.0 s (idle prelude).
+
+### PATTERN_SEGMENT
+
+One time segment of a slot's motion function: from `from_s` until the next segment's start (the last one lasts forever), evaluated in local time τ = t − `from_s` (planned #1258).
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| set_id | Set | String | 60 | Primary Key, Foreign Key (CONTROLLER_PATTERN.set_id) |
+| slot_index | Slot | Integer | 1 | Primary Key, Foreign Key (CONTROLLER_PATTERN.slot_index) |
+| position | Order of the segment within the slot | Integer | 2 | Primary Key, Min: 0, Max: 31 |
+| from_s | Start in seconds of game time; 0 for the first segment | Decimal | 6,3 | Not Null, Min: 0 |
+| function | Function kind | String | 8 | Not Null, Values: constant, ramp, sine |
+| level | `constant`: f = level, in g | Decimal | 6,3 | Optional, Min: 0, Max: 10 |
+| start | `ramp`: value at τ = 0, in g | Decimal | 6,3 | Optional, Min: 0, Max: 10 |
+| slope | `ramp`: change per second of game time, in g/s | Decimal | 6,3 | Optional, Min: -10, Max: 10 |
+| mean | `sine`: centre value, in g | Decimal | 6,3 | Optional, Min: 0, Max: 10 |
+| amplitude | `sine`: peak deviation from the mean, in g | Decimal | 6,3 | Optional, Min: 0, Max: 10 |
+| period_s | `sine`: period in seconds of game time | Decimal | 6,3 | Optional, Min: 0.1, Max: 60 |
+| phase | `sine`: phase offset in cycles | Decimal | 4,3 | Optional, Min: 0, Max: 0.999 |
+
+**Constraints:** exactly the parameters of its function are set (`constant`: level; `ramp`: start, slope; `sine`: mean, amplitude, period_s, phase); all are finite; `from_s` strictly increases with `position`.
+
+### PATTERN_PAIR_ASSIGNMENT
+
+The set an experiment's pair runs, pinned in the experiment journal when the experiment spawns its first shadow game (planned #1258).
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| experiment_id | Experiment | String | 50 | Primary Key, Foreign Key (EXPERIMENT.experiment_id) |
+| pair_index | Pair p; runs set p of the pinned list | Integer | 4 | Primary Key, Min: 0 |
+| set_id | Set the pair runs | String | 60 | Not Null, Foreign Key (MOTION_PATTERN_SET.set_id) |
+| set_version | Version pinned (equals the version in `set_id`; recorded for the audit trail) | Integer | 4 | Not Null, Min: 1 |
+| rng_seed | The pair's shared seed `pairSeed(experiment_id, pair_index)` | Long | 19 | Not Null, Min: 1 |
+
+**Constraints:** the pinned list holds at least `verdict_min_pairs` distinct sets; each set appears at most once per experiment, so the experiment has at most one pair per set (C-020, UC-046 BR-006).
 
 ### TRACE_CORRELATION
 

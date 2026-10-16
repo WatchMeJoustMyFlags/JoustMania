@@ -40,12 +40,15 @@
 | FR-070 to FR-079 | Infrastructure rollout and rollback |
 | FR-080 to FR-089 | Observability for the operator |
 | FR-090 to FR-099 | Talk demo |
+| FR-100 to FR-119 | Repeatable pattern-driven mock games (#1258) |
 | NFR-001 to NFR-009 | Gameplay timing |
 | NFR-010 to NFR-019 | Agent timing, budgets, degradation |
 | NFR-020 to NFR-029 | Platform, capacity, telemetry pipeline |
 | NFR-030 to NFR-039 | Maintainability |
+| NFR-040 to NFR-049 | Repeatability of pattern games (#1258) |
 | C-001 to C-009 | Northstar constraints |
 | C-010 to C-019 | Platform constraints and product decisions |
+| C-020 to C-029 | Experiment inputs (#1258) |
 
 ## Functional Requirements
 
@@ -134,6 +137,17 @@
 | FR-092 | Scripted game scenarios | As a presenter, I want a demo driver that plays scripted scenarios (skill gap, statue, death cascade, ...) with mock controllers so that agent behaviour is reproducible on stage. | Medium | Implemented |  |
 | FR-093 | Pre-flight check | As a presenter, I want a read-only pre-flight check of containers, flag baseline, keys, Jaeger and clock skew so that I find problems before going on stage. | Medium | Implemented | `scripts/talk-preflight.sh` (PR #1256), stub-tested by `scripts/tests/test-talk-preflight.sh`; untagged |
 | FR-094 | Talk runbook | As a presenter, I want a runbook with the beat table, timings, fallbacks and reset so that the talk is rehearsable. | Medium | Implemented | [docs/talk/two-standards-runbook.md](talk/two-standards-runbook.md) (PR #1256); rehearsal on the demo hardware still open in #743. |
+| FR-100 | Motion functions | As an operator, I want each mock controller of a pattern game to report an acceleration magnitude f(t; params) computed from a fixed function family (`constant`, `ramp`, `sine`, combined in time segments), with game time t = delivered frame index / pinned stream rate, so that the same parameters produce the same input signal under any host load. | High | Open | #1258; function family and units: [UC-046](use_cases/UC-046.md) BR-001, BR-002. Depends on SimulateMovement persistence being fixed separately (#1279, PR #1296). |
+| FR-101 | Named parameter sets | As a maintainer, I want parameter sets stored in the repo as one versioned JSON file per set (`services/controller_manager/patterns/<name>_v<version>.json`), holding one function per controller slot (slot = roster index 0..N−1, never the serial), so that a pattern game is fully defined by a set name. | High | Open | #1258; never edited in place (C-019). |
+| FR-102 | Parameter-set validation | As an operator, I want a parameter set rejected in CI and again when a game is spawned unless it passes the validation rules of UC-046 BR-003 (finite parameters, bounds, idle prelude, N−1 terminating slots before its `max_game_seconds`, separated death windows) so that every pattern game ends organically and in a determinate order. | High | Open | #1258 |
+| FR-103 | Pinned stream rate | As an operator, I want a pattern game's gameplay stream to run at its set's `stream_rate_hz` for the whole game, ignoring changes of `game_loop.update_frequency_hz`, so that game time and wall time advance together in every run. | High | Open | #1258; today the flag override applies to every live stream (`services/controller_manager/servicer.py:495-498,634-676`). |
+| FR-104 | Organic deaths only | As a maintainer, I want players in a pattern game to die only when the game's normal death detection (EMA, thresholds, grace) sees their signal cross the death threshold, with scripted kills (`SimulateDeath`, `SetAutoGameEnd`, the shadow runner's kill loop) and `SimulateMovement` refused for pattern controllers, so that sensitivity, EMA and threshold flags decide the outcome. | High | Open | #1258; today the runner kills `serials[0], serials[1], …` every 1.5 s (`services/agent/gamerunner/operations.go:322-349`). |
+| FR-105 | Select sets by flag | As an operator, I want to select the parameter sets of shadow experiments with the `agent.json` flag `experiment.mock_pattern_set` (default `none` = today's noise), read when an experiment spawns its first shadow game and pinned in the experiment journal, so that patterns are switched on and off by a flag change. | High | Open | #1258; flag row: [flags.md §3.1](specs/flags.md#31-planned-agent-flags). |
+| FR-106 | One set per pair | As the agent, I want pair p of an experiment to run set p of the pinned list, both arms of the pair receiving identical inputs with no added jitter, and an experiment whose list holds fewer distinct sets than `verdict_min_pairs` rejected, so that the verdict has between-pair variance and every pair is replayable. | High | Open | #1258; no jitter: C-020. |
+| FR-107 | Seeded rules chaos per game | As an operator, I want the rules engine's chaos choices in a pattern game drawn from a per-game RNG seeded by the game's `rng_seed` so that the agent's rules decisions replay with the game. | High | Open | #1258; today one time-seeded RNG is shared by all games (`services/agent/decision/rules.go:69-72,218-223`). |
+| FR-108 | Exact-replay classification | As an operator, I want a pattern game marked non-exact when a remote decision backend was selected during it, a stream frame overran, another game ran at the same time or the game was force-ended, so that replay comparisons use only exact games. | High | Open | #1258; reasons: UC-046 BR-008. |
+| FR-109 | Replay record | As an operator, I want the set name and version, the slot index of every controller, the rng seed, the stream rate and each controller's frame count and signal hash recorded on spans and in the experiment journal so that a pattern game can be replayed and its inputs verified from its trace alone. | High | Open | #1258; names: [telemetry.md §9](specs/telemetry.md#9-planned-pattern-games-1258). |
+| FR-110 | Replay a pattern game | As an operator, I want to run one shadow game with a given set and seed (the one-shot shadow runner with `SHADOW_GAME_SEED`) and compare it with a recorded game (signal hashes, elimination order, rules decisions) so that I can verify repeatability. | Medium | Open | #1258 |
 
 ## Non-Functional Requirements
 
@@ -165,6 +179,11 @@
 | NFR-030 | Spec first | Every PR that changes observable behaviour changes the spec (requirements, use case or technical spec) in the same or a preceding PR, or states `Spec changes: none: <reason>`. | Maintainability | High | Implemented | process; CI enforcement in progress (#1263) |
 | NFR-031 | Spec accuracy | Every factual statement in `docs/specs/*.md` cites a file (and line where practical) on `main`; discrepancies are logged in `docs/specs-inventory.md`. | Maintainability | High | Implemented |  |
 | NFR-032 | Lint clean | `make lint` passes on every PR (ruff, shellcheck-based script tests). | Maintainability | High | Implemented |  |
+| NFR-040 | Input replay | For the same parameter set, slot and pinned stream rate, a controller's signal hash over all delivered frames is identical in 10 of 10 reruns, both with one game at a time and with `max_shadow_games` (default 4) shadow games running at once. | Maintainability | High | Open | #1258; the input is frame-indexed, so host load stretches wall time but not the signal. |
+| NFR-041 | Elimination-order replay | With `decision.backend=rules`, `interventions_enabled` off, one game at a time and 0 frame overruns, 10 of 10 reruns of the same set and seed produce the same elimination order (by slot) and the same winner slot, and every death lands inside the slot's validated death window (UC-046 BR-003 V9). | Maintainability | High | Open | #1258 |
+| NFR-042 | Rules-decision replay | With `decision.backend=rules`, `interventions_enabled` on, one game at a time and 0 frame overruns, at least 9 of 10 reruns of the same set and seed produce the same ordered sequence of rules decisions (intervention type, target slot). | Maintainability | Medium | Open | #1258; target to confirm by the maintainer: evaluation timing still follows OTLP ingest (UC-046 BR-007). |
+| NFR-043 | Pattern-game termination | Over 20 runs per validated set at the default calibration (sensitivity 2, `perception.ema_weight` 4, default `thresholds`) with `interventions_enabled` off, 100 % of pattern games end with a winner before the set's `max_game_seconds` of game time, with 0 force-ends. | Availability | High | Open | #1258 |
+| NFR-044 | Pattern evaluation cost | Computing f for one controller and one delivered frame takes at most 50 µs on the Raspberry Pi 5 (C-010), so 8 pattern controllers at 60 Hz add at most 0.4 ms to a 16.7 ms frame. | Performance | Medium | Open | #1258 |
 
 ## Constraints
 
@@ -188,3 +207,5 @@
 | C-016 | Secrets out of flags | API keys come from the environment (`.env.local` or the shell), are read once at agent startup and never appear in flag files or spans. | Regulatory | High | Implemented |  |
 | C-017 | Licences | Code is MIT, audio assets CC BY-SA 4.0 (`LICENSE`). | Regulatory | Medium | Implemented |  |
 | C-018 | Decision backend roles | Maintainer decision (epic #1225): **Jev** is the main in-game backend; **Claude** serves the post-game retro / summary and the experiment proposer, and is the in-game **backup** selected by a manual `decision.backend` flip; the **rules** engine is the automatic floor whenever the selected backend cannot answer. The shipped default of `decision.backend` is still `rules`, so Jev is selected per deployment (e.g. `scripts/agent-backend.sh jev`). | Business | High | Implemented |  |
+| C-019 | Immutable parameter sets | A parameter set file merged to `main` is never edited or deleted; a change is a new file with a new name or version (maintainer decision on #1258, 2026-10-16), so that every recorded pattern game stays replayable. CI rejects a diff that modifies or deletes an existing set file. | Business | High | Open | #1258 |
+| C-020 | No jitter in pattern games | Pattern games add no random variation to the input signal: both arms of a pair receive identical inputs, and variation between pairs comes only from distinct named parameter sets (maintainer decision on #1258, 2026-10-16). | Business | High | Open | #1258 |
