@@ -16,7 +16,11 @@
 # - LOG_LEVEL: Logging level for all services (DEBUG, INFO, WARNING, ERROR) [default: INFO]
 # - JOUSTMANIA_HOST: Hostname for OTEL resource attributes (host.name) [default: joustmania]
 #
-# Controller backend is configured via the "backend" flag in flagd (controller domain).
+# Controller backend: the "backend" flag in flagd (controller domain) selects which
+# adapters load at startup; the default is "rust" (rust-hid, #1371). python-hid is
+# opt-in only: start it with the "python-hid" profile AND select a backend variant
+# naming python (python / mock_python / python_rust / mock_python_rust):
+#   docker compose --profile python-hid up -d    # or COMPOSE_PROFILES=python-hid
 #
 # Notes:
 # - All images default to ghcr.io/watchmejoustmyflags/joustmania registry
@@ -254,7 +258,7 @@ services:
       # Rust HID service for canary controller I/O backend
       - RUST_HID_HOST=rust-hid
       - RUST_HID_PORT=50058
-      # Python HID service for canary controller I/O backend
+      # Python HID service: opt-in backend (python-hid profile, #1371)
       - PYTHON_HID_HOST=python-hid
       - PYTHON_HID_PORT=50059
     depends_on:
@@ -262,8 +266,10 @@ services:
         condition: service_started
       rust-hid:
         condition: service_healthy
+      # Waited for only when the python-hid profile is active (#1371).
       python-hid:
         condition: service_healthy
+        required: false
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
     deploy:
@@ -314,7 +320,9 @@ services:
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses HTTP /healthz)
 
-  # Rust HID Service - PS Move HID operations via gRPC
+  # Rust HID Service - PS Move HID operations via gRPC. The default Bluetooth
+  # backend (#1371): the controller manager reads real controllers through it and
+  # the pairing daemon pairs through its PairingService.
   rust-hid:
     image: ghcr.io/watchmejoustmyflags/joustmania/rust-hid:${IMAGE_TAG:-latest}
     build:
@@ -347,7 +355,11 @@ services:
     logging: *default-logging
 
   # Python HID Service - PS Move HID operations via gRPC (Python implementation)
+  # OPT-IN ONLY (#1371): rust-hid is the default Bluetooth backend. Starts only
+  # with `--profile python-hid`; slated for removal after the talk.
   python-hid:
+    profiles:
+      - python-hid
     image: ghcr.io/watchmejoustmyflags/joustmania/python-hid:${IMAGE_TAG:-latest}
     build:
       context: .

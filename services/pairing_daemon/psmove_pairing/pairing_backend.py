@@ -1,9 +1,9 @@
 """Pairing backend abstraction for PS Move controllers.
 
 Defines a PairingBackend protocol with implementations for different
-hardware communication strategies. This enables canary releases by
-routing pairing operations to either the Python (hidapi) backend or
-a future Rust gRPC service.
+hardware communication strategies: the rust-hid gRPC PairingService
+(default, #1371) or the in-process Python hidapi backend (opt-in). The
+bluetooth_backend flag variant selects one (UC-001 BR-003).
 """
 
 from __future__ import annotations

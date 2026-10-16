@@ -33,7 +33,7 @@
         "rust": "rust",
         "unstable": "unstable"
       },
-      "defaultVariant": "python",
+      "defaultVariant": "rust",
       "targeting": {}
     },
     "chaos_fault_type": {

@@ -14,7 +14,7 @@
         "python_rust": "python,rust",
         "mock_python_rust": "mock,python,rust"
       },
-      "defaultVariant": "python_rust"
+      "defaultVariant": "rust"
     },
     "poll_drop_threshold": {
       "state": "ENABLED",
@@ -33,7 +33,7 @@
         "rust": "rust",
         "unstable": "unstable"
       },
-      "defaultVariant": "python",
+      "defaultVariant": "rust",
       "targeting": {}
     },
     "chaos_fault_type": {

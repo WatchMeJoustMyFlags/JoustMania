@@ -8,6 +8,9 @@
 #
 # Checks:
 #   1. the stack containers are running (and healthy where they have a check)
+#   1b. the controller backend: when the `backend` flag in the controller.json
+#      next to the flag file names rust (the default, #1371), the rust-hid
+#      container is running and healthy (UC-002 BR-003)
 #   2. the flag file the helper scripts edit is the one flagd and the agent mount
 #   3. the stage baseline of the decision.* + safety flags (defaultVariant, from
 #      scripts/talk-baseline.json; interventions_allowed=standard, #1301), at
@@ -110,6 +113,39 @@ else
       pass "${name}: running${health:+ (${health})}"
     fi
   done
+fi
+
+# --- 1b. controller backend: rust-hid up when backend=rust (#1371) --------
+section "controller backend (rust-hid when backend=rust)"
+CONTROLLER_FLAG_FILE="$(dirname "${FLAG_FILE}")/controller.json"
+backend_value="$(python3 -c '
+import json, sys
+try:
+    flag = json.load(open(sys.argv[1]))["flags"]["backend"]
+    print(flag["variants"][flag["defaultVariant"]])
+except (OSError, ValueError, KeyError, TypeError):
+    print("?")
+' "${CONTROLLER_FLAG_FILE}" 2>/dev/null)"
+if [[ ! -f "${CONTROLLER_FLAG_FILE}" ]]; then
+  info "no ${CONTROLLER_FLAG_FILE}; rust-hid check skipped"
+elif [[ -z "${backend_value}" || "${backend_value}" == "?" ]]; then
+  warn "cannot read the backend flag from ${CONTROLLER_FLAG_FILE}; rust-hid check skipped"
+elif [[ ",${backend_value// /}," != *",rust,"* ]]; then
+  info "backend = ${backend_value}: rust-hid not needed"
+elif [[ "${docker_ok}" -ne 1 ]]; then
+  info "backend = ${backend_value}: rust-hid check skipped (docker unavailable, see above)"
+else
+  rust_state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' joustmania-rust-hid 2>/dev/null)" || rust_state=""
+  read -r rust_status rust_health <<<"${rust_state}"
+  if [[ -z "${rust_state}" ]]; then
+    fail "backend = ${backend_value} but joustmania-rust-hid is not running: no real controller can connect (start the stack that ships rust-hid: docker-compose.yml or docker-compose.lite.yml)"
+  elif [[ "${rust_status}" != "running" ]]; then
+    fail "backend = ${backend_value} but joustmania-rust-hid is ${rust_status}"
+  elif [[ "${rust_health:-}" != "healthy" ]]; then
+    fail "backend = ${backend_value} but joustmania-rust-hid is not healthy (health: ${rust_health:-none})"
+  else
+    pass "backend = ${backend_value}; joustmania-rust-hid running (healthy)"
+  fi
 fi
 
 # --- 2. flag dir: the file the helpers edit is the file flagd serves -------

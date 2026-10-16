@@ -13,6 +13,8 @@ OTEL_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"
 # Default intervals (used as fallback when flagd is unavailable)
 _DEFAULT_POLL_INTERVAL = 10
 _DEFAULT_BT_MONITOR_INTERVAL = 5
+# bluetooth_backend fallback when flagd is unavailable: rust-hid is the default (#1371)
+_DEFAULT_BLUETOOTH_BACKEND = "rust"
 
 # Feature flag clients (initialized lazily via init_flag_domain)
 # system: pairing.* intervals; controller: bluetooth_backend routing
@@ -63,18 +65,19 @@ def get_adapter_routing_default() -> str:
     """Get the default adapter routing backend.
 
     Reads bluetooth_backend from the controller domain with no targeting
-    key. Returns "hidapi" or "rust".
+    key. Returns the raw flag variant value ("python", "rust" or "unstable");
+    usb_pairing maps it to a pairing backend (UC-001 BR-003).
 
-    Falls back to "hidapi" when flagd is unavailable.
+    Falls back to "rust", the flag's default, when flagd is unavailable (#1371).
     """
     if _controller_client is None:
-        return "hidapi"
+        return _DEFAULT_BLUETOOTH_BACKEND
     try:
         from openfeature.evaluation_context import EvaluationContext
 
-        return _controller_client.get_string_value("bluetooth_backend", "hidapi", EvaluationContext())
+        return _controller_client.get_string_value("bluetooth_backend", _DEFAULT_BLUETOOTH_BACKEND, EvaluationContext())
     except Exception:
-        return "hidapi"
+        return _DEFAULT_BLUETOOTH_BACKEND
 
 
 def get_bt_monitor_interval() -> int:

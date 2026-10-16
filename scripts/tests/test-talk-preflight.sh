@@ -22,6 +22,7 @@ SECRET="sk-test-DO-NOT-PRINT-123"
 # docker stub: inspect answers from STUB_* env; everything else succeeds.
 cat >"${WORK}/bin/docker" <<'SH'
 #!/usr/bin/env bash
+[[ "$1" == "info" && -n "${STUB_DOCKER_DOWN:-}" ]] && exit 1
 [[ "$1" == "info" ]] && exit 0
 if [[ "$1" == "exec" ]]; then
   # docker exec joustmania-audio python -m services.audio.sound_catalog <cue>
@@ -31,6 +32,8 @@ fi
 if [[ "$1" == "inspect" ]]; then
   [[ -n "${STUB_MISSING:-}" && "$4" == "${STUB_MISSING}" ]] && exit 1
   fmt="$3"
+  # rust-hid state override (#1371): "<status> <health>", e.g. "running starting".
+  [[ "$4" == "joustmania-rust-hid" && -n "${STUB_RUST_HID_STATE:-}" ]] && { echo "${STUB_RUST_HID_STATE}"; exit 0; }
   case "${fmt}" in
     *State.Status*) if [[ -n "${STUB_AUDIO_DOWN:-}" && "$4" == "joustmania-audio" ]]; then echo "exited"; else echo "running healthy"; fi ;;
     *Mounts*) echo "${STUB_MOUNT}" ;;
@@ -235,6 +238,44 @@ check "applied interventions warn" "WARN  interventions.json not neutral: shield
 fixture
 STUB_MISSING=joustmania-agent run_preflight
 check "missing container named" "FAIL  joustmania-agent: container not found, cannot check its flag mount"
+
+# --- controller backend: rust-hid up when backend=rust (#1371, UC-002 BR-003)
+controller_fixture() {
+  python3 - "${WORK}/flags/controller.json" "$1" <<'PY'
+import json, sys
+variants = {"python": "python", "mock": "mock", "rust": "rust", "mock_rust": "mock,rust", "python_rust": "python,rust"}
+json.dump({"flags": {"backend": {"state": "ENABLED", "variants": variants, "defaultVariant": sys.argv[2]}}},
+          open(sys.argv[1], "w"), indent=2)
+PY
+}
+fixture
+STUB_BUDGET=30 run_preflight
+check "no controller.json skips the rust-hid check" "INFO  no ${WORK}/flags/controller.json; rust-hid check skipped"
+
+controller_fixture rust
+STUB_BUDGET=30 run_preflight
+if [[ "${RC}" -eq 0 ]]; then ok "backend=rust + healthy rust-hid exits 0"; else not_ok "backend=rust + healthy rust-hid exits 0 (rc=${RC})"; fi
+check "backend=rust + healthy rust-hid passes" "PASS  backend = rust; joustmania-rust-hid running (healthy)"
+
+controller_fixture python_rust
+STUB_BUDGET=30 STUB_RUST_HID_STATE="running starting" run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "unhealthy rust-hid exits 1"; else not_ok "unhealthy rust-hid exits 1 (rc=${RC})"; fi
+check "comma list naming rust checks rust-hid health" "FAIL  backend = python,rust but joustmania-rust-hid is not healthy (health: starting)"
+
+controller_fixture rust
+STUB_BUDGET=30 STUB_MISSING=joustmania-rust-hid run_preflight
+check "missing rust-hid named" "FAIL  backend = rust but joustmania-rust-hid is not running"
+
+controller_fixture rust
+STUB_BUDGET=30 STUB_DOCKER_DOWN=1 run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "docker down still exits 1 (named once)"; else not_ok "docker down still exits 1 (rc=${RC})"; fi
+check "docker down degrades the rust-hid check to a skip" "INFO  backend = rust: rust-hid check skipped (docker unavailable"
+
+controller_fixture mock
+STUB_BUDGET=30 STUB_MISSING=joustmania-rust-hid run_preflight
+check "backend=mock does not need rust-hid" "INFO  backend = mock: rust-hid not needed"
+if has "joustmania-rust-hid is not running"; then not_ok "backend=mock never fails on rust-hid"; else ok "backend=mock never fails on rust-hid"; fi
+rm -f "${WORK}/flags/controller.json"
 
 # --- stage permission baseline and perceptibility (UC-070 BR-003/BR-004, #1301)
 fixture interventions_allowed=none

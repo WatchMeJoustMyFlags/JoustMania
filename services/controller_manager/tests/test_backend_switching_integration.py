@@ -5,13 +5,17 @@ routes to the Rust adapter when configured, without requiring
 the actual rust-hid service (uses mocked gRPC stubs).
 """
 
+import json
 import queue
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import grpc
+import pytest
 
 from services.controller_manager.backend_factory import (
+    DEFAULT_BACKEND,
     _create_adapter_by_name,
     create_backend,
 )
@@ -217,3 +221,58 @@ class TestBackendSwitchHidapiToRust:
 
             adapter_types = {a.adapter_type for a in backend.adapters}
             assert "mock" in adapter_types, f"mock not injected for flag={flag_value}"
+
+
+_CONTROLLER_FLAGS = Path(__file__).resolve().parents[3] / "services" / "flagd" / "controller.json"
+
+
+class TestRustIsTheDefaultBackend:
+    """rust-hid is the default Bluetooth backend; python is opt-in (UC-002 BR-003, #1371)."""
+
+    @pytest.mark.uc("UC-002", flow="main", steps=[2], br=["BR-003"])
+    @pytest.mark.parametrize(
+        "flag_client",
+        [
+            pytest.param(lambda: _client_returning(_mock_details("")), id="empty-flag"),
+            pytest.param(lambda: _client_raising(RuntimeError("flagd down")), id="flagd-down"),
+        ],
+    )
+    def test_unavailable_flag_falls_back_to_rust_plus_mock(self, flag_client):
+        """An empty or failing backend flag loads rust-hid (+ the auto-injected mock), never python."""
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=flag_client()),
+            patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
+        ):
+            mock_adapter = MagicMock()
+            mock_adapter.adapter_type = "mock"
+            mock_create.side_effect = [_make_rust_adapter(), mock_adapter]
+
+            create_backend()
+
+        assert [call[0][0] for call in mock_create.call_args_list] == [DEFAULT_BACKEND, "mock"]
+        assert DEFAULT_BACKEND == "rust"
+
+    @pytest.mark.uc("UC-002", flow="main", steps=[2], br=["BR-003"])
+    def test_shipped_flags_default_to_rust_and_keep_python_opt_in(self):
+        """controller.json defaults backend and bluetooth_backend to rust; python variants stay selectable."""
+        flags = json.loads(_CONTROLLER_FLAGS.read_text())["flags"]
+
+        backend = flags["backend"]
+        assert backend["variants"][backend["defaultVariant"]] == "rust"
+        assert {"python", "mock_python", "python_rust", "mock_python_rust"} <= set(backend["variants"])
+
+        routing = flags["bluetooth_backend"]
+        assert routing["variants"][routing["defaultVariant"]] == "rust"
+        assert set(routing["variants"].values()) == {"python", "rust", "unstable"}
+
+
+def _client_returning(details):
+    client = MagicMock()
+    client.get_string_details.return_value = details
+    return client
+
+
+def _client_raising(exc):
+    client = MagicMock()
+    client.get_string_details.side_effect = exc
+    return client
