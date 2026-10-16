@@ -24,13 +24,23 @@ magnitude into a zone (`services/game_coordinator/games/analytics.py`):
 
 | Zone | Magnitude | Driver vector |
 |------|-----------|---------------|
-| STILL | < 1.1g | `ZONE_STILL` (~1.0g) |
+| STILL | < 1.1g | `ZONE_DIP` (~0.5g), `ZONE_STILL` (~1.0g) |
 | ACTIVE | 1.1–1.5g | `ZONE_ACTIVE` (~1.3g) |
-| WARNING | 1.5–2.0g | `ZONE_WARNING` (~1.7g) |
-| DANGER | > 2.0g | `ZONE_DANGER` (~2.3g) |
+| WARNING | 1.5–2.0g | `ZONE_ACTIVE_HIGH` (1.5g), `ZONE_WARNING` (1.6g = `SAFE_MAX_G`) |
+| DANGER | > 2.0g | none: a held DANGER vector would kill (see below) |
 
-`SimulateMovement` sets a **persistent** accel vector, so a "beat" just sets each
-controller's magnitude. From the zone history + a rolling variance window the
+`SimulateMovement` **holds** its accel vector: every mock poll, and so every 60 Hz
+gameplay frame, reports exactly that vector until the next `SimulateMovement` or
+`ResetController` (UC-003 BR-002, fixed in #1279; a `SimulateDeath` latch wins for
+its 2 frames, then the held vector resumes). So a "beat" just sets each
+controller's magnitude. A held vector really reaches the death EMA, so anything
+above the player's death threshold kills them, and re-kills after every respawn
+grace while it stays held. The default threshold (medium sensitivity, slow music)
+is 1.8g, so no beat exceeds 1.6g; at sensitivity 0-1 (1.3g / 1.5g) the 1.6g beat
+is not safe. Jerky beats flip every 0.25s so the coordinator's ~1s variance
+window always sees both values. With `--keep-controllers` the driver sends
+`ResetController` to every driven controller at the end, so no vector stays
+held. From the zone history + a rolling variance window the
 coordinator derives `skill_level`, `movement_variance`, `movement_intensity`,
 which the rules read.
 
@@ -43,11 +53,11 @@ reacts.
 
 | `--scenario` | Movement pattern | Trips | Observable |
 |--------------|------------------|-------|------------|
-| `skill_gap` | high-skill cohort steady ACTIVE; low-skill cohort erratic STILL↔DANGER | **R3** skill gap > `fitness.balanced.max_skill_gap` (0.4) | `decision.action=adjust_player_sensitivity` on the outlier (a *difficulty* intervention — **blocked** under the stock `ambient` allow-list) |
-| `statue` | one controller held perfectly still; others jostle | **R8** variance < `statueVarianceEpsilon` (0.05) | `decision.action=send_controller_effect` — **dispatches** under stock `ambient` |
+| `skill_gap` | high-skill cohort steady ACTIVE (1.3g, skill ≈0.82); low-skill cohort jerky 0.5g↔1.6g every 0.25s (AGGRESSIVE, variance ≈0.3, skill ≈0.30) | **R3** skill gap > `fitness.balanced.max_skill_gap` (0.4) | `decision.action=adjust_player_sensitivity` on the outlier (a *difficulty* intervention — **blocked** under the stock `ambient` allow-list) |
+| `statue` | one controller held perfectly still (1.0g); others jostle 0.5g↔1.5g every 0.25s (variance ≈0.25) | **R8** variance < `statueVarianceEpsilon` (0.05) | `decision.action=send_controller_effect` — **dispatches** under stock `ambient` |
 | `low_variance` | whole field near-still | **R1/R2/R8** endurance + statue pressure | calming cue / slow-tempo decisions; statue nudges |
 | `death_cascade` | eliminate players fast while the session is young | **R1/R2** endurance (session at risk) | `decision.action=adjust_music_tempo` / `play_audio_cue` |
-| `idle_dominator` | one player pegged high, the rest near-still | **R6** eliminate-least-active (past the accelerate target) | activity spread; eliminate-player shape once past `fitness.accelerate.target_session_seconds` (60s) |
+| `idle_dominator` | one player alternates 1.3g↔1.5g, the rest hold 1.0g | **R6** eliminate-least-active (past the accelerate target) | activity spread; eliminate-player shape once past `fitness.accelerate.target_session_seconds` (60s) |
 | `blocked_battery` | skill-gap pattern under `ambient` | **R3 blocked by the permission layer** | `decision.blocked=true block_reason=not_allowed`; `game_interventions_total{blocked="true"}` — the permission chain shown end to end |
 
 > **Why a blocked beat matters.** `skill_gap`/`blocked_battery` produce a

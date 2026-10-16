@@ -29,9 +29,19 @@ How the movement → metric → rule mapping works
 ----------------------------------------------
 The coordinator classifies each frame's acceleration magnitude into a zone
 (``analytics.py``): STILL <1.1g, ACTIVE 1.1-1.5g, WARNING 1.5-2.0g, DANGER >2.0g.
-``SimulateMovement`` sets a *persistent* accel vector (held until the next call),
-so a scenario "beat" just sets each controller's magnitude. From the zone history +
-a rolling variance window the coordinator derives:
+``SimulateMovement`` holds its accel vector on the controller: every mock poll and
+so every 60 Hz gameplay frame reports exactly that vector until the next
+``SimulateMovement`` or ``ResetController`` (UC-003 BR-002; before #1279 the next
+100 Hz poll overwrote it with noise within ~10 ms). A ``SimulateDeath`` latch wins
+for its 2 delivered frames, then the held vector resumes; controllers the driver
+never moved report resting noise (~1g). So a scenario "beat" just sets each
+controller's magnitude. Because held vectors really reach the game, every held
+vector also feeds the death EMA: anything above the player's death threshold kills
+them (and re-kills after each respawn grace while it stays held). The default
+(medium sensitivity, slow music) threshold is 1.8g, so every beat here stays at or
+below 1.6g (``SAFE_MAX_G``) and no scenario kills a player except through
+``SimulateDeath``. Lower sensitivities (1.3g / 1.5g) are not safe for the 1.6g beat.
+From the zone history + a rolling variance window the coordinator derives:
 
   * ``skill_level``  = 0.6·playstyle_control + 0.4·motion_smoothness  (R3/R4)
       BALANCED+steady  → ~1.0   |   CALM/AGGRESSIVE or jerky → low
@@ -80,10 +90,21 @@ def _vec(magnitude: float) -> tuple[float, float, float]:
     return (xy, xy, z)
 
 
+# Held vectors reach the death EMA (#1279), so no beat may exceed the default
+# death threshold (medium sensitivity, slow music: 1.8g). SAFE_MAX_G leaves 0.2g of
+# margin. There is deliberately no DANGER (> 2.0g) vector: it would kill.
+SAFE_MAX_G = 1.6
+
+ZONE_DIP = _vec(0.5)        # < 1.1g  → STILL, far below rest (gives jerky beats variance)
 ZONE_STILL = _vec(1.0)      # < 1.1g  → STILL  (also drives variance→0 when held)
 ZONE_ACTIVE = _vec(1.3)     # 1.1-1.5 → ACTIVE (smooth, skilled when steady)
-ZONE_WARNING = _vec(1.7)    # 1.5-2.0 → WARNING
-ZONE_DANGER = _vec(2.3)     # > 2.0   → DANGER (aggressive playstyle)
+ZONE_ACTIVE_HIGH = _vec(1.5)  # 1.5   → WARNING boundary, still well under 1.8g
+ZONE_WARNING = _vec(SAFE_MAX_G)  # 1.5-2.0 → WARNING (aggressive playstyle), 0.2g under 1.8g
+
+# Jerky beats flip every JERK_PERIOD seconds so the coordinator's ~1s (64-frame)
+# variance window always holds both values; at a 1s flip the window often sees
+# one constant value and the variance collapses to 0 (a "statue").
+JERK_PERIOD = 0.25
 
 
 def log(msg: str) -> None:
@@ -145,6 +166,11 @@ def move(s: Stack, serial: str, vec: tuple[float, float, float]) -> None:
     s.mock.SimulateMovement(
         mockpb.MovementRequest(serial=serial, accel_x=vec[0], accel_y=vec[1], accel_z=vec[2])
     )
+
+
+def reset(s: Stack, serial: str) -> None:
+    """Clear the held vector (and any death latch): back to resting noise."""
+    s.mock.ResetController(mockpb.ResetRequest(serial=serial))
 
 
 def kill(s: Stack, serial: str) -> None:
@@ -223,28 +249,31 @@ def beat(label: str) -> None:
 def scenario_skill_gap(s: Stack, serials: list[str], duration: float) -> None:
     """R3 — skill gap exceeds fitness.balanced.max_skill_gap (0.4).
 
-    Split the field into a high-skill cohort (BALANCED + steady ~1.3g → skill≈1.0)
-    and a low-skill cohort (alternating STILL/DANGER → AGGRESSIVE + jerky → low
-    skill). The coordinator's per-player ``game_player_skill_level`` gap crosses
-    the threshold and the agent emits ``adjust_player_sensitivity`` on the outlier.
+    Split the field into a high-skill cohort (steady ~1.3g → ACTIVE playstyle,
+    zero variance → skill≈0.82) and a low-skill cohort (0.5g ↔ 1.6g every 0.25s →
+    50% WARNING = AGGRESSIVE, windowed variance ≈0.3 → skill≈0.30). The
+    coordinator's per-player ``game_player_skill_level`` gap (≈0.52) crosses the
+    0.4 threshold and the agent emits ``adjust_player_sensitivity`` on the outlier.
+    Nobody exceeds 1.6g, so nobody dies at the default 1.8g threshold.
     """
     if len(serials) < 2:
         raise RuntimeError("skill_gap needs >= 2 controllers")
     pro = serials[: max(1, len(serials) // 2)]
     novices = serials[max(1, len(serials) // 2):]
     log(f"pros (high skill): {pro}  |  novices (low skill): {novices}")
+    for serial in pro:
+        # Pros: steady ACTIVE, held (#1279) → zero variance → high skill.
+        move(s, serial, ZONE_ACTIVE)
     deadline = time.time() + duration
-    flip = False
+    tick = 0
     while time.time() < deadline:
-        # Pros: steady ACTIVE → BALANCED playstyle + low variance → high skill.
-        for serial in pro:
-            move(s, serial, ZONE_ACTIVE)
-        # Novices: alternate STILL <-> DANGER → AGGRESSIVE + jerky → low skill.
+        # Novices: dip <-> WARNING every 0.25s → AGGRESSIVE + jerky → low skill.
         for serial in novices:
-            move(s, serial, ZONE_DANGER if flip else ZONE_STILL)
-        beat("pros steady-active, novices erratic still/danger (widening skill gap)")
-        flip = not flip
-        time.sleep(1.0)
+            move(s, serial, ZONE_WARNING if tick % 2 else ZONE_DIP)
+        if tick % 4 == 0:
+            beat("pros steady-active, novices jerky dip/warning (widening skill gap)")
+        tick += 1
+        time.sleep(JERK_PERIOD)
 
 
 def scenario_statue(s: Stack, serials: list[str], duration: float) -> None:
@@ -252,22 +281,24 @@ def scenario_statue(s: Stack, serials: list[str], duration: float) -> None:
 
     Hold one controller at a constant STILL vector so its rolling movement
     variance collapses below the statueVarianceEpsilon (0.05) once the variance
-    window fills; the others jostle normally. The agent emits
+    window fills; the others jostle between 0.5g and 1.5g every 0.25s (windowed
+    variance ≈0.25, far above 0.05, so only the statue is flagged). The agent emits
     ``send_controller_effect`` to nudge the statue. (send_controller_effect is in
     the stock ``ambient`` allow-list, so this one can DISPATCH, not just decide.)
     """
     statue = serials[0]
     movers = serials[1:]
     log(f"statue (held perfectly still): {statue}  |  movers: {movers}")
+    move(s, statue, ZONE_STILL)  # held constant vector → variance → 0
     deadline = time.time() + duration
-    flip = False
+    tick = 0
     while time.time() < deadline:
-        move(s, statue, ZONE_STILL)  # constant vector → variance → 0
         for serial in movers:
-            move(s, serial, ZONE_WARNING if flip else ZONE_ACTIVE)
-        beat("statue frozen (variance→0), others jostling")
-        flip = not flip
-        time.sleep(1.0)
+            move(s, serial, ZONE_ACTIVE_HIGH if tick % 2 else ZONE_DIP)
+        if tick % 4 == 0:
+            beat("statue frozen (variance→0), others jostling")
+        tick += 1
+        time.sleep(JERK_PERIOD)
 
 
 def scenario_low_variance(s: Stack, serials: list[str], duration: float) -> None:
@@ -317,8 +348,9 @@ def scenario_death_cascade(s: Stack, serials: list[str], duration: float) -> Non
 def scenario_idle_dominator(s: Stack, serials: list[str], duration: float) -> None:
     """R6-flavored — one player dominates (very active) while others idle.
 
-    One controller stays in WARNING/DANGER (peak intensity) while the rest barely
-    move (lowest ``movement_intensity``). Past the accelerate target this is the
+    One controller alternates 1.3g ↔ 1.5g (always above the idlers, never above
+    1.5g, so it survives the default 1.8g threshold) while the rest hold 1.0g
+    (lowest ``movement_intensity``). Past the accelerate target this is the
     "eliminate the least-moving player" shape; before it, the activity spread
     still feeds the balanced/chaos signals. Pairs well with --duration long enough
     to cross fitness.accelerate.target_session_seconds (60s).
@@ -329,7 +361,7 @@ def scenario_idle_dominator(s: Stack, serials: list[str], duration: float) -> No
     deadline = time.time() + duration
     flip = False
     while time.time() < deadline:
-        move(s, dominator, ZONE_DANGER if flip else ZONE_WARNING)
+        move(s, dominator, ZONE_ACTIVE_HIGH if flip else ZONE_ACTIVE)
         for serial in idlers:
             move(s, serial, ZONE_STILL)
         beat("dominator pegged high, idlers near-still (widening activity spread)")
@@ -360,7 +392,7 @@ def scenario_blocked_battery(s: Stack, serials: list[str], duration: float) -> N
 
 SCENARIOS = {
     "skill_gap": (
-        "Split field into high/low skill cohorts → skill gap > 0.4",
+        "Split field into steady (~1.3g) / jerky (0.5↔1.6g) cohorts → skill gap ≈0.5 > 0.4",
         "R3 adjust_player_sensitivity",
         "decision.action=adjust_player_sensitivity on the outlier (blocked under ambient)",
         scenario_skill_gap,
@@ -456,7 +488,15 @@ def run_once(s: Stack, args: argparse.Namespace) -> None:
             except grpc.RpcError as exc:
                 log(f"force-end failed: {exc}")
     finally:
-        if not args.keep_controllers:
+        if args.keep_controllers:
+            # Kept controllers must not keep a scripted vector held (#1279).
+            for serial in serials:
+                try:
+                    reset(s, serial)
+                except grpc.RpcError as exc:
+                    log(f"cleanup ResetController({serial}) failed: {exc}")
+            log(f"reset {len(serials)} kept demo controllers to resting noise")
+        else:
             remove_demo_controllers(s)
 
 

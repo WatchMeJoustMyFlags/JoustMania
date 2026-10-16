@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import random
 import time
 
@@ -71,6 +72,11 @@ def _create_controller_state(serial: str, reserved: bool = False, tag: str = "")
         # set far above any in-game delivery time, so in a real game the frame
         # budget — not this timer — governs the latch (#926).
         "death_hold_until": 0.0,
+        # Acceleration held by SimulateMovement (UC-003 BR-002, #1279). While
+        # set, poll() reports exactly this vector instead of resting noise, so a
+        # scripted value reaches every streamed gameplay frame until the next
+        # SimulateMovement or ResetController. None = unscripted (pure noise).
+        "held_accel": None,
     }
 
 
@@ -157,15 +163,25 @@ class MockAdapter(ControllerIOAdapter):
                 controller["death_frames_remaining"] = 0
                 controller["death_hold_until"] = 0.0
 
-            # Add noise to accelerometer
-            controller[StateKey.ACCEL][AxisKey.X] = random.gauss(0.0, 0.1)
-            controller[StateKey.ACCEL][AxisKey.Y] = random.gauss(0.0, 0.1)
-            controller[StateKey.ACCEL][AxisKey.Z] = random.gauss(1.0, 0.1)
+            held_accel = controller["held_accel"]
+            if held_accel is not None:
+                # Scripted motion persists until changed (#1279).
+                controller[StateKey.ACCEL] = dict(held_accel)
+            else:
+                # Unscripted: resting noise around 1 g. Built whole and assigned
+                # once so a concurrent reader never sees a half-updated frame.
+                controller[StateKey.ACCEL] = {
+                    AxisKey.X: random.gauss(0.0, 0.1),
+                    AxisKey.Y: random.gauss(0.0, 0.1),
+                    AxisKey.Z: random.gauss(1.0, 0.1),
+                }
 
-        # Add noise to gyroscope
-        controller[StateKey.GYRO][AxisKey.X] = random.gauss(0.0, 0.5)
-        controller[StateKey.GYRO][AxisKey.Y] = random.gauss(0.0, 0.5)
-        controller[StateKey.GYRO][AxisKey.Z] = random.gauss(0.0, 0.5)
+        # Gyroscope noise, assigned once for the same reason.
+        controller[StateKey.GYRO] = {
+            AxisKey.X: random.gauss(0.0, 0.5),
+            AxisKey.Y: random.gauss(0.0, 0.5),
+            AxisKey.Z: random.gauss(0.0, 0.5),
+        }
 
         # Simulate battery drain
         time_since_connected = current_time - controller["connected_at"]
@@ -192,6 +208,36 @@ class MockAdapter(ControllerIOAdapter):
             StateKey.TEMPERATURE: controller[StateKey.TEMPERATURE],
             "connection_type": "mock",
         }
+
+    def hold_accel(self, serial: str, x: float, y: float, z: float) -> bool:
+        """Hold an acceleration vector on a controller until changed (#1279).
+
+        Every subsequent ``poll()`` reports exactly this vector (instead of
+        resting noise) until the next ``hold_accel`` or ``clear_held_accel``.
+        An active death latch still wins for its delivered frames; the held
+        vector resumes once the latch drains. Returns False for an unknown
+        controller.
+
+        Raises:
+            ValueError: if any component is NaN or infinite.
+        """
+        if not all(math.isfinite(v) for v in (x, y, z)):
+            raise ValueError(f"acceleration must be finite, got ({x}, {y}, {z})")
+        controller = self.controllers.get(serial)
+        if not controller:
+            return False
+        held = {AxisKey.X: x, AxisKey.Y: y, AxisKey.Z: z}
+        controller["held_accel"] = held
+        controller[StateKey.ACCEL] = dict(held)
+        return True
+
+    def clear_held_accel(self, serial: str) -> bool:
+        """Drop a held acceleration so the controller reports resting noise again."""
+        controller = self.controllers.get(serial)
+        if not controller:
+            return False
+        controller["held_accel"] = None
+        return True
 
     def consume_death_frame(self, serial: str) -> None:
         """Account one DELIVERED gameplay frame against a pending death latch.

@@ -6,7 +6,9 @@ import math
 import random
 import sys
 from pathlib import Path
+from unittest.mock import create_autospec, patch
 
+import grpc
 import pytest
 
 # Setup paths for imports
@@ -18,6 +20,7 @@ sys.path.insert(0, str(project_root))
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from proto import controller_manager_mock_pb2
 from services.controller_manager.mock_control_service import MockControllerService
+from services.controller_manager.multiplexer.chaos_adapter import ChaosAdapter
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 
 
@@ -448,3 +451,217 @@ class TestSimulateDeathConverges:
             f"sensitivity {sensitivity} {tempo} (threshold {threshold}g) must die within the {2}-frame delivery budget"
         )
         assert model.rekills == 0, "no #757 grace-expiry re-kill at any sensitivity"
+
+
+def _magnitude(accel: dict) -> float:
+    return math.sqrt(accel[AxisKey.X] ** 2 + accel[AxisKey.Y] ** 2 + accel[AxisKey.Z] ** 2)
+
+
+def _run_data_plane(adapter: MockAdapter, serial: str, seconds: float, send_hz: float = 60.0) -> list[dict]:
+    """Run the production two-loop data plane on a virtual timeline.
+
+    The discovery loop polls at 100 Hz and caches the latest frame; the send
+    loop streams the cached frame at ``send_hz`` and drains one death-latch
+    frame per send, exactly like servicer._build_gameplay_update. Returns the
+    accel of every STREAMED frame (what the game sees).
+    """
+    poll_interval = 1.0 / 100.0
+    send_interval = 1.0 / send_hz
+    elapsed = 0.0
+    next_send = 0.0
+    streamed: list[dict] = []
+    cache = adapter.poll(serial)
+    for _ in range(int(seconds / poll_interval)):
+        elapsed += poll_interval
+        cache = adapter.poll(serial)
+        if elapsed >= next_send:
+            streamed.append(cache[StateKey.ACCEL])
+            adapter.consume_death_frame(serial)
+            next_send += send_interval
+    return streamed
+
+
+class TestUC003HeldMovement:
+    """UC-003 BR-002 / A3: SimulateMovement holds its vector until changed (#1279)."""
+
+    SERIAL = "mock_controller_0"
+    WARNING_VEC = (1.2, 0.8, 0.6)  # ~1.56g, WARNING zone
+    DANGER_VEC = (1.5, 1.0, 1.3)  # ~2.22g, above the default 1.8g threshold
+
+    @pytest.fixture(autouse=True)
+    def _seeded_rng(self):
+        """Seed the module RNG for reproducible noise, then restore its state."""
+        state = random.getstate()
+        random.seed(1279)
+        yield
+        random.setstate(state)
+
+    def _expected(self, vec: tuple[float, float, float]) -> dict:
+        # MovementRequest fields are proto float (32-bit), hence the tolerance.
+        axes = (AxisKey.X, AxisKey.Y, AxisKey.Z)
+        return {axis: pytest.approx(value, abs=1e-6) for axis, value in zip(axes, vec, strict=True)}
+
+    def _move(self, service: MockControllerService, vec: tuple[float, float, float], serial: str = SERIAL):
+        return service.SimulateMovement(
+            controller_manager_mock_pb2.MovementRequest(serial=serial, accel_x=vec[0], accel_y=vec[1], accel_z=vec[2]),
+            None,
+        )
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
+    def test_held_vector_reaches_every_streamed_frame(self):
+        """UC-003 BR-002: a SimulateMovement vector is in every 60 Hz frame while held."""
+        service, adapter = _make_service(num_controllers=1)
+
+        assert self._move(service, self.WARNING_VEC).success
+
+        streamed = _run_data_plane(adapter, self.SERIAL, seconds=2.0)
+
+        assert len(streamed) >= 100  # ~2 s of 60 Hz frames, far more than "several"
+        expected = self._expected(self.WARNING_VEC)
+        assert all(frame == expected for frame in streamed)
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
+    def test_new_movement_replaces_held_vector(self):
+        """UC-003 BR-002: the next SimulateMovement replaces the held vector."""
+        service, adapter = _make_service(num_controllers=1)
+
+        self._move(service, self.WARNING_VEC)
+        self._move(service, (0.0, 0.0, 1.0))
+
+        streamed = _run_data_plane(adapter, self.SERIAL, seconds=0.5)
+        assert all(frame == {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: 1.0} for frame in streamed)
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
+    def test_unscripted_controller_stays_noisy(self):
+        """UC-003 BR-002: a controller nobody scripted reports resting noise around 1 g."""
+        service, adapter = _make_service(num_controllers=2)
+        self._move(service, self.WARNING_VEC, serial="mock_controller_0")
+
+        streamed = _run_data_plane(adapter, "mock_controller_1", seconds=1.0)
+
+        z_values = [frame[AxisKey.Z] for frame in streamed]
+        assert len(set(z_values)) == len(z_values), "every unscripted frame is a fresh noise sample"
+        mean_magnitude = sum(_magnitude(f) for f in streamed) / len(streamed)
+        assert 0.9 < mean_magnitude < 1.2
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-001", "BR-002"])
+    def test_death_latch_overrides_hold_then_hold_resumes(self):
+        """UC-003 BR-001/BR-002: SimulateDeath wins for its 2 frames, then the held vector resumes."""
+        service, adapter = _make_service(num_controllers=1)
+        self._move(service, self.WARNING_VEC)
+
+        resp = service.SimulateDeath(controller_manager_mock_pb2.DeathRequest(serial=self.SERIAL), None)
+        assert resp.success
+
+        streamed = _run_data_plane(adapter, self.SERIAL, seconds=0.5)
+
+        death_frames = [f for f in streamed if _magnitude(f) > 9.0]
+        assert len(death_frames) == 2, "death latch still delivers exactly its 2-frame budget (#926)"
+        assert streamed[0] == death_frames[0]
+        assert streamed[1] == death_frames[1]
+        expected = self._expected(self.WARNING_VEC)
+        assert all(frame == expected for frame in streamed[2:])
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-001", "BR-002"])
+    def test_death_kills_once_with_a_held_resting_vector(self):
+        """UC-003 BR-001: with a held resting vector the death lands once and no re-kill follows (#757)."""
+        service, adapter = _make_service(num_controllers=1)
+        self._move(service, (0.2, 0.2, 1.0))  # the shadow-game runner's liveliness vector
+        model = _GameSideModel(death_threshold=_FAST_MAX[4])
+
+        for frame in _run_data_plane(adapter, self.SERIAL, seconds=0.5):
+            model.feed(frame, 0.0)  # primes the EMA on the held vector (~1.04g)
+        service.SimulateDeath(controller_manager_mock_pb2.DeathRequest(serial=self.SERIAL), None)
+        now = 1.0
+        for frame in _run_data_plane(adapter, self.SERIAL, seconds=5.0):
+            now += 1.0 / 60.0
+            model.feed(frame, now)
+            model.respawn_if_grace_started(now)
+
+        assert model.kills == 1
+        assert model.rekills == 0
+
+    @pytest.mark.uc("UC-003", flow="A3")
+    def test_reset_returns_held_controller_to_noise(self):
+        """UC-003 A3: ResetController clears the hold; the controller reports noise again."""
+        service, adapter = _make_service(num_controllers=1)
+        self._move(service, self.WARNING_VEC)
+
+        resp = service.ResetController(controller_manager_mock_pb2.ResetRequest(serial=self.SERIAL), None)
+        assert resp.success
+
+        streamed = _run_data_plane(adapter, self.SERIAL, seconds=0.5)
+        z_values = [frame[AxisKey.Z] for frame in streamed]
+        assert len(set(z_values)) == len(z_values)
+        assert all(_magnitude(frame) < 1.5 for frame in streamed)
+
+    def test_simulate_movement_unknown_controller_returns_error(self):
+        """SimulateMovement on an unknown serial fails without holding anything."""
+        service, adapter = _make_service(num_controllers=0)
+
+        resp = self._move(service, self.WARNING_VEC, serial="NOPE")
+
+        assert not resp.success
+        assert "NOPE" in resp.error
+        assert adapter.controllers == {}
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
+    def test_held_vector_above_threshold_kills(self):
+        """UC-003 BR-002: a held vector above the death threshold kills the player."""
+        service, adapter = _make_service(num_controllers=1)
+        self._move(service, self.DANGER_VEC)
+        model = _GameSideModel(death_threshold=_DEATH_THRESHOLD)  # default 1.8g
+
+        now = 0.0
+        for frame in _run_data_plane(adapter, self.SERIAL, seconds=1.0):
+            now += 1.0 / 60.0
+            model.feed(frame, now)
+
+        assert model.kills == 1
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
+    def test_lethal_held_vector_rekills_after_each_grace(self):
+        """UC-003 BR-002: a lethal held vector re-kills the respawned player after every grace."""
+        service, adapter = _make_service(num_controllers=1)
+        self._move(service, self.DANGER_VEC)
+        model = _GameSideModel(death_threshold=_DEATH_THRESHOLD)
+
+        now = 0.0
+        for frame in _run_data_plane(adapter, self.SERIAL, seconds=5.0):
+            now += 1.0 / 60.0
+            model.feed(frame, now)
+            model.respawn_if_grace_started(now)
+
+        assert model.kills == 1
+        # Kill at ~0s, grace 2.0s → re-kill at ~2s and ~4s while the vector is held.
+        assert model.rekills == 2
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
+    @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+    def test_non_finite_movement_is_rejected(self, bad):
+        """UC-003 BR-002: a NaN/infinite component is INVALID_ARGUMENT and holds nothing."""
+        service, adapter = _make_service(num_controllers=1)
+        context = create_autospec(grpc.ServicerContext, instance=True)
+
+        resp = service.SimulateMovement(
+            controller_manager_mock_pb2.MovementRequest(serial=self.SERIAL, accel_x=bad, accel_y=0.0, accel_z=1.0),
+            context,
+        )
+
+        assert not resp.success
+        context.set_code.assert_called_once_with(grpc.StatusCode.INVALID_ARGUMENT)
+        assert adapter.controllers[self.SERIAL]["held_accel"] is None
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
+    def test_simulated_disconnect_keeps_the_hold(self):
+        """UC-003 BR-002: a chaos-simulated disconnect drops frames but the hold survives it."""
+        service, adapter = _make_service(num_controllers=1)
+        self._move(service, self.WARNING_VEC)
+        chaos = ChaosAdapter(adapter)
+
+        with patch.object(ChaosAdapter, "_get_fault", autospec=True, return_value="disconnect"):
+            assert chaos.poll(self.SERIAL) is None
+        with patch.object(ChaosAdapter, "_get_fault", autospec=True, return_value="none"):
+            frame = chaos.poll(self.SERIAL)
+
+        assert frame[StateKey.ACCEL] == self._expected(self.WARNING_VEC)

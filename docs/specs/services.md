@@ -93,11 +93,11 @@ observability), `.ci.yml` (CI flag dir, profiles), `.ci-rust.yml`, `.dev.yml` (s
 
 | RPC | Kind | Request → Response | Description | Line |
 |---|---|---|---|---|
-| `SimulateMovement` | unary | `MovementRequest` → `MovementResponse` | Simulate controller movement | `proto/controller_manager_mock.proto:10` |
+| `SimulateMovement` | unary | `MovementRequest` → `MovementResponse` | Simulate controller movement: holds the acceleration vector on that controller (every poll and gameplay frame reports it) until the next call or `ResetController`; a `SimulateDeath` latch overrides it for its frames; a NaN/infinite component returns `INVALID_ARGUMENT` (UC-003 BR-002, #1279) | `proto/controller_manager_mock.proto:10` |
 | `SimulateDeath` | unary | `DeathRequest` → `DeathResponse` | Simulate death (high acceleration) | `proto/controller_manager_mock.proto:13` |
 | `SimulateButton` | unary | `ButtonRequest` → `ButtonResponse` | Simulate button press | `proto/controller_manager_mock.proto:16` |
 | `SetColor` | unary | `ColorRequest` → `ColorResponse` | Set LED color | `proto/controller_manager_mock.proto:19` |
-| `ResetController` | unary | `ResetRequest` → `ResetResponse` | Reset controller to idle | `proto/controller_manager_mock.proto:22` |
+| `ResetController` | unary | `ResetRequest` → `ResetResponse` | Reset controller to idle: buttons released, death latch and held movement cleared, acceleration back to resting noise (UC-003 A3) | `proto/controller_manager_mock.proto:22` |
 | `ListMockControllers` | unary | `ListRequest` → `ListResponse` | Get list of mock controllers | `proto/controller_manager_mock.proto:25` |
 | `SetAutoGameEnd` | unary | `AutoGameEndRequest` → `AutoGameEndResponse` | Set auto game end - automatically kill players after duration to ensure game ends | `proto/controller_manager_mock.proto:28` |
 | `GetColor` | unary | `GetColorRequest` → `GetColorResponse` | Get current LED color of a controller | `proto/controller_manager_mock.proto:31` |

@@ -12,7 +12,7 @@
 //     (no lobby) and learns the coordinator-assigned game_id from the first
 //     stamped event (#776),
 //  3. drives the game to its win condition via the mock control RPCs
-//     (SimulateMovement for liveliness, SimulateDeath per player),
+//     (SimulateMovement holds a ~1.04g resting vector, SimulateDeath per player),
 //  4. awaits a terminal event (or force-ends on timeout),
 //  5. ALWAYS removes its reserved controllers on the way out.
 //
@@ -91,12 +91,14 @@ type Config struct {
 	// GameTimeout bounds how long RunShadowGame waits for a terminal event
 	// before force-ending the game.
 	GameTimeout time.Duration
-	// MovementInterval is how often SimulateMovement is sent per controller for
-	// liveliness while driving the game.
+	// MovementInterval is how often SimulateMovement is re-sent per controller
+	// while driving the game. The mock holds the vector until changed (#1279),
+	// so the resend is redundant but kept as a safeguard.
 	MovementInterval time.Duration
-	// KillInterval paces SimulateDeath calls. It MUST exceed the mock's
-	// death-hold (~1s) so a held death does not overlap the next kill and so
-	// the post-death grace window has elapsed before the next player is killed.
+	// KillInterval paces SimulateDeath calls. The mock latches a death for 2
+	// delivered gameplay frames (#926), so the latch itself is short; the
+	// interval mainly lets each death land and its post-death grace window
+	// (2.0s) elapse before the next player is killed.
 	KillInterval time.Duration
 	// RPCTimeout bounds individual unary RPCs (AddControllers, SimulateDeath,
 	// ForceEndGame, …).

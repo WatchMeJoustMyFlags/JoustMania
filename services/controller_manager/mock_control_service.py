@@ -11,6 +11,8 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+import grpc
+
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from proto import controller_manager_mock_pb2, controller_manager_mock_pb2_grpc
 
@@ -109,24 +111,32 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
         self.auto_end_task: asyncio.Task | None = None  # Background task for auto-ending games
         logger.info("MockControllerService initialized")
 
-    def SimulateMovement(self, request, _context):
-        """Simulate controller movement by setting acceleration values."""
+    def SimulateMovement(self, request, context):
+        """Hold an acceleration vector on a controller until changed or reset.
+
+        The value persists across polls (UC-003 BR-002, #1279): every poll and
+        so every streamed gameplay frame reports it until the next
+        SimulateMovement or ResetController. A SimulateDeath latch overrides it
+        for its delivered frames, after which the held value resumes. A NaN or
+        infinite component is rejected with INVALID_ARGUMENT.
+        """
         try:
             serial = request.serial
-            if serial not in self.backend.controllers:
+            try:
+                held = self.backend.hold_accel(serial, request.accel_x, request.accel_y, request.accel_z)
+            except ValueError as e:
+                if context is not None:
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    context.set_details(str(e))
+                return controller_manager_mock_pb2.MovementResponse(success=False, error=str(e))
+            if not held:
                 return controller_manager_mock_pb2.MovementResponse(
                     success=False, error=f"Controller {serial} not found"
                 )
 
-            # Update acceleration
-            self.backend.controllers[serial][StateKey.ACCEL] = {
-                AxisKey.X: request.accel_x,
-                AxisKey.Y: request.accel_y,
-                AxisKey.Z: request.accel_z,
-            }
-
             logger.info(
-                f"Mock: Set accel for {serial}: ({request.accel_x:.2f}, {request.accel_y:.2f}, {request.accel_z:.2f})"
+                f"Mock: Holding accel for {serial}: "
+                f"({request.accel_x:.2f}, {request.accel_y:.2f}, {request.accel_z:.2f})"
             )
             return controller_manager_mock_pb2.MovementResponse(success=True, error="")
 
@@ -246,6 +256,8 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             controller[ButtonKey.SQUARE] = False
             controller[StateKey.ACCEL] = {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: 1.0}  # At rest
             controller[StateKey.GYRO] = {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: 0.0}
+            # Drop any SimulateMovement hold: back to resting noise (UC-003 A3)
+            self.backend.clear_held_accel(serial)
             # Clear death state
             controller["death_accel"] = None
             controller["death_frames_remaining"] = 0

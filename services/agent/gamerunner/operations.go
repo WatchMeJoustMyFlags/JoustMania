@@ -309,14 +309,18 @@ func startRejectedInProgress(data map[string]string) bool {
 }
 
 // driveGame keeps the game alive and pushes it toward its win condition (step
-// d). It periodically sends SimulateMovement to every controller for liveliness
-// and, on a slower cadence, sends SimulateDeath to one player at a time until
+// d). It periodically sends SimulateMovement(0.2, 0.2, 1.0) to every controller,
+// which the mock now HOLDS as a constant ~1.04g (UC-003 BR-002, #1279) — well
+// under every death threshold — and, on a slower cadence, sends SimulateDeath to one player at a time until
 // all but one are dead — reaching the last-player-standing condition for the
 // elimination modes.
 //
-// SimulateDeath holds death-level acceleration for ~1s in the mock, so kills are
-// paced by KillInterval (> the hold) to avoid overlapping a held death with the
-// next kill and to let the post-death grace window pass. driveGame returns when
+// Because the hold persists, the periodic resend is redundant (the first call
+// would suffice); it is kept as a cheap safeguard, e.g. against a controller
+// reset mid-game. SimulateDeath latches death-level acceleration for 2
+// DELIVERED gameplay frames (#926), after which the held ~1.04g vector resumes;
+// kills are paced by KillInterval so each death lands and its post-death grace
+// window passes before the next player is killed. driveGame returns when
 // ctx is cancelled (the await loop saw a terminal event) or it runs out of
 // players to kill.
 func (r *Runner) driveGame(ctx context.Context, cl *clients, serials []string) {
@@ -348,7 +352,8 @@ func (r *Runner) driveGame(ctx context.Context, cl *clients, serials []string) {
 	}
 }
 
-// simulateMovement sends a small liveliness jitter to one controller.
+// simulateMovement (re)sends the held ~1.04g resting vector to one controller.
+// The mock holds it until changed (#1279), so the resend is redundant but kept.
 func (r *Runner) simulateMovement(ctx context.Context, cl *clients, serial string) {
 	rpcCtx, cancel := context.WithTimeout(ctx, r.cfg.RPCTimeout)
 	defer cancel()
