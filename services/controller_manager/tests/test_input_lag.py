@@ -6,7 +6,9 @@ i.e. the time from the controller-manager poll loop picking up a fresh sample
 to that sample being written to StreamGameplayData. A stale replay (adapter
 returns the same frame object again) keeps the old pick-up time, so a stalled
 backend shows up as growing lag. Bluetooth/HID transport before the CM poll is
-not included: SensorData carries no hardware timestamp.
+not included: SensorData carries no hardware timestamp. Only game streams
+(which always send a controller filter) record it; the dashboard's unfiltered
+stream does not.
 """
 
 import sys
@@ -122,10 +124,44 @@ class TestGameplayFrameObservesLag:
         mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
 
         with patch(LAG_METRIC) as lag:
-            servicer._build_gameplay_update(None)
+            servicer._build_gameplay_update({SERIAL}, "game")
+            servicer._build_gameplay_update({SERIAL}, "game")
 
+        # Labelled child is looked up once per serial, then cached.
         lag.labels.assert_called_once_with(serial=SERIAL)
-        lag.labels.return_value.observe.assert_called_once_with(0.012)
+        assert lag.labels.return_value.observe.call_count == 2
+        lag.labels.return_value.observe.assert_called_with(0.012)
+
+    @pytest.mark.uc("UC-035", flow="A2")
+    def test_unfiltered_dashboard_stream_records_nothing(self, servicer):
+        servicer, mock_loop = servicer
+        mock_loop.sample_age_seconds = MagicMock(return_value=0.5)
+
+        with patch(LAG_METRIC) as lag:
+            update = servicer._build_gameplay_update(None, "dashboard")
+
+        assert len(update.controllers) == 1
+        lag.labels.return_value.observe.assert_not_called()
+
+    @pytest.mark.uc("UC-035", flow="A2")
+    def test_pattern_controller_records_nothing(self, servicer):
+        """Pattern controllers synthesise accel per delivered frame; the polled sample's age is meaningless."""
+        servicer, mock_loop = servicer
+        mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
+
+        class PatternBackend:
+            def pattern_frame(self, _serial, _subscriber_id, _explicit):
+                return {"x": 0.0, "y": 0.0, "z": 1.0}
+
+            def pattern_serials(self):
+                return {SERIAL}
+
+        servicer.backend = PatternBackend()
+
+        with patch(LAG_METRIC) as lag:
+            servicer._build_gameplay_update({SERIAL}, "game")
+
+        lag.labels.return_value.observe.assert_not_called()
 
     @pytest.mark.uc("UC-035", flow="A2")
     def test_no_sample_yet_records_nothing(self, servicer):
@@ -133,7 +169,7 @@ class TestGameplayFrameObservesLag:
         mock_loop.sample_age_seconds = MagicMock(return_value=None)
 
         with patch(LAG_METRIC) as lag:
-            servicer._build_gameplay_update(None)
+            servicer._build_gameplay_update({SERIAL}, "game")
 
         lag.labels.return_value.observe.assert_not_called()
 

@@ -62,6 +62,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         self.tracked_controllers: dict[str, dict] = {}  # serial -> controller info
         self.controller_states: dict[str, dict] = {}  # serial -> state dict from backend
+        # Labelled controller_input_lag_seconds children, cached per serial so the
+        # per-frame path skips the labels() lookup (same idea as _accel_gauges, #542).
+        self._input_lag_histograms: dict[str, Any] = {}
         self.paired_serials: list[str] = []
         self.controller_processes: dict[str, Any] = {}  # serial -> process (for cleanup)
 
@@ -389,6 +392,10 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         pattern_frame = getattr(self.backend, "pattern_frame", None)
         pattern_serials = self._pattern_serials() if pattern_frame is not None else set()
         now = time.time()
+        # Input lag is a game-path signal: only game streams (which always send a
+        # controller filter) record it, not the dashboard's unfiltered stream, so
+        # menu/dashboard traffic can never trip HighInputLatency.
+        record_input_lag = current_filter is not None
         # No dict copy needed — _build_gameplay_update is synchronous (no await
         # points), so no dict mutation can happen during iteration.
         for serial, info in self.tracked_controllers.items():
@@ -439,7 +446,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             # Pattern controllers synthesise accel per delivered frame, so the
             # polled sample's age says nothing about what they carry.
-            if serial not in pattern_serials:
+            if record_input_lag and serial not in pattern_serials:
                 self._record_input_lag(serial, now)
 
         # Drain disconnect events accumulated since last frame (#580)
@@ -460,8 +467,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         before the poll is not included: SensorData has no hardware timestamp.
         """
         age = self.discovery_loop.sample_age_seconds(serial, now)
-        if age is not None:
-            metrics.controller_input_lag_seconds.labels(serial=serial).observe(age)
+        if age is None:
+            return
+        histogram = self._input_lag_histograms.get(serial)
+        if histogram is None:
+            histogram = metrics.controller_input_lag_seconds.labels(serial=serial)
+            self._input_lag_histograms[serial] = histogram
+        histogram.observe(age)
 
     def _pattern_serials(self) -> set:
         """Serials with a motion pattern; empty for backends without patterns."""

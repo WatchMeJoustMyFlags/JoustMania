@@ -184,7 +184,7 @@ class DiscoveryLoop:
         self._hw_fresh: dict[str, int] = {}  # polls returning a genuinely-new frame
         self._hw_drops: dict[str, int] = {}  # polls returning None
         self._hw_max_gap_ms: dict[str, float] = {}  # max gap between fresh frames
-        self._hw_last_fresh_ts: dict[str, float] = {}  # monotonic ts of last fresh frame
+        self._hw_last_fresh_ts: dict[str, float] = {}  # wall-clock (time.time()) ts of last fresh frame
         # Identity of the last poll object per serial — distinguishes a stale
         # replay (same object, e.g. UnstableAdapter throttle window) from a fresh
         # frame. The poll dict carries no sequence/timestamp, so identity is the
