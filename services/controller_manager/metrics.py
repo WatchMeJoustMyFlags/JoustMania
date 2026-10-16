@@ -55,6 +55,33 @@ controller_info = Gauge(
     ["serial", "name"],
 )
 
+
+def controller_info_name(serial: str, name: str) -> str:
+    """The ``name`` label controller_info carries for a controller (Issue #74).
+
+    The name from the name manager, else "PS Move <last 4 of serial>", else the serial.
+    """
+    if name:
+        return name
+    if len(serial) >= 4:
+        return f"PS Move {serial[-4:]}"
+    return serial
+
+
+def set_controller_info(serial: str, name: str) -> None:
+    """Publish the controller_info{serial,name} series for a tracked controller."""
+    controller_info.labels(serial=serial, name=controller_info_name(serial, name)).set(1)
+
+
+def remove_controller_info(serial: str, name: str) -> None:
+    """Drop the controller_info{serial,name} series (rename or untrack, #1295).
+
+    Without this an old {serial,name} label set keeps being exported and a consumer
+    (the agent's player.name view) cannot tell which name is current.
+    """
+    controller_info.remove(serial, controller_info_name(serial, name))
+
+
 # Combined LED color as hex integer (Phase 75: Per-player insights)
 # Value is (R << 16) | (G << 8) | B, e.g., 0xFF0000 for red
 controller_color_hex = Gauge(

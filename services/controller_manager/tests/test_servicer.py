@@ -15,7 +15,7 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -133,6 +133,40 @@ class TestRenameController:
         await servicer.RenameController(request, context)
 
         assert servicer.tracked_controllers["test_serial"][ControllerInfoKey.NAME] == "New Name"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A2")
+    async def test_rename_replaces_controller_info_series(self, servicer_components):
+        """UC-002 A2: renaming a connected controller swaps its controller_info label set (#1295)."""
+        from lib.controller_constants import ControllerInfoKey
+        from lib.otel_metrics import Gauge
+
+        servicer, _ = servicer_components
+        servicer.tracked_controllers["test_serial"] = {ControllerInfoKey.NAME: "Old Name"}
+        info = create_autospec(Gauge, instance=True)
+        with patch("services.controller_manager.metrics.controller_info", info):
+            request = controller_manager_pb2.RenameControllerRequest(serial="test_serial", name="New Name")
+            response = await servicer.RenameController(request, MockGrpcContext())
+
+        assert response.success is True
+        info.remove.assert_called_once_with("test_serial", "Old Name")
+        info.labels.assert_called_once_with(serial="test_serial", name="New Name")
+        info.labels.return_value.set.assert_called_once_with(1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A2")
+    async def test_rename_unconnected_controller_touches_no_series(self, servicer_components):
+        """UC-002 A2: a controller that is not tracked exports no controller_info series to swap."""
+        from lib.otel_metrics import Gauge
+
+        servicer, _ = servicer_components
+        info = create_autospec(Gauge, instance=True)
+        with patch("services.controller_manager.metrics.controller_info", info):
+            request = controller_manager_pb2.RenameControllerRequest(serial="unknown_serial", name="Player 1")
+            await servicer.RenameController(request, MockGrpcContext())
+
+        info.remove.assert_not_called()
+        info.labels.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_rename_controller_empty_serial(self, servicer_components):

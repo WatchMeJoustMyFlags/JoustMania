@@ -404,6 +404,8 @@ class DiscoveryLoop:
                 # controllers don't linger in dashboards.
                 metrics.controller_bluetooth_dropped_events_ratio.remove(serial)
                 metrics.controller_bluetooth_movement_update_hz.remove(serial)
+                # #1295: an untracked controller no longer exports its name.
+                metrics.remove_controller_info(serial, name)
                 # Publish disconnect event to button event stream subscribers —
                 # but never announce reserved controllers to the menu (#777).
                 if not reserved:
@@ -925,13 +927,7 @@ class DiscoveryLoop:
             metrics.controller_battery_pct.labels(serial=serial).set(metrics.battery_to_pct(battery))
             # Controller info metric with human-readable name (Issue #74)
             # Use actual name from name_manager, fallback to serial suffix
-            if name:
-                controller_name = name
-            elif len(serial) >= 4:
-                controller_name = f"PS Move {serial[-4:]}"
-            else:
-                controller_name = serial
-            metrics.controller_info.labels(serial=serial, name=controller_name).set(1)
+            metrics.set_controller_info(serial, name)
             # Initialize poll drop/error counters so rate() always returns a series,
             # even for controllers with zero drops (needed for dashboard queries).
             metrics.controller_poll_drops_total.labels(serial=serial)

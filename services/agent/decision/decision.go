@@ -371,13 +371,16 @@ func (l *Loop) SetPlayerNameResolver(resolve func(serial string) string) {
 
 // targetAttributes is the targeted-player view of a decision (#1295):
 // player.serial (the game coordinator's own key) and, when known, player.name.
-// Empty for a session-scoped decision.
-func (l *Loop) targetAttributes(serial string) []attribute.KeyValue {
+// Empty for a session-scoped decision; no player.name in a shadow game.
+func (l *Loop) targetAttributes(serial, gameKind string) []attribute.KeyValue {
 	if serial == "" {
 		return nil
 	}
 	attrs := []attribute.KeyValue{attribute.String(AttrPlayerSerial, serial)}
-	if l.playerName != nil {
+	// Shadow games run on mock serials (MOCK000N) that collide with real mock
+	// games' serials, so the process-wide name view would name the wrong player:
+	// a shadow decision carries player.serial only.
+	if l.playerName != nil && gameKind != gamecontext.GameKindShadow {
 		if name := l.playerName(serial); name != "" {
 			attrs = append(attrs, attribute.String(AttrPlayerName, name))
 		}
@@ -702,7 +705,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// This complements — does not replace — the #1095 game.id attribute (still emitted
 	// via decisionAttributes). gameTraceLink returns no options when the id is absent or
 	// invalid, so the span is created exactly as before (graceful fallback, no error).
-	target := l.targetAttributes(d.TargetSerial)
+	target := l.targetAttributes(d.TargetSerial, c.GameKind)
 	startOpts := []trace.SpanStartOption{
 		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind, c.SessionID)...),
 		// player.serial / player.name of a targeted decision, blocked or applied (#1295).

@@ -260,8 +260,9 @@ func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, c gamec
 	case fallbackReason != "":
 		rec.outcome = DecideOutcomeFallback
 	case len(out) == 0 || (hasIV && iv.Choice == decide.OptionNoop):
-		// #1295: a noop choice never reads act (the rules answers mirror the
-		// emitted decision, so this is "no decision this ranking").
+		// #1295, defensive: a noop choice never reads act. On the default rules
+		// path this record is never emitted (OnEvaluate returns before any span on
+		// a zero-decision cycle); it guards any future caller that emits it.
 		rec.outcome = DecideOutcomeNoop
 	}
 	return out, rec

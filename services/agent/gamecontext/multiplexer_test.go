@@ -495,16 +495,25 @@ func TestMux_PlayerNameFromControllerInfo(t *testing.T) {
 			t.Fatalf("controller_info created partitions %v", got)
 		}
 	})
-	t.Run("UC-040/main a renamed controller reports its latest name", func(t *testing.T) {
+	t.Run("UC-040/main after a rename the export carries only the new label set", func(t *testing.T) {
 		clk := &muxClock{t: time.Unix(2000, 0)}
 		mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
-		for _, name := range []string{"Calm Lion", "Kim"} {
-			md := pmetric.NewMetrics()
-			addGauge(md, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0004", attrName: name})
-			mux.ApplyMetrics(md)
-		}
+		// Export before the rename: one series per tracked controller.
+		before := pmetric.NewMetrics()
+		addGauge(before, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0004", attrName: "Calm Lion"})
+		addGauge(before, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0005", attrName: "Swift Fox"})
+		mux.ApplyMetrics(before)
+		// The controller manager replaces the series on RenameController (#1295), so
+		// the next export holds the new {serial,name} set and NOT the old one.
+		after := pmetric.NewMetrics()
+		addGauge(after, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0004", attrName: "Kim"})
+		addGauge(after, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0005", attrName: "Swift Fox"})
+		mux.ApplyMetrics(after)
 		if got := mux.PlayerName("MOCK0004"); got != "Kim" {
-			t.Fatalf("PlayerName = %q, want the latest name Kim", got)
+			t.Fatalf("PlayerName(MOCK0004) = %q, want the renamed Kim", got)
+		}
+		if got := mux.PlayerName("MOCK0005"); got != "Swift Fox" {
+			t.Fatalf("PlayerName(MOCK0005) = %q, want Swift Fox (untouched)", got)
 		}
 	})
 }

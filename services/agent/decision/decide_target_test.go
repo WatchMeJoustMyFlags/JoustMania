@@ -210,6 +210,26 @@ func TestDecisionSpans_NameTheTargetedPlayer(t *testing.T) {
 			t.Error("player.name present although no name is known")
 		}
 	})
+	t.Run("UC-040/A1 shadow game: player.serial only, never player.name", func(t *testing.T) {
+		fx := decideFixtures()[1] // balanced: player-targeted
+		fx.ctx.GameKind = "shadow"
+		clock := time.Unix(10_000, 0)
+		l, sr := decideRecordingLoop(t, rulesSnapshot())
+		l.Rules = newTestEngine(fx.cfg, &clock)
+		l.Actions = &capturingSink{}
+		l.SetPlayerNameResolver(func(string) string { return "Real Player" })
+		l.OnEvaluate(context.Background(), fx.ctx, testTrigger())
+		spans := append(spansByName(sr.Ended(), SpanDecision), spansByName(sr.Ended(), SpanAction)...)
+		if len(spans) == 0 {
+			t.Fatal("no decision spans")
+		}
+		for _, s := range spans {
+			strAttr(t, s, AttrPlayerSerial)
+			if _, ok := attrValue(s, AttrPlayerName); ok {
+				t.Errorf("%s carries player.name in a shadow game (mock serials collide with real games)", s.Name())
+			}
+		}
+	})
 	t.Run("UC-040/A1 session-scoped decision: no player attributes", func(t *testing.T) {
 		fx := decideFixtures()[0] // endurance: adjust_music_tempo, session-scoped
 		clock := time.Unix(10_000, 0)

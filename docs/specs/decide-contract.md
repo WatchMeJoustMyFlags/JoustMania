@@ -294,7 +294,9 @@ decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #
   the allow-list does not hold; the permission chain (§4.5) applies the allow-list afterwards and its verdict
   is `decide.blocked`. A remote backend's request, and `RulesBackend.Decide`, keep the allow-listed options.
   Only telemetry changed: the emitted decisions and their outcomes are pinned by
-  `decision/testdata/rules_path_golden.json`.
+  `decision/testdata/rules_path_golden.json`. Because the softmax runs over the widened options, the rules-path
+  `decide.confidence` (1 − p(noop) for the chosen intervention) is computed over the engine's own ranked
+  interventions, not only the allow-listed ones.
 - **Remote:** the model reports `confidence` per answer.
 - **Routing (remote path only)** uses the `ffa.intervention` confidence against the
   **effective threshold** for the backend that answered (`flags.DecisionBackend.ActThreshold`,
@@ -320,7 +322,7 @@ decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #
 |---|---|
 | `act` | Routed to the permission chain (which may still block: `decide.blocked`, and the `agent.decision` span). Also the rules-path outcome when the rules emitted a decision. |
 | `held` | Valid intervention answer below the threshold. No action. |
-| `noop` | Backend chose `noop`. No action. On the rules path: the ranking emitted no decision (a `noop` choice never reads `act`, #1295). |
+| `noop` | Backend chose `noop`. No action. Not seen on the rules path: a rules cycle whose ranking emitted no decision records no `agent.decide` span at all (`OnEvaluate` returns before any span); the rules record still sets `noop` for that case defensively, so a `noop` choice never reads `act` (#1295). |
 | `invalid` | Cross-question inconsistency (4.3). No action, no fallback. |
 | `fallback` | The requested backend could not decide; rules did. |
 | `discarded` | A valid answer was dropped when it landed; see `decide.discarded_reason`. |
