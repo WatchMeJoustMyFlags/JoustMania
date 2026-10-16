@@ -1,0 +1,237 @@
+{
+  "data": [
+    {
+      "traceID": "aaaa000000000001",
+      "spans": [
+        {
+          "traceID": "aaaa000000000001",
+          "spanID": "r0",
+          "operationName": "agent.signal_received",
+          "references": [],
+          "startTime": 1760000000000000,
+          "duration": 9000,
+          "tags": [],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "aaaa000000000001",
+          "spanID": "r1",
+          "operationName": "agent.decide",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "aaaa000000000001",
+              "spanID": "r0"
+            }
+          ],
+          "startTime": 1760000000000100,
+          "duration": 800,
+          "tags": [
+            {
+              "key": "gen_ai.agent.name",
+              "type": "string",
+              "value": "joustmania-agent"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "JoustFFA"
+            },
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_0a1b2c3d4e5f"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_0a1b2c3d4e5f"
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "type": "string",
+              "value": "game_0a1b2c3d4e5f"
+            },
+            {
+              "key": "decide.state.digest",
+              "type": "string",
+              "value": "sha256:9f2c"
+            },
+            {
+              "key": "decide.questions",
+              "type": "string",
+              "value": "[{\"id\":\"ffa.intervention\",\"kind\":\"choice\"}]"
+            },
+            {
+              "key": "decide.backend",
+              "type": "string",
+              "value": "rules"
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "rules"
+            },
+            {
+              "key": "decide.fallback_reason",
+              "type": "string",
+              "value": ""
+            },
+            {
+              "key": "decide.latency_ms",
+              "type": "int64",
+              "value": 0
+            },
+            {
+              "key": "decide.outcome",
+              "type": "string",
+              "value": "act"
+            },
+            {
+              "key": "decide.answers",
+              "type": "string",
+              "value": "[{\"question_id\":\"ffa.intervention\",\"choice\":\"grant_shield\",\"probabilities\":{\"grant_shield\":0.7,\"noop\":0.3},\"score\":0,\"confidence\":0.7},{\"question_id\":\"ffa.target\",\"choice\":\"MOCK0002\",\"score\":0,\"confidence\":0.7}]"
+            },
+            {
+              "key": "decide.confidence",
+              "type": "float64",
+              "value": 0.7
+            },
+            {
+              "key": "decide.confidence.min",
+              "type": "float64",
+              "value": 0.7
+            },
+            {
+              "key": "decide.rationale",
+              "type": "string",
+              "value": ""
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "aaaa000000000001",
+          "spanID": "r2",
+          "operationName": "agent.decision",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "aaaa000000000001",
+              "spanID": "r0"
+            }
+          ],
+          "startTime": 1760000000001000,
+          "duration": 3000,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "grant_shield"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": false
+            },
+            {
+              "key": "decision.reason",
+              "type": "string",
+              "value": "lagging player"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "aaaa000000000001",
+          "spanID": "r3",
+          "operationName": "agent.action",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "aaaa000000000001",
+              "spanID": "r2"
+            }
+          ],
+          "startTime": 1760000000001100,
+          "duration": 100,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "grant_shield"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": false
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "aaaa000000000001",
+          "spanID": "r4",
+          "operationName": "agent.decision",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "aaaa000000000001",
+              "spanID": "r0"
+            }
+          ],
+          "startTime": 1760000000004000,
+          "duration": 3000,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "adjust_speed"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": true
+            },
+            {
+              "key": "decision.reason",
+              "type": "string",
+              "value": "not allowed"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        }
+      ],
+      "processes": {
+        "p1": {
+          "serviceName": "agent",
+          "tags": []
+        },
+        "p2": {
+          "serviceName": "game-coordinator",
+          "tags": []
+        }
+      },
+      "warnings": null
+    }
+  ],
+  "total": 0,
+  "limit": 0,
+  "offset": 0,
+  "errors": null
+}

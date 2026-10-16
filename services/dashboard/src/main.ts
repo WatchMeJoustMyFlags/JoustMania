@@ -10,7 +10,7 @@ import { Controls } from "./components/Controls.js";
 import { ExperimentsView } from "./components/ExperimentsView.js";
 import { fetchExperiments } from "./experiments.js";
 import { AgentView } from "./components/AgentView.js";
-import { fetchAgentView } from "./agent.js";
+import { fetchAgentView, fetchDecideFeed } from "./agent.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
 // Poll cadence for the agent experiment view (Loki query). Matches the slow,
@@ -23,6 +23,11 @@ const EXPERIMENTS_POLL_MS = 5000;
 // still well under the agent's signal rate — this is an observability tail, not
 // a live stream.
 const AGENT_POLL_MS = 2000;
+
+// Poll cadence for the agent.decide feed (#1233, Jaeger query). Faster than the
+// Loki view: a live decision.backend switch must show on the very next decision,
+// and the remote cadence (decision.min_interval_ms) is 1.5-3s.
+const DECIDE_POLL_MS = 1500;
 
 // State
 interface AppState {
@@ -63,7 +68,11 @@ async function init() {
     onModeChange: handleModeChange,
   });
   experimentsView = new ExperimentsView("experiments-grid", "experiments-freshness");
-  agentView = new AgentView("agent-feed", "agent-flags", "agent-overlay", "agent-freshness");
+  agentView = new AgentView("agent-feed", "agent-flags", "agent-overlay", "agent-freshness", {
+    strip: "decide-strip",
+    feed: "decide-feed",
+    freshness: "decide-freshness",
+  });
 
   // Set up tab navigation
   setupTabs();
@@ -79,6 +88,9 @@ async function init() {
 
   // Start polling the agent decision/flag/intervention telemetry (Loki + VM)
   startAgentPolling();
+
+  // Start polling the agent.decide spans (Jaeger), independently of Loki
+  startDecidePolling();
 
   console.log("Dashboard initialized");
 }
@@ -248,6 +260,45 @@ function startAgentPolling() {
         agentPollTimer = null;
       }
     } else if (agentPollTimer === null) {
+      tick();
+    }
+  });
+
+  tick();
+}
+
+// Poll the agent.decide spans from Jaeger (#1233). Same self-rescheduling +
+// tab-hidden-pause + staleness model as the pollers above, but independent of
+// the Loki poll so either backend being down leaves the other panel live.
+let decidePollTimer: ReturnType<typeof setTimeout> | null = null;
+
+function startDecidePolling() {
+  const tick = async () => {
+    decidePollTimer = null;
+    if (document.hidden) return;
+    try {
+      agentView.renderDecide(await fetchDecideFeed());
+    } catch (error) {
+      console.error("Decide feed poll error:", error);
+      if (!agentView.decideHasRendered) {
+        agentView.setDecideError("Could not reach Jaeger for agent.decide spans.");
+      }
+    } finally {
+      if (!document.hidden) {
+        decidePollTimer = setTimeout(tick, DECIDE_POLL_MS);
+      }
+    }
+  };
+
+  setInterval(() => agentView.updateDecideFreshness(), 1000);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (decidePollTimer !== null) {
+        clearTimeout(decidePollTimer);
+        decidePollTimer = null;
+      }
+    } else if (decidePollTimer === null) {
       tick();
     }
   });

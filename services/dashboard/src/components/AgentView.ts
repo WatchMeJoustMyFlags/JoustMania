@@ -11,6 +11,11 @@
  *                          agent last evaluated against.
  *   3. Intervention      — applied vs blocked tallies (blocked by action and by
  *      overlay             reason from Loki, applied from VictoriaMetrics).
+ *   4. Decide feed       — (#1233) one row per agent.decide span from Jaeger:
+ *                          backend/model, answer, confidence vs threshold,
+ *                          outcome, rationale, plus a "current backend" strip so
+ *                          a live decision.backend switch is visible on the next
+ *                          decision. Polled and rendered independently of 1-3.
  *
  * Mirrors ExperimentsView's lifecycle exactly: setError / markStale /
  * updateFreshness / rendered, with the same STALE_AFTER_MS staleness model so the
@@ -18,10 +23,14 @@
  */
 import type {
   AgentView as AgentViewData,
+  DecideCurrent,
+  DecideFeed,
+  DecideRow,
   DecisionFeedRow,
   FlagPanel,
   InterventionOverlay,
 } from "../agent.js";
+import { confidenceBar, jaegerTraceUrl } from "../agent.js";
 
 /**
  * After this many ms without a successful poll, a kept-on-screen view is flagged
@@ -37,16 +46,89 @@ export class AgentView {
   private hasRendered = false;
   private lastUpdatedMs: number | null = null;
 
+  private readonly decideStripEl: HTMLElement | null;
+  private readonly decideFeedEl: HTMLElement | null;
+  private readonly decideFreshnessEl: HTMLElement | null;
+  private decideRendered = false;
+  private decideUpdatedMs: number | null = null;
+  /** Span keys already on screen: new ones get a one-shot highlight. */
+  private seenDecideKeys: Set<string> | null = null;
+  /** backend|model|threshold of the strip, to flash it when a switch lands. */
+  private lastStripKey: string | null = null;
+
   constructor(
     feedId: string,
     flagsId: string,
     overlayId: string,
     freshnessId?: string,
+    decideIds?: { strip: string; feed: string; freshness?: string },
   ) {
     this.feedEl = requireEl(feedId);
     this.flagsEl = requireEl(flagsId);
     this.overlayEl = requireEl(overlayId);
     this.freshnessEl = freshnessId ? document.getElementById(freshnessId) : null;
+    this.decideStripEl = decideIds ? requireEl(decideIds.strip) : null;
+    this.decideFeedEl = decideIds ? requireEl(decideIds.feed) : null;
+    this.decideFreshnessEl = decideIds?.freshness
+      ? document.getElementById(decideIds.freshness)
+      : null;
+  }
+
+  /* ---------------- agent.decide feed (#1233) ---------------- */
+
+  get decideHasRendered(): boolean {
+    return this.decideRendered;
+  }
+
+  setDecideError(message: string) {
+    if (!this.decideFeedEl || !this.decideStripEl) return;
+    this.decideFeedEl.innerHTML = `<div class="loading">${escapeHtml(message)}</div>`;
+    this.decideStripEl.innerHTML = "";
+    this.decideRendered = true;
+  }
+
+  updateDecideFreshness() {
+    const el = this.decideFreshnessEl;
+    if (!el || this.decideUpdatedMs === null) return;
+    const ageMs = Date.now() - this.decideUpdatedMs;
+    const ageSec = Math.max(0, Math.round(ageMs / 1000));
+    const stale = ageMs >= STALE_AFTER_MS;
+    el.textContent = stale ? `stale — last updated ${ageSec}s ago` : `updated ${ageSec}s ago`;
+    el.classList.toggle("stale", stale);
+    el.hidden = false;
+  }
+
+  renderDecide(feed: DecideFeed) {
+    if (!this.decideFeedEl || !this.decideStripEl) return;
+    this.decideRendered = true;
+    this.decideUpdatedMs = Date.now();
+    this.updateDecideFreshness();
+
+    const stripKey = feed.current ? decideStripKey(feed.current) : null;
+    const switched = this.lastStripKey !== null && stripKey !== null && stripKey !== this.lastStripKey;
+    this.decideStripEl.innerHTML = renderDecideStrip(feed.current, switched);
+    if (stripKey !== null) this.lastStripKey = stripKey;
+
+    if (feed.rows.length === 0) {
+      this.decideFeedEl.innerHTML =
+        '<div class="loading">No agent.decide spans in the last 10 minutes. ' +
+        "Rows appear here as soon as the agent decides in an FFA game.</div>";
+      return;
+    }
+    // First render: nothing is "new". Afterwards, highlight rows not seen before.
+    const previous = this.seenDecideKeys;
+    const keys = new Set<string>();
+    const html = feed.rows
+      .map((row) => {
+        const key = `${row.traceId}/${row.spanId}`;
+        keys.add(key);
+        return renderDecideRow(row, previous !== null && !previous.has(key));
+      })
+      .join("");
+    this.seenDecideKeys = previous ? new Set([...previous, ...keys]) : keys;
+    // Bound the memory of a long-running dashboard.
+    if (this.seenDecideKeys.size > 2000) this.seenDecideKeys = keys;
+    this.decideFeedEl.innerHTML = html;
   }
 
   setError(message: string) {
@@ -242,10 +324,172 @@ function shortId(id: string): string {
   return id.length > 12 ? `…${id.slice(-10)}` : id;
 }
 
-function escapeHtml(text: string): string {
+/** Escape text for HTML element content AND quoted attribute values. */
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/* ---------------- agent.decide rendering (#1233) ---------------- */
+/*
+ * Pure string builders (exported for tests). Every span-derived value goes
+ * through escapeHtml: the rationale and even the answers are model output.
+ */
+
+/** Visible rationale length; the full (already span-capped) text is the tooltip. */
+const RATIONALE_VISIBLE_CHARS = 140;
+
+const OUTCOME_LABEL: Record<DecideRow["outcome"], string> = {
+  act: "act",
+  held: "held",
+  noop: "noop",
+  invalid: "invalid",
+  fallback: "fallback",
+  discarded: "discarded",
+  unknown: "?",
+};
+
+function decideStripKey(c: DecideCurrent): string {
+  return `${c.backend}|${c.requested}|${c.model}|${c.threshold ?? ""}`;
+}
+
+function fmtConfidence(v: number | null): string {
+  return v === null ? "—" : v.toFixed(2);
+}
+
+/** Truncate on a code-point boundary, adding an ellipsis. */
+export function truncateText(text: string, max: number): string {
+  const chars = Array.from(text);
+  if (chars.length <= max) return text;
+  return chars.slice(0, max - 1).join("") + "…";
+}
+
+/** The "current backend" header strip. */
+export function renderDecideStrip(current: DecideCurrent | null, switched = false): string {
+  if (!current) {
+    return '<div class="decide-strip decide-strip-empty">current backend: waiting for the first agent.decide span…</div>';
+  }
+  const requestedDiffers = current.requested && current.requested !== current.backend;
+  const requested = requestedDiffers
+    ? `<span class="decide-strip-requested">requested <b>${escapeHtml(current.requested)}</b></span>`
+    : "";
+  const model = current.model || (current.backend === "rules" ? "rules engine" : "—");
+  const threshold =
+    current.threshold === null
+      ? '<span class="decide-strip-val" title="no confidence routing recorded yet (rules does not route by confidence)">—</span>'
+      : `<span class="decide-strip-val${current.thresholdFromOlder ? " decide-strip-dim" : ""}"${
+          current.thresholdFromOlder ? ' title="from an earlier decision; the newest one did not route by confidence"' : ""
+        }>${current.threshold.toFixed(2)}</span>`;
+  return `
+    <div class="decide-strip${switched ? " decide-strip-switched" : ""}">
+      <div class="decide-strip-item">
+        <span class="decide-strip-key">backend</span>
+        <span class="decide-strip-val decide-backend-${backendClass(current.backend)}">${escapeHtml(current.backend || "—")}</span>
+        ${requested}
+      </div>
+      <div class="decide-strip-item">
+        <span class="decide-strip-key">model</span>
+        <span class="decide-strip-val decide-strip-model">${escapeHtml(model)}</span>
+      </div>
+      <div class="decide-strip-item">
+        <span class="decide-strip-key">act threshold</span>
+        ${threshold}
+      </div>
+      <div class="decide-strip-item decide-strip-time">as of ${formatTime(current.tsMs)}</div>
+    </div>`;
+}
+
+/** CSS-safe class suffix for a backend name (rules / claude / openai / jev / other). */
+function backendClass(backend: string): string {
+  return ["rules", "claude", "openai", "jev"].includes(backend) ? backend : "other";
+}
+
+/** The confidence bar with the threshold tick. */
+export function renderConfidenceBar(confidence: number | null, threshold: number | null): string {
+  const bar = confidenceBar(confidence, threshold);
+  const state = bar.pass === null ? "na" : bar.pass ? "pass" : "fail";
+  const tick =
+    bar.thresholdPct === null
+      ? ""
+      : `<span class="decide-conf-tick" style="left:${bar.thresholdPct}%"></span>`;
+  const cmp =
+    confidence === null
+      ? "no confidence"
+      : threshold === null
+        ? `conf ${fmtConfidence(confidence)}`
+        : `conf ${fmtConfidence(confidence)} ${bar.pass ? "&ge;" : "&lt;"} ${fmtConfidence(threshold)}`;
+  return `
+    <div class="decide-conf decide-conf-${state}">
+      <div class="decide-conf-track">
+        <span class="decide-conf-fill" style="width:${bar.fillPct}%"></span>
+        ${tick}
+      </div>
+      <span class="decide-conf-text">${cmp}</span>
+    </div>`;
+}
+
+/** One decide feed row. */
+export function renderDecideRow(row: DecideRow, isNew = false): string {
+  const outcome = row.outcome;
+  const backendDiffers = row.requested && row.requested !== row.backend;
+  const backend = backendDiffers
+    ? `<span class="decide-backend decide-backend-${backendClass(row.requested)} decide-backend-struck" title="requested backend">${escapeHtml(row.requested)}</span>` +
+      `<span class="decide-arrow">→</span>` +
+      `<span class="decide-backend decide-backend-${backendClass(row.backend)}">${escapeHtml(row.backend)}</span>`
+    : `<span class="decide-backend decide-backend-${backendClass(row.backend)}">${escapeHtml(row.backend || "—")}</span>`;
+  const model = row.model
+    ? `<span class="decide-model">${escapeHtml(row.model)}</span>`
+    : "";
+  const fallback = row.fallbackReason
+    ? `<span class="decide-fallback-reason" title="decide.fallback_reason">${escapeHtml(row.fallbackReason)}${
+        row.errorType && row.errorType !== row.fallbackReason ? ` · ${escapeHtml(row.errorType)}` : ""
+      }</span>`
+    : "";
+  const answer = row.intervention
+    ? `<span class="decide-answer">${escapeHtml(row.intervention)}${
+        row.target && row.target !== "none"
+          ? ` <span class="decide-arrow">→</span> <span class="decide-target">${escapeHtml(row.target)}</span>`
+          : ""
+      }</span>`
+    : '<span class="decide-answer decide-answer-none">no answer</span>';
+  const outcomeReason = row.outcomeReason
+    ? `<span class="decide-outcome-reason">${escapeHtml(row.outcomeReason)}</span>`
+    : "";
+  const rationale = row.rationale
+    ? `<div class="decide-why" title="${escapeHtml(row.rationale)}"><span class="decide-why-label">why</span> ${escapeHtml(
+        truncateText(row.rationale, RATIONALE_VISIBLE_CHARS),
+      )}</div>`
+    : "";
+  const decisions =
+    row.decisions.length > 0
+      ? `<div class="decide-decisions">${row.decisions
+          .map(
+            (d) =>
+              `<span class="decide-decision ${d.blocked ? "decide-decision-blocked" : "decide-decision-allowed"}"${
+                d.reason ? ` title="${escapeHtml(d.reason)}"` : ""
+              }>agent.decision: ${escapeHtml(d.action || "?")} · ${d.blocked ? "blocked" : "allowed"}</span>`,
+          )
+          .join("")}</div>`
+      : "";
+  return `
+    <div class="decide-row decide-row-${outcome}${isNew ? " decide-row-new" : ""}">
+      <div class="decide-line">
+        <span class="agent-feed-time">${formatTime(row.tsMs)}</span>
+        <span class="decide-outcome decide-outcome-${outcome}">${OUTCOME_LABEL[outcome]}</span>
+        ${backend}
+        ${model}
+        ${fallback}
+        ${answer}
+        ${outcomeReason}
+        <span class="decide-latency">${Math.round(row.latencyMs)} ms</span>
+        <a class="decide-trace" href="${escapeHtml(jaegerTraceUrl(row.traceId, row.spanId))}" target="_blank" rel="noreferrer" title="open this decision in Jaeger">trace ↗</a>
+      </div>
+      ${renderConfidenceBar(row.confidence, row.threshold)}
+      ${rationale}
+      ${decisions}
+    </div>`;
 }

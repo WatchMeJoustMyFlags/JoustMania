@@ -1,0 +1,163 @@
+{
+  "data": [
+    {
+      "traceID": "dddd000000000004",
+      "spans": [
+        {
+          "traceID": "dddd000000000004",
+          "spanID": "f1",
+          "operationName": "agent.decide",
+          "references": [],
+          "startTime": 1760000008000000,
+          "duration": 2600000,
+          "tags": [
+            {
+              "key": "gen_ai.agent.name",
+              "type": "string",
+              "value": "joustmania-agent"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "JoustFFA"
+            },
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_0a1b2c3d4e5f"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_0a1b2c3d4e5f"
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "type": "string",
+              "value": "game_0a1b2c3d4e5f"
+            },
+            {
+              "key": "decide.state.digest",
+              "type": "string",
+              "value": "sha256:9f2c"
+            },
+            {
+              "key": "decide.questions",
+              "type": "string",
+              "value": "[{\"id\":\"ffa.intervention\",\"kind\":\"choice\"}]"
+            },
+            {
+              "key": "decide.backend",
+              "type": "string",
+              "value": "rules"
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "claude"
+            },
+            {
+              "key": "decide.fallback_reason",
+              "type": "string",
+              "value": "timeout"
+            },
+            {
+              "key": "error.type",
+              "type": "string",
+              "value": "timeout"
+            },
+            {
+              "key": "decide.latency_ms",
+              "type": "int64",
+              "value": 2501
+            },
+            {
+              "key": "decide.outcome",
+              "type": "string",
+              "value": "fallback"
+            },
+            {
+              "key": "gen_ai.request.model",
+              "type": "string",
+              "value": "claude-opus-5-5"
+            },
+            {
+              "key": "decide.confidence",
+              "type": "float64",
+              "value": 0.62
+            },
+            {
+              "key": "decide.confidence.min",
+              "type": "float64",
+              "value": 0.62
+            },
+            {
+              "key": "decide.answers",
+              "type": "string",
+              "value": "[{\"question_id\":\"ffa.intervention\",\"choice\":\"noop\",\"score\":0,\"confidence\":0.62},{\"question_id\":\"ffa.target\",\"choice\":\"none\",\"score\":0,\"confidence\":0.62}]"
+            },
+            {
+              "key": "decide.rationale",
+              "type": "string",
+              "value": ""
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "dddd000000000004",
+          "spanID": "f2",
+          "operationName": "chat claude-opus-5-5",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "dddd000000000004",
+              "spanID": "f1"
+            }
+          ],
+          "startTime": 1760000008000100,
+          "duration": 2500000,
+          "tags": [
+            {
+              "key": "gen_ai.operation.name",
+              "type": "string",
+              "value": "chat"
+            },
+            {
+              "key": "gen_ai.request.model",
+              "type": "string",
+              "value": "claude-opus-5-5"
+            },
+            {
+              "key": "error.type",
+              "type": "string",
+              "value": "timeout"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        }
+      ],
+      "processes": {
+        "p1": {
+          "serviceName": "agent",
+          "tags": []
+        },
+        "p2": {
+          "serviceName": "game-coordinator",
+          "tags": []
+        }
+      },
+      "warnings": null
+    }
+  ],
+  "total": 0,
+  "limit": 0,
+  "offset": 0,
+  "errors": null
+}

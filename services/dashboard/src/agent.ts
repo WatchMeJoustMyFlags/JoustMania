@@ -402,3 +402,403 @@ export async function fetchAgentView(): Promise<AgentView> {
     },
   };
 }
+
+/* ======================================================================== */
+/* agent.decide feed (#1233, epic #1225)                                    */
+/* ======================================================================== */
+/*
+ * The decide contract (#1226) records every decision on an `agent.decide` span:
+ * which backend answered (and which one the decision.backend flag requested),
+ * the model, the answers + confidence, the confidence-threshold verdict, the
+ * outcome and the model's one-line rationale. None of that is in Loki, so this
+ * feed reads the spans straight from Jaeger's HTTP query API, which envoy already
+ * routes at /jaeger/* (the same Jaeger the deep links open).
+ *
+ * TRACE SHAPE (services/agent/decision/decide_hook.go)
+ *   rules path:  agent.signal_received ─┬─ agent.decide
+ *                                        └─ agent.decision ─ agent.action   (0..2)
+ *   remote path: agent.decide ─┬─ chat {model}            (backend CLIENT span)
+ *                              └─ agent.decision ─ agent.action
+ *                (agent.decide is a remote child of the game's gameplay_phase
+ *                 span, so the trace is the whole per-game trace.)
+ *
+ * Jaeger's search returns WHOLE traces that contain a matching span, so one
+ * query gives us the decide spans plus their chat / decision neighbours.
+ *
+ * Every string here (rationale above all) can be model output: it is untrusted
+ * and the view escapes it before rendering.
+ */
+
+/** Jaeger operation the decide feed searches for. */
+export const DECIDE_OPERATION = "agent.decide";
+
+/** How far back the decide feed looks. */
+const DECIDE_LOOKBACK_SECONDS = 10 * 60;
+
+/**
+ * Max traces per Jaeger search. On the remote path a decide trace is the whole
+ * per-game trace (every agent.decide of the game lives in it), so a small number
+ * of traces already holds many decisions; keep it low to bound the payload of a
+ * 1.5s poll.
+ */
+const DECIDE_TRACE_LIMIT = 15;
+
+/** Max decide rows kept (newest first). */
+const MAX_DECIDE_ROWS = 30;
+
+/** decide.outcome values (DecideOutcome* in decide_hook.go). */
+export type DecideOutcome =
+  | "act"
+  | "held"
+  | "noop"
+  | "invalid"
+  | "fallback"
+  | "discarded";
+
+const KNOWN_OUTCOMES: ReadonlySet<string> = new Set([
+  "act",
+  "held",
+  "noop",
+  "invalid",
+  "fallback",
+  "discarded",
+]);
+
+/** An agent.decision span linked to a decide row via the trace shape. */
+export interface LinkedDecision {
+  spanId: string;
+  action: string;
+  blocked: boolean;
+  reason: string;
+}
+
+/** One agent.decide span, folded for the feed. */
+export interface DecideRow {
+  traceId: string;
+  spanId: string;
+  /** Span start, epoch ms. */
+  tsMs: number;
+  /** decide.latency_ms, else the span duration. */
+  latencyMs: number;
+  /** decide.backend: the backend whose answers were used ("rules" after a fallback). */
+  backend: string;
+  /** decide.backend.requested: the decision.backend flag value. */
+  requested: string;
+  fallbackReason: string;
+  /** gen_ai.request.model, else the child chat span's model ("" for rules). */
+  model: string;
+  /** ffa.intervention choice ("" when no answer was recorded). */
+  intervention: string;
+  /** ffa.target choice ("none" for session-scoped, "" when absent). */
+  target: string;
+  /** decide.confidence (the routing confidence), null when absent. */
+  confidence: number | null;
+  /** decide.act_confidence_threshold, null when the router did not run. */
+  threshold: number | null;
+  /** decide.outcome; unknown values are passed through as "unknown". */
+  outcome: DecideOutcome | "unknown";
+  /** decide.invalid_reason / decide.discarded_reason, whichever is set. */
+  outcomeReason: string;
+  /** decide.rationale: untrusted model text. */
+  rationale: string;
+  /** error.type, when the backend call failed. */
+  errorType: string;
+  gameId: string;
+  gameKind: string;
+  /** agent.decision spans this decide produced (remote) or ran beside (rules). */
+  decisions: LinkedDecision[];
+}
+
+/** The "current backend" strip: derived from the newest agent.decide span. */
+export interface DecideCurrent {
+  tsMs: number;
+  backend: string;
+  requested: string;
+  model: string;
+  /** Threshold of the newest span, else the newest one that carried it. */
+  threshold: number | null;
+  /** True when `threshold` came from an older span than the newest one. */
+  thresholdFromOlder: boolean;
+}
+
+export interface DecideFeed {
+  rows: DecideRow[];
+  current: DecideCurrent | null;
+}
+
+/* --- Jaeger HTTP API (/api/traces) response shape (the subset we read) --- */
+
+export interface JaegerTag {
+  key: string;
+  type?: string;
+  value: unknown;
+}
+
+export interface JaegerReference {
+  refType: string;
+  traceID: string;
+  spanID: string;
+}
+
+export interface JaegerSpan {
+  traceID: string;
+  spanID: string;
+  operationName: string;
+  references?: JaegerReference[];
+  /** Microseconds since epoch. */
+  startTime: number;
+  /** Microseconds. */
+  duration: number;
+  tags?: JaegerTag[];
+}
+
+export interface JaegerTrace {
+  traceID: string;
+  spans: JaegerSpan[];
+}
+
+export interface JaegerTracesResponse {
+  data?: JaegerTrace[] | null;
+}
+
+function tagMap(span: JaegerSpan): Map<string, unknown> {
+  const m = new Map<string, unknown>();
+  for (const t of span.tags ?? []) m.set(t.key, t.value);
+  return m;
+}
+
+function tagString(tags: Map<string, unknown>, key: string): string {
+  const v = tags.get(key);
+  if (v === undefined || v === null) return "";
+  return String(v);
+}
+
+function tagNumber(tags: Map<string, unknown>, key: string): number | null {
+  const v = tags.get(key);
+  if (v === undefined || v === null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function tagBool(tags: Map<string, unknown>, key: string): boolean {
+  const v = tags.get(key);
+  return v === true || v === "true";
+}
+
+/** The CHILD_OF parent span id ("" for a root). */
+function parentSpanId(span: JaegerSpan): string {
+  const ref = (span.references ?? []).find((r) => r.refType === "CHILD_OF");
+  return ref?.spanID ?? "";
+}
+
+/**
+ * Pull the ffa.intervention / ffa.target choices out of decide.answers. The
+ * attribute is size-capped JSON (it may end in "...(truncated)"), so a parse
+ * failure is expected and yields blanks rather than an error.
+ */
+export function parseDecideAnswers(raw: string): { intervention: string; target: string } {
+  const out = { intervention: "", target: "" };
+  if (!raw) return out;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return out;
+  }
+  if (!Array.isArray(parsed)) return out;
+  for (const a of parsed) {
+    if (!a || typeof a !== "object") continue;
+    const ans = a as { question_id?: unknown; choice?: unknown };
+    if (typeof ans.choice !== "string") continue;
+    if (ans.question_id === "ffa.intervention") out.intervention = ans.choice;
+    else if (ans.question_id === "ffa.target") out.target = ans.choice;
+  }
+  return out;
+}
+
+function isChatSpan(span: JaegerSpan, tags: Map<string, unknown>): boolean {
+  return span.operationName.startsWith("chat ") || tags.get("gen_ai.operation.name") === "chat";
+}
+
+/** Fold one agent.decide span (with its trace neighbours) into a feed row. */
+function decideRowFrom(
+  span: JaegerSpan,
+  byParent: Map<string, JaegerSpan[]>,
+): DecideRow {
+  const tags = tagMap(span);
+  const parent = parentSpanId(span);
+
+  // Remote path: decision + chat spans are children of the decide span.
+  // Rules path: decisions are siblings under the same agent.signal_received.
+  const children = byParent.get(span.spanID) ?? [];
+  let decisionSpans = children.filter((s) => s.operationName === "agent.decision");
+  if (decisionSpans.length === 0 && parent) {
+    const siblings = byParent.get(parent) ?? [];
+    // Only the rules path shares a parent with its decisions. Guard against a
+    // remote decide (parent = gameplay_phase) picking up unrelated decisions by
+    // requiring there is no other agent.decide under the same parent.
+    const decideSiblings = siblings.filter((s) => s.operationName === DECIDE_OPERATION);
+    if (decideSiblings.length === 1) {
+      decisionSpans = siblings.filter((s) => s.operationName === "agent.decision");
+    }
+  }
+
+  let model = tagString(tags, "gen_ai.request.model");
+  if (!model) {
+    for (const c of children) {
+      const ct = tagMap(c);
+      if (!isChatSpan(c, ct)) continue;
+      model =
+        tagString(ct, "gen_ai.response.model") ||
+        tagString(ct, "gen_ai.request.model") ||
+        c.operationName.replace(/^chat /, "");
+      if (model) break;
+    }
+  }
+
+  const answers = parseDecideAnswers(tagString(tags, "decide.answers"));
+  const rawOutcome = tagString(tags, "decide.outcome");
+  const latency = tagNumber(tags, "decide.latency_ms");
+
+  return {
+    traceId: span.traceID,
+    spanId: span.spanID,
+    tsMs: Math.floor(span.startTime / 1000),
+    latencyMs: latency ?? Math.round(span.duration / 1000),
+    backend: tagString(tags, "decide.backend"),
+    requested: tagString(tags, "decide.backend.requested"),
+    fallbackReason: tagString(tags, "decide.fallback_reason"),
+    model,
+    intervention: answers.intervention,
+    target: answers.target,
+    confidence: tagNumber(tags, "decide.confidence"),
+    threshold: tagNumber(tags, "decide.act_confidence_threshold"),
+    outcome: KNOWN_OUTCOMES.has(rawOutcome) ? (rawOutcome as DecideOutcome) : "unknown",
+    outcomeReason:
+      tagString(tags, "decide.invalid_reason") || tagString(tags, "decide.discarded_reason"),
+    rationale: tagString(tags, "decide.rationale"),
+    errorType: tagString(tags, "error.type"),
+    gameId: tagString(tags, "game.id"),
+    gameKind: tagString(tags, "game.kind"),
+    decisions: decisionSpans
+      .slice()
+      .sort((a, b) => a.startTime - b.startTime)
+      .map((d) => {
+        const dt = tagMap(d);
+        return {
+          spanId: d.spanID,
+          action: tagString(dt, "decision.action"),
+          blocked: tagBool(dt, "decision.blocked"),
+          reason: tagString(dt, "decision.reason"),
+        };
+      }),
+  };
+}
+
+/**
+ * Fold a Jaeger /api/traces response into the decide feed.
+ *
+ * Pure. Rows are deduplicated by (traceID, spanID): Jaeger can return the same
+ * trace more than once when it is still being written to, and the remote path
+ * puts many decide spans in one per-game trace. Newest first, capped.
+ */
+export function parseDecideTraces(body: JaegerTracesResponse): DecideFeed {
+  const rows: DecideRow[] = [];
+  const seen = new Set<string>();
+
+  for (const trace of body.data ?? []) {
+    const spans = trace.spans ?? [];
+    const byParent = new Map<string, JaegerSpan[]>();
+    for (const s of spans) {
+      const p = parentSpanId(s);
+      if (!p) continue;
+      const list = byParent.get(p);
+      if (list) list.push(s);
+      else byParent.set(p, [s]);
+    }
+    for (const s of spans) {
+      if (s.operationName !== DECIDE_OPERATION) continue;
+      const key = `${s.traceID}/${s.spanID}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(decideRowFrom(s, byParent));
+    }
+  }
+
+  rows.sort((a, b) => b.tsMs - a.tsMs || b.spanId.localeCompare(a.spanId));
+  const capped = rows.slice(0, MAX_DECIDE_ROWS);
+  return { rows: capped, current: currentFrom(rows) };
+}
+
+function currentFrom(rows: DecideRow[]): DecideCurrent | null {
+  const newest = rows[0];
+  if (!newest) return null;
+  let threshold = newest.threshold;
+  let thresholdFromOlder = false;
+  if (threshold === null) {
+    const older = rows.find((r) => r.threshold !== null);
+    if (older) {
+      threshold = older.threshold;
+      thresholdFromOlder = true;
+    }
+  }
+  return {
+    tsMs: newest.tsMs,
+    backend: newest.backend,
+    requested: newest.requested,
+    model: newest.model,
+    threshold,
+    thresholdFromOlder,
+  };
+}
+
+/** Geometry of a confidence bar against the act threshold (all percentages 0..100). */
+export interface ConfidenceBar {
+  /** Filled width. 0 when confidence is unknown. */
+  fillPct: number;
+  /** Threshold marker position, null when no threshold was recorded. */
+  thresholdPct: number | null;
+  /** confidence >= threshold; null when either side is unknown. */
+  pass: boolean | null;
+}
+
+function clampUnit(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(1, Math.max(0, v));
+}
+
+/** Confidence vs threshold maths for the row bar. Mirrors the agent's `>=` routing. */
+export function confidenceBar(confidence: number | null, threshold: number | null): ConfidenceBar {
+  const fillPct = confidence === null ? 0 : Math.round(clampUnit(confidence) * 1000) / 10;
+  const thresholdPct = threshold === null ? null : Math.round(clampUnit(threshold) * 1000) / 10;
+  const pass = confidence === null || threshold === null ? null : confidence >= threshold;
+  return { fillPct, thresholdPct, pass };
+}
+
+/** Jaeger UI deep link to one span of a trace. */
+export function jaegerTraceUrl(traceId: string, spanId: string): string {
+  return `/jaeger/trace/${encodeURIComponent(traceId)}?uiFind=${encodeURIComponent(spanId)}`;
+}
+
+/**
+ * Query Jaeger for recent agent.decide spans. Throws on transport errors so the
+ * caller can flag the panel stale; it is polled separately from the Loki view so
+ * a Loki outage never hides the decide feed (and vice versa).
+ */
+export async function fetchDecideFeed(): Promise<DecideFeed> {
+  const endUs = Date.now() * 1000;
+  const startUs = endUs - DECIDE_LOOKBACK_SECONDS * 1_000_000;
+  const params = new URLSearchParams({
+    service: "agent",
+    operation: DECIDE_OPERATION,
+    start: String(startUs),
+    end: String(endUs),
+    limit: String(DECIDE_TRACE_LIMIT),
+  });
+  const url = `${BASE_URL}/jaeger/api/traces?${params.toString()}`;
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!response.ok) {
+    throw new Error(`Jaeger query failed: ${response.status} ${response.statusText}`);
+  }
+  return parseDecideTraces((await response.json()) as JaegerTracesResponse);
+}

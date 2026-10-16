@@ -914,3 +914,312 @@ body {
   font-size: 0.78rem;
   color: var(--text-secondary);
 }
+
+/* ===== agent.decide feed (#1233) ===== */
+/* Projector-first: larger type than the rest of the tab, strong colour coding. */
+
+.decide-panel {
+  margin: 4px 4px 16px;
+}
+
+.decide-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.decide-panel-head .external-link {
+  margin-left: auto;
+}
+
+.decide-panel-sub {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: normal;
+  margin-left: 6px;
+}
+
+/* Current-backend strip. */
+.decide-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px 28px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  font-size: 1.15rem;
+}
+
+.decide-strip-empty {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+.decide-strip-switched {
+  animation: decide-switch-flash 2.5s ease-out;
+}
+
+@keyframes decide-switch-flash {
+  0% { border-color: var(--accent-warning); background: rgba(255, 152, 0, 0.35); }
+  100% { border-color: rgba(255, 255, 255, 0.12); background: rgba(0, 0, 0, 0.25); }
+}
+
+.decide-strip-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.decide-strip-key {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.decide-strip-val {
+  font-weight: 700;
+  font-size: 1.35rem;
+}
+
+.decide-strip-model {
+  font-family: monospace;
+  font-size: 1.15rem;
+}
+
+.decide-strip-dim {
+  opacity: 0.6;
+}
+
+.decide-strip-requested {
+  font-size: 0.9rem;
+  color: var(--accent-warning);
+}
+
+.decide-strip-time {
+  margin-left: auto;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Backend colours (text). */
+.decide-backend-rules { color: #9ec9ff; }
+.decide-backend-claude { color: #ffb37a; }
+.decide-backend-openai { color: #7ee2b8; }
+.decide-backend-jev { color: #e0a6ff; }
+.decide-backend-other { color: var(--text-primary); }
+
+/* Rows. */
+.decide-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 62vh;
+  overflow-y: auto;
+}
+
+.decide-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 5px solid rgba(255, 255, 255, 0.2);
+  font-size: 1rem;
+}
+
+.decide-row-new {
+  animation: decide-row-flash 2s ease-out;
+}
+
+@keyframes decide-row-flash {
+  0% { background: rgba(255, 255, 255, 0.22); }
+  100% { background: rgba(255, 255, 255, 0.04); }
+}
+
+.decide-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.decide-line .agent-feed-time {
+  font-size: 0.9rem;
+}
+
+/* Outcome badge: distinct colour per outcome (also the row's left edge). */
+.decide-outcome {
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 10px;
+  border-radius: 12px;
+  min-width: 5.5em;
+  text-align: center;
+  color: #10131c;
+}
+
+.decide-outcome-act { background: #4caf50; }
+.decide-outcome-held { background: #ffc107; }
+.decide-outcome-noop { background: #9aa4b2; }
+.decide-outcome-invalid { background: #c77dff; }
+.decide-outcome-fallback { background: #ff6d3a; }
+.decide-outcome-discarded { background: transparent; color: #cfd6e0; border: 2px dashed #cfd6e0; }
+.decide-outcome-unknown { background: #555; color: #fff; }
+
+.decide-row-act { border-left-color: #4caf50; }
+.decide-row-held { border-left-color: #ffc107; }
+.decide-row-noop { border-left-color: #9aa4b2; }
+.decide-row-invalid { border-left-color: #c77dff; }
+.decide-row-fallback { border-left-color: #ff6d3a; }
+.decide-row-discarded { border-left-color: #cfd6e0; border-left-style: dashed; }
+
+.decide-backend {
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.decide-backend-struck {
+  text-decoration: line-through;
+  opacity: 0.75;
+}
+
+.decide-arrow {
+  color: var(--text-secondary);
+}
+
+.decide-model {
+  font-family: monospace;
+  font-size: 0.92rem;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.decide-fallback-reason {
+  color: #ff8a5c;
+  font-size: 0.9rem;
+}
+
+.decide-answer {
+  font-family: monospace;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.decide-answer-none {
+  color: var(--text-secondary);
+  font-weight: normal;
+}
+
+.decide-target {
+  color: #9ec9ff;
+}
+
+.decide-outcome-reason {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+}
+
+.decide-latency {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.decide-trace {
+  color: var(--accent-info);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.decide-trace:hover {
+  text-decoration: underline;
+}
+
+/* Confidence bar with the act-threshold tick. */
+.decide-conf {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.decide-conf-track {
+  position: relative;
+  flex: 0 1 360px;
+  height: 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: visible;
+}
+
+.decide-conf-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 6px;
+  background: #9aa4b2;
+}
+
+.decide-conf-pass .decide-conf-fill { background: #4caf50; }
+.decide-conf-fail .decide-conf-fill { background: #ffc107; }
+
+.decide-conf-tick {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 3px;
+  margin-left: -1px;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px #000;
+}
+
+.decide-conf-text {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.decide-why {
+  font-size: 1rem;
+  line-height: 1.35;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.decide-why-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-right: 4px;
+}
+
+.decide-decisions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.decide-decision {
+  font-family: monospace;
+  font-size: 0.82rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.decide-decision-allowed { color: #7ee2b8; }
+.decide-decision-blocked { color: var(--accent-primary); }

@@ -1,0 +1,252 @@
+{
+  "data": [
+    {
+      "traceID": "bbbb000000000002",
+      "spans": [
+        {
+          "traceID": "bbbb000000000002",
+          "spanID": "g1",
+          "operationName": "gameplay_phase",
+          "references": [],
+          "startTime": 1759999940000000,
+          "duration": 120000000,
+          "tags": [],
+          "logs": [],
+          "processID": "p2",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "bbbb000000000002",
+          "spanID": "d1",
+          "operationName": "agent.decide",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "bbbb000000000002",
+              "spanID": "g1"
+            }
+          ],
+          "startTime": 1760000002000000,
+          "duration": 1400000,
+          "tags": [
+            {
+              "key": "gen_ai.agent.name",
+              "type": "string",
+              "value": "joustmania-agent"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "JoustFFA"
+            },
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_0a1b2c3d4e5f"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_0a1b2c3d4e5f"
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "type": "string",
+              "value": "game_0a1b2c3d4e5f"
+            },
+            {
+              "key": "decide.state.digest",
+              "type": "string",
+              "value": "sha256:9f2c"
+            },
+            {
+              "key": "decide.questions",
+              "type": "string",
+              "value": "[{\"id\":\"ffa.intervention\",\"kind\":\"choice\"}]"
+            },
+            {
+              "key": "decide.backend",
+              "type": "string",
+              "value": "claude"
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "claude"
+            },
+            {
+              "key": "decide.fallback_reason",
+              "type": "string",
+              "value": ""
+            },
+            {
+              "key": "decide.latency_ms",
+              "type": "int64",
+              "value": 1312
+            },
+            {
+              "key": "decide.outcome",
+              "type": "string",
+              "value": "act"
+            },
+            {
+              "key": "gen_ai.request.model",
+              "type": "string",
+              "value": "claude-sonnet-5-5"
+            },
+            {
+              "key": "decide.act_confidence_threshold",
+              "type": "float64",
+              "value": 0.8
+            },
+            {
+              "key": "decide.confidence",
+              "type": "float64",
+              "value": 0.91
+            },
+            {
+              "key": "decide.confidence.min",
+              "type": "float64",
+              "value": 0.86
+            },
+            {
+              "key": "decide.answers",
+              "type": "string",
+              "value": "[{\"question_id\":\"ffa.intervention\",\"choice\":\"send_controller_effect\",\"probabilities\":{\"send_controller_effect\":0.91,\"noop\":0.09},\"score\":0,\"confidence\":0.91},{\"question_id\":\"ffa.target\",\"choice\":\"MOCK0003\",\"score\":0,\"confidence\":0.86}]"
+            },
+            {
+              "key": "decide.rationale",
+              "type": "string",
+              "value": "MOCK0003 has been idle for 20s; a rumble nudges them back in."
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "bbbb000000000002",
+          "spanID": "c1",
+          "operationName": "chat claude-sonnet-5-5",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "bbbb000000000002",
+              "spanID": "d1"
+            }
+          ],
+          "startTime": 1760000002000100,
+          "duration": 1300000,
+          "tags": [
+            {
+              "key": "gen_ai.operation.name",
+              "type": "string",
+              "value": "chat"
+            },
+            {
+              "key": "gen_ai.provider.name",
+              "type": "string",
+              "value": "anthropic"
+            },
+            {
+              "key": "gen_ai.request.model",
+              "type": "string",
+              "value": "claude-sonnet-5-5"
+            },
+            {
+              "key": "gen_ai.response.model",
+              "type": "string",
+              "value": "claude-sonnet-5-5"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "bbbb000000000002",
+          "spanID": "d2",
+          "operationName": "agent.decision",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "bbbb000000000002",
+              "spanID": "d1"
+            }
+          ],
+          "startTime": 1760000003390000,
+          "duration": 2000,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "send_controller_effect"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": false
+            },
+            {
+              "key": "decision.reason",
+              "type": "string",
+              "value": "MOCK0003 has been idle"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "bbbb000000000002",
+          "spanID": "d3",
+          "operationName": "agent.action",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "bbbb000000000002",
+              "spanID": "d2"
+            }
+          ],
+          "startTime": 1760000003391000,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "send_controller_effect"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": false
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        }
+      ],
+      "processes": {
+        "p1": {
+          "serviceName": "agent",
+          "tags": []
+        },
+        "p2": {
+          "serviceName": "game-coordinator",
+          "tags": []
+        }
+      },
+      "warnings": null
+    }
+  ],
+  "total": 0,
+  "limit": 0,
+  "offset": 0,
+  "errors": null
+}
