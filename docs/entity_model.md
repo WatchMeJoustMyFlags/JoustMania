@@ -5,7 +5,7 @@
 >
 > JoustMania has no database: these entities live in protobuf messages, in-memory service state, flag
 > files and the agent's experiment journal. "Primary Key" therefore means the natural identifier.
-> Source of each entity is given in its description. State: `main` @ 354f36c5 (includes PRs #1257, #1261).
+> Source of each entity is given in its description. State: `main` @ 81c9ecea (includes PRs #1257, #1261, #1265).
 
 ## Entity Relationship Diagram
 
@@ -15,6 +15,7 @@ erDiagram
     CONTROLLER ||--o{ PLAYER : "is played as"
     GAME_MODE ||--o{ GAME_SESSION : "defines rules of"
     GAME_SESSION ||--|{ PLAYER : "has"
+    PLAYER ||--o| DECIDE_PLAYER_STATE : "is seen by the agent as"
     GAME_SESSION ||--o{ TEAM : "groups players into"
     TEAM ||--o{ PLAYER : "contains"
     GAME_SESSION ||--o{ GAME_EVENT : "publishes"
@@ -111,18 +112,36 @@ A controller's participation in one game (`proto/game_coordinator.proto` `Player
 |---|---|---|---|---|
 | serial | Controller played | String | 17 | Primary Key, Foreign Key (CONTROLLER.serial) |
 | game_id | Game | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
-| team | Team index, -1 without teams | Integer | 2 | Not Null, Min: -1, Max: 7 |
+| team | Team index; 0 in modes without teams, -1 only in Tournament | Integer | 2 | Not Null, Min: -1, Max: 7 |
 | alive | Still in the game (zombies stay alive when converted) | Boolean | 1 | Not Null |
-| score | Mode score (NonStop: 100 − 10 × deaths); `ListGames` reports 0 | Integer | 5 | Optional, Min: 0 |
+| score | Mode score; NonStop computes max(0, base − deaths × penalty) only at game end, so it is 0 during play; `ListGames` always reports 0 | Integer | 5 | Optional, Min: 0 |
 | sensitivity_factor | Agent per-player factor (divides thresholds) | Decimal | 4,2 | Not Null, Min: 0.5, Max: 2.0 |
 | handicap_factor | Agent handicap (multiplies thresholds) | Decimal | 4,2 | Not Null, Min: 0.5, Max: 2.0 |
 | grace_until | No-death deadline from respawn, conversion or agent shield | DateTime | - | Optional |
 | invincible_until | No-death deadline from match / round start (Tournament, Fight Club) | DateTime | - | Optional |
 | smoothed_accel | EMA of acceleration magnitude in g | Decimal | 6,3 | Not Null, Min: 0 |
 
-**In flight (PR #1265, #1262, not on `main`):** the decide state's per-player view (`decide.PlayerState`) gains a danger signal (`safe` / `elevated` / `near_threshold` at 0.60 / 0.85 of the death threshold), `intensity_rank`, `threshold_margin`, `most_headroom` / `struggling` markers and `shielded`; two-stage Jev decisions with Go-decided direction for two-way levers and no neutral acting levels.
-
 **Constraints:** the player cannot die while `now < max(grace_until, invincible_until)`. Effective thresholds are divided by `clamp(sensitivity_factor × global_difficulty_factor, 0.5, 2.0)` and multiplied by `clamp(handicap, 0.5, 2.0)`.
+
+### DECIDE_PLAYER_STATE
+
+A player as the decision backends see it (`decide.PlayerState`, `services/agent/decide/decide.go`, signals from `services/agent/decide/danger.go`, PR #1265).
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| serial | Player | String | 17 | Primary Key, Foreign Key (PLAYER.serial) |
+| alive | Player is active | Boolean | 1 | Not Null |
+| intensity | Smoothed movement intensity in g (absent when never observed) | Decimal | 6,3 | Optional, Min: 0 |
+| variance | Movement variance | Decimal | 6,3 | Optional |
+| skill | Skill level (from `game_player_skill_level`, else playstyle / 3) | Decimal | 4,3 | Optional |
+| battery_pct | Battery in percent | Decimal | 5,2 | Optional, Min: 0, Max: 100 |
+| elimination_order | 1-based elimination order | Integer | 3 | Optional, Min: 1 |
+| intensity_rank | 1 = highest intensity among alive players with an observed intensity; 0 unranked | Integer | 3 | Not Null, Min: 0 |
+| threshold_margin | Session death threshold − intensity (g, 2 decimals); negative when over | Decimal | 4,2 | Optional |
+| danger | Intensity / session death threshold: `safe` < 0.60 ≤ `elevated` < 0.85 ≤ `near_threshold`; empty when unknown | String | 14 | Optional, Values: safe, elevated, near_threshold |
+| shielded | A grant_shield / partial_shield was dispatched to the player in the last 10 s | Boolean | 1 | Not Null |
+
+**Constraints:** danger reads the **session** death threshold, so per-player factors and shields are not reflected (`shielded` flags shields separately). Session-level fields on the state: `most_headroom` (alive player with the strictly lowest intensity) and `struggling` (strictly highest intensity when elevated or near_threshold); ties leave them empty.
 
 ### TEAM
 
@@ -130,8 +149,8 @@ A colour team in team modes (`services/game_coordinator/games/teams_base.py`).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| index | Team number | Integer | 1 | Primary Key, Min: 0, Max: 7 |
-| game_id | Game | String | 17 | Not Null, Foreign Key (GAME_SESSION.game_id) |
+| game_id | Game | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
+| index | Team number within the game | Integer | 1 | Primary Key, Min: 0, Max: 7 |
 | name | Colour name (e.g. Pink, Magenta) | String | 20 | Not Null |
 | color | RGB colour | Integer | 3 | Not Null, Min: 0, Max: 255 |
 | secret | Hidden team for traitors (Traitor mode only) | Boolean | 1 | Not Null |
@@ -221,6 +240,7 @@ A backend's answer to one question (`decide.go:77-90`, validation `validate.go`)
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
+| decision_id | Decision the answer belongs to | String | 40 | Primary Key, Foreign Key (DECISION.decision_id) |
 | question_id | Answered question | String | 30 | Primary Key, Foreign Key (QUESTION.question_id) |
 | choice | Chosen option (choice kind) | String | 60 | Optional |
 | probabilities | Option → probability, sum 1 ± 0.001, choice is the argmax | String | 2000 | Optional |
@@ -242,7 +262,7 @@ A bounded in-game change applied through `interventions.json` (`services/agent/a
 | value | Resolved magnitude or payload | String | 60 | Optional |
 | blocked_by_coordinator | Coordinator block reason | String | 16 | Optional, Values: not_allowed, rate_limited, low_battery, mode_unsupported, no_game, handler_error |
 
-**Constraints:** the type must be in the live `interventions_allowed` list (checked by the agent and again by the coordinator); writes happen only while `interventions_enabled` is on. Agent writes carry no `gameId` targeting today (D-A2, #920).
+**Constraints:** the type must be in the live `interventions_allowed` list (checked by the agent and again by the coordinator); writes happen only while `interventions_enabled` is on. Game scoping: see [D-A2](specs-inventory.md#46-agent-d-a).
 
 ### EXPERIMENT
 

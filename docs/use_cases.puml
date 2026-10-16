@@ -89,8 +89,6 @@ agent --> UC051
 presenter --> UC070
 maintainer --> UC043
 
-UC010 ..> UC020 : <<include>>
-UC014 ..> UC010 : <<include>>
 UC020 ..> UC030 : <<include>>
 UC040 ..> UC041 : <<include>>
 UC043 ..> UC041 : <<include>>
