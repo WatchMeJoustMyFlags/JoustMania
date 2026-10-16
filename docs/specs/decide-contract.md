@@ -80,7 +80,7 @@ reflected. Entity: [DECIDE_PLAYER_STATE](../entity_model.md#decide_player_state)
 | `ffa.target` | choice | `none` + alive serials (sorted) | `ffa.go:FFAQuestions` |
 | `ffa.magnitude` | score | [0, 1], normalised over the chosen intervention's bounds | `ffa.go:FFAQuestions`, `magnitudeText` |
 
-With `interventions_allowed=none` the only option is `noop`.
+With `interventions_allowed=none` the only option would be `noop`, so no remote call is made at all (§7.1, #1298); the rules adapter still builds the set on the `rules` backend.
 
 ### 2.1 Magnitude bounds
 
@@ -360,13 +360,46 @@ There is no separate `rate_limited` reason: HTTP 429 is `error`, with
 `error.type="429"` on the `chat {model}` span.
 
 **Not fallbacks** (rules stay quiet that cycle, no decision): the per-game cadence
-gate (`decide_interval`, counted in `agent_llm_gated_total{reason}`) and a remote
-call already in flight for that game (`decide_hook.go:237-241,277-279`).
+gate (`decide_interval`, counted in `agent_llm_gated_total{reason}`), a remote
+call already in flight for that game (`decide_hook.go:decideRemote`), and an empty
+allow-list (`no_interventions_allowed`, §7.1).
 
-Order of checks on the remote path (`decide_hook.go:236-315`): in-flight claim →
+Order of checks on the remote path (`decide_hook.go:decideRemote`, `gateRemoteDecide`): in-flight claim →
 resolve backend (unknown / unavailable) → async wired → admission seam
-(`remoteDecideAdmitted`, always true on `main`) → eligibility → cadence → budget →
-fire.
+(`remoteDecideAdmitted`, always true on `main`) → eligibility → allow-list not empty →
+cadence → budget → fire.
+
+### 7.1 Call gate: no interventions allowed (#1298)
+
+A remote decide call whose `ffa.intervention` question could only offer `noop` is
+never made. `gateRemoteDecide` checks `hasAllowedInterventions(snapshot.InterventionsAllowed)`
+after eligibility and **before** the cadence and the global budget are charged and
+before the request is built. The list counts as empty after the same filtering as
+the `ffa.intervention` options (`decide/ffa.go:interventionOptions`: duplicates,
+empty ids and `noop` dropped), so the `none` variant (`""`) and the `probe` variant
+(`"noop"`) both gate.
+
+| Aspect | Behaviour |
+|---|---|
+| Remote call | none (no Jev / Claude / OpenAI request built or sent) |
+| Cadence `decision.min_interval_ms` | not charged (`lastDecideAttempt` unchanged) |
+| Global budget `llm.max_requests_per_minute` | not charged |
+| Rules engine | not run: nothing it emits could pass the allow-list; not a fallback |
+| `agent.decide` span | none (the cycle runs at 10 to 60 Hz; a span per cycle would be noise) |
+| Metric | `agent_llm_gated_total{reason=no_interventions_allowed}` per gated cycle |
+| Log | debug `agent.decide.no_interventions_allowed` only when the game enters (`skipping=true`) or leaves (`skipping=false`) the state |
+
+Ineligible game kinds are checked first and still fall back to rules
+(`llm_not_eligible`), so shadow games keep their rules-only behaviour. A backend
+that cannot be resolved also still falls back to rules before this gate.
+
+An answer already in flight when `interventions_allowed` flips to `none` is not
+affected by this gate: the landing re-reads the live allow-list and the permission
+chain blocks it with `not_allowed` (§9).
+
+Scope: in-game decide calls only. The post-game retro (`llm.retro`) and the
+experiment proposer do not read the allow-list for admission; they are governed by
+the kill switch `enabled` and the shared LLM budget (NFR-011).
 
 ## 8. Timeouts, cadence and budgets
 
@@ -414,7 +447,7 @@ No p50 / p95 from production `agent.decide` spans has been published yet (#1231)
 | `enabled` → off | HTTP call is **not** cancelled; on landing the live flags are re-read and the answer is `discarded/kill_switch`; the rules fallback is suppressed too | `decide_hook.go:339-360,439-445`; `TestRemote_KillSwitchAtLanding`, `TestRemote_KillSwitchSuppressesTimeoutFallback`; e2e `tests/integration/test_decide_backend_e2e.py::test_kill_switch_discards_inflight_answer` |
 | `decision.backend` changed | `discarded/backend_changed` | `decide_hook.go:446-449`; `TestRemote_BackendChangedMidFlight` |
 | `decision.act_confidence_threshold` / `decision.jev.act_confidence_threshold` changed | the effective threshold for the answering backend is re-read at landing (§5); the answer is `act` or `held` against the new value | `decide_hook.go:453`; `TestRemote_ThresholdRaisedMidFlight`, `TestThreshold_JevRaisedMidFlightAppliesAtLanding`, `TestThreshold_JevInheritFlippedMidFlightAppliesAtLanding` |
-| `interventions_allowed` narrowed | outcome stays `act`; the permission chain blocks `not_allowed` (`decide.blocked=true`, `decide.block_reason=not_allowed`) | `TestRemote_AllowListAtLanding`, `TestRemote_BlockedDecisionNamesTargetAndDecideBlocked` |
+| `interventions_allowed` narrowed (including to `none`) | outcome stays `act`; the permission chain blocks `not_allowed` (`decide.blocked=true`, `decide.block_reason=not_allowed`); the next cycle makes no new call (§7.1) | `TestRemote_AllowListAtLanding`, `TestRemote_BlockedDecisionNamesTargetAndDecideBlocked`, `TestRemote_NoInterventionsAllowed`, `TestRemote_NoInterventionsAllowedAtLanding` |
 | `interventions_enabled` → off | not checked by the decide hook; the gated sink writes nothing | `actions/gated.go:31-67` |
 | agent shutdown | `discarded/shutdown` | `decide_hook.go:397-402` |
 
@@ -516,7 +549,8 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
 - `agent.decision` / `agent.action` of a player-targeted decision carry `player.serial` (and `player.name`
   when known), [telemetry.md §4.3](telemetry.md#43-decision-attributes) (#1295).
 - Metrics: `gen_ai.client.operation.duration`, `gen_ai.client.token.usage`,
-  `agent_llm_gated_total{reason}`, `agent_decisions_total`, `agent_interventions_applied_total`.
+  `agent_llm_gated_total{reason}` (decide path reasons: `llm_not_eligible`, `llm_budget_exhausted`,
+  `decide_interval`, `no_interventions_allowed`), `agent_decisions_total`, `agent_interventions_applied_total`.
 
 Known gap: `agent_interventions_applied_total` also counts applies that the gated sink
 turned into no-ops while `interventions_enabled` is off (`actions/gated.go:60-65`).
