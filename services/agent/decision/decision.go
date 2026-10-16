@@ -172,7 +172,12 @@ type Loop struct {
 	// mu guards the log-throttle state and lastLayer below.
 	mu      sync.Mutex
 	lastLog time.Time
-	now     func() time.Time
+	// lastQuietFallback throttles, per fallback reason, the agent.decide span of a
+	// configuration fallback on which the rules emitted nothing (emitQuietFallback).
+	// Its own timestamps, so the evaluate log line does not use up the window and
+	// one reason does not hide another. Lazily allocated; guarded by mu.
+	lastQuietFallback map[string]*time.Time
+	now               func() time.Time
 	// throttle bounds how often the evaluate log line and agent.disabled span are
 	// emitted. The STATIC fallback value, set via SetThrottle; a zero value means
 	// DefaultThrottleInterval. Used only when throttleSource is nil.
@@ -207,6 +212,11 @@ type Loop struct {
 	// gated because the allow-list is empty (#1298). Guarded by llmGate; it only
 	// drives the log-on-state-change debug line.
 	skippingNoInterventions bool
+	// misconfiguredReason is the configuration fallback reason (unknown_backend,
+	// backend_unavailable, async_not_wired) this game's remote decide cycles are
+	// currently in, "" when none. Guarded by llmGate; it only drives the
+	// log-on-state-change lines of noteMisconfigured.
+	misconfiguredReason string
 	// budget is the GLOBAL per-minute LLM request cap shared across ALL loops and
 	// the post-game retro (#847): llm.max_requests_per_minute bounds remote decide
 	// calls and retro calls together. It is injected via SetLLMBudget from the one instance main.go
@@ -570,7 +580,13 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// arriving but nothing fires" distinguishable from "metrics aren't arriving".
 	if len(decisions) == 0 {
 		l.recordEvaluation(ctx, trig.Signal, "idle")
-		l.setLastLayer(state) // no decision, no trace
+		// A configuration fallback is still recorded when the rules then emit
+		// nothing (UC-040 A3, decide contract §7), throttled; otherwise no
+		// decision, no trace.
+		if decideRec != nil && isConfigFallback(decideRec.fallbackReason) {
+			l.emitQuietFallback(ctx, decideRec, c, trig)
+		}
+		l.setLastLayer(state)
 		return state
 	}
 	l.recordEvaluation(ctx, trig.Signal, "decided")
@@ -688,6 +704,7 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 	// state so its "entering" debug line fires again on a later remote cycle (#1298).
 	l.llmGate.Lock()
 	l.noteNoInterventions(c, false)
+	l.noteMisconfigured(c, flags.DecisionBackendRules, "")
 	l.llmGate.Unlock()
 	return l.rulesDecide(ctx, snapshot, c, flags.DecisionBackendRules, "")
 }
@@ -928,6 +945,12 @@ func (l *Loop) batteryBlocks(snapshot flags.Snapshot, c gamecontext.GameContext,
 // OnEvaluate runs concurrently from the trace and metrics Export handler
 // goroutines.
 func (l *Loop) shouldLog() bool {
+	return l.throttleAllows(&l.lastLog)
+}
+
+// throttleAllows reports whether the throttle window since *last has elapsed
+// and, if so, moves *last to now. last must be a field guarded by l.mu.
+func (l *Loop) throttleAllows(last *time.Time) bool {
 	now := l.now
 	if now == nil {
 		now = time.Now
@@ -948,10 +971,10 @@ func (l *Loop) shouldLog() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	t := now()
-	if t.Sub(l.lastLog) < throttle {
+	if t.Sub(*last) < throttle {
 		return false
 	}
-	l.lastLog = t
+	*last = t
 	return true
 }
 

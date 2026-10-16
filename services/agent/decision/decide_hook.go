@@ -292,10 +292,22 @@ func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c game
 
 	requested := requestedBackend(snapshot)
 	backend, reason := l.decideBackends.Resolve(snapshot.Decision)
+	misconfigured := reason
+	if backend != nil && !l.asyncEnabled() {
+		misconfigured = DecideFallbackNotWired
+	}
+	l.llmGate.Lock()
+	l.noteMisconfigured(c, requested, misconfigured)
+	l.llmGate.Unlock()
 	if backend == nil {
+		// Counted every cycle, like the eligibility and budget gates, so a
+		// misconfigured backend (e.g. JEV_API_KEY missing) shows up in metrics
+		// even while the rules engine is quiet.
+		l.recordGated(ctx, reason)
 		return l.rulesDecide(ctx, snapshot, c, requested, reason)
 	}
 	if !l.asyncEnabled() {
+		l.recordGated(ctx, DecideFallbackNotWired)
 		return l.rulesDecide(ctx, snapshot, c, requested, DecideFallbackNotWired)
 	}
 	if !l.remoteDecideAdmitted(snapshot, c) {
@@ -320,6 +332,71 @@ func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c game
 	fired = true
 	l.launchDecideAsync(ctx, snapshot, backend, requested, c, trig)
 	return nil, nil
+}
+
+// isConfigFallback reports whether reason is a configuration fallback: the
+// requested backend can never decide until its configuration changes
+// (unknown_backend, backend_unavailable, async_not_wired). llm_not_eligible and
+// llm_budget_exhausted are normal operation (shadow games, spend cap) and stay
+// counter-only on a quiet cycle.
+func isConfigFallback(reason string) bool {
+	switch reason {
+	case DecideFallbackUnknownBackend, DecideFallbackUnavailable, DecideFallbackNotWired:
+		return true
+	}
+	return false
+}
+
+// noteMisconfigured logs when this game enters or leaves a configuration
+// fallback (reason "" = none), not once per cycle: a WARN on entering or
+// changing reason, an INFO when it clears. The caller holds llmGate.
+func (l *Loop) noteMisconfigured(c gamecontext.GameContext, requested, reason string) {
+	prev := l.misconfiguredReason
+	if prev == reason {
+		return
+	}
+	l.misconfiguredReason = reason
+	if reason == "" {
+		l.Log.Info("agent.decide.backend_misconfigured", "session_id", c.SessionID,
+			"backend", requested, "state", "cleared", "previous_reason", prev)
+		return
+	}
+	l.Log.Warn("agent.decide.backend_misconfigured", "session_id", c.SessionID,
+		"backend", requested, "state", "entered", "reason", reason)
+}
+
+// emitQuietFallback records a configuration fallback (isConfigFallback) on which
+// the rules engine emitted nothing (UC-040 A3, decide contract §7): an
+// agent.decide span with outcome=fallback and the fallback reason, under its own
+// agent.signal_received root like a decided cycle's. A decided cycle already
+// carries that span; without this a quiet cycle left no trace, so for example a
+// missing API key was invisible until a rule fired. Throttled per reason to one
+// per throttle window (decision.throttle_seconds) because it can fire on every
+// 10-60 Hz cycle; the agent_llm_gated_total counter still counts every cycle.
+func (l *Loop) emitQuietFallback(ctx context.Context, rec *decideRecord, c gamecontext.GameContext, trig EvalTrigger) {
+	if !l.throttleAllows(l.quietFallbackClock(rec.fallbackReason)) {
+		return
+	}
+	rootCtx, root := l.startSignalReceivedSpan(ctx, c, trig)
+	l.emitDecideSpan(rootCtx, rec, c)
+	root.End()
+}
+
+// quietFallbackClock returns the per-reason throttle timestamp for
+// emitQuietFallback, allocating it on first use. The pointer stays valid; the
+// timestamp itself is read and written under mu by throttleAllows.
+func (l *Loop) quietFallbackClock(reason string) *time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lastQuietFallback == nil {
+		l.lastQuietFallback = map[string]*time.Time{}
+	}
+	t, ok := l.lastQuietFallback[reason]
+	if !ok {
+		t = new(time.Time)
+		l.lastQuietFallback[reason] = t
+	}
+	return t
 }
 
 // DecideGateInterval is the agent_llm_gated_total reason (and debug log) for a
