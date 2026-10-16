@@ -13,16 +13,10 @@ import (
 //
 // A factory runs on EVERY remote decide call with the cycle's flag snapshot, so a
 // change to a backend's model / base URL / timeout flag applies on the very next
-// call with no restart. Secrets (API keys) are not flags: the factory reads them
-// from the environment (main.go closes over os.Getenv), so they never appear in a
-// flag file or a span.
-//
-// main.go registers the remote backends, one Register call each:
-//
-//	reg.Register(flags.DecisionBackendClaude, func(d flags.DecisionBackend) decide.Backend {
-//		return claude.New(claude.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-//			Model: d.Claude.Model, Timeout: d.Claude.Timeout, CaptureContent: d.CaptureContent})
-//	})
+// call with no restart. Secrets (API keys) are not flags: main reads them from the
+// environment once at startup and the factories close over them, so they never
+// appear in a flag file or a span. The claude / openai / jev registrations live in
+// services/agent/decide_backends.go (newDecideRegistry, #1244).
 //
 // `rules` is NOT registered here: it is the in-process floor the loop runs itself
 // (ObjectiveRules.EvaluateDecide), so it can never be unknown or unavailable.

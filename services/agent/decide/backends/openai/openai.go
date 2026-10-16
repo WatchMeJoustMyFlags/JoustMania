@@ -117,6 +117,11 @@ type Config struct {
 	// (gen_ai.system_instructions / gen_ai.input.messages /
 	// gen_ai.output.messages). Off by default: content is opt-in per semconv.
 	CaptureContent bool
+	// ReasoningEffort is the reasoning_effort for reasoning models
+	// (decision.openai.reasoning_effort): "" or "auto" picks it from the model
+	// id (reasoningEffortFor); any other value (none, minimal, low, ...) is
+	// sent verbatim. Non-reasoning models never get reasoning_effort.
+	ReasoningEffort string
 }
 
 // Backend is the openai decision backend. It implements decide.Backend.
@@ -183,6 +188,7 @@ func schemaUnsupportedBody(body []byte) bool {
 func New(cfg Config) *Backend {
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	cfg.Model = strings.TrimSpace(cfg.Model)
+	cfg.ReasoningEffort = strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
@@ -199,6 +205,9 @@ func New(cfg Config) *Backend {
 
 // Name implements decide.Backend.
 func (b *Backend) Name() string { return Name }
+
+// Model is the configured model id (trimmed; empty when unset).
+func (b *Backend) Model() string { return b.cfg.Model }
 
 // Provider is the gen_ai.provider.name this backend records.
 func (b *Backend) Provider() string { return b.provider }
@@ -253,7 +262,7 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 // the HTTP status, 0 when there was no HTTP response; errBody is the response
 // body of a non-2xx answer.
 func (b *Backend) attempt(ctx context.Context, req decide.Request, prompt llmio.Prompt, format string) (decide.Response, int, []byte, error) {
-	shape := shapeFor(b.provider, b.cfg.Model)
+	shape := shapeFor(b.provider, b.cfg.Model, b.cfg.ReasoningEffort)
 	body, err := json.Marshal(b.request(prompt, shape, format))
 	if err != nil {
 		return decide.Response{}, 0, nil, fmt.Errorf("openai: marshal request: %w", err)
@@ -344,21 +353,37 @@ type requestShape struct {
 	reasoningEffort     string
 }
 
-// openAIReasoningModel matches OpenAI reasoning model ids (o1, o3-mini,
-// o4-mini, gpt-5, gpt-5-mini, ...). "-chat" ids (gpt-5-chat-latest) are the
-// non-reasoning chat variants and are excluded in isReasoningModel.
-var openAIReasoningModel = regexp.MustCompile(`^(o\d|gpt-5)`)
+// openAIReasoningModel matches OpenAI reasoning model ids: the o-series (o1,
+// o3-mini, o4-mini, ...) and gpt-5 and every later generation (gpt-5, gpt-5.1,
+// gpt-6*, gpt-10*, ...). "-chat" ids (gpt-5-chat-latest) are the non-reasoning
+// chat variants and are excluded in isReasoningModel.
+var openAIReasoningModel = regexp.MustCompile(`^(o\d|gpt-([5-9]|\d{2,}))`)
+
+// gpt5MinimalFamily matches the ORIGINAL gpt-5 family (gpt-5, gpt-5-mini,
+// gpt-5-nano, optionally date-pinned), the only models known to accept
+// reasoning_effort "minimal". Later releases (gpt-5.1+, gpt-6*) may reject it.
+var gpt5MinimalFamily = regexp.MustCompile(`^gpt-5(-mini|-nano)?(-\d{4}-\d{2}-\d{2})?$`)
 
 func isReasoningModel(model string) bool {
 	return openAIReasoningModel.MatchString(model) && !strings.Contains(model, "-chat")
 }
 
-// reasoningEffortFor is the lowest effort each reasoning family accepts, to
-// fit the 2.5s budget: "minimal" for gpt-5*, "low" for the o-series.
-// UNVERIFIED LIVE: newer gpt-5.x releases may rename or drop "minimal"; a
-// rejection is a 400 and the decision falls back to rules.
-func reasoningEffortFor(model string) string {
-	if strings.HasPrefix(model, "gpt-5") {
+// ReasoningEffortAuto (the decision.openai.reasoning_effort default) lets
+// reasoningEffortFor pick the effort from the model id.
+const ReasoningEffortAuto = "auto"
+
+// reasoningEffortFor is the reasoning_effort sent to a reasoning model. An
+// explicit effort (anything but "" / auto) is sent verbatim; auto picks the
+// lowest effort each family is known to accept, to fit the 2.5s budget:
+// "minimal" for the original gpt-5 family, "low" for every other reasoning
+// model ("low" is accepted by every OpenAI reasoning model so far). A
+// rejected value is a 400 and the decision falls back to rules; set the flag
+// explicitly for a model the heuristic gets wrong.
+func reasoningEffortFor(model, effort string) string {
+	if effort != "" && effort != ReasoningEffortAuto {
+		return effort
+	}
+	if gpt5MinimalFamily.MatchString(model) {
 		return "minimal"
 	}
 	return "low"
@@ -368,15 +393,15 @@ func reasoningEffortFor(model string) string {
 // host (ProviderName), so the host also selects the shape: only api.openai.com
 // gets the OpenAI shape logic; self-hosted Ollama/vLLM/LiteLLM hosts derive
 // "openai" too and therefore also get the OpenAI shape (max_completion_tokens),
-// which they accept. A wrong guess costs a 400 and a rules fallback, never a
-// bad act.
-func shapeFor(provider, model string) requestShape {
+// which they accept. effort is Config.ReasoningEffort. A wrong guess costs a
+// 400 and a rules fallback, never a bad act.
+func shapeFor(provider, model, effort string) requestShape {
 	zero := 0.0
 	if provider != string(genaiconv.ProviderNameOpenAI) {
 		return requestShape{temperature: &zero}
 	}
 	if isReasoningModel(model) {
-		return requestShape{maxCompletionTokens: true, reasoningEffort: reasoningEffortFor(model)}
+		return requestShape{maxCompletionTokens: true, reasoningEffort: reasoningEffortFor(model, effort)}
 	}
 	return requestShape{maxCompletionTokens: true, temperature: &zero}
 }

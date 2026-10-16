@@ -119,6 +119,9 @@ func New(cfg Config) *Backend {
 // Name implements decide.Backend.
 func (b *Backend) Name() string { return Name }
 
+// Model is the configured model id (trimmed; empty when unset).
+func (b *Backend) Model() string { return b.cfg.Model }
+
 // Available reports whether the backend is configured (an API key and a model).
 func (b *Backend) Available() bool {
 	return b != nil && strings.TrimSpace(b.cfg.APIKey) != "" && b.cfg.Model != ""

@@ -1015,6 +1015,35 @@ All configuration is via environment variables:
 > The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
 > not the in-process sync port `8015` that the Python services use.
 
+### Decision backends (#1225, #1244)
+
+`decision.backend` (agent.json) picks who answers the in-game decide questions:
+`rules` (default, in-process) or a remote backend, `claude`, `openai` or `jev`,
+called directly with no gateway. Flip it, and the backend's model, with
+`./scripts/agent-backend.sh` (edits `services/flagd/ci/agent.json`, applied live on
+the next cycle with no restart):
+
+```bash
+./scripts/agent-backend.sh                 # show current settings
+./scripts/agent-backend.sh claude sonnet   # decision.backend=claude, decision.claude.model=sonnet
+./scripts/agent-backend.sh rules           # back to rules
+```
+
+Each remote backend needs its API key in the agent's environment (passed through
+by `docker-compose.yml`, read once at startup) plus its flag config:
+
+| Backend | Env key | Flags it also needs |
+|---------|---------|---------------------|
+| `claude` | `ANTHROPIC_API_KEY` | `decision.claude.model` (defaults to haiku) |
+| `openai` | `DECISION_OPENAI_API_KEY` | `decision.openai.model` (unset by default), `decision.openai.base_url` (any OpenAI-compatible vendor), `decision.openai.reasoning_effort` (`auto` / `none` / `minimal` / `low`) |
+| `jev` | `JEV_API_KEY` | `decision.jev.base_url` (unset by default; stub backend) |
+
+A backend without its key, model or base URL resolves to `backend_unavailable`
+and the decision falls back to rules (`decide.fallback_reason` on the
+`agent.decide` span), as do timeouts (`decision.<backend>.timeout_ms`), errors and
+invalid answers. Keys are never flags and never land on spans; backend errors are
+recorded only as `error.type`. Wiring: `decide_backends.go`.
+
 ### Experiment cohort loop dry run (#982/#991/#999)
 
 `make dry-run` brings the cohort loop up **runnable out-of-the-box** — latest

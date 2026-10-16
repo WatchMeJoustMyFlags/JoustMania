@@ -569,20 +569,103 @@ func TestProviderName(t *testing.T) {
 }
 
 func TestShapeFor(t *testing.T) {
-	if s := shapeFor("openai", "gpt-5-mini"); !s.maxCompletionTokens || s.temperature != nil || s.reasoningEffort != "minimal" {
+	if s := shapeFor("openai", "gpt-5-mini", ""); !s.maxCompletionTokens || s.temperature != nil || s.reasoningEffort != "minimal" {
 		t.Errorf("gpt-5 shape = %+v", s)
 	}
-	if s := shapeFor("openai", "o4-mini"); s.temperature != nil || s.reasoningEffort != "low" {
+	if s := shapeFor("openai", "o4-mini", ""); s.temperature != nil || s.reasoningEffort != "low" {
 		t.Errorf("o4 shape = %+v", s)
 	}
-	if s := shapeFor("openai", "gpt-5-chat-latest"); s.temperature == nil || s.reasoningEffort != "" {
+	if s := shapeFor("openai", "gpt-5-chat-latest", ""); s.temperature == nil || s.reasoningEffort != "" {
 		t.Errorf("gpt-5-chat shape = %+v", s)
 	}
-	if s := shapeFor("openai", "gpt-4.1-mini"); !s.maxCompletionTokens || s.temperature == nil || s.reasoningEffort != "" {
+	if s := shapeFor("openai", "gpt-4.1-mini", ""); !s.maxCompletionTokens || s.temperature == nil || s.reasoningEffort != "" {
 		t.Errorf("gpt-4.1 shape = %+v", s)
 	}
-	if s := shapeFor("groq", "gpt-5-oss"); s.maxCompletionTokens || s.temperature == nil || s.reasoningEffort != "" {
+	if s := shapeFor("groq", "gpt-5-oss", "minimal"); s.maxCompletionTokens || s.temperature == nil || s.reasoningEffort != "" {
 		t.Errorf("non-openai shape = %+v", s)
+	}
+}
+
+// TestIsReasoningModel: gpt-5 and every later generation (gpt-6*, gpt-10*) are
+// reasoning models (no temperature) unless they are -chat variants.
+func TestIsReasoningModel(t *testing.T) {
+	cases := map[string]bool{
+		"o1": true, "o3-mini": true, "o4-mini": true,
+		"gpt-5": true, "gpt-5-mini": true, "gpt-5.1": true, "gpt-5.2-pro": true,
+		"gpt-6": true, "gpt-6-mini": true, "gpt-7.5": true, "gpt-10": true, "gpt-12-nano": true,
+		"gpt-5-chat-latest": false, "gpt-6-chat": false,
+		"gpt-4.1-mini": false, "gpt-4o": false, "gpt-4": false, "gpt-3.5-turbo": false, "gpt-1": false,
+	}
+	for model, want := range cases {
+		if got := isReasoningModel(model); got != want {
+			t.Errorf("isReasoningModel(%q) = %v, want %v", model, got, want)
+		}
+		if s := shapeFor("openai", model, ""); (s.temperature == nil) != want {
+			t.Errorf("shapeFor(%q).temperature = %v, want temperature only for non-reasoning", model, s.temperature)
+		}
+	}
+}
+
+// TestReasoningEffortFor: auto sends "minimal" only to the original gpt-5
+// family and "low" to every other reasoning model; an explicit effort is sent
+// verbatim.
+func TestReasoningEffortFor(t *testing.T) {
+	cases := []struct{ model, effort, want string }{
+		{"gpt-5", "", "minimal"},
+		{"gpt-5", "auto", "minimal"},
+		{"gpt-5-mini", "auto", "minimal"},
+		{"gpt-5-nano", "auto", "minimal"},
+		{"gpt-5-2025-08-07", "auto", "minimal"},
+		{"gpt-5-mini-2025-08-07", "auto", "minimal"},
+		{"gpt-5.1", "auto", "low"},
+		{"gpt-5.1-mini", "auto", "low"},
+		{"gpt-5-pro", "auto", "low"},
+		{"gpt-5-codex", "auto", "low"},
+		{"gpt-6", "auto", "low"},
+		{"gpt-6-mini", "auto", "low"},
+		{"o3-mini", "auto", "low"},
+		{"o4-mini", "", "low"},
+		{"gpt-5.1", "none", "none"},
+		{"gpt-5", "low", "low"},
+		{"o4-mini", "minimal", "minimal"},
+	}
+	for _, c := range cases {
+		if got := reasoningEffortFor(c.model, c.effort); got != c.want {
+			t.Errorf("reasoningEffortFor(%q, %q) = %q, want %q", c.model, c.effort, got, c.want)
+		}
+	}
+}
+
+// TestDecide_ReasoningEffortFlag: Config.ReasoningEffort (the
+// decision.openai.reasoning_effort flag) is normalized and sent verbatim to a
+// reasoning model, and never to a non-reasoning one.
+func TestDecide_ReasoningEffortFlag(t *testing.T) {
+	cases := []struct {
+		model, effort string
+		want          any // nil = field absent
+	}{
+		{"gpt-5.1", " None ", "none"},
+		{"gpt-6", "auto", "low"},
+		{"gpt-5-mini", "", "minimal"},
+		{"gpt-4.1-mini", "low", nil},
+	}
+	for _, c := range cases {
+		api := newFakeAPI(t, fixed(200, completion("stop", answerJSON, nil)))
+		b := New(Config{APIKey: "sk-test", BaseURL: api.srv.URL + "/v1", Model: c.model, ReasoningEffort: c.effort, HTTPClient: api.srv.Client()})
+		b.provider = "openai"
+		if _, err := b.Decide(context.Background(), testRequest()); err != nil {
+			t.Fatalf("%s: %v", c.model, err)
+		}
+		got, ok := api.body(0)["reasoning_effort"]
+		if c.want == nil {
+			if ok {
+				t.Errorf("%s: non-reasoning model got reasoning_effort %v", c.model, got)
+			}
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s effort %q: reasoning_effort = %v, want %v", c.model, c.effort, got, c.want)
+		}
 	}
 }
 

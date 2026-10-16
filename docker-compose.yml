@@ -737,6 +737,16 @@ services:
       # cold-start, which was being cut off at the old hardcoded 60s. Bump higher
       # (e.g. 180) for a heavier model / slower box.
       - AGENT_INFERENCE_TIMEOUT_SECONDS=${AGENT_INFERENCE_TIMEOUT_SECONDS:-}
+      # ---- Decision backends (#1244, epic #1225) ----
+      # API keys for the remote in-game decision backends selected by the
+      # decision.backend flag (claude / openai / jev; flip with
+      # ./scripts/agent-backend.sh). Keys go straight to the agent, which calls
+      # the vendor directly: there is no gateway. Read once at agent startup;
+      # an empty key makes that backend unavailable and the decision falls
+      # back to rules. Never put keys in a flag file.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - DECISION_OPENAI_API_KEY=${DECISION_OPENAI_API_KEY:-}
+      - JEV_API_KEY=${JEV_API_KEY:-}
       # LIVE per-minute LLM request budget override (#964/#1071). Read in main.go via
       # SetLLMBudgetOverride; empty default = ignored (the flag-derived cap governs),
       # matching the Go "non-positive = ignore" semantics. Declared here so a host
