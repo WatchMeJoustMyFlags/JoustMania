@@ -143,10 +143,7 @@ dry-run:
 .PHONY: lint
 lint:
 	uv run ruff check .
-	./scripts/tests/test-agent-backend.sh >/dev/null
-	./scripts/tests/test-talk-preflight.sh >/dev/null
-	./scripts/tests/test-talk-stage.sh >/dev/null
-	./scripts/tests/test-pattern-replay-check.sh >/dev/null
+	@for t in scripts/tests/test-*.sh; do echo "$$t"; "./$$t" >/dev/null || exit 1; done
 
 .PHONY: format
 format:

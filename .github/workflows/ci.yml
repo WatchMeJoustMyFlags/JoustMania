@@ -118,7 +118,10 @@ jobs:
               - 'scripts/tests/**'
               - 'services/flagd/**'
               - 'services/agent/actions/writer.go'
+              # make lint runs the same scripts locally; keep the two in step
               - 'Makefile'
+              # self-test edits to this job
+              - '.github/workflows/ci.yml'
             proto_pkg:
               - 'proto/**'
               - '**/pyproject.toml'
@@ -465,8 +468,14 @@ jobs:
 
       - name: Run scripts/tests/*.sh
         run: |
+          shopt -s nullglob
+          tests=(scripts/tests/test-*.sh)
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo "::error::no script tests found under scripts/tests/"
+            exit 1
+          fi
           status=0
-          for t in scripts/tests/test-*.sh; do
+          for t in "${tests[@]}"; do
             echo "::group::${t}"
             if "${t}"; then
               echo "::endgroup::"
