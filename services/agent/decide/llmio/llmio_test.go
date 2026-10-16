@@ -185,6 +185,8 @@ func TestParse_Rejects(t *testing.T) {
 		"array":             `[1,2,3]`,
 		"null":              `null`,
 		"trailing data":     validAnswer + `{"answers": []}`,
+		"trailing brace":    validAnswer + `}`,
+		"trailing bracket":  validAnswer + " ]",
 		"no answers":        `{"answers": [], "rationale": "x"}`,
 		"wrong types":       `{"answers": "lots", "rationale": 7}`,
 		"missing question":  strings.Replace(validAnswer, `"id": "ffa.target"`, `"id": "ffa.bogus"`, 1),

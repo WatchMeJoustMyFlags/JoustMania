@@ -31,9 +31,9 @@ type Prompt struct {
 	User   string
 }
 
-// systemPrompt is static so it is identical across requests (stable for prompt
-// caching and cheap to compare in captured spans). Everything that varies per
-// request (state, questions, options) goes into the user message.
+// systemPrompt is static so it is identical across requests (one fingerprint,
+// cheap to compare in captured spans). Everything that varies per request
+// (state, questions, options) goes into the user message.
 const systemPrompt = `You are the in-game decision engine of JoustMania, a motion-controlled party game played with PS Move controllers.
 
 The game mode is FFA (free for all): every player holds a controller and is eliminated when they move it too fast (their motion exceeds the death threshold). The last player standing wins. Each player is identified by the controller serial.

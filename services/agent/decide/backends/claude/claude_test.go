@@ -21,6 +21,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/anthropics/anthropic-sdk-go"
+
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/decide/llmio"
 	"github.com/joustmania/agent/gamecontext"
@@ -106,6 +108,14 @@ func thinkingTokens(blocks []map[string]any) int {
 		}
 	}
 	return 0
+}
+
+func refusalMessage(category string) []byte {
+	var m map[string]any
+	_ = json.Unmarshal(message("refusal", textBlock("")), &m)
+	m["stop_details"] = map[string]any{"type": "refusal", "category": category, "explanation": "declined"}
+	b, _ := json.Marshal(m)
+	return b
 }
 
 func textBlock(s string) map[string]any { return map[string]any{"type": "text", "text": s} }
@@ -255,6 +265,9 @@ func TestDecide_HappyPath(t *testing.T) {
 	if a["server.port"].AsInt64() == 0 {
 		t.Error("server.port missing")
 	}
+	if sha := a["llm.prompt.system_sha256"].AsString(); len(sha) != 16 || sha != systemSHA(llmio.Render(testRequest()).System) {
+		t.Errorf("llm.prompt.system_sha256 = %q", sha)
+	}
 	for _, k := range []string{"gen_ai.input.messages", "gen_ai.output.messages", "gen_ai.system_instructions",
 		"error.type", "gen_ai.usage.reasoning.output_tokens", "gen_ai.request.reasoning.level"} {
 		if _, ok := a[k]; ok {
@@ -344,7 +357,7 @@ func TestDecide_Failures(t *testing.T) {
 		{name: "prose instead of json", status: 200, errType: "invalid_output", isInvalid: true,
 			body: message("end_turn", textBlock("Grant a shield to MOCK0001."))},
 		{name: "refusal", status: 200, errType: "refusal", isInvalid: true,
-			body: message("refusal", textBlock(""))},
+			body: refusalMessage("cyber")},
 		{name: "max tokens", status: 200, errType: "max_tokens", isInvalid: true,
 			body: message("max_tokens", textBlock(answerJSON[:40]))},
 		{name: "rate limited", status: 429, errType: "429",
@@ -384,6 +397,15 @@ func TestDecide_Failures(t *testing.T) {
 			}
 			if s.Status().Code != codes.Error {
 				t.Errorf("span status = %v, want Error", s.Status())
+			}
+			a := attrs(s)
+			if tc.status != 200 || tc.timeout > 0 {
+				if fr := a["gen_ai.response.finish_reasons"].AsStringSlice(); len(fr) != 1 || fr[0] != "error" {
+					t.Errorf("transport failure finish_reasons = %v, want [error]", fr)
+				}
+			}
+			if tc.errType == "refusal" && a["anthropic.refusal.category"].AsString() != "cyber" {
+				t.Errorf("refusal category = %v", a["anthropic.refusal.category"].AsInterface())
 			}
 		})
 	}
@@ -455,8 +477,14 @@ func TestShapeFor(t *testing.T) {
 	if s := shapeFor("claude-opus-5-5"); s.effort != "low" || s.thinking.OfDisabled != nil {
 		t.Errorf("opus 5.5 shape = %+v", s)
 	}
-	if s := shapeFor("some-future-model"); s.effort != "" || s.temperature != nil || s.thinking.OfDisabled != nil {
-		t.Errorf("unknown model shape = %+v", s)
+	for _, m := range []string{"some-future-model", "claude-sonnet-5-6", "claude-opus-5-6", "claude-opus-5-5-fast",
+		"claude-fable-5", "claude-fable-5-1", "claude-haiku-4-5-2025", "claude-sonnet-5-5-x20251001"} {
+		if s := shapeFor(m); s.effort != "" || s.temperature != nil || s.thinking.OfDisabled != nil || s.thinking.OfBetweenTools != nil {
+			t.Errorf("%s: unknown model must get the empty shape, got %+v", m, s)
+		}
+	}
+	if s := shapeFor("claude-sonnet-5-5-20260901"); s.thinking.OfBetweenTools == nil {
+		t.Errorf("dated sonnet 5.5 shape = %+v", s)
 	}
 }
 
@@ -476,5 +504,36 @@ func TestDecide_NoQuestions(t *testing.T) {
 	_, err := api.backend("claude-haiku-4-5", false).Decide(context.Background(), decide.Request{})
 	if !errors.Is(err, decide.ErrInvalid) || api.calls.Load() != 0 {
 		t.Errorf("err = %v, calls = %d", err, api.calls.Load())
+	}
+}
+
+// TestNew_ConfigWinsOverEnvironment checks that ANTHROPIC_* env cannot redirect or
+// re-authenticate the client. (It does not prove WithoutEnvironmentDefaults is set:
+// explicit options already override env values; that option skips the env/profile
+// I/O and the env-only token, federation and header sources.)
+func TestNew_ConfigWinsOverEnvironment(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "env-token")
+	t.Setenv("ANTHROPIC_API_KEY", "env-key")
+	api := newFakeAPI(t, 200, message("end_turn", textBlock(answerJSON)), 0)
+	if _, err := api.backend("claude-haiku-4-5", false).Decide(context.Background(), testRequest()); err != nil {
+		t.Fatalf("Decide: %v (env leaked into the client?)", err)
+	}
+	hdr := api.lastHdr.Load().(http.Header)
+	if hdr.Get("X-Api-Key") != "sk-test" || hdr.Get("Authorization") != "" {
+		t.Errorf("auth headers = x-api-key %q, authorization %q", hdr.Get("X-Api-Key"), hdr.Get("Authorization"))
+	}
+}
+
+func TestFinishReasonMapping(t *testing.T) {
+	cases := map[string]string{
+		"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "length",
+		"model_context_window_exceeded": "length", "refusal": "content_filter",
+		"tool_use": "tool_call", "pause_turn": "error", "something_new": "error",
+	}
+	for in, want := range cases {
+		if got := finishReason(anthropic.StopReason(in)); got != want {
+			t.Errorf("%s -> %s, want %s", in, got, want)
+		}
 	}
 }

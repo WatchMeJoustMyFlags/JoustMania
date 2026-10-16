@@ -46,12 +46,22 @@ type Part struct {
 	Content string `json:"content"`
 }
 
-// Message is a semconv chat message. FinishReason is set on output messages
-// only.
+// Message is a semconv chat message (input messages: role + parts).
 type Message struct {
+	Role  string `json:"role"`
+	Parts []Part `json:"parts"`
+	// FinishReason is used on output messages only. OutputMessagesJSON always
+	// serializes it (required by gen-ai-output-messages.json, defaulting to
+	// "error"); input messages omit it.
+	FinishReason string `json:"finish_reason,omitempty"`
+}
+
+// outputMessage is the wire form of an output message: finish_reason is
+// required by gen-ai-output-messages.json, so it is never omitted.
+type outputMessage struct {
 	Role         string `json:"role"`
 	Parts        []Part `json:"parts"`
-	FinishReason string `json:"finish_reason,omitempty"`
+	FinishReason string `json:"finish_reason"`
 }
 
 // TextPart is a "text" part.
@@ -96,15 +106,19 @@ func InputMessagesJSON(p Prompt) string {
 
 // OutputMessagesJSON is the gen_ai.output.messages value.
 func OutputMessagesJSON(msgs ...Message) string {
-	if msgs == nil {
-		msgs = []Message{}
-	}
-	for i := range msgs {
-		if msgs[i].Parts == nil {
-			msgs[i].Parts = []Part{}
+	out := make([]outputMessage, 0, len(msgs))
+	for _, m := range msgs {
+		parts := m.Parts
+		if parts == nil {
+			parts = []Part{}
 		}
+		fr := m.FinishReason
+		if fr == "" {
+			fr = FinishError
+		}
+		out = append(out, outputMessage{Role: m.Role, Parts: parts, FinishReason: fr})
 	}
-	return marshal(msgs)
+	return marshal(out)
 }
 
 // InputContentAttributes are the opt-in content attributes known before the

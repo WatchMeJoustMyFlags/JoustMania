@@ -23,6 +23,8 @@ package claude
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -85,9 +87,10 @@ type Config struct {
 
 // Backend is the claude decision backend. It implements decide.Backend.
 type Backend struct {
-	cfg  Config
-	host string
-	port int
+	cfg    Config
+	host   string
+	port   int
+	client anthropic.Client
 }
 
 // defaultHTTPClient is shared by every Backend without a Config.HTTPClient so
@@ -110,7 +113,7 @@ func New(cfg Config) *Backend {
 		cfg.HTTPClient = defaultHTTPClient
 	}
 	host, port := serverAddress(cfg.BaseURL)
-	return &Backend{cfg: cfg, host: host, port: port}
+	return &Backend{cfg: cfg, host: host, port: port, client: newClient(cfg)}
 }
 
 // Name implements decide.Backend.
@@ -146,7 +149,7 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	ctx, span := otel.Tracer(instrumentationName).Start(ctx,
 		"chat "+b.cfg.Model,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(b.requestAttributes(shape)...),
+		trace.WithAttributes(b.requestAttributes(shape, prompt.System)...),
 	)
 	defer span.End()
 	if b.cfg.CaptureContent {
@@ -154,8 +157,7 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	}
 
 	start := time.Now()
-	client := b.client()
-	msg, err := client.Messages.New(ctx, params)
+	msg, err := b.client.Messages.New(ctx, params)
 	call := callResult{msg: msg, start: start}
 
 	if err != nil {
@@ -170,7 +172,12 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	switch msg.StopReason {
 	case anthropic.StopReasonEndTurn, anthropic.StopReasonStopSequence:
 	case anthropic.StopReasonRefusal:
+		// Server-side refusal fallbacks are deliberately not requested: a second
+		// model call does not fit the 2.5s budget, and rules is the fallback.
 		call.errType = "refusal"
+		if cat := string(msg.StopDetails.Category); cat != "" {
+			span.SetAttributes(attrRefusalCategory.String(cat))
+		}
 	case anthropic.StopReasonMaxTokens:
 		call.errType = "max_tokens"
 	default:
@@ -191,13 +198,16 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	return resp, nil
 }
 
-// client builds the SDK client. It is cheap (an options slice); the pooled
-// connections live in the http.Client.
-func (b *Backend) client() anthropic.Client {
+// newClient builds the SDK client once per Backend. The pooled connections
+// live in the (shared) http.Client.
+func newClient(cfg Config) anthropic.Client {
 	return anthropic.NewClient(
-		option.WithAPIKey(b.cfg.APIKey),
-		option.WithBaseURL(b.cfg.BaseURL),
-		option.WithHTTPClient(b.cfg.HTTPClient),
+		// Credentials and base URL come from Config only: no ANTHROPIC_* env
+		// variables, profile files, env auth token or federation middleware.
+		option.WithoutEnvironmentDefaults(),
+		option.WithAPIKey(cfg.APIKey),
+		option.WithBaseURL(cfg.BaseURL),
+		option.WithHTTPClient(cfg.HTTPClient),
 		option.WithMaxRetries(0),
 		// The SDK has built-in GenAI instrumentation. It is off here: Decide owns
 		// the single chat span (one GenAI span per call, not two), because the
@@ -222,6 +232,25 @@ func traceContextMiddleware(req *http.Request, next option.MiddlewareNext) (*htt
 // anthropic-sdk-go's own instrumentation records for output_config.effort.
 const attrRequestReasoningLevel = attribute.Key("gen_ai.request.reasoning.level")
 
+// attrRefusalCategory is the stop_details.category of a refusal. Semconv has
+// no name for it; the anthropic.* prefix follows the provider-specific
+// attribute convention.
+const attrRefusalCategory = attribute.Key("anthropic.refusal.category")
+
+// attrSystemSHA256 fingerprints the system prompt on every span (first 16 hex
+// chars of its sha256), mirroring llm.prompt.system_sha256 in
+// decision/prompt_fingerprint.go. The full text (gen_ai.system_instructions)
+// stays behind CaptureContent: stamping multi-KB prompts on every span is what
+// pushed the collector into OOM in #1167.
+const attrSystemSHA256 = attribute.Key("llm.prompt.system_sha256")
+
+const systemSHALen = 16
+
+func systemSHA(system string) string {
+	sum := sha256.Sum256([]byte(system))
+	return hex.EncodeToString(sum[:])[:systemSHALen]
+}
+
 // requestShape is the per-model latency tuning: thinking off where the model
 // allows it, low effort where it does not, temperature 0 where sampling
 // parameters are accepted.
@@ -231,26 +260,31 @@ type requestShape struct {
 	temperature *float64
 }
 
-// shapeFor picks the request shape for model. Order matters ("claude-sonnet-5"
-// is a prefix of "claude-sonnet-5-5"). Unknown models get no extra fields, so a
-// new model never 400s on a parameter it does not take.
+// shapeFor picks the request shape for model by EXACT id (after stripping a
+// dated-snapshot suffix such as "-20251001"). Prefix matching is deliberately
+// avoided: a future id like "claude-sonnet-5-6" must not inherit a shape (e.g.
+// thinking "disabled") that its API might reject with a 400 on every call.
+// Unknown models get no extra fields.
+//
+// Opus 5.5 is listed for completeness; even at low effort it is not expected
+// to fit the ~2.5s in-game budget (Fable is intentionally absent).
 func shapeFor(model string) requestShape {
 	zero := 0.0
-	switch {
-	case strings.HasPrefix(model, "claude-haiku-4-5"):
+	switch stripDateSuffix(model) {
+	case "claude-haiku-4-5":
 		// No thinking unless asked for; sampling parameters accepted; effort is not.
 		return requestShape{temperature: &zero}
-	case strings.HasPrefix(model, "claude-sonnet-5-5"):
+	case "claude-sonnet-5-5":
 		// "disabled" is a 400 here; between_tools turns thinking off for a
 		// tool-less call and is accepted at effort high or below.
 		return requestShape{
 			thinking: anthropic.ThinkingConfigParamUnion{OfBetweenTools: &anthropic.ThinkingConfigBetweenToolsParam{}},
 			effort:   anthropic.OutputConfigEffortLow,
 		}
-	case strings.HasPrefix(model, "claude-opus-5-5"), strings.HasPrefix(model, "claude-fable-5"):
+	case "claude-opus-5-5":
 		// Thinking cannot be disabled; low effort keeps it short.
 		return requestShape{effort: anthropic.OutputConfigEffortLow}
-	case strings.HasPrefix(model, "claude-opus-5"), strings.HasPrefix(model, "claude-sonnet-5"):
+	case "claude-opus-5", "claude-sonnet-5":
 		// Thinking on by default; disabled is accepted at effort high or below.
 		return requestShape{
 			thinking: anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}},
@@ -259,6 +293,20 @@ func shapeFor(model string) requestShape {
 	default:
 		return requestShape{}
 	}
+}
+
+// stripDateSuffix removes a trailing "-YYYYMMDD" snapshot date.
+func stripDateSuffix(model string) string {
+	i := strings.LastIndexByte(model, '-')
+	if i < 0 || len(model)-i-1 != 8 {
+		return model
+	}
+	for _, c := range model[i+1:] {
+		if c < '0' || c > '9' {
+			return model
+		}
+	}
+	return model[:i]
 }
 
 func (b *Backend) params(p llmio.Prompt, shape requestShape) anthropic.MessageNewParams {
@@ -281,7 +329,7 @@ func (b *Backend) params(p llmio.Prompt, shape requestShape) anthropic.MessageNe
 	return params
 }
 
-func (b *Backend) requestAttributes(shape requestShape) []attribute.KeyValue {
+func (b *Backend) requestAttributes(shape requestShape, system string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		semconv.GenAIOperationNameChat,
 		semconv.GenAIProviderNameAnthropic,
@@ -290,6 +338,7 @@ func (b *Backend) requestAttributes(shape requestShape) []attribute.KeyValue {
 		semconv.GenAIOutputTypeJSON,
 		semconv.ServerAddress(b.host),
 		semconv.ServerPort(b.port),
+		attrSystemSHA256.String(systemSHA(system)),
 	}
 	if shape.temperature != nil {
 		attrs = append(attrs, semconv.GenAIRequestTemperature(*shape.temperature))
@@ -341,6 +390,10 @@ func (b *Backend) finish(ctx context.Context, span trace.Span, c callResult, res
 		}
 		recordTokens(ctx, b, responseModel, input, int(m.Usage.OutputTokens))
 	}
+	if c.msg == nil {
+		// Transport failure: no response, so the generation ended in error.
+		span.SetAttributes(semconv.GenAIResponseFinishReasons(llmio.FinishError))
+	}
 	if c.errType != "" {
 		span.SetAttributes(semconv.ErrorTypeKey.String(c.errType))
 		span.SetStatus(codes.Error, c.errType)
@@ -378,7 +431,8 @@ func finishReason(r anthropic.StopReason) string {
 	case anthropic.StopReasonToolUse:
 		return llmio.FinishToolCall
 	default:
-		return string(r)
+		// pause_turn and any future stop reason: not in the semconv enum.
+		return llmio.FinishError
 	}
 }
 

@@ -80,3 +80,13 @@ func TestContentAttributes(t *testing.T) {
 		t.Errorf("output key = %s", k)
 	}
 }
+
+func TestOutputMessages_FinishReasonRequired(t *testing.T) {
+	got := OutputMessagesJSON(Message{Role: RoleAssistant, Parts: []Part{TextPart("x")}})
+	if !strings.Contains(got, `"finish_reason":"error"`) {
+		t.Errorf("missing finish_reason defaults to error: %s", got)
+	}
+	if strings.Contains(InputMessagesJSON(Prompt{User: "u"}), "finish_reason") {
+		t.Error("input message carries finish_reason")
+	}
+}

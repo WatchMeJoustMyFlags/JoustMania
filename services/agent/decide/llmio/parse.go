@@ -86,7 +86,9 @@ func Parse(req decide.Request, raw []byte, backend string) (decide.Response, err
 	if err := dec.Decode(&out); err != nil {
 		return decide.Response{}, fmt.Errorf("%w: %v", ErrMalformed, clipErr(err))
 	}
-	if dec.More() {
+	// Anything but whitespace after the top-level value (including a stray
+	// "}" or "]", which dec.More would not report) is rejected.
+	if len(bytes.TrimSpace(body[dec.InputOffset():])) != 0 {
 		return decide.Response{}, fmt.Errorf("%w: trailing data after the JSON object", ErrMalformed)
 	}
 	if len(out.Answers) == 0 {
