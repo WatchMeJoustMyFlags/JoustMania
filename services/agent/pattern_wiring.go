@@ -29,18 +29,30 @@ const (
 	envShadowSeed      = "SHADOW_GAME_SEED"
 )
 
+// liveStaleness is how fresh a telemetry partition must be to count as a live
+// game (UC-046 BR-008; a partition without updates is a stale leftover, cf. #1020).
+const liveStaleness = 10 * time.Second
+
 // otherGameLive reports whether any game other than gameID is active in the
-// telemetry multiplexer (UC-046 A8).
+// telemetry multiplexer with an update in the last liveStaleness (UC-046 A8).
 func otherGameLive(mux *gamecontext.Multiplexer) func(gameID string) bool {
+	return otherGameLiveAt(mux, time.Now)
+}
+
+func otherGameLiveAt(mux *gamecontext.Multiplexer, now func() time.Time) func(gameID string) bool {
 	return func(gameID string) bool {
 		for _, id := range mux.Partitions() {
 			if id == gameID {
 				continue
 			}
 			snap, ok := mux.Snapshot(id)
-			if ok && snap.Session.GameActive != nil && *snap.Session.GameActive {
-				return true
+			if !ok || snap.Session.GameActive == nil || !*snap.Session.GameActive {
+				continue
 			}
+			if now().Sub(snap.UpdatedAt) > liveStaleness {
+				continue // stale partition: no fresh data
+			}
+			return true
 		}
 		return false
 	}
