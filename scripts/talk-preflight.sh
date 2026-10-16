@@ -11,8 +11,11 @@
 #   2. the flag file the helper scripts edit is the one flagd and the agent mount
 #   3. the stage baseline of the decision.* + safety flags (defaultVariant),
 #      and the interventions.json next to it back at its neutral variants
-#   4. which decision backends have an API key in the agent container
-#      (presence only; values are never printed)
+#   4. the agent container env (presence only; key values are never printed):
+#      JEV_API_KEY (Jev, the main in-game backend) and ANTHROPIC_API_KEY (Claude:
+#      in-game backup + post-game summary) present, AGENT_INFERENCE_BACKEND=claude
+#      (the closing summary beat), and the shared LLM budget >= 30/min (the
+#      AGENT_LLM_MAX_REQUESTS_PER_MINUTE override, else the flag's value)
 #   5. Jaeger reachable and holding agent.decide spans from the last N minutes
 #   6. the dashboard reachable through envoy
 #   7. the clock: local time vs the HTTP Date header of a reachable host
@@ -25,7 +28,8 @@
 #   AGENT_FLAG_FILE      flag file the helpers edit (default services/flagd/ci/agent.json;
 #                        on the Pi hardware stack: services/flagd/agent.json)
 #   TALK_BASE_URL        envoy entry point (default http://localhost)
-#   TALK_EXPECT_BACKEND  expected decision.backend variant (default rules)
+#   TALK_EXPECT_BACKEND  expected decision.backend variant (default rules: the
+#                        session starts on the floor, beat 2 flips to jev)
 #   TALK_CLOCK_URLS      space-separated URLs whose Date header is the time
 #                        reference (default: api.anthropic.com, cloudflare, google)
 #   TALK_MAX_SKEW        allowed clock skew in seconds (default 60)
@@ -155,6 +159,9 @@ BASELINE = {
     "decision.capture_content": "on",
     "decision.min_interval_ms": "default",
     "decision.claude.model": "haiku",
+    # Claude backup: 5000 ms covers Haiku's ~3 s warm latency (patient = 8000).
+    "decision.claude.timeout_ms": "default",
+    "decision.jev.timeout_ms": "default",
     "llm.eligible_game_kinds": "real_only",
 }
 
@@ -175,13 +182,24 @@ for key, want in BASELINE.items():
     else:
         print(f"FAIL  {key} = {shown(flag)}, stage baseline is {want}")
 
-# The second vendor needs a model and a base URL variant the presenter adds.
+jev_model = flags.get("decision.jev.model")
+if jev_model is not None:
+    print(f"INFO  decision.jev.model = {shown(jev_model)} (gate calibrated on jev-1.13.0 = variant pinned)")
+jev_url = flags.get("decision.jev.base_url", {})
+if "blackhole" not in jev_url.get("variants", {}):
+    print("WARN  decision.jev.base_url has no blackhole variant: add it for the degrade beat (option B)")
+elif jev_url.get("defaultVariant") == "blackhole":
+    print("FAIL  decision.jev.base_url = blackhole: every jev call times out (reset: default)")
+else:
+    print(f"PASS  decision.jev.base_url = {shown(jev_url)}; blackhole variant present")
+
+# The optional second vendor (beat 6b) needs a model and a base URL variant the presenter adds.
 model = flags.get("decision.openai.model", {})
 model_value = model.get("variants", {}).get(model.get("defaultVariant"))
 non_empty = [v for v, val in model.get("variants", {}).items() if val]
 if not non_empty:
-    print("WARN  decision.openai.model has no non-empty variant: the openai beat falls back "
-          "to rules (backend_unavailable) until you add the vendor's model + base_url variants")
+    print("INFO  decision.openai.model has no non-empty variant: the optional openai beat (6b) "
+          "falls back to rules (backend_unavailable) until you add the vendor's model + base_url variants")
 elif not model_value:
     print(f"PASS  decision.openai.model variants available: {', '.join(non_empty)} "
           "(select with agent-backend.sh openai <variant>)")
@@ -193,7 +211,7 @@ print(f"INFO  decision.openai.base_url = {shown(base_url)}; variants: {', '.join
 budget = flags.get("llm.max_requests_per_minute")
 if budget is not None:
     print(f"INFO  llm.max_requests_per_minute = {shown(budget)} "
-          "(global remote-call budget; ignored when AGENT_LLM_MAX_REQUESTS_PER_MINUTE is set)")
+          "(global remote-call budget; replaced by AGENT_LLM_MAX_REQUESTS_PER_MINUTE when set)")
 
 # interventions.json (same dir): what the agent applied during a run stays there.
 # Neutral = the shipped default: "none" if the flag has it, else "default", else "off".
@@ -242,17 +260,37 @@ if [[ "${docker_ok}" -eq 1 ]]; then
     fail "joustmania-agent: cannot read its environment"
   else
     key_set() { grep -qE "^$1=[^[:space:]]+" <<<"${agent_env}"; }
-    if key_set ANTHROPIC_API_KEY; then pass "claude: ANTHROPIC_API_KEY present"; else fail "claude: ANTHROPIC_API_KEY missing (put it in .env.local, recreate the agent)"; fi
-    if key_set DECISION_OPENAI_API_KEY; then pass "openai: DECISION_OPENAI_API_KEY present"; else warn "openai: DECISION_OPENAI_API_KEY missing (second-vendor beat falls back to rules)"; fi
-    if key_set JEV_API_KEY; then info "jev: JEV_API_KEY present"; else info "jev: JEV_API_KEY absent (expected while Jev is a stub)"; fi
+    if key_set JEV_API_KEY; then pass "jev: JEV_API_KEY present"; else fail "jev: JEV_API_KEY missing: the main backend falls back to rules (backend_unavailable); put it in .env.local, recreate the agent"; fi
+    if key_set ANTHROPIC_API_KEY; then pass "claude: ANTHROPIC_API_KEY present"; else fail "claude: ANTHROPIC_API_KEY missing: no in-game backup and no post-game summary; put it in .env.local, recreate the agent"; fi
+    if key_set DECISION_OPENAI_API_KEY; then pass "openai: DECISION_OPENAI_API_KEY present"; else info "openai: DECISION_OPENAI_API_KEY absent (only the optional second-vendor beat needs it)"; fi
+    # Not a secret: the post-game text backend, read at agent start.
+    inference_backend="$(grep -E '^AGENT_INFERENCE_BACKEND=' <<<"${agent_env}" | head -1 | cut -d= -f2- | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    if [[ "${inference_backend}" == "claude" ]]; then
+      pass "AGENT_INFERENCE_BACKEND=claude (post-game summary on Claude)"
+    else
+      warn "AGENT_INFERENCE_BACKEND=${inference_backend:-unset} (not claude): the closing summary beat shows a capture-only retro; set it in .env.local, recreate the agent"
+    fi
     # Not a secret: the per-minute budget override, read at agent start.
     budget_override="$(grep -E '^AGENT_LLM_MAX_REQUESTS_PER_MINUTE=' <<<"${agent_env}" | head -1 | cut -d= -f2-)"
     if [[ "${budget_override}" =~ ^[0-9]+$ && "${budget_override}" -ge 30 ]]; then
-      pass "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_override} (one game at a 3 s cadence + retros; the flag is ignored)"
+      pass "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_override} (one remote-decide game + the post-game summary; replaces the flag)"
     elif [[ "${budget_override}" =~ ^[0-9]+$ && "${budget_override}" -gt 0 ]]; then
-      warn "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_override} overrides the flag but is below the recommended 30/min; only decision.min_interval_ms can relieve it live"
+      warn "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_override} replaces the flag but is below the stage 30/min; only decision.min_interval_ms can relieve it live"
     else
-      warn "AGENT_LLM_MAX_REQUESTS_PER_MINUTE unset: the llm.max_requests_per_minute flag governs; below 20/min remote decisions fall back with llm_budget_exhausted"
+      flag_budget="$(python3 -c '
+import json, sys
+try:
+    flag = json.load(open(sys.argv[1]))["flags"]["llm.max_requests_per_minute"]
+    print(flag["defaultVariant"], flag["variants"][flag["defaultVariant"]])
+except (OSError, ValueError, KeyError, TypeError):
+    print("? ?")
+' "${FLAG_FILE}" 2>/dev/null)"
+      read -r budget_variant budget_value <<<"${flag_budget}"
+      if [[ "${budget_value}" =~ ^[0-9]+$ && "${budget_value}" -ge 30 ]]; then
+        pass "LLM budget: llm.max_requests_per_minute = ${budget_variant} (${budget_value}/min; no env override)"
+      else
+        warn "LLM budget: llm.max_requests_per_minute = ${budget_variant:-?} (${budget_value:-?}/min) and no env override: a remote-decide game wants 15-20/min plus the summary; set the flag to stage (30)"
+      fi
     fi
   fi
 fi

@@ -29,7 +29,7 @@ if [[ "$1" == "inspect" ]]; then
   case "${fmt}" in
     *State.Status*) echo "running healthy" ;;
     *Mounts*) echo "${STUB_MOUNT}" ;;
-    *Config.Env*) printf '%s\n' "PATH=/usr/bin" "ANTHROPIC_API_KEY=${STUB_SECRET}" "DECISION_OPENAI_API_KEY=" "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${STUB_BUDGET:-}" ;;
+    *Config.Env*) printf '%s\n' "PATH=/usr/bin" "ANTHROPIC_API_KEY=${STUB_SECRET}" "JEV_API_KEY=${STUB_JEV_KEY-${STUB_SECRET}}" "DECISION_OPENAI_API_KEY=" "AGENT_INFERENCE_BACKEND=${STUB_INFERENCE-claude}" "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${STUB_BUDGET:-}" ;;
   esac
   exit 0
 fi
@@ -96,10 +96,14 @@ flags = {
     "decision.capture_content": f(onoff, "on"),
     "decision.min_interval_ms": f({"default": 3000}, "default"),
     "decision.claude.model": f({"haiku": "h", "sonnet": "s"}, "haiku"),
+    "decision.claude.timeout_ms": f({"fast": 1500, "tight": 2500, "default": 5000, "patient": 8000}, "default"),
+    "decision.jev.timeout_ms": f({"fast": 1500, "default": 2500, "patient": 5000}, "default"),
+    "decision.jev.model": f({"latest": "jev-latest", "pinned": "jev-1.13.0"}, "latest"),
+    "decision.jev.base_url": f({"default": "https://api.typesafe.ai/v1", "blackhole": "http://10.255.255.1/v1"}, "default"),
     "llm.eligible_game_kinds": f({"real_only": "real"}, "real_only"),
     "decision.openai.model": f({"unset": "", "vendor": "m"}, "unset"),
     "decision.openai.base_url": f({"default": "https://api.openai.com/v1"}, "default"),
-    "llm.max_requests_per_minute": f({"default": 6}, "default"),
+    "llm.max_requests_per_minute": f({"default": 6, "stage": 30}, "stage"),
 }
 for key, variant in overrides.items():
     flags[key]["defaultVariant"] = variant
@@ -125,9 +129,15 @@ fixture
 STUB_BUDGET=30 run_preflight
 if [[ "${RC}" -eq 0 ]]; then ok "baseline stack exits 0"; else not_ok "baseline stack exits 0 (rc=${RC}): ${OUT}"; fi
 check "flagd mount matches" "PASS  joustmania-flagd: mounts ${WORK}/flags"
+check "jev key present" "PASS  jev: JEV_API_KEY present"
 check "claude key present" "PASS  claude: ANTHROPIC_API_KEY present"
-check "empty openai key is missing" "WARN  openai: DECISION_OPENAI_API_KEY missing"
+check "empty openai key is only info" "INFO  openai: DECISION_OPENAI_API_KEY absent"
+check "inference backend claude passes" "PASS  AGENT_INFERENCE_BACKEND=claude"
 check "budget override passes" "PASS  AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30"
+check "claude timeout baseline" "PASS  decision.claude.timeout_ms = default (5000)"
+check "jev threshold baseline" "PASS  decision.jev.act_confidence_threshold = gate (0.6)"
+check "jev blackhole variant present" "PASS  decision.jev.base_url = default"
+if has "stub"; then not_ok "no stub wording"; else ok "no stub wording"; fi
 check "interventions neutral" "PASS  interventions.json at neutral variants"
 check "jaeger newest span summarised" "newest: backend=claude outcome=held"
 check "vendor variant listed" "decision.openai.model variants available: vendor"
@@ -142,8 +152,20 @@ if [[ "${RC}" -eq 1 ]]; then ok "drift exits 1"; else not_ok "drift exits 1 (rc=
 check "kill switch off fails" "FAIL  enabled = off (false), stage baseline is on"
 check "strict threshold fails" "FAIL  decision.act_confidence_threshold = strict (0.95), stage baseline is default"
 check "jev threshold inherit fails" "FAIL  decision.jev.act_confidence_threshold = inherit (-1.0), stage baseline is gate"
-check "unset budget warns" "WARN  AGENT_LLM_MAX_REQUESTS_PER_MINUTE unset"
+check "unset env falls back to the stage flag" "PASS  LLM budget: llm.max_requests_per_minute = stage (30/min"
 if [[ "$(cat "${AGENT_FLAG_FILE}")" == "${before}" ]]; then ok "flag file untouched"; else not_ok "flag file untouched"; fi
+
+# --- budget, timeout, keys and summary backend ----------------------------
+fixture llm.max_requests_per_minute=default decision.claude.timeout_ms=patient decision.jev.base_url=blackhole
+STUB_JEV_KEY="" STUB_INFERENCE=stub run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "drift + missing jev key exits 1"; else not_ok "drift + missing jev key exits 1 (rc=${RC})"; fi
+check "default flag budget warns" "WARN  LLM budget: llm.max_requests_per_minute = default (6/min)"
+check "claude timeout drift fails" "FAIL  decision.claude.timeout_ms = patient (8000), stage baseline is default"
+check "jev blackhole left on fails" "FAIL  decision.jev.base_url = blackhole"
+check "missing jev key fails" "FAIL  jev: JEV_API_KEY missing"
+check "stub summary backend warns" "WARN  AGENT_INFERENCE_BACKEND=stub (not claude)"
+STUB_BUDGET=10 run_preflight
+check "low env budget warns" "WARN  AGENT_LLM_MAX_REQUESTS_PER_MINUTE=10 replaces the flag"
 
 # --- expected backend override ---------------------------------------------
 fixture decision.backend=claude
