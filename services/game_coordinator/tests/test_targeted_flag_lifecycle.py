@@ -290,3 +290,78 @@ async def test_two_grants_within_one_poll_apply_the_later_once():
     await h.flag_change()
     await h.flag_change()
     assert game.shields == [("p1", 3.0)]
+
+
+# --------------------------------------------------------------------------- #
+# BR-017: the level baseline fails closed on flagd errors
+# --------------------------------------------------------------------------- #
+@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
+@pytest.mark.asyncio
+async def test_level_read_error_at_game_start_never_applies_the_leftover(flag_key):
+    """flagd errors while the game is primed: the getter would return the
+    neutral default and make p1's leftover level look new on recovery. The
+    error is recorded as unknown, so the leftover is adopted, not applied."""
+    h = LevelHarness()
+    h.set_level(flag_key, "p1", 1.5)  # left over from an earlier game
+    h.flags.failing = {flag_key}
+    game = h.start_game(REAL, real=True)
+    await h.flag_change()
+
+    h.flags.failing = set()
+    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
+    await h.flag_change()
+    assert factors(game, flag_key) == {"p1": 1.0, "p2": 1.0}
+
+    h.set_level(flag_key, "p1", 0.75)  # a decision in this game applies
+    await h.flag_change()
+    assert factors(game, flag_key)["p1"] == 0.75
+
+
+@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.asyncio
+async def test_level_read_error_mid_game_keeps_the_baseline():
+    """An error read mid-game neither resets nor moves the baseline."""
+    h = LevelHarness()
+    game = h.start_game(REAL, real=True)
+    h.set_level("player_sensitivity_factor", "p1", 1.5)
+    await h.flag_change()
+
+    h.flags.failing = {"player_sensitivity_factor"}
+    await h.flag_change()
+    assert game.players["p1"].sensitivity_factor == 1.5
+    h.flags.failing = set()
+    await h.flag_change()
+    assert game.players["p1"].sensitivity_factor == 1.5
+    assert len(h.recorded(REAL, "adjust_player_sensitivity")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# A22: a move to neutral is a revert, never blocked by the chain
+# --------------------------------------------------------------------------- #
+@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.parametrize("blocker", ["kill_switch", "budget_exhausted"])
+@pytest.mark.asyncio
+async def test_partial_revert_to_neutral_bypasses_a_blocked_chain(blocker):
+    """p1 reverts while p2 keeps its level and the chain blocks everything:
+    p1 is still reset (the baseline moved, so a blocked dispatch would leave
+    p1's factor stuck for the rest of the game)."""
+    h = LevelHarness()
+    game = h.start_game(REAL, real=True)
+    h.set_level("player_sensitivity_factor", "p1", 1.5)
+    h.set_level("player_sensitivity_factor", "p2", 0.7)
+    await h.flag_change()
+
+    agent = h.mgr._agent_client
+    if blocker == "kill_switch":
+        agent.get_string_value = lambda _key, _default, _ctx=None: "none"
+    else:
+        original = agent.get_integer_value
+        agent.get_integer_value = lambda key, default, _ctx=None: (
+            0 if key == "policy.coordinator_backstop_per_minute" else original(key, default, _ctx)
+        )
+    h.prune("p1")
+    await h.flag_change()
+
+    assert factors(game, "player_sensitivity_factor") == {"p1": 1.0, "p2": 0.7}
+    assert h.recorded(REAL, "adjust_player_sensitivity", blocked="true") == []

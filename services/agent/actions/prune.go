@@ -53,6 +53,14 @@ func validateGameID(gameID string) error {
 // recordOwner remembers the game a per-player write was for. Called with w.mu
 // held (inside edit). An unaddressed write forgets the owner, so the serial is
 // pruned by liveness only.
+//
+// The owner is the deciding loop's GameContext.SessionID. Until the partition
+// adopts the coordinator's game_id label that is the synthetic "session-<n>", so
+// a write made in that window is owned by "session-<n>". PruneGame for the
+// game_ id neither matches it by owner nor treats it as unowned, so the game-end
+// prune leaves it; the liveness prune (PruneExcept on partition retirement)
+// removes it once its player is in no partition and "session-<n>" is no longer
+// a live partition's SessionID.
 func (w *Writer) recordOwner(serial, gameID string) {
 	if w.owners == nil {
 		w.owners = map[string]string{}
