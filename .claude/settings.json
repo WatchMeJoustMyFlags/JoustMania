@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "aiup-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "martinellich/aiup-marketplace"
+      },
+      "autoUpdate": false
+    }
+  },
+  "enabledPlugins": {
+    "aiup-core@aiup-marketplace": true
+  }
+}
