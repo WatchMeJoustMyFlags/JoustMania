@@ -479,6 +479,15 @@ export interface LinkedDecision {
   action: string;
   blocked: boolean;
   reason: string;
+  /** player.serial of a player-targeted decision ("" when session-scoped), #1295. */
+  targetSerial: string;
+  /** player.name of the targeted player ("" when the agent knew no name), #1295. */
+  targetName: string;
+}
+
+/** The targeted player as shown in the Decisions row: name, else serial, else "". */
+export function decisionTargetLabel(d: Pick<LinkedDecision, "targetSerial" | "targetName">): string {
+  return d.targetName || d.targetSerial;
 }
 
 /** One agent.decide span, folded for the feed. */
@@ -701,6 +710,8 @@ function decideRowFrom(
           action: tagString(dt, "decision.action"),
           blocked: tagBool(dt, "decision.blocked"),
           reason: tagString(dt, "decision.reason"),
+          targetSerial: tagString(dt, "player.serial"),
+          targetName: tagString(dt, "player.name"),
         };
       }),
   };

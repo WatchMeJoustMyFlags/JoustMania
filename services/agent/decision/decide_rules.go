@@ -290,6 +290,47 @@ func optionSet(q decide.Question) map[string]bool {
 	return out
 }
 
+// emissionRequest widens req's ffa.intervention and ffa.target options with every
+// intervention and target in ranked (#1295), so answerFromRanked answers with the
+// engine's top candidate, i.e. the decision Evaluate emits, even when the
+// allow-list (which shaped req) or the alive-player list would have excluded it.
+// The permission chain applies the allow-list afterwards and its verdict rides
+// agent.decide as decide.blocked. Only the in-loop rules path uses it; a remote
+// backend and RulesBackend.Decide keep the caller's options. The question slices
+// are copied, never mutated in place.
+func emissionRequest(req decide.Request, ranked []scoredCandidate) decide.Request {
+	if len(ranked) == 0 {
+		return req
+	}
+	qs := make([]decide.Question, len(req.Questions))
+	copy(qs, req.Questions)
+	for i, q := range qs {
+		if q.Kind != decide.KindChoice {
+			continue
+		}
+		var option func(scoredCandidate) string
+		switch q.ID {
+		case decide.QuestionFFAIntervention:
+			option = func(sc scoredCandidate) string { return sc.decision.Intervention }
+		case decide.QuestionFFATarget:
+			option = func(sc scoredCandidate) string { return targetOption(sc.decision.TargetSerial) }
+		default:
+			continue
+		}
+		have := optionSet(q)
+		opts := append([]string(nil), q.Options...)
+		for _, sc := range ranked {
+			if o := option(sc); !have[o] {
+				have[o] = true
+				opts = append(opts, o)
+			}
+		}
+		qs[i].Options = opts
+	}
+	req.Questions = qs
+	return req
+}
+
 func targetOption(serial string) string {
 	if serial == "" {
 		return decide.TargetNone

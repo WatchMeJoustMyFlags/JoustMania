@@ -40,6 +40,13 @@ type Multiplexer struct {
 	// AND used by the Multiplexer's own per-resource self-skip so an own-resource
 	// batch is never routed to any partition. Set once before serving.
 	ownService string
+
+	// names is the serial -> display-name view from controller_info{serial,name}
+	// (#1295). controller-manager metrics carry no game_id, so the view is
+	// process-wide rather than per partition; it is bounded by the number of
+	// controllers ever seen and guarded by its own lock.
+	namesMu sync.RWMutex
+	names   map[string]string
 }
 
 // NewMultiplexer builds a Multiplexer over the given partition factory. The
@@ -49,6 +56,7 @@ func NewMultiplexer(newStore func(gameID string) *Store) *Multiplexer {
 	return &Multiplexer{
 		stores:   make(map[string]*Store),
 		newStore: newStore,
+		names:    make(map[string]string),
 	}
 }
 
@@ -112,6 +120,11 @@ func (m *Multiplexer) ApplyMetrics(md pmetric.Metrics) []string {
 func (m *Multiplexer) applyMetric(metric pmetric.Metric, touched *touchedSet) {
 	name := metric.Name()
 	dps := dataPoints(metric)
+	if name == metricControllerInfo {
+		// Identity only (#1295): never routed to a partition, never a trigger.
+		m.recordPlayerNames(dps)
+		return
+	}
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
 		gameID := gameIDOf(dp.Attributes())
@@ -120,6 +133,31 @@ func (m *Multiplexer) applyMetric(metric pmetric.Metric, touched *touchedSet) {
 			touched.add(gameID)
 		}
 	}
+}
+
+// recordPlayerNames stores the name label of each controller_info datapoint
+// under its serial label. Datapoints without both labels are ignored.
+func (m *Multiplexer) recordPlayerNames(dps pmetric.NumberDataPointSlice) {
+	for i := 0; i < dps.Len(); i++ {
+		attrs := dps.At(i).Attributes()
+		serial, okSerial := attrs.Get(attrSerial)
+		name, okName := attrs.Get(attrName)
+		if !okSerial || !okName || serial.AsString() == "" || name.AsString() == "" {
+			continue
+		}
+		m.namesMu.Lock()
+		m.names[serial.AsString()] = name.AsString()
+		m.namesMu.Unlock()
+	}
+}
+
+// PlayerName returns the display name the controller manager reported for
+// serial on controller_info (#1295), or "" when none was seen. Safe for
+// concurrent use; the decision loops use it for the player.name span attribute.
+func (m *Multiplexer) PlayerName(serial string) string {
+	m.namesMu.RLock()
+	defer m.namesMu.RUnlock()
+	return m.names[serial]
 }
 
 // ApplySpans walks the trace batch, routing each span to its game_id partition

@@ -275,7 +275,8 @@ Order on landing (`decision/decide_hook.go:Loop.runDecideRemote`, `decideRemoteA
 3. weighted per-game rate limit `policy.max_interventions_per_minute` → `rate_limit` (budget charged only on admit)
 
 Blocked decisions are recorded on the `agent.decision` span
-(`decision.blocked=true`, `decision.block_reason`) and never applied.
+(`decision.blocked=true`, `decision.block_reason`) and never applied. The `agent.decide` span of the same
+decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #1295).
 
 ## 5. Confidence and routing
 
@@ -285,6 +286,17 @@ Blocked decisions are recorded on the `agent.decision` span
   `minScore` 0.10, temperature = `minScore`; `ffa.intervention` confidence is
   1 − p(noop) when an intervention is chosen, p(noop) when `noop` is chosen
   (`decision/decide_rules.go:21-42,147-229`).
+- **Rules path answers = the emitted decision (#1295).** In the decision loop the rules answers describe
+  the decision the engine actually emitted this cycle (its first decision: intervention and target), from
+  the same ranking. The `ffa.intervention` / `ffa.target` options of the rules-path request are the
+  allow-listed interventions and alive players **plus** every intervention and target the engine ranked
+  (`decision/decide_rules.go:emissionRequest`), so `decide.questions` on a rules span can list an intervention
+  the allow-list does not hold; the permission chain (§4.5) applies the allow-list afterwards and its verdict
+  is `decide.blocked`. A remote backend's request, and `RulesBackend.Decide`, keep the allow-listed options.
+  Only telemetry changed: the emitted decisions and their outcomes are pinned by
+  `decision/testdata/rules_path_golden.json`. Because the softmax runs over the widened options, the rules-path
+  `decide.confidence` (1 − p(noop) for the chosen intervention) is computed over the engine's own ranked
+  interventions, not only the allow-listed ones.
 - **Remote:** the model reports `confidence` per answer.
 - **Routing (remote path only)** uses the `ffa.intervention` confidence against the
   **effective threshold** for the backend that answered (`flags.DecisionBackend.ActThreshold`,
@@ -308,12 +320,19 @@ Blocked decisions are recorded on the `agent.decision` span
 
 | Outcome | Meaning |
 |---|---|
-| `act` | Routed to the permission chain (which may still block; see the child `agent.decision`). Also the rules-path default. |
+| `act` | Routed to the permission chain (which may still block: `decide.blocked`, and the `agent.decision` span). Also the rules-path outcome when the rules emitted a decision. |
 | `held` | Valid intervention answer below the threshold. No action. |
-| `noop` | Backend chose `noop`. No action. |
+| `noop` | Backend chose `noop`. No action. Not seen on the rules path: a rules cycle whose ranking emitted no decision records no `agent.decide` span at all (`OnEvaluate` returns before any span); the rules record still sets `noop` for that case defensively, so a `noop` choice never reads `act` (#1295). |
 | `invalid` | Cross-question inconsistency (4.3). No action, no fallback. |
 | `fallback` | The requested backend could not decide; rules did. |
 | `discarded` | A valid answer was dropped when it landed; see `decide.discarded_reason`. |
+
+`decide.outcome` is the **routing** outcome. What the permission chain then did with the decision the
+answers describe (the first decision of the cycle) is on `decide.blocked` (bool) and, when blocked,
+`decide.block_reason` (`not_allowed`, `battery_threshold`, `rate_limit`), present exactly when that decision
+reached the permission chain: outcome `act`, or `fallback` when the rules fallback emitted a decision (#1295).
+So a rules decision blocked by the allow-list reads `outcome=act`, `decide.blocked=true`,
+`decide.block_reason=not_allowed`, with answers naming the blocked intervention and target.
 
 `decide.discarded_reason`: `stale_context`, `game_ended`, `target_gone`,
 `kill_switch`, `backend_changed`, `shutdown` (`decision/telemetry.go:57-65`;
@@ -395,7 +414,7 @@ No p50 / p95 from production `agent.decide` spans has been published yet (#1231)
 | `enabled` → off | HTTP call is **not** cancelled; on landing the live flags are re-read and the answer is `discarded/kill_switch`; the rules fallback is suppressed too | `decide_hook.go:339-360,439-445`; `TestRemote_KillSwitchAtLanding`, `TestRemote_KillSwitchSuppressesTimeoutFallback`; e2e `tests/integration/test_decide_backend_e2e.py::test_kill_switch_discards_inflight_answer` |
 | `decision.backend` changed | `discarded/backend_changed` | `decide_hook.go:446-449`; `TestRemote_BackendChangedMidFlight` |
 | `decision.act_confidence_threshold` / `decision.jev.act_confidence_threshold` changed | the effective threshold for the answering backend is re-read at landing (§5); the answer is `act` or `held` against the new value | `decide_hook.go:453`; `TestRemote_ThresholdRaisedMidFlight`, `TestThreshold_JevRaisedMidFlightAppliesAtLanding`, `TestThreshold_JevInheritFlippedMidFlightAppliesAtLanding` |
-| `interventions_allowed` narrowed | outcome stays `act`; the permission chain blocks `not_allowed` | `TestRemote_AllowListAtLanding` |
+| `interventions_allowed` narrowed | outcome stays `act`; the permission chain blocks `not_allowed` (`decide.blocked=true`, `decide.block_reason=not_allowed`) | `TestRemote_AllowListAtLanding`, `TestRemote_BlockedDecisionNamesTargetAndDecideBlocked` |
 | `interventions_enabled` → off | not checked by the decide hook; the gated sink writes nothing | `actions/gated.go:31-67` |
 | agent shutdown | `discarded/shutdown` | `decide_hook.go:397-402` |
 
@@ -454,14 +473,17 @@ The coordinator re-checks independently before any handler runs
 (`interventions.py:355-383`) → battery guard → global backstop. Its block reasons are
 `not_allowed`, `rate_limited`, `low_battery`, `mode_unsupported`, `no_game`, plus
 `handler_error`. Every outcome emits `game_interventions_total{type,objective,blocked,block_reason}`
-and an `agent_intervention` game event.
+and an `agent_intervention` game event. An applied player-targeted intervention is also recorded as an event on
+that player's `player_lifecycle` span naming the player (`player.serial`, `player.name`; event names in
+[telemetry.md §3.2](telemetry.md#32-game-coordinator), #1295).
 
 ## 12. Telemetry
 
 Full names in [telemetry.md](telemetry.md#4-agent). Summary:
 
 - `agent.decide` (INTERNAL). Rules path: sibling of `agent.decision` under
-  `agent.signal_received`, only when the cycle produced decisions. Remote path: async
+  `agent.signal_received`, only when the cycle produced decisions; ended after the cycle's decisions ran
+  (backdated to the ranking) so it can carry their permission verdict. Remote path: async
   root parented on the game's `gameplay_phase` span, linked to the fire-cycle
   `agent.signal_received` (`link.kind=fire_cycle`); parent of the backend's
   `chat {model}` CLIENT span and of the resulting `agent.decision`.
@@ -472,7 +494,8 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   threshold, §5) and `decide.act_confidence_threshold.source` (`jev` = `decision.jev.act_confidence_threshold`,
   `global` = `decision.act_confidence_threshold`; #1287), both only when routed,
   `gen_ai.request.model`, `decide.answers`, `decide.confidence`, `decide.confidence.min`,
-  `decide.rationale`, `decide.invalid_reason`, `decide.discarded_reason`, `error.type`.
+  `decide.rationale`, `decide.invalid_reason`, `decide.discarded_reason`, `error.type`, `decide.blocked` and
+  `decide.block_reason` (§6; #1295).
   Event `gen_ai.evaluation.result` (`gen_ai.evaluation.name=act_confidence_threshold`,
   score value, label `pass`/`fail`, explanation `confidence 0.720 >= threshold 0.600
   (decision.jev.act_confidence_threshold)` naming the flag the threshold came from) when routed
@@ -481,7 +504,8 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   truncation marker), one object per question:
   `{"question_id": "ffa.intervention", "choice": "grant_shield", "probabilities": {"noop": 0.3, "grant_shield": 0.7}, "score": 0, "confidence": 0.7}`,
   `{"question_id": "ffa.target", "choice": "MOCK0003", ...}`, `{"question_id": "ffa.magnitude", "score": 0.25, "confidence": 0.4}`;
-  `choice`, `probabilities` and `noul` are omitted when empty. Consumers: the dashboard Agent tab reads
+  `choice`, `probabilities` and `noul` are omitted when empty. On the rules path the `ffa.intervention` /
+  `ffa.target` choices are the emitted decision's (§5), also when the permission chain blocks it. Consumers: the dashboard Agent tab reads
   `question_id` / `choice` for `ffa.intervention` and `ffa.target` (`services/dashboard/src/agent.ts`), and the
   decide e2e test matches the scripted intervention in it (`tests/integration/test_decide_backend_e2e.py`).
   Changing this shape breaks both.
@@ -489,6 +513,8 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   (`gen_ai.operation.name=chat`, `gen_ai.provider.name`, request / response model,
   token usage, finish reasons, `error.type`; jev adds `jev.native_confidence` and `jev.stage`, one span per stage, and on a gated stage 1 `jev.gate.p_yes`, `jev.stage1.choice`, `jev.stage1.distribution`). Prompt and completion content only when
   `decision.capture_content` is on (`decide/llmio/genai.go`).
+- `agent.decision` / `agent.action` of a player-targeted decision carry `player.serial` (and `player.name`
+  when known), [telemetry.md §4.3](telemetry.md#43-decision-attributes) (#1295).
 - Metrics: `gen_ai.client.operation.duration`, `gen_ai.client.token.usage`,
   `agent_llm_gated_total{reason}`, `agent_decisions_total`, `agent_interventions_applied_total`.
 

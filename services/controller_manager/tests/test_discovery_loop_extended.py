@@ -556,6 +556,36 @@ class TestCheckForNewControllersAsync:
         assert button_det.connection_events[0]["serial"] == "serial_A"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A1")
+    async def test_disconnect_removes_controller_info_series(self):
+        """UC-002 A1: an untracked controller stops exporting controller_info{serial,name} (#1295)."""
+        from unittest.mock import create_autospec
+
+        from lib.otel_metrics import Gauge
+
+        backend = MockBackend()
+        backend.connected_controllers = []
+        tracked = {"serial_A": {"battery": 80, "name": "Player1"}, "serial_B": {"battery": 80, "name": ""}}
+        loop = self._create_discovery_loop(
+            backend=backend,
+            tracked_controllers=tracked,
+            controller_states={},
+            button_detector=MockButtonDetector(),
+            state_cache=MockStateCache(),
+        )
+        loop.backend_initialized = True
+        info = create_autospec(Gauge, instance=True)
+        with patch("services.controller_manager.metrics.controller_info", info):
+            await loop._check_for_new_controllers()
+
+        # The label set removed is the one published on connect: the stored name,
+        # else the "PS Move <last 4>" fallback.
+        assert sorted(c.args for c in info.remove.call_args_list) == [
+            ("serial_A", "Player1"),
+            ("serial_B", "PS Move al_B"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_skipped_when_backend_not_initialized(self):
         """_check_for_new_controllers should do nothing when backend not initialized."""
         backend = MockBackend()

@@ -49,11 +49,18 @@ const (
 	// balanced-fitness spike-survival sub-check is meaningful post-game (vs. the
 	// frozen-last-sample game_player_movement_variance).
 	metricMovementVarianceAggregate = "game_player_movement_variance_aggregate" // live
+
+	// Controller identity (#1295): controller-manager's info gauge (always 1,
+	// labels serial + name). The Multiplexer keeps a serial -> display-name view
+	// from it for the player.name attribute on targeted decisions; it is not a
+	// game signal and is never routed to a partition.
+	metricControllerInfo = "controller_info" // live
 )
 
 // Attribute keys.
 const (
 	attrSerial   = "serial"
+	attrName     = "name" // controller_info only (#1295)
 	attrMode     = "mode"
 	attrGameID   = "game_id"
 	attrGameKind = "game_kind"

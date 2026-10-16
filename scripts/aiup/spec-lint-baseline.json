@@ -436,13 +436,6 @@
       "message": "trigger of 'A3: Telemetry backend down' does not reference a main-scenario step as '(step N)'"
     },
     {
-      "fingerprint": "b308d0de4e96dd22c174f7b82782fb3afed593b0",
-      "code": "FLOW_TERMINATION",
-      "path": "use_cases/UC-040.md",
-      "element": "UC-040",
-      "message": "'A10: Blocked' does not end with 'Use case continues at step N.' or 'Use case ends.'"
-    },
-    {
       "fingerprint": "68947afb96110bb5c34f0988fc7c14b28add9915",
       "code": "FLOW_TERMINATION",
       "path": "use_cases/UC-040.md",

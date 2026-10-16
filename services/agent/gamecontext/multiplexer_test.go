@@ -472,3 +472,48 @@ func TestMux_TimelineIsolation(t *testing.T) {
 		t.Errorf("game-B timeline disturbed by game-A eviction: ok=%v timeline=%v", okB, b2.Timeline)
 	}
 }
+
+// UC: UC-041 main
+// UC: UC-040 main
+func TestMux_PlayerNameFromControllerInfo(t *testing.T) {
+	t.Run("UC-041/main controller_info maps serial to display name", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(2000, 0)}
+		mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
+		md := pmetric.NewMetrics()
+		addGauge(md, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0004", attrName: "Calm Lion"})
+		addGauge(md, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0005"}) // no name: ignored
+		if touched := mux.ApplyMetrics(md); len(touched) != 0 {
+			t.Fatalf("controller_info touched partitions %v; it is identity only, never a trigger", touched)
+		}
+		if got := mux.PlayerName("MOCK0004"); got != "Calm Lion" {
+			t.Fatalf("PlayerName(MOCK0004) = %q, want Calm Lion", got)
+		}
+		if got := mux.PlayerName("MOCK0005"); got != "" {
+			t.Fatalf("PlayerName(MOCK0005) = %q, want empty (no name label)", got)
+		}
+		if got := mux.Partitions(); len(got) != 0 {
+			t.Fatalf("controller_info created partitions %v", got)
+		}
+	})
+	t.Run("UC-040/main after a rename the export carries only the new label set", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(2000, 0)}
+		mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
+		// Export before the rename: one series per tracked controller.
+		before := pmetric.NewMetrics()
+		addGauge(before, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0004", attrName: "Calm Lion"})
+		addGauge(before, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0005", attrName: "Swift Fox"})
+		mux.ApplyMetrics(before)
+		// The controller manager replaces the series on RenameController (#1295), so
+		// the next export holds the new {serial,name} set and NOT the old one.
+		after := pmetric.NewMetrics()
+		addGauge(after, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0004", attrName: "Kim"})
+		addGauge(after, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0005", attrName: "Swift Fox"})
+		mux.ApplyMetrics(after)
+		if got := mux.PlayerName("MOCK0004"); got != "Kim" {
+			t.Fatalf("PlayerName(MOCK0004) = %q, want the renamed Kim", got)
+		}
+		if got := mux.PlayerName("MOCK0005"); got != "Swift Fox" {
+			t.Fatalf("PlayerName(MOCK0005) = %q, want Swift Fox (untouched)", got)
+		}
+	})
+}

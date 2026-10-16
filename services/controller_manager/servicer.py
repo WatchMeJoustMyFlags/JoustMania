@@ -560,7 +560,12 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             # Update tracked_controllers if the controller is currently connected
             if serial in self.tracked_controllers:
+                old_name = self.tracked_controllers[serial].get(ControllerInfoKey.NAME, "")
                 self.tracked_controllers[serial][ControllerInfoKey.NAME] = request.name
+                # #1295: swap the controller_info series so only the current
+                # {serial,name} label set is exported (the agent reads it for player.name).
+                metrics.remove_controller_info(serial, old_name)
+                metrics.set_controller_info(serial, request.name)
 
             logger.info(f"Renamed controller {serial} to '{request.name}'")
             return controller_manager_pb2.RenameControllerResponse(success=True, error="")

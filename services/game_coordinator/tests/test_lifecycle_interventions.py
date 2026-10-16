@@ -599,3 +599,113 @@ class TestRegistration:
         ):
             handler = mgr._handlers[flag]
             assert handler is not mgr._noop_handler
+
+
+# --------------------------------------------------------------------------- #
+# #1295: the span event recording an applied targeted intervention names the player
+# --------------------------------------------------------------------------- #
+def _named_game_with_spans(num_players=2):
+    """FFA game whose players carry display names and autospec'd lifecycle spans.
+
+    Telemetry is disabled in tests (the SDK hands out non-recording spans), so the
+    span is an autospec of ``trace.Span`` with an invalid span context (what the
+    trace-context injection reads) and its ``add_event`` calls are asserted.
+    """
+    from unittest.mock import create_autospec
+
+    from opentelemetry import trace
+
+    game = make_ffa_game(num_players=num_players)
+    names = ["Calm Lion", "Swift Fox", "Bold Bear"]
+    for i, player in enumerate(game.players.values()):
+        player.name = names[i]
+        span = create_autospec(trace.Span, instance=True)
+        span.get_span_context.return_value = trace.INVALID_SPAN_CONTEXT
+        player.span = span
+    return game
+
+
+def _span_event_attrs(span, event_name):
+    """Attributes of the single ``add_event(event_name, ...)`` call on ``span``."""
+    calls = [c for c in span.add_event.call_args_list if c.args and c.args[0] == event_name]
+    assert len(calls) == 1, f"{event_name}: {span.add_event.call_args_list}"
+    return calls[0].kwargs["attributes"]
+
+
+def _event_attrs(player, event_name):
+    return _span_event_attrs(player.span, event_name)
+
+
+class TestAppliedInterventionEventsNamePlayer:
+    """UC-040 step 13: the coordinator's record of an applied intervention names the player."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="main", steps=[13])
+    async def test_shield_granted_carries_serial_and_name(self):
+        """UC-040 main: shield_granted carries player.serial and player.name."""
+        game = _named_game_with_spans()
+        assert await game.grant_shield("p1", 5.0) is True
+        attrs = _event_attrs(game.players["p1"], "shield_granted")
+        assert attrs["player.serial"] == "p1"
+        assert attrs["player.name"] == "Calm Lion"
+        assert attrs["shield_seconds"] == 5.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="main", steps=[13])
+    async def test_partial_shield_and_soft_penalty_carry_identity(self):
+        """UC-040 main: partial_shield_armed / soft_penalty_tighten name the player."""
+        game = _named_game_with_spans()
+        assert await game.grant_partial_shield("p1", 5.0, 1.5) is True
+        assert await game.apply_soft_penalty("p2", 5.0, 0.6) is True
+        shield = _event_attrs(game.players["p1"], "partial_shield_armed")
+        penalty = _event_attrs(game.players["p2"], "soft_penalty_tighten")
+        assert (shield["player.serial"], shield["player.name"]) == ("p1", "Calm Lion")
+        assert (penalty["player.serial"], penalty["player.name"]) == ("p2", "Swift Fox")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="main", steps=[13])
+    async def test_revive_and_eliminate_carry_identity(self):
+        """UC-040 main: player_revived and the agent-forced player_death name the player."""
+        game = _named_game_with_spans()
+        game.players["p1"].alive = False
+        assert await game.revive_player("p1") is True
+        revived = _event_attrs(game.players["p1"], "player_revived")
+        assert (revived["player.serial"], revived["player.name"]) == ("p1", "Calm Lion")
+
+        p2 = game.players["p2"]
+        span = p2.span  # _kill_player may close and clear the span
+        await handle_eliminate_player(make_ctx("eliminate_player", "n1:p2", game, payload="p2", target="p2"))
+        # The base kill path's player_death (the one with death.reason) names the
+        # player; a mode may add its own secondary player_death event.
+        deaths = [
+            c.kwargs["attributes"]
+            for c in span.add_event.call_args_list
+            if c.args and c.args[0] == "player_death" and "death.reason" in c.kwargs["attributes"]
+        ]
+        assert len(deaths) == 1
+        attrs = deaths[0]
+        assert attrs["player.serial"] == "p2"
+        assert attrs["player.name"] == "Swift Fox"
+        assert attrs["death.reason"] == ELIMINATE_REASON
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="main", steps=[13])
+    async def test_rubberband_boost_carries_identity(self):
+        """UC-040 main: auto_rubberband_boost names each boosted player."""
+        game = _named_game_with_spans()
+        game.players["p1"].smoothed_accel = 0.2
+        game.players["p2"].smoothed_accel = 1.5
+        assert await game.apply_auto_rubberband("strong") >= 1
+        attrs = _event_attrs(game.players["p2"], "auto_rubberband_boost")
+        assert (attrs["player.serial"], attrs["player.name"]) == ("p2", "Swift Fox")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="main", steps=[13])
+    async def test_unnamed_player_carries_serial_only(self):
+        """UC-040 main: before the controller reported a name, only player.serial is set."""
+        game = _named_game_with_spans()
+        game.players["p1"].name = ""
+        assert await game.grant_shield("p1", 5.0) is True
+        attrs = _event_attrs(game.players["p1"], "shield_granted")
+        assert attrs["player.serial"] == "p1"
+        assert "player.name" not in attrs

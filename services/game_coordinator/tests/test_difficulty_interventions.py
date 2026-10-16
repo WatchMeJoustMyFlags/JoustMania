@@ -568,3 +568,55 @@ class _AllowAllAgent:
         if key == "policy.battery_threshold":
             return 20
         return default
+
+
+# --------------------------------------------------------------------------- #
+# #1295: per-player factor changes are recorded on the player span, naming the player
+# --------------------------------------------------------------------------- #
+class TestPlayerFactorEventsNamePlayer:
+    """UC-040 step 13: applied per-player factors are visible on the player span."""
+
+    @staticmethod
+    def _game_with_spans(num_players=3):
+        from unittest.mock import create_autospec
+
+        from opentelemetry import trace
+
+        game = make_game(num_players=num_players)
+        for i, player in enumerate(game.players.values()):
+            player.name = f"Player {i + 1}"
+            player.span = create_autospec(trace.Span, instance=True)
+        return game
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="main", steps=[13])
+    @pytest.mark.parametrize(
+        ("flag_key", "handler", "event", "attr"),
+        [
+            (
+                "player_sensitivity_factor",
+                handle_player_sensitivity_factor,
+                "sensitivity_factor_applied",
+                "sensitivity_factor",
+            ),
+            ("player_handicap_factor", handle_player_handicap_factor, "handicap_factor_applied", "handicap_factor"),
+        ],
+    )
+    async def test_changed_factor_recorded_with_identity(self, flag_key, handler, event, attr):
+        """UC-040 main: only the targeted (changed) player gets the event, with serial + name."""
+        game = self._game_with_spans()
+        mgr, _ = make_manager(game=game)
+        mgr._interventions_client = TargetingFlagClient(default=1.0, per_serial={"p2": 1.5})
+
+        await handler(make_ctx(flag_key, 1.5, game), mgr)
+
+        for serial in ("p1", "p3"):  # neutral, unchanged: no event
+            game.players[serial].span.add_event.assert_not_called()
+        game.players["p2"].span.add_event.assert_called_once_with(
+            event,
+            attributes={attr: pytest.approx(1.5), "player.serial": "p2", "player.name": "Player 2"},
+        )
+
+        # Re-applying the same map changes nothing and records nothing new.
+        await handler(make_ctx(flag_key, 1.5, game), mgr)
+        assert game.players["p2"].span.add_event.call_count == 1
