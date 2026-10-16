@@ -4,6 +4,19 @@ Multiplayer motion-controlled party game system using PS Move controllers.
 
 **Main branch: `main`**
 
+## Spec-driven development (AIUP)
+
+Specs are the source of truth; code and tests follow from them. Start at [docs/README.md](docs/README.md).
+
+- **Before any feature or bugfix that changes behaviour**, update the spec FIRST, in the same PR (or a preceding one): [docs/requirements.md](docs/requirements.md) (FR/NFR/C), the affected [docs/use_cases/UC-xxx.md](docs/use_cases/) (+ [docs/use_cases.puml](docs/use_cases.puml) for a new UC), and the matching technical spec in [docs/specs/](docs/specs/) (`services.md`, `flags.md`, `telemetry.md`, `decide-contract.md`). New flag, span, metric, RPC or decide field = spec row first.
+- **Use the AIUP skills** (`aiup-core` plugin, enabled at project scope in `.claude/settings.json` since #1259; per-user opt-out in `.claude/settings.local.json`) and follow their formats: `requirements` (catalog), `entity-model` (ER + 5-column attribute tables), `use-case-diagram` (PlantUML), `use-case-spec` (one UC per file). Never renumber IDs; retire with status `Rejected` / `Obsolete`.
+- **Spec describes what the code does.** Planned work carries its issue number and status `Open`/`In Progress`. If code and spec disagree, fix one of them or log it under "Discrepancies found" in [docs/specs-inventory.md](docs/specs-inventory.md).
+- **Logged discrepancies (`D-*` rows):** for rows of kind `bug` / `likely bug`, the CODE is wrong. The fixing PR marks the row `Resolved by #N`, updates the affected FR/NFR status, and rewrites any use-case or spec text that describes the buggy behaviour. For rows of kind `stale doc`, the doc is wrong: fix or banner the doc.
+- **No spec change needed** when observable behaviour is unchanged: pure refactors (same RPCs, flags, spans, metrics, outcomes), test-only changes, dependency bumps, CI-only changes, typo fixes. Say `Spec changes: none: <reason>` in the PR body.
+- **Hotfixes** may ship code first; the spec follow-up PR must land within 3 days and the gap is logged in [docs/specs-inventory.md](docs/specs-inventory.md) until then.
+- **Bot PRs** (Renovate, release-please, `chore(deps)`) are exempt from the "Spec changes" section.
+- Every other PR fills the **Spec changes** section of the PR template. The "tests trace to spec IDs" checklist item applies to new tests only. Workflow details: [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#spec-driven-development-aiup).
+
 ## Session Management
 
 When resuming from a previous session, ask the user to confirm the current task before reading files or starting work. Do not assume context from prior sessions without verification.
@@ -70,8 +83,9 @@ When editing YAML config files (Docker Compose, OTEL Collector, dashboards), val
 ## Key Documentation
 
 - [Northstar](docs/NORTHSTAR.md) - The "dark factory" goal and its hard constraints; read before agent work
+- [Docs index](docs/README.md) - Start here: vision → requirements → use cases → specs → runbooks → research
 - [Contributing Guide](docs/CONTRIBUTING.md) - Development workflow, CI checks, code style
 - [Development Guide](docs/DEVELOPMENT.md) - Building, running, debugging services
-- [Architecture](docs/ARCHITECTURE.md) - System design and service interactions
+- [Services spec](docs/specs/services.md) - Services, ports, RPCs, dependencies (supersedes the older [ARCHITECTURE.md](docs/ARCHITECTURE.md))
 - [Ownership Model](docs/OWNERSHIP_MODEL.md) - Human/agent settings arbitration & composition rules
 - [Talk runbook](docs/talk/two-standards-runbook.md) - "Two Standards" stage demo: beats, flag flips, pre-flight (`scripts/talk-preflight.sh`)

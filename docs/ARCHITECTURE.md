@@ -1,3 +1,5 @@
+> **Superseded** by [docs/specs/services.md](specs/services.md) (services, ports, RPCs) and [docs/specs/telemetry.md](specs/telemetry.md); see [specs-inventory](specs-inventory.md#2-core-docs-docs) for what is stale here (2026-10-16); kept for history.
+
 # JoustMania Architecture
 
 This document provides a comprehensive overview of the JoustMania microservices architecture.

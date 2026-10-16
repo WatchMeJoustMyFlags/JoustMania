@@ -46,6 +46,113 @@ The dev container includes:
    make format    # Auto-format code
    ```
 
+## Spec-driven development (AIUP)
+
+JoustMania follows the [AI Unified Process (AIUP)](https://aiup.dev):
+**the specification is the source of truth, and code and tests follow from it.**
+Every change that alters observable behaviour updates the spec *before* the code,
+in the same PR or in a preceding one. Start at the [docs index](README.md).
+
+### The spec tree
+
+| Layer | File(s) | AIUP skill | Holds |
+|---|---|---|---|
+| Vision | [vision.md](vision.md) (+ [NORTHSTAR.md](NORTHSTAR.md)) | (none) | Why the product exists, stakeholders, northstar constraints |
+| Requirements | [requirements.md](requirements.md) | `requirements` | `FR-xxx` user stories, `NFR-xxx` measurable qualities, `C-xxx` constraints |
+| Entity model | [entity_model.md](entity_model.md) | `entity-model` | Domain entities, ER diagram, 5-column attribute tables |
+| Use cases | [use_cases.puml](use_cases.puml), [use_cases/UC-xxx.md](use_cases/) | `use-case-diagram`, `use-case-spec` | Actor goals, main success scenario, alternative flows, business rules |
+| Technical specs | [specs/services.md](specs/services.md), [specs/flags.md](specs/flags.md), [specs/telemetry.md](specs/telemetry.md), [specs/decide-contract.md](specs/decide-contract.md) | (repo convention) | Ports, RPCs, flag catalog, span / metric / attribute names, the decision contract |
+
+The AIUP skills come from the `aiup-core` plugin, enabled for everyone at project
+scope in `.claude/settings.json` (#1259, marketplace `martinellich/aiup-marketplace`,
+auto-update off). It provides four skills: `requirements`, `entity-model`,
+`use-case-diagram` and `use-case-spec`. The plugin also brings the Context7 MCP
+server (`plugin:aiup-core:context7`), which stays enabled by maintainer decision;
+disable it per user if you do not want it. To opt out of the whole plugin for
+yourself, set `"enabledPlugins": {"aiup-core@aiup-marketplace": false}` in your
+git-ignored `.claude/settings.local.json`. Use the skills when you write or extend the corresponding
+artefact so the format stays uniform; the technical specs are a JoustMania
+convention on top of AIUP, because flags, telemetry names and the decide contract
+are where docs drifted from code in the past.
+
+### Workflow for a behaviour change
+
+1. **Find the spec.** Look up the requirement(s) and use case(s) your change
+   touches (grep the issue's keywords in `docs/requirements.md` and
+   `docs/use_cases/`). If none exist, the change is new behaviour: add them.
+2. **Update the spec first.**
+   - New or changed capability: add/edit an `FR-xxx` row (user story format, status
+     `Open` or `In Progress`).
+   - New or changed quality target (latency, rate, budget): add/edit an `NFR-xxx`
+     row with a number and, for measured values, the source (issue / PR / test).
+   - New or changed flow: edit the use case (main scenario or a new alternative
+     flow `An`), reference the FR IDs it fulfils.
+   - New or changed flag, span, attribute, metric, RPC, decide question or
+     outcome: edit the row in `docs/specs/*.md` *first*; the code must match it.
+3. **Implement and test.** New tests should name the spec ID they cover (in a
+   docstring, test name or comment), e.g. `# UC-040 A2: remote timeout → rules`.
+   Existing tests are not retrofitted.
+4. **Close the loop.** When the code ships, move the status forward
+   (`Open` → `Implemented` → `Verified` once an automated test covers it) and
+   update the "Traceability" line of the technical spec section with the code
+   path and test.
+5. **Fill in the PR template's "Spec changes"** with the IDs/sections changed.
+
+The spec PR can precede the code PR (useful for review of intent), but a code PR
+that changes behaviour without a spec change is incomplete.
+
+**Fixing a logged discrepancy.** A `D-*` row in
+[specs-inventory.md](specs-inventory.md#4-discrepancies-found) is either a `stale doc` (the doc is
+wrong: fix or banner it) or a `bug` / `likely bug` (the code is wrong). A PR that fixes a bug row marks
+it `Resolved by #N`, updates the status of the affected requirement, and rewrites any use-case or spec
+text that still describes the buggy behaviour (e.g. UC-040 A11 for D-A9).
+
+**Hotfixes** may merge code first; the spec follow-up PR lands within 3 days and the gap is logged in
+the inventory until then.
+
+### Status vocabularies
+
+Requirements use the AIUP requirement statuses (`Open`, `In Progress`, `Implemented`, `Verified`,
+`Deferred`, `Rejected`); use cases use the use-case statuses, which map as follows: `Draft` / `Review` /
+`Approved` = requirement `Open` or `In Progress`, `Implemented` = `Implemented`, `Tested` / `Done` =
+`Verified`, `Obsolete` = `Rejected`.
+
+### Identifiers in use cases (documented deviation)
+
+The `use-case-spec` skill asks for flows without implementation details. JoustMania's use cases
+deliberately name flags, span names and event types in their steps and business rules, because those
+identifiers are the contract the agent, the dashboard and the tests depend on, and naming them keeps
+traceability cheap. Every use case also ends with a "Code / tests" line.
+
+### Pure refactors and non-behavioural changes
+
+No spec change is needed when observable behaviour is unchanged: the same RPCs,
+messages, flags (keys, variants, defaults), spans, attributes, metrics, log lines
+that tests or dashboards rely on, and the same decision outcomes. Typical cases:
+internal refactors, test-only changes, dependency bumps, CI-only changes, typo fixes.
+Bot PRs (Renovate, release-please, `chore(deps)`) are exempt from the "Spec changes" section.
+Write `Spec changes: none: <reason>` in the PR body
+(e.g. `none: refactor, no behaviour change`). If you are unsure whether
+something is observable, it probably is: update the spec.
+
+### Traceability IDs
+
+- **IDs are permanent.** Never renumber or reuse an ID. Retire a requirement with
+  status `Rejected` (or `Deferred`), a use case with status `Obsolete`, and point
+  to the successor.
+- **Allocate the next free ID in the right block.** `requirements.md` groups FRs
+  by area in blocks of ten-ish IDs (pairing `FR-001`..., lobby `FR-010`...,
+  and so on; see its header); append new IDs at the end of the area's block or,
+  if the block is full, at the end of the table with the next free number.
+- **Use cases list the FRs they realise** (`Requirements:` line in the
+  overview). Every FR must be referenced by at least one UC.
+- **Technical spec sections end with a `Traceability:` line** listing FR / UC IDs,
+  the code paths (`file:line` or file) and the tests that exercise them.
+- **Planned work** carries its issue number in the row (`#1229`) and stays
+  `Open` until merged. Never write a plan as shipped.
+- **Discrepancies** between docs and code go to
+  [specs-inventory.md](specs-inventory.md#4-discrepancies-found) until fixed.
+
 ## Development Workflow
 
 ### Git Worktree (Recommended for Issue Work)

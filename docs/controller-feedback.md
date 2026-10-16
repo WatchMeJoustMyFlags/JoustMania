@@ -1,3 +1,5 @@
+> **Superseded** by [UC-010](use_cases/UC-010.md), [UC-012](use_cases/UC-012.md), [UC-030](use_cases/UC-030.md) and [specs-inventory D-C3](specs-inventory.md#45-controllers-pairing-leds-d-c) (2026-10-16); kept for history.
+
 # Controller LED Feedback Reference
 
 > **Primary LED Documentation** - This is the comprehensive reference for all controller LED states in JoustMania, covering menu/lobby, gameplay, teams, and troubleshooting.
