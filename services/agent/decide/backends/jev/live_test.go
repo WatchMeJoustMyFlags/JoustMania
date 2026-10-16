@@ -106,6 +106,58 @@ func TestLiveDecide(t *testing.T) {
 	record(t, "response_noul.json", ex.response)
 }
 
+// TestLiveGate measures Jev's gate (#1281) on the four calibration states of
+// the decide contract §3.1: one gated stage-1 call each for calm, dragging,
+// near-threshold and collapsing (4 calls, no details stage). It logs p_yes and Jev's stage-1 pick per state, the
+// numbers behind decision.jev.act_confidence_threshold (gate = 0.6, #1287),
+// and asserts only the shape (a gated request, p_yes in [0,1], a pick), not
+// the values: they move with the model and the wording.
+//
+//	JEV_API_KEY=... go test -tags live ./decide/backends/jev -run 'TestLiveGate$' -v
+//
+// The fixture states offer the full intervention list; on stage the agent
+// asks with the live interventions_allowed (ambient), so the pick differs.
+func TestLiveGate(t *testing.T) {
+	key := liveKey(t)
+	b := liveBackend(key, newRecordingTransport(key))
+	for _, sc := range []struct {
+		name string
+		req  decide.Request
+	}{
+		{"calm", calmRequest()},
+		{"dragging", draggingRequest()},
+		{"near-threshold", testRequest()},
+		{"collapsing", tooFastRequest()},
+	} {
+		plan := splitStages(sc.req)
+		if plan.gated == nil {
+			t.Fatalf("%s: request is not gated (ffa.intervention needs noop + an intervention)", sc.name)
+		}
+		start := time.Now()
+		resp, err := b.call(context.Background(), plan.stage, plan.first, "")
+		if err != nil {
+			t.Fatalf("%s: gate call: %v", sc.name, err)
+		}
+		var pYes *float64
+		pick := ""
+		for _, a := range resp.Answers {
+			switch a.QuestionID {
+			case GateQuestionID:
+				pYes = a.Noul
+			case decide.QuestionFFAIntervention:
+				pick = a.Choice
+			}
+		}
+		if pYes == nil || *pYes < 0 || *pYes > 1 {
+			t.Fatalf("%s: gate p_yes = %v, want a value in [0,1]", sc.name, pYes)
+		}
+		if pick == "" {
+			t.Errorf("%s: no stage-1 intervention pick", sc.name)
+		}
+		t.Logf("%s: p_yes=%.2f pick=%s latency=%v", sc.name, *pYes, pick, time.Since(start))
+	}
+}
+
 // TestLiveDetails records the details stage for the near-threshold state
 // after a grant_shield and an adjust_player_sensitivity stage-1 answer, exactly
 // as Decide conditions it, whatever the gate answers (one stage-1 call, then

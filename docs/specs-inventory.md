@@ -52,7 +52,7 @@ banner pointing at their replacement; nothing was deleted.
 | `agent-demo-runbook.md` | 482 | Three-act demo operator playbook | current (one stale line) | Same stale log grep (D-A7); tells you to edit base `agent.json` while the demo serves `ci/`. | guide; UC-070 |
 | `agent-dry-run-runbook.md` | 159 | Experiment loop dry run | stale (minor) | Seeded flag is `windows`, not `death_grace_period_seconds`; omits the env gates on promotion (D-A6). Kill-switch span name corrected to `agent.disabled` in the consistency pass. | guide; UC-043 |
 | `agent-inference.md` | 95 | Who calls which model | current | Matches #1234 (PR #1252) / #1244; does not say the #1207 length gate is retired, nor the backend role split (C-018). | decide contract; UC-042, UC-044 |
-| `talk/two-standards-runbook.md` | n/a (PR #1256, merged after the snapshot) | Talk operator runbook: setup, timing, beat table, pre-flight, reset, failure modes | current | Added by PR #1256; beats map to UC-070. | guide; UC-070 |
+| `talk/two-standards-runbook.md` | n/a (PR #1256, merged after the snapshot) | Talk operator runbook: setup, timing, beat table, pre-flight, reset, failure modes | current | Added by PR #1256; rewritten for the C-018 role split (#743): Jev-first model beat with act / noop / held on Jev's own threshold (#1288), Claude as the manual backup and the closing post-game summary, `stage` budget, kill-switch scope (#1284). Beats map to UC-070; rehearsal record still open. | guide; UC-070 |
 | `agent-trace-viz.md` | 307 | Agent trace on stage | stale (minor) | `agent.span_received` retired (#1053); `agent.signal_received` is a remote child of `gameplay_phase`, not a root (D-T2). | telemetry §agent; guide |
 | `design/agent-experiment-cohorts.md` | 389 | Cohort framework design (#982) | historical | Says "no implementation" but shipped (`services/agent/experiment/`). | ENT (Experiment, Arm), UC-043; history |
 | `research/722-intervention-surface.md` | 576 | Intervention vocabulary research | historical | Allow-list format and limiter location changed (#1127, #919). | ENT (Intervention), flags; history |
@@ -64,7 +64,7 @@ banner pointing at their replacement; nothing was deleted.
 
 ## 3. Service, tool and test docs
 
-`scripts/talk-preflight.sh` (PR #1256) is a read-only pre-flight check, not a doc; it is FR-093 and is consumed by UC-070.
+`scripts/talk-preflight.sh` (PR #1256) is a read-only pre-flight check, not a doc; it is FR-093 and is consumed by UC-070. It checks the runbook's stage baseline, including Jev's threshold, both backend keys (presence only), `AGENT_INFERENCE_BACKEND=claude` and a budget of at least 30 per minute (#743).
 
 | Doc | Lines | Covers | Status | Evidence | Target |
 |---|---|---|---|---|---|

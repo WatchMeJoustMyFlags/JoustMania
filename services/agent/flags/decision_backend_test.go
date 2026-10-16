@@ -227,6 +227,42 @@ func TestDecisionBackend_FlagFilesMatchDefaults(t *testing.T) {
 	}
 }
 
+// TestDecisionBackend_JevBlackholeVariant pins the talk's degrade-beat variant
+// (#743): decision.jev.base_url ships a non-default "blackhole" variant in both
+// flag files that points at TEST-NET-1 (RFC 5737, never routed) over https, so
+// the TLS handshake fails before any request header (the bearer key) is sent.
+// The default stays DefaultDecisionJevBaseURL.
+func TestDecisionBackend_JevBlackholeVariant(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "flagd", "agent.json"),
+		filepath.Join("..", "..", "flagd", "ci", "agent.json"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Flags map[string]struct {
+				Variants       map[string]any `json:"variants"`
+				DefaultVariant string         `json:"defaultVariant"`
+			} `json:"flags"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		f := doc.Flags[keyDecisionJevBaseURL]
+		if got := f.Variants["blackhole"]; got != "https://192.0.2.1/v1" {
+			t.Errorf("%s: %s blackhole = %v, want https://192.0.2.1/v1", path, keyDecisionJevBaseURL, got)
+		}
+		if f.DefaultVariant == "blackhole" {
+			t.Errorf("%s: %s must not default to blackhole", path, keyDecisionJevBaseURL)
+		}
+		if got := f.Variants[f.DefaultVariant]; got != DefaultDecisionJevBaseURL {
+			t.Errorf("%s: %s default = %v, want %s", path, keyDecisionJevBaseURL, got, DefaultDecisionJevBaseURL)
+		}
+	}
+}
+
 // TestDecisionBackend_StageBudgetVariant pins the presenter's live switch for the
 // global remote-call budget (#1231): llm.max_requests_per_minute has a "stage"
 // variant of 30 in both flag files, while the default stays
