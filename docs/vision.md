@@ -99,7 +99,7 @@ the manual in-game backup, and the rules engine is the automatic floor. The cano
 [C-018](requirements.md#constraints).
 
 The demo arc (issue #743; runbook: [docs/talk/two-standards-runbook.md](talk/two-standards-runbook.md), PR #1256): observe a live game → switch the decision
-backend live (Jev as primary, Claude as backup, OpenAI-compatible, rules) → narrow permissions and
+backend live (Jev as the main in-game backend, Claude as backup, OpenAI-compatible, rules) → narrow permissions and
 hit the kill switch → optional infrastructure rollout and automatic rollback →
 pull the network and show the rules fallback. See [UC-070](use_cases/UC-070.md).
 

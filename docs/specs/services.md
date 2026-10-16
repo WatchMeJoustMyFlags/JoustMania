@@ -1,6 +1,6 @@
 # Services
 
-> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 81c9ecea (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265).
+> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 7d25ade4 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1266, #1282, #1284).
 > RPC tables are **generated from `proto/*.proto`**; regenerate them when a `.proto` changes (and remember the
 > forwarding method in `services/connect-proxy/main.go` for browser-reachable RPCs).
 
@@ -224,7 +224,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - Environment: see `docker-compose.yml:685-783`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214). Still env: API keys, `AGENT_INFERENCE_*`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`, `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
 - Writes: `interventions.json` (action sink), `rollout.json` (`current_controller_count`), `game.json` (experiment targeting; autonomous real default when enabled). Never `agent.json` (code guard in `experiment/gate.go`; the mount is read-write).
 - Persistent volume `agent-experiments` for the experiment journal and autonomous-revert snapshots.
-- Decision backends: jev (primary in-game, TypeSafe System One), claude (in-game backup by manual flip; also retro / proposer), openai-compatible, rules (automatic floor) (C-018). Contract: [decide-contract.md](decide-contract.md).
+- Decision backends: jev (main in-game backend, TypeSafe System One), claude (in-game backup by manual flip; also retro / proposer), openai-compatible, rules (automatic floor) (C-018). Contract: [decide-contract.md](decide-contract.md).
 
 ### connect-proxy
 
