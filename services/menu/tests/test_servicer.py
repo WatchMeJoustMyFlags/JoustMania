@@ -4,12 +4,14 @@ Unit tests for MenuServicer.
 Tests the core Menu gRPC service:
 - State management
 - Controller event callbacks
-- Admin mode callbacks
-- Input handling logic
+- Admin combo detection
+- ProcessInput (button_press / web_command / reset_menu)
+- Ready-up and game start (UC-010)
 - Lifecycle methods
 
-Note: MenuServicer has complex initialization with many dependencies.
-These tests mock at method level rather than trying to mock the entire __init__.
+Behaviour tests use the ``real_servicer`` fixture: a real MenuServicer with its
+real StateManager and handlers, where only I/O edges are autospec'd (#1358).
+Tests for extracted helpers still bind the real method to ``FakeMenuServicer``.
 
 Issue #209: Improve test coverage for critical game flow
 """
@@ -18,9 +20,12 @@ import asyncio
 import contextlib
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
+import grpc
 import pytest
+import pytest_asyncio
+from openfeature.client import OpenFeatureClient
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -29,6 +34,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
+from lib.flag_config_writer import FlagConfigWriter
 from lib.types import Games
 from proto import menu_pb2
 from services.menu.handlers.base import ControllerState
@@ -159,534 +165,507 @@ class FakeMenuServicer:
         await self.state_manager.on_controller_disconnected(serial)
 
 
-# Import the actual method implementations to bind to our fake
-def bind_methods_from_servicer():
-    """Import real method implementations from MenuServicer."""
-    # We'll test the logic of individual methods by copying them to the fake
-    pass
+def _default_returning_flag_client(_domain: str):
+    """An OpenFeature client spec whose typed getters return the caller's default.
+
+    Stands in for a flagd connection: every flag resolves to the default the
+    production code passes, exactly as with flagd unreachable.
+    """
+    client = create_autospec(OpenFeatureClient, instance=True)
+    for getter in (
+        client.get_boolean_value,
+        client.get_string_value,
+        client.get_integer_value,
+        client.get_float_value,
+        client.get_object_value,
+    ):
+        getter.side_effect = lambda _key, default, *_args, **_kwargs: default
+    return client
+
+
+@pytest_asyncio.fixture
+async def real_servicer():
+    """A real MenuServicer with real StateManager and handlers.
+
+    Only the I/O edges are replaced, each by an autospec of the real class:
+    gRPC channels, flagd clients/writers, LED, audio, the event publisher,
+    the controller event loop and the idle monitor. Every test below drives the
+    production MenuServicer methods (#1358).
+    """
+    channel = create_autospec(grpc.aio.Channel, instance=True)
+    with (
+        patch("lib.grpc_utils.create_channel", return_value=channel),
+        patch("services.menu.servicer.init_flag_domain", autospec=True),
+        patch("services.menu.servicer.get_flag_client", side_effect=_default_returning_flag_client),
+        patch(
+            "services.menu.servicer.FlagConfigWriter",
+            side_effect=lambda _path: create_autospec(FlagConfigWriter, instance=True),
+        ),
+        patch("services.menu.servicer.LedController", autospec=True),
+        patch("services.menu.servicer.AudioHelper", autospec=True),
+        patch("services.menu.servicer.EventPublisher", autospec=True),
+        patch("services.menu.servicer.ControllerEventLoop", autospec=True),
+        patch("services.menu.servicer.IdleMonitor", autospec=True),
+    ):
+        from services.menu.servicer import MenuServicer
+
+        servicer = MenuServicer()
+
+    yield servicer
+
+    # Background tasks the real code may have scheduled.
+    for task in (servicer._game_lifecycle_task, servicer.admin_handler._timeout_task):
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+def _published(servicer) -> list[tuple[str, dict]]:
+    """(event_type, data) of every event the servicer published, in order."""
+    return [c.args for c in servicer.event_publisher.publish.await_args_list]
+
+
+async def _await_lifecycle(servicer) -> None:
+    """Wait for the background game-lifecycle task the real _start_game scheduled."""
+    assert servicer._game_lifecycle_task is not None, "no game start was scheduled"
+    await servicer._game_lifecycle_task
+
+
+def _started_roster(stream_mock) -> list[str]:
+    """Serials in the start_config the lifecycle sent to the coordinator."""
+    request = stream_mock.await_args.args[2]
+    return sorted(p.serial for p in request.start_config.players)
+
+
+async def _connect(servicer, *serials: str) -> None:
+    for serial in serials:
+        await servicer.on_connect(serial)
+
+
+async def _ready_up(servicer, *serials: str) -> None:
+    """Press the trigger on each controller (UC-010 steps 1-3)."""
+    for serial in serials:
+        await servicer.on_button(serial, "trigger", True)
+        await servicer.on_button(serial, "trigger", False)
 
 
 class TestMenuServicerState:
-    """Tests for state management."""
+    """Initial state of a freshly constructed MenuServicer."""
 
-    @pytest.fixture
-    def servicer(self):
-        """Create a fake servicer for testing."""
-        return FakeMenuServicer()
+    @pytest.mark.asyncio
+    async def test_initial_state(self, real_servicer):
+        """A new servicer is STOPPED, selects JoustFFA and has an empty lobby."""
+        assert real_servicer.state == menu_pb2.MenuState.STOPPED
+        assert real_servicer.current_selection == Games.JoustFFA
+        assert real_servicer.connected_controllers == set()
+        assert real_servicer.ready_controllers == set()
+        assert real_servicer.ready_controller_count == 0
 
-    def test_initial_state_stopped(self, servicer):
-        """Initial state should be STOPPED."""
-        assert servicer.state == menu_pb2.MenuState.STOPPED
+    @pytest.mark.asyncio
+    async def test_game_options_are_the_playable_modes(self, real_servicer):
+        """get_game_options returns a copy of GAME_MODES (UC-011 BR-001 source list)."""
+        from services.menu.utils.settings import GAME_MODES
 
-    def test_initial_selection_is_joust_ffa(self, servicer):
-        """Initial selection should be JoustFFA."""
-        assert servicer.current_selection == Games.JoustFFA
+        options = real_servicer.get_game_options()
+        assert options == GAME_MODES
+        options.append("Bogus")
+        assert "Bogus" not in real_servicer.get_game_options()
 
-    def test_initial_ready_controllers_empty(self, servicer):
-        """Ready controllers set should start empty."""
-        assert servicer.ready_controllers == set()
-
-    def test_initial_connected_controllers_empty(self, servicer):
-        """Connected controllers set should start empty."""
-        assert servicer.connected_controllers == set()
-
-    def test_initial_ready_count_zero(self, servicer):
-        """Ready controller count should start at 0."""
-        assert servicer.ready_controller_count == 0
-
-
-class TestMenuServicerAdminModeCallbacks:
-    """Tests for AdminModeCallbacks protocol methods."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
-
-    def test_set_menu_state(self, servicer):
-        """set_menu_state should update the state."""
-        servicer.state = menu_pb2.MenuState.STOPPED
-
-        # Simulate the real implementation
-        def set_menu_state(state):
-            servicer.state = state
-
-        set_menu_state(menu_pb2.MenuState.RUNNING)
-
-        assert servicer.state == menu_pb2.MenuState.RUNNING
-
-    def test_get_game_options_empty_default(self, servicer):
-        """get_game_options should return empty list by default."""
-        assert servicer.game_options == []
-
-    def test_get_game_options_returns_options(self, servicer):
-        """get_game_options should return options when set."""
-        servicer.game_options = ["Option1", "Option2"]
-        assert servicer.game_options == ["Option1", "Option2"]
+    @pytest.mark.asyncio
+    async def test_set_and_get_menu_state(self, real_servicer):
+        """set_menu_state / get_menu_state round-trip through the servicer."""
+        real_servicer.set_menu_state(menu_pb2.MenuState.GAME_STARTING)
+        assert real_servicer.get_menu_state() == menu_pb2.MenuState.GAME_STARTING
 
 
 class TestMenuServicerControllerCallbacks:
-    """Tests for ControllerEventCallbacks protocol methods."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
-
-    def test_get_menu_state(self, servicer):
-        """get_menu_state should return current state."""
-        servicer.state = menu_pb2.MenuState.GAME_STARTING
-        assert servicer.state == menu_pb2.MenuState.GAME_STARTING
+    """ControllerEventCallbacks: connect, disconnect, battery, stream reconnect."""
 
     @pytest.mark.asyncio
-    async def test_on_connect_adds_to_connected(self, servicer):
-        """on_connect should delegate to state_manager which tracks the connection."""
+    async def test_on_connect_registers_connected_with_dim_led(self, real_servicer):
+        """on_connect adds the serial as CONNECTED and lights the dim lobby colour."""
+        await _connect(real_servicer, "s1", "s2")
 
-        # Make state_manager.on_controller_connected update controller_states
-        async def mock_on_connected(serial):
-            servicer.state_manager.controller_states[serial] = ControllerState.CONNECTED
-
-        servicer.state_manager.on_controller_connected = AsyncMock(side_effect=mock_on_connected)
-
-        # Simulate the real on_connect implementation (just delegates to state_manager)
-        async def on_connect(serial):
-            await servicer.state_manager.on_controller_connected(serial)
-
-        await on_connect("serial_1")
-
-        assert "serial_1" in servicer.connected_controllers
-        servicer.state_manager.on_controller_connected.assert_called_once_with("serial_1")
+        assert real_servicer.connected_controllers == {"s1", "s2"}
+        assert real_servicer.state_manager.controller_states["s1"] == ControllerState.CONNECTED
+        real_servicer.led.set_connected_color.assert_any_await("s1", Games.JoustFFA.name)
 
     @pytest.mark.asyncio
-    async def test_on_disconnect_removes_from_all_sets(self, servicer):
-        """on_disconnect should clean up all tracking state."""
-        # Set up initial state via state_manager.controller_states (single source of truth)
-        servicer.state_manager.controller_states = {
-            "serial_1": ControllerState.READY,
-            "serial_2": ControllerState.CONNECTED,
-        }
+    async def test_on_disconnect_removes_ready_controller(self, real_servicer):
+        """on_disconnect removes the serial from the lobby, including its ready flag."""
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1")
+        assert real_servicer.ready_controller_count == 1
 
-        # Make state_manager.on_controller_disconnected update controller_states
-        async def mock_on_disconnected(serial):
-            servicer.state_manager.controller_states.pop(serial, None)
+        await real_servicer.on_disconnect("s1")
 
-        servicer.state_manager.on_controller_disconnected = AsyncMock(side_effect=mock_on_disconnected)
+        assert real_servicer.connected_controllers == {"s2", "s3"}
+        assert real_servicer.ready_controllers == set()
+        assert "s1" not in real_servicer.state_manager.button_states
 
-        # Call on_disconnect (now delegates to state_manager)
-        await servicer.on_disconnect("serial_1")
+    @pytest.mark.asyncio
+    async def test_update_battery_is_tracked(self, real_servicer):
+        """update_battery stores the level in the state manager."""
+        real_servicer.update_battery("s1", 4)
+        assert real_servicer.state_manager.battery_levels["s1"] == 4
 
-        assert "serial_1" not in servicer.connected_controllers
-        assert "serial_1" not in servicer.ready_controllers
-        assert servicer.ready_controller_count == 0
+    @pytest.mark.asyncio
+    async def test_stream_reconnect_clears_lobby(self, real_servicer):
+        """A button-stream reconnect clears all lobby state, un-readying everyone."""
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1")
 
-    def test_update_battery_calls_state_manager(self, servicer):
-        """update_battery should delegate to state_manager."""
-        servicer.state_manager.update_battery("serial_1", 80)
-        servicer.state_manager.update_battery.assert_called_with("serial_1", 80)
+        await real_servicer.on_stream_reconnected()
+
+        assert real_servicer.connected_controllers == set()
+        assert real_servicer.get_connected_serials() == set()
 
 
 class TestMenuServicerOnButton:
-    """Tests for on_button callback logic."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
+    """on_button: idle activity, admin combo detection and dispatch."""
 
     @pytest.mark.asyncio
-    async def test_on_button_forwards_to_state_manager(self, servicer):
-        """on_button should forward to state_manager.handle_button_event."""
-        await servicer.state_manager.handle_button_event("serial_1", "trigger", True)
-        servicer.state_manager.handle_button_event.assert_called_once_with("serial_1", "trigger", True)
+    async def test_any_button_resets_idle_activity(self, real_servicer):
+        """Every button event resets the idle timer."""
+        await real_servicer.on_button("s1", "move", True)
+        real_servicer.idle_monitor.reset_activity.assert_called()
 
     @pytest.mark.asyncio
-    async def test_on_button_checks_admin_combo(self, servicer):
-        """on_button should check admin combo on face button press."""
-        servicer.state_manager.button_states = {"serial_1": {"cross": True, "circle": True, "square": True}}
+    @pytest.mark.uc("UC-012", flow="main", steps=[1, 2])
+    async def test_four_face_buttons_enter_admin_mode(self, real_servicer):
+        """UC-012 steps 1-2: Cross+Circle+Square+Triangle switches the controller to ADMIN.
 
-        # Create preview state like the real implementation
-        button_state = servicer.state_manager.button_states.get("serial_1", {})
-        preview_state = dict(button_state)
-        preview_state["triangle"] = True
+        The admin enter effect is sent and the 60 s timeout task is started.
+        """
+        from proto import controller_manager_pb2
 
-        servicer.admin_handler.check_combo_from_state(preview_state)
+        await _connect(real_servicer, "host", "other")
+        for button in ("cross", "circle", "square", "triangle"):
+            await real_servicer.on_button("host", button, True)
 
-        servicer.admin_handler.check_combo_from_state.assert_called_with(preview_state)
-
-    @pytest.mark.asyncio
-    async def test_face_button_release_resets_admin_combo(self, servicer):
-        """Release of face button should reset admin combo flag."""
-        servicer.admin_handler.combo_shown = True
-
-        # Simulate the real logic
-        button = "cross"
-        is_press = False
-        if not is_press and button in ["cross", "circle", "square", "triangle"]:
-            servicer.admin_handler.combo_shown = False
-
-        assert servicer.admin_handler.combo_shown is False
-
-
-class TestMenuServicerStartMenu:
-    """Tests for StartMenu gRPC method logic."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
+        assert real_servicer.state_manager.controller_states["host"] == ControllerState.ADMIN
+        assert real_servicer.state_manager.controller_states["other"] == ControllerState.CONNECTED
+        assert real_servicer.admin_handler.is_admin_controller("host")
+        real_servicer.led.send_game_effect.assert_any_await(
+            "host", controller_manager_pb2.GAME_EFFECT_ADMIN_ENTER, color=None, duration_ms=0, speed=0
+        )
+        assert real_servicer.admin_handler._timeout_task is not None
+        assert not real_servicer.admin_handler._timeout_task.done()
 
     @pytest.mark.asyncio
-    async def test_start_menu_success(self, servicer):
-        """StartMenu should transition to RUNNING and return success."""
-        # Add some ready controllers to verify they get cleared
-        servicer.state_manager.controller_states = {"s1": ControllerState.READY}
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_partial_combo_stays_connected(self, real_servicer):
+        """UC-012 step 1: three face buttons are not the combo; the controller stays CONNECTED."""
+        await _connect(real_servicer, "host")
+        for button in ("cross", "circle", "square"):
+            await real_servicer.on_button("host", button, True)
 
-        # Simulate the real StartMenu logic (uses flagd clients instead of settings_helper)
-        if servicer.state == menu_pb2.MenuState.RUNNING:
-            success = False
-            error = "Menu already running"
-        else:
-            servicer.state = menu_pb2.MenuState.RUNNING
-            # Clear ready state (new implementation clears controller_states READY entries)
-            for serial in list(servicer.state_manager.controller_states.keys()):
-                if servicer.state_manager.controller_states[serial] == ControllerState.READY:
-                    servicer.state_manager.controller_states[serial] = ControllerState.CONNECTED
-            # Load settings from flagd (user domain)
-            servicer.voice_actor = servicer.user_prefs_client.get_string_value("menu_voice", "ivy")
-            servicer.user_prefs_client.get_string_value("current_game", "JoustFFA")
-            await servicer.audio.start_lobby_music()
-            await servicer.event_publisher.publish("menu_started", {})
-            success = True
-            error = ""
-
-        assert success is True
-        assert error == ""
-        assert servicer.state == menu_pb2.MenuState.RUNNING
-        assert servicer.ready_controller_count == 0  # All ready controllers cleared
-        servicer.audio.start_lobby_music.assert_called_once()
-        servicer.event_publisher.publish.assert_called_with("menu_started", {})
+        assert real_servicer.state_manager.controller_states["host"] == ControllerState.CONNECTED
+        assert not real_servicer.admin_handler.active
 
     @pytest.mark.asyncio
-    async def test_start_menu_already_running(self, servicer):
-        """StartMenu should fail if already running."""
-        servicer.state = menu_pb2.MenuState.RUNNING
+    async def test_face_button_release_rearms_combo(self, real_servicer):
+        """Releasing a face button clears combo_shown so the next full combo is seen again."""
+        await _connect(real_servicer, "host")
+        for button in ("cross", "circle", "square", "triangle"):
+            await real_servicer.on_button("host", button, True)
+        assert real_servicer.admin_handler.combo_shown is True
 
-        if servicer.state == menu_pb2.MenuState.RUNNING:
-            success = False
-            error = "Menu already running"
-        else:
-            success = True
-            error = ""
+        await real_servicer.on_button("host", "cross", False)
 
-        assert success is False
-        assert "already running" in error
+        assert real_servicer.admin_handler.combo_shown is False
 
 
-class TestMenuServicerStopMenu:
-    """Tests for StopMenu gRPC method logic."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
+class TestMenuServicerStartStopMenu:
+    """StartMenu / StopMenu RPCs on the real servicer."""
 
     @pytest.mark.asyncio
-    async def test_stop_menu_success(self, servicer):
-        """StopMenu should transition to STOPPED and clear state."""
-        servicer.state = menu_pb2.MenuState.RUNNING
-        # Set up state via controller_states (single source of truth)
-        servicer.state_manager.controller_states = {
-            "serial_1": ControllerState.READY,
-            "serial_2": ControllerState.CONNECTED,
-        }
+    async def test_start_menu_runs_lobby(self, real_servicer):
+        """StartMenu sets RUNNING, un-readies everyone, starts music + idle monitor, publishes menu_started."""
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1")
 
-        # Simulate the real StopMenu logic (new implementation)
-        if servicer.state != menu_pb2.MenuState.STOPPED:
-            servicer.state = menu_pb2.MenuState.STOPPED
-            servicer.state_manager.controller_states.clear()
-            await servicer.event_publisher.publish("menu_stopped", {})
+        response = await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
 
-        assert servicer.state == menu_pb2.MenuState.STOPPED
-        assert servicer.ready_controllers == set()
-        assert servicer.connected_controllers == set()
-        servicer.event_publisher.publish.assert_called_with("menu_stopped", {})
+        assert response.success is True
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        assert real_servicer.ready_controllers == set()
+        real_servicer.audio.start_lobby_music.assert_awaited_once()
+        real_servicer.idle_monitor.start.assert_called_once()
+        assert ("menu_started", {}) in _published(real_servicer)
 
     @pytest.mark.asyncio
-    async def test_stop_menu_already_stopped(self, servicer):
-        """StopMenu should fail if already stopped."""
-        servicer.state = menu_pb2.MenuState.STOPPED
+    async def test_start_menu_restores_persisted_selection(self, real_servicer):
+        """StartMenu restores the persisted current_game (UC-011 success postcondition)."""
+        real_servicer.user_prefs_client.get_string_value.side_effect = lambda key, default, *_a, **_k: (
+            "Tournament" if key == "current_game" else default
+        )
 
-        if servicer.state == menu_pb2.MenuState.STOPPED:
-            success = False
-            error = "Menu already stopped"
-        else:
-            success = True
-            error = ""
+        await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
 
-        assert success is False
-        assert "already stopped" in error
-
-
-class TestMenuServicerHandleButtonInput:
-    """Tests for _handle_button_input method logic."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
+        assert real_servicer.current_selection == Games.Tournament
+        assert real_servicer.state_manager.current_game_mode == Games.Tournament
 
     @pytest.mark.asyncio
-    async def test_button_select_cycles_game_mode(self, servicer):
-        """Select button should cycle to next game mode."""
+    async def test_start_menu_ignores_unplayable_persisted_selection(self, real_servicer):
+        """A persisted mode outside GAME_MODES falls back to the default mode."""
+        real_servicer.current_selection = Games.Tournament
+        real_servicer.user_prefs_client.get_string_value.side_effect = lambda key, default, *_a, **_k: (
+            "Random" if key == "current_game" else default
+        )
+
+        await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
+
+        assert real_servicer.current_selection == Games.JoustFFA
+
+    @pytest.mark.asyncio
+    async def test_start_menu_already_running(self, real_servicer):
+        """StartMenu on a running menu fails without side effects."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+
+        response = await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
+
+        assert response.success is False
+        assert "already running" in response.error
+        real_servicer.audio.start_lobby_music.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stop_menu_clears_lobby(self, real_servicer):
+        """StopMenu sets STOPPED, stops the idle monitor, clears the lobby, publishes menu_stopped."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+
+        response = await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+
+        assert response.success is True
+        assert real_servicer.state == menu_pb2.MenuState.STOPPED
+        assert real_servicer.connected_controllers == set()
+        real_servicer.idle_monitor.stop.assert_called_once()
+        assert ("menu_stopped", {}) in _published(real_servicer)
+
+    @pytest.mark.asyncio
+    async def test_stop_menu_already_stopped(self, real_servicer):
+        """StopMenu on a stopped menu fails."""
+        response = await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+
+        assert response.success is False
+        assert "already stopped" in response.error
+
+
+class TestMenuServicerProcessInput:
+    """ProcessInput button_press / web_command / reset_menu on the real servicer."""
+
+    @staticmethod
+    def _request(input_type: str, **data: str):
+        return menu_pb2.ProcessInputRequest(input_type=input_type, data=data)
+
+    @pytest.mark.asyncio
+    async def test_button_select_cycles_and_persists_mode(self, real_servicer):
+        """button_press select advances to the next playable mode, publishes and persists it."""
         from services.menu.utils.settings import get_next_game_mode
 
-        servicer.current_selection = Games.JoustFFA
+        expected = get_next_game_mode(Games.JoustFFA)
 
-        # Simulate the real logic using module-level function + FlagConfigWriter
-        next_mode = get_next_game_mode(servicer.current_selection)
-        servicer.current_selection = next_mode
-        servicer.state_manager.set_game_mode(servicer.current_selection)
-        await servicer.event_publisher.publish("selection_changed", {"game_name": servicer.current_selection.name})
-        # Persist to flagd via writer
-        servicer.user_prefs_writer.update_default_variant("current_game", servicer.current_selection.name)
+        response = await real_servicer.ProcessInput(self._request("button_press", button="select"), MagicMock())
 
-        assert servicer.current_selection != Games.JoustFFA
-        servicer.state_manager.set_game_mode.assert_called()
-        servicer.event_publisher.publish.assert_called()
-
-
-class TestMenuServicerHandleWebCommand:
-    """Tests for _handle_web_command method logic."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
+        assert response.success is True
+        assert real_servicer.current_selection == expected
+        assert real_servicer.state_manager.current_game_mode == expected
+        assert ("selection_changed", {"game_name": expected.name}) in _published(real_servicer)
+        real_servicer.user_prefs_writer.update_default_variant.assert_called_once_with("current_game", expected.name)
 
     @pytest.mark.asyncio
-    async def test_web_command_select_game_valid(self, servicer):
-        """select_game command should update selection for valid game."""
-        from services.menu.utils.settings import GAME_MODES
+    @pytest.mark.uc("UC-010", flow="A5")
+    async def test_button_trigger_starts_with_ready_roster(self, real_servicer):
+        """UC-010 A5: a ProcessInput trigger starts with the READY controllers, not waiting for all."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1", "s2")
+        assert real_servicer._game_lifecycle_task is None  # s3 not ready: no auto start
 
-        servicer.current_selection = Games.JoustFFA
-        game_name = "Tournament"
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.ProcessInput(self._request("button_press", button="trigger"), MagicMock())
+            await _await_lifecycle(real_servicer)
 
-        # Simulate the real logic (uses FlagConfigWriter instead of settings_helper)
-        game_mode = Games.from_name(game_name)
-        if game_mode is not None and game_name in GAME_MODES:
-            servicer.current_selection = game_mode
-            servicer.state_manager.set_game_mode(game_mode)
-            await servicer.event_publisher.publish("selection_changed", {"game_name": game_mode.name, "source": "web"})
-            # Persist to flagd via writer
-            servicer.user_prefs_writer.update_default_variant("current_game", game_mode.name)
-
-        assert servicer.current_selection == Games.Tournament
-        servicer.state_manager.set_game_mode.assert_called_with(Games.Tournament)
+        assert _started_roster(stream) == ["s1", "s2"]
+        assert real_servicer.state == menu_pb2.MenuState.GAME_STARTING
 
     @pytest.mark.asyncio
-    async def test_web_command_select_game_invalid(self, servicer):
-        """select_game command should ignore invalid game names."""
-        servicer.current_selection = Games.JoustFFA
-        game_name = "InvalidGameMode"
+    @pytest.mark.uc("UC-010", flow="A5")
+    async def test_web_start_game_starts_with_ready_roster(self, real_servicer):
+        """UC-010 A5: web_command start_game starts the selected mode with the READY controllers."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        real_servicer.current_selection = Games.JoustTeams
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s2", "s3")
 
-        # Simulate the real logic
-        game_mode = Games.from_name(game_name)
-        if game_mode is not None:
-            servicer.current_selection = game_mode
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.ProcessInput(self._request("web_command", command="start_game"), MagicMock())
+            await _await_lifecycle(real_servicer)
 
-        assert servicer.current_selection == Games.JoustFFA  # Unchanged
-
-
-class TestMenuServicerHandleResetMenu:
-    """Tests for _handle_reset_menu method logic."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
+        assert _started_roster(stream) == ["s2", "s3"]
+        request = stream.await_args.args[2]
+        assert request.start_config.game_name == Games.JoustTeams.name
 
     @pytest.mark.asyncio
-    async def test_reset_menu_from_game_starting(self, servicer):
-        """reset_menu should reset from GAME_STARTING to RUNNING."""
-        servicer.state = menu_pb2.MenuState.GAME_STARTING
+    async def test_reset_menu_cancels_game_start(self, real_servicer):
+        """reset_menu in GAME_STARTING returns to RUNNING and publishes game_start_cancelled."""
+        real_servicer.state = menu_pb2.MenuState.GAME_STARTING
 
-        # Simulate the real logic
-        if servicer.state == menu_pb2.MenuState.GAME_STARTING:
-            servicer.state = menu_pb2.MenuState.RUNNING
-            await servicer.event_publisher.publish("game_start_cancelled", {})
+        await real_servicer.ProcessInput(self._request("reset_menu"), MagicMock())
 
-        assert servicer.state == menu_pb2.MenuState.RUNNING
-        servicer.event_publisher.publish.assert_called_with("game_start_cancelled", {})
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        assert _published(real_servicer) == [("game_start_cancelled", {})]
 
     @pytest.mark.asyncio
-    async def test_reset_menu_from_running_no_change(self, servicer):
-        """reset_menu should not change state if RUNNING."""
-        servicer.state = menu_pb2.MenuState.RUNNING
+    async def test_reset_menu_while_running_is_noop(self, real_servicer):
+        """reset_menu outside GAME_STARTING changes nothing and publishes nothing."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
 
-        # Simulate the real logic
-        if servicer.state == menu_pb2.MenuState.GAME_STARTING:
-            servicer.state = menu_pb2.MenuState.RUNNING
-            await servicer.event_publisher.publish("game_start_cancelled", {})
+        await real_servicer.ProcessInput(self._request("reset_menu"), MagicMock())
 
-        assert servicer.state == menu_pb2.MenuState.RUNNING
-        servicer.event_publisher.publish.assert_not_called()
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        real_servicer.event_publisher.publish.assert_not_awaited()
 
 
-class TestMenuServicerStartGame:
-    """Tests for _start_game method logic."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
+class TestMenuServicerReadyUpStart:
+    """UC-010: ready up in the lobby and start the game (real state manager + handlers)."""
 
     @pytest.mark.asyncio
-    async def test_start_game_requires_two_players(self, servicer):
-        """_start_game should require at least 2 players."""
-        # Only 1 ready controller
-        servicer.state_manager.controller_states = {"serial_1": ControllerState.READY}
+    @pytest.mark.uc("UC-010", flow="main", steps=[1, 2, 3, 4, 5], br=["BR-001"])
+    async def test_all_ready_starts_selected_mode_with_ready_players(self, real_servicer):
+        """UC-010 steps 1-5: everyone readies up, the menu starts the selected mode with them."""
+        from lib.types import Sound
 
-        # Simulate the check
-        controllers = list(servicer.state_manager.ready_controllers)
-        if len(controllers) < 2:
-            started = False
-        else:
-            servicer.state = menu_pb2.MenuState.GAME_STARTING
-            started = True
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        real_servicer.current_selection = Games.JoustFFA
+        await _connect(real_servicer, "s1", "s2")
 
-        assert started is False
-        assert servicer.state == menu_pb2.MenuState.STOPPED
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await _ready_up(real_servicer, "s1")
+            # BR-001: one ready player is not enough.
+            assert real_servicer._game_lifecycle_task is None
+            await _ready_up(real_servicer, "s2")
+            await _await_lifecycle(real_servicer)
+
+        # Step 2: beep + bright LED per player.
+        real_servicer.audio.play_sound.assert_any_await(Sound.SFX_BEEP_LOUD, volume=0.5)
+        real_servicer.led.set_ready_color.assert_any_await("s1", Games.JoustFFA.name)
+        real_servicer.led.set_ready_color.assert_any_await("s2", Games.JoustFFA.name)
+        # Step 5: lobby music + idle monitor stopped, the coordinator asked for the mode.
+        real_servicer.audio.stop_lobby_music.assert_awaited_once()
+        real_servicer.idle_monitor.stop.assert_called()
+        assert _started_roster(stream) == ["s1", "s2"]
+        assert stream.await_args.args[2].start_config.game_name == Games.JoustFFA.name
+        assert real_servicer.state == menu_pb2.MenuState.GAME_STARTING
 
     @pytest.mark.asyncio
-    async def test_start_game_sets_game_starting_state(self, servicer):
-        """_start_game should set GAME_STARTING state with enough players."""
-        # 3 ready controllers
-        servicer.state_manager.controller_states = {
-            "serial_1": ControllerState.READY,
-            "serial_2": ControllerState.READY,
-            "serial_3": ControllerState.READY,
-        }
+    @pytest.mark.uc("UC-010", flow="A1")
+    async def test_move_unreadies_and_blocks_start(self, real_servicer):
+        """UC-010 A1: a READY player pressing Move returns to CONNECTED and no game starts."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        await _ready_up(real_servicer, "s1")
 
-        # Simulate the logic
-        controllers = list(servicer.state_manager.ready_controllers)
-        if len(controllers) >= 2:
-            servicer.state = menu_pb2.MenuState.GAME_STARTING
+        await real_servicer.on_button("s1", "move", True)
 
-        assert servicer.state == menu_pb2.MenuState.GAME_STARTING
+        assert real_servicer.state_manager.controller_states["s1"] == ControllerState.CONNECTED
+        real_servicer.led.set_connected_color.assert_awaited_with("s1", Games.JoustFFA.name)
+        assert real_servicer._game_lifecycle_task is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A4")
+    async def test_second_trigger_starts_once(self, real_servicer):
+        """UC-010 A4: with everyone ready, a trigger press starts the game; the latch stops a second start.
+
+        All-ready is reached without an on_enter (the last un-ready controller
+        disconnects), so the trigger path is what starts the game.
+        """
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1", "s2")
+        await real_servicer.on_disconnect("s3")
+        assert real_servicer.state_manager.all_ready()
+        assert real_servicer._game_lifecycle_task is None
+
+        with patch.object(type(real_servicer), "_run_game_lifecycle", autospec=True) as lifecycle:
+            await real_servicer.on_button("s1", "trigger", True)
+            await real_servicer.on_button("s2", "trigger", True)
+            await _await_lifecycle(real_servicer)
+
+        lifecycle.assert_called_once_with(real_servicer, "s1", "controller", None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[4], br=["BR-002"])
+    @pytest.mark.parametrize("blocking_state", [ControllerState.IDLE, ControllerState.ADMIN])
+    async def test_idle_or_admin_controller_blocks_auto_start(self, real_servicer, blocking_state):
+        """UC-010 BR-002: an IDLE or ADMIN controller counts as connected but not ready."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        real_servicer.state_manager.controller_states["blocker"] = blocking_state
+
+        await _ready_up(real_servicer, "s1", "s2")
+
+        assert real_servicer.ready_controllers == {"s1", "s2"}
+        assert not real_servicer.state_manager.all_ready()
+        assert real_servicer._game_lifecycle_task is None
+
+        # Allowed case: without the blocker the same lobby is all ready.
+        del real_servicer.state_manager.controller_states["blocker"]
+        assert real_servicer.state_manager.all_ready()
 
 
 class TestMenuServicerLifecycle:
-    """Tests for lifecycle methods."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
+    """Button monitor, game lifecycle task and shutdown on the real servicer."""
 
     @pytest.mark.asyncio
-    async def test_start_button_monitor(self, servicer):
-        """start_button_monitor should start controller events."""
-        await servicer.controller_events.start()
-        servicer.controller_events.start.assert_called_once()
+    async def test_button_monitor_delegates_to_controller_events(self, real_servicer):
+        """start/stop_button_monitor and button_monitor_running delegate to the event loop."""
+        await real_servicer.start_button_monitor()
+        await real_servicer.stop_button_monitor()
+
+        real_servicer.controller_events.start.assert_awaited_once()
+        real_servicer.controller_events.stop.assert_awaited_once()
+        real_servicer.controller_events.is_running = True
+        assert real_servicer.button_monitor_running is True
 
     @pytest.mark.asyncio
-    async def test_stop_button_monitor(self, servicer):
-        """stop_button_monitor should stop controller events."""
-        await servicer.controller_events.stop()
-        servicer.controller_events.stop.assert_called_once()
+    async def test_stop_game_event_monitor_cancels_lifecycle_task(self, real_servicer):
+        """stop_game_event_monitor cancels a running game lifecycle task."""
+        task = asyncio.create_task(asyncio.sleep(10))
+        real_servicer._game_lifecycle_task = task
 
-    def test_button_monitor_running_property(self, servicer):
-        """button_monitor_running should reflect controller_events.is_running."""
-        servicer.controller_events.is_running = True
-        assert servicer.controller_events.is_running is True
+        await real_servicer.stop_game_event_monitor()
 
-        servicer.controller_events.is_running = False
-        assert servicer.controller_events.is_running is False
+        assert task.cancelled()
+        assert real_servicer._game_lifecycle_task is None
 
     @pytest.mark.asyncio
-    async def test_start_game_event_monitor(self, servicer):
-        """start_game_event_monitor should set flag and create task."""
-        # Simulate the logic
-        if not servicer.game_event_monitor_running:
-            servicer.game_event_monitor_running = True
-            servicer.game_event_task = asyncio.create_task(asyncio.sleep(0.01))
+    async def test_start_game_replaces_running_lifecycle(self, real_servicer):
+        """A new _start_game cancels a lifecycle task that is still running."""
+        old = asyncio.create_task(asyncio.sleep(10))
+        real_servicer._game_lifecycle_task = old
 
-        assert servicer.game_event_monitor_running is True
-        assert servicer.game_event_task is not None
+        with patch.object(type(real_servicer), "_run_game_lifecycle", autospec=True):
+            await real_servicer._start_game("web", source="web")
+            await _await_lifecycle(real_servicer)
 
-        # Clean up
-        servicer.game_event_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await servicer.game_event_task
+        assert old.cancelled()
+        assert real_servicer._game_lifecycle_task is not old
 
     @pytest.mark.asyncio
-    async def test_stop_game_event_monitor(self, servicer):
-        """stop_game_event_monitor should clear flag and cancel task."""
-        servicer.game_event_monitor_running = True
-        servicer.game_event_task = asyncio.create_task(asyncio.sleep(10))
+    async def test_shutdown_stops_idle_monitor_and_closes_channels(self, real_servicer):
+        """shutdown stops the idle monitor, cancels the lifecycle and closes the gRPC channels."""
+        task = asyncio.create_task(asyncio.sleep(10))
+        real_servicer._game_lifecycle_task = task
 
-        # Simulate the stop logic
-        servicer.game_event_monitor_running = False
-        if servicer.game_event_task:
-            servicer.game_event_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await servicer.game_event_task
+        await real_servicer.shutdown()
 
-        assert servicer.game_event_monitor_running is False
-
-    @pytest.mark.asyncio
-    async def test_shutdown_closes_channels(self, servicer):
-        """shutdown should close all gRPC channels (no settings channel - moved to flagd)."""
-        await servicer.controller_channel.close()
-        await servicer.game_coordinator_channel.close()
-        await servicer.audio_channel.close()
-
-        servicer.controller_channel.close.assert_called_once()
-        servicer.game_coordinator_channel.close.assert_called_once()
-        servicer.audio_channel.close.assert_called_once()
-
-
-class TestMenuServicerLobbyState:
-    """Tests for lobby state management."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
-
-    def test_multiple_controller_connect(self, servicer):
-        """Should correctly track multiple connected controllers via controller_states."""
-        servicer.state_manager.controller_states["serial_1"] = ControllerState.CONNECTED
-        servicer.state_manager.controller_states["serial_2"] = ControllerState.CONNECTED
-        servicer.state_manager.controller_states["serial_3"] = ControllerState.CONNECTED
-
-        assert len(servicer.connected_controllers) == 3
-        assert "serial_1" in servicer.connected_controllers
-        assert "serial_2" in servicer.connected_controllers
-        assert "serial_3" in servicer.connected_controllers
-
-    def test_controller_disconnect_updates_count(self, servicer):
-        """Disconnecting should update ready count (computed from controller_states)."""
-        servicer.state_manager.controller_states = {
-            "serial_1": ControllerState.READY,
-            "serial_2": ControllerState.READY,
-        }
-        assert servicer.ready_controller_count == 2
-
-        # Remove one controller
-        del servicer.state_manager.controller_states["serial_1"]
-
-        assert servicer.ready_controller_count == 1
-
-
-class TestMenuServicerGameModeSelection:
-    """Tests for game mode selection logic."""
-
-    @pytest.fixture
-    def servicer(self):
-        return FakeMenuServicer()
-
-    def test_set_game_mode_updates_state_manager(self, servicer):
-        """Setting game mode should update state_manager."""
-        servicer.state_manager.set_game_mode(Games.Tournament)
-        servicer.state_manager.set_game_mode.assert_called_with(Games.Tournament)
-
-    def test_current_selection_persistence(self, servicer):
-        """Current selection should persist across state changes."""
-        servicer.current_selection = Games.Werewolf
-        servicer.state = menu_pb2.MenuState.RUNNING
-        servicer.state = menu_pb2.MenuState.STOPPED
-
-        assert servicer.current_selection == Games.Werewolf
+        real_servicer.idle_monitor.stop.assert_called_once()
+        assert task.cancelled()
+        # All three channels are the same autospec'd channel in this fixture.
+        assert real_servicer.controller_channel.close.await_count == 3
 
 
 class TestGameEventResult:
