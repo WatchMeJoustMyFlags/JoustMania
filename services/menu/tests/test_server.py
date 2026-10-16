@@ -29,8 +29,8 @@ def _servicer_with_flags(**flags):
     return servicer
 
 
-async def _boot(servicer) -> None:
-    """Run server.serve() until the boot sequence is done, then shut it down via SIGTERM."""
+async def _boot(servicer):
+    """Run server.serve() until the boot sequence is done, then SIGTERM it; returns the gRPC server mock."""
     loop = asyncio.get_running_loop()
     handlers = {}
     grpc_server = create_autospec(grpc.aio.Server, instance=True)
@@ -53,6 +53,7 @@ async def _boot(servicer) -> None:
         handlers[signal.SIGTERM]()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=5)
+    return grpc_server
 
 
 class TestMenuAutoStart:
@@ -91,8 +92,10 @@ class TestMenuAutoStart:
         """SIGTERM stops the button monitor and lifecycle, shuts the servicer down and stops the server."""
         servicer = _servicer_with_flags()
 
-        await _boot(servicer)
+        grpc_server = await _boot(servicer)
 
         servicer.stop_button_monitor.assert_awaited_once()
         servicer.stop_game_event_monitor.assert_awaited_once()
         servicer.shutdown.assert_awaited_once()
+        grpc_server.start.assert_awaited_once()
+        grpc_server.stop.assert_awaited_once_with(grace=5)

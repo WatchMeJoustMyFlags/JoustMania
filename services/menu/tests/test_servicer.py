@@ -67,10 +67,6 @@ class FakeMenuServicer:
         self.state = menu_pb2.MenuState.STOPPED
         self.current_selection = Games.JoustFFA
 
-        # Game event monitoring
-        self.game_event_task = None
-        self.game_event_monitor_running = False
-
         # Mocked dependencies
         self.led = MagicMock()
         self.audio = MagicMock()
@@ -81,13 +77,9 @@ class FakeMenuServicer:
         # FlagConfigWriter mocks (replacing SettingsHelper)
         self.game_settings_writer = MagicMock()
         self.game_settings_writer.update_default_variant = MagicMock(return_value=True)
-        self.game_settings_writer.cycle_variant = MagicMock(return_value="medium")
-        self.game_settings_writer.get_current_variant = MagicMock(return_value="medium")
 
         self.user_prefs_writer = MagicMock()
         self.user_prefs_writer.update_default_variant = MagicMock(return_value=True)
-        self.user_prefs_writer.cycle_variant = MagicMock(return_value="on")
-        self.user_prefs_writer.get_current_variant = MagicMock(return_value="on")
 
         # OpenFeature client mocks (for reading settings)
         self.game_settings_client = MagicMock()
@@ -106,16 +98,9 @@ class FakeMenuServicer:
         self.event_publisher.unsubscribe = AsyncMock()
 
         self.state_manager = MagicMock()
-        self.state_manager.on_controller_connected = AsyncMock()
-        self.state_manager.on_controller_disconnected = AsyncMock()
-        self.state_manager.update_battery = MagicMock()
-        self.state_manager.handle_button_event = AsyncMock()
-        self.state_manager.set_game_mode = MagicMock()
         self.state_manager.reset = AsyncMock(return_value=["serial_1", "serial_2"])
         # controller_states is the single source of truth (starts empty)
         self.state_manager.controller_states = {}
-        self.state_manager.button_states = {}
-        self.state_manager.transition_to = AsyncMock()
 
         # Computed properties on state_manager (match real implementation)
         type(self.state_manager).ready_controllers = property(
@@ -123,18 +108,9 @@ class FakeMenuServicer:
         )
         type(self.state_manager).connected_controllers = property(lambda sm: set(sm.controller_states.keys()))
 
+        # _restart_lobby waits for the button stream to reconnect.
         self.controller_events = MagicMock()
-        self.controller_events.start = AsyncMock()
-        self.controller_events.stop = AsyncMock()
-        self.controller_events.is_running = False
         self.controller_events.wait_for_connection = AsyncMock()
-
-        self.admin_handler = MagicMock()
-        self.admin_handler.combo_shown = False
-        self.admin_handler.check_combo_from_state = MagicMock(return_value=False)
-
-        self.voice_actor = "ivy"
-        self.game_options = []
 
         # Mock channels (no settings_channel - settings moved to flagd)
         self.controller_channel = MagicMock()
@@ -154,15 +130,6 @@ class FakeMenuServicer:
     def connected_controllers(self) -> set[str]:
         """All connected controllers (delegates to state_manager)."""
         return self.state_manager.connected_controllers
-
-    @property
-    def ready_controller_count(self) -> int:
-        """Number of ready controllers (computed from state_manager)."""
-        return len(self.state_manager.ready_controllers)
-
-    async def on_disconnect(self, serial: str) -> None:
-        """Handle controller disconnect (matches real implementation)."""
-        await self.state_manager.on_controller_disconnected(serial)
 
 
 def _default_returning_flag_client(_domain: str):
@@ -545,12 +512,14 @@ class TestMenuServicerReadyUpStart:
 
         real_servicer.state = menu_pb2.MenuState.RUNNING
         real_servicer.current_selection = Games.JoustFFA
-        await _connect(real_servicer, "s1", "s2")
+        await _connect(real_servicer, "s1")
 
         with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
             await _ready_up(real_servicer, "s1")
-            # BR-001: one ready player is not enough.
+            # BR-001: a lone ready player is "everyone ready" but below the 2-player minimum.
+            assert real_servicer.ready_controllers == real_servicer.connected_controllers == {"s1"}
             assert real_servicer._game_lifecycle_task is None
+            await _connect(real_servicer, "s2")
             await _ready_up(real_servicer, "s2")
             await _await_lifecycle(real_servicer)
 
@@ -625,7 +594,7 @@ class TestMenuServicerForceStartShortRoster:
     """UC-014 A3: a forced roster of fewer than two players never starts a game."""
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-014", flow="A3", steps=[3])
+    @pytest.mark.uc("UC-014", flow="A3", steps=[1, 2])
     async def test_force_start_with_only_host_publishes_cancelled(self, real_servicer):
         """force_all_start off and nobody else ready: roster = host only -> game_start_cancelled, lobby back."""
         from proto import controller_manager_pb2, controller_manager_pb2_grpc
