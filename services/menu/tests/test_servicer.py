@@ -616,6 +616,44 @@ class TestMenuServicerReadyUpStart:
         assert real_servicer.state_manager.all_ready()
 
 
+class TestMenuServicerForceStartShortRoster:
+    """UC-014 A3: a forced roster of fewer than two players never starts a game."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A3", steps=[3])
+    async def test_force_start_with_only_host_publishes_cancelled(self, real_servicer):
+        """force_all_start off and nobody else ready: roster = host only -> game_start_cancelled, lobby back."""
+        from proto import controller_manager_pb2, controller_manager_pb2_grpc
+
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "host", "s2")
+        for button in ("cross", "circle", "square", "triangle"):
+            await real_servicer.on_button("host", button, True)
+        assert real_servicer.admin_handler.is_admin_controller("host")
+
+        live_stub = create_autospec(controller_manager_pb2_grpc.ControllerManagerServiceStub, instance=True)
+        live_stub.GetConnectedControllers = AsyncMock(
+            return_value=controller_manager_pb2.GetConnectedControllersResponse(connected_serials=["host", "s2"])
+        )
+        with (
+            patch("lib.feature_flags.get_flag_client", side_effect=_default_returning_flag_client),
+            patch.object(controller_manager_pb2_grpc, "ControllerManagerServiceStub", return_value=live_stub),
+            patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream,
+        ):
+            await real_servicer.admin_handler.handle_force_start("host")
+            await _await_lifecycle(real_servicer)
+
+        published = [event for event, _data in _published(real_servicer)]
+        assert "game_requested" in published
+        assert published.count("game_start_cancelled") == 1
+        assert published.index("game_requested") < published.index("game_start_cancelled")
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        stream.assert_not_awaited()
+        # Back in the lobby: the host is CONNECTED again with the lobby colour.
+        assert real_servicer.state_manager.controller_states["host"] == ControllerState.CONNECTED
+        real_servicer.led.set_connected_color.assert_any_await("host", Games.JoustFFA.name)
+
+
 class TestMenuServicerLifecycle:
     """Button monitor, game lifecycle task and shutdown on the real servicer."""
 
