@@ -64,7 +64,7 @@ describe("parseLogfmt", () => {
   });
 });
 
-describe("aggregateLogLines — counts, means, in-flight, delta", () => {
+describe("UC-035: main step 4, aggregateLogLines — counts, means, in-flight, delta", () => {
   it("ignores non-experiment lines and lines missing msg/experiment_id", () => {
     const result = aggregateLogLines([
       { line: "msg=some.other.event foo=bar", tsMs: nextTs() },
