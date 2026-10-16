@@ -284,8 +284,8 @@ states.
   (`{"serial":"MOCK0003"}`, `{"serial":"...","effect":"rumble"}`), so one game's events are one value and
   a burst of events for different players never collapses (review Important 1 and C2).
 - `POST /interventions/{flag}` with `scope.game_id` appends an event and returns its `seq`.
-- **Coordinator changes** (#1410 lands the reader behind a switch, default off; #1411 switches the flags
-  and turns it on): per (game, flag) it keeps the last `(epoch, seq)` it applied, starting at `("", 0)` when
+- **Coordinator changes** (#1410 lands the reader behind a switch, `INTERVENTION_EVENT_LIST_READER`,
+  default off; #1411 switches the flags and turns it on): per (game, flag) it keeps the last `(epoch, seq)` it applied, starting at `("", 0)` when
   the game registers; on each configuration change it evaluates the flag with `{gameId}` and applies, in
   order, every event with `seq` above the last one. The nonce parsing, `_UnknownNonce` and the per-game nonce
   baseline go away (#1416). Today's change detection is replaced, not kept. The reader **never replays**
@@ -436,8 +436,13 @@ write it re-renders the merged configuration and pushes it to every open stream.
 - **`DELETE` of a persisted value** removes it from the state file. Fixtures `DELETE` every value they set.
 
 Size is bounded by live games × players × mutable flags (NFR-051), not by history. Readers that
-evaluate an intervention flag without `gameId` (the menu's display of `global_sensitivity_override`,
-`services/menu/handlers/admin.py:1260`) resolve the baseline; #1410 lists them.
+evaluate an intervention flag without `gameId` resolve the baseline, never a game's value. #1410 found
+two, both display-only:
+
+| Reader | Reads | Effect of per-game rendering |
+|---|---|---|
+| menu admin display (`services/menu/handlers/admin.py:1314`, `_state_manager.interventions_client`) | `global_sensitivity_override` without context | shows the baseline (`none`) while a game runs with an override; display only |
+| agent pattern digest (`services/agent/patterngame/digest.go`, OFREP, `interventions: {"*"}`) | every `interventions` key without `gameId` | digests the baseline; a game's interventions are not part of the replay digest, which is the intent (UC-046) |
 
 ## 11. Risks
 

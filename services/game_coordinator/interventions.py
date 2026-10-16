@@ -46,6 +46,7 @@ NO game effects are applied in this PR.
 import asyncio
 import contextlib
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -134,6 +135,17 @@ class _UnknownNonce:
 
 
 _UNKNOWN = _UnknownNonce()
+
+# Event-list reader switch (FR-127, #1410). When on, the five one-shot flags are
+# read as per-game event lists ``{"epoch","seq","events"}`` served by the flag
+# service (architecture note §6) instead of ``"<nonce>:<payload>"`` strings.
+# Default off until the interventions set is cut over to the flag service (#1411).
+EVENT_LIST_READER_ENV = "INTERVENTION_EVENT_LIST_READER"
+
+
+def _event_list_reader_from_env() -> bool:
+    return os.getenv(EVENT_LIST_READER_ENV, "off").strip().lower() in ("1", "on", "true", "yes")
+
 
 # Sentinel "no payload / no-op" values for edge-triggered flags.
 _EDGE_EMPTY_VALUES = {"", "none"}
@@ -586,6 +598,7 @@ class InterventionManager:
         time_fn: Callable[[], float] = time.monotonic,
         end_game_fn: Callable[[str, str], Awaitable[tuple[bool, str]]] | None = None,
         get_sessions: Callable[[], list["SessionView"]] | None = None,
+        event_list_reader: bool | None = None,
     ):
         """
         Args:
@@ -618,6 +631,18 @@ class InterventionManager:
                 session; ``end_game`` is addressed by payload instead (BR-011).
         """
         self._publish = event_publisher
+        # Event-list reader (FR-127): None reads INTERVENTION_EVENT_LIST_READER.
+        self._event_lists = _event_list_reader_from_env() if event_list_reader is None else event_list_reader
+        # Per game, per one-shot flag: the last applied (epoch, seq). Starts at
+        # ("", 0) when the game registers; advanced under the lock BEFORE the
+        # events are dispatched (re-review N1/N2).
+        self._last_event: dict[str, dict[str, tuple[str, int]]] = {}
+        # Single-flight evaluate_all (re-review N1): one flag-service write
+        # wakes every flagd domain watcher, so PROVIDER_CONFIGURATION_CHANGED
+        # fires once per domain; overlapping passes coalesce into one follow-up.
+        self._eval_state_lock = threading.Lock()
+        self._eval_running = False
+        self._eval_dirty = False
         self._get_game = get_game
         self._get_sessions = get_sessions
         self._battery_provider = battery_provider
@@ -971,6 +996,15 @@ class InterventionManager:
         converges on the current value", so a still-set state value applies to a
         new game (not game-scoped yet, #1269).
         """
+        if self._event_lists:
+            # A fresh game scope starts with empty event lists, neutral grants
+            # and neutral levels: the flag service drops a game's values with
+            # its scope, so nothing of an earlier game is left (BR-006, #1317).
+            with self._lock:
+                self._last_event[game_id] = {}
+                self._state_bucket(game_id)
+                self._pending_primed.add(game_id)
+            return
         serials = list(serials)
         session = SessionView(game_id=game_id, game=None, publish=self._publish)
         self._prime_edge_bucket(session)
@@ -990,6 +1024,7 @@ class InterventionManager:
             self._last_nonce.pop(game_id, None)
             self._last_state_value.pop(game_id, None)
             self._dispatchers.pop(game_id, None)
+            self._last_event.pop(game_id, None)
 
     def _prime_edge_bucket(self, session: "SessionView") -> None:
         """Record every edge flag's current nonce for ``session`` (no apply).
@@ -1059,6 +1094,8 @@ class InterventionManager:
                 self._last_state_value.pop(stale, None)
             for stale in [gid for gid in self._dispatchers if gid not in live_ids]:
                 self._dispatchers.pop(stale, None)
+            for stale in [gid for gid in self._last_event if gid not in keep]:
+                self._last_event.pop(stale, None)
 
     # ------------------------------------------------------------------ #
     # Flag change handling
@@ -1092,6 +1129,32 @@ class InterventionManager:
             asyncio.run(self.evaluate_all())
 
     async def evaluate_all(self) -> None:
+        """Single-flight wrapper around :meth:`_evaluate_all_once` (re-review N1).
+
+        A call while a pass runs only marks the pass dirty and returns; the
+        running pass then loops once more, so N overlapping change events cost
+        at most two passes and two passes never interleave.
+        """
+        with self._eval_state_lock:
+            if self._eval_running:
+                self._eval_dirty = True
+                return
+            self._eval_running = True
+            self._eval_dirty = False
+        try:
+            while True:
+                await self._evaluate_all_once()
+                with self._eval_state_lock:
+                    if not self._eval_dirty:
+                        self._eval_running = False
+                        return
+                    self._eval_dirty = False
+        except BaseException:
+            with self._eval_state_lock:
+                self._eval_running = False
+            raise
+
+    async def _evaluate_all_once(self) -> None:
         """Re-evaluate every intervention flag for every live session (#838).
 
         Public for tests and the change handler. Refreshes the rate-limit budget
@@ -1117,6 +1180,8 @@ class InterventionManager:
             with self._lock:
                 self._nonce_bucket(session.game_id)
                 self._state_bucket(session.game_id)
+                if self._event_lists:
+                    self._last_event.setdefault(session.game_id, {})
             for spec in INTERVENTION_SPECS:
                 try:
                     await self._evaluate_one(spec, session)
@@ -1138,7 +1203,8 @@ class InterventionManager:
         """
         # The legacy single-primary path (sentinel id) is primed once in start()
         # and its bucket outlives games, so it never replays a stale value.
-        if session.game_id == _PRIMARY_SENTINEL_GAME_ID:
+        if session.game_id == _PRIMARY_SENTINEL_GAME_ID or self._event_lists:
+            # Event lists need no baseline: a game scope starts empty (BR-006).
             return
         with self._lock:
             if session.game_id in self._last_nonce:
@@ -1165,6 +1231,10 @@ class InterventionManager:
             return
         if spec.player_targeted and not spec.edge_triggered:
             await self._evaluate_targeted_state(spec, session)
+            return
+
+        if spec.edge_triggered and self._event_lists:
+            await self._evaluate_event_list(spec, session)
             return
 
         if spec.edge_triggered:
@@ -1232,6 +1302,89 @@ class InterventionManager:
             value = raw
 
         await self._enforce_and_dispatch(spec, value, payload, target, session)
+
+    async def _evaluate_event_list(self, spec: InterventionSpec, session: "SessionView") -> None:
+        """Apply every new event of a one-shot flag's per-game event list (FR-127).
+
+        The flag resolves, for this game's ``gameId``, to
+        ``{"epoch","seq","events":[{"seq","payload"}, ...]}`` (the last K
+        events). Rules (architecture note §6, re-review N2):
+
+        - a failed read (error code or reason ERROR) does nothing: it neither
+          applies nor moves the last applied ``(epoch, seq)``;
+        - an empty epoch is the baseline value: nothing to apply or reset;
+        - only a non-empty, different epoch (a flag-service restart) resets the
+          last seq to 0;
+        - a seq at or below the last applied one in the same epoch is ignored;
+        - more than K events between two reads is logged and counted;
+        - the last applied ``(epoch, seq)`` advances under the lock BEFORE the
+          events are dispatched, so an overlapping pass cannot apply them twice.
+        """
+        value = self._read_event_list(spec, session)
+        if value is None:
+            return
+        epoch, seq, events = value
+        if not epoch:
+            return
+        with self._lock:
+            bucket = self._last_event.get(session.game_id)
+            if bucket is None:
+                return  # session retired mid-pass: never fire into it
+            last_epoch, last_seq = bucket.get(spec.flag_key, ("", 0))
+            if epoch != last_epoch:
+                last_seq = 0
+            elif seq <= last_seq:
+                return
+            fresh = sorted((e for e in events if e[0] > last_seq), key=lambda e: e[0])
+            gap = bool(fresh) and fresh[0][0] > last_seq + 1
+            bucket[spec.flag_key] = (epoch, max([seq, last_seq] + [e[0] for e in fresh]))
+        if gap:
+            logger.warning(
+                f"{spec.flag_key}: game {session.game_id}: events {last_seq + 1}..{fresh[0][0] - 1} "
+                "fell out of the event list before they were read (more than K between two reads)"
+            )
+            from services.game_coordinator import metrics
+
+            metrics.intervention_event_gaps_total.labels(flag=spec.flag_key).inc()
+        for _, payload in fresh:
+            payload_str = _event_payload_string(spec, payload)
+            if spec.payload_required and not payload_str.strip(" :"):
+                continue
+            target = _edge_target_serial(spec, payload_str)
+            await self._enforce_and_dispatch(spec, payload_str, payload_str, target, session)
+
+    def _read_event_list(
+        self, spec: InterventionSpec, session: "SessionView"
+    ) -> "tuple[str, int, list[tuple[int, dict]]] | None":
+        """Read an event list as ``(epoch, seq, [(seq, payload), ...])``, or None
+        on a failed or malformed read (fail closed: nothing applies)."""
+        client = self._interventions_client
+        if client is None:
+            return None
+        ctx = self._session_context(session.game_id)
+        try:
+            details = client.get_object_details(spec.flag_key, {}, ctx)
+        except Exception as e:
+            record_flag_fallback(spec.flag_key, type(e).__name__, str(e))
+            return None
+        if details.error_code is not None or details.reason == Reason.ERROR:
+            error_code = getattr(details.error_code, "value", None) or str(details.error_code or "ERROR")
+            record_flag_fallback(spec.flag_key, error_code, details.error_message or "")
+            return None
+        value = details.value
+        if not isinstance(value, dict):
+            return None
+        try:
+            epoch = str(value.get("epoch") or "")
+            seq = int(value.get("seq") or 0)
+            events = [
+                (int(e["seq"]), e.get("payload") if isinstance(e.get("payload"), dict) else {})
+                for e in value.get("events") or []
+                if isinstance(e, dict) and "seq" in e
+            ]
+        except (TypeError, ValueError):
+            return None
+        return epoch, seq, events
 
     async def _evaluate_targeted_state(self, spec: InterventionSpec, session: "SessionView") -> None:
         """Change-detect and dispatch a player-targeted LEVEL flag.
@@ -1921,6 +2074,21 @@ class InterventionManager:
 # ---------------------------------------------------------------------- #
 # Module-level helpers (pure; easy to unit-test)
 # ---------------------------------------------------------------------- #
+def _event_payload_string(spec: InterventionSpec, payload: dict) -> str:
+    """Map an event payload (FR-127) to the payload string the handlers take:
+    the serial (eliminate/revive), the sound id (audio_cue),
+    ``"<serial>:<effect>"`` (controller_effect) or ``""`` (end_game; the game
+    is the scope)."""
+    serial = str(payload.get("serial") or "")
+    if spec.flag_key == "audio_cue":
+        return str(payload.get("sound") or "")
+    if spec.flag_key == "controller_effect":
+        return f"{serial}:{payload.get('effect') or ''}"
+    if spec.flag_key == "end_game":
+        return ""
+    return serial
+
+
 def _split_nonce(raw: str) -> tuple[str, str]:
     """Split an edge-triggered value ``"<nonce>:<payload>"``.
 
