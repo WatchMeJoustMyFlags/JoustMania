@@ -4,6 +4,24 @@
  * Displays a single controller with LED color, battery, accelerometer visualization.
  */
 import type { GameplayData, RGB } from "../gen/controller_manager_pb.js";
+import { shieldBadge } from "../shield.js";
+import type { ShieldState } from "../shield.js";
+
+/**
+ * CSS for the LED circle. `color` is the colour last written to the LED, so a
+ * shield shows as white fading to dim white, the last-second blink as off frames
+ * (#1301). Proto3 JSON omits zero fields, so missing r/g/b mean 0.
+ */
+export function ledColorCss(color: Partial<Pick<RGB, "r" | "g" | "b">> | undefined): {
+  background: string;
+  glow: string;
+} {
+  if (!color) return { background: "#333", glow: "transparent" };
+  const r = color.r ?? 0;
+  const g = color.g ?? 0;
+  const b = color.b ?? 0;
+  return { background: `rgb(${r}, ${g}, ${b})`, glow: `rgba(${r}, ${g}, ${b}, 0.6)` };
+}
 
 export class ControllerCard {
   readonly element: HTMLElement;
@@ -12,6 +30,7 @@ export class ControllerCard {
   private readonly batteryElement: HTMLElement;
   private readonly accelDot: HTMLElement;
   private readonly statusBadge: HTMLElement;
+  private readonly shieldElement: HTMLElement;
 
   constructor(serial: string) {
     this.serial = serial;
@@ -21,6 +40,7 @@ export class ControllerCard {
     this.batteryElement = this.element.querySelector(".battery-level")!;
     this.accelDot = this.element.querySelector(".accel-dot")!;
     this.statusBadge = this.element.querySelector(".status-badge")!;
+    this.shieldElement = this.element.querySelector(".shield-badge")!;
   }
 
   private createElement(): HTMLElement {
@@ -36,6 +56,7 @@ export class ControllerCard {
         <div class="accel-dot"></div>
       </div>
       <div class="status-badge connected">Connected</div>
+      <div class="shield-badge" hidden></div>
     `;
     return card;
   }
@@ -45,9 +66,12 @@ export class ControllerCard {
     return this.serial.slice(-4);
   }
 
-  update(data: GameplayData) {
-    // Update LED color
+  update(data: GameplayData, shield: ShieldState | null = null, nowMs: number = Date.now()) {
+    // Update LED color: the colour last written to the LED (shield fade included, #1301)
     this.updateLedColor(data.color);
+
+    // Agent shield badge (UC-040 A14)
+    this.updateShield(shield, nowMs);
 
     // Update battery level
     this.updateBattery(data.battery);
@@ -60,21 +84,22 @@ export class ControllerCard {
   }
 
   private updateLedColor(color: RGB | undefined) {
-    if (!color) {
-      this.ledElement.style.backgroundColor = "#333";
-      this.ledElement.style.setProperty("--led-glow", "transparent");
+    const css = ledColorCss(color);
+    this.ledElement.style.backgroundColor = css.background;
+    this.ledElement.style.setProperty("--led-glow", css.glow);
+    this.ledElement.style.boxShadow = css.glow === "transparent" ? "" : `0 0 20px ${css.glow}`;
+  }
+
+  private updateShield(shield: ShieldState | null, nowMs: number) {
+    const badge = shieldBadge(shield, nowMs);
+    this.element.classList.toggle("shielded", badge !== null);
+    if (!badge) {
+      this.shieldElement.hidden = true;
       return;
     }
-
-    const r = color.r;
-    const g = color.g;
-    const b = color.b;
-    const colorStr = `rgb(${r}, ${g}, ${b})`;
-    const glowStr = `rgba(${r}, ${g}, ${b}, 0.6)`;
-
-    this.ledElement.style.backgroundColor = colorStr;
-    this.ledElement.style.setProperty("--led-glow", glowStr);
-    this.ledElement.style.boxShadow = `0 0 20px ${glowStr}`;
+    this.shieldElement.hidden = false;
+    this.shieldElement.className = badge.className;
+    this.shieldElement.textContent = badge.text;
   }
 
   private updateBattery(level: number) {
