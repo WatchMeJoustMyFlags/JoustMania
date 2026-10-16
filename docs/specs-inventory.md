@@ -185,7 +185,7 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 | D-K4 | #1231 body cites the #1207 length gate (8 s) | The gate was removed from the code by PR #1252 (the change for issue #1234: LiteLLM gateway and legacy in-game LLM path removal); `remoteDecideAdmitted` is always true by design (`services/agent/decision/decide_hook.go:307-315`, comment updated in PR #1257). | stale issue text |
 | D-K5 | Agent README: `enabled=false` stops "before any spans are emitted" | A throttled `agent.disabled` span is emitted (`decision/decision.go:472-476`). | stale doc |
 | D-K6 | Shipped defaults made remote Claude decisions time out: 2500 ms timeout vs 3.4 to 5.5 s measured (#1231) | `decision.claude.timeout_ms` default 5000 ms, `stage` budget variant, leaner output; warm ≈ 2.7 to 3.0 s. | **Resolved by PR #1257** |
-| D-K7 | `services/agent/decide/backends/jev/jev.go:7` package comment says `fallback_reason=unavailable` | The value is `backend_unavailable` (`decision/decide_registry.go`). Doc-only fix inside `services/agent/decide/**`, not edited by the spec PRs. | stale comment |
+| D-K7 | `services/agent/decide/backends/jev/jev.go:7` package comment says `fallback_reason=unavailable` | The value is `backend_unavailable` (`decision/decide_registry.go`). Doc-only fix inside `services/agent/decide/**`, not edited by the spec PRs. | stale comment, **Resolved by #1281** |
 
 ### 4.8 Flags (D-F)
 

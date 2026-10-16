@@ -4,7 +4,7 @@
 //
 // Available() is false until Config.APIKey (JEV_API_KEY) is set, so with
 // decision.backend=jev and no key the decision wiring falls back to rules with
-// fallback_reason=unavailable. The base URL and model default to
+// fallback_reason=backend_unavailable. The base URL and model default to
 // DefaultBaseURL / DefaultModel. The wire format (typed state + questions, typed
 // answers with probabilities and confidence) lives in wire.go and criteria.go.
 //
