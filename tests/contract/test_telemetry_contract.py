@@ -9,7 +9,23 @@ Every telemetry name a consumer depends on must have a live producer:
 (b) every metric (and Python label matcher) in the Grafana dashboards and the
     Prometheus alerts has a producer;
 (c) ``alerts.yml`` passes ``promtool check rules`` (docker), with a structural
-    Python fallback when docker is not available locally.
+    Python fallback when docker is not available locally (in CI, where ``CI`` is
+    set, a missing docker is a failure, not a skip).
+
+Strength of the evidence, per producer kind:
+* Python metrics: a definition AND a recording use resolved through the using
+  file's imports (``metrics.var.set(...)``, ``from .metrics import var``,
+  ``self.metrics.var``, or a helper in the defining module that another file
+  reaches). A same-named parameter or local never counts, and ``.set(0)``
+  (a reset) never counts. See ``telemetry_inventory`` and the scanner fixtures
+  in ``test_scanner_*`` below.
+* Go (agent, connect-proxy) and Rust (rust-hid) metrics: definition only. Their
+  instruments are created where they are recorded, but a Go/Rust metric that is
+  created and never recorded would still pass. Label matchers are checked for
+  Python metrics only.
+* Span names, events and attribute keys: the string literal exists in non-test
+  Python/Rust producer code (docstrings excluded). That proves the name is
+  spelled the same somewhere, not that it is set on the span the agent reads.
 
 Known gaps are listed below, keyed by the issue that tracks them. The lists may
 only shrink: an entry whose gap is fixed fails ``test_known_gaps_are_still_gaps``
@@ -18,6 +34,7 @@ until it is removed, so the PR that fixes a gap also deletes its entry here.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 
@@ -118,6 +135,7 @@ def consumer_queries():
     """(where, PromQL) for every dashboard query and alert expression."""
     queries = [(f"{f} / {title}", q) for f, title, q in ti.dashboard_queries()]
     queries += [(f"alerts.yml / {r['alert']}", r["expr"]) for r in ti.alert_rules()]
+    queries += [(f"dashboard SPA {f} / {name}", q) for f, name, q in ti.spa_queries()]
     return queries
 
 
@@ -134,6 +152,9 @@ def test_inventory_parsers_find_the_known_surface(python_metrics, consumer_queri
     )
     assert ingest.span_events, "extract_spans.go event constants not found"
     assert ingest.infra_span_names, "infracontext span-name constants not found"
+    assert len(ti.spa_queries()) >= 2, (
+        "dashboard SPA *_QUERY scan found too few queries"
+    )
     assert len(consumer_queries) >= 250, (
         "dashboard/alert query scan found too few queries"
     )
@@ -301,7 +322,7 @@ def test_known_gaps_are_still_gaps(python_metrics, produced, consumer_queries, d
     stale += [
         f"AGENT_METRIC_KNOWN_GAPS[{n}]"
         for n in AGENT_METRIC_KNOWN_GAPS
-        if n in produced
+        if n in produced or n not in set(ti.agent_ingest().metric_names.values())
     ]
     used = _consumed_metrics(consumer_queries, defined)
     stale += [
@@ -372,6 +393,8 @@ def run_promtool(*args: str) -> subprocess.CompletedProcess:
 def test_alert_rules_pass_promtool_check():
     """UC-035 A2: alerts.yml is a valid Prometheus rule file."""
     if not _docker_available():
+        if os.environ.get("CI"):
+            pytest.fail("docker is required in CI for promtool check rules")
         pytest.skip(
             "docker not available; structural fallback runs in test_alert_rules_structure"
         )
@@ -395,3 +418,79 @@ def test_alert_rules_structure():
         )
         names.append(rule["alert"])
     assert len(names) == len(set(names)), "duplicate alert names"
+
+
+# --------------------------------------------------------------------------- #
+# Scanner regression fixtures (review of #1392): a dead metric must stay dead.
+# --------------------------------------------------------------------------- #
+_FIXTURE_METRICS = """\
+from lib.otel_metrics import Gauge
+
+current_game_mode = Gauge("svc_current_mode", "mode", ["mode"])
+music_tempo = Gauge("svc_music_tempo", "tempo")
+active_players = Gauge("svc_active_players", "players")
+
+
+def reset_game_metrics():
+    music_tempo.set(0)
+"""
+
+_FIXTURE_GAME = """\
+from .. import metrics
+
+
+def _probe(logger, current_game_mode):
+    logger.info("mode %s", current_game_mode)
+
+
+def count(active_players):
+    return len(active_players)
+
+
+def end_game():
+    metrics.reset_game_metrics()
+"""
+
+
+def _fixture_tree(tmp_path, game_extra: str = ""):
+    (tmp_path / "lib").mkdir()
+    svc = tmp_path / "services" / "svc"
+    (svc / "games").mkdir(parents=True)
+    (svc / "metrics.py").write_text(_FIXTURE_METRICS)
+    (svc / "games" / "mode.py").write_text(_FIXTURE_GAME + game_extra)
+    return tmp_path
+
+
+def test_scanner_same_named_parameter_or_local_is_not_a_recording(tmp_path):
+    """A parameter named like a metric (``_probe(logger, current_game_mode)``,
+    ``len(active_players)``) is not the metric."""
+    pm = ti.python_metrics(_fixture_tree(tmp_path))
+    assert pm["svc_current_mode"].recorded_at == []
+    assert pm["svc_active_players"].recorded_at == []
+
+
+def test_scanner_reset_in_the_defining_module_is_not_a_recording(tmp_path):
+    """Only a ``.set(0)`` reset inside metrics.py (reached via reset_game_metrics) is left."""
+    pm = ti.python_metrics(_fixture_tree(tmp_path))
+    assert pm["svc_music_tempo"].recorded_at == []
+
+
+def test_scanner_counts_resolved_recordings(tmp_path):
+    """The real forms do count: module alias, imported name, injected self.metrics, reached helper."""
+    extra = """
+from ..metrics import active_players as players_gauge
+
+
+class Game:
+    def __init__(self, metrics_module):
+        self.metrics = metrics_module
+
+    def tick(self, speed, n):
+        metrics.music_tempo.set(speed)
+        players_gauge.set(n)
+        self.metrics.current_game_mode.labels(mode="ffa").set(1)
+"""
+    pm = ti.python_metrics(_fixture_tree(tmp_path, extra))
+    assert pm["svc_music_tempo"].recorded_at
+    assert pm["svc_active_players"].recorded_at
+    assert pm["svc_current_mode"].recorded_at

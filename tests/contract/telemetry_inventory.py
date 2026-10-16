@@ -52,12 +52,11 @@ _RECORDING_METHODS = {"inc", "dec", "set", "observe", "time"}
 # --------------------------------------------------------------------------- #
 # Source discovery
 # --------------------------------------------------------------------------- #
-def _source_files(root: Path, suffix: str) -> list[Path]:
-    """Non-test production source files under ``root`` with ``suffix``."""
+def _source_files(base: Path, suffix: str, root: Path = REPO_ROOT) -> list[Path]:
+    """Non-test production source files under ``base`` with ``suffix``."""
     out = []
-    for path in root.rglob(f"*{suffix}"):
-        rel_parts = path.relative_to(REPO_ROOT).parts
-        if _SKIP_DIR_PARTS.intersection(rel_parts):
+    for path in base.rglob(f"*{suffix}"):
+        if _SKIP_DIR_PARTS.intersection(path.relative_to(root).parts):
             continue
         name = path.name
         if (
@@ -70,18 +69,23 @@ def _source_files(root: Path, suffix: str) -> list[Path]:
     return sorted(out)
 
 
-def python_sources() -> list[Path]:
-    return _source_files(REPO_ROOT / "lib", ".py") + _source_files(
-        REPO_ROOT / "services", ".py"
+def python_sources(root: Path = REPO_ROOT) -> list[Path]:
+    return _source_files(root / "lib", ".py", root) + _source_files(
+        root / "services", ".py", root
     )
 
 
-def _service_root(path: Path) -> Path:
-    """``services/<svc>`` for a service file, ``lib`` for a lib file."""
-    rel = path.relative_to(REPO_ROOT).parts
-    if rel[0] == "services":
-        return REPO_ROOT / rel[0] / rel[1]
-    return REPO_ROOT / rel[0]
+def _dotted(path: Path, root: Path) -> str:
+    parts = list(path.relative_to(root).with_suffix("").parts)
+    if parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
+
+
+def _service_prefix(dotted: str) -> str:
+    """``services.<svc>`` for a service module, ``lib`` for a lib module."""
+    parts = dotted.split(".")
+    return ".".join(parts[:2]) if parts[0] == "services" else parts[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -92,11 +96,11 @@ class PyMetric:
     name: str
     kind: str  # Counter | Gauge | Histogram
     var: str  # the module-level variable it is bound to
-    path: Path
+    module: str  # dotted defining module, e.g. services.game_coordinator.metrics
     labels: tuple[str, ...] = ()
     recorded_at: list[str] = field(
         default_factory=list
-    )  # "file:line" of recording (or escaping) uses
+    )  # "file:line" of recording uses
 
 
 def _call_name(func: ast.expr) -> str | None:
@@ -105,29 +109,6 @@ def _call_name(func: ast.expr) -> str | None:
     if isinstance(func, ast.Attribute):
         return func.attr
     return None
-
-
-def _python_metric_definitions() -> list[PyMetric]:
-    defs: list[PyMetric] = []
-    for path in python_sources():
-        if path.name == "otel_metrics.py":
-            continue
-        tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
-                continue
-            call = node.value
-            kind = _call_name(call.func)
-            if kind not in _PY_METRIC_CLASSES or not call.args:
-                continue
-            first = call.args[0]
-            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
-                continue
-            target = node.targets[0]
-            var = target.id if isinstance(target, ast.Name) else _call_name(target)
-            if var:
-                defs.append(PyMetric(first.value, kind, var, path, _label_names(call)))
-    return defs
 
 
 def _label_names(call: ast.Call) -> tuple[str, ...]:
@@ -145,11 +126,109 @@ def _label_names(call: ast.Call) -> tuple[str, ...]:
     return ()
 
 
-def _receiver_name(expr: ast.expr) -> str | None:
-    """Terminal name of a metric receiver, unwrapping ``.labels(...)``.
+def _python_metric_definitions(root: Path) -> list[PyMetric]:
+    """Module-level ``var = Counter|Gauge|Histogram("name", ...)`` assignments."""
+    defs: list[PyMetric] = []
+    for path in python_sources(root):
+        if path.name == "otel_metrics.py":
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+                continue
+            call = node.value
+            if _call_name(call.func) not in _PY_METRIC_CLASSES or not call.args:
+                continue
+            first = call.args[0]
+            target = node.targets[0]
+            if (
+                isinstance(first, ast.Constant)
+                and isinstance(first.value, str)
+                and isinstance(target, ast.Name)
+            ):
+                defs.append(
+                    PyMetric(
+                        first.value,
+                        _call_name(call.func),
+                        target.id,
+                        _dotted(path, root),
+                        _label_names(call),
+                    )
+                )
+    return defs
 
-    ``metrics.foo.labels(a=1).inc()`` -> ``foo``; ``foo.set(1)`` -> ``foo``.
-    """
+
+# Receivers are resolved through the importing file's bindings, never by bare
+# variable name: a parameter or local that happens to share a metric's name
+# (``def f(current_game_mode): log(current_game_mode)``) is not the metric.
+# Recognised forms, for a metric ``var`` defined in module ``M``:
+#   * ``alias.var`` where ``alias`` is bound to ``M`` (``from . import metrics``,
+#     ``import metrics``, ``from services.x import metrics as m``, ...);
+#   * ``name`` imported from ``M`` (``from .metrics import var as name``);
+#   * ``self.metrics.var`` / ``self._metrics.var``: the menu injects its service's
+#     ``metrics`` module this way (MetricsAware handlers);
+#   * a bare ``var`` inside ``M`` itself, but only within a top-level function or
+#     class that another file reaches (``metrics.set_controller_info(...)``,
+#     ``get_metrics_interceptors()`` -> the interceptor classes); module-level
+#     statements and unreached helpers in ``M`` never count.
+# ``.set(0)`` is a reset, not a recording, and never counts.
+_INJECTED_MODULE_ATTRS = {"metrics", "_metrics"}
+
+
+@dataclass
+class _Bindings:
+    modules: dict[str, str] = field(
+        default_factory=dict
+    )  # local alias -> defining module
+    names: dict[str, tuple[str, str]] = field(
+        default_factory=dict
+    )  # local name -> (module, var)
+    injected: str | None = None  # module behind self.metrics / self._metrics
+
+
+def _resolve_module(candidate: str, defining: set[str], importer: str) -> str | None:
+    matches = [d for d in defining if d == candidate or d.endswith("." + candidate)]
+    if len(matches) > 1:  # e.g. ``import metrics``: the importer's own service wins
+        matches = [
+            d for d in matches if _service_prefix(d) == _service_prefix(importer)
+        ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _bindings(tree: ast.Module, module: str, defining: set[str]) -> _Bindings:
+    b = _Bindings()
+    package = module.rsplit(".", 1)[0] if "." in module else ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                target = _resolve_module(alias.name, defining, module)
+                if target and (alias.asname or "." not in alias.name):
+                    b.modules[alias.asname or alias.name] = target
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                parts = package.split(".") if package else []
+                parts = parts[: len(parts) - (node.level - 1)]
+                base = ".".join(parts + ([node.module] if node.module else []))
+            for alias in node.names:
+                local = alias.asname or alias.name
+                target = _resolve_module(
+                    f"{base}.{alias.name}" if base else alias.name, defining, module
+                )
+                if target:
+                    b.modules[local] = target
+                elif base and (owner := _resolve_module(base, defining, module)):
+                    b.names[local] = (owner, alias.name)
+    own_metrics = _resolve_module("metrics", defining, module)
+    if own_metrics and _service_prefix(own_metrics) == _service_prefix(module):
+        b.injected = own_metrics
+    return b
+
+
+def _resolve_ref(
+    expr: ast.expr, b: _Bindings, local_vars: dict[str, str] | None = None
+) -> tuple[str, str] | None:
+    """(module, var) of a metric reference, unwrapping ``.labels(...)``; None if unresolvable."""
     if (
         isinstance(expr, ast.Call)
         and isinstance(expr.func, ast.Attribute)
@@ -157,22 +236,23 @@ def _receiver_name(expr: ast.expr) -> str | None:
     ):
         expr = expr.func.value
     if isinstance(expr, ast.Attribute):
-        return expr.attr
+        owner = expr.value
+        if isinstance(owner, ast.Name) and owner.id in b.modules:
+            return b.modules[owner.id], expr.attr
+        if (
+            b.injected
+            and isinstance(owner, ast.Attribute)
+            and owner.attr in _INJECTED_MODULE_ATTRS
+            and isinstance(owner.value, ast.Name)
+            and owner.value.id == "self"
+        ):
+            return b.injected, expr.attr
+        return None
     if isinstance(expr, ast.Name):
-        return expr.id
-    return None
-
-
-def _metric_ref_name(expr: ast.expr) -> str | None:
-    """Terminal name of a bare metric reference or its ``.labels(...)`` child."""
-    if (
-        isinstance(expr, ast.Call)
-        and isinstance(expr.func, ast.Attribute)
-        and expr.func.attr == "labels"
-    ):
-        expr = expr.func.value
-    if isinstance(expr, (ast.Attribute, ast.Name)):
-        return _receiver_name(expr)
+        if expr.id in b.names:
+            return b.names[expr.id]
+        if local_vars and expr.id in local_vars:
+            return local_vars[expr.id], expr.id
     return None
 
 
@@ -186,6 +266,7 @@ _NON_RECORDING_CALLS = {
     "id",
     "repr",
     "str",
+    "len",
 }
 
 
@@ -193,12 +274,11 @@ def _escapes(node: ast.expr, parent: ast.AST) -> bool:
     """True when a metric (or its labelled child) is handed on to be recorded elsewhere.
 
     Covers the two indirect patterns this codebase uses: passing the metric to a
-    recording helper (``start_system_metrics_collector(cpu_counter, ...)``) and
-    caching labelled children for a hot loop (``self._gauges[s] = {"x": m.labels(serial=s)}``).
+    recording helper (``start_system_metrics_collector(cpu_counter=metrics.x)``) and
+    caching labelled children for a hot loop (``self._gauges[s] = {"x": metrics.m.labels(serial=s)}``).
     """
     if isinstance(parent, ast.Call) and node is not parent.func:
-        callee = _call_name(parent.func)
-        return callee not in _NON_RECORDING_CALLS
+        return _call_name(parent.func) not in _NON_RECORDING_CALLS
     if isinstance(parent, ast.keyword):
         return True
     if isinstance(parent, ast.Dict):
@@ -208,63 +288,112 @@ def _escapes(node: ast.expr, parent: ast.AST) -> bool:
     return isinstance(parent, (ast.Return, ast.List, ast.Tuple))
 
 
-def _recording_calls(paths: list[Path]) -> dict[str, list[str]]:
-    """Map metric variable name -> recording call sites ("relpath:line").
+def _is_reset(call: ast.Call) -> bool:
+    return (
+        call.func.attr == "set"
+        and len(call.args) == 1
+        and isinstance(call.args[0], ast.Constant)
+        and call.args[0].value == 0
+    )
 
-    A site is a recording method call on the metric (directly or through
-    ``.labels(...)``), or a place where the metric escapes to code that records
-    it (see :func:`_escapes`). Bare ``.labels(...)`` statements, ``.remove()``
-    and ``.clear()`` do not count: they never put a sample on the wire.
-    """
-    sites: dict[str, list[str]] = {}
-    for path in paths:
-        tree = ast.parse(path.read_text(), filename=str(path))
-        rel = path.relative_to(REPO_ROOT)
-        parents = {
-            child: node
-            for node in ast.walk(tree)
-            for child in ast.iter_child_nodes(node)
-        }
-        for node in ast.walk(tree):
-            name = None
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                if node.func.attr in _RECORDING_METHODS:
-                    name = _receiver_name(node.func.value)
-            is_load = not isinstance(
-                getattr(node, "ctx", ast.Load()), (ast.Store, ast.Del)
-            )
-            if (
-                name is None
-                and is_load
-                and isinstance(node, (ast.Attribute, ast.Name, ast.Call))
-            ):
+
+def _uses(
+    tree: ast.AST, b: _Bindings, local_vars: dict[str, str] | None = None
+) -> list[tuple[tuple[str, str], int]]:
+    """((module, var), line) for every recording call or escape in ``tree``."""
+    parents = {
+        child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
+    }
+    out = []
+    for node in ast.walk(tree):
+        ref = None
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _RECORDING_METHODS
+        ):
+            if not _is_reset(node):
+                ref = _resolve_ref(node.func.value, b, local_vars)
+        if ref is None and isinstance(node, (ast.Attribute, ast.Name, ast.Call)):
+            if not isinstance(getattr(node, "ctx", ast.Load()), (ast.Store, ast.Del)):
                 parent = parents.get(node)
                 if parent is not None and _escapes(node, parent):
-                    name = _metric_ref_name(node)
-            if name:
-                sites.setdefault(name, []).append(f"{rel}:{node.lineno}")
-    return sites
+                    ref = _resolve_ref(node, b, local_vars)
+        if ref:
+            out.append((ref, node.lineno))
+    return out
 
 
-def python_metrics() -> dict[str, PyMetric]:
-    """All Python metric definitions keyed by metric name, with recording sites.
+def python_metrics(root: Path = REPO_ROOT) -> dict[str, PyMetric]:
+    """All Python metric definitions keyed by metric name, with recording sites."""
+    defs = _python_metric_definitions(root)
+    defining = {d.module for d in defs}
+    vars_by_module: dict[str, set[str]] = {}
+    for d in defs:
+        vars_by_module.setdefault(d.module, set()).add(d.var)
 
-    A recording site counts when it is in the defining service (or anywhere, for
-    a metric defined in ``lib/``) and calls a recording method on the variable
-    the metric is bound to.
-    """
-    defs = _python_metric_definitions()
-    all_py = python_sources()
-    sites_by_root: dict[Path, dict[str, list[str]]] = {}
-    for root in {_service_root(d.path) for d in defs}:
-        if root == REPO_ROOT / "lib":
-            scope = all_py
-        else:
-            scope = [p for p in all_py if root in p.parents]
-        sites_by_root[root] = _recording_calls(scope)
+    sites: dict[tuple[str, str], list[str]] = {}
+    helper_sites: dict[
+        tuple[str, str], list[tuple[str, str]]
+    ] = {}  # (module, def) -> [(var, where)]
+    helper_refs: dict[
+        tuple[str, str], set[str]
+    ] = {}  # (module, def) -> same-module defs it references
+    external_refs: set[tuple[str, str]] = (
+        set()
+    )  # (module, name) referenced from another file
+    for path in python_sources(root):
+        module = _dotted(path, root)
+        tree = ast.parse(path.read_text(), filename=str(path))
+        rel = path.relative_to(root)
+        b = _bindings(tree, module, defining)
+        for ref, line in _uses(tree, b):
+            sites.setdefault(ref, []).append(f"{rel}:{line}")
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Attribute, ast.Name)) and (
+                ref := _resolve_ref(node, b)
+            ):
+                external_refs.add(ref)
+        if module in vars_by_module:
+            own = dict.fromkeys(vars_by_module[module], module)
+            top = {
+                n.name
+                for n in tree.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            }
+            for fn in tree.body:
+                if fn.__class__.__name__ in {
+                    "FunctionDef",
+                    "AsyncFunctionDef",
+                    "ClassDef",
+                }:
+                    key = (module, fn.name)
+                    helper_sites[key] = [
+                        (ref[1], f"{rel}:{line}")
+                        for ref, line in _uses(fn, _Bindings(), own)
+                    ]
+                    helper_refs[key] = {
+                        n.id
+                        for n in ast.walk(fn)
+                        if isinstance(n, ast.Name) and n.id in top
+                    } - {fn.name}
+    # A helper (function or class) in a defining module records only if another
+    # file reaches it, directly or through other helpers of the same module.
+    reachable = {k for k in helper_sites if k in external_refs}
+    frontier = list(reachable)
+    while frontier:
+        module, name = frontier.pop()
+        for other in helper_refs.get((module, name), ()):
+            if (module, other) not in reachable:
+                reachable.add((module, other))
+                frontier.append((module, other))
+    for key in reachable:
+        for var, where in helper_sites[key]:
+            sites.setdefault((key[0], var), []).append(where)
+
     out: dict[str, PyMetric] = {}
     for d in defs:
-        d.recorded_at = sites_by_root[_service_root(d.path)].get(d.var, [])
+        d.recorded_at = list(sites.get((d.module, d.var), []))
         prev = out.get(d.name)
         if prev is None:
             out[d.name] = d
@@ -274,8 +403,8 @@ def python_metrics() -> dict[str, PyMetric]:
     return out
 
 
-def recorded_python_metrics() -> set[str]:
-    return {n for n, m in python_metrics().items() if m.recorded_at}
+def recorded_python_metrics(root: Path = REPO_ROOT) -> set[str]:
+    return {n for n, m in python_metrics(root).items() if m.recorded_at}
 
 
 # --------------------------------------------------------------------------- #
@@ -503,3 +632,22 @@ def promql_selector_labels(expr: str) -> list[tuple[str, str]]:
         body = _STRING_RE.sub('""', body)
         pairs.extend((metric, label) for label in _MATCHER_LABEL_RE.findall(body))
     return pairs
+
+
+SPA_DIR = REPO_ROOT / "services" / "dashboard" / "src"
+_SPA_QUERY_RE = re.compile(r"const\s+(\w*QUERY\w*)\s*=\s*(['\"`])(.*?)\2", re.S)
+
+
+def spa_queries() -> list[tuple[str, str, str]]:
+    """(file, const name, PromQL) for the dashboard SPA's VictoriaMetrics queries.
+
+    Every ``const *_QUERY = '...'`` in ``services/dashboard/src/*.ts`` except the
+    Loki ones (``*LOG*``, LogQL). Template ``${...}`` parts are Grafana-style
+    variables to the PromQL scan.
+    """
+    out = []
+    for path in sorted(SPA_DIR.glob("*.ts")):
+        for name, _, body in _SPA_QUERY_RE.findall(path.read_text()):
+            if "LOG" not in name:
+                out.append((path.name, name, body))
+    return out
