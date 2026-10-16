@@ -2,6 +2,7 @@ package decision
 
 import (
 	"testing"
+	"time"
 
 	"github.com/joustmania/agent/gamecontext"
 )
@@ -328,4 +329,44 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// TestAccelerateCandidates_LiveElapsedFromStore shows the #1305 effect on the
+// rules: before #1305 the in-game snapshot had no game_duration_seconds
+// (DurationSeconds nil -> sessionDuration -1), so the duration-gated rules were
+// dead in real games. A live Store snapshot past the accelerate target now
+// carries a real elapsed time and R5 (speed up) produces a candidate.
+//
+// UC: UC-041 BR-003
+func TestAccelerateCandidates_LiveElapsedFromStore(t *testing.T) {
+	accelDominant := map[string]float64{ObjectiveAccelerate: 0.7, ObjectiveEndurance: 0.3}
+	target := defaultFit().AccelerateTargetSessionSeconds
+
+	now := time.Unix(20_000, 0)
+	s := gamecontext.NewStore(time.Hour, time.Hour, func() time.Time { return now })
+	s.SetGameActive(true)
+	for _, serial := range []string{"A", "B", "C"} {
+		s.SetPlayerIntensity(serial, 0.8)
+		s.SetPlayerAlive(serial, true)
+	}
+	now = now.Add(time.Duration(target+20) * time.Second)
+	s.SetSessionDuration(target + 20) // the live gauge, past the target
+
+	t.Run("UC-041/BR-003 pre-#1305 snapshot without duration yields no accelerate candidate", func(t *testing.T) {
+		old := s.Snapshot()
+		old.Session.DurationSeconds = nil
+		if cands := accelerateCandidates(old, defaultFit(), accelDominant); cands != nil {
+			t.Fatalf("candidates = %v, want none without a duration", interventionsOf(cands))
+		}
+	})
+
+	t.Run("UC-041/BR-003 live snapshot past target yields R5 tempo-up", func(t *testing.T) {
+		cands := accelerateCandidates(s.Snapshot(), defaultFit(), accelDominant)
+		if len(cands) != 1 || cands[0].decision.Intervention != InterventionAdjustMusicTempo {
+			t.Fatalf("candidates = %v, want only the R5 tempo-up", interventionsOf(cands))
+		}
+		if got := cands[0].decision.Fitness["session_duration"]; got != target+20 {
+			t.Fatalf("session_duration = %v, want %v", got, target+20)
+		}
+	})
 }

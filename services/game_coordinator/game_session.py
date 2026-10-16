@@ -55,6 +55,9 @@ tracer = get_tracer(__name__)
 GAME_KIND_PRIMARY = "primary"
 GAME_KIND_SHADOW = "shadow"
 
+# How often game_duration_seconds is refreshed while a game is RUNNING (#1305).
+DURATION_GAUGE_INTERVAL_S = 1.0
+
 
 class GameSession:
     """State container + runtime for a single concurrent game.
@@ -226,6 +229,42 @@ class GameSession:
             game_trace_span_id=self.game_trace_span_id,
             gameplay_phase_span_id=self.gameplay_phase_span_id,
         ).set(1)
+
+    def _set_duration_gauge(self) -> None:
+        """Set game_duration_seconds to the seconds since this game was started.
+
+        Same label tuple (game_kind, game_id, experiment_id, arm) as the other
+        per-game lifecycle gauges, so it is one series per live game and is
+        removed at retire by ``clear_metrics`` (bounded cardinality).
+        """
+        if not self.game_start_time:
+            return
+        metrics.game_duration_seconds.labels(
+            game_kind=self.game_kind,
+            game_id=self.game_id,
+            experiment_id=self.experiment_id,
+            arm=self.arm,
+        ).set(time.time() - self.game_start_time)
+
+    async def _publish_duration_while_running(self) -> None:
+        """Refresh game_duration_seconds every DURATION_GAUGE_INTERVAL_S while RUNNING (#1305).
+
+        Before #1305 the gauge was only set at game end, so the agent saw an
+        elapsed time of 0 for the whole game. Runs for real and shadow sessions
+        alike; cancelled by the game loop when ``game.run()`` returns.
+        """
+        warned = False
+        while self.game_running:
+            if self.game_state == game_coordinator_pb2.GameState.RUNNING:
+                try:
+                    self._set_duration_gauge()
+                except Exception as e:
+                    # A metrics failure must not stop the ticker or fail the game;
+                    # warn once per game, then keep trying quietly.
+                    log = logger.debug if warned else logger.warning
+                    log(f"Could not update game_duration_seconds for game {self.game_id}: {e}")
+                    warned = True
+            await asyncio.sleep(DURATION_GAUGE_INTERVAL_S)
 
     def on_event_state_sync(self, event_type: str) -> None:
         """EventBus state-sync callback bound to THIS session's state (#775).
@@ -445,9 +484,24 @@ class GameSession:
                 # session sets game_kind/experiment_id on the game.
                 game.on_gameplay_phase_open = self.publish_gameplay_phase_span_id
 
-                # Store reference and run game
+                # Store reference and run game. The duration ticker shares this
+                # session's event loop (no extra thread/loop) and keeps
+                # game_duration_seconds live while RUNNING (#1305); it is stopped
+                # before the final value is set below so a late tick cannot
+                # overwrite it.
                 self.current_game = game
-                await game.run()
+                duration_ticker = asyncio.create_task(self._publish_duration_while_running())
+                try:
+                    await game.run()
+                finally:
+                    duration_ticker.cancel()
+                    try:
+                        await duration_ticker
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        # Telemetry must never turn a finished game into game_error.
+                        logger.warning(f"Duration ticker for game {self.game_id} failed: {e}")
                 logger.info(f"{self.game_name} game completed")
 
             except Exception as e:
@@ -495,14 +549,11 @@ class GameSession:
                         mode=self.game_name,
                         game_kind=self.game_kind,
                     ).inc()
-                if self.game_start_time:
-                    duration = time.time() - self.game_start_time
-                    metrics.game_duration_seconds.labels(
-                        game_kind=self.game_kind,
-                        game_id=self.game_id,
-                        experiment_id=self.experiment_id,
-                        arm=self.arm,
-                    ).set(duration)
+                # Final value: the gauge holds the whole game's duration at end.
+                try:
+                    self._set_duration_gauge()
+                except Exception as e:
+                    logger.warning(f"Could not set final game_duration_seconds for game {self.game_id}: {e}")
 
                 # Cleanup channels
                 await self.clients.close()

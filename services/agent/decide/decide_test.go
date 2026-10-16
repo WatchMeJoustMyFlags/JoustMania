@@ -447,3 +447,44 @@ func TestAnswerJSON_NoulOmitted(t *testing.T) {
 		t.Errorf("noul 0 must serialize: %s", b)
 	}
 }
+
+// TestBuildState_ElapsedFromLiveStore checks that the elapsed_s a backend (Jev,
+// Claude, rules) is given mid-game comes from a real Store snapshot: the live
+// game_duration_seconds gauge when it advances, and the time since the game
+// started when the gauge is missing (#1305: it used to be 0 for the whole game).
+//
+// UC: UC-041 main A3 BR-003
+func TestBuildState_ElapsedFromLiveStore(t *testing.T) {
+	newStore := func() (*gamecontext.Store, *time.Time) {
+		now := time.Unix(5_000, 0)
+		s := gamecontext.NewStore(time.Hour, time.Hour, func() time.Time { return now })
+		s.SetGameActive(true)
+		return s, &now
+	}
+
+	t.Run("UC-041/main elapsed_s comes from the live gauge", func(t *testing.T) {
+		s, now := newStore()
+		*now = now.Add(12 * time.Second)
+		s.SetSessionDuration(12.5)
+		st := BuildState(s.Snapshot())
+		if st.ElapsedSeconds != 12.5 {
+			t.Fatalf("ElapsedSeconds = %v, want 12.5", st.ElapsedSeconds)
+		}
+		if !strings.Contains(st.Narrative, "elapsed=12.5s") {
+			t.Fatalf("narrative should carry the live elapsed time: %q", st.Narrative)
+		}
+	})
+
+	t.Run("UC-041/A3 elapsed_s falls back to time since start without a gauge", func(t *testing.T) {
+		s, now := newStore()
+		*now = now.Add(45 * time.Second)
+		st := BuildState(s.Snapshot())
+		if st.ElapsedSeconds != 45 {
+			t.Fatalf("ElapsedSeconds = %v, want 45 (fallback)", st.ElapsedSeconds)
+		}
+		raw, err := json.Marshal(st)
+		if err != nil || !strings.Contains(string(raw), `"elapsed_s":45`) {
+			t.Fatalf("JSON should carry elapsed_s 45: %s (%v)", raw, err)
+		}
+	})
+}

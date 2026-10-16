@@ -253,3 +253,37 @@ func TestBalanced_FoldsZeroOnlyWhenSkillLevelGenuinelyMissing(t *testing.T) {
 		t.Fatalf("balanced with 2 skill_level players must fold non-zero from skill-gap, got %v", fit)
 	}
 }
+
+// TestWithEffectiveDuration_LiveGaugeShorterThanTimeline covers the #1305 race: the
+// gauge is now live (~1 Hz), so when the coordinator's final set loses the race
+// against game_active=0 the end snapshot carries the last LIVE value, a little short
+// of the real duration. The start→end bracket then wins; a final gauge at least as
+// long as the bracket stays authoritative.
+//
+// UC: UC-041 BR-003
+func TestWithEffectiveDuration_LiveGaugeShorterThanTimeline(t *testing.T) {
+	start := time.Unix(1_000, 0)
+	timeline := []gamecontext.TimelineEvent{
+		{At: start, Kind: gamecontext.EventPhase, Detail: "start"},
+		{At: start.Add(45 * time.Second), Kind: gamecontext.EventPhase, Detail: "end"},
+	}
+	t.Run("UC-041/BR-003 stale live gauge is replaced by the bracket", func(t *testing.T) {
+		live := 44.0
+		gc := gamecontext.GameContext{Session: gamecontext.SessionSignals{DurationSeconds: &live}, Timeline: timeline}
+		got := withEffectiveDuration(gc)
+		if got.Session.DurationSeconds == nil || *got.Session.DurationSeconds != 45 {
+			t.Fatalf("duration = %v, want 45 from the timeline", got.Session.DurationSeconds)
+		}
+		if live != 44 {
+			t.Fatal("the caller's gauge value must not be mutated")
+		}
+	})
+	t.Run("UC-041/BR-003 final gauge at least as long as the bracket wins", func(t *testing.T) {
+		final := 45.2
+		gc := gamecontext.GameContext{Session: gamecontext.SessionSignals{DurationSeconds: &final}, Timeline: timeline}
+		got := withEffectiveDuration(gc)
+		if got.Session.DurationSeconds == nil || *got.Session.DurationSeconds != 45.2 {
+			t.Fatalf("duration = %v, want the final gauge 45.2", got.Session.DurationSeconds)
+		}
+	})
+}

@@ -768,10 +768,11 @@ func (e *experimentLoop) declareAndStart(ctx context.Context, in experiment.Inte
 // existing per-game retro/summary path. After a conclusion it nudges
 // AllocateAndSpawn so the freed slot is refilled promptly (capacity churn).
 func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
-	// The coordinator emits game_duration_seconds ONLY at game end (one gauge set in
-	// the session teardown), so for an agent-spawned shadow game it routinely loses
-	// the race against the game_active=0 datapoint that fires THIS hook — leaving
-	// gc.Session.DurationSeconds nil at conclusion. That nil made every
+	// The coordinator sets the FINAL game_duration_seconds in the session teardown,
+	// so for an agent-spawned shadow game it routinely loses the race against the
+	// game_active=0 datapoint that fires THIS hook — leaving gc.Session.DurationSeconds
+	// nil at conclusion (before #1305, when the gauge was end-only) or the last live
+	// ~1 Hz value (since #1305), up to an export interval short. That nil made every
 	// duration-based objective (endurance/accelerate) skip its fitness function and
 	// fold the worst-case 0 (#997). Recover the real elapsed time from the partition's
 	// own start→end phase timeline so a concluded game carries a meaningful,
@@ -1208,9 +1209,11 @@ func defaultGameFitness(gc gamecontext.GameContext, objective string) float64 {
 }
 
 // withEffectiveDuration returns gc with Session.DurationSeconds populated from the
-// partition's start→end phase timeline when the coordinator's end-only
-// game_duration_seconds gauge has not yet been observed (DurationSeconds == nil).
-// It is a no-op when the gauge IS present (the gauge is authoritative) or when the
+// partition's start→end phase timeline when the coordinator's final
+// game_duration_seconds value has not yet been observed: either no gauge at all
+// (DurationSeconds == nil) or only a live in-game value (#1305) that is shorter
+// than the start→end bracket because the final set lost the race. The larger of the
+// two wins, so a present final gauge stays authoritative. It is a no-op when the
 // timeline lacks a start/end pair to bracket (no signal to recover — a genuinely
 // signal-less game still folds the worst-case 0, the #994 contract).
 //
@@ -1219,11 +1222,11 @@ func defaultGameFitness(gc gamecontext.GameContext, objective string) float64 {
 // (SetGameActive start/end), NOT a fabricated number — so duration-based
 // objectives (endurance/accelerate) get the signal they need at conclusion.
 func withEffectiveDuration(gc gamecontext.GameContext) gamecontext.GameContext {
-	if gc.Session.DurationSeconds != nil {
-		return gc
-	}
 	dur, ok := timelinePhaseDuration(gc.Timeline)
 	if !ok {
+		return gc
+	}
+	if gc.Session.DurationSeconds != nil && *gc.Session.DurationSeconds >= dur {
 		return gc
 	}
 	gc.Session.DurationSeconds = &dur
