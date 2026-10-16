@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -153,7 +154,7 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 		return decide.Response{}, fmt.Errorf("jev: %s: %w", errType, err)
 	case status < 200 || status > 299:
 		b.finish(ctx, span, start, nil, chathttp.StatusErrorType(status))
-		return decide.Response{}, fmt.Errorf("jev: status %d: %s", status, clip(string(raw), 256))
+		return decide.Response{}, fmt.Errorf("jev: status %d: %s", status, scrub(clip(string(raw), 256)))
 	}
 
 	res, errType, err := decodeResponse(req, raw)
@@ -221,6 +222,14 @@ func (b *Backend) finish(ctx context.Context, span trace.Span, start time.Time, 
 	}
 	metrics.RecordDuration(ctx, mc, errType, duration)
 }
+
+// secretPattern matches credential-looking substrings ("sk-...", "Bearer ...").
+var secretPattern = regexp.MustCompile(`(?i)(sk-[a-z0-9_\-]{6,}|bearer\s+[a-z0-9._\-]+)`)
+
+// scrub redacts credential-looking substrings from vendor error text. The
+// result is still untrusted: callers must not record error strings verbatim on
+// spans (use error.type).
+func scrub(s string) string { return secretPattern.ReplaceAllString(s, "[redacted]") }
 
 func clip(s string, n int) string {
 	if len(s) <= n {

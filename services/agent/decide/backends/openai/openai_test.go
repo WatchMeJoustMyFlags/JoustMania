@@ -405,7 +405,7 @@ func TestDecide_400NotAboutSchemaIsNotRemembered(t *testing.T) {
 	if api.calls.Load() != 2 {
 		t.Errorf("%d calls, want 2", api.calls.Load())
 	}
-	if b.schemaRejected.Load() {
+	if b.schemaDowngraded() {
 		t.Error("downgrade remembered although json_object also failed")
 	}
 	_, _ = b.Decide(context.Background(), testRequest())
@@ -569,11 +569,14 @@ func TestProviderName(t *testing.T) {
 }
 
 func TestShapeFor(t *testing.T) {
-	if s := shapeFor("openai", "gpt-5-mini"); !s.maxCompletionTokens || s.temperature != nil || s.reasoningEffort != "low" {
+	if s := shapeFor("openai", "gpt-5-mini"); !s.maxCompletionTokens || s.temperature != nil || s.reasoningEffort != "minimal" {
 		t.Errorf("gpt-5 shape = %+v", s)
 	}
 	if s := shapeFor("openai", "o4-mini"); s.temperature != nil || s.reasoningEffort != "low" {
 		t.Errorf("o4 shape = %+v", s)
+	}
+	if s := shapeFor("openai", "gpt-5-chat-latest"); s.temperature == nil || s.reasoningEffort != "" {
+		t.Errorf("gpt-5-chat shape = %+v", s)
 	}
 	if s := shapeFor("openai", "gpt-4.1-mini"); !s.maxCompletionTokens || s.temperature == nil || s.reasoningEffort != "" {
 		t.Errorf("gpt-4.1 shape = %+v", s)
@@ -597,10 +600,10 @@ func TestDecide_OpenAIReasoningRequestShape(t *testing.T) {
 	if _, ok := body["max_tokens"]; ok || body["max_completion_tokens"].(float64) != MaxTokens {
 		t.Errorf("tokens = %v / %v", body["max_tokens"], body["max_completion_tokens"])
 	}
-	if body["reasoning_effort"] != "low" {
+	if body["reasoning_effort"] != "minimal" {
 		t.Errorf("reasoning_effort = %v", body["reasoning_effort"])
 	}
-	if a := attrs(api.spans(t)[0]); a["gen_ai.request.reasoning.level"].AsString() != "low" {
+	if a := attrs(api.spans(t)[0]); a["gen_ai.request.reasoning.level"].AsString() != "minimal" {
 		t.Errorf("reasoning.level = %v", a["gen_ai.request.reasoning.level"].AsInterface())
 	}
 }
@@ -630,5 +633,136 @@ func TestDecide_NoQuestions(t *testing.T) {
 	_, err := api.backend("gpt-4.1-mini", false).Decide(context.Background(), decide.Request{})
 	if !errors.Is(err, decide.ErrInvalid) || api.calls.Load() != 0 {
 		t.Errorf("err = %v, calls = %d", err, api.calls.Load())
+	}
+}
+
+// schemaThenObject answers json_schema requests with schemaStatus/schemaBody
+// and json_object requests with objectReply, counting json_schema attempts.
+func schemaThenObject(schemaCalls *atomic.Int32, schemaStatus int, schemaBody string, objectReply reply) func(map[string]any) reply {
+	return func(body map[string]any) reply {
+		if body["response_format"].(map[string]any)["type"] == "json_schema" {
+			schemaCalls.Add(1)
+			return reply{status: schemaStatus, body: []byte(schemaBody)}
+		}
+		return objectReply
+	}
+}
+
+const unsupportedBody = `{"error":{"message":"This response_format type is unavailable now","type":"invalid_request_error"}}`
+
+func TestDecide_ValidationFailure400IsNotRemembered(t *testing.T) {
+	// Groq's one-off output validation failure must not downgrade for good.
+	var schemaCalls atomic.Int32
+	groq := `{"error":{"message":"Generated JSON does not match the expected schema. Please adjust your prompt.","type":"invalid_request_error","code":"json_validate_failed"}}`
+	api := newFakeAPI(t, schemaThenObject(&schemaCalls, 400, groq, reply{status: 200, body: completion("stop", answerJSON, nil)}))
+	b := api.backend("llama-validate", false)
+	if _, err := b.Decide(context.Background(), testRequest()); err != nil {
+		t.Fatalf("Decide: %v (the json_object retry should still answer)", err)
+	}
+	if b.schemaDowngraded() {
+		t.Error("validation-failure 400 downgraded")
+	}
+	_, _ = b.Decide(context.Background(), testRequest())
+	if schemaCalls.Load() != 2 {
+		t.Errorf("json_schema attempts = %d, want 2", schemaCalls.Load())
+	}
+}
+
+func TestDecide_422TreatedLike400(t *testing.T) {
+	var schemaCalls atomic.Int32
+	api := newFakeAPI(t, schemaThenObject(&schemaCalls, 422, `{"detail":"json_schema not supported"}`,
+		reply{status: 200, body: completion("stop", answerJSON, nil)}))
+	b := api.backend("vllm-422", false)
+	if _, err := b.Decide(context.Background(), testRequest()); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if api.calls.Load() != 2 || !b.schemaDowngraded() {
+		t.Errorf("calls = %d downgraded = %v", api.calls.Load(), b.schemaDowngraded())
+	}
+}
+
+func TestDecide_RetryNon2xxIsNotRemembered(t *testing.T) {
+	for _, status := range []int{401, 429, 500} {
+		var schemaCalls atomic.Int32
+		api := newFakeAPI(t, schemaThenObject(&schemaCalls, 400, unsupportedBody,
+			reply{status: status, body: []byte(`{"error":{"message":"nope"}}`)}))
+		b := api.backend("retry-fails", false)
+		if _, err := b.Decide(context.Background(), testRequest()); err == nil {
+			t.Fatalf("%d: Decide succeeded", status)
+		}
+		if b.schemaDowngraded() {
+			t.Errorf("%d on the retry downgraded", status)
+		}
+	}
+}
+
+func TestDecide_DowngradeExpires(t *testing.T) {
+	var schemaCalls atomic.Int32
+	api := newFakeAPI(t, schemaThenObject(&schemaCalls, 400, unsupportedBody,
+		reply{status: 200, body: completion("stop", answerJSON, nil)}))
+	clock := time.Now()
+	now = func() time.Time { return clock }
+	t.Cleanup(func() { now = time.Now })
+
+	if _, err := api.backend("ttl-model", false).Decide(context.Background(), testRequest()); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(schemaDowngradeTTL - time.Second)
+	if b := api.backend("ttl-model", false); !b.schemaDowngraded() {
+		t.Error("downgrade forgotten before the TTL")
+	}
+	clock = clock.Add(2 * time.Second)
+	b := api.backend("ttl-model", false)
+	if b.schemaDowngraded() {
+		t.Error("downgrade still active after the TTL")
+	}
+	_, _ = b.Decide(context.Background(), testRequest())
+	if schemaCalls.Load() != 2 {
+		t.Errorf("json_schema attempts = %d, want 2 (re-probed after TTL)", schemaCalls.Load())
+	}
+}
+
+func TestDecide_RetryGetsRemainingBudget(t *testing.T) {
+	// The first attempt eats most of the budget; the json_object retry must
+	// only get what is left and end as a timeout, not a fresh full budget.
+	var schemaCalls atomic.Int32
+	api := newFakeAPI(t, func(body map[string]any) reply {
+		if body["response_format"].(map[string]any)["type"] == "json_schema" {
+			schemaCalls.Add(1)
+			return reply{status: 400, body: []byte(unsupportedBody), delay: 250 * time.Millisecond}
+		}
+		return reply{status: 200, body: completion("stop", answerJSON, nil), delay: 2 * time.Second}
+	})
+	b := api.backend("budget-model", false)
+	b.cfg.Timeout = 400 * time.Millisecond
+	start := time.Now()
+	_, err := b.Decide(context.Background(), testRequest())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Decide succeeded")
+	}
+	if elapsed > b.cfg.Timeout+300*time.Millisecond {
+		t.Errorf("took %v, budget %v", elapsed, b.cfg.Timeout)
+	}
+	spans := api.spans(t)
+	if len(spans) != 2 {
+		t.Fatalf("%d spans", len(spans))
+	}
+	if got := attrs(spans[1])["error.type"].AsString(); got != "timeout" {
+		t.Errorf("retry error.type = %q, want timeout", got)
+	}
+	if b.schemaDowngraded() {
+		t.Error("timed-out retry downgraded")
+	}
+}
+
+func TestScrubErrorBody(t *testing.T) {
+	api := newFakeAPI(t, fixed(401, []byte(`{"error":{"message":"Incorrect API key provided: sk-proj-abcDEF123456. Header was Bearer abc.def-123"}}`)))
+	_, err := api.backend("gpt-4.1-mini", false).Decide(context.Background(), testRequest())
+	if err == nil || strings.Contains(err.Error(), "sk-proj") || strings.Contains(err.Error(), "abc.def-123") {
+		t.Errorf("err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "[redacted]") {
+		t.Errorf("err = %v", err)
 	}
 }

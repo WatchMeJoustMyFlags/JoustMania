@@ -22,6 +22,18 @@
 // request is accepted, remembers the downgrade for this base URL + model (see
 // schemaRejected) so later calls skip the doomed first attempt.
 //
+// The provider derived from the base URL host (ProviderName) is used for
+// telemetry AND selects the request shape (shapeFor). A wrong guess is at
+// worst a 400, which the caller turns into a rules fallback.
+//
+// Azure OpenAI is NOT supported for now: it authenticates with an "api-key"
+// header (we send Bearer), uses deployment names as model ids, and its
+// reasoning deployments are not detected by shapeFor.
+//
+// Security: BaseURL comes from decision.openai.base_url, a human-owned flag
+// in agent.json (mounted read-only for the agent), so the request target is
+// not agent-reachable (no SSRF via the agent loop).
+//
 // Telemetry mirrors the claude backend: one CLIENT span per HTTP call named
 // "chat {model}" with the OTel GenAI semantic conventions (v1.41.0),
 // gen_ai.provider.name derived from the base URL host (ProviderName), opt-in
@@ -113,18 +125,58 @@ type Backend struct {
 	host     string
 	port     int
 	provider string
-	// schemaRejected is set once the endpoint rejected json_schema with a 400
-	// and accepted json_object; later calls go straight to json_object.
-	schemaRejected atomic.Bool
+	// schemaRejectedUntil (unix nanos) is set when the endpoint rejected
+	// json_schema as unsupported and accepted json_object; until then calls go
+	// straight to json_object.
+	schemaRejectedUntil atomic.Int64
 }
+
+// schemaDowngradeTTL bounds how long a json_schema downgrade is remembered.
+// After it json_schema is re-probed, so a misread 400 (or a vendor that adds
+// json_schema support) does not pin the weaker json_object mode forever.
+const schemaDowngradeTTL = 10 * time.Minute
+
+// now is the clock, swappable in tests.
+var now = time.Now
 
 // schemaRejectedEndpoints carries the json_schema downgrade across Backend
 // instances (the caller builds a new Backend per decision), keyed by
-// base URL + model. Without it every decision against such a vendor would pay
-// a doomed json_schema round-trip first.
-var schemaRejectedEndpoints sync.Map // endpointKey -> struct{}
+// base URL + model, valued by the expiry (time.Time). Without it every
+// decision against such a vendor would pay a doomed json_schema round-trip
+// first.
+var schemaRejectedEndpoints sync.Map // endpointKey -> time.Time
 
 func endpointKey(baseURL, model string) string { return baseURL + "\x00" + model }
+
+// schemaDowngraded reports whether json_schema is currently known to be
+// rejected by this endpoint + model.
+func (b *Backend) schemaDowngraded() bool {
+	return now().UnixNano() < b.schemaRejectedUntil.Load()
+}
+
+func (b *Backend) rememberDowngrade() {
+	until := now().Add(schemaDowngradeTTL)
+	b.schemaRejectedUntil.Store(until.UnixNano())
+	schemaRejectedEndpoints.Store(endpointKey(b.cfg.BaseURL, b.cfg.Model), until)
+}
+
+// schemaUnsupportedBody reports whether a 400/422 body says the
+// response_format / json_schema itself is unsupported, as opposed to a
+// one-off output-validation failure (Groq: 400 "Generated JSON does not match
+// the expected schema", code json_validate_failed), which must not downgrade.
+func schemaUnsupportedBody(body []byte) bool {
+	s := strings.ToLower(string(body))
+	if strings.Contains(s, "does not match") || strings.Contains(s, "json_validate_failed") {
+		return false
+	}
+	for _, kw := range []string{"response_format", "json_schema", "strict", "schema support",
+		"schema is not supported", "schemas are not supported", "unsupported schema"} {
+		if strings.Contains(s, kw) {
+			return true
+		}
+	}
+	return false
+}
 
 // New builds a Backend. It never fails; an incomplete Config makes Available
 // false and Decide return ErrUnavailable.
@@ -139,8 +191,8 @@ func New(cfg Config) *Backend {
 	}
 	host, port := chathttp.ServerAddress(cfg.BaseURL)
 	b := &Backend{cfg: cfg, host: host, port: port, provider: ProviderName(cfg.BaseURL)}
-	if _, ok := schemaRejectedEndpoints.Load(endpointKey(cfg.BaseURL, cfg.Model)); ok {
-		b.schemaRejected.Store(true)
+	if v, ok := schemaRejectedEndpoints.Load(endpointKey(cfg.BaseURL, cfg.Model)); ok {
+		b.schemaRejectedUntil.Store(v.(time.Time).UnixNano())
 	}
 	return b
 }
@@ -176,33 +228,35 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	defer cancel()
 
 	prompt := llmio.Render(req)
-	if b.schemaRejected.Load() {
-		resp, _, err := b.attempt(ctx, req, prompt, formatJSONObject)
+	if b.schemaDowngraded() {
+		resp, _, _, err := b.attempt(ctx, req, prompt, formatJSONObject)
 		return resp, err
 	}
-	resp, status, err := b.attempt(ctx, req, prompt, formatJSONSchema)
-	if status != http.StatusBadRequest {
+	resp, status, errBody, err := b.attempt(ctx, req, prompt, formatJSONSchema)
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
 		return resp, err
 	}
-	// A 400 on json_schema: retry once with json_object. Only an HTTP answer
-	// other than 400 proves json_object is accepted (so the 400 was about the
-	// schema, not, say, an unknown model); only then is the downgrade
-	// remembered.
-	resp, status, err = b.attempt(ctx, req, prompt, formatJSONObject)
-	if status != 0 && status != http.StatusBadRequest {
-		b.schemaRejected.Store(true)
-		schemaRejectedEndpoints.Store(endpointKey(b.cfg.BaseURL, b.cfg.Model), struct{}{})
+	// A 400/422 on json_schema: retry once with json_object, within what is
+	// left of the same ctx budget. The downgrade is remembered (for
+	// schemaDowngradeTTL) only when the first body says the schema/format is
+	// unsupported AND the retry was accepted (2xx); a 429/5xx/401 on the retry
+	// proves nothing about json_object.
+	unsupported := schemaUnsupportedBody(errBody)
+	resp, status, _, err = b.attempt(ctx, req, prompt, formatJSONObject)
+	if unsupported && status >= 200 && status <= 299 {
+		b.rememberDowngrade()
 	}
 	return resp, err
 }
 
 // attempt makes one /chat/completions call under its own chat span. status is
-// the HTTP status, 0 when there was no HTTP response.
-func (b *Backend) attempt(ctx context.Context, req decide.Request, prompt llmio.Prompt, format string) (decide.Response, int, error) {
+// the HTTP status, 0 when there was no HTTP response; errBody is the response
+// body of a non-2xx answer.
+func (b *Backend) attempt(ctx context.Context, req decide.Request, prompt llmio.Prompt, format string) (decide.Response, int, []byte, error) {
 	shape := shapeFor(b.provider, b.cfg.Model)
 	body, err := json.Marshal(b.request(prompt, shape, format))
 	if err != nil {
-		return decide.Response{}, 0, fmt.Errorf("openai: marshal request: %w", err)
+		return decide.Response{}, 0, nil, fmt.Errorf("openai: marshal request: %w", err)
 	}
 
 	ctx, span := otel.Tracer(instrumentationName).Start(ctx,
@@ -224,33 +278,33 @@ func (b *Backend) attempt(ctx context.Context, req decide.Request, prompt llmio.
 	case errors.Is(err, chathttp.ErrTooLarge):
 		call.errType = "response_too_large"
 		b.finish(ctx, span, call, nil)
-		return decide.Response{}, status, fmt.Errorf("openai: %w: response body over %d bytes", llmio.ErrMalformed, chathttp.MaxResponseBytes)
+		return decide.Response{}, status, nil, fmt.Errorf("openai: %w: response body over %d bytes", llmio.ErrMalformed, chathttp.MaxResponseBytes)
 	case err != nil:
 		call.errType = chathttp.TransportErrorType(ctx, err)
 		b.finish(ctx, span, call, nil)
-		return decide.Response{}, status, fmt.Errorf("openai: %s: %w", call.errType, err)
+		return decide.Response{}, status, nil, fmt.Errorf("openai: %s: %w", call.errType, err)
 	case status < 200 || status > 299:
 		call.errType = chathttp.StatusErrorType(status)
 		b.finish(ctx, span, call, nil)
-		return decide.Response{}, status, fmt.Errorf("openai: status %d: %s", status, clip(string(raw), 256))
+		return decide.Response{}, status, raw, fmt.Errorf("openai: status %d: %s", status, scrub(clip(string(raw), 256)))
 	}
 
 	var cr chatResponse
 	if err := json.Unmarshal(raw, &cr); err != nil {
 		call.errType = "invalid_response"
 		b.finish(ctx, span, call, nil)
-		return decide.Response{}, status, fmt.Errorf("openai: %w: unparseable response body: %v", llmio.ErrMalformed, err)
+		return decide.Response{}, status, nil, fmt.Errorf("openai: %w: unparseable response body: %v", llmio.ErrMalformed, err)
 	}
 	call.resp = &cr
 	if cr.Error != nil && cr.Error.Message != "" {
 		call.errType = semconv.ErrorTypeOther.Value.AsString()
 		b.finish(ctx, span, call, nil)
-		return decide.Response{}, status, fmt.Errorf("openai: endpoint error: %s", clip(cr.Error.Message, 256))
+		return decide.Response{}, status, nil, fmt.Errorf("openai: endpoint error: %s", scrub(clip(cr.Error.Message, 256)))
 	}
 	if len(cr.Choices) == 0 {
 		call.errType = "no_choices"
 		b.finish(ctx, span, call, nil)
-		return decide.Response{}, status, fmt.Errorf("openai: %w: no choices", llmio.ErrMalformed)
+		return decide.Response{}, status, nil, fmt.Errorf("openai: %w: no choices", llmio.ErrMalformed)
 	}
 	choice := cr.Choices[0]
 	call.text, call.reasoning = choice.Message.Content.text, choice.reasoning()
@@ -266,17 +320,17 @@ func (b *Backend) attempt(ctx context.Context, req decide.Request, prompt llmio.
 	}
 	if call.errType != "" {
 		b.finish(ctx, span, call, nil)
-		return decide.Response{}, status, fmt.Errorf("%w: openai: %s", decide.ErrInvalid, call.errType)
+		return decide.Response{}, status, nil, fmt.Errorf("%w: openai: %s", decide.ErrInvalid, call.errType)
 	}
 
 	resp, perr := llmio.Parse(req, []byte(call.text), Name)
 	if perr != nil {
 		call.errType = "invalid_output"
 		b.finish(ctx, span, call, nil)
-		return decide.Response{}, status, fmt.Errorf("openai: %w", perr)
+		return decide.Response{}, status, nil, fmt.Errorf("openai: %w", perr)
 	}
 	b.finish(ctx, span, call, &resp)
-	return resp, status, nil
+	return resp, status, nil, nil
 }
 
 // requestShape is the per-vendor/model parameter set: OpenAI's own API takes
@@ -290,17 +344,39 @@ type requestShape struct {
 	reasoningEffort     string
 }
 
-// openAIReasoningModel matches OpenAI reasoning model ids (o1, o3-mini, o4-mini,
-// gpt-5, gpt-5.5-mini, ...).
+// openAIReasoningModel matches OpenAI reasoning model ids (o1, o3-mini,
+// o4-mini, gpt-5, gpt-5-mini, ...). "-chat" ids (gpt-5-chat-latest) are the
+// non-reasoning chat variants and are excluded in isReasoningModel.
 var openAIReasoningModel = regexp.MustCompile(`^(o\d|gpt-5)`)
 
+func isReasoningModel(model string) bool {
+	return openAIReasoningModel.MatchString(model) && !strings.Contains(model, "-chat")
+}
+
+// reasoningEffortFor is the lowest effort each reasoning family accepts, to
+// fit the 2.5s budget: "minimal" for gpt-5*, "low" for the o-series.
+// UNVERIFIED LIVE: newer gpt-5.x releases may rename or drop "minimal"; a
+// rejection is a 400 and the decision falls back to rules.
+func reasoningEffortFor(model string) string {
+	if strings.HasPrefix(model, "gpt-5") {
+		return "minimal"
+	}
+	return "low"
+}
+
+// shapeFor picks the request shape. The provider is derived from the base URL
+// host (ProviderName), so the host also selects the shape: only api.openai.com
+// gets the OpenAI shape logic; self-hosted Ollama/vLLM/LiteLLM hosts derive
+// "openai" too and therefore also get the OpenAI shape (max_completion_tokens),
+// which they accept. A wrong guess costs a 400 and a rules fallback, never a
+// bad act.
 func shapeFor(provider, model string) requestShape {
 	zero := 0.0
 	if provider != string(genaiconv.ProviderNameOpenAI) {
 		return requestShape{temperature: &zero}
 	}
-	if openAIReasoningModel.MatchString(model) {
-		return requestShape{maxCompletionTokens: true, reasoningEffort: "low"}
+	if isReasoningModel(model) {
+		return requestShape{maxCompletionTokens: true, reasoningEffort: reasoningEffortFor(model)}
 	}
 	return requestShape{maxCompletionTokens: true, temperature: &zero}
 }
@@ -381,7 +457,8 @@ func (b *Backend) finish(ctx context.Context, span trace.Span, c callResult, res
 		}
 		if u := r.Usage; u != nil {
 			// OpenAI's prompt_tokens already includes cached tokens, which is
-			// what semconv's gen_ai.usage.input_tokens means.
+			// what semconv's gen_ai.usage.input_tokens means. DeepSeek reports
+			// cache hits as prompt_cache_hit_tokens, which is not mapped.
 			span.SetAttributes(
 				semconv.GenAIUsageInputTokens(u.PromptTokens),
 				semconv.GenAIUsageOutputTokens(u.CompletionTokens),
@@ -409,6 +486,16 @@ func (b *Backend) finish(ctx context.Context, span trace.Span, c callResult, res
 	}
 	metrics.RecordDuration(ctx, mc, c.errType, duration)
 }
+
+// secretPattern matches things that look like credentials in a vendor error
+// body: OpenAI-style "sk-..." keys and "Bearer ..." tokens.
+var secretPattern = regexp.MustCompile(`(?i)(sk-[a-z0-9_\-]{6,}|bearer\s+[a-z0-9._\-]+)`)
+
+// scrub redacts credential-looking substrings from vendor error text before
+// it goes into a returned error. Even scrubbed, the text is untrusted vendor
+// output: callers must not record error strings verbatim on spans (use
+// error.type, which is low-cardinality).
+func scrub(s string) string { return secretPattern.ReplaceAllString(s, "[redacted]") }
 
 func clip(s string, n int) string {
 	if len(s) <= n {

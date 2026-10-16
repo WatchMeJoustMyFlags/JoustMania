@@ -30,6 +30,11 @@ var providerHosts = []struct {
 	{"ml.cloud.ibm.com", genaiconv.ProviderNameIBMWatsonxAI},
 }
 
+// The derived provider also selects the request shape (see shapeFor). Azure
+// hosts map to their semconv values for telemetry, but Azure OpenAI itself is
+// not supported (api-key header auth, deployment-name model ids, undetected
+// reasoning deployments); see the package doc.
+//
 // ProviderName derives gen_ai.provider.name from an OpenAI-compatible base URL:
 // the semconv well-known value for a known vendor host or a subdomain of it
 // (e.g. "myres.openai.azure.com"), Vertex AI regional and AWS Bedrock hosts by

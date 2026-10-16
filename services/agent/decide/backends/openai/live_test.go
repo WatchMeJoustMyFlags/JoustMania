@@ -52,7 +52,7 @@ func TestLiveDecide(t *testing.T) {
 			t.Fatalf("call %d: Validate: %v", i, err)
 		}
 		t.Logf("call %d: latency=%v json_object_fallback=%v answers=%+v rationale=%q",
-			i, elapsed, b.schemaRejected.Load(), resp.Answers, resp.Rationale)
+			i, elapsed, b.schemaDowngraded(), resp.Answers, resp.Rationale)
 		if i == 1 && elapsed > DefaultTimeout {
 			t.Errorf("steady-state latency %v exceeds the %v in-game budget", elapsed, DefaultTimeout)
 		}

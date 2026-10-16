@@ -25,12 +25,13 @@ package jev
 // contract_test.go should need to change.
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/decide/llmio"
@@ -178,8 +179,7 @@ var errEndpoint = errors.New("jev: endpoint error")
 // map them to decide.Answer here and call decide.Validate directly.
 func decodeResponse(req decide.Request, body []byte) (wireResult, string, error) {
 	var r jevResponse
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := dec.Decode(&r); err != nil {
+	if err := json.Unmarshal(body, &r); err != nil {
 		return wireResult{}, "invalid_response", fmt.Errorf("jev: %w: unparseable response body: %v", llmio.ErrMalformed, err)
 	}
 	res := wireResult{ID: r.ID, Model: r.Model}
@@ -190,7 +190,7 @@ func decodeResponse(req decide.Request, body []byte) (wireResult, string, error)
 		}
 	}
 	if r.Error != nil && r.Error.Message != "" {
-		return res, "_OTHER", fmt.Errorf("%w: %s", errEndpoint, clip(r.Error.Message, 256))
+		return res, semconv.ErrorTypeOther.Value.AsString(), fmt.Errorf("%w: %s", errEndpoint, scrub(clip(r.Error.Message, 256)))
 	}
 	if len(r.Choices) == 0 {
 		return res, "no_choices", fmt.Errorf("jev: %w: no choices", llmio.ErrMalformed)
