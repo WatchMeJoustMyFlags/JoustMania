@@ -40,10 +40,17 @@ from helpers import (
 MAX_ITERATION_MS = 50.0
 # Target mean iteration time (should be well within frame budget)
 MEAN_ITERATION_BUDGET_MS = 16.67
+# Allowed p99 - p50 frame-time spread: a quarter frame at 60 Hz
+JITTER_BUDGET_MS = MEAN_ITERATION_BUDGET_MS / 4
 
 
+@pytest.mark.nfr("NFR-004")
 class TestGameLoopTiming:
-    """Test per-iteration timing of the game loop."""
+    """Test per-iteration timing of the game loop.
+
+    NFR-004 (partial): the per-frame processing cost the game adds on top of
+    the frame-count latency measured in TestDeathDetectionLatency.
+    """
 
     @pytest.mark.asyncio
     async def test_iteration_timing_4_players(self):
@@ -212,11 +219,19 @@ class TestGameLoopTiming:
 
     @pytest.mark.asyncio
     async def test_iteration_consistency(self):
-        """Verify low jitter in iteration times.
+        """Verify that frame-time jitter stays small against the frame budget.
 
-        Consistent frame timing is important for fair gameplay.
-        High jitter means some frames take much longer than others,
-        which can cause uneven death detection.
+        Consistent frame timing is important for fair gameplay: a slow frame
+        delays death detection for every controller in it. What matters is the
+        jitter in absolute time relative to the 16.67 ms frame, not relative to
+        the (sub-0.1 ms) mean.
+
+        This used to assert a coefficient of variation (stdev / mean) < 1.0.
+        At a ~0.05 ms mean a single scheduler preemption dominates the CV, so
+        it failed on shared runners and WSL with no real regression (#1283:
+        CV 1.196 at mean 0.033 ms). The assertion is now on robust absolute
+        statistics: the p99 frame stays well inside the frame budget and the
+        p99 - p50 spread stays under a quarter frame.
         """
         import statistics
 
@@ -240,20 +255,24 @@ class TestGameLoopTiming:
 
             frame_times.append(timer.elapsed_ms)
 
+        ordered = sorted(frame_times)
+        p50 = statistics.median(ordered)
+        p99 = ordered[int(len(ordered) * 0.99) - 1]
+        spread = p99 - p50
         mean_time = statistics.mean(frame_times)
         stdev_time = statistics.stdev(frame_times)
-        # Coefficient of variation: stdev/mean (lower = more consistent)
         cv = stdev_time / mean_time if mean_time > 0 else float("inf")
 
         print(f"\n--- Iteration consistency: {num_controllers} players ---")
-        print(f"  Mean:   {mean_time:.3f}ms")
-        print(f"  StdDev: {stdev_time:.3f}ms")
-        print(f"  CV:     {cv:.3f} (lower = more consistent)")
+        print(f"  P50:    {p50:.3f}ms")
+        print(f"  P99:    {p99:.3f}ms (spread p99-p50 {spread:.3f}ms)")
+        print(f"  Mean:   {mean_time:.3f}ms StdDev: {stdev_time:.3f}ms CV: {cv:.3f} (informational only)")
 
-        # CV should be below 1.0 (stdev < mean), indicating reasonable consistency
-        assert cv < 1.0, (
-            f"Frame time coefficient of variation ({cv:.3f}) is too high. "
-            f"Mean={mean_time:.3f}ms, StdDev={stdev_time:.3f}ms"
+        assert p99 < MEAN_ITERATION_BUDGET_MS / 2, (
+            f"P99 frame time ({p99:.3f}ms) uses more than half the {MEAN_ITERATION_BUDGET_MS}ms frame budget"
+        )
+        assert spread < JITTER_BUDGET_MS, (
+            f"Frame-time jitter p99-p50 ({spread:.3f}ms) exceeds {JITTER_BUDGET_MS}ms. P50={p50:.3f}ms, P99={p99:.3f}ms"
         )
 
     @pytest.mark.asyncio
@@ -307,11 +326,153 @@ class TestGameLoopTiming:
         print(f"  Violent mean: {violent_mean:.3f}ms")
         print(f"  Overhead:     {overhead_factor:.2f}x")
 
-        # Death processing should not exceed 5x normal frame time
-        assert overhead_factor < 5.0, (
-            f"Death processing overhead ({overhead_factor:.2f}x) is too high. "
+        # Assert the death cost in absolute time, not as a ratio: at a ~0.04 ms
+        # idle frame a 5x ratio is 0.2 ms and a single preemption flips it
+        # (seen at 5.05x locally). A death must cost less than a quarter frame.
+        death_cost_ms = violent_mean - normal_mean
+        assert death_cost_ms < MEAN_ITERATION_BUDGET_MS / 4, (
+            f"Death processing adds {death_cost_ms:.3f}ms per frame ({overhead_factor:.2f}x). "
             f"Normal={normal_mean:.3f}ms, Violent={violent_mean:.3f}ms"
         )
         # Violent frames should still be within frame budget
         violent_p95 = sorted(violent_times)[int(len(violent_times) * 0.95)]
         assert violent_p95 < MEAN_ITERATION_BUDGET_MS, f"Violent frame P95 ({violent_p95:.3f}ms) exceeds frame budget"
+
+
+# ---------------------------------------------------------------------------
+# NFR-004: death detection latency (game-side share)
+# ---------------------------------------------------------------------------
+
+# Game-loop / gameplay-stream period at the default game_loop.update_frequency_hz (60 Hz, NFR-003)
+FRAME_PERIOD_MS = 1000.0 / 60.0
+# perception.ema_weight variants: responsive / default / smooth
+EMA_WEIGHTS = (2.0, 4.0, 6.0)
+STEP_MAGNITUDES_G = (3.0, 4.0)
+KILL_REPEATS = 30
+
+
+def _frames_to_kill_oracle(rest_g: float, step_g: float, weight: float, threshold: float) -> int | None:
+    """Closed-form EMA step response, independent of the production loop.
+
+    After priming at ``rest_g`` and n frames at ``step_g`` the smoothed value is
+    ``step - (step - rest) * (w / (w + 1)) ** n``; the kill happens on the first
+    frame where it exceeds ``threshold``. Returns None when it never does.
+    """
+    if step_g <= threshold:
+        return None
+    decay = weight / (weight + 1.0)
+    n = 1
+    while step_g - (step_g - rest_g) * decay**n <= threshold:
+        n += 1
+    return n
+
+
+def _update(serial_accels: dict[str, tuple[float, float, float]]):
+    from proto import controller_manager_pb2
+
+    return controller_manager_pb2.GameplayDataUpdate(
+        controllers=[
+            controller_manager_pb2.GameplayData(
+                serial=serial,
+                battery=80,
+                accel=controller_manager_pb2.Vector3(x=x, y=y, z=z),
+                gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+            )
+            for serial, (x, y, z) in serial_accels.items()
+        ]
+    )
+
+
+async def _measure_kill(weight: float, music_speed: float, step_g: float) -> tuple[int, float, float]:
+    """Drive one fresh 4-player FFA game through the real per-update entry point.
+
+    One player rests at 1 g (primes the EMA), then receives a constant
+    ``step_g`` sample every frame while the others stay at rest. Returns
+    (frames until the kill, the death threshold in effect, wall time of the
+    kill frame in ms).
+    """
+    from lib.types import Sensitivity
+
+    game, serials = create_ffa_game(4)
+    game.sensitivity = Sensitivity.MEDIUM
+    game.music_speed = music_speed
+    game._ema_weight = weight
+    target = serials[0]
+    rest = dict.fromkeys(serials, (0.0, 0.0, 1.0))
+
+    await game._process_gameplay_update(_update(rest))  # prime the EMA at 1 g
+    threshold = game._compute_effective_thresholds(game.players[target])[1]
+
+    step = dict(rest)
+    step[target] = (0.0, 0.0, step_g)
+    for frame in range(1, 600):
+        with measure_time() as timer:
+            await game._process_gameplay_update(_update(step))
+        if not game.players[target].alive:
+            return frame, threshold, timer.elapsed_ms
+    raise AssertionError(f"no kill after 600 frames (weight={weight}, speed={music_speed}, step={step_g}g)")
+
+
+@pytest.mark.nfr("NFR-004")
+class TestDeathDetectionLatency:
+    """NFR-004: from the first over-threshold sample to the kill, game side.
+
+    The game coordinator processes each gameplay update as it arrives
+    (``_process_gameplay_update``), so its share of the latency is
+    ``(frames_to_kill - 1) * frame period + processing time of the kill frame``.
+    frames_to_kill is set by the EMA weight and the threshold, and is
+    deterministic; the processing time is measured. Not covered here: HID
+    sampling (NFR-001), the controller-manager stream tick (up to one frame of
+    queueing) and gRPC transport.
+    """
+
+    @pytest.mark.asyncio
+    async def test_frames_to_kill_match_ema_step_response(self):
+        """The production loop kills on exactly the frame the closed-form EMA predicts."""
+        from services.game_coordinator.games.base import FAST_MUSIC_SPEED, SLOW_MUSIC_SPEED
+
+        rows = []
+        for weight in EMA_WEIGHTS:
+            for speed_name, speed in (("slow", SLOW_MUSIC_SPEED), ("fast", FAST_MUSIC_SPEED)):
+                for step_g in STEP_MAGNITUDES_G:
+                    frames, threshold, _ = await _measure_kill(weight, speed, step_g)
+                    expected = _frames_to_kill_oracle(1.0, step_g, weight, threshold)
+                    assert frames == expected, (
+                        f"weight={weight} {speed_name} step={step_g}g threshold={threshold:.2f}g: "
+                        f"killed on frame {frames}, EMA step response predicts {expected}"
+                    )
+                    rows.append((weight, speed_name, threshold, step_g, frames))
+
+        print("\n--- NFR-004 frames to kill (medium sensitivity, 60 Hz) ---")
+        print("  ema_weight  music  threshold  step   frames  game-side latency")
+        for weight, speed_name, threshold, step_g, frames in rows:
+            latency_ms = (frames - 1) * FRAME_PERIOD_MS
+            print(
+                f"  {weight:>10.0f}  {speed_name:<5}  {threshold:>7.2f} g  {step_g:.1f} g"
+                f"  {frames:>6}  {latency_ms:7.1f} ms"
+            )
+
+        # Default configuration documented in NFR-004: weight 4, medium, slow
+        # music, 3 g step -> kill on the 3rd frame, 2 frame periods after the
+        # first over-threshold sample.
+        default = next(r for r in rows if r[0] == 4.0 and r[1] == "slow" and r[3] == 3.0)
+        assert default[4] == 3
+
+    @pytest.mark.asyncio
+    async def test_kill_frame_processing_time(self):
+        """The kill frame itself (EMA, thresholds, _kill_player, win check) costs well under a frame."""
+        from services.game_coordinator.games.base import SLOW_MUSIC_SPEED
+
+        kill_frame_ms = []
+        for _ in range(KILL_REPEATS):
+            for weight in EMA_WEIGHTS:
+                _, _, elapsed_ms = await _measure_kill(weight, SLOW_MUSIC_SPEED, 3.0)
+                kill_frame_ms.append(elapsed_ms)
+
+        ordered = sorted(kill_frame_ms)
+        p50 = ordered[len(ordered) // 2]
+        p95 = ordered[int(len(ordered) * 0.95) - 1]
+        print(f"\n--- NFR-004 kill-frame processing, 4 players, n={len(ordered)} ---")
+        print(f"  P50: {p50:.3f}ms  P95: {p95:.3f}ms  Max: {ordered[-1]:.3f}ms")
+
+        assert p95 < FRAME_PERIOD_MS / 4, f"kill frame P95 {p95:.3f}ms exceeds a quarter frame"
