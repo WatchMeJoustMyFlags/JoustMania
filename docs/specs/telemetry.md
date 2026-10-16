@@ -1,6 +1,6 @@
 # Telemetry
 
-> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 30162483 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1297, #1303, #1307, #1309, #1312, #1315, #1324, #1308 (#1258 pattern games), #1332 (#1325 span parents), #1378 (validator spans removed), #1351 (#1326 budget), #1333 (#1327 one `player_death` event), #1375 (rollout dry run), #1376 (deaths counter, input lag) and #1377 (quiet-cycle fallbacks)). The metric catalog (§6.2) and the span-event inventory were generated from the code at 84c3ba15 by script; remaining `file:line` references were re-based to 84c3ba15 and then to 30162483.
+> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 226cb2d3 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1297, #1303, #1307, #1309, #1312, #1315, #1324, #1308 (#1258 pattern games), #1332 (#1325 span parents), #1378 (validator spans removed), #1351 (#1326 budget), #1333 (#1327 one `player_death` event), #1375 (rollout dry run), #1376 (deaths counter, input lag), #1377 (quiet-cycle fallbacks) and #1387 (`audio.silent`)). The metric catalog (§6.2) and the span-event inventory were generated from the code at 84c3ba15 by script; remaining `file:line` references were re-based to 84c3ba15 and then to 226cb2d3.
 > Telemetry is the agent's only view of the game (C-001), so span names, attribute keys, metric names and the
 > log lines below are a **contract**: the agent, the dashboard SPA, Grafana, alerts and integration tests match
 > on them. Change a name here first.
@@ -63,7 +63,9 @@ Service identities (`OTEL_SERVICE_NAME` / namespace): `controller-manager-servic
 |---|---|---|---|
 | `{Service}/{Method}` (e.g. `GameCoordinatorService/ForceEndGame`) | CLIENT / SERVER | flag `grpc_rpc_spans` (default variant `enabled`), evaluated per RPC; when flagd is unreachable or the flag is missing the Python check falls back to **false** (no RPC spans) | `lib/grpc_tracing.py` (`_rpc_spans_enabled`) |
 | `grpc.server` (rust-hid) | SERVER | same flag | `services/rust-hid/src/grpc_tracing.rs:105-115` |
-| renamed: `StreamButtonEvents`, `StreamGameplayData` (CM); `PlaySound:{sound}`, `PlayMusic:{dir}`, `ChangeTempo:{x}x`, `SetVolume:{pct}` (audio) | SERVER | | `services/controller_manager/servicer.py` (`StreamButtonEvents`, `StreamGameplayData`); `services/audio/servicer.py:660-721` |
+| renamed: `StreamButtonEvents`, `StreamGameplayData` (CM); `PlaySound:{sound}`, `PlayMusic:{dir}`, `ChangeTempo:{x}x`, `SetVolume:{pct}` (audio) | SERVER | | `services/controller_manager/servicer.py` (`StreamButtonEvents`, `StreamGameplayData`); `services/audio/servicer.py` (`PlaySound`, `PlayMusic`, `ChangeTempo`, `SetVolume`) |
+
+Audio span attributes: `PlaySound:{sound}` carries `audio.file`; `PlaySound` and `PlayMusic` carry `audio.muted=true` when `play_audio` is off (read at use time); `PlaySound` carries `audio.silent=true` when `play_audio` is on but the audio hardware is not open yet, so nothing is heard (#1387).
 
 connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` client spans only.
 

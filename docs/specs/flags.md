@@ -1,8 +1,8 @@
 # Flag catalog (OpenFeature / flagd)
 
 > Technical spec. Part of the [spec tree](../README.md). Also serves #1092 (agent-tunable flag catalog).
-> State: `main` @ 30162483 (2026-10-16, includes PRs #1257, #1261, #1265, #1284, #1286, #1288, #1312 (stage baseline `standard`), #1315, #1308 (#1258 pattern-game flags), #1378 (validator accessor removed), #1382 (`backend` / `bluetooth_backend` default `rust`), #1351 (budget-aware admission), #1373, #1375, #1376 and #1377; #1265 and #1284 changed no flag definitions). **Generated from the JSON files plus a call-site scan**, then
-> hand-verified. Keys, types, variant names and values, defaults, targeting presence, the per-set counts and the §12 `ci/` differences were re-checked against `services/flagd/*.json` by script at 84c3ba15; the `file:line` references were re-based to 84c3ba15 by mapping each one through `git diff` from the commit that introduced it, then to 30162483 through `git diff 84c3ba15 30162483`. Regenerate rather than hand-edit when many rows change.
+> State: `main` @ 226cb2d3 (2026-10-16, includes PRs #1257, #1261, #1265, #1284, #1286, #1288, #1312 (stage baseline `standard`), #1315, #1308 (#1258 pattern-game flags), #1378 (validator accessor removed), #1382 (`backend` / `bluetooth_backend` default `rust`), #1351 (budget-aware admission), #1373, #1375, #1376, #1377 and #1387; #1265 and #1284 changed no flag definitions). **Generated from the JSON files plus a call-site scan**, then
+> hand-verified. Keys, types, variant names and values, defaults, targeting presence, the per-set counts and the §12 `ci/` differences were re-checked against `services/flagd/*.json` by script at 84c3ba15; the `file:line` references were re-based to 84c3ba15 by mapping each one through `git diff` from the commit that introduced it, then to 226cb2d3 through `git diff 84c3ba15 226cb2d3`. Regenerate rather than hand-edit when many rows change.
 
 OpenFeature flags served by flagd are the **only** control surface of the system:
 human settings, the agent's governor, the agent's own interventions and the infrastructure rollout
@@ -303,8 +303,8 @@ Venue preferences owned by the host: voice, audio on/off, volumes, the persisted
 
 | Key | Type | Variants | Default | Targeting | Read by (file:line) | Written by | Reload |
 |---|---|---|---|---|---|---|---|
-| `menu_voice` | string | aaron="aaron", ivy="ivy" | `ivy` = "ivy" | N | menu: services/menu/servicer.py:336 (StartMenu); audio: services/audio/servicer.py:481 (startup) / :522 (change handler) | manual edit only | menu: per StartMenu; audio: event-refreshed |
-| `play_audio` | bool | on=true, off=false | `on` = true | N | audio: services/audio/servicer.py:463 (startup) / :514 (change handler) | manual edit only (ci = off) | event-refreshed |
+| `menu_voice` | string | aaron="aaron", ivy="ivy" | `ivy` = "ivy" | N | menu: services/menu/servicer.py:336 (StartMenu); audio: services/audio/servicer.py:501 (startup) / :539 (change handler) | manual edit only | menu: per StartMenu; audio: event-refreshed |
+| `play_audio` | bool | on=true, off=false | `on` = true | N | audio: services/audio/servicer.py:483 (startup) / :536 (change handler) / `_read_play_audio_flag` (use time, `PlaySound` / `PlayMusic`, #1387) | manual edit only (ci = off) | event-refreshed and re-read at each `PlaySound` / `PlayMusic`; turning it on opens the audio hardware at runtime (UC-031 A1) |
 | `current_game` | string | JoustFFA="JoustFFA", JoustTeams="JoustTeams", JoustRandomTeams="JoustRandomTeams", Traitor="Traitor", Werewolf="Werewolf", Zombies="Zombies", Tournament="Tournament", FightClub="FightClub", Swapper="Swapper", NonStop="NonStop" | `JoustFFA` = "JoustFFA" | N | menu: services/menu/servicer.py:337 (StartMenu) | menu services/menu/servicer.py:217/467/489 update_default_variant (user_prefs_writer, :102) | per StartMenu |
 | `game_instructions` | bool | on=true, off=false | `on` = true | N | NONE (only the writer reads it: services/menu/handlers/admin.py:1071 get_current_variant) | menu admin services/menu/handlers/admin.py:1072 cycle_variant | n/a - NO READER FOUND |
 | `agent_intervention_cue` | bool | on=true, off=false | `on` = true | N | game-coordinator: services/game_coordinator/interventions.py:1413 (_cue_enabled) | manual edit only (ci = off) | live (per intervention cue) |
