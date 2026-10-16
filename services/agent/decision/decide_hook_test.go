@@ -782,6 +782,27 @@ func TestRemote_ShadowGameFallsBackToRules(t *testing.T) {
 	}
 }
 
+// TestRemote_PrimaryLabelledGameIsEligible (#1249): a menu game the coordinator
+// labels game_kind="primary" is normalised to "real" at ingest, so it is admitted
+// under the default llm.eligible_game_kinds=["real"] and calls the remote backend.
+func TestRemote_PrimaryLabelledGameIsEligible(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	ingest := gamecontext.NewStore(time.Hour, time.Hour, nil)
+	ingest.SetGameKind("primary") // the coordinator's telemetry label
+	c := remoteContext()
+	c.GameKind = ingest.Snapshot().GameKind
+	if reason := h.loop.gateRemoteDecide(context.Background(), remoteSnapshot(time.Second), c); reason != "" {
+		t.Fatalf("primary-labelled game gated: %q, want admitted", reason)
+	}
+	h.loop.lastDecideAttempt = time.Time{} // reset the cadence charged by the direct gate call
+	h.loop.OnEvaluate(context.Background(), c, testTrigger())
+	h.loop.AwaitInflight()
+	if be.callCount() != 1 {
+		t.Fatalf("primary-labelled game must reach the remote backend, calls=%d", be.callCount())
+	}
+}
+
 // ---- live flags at landing (PR #1240 review blocker) ----
 
 // fireAndMutate fires one remote call, lets the test change state while it is in
