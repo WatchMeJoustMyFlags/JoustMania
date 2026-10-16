@@ -1,7 +1,7 @@
 """
 Edge-triggered interventions fire only in the game that saw them change (#1299).
 
-UC-040 BR-005 / A14: an edge flag value present when a game starts is that
+UC-040 BR-006 / A15: an edge flag value present when a game starts is that
 game's consumed baseline. Before the fix the per-game nonce bucket started empty
 for any game that began after the coordinator started, so the first unrelated
 flag change replayed the previous game's last ``audio_cue`` / ``end_game`` /
@@ -179,9 +179,9 @@ class Harness:
 
 
 # --------------------------------------------------------------------------- #
-# BR-005 / A14 at the manager seam
+# BR-006 / A15 at the manager seam
 # --------------------------------------------------------------------------- #
-@pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 @pytest.mark.parametrize("flag_key", EDGE_FLAGS)
 @pytest.mark.asyncio
 async def test_stale_edge_from_previous_game_does_not_fire_in_next_game(flag_key):
@@ -201,7 +201,7 @@ async def test_stale_edge_from_previous_game_does_not_fire_in_next_game(flag_key
     assert h.applied("game_n1", flag_key) == []
 
 
-@pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 @pytest.mark.parametrize("flag_key", EDGE_FLAGS)
 @pytest.mark.asyncio
 async def test_fresh_edge_in_next_game_fires_once(flag_key):
@@ -220,7 +220,7 @@ async def test_fresh_edge_in_next_game_fires_once(flag_key):
     assert len(h.applied("game_n1", flag_key)) == 1
 
 
-@pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 @pytest.mark.asyncio
 async def test_stale_end_game_does_not_end_next_game_but_fresh_one_does():
     """end_game path: the stale nonce never reaches the force-end function; a
@@ -237,7 +237,7 @@ async def test_stale_end_game_does_not_end_next_game_but_fresh_one_does():
     h.end_game_fn.assert_awaited_once_with("agent_intervention")
 
 
-@pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 @pytest.mark.asyncio
 async def test_stale_eliminate_player_does_not_kill_in_next_game_but_fresh_one_does():
     """eliminate_player path: no one dies from the stale nonce; a fresh nonce
@@ -254,7 +254,7 @@ async def test_stale_eliminate_player_does_not_kill_in_next_game_but_fresh_one_d
     assert game.killed == ["p2"]
 
 
-@pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 @pytest.mark.parametrize("game_kind", GAME_KINDS)
 @pytest.mark.asyncio
 async def test_coordinator_restart_does_not_replay_stale_audio_cue(game_kind):
@@ -272,7 +272,7 @@ async def test_coordinator_restart_does_not_replay_stale_audio_cue(game_kind):
     assert h.applied(f"game_{game_kind}", "audio_cue") == []
 
 
-@pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 @pytest.mark.asyncio
 async def test_primed_baseline_survives_evaluation_before_game_is_live():
     """A flag change between admission and the game instance being built must
@@ -287,7 +287,7 @@ async def test_primed_baseline_survives_evaluation_before_game_is_live():
     h.end_game_fn.assert_not_awaited()
 
 
-@pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 @pytest.mark.asyncio
 async def test_unprimed_live_game_fails_closed():
     """A live game that was never primed treats the current edge values as
@@ -303,7 +303,7 @@ async def test_unprimed_live_game_fails_closed():
     h.end_game_fn.assert_awaited_once()
 
 
-@pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 def test_pending_primed_sessions_are_bounded():
     """Sessions primed but never built (start error) cannot grow without bound."""
     h = Harness()
@@ -314,7 +314,7 @@ def test_pending_primed_sessions_are_bounded():
 
 
 # --------------------------------------------------------------------------- #
-# BR-005 at the servicer seam: every admitted game is primed, real and shadow
+# BR-006 at the servicer seam: every admitted game is primed, real and shadow
 # --------------------------------------------------------------------------- #
 class _MockSpanContext:
     trace_id = 0
@@ -342,7 +342,7 @@ def _start_config(game_kind: str):
     )
 
 
-@pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 @pytest.mark.parametrize("game_kind", GAME_KINDS)
 @pytest.mark.asyncio
 async def test_servicer_start_primes_new_game_so_stale_end_game_is_not_replayed(game_kind):

@@ -606,7 +606,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # Seed this game's edge-intervention baseline from the current flag
             # values BEFORE it runs: a value already present belongs to an
             # earlier game and is consumed, so it can never replay into this one
-            # (UC-040 BR-005, #1299). Real and shadow sessions alike.
+            # (UC-040 BR-006, #1299). Real and shadow sessions alike.
             self._prime_intervention_baseline(game_id)
             # Update lifecycle metrics for this session's kind (#775) + experiment
             # attribution (#975). experiment_id/arm are "" for a non-experiment

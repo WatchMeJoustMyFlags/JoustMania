@@ -19,7 +19,7 @@ Design (from docs/research/722-intervention-surface.md §5/§6/§8/§9):
       nonce triggers exactly one application (idempotent across flagd
       reconnects / re-reads). The per-game nonce baseline is seeded when the
       game starts (``prime_session``), so a value left over from an earlier
-      game counts as already consumed and is never replayed (UC-040 BR-005,
+      game counts as already consumed and is never replayed (UC-040 BR-006,
       #1299).
 - Enforcement chain, evaluated *before* any handler runs (defense in depth; the
   agent also self-checks in #726):
@@ -872,7 +872,7 @@ class InterventionManager:
         """Seed a new game's edge-trigger baseline from the current flag values.
 
         Called by the servicer when a game session is admitted, before its game
-        runs (UC-040 BR-005, #1299). Each edge-triggered flag's current nonce is
+        runs (UC-040 BR-006, #1299). Each edge-triggered flag's current nonce is
         recorded for ``game_id`` WITHOUT applying it: any value present when the
         game starts belongs to an earlier game and counts as already consumed.
         Only a nonce change observed during this game fires. Without this, the
