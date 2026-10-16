@@ -97,6 +97,12 @@ class StateManager:
         """Controller serials in READY state (computed from controller_states)."""
         return {serial for serial, state in self.controller_states.items() if state == ControllerState.READY}
 
+    def _abandon_admin_session(self) -> None:
+        """Release the admin session (UC-012 single-admin lock) when state is cleared wholesale."""
+        admin_handler = self._handlers.get(ControllerState.ADMIN)
+        if admin_handler is not None and hasattr(admin_handler, "abandon_session"):
+            admin_handler.abandon_session()
+
     def register_handler(self, handler: ControllerHandler) -> None:
         """
         Register a handler for a controller state.
@@ -267,6 +273,7 @@ class StateManager:
         Clear state so these events re-populate cleanly without ghosts.
         """
         count = len(self.controller_states)
+        self._abandon_admin_session()
         self.controller_states.clear()
         self.button_states.clear()
         self.battery_levels.clear()
@@ -344,6 +351,9 @@ class StateManager:
         """
         # Remember which controllers were connected before clearing
         serials = list(self.controller_states.keys())
+
+        # Clearing state skips on_exit, so release the admin session explicitly.
+        self._abandon_admin_session()
 
         # Clear all state (controller_states is the single source of truth)
         self.controller_states.clear()

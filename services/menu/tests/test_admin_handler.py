@@ -1,5 +1,6 @@
 """Unit tests for AdminModeHandler game settings."""
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1433,9 +1434,9 @@ class TestControllerHandlerProtocol:
 
     @pytest.mark.asyncio
     async def test_on_exit_delegates(self, handler):
-        """on_exit should delegate to exit."""
+        """on_exit for the admin-owning controller should delegate to exit."""
         handler.exit = AsyncMock()
-        await handler.on_exit("s1")
+        await handler.on_exit("test_serial")
         handler.exit.assert_called_once()
 
     def test_set_state_manager(self, inactive_handler, mock_state_manager):
@@ -1522,27 +1523,29 @@ class TestAgentControlOption:
         )
 
     @pytest.mark.asyncio
-    async def test_panic_off_wraps_from_none_backward(self, handler, mock_state_manager):
-        """Restricting from 'none' wraps to the most-permissive 'full' (cycle)."""
+    @pytest.mark.uc("UC-013", flow="main", steps=[3])
+    async def test_panic_off_clamps_at_none(self, handler, mock_state_manager):
+        """Restricting from 'none' stays at 'none' — the kill switch never wraps to 'full' (UC-013)."""
         handler.current_option = handler.option_names.index("agent_control")
         mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = "none"
 
         await handler.handle_decrease_value("test_serial")
 
         mock_state_manager.agent_settings_writer.update_default_variant.assert_called_once_with(
-            "interventions_allowed", "full"
+            "interventions_allowed", "none"
         )
 
     @pytest.mark.asyncio
-    async def test_full_escalates_to_none_wrap(self, handler, mock_state_manager):
-        """Escalating from 'full' wraps to 'none' (cycle through 4 levels)."""
+    @pytest.mark.uc("UC-013", flow="main", steps=[3])
+    async def test_full_clamps_at_full(self, handler, mock_state_manager):
+        """Escalating from 'full' stays at 'full' — no wrap to 'none' (UC-013)."""
         handler.current_option = handler.option_names.index("agent_control")
         mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = "full"
 
         await handler.handle_increase_value("test_serial")
 
         mock_state_manager.agent_settings_writer.update_default_variant.assert_called_once_with(
-            "interventions_allowed", "none"
+            "interventions_allowed", "full"
         )
 
     @pytest.mark.asyncio
@@ -1582,13 +1585,16 @@ class TestAgentControlOption:
         # Should not raise.
         await handler.handle_increase_value("test_serial")
 
-    def test_next_agent_level_cycle(self):
-        """_next_agent_level cycles the 4 levels forward and backward."""
+    @pytest.mark.uc("UC-013", flow="main", steps=[3])
+    def test_next_agent_level_ladder_clamps(self):
+        """_next_agent_level steps the 4-level ladder and clamps at both ends (UC-013)."""
         assert AdminModeHandler._next_agent_level("none", forward=True) == "ambient"
         assert AdminModeHandler._next_agent_level("ambient", forward=True) == "standard"
         assert AdminModeHandler._next_agent_level("standard", forward=True) == "full"
-        assert AdminModeHandler._next_agent_level("full", forward=True) == "none"
+        assert AdminModeHandler._next_agent_level("full", forward=True) == "full"
+        assert AdminModeHandler._next_agent_level("full", forward=False) == "standard"
         assert AdminModeHandler._next_agent_level("ambient", forward=False) == "none"
+        assert AdminModeHandler._next_agent_level("none", forward=False) == "none"
         # Unknown current value: forward starts the ladder, backward = panic-off.
         assert AdminModeHandler._next_agent_level(None, forward=True) == "none"
         assert AdminModeHandler._next_agent_level("bogus", forward=False) == "none"
@@ -1761,3 +1767,250 @@ class TestForceStartThresholdFlag:
             side_effect=lambda _domain, _key, default, _game_id=None: default,
         ):
             assert handler._force_start_threshold() == 3.0
+
+
+class TestSingleAdminSession:
+    """UC-012 precondition: only one controller may be in admin mode at a time.
+
+    Drives the real MenuServicer.on_button combo detection, the real StateManager
+    and the real AdminModeHandler — no re-implemented logic.
+    """
+
+    FACE_BUTTONS = ["cross", "circle", "square", "triangle"]
+
+    @pytest.fixture
+    def stack(self, mock_tracer, mock_callbacks, mock_metrics):
+        from types import SimpleNamespace
+
+        from services.menu.state_manager import StateManager
+
+        led = MagicMock()
+        led.send_game_effect = AsyncMock(return_value=True)
+        led.send_base_color = AsyncMock(return_value=True)
+        led.set_connected_color = AsyncMock()
+        audio = MagicMock()
+        audio.play_voice = AsyncMock()
+        audio.play_sound = AsyncMock()
+        state_manager = StateManager(led, audio, MagicMock(), MagicMock(), AsyncMock())
+
+        connected_handler = MagicMock()
+        connected_handler.state = ControllerState.CONNECTED
+        connected_handler.on_enter = AsyncMock()
+        connected_handler.on_exit = AsyncMock()
+        connected_handler.handle_button = AsyncMock()
+        state_manager.register_handler(connected_handler)
+
+        admin_handler = AdminModeHandler(
+            controller_channel=MagicMock(),
+            tracer=mock_tracer,
+            callbacks=mock_callbacks,
+            metrics=mock_metrics,
+        )
+        state_manager.register_handler(admin_handler)
+
+        servicer = SimpleNamespace(idle_monitor=MagicMock(), state_manager=state_manager, admin_handler=admin_handler)
+        return servicer, state_manager, admin_handler
+
+    async def _press_combo(self, servicer, serial):
+        from services.menu.servicer import MenuServicer
+
+        for button in self.FACE_BUTTONS:
+            await MenuServicer.on_button(servicer, serial, button, True)
+        for button in self.FACE_BUTTONS:
+            await MenuServicer.on_button(servicer, serial, button, False)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_second_controller_combo_is_rejected(self, stack):
+        """A second controller completing the combo stays CONNECTED; the first keeps its session."""
+        servicer, state_manager, admin_handler = stack
+        try:
+            await self._press_combo(servicer, "A")
+            assert state_manager.get_controller_state("A") == ControllerState.ADMIN
+            timeout_task = admin_handler._timeout_task
+
+            await self._press_combo(servicer, "B")
+
+            assert state_manager.get_controller_state("B") == ControllerState.CONNECTED
+            assert state_manager.get_controller_state("A") == ControllerState.ADMIN
+            assert admin_handler.active is True
+            assert admin_handler.controller_serial == "A"
+            # The first controller's auto-exit timeout must not be cancelled/replaced.
+            assert admin_handler._timeout_task is timeout_task
+            assert not timeout_task.done()
+        finally:
+            await admin_handler.exit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_second_controller_can_enter_after_first_exits(self, stack):
+        """Once the active admin leaves, another controller may enter admin mode."""
+        servicer, state_manager, admin_handler = stack
+        try:
+            await self._press_combo(servicer, "A")
+            await state_manager.transition_to("A", ControllerState.CONNECTED)
+            assert admin_handler.active is False
+
+            await self._press_combo(servicer, "B")
+
+            assert state_manager.get_controller_state("B") == ControllerState.ADMIN
+            assert admin_handler.controller_serial == "B"
+        finally:
+            await admin_handler.exit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_buttons_from_non_admin_serial_are_ignored(self, inactive_handler, mock_state_manager):
+        """Defence in depth: admin commands are only accepted from the admin controller."""
+        mock_state_manager.get_controller_state = MagicMock(return_value=ControllerState.ADMIN)
+        inactive_handler.active = True
+        inactive_handler.controller_serial = "A"
+        inactive_handler.entry_time = time.time()
+        inactive_handler._exit_to_connected = AsyncMock()
+
+        await inactive_handler.handle_button_event("B", ButtonTrackingKey.PS)
+
+        inactive_handler._exit_to_connected.assert_not_awaited()
+        assert inactive_handler.active is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_on_exit_for_other_serial_keeps_session(self, inactive_handler):
+        """on_exit for a controller that does not own the session must not end it."""
+        inactive_handler.active = True
+        inactive_handler.controller_serial = "A"
+        inactive_handler.entry_time = time.time()
+
+        await inactive_handler.on_exit("B")
+
+        assert inactive_handler.active is True
+        assert inactive_handler.controller_serial == "A"
+
+    # --- Lock release (review of PR #1373): the lock must never go stale. ---
+
+    async def _assert_second_controller_can_enter(self, servicer, state_manager, admin_handler):
+        await self._press_combo(servicer, "B")
+        assert state_manager.get_controller_state("B") == ControllerState.ADMIN
+        assert admin_handler.active is True
+        assert admin_handler.controller_serial == "B"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_lobby_reset_releases_lock(self, stack):
+        """StateManager.reset() (lobby restart) releases the admin session."""
+        servicer, state_manager, admin_handler = stack
+        try:
+            await self._press_combo(servicer, "A")
+            timeout_task = admin_handler._timeout_task
+
+            await state_manager.reset()
+
+            assert admin_handler.active is False
+            await asyncio.sleep(0)
+            assert timeout_task.cancelled()
+            await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
+        finally:
+            await admin_handler.exit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_stream_reconnect_releases_lock(self, stack):
+        """on_stream_reconnected() releases the admin session."""
+        servicer, state_manager, admin_handler = stack
+        try:
+            await self._press_combo(servicer, "A")
+
+            await state_manager.on_stream_reconnected()
+            await state_manager.on_controller_connected("A")
+
+            assert admin_handler.active is False
+            await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
+        finally:
+            await admin_handler.exit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_stop_menu_releases_lock(self, stack):
+        """StopMenu releases the admin session."""
+        from proto import menu_pb2
+        from services.menu.servicer import MenuServicer
+
+        servicer, state_manager, admin_handler = stack
+        servicer.state = menu_pb2.MenuState.RUNNING
+        servicer._clear_ready_state = MagicMock()
+        servicer.event_publisher = MagicMock(publish=AsyncMock())
+        try:
+            await self._press_combo(servicer, "A")
+
+            with patch("services.menu.servicer.metrics"):
+                response = await MenuServicer.StopMenu(servicer, MagicMock(), MagicMock())
+
+            assert response.success is True
+            assert admin_handler.active is False
+            await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
+        finally:
+            await admin_handler.exit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_admin_disconnect_releases_lock(self, stack):
+        """The admin controller disconnecting while in ADMIN releases the lock."""
+        servicer, state_manager, admin_handler = stack
+        try:
+            await self._press_combo(servicer, "A")
+
+            await state_manager.on_controller_disconnected("A")
+
+            assert admin_handler.active is False
+            await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
+        finally:
+            await admin_handler.exit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_timeout_releases_lock(self, stack):
+        """The auto-exit timeout releases the lock and returns the admin to CONNECTED."""
+        servicer, state_manager, admin_handler = stack
+        admin_handler._timeout_seconds = 0.01
+        try:
+            await self._press_combo(servicer, "A")
+            await admin_handler._timeout_task
+
+            assert admin_handler.active is False
+            assert state_manager.get_controller_state("A") == ControllerState.CONNECTED
+            await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
+        finally:
+            await admin_handler.exit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_timeout_ends_session_when_owner_state_already_cleared(self, stack):
+        """If the owner's state was cleared behind the handler's back, the timeout still ends the session."""
+        servicer, state_manager, admin_handler = stack
+        admin_handler._timeout_seconds = 0.01
+        try:
+            await self._press_combo(servicer, "A")
+            # Simulate a clear that bypasses on_exit and the explicit abandon hooks.
+            state_manager.controller_states["A"] = ControllerState.CONNECTED
+            await admin_handler._timeout_task
+
+            assert admin_handler.active is False
+        finally:
+            await admin_handler.exit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    async def test_stale_session_does_not_block_new_admin(self, stack):
+        """Self-healing lock: a session whose owner is no longer ADMIN is released on the next combo."""
+        servicer, state_manager, admin_handler = stack
+        try:
+            await self._press_combo(servicer, "A")
+            stale_timeout = admin_handler._timeout_task
+            # Clear state behind the handler's back (no on_exit, no abandon hook).
+            state_manager.controller_states["A"] = ControllerState.CONNECTED
+
+            await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
+            await asyncio.sleep(0)
+            assert stale_timeout.cancelled()
+        finally:
+            await admin_handler.exit()
