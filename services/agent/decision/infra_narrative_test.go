@@ -261,10 +261,17 @@ func TestInfraNarrative_RecommendedOnlyStalls(t *testing.T) {
 }
 
 // TestInfraNarrative_DryRunTagsEverySpan is the M3 trace-honesty narrative: with
-// the dry-run actuator the loop still DECIDES and SPANS the same
-// expand→...→rollback story, but rollout.dry_run=true on EVERY span so a Jaeger
-// consumer can tell the rehearsal apart from a real rollout. The real-actuator
-// narrative (TestInfraNarrative_FullIncident) is the dry_run=false counterpart.
+// the dry-run actuator the loop still DECIDES and SPANS the expand/rollback story,
+// but rollout.dry_run=true on EVERY span so a Jaeger consumer can tell the
+// rehearsal apart from a real rollout. The real-actuator narrative
+// (TestInfraNarrative_FullIncident) is the dry_run=false counterpart.
+//
+// The observed stage stays at 1 throughout: a dry run writes nothing, so the
+// controller-manager never moves the stage. An earlier version advanced the stage
+// between cycles, which cannot happen in a real dry run and hid the stale-state
+// bug (UC-045 A4): only the first rehearsed expansion was ever recorded.
+//
+// UC: UC-050 A3
 func TestInfraNarrative_DryRunTagsEverySpan(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	rollout := &dryRollout{}
@@ -272,14 +279,17 @@ func TestInfraNarrative_DryRunTagsEverySpan(t *testing.T) {
 	l.SetRemediationSource(StaticRemediation(true))
 	l.SetCooldown(30 * time.Second)
 
-	// Same incident shape as the real-actuator narrative: expand, expand, rollback.
-	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 0, clock, passingHz))
+	// Stationary stage 1: would expand, would expand again one dwell later, then
+	// fitness fails → would roll back, then "none" during the rehearsal cooldown.
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 1, clock, passingHz))
 	clock = clock.Add(DefaultRolloutDwell)
 	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 1, clock, passingHz))
 	clock = clock.Add(time.Second)
-	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 3, clock, failingHz))
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 1, clock, failingHz))
+	clock = clock.Add(time.Second)
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 1, clock, failingHz))
 
-	wantActions := []string{RemediationExpand, RemediationExpand, RemediationRollback}
+	wantActions := []string{RemediationExpand, RemediationExpand, RemediationRollback, RemediationNone}
 	spans := infraSpans(sr)
 	if len(spans) != len(wantActions) {
 		t.Fatalf("got %d spans, want %d", len(spans), len(wantActions))

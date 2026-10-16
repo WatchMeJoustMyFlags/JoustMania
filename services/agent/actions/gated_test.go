@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/infracontext"
 )
 
 // staticGate is a constant InterventionGate/RolloutGate for the gated-wrapper unit
@@ -94,5 +96,77 @@ func TestGatedRolloutActuator_LadderDelegates(t *testing.T) {
 	}
 	if v, ok := act.StageVariantForValue(StageThreeValue); !ok || v != StageThreeVariant {
 		t.Fatalf("StageVariantForValue(3) = (%q,%v), want (three,true)", v, ok)
+	}
+}
+
+// flippingGate answers RolloutEnabled from a script, one answer per call, so a
+// test can model rollout_enabled flipping between two reads.
+type flippingGate struct{ answers []bool }
+
+func (g *flippingGate) InterventionsEnabled(context.Context) bool { return false }
+func (g *flippingGate) RolloutEnabled(context.Context) bool {
+	v := g.answers[0]
+	if len(g.answers) > 1 {
+		g.answers = g.answers[1:]
+	}
+	return v
+}
+
+// UC: UC-045 A4
+//
+// ApplyControllerCount reads the gate once and reports what actually happened, so
+// the InfraLoop never commits state for a write that was only rehearsed.
+func TestGatedRolloutActuator_ApplyReportsOutcome(t *testing.T) {
+	w, path := newTestRolloutWriter(t)
+	before := defaultVariantOf(t, path, flagCurrentControllerCount)
+
+	off := NewGatedRolloutActuator(context.Background(), staticGate(false), w, nil)
+	if applied, err := off.ApplyControllerCount(StageOneVariant); err != nil || applied {
+		t.Fatalf("gate off: (applied=%v, err=%v), want (false, nil)", applied, err)
+	}
+	if got := defaultVariantOf(t, path, flagCurrentControllerCount); got != before {
+		t.Fatalf("gate off wrote %q, want unchanged %q", got, before)
+	}
+
+	on := NewGatedRolloutActuator(context.Background(), staticGate(true), w, nil)
+	if applied, err := on.ApplyControllerCount(StageOneVariant); err != nil || !applied {
+		t.Fatalf("gate on: (applied=%v, err=%v), want (true, nil)", applied, err)
+	}
+	if got := defaultVariantOf(t, path, flagCurrentControllerCount); got != StageOneVariant {
+		t.Fatalf("gate on wrote %q, want %q", got, StageOneVariant)
+	}
+}
+
+// UC: UC-045 A4
+//
+// End to end with the real gated actuator and rollout.json: a dry run at a
+// stationary stage, then rollout_enabled on, then the loop expands for real
+// without an agent restart.
+func TestGatedRolloutActuator_LoopResumesAfterDryRun(t *testing.T) {
+	w, path := newTestRolloutWriter(t)
+	gate := &flippingGate{answers: []bool{false}}
+	act := NewGatedRolloutActuator(context.Background(), gate, w, nil)
+
+	loop := decision.NewInfraLoop(discardLogger(), time.Hour, nil, act)
+	loop.SetGate(func(infracontext.InfraContext, time.Time) bool { return true })
+	snap := func() infracontext.InfraContext {
+		hz := 30.0
+		gap, dropped := 20.0, 0.01
+		return infracontext.InfraContext{Window: infracontext.WindowSignals{
+			EventGapMs: &gap, DroppedEventsPct: &dropped, MovementUpdateHz: &hz,
+			TargetBackend: "rust", RolloutCount: StageNoneValue,
+		}}
+	}
+	for i := 0; i < 3; i++ {
+		loop.OnInfraEvaluate(context.Background(), snap())
+	}
+	if got := defaultVariantOf(t, path, flagCurrentControllerCount); got != StageNoneVariant {
+		t.Fatalf("dry run wrote %q, want %q", got, StageNoneVariant)
+	}
+
+	gate.answers = []bool{true}
+	loop.OnInfraEvaluate(context.Background(), snap())
+	if got := defaultVariantOf(t, path, flagCurrentControllerCount); got != StageOneVariant {
+		t.Fatalf("after rollout_enabled on: current_controller_count = %q, want %q", got, StageOneVariant)
 	}
 }
