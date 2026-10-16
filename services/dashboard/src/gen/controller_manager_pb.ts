@@ -1,6 +1,6 @@
 /**
- * Generated types for controller_manager.proto
- * Compatible with Connect-Web v2.x
+ * TypeScript types for controller_manager.proto messages used by the dashboard.
+ * Hand-written (not buf output); keep in sync with the .proto by hand.
  */
 
 // RGB color
@@ -39,16 +39,3 @@ export interface GameplayDataUpdate {
 export interface GameplayStreamRequest {
   updateFrequencyHz: number;
 }
-
-// Service definition for Connect-Web
-export const ControllerManagerService = {
-  typeName: "joustmania.controller_manager.ControllerManagerService",
-  methods: {
-    streamGameplayData: {
-      name: "StreamGameplayData",
-      kind: "server_streaming" as const,
-      I: {} as GameplayStreamRequest,
-      O: {} as GameplayDataUpdate,
-    },
-  },
-} as const;
