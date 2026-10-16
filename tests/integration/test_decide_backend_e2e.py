@@ -83,6 +83,9 @@ AGENT_PATH = active_flag_file("agent")
 INTERVENTIONS_PATH = active_flag_file("interventions")
 
 AGENT_SERVICE = "agent"
+AGENT_CONTAINER = "joustmania-agent"
+# Tag of the agent image this module builds from the checkout (see decide_stack).
+AGENT_IMAGE_TAG = "decide-e2e"
 FAKE_SERVICE = "fake-openai"
 DECIDE_COMPOSE_FILE = "docker-compose.decide-e2e.yml"
 
@@ -120,9 +123,19 @@ ACT_THRESHOLD = 0.8
 # configure_agent for why "primary" is listed.
 ELIGIBLE_GAME_KINDS = "real,primary"
 
-# Remote call budget per decide call. Long so a held call in the kill-switch case
-# is still in flight when the switch flips; every other case answers at once.
-DECIDE_TIMEOUT_MS = 20000
+# Remote call budget per decide call (decision.openai.timeout_ms). Long so the
+# held call in the kill-switch case is still in flight after the switch flips and
+# the agent has provably seen it; every other case answers at once. It must stay
+# below the agent's shared HTTP client backstop (decideHTTPTimeout, 30s), and the
+# fake's hold below it, so the held call ends by OUR release, never by a timeout.
+DECIDE_TIMEOUT_MS = 25000
+KILL_HOLD_MAX_SECONDS = 28
+# Kill-switch sequence budget, measured from "the fake holds the call": flag
+# write -> flagd serves enabled=false -> an agent.disabled span for this game
+# proves the agent's own flag read sees it. Must leave headroom under
+# DECIDE_TIMEOUT_MS so the release (not a timeout) ends the call.
+KILL_SIGNAL_TIMEOUT = 15.0
+KILL_RELEASE_HEADROOM = 3.0
 
 # Polling budgets (worst-case bounds, not paid waits).
 FIRST_CALL_TIMEOUT = 60.0  # game start -> OTLP -> agent cycle -> first remote call
@@ -160,7 +173,11 @@ def release_fake() -> None:
 
 def fake_requests(game_id: str) -> list[dict]:
     """The fake's chat calls for ``game_id`` (parsed from the rendered prompt)."""
-    return [r for r in _fake_call("GET", "/_control/requests")["requests"] if r["game_id"] == game_id]
+    return [
+        r
+        for r in _fake_call("GET", "/_control/requests")["requests"]
+        if r["game_id"] == game_id
+    ]
 
 
 def _span_tags(span: dict) -> dict:
@@ -169,15 +186,20 @@ def _span_tags(span: dict) -> dict:
 
 def _span_events(span: dict) -> list[dict]:
     """Span events (Jaeger "logs") as {field: value} dicts; the name is "event"."""
-    return [{f["key"]: f["value"] for f in log.get("fields", [])} for log in span.get("logs", [])]
+    return [
+        {f["key"]: f["value"] for f in log.get("fields", [])}
+        for log in span.get("logs", [])
+    ]
 
 
-def jaeger_decide_spans(game_id: str, since_s: float) -> list[tuple[dict, list[dict]]]:
-    """Every agent.decide span for ``game_id`` started after ``since_s`` (epoch s),
-    each with the full span list of its trace (to find children)."""
+def jaeger_spans(
+    operation: str, game_id: str, since_s: float
+) -> list[tuple[dict, list[dict]]]:
+    """Every agent span named ``operation`` for ``game_id`` started after
+    ``since_s`` (epoch s), each with the full span list of its trace."""
     params = {
         "service": AGENT_SERVICE,
-        "operation": "agent.decide",
+        "operation": operation,
         "tags": json.dumps({"game.id": game_id}),
         "start": str(int(since_s * 1_000_000)),
         "end": str(int((time.time() + 60) * 1_000_000)),
@@ -191,7 +213,7 @@ def jaeger_decide_spans(game_id: str, since_s: float) -> list[tuple[dict, list[d
     for trace in doc.get("data") or []:
         spans = trace.get("spans", [])
         for span in spans:
-            if span["operationName"] != "agent.decide":
+            if span["operationName"] != operation:
                 continue
             if _span_tags(span).get("game.id") != game_id:
                 continue
@@ -199,7 +221,14 @@ def jaeger_decide_spans(game_id: str, since_s: float) -> list[tuple[dict, list[d
     return out
 
 
-def children(span: dict, trace_spans: list[dict], name: str | None = None) -> list[dict]:
+def jaeger_decide_spans(game_id: str, since_s: float) -> list[tuple[dict, list[dict]]]:
+    """Every agent.decide span for ``game_id`` started after ``since_s``."""
+    return jaeger_spans("agent.decide", game_id, since_s)
+
+
+def children(
+    span: dict, trace_spans: list[dict], name: str | None = None
+) -> list[dict]:
     """Direct children of ``span`` in its trace, optionally filtered by name."""
     out = []
     for s in trace_spans:
@@ -209,7 +238,9 @@ def children(span: dict, trace_spans: list[dict], name: str | None = None) -> li
     return out
 
 
-async def wait_decide_span(game_id: str, since_s: float, predicate, what: str, timeout: float = SPAN_TIMEOUT):
+async def wait_decide_span(
+    game_id: str, since_s: float, predicate, what: str, timeout: float = SPAN_TIMEOUT
+):
     """Poll Jaeger until an agent.decide span for ``game_id`` satisfies
     ``predicate(tags, span, trace_spans)``; return (span, trace_spans)."""
     found: list = []
@@ -224,10 +255,17 @@ async def wait_decide_span(game_id: str, since_s: float, predicate, what: str, t
     ok = await async_poll_until(_check, timeout, interval=1.0)
     if not ok:
         seen = [
-            {k: v for k, v in _span_tags(s).items() if k.startswith("decide.") and k not in ("decide.questions", "decide.answers")}
+            {
+                k: v
+                for k, v in _span_tags(s).items()
+                if k.startswith("decide.")
+                and k not in ("decide.questions", "decide.answers")
+            }
             for s, _ in jaeger_decide_spans(game_id, since_s)
         ]
-        raise AssertionError(f"no agent.decide span for {game_id} with {what} within {timeout}s; saw: {seen}")
+        raise AssertionError(
+            f"no agent.decide span for {game_id} with {what} within {timeout}s; saw: {seen}"
+        )
     return found[0]
 
 
@@ -253,12 +291,16 @@ def _set(doc: dict, key: str, value) -> None:
     flag["defaultVariant"] = E2E_VARIANT
 
 
-def configure_agent(*, backend: str, enabled: bool = True, interventions: bool = True) -> None:
+def configure_agent(
+    *, backend: str, enabled: bool = True, interventions: bool = True
+) -> None:
     """One idempotent write of every agent.json flag a case needs (one reload)."""
     doc = _load(AGENT_PATH)
     _set(doc, "enabled", enabled)
     _set(doc, "interventions_enabled", interventions)
-    doc["flags"]["interventions_allowed"]["defaultVariant"] = INTERVENTIONS_ALLOWED_VARIANT
+    doc["flags"]["interventions_allowed"]["defaultVariant"] = (
+        INTERVENTIONS_ALLOWED_VARIANT
+    )
     _set(doc, "decision.backend", backend)
     _set(doc, "decision.openai.base_url", FAKE_BASE_URL_IN_NETWORK)
     _set(doc, "decision.openai.model", FAKE_MODEL)
@@ -281,7 +323,9 @@ def set_enabled(enabled: bool) -> None:
     _dump_in_place(AGENT_PATH, doc)
 
 
-def wait_agent_flags_served(docker_compose, *, backend: str, enabled: bool, rewrite) -> None:
+def wait_agent_flags_served(
+    docker_compose, *, backend: str, enabled: bool, rewrite
+) -> None:
     from openfeature.evaluation_context import EvaluationContext
 
     ctx = EvaluationContext()
@@ -291,8 +335,10 @@ def wait_agent_flags_served(docker_compose, *, backend: str, enabled: bool, rewr
             and client.get_boolean_value("enabled", not enabled, ctx) is enabled
             and client.get_string_value("decision.openai.model", "", ctx) == FAKE_MODEL
             # numeric flag: TYPED getter (the #903 ObjectValue TYPE_MISMATCH trap)
-            and client.get_integer_value("decision.openai.timeout_ms", -1, ctx) == DECIDE_TIMEOUT_MS
-            and client.get_string_value("llm.eligible_game_kinds", "", ctx) == ELIGIBLE_GAME_KINDS,
+            and client.get_integer_value("decision.openai.timeout_ms", -1, ctx)
+            == DECIDE_TIMEOUT_MS
+            and client.get_string_value("llm.eligible_game_kinds", "", ctx)
+            == ELIGIBLE_GAME_KINDS,
             rewrite=rewrite,
         )
     assert served, f"flagd did not serve decision.backend={backend} enabled={enabled}"
@@ -318,30 +364,59 @@ def _compose_prefix(docker_compose) -> list[str]:
 @pytest.fixture(scope="module")
 def decide_stack(docker_compose):
     """Bring up fake-openai + the agent (with the dummy key) on the session stack,
-    and remove both afterwards so later modules see the agent absent."""
+    and remove both afterwards so later modules see the agent absent.
+
+    The agent is ALWAYS built from this checkout, whatever the suite's
+    USE_PREBUILT_IMAGES / USE_DEV_MOUNTS mode: CI's fast path runs the published
+    :latest images (it only rebuilds on Dockerfile/deps changes), so without this
+    a Go change to the decide path would be tested against the OLD agent. The build
+    uses its own tag (AGENT_IMAGE_TAG) so it never overwrites the :latest image
+    another module may run, and ``--no-deps`` so changing IMAGE_TAG for this call
+    cannot recreate any shared service (flagd, collector, ...).
+    """
     cwd = str(docker_compose.context)
     prefix = _compose_prefix(docker_compose)
-    use_prebuilt = os.getenv("USE_PREBUILT_IMAGES", "false").lower() == "true"
-    use_dev_mounts = os.getenv("USE_DEV_MOUNTS", "false").lower() == "true"
-    up_cmd = [*prefix, "--profile", AGENT_SERVICE, "up", "-d", "--wait"]
-    if not use_prebuilt and not use_dev_mounts:
-        # The agent is profile-gated, so the session bring-up never built it.
-        up_cmd.append("--build")
-    up_cmd += [FAKE_SERVICE, AGENT_SERVICE]
-    up = subprocess.run(up_cmd, cwd=cwd, env=dict(os.environ), capture_output=True, text=True, timeout=900)
-    assert up.returncode == 0, f"failed to start fake-openai + agent:\nSTDOUT:{up.stdout}\nSTDERR:{up.stderr}"
-    assert poll_until(lambda: _fake_reachable(), timeout=30), "fake-openai control API not reachable on the host"
-    try:
-        yield docker_compose
-    finally:
-        subprocess.run(
-            [*prefix, "--profile", AGENT_SERVICE, "rm", "-sf", AGENT_SERVICE, FAKE_SERVICE],
+    base_env = dict(os.environ)
+    agent_env = {**base_env, "IMAGE_TAG": AGENT_IMAGE_TAG}
+
+    def _compose(args: list[str], env: dict, timeout: int):
+        return subprocess.run(
+            [*prefix, "--profile", AGENT_SERVICE, *args],
             cwd=cwd,
-            env=dict(os.environ),
+            env=env,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=timeout,
         )
+
+    try:
+        up = _compose(["up", "-d", "--wait", FAKE_SERVICE], base_env, 300)
+        assert up.returncode == 0, (
+            f"failed to start fake-openai:\nSTDOUT:{up.stdout}\nSTDERR:{up.stderr}"
+        )
+        up = _compose(
+            ["up", "-d", "--wait", "--no-deps", "--build", AGENT_SERVICE],
+            agent_env,
+            900,
+        )
+        assert up.returncode == 0, (
+            f"failed to build/start the agent at HEAD:\nSTDOUT:{up.stdout}\nSTDERR:{up.stderr}"
+        )
+        image = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Config.Image}}", AGENT_CONTAINER],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+        assert image.endswith(f"/agent:{AGENT_IMAGE_TAG}"), (
+            f"{AGENT_CONTAINER} runs {image!r}, not the HEAD build (agent:{AGENT_IMAGE_TAG})"
+        )
+        assert poll_until(lambda: _fake_reachable(), timeout=30), (
+            "fake-openai control API not reachable on the host"
+        )
+        yield docker_compose
+    finally:
+        _compose(["rm", "-sf", AGENT_SERVICE, FAKE_SERVICE], base_env, 120)
 
 
 def _fake_reachable() -> bool:
@@ -384,19 +459,30 @@ def decide_flags(decide_stack):
     with open(AGENT_PATH) as fh:
         agent_mutated = fh.read()
     _restore_agent()
-    wait_flag_file_restored(decide_stack, "agent", agent_backup, agent_mutated, _restore_agent)
-
-    with open(INTERVENTIONS_PATH) as fh:
-        interventions_mutated = fh.read()
-    _restore_interventions()
-    wait_flag_file_restored(
-        decide_stack, "interventions", interventions_backup, interventions_mutated, _restore_interventions
-    )
+    try:
+        wait_flag_file_restored(
+            decide_stack, "agent", agent_backup, agent_mutated, _restore_agent
+        )
+    finally:
+        # ALWAYS write interventions.json back, even when the agent.json wait
+        # failed: a leaked intervention would bleed into every later test.
+        with open(INTERVENTIONS_PATH) as fh:
+            interventions_mutated = fh.read()
+        _restore_interventions()
+        wait_flag_file_restored(
+            decide_stack,
+            "interventions",
+            interventions_backup,
+            interventions_mutated,
+            _restore_interventions,
+        )
 
 
 async def _start_ffa(docker_compose, collector: GameEventCollector) -> str:
     """Start a 4-player JoustFFA game via the menu and return its game id."""
-    await start_game_via_menu(docker_compose, game_mode="JoustFFA", timeout=30.0, event_collector=collector)
+    await start_game_via_menu(
+        docker_compose, game_mode="JoustFFA", timeout=30.0, event_collector=collector
+    )
     started = collector.get_events("game_started")
     game_id = started[-1].game_id if started else ""
     assert game_id, "game_started carried no game_id"
@@ -405,21 +491,45 @@ async def _start_ffa(docker_compose, collector: GameEventCollector) -> str:
 
 def _intervention_events(collector: GameEventCollector) -> list[dict]:
     return [
-        dict(e.data) for e in collector.get_events("agent_intervention") if e.data.get("type") == SCRIPTED_INTERVENTION
+        dict(e.data)
+        for e in collector.get_events("agent_intervention")
+        if e.data.get("type") == SCRIPTED_INTERVENTION
+    ]
+
+
+def _parse_failures() -> list[dict]:
+    return [
+        r
+        for r in _fake_call("GET", "/_control/requests")["requests"]
+        if r.get("parse_failed")
     ]
 
 
 async def _wait_first_call(game_id: str) -> list[dict]:
-    assert await async_poll_until(lambda: bool(fake_requests(game_id)), FIRST_CALL_TIMEOUT, interval=0.5), (
-        f"the agent never called fake-openai for game {game_id} within {FIRST_CALL_TIMEOUT}s"
+    ok = await async_poll_until(
+        lambda: bool(fake_requests(game_id)), FIRST_CALL_TIMEOUT, interval=0.5
     )
-    return fake_requests(game_id)
+    assert ok, (
+        f"the agent never called fake-openai for game {game_id} within {FIRST_CALL_TIMEOUT}s; "
+        f"unparseable prompts: {_parse_failures()}"
+    )
+    calls = fake_requests(game_id)
+    assert calls[0].get("questions"), (
+        "fake-openai parsed no decide questions from the prompt: the rendered prompt "
+        "(services/agent/decide/llmio/llmio.go Render) no longer matches "
+        f"tests/integration/fake_openai/server.py _QUESTION_RE: {calls[0]}"
+    )
+    return calls
 
 
-async def _assert_nothing_applied(collector: GameEventCollector, flag_before: tuple) -> None:
+async def _assert_nothing_applied(
+    collector: GameEventCollector, flag_before: tuple
+) -> None:
     await asyncio.sleep(ABSENCE_WINDOW)
     events = _intervention_events(collector)
-    assert not events, f"{SCRIPTED_INTERVENTION} reached the game although nothing should act: {events}"
+    assert not events, (
+        f"{SCRIPTED_INTERVENTION} reached the game although nothing should act: {events}"
+    )
     assert scripted_flag_state() == flag_before, (
         f"interventions.json {SCRIPTED_FLAG} changed: {flag_before} -> {scripted_flag_state()}"
     )
@@ -431,7 +541,9 @@ async def _assert_nothing_applied(collector: GameEventCollector, flag_before: tu
 
 
 @pytest.mark.asyncio
-async def test_rules_backend_default_unchanged(decide_flags, docker_compose, ensure_game_stopped):
+async def test_rules_backend_default_unchanged(
+    decide_flags, docker_compose, ensure_game_stopped
+):
     """decision.backend=rules (the default): the rules engine decides exactly as
     before, recorded on an agent.decide span (backend=rules, requested=rules, no
     fallback) that is a SIBLING of the rules agent.decision under
@@ -440,7 +552,10 @@ async def test_rules_backend_default_unchanged(decide_flags, docker_compose, ens
     # interventions stay off: this case observes the rules decision, not its effect.
     configure_agent(backend="rules", interventions=False)
     wait_agent_flags_served(
-        docker_compose, backend="rules", enabled=True, rewrite=lambda: configure_agent(backend="rules", interventions=False)
+        docker_compose,
+        backend="rules",
+        enabled=True,
+        rewrite=lambda: configure_agent(backend="rules", interventions=False),
     )
 
     await setup_mock_controllers(docker_compose, count=4)
@@ -454,7 +569,9 @@ async def test_rules_backend_default_unchanged(decide_flags, docker_compose, ens
             game_id = await _start_ffa(docker_compose, collector)
             # R1 (endurance): an early elimination in a young session makes the
             # rules engine slow the tempo / cue audio, i.e. decide something.
-            await kill_player_verified(mock_client, game_client, serials[0], lambda p: not p.alive)
+            await kill_player_verified(
+                mock_client, game_client, serials[0], lambda p: not p.alive
+            )
 
             span, trace_spans = await wait_decide_span(
                 game_id,
@@ -474,23 +591,43 @@ async def test_rules_backend_default_unchanged(decide_flags, docker_compose, ens
             parent_ids = {r["spanID"] for r in span.get("references", [])}
             assert parent_ids, "agent.decide has no parent on the rules path"
             parents = [s for s in trace_spans if s["spanID"] in parent_ids]
-            assert parents and parents[0]["operationName"] == "agent.signal_received", parents
-            assert children(parents[0], trace_spans, "agent.decision"), "no sibling agent.decision"
-            assert not children(span, trace_spans), "the rules agent.decide span must have no children"
-            assert fake_requests(game_id) == [], "the rules backend must never call the remote backend"
+            assert parents and parents[0]["operationName"] == "agent.signal_received", (
+                parents
+            )
+            assert children(parents[0], trace_spans, "agent.decision"), (
+                "no sibling agent.decision"
+            )
+            assert not children(span, trace_spans), (
+                "the rules agent.decide span must have no children"
+            )
+            assert fake_requests(game_id) == [], (
+                "the rules backend must never call the remote backend"
+            )
     finally:
         await channel.close()
 
 
 @pytest.mark.asyncio
-async def test_openai_high_confidence_acts(decide_flags, docker_compose, ensure_game_stopped):
+async def test_openai_high_confidence_acts(
+    decide_flags, docker_compose, ensure_game_stopped
+):
     """High confidence -> decide.outcome=act: the scripted intervention is written
     to interventions.json and applied by the coordinator; the agent.decide span
     carries the passing gen_ai.evaluation.result and parents the chat span and the
     dispatched agent.decision."""
-    script_fake("valid", intervention=SCRIPTED_INTERVENTION, confidence=HIGH_CONFIDENCE, magnitude=SCRIPTED_MAGNITUDE)
+    script_fake(
+        "valid",
+        intervention=SCRIPTED_INTERVENTION,
+        confidence=HIGH_CONFIDENCE,
+        magnitude=SCRIPTED_MAGNITUDE,
+    )
     configure_agent(backend="openai")
-    wait_agent_flags_served(docker_compose, backend="openai", enabled=True, rewrite=lambda: configure_agent(backend="openai"))
+    wait_agent_flags_served(
+        docker_compose,
+        backend="openai",
+        enabled=True,
+        rewrite=lambda: configure_agent(backend="openai"),
+    )
 
     await setup_mock_controllers(docker_compose, count=4)
     game_client, channel = await get_game_client(docker_compose)
@@ -508,47 +645,84 @@ async def test_openai_high_confidence_acts(decide_flags, docker_compose, ensure_
 
             # Effect: the agent wrote the flag and the coordinator applied it.
             assert await async_poll_until(
-                lambda: any(e.get("blocked") == "false" for e in _intervention_events(collector)), APPLY_TIMEOUT
-            ), f"no applied {SCRIPTED_INTERVENTION} on the game stream; saw {_intervention_events(collector)}"
+                lambda: any(
+                    e.get("blocked") == "false" for e in _intervention_events(collector)
+                ),
+                APPLY_TIMEOUT,
+            ), (
+                f"no applied {SCRIPTED_INTERVENTION} on the game stream; saw {_intervention_events(collector)}"
+            )
             variant, value = scripted_flag_state()
-            assert variant == "active", f"agent did not write {SCRIPTED_FLAG}: defaultVariant={variant}"
+            assert variant == "active", (
+                f"agent did not write {SCRIPTED_FLAG}: defaultVariant={variant}"
+            )
             assert abs(float(value) - EXPECTED_VALUE) < 1e-6, value
 
             span, trace_spans = await wait_decide_span(
-                game_id, since, lambda t, s, ts: t.get("decide.outcome") == "act", "decide.outcome=act"
+                game_id,
+                since,
+                lambda t, s, ts: t.get("decide.outcome") == "act",
+                "decide.outcome=act",
             )
             tags = _span_tags(span)
             assert tags.get("decide.backend") == "openai", tags
             assert tags.get("decide.backend.requested") == "openai", tags
             assert tags.get("decide.fallback_reason", "") == "", tags
             assert tags.get("gen_ai.request.model") == FAKE_MODEL, tags
-            assert abs(float(tags.get("decide.confidence")) - HIGH_CONFIDENCE) < 1e-9, tags
-            assert abs(float(tags.get("decide.act_confidence_threshold")) - ACT_THRESHOLD) < 1e-9, tags
+            assert abs(float(tags.get("decide.confidence")) - HIGH_CONFIDENCE) < 1e-9, (
+                tags
+            )
+            assert (
+                abs(float(tags.get("decide.act_confidence_threshold")) - ACT_THRESHOLD)
+                < 1e-9
+            ), tags
             assert SCRIPTED_INTERVENTION in tags.get("decide.answers", ""), tags
 
-            evaluations = [e for e in _span_events(span) if e.get("event") == "gen_ai.evaluation.result"]
-            assert evaluations, f"no gen_ai.evaluation.result event: {_span_events(span)}"
-            assert evaluations[0].get("gen_ai.evaluation.name") == "act_confidence_threshold", evaluations
-            assert evaluations[0].get("gen_ai.evaluation.score.label") == "pass", evaluations
+            evaluations = [
+                e
+                for e in _span_events(span)
+                if e.get("event") == "gen_ai.evaluation.result"
+            ]
+            assert evaluations, (
+                f"no gen_ai.evaluation.result event: {_span_events(span)}"
+            )
+            assert (
+                evaluations[0].get("gen_ai.evaluation.name")
+                == "act_confidence_threshold"
+            ), evaluations
+            assert evaluations[0].get("gen_ai.evaluation.score.label") == "pass", (
+                evaluations
+            )
 
             chats = children(span, trace_spans, CHAT_SPAN)
-            assert chats, f"no '{CHAT_SPAN}' child under agent.decide: {[s['operationName'] for s in trace_spans]}"
+            assert chats, (
+                f"no '{CHAT_SPAN}' child under agent.decide: {[s['operationName'] for s in trace_spans]}"
+            )
             chat_tags = _span_tags(chats[0])
             assert chat_tags.get("gen_ai.provider.name") == "openai", chat_tags
             assert chat_tags.get("gen_ai.operation.name") == "chat", chat_tags
             assert chat_tags.get("gen_ai.request.model") == FAKE_MODEL, chat_tags
-            assert children(span, trace_spans, "agent.decision"), "the act must route through agent.decision"
+            assert children(span, trace_spans, "agent.decision"), (
+                "the act must route through agent.decision"
+            )
     finally:
         await channel.close()
 
 
 @pytest.mark.asyncio
-async def test_openai_low_confidence_held(decide_flags, docker_compose, ensure_game_stopped):
+async def test_openai_low_confidence_held(
+    decide_flags, docker_compose, ensure_game_stopped
+):
     """Low confidence -> decide.outcome=held: no agent.decision, nothing written,
     nothing applied; the gen_ai.evaluation.result fails the threshold."""
     script_fake("valid", intervention=SCRIPTED_INTERVENTION, confidence=LOW_CONFIDENCE)
     configure_agent(backend="openai")
-    wait_agent_flags_served(docker_compose, backend="openai", enabled=True, rewrite=lambda: configure_agent(backend="openai"))
+    wait_agent_flags_served(
+        docker_compose,
+        backend="openai",
+        enabled=True,
+        rewrite=lambda: configure_agent(backend="openai"),
+    )
     flag_before = scripted_flag_state()
 
     await setup_mock_controllers(docker_compose, count=4)
@@ -562,31 +736,57 @@ async def test_openai_low_confidence_held(decide_flags, docker_compose, ensure_g
             assert calls[0]["intervention"] == SCRIPTED_INTERVENTION, calls[0]
 
             span, trace_spans = await wait_decide_span(
-                game_id, since, lambda t, s, ts: t.get("decide.outcome") == "held", "decide.outcome=held"
+                game_id,
+                since,
+                lambda t, s, ts: t.get("decide.outcome") == "held",
+                "decide.outcome=held",
             )
             tags = _span_tags(span)
             assert tags.get("decide.backend") == "openai", tags
-            assert abs(float(tags.get("decide.confidence")) - LOW_CONFIDENCE) < 1e-9, tags
-            evaluations = [e for e in _span_events(span) if e.get("event") == "gen_ai.evaluation.result"]
-            assert evaluations and evaluations[0].get("gen_ai.evaluation.score.label") == "fail", evaluations
-            assert children(span, trace_spans, CHAT_SPAN), "the held call still has its chat span"
-            assert not children(span, trace_spans, "agent.decision"), "a held answer must not reach runDecision"
+            assert abs(float(tags.get("decide.confidence")) - LOW_CONFIDENCE) < 1e-9, (
+                tags
+            )
+            evaluations = [
+                e
+                for e in _span_events(span)
+                if e.get("event") == "gen_ai.evaluation.result"
+            ]
+            assert (
+                evaluations
+                and evaluations[0].get("gen_ai.evaluation.score.label") == "fail"
+            ), evaluations
+            assert children(span, trace_spans, CHAT_SPAN), (
+                "the held call still has its chat span"
+            )
+            assert not children(span, trace_spans, "agent.decision"), (
+                "a held answer must not reach runDecision"
+            )
 
             await _assert_nothing_applied(collector, flag_before)
             # Every decide span of this game is held: no act slipped through.
-            outcomes = {_span_tags(s).get("decide.outcome") for s, _ in jaeger_decide_spans(game_id, since)}
+            outcomes = {
+                _span_tags(s).get("decide.outcome")
+                for s, _ in jaeger_decide_spans(game_id, since)
+            }
             assert outcomes == {"held"}, outcomes
     finally:
         await channel.close()
 
 
 @pytest.mark.asyncio
-async def test_openai_garbage_falls_back_to_rules(decide_flags, docker_compose, ensure_game_stopped):
+async def test_openai_garbage_falls_back_to_rules(
+    decide_flags, docker_compose, ensure_game_stopped
+):
     """Garbage model output -> the rules engine decides instead:
     decide.outcome=fallback, decide.backend=rules, decide.fallback_reason=invalid_answer."""
     script_fake("garbage")
     configure_agent(backend="openai")
-    wait_agent_flags_served(docker_compose, backend="openai", enabled=True, rewrite=lambda: configure_agent(backend="openai"))
+    wait_agent_flags_served(
+        docker_compose,
+        backend="openai",
+        enabled=True,
+        rewrite=lambda: configure_agent(backend="openai"),
+    )
 
     await setup_mock_controllers(docker_compose, count=4)
     game_client, channel = await get_game_client(docker_compose)
@@ -598,7 +798,10 @@ async def test_openai_garbage_falls_back_to_rules(decide_flags, docker_compose, 
             await _wait_first_call(game_id)
 
             span, trace_spans = await wait_decide_span(
-                game_id, since, lambda t, s, ts: t.get("decide.outcome") == "fallback", "decide.outcome=fallback"
+                game_id,
+                since,
+                lambda t, s, ts: t.get("decide.outcome") == "fallback",
+                "decide.outcome=fallback",
             )
             tags = _span_tags(span)
             assert tags.get("decide.fallback_reason") == "invalid_answer", tags
@@ -607,19 +810,33 @@ async def test_openai_garbage_falls_back_to_rules(decide_flags, docker_compose, 
             assert tags.get("error.type") == "invalid_answer", tags
             chats = children(span, trace_spans, CHAT_SPAN)
             assert chats, "the failed call still records its chat span"
-            assert _span_tags(chats[0]).get("error.type") == "invalid_output", _span_tags(chats[0])
+            assert _span_tags(chats[0]).get("error.type") == "invalid_output", (
+                _span_tags(chats[0])
+            )
     finally:
         await channel.close()
 
 
 @pytest.mark.asyncio
-async def test_kill_switch_discards_inflight_answer(decide_flags, docker_compose, ensure_game_stopped):
+async def test_kill_switch_discards_inflight_answer(
+    decide_flags, docker_compose, ensure_game_stopped
+):
     """The kill switch flipped while the remote call is in flight: the late
     high-confidence answer is discarded (decide.discarded_reason=kill_switch) and
     nothing is applied. Sequential by nature: ``enabled`` is a global flag."""
-    script_fake("hold", intervention=SCRIPTED_INTERVENTION, confidence=HIGH_CONFIDENCE, hold_max_seconds=30)
+    script_fake(
+        "hold",
+        intervention=SCRIPTED_INTERVENTION,
+        confidence=HIGH_CONFIDENCE,
+        hold_max_seconds=KILL_HOLD_MAX_SECONDS,
+    )
     configure_agent(backend="openai")
-    wait_agent_flags_served(docker_compose, backend="openai", enabled=True, rewrite=lambda: configure_agent(backend="openai"))
+    wait_agent_flags_served(
+        docker_compose,
+        backend="openai",
+        enabled=True,
+        rewrite=lambda: configure_agent(backend="openai"),
+    )
     flag_before = scripted_flag_state()
 
     await setup_mock_controllers(docker_compose, count=4)
@@ -631,16 +848,36 @@ async def test_kill_switch_discards_inflight_answer(decide_flags, docker_compose
             game_id = await _start_ffa(docker_compose, collector)
             # The agent's call is in flight: the fake is holding it.
             assert await async_poll_until(
-                lambda: any(r["held"] for r in fake_requests(game_id)), FIRST_CALL_TIMEOUT, interval=0.5
+                lambda: any(r.get("held") for r in fake_requests(game_id)),
+                FIRST_CALL_TIMEOUT,
+                interval=0.5,
             ), f"no held call for {game_id}: {fake_requests(game_id)}"
+            held_at = time.time()
 
+            flipped_at = time.time()
             set_enabled(False)
             wait_agent_flags_served(
-                docker_compose, backend="openai", enabled=False, rewrite=lambda: set_enabled(False)
+                docker_compose,
+                backend="openai",
+                enabled=False,
+                rewrite=lambda: set_enabled(False),
             )
-            # Give the agent's flagd RPC client a moment to see the change event
-            # before the answer lands (it re-reads the live flags at landing).
-            await asyncio.sleep(2.0)
+            # Positive signal that the AGENT (not just flagd) reads enabled=false:
+            # its kill-switch path emits agent.disabled for this game on the next
+            # evaluation cycle. Only then release the held answer, which re-reads
+            # the live flags when it lands.
+            assert await async_poll_until(
+                lambda: bool(jaeger_spans("agent.disabled", game_id, flipped_at)),
+                KILL_SIGNAL_TIMEOUT,
+                interval=0.5,
+            ), (
+                f"no agent.disabled span for {game_id} within {KILL_SIGNAL_TIMEOUT}s of the kill-switch flip"
+            )
+            elapsed = time.time() - held_at
+            assert elapsed < DECIDE_TIMEOUT_MS / 1000 - KILL_RELEASE_HEADROOM, (
+                f"kill-switch sequence took {elapsed:.1f}s: the held call would time out before the "
+                f"release (DECIDE_TIMEOUT_MS={DECIDE_TIMEOUT_MS}); budgets too tight"
+            )
             release_fake()
 
             span, _ = await wait_decide_span(
@@ -654,10 +891,15 @@ async def test_kill_switch_discards_inflight_answer(decide_flags, docker_compose
             assert tags.get("decide.backend") == "openai", tags
             # The answer itself was a valid high-confidence act: the switch stopped it.
             assert SCRIPTED_INTERVENTION in tags.get("decide.answers", ""), tags
-            assert abs(float(tags.get("decide.confidence")) - HIGH_CONFIDENCE) < 1e-9, tags
+            assert abs(float(tags.get("decide.confidence")) - HIGH_CONFIDENCE) < 1e-9, (
+                tags
+            )
 
             await _assert_nothing_applied(collector, flag_before)
-            outcomes = {_span_tags(s).get("decide.outcome") for s, _ in jaeger_decide_spans(game_id, since)}
+            outcomes = {
+                _span_tags(s).get("decide.outcome")
+                for s, _ in jaeger_decide_spans(game_id, since)
+            }
             assert "act" not in outcomes, outcomes
     finally:
         await channel.close()

@@ -25,9 +25,13 @@ test through the control API, so tests never restart the container:
         flip a flag while the agent's call is provably in flight.
     POST /_control/release  releases every held request.
     GET  /_control/requests the request log: one entry per chat call with the
-                            game id parsed from the prompt, the mode it was
-                            answered with, the chosen intervention, and whether
-                            it is still held.
+                            game id and question ids parsed from the prompt,
+                            the mode it was answered with, the chosen
+                            intervention, and whether it is still held.
+
+A prompt this fake cannot parse (no question or no game id, i.e. llmio.Render
+changed shape) is answered HTTP 500, logged as ``parse_failed`` and recorded
+with ``"parse_failed": true``.
 
 ``GET /_jaeger/<path>`` relays to the Jaeger query API inside the compose
 network (``JAEGER_QUERY_URL``): the integration stack publishes no Jaeger host
@@ -72,7 +76,9 @@ _requests: list[dict] = []
 
 # Rendered prompt shapes (services/agent/decide/llmio/llmio.go Render).
 _GAME_ID_RE = re.compile(r"^game: id=(\S+)", re.MULTILINE)
-_QUESTION_RE = re.compile(r"^- id: (\S+)\n  kind: (\w+)\n  (options|range): (\[.*\])$", re.MULTILINE)
+_QUESTION_RE = re.compile(
+    r"^- id: (\S+)\n  kind: (\w+)\n  (options|range): (\[.*\])$", re.MULTILINE
+)
 
 
 def parse_questions(user_prompt: str) -> list[dict]:
@@ -92,7 +98,9 @@ def parse_questions(user_prompt: str) -> list[dict]:
     return questions
 
 
-def _choice_answer(qid: str, options: list[str], wanted: str, confidence: float) -> dict:
+def _choice_answer(
+    qid: str, options: list[str], wanted: str, confidence: float
+) -> dict:
     choice = wanted if wanted in options else options[0]
     probabilities = [{"option": choice, "p": 0.9}]
     others = [o for o in options if o != choice]
@@ -135,12 +143,21 @@ def build_answer(questions: list[dict], script: dict) -> tuple[dict, str]:
             lo, hi = q["range"]
             score = min(max(float(script["magnitude"]), lo), hi)
             answers.append(
-                {"id": q["id"], "choice": "", "score": score, "probabilities": [], "confidence": confidence}
+                {
+                    "id": q["id"],
+                    "choice": "",
+                    "score": score,
+                    "probabilities": [],
+                    "confidence": confidence,
+                }
             )
     # Cross-question consistency: noop must target "none" (it already does).
     if chosen == "":
         chosen = OPTION_NOOP
-    return {"answers": answers, "rationale": f"fake-openai scripted {chosen} at confidence {confidence}"}, chosen
+    return {
+        "answers": answers,
+        "rationale": f"fake-openai scripted {chosen} at confidence {confidence}",
+    }, chosen
 
 
 def chat_completion(model: str, content: str) -> dict:
@@ -186,7 +203,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
         elif self.path == "/_control/requests":
             with _lock:
-                self._send_json(200, {"script": dict(_script), "requests": list(_requests)})
+                self._send_json(
+                    200, {"script": dict(_script), "requests": list(_requests)}
+                )
         elif self.path.startswith("/_jaeger/"):
             self._relay_jaeger()
         else:
@@ -209,7 +228,9 @@ class Handler(BaseHTTPRequestHandler):
         script = dict(DEFAULT_SCRIPT)
         script.update({k: v for k, v in body.items() if k in DEFAULT_SCRIPT})
         if script["mode"] not in VALID_MODES:
-            self._send_json(400, {"error": f"mode must be one of {sorted(VALID_MODES)}"})
+            self._send_json(
+                400, {"error": f"mode must be one of {sorted(VALID_MODES)}"}
+            )
             return
         with _lock:
             # Release anything still held by the previous script before swapping.
@@ -222,13 +243,51 @@ class Handler(BaseHTTPRequestHandler):
 
     def _chat(self) -> None:
         if self.headers.get("Authorization") != f"Bearer {EXPECTED_API_KEY}":
-            self._send_json(401, {"error": {"message": "invalid api key", "type": "invalid_request_error"}})
+            self._send_json(
+                401,
+                {
+                    "error": {
+                        "message": "invalid api key",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
             return
         body = self._read_json()
         messages = body.get("messages") or []
-        user = next((m.get("content", "") for m in messages if m.get("role") == "user"), "")
+        user = next(
+            (m.get("content", "") for m in messages if m.get("role") == "user"), ""
+        )
         match = _GAME_ID_RE.search(user)
         game_id = match.group(1) if match else ""
+        questions = parse_questions(user)
+
+        if not questions or not game_id:
+            # The rendered prompt no longer matches what this fake parses
+            # (llmio.Render changed?). Fail loudly instead of answering junk.
+            print(
+                f"fake-openai: parse_failed game_id={game_id!r} questions={len(questions)}",
+                flush=True,
+            )
+            with _lock:
+                _requests.append(
+                    {
+                        "game_id": game_id,
+                        "parse_failed": True,
+                        "questions": [q["id"] for q in questions],
+                        "at": time.time(),
+                    }
+                )
+            self._send_json(
+                500,
+                {
+                    "error": {
+                        "message": "fake-openai: parse_failed",
+                        "type": "server_error",
+                    }
+                },
+            )
+            return
 
         with _lock:
             script = dict(_script)
@@ -241,17 +300,16 @@ class Handler(BaseHTTPRequestHandler):
                 "at": time.time(),
                 "held": script["mode"] == "hold",
                 "intervention": "",
+                "questions": [q["id"] for q in questions],
             }
             _requests.append(entry)
 
         if script["mode"] == "garbage":
             content = "this is not the JSON you are looking for {"
         else:
-            questions = parse_questions(user)
             answer, chosen = build_answer(questions, script)
             with _lock:
                 entry["intervention"] = chosen
-                entry["questions"] = [q["id"] for q in questions]
             content = json.dumps(answer)
 
         if script["mode"] == "hold":
@@ -268,7 +326,7 @@ class Handler(BaseHTTPRequestHandler):
                 entry["client_gone"] = True
 
     def _relay_jaeger(self) -> None:
-        url = JAEGER_QUERY_URL + "/jaeger/" + self.path[len("/_jaeger/"):]
+        url = JAEGER_QUERY_URL + "/jaeger/" + self.path[len("/_jaeger/") :]
         try:
             with urllib.request.urlopen(url, timeout=10) as resp:
                 status, body = resp.status, resp.read()

@@ -7,6 +7,19 @@
 #     -f docker-compose.ci.yml -f docker-compose.decide-e2e.yml \
 #     --profile agent up -d --wait fake-openai agent
 #
+# Validating it: alone it is not a valid project (the `agent` entry is a partial
+# override and the `joustmania` network lives in docker-compose.yml), and both
+# services are in the `agent` profile, so without `--profile agent` (the profile the
+# test brings them up under) `config` silently filters them out. Use the full stack:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml \
+#     -f docker-compose.ci.yml -f docker-compose.decide-e2e.yml --profile agent config -q
+#
+# The test builds the agent at HEAD with its own image tag (IMAGE_TAG=decide-e2e,
+# `up --build --no-deps agent`), whatever the suite's prebuilt/dev-mount mode, so the
+# agent under test always carries this checkout's Go code (CI's fast path would
+# otherwise run the published :latest agent).
+#
 # No production stack loads this file: it adds a scriptable fake
 # OpenAI-compatible endpoint (fake-openai) and hands the agent a DUMMY
 # DECISION_OPENAI_API_KEY so the `openai` decision backend is available. The
@@ -22,7 +35,7 @@ services:
   fake-openai:
     profiles:
       - agent
-    image: python:3.14-alpine
+    image: python:3.14.5-alpine
     container_name: joustmania-fake-openai
     command: ["python", "-u", "/app/server.py"]
     volumes:
@@ -32,7 +45,7 @@ services:
       - FAKE_OPENAI_API_KEY=fake-decide-e2e-key
       - JAEGER_QUERY_URL=http://jaeger:16686
     ports:
-      - "18089:8080"
+      - "127.0.0.1:18089:8080"
     networks:
       - joustmania
     healthcheck:
