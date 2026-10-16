@@ -7,6 +7,8 @@ Tests human-readable controller name generation and persistence.
 import os
 import tempfile
 
+import pytest
+
 from services.controller_manager.name_manager import (
     ADJECTIVES,
     NOUNS,
@@ -35,6 +37,7 @@ class TestNameGeneration:
             if os.path.exists(names_file):
                 os.unlink(names_file)
 
+    @pytest.mark.uc("UC-002", flow="main", steps=[4])
     def test_deterministic_generation(self):
         """Same serial always generates same name."""
         with tempfile.NamedTemporaryFile(delete=False) as f:
@@ -92,6 +95,7 @@ class TestNameGeneration:
 class TestNamePersistence:
     """Tests for name persistence to file."""
 
+    @pytest.mark.uc("UC-002", flow="main", steps=[4])
     def test_name_saved_on_first_get(self):
         """First get_name saves the name to file."""
         with tempfile.NamedTemporaryFile(delete=False) as f:
@@ -111,6 +115,7 @@ class TestNamePersistence:
             if os.path.exists(names_file):
                 os.unlink(names_file)
 
+    @pytest.mark.uc("UC-002", flow="main", steps=[4])
     def test_names_persist_across_instances(self):
         """Names persist when creating new NameManager instance."""
         with tempfile.NamedTemporaryFile(delete=False) as f:

@@ -57,6 +57,49 @@ class TestAddController:
         assert response.serial == "DUP"
 
 
+class TestUC003AutoGameEnd:
+    """UC-003 A1: SetAutoGameEnd kills players after the duration so the game reaches a winner."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-003", flow="A1")
+    async def test_kills_all_but_last_after_duration(self):
+        """After the duration every mock controller but the last-added one is latched dead (BR-001 latch)."""
+        service, adapter = _make_service()
+        serials = list(service.AddControllers(controller_manager_mock_pb2.AddControllersRequest(count=3), None).serials)
+
+        response = await service.SetAutoGameEnd(
+            controller_manager_mock_pb2.AutoGameEndRequest(enabled=True, duration_seconds=0.05), None
+        )
+        assert response.success
+        # Nothing happens before the duration has passed.
+        assert all(adapter.controllers[s]["death_accel"] is None for s in serials)
+
+        await service.auto_end_task
+
+        for serial in serials[:-1]:
+            controller = adapter.controllers[serial]
+            assert _magnitude(controller["death_accel"]) == pytest.approx(9.95, abs=0.01)
+            assert controller["death_frames_remaining"] > 0
+        assert adapter.controllers[serials[-1]]["death_accel"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-003", flow="A1")
+    async def test_disable_cancels_pending_auto_end(self):
+        """Disabling before the duration cancels the scheduled kill."""
+        service, adapter = _make_service()
+        serials = list(service.AddControllers(controller_manager_mock_pb2.AddControllersRequest(count=2), None).serials)
+        await service.SetAutoGameEnd(
+            controller_manager_mock_pb2.AutoGameEndRequest(enabled=True, duration_seconds=30), None
+        )
+        pending = service.auto_end_task
+
+        response = await service.SetAutoGameEnd(controller_manager_mock_pb2.AutoGameEndRequest(enabled=False), None)
+
+        assert response.success
+        assert pending.cancelled()
+        assert all(adapter.controllers[s]["death_accel"] is None for s in serials)
+
+
 class TestRemoveController:
     def test_remove_existing_controller(self):
         service, adapter = _make_service()
@@ -75,6 +118,7 @@ class TestRemoveController:
 
 
 class TestAddControllers:
+    @pytest.mark.uc("UC-003", flow="main", steps=[1, 2])
     def test_add_multiple_controllers(self):
         service, adapter = _make_service()
         request = controller_manager_mock_pb2.AddControllersRequest(count=3)
@@ -91,6 +135,7 @@ class TestAddControllers:
         assert len(response.serials) == 0
         assert len(adapter.controllers) == 0
 
+    @pytest.mark.uc("UC-003", flow="main", steps=[1, 2])
     def test_add_controllers_incremental(self):
         service, adapter = _make_service()
         # Add 2, then 3 more
@@ -120,6 +165,7 @@ _BUTTON_CASES = [
 
 class TestSimulateButton:
     @pytest.mark.parametrize(("proto_button", "button_key"), _BUTTON_CASES)
+    @pytest.mark.uc("UC-003", flow="main", steps=[3])
     def test_press_sets_backend_state(self, proto_button, button_key):
         """Each of the nine buttons can be pressed and released independently."""
         service, adapter = _make_service()

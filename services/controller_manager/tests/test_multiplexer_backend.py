@@ -506,6 +506,7 @@ class TestRouteControllers:
     """Tests for OpenFeature targeting-based adapter routing."""
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    @pytest.mark.uc("UC-002", flow="main", steps=[3], br=["BR-001"])
     def test_targeting_routes_to_preferred_adapter(self, mock_metrics):
         """Both adapters discover AA:AA; targeting picks a2, a1's handle is closed."""
         a1 = _make_adapter("python", serials=["AA:AA"])
@@ -596,6 +597,7 @@ class TestRouteControllers:
         assert "Switched AA:AA: python -> rust" in caplog.text
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    @pytest.mark.uc("UC-002", flow="main", steps=[3], br=["BR-001"])
     def test_dynamic_switch_closes_old_adapter(self, mock_metrics):
         """Switching adapter should close the handle on the old adapter."""
         a1 = _make_adapter("python", serials=["AA:AA"])
@@ -619,6 +621,7 @@ class TestRouteControllers:
         a1.close.assert_called_with("AA:AA")
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    @pytest.mark.uc("UC-002", flow="main", steps=[3], br=["BR-001"])
     def test_different_serials_to_different_adapters(self, mock_metrics):
         """Each serial can route to a different adapter independently."""
         a1 = _make_adapter("python", serials=["AA:AA", "BB:BB"])
@@ -796,6 +799,7 @@ def _details(value, reason):
 class TestResolveAdapterForSerial:
     """Tests for three-way precedence in _resolve_adapter_for_serial."""
 
+    @pytest.mark.uc("UC-002", flow="main", steps=[3])
     def test_explicit_targeting_match_wins(self):
         """A TARGETING_MATCH on bluetooth_backend routes to that adapter."""
         a1 = _make_adapter("python")
@@ -811,6 +815,7 @@ class TestResolveAdapterForSerial:
         assert adapter is a2
         assert method == "targeted"
 
+    @pytest.mark.uc("UC-002", flow="main", steps=[3])
     def test_default_variant_is_method_default_not_targeted(self):
         """A non-TARGETING_MATCH reason (default variant) routes as 'default'."""
         a1 = _make_adapter("python")
@@ -828,6 +833,7 @@ class TestResolveAdapterForSerial:
         assert adapter is a1
         assert method == "default"
 
+    @pytest.mark.uc("UC-002", flow="main", steps=[3])
     def test_rollout_beats_default_when_no_explicit_targeting(self):
         """Rollout target wins over the flag default variant."""
         a_py = _make_adapter("python")
@@ -847,6 +853,7 @@ class TestResolveAdapterForSerial:
         assert adapter is a_un
         assert method == "rollout"
 
+    @pytest.mark.uc("UC-002", flow="main", steps=[3])
     def test_explicit_targeting_beats_rollout(self):
         """Explicit TARGETING_MATCH takes precedence over an active rollout."""
         a_py = _make_adapter("python")
