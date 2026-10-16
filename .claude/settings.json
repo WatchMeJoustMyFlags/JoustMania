@@ -1,14 +1,15 @@
 {
   "extraKnownMarketplaces": {
-    "aiup-marketplace": {
+    "ai-unified-process-marketplace": {
       "source": {
         "source": "github",
-        "repo": "martinellich/aiup-marketplace"
+        "repo": "AI-Unified-Process/marketplace",
+        "ref": "aiup-core-v2.28.0"
       },
       "autoUpdate": false
     }
   },
   "enabledPlugins": {
-    "aiup-core@aiup-marketplace": true
+    "aiup-core@ai-unified-process-marketplace": true
   }
 }

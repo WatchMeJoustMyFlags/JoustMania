@@ -1,0 +1,14 @@
+# Spec documents and the gate that enforces them (AIUP, #1263): the spec is the
+# source of truth, so changes to it, to the vendored linter + baseline, and to
+# CI request a review from the repository owner. Informational: the main
+# ruleset requires only "CI Complete", not code-owner approval.
+/docs/requirements.md     @aepfli
+/docs/use_cases/          @aepfli
+/docs/use_cases.puml      @aepfli
+/docs/specs/              @aepfli
+/docs/specs-inventory.md  @aepfli
+/docs/entity_model.md     @aepfli
+/docs/vision.md           @aepfli
+/docs/NORTHSTAR.md        @aepfli
+/scripts/aiup/            @aepfli
+/.github/workflows/       @aepfli

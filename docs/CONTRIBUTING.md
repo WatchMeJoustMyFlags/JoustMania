@@ -63,13 +63,19 @@ in the same PR or in a preceding one. Start at the [docs index](README.md).
 | Use cases | [use_cases.puml](use_cases.puml), [use_cases/UC-xxx.md](use_cases/) | `use-case-diagram`, `use-case-spec` | Actor goals, main success scenario, alternative flows, business rules |
 | Technical specs | [specs/services.md](specs/services.md), [specs/flags.md](specs/flags.md), [specs/telemetry.md](specs/telemetry.md), [specs/decide-contract.md](specs/decide-contract.md) | (repo convention) | Ports, RPCs, flag catalog, span / metric / attribute names, the decision contract |
 
-The AIUP skills come from the `aiup-core` plugin, enabled for everyone at project
-scope in `.claude/settings.json` (#1259, marketplace `martinellich/aiup-marketplace`,
-auto-update off). It provides four skills: `requirements`, `entity-model`,
-`use-case-diagram` and `use-case-spec`. The plugin also brings the Context7 MCP
-server (`plugin:aiup-core:context7`), which stays enabled by maintainer decision;
-disable it per user if you do not want it. To opt out of the whole plugin for
-yourself, set `"enabledPlugins": {"aiup-core@aiup-marketplace": false}` in your
+The AIUP skills come from the stack-agnostic `aiup-core` plugin, enabled for everyone
+at project scope in `.claude/settings.json` (#1259, #1263; marketplace
+[`AI-Unified-Process/marketplace`](https://github.com/AI-Unified-Process/marketplace),
+the successor of the archived `martinellich/aiup-marketplace`; auto-update off, so a
+plugin update is a reviewed PR). The skills we use: `requirements`, `entity-model`,
+`use-case-diagram`, `use-case-spec`, `spec-review` (cross-file lint, trace matrix,
+HTML report) and `test-case` (end-to-end test case documents). The plugin also ships
+`business-process` (BPMN) and `reverse-engineer`, which JoustMania does not use. The
+stack-specific plugins of that marketplace (Vaadin/jOOQ, Angular/JPA, ...) are not
+enabled. The plugin also brings the Context7 MCP server (`plugin:aiup-core:context7`),
+which stays enabled by maintainer decision; disable it per user if you do not want it.
+To opt out of the whole plugin for yourself, set
+`"enabledPlugins": {"aiup-core@ai-unified-process-marketplace": false}` in your
 git-ignored `.claude/settings.local.json`. Use the skills when you write or extend the corresponding
 artefact so the format stays uniform; the technical specs are a JoustMania
 convention on top of AIUP, because flags, telemetry names and the decide contract
@@ -144,8 +150,60 @@ that tests or dashboards rely on, and the same decision outcomes. Typical cases:
 internal refactors, test-only changes, dependency bumps, CI-only changes, typo fixes.
 Bot PRs (Renovate, release-please, `chore(deps)`) are exempt from the "Spec changes" section.
 Write `Spec changes: none: <reason>` in the PR body
-(e.g. `none: refactor, no behaviour change`). If you are unsure whether
+(e.g. `none: refactor, no behaviour change`) and add the `no-spec-change` label
+(see the CI gate below). If you are unsure whether
 something is observable, it probably is: update the spec.
+
+### CI spec gate
+
+The `Spec Gate` job in `ci.yml` (#1263, required through `CI Complete`) has two steps:
+
+1. **Spec lint** (runs when `docs/**`, `.github/**` or `scripts/aiup/**` change):
+   `scripts/aiup/spec-review/scripts/spec_lint.py`, the `spec-review` skill's linter,
+   vendored from the AIUP marketplace (Apache-2.0, see `scripts/aiup/NOTICE`; three
+   local patches: the requirement Status column is read by its header because our
+   tables have a Notes column after it; FRs on a use case's `**Planned:**` line
+   count as covered for `FR_UNCOVERED` without feeding the derived status checked by
+   `REQ_STATUS_DRIFT`; and `REQ_STATUS_DRIFT` checks FRs only, since NFRs are
+   measured separately and constraints are verified by review and the technical specs). `scripts/aiup/spec-lint-gate.sh` runs it over `docs/`:
+   - **Every error fails**: `DUPLICATE_ID`, `SPEC_MISSING`, `NOT_IN_DIAGRAM`,
+     `DANGLING_REF`, and use case files the AIUP format cannot parse. Errors are
+     checked without the baseline, so they cannot be baselined.
+   - **New warnings fail** (`REQ_STATUS_DRIFT`, `FLOW_TERMINATION`, `WEAK_WORD`, ...).
+     The existing ones are accepted in `scripts/aiup/spec-lint-baseline.json`.
+   - **The baseline only shrinks**: on a PR it may not have more entries than on
+     `main`, unless the PR carries the `spec-baseline-growth` label (a deliberate,
+     reviewed acceptance of new warnings).
+
+   Run the same gate locally before pushing a docs change:
+
+   ```bash
+   scripts/aiup/spec-lint-gate.sh            # errors + new warnings
+   BASE_REF=main PR_LABELS= scripts/aiup/spec-lint-gate.sh   # + baseline growth
+   ```
+
+   Fixing a baselined finding is reported as `INFO BASELINE_STALE` (not a failure);
+   refresh the baseline in the same PR so it shrinks:
+   `python3 scripts/aiup/spec-review/scripts/spec_lint.py --docs docs --baseline scripts/aiup/spec-lint-baseline.json --update-baseline`.
+2. **Spec touched** (pull requests changing `services/**`, `lib/**` or `proto/**`;
+   tests (`tests/`, `testutil/`, `mocks/`, `conftest.py`, `*_test.*`, `test_*.py`,
+   `*.test.ts(x)`, `*.spec.ts(x)`), `*.md`, dependency manifests/locks and
+   Dockerfiles do not count; Grafana dashboards, Prometheus alerts and collector
+   config do, since `docs/specs/telemetry.md` documents them): the PR must also change
+   `docs/requirements.md`, `docs/use_cases/**`, `docs/use_cases.puml`, `docs/specs/**`,
+   `docs/specs-inventory.md` or `docs/entity_model.md`. A change to
+   `services/flagd/*.json` must touch `docs/specs/flags.md`, a change to
+   `proto/*.proto` must touch `docs/specs/services.md`. Exempt: PRs with the
+   `no-spec-change` label; Renovate, Dependabot and release-please PRs (the bot
+   accounts `renovate[bot]`, `dependabot[bot]`, `github-actions[bot]`, matched by
+   login and account type); and the agent's experiment-promoter PRs (branch
+   `agent/experiment-*` in this repository, title `Flag experiment: ...`).
+
+Adding or removing `no-spec-change` or `spec-baseline-growth` re-runs the Spec Gate
+automatically (`spec-label-rerun.yml`). Label events run in their own concurrency
+group, so they never cancel a CI run in progress. On a **fork PR** the re-run
+workflow has no permission to re-run jobs: push a commit (an empty one is fine)
+after adding the label instead.
 
 ### Traceability IDs
 
@@ -222,6 +280,7 @@ All pull requests must pass CI checks before merging:
 4. **Proto Validation** - Proto files must be up-to-date (run `make protos`)
 5. **Docker Builds** - All services must build successfully
 6. **Package Validation** - All workspace packages must install correctly
+7. **Spec Gate** - Spec lint over `docs/` and the spec-touched check (see [CI spec gate](#ci-spec-gate))
 
 ### Running Checks Locally
 

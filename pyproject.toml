@@ -77,4 +77,5 @@ markers = [
 exclude = [
     "tools",             # Utility scripts (not part of main codebase)
     "tests/integration", # Integration tests (separate package)
+    "scripts/aiup",      # Vendored AI Unified Process linter (upstream style, Apache-2.0)
 ]

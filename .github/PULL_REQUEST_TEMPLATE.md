@@ -9,6 +9,7 @@ Spec-driven development (AIUP): behaviour changes update the spec first, in this
 See docs/CONTRIBUTING.md#spec-driven-development-aiup. Fill in ONE of:
   - the IDs / sections you added or changed, e.g. "FR-045, NFR-011, UC-040 A3, specs/flags.md#agent, specs/telemetry.md agent.decide"
   - "none: <reason>", e.g. "none: refactor, no behaviour change" or "none: test-only"
+    and add the `no-spec-change` label, or the Spec Gate CI check fails for PRs touching services/, lib/ or proto/
   Bot PRs (Renovate, release-please, chore(deps)) may delete this section.
 -->
 

@@ -30,8 +30,10 @@ env:
 
 concurrency:
   # PRs group by number (new pushes cancel stale runs); pushes group by SHA so
-  # main runs never cancel each other mid-image-push.
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  # main runs never cancel each other mid-image-push. Label events other than
+  # `ci-full` run nothing (see the `changes` job) and get a group of their own
+  # (#1263), so adding e.g. `no-spec-change` never cancels the real run.
+  group: ci-${{ github.event.pull_request.number || github.sha }}${{ ((github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci-full') && format('-lbl-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -59,6 +61,8 @@ jobs:
       rust: ${{ steps.f.outputs.rust }}
       agent: ${{ steps.f.outputs.agent }}
       dockerfiles: ${{ steps.f.outputs.dockerfiles }}
+      specs: ${{ steps.f.outputs.specs }}
+      spec_code: ${{ steps.f.outputs.spec_code }}
       proto_pkg: ${{ steps.f.outputs.proto_pkg }}
       integration_deps: ${{ steps.f.outputs.integration_deps }}
       # force_full: ALL image builds + checks (workflow_dispatch / ci-full label)
@@ -95,6 +99,16 @@ jobs:
             dockerfiles:
               - '**/Dockerfile'
               - '.hadolint.yaml'
+            # Spec gate (#1263): `specs` runs the AIUP spec lint, `spec_code`
+            # runs the spec-touched check on PRs.
+            specs:
+              - 'docs/**'
+              - '.github/**'
+              - 'scripts/aiup/**'
+            spec_code:
+              - 'services/**'
+              - 'lib/**'
+              - 'proto/**'
             proto_pkg:
               - 'proto/**'
               - '**/pyproject.toml'
@@ -127,6 +141,9 @@ jobs:
             otel_collector:
               - 'images/otel-collector/**'
             integration_deps:
+              # root pyproject.toml is a deps-fingerprint input
+              # (scripts/ci/deps-fingerprint.sh), so it must force fresh images
+              - 'pyproject.toml'
               - 'services/*/Dockerfile'
               - 'services/*/pyproject.toml'
               - 'lib/pyproject.toml'
@@ -433,6 +450,55 @@ jobs:
 
       - name: Lint Dockerfiles
         run: make ci-lint-dockerfiles
+
+  # Spec gate (#1263, AIUP). Two independent steps:
+  #  1. Spec lint (scripts/aiup/spec-lint-gate.sh): the AI Unified Process
+  #     spec_lint.py (vendored under scripts/aiup/, see its NOTICE) checks docs/
+  #     across files. Every ERROR fails (checked without the baseline, so errors
+  #     cannot be baselined); every WARN not in the committed baseline
+  #     (scripts/aiup/spec-lint-baseline.json) fails, so existing warning debt is
+  #     reported but only NEW warnings block; on PRs the baseline may not grow
+  #     versus the base branch unless the `spec-baseline-growth` label is set.
+  #  2. Spec touched: a PR changing services/**, lib/** or proto/** must change
+  #     the spec, or carry the `no-spec-change` label, or be a bot / agent-
+  #     promoter PR. Adding/removing either label re-runs this job via
+  #     spec-label-rerun.yml (the steps read the labels live from the API).
+  spec-gate:
+    name: Spec Gate
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: >-
+      needs.changes.outputs.specs == 'true' ||
+      needs.changes.outputs.spec_code == 'true' ||
+      needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Spec lint (AIUP spec_lint.py; errors always fail, new warnings fail)
+        if: needs.changes.outputs.specs == 'true' || needs.changes.outputs.run_all_checks == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: scripts/aiup/spec-lint-gate.sh
+
+      - name: Spec touched (no-spec-change label or bot/agent PR to skip)
+        if: github.event_name == 'pull_request' && needs.changes.outputs.spec_code == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: scripts/aiup/check-spec-touched.sh
 
   # SonarCloud analysis with coverage.
   # !cancelled() lets it run even when upstream jobs were skipped by the path
@@ -775,6 +841,7 @@ jobs:
       - rust-checks
       - agent-tests
       - lint-dockerfiles
+      - spec-gate
       - sonarcloud
       - validate
       - integration-test
