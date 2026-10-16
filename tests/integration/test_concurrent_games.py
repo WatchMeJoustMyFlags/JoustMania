@@ -50,6 +50,7 @@ def _running_ids(games) -> set[str]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.nfr("NFR-018")  # end to end: several live games at once; caps and block are unit-tested
 async def test_two_concurrent_headless_games(docker_compose, headless_cleanup):
     """Two headless games run concurrently and stay fully isolated.
 
@@ -173,6 +174,7 @@ async def test_two_concurrent_headless_games(docker_compose, headless_cleanup):
 
 
 @pytest.mark.asyncio
+@pytest.mark.nfr("NFR-018")  # end to end: several live games at once; caps and block are unit-tested
 async def test_shadow_game_isolated_from_menu(
     docker_compose, ensure_game_stopped, headless_cleanup
 ):

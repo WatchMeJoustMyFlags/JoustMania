@@ -366,6 +366,7 @@ class TestMultiSession:
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.servicer._shadow_policy", lambda: "allow")
+    @pytest.mark.nfr("NFR-018")
     async def test_third_start_rejected_at_cap(self, servicer, cap_two):
         """With cap=2, a third shadow start is rejected once the cap is full.
 
@@ -464,6 +465,7 @@ class TestMultiSession:
             mock_death.set.assert_called_once_with(0)
 
 
+@pytest.mark.nfr("NFR-018")
 class TestConcurrentShadowGames:
     """Concurrent shadow games (#1018, option b).
 
@@ -586,6 +588,7 @@ class TestConcurrentShadowGames:
             assert _max_shadow_games() == 3
 
 
+@pytest.mark.nfr("NFR-018")
 class TestSessionCapFlags:
     """The total/shadow session caps read from game.json flags (#1215).
 
@@ -961,6 +964,7 @@ class TestShadowGameGovernance:
     # -- Resource gate ------------------------------------------------------
 
     @pytest.mark.asyncio
+    @pytest.mark.nfr("NFR-018")
     async def test_gate_blocks_shadow_while_real_running(self, servicer, cap_two, policy_block):
         """policy=block: a shadow start is rejected (distinct message) while a
         real game is STARTING/RUNNING."""
@@ -987,6 +991,7 @@ class TestShadowGameGovernance:
         assert servicer._primary_game_id == gid_real
 
     @pytest.mark.asyncio
+    @pytest.mark.nfr("NFR-018")
     async def test_gate_does_not_block_shadow_when_idle(self, servicer, policy_block):
         """policy=block but NO real game running -> shadow start admitted."""
         with _NO_THREAD:
@@ -997,6 +1002,7 @@ class TestShadowGameGovernance:
     # -- Preemption ---------------------------------------------------------
 
     @pytest.mark.asyncio
+    @pytest.mark.nfr("NFR-018")
     async def test_real_start_preempts_live_shadow(self, servicer, cap_two, policy_allow):
         """A real (menu) start force-ends running shadows and becomes primary."""
         # A shadow is running idle-time.
@@ -1024,6 +1030,7 @@ class TestShadowGameGovernance:
         assert force_ended[0].data["reason"] == "preempted_by_real_game"
 
     @pytest.mark.asyncio
+    @pytest.mark.nfr("NFR-018")
     async def test_real_start_preempts_even_when_policy_block(self, servicer, cap_two, policy_block):
         """Preemption applies regardless of policy — the real game always wins.
 
@@ -1038,6 +1045,7 @@ class TestShadowGameGovernance:
         assert servicer.sessions[gid_real].game_kind == "primary"
 
     @pytest.mark.asyncio
+    @pytest.mark.nfr("NFR-018")
     async def test_real_start_not_rejected_when_shadows_fill_cap(self, servicer, cap_two, policy_allow):
         """Freed shadow slots count before the cap check — the real game (cap=2)
         is never rejected because shadows filled the cap (#837)."""
@@ -1055,6 +1063,7 @@ class TestShadowGameGovernance:
         assert len(servicer.sessions) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.nfr("NFR-018")
     async def test_shadow_start_does_not_preempt_other_shadow(self, servicer, cap_two, policy_allow):
         """A shadow start must NOT preempt another shadow (only real games do)."""
         gid1, _ = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
