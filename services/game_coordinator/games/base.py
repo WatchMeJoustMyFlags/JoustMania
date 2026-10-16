@@ -718,6 +718,9 @@ class BaseGameMode(ABC):
         # gameplay_phase. Defaults to a no-op so a standalone game / every existing
         # test runs unchanged.
         self.on_gameplay_phase_open: Callable[[str], None] = lambda _span_id: None
+        # Same for the game_cycle span (#1325): the agent's preferred parent for its
+        # in-game spans (UC-040 BR-013). No-op by default.
+        self.on_game_cycle_open: Callable[[str], None] = lambda _span_id: None
 
         # Game state
         self.state = GameState.IDLE
@@ -2844,6 +2847,13 @@ class BaseGameMode(ABC):
                     attributes={"game.id": self.game_id},
                 )
                 self.game_cycle_context = trace.set_span_in_context(self._game_cycle_span)
+                # Publish the game_cycle span_id (#1325, UC-041 BR-004): the agent
+                # parents its in-game spans under game_cycle (UC-040 BR-013). An
+                # unsampled span has a zero id; publishing nothing keeps the agent on
+                # its gameplay_phase / game-root fallback.
+                game_cycle_span_ctx = self._game_cycle_span.get_span_context()
+                if game_cycle_span_ctx.span_id != 0:
+                    self.on_game_cycle_open(trace.format_span_id(game_cycle_span_ctx.span_id))
 
                 # Create player lifecycle spans under "players" parent
                 self._create_player_spans(players_ctx)

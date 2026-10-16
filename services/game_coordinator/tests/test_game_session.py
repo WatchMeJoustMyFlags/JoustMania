@@ -392,6 +392,7 @@ class TestGameSessionLoop:
             game_trace_id=expected_trace_hex,
             game_trace_span_id=expected_span_hex,
             gameplay_phase_span_id="",
+            game_cycle_span_id="",
         )
         mock_metrics.game_trace_correlation.labels.return_value.set.assert_any_call(1)
 
@@ -851,6 +852,7 @@ class TestGameSessionClearMetrics:
             "4bf92f3577b34da6a3ce929d0e0e4736",
             "051581bf3cb55c13",
             "00f067aa0ba902b7",
+            "",
         )
 
     @patch("services.game_coordinator.game_session.metrics")
@@ -887,6 +889,7 @@ class TestPublishGameplayPhaseSpanID:
             "4bf92f3577b34da6a3ce929d0e0e4736",
             "051581bf3cb55c13",
             "",
+            "",
         )
         # ... then the populated series set.
         mock_metrics.game_trace_correlation.labels.assert_called_once_with(
@@ -895,6 +898,7 @@ class TestPublishGameplayPhaseSpanID:
             game_trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
             game_trace_span_id="051581bf3cb55c13",
             gameplay_phase_span_id="00f067aa0ba902b7",
+            game_cycle_span_id="",
         )
         mock_metrics.game_trace_correlation.labels.return_value.set.assert_called_once_with(1)
         assert session.gameplay_phase_span_id == "00f067aa0ba902b7"

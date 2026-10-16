@@ -136,6 +136,12 @@ class GameSession:
         # Captured/cleared in lockstep with game_trace_id so retire removes the
         # exact gauge series.
         self.gameplay_phase_span_id = ""
+        # Hex span_id of this session's game_cycle span (#1325, UC-041 BR-004).
+        # game_cycle is the child of gameplay_phase the agent parents its in-game
+        # spans under (UC-040 BR-013). Empty until base.py opens game_cycle and
+        # calls publish_game_cycle_span_id; modes with their own run() never open
+        # it, so the agent falls back to gameplay_phase / the game root.
+        self.game_cycle_span_id = ""
 
         # Per-session loop runs in its own thread with its own GrpcClientManager.
         self.clients = GrpcClientManager()
@@ -175,20 +181,63 @@ class GameSession:
 
         # The trace-correlation gauge (#1133/#1157/#1195) carries a different label
         # tuple (game_kind, game_id, game_trace_id, game_trace_span_id,
-        # gameplay_phase_span_id) and was only set when the span was sampled
-        # (game_trace_id non-empty), so remove it separately and only then. Remove
-        # with the CURRENT gameplay_phase_span_id: it is "" until the gameplay_phase
-        # span opens and is then updated in lockstep with the gauge re-emit, so this
+        # gameplay_phase_span_id, game_cycle_span_id) and was only set when the span
+        # was sampled (game_trace_id non-empty), so remove it separately and only
+        # then. Remove with the CURRENT phase span ids: each is "" until its span
+        # opens and is then updated in lockstep with the gauge re-emit, so this
         # always matches the live series tuple.
         if self.game_trace_id:
             with suppress(KeyError, ValueError):
-                metrics.game_trace_correlation.remove(
-                    self.game_kind,
-                    self.game_id,
-                    self.game_trace_id,
-                    self.game_trace_span_id,
-                    self.gameplay_phase_span_id,
-                )
+                metrics.game_trace_correlation.remove(*self._correlation_labels())
+
+    def _correlation_labels(self) -> tuple[str, str, str, str, str, str]:
+        """The game_trace_correlation label tuple of the live series, in label order."""
+        return (
+            self.game_kind,
+            self.game_id,
+            self.game_trace_id,
+            self.game_trace_span_id,
+            self.gameplay_phase_span_id,
+            self.game_cycle_span_id,
+        )
+
+    def _set_trace_correlation(self) -> None:
+        """Set the game_trace_correlation series for the current label tuple to 1."""
+        metrics.game_trace_correlation.labels(
+            game_kind=self.game_kind,
+            game_id=self.game_id,
+            game_trace_id=self.game_trace_id,
+            game_trace_span_id=self.game_trace_span_id,
+            gameplay_phase_span_id=self.gameplay_phase_span_id,
+            game_cycle_span_id=self.game_cycle_span_id,
+        ).set(1)
+
+    def _republish_trace_correlation(self, attr: str, span_id: str) -> None:
+        """Swap the live correlation series for one carrying a newly opened span's id.
+
+        attr names the session field (and gauge label) to update. The previous
+        series (with the old, usually empty, value) is removed first so exactly one
+        series per live game remains, and clear_metrics removes the live tuple at
+        retire. No-op when the game span was unsampled (no gauge was ever set), the
+        id is empty, or it is unchanged.
+        """
+        if not self.game_trace_id or not span_id:
+            return
+        if getattr(self, attr) == span_id:
+            return
+        with suppress(KeyError, ValueError):
+            metrics.game_trace_correlation.remove(*self._correlation_labels())
+        setattr(self, attr, span_id)
+        self._set_trace_correlation()
+
+    def publish_game_cycle_span_id(self, game_cycle_span_id: str) -> None:
+        """Re-emit the correlation gauge carrying the game_cycle span_id (#1325).
+
+        Called by the game (base.py) right after it opens game_cycle. The agent
+        parents its in-game spans under game_cycle (UC-040 BR-013); until this is
+        published it falls back to gameplay_phase, then the game root.
+        """
+        self._republish_trace_correlation("game_cycle_span_id", game_cycle_span_id)
 
     def publish_gameplay_phase_span_id(self, gameplay_phase_span_id: str) -> None:
         """Re-emit the correlation gauge carrying the gameplay_phase span_id (#1195).
@@ -208,27 +257,7 @@ class GameSession:
         never set) or the passed id is empty/invalid: the agent then keeps falling
         back to the game root span (game_trace_span_id), so correlation is never lost.
         """
-        if not self.game_trace_id or not gameplay_phase_span_id:
-            return
-        if gameplay_phase_span_id == self.gameplay_phase_span_id:
-            return
-        # Remove the previously-set series (empty gameplay id at first publish).
-        with suppress(KeyError, ValueError):
-            metrics.game_trace_correlation.remove(
-                self.game_kind,
-                self.game_id,
-                self.game_trace_id,
-                self.game_trace_span_id,
-                self.gameplay_phase_span_id,
-            )
-        self.gameplay_phase_span_id = gameplay_phase_span_id
-        metrics.game_trace_correlation.labels(
-            game_kind=self.game_kind,
-            game_id=self.game_id,
-            game_trace_id=self.game_trace_id,
-            game_trace_span_id=self.game_trace_span_id,
-            gameplay_phase_span_id=self.gameplay_phase_span_id,
-        ).set(1)
+        self._republish_trace_correlation("gameplay_phase_span_id", gameplay_phase_span_id)
 
     def _set_duration_gauge(self) -> None:
         """Set game_duration_seconds to the seconds since this game was started.
@@ -427,13 +456,7 @@ class GameSession:
                 # two-tier fallback uses the game root span until gameplay_phase
                 # publishes its id, at which point the gauge is re-emitted with the
                 # populated label (publish_gameplay_phase_span_id).
-                metrics.game_trace_correlation.labels(
-                    game_kind=self.game_kind,
-                    game_id=self.game_id,
-                    game_trace_id=self.game_trace_id,
-                    game_trace_span_id=self.game_trace_span_id,
-                    gameplay_phase_span_id=self.gameplay_phase_span_id,
-                ).set(1)
+                self._set_trace_correlation()
 
             try:
                 # Check if gRPC clients are available
@@ -483,6 +506,8 @@ class GameSession:
                 # game holds only this callback (not the session), mirroring how the
                 # session sets game_kind/experiment_id on the game.
                 game.on_gameplay_phase_open = self.publish_gameplay_phase_span_id
+                # Same for game_cycle (#1325): the agent's preferred parent.
+                game.on_game_cycle_open = self.publish_game_cycle_span_id
 
                 # Store reference and run game. The duration ticker shares this
                 # session's event loop (no extra thread/loop) and keeps

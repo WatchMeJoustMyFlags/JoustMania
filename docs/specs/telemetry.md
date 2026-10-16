@@ -48,7 +48,7 @@ Service identities (`OTEL_SERVICE_NAME` / namespace): `controller-manager-servic
 | game id | `game.id` (agent also `session.id`) | label `game_id` | `game_<12 hex>`; the agent partitions all signals by it |
 | game kind | coordinator: `game.kind` = `primary` / `shadow`; agent: `game.kind` = `real` / `shadow` | coordinator label `game_kind` = `primary` / `shadow` | **Two vocabularies under one key** (#1249). Flags use `real` / `shadow`; the agent normalises `primary → real` at ingest (`services/agent/gamecontext/gamekind.go`). |
 | experiment, arm | `experiment.id`, `experiment.arm` | `experiment_id`, `arm` on per-game gauges only (never on cumulative counters) | |
-| trace context | `game.trace_id`, `game.trace_span_id`, Links | gauge `game_trace_correlation{game_trace_id, game_trace_span_id, gameplay_phase_span_id}` = 1 while live | metric-carried because observable gauges cannot carry exemplars (`services/game_coordinator/metrics.py:44-85`) |
+| trace context | `game.trace_id`, `game.trace_span_id`, Links | gauge `game_trace_correlation{game_trace_id, game_trace_span_id, gameplay_phase_span_id, game_cycle_span_id}` = 1 while live; the two phase ids are empty until their span opens and the gauge is re-emitted when each is published (UC-041 BR-004) | metric-carried because observable gauges cannot carry exemplars (`services/game_coordinator/metrics.py:44-85`) |
 | serial | `player.serial`, `controller.serial` | `serial` | `player.serial` is ONE key on both sides (#1295): the coordinator's player spans and intervention events, and the agent's targeted `agent.decision` / `agent.action`, so one Jaeger search `player.serial=<serial>` finds both |
 | intervention | `intervention.id`, `decision.intervention_id` | | joins decision and effect |
 | W3C propagation | menu events carry `_traceparent` / `_tracestate`; the agent injects traceparent into shadow-game spawns and model calls | | |
@@ -72,7 +72,7 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 | Span | Notes | Source |
 |---|---|---|
 | `<mode display name>` (e.g. `Joust Free-for-All`, `Non Stop Joust`) | **game root**, own trace (#1157); child of `agent.experiment` for experiment shadow games (#1182); attrs `game.name`, `game.id`, `game.kind`, `experiment.id`, `experiment.arm`, `player.count` | `game_session.py:319-380` |
-| `initialization_phase`, `<phase>` (`color_assignment`, `team_formation_phase`, `traitor_signal`, `werewolf_intro`, `zombie_intro`, `fight_club_intro`, `tournament_intro`), `gameplay_phase`, `players`, `game_cycle`, `teardown_phase` | phases; `gameplay_phase` is the remote parent of in-game agent spans (#1195) | `games/base.py:2629-2790` |
+| `initialization_phase`, `<phase>` (`color_assignment`, `team_formation_phase`, `traitor_signal`, `werewolf_intro`, `zombie_intro`, `fight_club_intro`, `tournament_intro`), `gameplay_phase`, `players`, `game_cycle`, `teardown_phase` | phases; `game_cycle` (child of `gameplay_phase`, base modes) is the remote parent of in-game agent spans (#1325); modes without it fall back to `gameplay_phase`, then the game root (#1195) | `games/base.py:2629-2790` |
 | `player_lifecycle`, renamed `player: {name}` on the first frame | one per player; attrs `player.serial`, `player.name` (set with the rename); events `death_warning`, `player_death`, `shield_granted`, `player_revived`, `partial_shield_armed`, `shield_feedback` (attrs `shield.kind` = full / partial, `shield.duration_ms`, `shield.sound` = `shield_up` or `none` on a silent extension; UC-040 A16), `soft_penalty_tighten`, `auto_rubberband_boost`, `sensitivity_factor_applied`, `handicap_factor_applied` (#1295; recorded only when the player's factor changes), `player_disconnected`. The events that record an applied intervention (`shield_granted`, `partial_shield_armed`, `soft_penalty_tighten`, `auto_rubberband_boost`, `player_revived`, `sensitivity_factor_applied`, `handicap_factor_applied`, and the base kill path's `player_death`, which carries `death.reason=agent_intervention` for `eliminate_player`) carry `player.serial` and, once the controller reported one, `player.name` (#1295). The span ends at game end, so these events reach Jaeger then (UC-041 BR-001). | `games/base.py` (`player_identity_attributes`), `difficulty_handlers.py` |
 | `countdown_phase` | per player (base modes) | `games/base.py:2737` |
 | `team_lifecycle` | team modes | `games/teams_base.py:151` |
@@ -96,11 +96,11 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 
 | Span | Kind / parent | Source |
 |---|---|---|
-| `agent.signal_received` | SERVER; remote child of the game's `gameplay_phase` (fallback: game root, else own root); attrs `otlp.signal`, `game.id`, `game.trace_id` | `services/agent/decision/decision.go:585-620`; constant `decision/telemetry.go:34` |
-| `agent.decide` | rules path: sibling of `agent.decision` under `agent.signal_received`; remote path: remote child of `gameplay_phase`, Link `link.kind=fire_cycle`, parent of `chat {model}` and `agent.decision` | `decision/decide_hook.go:44-127,622-706` |
+| `agent.signal_received` | SERVER; remote child of the game's `game_cycle` (fallback order: `gameplay_phase`, game root, else own root; the `agent.decision` spans below keep their Link to the game root in every case, #1325); attrs `otlp.signal`, `game.id`, `game.trace_id` | `services/agent/decision/decision.go:585-620`; constant `decision/telemetry.go:34` |
+| `agent.decide` | rules path: sibling of `agent.decision` under `agent.signal_received`; remote path: remote child of `game_cycle` (same fallback order as `agent.signal_received`), Link `link.kind=fire_cycle`, parent of `chat {model}` and `agent.decision` | `decision/decide_hook.go:44-127,622-706` |
 | `agent.decision` → `agent.action` | Link to the game trace; event `feature_flag`. A player-targeted decision (blocked or applied) carries `player.serial` (the target) and, when the agent knows it and the game is not `shadow`, `player.name` on both spans (#1295) | `decision/decision.go` (`runDecision`, `targetAttributes`) |
 | `agent.disabled` | throttled kill-switch audit | `decision/decision.go:796` |
-| `agent.intervention.effect` | child of the decision span context | `decision/effect.go:312-331` |
+| `agent.intervention.effect` | one span per evaluated fitness signal, each a direct remote child of the `agent.decision` that dispatched the intervention, backdated to dispatch time and ended after the follow-up window (#1325; there is no intermediate effect span, so consecutive effect spans never nest). A follow-up whose game is gone emits one span with `intervention.effect_aborted=true`, also under the decision. Without a valid decision span context the span is its own root | `decision/effect.go` (`emitEffectSample`) |
 | `agent.llm.retro` | own root, or child of `agent.experiment`; Link to the game; event `retro.suggestion`. Capture-only spans carry `inference.used=none` and `inference.fallback_reason` = `no_backend_available` / `llm_not_eligible` / `agent_disabled` (kill switch off, #1270) | `decision/retro_capture.go` |
 | `agent.game.summary` | own root or child of `agent.experiment` | `gamesummary/coordinator.go:195` |
 | `agent.experiment` | long-lived **root**; its traceparent is injected into shadow-game spawns | `experiment/registry.go:657` |
@@ -111,11 +111,13 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 | `chat {model}` | CLIENT; decide backends (claude, openai, jev) and the retro / proposer backend | `decide/backends/*/`, `inference/claude.go:182` |
 
 ```text
-[game trace]  <mode root> ─ gameplay_phase ─(remote parent)─> agent.signal_received
-                                                                ├─ agent.decide (rules)
-                                                                └─ agent.decision ─> agent.action
-              gameplay_phase ─(remote parent)─> agent.decide (remote) ─┬─ chat {model}
-                                                                       └─ agent.decision ─> agent.action
+[game trace]  <mode root> ─ gameplay_phase ─┬─ players ─ player: {name} ...
+                                            └─ game_cycle ─(remote parent)─> agent.signal_received
+                                                                               ├─ agent.decide (rules)
+                                                                               └─ agent.decision ─┬─ agent.action
+                                                                                                  └─ agent.intervention.effect (one per signal)
+                                               game_cycle ─(remote parent)─> agent.decide (remote) ─┬─ chat {model}
+                                                                                                    └─ agent.decision ─> agent.action, agent.intervention.effect
 [experiment trace]  agent.experiment ─┬─ <shadow game root> ─ ... (agent spans of shadow games)
                                       ├─ experiment.fitness / experiment.evaluate ─ experiment.verdict, code_improvement.promote
                                       ├─ agent.llm.retro ─ chat {model}
@@ -156,7 +158,7 @@ name from `controller_info{serial,name}`, §4.4; absent when no name was seen fo
 
 | Signal | Matched on | Source |
 |---|---|---|
-| Metrics | names `game_player_accel_magnitude`, `controller_battery_level`, `controller_battery_pct`, `game_player_playstyle`, `game_player_alive`, `controller_connected`, `game_duration_seconds`, `game_active_players`, `game_active`, `game_current_mode`, `game_player_deaths_total`, `game_player_peak_accel`, `game_trace_correlation`, `game_music_tempo`, `game_effective_death_threshold`, `game_effective_warning_threshold`, `game_player_movement_variance`, `game_player_movement_variance_aggregate`, `game_player_skill_level`, `game_player_elimination_order`; `controller_info` (labels `serial`, `name`: identity only, kept process-wide as the serial → display-name view for `player.name`, never routed to a game partition and never a trigger, #1295); labels `serial`, `mode`, `game_id`, `game_kind`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `experiment_id`, `arm` | `services/agent/gamecontext/extract_metrics.go:13-81`; `controller_info`: `gamecontext/multiplexer.go` (`PlayerName`) |
+| Metrics | names `game_player_accel_magnitude`, `controller_battery_level`, `controller_battery_pct`, `game_player_playstyle`, `game_player_alive`, `controller_connected`, `game_duration_seconds`, `game_active_players`, `game_active`, `game_current_mode`, `game_player_deaths_total`, `game_player_peak_accel`, `game_trace_correlation`, `game_music_tempo`, `game_effective_death_threshold`, `game_effective_warning_threshold`, `game_player_movement_variance`, `game_player_movement_variance_aggregate`, `game_player_skill_level`, `game_player_elimination_order`; `controller_info` (labels `serial`, `name`: identity only, kept process-wide as the serial → display-name view for `player.name`, never routed to a game partition and never a trigger, #1295); labels `serial`, `mode`, `game_id`, `game_kind`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id`, `experiment_id`, `arm` | `services/agent/gamecontext/extract_metrics.go:13-81`; `controller_info`: `gamecontext/multiplexer.go` (`PlayerName`) |
 | Spans | any span: `player.serial`, `game.mode`, `game.id`, `game.kind`, `experiment.id`, `experiment.arm`; event `player_death` | `gamecontext/extract_spans.go:10-135` |
 | Infra spans | `controller.bluetooth_health` + event `bluetooth_controller_sample` | `infracontext/extract_spans.go:14-78` |
 
@@ -170,7 +172,7 @@ decreases. At game end the duration every game-end consumer (experiment conclusi
 the larger of the gauge and the agent's own start → end time, because the coordinator's final set can arrive after
 `game_active` 0 (UC-041 A3, BR-003; `services/agent/gamecontext/store.go` `effectiveDurationLocked`).
 
-**Traceability:** FR-040 to FR-049, FR-056, FR-063, FR-071, FR-072 / UC-040 to UC-045, UC-050, UC-051 / `services/agent/decision/`, `services/agent/experiment/`, `services/agent/gamecontext/` / `services/agent/decision/*_test.go` (trace_link, signal_telemetry, gameplay_phase_parent), `tests/integration/test_decide_backend_e2e.py`, `tests/integration/test_experiment_cohort_loop.py`.
+**Traceability:** FR-040 to FR-049, FR-056, FR-063, FR-071, FR-072 / UC-040 to UC-045, UC-050, UC-051 / `services/agent/decision/`, `services/agent/experiment/`, `services/agent/gamecontext/` / `services/agent/decision/*_test.go` (trace_link, signal_telemetry, gameplay_phase_parent, game_cycle_parent, effect_parent), `tests/integration/test_decide_backend_e2e.py`, `tests/integration/test_experiment_cohort_loop.py`.
 
 ## 5. Game events
 

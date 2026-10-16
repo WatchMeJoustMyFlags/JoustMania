@@ -547,3 +547,35 @@ func TestApplyMetrics_SpeedAndThreshold(t *testing.T) {
 		t.Error("tempo v==0 must not be recorded")
 	}
 }
+
+// UC: UC-041 BR-004
+func TestApplyMetrics_AdoptsGameCycleSpanID(t *testing.T) {
+	const tid = "4bf92f3577b34da6a3ce929d0e0e4736"
+	t.Run("UC-041/BR-004 game_cycle_span_id label is adopted", func(t *testing.T) {
+		s := newTestStore()
+		if !s.ApplyMetrics(metricsWith(metricTraceCorrelation, 1, map[string]string{
+			attrGameID:              "game-cyc",
+			attrGameTraceID:         tid,
+			attrGameTraceSpanID:     "051581bf3cb55c13",
+			attrGameplayPhaseSpanID: "00f067aa0ba902b7",
+			attrGameCycleSpanID:     "1a2b3c4d5e6f7081",
+		})) {
+			t.Fatal("correlation datapoint must apply")
+		}
+		if got := s.Snapshot().GameCycleSpanID; got != "1a2b3c4d5e6f7081" {
+			t.Fatalf("GameCycleSpanID = %q, want 1a2b3c4d5e6f7081", got)
+		}
+	})
+	t.Run("UC-041/BR-004 a datapoint without the label keeps the known id", func(t *testing.T) {
+		s := newTestStore()
+		s.ApplyMetrics(metricsWith(metricTraceCorrelation, 1, map[string]string{
+			attrGameID: "game-cyc", attrGameTraceID: tid, attrGameCycleSpanID: "1a2b3c4d5e6f7081",
+		}))
+		s.ApplyMetrics(metricsWith(metricTraceCorrelation, 1, map[string]string{
+			attrGameID: "game-cyc", attrGameTraceID: tid,
+		}))
+		if got := s.Snapshot().GameCycleSpanID; got != "1a2b3c4d5e6f7081" {
+			t.Fatalf("GameCycleSpanID = %q, want the earlier id kept", got)
+		}
+	})
+}

@@ -79,6 +79,10 @@ const (
 	// present, falling back to attrGameTraceSpanID otherwise. Same trace as
 	// game_trace_id.
 	attrGameplayPhaseSpanID = "gameplay_phase_span_id"
+	// attrGameCycleSpanID is the coordinator game_cycle span_id carried on the same
+	// game_trace_correlation signal (#1325). Hex string; empty until game_cycle opens
+	// (or unsampled / a mode without it). The preferred in-game parent (UC-040 BR-013).
+	attrGameCycleSpanID = "game_cycle_span_id"
 	// Experiment attribution (#975, epic #982): finer-grained labels WITHIN a
 	// shadow game. Carried on the LOW-RATE lifecycle metrics (game_active,
 	// game_active_players, game_duration_seconds) the same way game_kind is —
@@ -122,6 +126,9 @@ type gameLabels struct {
 	// (a refinement of the #1187 game-root parenting); empty -> fall back to
 	// GameTraceSpanID. Same trace as GameTraceID.
 	GameplayPhaseSpanID string
+	// GameCycleSpanID carries the coordinator's game_cycle span_id (#1325), likewise
+	// only on the game_trace_correlation gauge and likewise enrichment.
+	GameCycleSpanID string
 }
 
 // gameIDOf reads the game_id datapoint label; empty when absent.
@@ -182,6 +189,14 @@ func gameplayPhaseSpanIDOf(attrs pcommon.Map) string {
 	return ""
 }
 
+// gameCycleSpanIDOf reads the game_cycle_span_id datapoint label (#1325); empty when absent.
+func gameCycleSpanIDOf(attrs pcommon.Map) string {
+	if v, ok := attrs.Get(attrGameCycleSpanID); ok {
+		return v.AsString()
+	}
+	return ""
+}
+
 // metricGameLabels resolves the game identity labels on a metric datapoint.
 func metricGameLabels(attrs pcommon.Map) gameLabels {
 	return gameLabels{
@@ -192,6 +207,7 @@ func metricGameLabels(attrs pcommon.Map) gameLabels {
 		GameTraceID:         gameTraceIDOf(attrs),
 		GameTraceSpanID:     gameTraceSpanIDOf(attrs),
 		GameplayPhaseSpanID: gameplayPhaseSpanIDOf(attrs),
+		GameCycleSpanID:     gameCycleSpanIDOf(attrs),
 	}
 }
 
@@ -424,4 +440,5 @@ func (s *Store) adoptGame(labels gameLabels) {
 	s.SetGameTraceID(labels.GameTraceID)                 // #1133: empty on all but game_trace_correlation
 	s.SetGameTraceSpanID(labels.GameTraceSpanID)         // #1157: ditto
 	s.SetGameplayPhaseSpanID(labels.GameplayPhaseSpanID) // #1195: ditto
+	s.SetGameCycleSpanID(labels.GameCycleSpanID)         // #1325: ditto
 }

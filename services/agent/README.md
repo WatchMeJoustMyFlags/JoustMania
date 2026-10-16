@@ -811,8 +811,9 @@ fitness → rollback); the game path had nothing. #918 closes the **measurement*
    dispatch-time thresholds.
 3. It emits an **effect record** attributed to the intervention id:
 
-   - **Span** `agent.intervention.effect`: one backdated root (to dispatch time) per
-     dispatched intervention, parenting one child span per evaluated fitness signal.
+   - **Span** `agent.intervention.effect`: one span per evaluated fitness signal, each a
+     direct child of the `agent.decision` that dispatched the intervention and backdated
+     to dispatch time (no wrapper span, so effect spans never nest; #1325).
      Attributes: `intervention.id`, `intervention.type`, `intervention.objective`,
      `intervention.signal`, `intervention.fitness_baseline`,
      `intervention.fitness_followup`, `intervention.fitness_delta`,

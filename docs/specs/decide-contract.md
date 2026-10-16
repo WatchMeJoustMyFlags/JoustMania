@@ -551,7 +551,7 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
 - `agent.decide` (INTERNAL). Rules path: sibling of `agent.decision` under
   `agent.signal_received`, only when the cycle produced decisions; ended after the cycle's decisions ran
   (backdated to the ranking) so it can carry their permission verdict. Remote path: async
-  root parented on the game's `gameplay_phase` span, linked to the fire-cycle
+  root parented on the game's `game_cycle` span (fallback `gameplay_phase`, then the game root; UC-040 BR-013), linked to the fire-cycle
   `agent.signal_received` (`link.kind=fire_cycle`); parent of the backend's
   `chat {model}` CLIENT span and of the resulting `agent.decision`.
   Always: `gen_ai.agent.name=joustmania-agent`, `gen_ai.conversation.id=<game id>`,

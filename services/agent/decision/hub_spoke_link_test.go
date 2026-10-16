@@ -34,27 +34,27 @@ func gameTraceCtx(gameID string) gamecontext.GameContext {
 	}
 }
 
-// rootEffectSpan returns the root agent.intervention.effect span (the one carrying the
-// effect id but NO per-signal key), or nil.
-func rootEffectSpan(spans []sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
+// effectSpans returns every ended agent.intervention.effect span, failing the test
+// when there is none.
+func effectSpans(t *testing.T, spans []sdktrace.ReadOnlySpan) []sdktrace.ReadOnlySpan {
+	t.Helper()
+	var out []sdktrace.ReadOnlySpan
 	for _, s := range spans {
-		if s.Name() != SpanInterventionEffect {
-			continue
+		if s.Name() == SpanInterventionEffect {
+			out = append(out, s)
 		}
-		if _, ok := attrValue(s, AttrEffectSignal); ok {
-			continue // per-signal child
-		}
-		return s
 	}
-	return nil
+	if len(out) == 0 {
+		t.Fatal("no agent.intervention.effect span")
+	}
+	return out
 }
 
 // TestEffectSpan_ChildOfDecision: when a live decision span is in scope at schedule time,
-// the emitted intervention.effect root is a remote CHILD of that decision span — its
-// Parent is the decision SpanContext and it lives in the decision's trace — and it carries
-// NO standalone Links (the game-trace Link is dropped, the decision is now the parent).
-// game.id stays the query axis; the game trace ids stay as searchable attributes. The
-// per-signal child carries game.id + the intervention id.
+// every emitted intervention.effect span (one per signal, #1325) is a remote CHILD of that
+// decision span — its Parent is the decision SpanContext and it lives in the decision's
+// trace — and carries NO standalone Links (the decision is the parent). game.id and the
+// intervention id stay the query axis; the game trace ids stay as searchable attributes.
 func TestEffectSpan_ChildOfDecision(t *testing.T) {
 	provider := newFakeContextProvider()
 	const gameID = "game_hub01"
@@ -73,63 +73,32 @@ func TestEffectSpan_ChildOfDecision(t *testing.T) {
 	sched.fire()
 	l.AwaitEffects()
 
-	root := rootEffectSpan(sr.Ended())
-	if root == nil {
-		t.Fatal("no root agent.intervention.effect span")
-	}
-
-	// (a) game.id present.
-	if v, ok := attrValue(root, AttrGameID); !ok || v.AsString() != gameID {
-		t.Errorf("effect root game.id = %q (present=%v), want %q", v.AsString(), ok, gameID)
-	}
-
-	// (b) the effect root is a remote CHILD of the causing decision span.
-	if root.Parent().TraceID() != decisionSpan.SpanContext().TraceID() {
-		t.Errorf("effect root trace_id = %s, want decision trace %s",
-			root.Parent().TraceID(), decisionSpan.SpanContext().TraceID())
-	}
-	if root.Parent().SpanID() != decisionSpan.SpanContext().SpanID() {
-		t.Errorf("effect root parent span_id = %s, want decision span %s",
-			root.Parent().SpanID(), decisionSpan.SpanContext().SpanID())
-	}
-	if root.SpanContext().TraceID() != decisionSpan.SpanContext().TraceID() {
-		t.Errorf("effect root must share the decision trace; got %s want %s",
-			root.SpanContext().TraceID(), decisionSpan.SpanContext().TraceID())
-	}
-
-	// (c) no standalone Links: the game-trace Link is dropped, the decision is the parent.
-	if n := len(root.Links()); n != 0 {
-		t.Errorf("effect root links = %d, want 0 (re-parented, not Linked); links=%v", n, root.Links())
-	}
-	// Searchable game.trace_id attribute is still stamped.
-	if v, ok := attrValue(root, AttrGameTraceID); !ok || v.AsString() != hubGameTrace {
-		t.Errorf("effect root game.trace_id = %q (present=%v), want %q", v.AsString(), ok, hubGameTrace)
-	}
-
-	// per-signal child carries game.id + the intervention id (both keys).
-	var sawChild bool
-	for _, s := range sr.Ended() {
-		if s.Name() != SpanInterventionEffect {
-			continue
+	for _, span := range effectSpans(t, sr.Ended()) {
+		if v, ok := attrValue(span, AttrGameID); !ok || v.AsString() != gameID {
+			t.Errorf("effect game.id = %q (present=%v), want %q", v.AsString(), ok, gameID)
 		}
-		if _, ok := attrValue(s, AttrEffectSignal); !ok {
-			continue
+		if v, ok := attrValue(span, AttrDecisionInterventionID); !ok || v.AsString() != id {
+			t.Errorf("effect %s = %q (present=%v), want %q", AttrDecisionInterventionID, v.AsString(), ok, id)
 		}
-		sawChild = true
-		if v, ok := attrValue(s, AttrGameID); !ok || v.AsString() != gameID {
-			t.Errorf("effect child game.id = %q (present=%v), want %q", v.AsString(), ok, gameID)
+		if span.Parent().SpanID() != decisionSpan.SpanContext().SpanID() {
+			t.Errorf("effect parent span_id = %s, want decision span %s",
+				span.Parent().SpanID(), decisionSpan.SpanContext().SpanID())
 		}
-		if v, ok := attrValue(s, AttrDecisionInterventionID); !ok || v.AsString() != id {
-			t.Errorf("effect child %s = %q (present=%v), want %q", AttrDecisionInterventionID, v.AsString(), ok, id)
+		if span.SpanContext().TraceID() != decisionSpan.SpanContext().TraceID() {
+			t.Errorf("effect must share the decision trace; got %s want %s",
+				span.SpanContext().TraceID(), decisionSpan.SpanContext().TraceID())
 		}
-	}
-	if !sawChild {
-		t.Fatal("no per-signal effect child span")
+		if n := len(span.Links()); n != 0 {
+			t.Errorf("effect links = %d, want 0 (re-parented, not Linked); links=%v", n, span.Links())
+		}
+		if v, ok := attrValue(span, AttrGameTraceID); !ok || v.AsString() != hubGameTrace {
+			t.Errorf("effect game.trace_id = %q (present=%v), want %q", v.AsString(), ok, hubGameTrace)
+		}
 	}
 }
 
 // TestEffectSpan_OwnRootWhenDecisionAbsent: with no live decision span in scope (and an
-// empty GameContext) the effect span is its own root — no parent, no Links — exactly the
+// empty GameContext) every effect span is its own root — no parent, no Links — exactly the
 // graceful fallback the nil-safe Link produced before.
 func TestEffectSpan_OwnRootWhenDecisionAbsent(t *testing.T) {
 	provider := newFakeContextProvider()
@@ -147,18 +116,16 @@ func TestEffectSpan_OwnRootWhenDecisionAbsent(t *testing.T) {
 	sched.fire()
 	l.AwaitEffects()
 
-	root := rootEffectSpan(sr.Ended())
-	if root == nil {
-		t.Fatal("no root agent.intervention.effect span")
-	}
-	if root.Parent().IsValid() {
-		t.Errorf("effect root must be own-root when no decision span in scope; parent=%v", root.Parent())
-	}
-	if n := len(root.Links()); n != 0 {
-		t.Errorf("effect root links = %d, want 0 (no ids => no Links); links=%v", n, root.Links())
-	}
-	if _, ok := attrValue(root, AttrGameTraceID); ok {
-		t.Error("effect root carries game.trace_id attr despite empty ids")
+	for _, span := range effectSpans(t, sr.Ended()) {
+		if span.Parent().IsValid() {
+			t.Errorf("effect must be own-root when no decision span in scope; parent=%v", span.Parent())
+		}
+		if n := len(span.Links()); n != 0 {
+			t.Errorf("effect links = %d, want 0 (no ids => no Links); links=%v", n, span.Links())
+		}
+		if _, ok := attrValue(span, AttrGameTraceID); ok {
+			t.Error("effect carries game.trace_id attr despite empty ids")
+		}
 	}
 }
 

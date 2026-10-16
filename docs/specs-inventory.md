@@ -53,7 +53,7 @@ banner pointing at their replacement; nothing was deleted.
 | `agent-dry-run-runbook.md` | 159 | Experiment loop dry run | stale (minor) | Seeded flag is `windows`, not `death_grace_period_seconds`; omits the env gates on promotion (D-A6). Kill-switch span name corrected to `agent.disabled` in the consistency pass. | guide; UC-043 |
 | `agent-inference.md` | 95 | Who calls which model | current | Matches #1234 (PR #1252) / #1244; does not say the #1207 length gate is retired, nor the backend role split (C-018). | decide contract; UC-042, UC-044 |
 | `talk/two-standards-runbook.md` | n/a (PR #1256, merged after the snapshot) | Talk operator runbook: setup, timing, beat table, pre-flight, reset, failure modes | current | Added by PR #1256; rewritten for the C-018 role split (#743): Jev-first model beat with act / noop / held on Jev's own threshold (#1288), Claude as the manual backup and the closing post-game summary, `stage` budget, kill-switch scope (#1284). Beats map to UC-070; rehearsal record still open. | guide; UC-070 |
-| `agent-trace-viz.md` | 307 | Agent trace on stage | stale (minor) | `agent.span_received` retired (#1053); `agent.signal_received` is a remote child of `gameplay_phase`, not a root (D-T2). | telemetry §agent; guide |
+| `agent-trace-viz.md` | 307 | Agent trace on stage | stale (minor) | `agent.span_received` retired (#1053); `agent.signal_received` is a remote child of `game_cycle` (#1325), not a root (D-T2). | telemetry §agent; guide |
 | `design/agent-experiment-cohorts.md` | 389 | Cohort framework design (#982) | historical | Says "no implementation" but shipped (`services/agent/experiment/`). | ENT (Experiment, Arm), UC-043; history |
 | `research/722-intervention-surface.md` | 576 | Intervention vocabulary research | historical | Allow-list format and limiter location changed (#1127, #919). | ENT (Intervention), flags; history |
 | `research/739-prompt-capture.md` | 146 | In-game LLM prompt spike | historical | Already bannered; path retired by PR #1252 (issue #1234). | history |
@@ -205,7 +205,7 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 | ID | Doc claim | Code | Kind |
 |---|---|---|---|
 | D-T1 | Each service exposes `/metrics`; "Jaeger exporter" | OTLP push to the collector; only controller-manager also runs a prometheus_client endpoint on 8000. | stale doc |
-| D-T2 | `agent.signal_received` is a trace root; `agent.span_received` exists (agent-trace-viz) | Remote child of the coordinator's `gameplay_phase` (#1195); `agent.span_received` retired (#1053). | stale doc |
+| D-T2 | `agent.signal_received` is a trace root; `agent.span_received` exists (agent-trace-viz) | Remote child of the coordinator's `game_cycle` (#1325, was `gameplay_phase` since #1195); `agent.span_received` retired (#1053). | stale doc |
 | D-T3 | Alerts `GameCrashRate`, `ServiceUpdatePending` | Use `games_force_ended_total` and `joustmania_service_update_pending`, which no code defines: they can never fire (`services/prometheus/alerts.yml:89-100`). | bug (issue #1275) |
 | D-T4 | Span names `player_{serial}_lifecycle`, `ffa_game_loop`, `GrpcInstrumentor*` (DISTRIBUTED_TRACING, PER_PLAYER_TRACING) | `player_lifecycle` (renamed `player: {name}`), `team_lifecycle`, custom interceptors. | stale doc |
 | D-T5 | Metrics `game_loop_latency_ms`, `game_configured_update_frequency_hz`, `game_loop_iterations_total`, `config_changes_total` | Not defined; nearest are `game_loop_jitter_ms`, `game_current_update_frequency_hz`, `game_config_changes_total`. | stale doc |
