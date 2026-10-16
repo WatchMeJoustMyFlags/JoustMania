@@ -365,3 +365,53 @@ async def test_partial_revert_to_neutral_bypasses_a_blocked_chain(blocker):
 
     assert factors(game, "player_sensitivity_factor") == {"p1": 1.0, "p2": 0.7}
     assert h.recorded(REAL, "adjust_player_sensitivity", blocked="true") == []
+
+
+@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
+@pytest.mark.asyncio
+async def test_revived_player_missing_from_the_level_baseline_adopts_without_applying(flag_key):
+    """The fallback prime records alive players only, so the primed level
+    bucket has no entry for the dead p2. When p2 is revived its leftover level
+    is adopted as the baseline, not applied; a later level for p2 applies."""
+    h = LevelHarness()
+    game = FakeGame(("p1", "p2"))
+    for player in game.players.values():
+        player.sensitivity_factor = 1.0
+        player.handicap_factor = 1.0
+    game.players["p2"].alive = False
+    h.set_level(flag_key, "p2", 1.5)  # left over from an earlier game
+    h.views.append(SessionView(game_id=REAL, game=game, publish=h._publisher(REAL), is_real=True))
+    await h.flag_change()  # never primed: fallback prime (alive players only)
+    assert "p2" not in h.mgr._state_bucket(REAL)[flag_key]
+
+    game.players["p2"].alive = True  # revived
+    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
+    await h.flag_change()
+    assert factors(game, flag_key) == {"p1": 1.0, "p2": 1.0}
+    assert h.recorded(REAL, SPEC_BY_KEY[flag_key].type_id) == []
+
+    h.set_level(flag_key, "p2", 0.75)
+    await h.flag_change()
+    assert factors(game, flag_key)["p2"] == 0.75
+
+
+@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
+@pytest.mark.asyncio
+async def test_low_battery_player_gets_no_new_level(flag_key):
+    """#798 battery guard on levels: a new level for a controller below
+    policy.battery_threshold is neither dispatched nor applied; the others
+    still get theirs."""
+    battery = {"p1": 5.0, "p2": 90.0}
+    h = LevelHarness(battery=battery, battery_threshold=20)
+    game = h.start_game(REAL, real=True)
+
+    h.set_level(flag_key, "p1", 1.5)
+    await h.flag_change()
+    assert factors(game, flag_key) == {"p1": 1.0, "p2": 1.0}
+    assert h.recorded(REAL, SPEC_BY_KEY[flag_key].type_id) == []
+
+    h.set_level(flag_key, "p2", 0.75)
+    await h.flag_change()
+    assert factors(game, flag_key) == {"p1": 1.0, "p2": 0.75}
