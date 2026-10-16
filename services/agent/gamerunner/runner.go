@@ -77,7 +77,24 @@ const (
 	// OutcomeError means the game emitted game_error, or the run failed before
 	// reaching a terminal event.
 	OutcomeError Outcome = "error"
+	// OutcomeTimeout means a pattern game reached its safety cap and was
+	// force-ended (UC-046 A3, BR-013): a VALID result whose fitness sample counts.
+	OutcomeTimeout Outcome = "timeout"
 )
+
+// patternOutcome maps a run outcome to the replay record's pattern.outcome.
+func patternOutcome(o Outcome) string {
+	switch o {
+	case OutcomeCompleted:
+		return patterngame.OutcomeWinner
+	case OutcomeTimeout:
+		return patterngame.OutcomeTimeout
+	case OutcomeForceEnded:
+		return patterngame.OutcomeAborted
+	default:
+		return patterngame.OutcomeError
+	}
+}
 
 // Config holds the endpoints and tuning for a Runner. Endpoints mirror the
 // docker-compose service names; the zero value is filled by ConfigFromEnv.
@@ -208,25 +225,27 @@ type Spec struct {
 	// shadow session (the hard real-protection invariant, epic #982 decision 7).
 	Seed uint64
 
-	// Pattern, when Pattern.ID is set, makes this a pattern game (UC-046): the
-	// controllers are reserved with the set installed (Players = its slot count),
-	// the runner sends no SimulateMovement / SimulateDeath (BR-004), awaits the game
-	// for max_game_seconds + 15 s before force-ending it (A9), and builds the replay
-	// record from the controllers' RemoveController answers.
-	Pattern patterngame.SetInfo
+	// Pattern, when Pattern.Name is set, makes this a pattern game (UC-046): the
+	// controllers are reserved with the archetype installed (Players = its players),
+	// the runner sends no SimulateMovement / SimulateDeath (BR-004), force-ends the
+	// game at the safety cap MaxGameSeconds with outcome timeout (BR-013), and
+	// builds the replay record from the controllers' RemoveController answers.
+	Pattern patterngame.Archetype
+	// MaxGameSeconds is the pinned safety cap of a pattern game (0 = default 300 s).
+	MaxGameSeconds int
 	// FlagDigest is UC-046 BR-011's digest of the flag files at spawn.
 	FlagDigest string
-	// PairIndex is the experiment pair (-1 / 0 for a one-shot game).
+	// PairIndex is the experiment pair (-1 for a one-shot game).
 	PairIndex int
 }
 
 // IsPattern reports whether the spec runs a pattern game.
-func (s Spec) IsPattern() bool { return s.Pattern.ID != "" }
+func (s Spec) IsPattern() bool { return s.Pattern.Name != "" }
 
-// gameTimeout is the await bound: the config timeout, or T + 15 s for a pattern game.
+// gameTimeout is the await bound: the config timeout, or the safety cap for a pattern game.
 func (s Spec) gameTimeout(def time.Duration) time.Duration {
-	if s.IsPattern() && s.Pattern.MaxGameSeconds > 0 {
-		return time.Duration(s.Pattern.MaxGameSeconds+patterngame.ForceEndGraceSeconds) * time.Second
+	if s.IsPattern() {
+		return time.Duration(patterngame.ClampCap(s.MaxGameSeconds)) * time.Second
 	}
 	return def
 }
@@ -284,6 +303,10 @@ type TerminalCallback func(gameID string, outcome Outcome)
 // TerminalCallback.
 type PatternCallback func(rec patterngame.Record)
 
+// PatternStartCallback receives a pattern game's registration (UC-046 step 3) as
+// soon as its game_id is known.
+type PatternStartCallback func(info patterngame.Info)
+
 // Runner drives shadow games against a coordinator + mock control service.
 type Runner struct {
 	cfg    Config
@@ -294,11 +317,15 @@ type Runner struct {
 	// outcome. nil ⇒ no callback (the #778 one-shot runner does not use it).
 	onTerminal TerminalCallback
 	onPattern  PatternCallback
+	onStart    PatternStartCallback
 	tracker    *patterngame.Tracker
 }
 
 // SetPatternCallback registers the UC-046 replay-record hook.
 func (r *Runner) SetPatternCallback(cb PatternCallback) { r.onPattern = cb }
+
+// SetPatternStartCallback registers the UC-046 game-start hook.
+func (r *Runner) SetPatternStartCallback(cb PatternStartCallback) { r.onStart = cb }
 
 // SetTracker overrides the pattern-game tracker (tests); default patterngame.Default.
 func (r *Runner) SetTracker(t *patterngame.Tracker) { r.tracker = t }
@@ -499,7 +526,7 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 		}()
 
 		defer cl.close()
-		abortCh := r.registerPattern(spec, gameID, serials)
+		abortCh, _, _ := r.registerPattern(spec, gameID, serials)
 		defer func() {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), r.cfg.RPCTimeout)
 			slots := r.removeControllers(cleanupCtx, cl, serials)
@@ -568,9 +595,9 @@ func (r *Runner) run(ctx context.Context, cl *clients, spec Spec, span trace.Spa
 	}
 	result.GameID = gameID
 	r.log.Debug("shadow game started", "run_id", spec.RunID, "game_id", gameID, "mode", spec.GameName)
-	abortCh := r.registerPattern(spec, gameID, serials)
-	if spec.IsPattern() {
-		addPatternGameEvent(span, spec, gameID, serials)
+	abortCh, info, isPattern := r.registerPattern(spec, gameID, serials)
+	if isPattern {
+		span.AddEvent("experiment.pattern_game", trace.WithAttributes(PatternGameAttributes(info)...))
 	}
 
 	// (d) Drive the game to its win condition in the background while (e) we

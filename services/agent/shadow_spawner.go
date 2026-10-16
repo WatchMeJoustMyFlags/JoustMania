@@ -11,6 +11,7 @@ import (
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/gamerunner"
+	"github.com/joustmania/agent/patterngame"
 )
 
 // shadow_spawner.go is the REAL ShadowSpawner seam (#976) the experiment registry
@@ -54,6 +55,16 @@ type shadowSpawner struct {
 	// in-flight slot released directly, independent of the telemetry path — the
 	// deadlock backstop for effective_concurrency=1.
 	onTerminal gamerunner.TerminalCallback
+
+	// onPatternStart / onPatternEnd report pattern games to the registry (UC-046).
+	onPatternStart gamerunner.PatternStartCallback
+	onPatternEnd   gamerunner.PatternCallback
+}
+
+// SetPatternCallbacks registers the UC-046 start and replay-record hooks.
+func (s *shadowSpawner) SetPatternCallbacks(start gamerunner.PatternStartCallback, end gamerunner.PatternCallback) {
+	s.onPatternStart = start
+	s.onPatternEnd = end
 }
 
 // SetTerminalCallback registers the #1014 terminal-outcome hook, propagated to
@@ -105,9 +116,23 @@ func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string, see
 	// the game stays own-rooted — graceful.
 	spec.ExperimentSpanContext = trace.SpanContextFromContext(ctx)
 
+	// UC-046 step 3: a pattern arm carries its pinned archetype and cap on the ctx.
+	if p, ok := experiment.PatternSpawnFrom(ctx); ok {
+		spec.Pattern = p.Archetype
+		spec.MaxGameSeconds = p.MaxGameSeconds
+		spec.PairIndex = p.PairIndex
+		spec.FlagDigest = patterngame.FlagDigest(flagDigestPaths()...)
+	}
+
 	runner := gamerunner.New(s.cfg, s.log)
 	if s.onTerminal != nil {
 		runner.SetTerminalCallback(s.onTerminal)
+	}
+	if s.onPatternStart != nil {
+		runner.SetPatternStartCallback(s.onPatternStart)
+	}
+	if s.onPatternEnd != nil {
+		runner.SetPatternCallback(s.onPatternEnd)
 	}
 
 	gameID, err := runner.StartExperimentGame(ctx, s.root, spec)

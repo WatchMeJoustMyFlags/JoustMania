@@ -38,6 +38,7 @@ import (
 	"github.com/joustmania/agent/inference"
 	"github.com/joustmania/agent/infracontext"
 	"github.com/joustmania/agent/llm"
+	"github.com/joustmania/agent/patterngame"
 	"github.com/joustmania/agent/promote"
 )
 
@@ -390,11 +391,23 @@ func secondsEnv(key string, fallback time.Duration) time.Duration {
 // crashed run, then runs one mock-only game to completion. Errors are logged,
 // not fatal — the shadow game is an auxiliary capability and must never take the
 // agent's observation path down.
-func runShadowGame(ctx context.Context, logger *slog.Logger) {
+func runShadowGame(ctx context.Context, logger *slog.Logger, agentFlags *flags.Flags) {
 	runID := uuid.NewString()
 	cfg := gamerunner.ConfigFromEnv()
 	spec := gamerunner.SpecFromEnv(runID)
 	runner := gamerunner.New(cfg, logger)
+	// UC-046: SHADOW_GAME_ARCHETYPE (or experiment.mock_archetypes) makes this a
+	// pattern game; an invalid selection or mode refuses the run (A2, A13).
+	spec, isPattern, refused := oneShotPatternSpec(ctx, agentFlags, spec)
+	if refused != "" {
+		logger.Error("Shadow pattern game refused", "run_id", runID, "reason", refused)
+		return
+	}
+	if isPattern {
+		runner.SetPatternCallback(func(rec patterngame.Record) { logReplayRecord(logger, rec) })
+		logger.Info("Shadow game is a pattern game (UC-046)", "archetype", spec.Pattern.Name,
+			"params_digest", spec.Pattern.Digest, "seed", spec.Seed, "max_game_seconds", spec.MaxGameSeconds)
+	}
 
 	logger.Info("Shadow-game runner enabled (#778)",
 		"coordinator", cfg.CoordinatorAddr, "mock", cfg.MockAddr, "spec", spec.String())
@@ -660,7 +673,15 @@ func main() {
 		// FRESH per loop (see the factory doc above). Its objective weights are driven
 		// live from the `objectives` flag each cycle; policy/fitness run on
 		// flagd-schema defaults.
-		loop.Rules = decision.NewObjectiveRulesLive(nil)
+		rules := decision.NewObjectiveRulesLive(nil)
+		// Pattern games (UC-046): the loop marks remote-backend decisions non-exact and
+		// records the decision sequence; the rules engine switches to a per-game chaos
+		// RNG seeded from the game's rng_seed once the runner registers the game
+		// (BR-007). For every other game both stay inert (rules golden unchanged).
+		patternObs := patterngame.LoopObserver{Tracker: patterngame.Default, GameID: gameID}
+		loop.SetPatternObserver(patternObs)
+		rules.SetChaosSeedSource(patternObs.SeedSource())
+		loop.Rules = rules
 		if probeDecisions {
 			// Demo/verification mode: emit a synthetic noop decision (and thus the
 			// full audit trace, #724) at most once per probe interval. Overrides
@@ -964,6 +985,8 @@ func main() {
 		return s
 	})
 	mux.SetOwnService(ownService)
+	// UC-046 A8: a pattern game is non-exact when any other game is live.
+	patterngame.Default.SetConcurrencyProbe(otherGameLive(mux))
 
 	pipe := newPipeline(mux, loops, lifecycle.PlayerTTL).
 		// Hot-reload the evaluate gate's freshness window in lockstep with the store
@@ -977,7 +1000,7 @@ func main() {
 	// not block startup. The default (unset) leaves the agent inert.
 	var shadow func(context.Context)
 	if gamerunner.Enabled() {
-		shadow = func(ctx context.Context) { runShadowGame(ctx, logger) }
+		shadow = func(ctx context.Context) { runShadowGame(ctx, logger, agentFlags) }
 	}
 
 	// The #991 experiment cohort loop's goroutine, owned by run() so it is torn down

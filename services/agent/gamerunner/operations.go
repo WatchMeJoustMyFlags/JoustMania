@@ -42,10 +42,12 @@ func (r *Runner) reserveControllers(ctx context.Context, cl *clients, spec Spec)
 	defer cancel()
 
 	resp, err := cl.mock.AddControllers(rpcCtx, &mockpb.AddControllersRequest{
-		Count:      int32(spec.Players),
-		Reserved:   true,
-		Tag:        spec.Tag(),
-		PatternSet: spec.Pattern.ID, // "" = random noise (UC-046 A1)
+		Count:    int32(spec.Players),
+		Reserved: true,
+		Tag:      spec.Tag(),
+		// UC-046 step 3: the agent-pinned archetype; "" = random noise (A1).
+		Archetype:       spec.Pattern.Name,
+		ArchetypeParams: spec.Pattern.ParamsJSON,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("AddControllers: %w", err)
@@ -53,9 +55,9 @@ func (r *Runner) reserveControllers(ctx context.Context, cl *clients, spec Spec)
 	if !resp.GetSuccess() {
 		return nil, fmt.Errorf("AddControllers rejected: %s", resp.GetError())
 	}
-	if spec.IsPattern() && resp.GetPatternSetId() != spec.Pattern.ID {
-		return resp.GetSerials(), fmt.Errorf("AddControllers installed pattern %q, want %q",
-			resp.GetPatternSetId(), spec.Pattern.ID)
+	if spec.IsPattern() && resp.GetArchetype() != spec.Pattern.Name {
+		return resp.GetSerials(), fmt.Errorf("AddControllers installed archetype %q, want %q",
+			resp.GetArchetype(), spec.Pattern.Name)
 	}
 	serials := resp.GetSerials()
 	if len(serials) != spec.Players {
@@ -157,7 +159,7 @@ func (r *Runner) removeControllers(ctx context.Context, cl *clients, serials []s
 			r.log.Warn("shadow game cleanup: RemoveController failed", "serial", serial, "error", err)
 			continue
 		}
-		if resp.GetPatternSetId() != "" {
+		if resp.GetArchetype() != "" {
 			slots = append(slots, patterngame.SlotRecord{
 				Slot:            int(resp.GetPatternSlot()),
 				Serial:          serial,
@@ -171,35 +173,40 @@ func (r *Runner) removeControllers(ctx context.Context, cl *clients, serials []s
 	return slots
 }
 
-// withPatternPlayers sets Players to the set's slot count for a pattern game.
+// withPatternPlayers sets Players to the archetype's players for a pattern game.
 func withPatternPlayers(spec Spec) Spec {
-	if spec.IsPattern() && spec.Pattern.SlotCount > 0 {
-		spec.Players = spec.Pattern.SlotCount
+	if spec.IsPattern() && spec.Pattern.Players > 0 {
+		spec.Players = spec.Pattern.Players
 	}
 	return spec
 }
 
 // registerPattern records a started pattern game with the tracker and returns the
 // channel that force-ends it (kill switch, UC-046 A12). nil for a noise game.
-func (r *Runner) registerPattern(spec Spec, gameID string, serials []string) <-chan struct{} {
+func (r *Runner) registerPattern(spec Spec, gameID string, serials []string) (<-chan struct{}, patterngame.Info, bool) {
 	if !spec.IsPattern() || r.tracker == nil {
-		return nil
+		return nil, patterngame.Info{}, false
 	}
 	abort := make(chan struct{})
 	var once sync.Once
-	r.tracker.Register(patterngame.Info{
-		GameID:       gameID,
-		Set:          spec.Pattern,
-		Seed:         spec.Seed,
-		Serials:      append([]string(nil), serials...),
-		FlagDigest:   spec.FlagDigest,
-		ExperimentID: spec.ExperimentID,
-		Arm:          spec.Arm,
-		PairIndex:    spec.PairIndex,
-		Abort:        func() { once.Do(func() { close(abort) }) },
-	})
+	info := patterngame.Info{
+		GameID:         gameID,
+		Archetype:      spec.Pattern,
+		MaxGameSeconds: patterngame.ClampCap(spec.MaxGameSeconds),
+		Seed:           spec.Seed,
+		Serials:        append([]string(nil), serials...),
+		FlagDigest:     spec.FlagDigest,
+		ExperimentID:   spec.ExperimentID,
+		Arm:            spec.Arm,
+		PairIndex:      spec.PairIndex,
+		Abort:          func() { once.Do(func() { close(abort) }) },
+	}
+	r.tracker.Register(info)
 	r.tracker.CheckConcurrency(gameID)
-	return abort
+	if r.onStart != nil {
+		r.onStart(info)
+	}
+	return abort, info, true
 }
 
 // finishPattern turns the removed controllers' records into the game's replay record.
@@ -207,26 +214,22 @@ func (r *Runner) finishPattern(spec Spec, gameID string, outcome Outcome, slots 
 	if !spec.IsPattern() || r.tracker == nil || gameID == "" {
 		return patterngame.Record{}, false
 	}
-	return r.tracker.Finish(gameID, outcome == OutcomeCompleted, slots)
-}
-
-// addPatternGameEvent stamps the telemetry.md §9 experiment.pattern_game attributes.
-func addPatternGameEvent(span trace.Span, spec Spec, gameID string, serials []string) {
-	span.AddEvent("experiment.pattern_game", trace.WithAttributes(PatternGameAttributes(spec, gameID, serials)...))
+	return r.tracker.Finish(gameID, patternOutcome(outcome), slots)
 }
 
 // PatternGameAttributes are the attributes of experiment.pattern_game (telemetry.md §9).
-func PatternGameAttributes(spec Spec, gameID string, serials []string) []attribute.KeyValue {
+func PatternGameAttributes(info patterngame.Info) []attribute.KeyValue {
 	return []attribute.KeyValue{
-		attribute.String("game.id", gameID),
-		attribute.String("experiment.arm", spec.Arm),
-		attribute.Int("experiment.pair_index", spec.PairIndex),
-		attribute.String("pattern.set", spec.Pattern.ID),
-		attribute.Int("pattern.set_version", spec.Pattern.Version),
-		attribute.String("game.rng_seed", fmt.Sprintf("%d", spec.Seed)),
-		attribute.Int("pattern.stream_rate_hz", spec.Pattern.StreamRateHz),
-		attribute.StringSlice("pattern.slot_serials", serials),
-		attribute.String("pattern.flag_digest", spec.FlagDigest),
+		attribute.String("game.id", info.GameID),
+		attribute.String("experiment.arm", info.Arm),
+		attribute.Int("experiment.pair_index", info.PairIndex),
+		attribute.String("pattern.archetype", info.Archetype.Name),
+		attribute.String("pattern.params_digest", info.Archetype.Digest),
+		attribute.String("game.rng_seed", fmt.Sprintf("%d", info.Seed)),
+		attribute.Int("pattern.stream_rate_hz", info.Archetype.StreamRateHz),
+		attribute.StringSlice("pattern.slot_serials", info.Serials),
+		attribute.Int("pattern.max_game_seconds", info.MaxGameSeconds),
+		attribute.String("pattern.flag_digest", info.FlagDigest),
 	}
 }
 
@@ -239,7 +242,9 @@ func addPatternEndedEvent(span trace.Span, rec patterngame.Record) {
 func PatternEndedAttributes(rec patterngame.Record) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("game.id", rec.GameID),
-		attribute.String("pattern.set", rec.Set.ID),
+		attribute.String("pattern.archetype", rec.Archetype.Name),
+		attribute.String("pattern.params_digest", rec.Archetype.Digest),
+		attribute.String("pattern.outcome", rec.Outcome),
 		attribute.IntSlice("pattern.elimination_order", rec.EliminationOrder),
 		attribute.Int("pattern.winner_slot", rec.WinnerSlot),
 		attribute.StringSlice("pattern.signal_hashes", rec.SignalHashes()),
@@ -283,6 +288,12 @@ func buildStartConfig(spec Spec, serials []string) *gcpb.StartGameConfig {
 		// the started shadow session builds its per-instance RNG from it. 0 means
 		// entropy (today's behavior); the coordinator honors it only for a shadow
 		// session (same real-protection guard as experiment_id/arm).
+		cfg.RngSeed = spec.Seed
+	}
+	// A one-shot pattern game (UC-046 BR-006) carries its seed too, so a replay
+	// with the same SHADOW_GAME_SEED faces the same game RNG. Honored
+	// coordinator-side only for a shadow session, like the experiment seed.
+	if spec.IsPattern() && spec.Seed != 0 {
 		cfg.RngSeed = spec.Seed
 	}
 	switch spec.GameName {
@@ -519,6 +530,7 @@ func (r *Runner) awaitTerminal(
 	}()
 
 	forced := false
+	aborted := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -526,7 +538,7 @@ func (r *Runner) awaitTerminal(
 		case <-deadline.C:
 			if forced {
 				// Already force-ended and still no terminal event; give up.
-				return terminal, eventsSeen, OutcomeForceEnded
+				return terminal, eventsSeen, forcedOutcome(abort != nil || aborted, aborted)
 			}
 			r.log.Warn("shadow game timed out, force-ending", "game_id", gameID,
 				"timeout", timeout)
@@ -538,6 +550,7 @@ func (r *Runner) awaitTerminal(
 			// Kill switch (UC-046 A12): force-end now; a nil channel never fires.
 			abort = nil
 			if !forced {
+				aborted = true
 				r.log.Info("pattern game aborted, force-ending", "game_id", gameID)
 				r.forceEnd(ctx, cl, gameID)
 				forced = true
@@ -554,13 +567,13 @@ func (r *Runner) awaitTerminal(
 				// Stream closed without a terminal event; treat a prior
 				// force-end as the outcome, else error.
 				if forced {
-					return terminal, eventsSeen, OutcomeForceEnded
+					return terminal, eventsSeen, forcedOutcome(abort != nil || aborted, aborted)
 				}
 				return terminal, eventsSeen, OutcomeError
 			}
 			if res.err != nil {
 				if forced {
-					return terminal, eventsSeen, OutcomeForceEnded
+					return terminal, eventsSeen, forcedOutcome(abort != nil || aborted, aborted)
 				}
 				return terminal, eventsSeen, OutcomeError
 			}
@@ -570,7 +583,7 @@ func (r *Runner) awaitTerminal(
 				terminal = et
 				switch {
 				case forced:
-					return terminal, eventsSeen, OutcomeForceEnded
+					return terminal, eventsSeen, forcedOutcome(abort != nil || aborted, aborted)
 				case et == eventGameError:
 					return terminal, eventsSeen, OutcomeError
 				default:
@@ -579,6 +592,16 @@ func (r *Runner) awaitTerminal(
 			}
 		}
 	}
+}
+
+// forcedOutcome classifies a force-ended game. A pattern game (pattern = true)
+// force-ended by the safety cap is a valid timeout (UC-046 BR-013); one ended by
+// the kill switch is force_ended (aborted). Noise games keep force_ended.
+func forcedOutcome(pattern, aborted bool) Outcome {
+	if pattern && !aborted {
+		return OutcomeTimeout
+	}
+	return OutcomeForceEnded
 }
 
 // forceEnd force-ends the game by id, best-effort.

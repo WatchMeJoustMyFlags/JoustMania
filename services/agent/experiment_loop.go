@@ -20,6 +20,7 @@ import (
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamerunner"
+	"github.com/joustmania/agent/patterngame"
 	"github.com/joustmania/agent/promote"
 )
 
@@ -326,7 +327,18 @@ func buildExperimentLoop(
 		Promoter:  promo,
 		Targeting: targeting,
 		Log:       logger,
+		// UC-046: pin experiment.mock_archetypes at each experiment's first spawn;
+		// the kill switch force-ends in-flight pattern games through the tracker.
+		Patterns: flagPatternPinner{
+			flags: flagsClient,
+			mode:  spawner.spec.GameName,
+			minPairs: func(ctx context.Context) int {
+				return flagsClient.Experiment(ctx, expDefaults).VerdictMinPairs
+			},
+		},
+		PatternTracker: patterngame.Default,
 	})
+	spawner.SetPatternCallbacks(registry.RecordPatternStart, registry.RecordPatternEnd)
 
 	loop := &experimentLoop{
 		registry:       registry,
@@ -1059,7 +1071,9 @@ func normalizedGameKind(gc gamecontext.GameContext) string {
 // telemetry path raced ahead this is a safe no-op. After a release it nudges
 // AllocateAndSpawn so the freed slot is refilled promptly.
 func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcome) {
-	if outcome == gamerunner.OutcomeCompleted {
+	// UC-046 BR-013: a pattern game that reached its safety cap (timeout) is a valid
+	// result; its fitness sample counts like a completed game's.
+	if outcome == gamerunner.OutcomeCompleted || outcome == gamerunner.OutcomeTimeout {
 		// Natural completion: the telemetry path (onGameEnd → ConcludeGame) concludes
 		// it WITH its fitness sample. We deliberately do NOT release here on the
 		// HAPPY path because that would drop the sample (ReleaseGame is non-counting).

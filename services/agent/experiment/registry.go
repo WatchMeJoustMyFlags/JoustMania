@@ -20,6 +20,7 @@ import (
 
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment/journal"
+	"github.com/joustmania/agent/patterngame"
 )
 
 // registry.go is the agent-owned experiment COORDINATOR (design §7, #978). It is
@@ -265,6 +266,11 @@ type entry struct {
 	// be appended to anyway.
 	span    trace.Span
 	spanCtx trace.SpanContext
+
+	// pin is the experiment's pinned pattern selection (UC-046 step 2): nil until
+	// its first spawn resolves it; an inactive pin means noise games (A1). Not
+	// persisted: a rehydrated experiment re-pins at its next spawn.
+	pin *patterngame.Pin
 }
 
 // inFlight returns the experiment's current count of live (unconcluded) shadow
@@ -344,6 +350,11 @@ type Registry struct {
 	// bindGame (the only window in which a real game_id can be reported-terminal before
 	// it is bound). It gates and bounds releaseTombstones (see above).
 	spawnsInFlight int
+
+	// patterns pins pattern selections (UC-046); nil = never pattern games.
+	patterns PatternPinner
+	// patternTracker force-ends in-flight pattern games on the kill switch (A12).
+	patternTracker *patterngame.Tracker
 }
 
 // RegistryConfig configures a Registry. Every seam may be nil — a nil seam
@@ -409,6 +420,12 @@ type RegistryConfig struct {
 	// assert the root span, or leave it nil to disable the span. The root span and its
 	// re-parenting are OBSERVABILITY ONLY — a nil tracer changes no lifecycle behavior.
 	Tracer trace.Tracer
+	// Patterns pins the experiment.mock_archetypes selection at each experiment's
+	// first spawn (UC-046). nil ⇒ no pattern games (today's noise).
+	Patterns PatternPinner
+	// PatternTracker is the live pattern-game tracker the kill switch force-ends
+	// games through (UC-046 A12). nil ⇒ no force-end.
+	PatternTracker *patterngame.Tracker
 }
 
 // NewRegistry builds a Registry over the injected seams. It does NOT touch the
@@ -483,6 +500,8 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 		tracer:            tracer,
 		entries:           make(map[string]*entry),
 		releaseTombstones: make(map[string]string),
+		patterns:          cfg.Patterns,
+		patternTracker:    cfg.PatternTracker,
 	}
 }
 
@@ -697,6 +716,8 @@ func (r *Registry) AllocateAndSpawn(ctx context.Context) int {
 	if r.spawner == nil {
 		return 0
 	}
+	// UC-046 step 2: pin the pattern selection of experiments that have not spawned yet.
+	r.pinPending(ctx)
 	spawned := 0
 	for {
 		// Each iteration is one round-robin PASS: pick the next live experiment (from
@@ -733,6 +754,8 @@ type pairPlan struct {
 	seed      uint64
 	pairIndex int
 	arms      []string // arm(s) reserved this tick, in reservation order
+	// pattern is set for a pattern experiment's arm (UC-046 step 3).
+	pattern *PatternSpawn
 }
 
 // startedArm is one arm of a CRN pair that successfully spawned a live game. It is
@@ -760,6 +783,9 @@ func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, sto
 	spawnCtx := ctx
 	if sc, ok := r.ExperimentSpanContext(plan.id); ok {
 		spawnCtx = trace.ContextWithRemoteSpanContext(ctx, sc)
+	}
+	if plan.pattern != nil {
+		spawnCtx = WithPatternSpawn(spawnCtx, *plan.pattern)
 	}
 	var live []startedArm
 	for i, arm := range plan.arms {
@@ -830,6 +856,10 @@ func (r *Registry) nextPair() (pairPlan, bool) {
 	if free <= 0 {
 		return pairPlan{}, false
 	}
+	// UC-046 BR-010: no other shadow game while a pattern game is in flight.
+	if r.patternInFlightLocked() {
+		return pairPlan{}, false
+	}
 	live := r.liveIDsLocked()
 	if len(live) == 0 {
 		return pairPlan{}, false
@@ -879,6 +909,23 @@ func (r *Registry) nextPair() (pairPlan, bool) {
 		if toReserve <= 0 {
 			continue
 		}
+		var pattern *PatternSpawn
+		if e.pin == nil && r.patterns != nil {
+			continue // not pinned yet (pinPending runs first; a fresh Start waits a tick)
+		}
+		if e.patternActive() {
+			// UC-046 BR-010: a pattern arm spawns only when no shadow game is in flight,
+			// one at a time. A6: one pair per pinned archetype, then no more.
+			if r.inFlightLocked() > 0 || pairIndex >= len(e.pin.Archetypes) {
+				continue
+			}
+			toReserve = 1
+			pattern = &PatternSpawn{
+				Archetype:      e.pin.Archetypes[pairIndex],
+				MaxGameSeconds: e.pin.MaxGameSeconds,
+				PairIndex:      pairIndex,
+			}
+		}
 
 		seed := pairSeed(cand, pairIndex)
 		r.rrCursor = (start + i + 1) % len(live)
@@ -898,7 +945,7 @@ func (r *Registry) nextPair() (pairPlan, bool) {
 			r.spawnsInFlight++
 			arms = append(arms, arm)
 		}
-		return pairPlan{id: cand, seed: seed, pairIndex: pairIndex, arms: arms}, true
+		return pairPlan{id: cand, seed: seed, pairIndex: pairIndex, arms: arms, pattern: pattern}, true
 	}
 	return pairPlan{}, false
 }
@@ -1026,6 +1073,7 @@ func (r *Registry) bindGame(id, gameID, arm string, pairIndex int) bool {
 		GameID:    gameID,
 		Arm:       arm,
 		PairIndex: &pi,
+		Pattern:   e.patternFactsLocked(pairIndex), // nil for a noise game
 	})
 	r.log.Info("experiment.game_assigned",
 		"experiment_id", id, "game_id", gameID, "arm", arm, "pair_index", pairIndex)
@@ -1172,6 +1220,11 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 		return r.conclude(ctx, id, final)
 	}
 
+	// UC-046 A6: a pattern experiment whose archetypes are all used concludes once
+	// its last game has ended.
+	if st, done := r.concludeIfPatternExhausted(ctx, id); done {
+		return st, nil
+	}
 	return StatusRunning, nil
 }
 
@@ -1239,6 +1292,8 @@ func (r *Registry) ReleaseGame(gameID, reason string) bool {
 
 	r.log.Info("experiment.game_released",
 		"experiment_id", id, "game_id", gameID, "arm", arm, "reason", reason)
+	// UC-046 A6: a released last game of an exhausted pattern experiment concludes it.
+	r.concludeIfPatternExhausted(context.Background(), id)
 	return true
 }
 
@@ -1431,6 +1486,16 @@ func (r *Registry) AbortAll(ctx context.Context, reason string) []string {
 	r.mu.Unlock()
 
 	sort.Strings(ids) // deterministic order (tests + stable logs)
+	// UC-046 A12: force-end in-flight pattern games, marked non-exact kill_switch.
+	var patternGames []string
+	if r.patternTracker != nil {
+		r.mu.Lock()
+		patternGames = r.patternGamesLocked(ids)
+		r.mu.Unlock()
+	}
+	for _, gid := range patternGames {
+		r.patternTracker.Abort(gid, patterngame.ReasonKillSwitch)
+	}
 	for _, id := range ids {
 		_ = r.Abort(ctx, id, reason)
 	}
