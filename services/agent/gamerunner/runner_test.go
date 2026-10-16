@@ -83,9 +83,9 @@ func TestStartExperimentGame_BindsCohortAndReturnsID(t *testing.T) {
 
 // TestStartExperimentGame_ValidatesSpec confirms the async start rejects an invalid
 // spec without spawning a goroutine or leaving controllers reserved.
-// UC: UC-046 A1 BR-004
+// UC: UC-046 main BR-004
 func TestStartExperimentGame_ValidatesSpec(t *testing.T) {
-	t.Run("UC-046/A1 a shadow game without an archetype is refused and reserves nothing", func(t *testing.T) {
+	t.Run("UC-046/BR-004 a shadow game without an archetype is refused and reserves nothing", func(t *testing.T) {
 		mock := &fakeMock{}
 		coord := &fakeCoord{gameID: "g"}
 		h := newHarness(t, mock, coord)

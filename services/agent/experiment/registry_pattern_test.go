@@ -471,3 +471,44 @@ func TestRegistryPatternTimeoutReportingAndDigest(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-046 main
+func TestRegistryPatternSpanEvents(t *testing.T) {
+	t.Run("UC-046/main the experiment span carries pattern_pinned, pattern_game and pattern_game_ended", func(t *testing.T) {
+		spawner := &patternSpawner{}
+		r, sr := rootSpanRegistry(t, RegistryConfig{MaxShadowGames: 2, EffectiveConcurrency: 1, Spawner: spawner,
+			Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "p")}}})
+		id := startExperiment(t, r)
+		r.AllocateAndSpawn(context.Background())
+		a := testPin(t, "p").Archetypes[0]
+		info := patterngame.Info{GameID: "game_1", ExperimentID: id, Arm: ArmExperimental, PairIndex: 0,
+			Archetype: a, Seed: 9, Serials: []string{"S0", "S1", "S2", "S3"}, MaxGameSeconds: 300, FlagDigest: "fd"}
+		r.RecordPatternStart(info)
+		r.RecordPatternEnd(patterngame.Record{Info: info, Outcome: patterngame.OutcomeTimeout, Censored: true,
+			OrderSource: patterngame.OrderFromEvents, EliminationOrder: []int{3, 2}, WinnerSlot: -1})
+		_ = r.Abort(context.Background(), id, "test")
+
+		want := map[string]map[string]string{
+			"experiment.pattern_pinned":     {"pattern.archetypes": `["p"]`, "pattern.max_game_seconds": "300"},
+			"experiment.pattern_game":       {"pattern.archetype": "p", "pattern.params_digest": a.Digest, "game.rng_seed": "9", "pattern.flag_digest": "fd"},
+			"experiment.pattern_game_ended": {"pattern.outcome": "timeout", "pattern.censored": "true", "pattern.order_source": "events", "pattern.elimination_order": "[3,2]", "pattern.winner_slot": "-1"},
+		}
+		got := map[string]map[string]string{}
+		for _, s := range rootSpans(sr) {
+			for _, ev := range s.Events() {
+				attrs := map[string]string{}
+				for _, kv := range ev.Attributes {
+					attrs[string(kv.Key)] = kv.Value.Emit()
+				}
+				got[ev.Name] = attrs
+			}
+		}
+		for name, kvs := range want {
+			for k, v := range kvs {
+				if got[name][k] != v {
+					t.Errorf("%s %s = %q, want %q", name, k, got[name][k], v)
+				}
+			}
+		}
+	})
+}

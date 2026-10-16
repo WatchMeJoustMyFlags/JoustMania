@@ -55,13 +55,8 @@ GAME_TIMEOUT_S = 120
 
 
 def _elimination_order(run: dict) -> tuple[list[int], int]:
-    """UC-046 BR-014: the winner from game_winner; the others by delivered frames, fewest first."""
-    winner = run["winner_slot"]
-    others = sorted(
-        (r for r in run["records"] if r["slot"] != winner),
-        key=lambda r: (r["frames"], r["slot"]),
-    )
-    return [r["slot"] for r in others], winner
+    """UC-046 BR-014: the order of the coordinator's player_death events; the winner from game_winner."""
+    return run["death_slots"], run["winner_slot"]
 
 
 async def _run_pattern_game(docker_compose, tag: str) -> dict:
@@ -107,6 +102,9 @@ async def _play(mock, game, tag: str) -> dict:
         winners = [
             dict(e.data).get("serial") for e in collector.get_events("game_winner")
         ]
+        deaths = [
+            dict(e.data).get("serial") for e in collector.get_events("player_death")
+        ]
     finally:
         await collector.stop()
 
@@ -126,11 +124,13 @@ async def _play(mock, game, tag: str) -> dict:
         )
     records.sort(key=lambda r: r["slot"])
     winner_slot = serials.index(winners[0]) if winners and winners[0] in serials else -1
+    death_slots = [serials.index(sr) for sr in deaths if sr in serials]
     return {
         "game_id": game_id,
         "terminal": terminal.event_type,
         "records": records,
         "winner_slot": winner_slot,
+        "death_slots": death_slots,
     }
 
 
@@ -138,7 +138,7 @@ async def _play(mock, game, tag: str) -> dict:
 @pytest.mark.uc(
     "UC-046",
     flow="main",
-    steps=[3, 4, 5, 6, 8, 9, 10],
+    steps=[3, 4, 5, 6, 8],
     br=["BR-001", "BR-004", "BR-005", "BR-014"],
 )
 async def test_pattern_game_replays_identically(docker_compose):

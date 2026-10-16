@@ -162,9 +162,9 @@ func testValidationPin(context.Context) patterngame.Pin {
 	return pin
 }
 
-// UC: UC-046 A1
+// UC: UC-046 main BR-004
 func TestRunner_ValidationGamesRunOnArchetypes(t *testing.T) {
-	t.Run("UC-046/A1 validation games cycle the selected archetypes; no selection fails closed without spawning", func(t *testing.T) {
+	t.Run("UC-046/BR-004 validation games cycle the selected archetypes; no selection fails closed without spawning", func(t *testing.T) {
 		spawner := &validationSpawner{}
 		r := newTestRunner(spawner, experiment.NewFitnessStore(16))
 		r.gameTimeout = 10 * time.Millisecond
@@ -182,9 +182,9 @@ func TestRunner_ValidationGamesRunOnArchetypes(t *testing.T) {
 	})
 }
 
-// UC: UC-046 A1 BR-004
+// UC: UC-046 main BR-004
 func TestShadowSpawner_RefusesGamesWithoutArchetype(t *testing.T) {
-	t.Run("UC-046/A1 no random-motion game is reachable from the experiment loop", func(t *testing.T) {
+	t.Run("UC-046/BR-004 no random-motion game is reachable from the experiment loop", func(t *testing.T) {
 		s := newShadowSpawner(gamerunner.Config{CoordinatorAddr: "127.0.0.1:1", MockAddr: "127.0.0.1:1"}, discardLogger())
 		_, err := s.Spawn(context.Background(), "exp_x", experiment.ArmControl, 7)
 		if !errors.Is(err, errSpawnNeedsArchetype) {
