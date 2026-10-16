@@ -1,11 +1,12 @@
 name: Spec label re-run
 
-# #1263: adding or removing the `no-spec-change` label must flip the Spec Gate
-# without a new push. ci.yml deliberately ignores non-`ci-full` label events
+# #1263: adding or removing the `no-spec-change` (or `spec-baseline-growth`)
+# label must flip the Spec Gate without a new push. ci.yml deliberately ignores non-`ci-full` label events
 # (#1086: no redundant heavy runs), so this workflow re-runs only the Spec Gate
 # job of the latest real CI run for the PR head; GitHub re-runs its dependents
 # (CI Complete) with it, which updates the required status. The Spec Gate step
-# reads the labels live from the API, so the re-run sees the change.
+# reads the labels live from the API, so the re-run sees the change. Fork PRs
+# get a read-only token here, so they re-push instead (docs/CONTRIBUTING.md).
 
 on:
   pull_request:
@@ -19,7 +20,7 @@ permissions:
 jobs:
   rerun-spec-gate:
     name: Re-run Spec Gate
-    if: github.event.label.name == 'no-spec-change'
+    if: github.event.label.name == 'no-spec-change' || github.event.label.name == 'spec-baseline-growth'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

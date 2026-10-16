@@ -8,7 +8,8 @@
 #                        LIVE from the API (needs GH_TOKEN + GH_REPO), so a re-run
 #                        after adding the label sees it (a re-run keeps the event
 #                        payload, and with it the labels, of the original event)
-#   PR_AUTHOR, PR_AUTHOR_TYPE, PR_TITLE, PR_HEAD_REF   exemption inputs
+#   PR_AUTHOR, PR_AUTHOR_TYPE, PR_TITLE, PR_HEAD_REF, PR_HEAD_REPO, GH_REPO
+#                        exemption inputs
 #   CHANGED_FILES_FILE   optional: newline list of changed files (local testing)
 #   PR_LABELS            optional: comma-separated labels (local testing; skips
 #                        the API call)
@@ -36,7 +37,8 @@ is_behaviour_file() {
     *) return 1 ;;
   esac
   case "$f" in
-    */tests/*|*/test/*|*/testdata/*|*_test.go|*/test_*.py|*_test.py|*.test.ts|*.test.tsx|*.spec.ts) return 1 ;;
+    */tests/*|*/test/*|*/testdata/*|*/testutil/*|*/mocks/*|*/conftest.py) return 1 ;;
+    *_test.go|*/test_*.py|*_test.py|*.test.ts|*.test.tsx|*.spec.ts|*.spec.tsx) return 1 ;;
     *.md) return 1 ;;
     */pyproject.toml|*/uv.lock|*/go.mod|*/go.sum|*/package.json|*/package-lock.json|*/Cargo.toml|*/Cargo.lock|*/Dockerfile) return 1 ;;
     proto/*) [[ "$f" == *.proto ]] || return 1 ;;
@@ -88,16 +90,20 @@ if [[ ${#problems[@]} -eq 0 ]]; then
   exit 0
 fi
 
-# Exemptions: bots (Renovate, Dependabot, release-please via github-actions)
-# and the agent's experiment promoter (services/agent/promote: head branch
-# agent/experiment-<flag>, title "Flag experiment: <flag>").
+# Exemptions, deliberately narrow (agent and app PRs are what the gate is for):
+#  - the dependency/release bots, by exact login AND account type Bot
+#    (release-please runs as github-actions[bot] here);
+#  - the agent's experiment promoter (services/agent/promote): head branch
+#    agent/experiment-<flag>, title "Flag experiment: <flag>", from this repo.
 author="${PR_AUTHOR:-}" title="${PR_TITLE:-}" head_ref="${PR_HEAD_REF:-}"
 if [[ "${PR_AUTHOR_TYPE:-}" == "Bot" ]] \
-  || [[ "$author" =~ ^(renovate|dependabot|release-please|github-actions)(\[bot\])?$ ]] \
-  || [[ "$title" =~ ^chore\(deps(-dev)?\) ]] \
-  || [[ "$title" =~ ^chore\(main\):\ release ]] \
-  || [[ "$head_ref" == agent/experiment-* && "$title" == "Flag experiment: "* ]]; then
-  echo "Exempt from the spec gate (bot or agent-promoter PR: author=$author, head=$head_ref, title=$title)."
+  && [[ "$author" == "renovate[bot]" || "$author" == "dependabot[bot]" || "$author" == "github-actions[bot]" ]]; then
+  echo "Exempt from the spec gate: bot PR by $author."
+  exit 0
+fi
+if [[ "$head_ref" == agent/experiment-* && "$title" == "Flag experiment: "* \
+      && -n "${GH_REPO:-}" && "${PR_HEAD_REPO:-}" == "$GH_REPO" ]]; then
+  echo "Exempt from the spec gate: agent experiment-promoter PR ($head_ref)."
   exit 0
 fi
 
@@ -122,5 +128,6 @@ echo "Fix it one of two ways ($HELP):"
 echo "  1. Update the spec in this PR (requirements, use case, or docs/specs/*)."
 echo "  2. If observable behaviour is unchanged (refactor, test-only, CI-only), add the"
 echo "     '$LABEL' label and write 'Spec changes: none: <reason>' in the PR body."
-echo "     The label re-runs this check automatically (spec-label-rerun workflow)."
+echo "     Adding the label re-runs this check automatically (spec-label-rerun"
+echo "     workflow); on a fork PR, push a commit instead."
 exit 1

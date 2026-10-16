@@ -164,33 +164,45 @@ The `Spec Gate` job in `ci.yml` (#1263, required through `CI Complete`) has two 
    local patches: the requirement Status column is read by its header because our
    tables have a Notes column after it, and FRs on a use case's `**Planned:**` line
    count as covered for `FR_UNCOVERED` without feeding the derived status checked by
-   `REQ_STATUS_DRIFT`). It checks `docs/` across files. Errors always fail
-   (`DUPLICATE_ID`, `SPEC_MISSING`, `NOT_IN_DIAGRAM`, `DANGLING_REF`, and use case
-   files the AIUP format cannot parse). Warnings (`REQ_STATUS_DRIFT`, `FLOW_TERMINATION`,
-   `WEAK_WORD`, ...) fail only when they are new: the existing ones are accepted in
-   `scripts/aiup/spec-lint-baseline.json`. Run it locally before pushing a docs change:
+   `REQ_STATUS_DRIFT`). `scripts/aiup/spec-lint-gate.sh` runs it over `docs/`:
+   - **Every error fails**: `DUPLICATE_ID`, `SPEC_MISSING`, `NOT_IN_DIAGRAM`,
+     `DANGLING_REF`, and use case files the AIUP format cannot parse. Errors are
+     checked without the baseline, so they cannot be baselined.
+   - **New warnings fail** (`REQ_STATUS_DRIFT`, `FLOW_TERMINATION`, `WEAK_WORD`, ...).
+     The existing ones are accepted in `scripts/aiup/spec-lint-baseline.json`.
+   - **The baseline only shrinks**: on a PR it may not have more entries than on
+     `main`, unless the PR carries the `spec-baseline-growth` label (a deliberate,
+     reviewed acceptance of new warnings).
+
+   Run the same gate locally before pushing a docs change:
 
    ```bash
-   python3 scripts/aiup/spec-review/scripts/spec_lint.py --docs docs --strict \
-     --baseline scripts/aiup/spec-lint-baseline.json
+   scripts/aiup/spec-lint-gate.sh            # errors + new warnings
+   BASE_REF=main PR_LABELS= scripts/aiup/spec-lint-gate.sh   # + baseline growth
    ```
 
    Fixing a baselined finding is reported as `INFO BASELINE_STALE` (not a failure);
-   refresh the baseline in the same PR with `--update-baseline` (same `--baseline`
-   path) so it only shrinks. Accepting a *new* warning into the baseline is a
-   deliberate, reviewed choice; the four cross-file error codes above are never
-   accepted (CI rejects a baseline that contains them).
-2. **Spec touched** (pull requests changing `services/**`, `lib/**` or `proto/**`,
-   ignoring tests, `*.md`, dependency manifests/locks and Dockerfiles): the PR must
-   also change `docs/requirements.md`, `docs/use_cases/**`, `docs/use_cases.puml`,
-   `docs/specs/**`, `docs/specs-inventory.md` or `docs/entity_model.md`. A change to
+   refresh the baseline in the same PR so it shrinks:
+   `python3 scripts/aiup/spec-review/scripts/spec_lint.py --docs docs --baseline scripts/aiup/spec-lint-baseline.json --update-baseline`.
+2. **Spec touched** (pull requests changing `services/**`, `lib/**` or `proto/**`;
+   tests (`tests/`, `testutil/`, `mocks/`, `conftest.py`, `*_test.*`, `test_*.py`,
+   `*.test.ts(x)`, `*.spec.ts(x)`), `*.md`, dependency manifests/locks and
+   Dockerfiles do not count; Grafana dashboards, Prometheus alerts and collector
+   config do, since `docs/specs/telemetry.md` documents them): the PR must also change
+   `docs/requirements.md`, `docs/use_cases/**`, `docs/use_cases.puml`, `docs/specs/**`,
+   `docs/specs-inventory.md` or `docs/entity_model.md`. A change to
    `services/flagd/*.json` must touch `docs/specs/flags.md`, a change to
    `proto/*.proto` must touch `docs/specs/services.md`. Exempt: PRs with the
-   `no-spec-change` label, bot PRs (Renovate, Dependabot, release-please,
-   `chore(deps)` titles) and the agent's experiment-promoter PRs (branch
-   `agent/experiment-*`, title `Flag experiment: ...`). Adding or removing the label
-   re-runs the gate automatically (`spec-label-rerun.yml`); add it once CI has
-   finished, since any label event cancels a CI run still in progress.
+   `no-spec-change` label; Renovate, Dependabot and release-please PRs (the bot
+   accounts `renovate[bot]`, `dependabot[bot]`, `github-actions[bot]`, matched by
+   login and account type); and the agent's experiment-promoter PRs (branch
+   `agent/experiment-*` in this repository, title `Flag experiment: ...`).
+
+Adding or removing `no-spec-change` or `spec-baseline-growth` re-runs the Spec Gate
+automatically (`spec-label-rerun.yml`). Label events run in their own concurrency
+group, so they never cancel a CI run in progress. On a **fork PR** the re-run
+workflow has no permission to re-run jobs: push a commit (an empty one is fine)
+after adding the label instead.
 
 ### Traceability IDs
 
@@ -267,6 +279,7 @@ All pull requests must pass CI checks before merging:
 4. **Proto Validation** - Proto files must be up-to-date (run `make protos`)
 5. **Docker Builds** - All services must build successfully
 6. **Package Validation** - All workspace packages must install correctly
+7. **Spec Gate** - Spec lint over `docs/` and the spec-touched check (see [CI spec gate](#ci-spec-gate))
 
 ### Running Checks Locally
 
