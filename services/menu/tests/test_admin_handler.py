@@ -1369,10 +1369,49 @@ class TestPlayValueVoice:
         mock_state_manager.audio.play_voice.assert_called_once_with(Sound.MENU_VOX_ADMINOP_FALSE)
 
     @pytest.mark.asyncio
-    async def test_other_option_no_voice(self, handler, mock_state_manager):
-        """Non num_teams/force_all_start options should not play voice."""
-        await handler._play_value_voice("sensitivity", 2)
+    async def test_unknown_option_no_voice(self, handler, mock_state_manager):
+        """Options without a voice mapping play nothing."""
+        await handler._play_value_voice("random_assignment", True)
         mock_state_manager.audio.play_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5])
+    async def test_sensitivity_voice_all_values(self, handler, mock_state_manager):
+        """Every sensitivity level announces its voice line (UC-012 step 5)."""
+        expected = {
+            0: Sound.MENU_VOX_SENSITIVITY_ULTRA_HIGH,
+            1: Sound.MENU_VOX_SENSITIVITY_HIGH,
+            2: Sound.MENU_VOX_SENSITIVITY_MEDIUM,
+            3: Sound.MENU_VOX_SENSITIVITY_LOW,
+            4: Sound.MENU_VOX_SENSITIVITY_ULTRA_LOW,
+        }
+        for value, expected_sound in expected.items():
+            mock_state_manager.audio.play_voice.reset_mock()
+            await handler._play_value_voice("sensitivity", value)
+            mock_state_manager.audio.play_voice.assert_called_once_with(expected_sound)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5])
+    async def test_select_on_sensitivity_plays_voice(self, handler, mock_state_manager):
+        """SELECT on the sensitivity option pulses and announces the new level (UC-012 step 5)."""
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
+
+        await handler.handle_increase_value("test_serial")
+
+        mock_state_manager.led.send_game_effect.assert_called()
+        mock_state_manager.audio.play_voice.assert_called_once_with(Sound.MENU_VOX_SENSITIVITY_LOW)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5])
+    async def test_start_on_sensitivity_plays_voice(self, handler, mock_state_manager):
+        """START on the sensitivity option announces the new level (UC-012 step 5)."""
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = "slow"
+
+        await handler.handle_decrease_value("test_serial")
+
+        mock_state_manager.audio.play_voice.assert_called_once_with(Sound.MENU_VOX_SENSITIVITY_HIGH)
 
 
 class TestControllerHandlerProtocol:

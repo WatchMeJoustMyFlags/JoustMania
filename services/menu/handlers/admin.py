@@ -53,6 +53,16 @@ AGENT_POLICY_FLAG = "interventions_allowed"
 # every intervention). Cycling forward escalates permissiveness.
 AGENT_POLICY_LEVELS = ["none", "ambient", "standard", "full"]
 
+# Voice line per sensitivity level index (0 = ultra_slow ... 4 = ultra_fast),
+# matching original JoustMania. Shared by Circle and Select/Start feedback.
+SENSITIVITY_VOICES = [
+    Sound.MENU_VOX_SENSITIVITY_ULTRA_HIGH,  # ULTRA_SLOW (0)
+    Sound.MENU_VOX_SENSITIVITY_HIGH,  # SLOW (1)
+    Sound.MENU_VOX_SENSITIVITY_MEDIUM,  # MEDIUM (2)
+    Sound.MENU_VOX_SENSITIVITY_LOW,  # FAST (3)
+    Sound.MENU_VOX_SENSITIVITY_ULTRA_LOW,  # ULTRA_FAST (4)
+]
+
 
 class AdminModeCallbacks(Protocol):
     """Protocol defining Menu-specific callbacks that AdminModeHandler needs."""
@@ -937,14 +947,7 @@ class AdminModeHandler:
                 )
 
                 # Play voice for sensitivity level (matches original JoustMania)
-                sensitivity_voices = [
-                    Sound.MENU_VOX_SENSITIVITY_ULTRA_HIGH,  # ULTRA_SLOW (0)
-                    Sound.MENU_VOX_SENSITIVITY_HIGH,  # SLOW (1)
-                    Sound.MENU_VOX_SENSITIVITY_MEDIUM,  # MEDIUM (2)
-                    Sound.MENU_VOX_SENSITIVITY_LOW,  # FAST (3)
-                    Sound.MENU_VOX_SENSITIVITY_ULTRA_LOW,  # ULTRA_FAST (4)
-                ]
-                await self._play_voice(sensitivity_voices[new_value])
+                await self._play_voice(SENSITIVITY_VOICES[new_value])
 
                 span.add_event(
                     "sensitivity_changed",
@@ -1545,7 +1548,11 @@ class AdminModeHandler:
             value: New value (typed from _variant_to_value)
         """
         try:
-            if option_name == "num_teams":
+            if option_name == "sensitivity":
+                # Same per-level voice as Circle (A1), so Select/Start announce it too (UC-012 step 5).
+                if isinstance(value, int) and 0 <= value < len(SENSITIVITY_VOICES):
+                    await self._play_voice(SENSITIVITY_VOICES[value])
+            elif option_name == "num_teams":
                 # Play number voice (adminop_2 through adminop_6)
                 num_teams_voices = {
                     "2": Sound.MENU_VOX_ADMINOP_2,

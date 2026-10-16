@@ -1619,3 +1619,89 @@ class TestRunGameLifecycleMidStartFailure:
 
         # State already RUNNING, so the guard skips the redundant restore.
         restart.assert_not_awaited()
+
+
+class TestRunGameLifecycleRosterAbort:
+    """UC-010 A3: a start aborted for a short roster publishes game_start_cancelled.
+
+    Calls the real MenuServicer._run_game_lifecycle bound to the fake servicer.
+    """
+
+    @pytest.fixture
+    def servicer(self):
+        s = FakeMenuServicer()
+        s.idle_monitor = MagicMock()
+        s._prepare_game_start = AsyncMock()
+        return s
+
+    async def _run(self, servicer, controllers=None):
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with patch("services.menu.servicer.metrics"), patch("services.menu.servicer.asyncio.sleep", AsyncMock()):
+            await MenuServicer._run_game_lifecycle(servicer, "s1", source="controller", controllers=controllers)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3")
+    async def test_ready_path_short_roster_publishes_cancelled(self, servicer):
+        """Ready/auto-start path (menu still RUNNING) publishes game_start_cancelled."""
+        servicer.state = menu_pb2.MenuState.RUNNING
+        servicer.state_manager.controller_states = {"s1": ControllerState.READY, "s2": ControllerState.CONNECTED}
+
+        await self._run(servicer)
+
+        servicer.event_publisher.publish.assert_awaited_once_with("game_start_cancelled", {})
+        assert servicer.state == menu_pb2.MenuState.RUNNING
+        servicer._prepare_game_start.assert_not_awaited()
+        servicer.state_manager.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3")
+    async def test_force_start_short_roster_resets_state_and_publishes_once(self, servicer):
+        """Admin force-start path (GAME_STARTING) returns to RUNNING and publishes exactly once."""
+        servicer.state = menu_pb2.MenuState.GAME_STARTING
+
+        await self._run(servicer, controllers=["s1"])
+
+        servicer.event_publisher.publish.assert_awaited_once_with("game_start_cancelled", {})
+        assert servicer.state == menu_pb2.MenuState.RUNNING
+
+
+class TestHandleWebCommandSelectGame:
+    """UC-011 A1: web select_game continues at step 5 (both selection events).
+
+    Calls the real MenuServicer._handle_web_command bound to the fake servicer.
+    """
+
+    @pytest.fixture
+    def servicer(self):
+        return FakeMenuServicer()
+
+    async def _select(self, servicer, game_name):
+        from services.menu.servicer import MenuServicer
+
+        await MenuServicer._handle_web_command(
+            servicer, {"command": "select_game", "game_name": game_name}, MagicMock()
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="A1", steps=[5])
+    async def test_web_select_publishes_both_selection_events(self, servicer):
+        await self._select(servicer, "Tournament")
+
+        published = [c.args for c in servicer.event_publisher.publish.await_args_list]
+        assert ("selection_changed", {"game_name": "Tournament", "source": "web"}) in published
+        assert ("game_selection_changed", {"game_name": "Tournament", "source": "web"}) in published
+        assert servicer.current_selection == Games.Tournament
+        servicer.user_prefs_writer.update_default_variant.assert_called_once_with("current_game", "Tournament")
+        servicer.audio.play_voice.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="A1")
+    async def test_web_select_unknown_game_publishes_nothing(self, servicer):
+        await self._select(servicer, "NotAGame")
+
+        servicer.event_publisher.publish.assert_not_awaited()
+        assert servicer.current_selection == Games.JoustFFA
+        servicer.user_prefs_writer.update_default_variant.assert_not_called()
