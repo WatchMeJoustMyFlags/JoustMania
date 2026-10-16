@@ -548,45 +548,49 @@ elimination order, winner and decisions are the evidence that the game played ou
 ## 10. Flag service (planned, epic #1407)
 
 > **Planned** for [UC-053](../use_cases/UC-053.md) (FR-129, NFR-050 to NFR-053). Service identity
-> `flag-service` (namespace `infrastructure`), Go OTel SDK, metrics every 1 s like the agent. New attribute
-> namespace `flagservice.*`; the flag itself uses the OTel feature-flag semantic convention keys
-> `feature_flag.key`, `feature_flag.set.id` and `feature_flag.result.variant` / `feature_flag.result.value`,
-> so a Jaeger search by flag key finds both evaluations and writes.
+> `flag-service` (namespace `infrastructure`), Go OTel SDK, metrics every 1 s like the agent; HTTP server spans
+> from `otelhttp`, so a write sits under the caller's span (W3C propagation). New attribute namespace
+> `flagservice.*`; the flag itself uses the OTel feature-flag semantic convention keys `feature_flag.key`,
+> `feature_flag.set.id` and `feature_flag.result.variant` / `feature_flag.result.value`, so a Jaeger search by
+> flag key finds both evaluations and writes. There are no roles (architecture note D11): `flagservice.writer`
+> is the caller's informational label.
 
 ### 10.1 Spans
 
 | Span | Kind | Attributes | When |
 |---|---|---|---|
-| `flagservice.write` | server (child of the caller's span via gRPC propagation, so an agent write sits under `agent.action`) | `feature_flag.key`, `feature_flag.set.id`, `feature_flag.result.variant` (generated variant), `feature_flag.result.value` (the value as JSON text), `flagservice.rpc` (e.g. `GrantPlayer`), `flagservice.writer.role`, `flagservice.scope` (`stack`, `game`, `game+serial`, `experiment+arm`, `fraction`), `flagservice.result` (`ok`, `rejected`, `error`), `flagservice.reason` (rejection reason code, services.md §7.2), `flagservice.sequence` (one-shot), `flagservice.snapshot_version`, `game.id`, `game.kind`, `player.serial`, `experiment.id`, `experiment.arm`, `decision.intervention_id` (from `WriteContext.decision_id`) | every write RPC, accepted or rejected |
-| `flagservice.game.register` | server | `game.id`, `game.kind`, `player.count`, `experiment.id`, `experiment.arm`, `flagservice.result` | `RegisterGame` |
-| `flagservice.game.end` | server | `game.id`, `flagservice.reason` (`ended`, `sync_live_games`, `expired`), `flagservice.dropped_values` | `EndGame`, a scope dropped by `SyncLiveGames` or by expiry |
-| `flagservice.sync.push` | internal, linked to the triggering `flagservice.write` | `feature_flag.set.id`, `flagservice.snapshot_version`, `flagservice.snapshot_bytes`, `flagservice.streams` | each snapshot sent to the sync streams of a set |
-| `flagservice.baseline.load` | internal | `feature_flag.set.id` (one event per set), `flagservice.flags`, `flagservice.result` | start |
+| `flagservice.write` | internal, child of the HTTP server span (`PUT`/`POST`/`DELETE /{flagSetId}/{flagName}`) | `feature_flag.key`, `feature_flag.set.id`, `feature_flag.result.variant` (generated variant), `feature_flag.result.value` (the value as JSON text), `flagservice.op` (`set`, `append`, `clear`), `flagservice.kind` (`state`, `level`, `grant`, `event`, `overlay`), `flagservice.scope` (`stack`, `game`, `game+serial`, `experiment+arm`, `real`, `fraction`), `flagservice.result` (`ok`, `rejected`, `error`), `flagservice.reason` (reason code, services.md §7.2), `flagservice.writer`, `flagservice.seq` (event writes), `flagservice.epoch`, `flagservice.snapshot_version`, `flagservice.persisted`, `game.id`, `game.kind`, `player.serial`, `experiment.id`, `experiment.arm`, `decision.intervention_id` (from `decision_id`) | every write, accepted or rejected |
+| `flagservice.game.register` | internal | `game.id`, `game.kind`, `player.count`, `experiment.id`, `experiment.arm`, `flagservice.coordinator_instance`, `flagservice.result` | `PUT /games/{gameId}` |
+| `flagservice.game.end` | internal | `game.id`, `flagservice.reason` (`ended`, `reconciled`, `expired`), `flagservice.dropped_values`, `flagservice.coordinator_instance` | `DELETE /games/{gameId}`, a scope dropped by the reconcile call or by expiry |
+| `flagservice.sync.push` | internal, linked to the triggering `flagservice.write` | `flagservice.snapshot_version`, `flagservice.snapshot_bytes`, `flagservice.streams`, `flagservice.epoch` | each merged configuration sent to the open sync streams |
+| `flagservice.baseline.load` | internal | `feature_flag.set.id` (one event per set), `flagservice.flags`, `flagservice.admin_values` (restored from `admin.json`), `flagservice.epoch`, `flagservice.result` | start |
 
 ### 10.2 Metrics
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `flagservice_writes_total` | counter | `flag_set`, `flag`, `role`, `result`, `reason` | every write RPC (UC-053 BR-007) |
-| `flagservice_write_duration_seconds` | histogram | `rpc` | validate + render + acknowledge (NFR-053) |
-| `flagservice_propagation_seconds` | histogram | `flag_set` | write accepted → snapshot handed to every open sync stream of the set; the end-to-end target of NFR-050 is measured by the integration test against flagd |
+| `flagservice_writes_total` | counter | `flag_set`, `flag`, `op`, `result`, `reason` | every write (UC-053 BR-005) |
+| `flagservice_write_duration_seconds` | histogram | `op` | validate + render + acknowledge (NFR-053) |
+| `flagservice_propagation_seconds` | histogram | | write accepted → merged configuration handed to every open sync stream; the end-to-end target of NFR-050 is measured by the integration test against flagd |
 | `flagservice_live_games` | gauge | `game_kind` | registered game scopes |
 | `flagservice_game_scopes_expired_total` | counter | | scopes dropped by expiry (UC-053 A10) |
 | `flagservice_scope_values` | gauge | `flag_set` | game-scoped and experiment values held (NFR-051) |
-| `flagservice_snapshot_bytes` | gauge | `flag_set` | size of the last rendered snapshot (NFR-051) |
-| `flagservice_sync_streams` | gauge | `flag_set` | open `SyncFlags` streams; 0 for a served set means flagd is not connected (pre-flight check, alert) |
-| `flagservice_overlays` | gauge | `flag_set`, `role` | stack-wide overlays in effect |
+| `flagservice_snapshot_bytes` | gauge | | size of the last merged configuration (NFR-051) |
+| `flagservice_sync_streams` | gauge | | open `SyncFlags` streams; 0 means flagd is not connected and writes return 503 `no_sync_stream` |
+| `flagservice_sync_rejected_total` | counter | `reason` | rejected `SyncFlags` / `FetchAllFlags` calls; `reason="unknown_selector"` means a misconfigured client or flagd |
+| `flagservice_overlays` | gauge | `flag_set`, `persisted` | stack overlays in effect |
+| `flagservice_admin_persist_errors_total` | counter | | failed writes of `admin.json` (the value still applies in memory) |
 
-Labels never carry `game_id` or `serial` (unbounded cardinality); those live on the spans. The names follow §8:
-service prefix `flagservice_`, counters end `_total`, histograms in seconds.
+Labels never carry `game_id`, `serial` or the free-text `writer` (unbounded cardinality); those live on the
+spans. The names follow §8: service prefix `flagservice_`, counters end `_total`, histograms in seconds.
 
 ### 10.3 Consumers
 
 | Consumer | Uses |
 |---|---|
-| Talk pre-flight (`scripts/talk-preflight.sh`) | `GetState` (sync streams per set, overlays equal the stage baseline) instead of reading the flag files |
-| Dashboard Agent tab | `flagservice.write` spans of role `agent` next to `agent.decision`; `flagservice_writes_total` replaces `agent_intervention_writes_total` once #1416 deletes the file writer |
-| Grafana | `feature-flags` dashboard: writes by role and result, propagation, live games, sync streams |
-| Prometheus alert | `FlagServiceSyncDisconnected`: `flagservice_sync_streams == 0` for a served set for 30 s |
+| Talk pre-flight (`scripts/talk-preflight.sh`) | `GET /state` (sync streams, epoch) and `GET /agent`, `GET /controller` (overlays equal the stage baseline) instead of reading the flag files |
+| Dashboard Agent tab | `flagservice.write` spans with `flagservice.writer=agent` next to `agent.decision`; `flagservice_writes_total` replaces `agent_intervention_writes_total` once #1416 deletes the file writer |
+| Grafana | `feature-flags` dashboard: writes by flag set and result, propagation, live games, sync streams |
+| Prometheus alerts | `FlagServiceSyncDisconnected`: `flagservice_sync_streams == 0` for 30 s; `FlagServiceUnknownSelector`: `increase(flagservice_sync_rejected_total{reason="unknown_selector"}[5m]) > 0` |
 
 **Traceability:** FR-129, NFR-050 to NFR-053 / UC-053 / planned `services/flag-service/` / planned tests in #1409, #1413.

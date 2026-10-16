@@ -263,184 +263,110 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 ## 7. Flag service (planned, epic #1407)
 
 > **Planned.** Nothing in this section exists on `main`. Use case [UC-053](../use_cases/UC-053.md);
-> requirements FR-120 to FR-129, NFR-050 to NFR-053, C-030 to C-033; design and migration plan in
-> [architecture/flag-service.md](../architecture/flag-service.md). The `.proto` files are added by #1408
-> (sync) and #1410 (write API); the sketches below are the contract they implement.
+> requirements FR-120 to FR-129, NFR-050 to NFR-053, C-030 to C-033; design, decisions and migration plan in
+> [architecture/flag-service.md](../architecture/flag-service.md).
 
 | Item | Value |
 |---|---|
-| Compose name | `flag-service` (Go, `services/flag-service/`), in every compose file that runs flagd (base, lite, ci, dry-run, decide-e2e) |
-| Port | `50064` gRPC: `flagd.sync.v1.FlagSyncService` and `joustmania.flags.v1.FlagService` on one listener; `13135` HTTP `/healthz`. Not published to the host (C-015); scripts use `docker compose exec -T flag-service flagctl ...` |
-| Inputs | `services/flagd/*.json` (or `ci/*.json`) mounted **read-only**, read once at start (FR-120, C-030); `FLAG_SERVICE_SETS` (sets served over sync during the migration); `FLAG_SERVICE_TEST_ROLE` (CI only); `FLAG_SERVICE_TOKEN_<ROLE>` (optional, C-016) |
-| Clients | flagd (sync, one stream per flag set); agent, menu, connect-proxy, game coordinator, `flagctl`, integration fixtures (write API) |
-| flagd wiring | `--sources` with one `{"uri":"flag-service:50064","provider":"grpc","selector":"flagSetId=<set>"}` per migrated set; `depends_on: flag-service: {condition: service_healthy, restart: true}` |
+| Compose name | `flag-service` (Go, `services/flag-service/`), in every compose file that runs flagd (base, lite, ci, dry-run, decide-e2e, agent-coordinator) |
+| Ports | `50064` gRPC: `flagd.sync.v1.FlagSyncService` (flagd only). `8070` HTTP/JSON: the write and read API and `/healthz`. Neither is published to the host (C-015); envoy routes `/flags/` to `flag-service:8070` with the prefix stripped |
+| Inputs | the eight baseline files `services/flagd/{system,controller,observability,game,user,agent,interventions,rollout}.json` (or `ci/`), an explicit list, mounted **read-only** and read once at start (FR-120); refuses to start on a duplicate flag key across sets |
+| State | in memory, except admin settings: `/var/lib/flag-service/admin.json` on the `flag-service-state` volume, loaded over the baseline at start and rewritten on each change of a `persist` flag (C-030, FR-018). Never `services/flagd/*.json` |
+| Config | `FLAG_SERVICE_SETS` (sets included in the sync payload during the migration), `FLAG_SERVICE_BASELINE_DIR`, `FLAG_SERVICE_STATE_DIR`, `FLAG_SERVICE_EVENT_LIST_LEN` (K, default 16), `FLAG_SERVICE_MAX_GAME_AGE` (default 1 h) |
+| flagd wiring | one gRPC source `--sources='[{"uri":"flag-service:50064","provider":"grpc"}]'` plus `file:` sources for sets not yet migrated; `depends_on: flag-service: {condition: service_healthy, restart: true}`; no flagd `readyz` check (flagd #1985) |
 | Memory | limit 64 MiB (NFR-051) |
-| Dependencies | none at start; the game coordinator calls it (lifecycle), the agent calls it (writes) |
+| Authorization | none, by decision (local party game, architecture note D11) |
 
-### 7.1 `flagd.sync.v1.FlagSyncService` (server)
+### 7.1 `flagd.sync.v1.FlagSyncService` (server, for flagd)
 
 The upstream schema (`buf.build/open-feature/flagd`, `flagd/sync/v1/sync.proto`), implemented unchanged:
 
 | RPC | Behaviour |
 |---|---|
-| `SyncFlags(SyncFlagsRequest{provider_id, selector}) → stream SyncFlagsResponse{flag_configuration}` | Selector `flagSetId=<set>` from the `flagd-selector` metadata header, else the body; an unknown set or filter key is `INVALID_ARGUMENT`. Sends the rendered set at once, then one full snapshot of the set after every accepted write or game-scope change of that set. `flag_configuration` is flagd JSON with top-level `metadata.flagSetId`. No `sync_context`. |
-| `FetchAllFlags(FetchAllFlagsRequest{provider_id, selector}) → FetchAllFlagsResponse{flag_configuration}` | The current rendered set. |
+| `SyncFlags(SyncFlagsRequest{provider_id, selector}) → stream SyncFlagsResponse{flag_configuration}` | Sends the merged configuration of every served set at once, then again after every accepted write, admin change or game-scope change. Every flag carries `metadata.flagSetId` (flagSetIds partition the flags, architecture note §5.2). An empty selector gets every served set; `flagSetId=<set>` (from the `flagd-selector` header or the body) gets that set only; an unknown selector key is `INVALID_ARGUMENT` (counted, alerted). No `sync_context`. |
+| `FetchAllFlags` | The current merged configuration, filtered like `SyncFlags`. |
 | `GetMetadata` | Deprecated upstream; `UNIMPLEMENTED`. |
 
-Server keepalive: `EnforcementPolicy{MinTime: 10s, PermitWithoutStream: true}` (flagd and the Go provider ping every 30 s).
+Keepalive: the server sends pings (`ServerParameters{Time: 30s, Timeout: 10s}`; flagd v0.16.0's sync client sets
+none) and allows client pings (`EnforcementPolicy{MinTime: 10s, PermitWithoutStream: true}`).
 
-### 7.2 `joustmania.flags.v1.FlagService` (write API, sketch)
+### 7.2 HTTP/JSON API (resource-style)
 
-Every write RPC carries the writer role in metadata `x-flag-writer-role` (plus `authorization: Bearer <token>`
-when a token is configured) and returns a `WriteResult`. Errors: `PERMISSION_DENIED` (`role_not_allowed`,
-`flag_read_only`, `test_role_disabled`), `INVALID_ARGUMENT` (`out_of_bounds`, `unknown_flag`,
-`serial_not_in_game`), `FAILED_PRECONDITION` (`game_not_live`, `experiment_unknown`), `UNAUTHENTICATED`.
-Writers use a 500 ms deadline and fail closed (NFR-052).
+One endpoint per flag set: the flag set id and the flag name are the path. All bodies are JSON. A write is
+validated only against the mutable-flag registry ([flags.md §13](flags.md#13-mutable-flag-registry)), the game
+scope and the sync stream; there are no roles or tokens. `writer`, `decision_id` and `reason` are informational:
+they go on the write span and are never checked. Writers use a 500 ms deadline and fail closed.
 
-```proto
-syntax = "proto3";
-package joustmania.flags.v1;
+| Method and path | Purpose | Success |
+|---|---|---|
+| `GET /` | flag sets with their flag counts and whether each is served | 200 |
+| `GET /{flagSetId}` | every flag of the set: registry policy (mutable, kind, scope, bounds, persist), effective default, overlays, scoped values | 200 |
+| `GET /{flagSetId}/{flagName}` | one flag's effective state (same fields), plus the rendered flagd JSON | 200 |
+| `PUT /{flagSetId}/{flagName}` | set a value in a scope (state, level, grant, overlay, experiment arm, fraction) | 200 `WriteResult` |
+| `POST /{flagSetId}/{flagName}` | append one event to a game's event list (registry kind `event` only) | 200 `WriteResult` with `seq` |
+| `DELETE /{flagSetId}/{flagName}` | clear the value in the scope given by query parameters (`game_id`, `serial`, `experiment_id`, `arm`, `writer`); no scope = the stack overlay; a `persist` flag returns to the baseline and is removed from `admin.json` | 204 |
+| `DELETE /{flagSetId}?writer=stage` | clear every stack overlay of that writer label in the set (talk reset) | 204 |
+| `PUT /games/{gameId}` | register a game | 200 (`already_registered` on a repeat) |
+| `DELETE /games/{gameId}` | end a game: drop its scope and every value written for it | 204 |
+| `PUT /coordinators/{instance}/games` | reconcile one coordinator instance's live games; drops that instance's other games only | 200 with the dropped ids |
+| `GET /games` | registered game scopes | 200 |
+| `GET /state` | epoch, snapshot version, open sync streams per set, live games, overlay counts | 200 |
+| `GET /healthz` | baseline loaded and the gRPC listener up | 200 |
 
-service FlagService {
-  // Game lifecycle (game coordinator only, role "coordinator").
-  rpc RegisterGame(RegisterGameRequest) returns (RegisterGameResponse);
-  rpc EndGame(EndGameRequest) returns (EndGameResponse);
-  rpc SyncLiveGames(SyncLiveGamesRequest) returns (SyncLiveGamesResponse);
+`games`, `coordinators`, `state` and `healthz` are reserved and cannot be flag-set ids.
 
-  // In-game interventions (role "agent"; FR-124, FR-126, FR-127).
-  rpc SetIntervention(SetInterventionRequest) returns (WriteResult);   // game-wide state flag
-  rpc SetPlayerLevel(SetPlayerLevelRequest) returns (WriteResult);     // per-serial level
-  rpc GrantPlayer(GrantPlayerRequest) returns (WriteResult);           // shield, partial shield, soft penalty
-  rpc FireOneShot(FireOneShotRequest) returns (WriteResult);           // end_game, eliminate, revive, cue, effect
+**`PUT /{flagSetId}/{flagName}` body**
 
-  // Experiments and promotion (roles "experiment", "promotion"; FR-128).
-  rpc SetExperimentArm(SetExperimentArmRequest) returns (WriteResult);
-  rpc ClearExperiment(ClearExperimentRequest) returns (WriteResult);
-  rpc PromoteDefault(PromoteDefaultRequest) returns (WriteResult);
-  rpc RevertPromotion(RevertPromotionRequest) returns (WriteResult);
-
-  // Stack-wide settings (roles "admin", "operator", "stage", "agent" for the rollout count).
-  rpc SetAgentSetting(SetAgentSettingRequest) returns (WriteResult);   // decision.backend, enabled, thresholds, ...
-  rpc SetAdminSetting(SetAdminSettingRequest) returns (WriteResult);   // sensitivity, num_teams, current_game, ...
-  rpc SetRolloutCount(SetRolloutCountRequest) returns (WriteResult);
-  rpc SetControllerRouting(SetControllerRoutingRequest) returns (WriteResult); // canary, chaos (fraction)
-  rpc SetFlag(SetFlagRequest) returns (WriteResult);                   // role "test" only
-  rpc ResetOverlays(ResetOverlaysRequest) returns (ResetOverlaysResponse);
-
-  // Read side (any role; FR-122, FR-129).
-  rpc GetRegistry(GetRegistryRequest) returns (GetRegistryResponse);
-  rpc GetState(GetStateRequest) returns (GetStateResponse);
+```jsonc
+{
+  "variant": "jev",                       // one of: a declared variant name ...
+  "value": 5,                             // ... or a value within the registry bounds
+  "scope": {
+    "game_id": "game_0a1b2c3d4e5f",       // game-scoped write (registered game)
+    "serial": "MOCK0003",                 // player in that game (level, grant)
+    "experiment_id": "exp_42",            // experiment arm write (with arm)
+    "arm": "experimental",
+    "game_kind": "real",                  // promotion: the real default
+    "fraction_percent": 10                // controller canary / chaos: fractional on serial
+  },
+  "ttl_seconds": 600,                     // optional: overlay expires
+  "writer": "agent",                      // informational
+  "decision_id": "dec_7f3",               // informational
+  "reason": "grant_shield"                // informational
 }
-
-enum GameKind { GAME_KIND_UNSPECIFIED = 0; GAME_KIND_REAL = 1; GAME_KIND_SHADOW = 2; }
-
-message RegisterGameRequest {
-  string game_id = 1;            // game_<12 hex>
-  GameKind game_kind = 2;        // unspecified is never treated as real (FR-041)
-  repeated string serials = 3;
-  string experiment_id = 4;      // empty for non-experiment games
-  string arm = 5;
-}
-message RegisterGameResponse { bool already_registered = 1; }
-message EndGameRequest { string game_id = 1; string reason = 2; }
-message EndGameResponse { int32 dropped_values = 1; }
-message SyncLiveGamesRequest { repeated RegisterGameRequest live_games = 1; }
-message SyncLiveGamesResponse { repeated string dropped_game_ids = 1; }
-
-message WriteContext {           // on every write; becomes span attributes
-  string decision_id = 1;        // agent decision / intervention id, when any
-  string reason = 2;             // free text for the audit span
-}
-
-message SetInterventionRequest {
-  string game_id = 1;
-  string flag = 2;               // music_tempo_override, global_difficulty_factor, ...
-  oneof value { double number = 3; string text = 4; bool clear = 5; }
-  WriteContext context = 6;
-}
-message SetPlayerLevelRequest {
-  string game_id = 1; string serial = 2;
-  string flag = 3;               // player_sensitivity_factor, player_handicap_factor
-  double factor = 4;
-  WriteContext context = 5;
-}
-message GrantPlayerRequest {
-  string game_id = 1; string serial = 2;
-  oneof grant {
-    int32 shield_seconds = 3;
-    PartialShield partial_shield = 4;
-    string soft_penalty = 5;     // warn | tighten | tighten:<s>:<f>
-  }
-  WriteContext context = 6;
-}
-message PartialShield { int32 seconds = 1; double factor = 2; }
-message FireOneShotRequest {
-  string game_id = 1;
-  string flag = 2;               // end_game | eliminate_player | revive_player | audio_cue | controller_effect
-  string serial = 3;             // for eliminate, revive, effect
-  string payload = 4;            // sound id for audio_cue, effect name for controller_effect
-  WriteContext context = 5;
-}
-
-message SetExperimentArmRequest {
-  string experiment_id = 1; string arm = 2;   // experimental | control
-  string flag_set = 3; string flag = 4;
-  oneof value { string variant = 5; double number = 6; string text = 7; }
-  WriteContext context = 8;
-}
-message ClearExperimentRequest { string experiment_id = 1; WriteContext context = 2; }
-message PromoteDefaultRequest { string flag_set = 1; string flag = 2; string experiment_id = 3; WriteContext context = 4; }
-message RevertPromotionRequest { string flag_set = 1; string flag = 2; WriteContext context = 3; }
-
-message SetAgentSettingRequest { string flag = 1; string variant = 2; WriteContext context = 3; }
-message SetAdminSettingRequest { string flag_set = 1; string flag = 2; string variant = 3; WriteContext context = 4; }
-message SetRolloutCountRequest { string variant = 1; WriteContext context = 2; }  // none|one|three|six|all
-message SetControllerRoutingRequest {
-  string flag = 1;               // bluetooth_backend | chaos_fault_type
-  string variant = 2;
-  int32 fraction_percent = 3;    // 0 = stack-wide default, 1..100 = fractional on serial
-  WriteContext context = 4;
-}
-message SetFlagRequest {         // role test only
-  string flag_set = 1; string flag = 2; string game_id = 3; string serial = 4;
-  oneof value { string variant = 5; double number = 6; string text = 7; bool boolean = 8; string object_json = 9; }
-}
-message ResetOverlaysRequest { string flag_set = 1; string role = 2; }   // empty = all sets / the caller's role
-message ResetOverlaysResponse { int32 cleared = 1; }
-
-message WriteResult {
-  string flag_set = 1; string flag = 2;
-  string variant = 3;            // generated variant name (opaque)
-  int64 sequence = 4;            // one-shot sequence, 0 otherwise
-  int64 snapshot_version = 5;    // monotonic per flag set; flagd has it once the stream sent it
-}
-
-message GetRegistryRequest {}
-message GetRegistryResponse { repeated MutableFlagPolicy flags = 1; }
-message MutableFlagPolicy {
-  string flag_set = 1; string flag = 2;
-  string scope = 3;              // stack | game | game+serial | experiment+arm | fraction
-  repeated string roles = 4;
-  repeated string allowed_variants = 5;
-  double min = 6; double max = 7; string payload_schema = 8;
-}
-message GetStateRequest { string flag_set = 1; }
-message GetStateResponse {
-  repeated LiveGame games = 1;   // registered scopes with their values
-  repeated Overlay overlays = 2; // stack-wide overlays with writer role and time
-  repeated ExperimentArm arms = 3;
-  map<string, int64> snapshot_versions = 4;
-  int32 sync_streams = 5;
-}
-message LiveGame { RegisterGameRequest game = 1; map<string, string> values = 2; int64 registered_unix_ms = 3; }
-message Overlay { string flag_set = 1; string flag = 2; string variant = 3; string role = 4; int64 set_unix_ms = 5; }
-message ExperimentArm { string experiment_id = 1; string arm = 2; string flag_set = 3; string flag = 4; string value = 5; }
 ```
 
-Lifecycle callers: the game coordinator calls `RegisterGame` at admission (where it calls
-`InterventionManager.prime_session` today) and `EndGame` at retire (`forget_session`), and `SyncLiveGames` at its
-start and whenever its channel to the flag service reconnects. A registration failure never blocks the game
-(C-004); the coordinator retries in the background.
+Exactly one of `variant` and `value`. The scope must match the registry row's scope (flags.md §13): a
+`game+serial` flag needs `game_id` and `serial`, a `stack` flag takes no scope (or `game_kind: "real"` for a
+promotion), an `experiment+arm` flag needs both ids.
 
-**Traceability:** FR-120 to FR-129, NFR-050 to NFR-053, C-030 to C-033 / UC-053 / planned `services/flag-service/`,
-`proto/flag_service.proto` / planned tests in #1408 to #1413.
+**`POST /{flagSetId}/{flagName}` body** (event flags: `end_game`, `eliminate_player`, `revive_player`,
+`audio_cue`, `controller_effect`): `{"scope": {"game_id": "..."}, "payload": {"serial": "MOCK0003"}, "writer",
+"decision_id", "reason"}`. The service appends `{"seq": n, "payload": ...}` to the game's list and keeps the last
+K; the flag resolves in that game to `{"epoch": "<boot id>", "seq": n, "events": [...]}`.
+
+**`WriteResult`**: `{"flag_set", "flag", "variant" (opaque, carries the epoch), "seq" (event writes), "epoch",
+"snapshot_version" (monotonic; flagd has it once the stream sent it), "persisted" (admin flags)}`.
+
+**`PUT /games/{gameId}` body**: `{"coordinator_instance": "<hostname>/<boot uuid>", "game_kind": "real" | "shadow",
+"serials": ["MOCK0001", ...], "experiment_id": "", "arm": ""}`. An unspecified kind is stored as is and never
+treated as real (FR-041). **`PUT /coordinators/{instance}/games` body**: `{"games": [<same objects>]}`.
+
+**Errors**: `{"error": "<reason>", "detail": "..."}`.
+
+| Status | Reason codes |
+|---|---|
+| 400 | `malformed` (bad JSON, both or neither of `variant` / `value`, scope does not fit the flag) |
+| 404 | `unknown_flag_set`, `unknown_flag` |
+| 409 | `game_not_live` (game not registered or ended), `experiment_unknown` |
+| 422 | `flag_read_only` (no registry row), `out_of_bounds`, `serial_not_in_game` |
+| 503 | `no_sync_stream` (the set is served but flagd has no open stream, so the write would not reach readers) |
+
+**Callers**: the game coordinator (`PUT /games/{id}` awaited for at most 200 ms before the game is RUNNING,
+outside `_sessions_lock`; `DELETE` at retire; the reconcile call at its start and when its connection recovers);
+the agent (interventions, rollout count, experiment arms, promotion; it retries `game_not_live` once after
+250 ms); the menu (admin settings, kill switch); the connect-proxy (canary, chaos); the stage scripts and the
+validation harness (`curl http://localhost/flags/...`); the integration fixtures.
+
+**Traceability:** FR-120 to FR-129, NFR-050 to NFR-053, C-030 to C-033 / UC-053 / planned `services/flag-service/`
+/ planned tests in #1408 to #1413.

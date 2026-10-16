@@ -230,14 +230,15 @@ A named value of a flag.
 
 **Planned** (epic #1407, UC-053, FR-122). One row of the flag service's mutable-flag registry
 ([flags.md §13](specs/flags.md#13-mutable-flag-registry)): a flag that may change at runtime, by whom and within
-which bounds. A flag without a policy is read-only baseline.
+which bounds, and whether it persists. A flag without a policy is read-only baseline. There are no writer roles (local game, architecture note D11).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
 | flag_key | The flag | String | 60 | Primary Key, Foreign Key (FLAG.key) |
 | flag_set_id | Its flag set | String | 20 | Not Null, Foreign Key (FLAG_SET.flag_set_id) |
-| scope | Where a write applies | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, fraction |
-| roles | Writer roles allowed to change it | String | 100 | Not Null, Values: agent, experiment, promotion, admin, operator, stage, test (comma list) |
+| kind | How values are written and rendered | String | 8 | Not Null, Values: state, level, grant, event, overlay |
+| scope | Where a write applies | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, real, fraction |
+| persist | Admin setting kept in the service's state file across restarts | Boolean | | Not Null, Default: false |
 | allowed_variants | Declared variants a write may select | String | 400 | Optional |
 | min_value | Inclusive lower bound of a numeric value | Decimal | 10,3 | Optional |
 | max_value | Inclusive upper bound of a numeric value | Decimal | 10,3 | Optional, >= min_value |
@@ -255,6 +256,7 @@ at admission and dropped at the game's end, on `SyncLiveGames` or after the maxi
 | serials | Serials of the game's players | String | 400 | Not Null |
 | experiment_id | Experiment of a shadow experiment game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
+| coordinator_instance | Coordinator instance that registered it; reconcile calls drop only that instance's scopes | String | 80 | Not Null |
 | registered_at | Registration time | DateTime | | Not Null |
 
 **Constraints:** at most 64 KiB of values per scope (NFR-051); a write naming a game without a scope is rejected
@@ -263,25 +265,27 @@ at admission and dropped at the game's end, on `SyncLiveGames` or after the maxi
 ### FLAG_OVERLAY
 
 **Planned** (FR-124, FR-126 to FR-128). One runtime value the flag service holds on top of the baseline, in memory
-only (C-030).
+(C-030); a value of a `persist` flag is also written to the service's own state file.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| overlay_id | Generated id; also the opaque variant name it renders (`r<n>`) | String | 20 | Primary Key |
+| overlay_id | Generated id; also the opaque variant name it renders (`r<epoch>_<n>`) | String | 24 | Primary Key |
+| epoch | Boot id of the flag service that holds it | String | 8 | Not Null |
 | flag_key | The flag | String | 60 | Not Null, Foreign Key (MUTABLE_FLAG_POLICY.flag_key) |
-| scope | Scope of this value | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, fraction |
+| scope | Scope of this value | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, real, fraction |
 | game_id | Game for a game-scoped value | String | 17 | Optional, Foreign Key (GAME_SCOPE.game_id) |
 | serial | Player for a game+serial value | String | 20 | Optional, must be in GAME_SCOPE.serials |
 | experiment_id | Experiment for an arm value | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm for an arm value | String | 12 | Optional |
 | fraction_percent | Share of serials for a fraction value | Integer | 3 | Optional, 1 to 100 |
-| value | Resolved value as JSON | String | 4000 | Not Null, within the policy's bounds |
-| sequence | Per-game sequence of a one-shot value | Integer | 10 | Optional, > 0, strictly increasing per game and flag |
-| writer_role | Role that wrote it | String | 12 | Not Null |
+| value | Resolved value as JSON; for an `event` flag the game's event list `{"epoch","seq","events"}` (last 16) | String | 4000 | Not Null, within the policy's bounds |
+| sequence | Last event sequence of an `event` value | Integer | 10 | Optional, > 0, strictly increasing per game and flag |
+| writer | Informational label of the caller (never checked) | String | 40 | Optional |
+| expires_at | End of an optional time-to-live | DateTime | | Optional |
 | decision_id | Agent decision or intervention id | String | 60 | Optional |
 | written_at | Write time | DateTime | | Not Null |
 
-**Constraints:** dropped with its GAME_SCOPE, by `ClearExperiment`, `ResetOverlays`, `RevertPromotion`, or a restart.
+**Constraints:** dropped with its GAME_SCOPE, by a `DELETE` of its flag and scope, when its time-to-live ends, or by a restart (a `persist` value is restored from the state file).
 
 ### DECISION
 
