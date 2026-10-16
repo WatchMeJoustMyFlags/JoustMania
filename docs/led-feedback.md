@@ -1,3 +1,5 @@
+> **Superseded** by [UC-010](use_cases/UC-010.md) to [UC-014](use_cases/UC-014.md) and [specs-inventory D-C3](specs-inventory.md#45-controllers-pairing-leds-d-c) (2026-10-16); kept for history.
+
 # Controller LED Feedback Reference (Menu System)
 
 > **See Also:** [controller-feedback.md](./controller-feedback.md) for comprehensive LED documentation including game states, team colors, and troubleshooting. This document focuses specifically on menu/lobby LED behavior and audio integration.

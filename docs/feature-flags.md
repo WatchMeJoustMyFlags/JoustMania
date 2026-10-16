@@ -1,3 +1,5 @@
+> **Partly superseded** (2026-10-16): the flag inventory is superseded by [docs/specs/flags.md](specs/flags.md); the architecture, naming and how-to sections are still current background.
+
 # Feature Flags with Event-Driven Updates
 
 ## Overview
