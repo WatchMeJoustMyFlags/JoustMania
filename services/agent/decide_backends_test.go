@@ -180,7 +180,7 @@ func TestDecideRegistry_ClaudeBackendCached(t *testing.T) {
 	if first != again {
 		t.Error("same claude config must reuse the cached backend")
 	}
-	cfg.Claude.Timeout = 5 * time.Second
+	cfg.Claude.Timeout += time.Second
 	if other, _ := reg.Resolve(cfg); other == first {
 		t.Error("a timeout flag change must build a new claude backend")
 	}

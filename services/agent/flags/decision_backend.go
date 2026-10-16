@@ -60,6 +60,19 @@ const (
 	// DefaultDecisionMinIntervalMs is the per-game cadence of remote decide calls
 	// (decision.min_interval_ms): at most one call per game per interval;
 	// llm.max_requests_per_minute stays the global spend bound.
+	//
+	// The interval runs from when a call FIRES, and the per-game inflight guard
+	// never overlaps two calls, so the effective cadence is max(interval, call
+	// latency) rounded up to the next evaluate cycle. With remote calls taking
+	// ~2-3.5s (#1231) that is one call every ~3-4s, i.e. ~15-20 calls a minute
+	// for ONE game, a lower bound on demand since post-game retros draw on the
+	// same global budget: far above the default llm.max_requests_per_minute of 6,
+	// which is spent in the first ~20s of a game (then llm_budget_exhausted ->
+	// rules). Raise the budget (its "stage" variant, 30) for a demo, or lengthen
+	// this interval to spend less; 3000 stays the default because a shorter
+	// interval would only be absorbed by the inflight guard. Note that
+	// AGENT_LLM_MAX_REQUESTS_PER_MINUTE, when set, replaces the budget flag
+	// (Loop.budgetCap), so flipping "stage" then has no effect.
 	DefaultDecisionMinIntervalMs = 3000
 	// DefaultDecisionClaudeModel is the claude backend's model (variant "haiku").
 	DefaultDecisionClaudeModel = "claude-haiku-4-5-20251001"
@@ -81,8 +94,16 @@ const (
 	// thresholds tuned against one release.
 	DefaultDecisionJevModel = "jev-latest"
 	// DefaultDecisionTimeoutMs bounds one remote decide call ("degrade, never
-	// stall"): a call that has not answered within it falls back to rules.
+	// stall"): a call that has not answered within it falls back to rules. It is
+	// the default of decision.openai.timeout_ms and decision.jev.timeout_ms.
 	DefaultDecisionTimeoutMs = 2500
+	// DefaultDecisionClaudeTimeoutMs is the decision.claude.timeout_ms default
+	// (variant "default"). Measured live (#1231): Haiku 4.5 and Sonnet 5.5 answer
+	// the FFA questions in ~2.3-3.4s on a warm connection and ~3.5-5.5s on the
+	// first call of a cold one, so the old 2.5s timed out nearly every call. 5s
+	// covers the warm p95 with ~1.5s headroom; "patient" (8s) also covers cold
+	// calls, "tight" is the old 2.5s.
+	DefaultDecisionClaudeTimeoutMs = 5000
 )
 
 // RemoteBackendConfig is the flag-driven, non-secret part of one remote decision
@@ -152,19 +173,19 @@ func (f *Flags) DecisionBackend(ctx context.Context) DecisionBackend {
 		MinInterval:            f.minIntervalFlag(ctx),
 		Claude: RemoteBackendConfig{
 			Model:   f.stringFlag(ctx, keyDecisionClaudeModel, DefaultDecisionClaudeModel),
-			Timeout: f.timeoutMsFlag(ctx, keyDecisionClaudeTimeoutMs),
+			Timeout: f.timeoutMsFlag(ctx, keyDecisionClaudeTimeoutMs, DefaultDecisionClaudeTimeoutMs),
 		},
 		OpenAI: RemoteBackendConfig{
 			BaseURL: f.stringFlag(ctx, keyDecisionOpenAIBaseURL, DefaultDecisionOpenAIBaseURL),
 			Model:   f.stringFlag(ctx, keyDecisionOpenAIModel, DefaultDecisionOpenAIModel),
-			Timeout: f.timeoutMsFlag(ctx, keyDecisionOpenAITimeoutMs),
+			Timeout: f.timeoutMsFlag(ctx, keyDecisionOpenAITimeoutMs, DefaultDecisionTimeoutMs),
 			ReasoningEffort: normalizeReasoningEffort(
 				f.stringFlag(ctx, keyDecisionOpenAIReasoningEffort, DefaultDecisionOpenAIReasoningEffort)),
 		},
 		Jev: RemoteBackendConfig{
 			BaseURL: f.stringFlag(ctx, keyDecisionJevBaseURL, DefaultDecisionJevBaseURL),
 			Model:   f.stringFlag(ctx, keyDecisionJevModel, DefaultDecisionJevModel),
-			Timeout: f.timeoutMsFlag(ctx, keyDecisionJevTimeoutMs),
+			Timeout: f.timeoutMsFlag(ctx, keyDecisionJevTimeoutMs, DefaultDecisionTimeoutMs),
 		},
 	}
 }
@@ -205,11 +226,11 @@ func (f *Flags) minIntervalFlag(ctx context.Context) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-func (f *Flags) timeoutMsFlag(ctx context.Context, key string) time.Duration {
-	ms := f.intFlag(ctx, key, DefaultDecisionTimeoutMs)
+func (f *Flags) timeoutMsFlag(ctx context.Context, key string, def int) time.Duration {
+	ms := f.intFlag(ctx, key, def)
 	if ms <= 0 {
-		f.log.Warn("flags timeout non-positive, using default", "key", key, "value", ms, "default", DefaultDecisionTimeoutMs)
-		ms = DefaultDecisionTimeoutMs
+		f.log.Warn("flags timeout non-positive, using default", "key", key, "value", ms, "default", def)
+		ms = def
 	}
 	return time.Duration(ms) * time.Millisecond
 }

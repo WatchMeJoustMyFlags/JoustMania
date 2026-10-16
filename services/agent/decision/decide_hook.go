@@ -304,10 +304,12 @@ func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c 
 	return ""
 }
 
-// remoteDecideAdmitted is the seam for a remote-decision admission gate (#1231).
-// It deliberately applies no game-length gate: the retired #1207 length gate routed
-// 6-7s games to rules almost always, so a remote backend would never decide in a
-// short FFA game. #1231 decides what (if anything) goes here.
+// remoteDecideAdmitted is the seam for a remote-decision admission gate. It is
+// always true by design (#1231): the remote cadence (decision.min_interval_ms),
+// the global budget (llm.max_requests_per_minute) and the per-game inflight guard
+// are the gates. It deliberately applies no game-length gate: the retired #1207
+// length gate routed 6-7s games to rules almost always, so a remote backend would
+// never decide in a short FFA game.
 func (l *Loop) remoteDecideAdmitted(flags.Snapshot, gamecontext.GameContext) bool {
 	return true
 }
