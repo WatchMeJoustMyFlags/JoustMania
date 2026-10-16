@@ -31,6 +31,7 @@ const (
 	MockControllerService_AddController_FullMethodName       = "/controller_manager_mock.MockControllerService/AddController"
 	MockControllerService_RemoveController_FullMethodName    = "/controller_manager_mock.MockControllerService/RemoveController"
 	MockControllerService_AddControllers_FullMethodName      = "/controller_manager_mock.MockControllerService/AddControllers"
+	MockControllerService_GetMotionPatternSet_FullMethodName = "/controller_manager_mock.MockControllerService/GetMotionPatternSet"
 )
 
 // MockControllerServiceClient is the client API for MockControllerService service.
@@ -63,6 +64,8 @@ type MockControllerServiceClient interface {
 	RemoveController(ctx context.Context, in *RemoveControllerRequest, opts ...grpc.CallOption) (*RemoveControllerResponse, error)
 	// Add multiple mock controllers at once
 	AddControllers(ctx context.Context, in *AddControllersRequest, opts ...grpc.CallOption) (*AddControllersResponse, error)
+	// Resolve and validate a motion-pattern parameter set (UC-046, #1258)
+	GetMotionPatternSet(ctx context.Context, in *GetMotionPatternSetRequest, opts ...grpc.CallOption) (*GetMotionPatternSetResponse, error)
 }
 
 type mockControllerServiceClient struct {
@@ -202,6 +205,16 @@ func (c *mockControllerServiceClient) AddControllers(ctx context.Context, in *Ad
 	return out, nil
 }
 
+func (c *mockControllerServiceClient) GetMotionPatternSet(ctx context.Context, in *GetMotionPatternSetRequest, opts ...grpc.CallOption) (*GetMotionPatternSetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMotionPatternSetResponse)
+	err := c.cc.Invoke(ctx, MockControllerService_GetMotionPatternSet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MockControllerServiceServer is the server API for MockControllerService service.
 // All implementations must embed UnimplementedMockControllerServiceServer
 // for forward compatibility.
@@ -232,6 +245,8 @@ type MockControllerServiceServer interface {
 	RemoveController(context.Context, *RemoveControllerRequest) (*RemoveControllerResponse, error)
 	// Add multiple mock controllers at once
 	AddControllers(context.Context, *AddControllersRequest) (*AddControllersResponse, error)
+	// Resolve and validate a motion-pattern parameter set (UC-046, #1258)
+	GetMotionPatternSet(context.Context, *GetMotionPatternSetRequest) (*GetMotionPatternSetResponse, error)
 	mustEmbedUnimplementedMockControllerServiceServer()
 }
 
@@ -277,6 +292,9 @@ func (UnimplementedMockControllerServiceServer) RemoveController(context.Context
 }
 func (UnimplementedMockControllerServiceServer) AddControllers(context.Context, *AddControllersRequest) (*AddControllersResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AddControllers not implemented")
+}
+func (UnimplementedMockControllerServiceServer) GetMotionPatternSet(context.Context, *GetMotionPatternSetRequest) (*GetMotionPatternSetResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetMotionPatternSet not implemented")
 }
 func (UnimplementedMockControllerServiceServer) mustEmbedUnimplementedMockControllerServiceServer() {}
 func (UnimplementedMockControllerServiceServer) testEmbeddedByValue()                               {}
@@ -508,6 +526,24 @@ func _MockControllerService_AddControllers_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _MockControllerService_GetMotionPatternSet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMotionPatternSetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MockControllerServiceServer).GetMotionPatternSet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MockControllerService_GetMotionPatternSet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MockControllerServiceServer).GetMotionPatternSet(ctx, req.(*GetMotionPatternSetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // MockControllerService_ServiceDesc is the grpc.ServiceDesc for MockControllerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -558,6 +594,10 @@ var MockControllerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AddControllers",
 			Handler:    _MockControllerService_AddControllers_Handler,
+		},
+		{
+			MethodName: "GetMotionPatternSet",
+			Handler:    _MockControllerService_GetMotionPatternSet_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

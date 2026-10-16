@@ -14,11 +14,46 @@ import logging
 import math
 import random
 import time
+from dataclasses import dataclass, field
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
+from services.controller_manager.multiplexer.motion_patterns import PatternSet, SignalHasher
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PatternRuntime:
+    """Per-controller state of an installed motion pattern (UC-046).
+
+    ``frame_index`` is k of BR-001: it advances once per frame DELIVERED on the
+    owning gameplay stream (the first stream whose explicit filter names this
+    controller), never per 100 Hz poll and never on other streams, so the signal
+    of the game's stream is f(0), f(1/r), f(2/r), ... whatever the host load.
+    """
+
+    pattern_set: PatternSet
+    slot: int
+    frame_index: int = 0
+    owner: str | None = None
+    overruns: int = 0
+    last_value: float = 1.0
+    hasher: SignalHasher = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.hasher = SignalHasher(self.pattern_set.stream_rate_hz)
+
+    def record(self) -> dict:
+        """The replay record of UC-046 step 8 (RemoveController / pattern_release)."""
+        return {
+            "set_id": self.pattern_set.set_id,
+            "slot": self.slot,
+            "frames_delivered": self.hasher.frames,
+            "signal_hash": self.hasher.value,
+            "signal_checkpoints": list(self.hasher.checkpoints),
+            "frame_overruns": self.overruns,
+        }
 
 
 def _create_controller_state(serial: str, reserved: bool = False, tag: str = "") -> dict:
@@ -77,6 +112,9 @@ def _create_controller_state(serial: str, reserved: bool = False, tag: str = "")
         # scripted value reaches every streamed gameplay frame until the next
         # SimulateMovement or ResetController. None = unscripted (pure noise).
         "held_accel": None,
+        # Installed motion pattern (UC-046, #1258). While set, the gameplay send
+        # path delivers f(k / r) instead of the polled acceleration (BR-012).
+        "pattern": None,
     }
 
 
@@ -164,7 +202,13 @@ class MockAdapter(ControllerIOAdapter):
                 controller["death_hold_until"] = 0.0
 
             held_accel = controller["held_accel"]
-            if held_accel is not None:
+            pattern = controller["pattern"]
+            if pattern is not None:
+                # UC-046 BR-012: a pattern controller never reports a SimulateMovement
+                # hold or noise. Delivered frames come from pattern_frame(); the polled
+                # state mirrors the last delivered value for other readers.
+                controller[StateKey.ACCEL] = {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: pattern.last_value}
+            elif held_accel is not None:
                 # Scripted motion persists until changed (#1279).
                 controller[StateKey.ACCEL] = dict(held_accel)
             else:
@@ -212,6 +256,8 @@ class MockAdapter(ControllerIOAdapter):
     def hold_accel(self, serial: str, x: float, y: float, z: float) -> bool:
         """Hold an acceleration vector on a controller until changed (#1279).
 
+        Ignored by delivery for a pattern controller: the pattern wins (UC-046 BR-012).
+
         Every subsequent ``poll()`` reports exactly this vector (instead of
         resting noise) until the next ``hold_accel`` or ``clear_held_accel``.
         An active death latch still wins for its delivered frames; the held
@@ -238,6 +284,84 @@ class MockAdapter(ControllerIOAdapter):
             return False
         controller["held_accel"] = None
         return True
+
+    # -- Motion patterns (UC-046, #1258) --
+
+    def install_pattern(self, serials: list[str], pattern_set: PatternSet) -> None:
+        """Bind slot i of ``pattern_set`` to ``serials[i]`` (UC-046 step 4, BR-006)."""
+        if len(serials) != pattern_set.slot_count:
+            raise ValueError(f"{pattern_set.set_id} has {pattern_set.slot_count} slots, got {len(serials)} serials")
+        for slot, serial in enumerate(serials):
+            controller = self.controllers[serial]
+            controller["pattern"] = PatternRuntime(pattern_set=pattern_set, slot=slot)
+            controller["held_accel"] = None
+
+    def has_pattern(self, serial: str) -> bool:
+        controller = self.controllers.get(serial)
+        return bool(controller and controller.get("pattern") is not None)
+
+    def pattern_info(self, serial: str) -> PatternRuntime | None:
+        controller = self.controllers.get(serial)
+        return controller.get("pattern") if controller else None
+
+    def pattern_frame(self, serial: str, subscriber_id: str, explicit: bool) -> dict | None:
+        """Acceleration to DELIVER for a pattern controller on one stream frame.
+
+        Returns None for a controller without a pattern (the caller keeps the
+        polled state). The first stream that names the controller in its explicit
+        filter becomes its owner; only the owner advances k (UC-046 BR-001), so a
+        dashboard stream (no filter) never perturbs the game's signal and just sees
+        the last delivered value. Precedence (BR-012): an active SimulateDeath latch
+        is delivered first, then f(k / r); k advances on every owned frame and the
+        signal hash covers the delivered magnitude.
+        """
+        controller = self.controllers.get(serial)
+        if not controller:
+            return None
+        pattern: PatternRuntime | None = controller.get("pattern")
+        if pattern is None:
+            return None
+        if pattern.owner is None and explicit:
+            pattern.owner = subscriber_id
+        if pattern.owner != subscriber_id:
+            return {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: pattern.last_value}
+
+        death = controller["death_accel"]
+        if death and controller["death_frames_remaining"] > 0:
+            accel = dict(death)
+            value = math.sqrt(sum(v * v for v in death.values()))
+        else:
+            value = pattern.pattern_set.value(pattern.slot, pattern.frame_index)
+            accel = {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: value}
+        pattern.hasher.update(value)
+        pattern.frame_index += 1
+        pattern.last_value = value
+        return accel
+
+    def pattern_stream_rate(self, serials) -> int | None:
+        """Pinned rate of a stream naming pattern controllers (UC-046 FR-103), else None."""
+        for serial in serials:
+            pattern = self.pattern_info(serial)
+            if pattern is not None:
+                return pattern.pattern_set.stream_rate_hz
+        return None
+
+    def record_pattern_overrun(self, subscriber_id: str) -> int:
+        """Count a frame overrun for every pattern controller this stream owns (UC-046 A10)."""
+        counted = 0
+        for controller in self.controllers.values():
+            pattern = controller.get("pattern")
+            if pattern is not None and pattern.owner == subscriber_id:
+                pattern.overruns += 1
+                counted += 1
+        return counted
+
+    def release_pattern_stream(self, subscriber_id: str) -> None:
+        """A stream ended: its controllers may be claimed by the next explicit stream (reconnect)."""
+        for controller in self.controllers.values():
+            pattern = controller.get("pattern")
+            if pattern is not None and pattern.owner == subscriber_id:
+                pattern.owner = None
 
     def consume_death_frame(self, serial: str) -> None:
         """Account one DELIVERED gameplay frame against a pending death latch.
