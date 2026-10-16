@@ -107,7 +107,8 @@ One running or finished game in the game coordinator (`services/game_coordinator
 | rng_seed | Shared seed for paired (CRN) shadow games; 0 = entropy | Long | 19 | Optional, Min: 0 |
 | pattern_set_id | Parameter set that drives the game's controllers (pattern game), planned (#1258) | String | 60 | Optional, Foreign Key (MOTION_PATTERN_SET.set_id) |
 | replay_exact | Whether the pattern game qualifies for replay comparison (UC-046 BR-008), planned (#1258) | Boolean | 1 | Optional |
-| non_exact_reasons | Why a pattern game is not exact, planned (#1258) | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, no_termination |
+| non_exact_reasons | Why a pattern game is not exact, planned (#1258) | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, no_termination, kill_switch |
+| flag_digest | SHA-256 of `agent.json` then `game.json` as the agent read them when it spawned the pattern game (UC-046 BR-011), planned (#1258) | String | 64 | Optional |
 | start_time | Start timestamp (ms) | DateTime | - | Not Null |
 
 **Constraints:**

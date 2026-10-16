@@ -282,8 +282,8 @@ alone, and the trace proves whether the inputs matched.
 | controller-manager | span `controller.mock.pattern_release` | `controller.serial`, `pattern.set`, `pattern.slot_index`, `pattern.frames_delivered`, `pattern.signal_hash`, `pattern.frame_overruns` | `RemoveController` of a pattern controller |
 | game-coordinator | game root span (§3.2) | `game.rng_seed` (decimal string; shadow sessions with a non-zero seed only) | game start |
 | agent | event `experiment.pattern_pinned` on `agent.experiment` | `pattern.selection` (flag value as read), `pattern.sets` (pinned ids in pair order), `pattern.set_versions` | first spawn of an experiment |
-| agent | event `experiment.pattern_game` on `agent.experiment`; the same attributes on `agent.shadow_game.run` for a one-shot game | `game.id`, `experiment.arm`, `experiment.pair_index`, `pattern.set`, `pattern.set_version`, `game.rng_seed`, `pattern.stream_rate_hz`, `pattern.slot_serials` (serials in slot order) | each spawned arm |
-| agent | event `experiment.pattern_game_ended` on `agent.experiment` (or `agent.shadow_game.run`) | `game.id`, `pattern.elimination_order` (slot indices in death order), `pattern.winner_slot`, `pattern.signal_hashes` (in slot order), `pattern.replay_exact`, `pattern.non_exact_reasons` (`remote_backend`, `frame_overrun`, `concurrent_game`, `no_termination`) | game end |
+| agent | event `experiment.pattern_game` on `agent.experiment`; the same attributes on `agent.shadow_game.run` for a one-shot game | `game.id`, `experiment.arm`, `experiment.pair_index`, `pattern.set`, `pattern.set_version`, `game.rng_seed`, `pattern.stream_rate_hz`, `pattern.slot_serials` (serials in slot order), `pattern.flag_digest` (SHA-256 hex of `agent.json` then `game.json` as read at spawn, UC-046 BR-011) | each spawned arm |
+| agent | event `experiment.pattern_game_ended` on `agent.experiment` (or `agent.shadow_game.run`) | `game.id`, `pattern.elimination_order` (slot indices in death order), `pattern.winner_slot`, `pattern.signal_hashes` (in slot order), `pattern.replay_exact`, `pattern.non_exact_reasons` (`remote_backend`, `frame_overrun`, `concurrent_game`, `no_termination`, `kill_switch`) | game end |
 | agent | `agent.decision` / `agent.decide` in a pattern game | `pattern.target_slot` (slot of the targeted player, when the target is a player), `decision.chaos_draw_index` (index of the chaos RNG draw in the game, rules only) | each decision |
 
 **Signal hash:** FNV-1a/64 over the controller's delivered frames in order, each frame encoded as the signed
@@ -291,13 +291,15 @@ alone, and the trace proves whether the inputs matched.
 double precision; the milli-g rounding keeps the hash stable across Python builds, and golden tests pin it.
 
 **Journal:** the experiment journal records the same facts: a `pattern_pinned` event (selection, pinned ids and
-versions), `pattern_set`, `pattern_set_version` and `rng_seed` on each `game_assigned`, and `replay_exact`,
+versions), `pattern_set`, `pattern_set_version`, `rng_seed` and `flag_digest` on each `game_assigned`, and `replay_exact`,
 `non_exact_reasons`, `elimination_order` and `signal_hashes` on `game_concluded` / `game_released`.
 
 **Replay check:** read `pattern.set`, `pattern.set_version`, `game.rng_seed`, `pattern.stream_rate_hz`, the game
 mode and sensitivity off the trace, run one shadow game with them (`SHADOW_GAME_SEED`), and compare: per-slot
 `pattern.signal_hash` equal (NFR-040), `pattern.elimination_order` and `pattern.winner_slot` equal (NFR-041),
 and the sequence of rules decisions as (`intervention` type, `pattern.target_slot`) equal (NFR-042). Only games with
-`pattern.replay_exact=true` on both sides are compared.
+`pattern.replay_exact=true` and the same `pattern.flag_digest` on both sides are compared.
+`scripts/pattern-replay-check.sh <set id> [seed]` runs the set twice with the one-shot runner and performs this
+comparison on the two runs.
 
 **Traceability:** FR-107, FR-108, FR-109, FR-110, NFR-040 to NFR-042 / UC-046 / planned in `services/controller_manager/`, `services/game_coordinator/game_session.py`, `services/agent/experiment/`, `services/agent/gamerunner/` / none yet.
