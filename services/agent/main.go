@@ -793,7 +793,7 @@ func main() {
 	// llm.eligible_game_kinds. Installed only when a real text backend is wired: the
 	// stub makes no model call and so never charges the budget.
 	proposer.SetLLMAdmission(proposerAdmissionFor(inferDelegate,
-		decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCapOverride, logger)))
+		decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCapOverride, "proposer", logger)))
 	// #1270: the kill-switch gate, read at USE time on every game end (never cached
 	// at startup: flagd may be down then). Both `enabled` and `experiments_enabled`
 	// must be on, the same two gates the experiment loop obeys (FR-066).

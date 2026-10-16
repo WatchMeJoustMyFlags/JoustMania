@@ -196,7 +196,7 @@ const (
 // #739 degrade-to-rules contract.
 type Result struct {
 	Outcome  ProposeOutcome
-	Proposal *Proposal // set on ProposeProposed / ProposeBlocked
+	Proposal *Proposal // set on ProposeProposed / ProposeBlocked, and on a ProposeDisabled cycle dropped after inference
 	Err      error     // set on ProposeNoBackend / ProposeUndecodable / ProposeBlocked
 	// Reason is the skip reason on ProposeDisabled (SkipReason*) and the gate
 	// reason on ProposeLLMGated (llm_not_eligible / llm_budget_exhausted).
@@ -370,7 +370,8 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 			attribute.String(AttrReason, reason),
 		)
 		p.log.Info("code_improvement.propose_skipped: switched off during inference, no write", "reason", reason, "flag", proposal.FlagKey)
-		return Result{Outcome: ProposeDisabled, Reason: reason}
+		pr := proposal
+		return Result{Outcome: ProposeDisabled, Proposal: &pr, Reason: reason}
 	}
 
 	// Submit through the Gate — the ONLY sanctioned write path. The Gate enforces

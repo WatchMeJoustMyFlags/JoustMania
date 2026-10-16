@@ -124,6 +124,9 @@ func TestProposeOnce_SwitchedOffDuringInferenceDoesNotWrite(t *testing.T) {
 	if res.Outcome != ProposeDisabled || res.Reason != SkipReasonAgentDisabled {
 		t.Fatalf("result = (%q, %q), want (disabled, agent_disabled)", res.Outcome, res.Reason)
 	}
+	if res.Proposal == nil || res.Proposal.FlagKey != "death_grace_period_seconds" {
+		t.Fatalf("dropped proposal = %+v, want the decoded proposal returned for telemetry", res.Proposal)
+	}
 	if _, ok := experimentVariantValue(t, path, "death_grace_period_seconds"); ok {
 		t.Fatal("a kill switch flipped during inference must prevent the game.json write")
 	}

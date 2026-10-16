@@ -32,8 +32,10 @@ type LLMAdmission struct {
 	budget         *llmBudget
 	budgetOverride int
 	llmGated       otelmetric.Int64Counter
-	log            *slog.Logger
-	now            func() time.Time
+	// gatedEvent is the log event name for a refusal: agent.llm.<source>_gated.
+	gatedEvent string
+	log        *slog.Logger
+	now        func() time.Time
 }
 
 // NewLLMAdmission builds the gate over the live flag source and the shared budget
@@ -41,7 +43,9 @@ type LLMAdmission struct {
 // replaces llm.max_requests_per_minute as the cap (AGENT_LLM_MAX_REQUESTS_PER_MINUTE,
 // #964); 0 means the flag governs. A nil budget leaves the call ungated by the cap
 // (eligibility still applies), mirroring the retro's nil-budget test wiring.
-func NewLLMAdmission(src FlagSource, budget *llmBudget, budgetOverride int, log *slog.Logger) *LLMAdmission {
+// source names the caller (e.g. "proposer") and sets the refusal log event to
+// agent.llm.<source>_gated.
+func NewLLMAdmission(src FlagSource, budget *llmBudget, budgetOverride int, source string, log *slog.Logger) *LLMAdmission {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -53,6 +57,7 @@ func NewLLMAdmission(src FlagSource, budget *llmBudget, budgetOverride int, log 
 		budget:         budget,
 		budgetOverride: budgetOverride,
 		llmGated:       defaultLLMGatedCounter(),
+		gatedEvent:     "agent.llm." + source + "_gated",
 		log:            log,
 		now:            time.Now,
 	}
@@ -86,5 +91,5 @@ func (a *LLMAdmission) Admit(ctx context.Context, gameKind string) (bool, string
 func (a *LLMAdmission) gated(reason, gameKind string) {
 	a.llmGated.Add(context.Background(), 1,
 		otelmetric.WithAttributes(attribute.String("reason", reason)))
-	a.log.Info("agent.llm.proposer_gated", "fallback_reason", reason, "game_kind", gameKind)
+	a.log.Info(a.gatedEvent, "fallback_reason", reason, "game_kind", gameKind)
 }

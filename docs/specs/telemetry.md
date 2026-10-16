@@ -101,7 +101,7 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 | `agent.decision` → `agent.action` | Link to the game trace; event `feature_flag` | `decision/decision.go:677-699` |
 | `agent.disabled` | throttled kill-switch audit | `decision/decision.go:796` |
 | `agent.intervention.effect` | child of the decision span context | `decision/effect.go:312-331` |
-| `agent.llm.retro` | own root, or child of `agent.experiment`; Link to the game; event `retro.suggestion` | `decision/retro_capture.go:469` |
+| `agent.llm.retro` | own root, or child of `agent.experiment`; Link to the game; event `retro.suggestion`. Capture-only spans carry `inference.used=none` and `inference.fallback_reason` = `no_backend_available` / `llm_not_eligible` / `agent_disabled` (kill switch off, #1270) | `decision/retro_capture.go` |
 | `agent.game.summary` | own root or child of `agent.experiment` | `gamesummary/coordinator.go:195` |
 | `agent.experiment` | long-lived **root**; its traceparent is injected into shadow-game spawns | `experiment/registry.go:657` |
 | `experiment.fitness`, `experiment.evaluate`, `experiment.verdict` | children of `agent.experiment` | `experiment_loop.go:869-967` |

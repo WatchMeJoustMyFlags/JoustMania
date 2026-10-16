@@ -220,6 +220,12 @@ Manual: **Operation** `code_improvement.proposed` (also
 `code_improvement.propose_attempt`, `code_improvement.promote`). **Validated
 live: 5 results** for `code_improvement.proposed`.
 
+Since #1270 a proposer span appears only when `enabled` and `experiments_enabled`
+are both on, and a model-backed proposal (`AGENT_INFERENCE_BACKEND=claude`) only
+follows a **real** game end within the shared LLM budget. A shadow-only run shows no
+proposals unless `llm.eligible_game_kinds` is `real_and_shadow`, which also widens
+decide and retro calls to shadow games.
+
 ---
 
 ## 3. Stage-display tuning tips

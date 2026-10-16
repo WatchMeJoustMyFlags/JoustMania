@@ -84,6 +84,14 @@ real-default change.
    games to Claude when the agent has `ANTHROPIC_API_KEY`; shadow games stay on
    rules.
 
+   *(Optional) post-game proposer* — with `AGENT_INFERENCE_BACKEND=claude` the
+   M7-4 proposer asks Claude for an experiment at game end, but only while gates
+   1 and 2 are on and only after a **real** game ends (#1270): a shadow-only dry
+   run produces **no** proposals. To let shadow game ends trigger it, set
+   `llm.eligible_game_kinds` to `real_and_shadow`, which also enables remote
+   decide calls and retros for shadow games. Proposals also share the
+   `llm.max_requests_per_minute` budget (see `docs/agent-inference.md`).
+
 3. **`code_improvement.*` promotion gates** — separate flags in the agent
    domain (`code_improvement.mode`, `.target`, `.validation_games`,
    `.fitness_improvement_threshold`, …). These gate the **real-default

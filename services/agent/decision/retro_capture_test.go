@@ -525,3 +525,36 @@ func TestRetroCapture_StubDefaultCaptureOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestRetroCapture_KillSwitchOffNoCallNoCharge (#1270, FR-042 / UC-045): with the
+// agent `enabled` kill switch off, a real game end with a backend wired is
+// capture-only: no model call, no budget slot, and the skip reason on the span.
+func TestRetroCapture_KillSwitchOffNoCallNoCharge(t *testing.T) {
+	be := &countingText{}
+	rc, sr, budget, now := budgetedRetro(t, 2, be)
+	snap := retroFlagSnapshot()
+	snap.Enabled = false
+	snap.LLMGate.MaxRequestsPerMinute = 2
+	rc.Flags = fakeFlags{snap: snap}
+
+	rc.OnGameEnd(endedSession())
+	rc.AwaitInflight()
+	spans := spansByName(sr.Ended(), SpanLLMRetro)
+	if len(spans) != 1 {
+		t.Fatalf("agent.llm.retro spans = %d, want 1 (capture-only)", len(spans))
+	}
+	if be.count() != 0 {
+		t.Errorf("Infer calls = %d, want 0 with the kill switch off", be.count())
+	}
+	if left := slotsLeft(budget, now, 2); left != 2 {
+		t.Errorf("free budget slots = %d, want 2 (agent off must not charge)", left)
+	}
+	for key, want := range map[string]string{
+		AttrInferenceUsed:     DefaultInference,
+		AttrInferenceFallback: FallbackAgentDisabled,
+	} {
+		if v, ok := attrValue(spans[0], key); !ok || v.AsString() != want {
+			t.Errorf("%s = %q (present=%v), want %q", key, v.AsString(), ok, want)
+		}
+	}
+}

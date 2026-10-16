@@ -70,6 +70,24 @@ of the same shared budget is free. Otherwise it records
 `agent_llm_gated_total{reason=llm_not_eligible|llm_budget_exhausted}` and retries
 at the next game end (#1270). The stub never draws from the budget.
 
+The retro obeys the `enabled` kill switch too: with the agent off, a retro is
+capture-only (`inference.fallback_reason=agent_disabled`), with no model call and no
+budget slot (#1270).
+
+**The budget is tight during a remote-decide session.** The budget is a sliding
+60 s window shared by in-game decisions, the retro and the proposer. With a remote
+`decision.backend` and `decision.min_interval_ms` 3000, one game alone wants about
+20 calls a minute against the default cap of 6, so at game end the retro and the
+proposer usually find the budget full and are gated with `llm_budget_exhausted`. If
+you need retros or proposals in such a session, use the `stage` cap
+(`llm.max_requests_per_minute` = 30) or `decision.backend=rules`.
+
+**Shadow-only runs make no proposals.** With the default
+`llm.eligible_game_kinds = real` only a real game end can trigger a proposer model
+call, so a dry run that plays only shadow games produces no proposals even with
+`claude`. Setting `llm.eligible_game_kinds` to `real_and_shadow` allows it, but it
+also lets shadow games use remote decide calls and retros.
+
 The `code_improvement.engine` flag (`stub` / `claude`) is only recorded on the
 propose span; it does not select anything. `AGENT_INFERENCE_BACKEND` does.
 

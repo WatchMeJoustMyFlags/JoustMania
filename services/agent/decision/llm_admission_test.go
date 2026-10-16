@@ -24,7 +24,7 @@ func admissionUnderTest(t *testing.T, kinds []string, maxPerMinute, override int
 		EligibleGameKinds:    kinds,
 		MaxRequestsPerMinute: maxPerMinute,
 	}}}
-	a := NewLLMAdmission(src, budget, override, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a := NewLLMAdmission(src, budget, override, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	reader := metric.NewManualReader()
 	a.llmGated = newLLMGatedCounter(metric.NewMeterProvider(metric.WithReader(reader)))
 	now := time.Unix(1000, 0)
