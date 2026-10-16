@@ -204,7 +204,7 @@ One agent decision cycle for a game (`services/agent/decision/decision.go`, `dec
 
 ### QUESTION
 
-A question in a decide request (`services/agent/decide/decide.go:50-60`, FFA set `ffa.go`).
+A question in a decide request (`services/agent/decide/decide.go:64-74`, FFA set `ffa.go`).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -217,7 +217,7 @@ A question in a decide request (`services/agent/decide/decide.go:50-60`, FFA set
 
 ### ANSWER
 
-A backend's answer to one question (`decide.go:63-76`, validation `validate.go`).
+A backend's answer to one question (`decide.go:77-90`, validation `validate.go`).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
