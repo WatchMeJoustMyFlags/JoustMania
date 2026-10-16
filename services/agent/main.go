@@ -426,34 +426,33 @@ func runShadowGame(ctx context.Context, logger *slog.Logger) {
 // returns it (nil = the stub default) so main.go feeds the same backend to both seams.
 type inferFunc = func(ctx context.Context, prompt llm.Prompt) (string, error)
 
-// selectInferenceBackend reads the AGENT_INFERENCE_* env config (#1048) and returns
-// the inference delegate to feed BOTH the proposer and the decision chain — or nil
-// when the stub backend is selected (the DEFAULT → no behavior change: the proposer
-// keeps the inert proposeBackend{} stub and the decision chain keeps the
-// not-implemented sentinel, both degrading safely as before).
+// selectInferenceBackend reads the AGENT_INFERENCE_* env (#1234) and returns the
+// text backend for the OFFLINE LLM seams: the shadow-experiment proposer and the
+// post-game retro. In-game decisions never use it (they go through the
+// decision.backend registry, see decide_backends.go).
 //
-// AGENT_INFERENCE_BACKEND: "stub" (default) | "openai". Only "openai" (case-
-// insensitive) activates the real OpenAI-compatible client; any other value
-// (including unset/empty) selects the stub, so a typo fails SAFE to today's
-// behavior rather than to a broken backend. The base URL/model/key come from
-// AGENT_INFERENCE_BASE_URL (default the host Ollama), AGENT_INFERENCE_MODEL
-// (default phi4-mini), and AGENT_INFERENCE_API_KEY (optional — empty for the local
-// no-key path, set for a gateway/cloud target). The HTTP round-trip timeout comes
-// from AGENT_INFERENCE_TIMEOUT_SECONDS (#1079, default inference.DefaultTimeout) so a
-// local 8B cold-start can be given a longer ceiling than the 60s that was cutting it
-// off. Returns the chosen backend name for the startup log too.
-func selectInferenceBackend() (inferFunc, string) {
+// AGENT_INFERENCE_BACKEND: "stub" (default) | "claude". Only "claude" (case-
+// insensitive) with ANTHROPIC_API_KEY set builds the direct Anthropic client; any
+// other value, or claude without a key, returns nil = the stub (the proposer
+// proposes nothing, the retro is capture-only), so a typo or a missing key fails
+// safe. AGENT_INFERENCE_MODEL / _EFFORT / _TIMEOUT_SECONDS tune the client.
+// Returns the effective backend name for the startup log.
+func selectInferenceBackend(logger *slog.Logger) (*inference.Claude, string) {
 	backend := strings.ToLower(strings.TrimSpace(getEnv("AGENT_INFERENCE_BACKEND", "stub")))
-	if backend != "openai" {
+	if backend != inference.Name {
 		return nil, "stub"
 	}
-	client := inference.New(
-		getEnv("AGENT_INFERENCE_BASE_URL", inference.DefaultBaseURL),
-		getEnv("AGENT_INFERENCE_API_KEY", ""),
-		getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
-		inference.WithTimeout(secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout)),
-	)
-	return client.Infer, "openai"
+	key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+	if key == "" {
+		logger.Warn("AGENT_INFERENCE_BACKEND=claude but ANTHROPIC_API_KEY is empty; proposer/retro stay on the stub")
+		return nil, "stub"
+	}
+	return inference.NewClaude(inference.Config{
+		APIKey:  key,
+		Model:   getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
+		Effort:  getEnv("AGENT_INFERENCE_EFFORT", inference.DefaultEffort),
+		Timeout: secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout),
+	}), inference.Name
 }
 
 func main() {
@@ -573,53 +572,24 @@ func main() {
 	// and degrades to rules; the proposer keeps proposeBackend{} and proposes nothing).
 	// AGENT_INFERENCE_BACKEND=openai points it at the host Ollama (or a gateway) for a
 	// real local inference path with no key.
-	inferDelegate, inferBackendName := selectInferenceBackend()
-	inferBaseURL := getEnv("AGENT_INFERENCE_BASE_URL", inference.DefaultBaseURL)
-	inferModel := getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel)
-	slog.Info("Inference backend selected (#1048)",
+	textBackend, inferBackendName := selectInferenceBackend(logger)
+	slog.Info("Proposer/retro inference backend selected (#1234)",
 		"backend", inferBackendName,
-		"base_url", inferBaseURL,
-		"model", inferModel,
-		"api_key_set", getEnv("AGENT_INFERENCE_API_KEY", "") != "",
+		"model", getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
+		"api_key_set", os.Getenv("ANTHROPIC_API_KEY") != "",
 	)
-	// Inference cold-start pre-warm (#1130). When a REAL backend is configured
-	// (inferDelegate != nil, AGENT_INFERENCE_BACKEND=openai), fire ONE best-effort
-	// throwaway Infer in the background so the host Ollama model is resident before
-	// the first real decision/proposal pays the ~30-100s cold load. No-op for the
-	// stub default (nil delegate) → byte-identical startup. Bounded by the configured
-	// inference timeout, non-blocking, non-fatal — see prewarmInference.
-	prewarmInference(ctx, inferDelegate, inferModel,
-		secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout))
+	var inferDelegate inferFunc
+	if textBackend != nil {
+		inferDelegate = textBackend.Infer
+	}
 	legacyEndpoints := decision.Endpoints{
-		Cloud:     getEnv("AGENT_CLOUD_ENDPOINT", ""),                    // #742 credential-blocked: empty = permanently unreachable
-		Jetson:    getEnv("AGENT_JETSON_ENDPOINT", "jetson:11434"),       // #738 Ollama on the Jetson; unresolvable in dev
-		Localhost: getEnv("AGENT_LOCALHOST_ENDPOINT", "localhost:11434"), // #739 Ollama locally; unreachable unless running
+		Cloud:     getEnv("AGENT_CLOUD_ENDPOINT", ""),
+		Jetson:    getEnv("AGENT_JETSON_ENDPOINT", "jetson:11434"),
+		Localhost: getEnv("AGENT_LOCALHOST_ENDPOINT", "localhost:11434"),
 	}
-	// #964: when a REAL inference backend is configured (AGENT_INFERENCE_BACKEND=openai),
-	// build a Resolver whose chain TOP is the configured backend itself — named after
-	// AGENT_INFERENCE_MODEL, probed at the host:port parsed from AGENT_INFERENCE_BASE_URL,
-	// Infer-delegating to the SAME client the proposer uses. resolve() always starts at
-	// that tier, so a reachable backend yields a non-nil Backend and the decision loop
-	// reaches mode=llm instead of degrading to rules because the default phi4-mini model
-	// flag pointed at an unreachable localhost tier. A single AGENT_INFERENCE_* config now
-	// drives the backend request, the resolver's availability probe, AND the inference.used
-	// attribution. When inferDelegate is nil (the stub DEFAULT) the legacy DefaultChainWithInfer
-	// resolver is built unchanged — byte-identical degrade-to-rules behavior.
-	var sharedResolver *decision.Resolver
-	if inferDelegate != nil {
-		probeAddr := decision.InferenceProbeAddr(inferBaseURL)
-		slog.Info("Inference-backend resolver tier wired (#964)",
-			"model", inferModel, "probe_addr", probeAddr)
-		sharedResolver = decision.NewInferenceResolver(decision.InferenceTier{
-			Model: inferModel,
-			Addr:  probeAddr,
-			Infer: inferDelegate,
-		}, legacyEndpoints, decision.DefaultProbeInterval)
-	} else {
-		sharedResolver = decision.NewResolver(
-			decision.DefaultChainWithInfer(legacyEndpoints, inferDelegate),
-			decision.DefaultProbeInterval)
-	}
+	sharedResolver := decision.NewResolver(
+		decision.DefaultChainWithInfer(legacyEndpoints, nil),
+		decision.DefaultProbeInterval)
 	// The resolver's background probe ticker is started by run() (#923), which owns
 	// the agent's goroutine lifecycle, so it is stopped on ctx cancellation alongside
 	// every other runtime goroutine.

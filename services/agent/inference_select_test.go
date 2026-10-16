@@ -3,44 +3,61 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/llm"
 )
 
-// inference_select_test.go covers the #1048 env-driven backend selection in main:
-// the default/stub path returns NO delegate (so both seams keep their inert stubs,
-// no behavior change) and the openai path returns a real delegate that feeds both.
+// inference_select_test.go covers the #1234 env-driven backend selection for the
+// offline seams (proposer + retro): the stub default, fail-safe on unknown values
+// and on a missing key, and the claude path.
+
+func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func TestSelectInferenceBackend_DefaultIsStub(t *testing.T) {
 	t.Setenv("AGENT_INFERENCE_BACKEND", "") // unset/empty == stub
-	delegate, name := selectInferenceBackend()
-	if delegate != nil {
-		t.Error("delegate != nil for default backend; want nil (stub)")
-	}
-	if name != "stub" {
-		t.Errorf("name = %q, want stub", name)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	backend, name := selectInferenceBackend(quietLogger())
+	if backend != nil || name != "stub" {
+		t.Errorf("default = (%v, %q), want (nil, stub)", backend != nil, name)
 	}
 }
 
 func TestSelectInferenceBackend_UnknownValueFailsSafeToStub(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "gpt-9000") // typo / unknown
-	delegate, name := selectInferenceBackend()
-	if delegate != nil || name != "stub" {
-		t.Errorf("unknown backend = (%v, %q), want (nil, stub)", delegate != nil, name)
+	for _, v := range []string{"gpt-9000", "openai"} { // openai was retired in #1234
+		t.Setenv("AGENT_INFERENCE_BACKEND", v)
+		t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+		backend, name := selectInferenceBackend(quietLogger())
+		if backend != nil || name != "stub" {
+			t.Errorf("%s = (%v, %q), want (nil, stub)", v, backend != nil, name)
+		}
 	}
 }
 
-func TestSelectInferenceBackend_OpenAISelectsRealDelegate(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "OpenAI") // case-insensitive
-	delegate, name := selectInferenceBackend()
-	if delegate == nil {
-		t.Fatal("delegate == nil for openai backend; want a real client")
+func TestSelectInferenceBackend_ClaudeWithoutKeyIsStub(t *testing.T) {
+	t.Setenv("AGENT_INFERENCE_BACKEND", "claude")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	backend, name := selectInferenceBackend(quietLogger())
+	if backend != nil || name != "stub" {
+		t.Errorf("claude without key = (%v, %q), want (nil, stub)", backend != nil, name)
 	}
-	if name != "openai" {
-		t.Errorf("name = %q, want openai", name)
+}
+
+func TestSelectInferenceBackend_ClaudeSelectsRealClient(t *testing.T) {
+	t.Setenv("AGENT_INFERENCE_BACKEND", "Claude") // case-insensitive
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	t.Setenv("AGENT_INFERENCE_MODEL", "claude-sonnet-5-5")
+	backend, name := selectInferenceBackend(quietLogger())
+	if backend == nil || name != "claude" {
+		t.Fatalf("claude = (%v, %q), want a real client", backend != nil, name)
 	}
+	if !backend.Available() || backend.Model() != "claude-sonnet-5-5" {
+		t.Errorf("client available=%v model=%q", backend.Available(), backend.Model())
+	}
+	var _ experiment.Backend = backend
 }
 
 // proposeBackendFor: nil delegate -> the inert stub (returns the not-implemented

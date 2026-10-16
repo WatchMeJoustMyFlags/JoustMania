@@ -2,62 +2,36 @@ package inference
 
 import (
 	"context"
-	"net/http"
 	"os"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/joustmania/agent/llm"
 )
 
-// live_test.go runs a REAL Infer against a host Ollama OpenAI-compatible endpoint
-// (#1048 live smoke). It is OPT-IN via AGENT_LIVE_OLLAMA=1 and additionally probes
-// reachability, so a normal `go test ./...` (no env, no Ollama) SKIPS it cleanly —
-// it never fails CI or a dev box without a model. The maintainer runs it via
-// `make dry-run` with AGENT_INFERENCE_BACKEND=openai, or directly:
+// TestLiveClaude calls the real Anthropic API. Opt-in (it costs money):
 //
-//	AGENT_LIVE_OLLAMA=1 go test ./inference -run TestLiveInfer -v
+//	AGENT_LIVE_CLAUDE=1 ANTHROPIC_API_KEY=... go test ./inference -run TestLiveClaude -v
 //
-// AGENT_INFERENCE_BASE_URL overrides the endpoint (default the host-local Ollama
-// /v1); AGENT_INFERENCE_MODEL overrides the model (default phi4-mini).
-func TestLiveInfer(t *testing.T) {
-	if os.Getenv("AGENT_LIVE_OLLAMA") != "1" {
-		t.Skip("set AGENT_LIVE_OLLAMA=1 to run the live Ollama smoke test")
+// AGENT_INFERENCE_MODEL overrides the model.
+func TestLiveClaude(t *testing.T) {
+	if os.Getenv("AGENT_LIVE_CLAUDE") != "1" || os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Skip("set AGENT_LIVE_CLAUDE=1 and ANTHROPIC_API_KEY to run the live Claude smoke test")
 	}
-
-	baseURL := os.Getenv("AGENT_INFERENCE_BASE_URL")
-	if baseURL == "" {
-		baseURL = "http://localhost:11434/v1"
-	}
-	model := os.Getenv("AGENT_INFERENCE_MODEL")
-	if model == "" {
-		model = DefaultModel
-	}
-
-	// Reachability probe so a misconfigured/unreachable endpoint skips rather than
-	// fails — the live test asserts behavior only when a model is genuinely present.
-	probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, baseURL+"/models", nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Skipf("Ollama not reachable at %s: %v", baseURL, err)
-	}
-	_ = resp.Body.Close()
-
-	b := New(baseURL, os.Getenv("AGENT_INFERENCE_API_KEY"), model)
-	ctx, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel2()
-
-	out, err := b.Infer(ctx, llm.Prompt{
-		System: "Reply with EXACTLY ONE JSON object and nothing else: {\"flag\":\"sensitivity\",\"value\":2,\"rationale\":\"<one sentence>\"}",
-		User:   "The players are tiring; propose one experiment.",
+	c := NewClaude(Config{
+		APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+		Model:  os.Getenv("AGENT_INFERENCE_MODEL"),
+		Effort: DefaultEffort,
+	})
+	out, err := c.Infer(context.Background(), llm.Prompt{
+		System: "Reply with exactly one JSON object and no prose.",
+		User:   `Return {"ok": true}.`,
 	})
 	if err != nil {
-		t.Fatalf("live Infer against %s (model=%s) failed: %v", baseURL, model, err)
+		t.Fatalf("Infer: %v", err)
 	}
-	if out == "" {
-		t.Fatal("live Infer returned empty completion")
+	if !strings.Contains(out, "ok") {
+		t.Fatalf("unexpected reply: %q", out)
 	}
-	t.Logf("live completion (%d bytes): %s", len(out), out)
+	t.Logf("model %s replied: %s", c.Model(), out)
 }
