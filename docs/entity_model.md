@@ -58,8 +58,8 @@ A physical or mock PS Move controller tracked by the controller manager (`proto/
 | rssi | Signal strength in dBm (controller manager always reports 0; RSSI comes from the pairing daemon metric) | Integer | 4 | Optional, Min: -100, Max: 0 |
 | adapter | I/O adapter currently routing this controller | String | 10 | Not Null, Values: python, rust, mock, unstable |
 | reserved | Mock controller reserved for a shadow game (hidden from the lobby roster) | Boolean | 1 | Not Null |
-| pattern_archetype | Archetype installed on this mock controller, planned (#1258) | String | 40 | Optional, Foreign Key (MOTION_ARCHETYPE.archetype_id) |
-| pattern_slot | Slot of the installed archetype this controller plays (its index in the reservation order), planned (#1258) | Integer | 1 | Optional, Min: 0, Max: 7 |
+| pattern_archetype | Archetype installed on this mock controller | String | 40 | Optional, Foreign Key (MOTION_ARCHETYPE.archetype_id) |
+| pattern_slot | Slot of the installed archetype this controller plays (its index in the reservation order) | Integer | 1 | Optional, Min: 0, Max: 7 |
 
 ### LOBBY_ENTRY
 
@@ -103,11 +103,11 @@ One running or finished game in the game coordinator (`services/game_coordinator
 | experiment_id | Experiment the shadow game belongs to | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of the experiment | String | 12 | Optional, Values: experimental, control |
 | rng_seed | Shared seed for paired (CRN) shadow games; 0 = entropy | Long | 19 | Optional, Min: 0 |
-| pattern_archetype | Archetype that drives the game's controllers (pattern game), planned (#1258) | String | 40 | Optional, Foreign Key (MOTION_ARCHETYPE.archetype_id) |
-| pattern_outcome | How the pattern game ended (UC-046 A3, A9, BR-013), planned (#1258) | String | 8 | Optional, Values: winner, timeout, aborted, error |
-| replay_exact | Whether the pattern game qualifies for replay comparison (UC-046 BR-008), planned (#1258) | Boolean | 1 | Optional |
-| non_exact_reasons | Why a pattern game is not exact, planned (#1258) | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, kill_switch |
-| flag_digest | SHA-256 of `agent.json` then `game.json` as the agent read them when it spawned the pattern game (UC-046 BR-011), planned (#1258) | String | 64 | Optional |
+| pattern_archetype | Archetype that drives the game's controllers (pattern game) | String | 40 | Optional, Foreign Key (MOTION_ARCHETYPE.archetype_id) |
+| pattern_outcome | How the pattern game ended (UC-046 A3, A9, BR-013) | String | 8 | Optional, Values: winner, timeout, aborted, error |
+| replay_exact | Whether the pattern game qualifies for replay comparison (UC-046 BR-008) | Boolean | 1 | Optional |
+| non_exact_reasons | Why a pattern game is not exact | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, kill_switch |
+| flag_digest | SHA-256 of `agent.json` then `game.json` as the agent read them when it spawned the pattern game (UC-046 BR-011) | String | 64 | Optional |
 | start_time | Start timestamp (ms) | DateTime | - | Not Null |
 
 **Constraints:**
@@ -367,7 +367,7 @@ A stage of a progressive rollout: how many controllers (first N by sorted serial
 
 ### MOTION_ARCHETYPE
 
-A named parameter object that defines the motion function of every player of a pattern game: one object variant of the `agent.json` flag `experiment.mock_archetype`, planned (#1258, [UC-046](use_cases/UC-046.md) BR-002, BR-003). Player i (slot i) uses base_i = base + i·d_base, drift_i = drift + i·d_drift, amp_i = amp + i·d_amp, phase_i = frac(phase + i·d_phase).
+A named parameter object that defines the motion function of every player of a pattern game: one object variant of the `agent.json` flag `experiment.mock_archetype`, (#1258, [UC-046](use_cases/UC-046.md) BR-002, BR-003). Player i (slot i) uses base_i = base + i·d_base, drift_i = drift + i·d_drift, amp_i = amp + i·d_amp, phase_i = frac(phase + i·d_phase).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -391,7 +391,7 @@ A named parameter object that defines the motion function of every player of a p
 
 ### PATTERN_PAIR_ASSIGNMENT
 
-The archetype an experiment's pair runs, pinned in the experiment journal when the experiment spawns its first shadow game (planned #1258).
+The archetype an experiment's pair runs, pinned in the experiment journal when the experiment spawns its first shadow game (#1258).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|

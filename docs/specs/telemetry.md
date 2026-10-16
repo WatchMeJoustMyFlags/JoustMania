@@ -269,9 +269,9 @@ coordinator / menu spans in snake_case; rust `grpc.server` vs Python `{Service}/
 
 **Traceability:** NFR-030, NFR-031 / UC-035 / `.claude/rules/development.md`.
 
-## 9. Planned: pattern games (#1258)
+## 9. Pattern games (#1258)
 
-Not on `main`. Names for [UC-046](../use_cases/UC-046.md); they enter the sections above when they ship. New
+Shipped by PR #1308 for [UC-046](../use_cases/UC-046.md). New
 namespace `pattern.*` (producers: controller-manager, agent). Goal: a pattern game can be replayed from its trace
 alone, and the trace proves whether the inputs matched.
 
@@ -307,4 +307,4 @@ and compare: per-slot checkpoints equal on their common prefix (NFR-040), `patte
 <archetype> [seed]` runs the archetype twice with the one-shot runner and performs this comparison on the two runs
 (it reads the `pattern_replay_record` log line the one-shot runner prints).
 
-**Traceability:** FR-107, FR-108, FR-109, FR-110, NFR-040 to NFR-042 / UC-046 / planned in `services/controller_manager/`, `services/agent/experiment/`, `services/agent/gamerunner/`, `services/agent/patterngame/` / none yet.
+**Traceability:** FR-107, FR-108, FR-109, FR-110, NFR-040 to NFR-042 / UC-046 / `services/controller_manager/mock_control_service.py`, `services/agent/experiment/registry_pattern.go`, `services/agent/gamerunner/operations.go`, `services/agent/decision/pattern_hook.go`, `services/agent/pattern_wiring.go` / `services/agent/gamerunner/pattern_test.go`, `services/agent/decision/pattern_hook_test.go`, `services/agent/experiment/registry_pattern_test.go`.
