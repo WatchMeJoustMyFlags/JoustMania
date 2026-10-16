@@ -1,0 +1,68 @@
+{
+  "name": "ffa_close_finish",
+  "version": 1,
+  "description": "Close finish: three players; slot 0 dies at about 9.5 s, slot 1 at about 16.5 s after a long near-threshold sine; slot 2 survives on a similar sine just below the death window.",
+  "stream_rate_hz": 30,
+  "max_game_seconds": 30,
+  "slots": [
+    [
+      {
+        "from_s": 0,
+        "function": "constant",
+        "level": 1.0
+      },
+      {
+        "from_s": 9.0,
+        "function": "ramp",
+        "start": 1.2,
+        "slope": 2.0
+      },
+      {
+        "from_s": 10.5,
+        "function": "constant",
+        "level": 5.0
+      }
+    ],
+    [
+      {
+        "from_s": 0,
+        "function": "constant",
+        "level": 1.0
+      },
+      {
+        "from_s": 4.0,
+        "function": "sine",
+        "mean": 1.35,
+        "amplitude": 0.25,
+        "period_s": 2.0,
+        "phase": 0.0
+      },
+      {
+        "from_s": 16.0,
+        "function": "ramp",
+        "start": 1.35,
+        "slope": 2.0
+      },
+      {
+        "from_s": 17.5,
+        "function": "constant",
+        "level": 5.0
+      }
+    ],
+    [
+      {
+        "from_s": 0,
+        "function": "constant",
+        "level": 1.0
+      },
+      {
+        "from_s": 4.0,
+        "function": "sine",
+        "mean": 1.35,
+        "amplitude": 0.25,
+        "period_s": 2.0,
+        "phase": 0.5
+      }
+    ]
+  ]
+}
