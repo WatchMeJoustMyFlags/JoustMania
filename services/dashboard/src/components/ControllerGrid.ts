@@ -5,6 +5,7 @@
  */
 import { ControllerCard } from "./ControllerCard.js";
 import type { GameplayData } from "../gen/controller_manager_pb.js";
+import type { ShieldStore } from "../shield.js";
 
 export class ControllerGrid {
   private readonly container: HTMLElement;
@@ -30,7 +31,7 @@ export class ControllerGrid {
     this.container.innerHTML = `<div class="loading">${message}</div>`;
   }
 
-  render(controllers: GameplayData[]) {
+  render(controllers: GameplayData[], shields: ShieldStore | null = null, nowMs: number = Date.now()) {
     if (this.isLoading) {
       this.isLoading = false;
       this.container.innerHTML = "";
@@ -59,7 +60,7 @@ export class ControllerGrid {
       }
 
       // Update card with new data
-      card.update(controller);
+      card.update(controller, shields?.get(controller.serial, nowMs) ?? null, nowMs);
     }
 
     // Show empty state if no controllers

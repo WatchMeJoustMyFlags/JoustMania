@@ -269,6 +269,10 @@ class Sound(StrEnum):
     SFX_WOLFDOWN = "wolfdown"
     SFX_SHOTGUN_FOUND = "shotgun found"
     SFX_TRAITOR_INTRO = "traitor_intro"
+    # Agent intervention feedback (#1301, UC-040 BR-007): registry ALIASES in
+    # services/audio/sound_catalog.py, not file names.
+    SFX_AGENT_CUE = "agent_cue"  # -> beep_loud, the lobby ready ping
+    SFX_SHIELD_UP = "shield_up"  # -> power_ready (Commander)
 
     # Zombie game sounds (in Zombie/vox/)
     VOX_ZOMBIE_VICTORY = "zombie_victory"
@@ -375,6 +379,7 @@ class GameEvent(StrEnum):
     PLAYER_REVIVE = "player_revive"
     PLAYER_OUT = "player_out"  # Player eliminated (no more lives)
     PLAYER_ANALYTICS = "player_analytics"  # Analytics summary for a player at game end
+    PLAYER_SHIELDED = "player_shielded"  # Agent shield feedback started (#1301, UC-040 A16)
 
     # Game phase events
     COUNTDOWN_START = "countdown_start"

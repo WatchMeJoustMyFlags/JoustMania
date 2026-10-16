@@ -12,6 +12,7 @@ import { fetchExperiments } from "./experiments.js";
 import { AgentView } from "./components/AgentView.js";
 import { DecideStore, fetchAgentView, fetchDecideFeed } from "./agent.js";
 import { createPoller } from "./poller.js";
+import { ShieldStore } from "./shield.js";
 import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
@@ -53,6 +54,9 @@ const state: AppState = {
   events: [],
   isStreaming: false,
 };
+
+// Agent shields per controller, from player_shielded game events (#1301)
+const shields = new ShieldStore();
 
 // Components
 let controllerGrid: ControllerGrid;
@@ -159,7 +163,7 @@ async function startControllerStream() {
       state.totalPlayers = update.controllers.length;
 
       // Render controllers
-      controllerGrid.render(Array.from(state.controllers.values()));
+      controllerGrid.render(Array.from(state.controllers.values()), shields);
       gameStatus.updatePlayerCount(state.totalPlayers, state.alivePlayers);
     }
   } catch (error) {
@@ -321,6 +325,9 @@ function handleGameEvent(event: { eventType: string; data: { [key: string]: stri
   const eventType = event.eventType;
   const data = event.data;
 
+  // Shield badges (UC-040 A16 / A17): the next controller frame re-renders them.
+  shields.apply(event);
+
   // Update state based on event type
   switch (eventType) {
     case "game_start":
@@ -342,6 +349,13 @@ function handleGameEvent(event: { eventType: string; data: { [key: string]: stri
       state.alivePlayers = Math.max(0, state.alivePlayers - 1);
       const player = data["serial"]?.slice(-4) || "???";
       addEvent(`Player ${player} eliminated`);
+      break;
+    }
+
+    case "player_shielded": {
+      const player = data["serial"]?.slice(-4) || "???";
+      const kind = data["kind"] === "partial" ? "partial shield" : "shield";
+      addEvent(`Agent: ${kind} for ${player} (${data["seconds"] ?? "?"}s)`);
       break;
     }
 

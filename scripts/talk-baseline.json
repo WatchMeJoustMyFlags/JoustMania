@@ -1,0 +1,36 @@
+{
+  "_comment": "Stage baseline for the 'Two Standards' talk (UC-070 BR-003, #1301). Read by scripts/talk-stage.sh (applies it) and scripts/talk-preflight.sh (checks it). flag key -> defaultVariant. 'checked' is verified by the pre-flight; 'reset_also' is only restored by talk-stage.sh reset. The shipped flag files keep their own defaults.",
+  "checked": {
+    "enabled": "on",
+    "interventions_enabled": "on",
+    "interventions_allowed": "standard",
+    "rollout_enabled": "off",
+    "experiments_enabled": "off",
+    "decision.backend": "rules",
+    "decision.act_confidence_threshold": "default",
+    "decision.jev.act_confidence_threshold": "gate",
+    "decision.capture_content": "on",
+    "decision.min_interval_ms": "default",
+    "decision.claude.model": "haiku",
+    "decision.claude.timeout_ms": "default",
+    "decision.jev.timeout_ms": "default",
+    "llm.eligible_game_kinds": "real_only"
+  },
+  "reset_also": {
+    "decision.jev.base_url": "default",
+    "decision.openai.base_url": "default",
+    "decision.openai.model": "unset",
+    "decision.openai.reasoning_effort": "auto",
+    "llm.max_requests_per_minute": "stage"
+  },
+  "perceptible_interventions": [
+    "play_audio_cue",
+    "grant_shield",
+    "partial_shield",
+    "adjust_music_tempo",
+    "ramp_tempo",
+    "eliminate_player",
+    "revive_player",
+    "end_game"
+  ]
+}

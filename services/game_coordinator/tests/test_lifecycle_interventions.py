@@ -4,7 +4,7 @@ Unit tests for the shield + lifecycle intervention handlers (#730, PR D).
 Covers the three shield/lifecycle interventions and the BaseGameMode primitives
 they drive:
 
-- grant_shield (BaseGameMode): sets grace_until, sends a visible pulse effect,
+- grant_shield (BaseGameMode): sets grace_until, sends the shield LED effect,
   and extends-not-shortens an existing shield; defensive on unknown/dead player.
 - shield_seconds handler: per-serial targeting (targeted serials shielded,
   value-0 default skipped), battery-gated skip, no-live-game no-op.
@@ -188,8 +188,8 @@ class TestGrantShieldPrimitive:
         assert granted is True
         # grace_until pushed roughly 5s into the future.
         assert game.players["p1"].grace_until >= before + 4.5
-        # A visible pulse effect was sent.
-        assert controller_manager_pb2.GAME_EFFECT_PULSE in game.gameplay_stream.effects()
+        # The shield LED effect was sent (#1301; was a generic PULSE).
+        assert controller_manager_pb2.GAME_EFFECT_SHIELD in game.gameplay_stream.effects()
 
     @pytest.mark.asyncio
     async def test_extends_not_shortens(self):

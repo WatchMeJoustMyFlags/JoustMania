@@ -237,3 +237,35 @@ class TestResolveVoxPath:
         """A plain filename without path separators is returned as-is (no /vox/)."""
         result = servicer._resolve_vox_path("congratulations.ogg")
         assert result == "congratulations.ogg"
+
+
+class TestUC040UnknownSoundWarning:
+    """UC-040 BR-007: an unknown sound id is logged at WARNING, aliases resolve."""
+
+    @pytest.fixture
+    def servicer(self, mock_audio_servicer):
+        servicer = mock_audio_servicer
+        servicer.menu_voice = "ivy"
+        return servicer
+
+    @pytest.mark.uc("UC-040", flow="main", br=["BR-007"])
+    def test_unknown_sound_id_logs_warning(self, servicer, caplog):
+        """UC-040 BR-007: a sound id outside the registry and its aliases is a WARNING."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="services.audio.servicer"):
+            servicer._resolve_simple_name("definitely_not_a_sound")
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Unknown sound id 'definitely_not_a_sound'" in r.getMessage() for r in warnings)
+
+    @pytest.mark.uc("UC-040", flow="main", br=["BR-007"])
+    def test_alias_resolves_without_warning(self, servicer, caplog):
+        """UC-040 BR-007: the agent_cue alias resolves to the lobby ping, no warning."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="services.audio.servicer"):
+            path = servicer._resolve_sound_path("agent_cue")
+
+        assert path == "Joust/sounds/beep_loud.ogg"
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

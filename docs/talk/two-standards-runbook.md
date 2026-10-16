@@ -266,8 +266,10 @@ confidence: `noop` at 0.84 reads "84% sure nothing is needed" (confidence is
 1 − p_yes for `noop`).
 
 Do not promise exact numbers on stage. The calibration states are fixtures
-asked with the `full` allow-list; on stage the agent asks with `ambient`, so
-the pick is `play_audio_cue`, `send_controller_effect` or `adjust_volume`, and
+asked with the `full` allow-list; on stage the agent asks with `standard`
+(the stage baseline, #1301), so the pick is one of `play_audio_cue`,
+`send_controller_effect`, `adjust_volume`, `adjust_music_tempo`,
+`set_pacing_profile`, `adjust_player_sensitivity` or `grant_shield`, and
 real (or mock) motion is noisier than the fixtures (mock motion noise: #1279).
 Say "around 0.7 near the threshold", and measure it in rehearsal (section 9). The global
 `decision.act_confidence_threshold` (default 0.8) governs claude and openai
@@ -328,9 +330,9 @@ Start state: the baseline, a real game running. `backend.sh` below is
 | # | Talk beat | Command | Flag changed | Expected on screen (dashboard / Jaeger / game) | Expected latency | Fallback if it doesn't show |
 |---|---|---|---|---|---|---|
 | 1 | **Observe**: the agent decides; why + confidence | (none; play) `backend.sh status` on screen | none | Dashboard: rows with backend `rules`, outcome `act`. Jaeger: open a row's `trace` link; `agent.decide` with `decide.rationale`, `decide.confidence`, `gen_ai.agent.name`; on the rules path the `agent.decision` spans (action, allowed/blocked) are its **siblings** under `agent.signal_received` | a row per rules decision; rules decisions depend on play. **Verify in rehearsal** how often a 4-player game decides | Run `demo_driver.py --scenario statue` (mock stack) or ask a player to freeze; show a pre-captured trace |
-| 2 | **Live model switch to Jev (the main in-game backend)**: acts when the game needs it, stays out when it does not | `backend.sh jev` | `decision.backend=jev` | Strip flashes to `jev` / `jev-latest`; the threshold (0.60) appears with the first `act` / `held` row (before that "—" or dimmed). Calm play: grey `noop` rows ("84% sure nothing is needed"). Ask the players to push to the edge (near the death threshold) or let eliminations pile up: a green `act` row, e.g. `play_audio_cue`, and the cue/LED effect in the game. Jaeger: the act trace has two `chat jev-latest` children (`jev.stage=intervention`, then `details`); the stage-1 span shows `jev.gate.p_yes` (around 0.7 near the threshold, around 0.16 calm; measure, do not promise), the event says e.g. `confidence 0.720 >= threshold 0.600 (decision.jev.act_confidence_threshold)`, source `jev` | flagd reload about 1 s + next decide slot (up to 3 s) + call: noop round about 0.22-0.34 s, act round about 0.47-0.57 s | `~~jev~~ -> rules, backend_unavailable`: `JEV_API_KEY` missing, see failure modes. `timeout` / `error`: Jev unreachable, go to beat 4 now (Claude backup). No `act` ever: mock stack `demo_driver.py --scenario death_cascade` (collapse) or `skill_gap` (novices jerk up to 1.6 g, near but below the default 1.8 g death threshold: the skill gap opens without deaths); show a captured act trace |
+| 2 | **Live model switch to Jev (the main in-game backend)**: acts when the game needs it, stays out when it does not | `backend.sh jev` | `decision.backend=jev` | Strip flashes to `jev` / `jev-latest`; the threshold (0.60) appears with the first `act` / `held` row (before that "—" or dimmed). Calm play: grey `noop` rows ("84% sure nothing is needed"). Ask the players to push to the edge (near the death threshold) or let eliminations pile up: a green `act` row and something the audience notices: `grant_shield` turns the player's LED and dashboard tile white with a `Shield 5.0s` badge, fades, blinks in the last second and returns to the player colour, with the shield sound; `adjust_music_tempo` speeds the music up; `play_audio_cue` plays the lobby ping. Jaeger: the act trace has two `chat jev-latest` children (`jev.stage=intervention`, then `details`); the stage-1 span shows `jev.gate.p_yes` (around 0.7 near the threshold, around 0.16 calm; measure, do not promise), the event says e.g. `confidence 0.720 >= threshold 0.600 (decision.jev.act_confidence_threshold)`, source `jev` | flagd reload about 1 s + next decide slot (up to 3 s) + call: noop round about 0.22-0.34 s, act round about 0.47-0.57 s | `~~jev~~ -> rules, backend_unavailable`: `JEV_API_KEY` missing, see failure modes. `timeout` / `error`: Jev unreachable, go to beat 4 now (Claude backup). No `act` ever: mock stack `demo_driver.py --scenario death_cascade` (collapse) or `skill_gap` (novices in the danger zone); show a captured act trace |
 | 3a | **Permissions: confidence threshold** (Jev's own bar) | `backend.sh jev-threshold strict`; after a held row: `backend.sh jev-threshold gate` | `decision.jev.act_confidence_threshold=strict` (0.95), then `gate` (0.6) | The near-threshold / collapsing rows that acted in beat 2 turn amber `held`: event "confidence 0.720 < threshold 0.950 (decision.jev.act_confidence_threshold)", nothing acts in the game. Calm / dragging rows stay grey `noop` (the gate is closed, p_yes ≤ 0.5, so there is nothing to hold). Back on `gate`: acts again | about 1 s + the next decision that opens the gate | `held` needs an open gate: keep the players at the edge. The **global** `backend.sh threshold strict` does NOT move Jev (only claude/openai), so do not use it here. If no held row appears, show the evaluation event of a held captured trace |
-| 3b | Permissions: what it may do (**cut**) | `setflag "$AF" interventions_allowed none`, later `... ambient` | `interventions_allowed` | No new rows: **the permission shrinks the question the model is asked (remote backends)**, and with `none` the only option left would be `noop`, so the agent does not ask at all (no remote call, no budget spent; `agent_llm_gated_total{reason=no_interventions_allowed}` counts the skipped cycles, #1298). The `ffa.intervention` options are `noop` plus the allowed list (`decide.FFAQuestions`, visible in `decide.questions`). Back on `ambient` Jev is offered audio cue / controller effect / volume again | about 1 s + next decision | If nothing ever acts on `ambient`: is `interventions_enabled` on? Try `standard` |
+| 3b | Permissions: what it may do (**cut**) | `./scripts/talk-stage.sh permissions none 12` (holds `none` 12 s, then restores `standard`; Ctrl-C restores at once) | `interventions_allowed` | No new rows: **the permission shrinks the question the model is asked (remote backends)**, and with `none` the only option left would be `noop`, so the agent does not ask at all (no remote call, no budget spent; `agent_llm_gated_total{reason=no_interventions_allowed}` counts the skipped cycles, #1298). The `ffa.intervention` options are `noop` plus the allowed list (`decide.FFAQuestions`, visible in `decide.questions`). Back on `standard` Jev is offered shield, tempo, cue and the rest again | about 1 s + next decision | The helper restores `standard` on every exit but `kill -9`; if the beat was killed, `./scripts/talk-stage.sh reset` (the pre-flight FAILs on `none` / `probe`) |
 | 4 | **The backup backend: flip to Claude** (manual, one flag; no automatic jev -> claude chain) | `backend.sh claude` (haiku) | `decision.backend=claude` | Strip flashes to `claude` / `claude-haiku-4-5-20251001`; the threshold may still show a dimmed 0.60 from Jev's last routed row until Claude's first `act` / `held` row shows 0.80 (the global one, source `global`). New rows backend `claude`; Jaeger child `chat claude-haiku-4-5-20251001` with `gen_ai.provider.name=anthropic`. Same contract, same rows, slower: point at `decide.latency_ms` (about 3 s vs Jev's 0.3-0.5 s) | flagd reload about 1 s + next slot + about 2.7-3.0 s (Haiku warm) | `backend_unavailable`: `ANTHROPIC_API_KEY` missing. `timeout` (above `decision.claude.timeout_ms`, default 5000 ms): `setflag "$AF" decision.claude.timeout_ms patient` (8000) |
 | 5 | **Kill switch**, including a discarded in-flight answer | `./scripts/agent-killswitch.sh off` right after a new Claude row appears (rows appear when a call lands; with about 3 s calls on a 3 s cadence, counted from each call's start, the next call is usually already in flight, so a discard is likely, about 3 in 4 tries; measure in rehearsal); after the point: `./scripts/agent-killswitch.sh on` | `enabled=off`, then `on` | No new `agent.decide` rows; Jaeger shows throttled `agent.disabled` spans. The in-flight call lands as a dashed `discarded` row with `kill_switch` (`decide.outcome=discarded`, `decide.discarded_reason=kill_switch`; its rules fallback is suppressed too). Game keeps playing, agent silent. Say what it stops (below) | about 1 s | The discard is likely on Claude (about 3 in 4 tries), rare on Jev (its call is over in 0.3 s): do this beat while on Claude. If no discarded row: narrate the silent feed. **Verify in rehearsal** |
 | 6 | **Rollback without redeploy**: back to Jev | `backend.sh jev` | `decision.backend=jev` | Strip back to `jev`; a Claude answer that lands after the flip shows `discarded` / `backend_changed`. No container restarted (`docker ps` uptime). The full rollback to the floor is one more flip: `backend.sh rules` | about 1 s | If Jev is unreachable at the venue, stay on Claude and say so: this *is* the backup working |
@@ -477,42 +479,42 @@ bar), `decision.act_confidence_threshold=default` (0.8, claude/openai),
 `decision.min_interval_ms=default` (3000 ms), `decision.claude.timeout_ms=default`
 (5000 ms; `patient` = 8000 only if rehearsal says so), `decision.jev.timeout_ms=default`
 (2500 ms), `llm.max_requests_per_minute=stage` (30/min; or the env override
-≥ 30), `decision.capture_content=on`, `enabled=on`, `experiments_enabled=off`.
+≥ 30), `decision.capture_content=on`, `enabled=on`, `experiments_enabled=off`,
+`interventions_allowed=standard` (all of it: `./scripts/talk-stage.sh reset`).
 
 ---
 
 ## 6. Reset to baseline (between rehearsals, and at T-1h)
 
 ```bash
-./scripts/agent-backend.sh rules                  # session start; beat 2 flips to jev
-./scripts/agent-backend.sh jev-threshold gate
-./scripts/agent-backend.sh threshold default
-./scripts/agent-backend.sh capture on
-./scripts/agent-backend.sh effort auto
-setflag "$AF" decision.claude.model haiku
-setflag "$AF" decision.jev.model latest           # or pinned, if you pinned jev-1.13.0
-setflag "$AF" decision.jev.base_url default
-setflag "$AF" decision.openai.base_url default    # no vendor variant ships
-setflag "$AF" decision.openai.model unset         # if beat 6b selected a vendor model
-setflag "$AF" decision.min_interval_ms default
-setflag "$AF" decision.claude.timeout_ms default  # or patient, if rehearsal said so
-setflag "$AF" decision.jev.timeout_ms default
-setflag "$AF" llm.max_requests_per_minute stage   # 30/min; ignored if AGENT_LLM_MAX_REQUESTS_PER_MINUTE is set
-setflag "$AF" interventions_allowed ambient
-setflag "$AF" interventions_enabled on
-setflag "$AF" experiments_enabled off
-setflag "$AF" rollout_enabled off
-./scripts/agent-killswitch.sh on
-# Interventions the agent applied during the run stay in interventions.json
-# until something resets them: restore the neutral file (the agent is the only
-# writer; it re-reads the file on its next write).
-git checkout "$(dirname "$AF")/interventions.json"
-# after beat I also run the rollout reset from section 4 (incl. the agent restart)
+./scripts/talk-stage.sh reset     # every stage-baseline flag + interventions.json neutral
 ./scripts/talk-preflight.sh
 ```
 
+`talk-stage.sh reset` applies `scripts/talk-baseline.json` to `$AF`
+(`AGENT_FLAG_FILE`): `decision.backend=rules`, both thresholds (`default`,
+Jev's `gate`), capture `on`, `min_interval_ms`, claude model `haiku`, both
+timeouts `default`, `llm.eligible_game_kinds=real_only`, `enabled=on`,
+`interventions_enabled=on`, **`interventions_allowed=standard`**,
+`experiments_enabled=off`, `rollout_enabled=off`, plus `decision.jev.base_url`,
+`decision.openai.base_url` / `.model` / `.reasoning_effort` back to their
+shipped variants and `llm.max_requests_per_minute=stage`. It sets every flag in
+the `interventions.json` next to `$AF` back to its neutral variant and drops
+any targeting the agent wrote. It is idempotent and does not care what a beat
+left behind, so it is also the recovery after an interrupted beat. It leaves
+`decision.jev.model` alone (`latest` or `pinned` is the presenter's choice).
+After beat I also run the rollout reset from section 4 (incl. the agent
+restart).
+
+**Why `standard` and not the shipped `ambient`:** on the mock stack nothing in
+`ambient` is visible (a controller effect defaults to rumble, volume 0.7 is
+barely audible); `standard` adds `grant_shield` and `adjust_music_tempo`, which
+the audience sees on the dashboard tile and hears in the music (#1301). The
+stage baseline lives in the helper; the shipped flag files keep `ambient`.
+
 `talk-preflight.sh` checks exactly this baseline (`enabled=on`,
-`interventions_enabled=on`, `interventions_allowed=ambient`,
+`interventions_enabled=on`, `interventions_allowed=standard`, FAIL naming
+an interrupted permissions beat for `none` / `probe`,
 `rollout_enabled=off`, `experiments_enabled=off`, `decision.backend=rules`,
 both thresholds (`default` and Jev's `gate`), capture `on`, `min_interval_ms`
 `default`, claude model `haiku`, `decision.claude.timeout_ms` and
@@ -522,7 +524,13 @@ present). It
 checks the budget (env override ≥ 30, else the flag's value ≥ 30, i.e. `stage`),
 that `JEV_API_KEY` and `ANTHROPIC_API_KEY` are present (presence only) and that
 `AGENT_INFERENCE_BACKEND=claude` (WARN otherwise: beat 8 shows a capture-only
-retro). Set `TALK_EXPECT_BACKEND=jev` if you decide to start on Jev. It also
+retro). It FAILs when the resolved allow-list holds no perceptible
+intervention (`play_audio_cue`, `grant_shield`, `partial_shield`,
+`adjust_music_tempo`, `ramp_tempo`, `eliminate_player`, `revive_player`,
+`end_game`) and when the agent's audio cue (`defaultAudioCue` in
+`services/agent/actions/writer.go`, `agent_cue`) does not resolve to a file in
+the **running** `joustmania-audio` container (an image from before #1301 has
+no `agent_cue` alias). Set `TALK_EXPECT_BACKEND=jev` if you decide to start on Jev. It also
 WARNs when any flag in the `interventions.json` next to `$AF` is not at its
 neutral variant (`none`, `default`, or `off` for `auto_rubberband`).
 
@@ -542,7 +550,8 @@ git checkout services/flagd/agent.json services/flagd/rollout.json services/flag
 
 | Symptom | Likely cause | Check | Fix |
 |---|---|---|---|
-| Remote backend selected but no `agent.decide` spans at all, `agent_llm_gated_total{reason=no_interventions_allowed}` rising | `interventions_allowed` is `none` (or `probe`): with nothing allowed the agent makes no remote call (#1298) | `talk-preflight.sh` WARN `allows no intervention` | `setflag "$AF" interventions_allowed ambient` (live) |
+| Remote backend selected but no `agent.decide` spans at all, `agent_llm_gated_total{reason=no_interventions_allowed}` rising | `interventions_allowed` is `none` (or `probe`): with nothing allowed the agent makes no remote call (#1298) | `talk-preflight.sh` WARN `allows no intervention` | `./scripts/talk-stage.sh reset` (live; restores `standard`) |
+| Green `act` row, but nothing seen or heard in the game | The act was applied but is imperceptible: `interventions_allowed` off the stage baseline (only `ambient`, or `none` left by an interrupted beat), or the audio image predates the `agent_cue` alias | `talk-preflight.sh` (allow-list, perceptible and audio-cue lines). After a beat both `game_interventions_total{blocked="false"}` **and** `audio_sounds_played_total{result="success"}` (cue / shield sound) should rise | `./scripts/talk-stage.sh reset`; for the cue, pull / rebuild the audio image |
 | Rows show `~~jev~~ -> rules`, `backend_unavailable` | `JEV_API_KEY` not in the agent container (keys are read at startup) | `talk-preflight.sh` key section | Add the key to `.env.local`, recreate the agent (`... up -d agent`). On stage: flip to the backup, `backend.sh claude` |
 | `~~jev~~ -> rules` with `timeout` or `error` on every row | Jev unreachable or slow from the venue (network, TypeSafe outage, 401 / 429 / 5xx; `error.type` says which) | `error.type` and `decide.latency_ms` on the span | **`backend.sh claude`** (the manual backup; there is no automatic jev -> claude chain). Rules already covered every cycle, so the game never stalled: say so. Try `backend.sh jev` again later |
 | `~~claude~~ -> rules`, `backend_unavailable` | `ANTHROPIC_API_KEY` missing | `talk-preflight.sh` key section | Add it to `.env.local`, recreate the agent; on stage go back to `backend.sh jev` |

@@ -53,9 +53,17 @@ class StateCache:
         # Reference to shared state (set by servicer)
         self._controller_states: dict[str, dict] = {}
 
+        # Reference to the LED colour last written per controller (set by the
+        # servicer from FeedbackManager.current_colors; #1301).
+        self._led_colors: dict[str, tuple[int, int, int]] = {}
+
     def set_controller_states(self, controller_states: dict[str, dict]) -> None:
         """Set reference to the shared controller_states dict."""
         self._controller_states = controller_states
+
+    def set_led_colors(self, led_colors: dict[str, tuple[int, int, int]]) -> None:
+        """Set reference to the shared current-LED-colour dict (#1301)."""
+        self._led_colors = led_colors
 
     def clear_controller(self, serial: str) -> None:
         """Clear cached state for a controller."""
@@ -94,6 +102,9 @@ class StateCache:
             Hash string representing the current state snapshot
         """
         state_dict = self._controller_states.get(serial)
+        # The live LED colour is part of the snapshot so an effect frame (e.g.
+        # the shield fade, #1301) invalidates the cached state.
+        led = self._led_colors.get(serial)
 
         if state_dict:
             accel = state_dict.get(StateKey.ACCEL, {})
@@ -106,13 +117,13 @@ class StateCache:
                 f"{state_dict.get(ButtonKey.PS, False)}|"
                 f"{accel.get(AxisKey.X, 0):.2f},{accel.get(AxisKey.Y, 0):.2f},{accel.get(AxisKey.Z, 0):.2f}|"
                 f"{gyro.get(AxisKey.X, 0):.2f},{gyro.get(AxisKey.Y, 0):.2f},{gyro.get(AxisKey.Z, 0):.2f}|"
-                f"{info.get(ControllerInfoKey.TEAM, 0)}"
+                f"{info.get(ControllerInfoKey.TEAM, 0)}|{led}"
             )
 
         # No state available, return hash based on info only
         battery = info.get(ControllerInfoKey.BATTERY, 0)
         team = info.get(ControllerInfoKey.TEAM, 0)
-        return f"{battery}|{team}"
+        return f"{battery}|{team}|{led}"
 
     def build_or_get_cached_state(self, serial: str, info: dict) -> controller_manager_pb2.ControllerState:
         """
@@ -211,9 +222,12 @@ class StateCache:
         controller_state.trigger_pressed = trigger_pressed
         controller_state.move_pressed = move_pressed
         controller_state.team = info.get(ControllerInfoKey.TEAM, 0)
-        controller_state.color.r = 0
-        controller_state.color.g = 0
-        controller_state.color.b = 255
+        # The LED colour last written to the controller (#1301); off until the
+        # first write.
+        led_r, led_g, led_b = self._led_colors.get(serial, (0, 0, 0))
+        controller_state.color.r = led_r
+        controller_state.color.g = led_g
+        controller_state.color.b = led_b
         controller_state.accel.CopyFrom(accel_vec)
         controller_state.gyro.CopyFrom(gyro_vec)
         controller_state.cross_pressed = cross_pressed

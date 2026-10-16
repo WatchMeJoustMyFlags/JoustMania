@@ -104,6 +104,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             backend=self.backend,
             tracked_controllers=self.tracked_controllers,
         )
+        # Stream the live LED colour (effect frames included) to clients (#1301).
+        self.state_cache_manager.set_led_colors(self.feedback_manager.current_colors)
 
         # Phase 79: Periodic rescan timer for externally paired controllers
         self.rescan_timer = PeriodicRescanTimer(interval=10.0)

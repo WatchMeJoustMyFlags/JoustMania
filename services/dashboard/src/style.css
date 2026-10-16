@@ -366,6 +366,46 @@ body {
   color: white;
 }
 
+/* Agent shield (#1301, UC-040 A16): the LED circle shows the live colour; the
+   ring and badge say it is a shield and how long it has left. */
+.controller-card.shielded {
+  border-color: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.35);
+}
+
+.shield-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  background: rgba(255, 255, 255, 0.85);
+  color: #0f3460;
+}
+
+.shield-badge.shield-partial {
+  background: rgba(255, 255, 255, 0.35);
+  color: white;
+}
+
+.shield-badge.shield-ending {
+  animation: shield-blink 0.25s steps(2, start) infinite;
+}
+
+@keyframes shield-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shield-badge.shield-ending {
+    animation: none;
+    outline: 2px dashed currentColor;
+  }
+}
+
 /* Status Bar */
 .status-bar {
   display: flex;
