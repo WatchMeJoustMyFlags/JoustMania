@@ -4,6 +4,9 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/joustmania/agent/gamecontext"
 )
 
 func TestClassifyDanger(t *testing.T) {
@@ -46,9 +49,9 @@ func TestApplyDangerSignals(t *testing.T) {
 		{Serial: "D", Alive: false, Intensity: fptr(3.0)}, // out: never ranked
 		{Serial: "E", Alive: true},                        // unobserved
 	}
-	leader, struggling := applyDangerSignals(players, fptr(2.3))
-	if leader != "A" || struggling != "B" {
-		t.Errorf("leader/struggling = %q/%q", leader, struggling)
+	mostHeadroom, struggling := applyDangerSignals(players, fptr(2.3))
+	if mostHeadroom != "A" || struggling != "B" {
+		t.Errorf("mostHeadroom/struggling = %q/%q", mostHeadroom, struggling)
 	}
 	wantRank := map[string]int{"A": 3, "B": 1, "C": 2, "D": 0, "E": 0}
 	wantDanger := map[string]string{"A": DangerSafe, "B": DangerNearThreshold, "C": DangerElevated}
@@ -71,28 +74,28 @@ func TestApplyDangerSignals_NoHints(t *testing.T) {
 			{Serial: "A", Alive: true, Intensity: fptr(2.1)},
 			{Serial: "B", Alive: true, Intensity: fptr(2.1)},
 		}
-		leader, struggling := applyDangerSignals(ps, fptr(2.3))
-		if leader != "" || struggling != "" || ps[0].IntensityRank != 1 || ps[1].IntensityRank != 1 {
-			t.Errorf("ties: %q/%q ranks %d/%d", leader, struggling, ps[0].IntensityRank, ps[1].IntensityRank)
+		mostHeadroom, struggling := applyDangerSignals(ps, fptr(2.3))
+		if mostHeadroom != "" || struggling != "" || ps[0].IntensityRank != 1 || ps[1].IntensityRank != 1 {
+			t.Errorf("ties: %q/%q ranks %d/%d", mostHeadroom, struggling, ps[0].IntensityRank, ps[1].IntensityRank)
 		}
 	})
 	t.Run("nobody in danger", func(t *testing.T) {
 		ps := []PlayerState{{Serial: "A", Alive: true, Intensity: fptr(0.2)}, {Serial: "B", Alive: true, Intensity: fptr(0.5)}}
-		if leader, struggling := applyDangerSignals(ps, fptr(2.3)); leader != "A" || struggling != "" {
-			t.Errorf("%q/%q", leader, struggling)
+		if mostHeadroom, struggling := applyDangerSignals(ps, fptr(2.3)); mostHeadroom != "A" || struggling != "" {
+			t.Errorf("%q/%q", mostHeadroom, struggling)
 		}
 	})
 	t.Run("unknown threshold", func(t *testing.T) {
 		ps := []PlayerState{{Serial: "A", Alive: true, Intensity: fptr(0.2)}, {Serial: "B", Alive: true, Intensity: fptr(2.5)}}
-		leader, struggling := applyDangerSignals(ps, nil)
-		if leader != "A" || struggling != "" || ps[1].Danger != "" || ps[1].IntensityRank != 1 {
-			t.Errorf("%q/%q %+v", leader, struggling, ps[1])
+		mostHeadroom, struggling := applyDangerSignals(ps, nil)
+		if mostHeadroom != "A" || struggling != "" || ps[1].Danger != "" || ps[1].IntensityRank != 1 {
+			t.Errorf("%q/%q %+v", mostHeadroom, struggling, ps[1])
 		}
 	})
 	t.Run("single player", func(t *testing.T) {
 		ps := []PlayerState{{Serial: "A", Alive: true, Intensity: fptr(2.2)}}
-		if leader, struggling := applyDangerSignals(ps, fptr(2.3)); leader != "" || struggling != "" || ps[0].Danger != DangerNearThreshold {
-			t.Errorf("%q/%q %+v", leader, struggling, ps[0])
+		if mostHeadroom, struggling := applyDangerSignals(ps, fptr(2.3)); mostHeadroom != "" || struggling != "" || ps[0].Danger != DangerNearThreshold {
+			t.Errorf("%q/%q %+v", mostHeadroom, struggling, ps[0])
 		}
 	})
 }
@@ -102,11 +105,11 @@ func TestApplyDangerSignals_NoHints(t *testing.T) {
 func TestBuildState_DangerSignals(t *testing.T) {
 	c := sampleCtx()
 	st := BuildState(c)
-	if st.Leader != "A" || st.Struggling != "" {
-		t.Errorf("leader/struggling = %q/%q", st.Leader, st.Struggling)
+	if st.MostHeadroom != "A" || st.Struggling != "" {
+		t.Errorf("mostHeadroom/struggling = %q/%q", st.MostHeadroom, st.Struggling)
 	}
 	for _, want := range []string{
-		"death_threshold=2.30 leader=A\n",
+		"death_threshold=2.30 most_headroom=A\n",
 		" danger=safe margin=1.90 intensity_rank=2/2\n",
 		"  B alive intensity=1.10 skill=0.30 danger=safe margin=1.20 intensity_rank=1/2\n",
 	} {
@@ -121,5 +124,26 @@ func TestBuildState_DangerSignals(t *testing.T) {
 	}
 	if st2.Digest == st.Digest {
 		t.Error("digest must change with the danger signals")
+	}
+}
+
+// TestBuildState_Shielded: a dispatched shield within ShieldWindow marks the
+// player; an older or blocked one does not.
+func TestBuildState_Shielded(t *testing.T) {
+	c := sampleCtx()
+	c.Timeline = append(c.Timeline,
+		gamecontext.TimelineEvent{At: c.UpdatedAt.Add(-4 * time.Second), Kind: gamecontext.EventIntervention, Detail: "grant_shield", Serial: "B"},
+		gamecontext.TimelineEvent{At: c.UpdatedAt.Add(-20 * time.Second), Kind: gamecontext.EventIntervention, Detail: "grant_shield", Serial: "A"},
+		gamecontext.TimelineEvent{At: c.UpdatedAt.Add(-2 * time.Second), Kind: gamecontext.EventIntervention, Detail: "partial_shield", Serial: "A", Blocked: true},
+	)
+	st := BuildState(c)
+	if st.Players[0].Shielded || !st.Players[1].Shielded {
+		t.Errorf("shielded A=%v B=%v, want false/true", st.Players[0].Shielded, st.Players[1].Shielded)
+	}
+	if !strings.Contains(st.Narrative, "intensity_rank=1/2 shielded\n") {
+		t.Errorf("narrative:\n%s", st.Narrative)
+	}
+	if st.Digest == BuildState(sampleCtx()).Digest {
+		t.Error("digest must change")
 	}
 }

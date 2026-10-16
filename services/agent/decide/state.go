@@ -24,7 +24,7 @@ func BuildState(c gamecontext.GameContext) State {
 		Players:        buildPlayers(c),
 		ElapsedSeconds: elapsedSeconds(c),
 	}
-	st.Leader, st.Struggling = applyDangerSignals(st.Players, c.Session.DeathThreshold)
+	st.MostHeadroom, st.Struggling = applyDangerSignals(st.Players, c.Session.DeathThreshold)
 	st.Narrative = renderNarrative(c, st)
 	st.Digest = digest(st)
 	return st
@@ -48,6 +48,7 @@ func buildPlayers(c gamecontext.GameContext) []PlayerState {
 			elimOrder[serial] = i + 1
 		}
 	}
+	shielded := recentlyShielded(c)
 	out := make([]PlayerState, 0, len(c.Players))
 	for key, p := range c.Players {
 		if p == nil {
@@ -65,6 +66,7 @@ func buildPlayers(c gamecontext.GameContext) []PlayerState {
 			Skill:            p.SkillLevel,
 			BatteryPct:       p.BatteryPct,
 			EliminationOrder: elimOrder[serial],
+			Shielded:         shielded[serial],
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Serial < out[j].Serial })
@@ -91,8 +93,8 @@ func renderNarrative(c gamecontext.GameContext, st State) string {
 		" eliminated=" + strconv.Itoa(len(c.Session.EliminationSequence)))
 	writeOpt(&b, "tempo", c.Session.MusicTempo)
 	writeOpt(&b, "death_threshold", c.Session.DeathThreshold)
-	if st.Leader != "" {
-		b.WriteString(" leader=" + st.Leader)
+	if st.MostHeadroom != "" {
+		b.WriteString(" most_headroom=" + st.MostHeadroom)
 	}
 	if st.Struggling != "" {
 		b.WriteString(" struggling=" + st.Struggling)
@@ -150,9 +152,10 @@ func digest(st State) string {
 			" elimination_order=" + strconv.Itoa(p.EliminationOrder) +
 			" intensity_rank=" + strconv.Itoa(p.IntensityRank) +
 			" threshold_margin=" + exact(p.ThresholdMargin) +
-			" danger=" + strconv.Quote(p.Danger) + "\n")
+			" danger=" + strconv.Quote(p.Danger) +
+			" shielded=" + strconv.FormatBool(p.Shielded) + "\n")
 	}
-	b.WriteString("leader=" + strconv.Quote(st.Leader) + " struggling=" + strconv.Quote(st.Struggling) + "\n")
+	b.WriteString("most_headroom=" + strconv.Quote(st.MostHeadroom) + " struggling=" + strconv.Quote(st.Struggling) + "\n")
 	b.WriteString("narrative=" + strconv.Quote(st.Narrative) + "\n")
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])

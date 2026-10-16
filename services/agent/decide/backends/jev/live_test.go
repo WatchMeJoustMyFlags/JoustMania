@@ -26,7 +26,8 @@ import (
 //	JEV_API_KEY=... go test -tags live ./decide/backends/jev -run TestLive -v
 //
 // JEV_LIVE_MODEL overrides the model (default DefaultModel);
-// JEV_LIVE_SCENARIO=<name> runs one FFA scenario only (and no noul). With
+// JEV_LIVE_SCENARIO=<name> runs one FFA scenario only (and no noul unless
+// JEV_LIVE_NOUL=1). With
 // JEV_RECORD_FIXTURES=1 the request/response bodies are written to testdata/
 // (the API key travels only in the Authorization header, never in a body, and
 // recordingTransport asserts that).
@@ -84,7 +85,7 @@ func TestLiveDecide(t *testing.T) {
 		}
 	}
 
-	if os.Getenv("JEV_LIVE_SCENARIO") != "" {
+	if os.Getenv("JEV_LIVE_SCENARIO") != "" && os.Getenv("JEV_LIVE_NOUL") != "1" {
 		return
 	}
 	// A noul request (#1229 KindNoul): single stage.
@@ -125,7 +126,7 @@ func TestLiveDetails(t *testing.T) {
 			t.Fatalf("%s stage 1: %v", label, err)
 		}
 		stage1 := time.Since(start)
-		resp := liveDetails(t, b, req, "grant_shield")
+		resp, _ := liveDetails(t, b, req, "grant_shield")
 		ex := rec.last()
 		t.Logf("act round %s: stage1=%v details=%v total=%v", label, stage1, ex.elapsed, time.Since(start))
 		logDetails(t, "grant_shield", resp)
@@ -134,16 +135,40 @@ func TestLiveDetails(t *testing.T) {
 			record(t, "shield_response_details.json", ex.response)
 		}
 	}
-	logDetails(t, "adjust_player_sensitivity", liveDetails(t, b, req, "adjust_player_sensitivity"))
+	// Two-way levers (#1262 review I1): the direction comes from the chosen
+	// target in Go, Jev answers the strength per side; log both sides and the
+	// resolved magnitude.
+	for i, iv := range []string{"adjust_player_sensitivity", "set_player_handicap"} {
+		resp, raw := liveDetails(t, b, req, iv)
+		for _, a := range raw.Answers {
+			if dir := strengthDirection(a.QuestionID); dir != "" {
+				v, _ := decide.ResolveMagnitude(iv, a.Score)
+				t.Logf("  %s %s strength: %v (confidence %.2f)", iv, dir, v, a.Confidence)
+			}
+		}
+		logDetails(t, iv, resp)
+		if i == 0 {
+			ex := rec.last()
+			record(t, "balance_request_details.json", ex.request)
+			record(t, "balance_response_details.json", ex.response)
+		}
+	}
 }
 
-func liveDetails(t *testing.T, b *Backend, req decide.Request, iv string) decide.Response {
+// liveDetails runs the details call for iv and returns the resolved answers
+// (two-way strength picked by direction) and the raw details response.
+func liveDetails(t *testing.T, b *Backend, req decide.Request, iv string) (decide.Response, decide.Response) {
 	t.Helper()
-	resp, err := b.call(context.Background(), StageDetails, detailsRequest(req, iv).ask, iv)
+	plan := detailsRequest(req, iv)
+	raw, err := b.call(context.Background(), StageDetails, plan.ask, iv)
 	if err != nil {
 		t.Fatalf("%s details: %v", iv, err)
 	}
-	return resp
+	answers, err := plan.resolveTwoWay(req.State, append(append([]decide.Answer{}, raw.Answers...), plan.local...))
+	if err != nil {
+		t.Fatalf("%s resolve: %v", iv, err)
+	}
+	return decide.Response{Answers: answers}, raw
 }
 
 func logDetails(t *testing.T, iv string, resp decide.Response) {

@@ -176,10 +176,10 @@ func TestDecide_HappyPathSpan(t *testing.T) {
 		"gen_ai.response.model":      "jev-1.13.0",
 		"gen_ai.response.id":         "req_test_001",
 		"gen_ai.output.type":         "json",
-		"gen_ai.usage.input_tokens":  int64(1523),
+		"gen_ai.usage.input_tokens":  int64(1531),
 		"gen_ai.usage.output_tokens": int64(146),
 		"server.address":             "127.0.0.1",
-		AttrNativeConfidence:         `{"ffa.intervention":0.61}`,
+		AttrNativeConfidence:         `{"ffa.intervention":0.64}`,
 		AttrStage:                    StageIntervention,
 	}
 	for k, v := range want {

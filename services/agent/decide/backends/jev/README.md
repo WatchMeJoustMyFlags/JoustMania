@@ -47,6 +47,30 @@ magnitude the model never chose. Rules is the tested floor.
 Every choice distribution covers every option of the original question; the
 details-stage target answer gets an explicit `none: 0`.
 
+**Two-way levers** (`adjust_player_sensitivity` 0.7 protect .. 1.5 handicap,
+`set_player_handicap` 0.75 rein in .. 1.75 help). Asked independently, Jev could
+pick the struggling player AND the handicap end. So the DIRECTION is decided in
+Go from the chosen target's signals: `struggling` or `near_threshold` gets the
+help / protect side, `most_headroom` the rein-in side, anything ambiguous the
+help side (fail-safe). Jev answers only the STRENGTH on each side, as two
+3-level half-ladders asked in the same details call (`ffa.magnitude.help` /
+`ffa.magnitude.rein_in`, internal ids), and `Decide` keeps the one matching the
+chosen target. No third call. Half-ladders run from the neutral (excluded)
+outward: sensitivity help 0.9 / 0.8 / 0.7, rein in 1.17 / 1.33 / 1.5; handicap
+help 1.25 / 1.5 / 1.75, rein in 0.92 / 0.83 / 0.75.
+
+**No neutral in acting ladders.** A lever's neutral ("no change", e.g. handicap
+1.0) is never a magnitude level, so an acting round cannot spend an
+intervention on a no-op.
+
+A player intervention with numeric bounds but no alive candidate makes no
+details call: target `none` at confidence 0 is returned directly (the decision
+hook rejects it as `player_intervention_without_target`).
+
+**Rate.** An acting round makes 2 HTTP calls per `Decide` (a noop round 1), so
+the request rate to TypeSafe can exceed the configured per-minute decide /
+intervention budget by up to 2x. Size the TypeSafe rate limit accordingly.
+
 ## Wire format
 
 ```
@@ -67,7 +91,7 @@ The request id comes back only as the `x-typesafe-request-id` header; it becomes
 
 `state` is `decide.State` as a JSON object: a static game description, game
 kind, elapsed seconds, the alive serials, the players (with the danger signals
-below), the narrative, `leader` / `struggling`, and in the details stage
+below), the narrative, `most_headroom` / `struggling`, and in the details stage
 `chosen_intervention`. Never
 `Request.Context`, and not the digest or game id. Non-finite readings are
 dropped (Jev rejects them with a 400).
@@ -85,10 +109,20 @@ intensity), `threshold_margin` (death threshold minus intensity, g) and
 | `elevated` | 0.60 to < 0.85 | |
 | `near_threshold` | >= 0.85 (over the threshold included) | 0.85 is the median of the game's own warning band (SLOW/FAST_WARNING are 0.68 to 0.92 of the death threshold, `games/base.py`) |
 
-Unknown threshold or intensity leaves `danger` empty. Session-level: `leader`
-(strictly lowest intensity) and `struggling` (strictly highest intensity, if
+Unknown threshold or intensity leaves `danger` empty. Session-level:
+`most_headroom` (strictly lowest current intensity: the calmest right now,
+**not** "winning", and never a reason to eliminate anyone) and `struggling` (strictly highest intensity, if
 elevated or near_threshold). They are in the narrative (so Claude and OpenAI
 read them, and the system prompt explains them) and in the digest.
+
+`shielded` marks a player a `grant_shield` / `partial_shield` was dispatched to
+within the last 10 s (the longest shield, read from the timeline); the
+details-stage target description then says another shield would be wasted.
+
+**Limits.** `danger` reads the SESSION's effective death threshold
+(`game_effective_death_threshold`). Per-player sensitivity, handicap factors and
+shields are invisible to it, so a player with a protective factor or an active
+shield can still show `near_threshold`.
 
 ### Option order
 
@@ -152,7 +186,7 @@ finish reason. We do not retry 429/529: the in-game budget is one call.
 | `stages.go` | the two-stage split, the details plan, local answers, merging |
 | `criteria.go` | the natural-language option and level descriptions and the state's game description |
 | `jev.go` | Config and defaults, `Available`, timeout, the HTTP call, GenAI span and metrics |
-| `testdata/*.json` | **recorded** Jev traffic (jev-1.13.0, 2026-10-16): `noop_*_intervention` (stage 1 of `testRequest()`), `shield_*_details` (stage 2 after `grant_shield`), `*_noul`, 401/422 |
+| `testdata/*.json` | **recorded** Jev traffic (jev-1.13.0, 2026-10-16): `noop_*_intervention` (stage 1 of `testRequest()`), `shield_*_details` (stage 2 after `grant_shield`), `balance_*_details` (stage 2 after `adjust_player_sensitivity`: target + both strength half-ladders), `*_noul`, 401/422 |
 | `contract_test.go` | replays the fixtures (and mutations of them) through `wire.go` and the two-stage `Decide`: noop round (1 call), act round (2 calls, conditioned), session interventions, stage-2 failure, shared deadline |
 | `live_test.go` | `-tags live`: real calls (`TestLiveDecide`, `TestLiveDetails`, `TestLiveOptionOrder`), latency/tokens log, `JEV_RECORD_FIXTURES=1` re-records `testdata/` |
 
@@ -195,8 +229,9 @@ tokens only.
   MOCK0003 at 0.99 (confidence 0.98) for `grant_shield`.
 - Jev is weak at **numeric comparison and interpolation**: hence the danger
   signals and ranks computed in code, and the snapped score. Magnitude
-  confidence stays low (0.11 to 0.28 measured): Jev spreads mass over the
-  shield levels (0.27 / 0.27 / 0.31 / 0.12 / 0.03 in the recorded answer).
+  confidence stays low on the 5-level shield ladder (0.15 to 0.28 measured;
+  0.29 / 0.28 / 0.30 / 0.10 / 0.03 in the recorded answer) and is higher on
+  the 3-level two-way half-ladders (sensitivity help 0.41).
 - **Option order bias** toward the first option: measured small, see above.
 
 ## Stage fallback

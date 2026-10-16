@@ -3,6 +3,9 @@ package decide
 import (
 	"math"
 	"strconv"
+	"time"
+
+	"github.com/joustmania/agent/gamecontext"
 )
 
 // danger.go derives the explicit danger signals of State (#1262): numeric
@@ -24,6 +27,12 @@ const (
 	// threshold (including at or over it): one twitch from elimination.
 	DangerNearThreshold = "near_threshold"
 )
+
+// Limits of the danger signals: they read the SESSION's effective death
+// threshold (gamecontext.SessionSignals.DeathThreshold), not a per-player one.
+// Per-player sensitivity, handicap factors and shields are invisible here, so a
+// player with a protective factor or an active shield can still show
+// near_threshold. PlayerState.Shielded flags a recent shield separately.
 
 // Danger cut-offs, as intensity / effective death threshold.
 //
@@ -55,21 +64,21 @@ func classifyDanger(intensity, threshold *float64) string {
 }
 
 // applyDangerSignals fills each alive player's IntensityRank, ThresholdMargin
-// and Danger, and returns the session-level leader / struggling hints. players
-// must be sorted by serial (ties in rank are broken by that order only for the
-// rank position; ties never produce a leader or struggling hint).
+// and Danger, and returns the session-level most-headroom / struggling hints.
+// players must be sorted by serial. Ties never produce a hint.
 //
 //   - IntensityRank: 1 = highest current intensity among the alive players with
 //     an observed (finite) intensity; equal intensities share the better rank.
 //   - ThresholdMargin: death threshold - intensity (g-force), rounded to 0.01;
 //     negative when over it. nil when either is unknown.
-//   - leader: the alive player with the strictly lowest intensity (the most
-//     headroom, best placed to outlast the others), with at least two alive
-//     players observed.
+//   - mostHeadroom: the alive player with the strictly lowest current
+//     intensity (the calmest right now, the most headroom below the
+//     threshold), with at least two alive players observed. It is a momentary
+//     reading, NOT "winning": a calm player is not a target for punishment.
 //   - struggling: the alive player with the strictly highest intensity, when
 //     at least two alive players are observed and that player's danger is
 //     elevated or near_threshold (needs a known threshold).
-func applyDangerSignals(players []PlayerState, threshold *float64) (leader, struggling string) {
+func applyDangerSignals(players []PlayerState, threshold *float64) (mostHeadroom, struggling string) {
 	var observed []int
 	for i, p := range players {
 		if p.Alive && p.Intensity != nil && finite(*p.Intensity) {
@@ -112,12 +121,12 @@ func applyDangerSignals(players []PlayerState, threshold *float64) (leader, stru
 		}
 	}
 	if !minTie {
-		leader = players[minI].Serial
+		mostHeadroom = players[minI].Serial
 	}
 	if d := players[maxI].Danger; !maxTie && (d == DangerElevated || d == DangerNearThreshold) {
 		struggling = players[maxI].Serial
 	}
-	return leader, struggling
+	return mostHeadroom, struggling
 }
 
 // dangerNarrative is the danger suffix of a player's narrative line, e.g.
@@ -134,7 +143,31 @@ func dangerNarrative(p PlayerState, ranked int) string {
 	if p.IntensityRank > 0 {
 		s += " intensity_rank=" + strconv.Itoa(p.IntensityRank) + "/" + strconv.Itoa(ranked)
 	}
+	if p.Shielded {
+		s += " shielded"
+	}
 	return s
+}
+
+// ShieldWindow is how long after a dispatched shield a player counts as
+// Shielded: the longest shield variant (grant_shield / partial_shield max,
+// decide.MagnitudeBounds).
+const ShieldWindow = 10 * time.Second
+
+// recentlyShielded returns the serials a grant_shield / partial_shield was
+// dispatched to (not blocked) within ShieldWindow before c.UpdatedAt.
+func recentlyShielded(c gamecontext.GameContext) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range c.Timeline {
+		if e.Kind != gamecontext.EventIntervention || e.Blocked || e.Serial == "" ||
+			(e.Detail != "grant_shield" && e.Detail != "partial_shield") {
+			continue
+		}
+		if age := c.UpdatedAt.Sub(e.At); age >= 0 && age <= ShieldWindow {
+			out[e.Serial] = true
+		}
+	}
+	return out
 }
 
 // RankedCount is the number of alive players with an IntensityRank (the

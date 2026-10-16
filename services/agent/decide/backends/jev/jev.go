@@ -161,7 +161,11 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 		}
 		detailAnswers = detailResp.Answers
 	}
-	resp, err := mergeAnswers(req, firstResp.Answers, detailAnswers, plan.local)
+	answered, err := plan.resolveTwoWay(req.State, append(detailAnswers, plan.local...))
+	if err != nil {
+		return decide.Response{}, err
+	}
+	resp, err := mergeAnswers(req, firstResp.Answers, answered)
 	if err != nil {
 		return decide.Response{}, err
 	}

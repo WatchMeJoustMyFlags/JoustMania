@@ -166,14 +166,14 @@ var responseContracts = []responseContract{
 			t.Fatalf("response = %+v", r)
 		}
 		iv, _ := r.Find(decide.QuestionFFAIntervention)
-		// Acting confidence (p(noop) for a noop choice), not Jev's native 0.61.
-		if iv.Choice != decide.OptionNoop || iv.Probabilities["noop"] != 0.64 || iv.Confidence != 0.64 {
+		// Acting confidence (p(noop) for a noop choice), not Jev's native 0.64.
+		if iv.Choice != decide.OptionNoop || iv.Probabilities["noop"] != 0.67 || iv.Confidence != 0.67 {
 			t.Errorf("intervention = %+v", iv)
 		}
-		if !reflect.DeepEqual(res.NativeConfidence, map[string]float64{"ffa.intervention": 0.61}) {
+		if !reflect.DeepEqual(res.NativeConfidence, map[string]float64{"ffa.intervention": 0.64}) {
 			t.Errorf("native confidence = %v", res.NativeConfidence)
 		}
-		if res.Model != "jev-1.13.0" || res.Usage == nil || res.Usage.InputTokens != 1523 || res.Usage.OutputTokens != 146 {
+		if res.Model != "jev-1.13.0" || res.Usage == nil || res.Usage.InputTokens != 1531 || res.Usage.OutputTokens != 146 {
 			t.Errorf("model/usage = %q/%+v", res.Model, res.Usage)
 		}
 		if !strings.Contains(res.Text, `"ffa.intervention"`) {
@@ -185,24 +185,24 @@ var responseContracts = []responseContract{
 		if a, _ := r.Find(decide.QuestionFFATarget); a.Choice != "MOCK0003" || a.Confidence != 0.98 || a.Probabilities["MOCK0003"] != 0.99 {
 			t.Errorf("target = %+v", a)
 		}
-		// Jev score 1.37 snaps to level 1 of grant_shield's own ladder
+		// Jev score 1.3 snaps to level 1 of grant_shield's own ladder
 		// (3, 4.75, 6.5, 8.25, 10 s): 4.75 s, normalized 0.25.
 		a, _ := r.Find(decide.QuestionFFAMagnitude)
-		if v, _ := decide.ResolveMagnitude("grant_shield", a.Score); a.Score != 0.25 || v != 4.75 || a.Confidence != 0.17 {
+		if v, _ := decide.ResolveMagnitude("grant_shield", a.Score); a.Score != 0.25 || v != 4.75 || a.Confidence != 0.15 {
 			t.Errorf("magnitude = %+v (%v s)", a, v)
 		}
-		want := map[string]float64{"ffa.target": 0.98, "ffa.magnitude": 0.17}
+		want := map[string]float64{"ffa.target": 0.98, "ffa.magnitude": 0.15}
 		if !reflect.DeepEqual(res.NativeConfidence, want) {
 			t.Errorf("native confidence = %v", res.NativeConfidence)
 		}
 	}},
 	{name: "noul", body: fixture("response_noul.json"), req: noulRequest, check: func(t *testing.T, res wireResult) {
 		a, _ := res.Response.Find("about_to_end")
-		if a.Noul == nil || *a.Noul != 0.61 || math.Abs(a.Confidence-0.22) > 1e-12 {
+		if a.Noul == nil || *a.Noul != 0.62 || math.Abs(a.Confidence-0.24) > 1e-12 {
 			t.Errorf("about_to_end = %+v", a)
 		}
 		a, _ = res.Response.Find("lopsided")
-		if a.Noul == nil || *a.Noul != 0.56 || math.Abs(a.Confidence-0.12) > 1e-12 {
+		if a.Noul == nil || *a.Noul != 0.29 || math.Abs(a.Confidence-0.42) > 1e-12 {
 			t.Errorf("lopsided = %+v", a)
 		}
 		if len(res.NativeConfidence) != 0 {
@@ -260,7 +260,7 @@ var responseContracts = []responseContract{
 		body: mutated(fxDetails, func(m map[string]any) { answer(m, "ffa.magnitude")["type"] = "noul" })},
 	{name: "noul out of range", req: noulRequest, errType: "invalid_output", isInvalid: true,
 		body: func(t *testing.T) []byte {
-			return []byte(strings.Replace(string(loadFixture(t, "response_noul.json")), `"noul": 0.61`, `"noul": 1.61`, 1))
+			return []byte(strings.Replace(string(loadFixture(t, "response_noul.json")), `"noul": 0.62`, `"noul": 1.62`, 1))
 		}},
 }
 
@@ -296,6 +296,9 @@ func actingIntervention(t *testing.T, iv string) []byte {
 	return mutate(t, fxIntervention, func(m map[string]any) {
 		a := answer(m, "ffa.intervention")
 		probs := a["probabilities"].(map[string]any)
+		if _, ok := probs[iv]; !ok {
+			probs[iv] = 0.0 // an option outside the recorded allow-list
+		}
 		probs[iv], probs["noop"] = probs["noop"], probs[iv]
 		a["choice"] = iv
 	})
@@ -322,10 +325,10 @@ func TestContract_NoopRound(t *testing.T) {
 	if tg.Choice != decide.TargetNone || tg.Confidence != 1 || len(tg.Probabilities) != 4 || tg.Probabilities[decide.TargetNone] != 1 {
 		t.Errorf("target = %+v", tg)
 	}
-	if m, _ := resp.Find(decide.QuestionFFAMagnitude); m.Score != 0 || m.Confidence != 0.64 {
+	if m, _ := resp.Find(decide.QuestionFFAMagnitude); m.Score != 0 || m.Confidence != 0.67 {
 		t.Errorf("magnitude = %+v", m)
 	}
-	if resp.Rationale != "jev: noop (p=0.64)" {
+	if resp.Rationale != "jev: noop (p=0.67)" {
 		t.Errorf("rationale = %q", resp.Rationale)
 	}
 	spans := api.chatSpans()
@@ -355,7 +358,7 @@ func TestContract_ActRound(t *testing.T) {
 	iv, _ := resp.Find(decide.QuestionFFAIntervention)
 	tg, _ := resp.Find(decide.QuestionFFATarget)
 	mg, _ := resp.Find(decide.QuestionFFAMagnitude)
-	if iv.Choice != "grant_shield" || math.Abs(iv.Confidence-0.88) > 1e-9 {
+	if iv.Choice != "grant_shield" || math.Abs(iv.Confidence-0.92) > 1e-9 {
 		t.Errorf("intervention = %+v", iv)
 	}
 	if tg.Choice != "MOCK0003" || len(tg.Probabilities) != 4 || tg.Probabilities[decide.TargetNone] != 0 {
@@ -364,7 +367,7 @@ func TestContract_ActRound(t *testing.T) {
 	if v, _ := decide.ResolveMagnitude("grant_shield", mg.Score); v != 4.75 {
 		t.Errorf("magnitude = %+v -> %v s", mg, v)
 	}
-	if resp.Rationale != "jev: grant_shield (p=0.64) on MOCK0003 (p=0.99)" {
+	if resp.Rationale != "jev: grant_shield (p=0.67) on MOCK0003 (p=0.99)" {
 		t.Errorf("rationale = %q", resp.Rationale)
 	}
 
@@ -483,8 +486,114 @@ func TestContract_SharedDeadline(t *testing.T) {
 	if el := time.Since(start); el > 800*time.Millisecond {
 		t.Errorf("round took %v, want about the 300ms deadline", el)
 	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap context.DeadlineExceeded", err)
+	}
 	if got := attrs(api.lastSpan(t))["error.type"].AsString(); got != "timeout" {
 		t.Errorf("error.type = %q", got)
+	}
+}
+
+const fxBalance = "balance_response_details.json"
+
+// balanceDetails returns the recorded adjust_player_sensitivity details body
+// with the target choice moved to target (probabilities swapped so the choice
+// stays the argmax) and both strength scores set to level.
+func balanceDetails(t *testing.T, target string, level float64) []byte {
+	return mutate(t, fxBalance, func(m map[string]any) {
+		a := answer(m, "ffa.target")
+		probs := a["probabilities"].(map[string]any)
+		chosen := a["choice"].(string)
+		probs[target], probs[chosen] = probs[chosen], probs[target]
+		a["choice"] = target
+		if level >= 0 {
+			answer(m, "ffa.magnitude.help")["score"] = level
+			answer(m, "ffa.magnitude.rein_in")["score"] = level
+		}
+	})
+}
+
+// TestContract_TwoWayLever (#1262 review I1): for adjust_player_sensitivity
+// (0.7 protect .. 1.5 handicap) and set_player_handicap (0.75 rein in .. 1.75
+// help) the direction comes from the chosen target in Go; Jev only picks the
+// strength. The struggling target never gets a handicap-side value, the
+// calmest never a help-side one, and the neutral 1.0 is never applied.
+func TestContract_TwoWayLever(t *testing.T) {
+	t.Run("recorded", func(t *testing.T) {
+		api := newScriptedAPI(t, ok(actingIntervention(t, "adjust_player_sensitivity")), ok(loadFixture(t, fxBalance)))
+		resp, err := api.backend(fixtureModel, false).Decide(context.Background(), testRequest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		api.mu.Lock()
+		second := api.bodies[1]
+		api.mu.Unlock()
+		jsonEqual(t, second, "balance_request_details.json")
+		tg, _ := resp.Find(decide.QuestionFFATarget)
+		mg, _ := resp.Find(decide.QuestionFFAMagnitude)
+		// Jev's help strength 1.03 snaps to level 1 (0.8); the rein-in answer is dropped.
+		if v, _ := decide.ResolveMagnitude("adjust_player_sensitivity", mg.Score); tg.Choice != "MOCK0003" || v != 0.8 || mg.Confidence != 0.41 {
+			t.Errorf("target %s, magnitude %+v -> %v", tg.Choice, mg, v)
+		}
+		if len(resp.Answers) != 3 {
+			t.Errorf("internal strength answers leaked: %+v", resp.Answers)
+		}
+	})
+	for _, iv := range []string{"adjust_player_sensitivity", "set_player_handicap"} {
+		for _, target := range []string{"MOCK0003", "MOCK0002", "MOCK0004"} {
+			for _, level := range []float64{0, 1, 2} {
+				st := testRequest().State
+				req := decide.Request{State: st, Questions: decide.FFAQuestions(st, append([]string{"set_player_handicap"}, fullInterventions...))}
+				stage1 := actingIntervention(t, iv)
+				var m map[string]any
+				_ = json.Unmarshal(stage1, &m)
+				probs := answer(m, "ffa.intervention")["probabilities"].(map[string]any)
+				if _, ok := probs["set_player_handicap"]; !ok {
+					probs["set_player_handicap"] = 0.0
+				}
+				stage1, _ = json.Marshal(m)
+				api := newScriptedAPI(t, ok(stage1), ok(balanceDetails(t, target, level)))
+				resp, err := api.backend(fixtureModel, false).Decide(context.Background(), req)
+				if err != nil {
+					t.Fatalf("%s %s %v: %v", iv, target, level, err)
+				}
+				mg, _ := resp.Find(decide.QuestionFFAMagnitude)
+				v, _ := decide.ResolveMagnitude(iv, mg.Score)
+				helped := v < 1 // sensitivity: below neutral protects
+				if iv == "set_player_handicap" {
+					helped = v > 1 // handicap: above neutral helps
+				}
+				// MOCK0003 struggles, MOCK0002 has the most headroom, MOCK0004
+				// is ambiguous (help, fail-safe).
+				wantHelp := target != "MOCK0002"
+				if v == 1 || helped != wantHelp {
+					t.Errorf("%s on %s at level %v: value %v (helped=%v, want %v)", iv, target, level, v, helped, wantHelp)
+				}
+			}
+		}
+	}
+}
+
+// TestContract_NoCandidate (#1262 review S2): a player intervention with
+// bounds and no alive candidate is answered locally without a details call;
+// the target none at confidence 0 is what the decision hook rejects.
+func TestContract_NoCandidate(t *testing.T) {
+	c := lopsidedContext()
+	for _, p := range c.Players {
+		p.Active = boolp(false)
+	}
+	st := decide.BuildState(c)
+	req := decide.Request{State: st, Questions: decide.FFAQuestions(st, fullInterventions)}
+	api := newScriptedAPI(t, ok(actingIntervention(t, "grant_shield")))
+	resp, err := api.backend(fixtureModel, false).Decide(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := api.calls.Load(); n != 1 {
+		t.Errorf("%d calls, want 1 (no candidate, no details call)", n)
+	}
+	if tg, _ := resp.Find(decide.QuestionFFATarget); tg.Choice != decide.TargetNone || tg.Confidence != 0 {
+		t.Errorf("target = %+v", tg)
 	}
 }
 

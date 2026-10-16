@@ -34,6 +34,7 @@ func TestPlanDetails(t *testing.T) {
 		{"send_controller_effect", []string{decide.QuestionFFATarget}, []string{decide.QuestionFFAMagnitude}},
 		{"adjust_music_tempo", []string{decide.QuestionFFAMagnitude}, []string{decide.QuestionFFATarget}},
 		{"end_game", nil, []string{decide.QuestionFFATarget, decide.QuestionFFAMagnitude}},
+		{"adjust_player_sensitivity", []string{decide.QuestionFFATarget, "ffa.magnitude.help", "ffa.magnitude.rein_in"}, nil},
 	} {
 		p := detailsRequest(req, c.iv)
 		var ask, local []string
@@ -75,14 +76,56 @@ func TestMagnitudeLevels(t *testing.T) {
 	if magnitudeLevels("end_game") != nil {
 		t.Error("no bounds, no levels")
 	}
-	instr, ladder := conditionedMagnitude("adjust_player_sensitivity", magnitudeLevels("adjust_player_sensitivity"))
-	if !strings.HasPrefix(instr, "The agent will apply adjust_player_sensitivity (") || len(ladder) != 5 {
+	// I3: the neutral "no change" value is never an acting level.
+	if got := magnitudeLevels("set_player_handicap"); !reflect.DeepEqual(got, []float64{0.75, 1.25, 1.5, 1.75}) {
+		t.Errorf("handicap = %v (neutral 1.0 must be excluded)", got)
+	}
+	mag := decide.Question{ID: decide.QuestionFFAMagnitude, Kind: decide.KindScore, Range: [2]float64{0, 1}}
+	instr, ladder := conditionedMagnitude(mag, "adjust_global_difficulty", magnitudeLevels("adjust_global_difficulty"))
+	if !strings.HasPrefix(instr, "The agent will apply adjust_global_difficulty (") || len(ladder) != 5 {
 		t.Fatalf("%q %v", instr, ladder)
 	}
-	if ladder[0] != "The lowest setting: 0.7 factor (player most protected)." ||
-		ladder[1] != "A low setting: 0.9 factor (toward player most protected)." ||
-		ladder[3] != "A high setting: 1.3 factor (toward player most handicapped)." {
+	if ladder[0] != "The lowest setting: 0.5 factor (easiest game)." || ladder[1] != "A low setting: 0.875 factor (toward easiest game)." {
 		t.Errorf("ladder = %q", ladder)
+	}
+}
+
+// TestStrengthLevels: a two-way lever's half-ladders stay on their side of the
+// neutral, weakest first.
+func TestStrengthLevels(t *testing.T) {
+	for _, c := range []struct {
+		iv, dir string
+		want    []float64
+	}{
+		{"adjust_player_sensitivity", directionHelp, []float64{0.9, 0.8, 0.7}},
+		{"adjust_player_sensitivity", directionReinIn, []float64{1.17, 1.33, 1.5}},
+		{"set_player_handicap", directionHelp, []float64{1.25, 1.5, 1.75}},
+		{"set_player_handicap", directionReinIn, []float64{0.92, 0.83, 0.75}},
+	} {
+		if got := strengthLevels(c.iv, c.dir); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s %s = %v, want %v", c.iv, c.dir, got, c.want)
+		}
+	}
+	if strengthLevels("grant_shield", directionHelp) != nil {
+		t.Error("one-way lever has no half-ladder")
+	}
+	q := decide.Question{ID: strengthQuestionID(directionHelp), Kind: decide.KindScore, Range: [2]float64{0, 1}}
+	instr, ladder := scoreLadder(q, decide.Request{}, "adjust_player_sensitivity")
+	if !strings.Contains(instr, "to help a struggling player") || ladder[0] != "A slight change: 0.9 factor (neutral is 1)." {
+		t.Errorf("%q %q", instr, ladder)
+	}
+}
+
+// TestDirection: help for the struggling / near-threshold player, rein in the
+// calmest, help when ambiguous or unknown.
+func TestDirection(t *testing.T) {
+	st := testRequest().State // MOCK0003 struggling, MOCK0002 most headroom, MOCK0004 in between
+	for target, want := range map[string]string{
+		"MOCK0003": directionHelp, "MOCK0002": directionReinIn, "MOCK0004": directionHelp, "none": directionHelp, "": directionHelp,
+	} {
+		if got := direction(st, target); got != want {
+			t.Errorf("direction(%s) = %s, want %s", target, got, want)
+		}
 	}
 }
 
@@ -97,15 +140,26 @@ func TestDescribeCandidates(t *testing.T) {
 		t.Errorf("shield = %v", shield)
 	}
 	penalty := describeCandidates(st, "soft_penalty")
-	if !strings.Contains(penalty["MOCK0002"], "Leading with the most headroom: pressure here") || !strings.Contains(penalty["MOCK0003"], "pile on") {
+	if !strings.Contains(penalty["MOCK0002"], "Most headroom below the death threshold right now: pressure here") || !strings.Contains(penalty["MOCK0003"], "pile on") {
 		t.Errorf("penalty = %v", penalty)
 	}
 	balance := describeCandidates(st, "set_player_handicap")
 	if !strings.Contains(balance["MOCK0003"], "helping this player") || !strings.Contains(balance["MOCK0002"], "reining this player in") ||
-		!strings.Contains(balance["MOCK0004"], "little to balance") {
+		!strings.Contains(balance["MOCK0004"], "little to balance") || strings.Contains(balance["MOCK0002"], "lead") {
 		t.Errorf("balance = %v", balance)
 	}
 	if fx := describeCandidates(st, "send_controller_effect")["MOCK0003"]; strings.Contains(fx, "matters most") {
 		t.Errorf("no suitability for an unfamilied intervention: %q", fx)
+	}
+	// I2: never suggest eliminating a player because they are calm.
+	for serial, d := range describeCandidates(st, "eliminate_player") {
+		if strings.Contains(d, "pressure") || strings.Contains(d, "keeps the game close") {
+			t.Errorf("eliminate_player suitability for %s: %q", serial, d)
+		}
+	}
+	// S1: a recently shielded player is not suggested for another shield.
+	st.Players[2].Shielded = true // MOCK0003
+	if d := describeCandidates(st, "grant_shield")["MOCK0003"]; !strings.Contains(d, "another shield would be wasted") || strings.Contains(d, "matters most") {
+		t.Errorf("shielded MOCK0003 = %q", d)
 	}
 }

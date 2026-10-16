@@ -124,9 +124,9 @@ type jevState struct {
 	AlivePlayers       []string             `json:"alive_players"`
 	Players            []decide.PlayerState `json:"players"`
 	Narrative          string               `json:"narrative"`
-	// Leader / Struggling are decide.State's session-level hints (#1262).
-	Leader     string `json:"leader,omitempty"`
-	Struggling string `json:"struggling,omitempty"`
+	// MostHeadroom / Struggling are decide.State's session-level hints (#1262).
+	MostHeadroom string `json:"most_headroom,omitempty"`
+	Struggling   string `json:"struggling,omitempty"`
 }
 
 type jevQuestion struct {
@@ -237,7 +237,7 @@ func encodeState(st decide.State, chosen string) jevState {
 		AlivePlayers:   alive,
 		Players:        players,
 		Narrative:      st.Narrative,
-		Leader:         st.Leader,
+		MostHeadroom:   st.MostHeadroom,
 		Struggling:     st.Struggling,
 
 		ChosenIntervention: chosen,

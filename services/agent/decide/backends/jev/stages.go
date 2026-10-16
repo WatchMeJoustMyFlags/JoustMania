@@ -86,18 +86,32 @@ type detailsPlan struct {
 	intervention string
 	ask          decide.Request
 	local        []decide.Answer
+	// magnitude is the original ffa.magnitude question when the intervention
+	// is a two-way lever: its answer is picked from the strength question of
+	// the chosen target's direction (resolveTwoWay).
+	magnitude *decide.Question
 }
 
 // planDetails decides which detail questions need Jev for the chosen
-// intervention iv (with acting confidence ivConfidence).
+// intervention iv (with acting confidence iv.Confidence).
 func planDetails(st decide.State, iv decide.Answer, details []decide.Question) detailsPlan {
 	p := detailsPlan{intervention: iv.Choice, ask: decide.Request{State: st}}
 	acting := iv.Choice != decide.OptionNoop
+	playerScoped := acting && decide.PlayerTargeted(iv.Choice)
+	var alive []string
+	for _, q := range details {
+		if q.ID == decide.QuestionFFATarget {
+			alive = aliveOptions(q, st)
+		}
+	}
+	// A player intervention without a candidate cannot be applied: answer
+	// everything locally (target none at confidence 0, which the decision hook
+	// rejects as player_intervention_without_target) without calling Jev.
+	noCandidate := playerScoped && len(alive) == 0
 	for _, q := range details {
 		switch q.ID {
 		case decide.QuestionFFATarget:
-			alive := aliveOptions(q, st)
-			if acting && decide.PlayerTargeted(iv.Choice) && len(alive) > 1 {
+			if playerScoped && len(alive) > 1 {
 				p.ask.Questions = append(p.ask.Questions, decide.Question{
 					ID: q.ID, Kind: decide.KindChoice, Text: targetInstructions(iv.Choice), Options: alive,
 				})
@@ -105,16 +119,64 @@ func planDetails(st decide.State, iv decide.Answer, details []decide.Question) d
 			}
 			p.local = append(p.local, localTarget(q, iv.Choice, alive))
 		case decide.QuestionFFAMagnitude:
-			if _, ok := decide.MagnitudeBounds(iv.Choice); acting && ok {
+			_, hasBounds := decide.MagnitudeBounds(iv.Choice)
+			switch {
+			case !acting || !hasBounds || noCandidate:
+				p.local = append(p.local, decide.Answer{QuestionID: q.ID, Score: q.Range[0], Confidence: iv.Confidence})
+			case isTwoWay(iv.Choice):
+				mq := q
+				p.magnitude = &mq
+				dirs := []string{directionHelp, directionReinIn}
+				if len(alive) == 1 {
+					dirs = []string{direction(st, alive[0])}
+				}
+				for _, dir := range dirs {
+					p.ask.Questions = append(p.ask.Questions, decide.Question{
+						ID: strengthQuestionID(dir), Kind: decide.KindScore, Text: q.Text, Range: q.Range,
+					})
+				}
+			default:
 				p.ask.Questions = append(p.ask.Questions, decide.Question{
 					ID: q.ID, Kind: decide.KindScore, Text: q.Text, Range: q.Range,
 				})
-				continue
 			}
-			p.local = append(p.local, decide.Answer{QuestionID: q.ID, Score: q.Range[0], Confidence: iv.Confidence})
 		}
 	}
 	return p
+}
+
+// resolveTwoWay turns a two-way lever's strength answers into the ffa.magnitude
+// answer: the one on the side direction() picks for the chosen target. The
+// other side's answer is dropped. answers are the details and local answers.
+func (p detailsPlan) resolveTwoWay(st decide.State, answers []decide.Answer) ([]decide.Answer, error) {
+	if p.magnitude == nil {
+		return answers, nil
+	}
+	target := ""
+	for _, a := range answers {
+		if a.QuestionID == decide.QuestionFFATarget {
+			target = a.Choice
+		}
+	}
+	want := strengthQuestionID(direction(st, target))
+	out := make([]decide.Answer, 0, len(answers))
+	found := false
+	for _, a := range answers {
+		switch {
+		case a.QuestionID == want:
+			a.QuestionID = p.magnitude.ID
+			out = append(out, a)
+			found = true
+		case strengthDirection(a.QuestionID) != "":
+			// the other side: not applied
+		default:
+			out = append(out, a)
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("jev: %w: no %s answer for target %q", decide.ErrInvalid, want, target)
+	}
+	return out, nil
 }
 
 // aliveOptions are q's options that are alive serials of st, in option order.

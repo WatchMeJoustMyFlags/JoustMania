@@ -323,7 +323,7 @@ func TestSupported(t *testing.T) {
 func TestRender_DangerSignals(t *testing.T) {
 	req := decide.Request{State: decide.State{
 		Players:   []decide.PlayerState{{Serial: "P1", Alive: true}},
-		Narrative: "session: alive=2 death_threshold=2.30 leader=P2 struggling=P1\nplayers:\n  P1 alive intensity=2.20 danger=near_threshold margin=0.10 intensity_rank=1/2\n",
+		Narrative: "session: alive=2 death_threshold=2.30 most_headroom=P2 struggling=P1\nplayers:\n  P1 alive intensity=2.20 danger=near_threshold margin=0.10 intensity_rank=1/2\n",
 	}}
 	p := Render(req)
 	for _, want := range []string{"struggling=P1", "danger=near_threshold margin=0.10 intensity_rank=1/2"} {
@@ -331,7 +331,7 @@ func TestRender_DangerSignals(t *testing.T) {
 			t.Errorf("user message missing %q", want)
 		}
 	}
-	for _, want := range []string{`"danger" is safe, elevated or near_threshold`, `"intensity_rank"`, `"leader"`} {
+	for _, want := range []string{`"danger" is safe, elevated or near_threshold`, `"intensity_rank"`, `"most_headroom"`} {
 		if !strings.Contains(p.System, want) {
 			t.Errorf("system prompt missing %q", want)
 		}
