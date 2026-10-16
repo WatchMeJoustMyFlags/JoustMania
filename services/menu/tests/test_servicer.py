@@ -448,9 +448,9 @@ class TestMenuServicerProcessInput:
         real_servicer.user_prefs_writer.update_default_variant.assert_called_once_with("current_game", expected.name)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-010", flow="A5")
+    @pytest.mark.uc("UC-010", flow="A6")
     async def test_button_trigger_starts_with_ready_roster(self, real_servicer):
-        """UC-010 A5: a ProcessInput trigger starts with the READY controllers, not waiting for all."""
+        """UC-010 A6: a ProcessInput trigger starts with the READY controllers, not waiting for all."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
         await _connect(real_servicer, "s1", "s2", "s3")
         await _ready_up(real_servicer, "s1", "s2")
@@ -464,9 +464,9 @@ class TestMenuServicerProcessInput:
         assert real_servicer.state == menu_pb2.MenuState.GAME_STARTING
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-010", flow="A5")
+    @pytest.mark.uc("UC-010", flow="A6")
     async def test_web_start_game_starts_with_ready_roster(self, real_servicer):
-        """UC-010 A5: web_command start_game starts the selected mode with the READY controllers."""
+        """UC-010 A6: web_command start_game starts the selected mode with the READY controllers."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
         real_servicer.current_selection = Games.JoustTeams
         await _connect(real_servicer, "s1", "s2", "s3")
