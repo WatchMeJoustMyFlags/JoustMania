@@ -46,9 +46,7 @@ import telemetry_inventory as ti
 # --------------------------------------------------------------------------- #
 
 # (a) Agent-ingested metric names with no recording producer.
-AGENT_METRIC_KNOWN_GAPS = {
-    "game_current_mode": "#1336 (defined, never set; fix in PR #1379)",
-}
+AGENT_METRIC_KNOWN_GAPS: dict[str, str] = {}  # empty since #1376 / #1379
 
 # (b) Metrics referenced by dashboards/alerts that no code records.
 CONSUMED_METRIC_KNOWN_GAPS = {
@@ -79,8 +77,6 @@ DEAD_DEFINITION_KNOWN_GAPS = {
     "python_hid_open_total": "#1322 item 7",
     "python_hid_poll_duration_seconds": "#1322 item 7",
     "python_hid_sensor_data_total": "#1322 item 7",
-    # consumed one, tracked above with its own issue
-    "game_current_mode": "#1336",
 }
 
 # Metrics produced outside this repo's code (not gaps). Matched by exact name or prefix.

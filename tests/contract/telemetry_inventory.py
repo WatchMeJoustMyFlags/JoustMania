@@ -111,12 +111,19 @@ def _call_name(func: ast.expr) -> str | None:
     return None
 
 
-def _label_names(call: ast.Call) -> tuple[str, ...]:
-    """The label-name list of a ``Counter/Gauge/Histogram(name, doc, [labels])`` call."""
+def _label_names(
+    call: ast.Call, constants: dict[str, ast.expr] | None = None
+) -> tuple[str, ...]:
+    """The label-name list of a ``Counter/Gauge/Histogram(name, doc, [labels])`` call.
+
+    The list may be a literal or a module-level constant (``GAME_STATE_LABELS``).
+    """
     node = call.args[2] if len(call.args) > 2 else None
     for kw in call.keywords:
         if kw.arg in {"labelnames", "labels", "label_names"}:
             node = kw.value
+    if isinstance(node, ast.Name) and constants and node.id in constants:
+        node = constants[node.id]
     if isinstance(node, (ast.List, ast.Tuple)):
         return tuple(
             e.value
@@ -133,6 +140,13 @@ def _python_metric_definitions(root: Path) -> list[PyMetric]:
         if path.name == "otel_metrics.py":
             continue
         tree = ast.parse(path.read_text(), filename=str(path))
+        constants = {
+            n.targets[0].id: n.value
+            for n in tree.body
+            if isinstance(n, ast.Assign)
+            and isinstance(n.targets[0], ast.Name)
+            and isinstance(n.value, (ast.List, ast.Tuple))
+        }
         for node in tree.body:
             if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
                 continue
@@ -152,7 +166,7 @@ def _python_metric_definitions(root: Path) -> list[PyMetric]:
                         _call_name(call.func),
                         target.id,
                         _dotted(path, root),
-                        _label_names(call),
+                        _label_names(call, constants),
                     )
                 )
     return defs
