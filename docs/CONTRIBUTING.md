@@ -22,7 +22,7 @@ Thank you for your interest in contributing to JoustMania! This guide will help 
 6. You're ready to develop!
 
 The dev container includes:
-- Python 3.11+
+- Python 3.14 (`python:3.14-slim`; the repo requires `>=3.14,<3.15`)
 - All development tools (ruff, uv, ipython)
 - Docker-in-Docker for building service images
 - Pre-configured VS Code extensions
@@ -95,7 +95,9 @@ are where docs drifted from code in the past.
 4. **Close the loop.** When the code ships, move the status forward
    (`Open` → `Implemented` → `Verified` once an automated test covers it) and
    update the "Traceability" line of the technical spec section with the code
-   path and test.
+   path and test. In a same-PR spec change, set the post-merge status
+   (`Implemented` / `Verified`) directly; do not leave `In Progress` for a
+   follow-up to flip.
 5. **Fill in the PR template's "Spec changes"** with the IDs/sections changed.
 
 The spec PR can precede the code PR (useful for review of intent), but a code PR
@@ -115,7 +117,10 @@ the inventory until then.
 Requirements use the AIUP requirement statuses (`Open`, `In Progress`, `Implemented`, `Verified`,
 `Deferred`, `Rejected`); use cases use the use-case statuses, which map as follows: `Draft` / `Review` /
 `Approved` = requirement `Open` or `In Progress`, `Implemented` = `Implemented`, `Tested` / `Done` =
-`Verified`, `Obsolete` = `Rejected`.
+`Verified`, `Obsolete` = `Rejected`. UC `Tested` = every main-scenario and alternative-flow step has a
+tagged test (see /coverage-check). A use case's status is never above the weakest FR on its
+`Requirements:` line; FRs that only a planned flow needs go on a separate `Planned:` line with their
+issue number, so the use case can be `Implemented` while they stay `Open`.
 
 ### Identifiers in use cases (documented deviation)
 
@@ -145,7 +150,8 @@ something is observable, it probably is: update the spec.
   and so on; see its header); append new IDs at the end of the area's block or,
   if the block is full, at the end of the table with the next free number.
 - **Use cases list the FRs they realise** (`Requirements:` line in the
-  overview). Every FR must be referenced by at least one UC.
+  overview; FRs for planned flows on a `Planned:` line). Every FR must be
+  referenced by at least one UC.
 - **Technical spec sections end with a `Traceability:` line** listing FR / UC IDs,
   the code paths (`file:line` or file) and the tests that exercise them.
 - **Planned work** carries its issue number in the row (`#1229`) and stays
@@ -155,13 +161,15 @@ something is observable, it probably is: update the spec.
 
 ## Development Workflow
 
-### Git Worktree (Recommended for Issue Work)
+### Git Worktree (Required)
 
-Use git worktrees to isolate work on different issues:
+Always work in a new worktree on a feature branch; never commit on `main` or in the
+main checkout. Branches are named `fix/<description>` or `feat/<description>` (other
+Conventional Commit types such as `docs/` and `refactor/` work the same way):
 
 ```bash
 # Create worktree for an issue
-git worktree add ../JoustMania-issue-<NUMBER> -b issue-<NUMBER> origin/main
+git worktree add ../JoustMania-issue-<NUMBER> -b fix/<description> origin/main
 
 # Work in the isolated directory
 cd ../JoustMania-issue-<NUMBER>
@@ -172,10 +180,7 @@ git worktree remove ../JoustMania-issue-<NUMBER>
 
 ### Making Changes
 
-1. Create a branch (or use worktree above):
-   ```bash
-   git checkout -b issue-<NUMBER>
-   ```
+1. Create the worktree and branch above (`fix/<description>` or `feat/<description>`).
 
 2. Make your changes
 
@@ -197,7 +202,7 @@ git worktree remove ../JoustMania-issue-<NUMBER>
 
 6. Push and create pull request:
    ```bash
-   git push origin issue-<NUMBER>
+   git push -u origin fix/<description>
    ```
 
 ## Continuous Integration
@@ -288,7 +293,7 @@ git commit -m "chore: Regenerate proto files"
 
 We use **ruff** for linting and formatting:
 - Line length: 100 characters
-- Target version: Python 3.11+
+- Target version: Python 3.14 (`requires-python = ">=3.14,<3.15"` in `pyproject.toml`)
 - Automatic import sorting
 - Comprehensive linting rules
 

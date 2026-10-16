@@ -57,6 +57,7 @@ rectangle "JoustMania" {
 player --> UC001
 player --> UC002
 player --> UC010
+player --> UC011
 player --> UC020
 player --> UC021
 player --> UC022
