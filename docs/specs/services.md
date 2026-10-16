@@ -221,7 +221,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 - Sessions: one primary (menu origin) + shadows; caps `max_concurrent_games` (8), `max_shadow_games` (4), `shadow_policy` (block); real starts preempt shadows (`servicer.py:66-136,332-525`). Game ids `game_<12 hex>`.
 - Registry `_GAME_CLASSES` (`game_factory.py:56-67`), 10 modes. Death detection in `games/base.py` (UC-030).
-- `InterventionManager` watches `interventions.json`, evaluates each flag per live session with `{targetingKey=serial, gameId}`, enforces allow-list → mode matrix → battery → global backstop, applies via difficulty / lifecycle handlers and emits `agent_intervention` + `game_interventions_total`.
+- `InterventionManager` watches `interventions.json`, evaluates each flag per live session with `{targetingKey=serial, gameId}`, enforces allow-list → mode matrix → battery → global backstop, applies via difficulty / lifecycle handlers and emits `agent_intervention` + `game_interventions_total`. The `end_game` intervention ends only the session whose `game_id` it carries, through the same path as `ForceEndGame` with that `game_id` (UC-040 BR-011); per-player grant flags apply once per decision, per player (UC-040 BR-012).
 
 ### menu
 

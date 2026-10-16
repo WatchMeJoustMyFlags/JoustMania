@@ -174,7 +174,9 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             event_publisher=self.primary_event_bus.publish,
             get_sessions=self.get_intervention_sessions,
             battery_provider=self._battery_pct_for_serial,
-            end_game_fn=self._force_end_current_game,
+            # end_game ends exactly the session it was evaluated for, never
+            # "the current game" (UC-040 BR-011, #1310).
+            end_game_fn=self._force_end_session,
         )
         # PR E: register the ambient/session handlers (audio cue, volume,
         # controller effect, end game).
@@ -280,6 +282,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     game_id=session.game_id,
                     game=game,
                     publish=session.event_bus.publish,
+                    is_real=session.is_primary,
                 )
             )
         return views
@@ -608,7 +611,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # values BEFORE it runs: a value already present belongs to an
             # earlier game and is consumed, so it can never replay into this one
             # (UC-040 BR-006, #1299). Real and shadow sessions alike.
-            self._prime_intervention_baseline(game_id)
+            self._prime_intervention_baseline(game_id, session.players)
             # Update lifecycle metrics for this session's kind (#775) + experiment
             # attribution (#975). experiment_id/arm are "" for a non-experiment
             # game; #976's spawn binding sets them on the session.
@@ -658,25 +661,37 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
     # ------------------------------------------------------------------
 
     async def _force_end_current_game(self, reason: str) -> tuple[bool, str]:
-        """Force end the PRIMARY game (shared by ForceEndGame RPC and the
-        ``end_game`` agent intervention, #730).
+        """Force end the PRIMARY game (legacy ``ForceEndGame`` with no game_id).
 
-        Until game_id routing lands (#776), this targets the primary session.
         No-ops safely (returns ``(False, ...)``) when no primary game is running.
 
         Returns ``(success, error)``.
         """
-        session = self._get_primary_session()
+        return await self._force_end_session("", reason)
+
+    async def _force_end_session(self, game_id: str, reason: str) -> tuple[bool, str]:
+        """Force end exactly the session ``game_id`` (shared by ``ForceEndGame``
+        and the ``end_game`` agent intervention).
+
+        ``""`` resolves to the primary session (legacy semantics). A non-empty
+        game_id never falls back to the primary: an unknown id is a no-op, so an
+        ``end_game`` evaluated for a shadow can only end that shadow (UC-040
+        BR-011, #1310).
+
+        Returns ``(success, error)``.
+        """
+        session = self._resolve_session(game_id)
         if session is None:
-            return False, "No game in progress"
+            return False, (f"Unknown game_id: {game_id}" if game_id else "No game in progress")
 
         success, error = await session.force_end(reason)
         if success:
             self._retire_session(session.game_id)
         return success, error
 
-    def _prime_intervention_baseline(self, game_id: str) -> None:
-        """Prime the InterventionManager's edge baseline for a new game (#1299).
+    def _prime_intervention_baseline(self, game_id: str, players=()) -> None:
+        """Prime the InterventionManager's edge and per-player grant baselines
+        for a new game (#1299, #1313). ``players`` are the game's Player protos.
 
         Never fails a start. If priming raises, the manager's fallback primes the
         session the first time it is evaluated live, recording current edge
@@ -685,7 +700,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         evaluation is not applied.
         """
         try:
-            self.intervention_manager.prime_session(game_id)
+            self.intervention_manager.prime_session(game_id, [player.serial for player in players])
         except Exception as e:
             logger.error(f"Failed to prime intervention baseline for {game_id}: {e}")
 
@@ -722,13 +737,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 success, error = await self._force_end_current_game(request.reason)
                 return game_coordinator_pb2.ForceEndGameResponse(success=success, error=error)
 
-            session = self._resolve_session(game_id)
-            if session is None:
-                return game_coordinator_pb2.ForceEndGameResponse(success=False, error=f"Unknown game_id: {game_id}")
-
-            success, error = await session.force_end(request.reason)
-            if success:
-                self._retire_session(session.game_id)
+            success, error = await self._force_end_session(game_id, request.reason)
             return game_coordinator_pb2.ForceEndGameResponse(success=success, error=error)
         except Exception as e:
             logger.error(f"ForceEndGame error: {e}", exc_info=True)

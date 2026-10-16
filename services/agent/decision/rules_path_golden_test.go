@@ -57,7 +57,13 @@ func TestRulesPathGolden(t *testing.T) {
 			rec.Steps = append(rec.Steps, rulesGoldenStep{Step: step, Outcomes: st.Outcomes})
 			advance(&clock, 7*time.Second)
 		}
-		rec.Applied = sink.decisions()
+		// GameID is the sink-call addressing runDecision stamps (#1310), not
+		// part of what the rules decided; the golden pins the rules path only.
+		applied := sink.decisions()
+		for i := range applied {
+			applied[i].GameID = ""
+		}
+		rec.Applied = applied
 		got = append(got, rec)
 	}
 

@@ -172,12 +172,14 @@ class Harness:
 
         return publish
 
-    def start_game(self, game_id: str, *, prime: bool = True) -> FakeGame:
-        """Admit a game the way the servicer does: prime, then go live."""
+    def start_game(self, game_id: str, *, prime: bool = True, real: bool = True) -> FakeGame:
+        """Admit a game the way the servicer does: prime, then go live. The
+        game is the real one unless ``real=False`` (an un-addressed ``end_game``
+        applies only to the real game, UC-040 BR-011)."""
         if prime:
             self.mgr.prime_session(game_id)
         game = FakeGame()
-        self.views.append(SessionView(game_id=game_id, game=game, publish=self._publisher(game_id)))
+        self.views.append(SessionView(game_id=game_id, game=game, publish=self._publisher(game_id), is_real=real))
         return game
 
     def end_game(self, game_id: str) -> None:
@@ -253,7 +255,7 @@ async def test_stale_end_game_does_not_end_next_game_but_fresh_one_does():
 
     h.flags.values["end_game"] = "6-new:"
     await h.flag_change()
-    h.end_game_fn.assert_awaited_once_with("agent_intervention")
+    h.end_game_fn.assert_awaited_once_with("game_n1", "agent_intervention")
 
 
 @pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
@@ -476,9 +478,11 @@ async def test_servicer_start_primes_new_game_so_stale_edge_is_not_replayed(game
     a stale value left in flagd is not applied on the next flag change, while
     a fresh value written during the game is."""
     stale = {"end_game": "9-stale:", "eliminate_player": "9-stale:p1"}[flag_key]
-    fresh = {"end_game": "10-fresh:", "eliminate_player": "10-fresh:p2"}[flag_key]
     servicer, flags, end_game_fn, game = await _start_through_servicer(game_kind, {flag_key: stale})
     mgr = servicer.intervention_manager
+    # end_game is addressed to the deciding game (UC-040 BR-011, #1310).
+    game_id = next(iter(servicer.sessions))
+    fresh = {"end_game": f"10-fresh:{game_id}", "eliminate_player": "10-fresh:p2"}[flag_key]
     try:
         with patch("services.game_coordinator.metrics.interventions_total"):
             flags.values["global_difficulty_factor"] = 1.5  # unrelated write
@@ -501,9 +505,10 @@ async def test_servicer_primes_at_start_so_first_change_fresh_edge_fires(game_ki
     """The very first flag change in the game is a fresh edge write: it must
     fire. This pins the servicer's start-time prime: without it the never-primed
     fallback would adopt the fresh value as the baseline and swallow it."""
-    fresh = {"end_game": "10-fresh:", "eliminate_player": "10-fresh:p2"}[flag_key]
     servicer, flags, end_game_fn, game = await _start_through_servicer(game_kind, {})
     mgr = servicer.intervention_manager
+    game_id = next(iter(servicer.sessions))
+    fresh = {"end_game": f"10-fresh:{game_id}", "eliminate_player": "10-fresh:p2"}[flag_key]
     try:
         flags.values[flag_key] = fresh
         with patch("services.game_coordinator.metrics.interventions_total"):

@@ -56,6 +56,10 @@ class FakeFlagClient:
         # The manager reads edge flags via details to see errors (#1299).
         return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, _ctx))
 
+    def get_float_details(self, key, default, _ctx=None):
+        # Per-serial grant flags are read via details (variant + errors, #1313).
+        return FlagEvaluationDetails(flag_key=key, value=self.get_float_value(key, default, _ctx))
+
     def get_integer_value(self, key, default, _ctx=None):
         return int(self.values.get(key, default))
 
@@ -732,8 +736,8 @@ async def test_string_targeted_state_dispatches_and_reverts():
         mgr._interventions_client.set("soft_penalty_action", "none")
         await mgr.evaluate_all()
     assert len(_applied(events, "soft_penalty")) == 1
-    # The recorded change-detection baseline is back to the empty (neutral) key.
-    assert mgr._state_bucket("").get("soft_penalty_action") == ()
+    # The recorded per-serial grant baseline (UC-040 BR-012) is back to neutral.
+    assert mgr._state_bucket("").get("soft_penalty_action") == {"p1": (None, "none")}
 
 
 @pytest.mark.asyncio
@@ -747,8 +751,8 @@ async def test_partial_shield_string_value_change_detected():
         mgr._interventions_client.set("partial_shield_seconds", "5:2.0")
         await mgr.evaluate_all()  # real value -> dispatch
     assert len(_applied(events, "partial_shield")) == 1
-    # The change-detection baseline holds the REAL string, not a coerced default.
-    assert mgr._state_bucket("").get("partial_shield_seconds") == (("p1", "5:2.0"),)
+    # The per-serial grant baseline holds the REAL string, not a coerced default.
+    assert mgr._state_bucket("").get("partial_shield_seconds") == {"p1": (None, "5:2.0")}
 
 
 @pytest.mark.asyncio

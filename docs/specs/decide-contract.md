@@ -479,7 +479,7 @@ Full flag shapes: [flags.md § interventions](flags.md#5-interventions).
 | `play_audio_cue` | `audio_cue` | edge `<nonce>:<payload>` | `agent_cue` (an audio-registry alias of the lobby ready ping `beep_loud`; UC-040 BR-007) |
 | `send_controller_effect` | `controller_effect` | edge `<nonce>:<serial>:<effect>` | `rumble` |
 | `eliminate_player` / `revive_player` | same name | edge `<nonce>:<serial>` | |
-| `end_game` | `end_game` | edge, nonce only | |
+| `end_game` | `end_game` | edge `<nonce>:<game_id>` (deciding game) | |
 | `adjust_music_tempo` | `music_tempo_override` | state | 1.15 |
 | `adjust_volume` | `volume_override` | state | 0.7 |
 | `adjust_global_sensitivity` | `global_sensitivity_override` | state | 2 |
@@ -487,14 +487,14 @@ Full flag shapes: [flags.md § interventions](flags.md#5-interventions).
 | `set_pacing_profile` | `pacing_profile` | state | `frantic` |
 | `ramp_tempo` | `tempo_ramp` | state | `1.3:8:linear` |
 | `auto_rubberband` | `auto_rubberband` | state | `gentle` |
-| `adjust_player_sensitivity` | `player_sensitivity_factor` | per serial | 1.5 |
-| `set_player_handicap` | `player_handicap_factor` | per serial | 1.25 |
-| `grant_shield` | `shield_seconds` | per serial | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16) |
-| `partial_shield` | `partial_shield_seconds` | per serial | `5:2.0` (feedback: `shield_up` at half volume + `GAME_EFFECT_PARTIAL_SHIELD`) |
-| `soft_penalty` | `soft_penalty_action` | per serial | `warn` |
+| `adjust_player_sensitivity` | `player_sensitivity_factor` | per serial level | 1.5 |
+| `set_player_handicap` | `player_handicap_factor` | per serial level | 1.25 |
+| `grant_shield` | `shield_seconds` | per serial grant | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16) |
+| `partial_shield` | `partial_shield_seconds` | per serial grant | `5:2.0` (feedback: `shield_up` at half volume + `GAME_EFFECT_PARTIAL_SHIELD`) |
+| `soft_penalty` | `soft_penalty_action` | per serial grant | `warn` |
 | `noop` | (no write) | | |
 
-The agent targets by **serial only**; it never writes `gameId` targeting, although
+The agent targets by **serial only**; it never writes `gameId` targeting (the one exception is `end_game`, addressed by payload, below), although
 the coordinator evaluates every intervention flag with `{targetingKey=serial,
 gameId}` and supports gameId-scoped rules (#838,
 `tests/integration/test_gameid_intervention_isolation.py`). An un-targeted state flip
@@ -508,6 +508,27 @@ a value left over from an earlier game, or from before a coordinator restart, is
 consumed and never replayed. Edge flags are read with their evaluation details: a
 flagd error read never moves the baseline, and a baseline that could not be read
 at game start adopts the next good value without firing (fail closed) ([UC-040 BR-006](../use_cases/UC-040.md#br-006-an-edge-intervention-fires-only-in-the-game-that-saw-it-change), #1299).
+
+`end_game` is addressed: the writer sets `Decision.GameID` from the deciding loop's
+`GameContext.SessionID` and writes `<nonce>:<game_id>`; it refuses an `end_game` with no
+game id. The coordinator consumes the nonce in every live session but force-ends only the
+session whose `game_id` is the payload (`InterventionManager._evaluate_one` →
+`_handle_end_game` → `end_game_fn(game_id, reason)` = `GameCoordinatorServicer._force_end_session`,
+the same path as `ForceEndGame` with a `game_id`). A session that is not addressed records
+nothing and uses no backstop budget. A value without a game id ends only the real game
+([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for), #1310).
+
+Per-serial **grant** flags (`shield_seconds`, `partial_shield_seconds`,
+`soft_penalty_action`) are one-shot per decision: the writer gives each grant a fresh
+variant `agent_<serial>#<nonce>` that replaces the player's previous variant. The
+coordinator (`InterventionManager._evaluate_targeted_grant`) reads each player's
+variant and value with evaluation details, seeds the game's per-player baseline at
+`prime_session` (the servicer passes the game's serials), and dispatches one intervention
+per player whose variant or value changed and is not neutral, with `target` = that
+serial. An error read never moves that player's baseline; an unknown baseline adopts the
+next good value without firing. Per-serial **level** flags (`player_sensitivity_factor`,
+`player_handicap_factor`) keep the whole-map change key: the handler re-applies every
+player's factor, which is idempotent ([UC-040 BR-012](../use_cases/UC-040.md#br-012-a-per-player-grant-applies-once-per-decision), #1313).
 
 The coordinator re-checks independently before any handler runs
 (`InterventionManager._enforce_and_dispatch` → `_check_chain` in `interventions.py`): allow-list membership → mode capability deny matrix
