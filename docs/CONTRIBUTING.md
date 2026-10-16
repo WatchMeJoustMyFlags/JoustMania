@@ -89,9 +89,12 @@ are where docs drifted from code in the past.
      flow `An`), reference the FR IDs it fulfils.
    - New or changed flag, span, attribute, metric, RPC, decide question or
      outcome: edit the row in `docs/specs/*.md` *first*; the code must match it.
-3. **Implement and test.** New tests should name the spec ID they cover (in a
-   docstring, test name or comment), e.g. `# UC-040 A2: remote timeout → rules`.
-   Existing tests are not retrofitted.
+3. **Implement and test.** New tests carry a traceability tag for the spec unit they
+   cover: `@pytest.mark.uc("UC-040", flow="A2", br=["BR-001"])` in pytest, a
+   `// UC: UC-040 A2` line above `func Test…` plus `UC-040/A2 …` subtest names in Go,
+   `describe('UC-040: …')` in the dashboard (see [.claude/skills/README.md](../.claude/skills/README.md)).
+   A docstring or comment alone does not count. Existing tests are retagged per area
+   (backlog); a UC returns to `Tested` when `/coverage-check` shows full tagged coverage.
 4. **Close the loop.** When the code ships, move the status forward
    (`Open` → `Implemented` → `Verified` once an automated test covers it) and
    update the "Traceability" line of the technical spec section with the code

@@ -2,8 +2,10 @@
 
 Project skills that implement the AIUP [stack plugin contract](https://unifiedprocess.ai/stack-guide.html)
 for our stack (Python services on `lib/`, the Go agent, the TS dashboard, docker-compose e2e on mock
-controllers). The spec skills (`requirements`, `entity-model`, `use-case-diagram`, `use-case-spec`,
-`spec-review`, `test-case`) come from the `aiup-core` plugin.
+controllers). The spec skills (`requirements`, `entity-model`, `use-case-diagram`, `use-case-spec`) come
+from the `aiup-core` plugin. `spec-review` and `test-case` require the switch to the
+[AI-Unified-Process/marketplace](https://github.com/AI-Unified-Process/marketplace) (PR #1290); until that
+lands, skip step 1 of the loop.
 
 ## The loop, one use case at a time
 
@@ -25,7 +27,10 @@ line; when code and spec disagree they stop and propose a spec change.
 | `pytest-test` | `services/*/tests`, `lib/tests` | Unit tests |
 | `go-test` | `services/agent/**/*_test.go` | Unit tests |
 | `integration-test` | `tests/integration` | End-to-end (our `playwright-test`) |
-| `coverage-check` | nothing | Coverage audit |
+| `coverage-check` | nothing (delegates to the read-only `uc-coverage` agent in `.claude/agents/`) | Coverage audit |
+
+Dashboard (vitest) tests have no writing skill yet, deliberately: write them by hand with the
+`describe('UC-040: ...')` convention; `coverage-check` already reads it.
 
 There is no migration skill: JoustMania has no database (state lives in flagd JSON flag sets and
 in-memory services).
