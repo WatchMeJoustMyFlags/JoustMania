@@ -501,6 +501,12 @@ gameId}` and supports gameId-scoped rules (#838,
 therefore resolves for every live session. Design follow-up: #920. Logged as a
 discrepancy in [specs-inventory.md](../specs-inventory.md#4-discrepancies-found).
 
+Edge flags apply once per nonce and only in the game during which the nonce changed.
+The coordinator seeds each game's nonce baseline from the current flag values when
+the game is admitted (`InterventionManager.prime_session`, real and shadow alike), so
+a value left over from an earlier game, or from before a coordinator restart, is
+consumed and never replayed ([UC-040 BR-005](../use_cases/UC-040.md#br-005-an-edge-intervention-fires-only-in-the-game-that-saw-it-change), #1299).
+
 The coordinator re-checks independently before any handler runs
 (`interventions.py:1190-1222`): allow-list membership → mode capability deny matrix
 (`interventions.py:355-383`) → battery guard → global backstop. Its block reasons are

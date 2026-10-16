@@ -158,6 +158,10 @@ def make_multisession_manager(*, sessions, rules=None):
     mgr._interventions_client = TargetingFlagClient(rules or {})
     mgr._agent_client = AgentStub()
     mgr._rate_limiter.set_budget(50.0)
+    # Model the servicer: every session is primed at game start (#1299), before
+    # the test writes the intervention it expects to fire.
+    for game_id, _game in sessions:
+        mgr.prime_session(game_id)
     return mgr, events_by_game
 
 

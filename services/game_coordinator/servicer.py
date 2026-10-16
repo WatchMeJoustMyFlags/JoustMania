@@ -603,6 +603,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 if not is_real or attempt == 1:
                     return False, "Game already in progress"
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
+            # Seed this game's edge-intervention baseline from the current flag
+            # values BEFORE it runs: a value already present belongs to an
+            # earlier game and is consumed, so it can never replay into this one
+            # (UC-040 BR-005, #1299). Real and shadow sessions alike.
+            self._prime_intervention_baseline(game_id)
             # Update lifecycle metrics for this session's kind (#775) + experiment
             # attribution (#975). experiment_id/arm are "" for a non-experiment
             # game; #976's spawn binding sets them on the session.
@@ -668,6 +673,17 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         if success:
             self._retire_session(session.game_id)
         return success, error
+
+    def _prime_intervention_baseline(self, game_id: str) -> None:
+        """Prime the InterventionManager's edge baseline for a new game (#1299).
+
+        Never fails a start: on error the manager's fail-closed fallback primes
+        the session the first time it is evaluated live.
+        """
+        try:
+            self.intervention_manager.prime_session(game_id)
+        except Exception as e:
+            logger.error(f"Failed to prime intervention baseline for {game_id}: {e}")
 
     def _retire_session(self, game_id: str) -> None:
         """Remove a finished session from the registry and free the primary slot
