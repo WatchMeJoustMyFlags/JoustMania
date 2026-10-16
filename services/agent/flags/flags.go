@@ -177,7 +177,10 @@ const (
 	// ALL games combined plus the retro (llm.max_requests_per_minute). Each
 	// admitted remote decide call or retro is one request; defaults to 6/min total.
 	// The agent.json "stage" variant (30/min) is for a live remote-backend demo:
-	// one game at decision.min_interval_ms=3000 asks ~15-20 times a minute (#1231).
+	// one game at decision.min_interval_ms=3000 asks ~15-20 times a minute
+	// (#1231), and post-game retros draw on the same budget, so that is a lower
+	// bound on demand. AGENT_LLM_MAX_REQUESTS_PER_MINUTE, when set, REPLACES this
+	// flag (Loop.budgetCap, #964): flipping "stage" then changes nothing.
 	DefaultLLMMaxRequestsPerMinute = 6
 
 	// Fitness threshold defaults (#731), mirroring the services/flagd/agent.json

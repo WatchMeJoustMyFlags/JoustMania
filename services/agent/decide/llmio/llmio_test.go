@@ -204,6 +204,29 @@ func TestParse_TruncatedTopK(t *testing.T) {
 			t.Errorf("%s: err = %v, want decide.ErrInvalid", name, err)
 		}
 	}
+
+	// The top listed entry must beat any single omitted option even if all of
+	// the missing mass went to it; otherwise the list may not be the top.
+	fourOptions := decide.Request{State: req.State, Questions: []decide.Question{
+		{ID: "q", Kind: decide.KindChoice, Options: []string{"a", "b", "c", "d"}},
+	}}
+	twoOptions := decide.Request{State: req.State, Questions: []decide.Question{
+		{ID: "q", Kind: decide.KindChoice, Options: []string{"MOCK1", "none"}},
+	}}
+	ambiguous := map[string]struct {
+		req  decide.Request
+		body string
+	}{
+		"0.30+0.25 of 4 options (0.45 missing)": {fourOptions,
+			`{"answers":[{"id":"q","choice":"a","score":0,"probabilities":[{"option":"a","p":0.30},{"option":"b","p":0.25}],"confidence":0.5}],"rationale":"r"}`},
+		"0.5 of 2 options (tie with the omitted one)": {twoOptions,
+			`{"answers":[{"id":"q","choice":"MOCK1","score":0,"probabilities":[{"option":"MOCK1","p":0.5}],"confidence":0.5}],"rationale":"r"}`},
+	}
+	for name, c := range ambiguous {
+		if _, err := Parse(c.req, []byte(c.body), "claude"); !errors.Is(err, decide.ErrInvalid) {
+			t.Errorf("%s: err = %v, want decide.ErrInvalid", name, err)
+		}
+	}
 }
 
 func TestParse_Rejects(t *testing.T) {

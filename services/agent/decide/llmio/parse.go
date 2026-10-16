@@ -38,7 +38,10 @@ const renormalizeTolerance = 0.02
 // to 1. The prompt asks for the top 3 options only, and models sometimes list
 // just the chosen option at p=0.95 and drop the tail instead of spreading it
 // (seen live on claude-haiku-4-5, #1231). Rescaling keeps the ranking (the
-// choice must still be the argmax for decide.Validate); a list carrying less
+// choice must still be the argmax for decide.Validate). It is only safe when the
+// list really is the top: its most probable entry must beat any single omitted
+// option even if all the missing mass went to that option (maxListed > 1-sum),
+// see rescalable. The floor is a further sanity check: a list carrying less
 // than half the mass is not a top-k answer and is left for Validate to reject.
 const truncatedMinSum = 0.5
 
@@ -78,8 +81,9 @@ type wireOutput struct {
 //     field to be present, so the "unused" value is noise, not a contradiction);
 //   - choice probabilities summing to within 0.02 of 1 are rescaled to sum to 1;
 //   - a truncated choice distribution (fewer entries than options, summing to
-//     at least 0.5 but less than 1) is rescaled to sum to 1: the omitted
-//     options keep probability 0 and the listed ones keep their ranking.
+//     at least 0.5 but less than 1, whose top entry exceeds the missing mass
+//     1-sum) is rescaled to sum to 1: the omitted options keep probability 0
+//     and the listed ones keep their ranking.
 //
 // Everything else (unknown question ids, duplicate answers, out-of-range
 // numbers, a choice that is not the most probable option) is left for
@@ -168,7 +172,7 @@ func toProbabilities(in []wireProbability, options int) (map[string]float64, err
 		return nil, fmt.Errorf("%d probabilities, limit %d", len(in), MaxProbabilities)
 	}
 	out := make(map[string]float64, len(in))
-	var sum float64
+	var sum, maxListed float64
 	for _, p := range in {
 		if p.P == nil {
 			return nil, errors.New("probability entry without p")
@@ -178,8 +182,9 @@ func toProbabilities(in []wireProbability, options int) (map[string]float64, err
 		}
 		out[p.Option] = *p.P
 		sum += *p.P
+		maxListed = math.Max(maxListed, *p.P)
 	}
-	if rescalable(sum, len(out) < options) {
+	if rescalable(sum, maxListed, len(out) < options) {
 		for k, v := range out {
 			if v > 0 {
 				out[k] = v / sum
@@ -191,15 +196,18 @@ func toProbabilities(in []wireProbability, options int) (map[string]float64, err
 
 // rescalable reports whether a distribution summing to sum is rescaled to 1:
 // within renormalizeTolerance of 1 (rounding), or a truncated top-k list
-// carrying at least truncatedMinSum of the mass.
-func rescalable(sum float64, truncated bool) bool {
+// carrying at least truncatedMinSum of the mass whose most probable entry
+// (maxListed) strictly beats any single omitted option, even one that took all
+// of the missing mass 1-sum. Without that, rescaling could crown an option that
+// is not the model's real argmax.
+func rescalable(sum, maxListed float64, truncated bool) bool {
 	if sum <= 0 || sum == 1 || math.IsInf(sum, 0) || math.IsNaN(sum) {
 		return false
 	}
 	if math.Abs(sum-1) <= renormalizeTolerance {
 		return true
 	}
-	return truncated && sum >= truncatedMinSum && sum < 1
+	return truncated && sum >= truncatedMinSum && sum < 1 && maxListed > 1-sum
 }
 
 // stripFence removes one surrounding ``` / ```json fence.

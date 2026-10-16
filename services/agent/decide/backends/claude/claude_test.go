@@ -507,8 +507,8 @@ func TestDecide_SonnetRequestShape(t *testing.T) {
 	if body["max_tokens"].(float64) != MaxTokens {
 		t.Errorf("max_tokens = %v, want %d (adaptive may think)", body["max_tokens"], MaxTokens)
 	}
-	// No prompt caching (see the package doc, #1231): cache_control on the
-	// system block correlated with empty answers on Sonnet 5.5.
+	// No prompt caching (see the package doc, #1231): no measurable TTFT gain
+	// at this prompt size.
 	if raw := string(api.lastBody.Load().([]byte)); strings.Contains(raw, "cache_control") {
 		t.Error("request must not carry cache_control")
 	}

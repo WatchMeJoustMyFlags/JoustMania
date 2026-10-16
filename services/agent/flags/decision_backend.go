@@ -65,11 +65,14 @@ const (
 	// never overlaps two calls, so the effective cadence is max(interval, call
 	// latency) rounded up to the next evaluate cycle. With remote calls taking
 	// ~2-3.5s (#1231) that is one call every ~3-4s, i.e. ~15-20 calls a minute
-	// for ONE game: far above the default llm.max_requests_per_minute of 6, which
-	// is spent in the first ~20s of a game (then llm_budget_exhausted -> rules).
-	// Raise the budget (its "stage" variant, 30) for a demo, or lengthen this
-	// interval to spend less; 3000 stays the default because a shorter interval
-	// would only be absorbed by the inflight guard.
+	// for ONE game, a lower bound on demand since post-game retros draw on the
+	// same global budget: far above the default llm.max_requests_per_minute of 6,
+	// which is spent in the first ~20s of a game (then llm_budget_exhausted ->
+	// rules). Raise the budget (its "stage" variant, 30) for a demo, or lengthen
+	// this interval to spend less; 3000 stays the default because a shorter
+	// interval would only be absorbed by the inflight guard. Note that
+	// AGENT_LLM_MAX_REQUESTS_PER_MINUTE, when set, replaces the budget flag
+	// (Loop.budgetCap), so flipping "stage" then has no effect.
 	DefaultDecisionMinIntervalMs = 3000
 	// DefaultDecisionClaudeModel is the claude backend's model (variant "haiku").
 	DefaultDecisionClaudeModel = "claude-haiku-4-5-20251001"
