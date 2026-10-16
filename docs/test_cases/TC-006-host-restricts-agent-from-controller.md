@@ -6,7 +6,7 @@
 **Goal:** During a Free-for-All game the host steps the agent's permission down to `none` from a controller, and from then on the agent makes no remote call and nothing it decides takes effect in the game.  
 **Priority:** Critical  
 **Status:** Draft  
-**Use cases:** [UC-012](../use_cases/UC-012.md) main, A6; [UC-013](../use_cases/UC-013.md) main; [UC-040](../use_cases/UC-040.md) A14, A20; [UC-045](../use_cases/UC-045.md) A2
+**Use cases:** [UC-012](../use_cases/UC-012.md) main, A6; [UC-013](../use_cases/UC-013.md) main; [UC-040](../use_cases/UC-040.md) A14, A22; [UC-045](../use_cases/UC-045.md) A2
 
 ## Roles
 
