@@ -18,8 +18,9 @@ func defaultDecisionBackend() DecisionBackend {
 		CaptureContent:         DefaultDecisionCaptureContent,
 		MinInterval:            DefaultDecisionMinIntervalMs * time.Millisecond,
 		Claude:                 RemoteBackendConfig{Model: DefaultDecisionClaudeModel, Timeout: timeout},
-		OpenAI:                 RemoteBackendConfig{BaseURL: DefaultDecisionOpenAIBaseURL, Timeout: timeout},
-		Jev:                    RemoteBackendConfig{Timeout: timeout},
+		OpenAI: RemoteBackendConfig{BaseURL: DefaultDecisionOpenAIBaseURL, Timeout: timeout,
+			ReasoningEffort: DefaultDecisionOpenAIReasoningEffort},
+		Jev: RemoteBackendConfig{Timeout: timeout},
 	}
 }
 
@@ -37,12 +38,13 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 	stub := stubEvaluator{
 		booleans: map[string]bool{keyDecisionCaptureContent: true},
 		strings: map[string]string{
-			keyDecisionBackend:       " Claude ",
-			keyDecisionClaudeModel:   "claude-sonnet-5-5",
-			keyDecisionOpenAIBaseURL: "https://example.test/v1",
-			keyDecisionOpenAIModel:   "gpt-x",
-			keyDecisionJevBaseURL:    "https://jev.test",
-			keyDecisionJevModel:      "jev-1",
+			keyDecisionBackend:               " Claude ",
+			keyDecisionClaudeModel:           "claude-sonnet-5-5",
+			keyDecisionOpenAIBaseURL:         "https://example.test/v1",
+			keyDecisionOpenAIModel:           "gpt-x",
+			keyDecisionOpenAIReasoningEffort: " Minimal ",
+			keyDecisionJevBaseURL:            "https://jev.test",
+			keyDecisionJevModel:              "jev-1",
 		},
 		ints: map[string]int64{
 			keyDecisionClaudeTimeoutMs: 1500,
@@ -59,8 +61,9 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 		CaptureContent:         true,
 		MinInterval:            1500 * time.Millisecond,
 		Claude:                 RemoteBackendConfig{Model: "claude-sonnet-5-5", Timeout: 1500 * time.Millisecond},
-		OpenAI:                 RemoteBackendConfig{BaseURL: "https://example.test/v1", Model: "gpt-x", Timeout: 5 * time.Second},
-		Jev:                    RemoteBackendConfig{BaseURL: "https://jev.test", Model: "jev-1", Timeout: 2 * time.Second},
+		OpenAI: RemoteBackendConfig{BaseURL: "https://example.test/v1", Model: "gpt-x", Timeout: 5 * time.Second,
+			ReasoningEffort: "minimal"},
+		Jev: RemoteBackendConfig{BaseURL: "https://jev.test", Model: "jev-1", Timeout: 2 * time.Second},
 	}
 	if got != want {
 		t.Fatalf("DecisionBackend = %+v, want %+v", got, want)
@@ -78,7 +81,7 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 
 func TestDecisionBackend_BadValuesFallBack(t *testing.T) {
 	stub := stubEvaluator{
-		strings: map[string]string{keyDecisionBackend: "   "},
+		strings: map[string]string{keyDecisionBackend: "   ", keyDecisionOpenAIReasoningEffort: " "},
 		ints:    map[string]int64{keyDecisionClaudeTimeoutMs: 0, keyDecisionOpenAITimeoutMs: -5, keyDecisionMinIntervalMs: -1},
 		floats:  map[string]float64{keyDecisionActConfidenceThreshold: 1.5},
 	}
@@ -96,11 +99,19 @@ func TestDecisionBackend_DefaultsOnError(t *testing.T) {
 		keyDecisionClaudeModel, keyDecisionClaudeTimeoutMs, keyDecisionOpenAIBaseURL,
 		keyDecisionOpenAIModel, keyDecisionOpenAITimeoutMs, keyDecisionJevBaseURL,
 		keyDecisionJevModel, keyDecisionJevTimeoutMs, keyDecisionMinIntervalMs,
+		keyDecisionOpenAIReasoningEffort,
 	} {
 		stub.errs[k] = boom
 	}
 	if got := New(stub, nil).DecisionBackend(context.Background()); got != defaultDecisionBackend() {
 		t.Fatalf("Decision = %+v, want defaults", got)
+	}
+}
+
+func TestDecisionBackend_ReasoningEffortOmit(t *testing.T) {
+	stub := stubEvaluator{strings: map[string]string{keyDecisionOpenAIReasoningEffort: " OMIT "}}
+	if got := New(stub, nil).DecisionBackend(context.Background()).OpenAI.ReasoningEffort; got != "omit" {
+		t.Fatalf("ReasoningEffort = %q, want omit", got)
 	}
 }
 
@@ -122,6 +133,7 @@ func TestDecisionBackend_FlagFilesMatchDefaults(t *testing.T) {
 		keyDecisionOpenAIBaseURL:          DefaultDecisionOpenAIBaseURL,
 		keyDecisionOpenAIModel:            DefaultDecisionOpenAIModel,
 		keyDecisionOpenAITimeoutMs:        float64(DefaultDecisionTimeoutMs),
+		keyDecisionOpenAIReasoningEffort:  DefaultDecisionOpenAIReasoningEffort,
 		keyDecisionJevBaseURL:             DefaultDecisionJevBaseURL,
 		keyDecisionJevModel:               DefaultDecisionJevModel,
 		keyDecisionJevTimeoutMs:           float64(DefaultDecisionTimeoutMs),

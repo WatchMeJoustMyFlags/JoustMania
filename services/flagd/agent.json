@@ -634,6 +634,17 @@
       },
       "defaultVariant": "default"
     },
+    "decision.openai.reasoning_effort": {
+      "state": "ENABLED",
+      "variants": {
+        "auto": "auto",
+        "none": "none",
+        "minimal": "minimal",
+        "low": "low",
+        "omit": "omit"
+      },
+      "defaultVariant": "auto"
+    },
     "decision.jev.base_url": {
       "state": "ENABLED",
       "variants": {

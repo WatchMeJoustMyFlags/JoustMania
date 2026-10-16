@@ -53,6 +53,11 @@ fixture() {
       "state": "ENABLED",
       "variants": { "unset": "", "gpt": "gpt-5" },
       "defaultVariant": "unset"
+    },
+    "decision.openai.reasoning_effort": {
+      "state": "ENABLED",
+      "variants": { "auto": "auto", "none": "none", "minimal": "minimal", "low": "low", "omit": "omit" },
+      "defaultVariant": "auto"
     }
   }
 }
@@ -115,6 +120,11 @@ expect "threshold strict" 0 "agent act threshold -> strict (0.95)" -- threshold 
 check_variant decision.act_confidence_threshold strict
 expect "capture off" 0 "agent content capture -> off" -- capture off
 check_variant decision.capture_content off
+expect "effort omit" 0 'agent openai reasoning effort -> omit ("omit")' -- effort omit
+check_variant decision.openai.reasoning_effort omit
+expect "status after effort flip" 0 "capture   = off (false)" -- status
+"${HELPER}" openai >/dev/null
+expect "status shows effort for openai" 0 'effort    = omit ("omit")' -- status
 
 # --- refusals leave the file untouched ------------------------------------
 fixture
@@ -122,6 +132,8 @@ before="$(cat "${AGENT_FLAG_FILE}")"
 expect "unknown model lists valid ones" 1 "valid: haiku, sonnet, opus" -- claude gpt4
 expect "unknown threshold lists valid ones" 1 "valid: low, default, strict" -- threshold yolo
 expect "unknown capture variant refused" 1 "valid: on, off" -- capture maybe
+expect "unknown effort lists valid ones" 1 "valid: auto, none, minimal, low, omit" -- effort high
+expect "effort needs a value" 2 "usage:" -- effort
 expect "rules takes no model" 1 "rules backend has no model" -- rules haiku
 expect "missing model flag is named" 1 "flag 'decision.jev.model' not defined" -- jev small
 expect "unknown action shows usage" 2 "usage:" -- banana

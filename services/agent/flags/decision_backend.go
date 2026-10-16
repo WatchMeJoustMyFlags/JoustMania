@@ -31,6 +31,7 @@ const (
 	keyDecisionOpenAIBaseURL          = "decision.openai.base_url"
 	keyDecisionOpenAIModel            = "decision.openai.model"
 	keyDecisionOpenAITimeoutMs        = "decision.openai.timeout_ms"
+	keyDecisionOpenAIReasoningEffort  = "decision.openai.reasoning_effort"
 	keyDecisionJevBaseURL             = "decision.jev.base_url"
 	keyDecisionJevModel               = "decision.jev.model"
 	keyDecisionJevTimeoutMs           = "decision.jev.timeout_ms"
@@ -68,6 +69,11 @@ const (
 	// DefaultDecisionOpenAIModel is empty: unset means the openai backend is
 	// unavailable (and the decision falls back to rules).
 	DefaultDecisionOpenAIModel = ""
+	// DefaultDecisionOpenAIReasoningEffort lets the openai backend pick the
+	// reasoning_effort from the model id (backends/openai shapeFor); "omit"
+	// never sends the field; any other value (none, minimal, low, ...) is sent
+	// verbatim to reasoning models.
+	DefaultDecisionOpenAIReasoningEffort = "auto"
 	// DefaultDecisionJevBaseURL / DefaultDecisionJevModel are empty until we have
 	// a jev endpoint.
 	DefaultDecisionJevBaseURL = ""
@@ -86,6 +92,10 @@ type RemoteBackendConfig struct {
 	Model string
 	// Timeout bounds one decide call. Always positive.
 	Timeout time.Duration
+	// ReasoningEffort is the reasoning_effort sent to reasoning models
+	// (decision.openai.reasoning_effort; lowercase, trimmed, never empty).
+	// Only the openai backend has the flag; it is empty for claude and jev.
+	ReasoningEffort string
 }
 
 // DecisionBackend is the decision-backend flag group (#1226).
@@ -146,6 +156,8 @@ func (f *Flags) DecisionBackend(ctx context.Context) DecisionBackend {
 			BaseURL: f.stringFlag(ctx, keyDecisionOpenAIBaseURL, DefaultDecisionOpenAIBaseURL),
 			Model:   f.stringFlag(ctx, keyDecisionOpenAIModel, DefaultDecisionOpenAIModel),
 			Timeout: f.timeoutMsFlag(ctx, keyDecisionOpenAITimeoutMs),
+			ReasoningEffort: normalizeReasoningEffort(
+				f.stringFlag(ctx, keyDecisionOpenAIReasoningEffort, DefaultDecisionOpenAIReasoningEffort)),
 		},
 		Jev: RemoteBackendConfig{
 			BaseURL: f.stringFlag(ctx, keyDecisionJevBaseURL, DefaultDecisionJevBaseURL),
@@ -159,6 +171,15 @@ func normalizeBackendName(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
 	if v == "" {
 		return DefaultDecisionBackend
+	}
+	return v
+}
+
+// normalizeReasoningEffort lowercases and trims; empty means auto.
+func normalizeReasoningEffort(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return DefaultDecisionOpenAIReasoningEffort
 	}
 	return v
 }

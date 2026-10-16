@@ -648,18 +648,19 @@ func main() {
 	// CURRENT context from this Multiplexer when an async inference result lands. It is
 	// assigned below (mux = ...) before any signal arrives, so the closure never sees nil.
 	var mux *gamecontext.Multiplexer
-	// Decision-backend registry (#1226): maps the decision.backend flag to a factory
-	// that builds the remote decide.Backend from the CURRENT flag snapshot (model,
-	// base URL, timeout) plus env secrets on every call, so a backend/model switch is
-	// one flagd edit with no restart. `rules` is the built-in floor and needs no
-	// entry; an unregistered or unavailable backend falls back to rules. Each remote
-	// backend adds one Register call here (#1227 claude, #1228 openai, #1229 jev),
-	// reading its API key from env inside the factory, e.g.:
-	//   decideBackends.Register(flags.DecisionBackendClaude, func(d flags.DecisionBackend) decide.Backend {
-	//   	return claude.New(claude.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY"), Model: d.Claude.Model,
-	//   		Timeout: d.Claude.Timeout, CaptureContent: d.CaptureContent})
-	//   })
-	decideBackends := decision.NewDecideRegistry()
+	// Decision-backend registry (#1226, #1244): maps the decision.backend flag to a
+	// factory that builds the remote decide.Backend (claude / openai / jev) from the
+	// CURRENT flag snapshot (model, base URL, timeout, reasoning effort) on every
+	// call, so a backend/model switch is one flagd edit with no restart. API keys
+	// (ANTHROPIC_API_KEY, DECISION_OPENAI_API_KEY, JEV_API_KEY) are read once here;
+	// a backend without its key/model is unavailable and falls back to rules. `rules`
+	// is the built-in floor and needs no entry. See decide_backends.go.
+	decideEnv := decideBackendEnvFromOS()
+	slog.Info("Decision backends registered (#1244)",
+		"claude_key", decideEnv.AnthropicAPIKey != "",
+		"openai_key", decideEnv.OpenAIAPIKey != "",
+		"jev_key", decideEnv.JevAPIKey != "")
+	decideBackends := newDecideRegistry(decideEnv, newDecideHTTPClient())
 	loopFactory := func(gameID string) *decision.Loop {
 		// The decision loop is driven by the OpenFeature/flagd control layer (#727):
 		// flags are evaluated every cycle, the kill switch / objectives / permission

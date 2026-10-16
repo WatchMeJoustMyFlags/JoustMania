@@ -1,9 +1,11 @@
 package decision
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
@@ -543,6 +545,42 @@ func TestRemote_ErrorFallsBackToRules(t *testing.T) {
 	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
 	span := h.run(t)
 	assertRulesFallback(t, h, span, DecideFallbackError, "*errors.errorString")
+}
+
+// TestRemote_ErrorTextNeverOnSpans (#1244): a backend error string can echo a
+// vendor body (and a masked key in it), so no span the decide path records may
+// carry it (not as an attribute, a status description or an event), and neither
+// may the fallback log line. Only the low-cardinality error.type is recorded.
+func TestRemote_ErrorTextNeverOnSpans(t *testing.T) {
+	const secret = "sk-live-SECRET-echoed-by-vendor"
+	be := newFakeDecideBackend(func(decide.Request) (decide.Response, error) {
+		return decide.Response{}, fmt.Errorf("openai: status 401: invalid key %s", secret)
+	})
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	var logs bytes.Buffer
+	h.loop.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	h.run(t)
+	h.loop.AwaitInflight()
+	if out := logs.String(); strings.Contains(out, secret) || !strings.Contains(out, "agent.decide.fallback") {
+		t.Errorf("fallback log must carry error.type, never the backend error text:\n%s", out)
+	}
+	for _, sp := range h.sr.Ended() {
+		if strings.Contains(sp.Status().Description, secret) {
+			t.Errorf("span %s status description carries the backend error: %q", sp.Name(), sp.Status().Description)
+		}
+		for _, kv := range sp.Attributes() {
+			if strings.Contains(kv.Value.Emit(), secret) {
+				t.Errorf("span %s attribute %s carries the backend error", sp.Name(), kv.Key)
+			}
+		}
+		for _, ev := range sp.Events() {
+			for _, kv := range ev.Attributes {
+				if strings.Contains(kv.Value.Emit(), secret) {
+					t.Errorf("span %s event %s carries the backend error", sp.Name(), ev.Name)
+				}
+			}
+		}
+	}
 }
 
 func TestRemote_InvalidAnswerFallsBackToRules(t *testing.T) {

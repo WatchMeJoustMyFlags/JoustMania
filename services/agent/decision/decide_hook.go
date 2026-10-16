@@ -413,12 +413,14 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		}
 	}
 	if rec.fallbackReason != "" {
+		// error.type only, never the error text: a backend error can echo a
+		// vendor body (and a masked key in it), and logs are exported too.
 		l.Log.Warn("agent.decide.fallback",
 			"session_id", l.gameID,
 			"backend", requested,
 			"reason", rec.fallbackReason,
 			"digest", rec.req.State.Digest,
-			"error", rec.err)
+			"error.type", decideErrorType(rec))
 	}
 
 	// Re-read the LIVE flags: the safety gates apply as they are now.

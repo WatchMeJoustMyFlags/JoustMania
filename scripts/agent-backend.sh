@@ -16,6 +16,7 @@
 #   ./scripts/agent-backend.sh rules                 # back to the deterministic rules backend
 #   ./scripts/agent-backend.sh threshold strict      # decision.act_confidence_threshold -> strict
 #   ./scripts/agent-backend.sh capture on            # decision.capture_content -> on
+#   ./scripts/agent-backend.sh effort low            # decision.openai.reasoning_effort -> low
 #
 # Only defaultVariant is edited; an unknown variant is refused with the list of
 # valid ones read from the file. The write is in place (same inode), like
@@ -38,6 +39,7 @@ usage: $0 [status]
        $0 {rules|claude|openai|jev} [model-variant]
        $0 threshold {low|default|strict}
        $0 capture {on|off}
+       $0 effort {auto|none|minimal|low|omit}
 EOF
   exit 2
 }
@@ -51,7 +53,7 @@ case "${action}" in
   rules|claude|openai|jev)
     [[ $# -le 2 ]] || usage
     ;;
-  threshold|capture)
+  threshold|capture|effort)
     [[ $# -eq 2 ]] || usage
     ;;
   *)
@@ -122,6 +124,8 @@ if action == "status":
         print(f"model     = {current(f'decision.{backend}.model')}")
     print(f"threshold = {current('decision.act_confidence_threshold')}")
     print(f"capture   = {current('decision.capture_content')}")
+    if backend == "openai":
+        print(f"effort    = {current('decision.openai.reasoning_effort')}")
     print(f"({path})")
     missing = [
         k
@@ -134,6 +138,10 @@ if action == "threshold":
     value = set_variant("decision.act_confidence_threshold", args[1])
     write_in_place()
     print(f"agent act threshold -> {args[1]} ({value})  ({path})")
+elif action == "effort":
+    value = set_variant("decision.openai.reasoning_effort", args[1])
+    write_in_place()
+    print(f"agent openai reasoning effort -> {args[1]} ({value})  ({path})")
 elif action == "capture":
     value = set_variant("decision.capture_content", args[1])
     write_in_place()
