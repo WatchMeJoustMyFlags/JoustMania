@@ -387,7 +387,7 @@ empty ids and `noop` dropped), so the `none` variant (`""`) and the `probe` vari
 | Rules engine | not run: nothing it emits could pass the allow-list; not a fallback |
 | `agent.decide` span | none (the cycle runs at 10 to 60 Hz; a span per cycle would be noise) |
 | Metric | `agent_llm_gated_total{reason=no_interventions_allowed}` per gated cycle |
-| Log | debug `agent.decide.no_interventions_allowed` only when the game enters (`skipping=true`) or leaves (`skipping=false`) the state |
+| Log | debug `agent.decide.no_interventions_allowed` only when the game enters (`skipping=true`) or leaves (`skipping=false`) the state; a cycle on the rules backend counts as leaving |
 
 Ineligible game kinds are checked first and still fall back to rules
 (`llm_not_eligible`), so shadow games keep their rules-only behaviour. A backend

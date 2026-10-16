@@ -136,6 +136,26 @@ func TestRemote_NoInterventionsAllowed(t *testing.T) {
 		}
 	})
 
+	t.Run("UC-040/A14 a rules cycle resets the state so entering logs again", func(t *testing.T) {
+		be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
+		h, reader, logs := noAllowedHarness(t, nil, be)
+		h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+		h.flags.mutate(func(s *flags.Snapshot) { s.Decision.Backend = flags.DecisionBackendRules })
+		h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+		h.flags.mutate(func(s *flags.Snapshot) { s.Decision.Backend = flags.DecisionBackendClaude })
+		h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+		h.loop.AwaitInflight()
+		if n := logs.count("skipping=true"); n != 2 {
+			t.Fatalf("entering logs = %d, want 2 (rules cycle in between resets the state)", n)
+		}
+		if n := logs.count("skipping=false"); n != 1 {
+			t.Fatalf("leaving logs = %d, want 1", n)
+		}
+		if g := gatedByReason(t, reader)[DecideGateNoInterventions]; g != 2 || be.callCount() != 0 {
+			t.Fatalf("gated = %d, calls = %d; want 2 gated remote cycles and no call", g, be.callCount())
+		}
+	})
+
 	t.Run("UC-040/A14 ineligible game kind still falls back to rules first", func(t *testing.T) {
 		be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
 		h, reader, _ := noAllowedHarness(t, nil, be)

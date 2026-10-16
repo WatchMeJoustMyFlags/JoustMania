@@ -673,6 +673,11 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 	if !snapshot.Decision.IsRules() {
 		return l.decideRemote(ctx, snapshot, c, trig)
 	}
+	// The remote call gate is not reached on rules: leave the empty-allow-list
+	// state so its "entering" debug line fires again on a later remote cycle (#1298).
+	l.llmGate.Lock()
+	l.noteNoInterventions(c, false)
+	l.llmGate.Unlock()
 	return l.rulesDecide(ctx, snapshot, c, flags.DecisionBackendRules, "")
 }
 

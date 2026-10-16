@@ -185,7 +185,6 @@ for key, want in BASELINE.items():
         print(f"FAIL  {key} = {shown(flag)}, stage baseline is {want}")
 
 
-
 def variant_value(key):
     flag = flags.get(key) or {}
     return flag.get("variants", {}).get(flag.get("defaultVariant"))
