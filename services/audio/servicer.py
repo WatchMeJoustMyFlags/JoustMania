@@ -211,6 +211,26 @@ class AudioManager:
         # Track currently playing sounds for status
         self.active_sounds: dict[str, dict] = {}
 
+    def enable_hardware(self) -> bool:
+        """Open the audio hardware of a manager that started silent (#1352).
+
+        Mutates this manager in place (rather than replacing it) so the event
+        loop set by the server and the master volume set while muted are kept.
+
+        Returns:
+            True if the manager switched from silent to live, False if it was
+            already live.
+        """
+        with self.music_lock:
+            if not self.silent:
+                return False
+            self.channels = [SoundChannel(i) for i in range(self.MAX_CHANNELS)]
+            self.music_player = MusicPlayer("background")
+            self.music_player.set_volume(self.master_volume)
+            self.silent = False
+        logger.info(f"AudioManager left silent mode: {self.MAX_CHANNELS} channels and music player initialized")
+        return True
+
     def _update_channel_gauge(self):
         """Update the active channels gauge."""
         active = sum(1 for c in self.channels if c.is_playing)
@@ -511,12 +531,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             client = get_flag_client("user")
 
             # Check play_audio
-            new_audio_enabled = client.get_boolean_value("play_audio", True)
-            if new_audio_enabled != self.audio_enabled:
-                logger.info("play_audio flag changed: %s -> %s", self.audio_enabled, new_audio_enabled)
-                self.audio_enabled = new_audio_enabled
-                if not new_audio_enabled:
-                    self.audio_manager.stop_music()
+            self._apply_play_audio(client.get_boolean_value("play_audio", True))
 
             # Check menu_voice
             new_voice = client.get_string_value("menu_voice", "ivy")
@@ -526,6 +541,35 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
         except Exception as e:
             logger.warning("Error handling flag change: %s", e)
+
+    def _read_play_audio_flag(self) -> bool:
+        """Read play_audio at use time (in-process flagd resolver, so cheap).
+
+        A startup read can miss the configured value (flagd not yet reachable)
+        and a change event can be missed, so the RPCs re-read the flag. When
+        flagd cannot be read, the last known value is kept.
+        """
+        try:
+            from lib.feature_flags import get_flag_client
+
+            return bool(get_flag_client("user").get_boolean_value("play_audio", self.audio_enabled))
+        except Exception as e:
+            logger.debug("Could not read play_audio flag: %s, keeping %s", e, self.audio_enabled)
+            return self.audio_enabled
+
+    def _apply_play_audio(self, enabled: bool) -> None:
+        """Apply a play_audio value: off stops the music, on opens the hardware if the service started muted."""
+        if enabled == self.audio_enabled:
+            return
+        logger.info("play_audio flag changed: %s -> %s", self.audio_enabled, enabled)
+        self.audio_enabled = enabled
+        if not enabled:
+            self.audio_manager.stop_music()
+            return
+        try:
+            self.audio_manager.enable_hardware()
+        except Exception as e:
+            logger.error("Could not open audio hardware after play_audio was enabled: %s", e, exc_info=True)
 
     def _build_sound_registry(self):
         """
@@ -660,7 +704,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         span.update_name(f"PlaySound:{sound_name}")
         span.set_attribute("audio.file", resolved_path)
 
-        # Check if audio is disabled via settings
+        # Check if audio is disabled via settings (read at use time, #1352)
+        self._apply_play_audio(self._read_play_audio_flag())
         if not self.audio_enabled:
             span.set_attribute("audio.muted", True)
             return audio_pb2.PlaySoundResponse(success=True, error="")  # Silently succeed
@@ -682,7 +727,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         span.update_name(f"PlayMusic:{music_dir}")
         span.set_attribute("audio.pattern", request.file_pattern)
 
-        # Check if audio is disabled via settings
+        # Check if audio is disabled via settings (read at use time, #1352)
+        self._apply_play_audio(self._read_play_audio_flag())
         if not self.audio_enabled:
             span.set_attribute("audio.muted", True)
             return audio_pb2.PlayMusicResponse(track_id="muted", success=True, error="")

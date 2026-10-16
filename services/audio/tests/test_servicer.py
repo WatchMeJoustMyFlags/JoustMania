@@ -257,16 +257,24 @@ class TestOnFlagsChanged:
         assert servicer.audio_enabled is False
         servicer.audio_manager.stop_music.assert_called_once()
 
+    @pytest.mark.uc("UC-031", flow="A1")
     def test_enables_audio(self, servicer):
+        """UC-031 A1: turning play_audio on opens the hardware of a silent manager (#1352)."""
         servicer.audio_enabled = False
+        assert servicer.audio_manager.silent is True
         mock_client = MagicMock()
         mock_client.get_boolean_value.return_value = True
         mock_client.get_string_value.return_value = "ivy"
 
-        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.audio.servicer.MusicPlayer", autospec=True),
+        ):
             servicer._on_flags_changed(None)
 
         assert servicer.audio_enabled is True
+        assert servicer.audio_manager.silent is False
+        assert len(servicer.audio_manager.channels) == servicer.audio_manager.MAX_CHANNELS
 
     def test_changes_menu_voice(self, servicer):
         servicer.menu_voice = "ivy"
