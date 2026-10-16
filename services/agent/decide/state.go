@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/joustmania/agent/gamecontext"
 )
@@ -20,10 +19,10 @@ import (
 // Digest hashes a fixed-order canonical encoding that never ranges over a map.
 func BuildState(c gamecontext.GameContext) State {
 	st := State{
-		GameID:   c.SessionID,
-		GameKind: c.GameKind,
-		Players:  buildPlayers(c),
-		Elapsed:  elapsed(c),
+		GameID:         c.SessionID,
+		GameKind:       c.GameKind,
+		Players:        buildPlayers(c),
+		ElapsedSeconds: elapsedSeconds(c),
 	}
 	st.Narrative = renderNarrative(c, st)
 	st.Digest = digest(st)
@@ -71,12 +70,12 @@ func buildPlayers(c gamecontext.GameContext) []PlayerState {
 	return out
 }
 
-func elapsed(c gamecontext.GameContext) time.Duration {
+func elapsedSeconds(c gamecontext.GameContext) float64 {
 	d := c.Session.DurationSeconds
 	if d == nil || !finite(*d) || *d <= 0 {
 		return 0
 	}
-	return time.Duration(*d * float64(time.Second))
+	return *d
 }
 
 // renderNarrative is the line-oriented text a remote model reads. Numbers use
@@ -85,7 +84,7 @@ func renderNarrative(c gamecontext.GameContext, st State) string {
 	var b strings.Builder
 	b.WriteString("game: id=" + orUnknown(st.GameID) + " kind=" + orUnknown(st.GameKind) +
 		" mode=" + orUnknown(deref(c.Session.GameMode)) +
-		" elapsed=" + strconv.FormatFloat(st.Elapsed.Seconds(), 'f', 1, 64) + "s\n")
+		" elapsed=" + strconv.FormatFloat(st.ElapsedSeconds, 'f', 1, 64) + "s\n")
 
 	b.WriteString("session: alive=" + strconv.Itoa(len(st.AliveSerials())) +
 		" eliminated=" + strconv.Itoa(len(c.Session.EliminationSequence)))
@@ -131,7 +130,7 @@ func digest(st State) string {
 	var b strings.Builder
 	b.WriteString("game_id=" + strconv.Quote(st.GameID) + "\n")
 	b.WriteString("game_kind=" + strconv.Quote(st.GameKind) + "\n")
-	b.WriteString("elapsed_ns=" + strconv.FormatInt(int64(st.Elapsed), 10) + "\n")
+	b.WriteString("elapsed_s=" + strconv.FormatFloat(st.ElapsedSeconds, 'g', -1, 64) + "\n")
 	for _, p := range st.Players {
 		b.WriteString("player=" + strconv.Quote(p.Serial) +
 			" alive=" + strconv.FormatBool(p.Alive) +

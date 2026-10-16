@@ -20,15 +20,31 @@ var boundsSource = map[string]struct {
 	flag    string
 	neutral string
 	def     float64
+	// sentinel marks a neutral variant that means "no override" (the game's own
+	// schedule/default) rather than a writable no-op value.
+	sentinel bool
 }{
-	decision.InterventionAdjustMusicTempo:        {flagMusicTempoOverride, neutralNone, defaultMusicTempo},
-	decision.InterventionAdjustVolume:            {flagVolumeOverride, neutralNone, defaultVolume},
-	decision.InterventionAdjustGlobalSensitivity: {flagGlobalSensitivityOverride, neutralNone, defaultGlobalSensitivity},
-	decision.InterventionAdjustPlayerSensitivity: {flagPlayerSensitivityFactor, neutralDefault, defaultPlayerSensitivity},
-	decision.InterventionAdjustGlobalDifficulty:  {flagGlobalDifficultyFactor, neutralDefault, defaultGlobalDifficulty},
-	decision.InterventionSetPlayerHandicap:       {flagPlayerHandicapFactor, neutralDefault, defaultPlayerHandicap},
-	decision.InterventionGrantShield:             {flagShieldSeconds, neutralNone, defaultShieldSeconds},
-	decision.InterventionPartialShield:           {flagPartialShieldSeconds, neutralNone, partialShieldDefaultSeconds(defaultPartialShield)},
+	decision.InterventionAdjustMusicTempo:        {flagMusicTempoOverride, neutralNone, defaultMusicTempo, true},
+	decision.InterventionAdjustVolume:            {flagVolumeOverride, neutralNone, defaultVolume, true},
+	decision.InterventionAdjustGlobalSensitivity: {flagGlobalSensitivityOverride, neutralNone, defaultGlobalSensitivity, true},
+	decision.InterventionAdjustPlayerSensitivity: {flagPlayerSensitivityFactor, neutralDefault, defaultPlayerSensitivity, false},
+	decision.InterventionAdjustGlobalDifficulty:  {flagGlobalDifficultyFactor, neutralDefault, defaultGlobalDifficulty, false},
+	decision.InterventionSetPlayerHandicap:       {flagPlayerHandicapFactor, neutralDefault, defaultPlayerHandicap, false},
+	decision.InterventionGrantShield:             {flagShieldSeconds, neutralNone, defaultShieldSeconds, false},
+	decision.InterventionPartialShield:           {flagPartialShieldSeconds, neutralNone, partialShieldDefaultSeconds(defaultPartialShield), false},
+}
+
+// TestDecideBounds_IntegerFlags: int-valued flags round in ResolveMagnitude.
+func TestDecideBounds_IntegerFlags(t *testing.T) {
+	b, _ := decide.MagnitudeBounds(decision.InterventionAdjustGlobalSensitivity)
+	if !b.Integer {
+		t.Fatal("adjust_global_sensitivity is an int flag (value_kind=\"int\" in game_coordinator/interventions.py)")
+	}
+	for _, iv := range decide.MagnitudeInterventions() {
+		if b, _ := decide.MagnitudeBounds(iv); b.Integer && iv != decision.InterventionAdjustGlobalSensitivity {
+			t.Errorf("%s unexpectedly marked Integer", iv)
+		}
+	}
 }
 
 func partialShieldDefaultSeconds(directive string) float64 {
@@ -83,6 +99,15 @@ func TestDecideBounds_MatchWriterDefaultsAndFlagVariants(t *testing.T) {
 		}
 		if b.Min != lo || b.Max != hi {
 			t.Errorf("%s: bounds [%v,%v], %s non-neutral variants span [%v,%v]", iv, b.Min, b.Max, src.flag, lo, hi)
+		}
+		if nv, ok := flag.Variants[src.neutral]; ok {
+			n, _ := variantNumber(nv)
+			if src.sentinel && b.HasNeutral {
+				t.Errorf("%s: HasNeutral set but %s's neutral variant %v is a no-override sentinel", iv, src.flag, nv)
+			}
+			if !src.sentinel && (!b.HasNeutral || b.Neutral != n) {
+				t.Errorf("%s: neutral = %v (has=%v), %s neutral variant = %v", iv, b.Neutral, b.HasNeutral, src.flag, n)
+			}
 		}
 		if b.Default < b.Min || b.Default > b.Max {
 			t.Errorf("%s: default %v outside [%v,%v]", iv, b.Default, b.Min, b.Max)

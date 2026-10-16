@@ -6,7 +6,16 @@
 // A Request carries the game State (a deterministic narrative plus a sha256
 // Digest of its canonical form) and a list of typed Questions. A backend returns
 // one Answer per Question; every Answer carries a confidence in [0,1] and, for
-// choice questions, a probability distribution over the options. Backends are
+// choice questions, a probability distribution over the options in which the
+// choice is the most probable option.
+//
+// Confidence is the backend's confidence that ACTING on the answer is right. Its
+// derivation is backend-defined (the rules adapter uses 1 - p(noop) for an
+// intervention, a model may report its own), but it is always in [0,1] and is
+// what the confidence router (#1225 PR E) compares against
+// decision.act_confidence_threshold. It is deliberately NOT required to equal or
+// stay below p(choice): two strong competing interventions split the
+// probability mass yet still make acting a confident call. Backends are
 // UNTRUSTED (remote models can return anything), so callers must run Validate on
 // every Response before acting on it.
 //
@@ -61,7 +70,8 @@ type Answer struct {
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
 	// Score is the value of a KindScore question, within its Range.
 	Score float64 `json:"score"`
-	// Confidence is the backend's confidence in this answer, in [0,1].
+	// Confidence is the backend's confidence that acting on this answer is right,
+	// in [0,1] (see the package doc).
 	Confidence float64 `json:"confidence"`
 }
 
@@ -95,17 +105,25 @@ type State struct {
 	Narrative string `json:"narrative"`
 	// Players are sorted by serial.
 	Players []PlayerState `json:"players"`
-	// Elapsed is the session duration; 0 when not yet observed.
-	Elapsed time.Duration `json:"elapsed"`
+	// ElapsedSeconds is the session duration in seconds; 0 when not yet observed.
+	ElapsedSeconds float64 `json:"elapsed_s"`
+}
+
+// Elapsed returns ElapsedSeconds as a time.Duration.
+func (s State) Elapsed() time.Duration {
+	return time.Duration(s.ElapsedSeconds * float64(time.Second))
 }
 
 // Request is one decision request: a State and the Questions to answer about it.
 type Request struct {
 	State     State      `json:"state"`
 	Questions []Question `json:"questions"`
-	// Context is the raw snapshot State was built from. In-process backends (the
-	// rules adapter) read it because the rules engine reasons over the full
-	// GameContext; remote backends must use State only. It is never serialized.
+	// Context is the raw snapshot State was built from. Only in-process backends
+	// (the rules adapter, which reasons over the full GameContext) may read it.
+	// Remote backends MUST NOT read it: State is the entire contract they get, and
+	// it is what the Digest covers. It is excluded from JSON, but it is not
+	// redacted from fmt, so a Request must never be logged with %v/%+v (that
+	// would dump the whole GameContext); log State.Digest and the Questions.
 	Context *gamecontext.GameContext `json:"-"`
 }
 

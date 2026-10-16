@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 )
 
 // ProbabilityTolerance is how far a choice answer's probabilities may sum from
@@ -21,22 +22,28 @@ var ErrInvalid = errors.New("decide: invalid response")
 //   - the questions themselves are well formed (unique IDs, known kinds, a
 //     choice has unique non-empty options, a score range is finite and ordered);
 //   - every question is answered exactly once and no unknown question is;
-//   - every confidence is finite and in [0,1];
+//   - every number (confidence, score, probabilities) is finite (no NaN/Inf);
+//   - every confidence is in [0,1];
 //   - a choice answer picks one of the options and carries a probability
-//     distribution over the options (each finite and >= 0, summing to 1 within
-//     ProbabilityTolerance);
+//     distribution over the options (each >= 0, summing to 1 within
+//     ProbabilityTolerance) in which the choice is the argmax: p(choice) > 0
+//     and p(choice) >= max(p) - ProbabilityTolerance. Its Score must be 0.
+//     Confidence is NOT tied to p(choice): it is the backend's confidence that
+//     acting on the answer is right (see Answer.Confidence);
 //   - a score answer is finite, within the inclusive range, and carries no
 //     choice or probabilities.
 //
 // The returned error wraps ErrInvalid and names the first offending question.
+// Backend-supplied strings in the message are truncated (see clip), so a
+// hostile model cannot blow up a log line or span attribute.
 func Validate(req Request, resp Response) error {
 	questions := make(map[string]Question, len(req.Questions))
 	for _, q := range req.Questions {
 		if err := validateQuestion(q); err != nil {
-			return invalid("question %q: %v", q.ID, err)
+			return invalid("question %s: %v", clip(q.ID), err)
 		}
 		if _, dup := questions[q.ID]; dup {
-			return invalid("question %q: duplicate id", q.ID)
+			return invalid("question %s: duplicate id", clip(q.ID))
 		}
 		questions[q.ID] = q
 	}
@@ -45,19 +52,19 @@ func Validate(req Request, resp Response) error {
 	for _, a := range resp.Answers {
 		q, ok := questions[a.QuestionID]
 		if !ok {
-			return invalid("answer to unknown question %q", a.QuestionID)
+			return invalid("answer to unknown question %s", clip(a.QuestionID))
 		}
 		if answered[a.QuestionID] {
-			return invalid("question %q answered more than once", a.QuestionID)
+			return invalid("question %s answered more than once", clip(a.QuestionID))
 		}
 		answered[a.QuestionID] = true
 		if err := validateAnswer(q, a); err != nil {
-			return invalid("question %q: %v", q.ID, err)
+			return invalid("question %s: %v", clip(q.ID), err)
 		}
 	}
 	for _, q := range req.Questions {
 		if !answered[q.ID] {
-			return invalid("question %q not answered", q.ID)
+			return invalid("question %s not answered", clip(q.ID))
 		}
 	}
 	return nil
@@ -65,6 +72,19 @@ func Validate(req Request, resp Response) error {
 
 func invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
+}
+
+// maxErrString caps how much of a backend-supplied string an error message
+// quotes.
+const maxErrString = 64
+
+// clip quotes s for an error message, truncated to maxErrString runes.
+func clip(s string) string {
+	r := []rune(s)
+	if len(r) > maxErrString {
+		return strconv.Quote(string(r[:maxErrString])) + "..."
+	}
+	return strconv.Quote(s)
 }
 
 func validateQuestion(q Question) error {
@@ -82,7 +102,7 @@ func validateQuestion(q Question) error {
 				return errors.New("empty option")
 			}
 			if seen[o] {
-				return fmt.Errorf("duplicate option %q", o)
+				return fmt.Errorf("duplicate option %s", clip(o))
 			}
 			seen[o] = true
 		}
@@ -92,7 +112,7 @@ func validateQuestion(q Question) error {
 			return fmt.Errorf("bad range [%v, %v]", lo, hi)
 		}
 	default:
-		return fmt.Errorf("unknown kind %q", q.Kind)
+		return fmt.Errorf("unknown kind %s", clip(string(q.Kind)))
 	}
 	return nil
 }
@@ -116,28 +136,39 @@ func validateAnswer(q Question, a Answer) error {
 }
 
 func validateChoice(q Question, a Answer) error {
+	if a.Score != 0 {
+		return fmt.Errorf("choice answer carries a score (%v)", a.Score)
+	}
 	options := make(map[string]bool, len(q.Options))
 	for _, o := range q.Options {
 		options[o] = true
 	}
 	if !options[a.Choice] {
-		return fmt.Errorf("choice %q not among the options", a.Choice)
+		return fmt.Errorf("choice %s not among the options", clip(a.Choice))
 	}
 	if len(a.Probabilities) == 0 {
 		return errors.New("choice answer without probabilities")
 	}
-	var sum float64
+	var sum, maxP float64
 	for o, p := range a.Probabilities {
 		if !options[o] {
-			return fmt.Errorf("probability for unknown option %q", o)
+			return fmt.Errorf("probability for unknown option %s", clip(o))
 		}
 		if !finite(p) || p < 0 {
-			return fmt.Errorf("probability %v for %q is not a finite non-negative number", p, o)
+			return fmt.Errorf("probability %v for %s is not a finite non-negative number", p, clip(o))
 		}
 		sum += p
+		maxP = math.Max(maxP, p)
 	}
 	if math.Abs(sum-1) > ProbabilityTolerance {
 		return fmt.Errorf("probabilities sum to %v, want 1", sum)
+	}
+	pc := a.Probabilities[a.Choice]
+	if pc <= 0 {
+		return fmt.Errorf("choice %s has probability 0", clip(a.Choice))
+	}
+	if pc < maxP-ProbabilityTolerance {
+		return fmt.Errorf("choice %s (p=%v) is not the most probable option (p=%v)", clip(a.Choice), pc, maxP)
 	}
 	return nil
 }

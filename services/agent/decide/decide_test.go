@@ -1,6 +1,7 @@
 package decide
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"reflect"
@@ -43,8 +44,12 @@ func sampleCtx() gamecontext.GameContext {
 
 func TestBuildState_Fields(t *testing.T) {
 	st := BuildState(sampleCtx())
-	if st.GameID != "game_abc123" || st.GameKind != "real" || st.Elapsed != 30*time.Second {
-		t.Fatalf("state header = %q %q %v", st.GameID, st.GameKind, st.Elapsed)
+	if st.GameID != "game_abc123" || st.GameKind != "real" || st.ElapsedSeconds != 30 || st.Elapsed() != 30*time.Second {
+		t.Fatalf("state header = %q %q %v", st.GameID, st.GameKind, st.ElapsedSeconds)
+	}
+	raw, err := json.Marshal(st)
+	if err != nil || !strings.Contains(string(raw), `"elapsed_s":30`) {
+		t.Errorf("JSON should carry elapsed_s in seconds: %s (%v)", raw, err)
 	}
 	var serials []string
 	for _, p := range st.Players {
@@ -117,7 +122,7 @@ func TestBuildState_DigestChangesWithState(t *testing.T) {
 
 func TestBuildState_Empty(t *testing.T) {
 	st := BuildState(gamecontext.GameContext{})
-	if len(st.Players) != 0 || st.Elapsed != 0 || len(st.Digest) != 64 {
+	if len(st.Players) != 0 || st.ElapsedSeconds != 0 || len(st.Digest) != 64 {
 		t.Fatalf("empty state = %+v", st)
 	}
 	if !strings.HasPrefix(st.Narrative, "game: id=unknown kind=unknown mode=unknown elapsed=0.0s") {
@@ -158,10 +163,17 @@ func TestFFAQuestions_AlivePlayers(t *testing.T) {
 			if mag.ID != QuestionFFAMagnitude || mag.Kind != KindScore || mag.Range != [2]float64{0, 1} {
 				t.Errorf("magnitude question = %+v", mag)
 			}
-			if !strings.Contains(mag.Text, "adjust_music_tempo: 1..1.3 tempo (default 1.15)") ||
-				!strings.Contains(mag.Text, "grant_shield: 3..10 seconds (default 5)") ||
-				strings.Contains(mag.Text, "play_audio_cue:") {
-				t.Errorf("magnitude text lists the wrong bounds:\n%s", mag.Text)
+			for _, want := range []string{
+				"0 = the lowest listed value and 1 = the highest",
+				"adjust_music_tempo: lowest 1, highest 1.3 tempo (default 1.15)",
+				"grant_shield: lowest 3, highest 10 seconds, neutral 0 (default 5)",
+			} {
+				if !strings.Contains(mag.Text, want) {
+					t.Errorf("magnitude text missing %q:\n%s", want, mag.Text)
+				}
+			}
+			if strings.Contains(mag.Text, "play_audio_cue:") || strings.Contains(mag.Text, "set_player_handicap:") {
+				t.Errorf("magnitude text lists interventions that are unbounded or not allowed:\n%s", mag.Text)
 			}
 			// The question set itself must be well formed for Validate.
 			for _, q := range qs {
@@ -177,6 +189,19 @@ func TestFFAQuestions_EmptyAllowList(t *testing.T) {
 	qs := FFAQuestions(State{}, nil)
 	if !reflect.DeepEqual(qs[0].Options, []string{"noop"}) {
 		t.Fatalf("options = %v, want [noop]", qs[0].Options)
+	}
+}
+
+func TestFFAQuestions_MagnitudeTextPerIntervention(t *testing.T) {
+	qs := FFAQuestions(State{}, []string{"set_player_handicap", "adjust_global_sensitivity", "adjust_volume"})
+	for _, want := range []string{
+		"set_player_handicap: lowest 0.75, highest 1.75 factor, neutral 1 (default 1.25)",
+		"adjust_global_sensitivity: lowest 0, highest 4 level, whole numbers only (default 2)",
+		"adjust_volume: lowest 0.3, highest 1 volume (default 0.7)",
+	} {
+		if !strings.Contains(qs[2].Text, want) {
+			t.Errorf("magnitude text missing %q:\n%s", want, qs[2].Text)
+		}
 	}
 }
 
@@ -273,6 +298,30 @@ func TestValidate(t *testing.T) {
 			r.Answers[1].Probabilities = map[string]float64{"x": 1}
 		}, false},
 		{"score with choice", func(_ *Request, r *Response) { r.Answers[1].Choice = "x" }, false},
+		{"score NaN", func(_ *Request, r *Response) { r.Answers[1].Score = math.NaN() }, false},
+		{"confidence Inf", func(_ *Request, r *Response) { r.Answers[0].Confidence = math.Inf(1) }, false},
+		{"Inf probability", func(_ *Request, r *Response) {
+			r.Answers[0].Probabilities = map[string]float64{"noop": math.Inf(1), "grant_shield": 1}
+		}, false},
+		{"choice with probability 0", func(_ *Request, r *Response) {
+			r.Answers[0].Probabilities = map[string]float64{"noop": 1, "grant_shield": 0}
+		}, false},
+		{"choice not the argmax", func(_ *Request, r *Response) {
+			r.Answers[0].Probabilities = map[string]float64{"noop": 0.6, "grant_shield": 0.4}
+		}, false},
+		{"choice contradicts certain noop", func(q *Request, r *Response) {
+			q.Questions[0].Options = []string{"noop", "end_game"}
+			r.Answers[0] = Answer{QuestionID: "iv", Choice: "end_game", Probabilities: map[string]float64{"noop": 1}, Confidence: 1}
+		}, false},
+		{"choice with a score", func(_ *Request, r *Response) { r.Answers[0].Score = 0.5 }, false},
+		{"choice with NaN score", func(_ *Request, r *Response) { r.Answers[0].Score = math.NaN() }, false},
+		{"tie within tolerance is an argmax", func(_ *Request, r *Response) {
+			r.Answers[0].Probabilities = map[string]float64{"noop": 0.5004, "grant_shield": 0.4996}
+		}, true},
+		{"confidence above p(choice) is allowed", func(_ *Request, r *Response) {
+			r.Answers[0].Probabilities = map[string]float64{"noop": 0.4, "grant_shield": 0.6}
+			r.Answers[0].Confidence = 0.95
+		}, true},
 
 		{"question unknown kind", func(q *Request, _ *Response) { q.Questions[1].Kind = "noul" }, false},
 		{"question duplicate id", func(q *Request, r *Response) {
@@ -302,6 +351,31 @@ func TestValidate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidate_TruncatesBackendStrings(t *testing.T) {
+	req, resp := validPair()
+	resp.Answers[0].Choice = strings.Repeat("x", 10_000)
+	err := Validate(req, resp)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if len(err.Error()) > 300 {
+		t.Fatalf("error message is %d bytes; backend strings must be truncated", len(err.Error()))
+	}
+}
+
+func TestMagnitude_IntegerRounds(t *testing.T) {
+	cases := map[float64]float64{0: 0, 0.1: 0, 0.13: 1, 0.5: 2, 0.62: 2, 0.63: 3, 0.9: 4, 1: 4}
+	for score, want := range cases {
+		if v, _ := ResolveMagnitude("adjust_global_sensitivity", score); v != want {
+			t.Errorf("adjust_global_sensitivity: resolve(%v) = %v, want %v", score, v, want)
+		}
+	}
+	// Non-integer flags are not rounded.
+	if v, _ := ResolveMagnitude("adjust_music_tempo", 0.5); math.Abs(v-1.15) > 1e-9 {
+		t.Errorf("tempo resolve(0.5) = %v, want 1.15", v)
 	}
 }
 

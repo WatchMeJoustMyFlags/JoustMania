@@ -3,6 +3,7 @@ package decision
 import (
 	"context"
 	"math"
+	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -135,7 +136,7 @@ func TestRulesBackend_MatchesEvaluate(t *testing.T) {
 				t.Fatalf("adapter picked %s -> %s, Evaluate picked %s -> %s (all: %+v)",
 					iv.Choice, tgt.Choice, wantIV, wantTgt, want)
 			}
-			t.Logf("%s -> %s (confidence %.3f, target confidence %.3f)", iv.Choice, tgt.Choice, iv.Confidence, tgt.Confidence)
+			t.Logf("%s -> %s (confidence %.4f, target confidence %.4f)", iv.Choice, tgt.Choice, iv.Confidence, tgt.Confidence)
 			if fx.name != "no candidates" && len(want) == 0 {
 				t.Fatalf("fixture %q should produce a decision", fx.name)
 			}
@@ -180,13 +181,18 @@ func TestRulesBackend_ProbabilitiesAreSoftmaxOfScores(t *testing.T) {
 					t.Errorf("choice %s (p=%v) is not the argmax (%s p=%v)", iv.Choice, iv.Probabilities[iv.Choice], name, p)
 				}
 			}
-			ps := make([]float64, 0, len(iv.Probabilities))
-			for _, p := range iv.Probabilities {
-				ps = append(ps, p)
+			// Confidence that acting is right: 1 - p(noop) for an intervention,
+			// p(noop) for noop.
+			want := 1 - iv.Probabilities[decide.OptionNoop]
+			if iv.Choice == decide.OptionNoop {
+				want = iv.Probabilities[decide.OptionNoop]
 			}
-			sort.Sort(sort.Reverse(sort.Float64Slice(ps)))
-			if want := ps[0] - ps[1]; math.Abs(iv.Confidence-want) > 1e-12 {
-				t.Errorf("confidence = %v, want top-1 margin %v", iv.Confidence, want)
+			if math.Abs(iv.Confidence-want) > 1e-12 {
+				t.Errorf("intervention confidence = %v, want %v", iv.Confidence, want)
+			}
+			tgt, _ := resp.Find(decide.QuestionFFATarget)
+			if tgt.Confidence != tgt.Probabilities[tgt.Choice] {
+				t.Errorf("target confidence = %v, want p(%s) = %v", tgt.Confidence, tgt.Choice, tgt.Probabilities[tgt.Choice])
 			}
 		})
 	}
@@ -337,6 +343,8 @@ func TestRulesBackend_RecordsNoEngineState(t *testing.T) {
 	fx := decideFixtures()[0]
 	clock := time.Unix(10_000, 0)
 	engine := newTestEngine(fx.cfg, &clock)
+	sentinel := FitnessEvaluation{Results: map[string]FitnessResult{"sentinel": {}}}
+	engine.lastFitness = sentinel
 	b := NewRulesBackend(engine)
 	for i := 0; i < 3; i++ {
 		if _, err := b.Decide(context.Background(), ffaRequest(fx.ctx, allInterventions())); err != nil {
@@ -345,6 +353,9 @@ func TestRulesBackend_RecordsNoEngineState(t *testing.T) {
 	}
 	if !engine.lastEval.IsZero() || !engine.lastDifficultyAt.IsZero() {
 		t.Fatalf("adapter touched engine state: lastEval=%v lastDifficultyAt=%v", engine.lastEval, engine.lastDifficultyAt)
+	}
+	if !reflect.DeepEqual(engine.LastFitness(), sentinel) {
+		t.Fatalf("adapter overwrote lastFitness: %+v", engine.LastFitness())
 	}
 	if out := engine.Evaluate(context.Background(), fx.ctx); len(out) == 0 {
 		t.Fatal("Evaluate throttled after adapter calls")
@@ -361,5 +372,72 @@ func TestDecideContract_VocabularyMatches(t *testing.T) {
 		if _, ok := interventionWeights[iv]; !ok {
 			t.Errorf("bounds table names unknown intervention %q", iv)
 		}
+	}
+}
+
+// rankedCandidate builds a scored candidate directly, for the probability edge
+// cases that are awkward to reach through a full GameContext.
+func rankedCandidate(intervention, target string, score float64) scoredCandidate {
+	return scoredCandidate{
+		candidate: candidate{decision: Decision{Intervention: intervention, TargetSerial: target}},
+		score:     score,
+	}
+}
+
+// ffaQuestionsFor builds the FFA question set over the given alive serials.
+func ffaQuestionsFor(allowed []string, alive ...string) map[string]decide.Question {
+	c := gamecontext.GameContext{Players: map[string]*gamecontext.PlayerSignals{}}
+	for _, s := range alive {
+		c.Players[s] = &gamecontext.PlayerSignals{Serial: s, Active: bptr(true)}
+	}
+	return indexQuestions(decide.FFAQuestions(decide.BuildState(c), allowed))
+}
+
+// TestRulesAnswer_CompetingStrongInterventions: two strong candidates split the
+// probability mass, but both clearly beat noop, so acting is a confident call.
+// (A top-1 margin would have reported ~0.05 here and declined to act.)
+func TestRulesAnswer_CompetingStrongInterventions(t *testing.T) {
+	qs := ffaQuestionsFor(allInterventions(), "A")
+	eligible := []scoredCandidate{
+		rankedCandidate(InterventionAdjustMusicTempo, "", 0.90),
+		rankedCandidate(InterventionGrantShield, "A", 0.89),
+	}
+	pick := answerIntervention(qs[decide.QuestionFFAIntervention], eligible)
+	a := pick.answer
+	if a.Choice != InterventionAdjustMusicTempo {
+		t.Fatalf("choice = %s", a.Choice)
+	}
+	if p1, p2 := a.Probabilities[InterventionAdjustMusicTempo], a.Probabilities[InterventionGrantShield]; p1-p2 > 0.1 {
+		t.Fatalf("fixture should split the mass: p=%v vs %v", p1, p2)
+	}
+	if a.Confidence < 0.99 {
+		t.Errorf("confidence = %v, want >= 0.99 (1 - p(noop))", a.Confidence)
+	}
+	req := decide.Request{Questions: []decide.Question{qs[decide.QuestionFFAIntervention]}}
+	if err := decide.Validate(req, decide.Response{Answers: []decide.Answer{a}}); err != nil {
+		t.Fatalf("invalid: %v", err)
+	}
+}
+
+// TestRulesAnswer_ExactMinScoreTie: a candidate at exactly minScore survives the
+// engine's filter (s < minScore is dropped), so the rules act on it; it ties
+// noop at p=0.5 and the answer still validates (the choice is an argmax).
+func TestRulesAnswer_ExactMinScoreTie(t *testing.T) {
+	qs := ffaQuestionsFor(allInterventions(), "A")
+	eligible := []scoredCandidate{rankedCandidate(InterventionPlayAudioCue, "", minScore)}
+	pick := answerIntervention(qs[decide.QuestionFFAIntervention], eligible)
+	a := pick.answer
+	if a.Choice != InterventionPlayAudioCue {
+		t.Fatalf("choice = %s, want the candidate (rules act at score == minScore)", a.Choice)
+	}
+	if a.Probabilities[InterventionPlayAudioCue] != 0.5 || a.Probabilities[decide.OptionNoop] != 0.5 {
+		t.Errorf("probabilities = %v, want an even split with noop", a.Probabilities)
+	}
+	if a.Confidence != 0.5 {
+		t.Errorf("confidence = %v, want 0.5", a.Confidence)
+	}
+	req := decide.Request{Questions: []decide.Question{qs[decide.QuestionFFAIntervention]}}
+	if err := decide.Validate(req, decide.Response{Answers: []decide.Answer{a}}); err != nil {
+		t.Fatalf("invalid: %v", err)
 	}
 }

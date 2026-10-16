@@ -3,7 +3,6 @@ package decision
 import (
 	"context"
 	"math"
-	"sort"
 	"strconv"
 
 	"github.com/joustmania/agent/decide"
@@ -23,7 +22,13 @@ import (
 // urgency x objective weight x fitness amplification, see scoreAndSort), with
 // noop competing at minScore: a candidate below minScore is dropped by the
 // engine, so noop is exactly "the score the engine needs before it acts".
-// Confidence is the top-1 probability minus the runner-up's.
+//
+// Confidence follows the contract's "confidence that ACTING is right" (see the
+// decide package doc): for ffa.intervention it is 1 - p(noop) when the choice is
+// an intervention and p(noop) when it is noop; for ffa.target it is p(chosen
+// target); for ffa.magnitude it is the intervention's. A top-1 margin was used
+// first and rejected: two strong competing interventions split the mass and the
+// rules declined to act although either one clearly beat doing nothing.
 
 // RulesBackendName is the rules backend's Name() and its decision.backend flag
 // value.
@@ -31,7 +36,7 @@ const RulesBackendName = "rules"
 
 // rulesSoftmaxTemperature scales candidate scores before the softmax. It is set
 // to minScore so one minScore of score difference is one nat: a candidate 0.1
-// above noop gets ~0.73 vs ~0.27 (confidence ~0.46), one 0.5 above gets ~0.99.
+// above noop gets ~0.73 vs ~0.27 (confidence ~0.73), one 0.5 above gets ~0.99.
 // With T=1 the [0,~2] score range would collapse every distribution towards
 // uniform and the rules engine could never clear a confidence threshold.
 const rulesSoftmaxTemperature = minScore
@@ -152,11 +157,15 @@ func answerIntervention(q decide.Question, eligible []scoredCandidate) intervent
 		pick.best = &eligible[0]
 		choice = eligible[0].decision.Intervention
 	}
+	confidence := probs[decide.OptionNoop]
+	if choice != decide.OptionNoop {
+		confidence = 1 - probs[decide.OptionNoop]
+	}
 	pick.answer = decide.Answer{
 		QuestionID:    q.ID,
 		Choice:        choice,
 		Probabilities: probs,
-		Confidence:    margin(probs),
+		Confidence:    clamp01(confidence),
 	}
 	return pick
 }
@@ -185,7 +194,7 @@ func answerTarget(q decide.Question, iv interventionPick, eligible []scoredCandi
 		return neutralAnswer(q) // a caller-built target question without TargetNone
 	}
 	probs := softmax(q.Options, logits)
-	return decide.Answer{QuestionID: q.ID, Choice: choice, Probabilities: probs, Confidence: margin(probs)}
+	return decide.Answer{QuestionID: q.ID, Choice: choice, Probabilities: probs, Confidence: probs[choice]}
 }
 
 // answerMagnitude reports the magnitude the rules decision would be applied
@@ -261,24 +270,6 @@ func softmax(options []string, logits map[string]float64) map[string]float64 {
 		}
 	}
 	return probs
-}
-
-// margin is the top-1 probability minus the runner-up's (the runner-up is 0 for
-// a single-option distribution).
-func margin(probs map[string]float64) float64 {
-	ps := make([]float64, 0, len(probs))
-	for _, p := range probs {
-		ps = append(ps, p)
-	}
-	sort.Sort(sort.Reverse(sort.Float64Slice(ps)))
-	switch len(ps) {
-	case 0:
-		return 0
-	case 1:
-		return ps[0]
-	default:
-		return ps[0] - ps[1]
-	}
 }
 
 func optionSet(q decide.Question) map[string]bool {

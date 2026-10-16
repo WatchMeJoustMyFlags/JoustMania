@@ -1,6 +1,7 @@
 package decide
 
 import (
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,17 @@ type Bounds struct {
 	// Default is what the action sink writes when a Decision carries no Value
 	// (services/agent/actions/writer.go), i.e. what the rules engine applies today.
 	Default float64
+	// Neutral is the value that leaves the game unchanged (the flag's neutral
+	// variant), valid only when HasNeutral. Tempo, volume and global sensitivity
+	// have none: their neutral variant is a "no override" sentinel (0 / -1 / -1)
+	// that hands control back to the game's own schedule or admin setting, not a
+	// value the intervention could write.
+	Neutral    float64
+	HasNeutral bool
+	// Integer marks an int-valued flag (value_kind="int" in
+	// services/game_coordinator/interventions.py): ResolveMagnitude rounds to the
+	// nearest whole number.
+	Integer bool
 	Unit    string
 }
 
@@ -37,7 +49,8 @@ type Bounds struct {
 // non-neutral variants of the matching flag in services/flagd/interventions.json
 // (the vetted range the admin UI and agent already use), each of which lies
 // inside the game-side clamp cited below; Default is the writer default from
-// services/agent/actions/writer.go (a test there keeps the two in sync).
+// services/agent/actions/writer.go; Neutral is the flag's neutral variant (a test
+// in services/agent/actions keeps all three in sync).
 //
 //	intervention               flag (variants)                         game-side clamp (services/game_coordinator)
 //	adjust_music_tempo         music_tempo_override slow..fast         SLOW/FAST_MUSIC_SPEED 1.0..1.3 (games/base.py)
@@ -55,12 +68,12 @@ type Bounds struct {
 var magnitudeBounds = map[string]Bounds{
 	"adjust_music_tempo":        {Min: 1.0, Max: 1.3, Default: 1.15, Unit: "tempo"},
 	"adjust_volume":             {Min: 0.3, Max: 1.0, Default: 0.7, Unit: "volume"},
-	"adjust_global_sensitivity": {Min: 0, Max: 4, Default: 2, Unit: "level"},
-	"adjust_player_sensitivity": {Min: 0.7, Max: 1.5, Default: 1.5, Unit: "factor"},
-	"adjust_global_difficulty":  {Min: 0.5, Max: 2.0, Default: 1.5, Unit: "factor"},
-	"set_player_handicap":       {Min: 0.75, Max: 1.75, Default: 1.25, Unit: "factor"},
-	"grant_shield":              {Min: 3, Max: 10, Default: 5, Unit: "seconds"},
-	"partial_shield":            {Min: 3, Max: 10, Default: 5, Unit: "seconds"},
+	"adjust_global_sensitivity": {Min: 0, Max: 4, Default: 2, Integer: true, Unit: "level"},
+	"adjust_player_sensitivity": {Min: 0.7, Max: 1.5, Default: 1.5, Neutral: 1.0, HasNeutral: true, Unit: "factor"},
+	"adjust_global_difficulty":  {Min: 0.5, Max: 2.0, Default: 1.5, Neutral: 1.0, HasNeutral: true, Unit: "factor"},
+	"set_player_handicap":       {Min: 0.75, Max: 1.75, Default: 1.25, Neutral: 1.0, HasNeutral: true, Unit: "factor"},
+	"grant_shield":              {Min: 3, Max: 10, Default: 5, Neutral: 0, HasNeutral: true, Unit: "seconds"},
+	"partial_shield":            {Min: 3, Max: 10, Default: 5, Neutral: 0, HasNeutral: true, Unit: "seconds"},
 }
 
 // MagnitudeBounds returns the bounds of intervention's numeric Value, and false
@@ -80,10 +93,11 @@ func MagnitudeInterventions() []string {
 	return out
 }
 
-// ResolveMagnitude maps a normalized ffa.magnitude score (0 = gentlest, 1 =
-// strongest) onto intervention's bounds. The score is clamped to [0,1] first, so
-// the result is always inside the bounds whatever a backend sent. ok is false
-// when the intervention takes no numeric magnitude.
+// ResolveMagnitude maps a normalized ffa.magnitude score (0 = Min, 1 = Max)
+// linearly onto intervention's bounds, rounding to a whole number for an Integer
+// flag. The score is clamped to [0,1] first, so the result is always inside the
+// bounds whatever a backend sent. ok is false when the intervention takes no
+// numeric magnitude.
 func ResolveMagnitude(intervention string, score float64) (value float64, ok bool) {
 	b, ok := magnitudeBounds[intervention]
 	if !ok {
@@ -93,7 +107,11 @@ func ResolveMagnitude(intervention string, score float64) (value float64, ok boo
 		score = 0
 	}
 	score = clamp01(score)
-	return b.Min + score*(b.Max-b.Min), true
+	v := b.Min + score*(b.Max-b.Min)
+	if b.Integer {
+		v = math.Round(v)
+	}
+	return v, true
 }
 
 // NormalizeMagnitude is the inverse of ResolveMagnitude: the normalized score of
@@ -115,7 +133,7 @@ func NormalizeMagnitude(intervention string, value float64) (score float64, ok b
 //     (deduplicated, sorted, empty ids dropped);
 //   - ffa.target: a choice over TargetNone plus the alive serials (sorted);
 //   - ffa.magnitude: a score in [0,1], normalized over the CHOSEN intervention's
-//     bounds (see ResolveMagnitude). The three questions are answered in one
+//     bounds: 0 = Min, 1 = Max (see ResolveMagnitude). The three questions are answered in one
 //     round, before the intervention is known, so the range is normalized and
 //     the question text lists each allowed intervention's native bounds.
 func FFAQuestions(st State, allowed []string) []Question {
@@ -160,15 +178,22 @@ func interventionOptions(allowed []string) []string {
 
 func magnitudeText(interventions []string) string {
 	var b strings.Builder
-	b.WriteString("How strong should the chosen intervention be, from 0 (gentlest) to 1 (strongest)? " +
-		"It maps linearly onto the intervention's bounds; ignored for interventions without bounds.")
+	b.WriteString("What value should the chosen intervention use? Answer on a 0..1 scale where " +
+		"0 = the lowest listed value and 1 = the highest; it maps linearly onto the range below " +
+		"(in the intervention's own units). Ignored for interventions not listed.")
 	for _, i := range interventions {
 		bd, ok := magnitudeBounds[i]
 		if !ok {
 			continue
 		}
-		b.WriteString("\n  " + i + ": " + fmtNum(bd.Min) + ".." + fmtNum(bd.Max) + " " + bd.Unit +
-			" (default " + fmtNum(bd.Default) + ")")
+		line := "\n  " + i + ": lowest " + fmtNum(bd.Min) + ", highest " + fmtNum(bd.Max) + " " + bd.Unit
+		if bd.HasNeutral {
+			line += ", neutral " + fmtNum(bd.Neutral)
+		}
+		if bd.Integer {
+			line += ", whole numbers only"
+		}
+		b.WriteString(line + " (default " + fmtNum(bd.Default) + ")")
 	}
 	return b.String()
 }
