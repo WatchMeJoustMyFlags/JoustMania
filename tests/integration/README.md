@@ -160,9 +160,10 @@ as the else-branch). It also documents WHERE the fail-safe lives: a context with
 no `game_kind` resolves EXPERIMENTAL at raw flagd (rule is `!= real`), so the
 real-by-default protection is enforced by the application context
 (`lib/feature_flags` defaults the API-level context to `game_kind="real"`), not by
-flagd — which would catch a writer that mistakenly used `== shadow`. A companion
-`test_game_kind_constants_match_source` pins the `game_kind` var/value strings to
-their single source of truth in both languages. Kept sequential (mutates the
+flagd — which would catch a writer that mistakenly used `== shadow`. The unit test
+`test_game_kind_constants_match_source` (`lib/tests/test_shipped_safety_defaults.py`)
+pins the `game_kind` var/value strings used here to their single source of truth in
+both languages. Kept sequential (mutates the
 global `game` flagset); `game.json` is snapshotted and restored byte-for-byte by
 the `game_flags` fixture so the experiment never leaks.
 

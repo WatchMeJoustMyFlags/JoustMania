@@ -53,7 +53,8 @@ Scope decision (mirrors the intervention/rollout live-flagd tests):
 
   The `game_kind` values used are the EXACT strings the #954 wiring puts on the
   context: `"shadow"` for a shadow session and `"real"` for a real game / the
-  fail-safe API-level default. `test_game_kind_constants_match_source` pins them
+  fail-safe API-level default. `test_game_kind_constants_match_source`
+  (lib/tests/test_shipped_safety_defaults.py) pins them
   to the single source of truth in BOTH languages (Python `lib.feature_flags`
   GAME_KIND_* and the Go `experiment` GameKindVar/GameKindReal contract), so a
   drift fails loudly rather than silently testing a stale value.
@@ -96,7 +97,8 @@ from tests.integration.helpers import (  # noqa: E402
 # We define them here rather than importing lib.feature_flags because the
 # integration-tests venv intentionally does NOT install the full app dependency
 # stack (lib.feature_flags pulls openfeature.contrib.hook, absent here). The
-# values are pinned to source by test_game_kind_constants_match_source below, so
+# values are pinned to source by test_game_kind_constants_match_source in
+# lib/tests/test_shipped_safety_defaults.py (it also reads this file), so
 # any drift fails loudly — the import-free equivalent of the #954 cross-language
 # constant-match unit test.
 GAME_KIND_VAR = "game_kind"
@@ -237,45 +239,6 @@ def game_flags(docker_compose):
         assert poll_until(_restored, FLAGD_RESOLVE_TIMEOUT_SECONDS, rewrite=_restore), (
             "flagd still served the experiment after restore (game*.json leak)"
         )
-
-
-# =============================================================================
-# Contract pin: the game_kind constants used here MUST match the single source
-# of truth in both languages (Go writer/gate + Python #954 wiring). This is the
-# import-free equivalent of the #954 cross-language constant-match unit test —
-# it fails loudly if the var name / "real" / "shadow" values ever drift, so the
-# resolution assertions below can never silently test a stale contract.
-# =============================================================================
-
-
-def test_game_kind_constants_match_source():
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-
-    go_targeting = os.path.join(repo_root, "services/agent/experiment/targeting.go")
-    with open(go_targeting) as fh:
-        go_src = fh.read()
-    assert f'GameKindVar = "{GAME_KIND_VAR}"' in go_src, (
-        "Go GameKindVar drifted from the test's GAME_KIND_VAR"
-    )
-    assert f'GameKindReal = "{GAME_KIND_REAL}"' in go_src, (
-        "Go GameKindReal drifted from the test's GAME_KIND_REAL"
-    )
-    assert f'ExperimentVariant = "{EXPERIMENT_VARIANT}"' in go_src, (
-        "Go ExperimentVariant drifted from the test's EXPERIMENT_VARIANT"
-    )
-
-    py_flags = os.path.join(repo_root, "lib/feature_flags.py")
-    with open(py_flags) as fh:
-        py_src = fh.read()
-    assert f'GAME_KIND_VAR = "{GAME_KIND_VAR}"' in py_src, (
-        "Python GAME_KIND_VAR drifted from the test's GAME_KIND_VAR"
-    )
-    assert f'GAME_KIND_REAL = "{GAME_KIND_REAL}"' in py_src, (
-        "Python GAME_KIND_REAL drifted from the test's GAME_KIND_REAL"
-    )
-    assert f'GAME_KIND_SHADOW = "{GAME_KIND_SHADOW}"' in py_src, (
-        "Python GAME_KIND_SHADOW drifted from the test's GAME_KIND_SHADOW"
-    )
 
 
 # =============================================================================

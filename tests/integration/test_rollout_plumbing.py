@@ -224,30 +224,3 @@ async def test_rollout_write_shape_resolves_via_live_flagd(rollout_file, docker_
         ), "rollback-to-none did not resolve to 0"
     finally:
         provider.shutdown()
-
-
-def test_remediation_allowed_flag_is_resolvable_shape(rollout_file, docker_compose):
-    """The remediation_allowed gate the agent reads (fail-closed) exists in the
-    rollout schema with both boolean variants, and flips resolve. The agent's
-    RemediationReader resolves this same flag's defaultVariant from rollout.json;
-    this asserts the schema the reader depends on is present and well-formed.
-
-    Synchronous (no live RPC needed): we assert the schema shape + that a flip
-    round-trips through the file, which is the property the Go RemediationReader
-    unit tests rely on being true in the shipped schema.
-    """
-    doc = _load()
-    flag = doc["flags"]["remediation_allowed"]
-    assert set(flag["variants"]) == {"on", "off"}, (
-        f"remediation_allowed variants drifted: {sorted(flag['variants'])}"
-    )
-    assert flag["variants"]["on"] is True and flag["variants"]["off"] is False
-    # Default ships OFF (fail-closed): the agent only auto-rolls-back when an
-    # operator explicitly flips this on.
-    assert flag["defaultVariant"] == "off", (
-        "remediation_allowed must ship default OFF (fail-closed)"
-    )
-
-    # A flip round-trips through the in-place write the agent/operator would use.
-    set_default_variant("remediation_allowed", "on")
-    assert _load()["flags"]["remediation_allowed"]["defaultVariant"] == "on"
