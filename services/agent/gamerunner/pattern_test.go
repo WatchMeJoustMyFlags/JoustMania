@@ -227,3 +227,33 @@ func TestRunShadowGame_PatternRejectsUnsupportedMode(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-046 A9
+func TestRunShadowGame_PatternGameError(t *testing.T) {
+	t.Run("UC-046/A9 a pattern game ending in game_error has outcome error and is still recorded", func(t *testing.T) {
+		a := testArchetype(t)
+		mock := patternMock(a, map[int]uint64{0: 200, 1: 200, 2: 200}, -1)
+		coord := &fakeCoord{gameID: "game_pat_err", events: []*gcpb.GameEvent{ev("game_starting"), ev("game_error")}}
+		h := newHarness(t, mock, coord)
+		defer h.stop()
+		h.runner.SetTracker(patterngame.NewTracker())
+		outcomes := make(chan Outcome, 1)
+		records := make(chan patterngame.Record, 1)
+		h.runner.SetTerminalCallback(func(_ string, o Outcome) { outcomes <- o })
+		h.runner.SetPatternCallback(func(rec patterngame.Record) { records <- rec })
+
+		spec := patternSpec(a)
+		spec.ExperimentID, spec.Arm, spec.PairIndex = "exp_err", "experimental", 0
+		if _, err := h.runner.StartExperimentGame(context.Background(), context.Background(), spec); err != nil {
+			t.Fatalf("StartExperimentGame: %v", err)
+		}
+		rec := <-records
+		// OutcomeError is what the experiment loop releases without a sample (#1014).
+		if o := <-outcomes; o != OutcomeError {
+			t.Fatalf("terminal outcome = %s, want error (released without a fitness sample)", o)
+		}
+		if rec.Outcome != patterngame.OutcomeError || rec.WinnerSlot != -1 {
+			t.Errorf("record = %s/%d, want error/-1", rec.Outcome, rec.WinnerSlot)
+		}
+	})
+}

@@ -190,8 +190,13 @@ func TestRegistryPatternPinIsKept(t *testing.T) {
 
 // UC: UC-046 A1 A2 A4 A13 BR-010
 func TestRegistryPatternDiscardsAndNoise(t *testing.T) {
+	flowOf := map[string]string{
+		patterngame.DiscardArchetypeInvalid: "A2",
+		patterngame.DiscardSelectionSmall:   "A4",
+		patterngame.DiscardModeUnsupported:  "A13",
+	}
 	for _, reason := range []string{patterngame.DiscardArchetypeInvalid, patterngame.DiscardSelectionSmall, patterngame.DiscardModeUnsupported} {
-		t.Run("UC-046/A2 discards with "+reason, func(t *testing.T) {
+		t.Run("UC-046/"+flowOf[reason]+" discards with "+reason, func(t *testing.T) {
 			spawner := &patternSpawner{}
 			pin := patterngame.Pin{Selection: "x", DiscardReason: reason, Errors: []string{"why"}}
 			r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2, Spawner: spawner, Patterns: &queuePinner{pins: []patterngame.Pin{pin}}})
