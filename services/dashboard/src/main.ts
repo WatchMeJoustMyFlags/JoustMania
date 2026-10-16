@@ -10,7 +10,9 @@ import { Controls } from "./components/Controls.js";
 import { ExperimentsView } from "./components/ExperimentsView.js";
 import { fetchExperiments } from "./experiments.js";
 import { AgentView } from "./components/AgentView.js";
-import { fetchAgentView, fetchDecideFeed } from "./agent.js";
+import { DecideStore, fetchAgentView, fetchDecideFeed } from "./agent.js";
+import { createPoller } from "./poller.js";
+import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
 // Poll cadence for the agent experiment view (Loki query). Matches the slow,
@@ -26,8 +28,12 @@ const AGENT_POLL_MS = 2000;
 
 // Poll cadence for the agent.decide feed (#1233, Jaeger query). Faster than the
 // Loki view: a live decision.backend switch must show on the very next decision,
-// and the remote cadence (decision.min_interval_ms) is 1.5-3s.
+// and the remote cadence (decision.min_interval_ms) is 1.5-3s. Errors and slow
+// responses back off (doubling) to DECIDE_MAX_BACKOFF_MS; each request is aborted
+// after DECIDE_TIMEOUT_MS so a struggling Jaeger is not piled onto.
 const DECIDE_POLL_MS = 1500;
+const DECIDE_MAX_BACKOFF_MS = 10_000;
+const DECIDE_TIMEOUT_MS = 4000;
 
 // State
 interface AppState {
@@ -95,6 +101,12 @@ async function init() {
   console.log("Dashboard initialized");
 }
 
+// The tab currently shown (setupTabs keeps it current). Pollers that only feed
+// one tab check it so a hidden tab costs no queries.
+let activeTab =
+  (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "";
+let decidePoller: Poller | null = null;
+
 // Tab navigation
 function setupTabs() {
   const tabButtons = document.querySelectorAll(".tab-btn");
@@ -116,6 +128,9 @@ function setupTabs() {
           panel.classList.add("active");
         }
       });
+
+      activeTab = tabId;
+      if (tabId === "agent") decidePoller?.poke();
 
       console.log(`Switched to tab: ${tabId}`);
     });
@@ -267,43 +282,38 @@ function startAgentPolling() {
   tick();
 }
 
-// Poll the agent.decide spans from Jaeger (#1233). Same self-rescheduling +
-// tab-hidden-pause + staleness model as the pollers above, but independent of
-// the Loki poll so either backend being down leaves the other panel live.
-let decidePollTimer: ReturnType<typeof setTimeout> | null = null;
-
+// Poll the agent.decide spans from Jaeger (#1233). Only while the Agent tab is
+// shown AND the page is visible; one chain at most (see poller.ts), incremental
+// query window (DecideStore), per-request timeout and backoff. Independent of the
+// Loki poll so either backend being down leaves the other panel live.
 function startDecidePolling() {
-  const tick = async () => {
-    decidePollTimer = null;
-    if (document.hidden) return;
-    try {
-      agentView.renderDecide(await fetchDecideFeed());
-    } catch (error) {
+  const store = new DecideStore();
+  decidePoller = createPoller({
+    baseMs: DECIDE_POLL_MS,
+    maxMs: DECIDE_MAX_BACKOFF_MS,
+    timeoutMs: DECIDE_TIMEOUT_MS,
+    isActive: () => activeTab === "agent" && !document.hidden,
+    run: async (signal) => {
+      const feed = await fetchDecideFeed(store.queryStartMs(Date.now()), signal);
+      store.merge(feed.rows);
+      agentView.renderDecide(store.feed());
+    },
+    onError: (error) => {
       console.error("Decide feed poll error:", error);
       if (!agentView.decideHasRendered) {
         agentView.setDecideError("Could not reach Jaeger for agent.decide spans.");
       }
-    } finally {
-      if (!document.hidden) {
-        decidePollTimer = setTimeout(tick, DECIDE_POLL_MS);
-      }
-    }
-  };
+    },
+  });
 
   setInterval(() => agentView.updateDecideFreshness(), 1000);
 
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      if (decidePollTimer !== null) {
-        clearTimeout(decidePollTimer);
-        decidePollTimer = null;
-      }
-    } else if (decidePollTimer === null) {
-      tick();
-    }
+    if (document.hidden) decidePoller?.stop();
+    else decidePoller?.poke();
   });
 
-  tick();
+  decidePoller.poke();
 }
 
 // Handle game events

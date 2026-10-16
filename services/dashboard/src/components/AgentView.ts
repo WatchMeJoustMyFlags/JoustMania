@@ -55,6 +55,8 @@ export class AgentView {
   private seenDecideKeys: Set<string> | null = null;
   /** backend|model|threshold of the strip, to flash it when a switch lands. */
   private lastStripKey: string | null = null;
+  /** Signature of the rendered rows; unchanged -> the DOM is left alone. */
+  private lastRowsKey: string | null = null;
 
   constructor(
     feedId: string,
@@ -104,14 +106,22 @@ export class AgentView {
     this.decideUpdatedMs = Date.now();
     this.updateDecideFreshness();
 
-    const stripKey = feed.current ? decideStripKey(feed.current) : null;
-    const switched = this.lastStripKey !== null && stripKey !== null && stripKey !== this.lastStripKey;
-    this.decideStripEl.innerHTML = renderDecideStrip(feed.current, switched);
-    if (stripKey !== null) this.lastStripKey = stripKey;
+    // Leave the DOM alone when nothing changed: rebuilding it would restart the
+    // highlight animations and drop an open hover tooltip on every poll.
+    const stripKey = feed.current ? decideStripKey(feed.current) : "";
+    if (stripKey !== this.lastStripKey) {
+      const switched = !!this.lastStripKey && !!stripKey;
+      this.decideStripEl.innerHTML = renderDecideStrip(feed.current, switched);
+      this.lastStripKey = stripKey;
+    }
+
+    const rowsKey = decideRowsKey(feed.rows);
+    if (rowsKey === this.lastRowsKey) return;
+    this.lastRowsKey = rowsKey;
 
     if (feed.rows.length === 0) {
       this.decideFeedEl.innerHTML =
-        '<div class="loading">No agent.decide spans in the last 10 minutes. ' +
+        '<div class="loading">No agent.decide spans in the last 2 minutes. ' +
         "Rows appear here as soon as the agent decides in an FFA game.</div>";
       return;
     }
@@ -353,8 +363,32 @@ const OUTCOME_LABEL: Record<DecideRow["outcome"], string> = {
   unknown: "?",
 };
 
-function decideStripKey(c: DecideCurrent): string {
-  return `${c.backend}|${c.requested}|${c.model}|${c.threshold ?? ""}`;
+/** What the strip shows; a change re-renders (and flashes) it. */
+export function decideStripKey(c: DecideCurrent): string {
+  return `${c.backend}|${c.requested}|${c.model}|${c.threshold ?? ""}|${c.thresholdFromOlder}|${c.gameId}`;
+}
+
+/**
+ * Signature of a row list: the row keys plus the fields that can change when a
+ * span is re-fetched (linked decisions arrive after their decide).
+ */
+export function decideRowsKey(rows: DecideRow[]): string {
+  return rows.map((r) => `${r.traceId}/${r.spanId}:${r.decisions.length}:${r.outcome}`).join(",");
+}
+
+/** Short game id for a row: game_<12 hex> -> its last 6 chars. */
+export function shortGameId(id: string): string {
+  if (!id) return "?";
+  return id.length > 8 ? `…${id.slice(-6)}` : id;
+}
+
+/** Game badge: short id + kind (real / shadow / unknown). */
+function renderGameBadge(gameId: string, gameKind: string): string {
+  const kind = gameKind === "shadow" ? "shadow" : gameKind ? "real" : "unknown";
+  const label = gameKind || "?";
+  return `<span class="decide-game decide-game-${kind}" title="${escapeHtml(gameId || "unknown game")}">${escapeHtml(
+    label,
+  )} ${escapeHtml(shortGameId(gameId))}</span>`;
 }
 
 function fmtConfidence(v: number | null): string {
@@ -377,7 +411,9 @@ export function renderDecideStrip(current: DecideCurrent | null, switched = fals
   const requested = requestedDiffers
     ? `<span class="decide-strip-requested">requested <b>${escapeHtml(current.requested)}</b></span>`
     : "";
-  const model = current.model || (current.backend === "rules" ? "rules engine" : "—");
+  // A rules decide (incl. a fallback, whose span still names the requested
+  // backend's model) is decided by the rules engine: no model.
+  const model = current.backend === "rules" ? "rules engine" : current.model || "—";
   const threshold =
     current.threshold === null
       ? '<span class="decide-strip-val" title="no confidence routing recorded yet (rules does not route by confidence)">—</span>'
@@ -399,7 +435,7 @@ export function renderDecideStrip(current: DecideCurrent | null, switched = fals
         <span class="decide-strip-key">act threshold</span>
         ${threshold}
       </div>
-      <div class="decide-strip-item decide-strip-time">as of ${formatTime(current.tsMs)}</div>
+      <div class="decide-strip-item decide-strip-time">${renderGameBadge(current.gameId, current.gameKind)} as of ${formatTime(current.tsMs)}</div>
     </div>`;
 }
 
@@ -436,14 +472,18 @@ export function renderConfidenceBar(confidence: number | null, threshold: number
 export function renderDecideRow(row: DecideRow, isNew = false): string {
   const outcome = row.outcome;
   const backendDiffers = row.requested && row.requested !== row.backend;
+  const model = row.model
+    ? `<span class="decide-model${backendDiffers ? " decide-backend-struck" : ""}">${escapeHtml(row.model)}</span>`
+    : "";
+  // On a fallback the model belongs to the REQUESTED backend (struck through),
+  // not to rules, which has none.
   const backend = backendDiffers
     ? `<span class="decide-backend decide-backend-${backendClass(row.requested)} decide-backend-struck" title="requested backend">${escapeHtml(row.requested)}</span>` +
+      model +
       `<span class="decide-arrow">→</span>` +
       `<span class="decide-backend decide-backend-${backendClass(row.backend)}">${escapeHtml(row.backend)}</span>`
-    : `<span class="decide-backend decide-backend-${backendClass(row.backend)}">${escapeHtml(row.backend || "—")}</span>`;
-  const model = row.model
-    ? `<span class="decide-model">${escapeHtml(row.model)}</span>`
-    : "";
+    : `<span class="decide-backend decide-backend-${backendClass(row.backend)}">${escapeHtml(row.backend || "—")}</span>` +
+      (row.backend === "rules" ? "" : model);
   const fallback = row.fallbackReason
     ? `<span class="decide-fallback-reason" title="decide.fallback_reason">${escapeHtml(row.fallbackReason)}${
         row.errorType && row.errorType !== row.fallbackReason ? ` · ${escapeHtml(row.errorType)}` : ""
@@ -480,8 +520,8 @@ export function renderDecideRow(row: DecideRow, isNew = false): string {
       <div class="decide-line">
         <span class="agent-feed-time">${formatTime(row.tsMs)}</span>
         <span class="decide-outcome decide-outcome-${outcome}">${OUTCOME_LABEL[outcome]}</span>
+        ${renderGameBadge(row.gameId, row.gameKind)}
         ${backend}
-        ${model}
         ${fallback}
         ${answer}
         ${outcomeReason}

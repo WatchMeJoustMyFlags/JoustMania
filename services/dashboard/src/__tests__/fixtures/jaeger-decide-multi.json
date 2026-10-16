@@ -1,0 +1,482 @@
+{
+  "data": [
+    {
+      "traceID": "ffff000000000006",
+      "spans": [
+        {
+          "traceID": "ffff000000000006",
+          "spanID": "g1",
+          "operationName": "gameplay_phase",
+          "references": [],
+          "startTime": 1760000000000000,
+          "duration": 60000000,
+          "tags": [],
+          "logs": [],
+          "processID": "p2",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "ffff000000000006",
+          "spanID": "pd",
+          "operationName": "game.process_death",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "ffff000000000006",
+              "spanID": "g1"
+            }
+          ],
+          "startTime": 1760000001000000,
+          "duration": 500,
+          "tags": [],
+          "logs": [],
+          "processID": "p2",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "ffff000000000006",
+          "spanID": "st",
+          "operationName": "agent.decision",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "ffff000000000006",
+              "spanID": "g1"
+            }
+          ],
+          "startTime": 1760000001500000,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "legacy_thing"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": false
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "ffff000000000006",
+          "spanID": "s1",
+          "operationName": "agent.signal_received",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "ffff000000000006",
+              "spanID": "g1"
+            }
+          ],
+          "startTime": 1760000002000000,
+          "duration": 9000,
+          "tags": [
+            {
+              "key": "gen_ai.agent.name",
+              "type": "string",
+              "value": "joustmania-agent"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "real"
+            },
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "ffff000000000006",
+          "spanID": "R1",
+          "operationName": "agent.decide",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "ffff000000000006",
+              "spanID": "s1"
+            }
+          ],
+          "startTime": 1760000002000100,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "gen_ai.agent.name",
+              "type": "string",
+              "value": "joustmania-agent"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "real"
+            },
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "decide.backend",
+              "type": "string",
+              "value": "rules"
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "rules"
+            },
+            {
+              "key": "decide.fallback_reason",
+              "type": "string",
+              "value": ""
+            },
+            {
+              "key": "decide.latency_ms",
+              "type": "int64",
+              "value": 0
+            },
+            {
+              "key": "decide.outcome",
+              "type": "string",
+              "value": "act"
+            },
+            {
+              "key": "decide.answers",
+              "type": "string",
+              "value": "[{\"question_id\": \"ffa.intervention\", \"choice\": \"grant_shield\", \"score\": 0, \"confidence\": 0.6}, {\"question_id\": \"ffa.target\", \"choice\": \"MOCK0001\", \"score\": 0, \"confidence\": 0.6}]"
+            },
+            {
+              "key": "decide.confidence",
+              "type": "float64",
+              "value": 0.6
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "ffff000000000006",
+          "spanID": "R1d",
+          "operationName": "agent.decision",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "ffff000000000006",
+              "spanID": "s1"
+            }
+          ],
+          "startTime": 1760000002001000,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "grant_shield"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": false
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "ffff000000000006",
+          "spanID": "D1",
+          "operationName": "agent.decide",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "ffff000000000006",
+              "spanID": "g1"
+            }
+          ],
+          "startTime": 1760000010000000,
+          "duration": 1200000,
+          "tags": [
+            {
+              "key": "gen_ai.agent.name",
+              "type": "string",
+              "value": "joustmania-agent"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "real"
+            },
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "decide.backend",
+              "type": "string",
+              "value": "claude"
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "claude"
+            },
+            {
+              "key": "decide.fallback_reason",
+              "type": "string",
+              "value": ""
+            },
+            {
+              "key": "decide.latency_ms",
+              "type": "int64",
+              "value": 1150
+            },
+            {
+              "key": "decide.outcome",
+              "type": "string",
+              "value": "act"
+            },
+            {
+              "key": "gen_ai.request.model",
+              "type": "string",
+              "value": "claude-sonnet-5-5"
+            },
+            {
+              "key": "decide.act_confidence_threshold",
+              "type": "float64",
+              "value": 0.8
+            },
+            {
+              "key": "decide.confidence",
+              "type": "float64",
+              "value": 0.88
+            },
+            {
+              "key": "decide.answers",
+              "type": "string",
+              "value": "[{\"question_id\": \"ffa.intervention\", \"choice\": \"send_controller_effect\", \"score\": 0, \"confidence\": 0.88}, {\"question_id\": \"ffa.target\", \"choice\": \"MOCK0002\", \"score\": 0, \"confidence\": 0.88}]"
+            },
+            {
+              "key": "decide.rationale",
+              "type": "string",
+              "value": "MOCK0002 idle"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "ffff000000000006",
+          "spanID": "D1c",
+          "operationName": "chat claude-sonnet-5-5",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "ffff000000000006",
+              "spanID": "D1"
+            }
+          ],
+          "startTime": 1760000010000100,
+          "duration": 1100000,
+          "tags": [
+            {
+              "key": "gen_ai.operation.name",
+              "type": "string",
+              "value": "chat"
+            },
+            {
+              "key": "gen_ai.request.model",
+              "type": "string",
+              "value": "claude-sonnet-5-5"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "ffff000000000006",
+          "spanID": "D1d",
+          "operationName": "agent.decision",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "ffff000000000006",
+              "spanID": "D1"
+            }
+          ],
+          "startTime": 1760000011150000,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "send_controller_effect"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": false
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "ffff000000000006",
+          "spanID": "D2",
+          "operationName": "agent.decide",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "ffff000000000006",
+              "spanID": "g1"
+            }
+          ],
+          "startTime": 1760000014000000,
+          "duration": 900000,
+          "tags": [
+            {
+              "key": "gen_ai.agent.name",
+              "type": "string",
+              "value": "joustmania-agent"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "real"
+            },
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "type": "string",
+              "value": "game_00000000a1b2"
+            },
+            {
+              "key": "decide.backend",
+              "type": "string",
+              "value": "claude"
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "claude"
+            },
+            {
+              "key": "decide.fallback_reason",
+              "type": "string",
+              "value": ""
+            },
+            {
+              "key": "decide.latency_ms",
+              "type": "int64",
+              "value": 880
+            },
+            {
+              "key": "decide.outcome",
+              "type": "string",
+              "value": "noop"
+            },
+            {
+              "key": "gen_ai.request.model",
+              "type": "string",
+              "value": "claude-sonnet-5-5"
+            },
+            {
+              "key": "decide.confidence",
+              "type": "float64",
+              "value": 0.7
+            },
+            {
+              "key": "decide.answers",
+              "type": "string",
+              "value": "[{\"question_id\": \"ffa.intervention\", \"choice\": \"noop\", \"score\": 0, \"confidence\": 0.7}, {\"question_id\": \"ffa.target\", \"choice\": \"none\", \"score\": 0, \"confidence\": 0.7}]"
+            },
+            {
+              "key": "decide.rationale",
+              "type": "string",
+              "value": "Game is balanced."
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        }
+      ],
+      "processes": {
+        "p1": {
+          "serviceName": "agent",
+          "tags": []
+        },
+        "p2": {
+          "serviceName": "game-coordinator",
+          "tags": []
+        }
+      },
+      "warnings": null
+    }
+  ]
+}

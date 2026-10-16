@@ -11,15 +11,21 @@
  *   fallback    claude timed out, rules answered
  *   discarded   act answer dropped (game_ended), truncated answers, hostile rationale
  */
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  DecideStore,
+  DECIDE_COLD_WINDOW_MS,
+  DECIDE_OVERLAP_MS,
   confidenceBar,
+  decideQueryStartMs,
   jaegerTraceUrl,
   parseDecideAnswers,
   parseDecideTraces,
 } from "../agent.js";
+import { createPoller } from "../poller.js";
 import type { DecideRow, JaegerTracesResponse } from "../agent.js";
 import {
+  AgentView,
   escapeHtml,
   renderConfidenceBar,
   renderDecideRow,
@@ -31,6 +37,8 @@ import actFixture from "./fixtures/jaeger-decide-remote-act.json";
 import heldFixture from "./fixtures/jaeger-decide-held.json";
 import fallbackFixture from "./fixtures/jaeger-decide-fallback.json";
 import discardedFixture from "./fixtures/jaeger-decide-discarded.json";
+import multiFixture from "./fixtures/jaeger-decide-multi.json";
+import shadowFixture from "./fixtures/jaeger-decide-shadow.json";
 
 const asResp = (f: unknown) => f as JaegerTracesResponse;
 
@@ -212,14 +220,17 @@ describe("rendering + escaping", () => {
     };
     const html = renderDecideRow(row);
     expect(html).not.toContain("<script>");
-    expect(renderDecideStrip({ tsMs: 0, backend: evil, requested: evil, model: evil, threshold: null, thresholdFromOlder: false })).not.toContain(
+    expect(renderDecideStrip({ tsMs: 0, backend: evil, requested: evil, model: evil, threshold: null, thresholdFromOlder: false, gameId: evil, gameKind: evil })).not.toContain(
       "<script>",
     );
   });
 
   it("shows requested -> used on a fallback row", () => {
     const html = renderDecideRow(only(fallbackFixture));
-    expect(html).toMatch(/decide-backend-struck[^>]*>claude<\/span><span class="decide-arrow">→<\/span><span class="decide-backend decide-backend-rules">rules/);
+    // The model sits with the REQUESTED (struck) backend, not with rules.
+    expect(html).toMatch(
+      /decide-backend-struck[^>]*>claude<\/span><span class="decide-model decide-backend-struck">claude-opus-5-5<\/span><span class="decide-arrow">→<\/span><span class="decide-backend decide-backend-rules">rules/,
+    );
     expect(html).toContain("timeout");
   });
 
@@ -239,5 +250,262 @@ describe("rendering + escaping", () => {
     expect(truncateText("abcdef", 4)).toBe("abc…");
     expect(truncateText("abc", 4)).toBe("abc");
     expect(escapeHtml(`<a href='x'>&"`)).toBe("&lt;a href=&#39;x&#39;&gt;&amp;&quot;");
+  });
+});
+
+describe("multi-decide game trace (#1195 shape)", () => {
+  const { rows } = parseDecideTraces(asResp(multiFixture));
+  const byId = new Map(rows.map((r) => [r.spanId, r]));
+
+  it("folds every decide in the game trace", () => {
+    expect(rows.map((r) => r.spanId)).toEqual(["D2", "D1", "R1"]);
+  });
+
+  it("rules decide links only its signal_received siblings", () => {
+    expect(byId.get("R1")?.decisions.map((d) => d.action)).toEqual(["grant_shield"]);
+  });
+
+  it("remote decides link only their own children, never gameplay_phase's", () => {
+    expect(byId.get("D1")?.decisions.map((d) => d.action)).toEqual(["send_controller_effect"]);
+    // D2 has no children; the stray agent.decision under gameplay_phase must not attach.
+    expect(byId.get("D2")?.decisions).toEqual([]);
+  });
+
+  it("row shows a short game id and kind badge", () => {
+    const html = renderDecideRow(byId.get("D1") as DecideRow);
+    expect(html).toContain("decide-game-real");
+    expect(html).toContain("real …00a1b2");
+  });
+});
+
+describe("current strip with real + shadow games", () => {
+  it("a newer shadow rules decide does not flip the strip", () => {
+    const { rows } = parseDecideTraces(merged(multiFixture, shadowFixture));
+    expect(rows[0].spanId).toBe("SH1");
+    const cur = parseDecideTraces(merged(multiFixture, shadowFixture)).current;
+    expect(cur?.gameKind).toBe("real");
+    expect(cur?.backend).toBe("claude");
+    expect(cur?.model).toBe("claude-sonnet-5-5");
+    // D2 (noop) carries no threshold; it comes from D1 of the same game.
+    expect(cur?.threshold).toBeCloseTo(0.8);
+    expect(cur?.thresholdFromOlder).toBe(true);
+  });
+
+  it("only shadow games -> the newest row's game", () => {
+    const cur = parseDecideTraces(merged(shadowFixture)).current;
+    expect(cur?.gameKind).toBe("shadow");
+    expect(cur?.backend).toBe("rules");
+  });
+
+  it("strip says rules engine (no model) when rules decided, even on a fallback", () => {
+    const cur = parseDecideTraces(merged(fallbackFixture)).current;
+    expect(cur?.model).toBe("claude-opus-5-5");
+    const html = renderDecideStrip(cur);
+    expect(html).toContain("rules engine");
+    expect(html).not.toContain("claude-opus-5-5");
+  });
+});
+
+describe("incremental query window", () => {
+  const now = 1_760_000_000_000;
+
+  it("cold start: the last 2 minutes", () => {
+    expect(decideQueryStartMs(null, now)).toBe(now - DECIDE_COLD_WINDOW_MS);
+  });
+
+  it("warm: 30s behind the newest decide seen", () => {
+    expect(decideQueryStartMs(now - 5_000, now)).toBe(now - 5_000 - DECIDE_OVERLAP_MS);
+  });
+
+  it("never wider than the cold window, however old the newest decide is", () => {
+    expect(decideQueryStartMs(now - 3_600_000, now)).toBe(now - DECIDE_COLD_WINDOW_MS);
+  });
+
+  it("DecideStore tracks the newest decide, replaces re-fetched rows, and stays bounded", () => {
+    const store = new DecideStore(3);
+    expect(store.queryStartMs(now)).toBe(now - DECIDE_COLD_WINDOW_MS);
+    const multi = parseDecideTraces(asResp(multiFixture)).rows;
+    store.merge(multi);
+    const newest = Math.max(...multi.map((r) => r.tsMs));
+    expect(store.queryStartMs(newest + 1000)).toBe(newest - DECIDE_OVERLAP_MS);
+    // Re-fetch of the same spans: no duplicates.
+    store.merge(multi);
+    expect(store.size).toBe(3);
+    // More rows than the bound: the oldest go.
+    store.merge(parseDecideTraces(asResp(shadowFixture)).rows);
+    expect(store.size).toBe(3);
+    expect(store.feed().rows.map((r) => r.spanId)).toEqual(["SH1", "D2", "D1"]);
+    expect(store.feed().current?.gameKind).toBe("real");
+  });
+});
+
+describe("poller", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function deferred() {
+    let resolve!: () => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("a poke during a slow fetch does not start a second chain", async () => {
+    const calls: ReturnType<typeof deferred>[] = [];
+    const poller = createPoller({
+      baseMs: 1500,
+      maxMs: 10_000,
+      timeoutMs: 4000,
+      isActive: () => true,
+      run: () => {
+        const d = deferred();
+        calls.push(d);
+        return d.promise;
+      },
+    });
+    poller.poke();
+    expect(calls).toHaveLength(1);
+    // Visibility / tab toggles while the request is in flight.
+    poller.stop();
+    poller.poke();
+    poller.poke();
+    expect(calls).toHaveLength(1);
+    calls[0].resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    // Exactly one tick scheduled, at the base cadence.
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(calls).toHaveLength(2);
+    calls[1].resolve();
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("backs off (doubling, capped) on errors and resets on a fast success", async () => {
+    let fail = true;
+    let runs = 0;
+    const poller = createPoller({
+      baseMs: 1500,
+      maxMs: 10_000,
+      timeoutMs: 4000,
+      isActive: () => true,
+      run: async () => {
+        runs += 1;
+        if (fail) throw new Error("jaeger down");
+      },
+    });
+    poller.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(poller.delayMs).toBe(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(poller.delayMs).toBe(6000);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(poller.delayMs).toBe(10_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(poller.delayMs).toBe(10_000);
+    fail = false;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(poller.delayMs).toBe(1500);
+    expect(runs).toBe(5);
+  });
+
+  it("aborts a request after the timeout and backs off", async () => {
+    let aborted = false;
+    const poller = createPoller({
+      baseMs: 1500,
+      maxMs: 10_000,
+      timeoutMs: 4000,
+      isActive: () => true,
+      run: (signal) =>
+        new Promise<void>((_, reject) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          });
+        }),
+    });
+    poller.poke();
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(aborted).toBe(true);
+    expect(poller.inFlight).toBe(false);
+    expect(poller.delayMs).toBe(3000);
+  });
+
+  it("does not poll while inactive and resumes on poke", async () => {
+    let active = false;
+    let runs = 0;
+    const poller = createPoller({
+      baseMs: 1500,
+      maxMs: 10_000,
+      timeoutMs: 4000,
+      isActive: () => active,
+      run: async () => {
+        runs += 1;
+      },
+    });
+    poller.poke();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(runs).toBe(0);
+    active = true;
+    poller.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runs).toBe(1);
+    active = false;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(runs).toBe(1);
+  });
+});
+
+describe("AgentView.renderDecide skips unchanged renders", () => {
+  /** Minimal DOM stand-in: counts innerHTML writes per element. */
+  function fakeDocument() {
+    const writes: Record<string, number> = {};
+    const els: Record<string, unknown> = {};
+    const make = (id: string) => {
+      let html = "";
+      writes[id] = 0;
+      return {
+        get innerHTML() {
+          return html;
+        },
+        set innerHTML(v: string) {
+          writes[id] += 1;
+          html = v;
+        },
+        hidden: true,
+        textContent: "",
+        classList: { toggle() {} },
+      };
+    };
+    for (const id of ["feed", "flags", "overlay", "strip", "dfeed"]) els[id] = make(id);
+    return { writes, doc: { getElementById: (id: string) => els[id] ?? null } };
+  }
+
+  let restore: unknown;
+  beforeEach(() => {
+    restore = (globalThis as { document?: unknown }).document;
+  });
+  afterEach(() => {
+    (globalThis as { document?: unknown }).document = restore;
+  });
+
+  it("does not rewrite the strip or rows when nothing changed", () => {
+    const { writes, doc } = fakeDocument();
+    (globalThis as { document?: unknown }).document = doc;
+    const view = new AgentView("feed", "flags", "overlay", undefined, { strip: "strip", feed: "dfeed" });
+    const feed = parseDecideTraces(merged(multiFixture));
+    view.renderDecide(feed);
+    expect(writes.strip).toBe(1);
+    expect(writes.dfeed).toBe(1);
+    // Same content again (a new object, as every poll produces).
+    view.renderDecide(parseDecideTraces(merged(multiFixture)));
+    expect(writes.strip).toBe(1);
+    expect(writes.dfeed).toBe(1);
+    // A newer shadow decide: rows change, the strip (real game) does not.
+    view.renderDecide(parseDecideTraces(merged(multiFixture, shadowFixture)));
+    expect(writes.strip).toBe(1);
+    expect(writes.dfeed).toBe(2);
   });
 });

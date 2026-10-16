@@ -1223,3 +1223,16 @@ body {
 
 .decide-decision-allowed { color: #7ee2b8; }
 .decide-decision-blocked { color: var(--accent-primary); }
+
+/* Game badge on decide rows and the strip: short id + kind. */
+.decide-game {
+  font-family: monospace;
+  font-size: 0.82rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.decide-game-real { background: rgba(33, 150, 243, 0.25); color: #cfe6ff; }
+.decide-game-shadow { background: rgba(255, 255, 255, 0.06); color: var(--text-secondary); border: 1px dashed rgba(255, 255, 255, 0.35); }
+.decide-game-unknown { background: rgba(255, 255, 255, 0.06); color: var(--text-secondary); }

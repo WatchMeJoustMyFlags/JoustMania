@@ -19,7 +19,7 @@
             {
               "key": "game.kind",
               "type": "string",
-              "value": "JoustFFA"
+              "value": "real"
             },
             {
               "key": "game.id",

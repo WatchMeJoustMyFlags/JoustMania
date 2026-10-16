@@ -432,19 +432,32 @@ export async function fetchAgentView(): Promise<AgentView> {
 /** Jaeger operation the decide feed searches for. */
 export const DECIDE_OPERATION = "agent.decide";
 
-/** How far back the decide feed looks. */
-const DECIDE_LOOKBACK_SECONDS = 10 * 60;
+/**
+ * Cold-start window, and the widest window any poll asks for. Rows older than
+ * that are already held client-side (DecideStore), so re-fetching them is waste.
+ */
+export const DECIDE_COLD_WINDOW_MS = 2 * 60 * 1000;
 
 /**
- * Max traces per Jaeger search. On the remote path a decide trace is the whole
- * per-game trace (every agent.decide of the game lives in it), so a small number
- * of traces already holds many decisions; keep it low to bound the payload of a
- * 1.5s poll.
+ * Overlap behind the newest decide already seen: spans are exported when they
+ * END, so a decide that started a little earlier than the newest one we hold can
+ * still arrive late.
  */
-const DECIDE_TRACE_LIMIT = 15;
+export const DECIDE_OVERLAP_MS = 30 * 1000;
+
+/**
+ * Max traces per Jaeger search. Both rules and remote agent.decide spans live in
+ * the whole per-GAME trace (since #1195), and Jaeger returns whole traces, so one
+ * trace already carries every decide of its game. Keep this low: it is the main
+ * bound on the payload of a poll (and on Jaeger's memory, see #1191).
+ */
+const DECIDE_TRACE_LIMIT = 5;
 
 /** Max decide rows kept (newest first). */
 const MAX_DECIDE_ROWS = 30;
+
+/** The rules path's per-cycle parent span (decide + decisions are its children). */
+const SIGNAL_OPERATION = "agent.signal_received";
 
 /** decide.outcome values (DecideOutcome* in decide_hook.go). */
 export type DecideOutcome =
@@ -517,6 +530,9 @@ export interface DecideCurrent {
   model: string;
   /** Threshold of the newest span, else the newest one that carried it. */
   threshold: number | null;
+  /** Game the strip describes: the newest non-shadow game, else the newest row's. */
+  gameId: string;
+  gameKind: string;
   /** True when `threshold` came from an older span than the newest one. */
   thresholdFromOlder: boolean;
 }
@@ -624,6 +640,7 @@ function isChatSpan(span: JaegerSpan, tags: Map<string, unknown>): boolean {
 function decideRowFrom(
   span: JaegerSpan,
   byParent: Map<string, JaegerSpan[]>,
+  byId: Map<string, JaegerSpan>,
 ): DecideRow {
   const tags = tagMap(span);
   const parent = parentSpanId(span);
@@ -632,15 +649,13 @@ function decideRowFrom(
   // Rules path: decisions are siblings under the same agent.signal_received.
   const children = byParent.get(span.spanID) ?? [];
   let decisionSpans = children.filter((s) => s.operationName === "agent.decision");
-  if (decisionSpans.length === 0 && parent) {
-    const siblings = byParent.get(parent) ?? [];
-    // Only the rules path shares a parent with its decisions. Guard against a
-    // remote decide (parent = gameplay_phase) picking up unrelated decisions by
-    // requiring there is no other agent.decide under the same parent.
-    const decideSiblings = siblings.filter((s) => s.operationName === DECIDE_OPERATION);
-    if (decideSiblings.length === 1) {
-      decisionSpans = siblings.filter((s) => s.operationName === "agent.decision");
-    }
+  // Only the rules path shares a parent with its decisions, and that parent is
+  // always the cycle's agent.signal_received. A remote decide's parent is the
+  // game's gameplay_phase, whose other children are unrelated: never link those.
+  if (decisionSpans.length === 0 && byId.get(parent)?.operationName === SIGNAL_OPERATION) {
+    decisionSpans = (byParent.get(parent) ?? []).filter(
+      (s) => s.operationName === "agent.decision",
+    );
   }
 
   let model = tagString(tags, "gen_ai.request.model");
@@ -709,7 +724,9 @@ export function parseDecideTraces(body: JaegerTracesResponse): DecideFeed {
   for (const trace of body.data ?? []) {
     const spans = trace.spans ?? [];
     const byParent = new Map<string, JaegerSpan[]>();
+    const byId = new Map<string, JaegerSpan>();
     for (const s of spans) {
+      byId.set(s.spanID, s);
       const p = parentSpanId(s);
       if (!p) continue;
       const list = byParent.get(p);
@@ -721,22 +738,36 @@ export function parseDecideTraces(body: JaegerTracesResponse): DecideFeed {
       const key = `${s.traceID}/${s.spanID}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      rows.push(decideRowFrom(s, byParent));
+      rows.push(decideRowFrom(s, byParent, byId));
     }
   }
 
-  rows.sort((a, b) => b.tsMs - a.tsMs || b.spanId.localeCompare(a.spanId));
+  rows.sort(newestFirst);
   const capped = rows.slice(0, MAX_DECIDE_ROWS);
   return { rows: capped, current: currentFrom(rows) };
 }
 
-function currentFrom(rows: DecideRow[]): DecideCurrent | null {
-  const newest = rows[0];
-  if (!newest) return null;
+/** Shadow games are the experiment loop's headless games (game.kind="shadow"). */
+export function isShadowGame(kind: string): boolean {
+  return kind === "shadow";
+}
+
+/**
+ * The current-backend strip. It describes the newest NON-shadow game (the one
+ * on stage): shadow games are rules-only (not eligible for remote backends), so a
+ * shadow decide must never flip the strip back to "rules". Without any
+ * non-shadow row it falls back to the game of the newest row. `rows` must be
+ * newest first.
+ */
+export function currentFrom(rows: DecideRow[]): DecideCurrent | null {
+  if (rows.length === 0) return null;
+  const anchor = rows.find((r) => !isShadowGame(r.gameKind)) ?? rows[0];
+  const gameRows = rows.filter((r) => r.gameId === anchor.gameId);
+  const newest = gameRows[0] ?? anchor;
   let threshold = newest.threshold;
   let thresholdFromOlder = false;
   if (threshold === null) {
-    const older = rows.find((r) => r.threshold !== null);
+    const older = gameRows.find((r) => r.threshold !== null) ?? rows.find((r) => r.threshold !== null);
     if (older) {
       threshold = older.threshold;
       thresholdFromOlder = true;
@@ -749,7 +780,70 @@ function currentFrom(rows: DecideRow[]): DecideCurrent | null {
     model: newest.model,
     threshold,
     thresholdFromOlder,
+    gameId: newest.gameId,
+    gameKind: newest.gameKind,
   };
+}
+
+function rowKey(r: DecideRow): string {
+  return `${r.traceId}/${r.spanId}`;
+}
+
+function newestFirst(a: DecideRow, b: DecideRow): number {
+  return b.tsMs - a.tsMs || b.spanId.localeCompare(a.spanId);
+}
+
+/**
+ * Start of the next decide query window (epoch ms): DECIDE_OVERLAP_MS behind the
+ * newest decide already held, but never wider than DECIDE_COLD_WINDOW_MS (which
+ * is also the cold-start window when nothing is held yet).
+ */
+export function decideQueryStartMs(newestSeenMs: number | null, nowMs: number): number {
+  const floor = nowMs - DECIDE_COLD_WINDOW_MS;
+  if (newestSeenMs === null) return floor;
+  return Math.max(newestSeenMs - DECIDE_OVERLAP_MS, floor);
+}
+
+/**
+ * Client-side decide rows across polls: each poll only fetches a short window,
+ * so the feed is the union of what the polls returned, keyed by trace/span (a
+ * re-fetched span replaces its row: its linked decisions may have arrived
+ * since), bounded to the newest `max` rows.
+ */
+export class DecideStore {
+  private readonly rows = new Map<string, DecideRow>();
+  private newestMs: number | null = null;
+
+  constructor(private readonly max = MAX_DECIDE_ROWS) {}
+
+  merge(rows: DecideRow[]): void {
+    for (const r of rows) {
+      this.rows.set(rowKey(r), r);
+      if (this.newestMs === null || r.tsMs > this.newestMs) this.newestMs = r.tsMs;
+    }
+    if (this.rows.size > this.max) {
+      const keep = this.sorted().slice(0, this.max);
+      this.rows.clear();
+      for (const r of keep) this.rows.set(rowKey(r), r);
+    }
+  }
+
+  queryStartMs(nowMs: number): number {
+    return decideQueryStartMs(this.newestMs, nowMs);
+  }
+
+  get size(): number {
+    return this.rows.size;
+  }
+
+  feed(): DecideFeed {
+    const rows = this.sorted();
+    return { rows, current: currentFrom(rows) };
+  }
+
+  private sorted(): DecideRow[] {
+    return Array.from(this.rows.values()).sort(newestFirst);
+  }
 }
 
 /** Geometry of a confidence bar against the act threshold (all percentages 0..100). */
@@ -781,22 +875,22 @@ export function jaegerTraceUrl(traceId: string, spanId: string): string {
 }
 
 /**
- * Query Jaeger for recent agent.decide spans. Throws on transport errors so the
- * caller can flag the panel stale; it is polled separately from the Loki view so
- * a Loki outage never hides the decide feed (and vice versa).
+ * Query Jaeger for the agent.decide spans that started at or after `startMs`.
+ * Throws on transport errors and on abort (the poller's per-request timeout) so
+ * the caller can back off. Polled separately from the Loki view so a Loki outage
+ * never hides the decide feed (and vice versa).
  */
-export async function fetchDecideFeed(): Promise<DecideFeed> {
+export async function fetchDecideFeed(startMs: number, signal?: AbortSignal): Promise<DecideFeed> {
   const endUs = Date.now() * 1000;
-  const startUs = endUs - DECIDE_LOOKBACK_SECONDS * 1_000_000;
   const params = new URLSearchParams({
     service: "agent",
     operation: DECIDE_OPERATION,
-    start: String(startUs),
+    start: String(Math.floor(startMs) * 1000),
     end: String(endUs),
     limit: String(DECIDE_TRACE_LIMIT),
   });
   const url = `${BASE_URL}/jaeger/api/traces?${params.toString()}`;
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const response = await fetch(url, { headers: { Accept: "application/json" }, signal });
   if (!response.ok) {
     throw new Error(`Jaeger query failed: ${response.status} ${response.statusText}`);
   }
