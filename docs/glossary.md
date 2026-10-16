@@ -1,7 +1,7 @@
 # Glossary
 
 > Part of the [spec tree](README.md), next to [requirements](requirements.md) and the
-> [entity model](entity_model.md). State: `main` @ 551d5b9d (2026-10-16). One meaning per term: when a
+> [entity model](entity_model.md). State: `main` @ 2fdfbfd1 (2026-10-16). One meaning per term: when a
 > word has several meanings in the code (gate, stage, backend), each meaning is its own row and the
 > spec names the qualified term. Items from open PRs are marked with the PR number.
 

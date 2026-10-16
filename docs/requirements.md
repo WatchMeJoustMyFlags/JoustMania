@@ -3,7 +3,7 @@
 > AIUP stage 2 of 5: [vision](vision.md) → **requirements** → [entity model](entity_model.md) →
 > [use cases](use_cases.puml) → [technical specs](specs/). Index: [docs/README.md](README.md).
 >
-> State: `main` @ 551d5b9d (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1266, #1282, #1284, #1286). **Status** follows the AIUP reference: `Open` (not built),
+> State: `main` @ 2fdfbfd1 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1266, #1282, #1284, #1286, #1288). **Status** follows the AIUP reference: `Open` (not built),
 > `In Progress` (open PR), `Implemented` (on `main`), `Verified` (for an FR: every use case that lists it
 > under `Requirements:` is `Tested`, i.e. has tagged tests; otherwise an FR is at most `Implemented`, and the Notes
 > column records untagged tests as "tests exist: …; untagged"), `Deferred`, `Rejected`. NFRs and constraints are exempt

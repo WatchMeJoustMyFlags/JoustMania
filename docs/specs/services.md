@@ -1,6 +1,6 @@
 # Services
 
-> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 551d5b9d (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1266, #1282, #1284, #1286).
+> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 2fdfbfd1 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1266, #1282, #1284, #1286, #1288).
 > RPC tables are **generated from `proto/*.proto`**; regenerate them when a `.proto` changes (and remember the
 > forwarding method in `services/connect-proxy/main.go` for browser-reachable RPCs).
 

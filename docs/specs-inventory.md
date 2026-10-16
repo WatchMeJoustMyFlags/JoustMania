@@ -1,7 +1,7 @@
 # Specs inventory
 
 > Snapshot of every Markdown document on `main` @ 2d162b33 (2026-10-16) when the AIUP spec tree was
-> introduced (epic #1260), updated for PRs #1256, #1257, #1259, #1261 and #1265 (merged the same day, `main` @ 81c9ecea), and for the spec consistency pass on `main` @ 551d5b9d (PRs #1266, #1282, #1284, #1286): what it covers, whether it is still true, and where its content now lives.
+> introduced (epic #1260), updated for PRs #1256, #1257, #1259, #1261 and #1265 (merged the same day, `main` @ 81c9ecea), and for the spec consistency pass on `main` @ 2fdfbfd1 (PRs #1266, #1282, #1284, #1286, #1288): what it covers, whether it is still true, and where its content now lives.
 > Followed by the **discrepancies found** between docs and code. Index: [README.md](README.md).
 
 **Status legend.** *current*: matches the code (minor drift at most). *stale*: contains claims the code on

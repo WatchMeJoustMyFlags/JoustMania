@@ -3,7 +3,7 @@
 > Technical spec. Part of the [spec tree](../README.md). Realises FR-044 to FR-054
 > in [requirements.md](../requirements.md) and [UC-040](../use_cases/UC-040.md),
 > [UC-044](../use_cases/UC-044.md), [UC-045](../use_cases/UC-045.md).
-> State: `main` @ 551d5b9d (2026-10-16, includes PRs #1257, #1261, #1265, #1284 and #1286: the Jev gate and most-likely-level magnitude of #1281). Code references use `file:Symbol` where practical, because line numbers rot. Planned or in-flight items carry their issue / PR number and are marked **Planned** / **In flight**.
+> State: `main` @ 2fdfbfd1 (2026-10-16, includes PRs #1257, #1261, #1265, #1284, #1286 (the Jev gate and most-likely-level magnitude of #1281) and #1288 (per-backend act threshold)). Code references use `file:Symbol` where practical, because line numbers rot. Planned or in-flight items carry their issue / PR number and are marked **Planned** / **In flight**.
 
 The agent answers "should I intervene in this game, how, and on whom" through one
 contract, independent of who answers: the in-process **rules** engine or a remote
