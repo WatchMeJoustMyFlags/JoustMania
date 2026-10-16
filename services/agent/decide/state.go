@@ -1,0 +1,175 @@
+package decide
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"math"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/joustmania/agent/gamecontext"
+)
+
+// BuildState turns a GameContext snapshot into the backend-facing State. It is
+// pure and deterministic: the same snapshot always yields the same Narrative
+// and Digest. Players are sorted by serial, the timeline renders through the
+// shared gamecontext.RenderTimeline (the exact lines the llm prompt and retro
+// use) with ages relative to c.UpdatedAt rather than the wall clock, and the
+// Digest hashes a fixed-order canonical encoding that never ranges over a map.
+func BuildState(c gamecontext.GameContext) State {
+	st := State{
+		GameID:   c.SessionID,
+		GameKind: c.GameKind,
+		Players:  buildPlayers(c),
+		Elapsed:  elapsed(c),
+	}
+	st.Narrative = renderNarrative(c, st)
+	st.Digest = digest(st)
+	return st
+}
+
+// AliveSerials returns the serials of the alive players, sorted.
+func (s State) AliveSerials() []string {
+	var out []string
+	for _, p := range s.Players {
+		if p.Alive {
+			out = append(out, p.Serial)
+		}
+	}
+	return out
+}
+
+func buildPlayers(c gamecontext.GameContext) []PlayerState {
+	elimOrder := make(map[string]int, len(c.Session.EliminationSequence))
+	for i, serial := range c.Session.EliminationSequence {
+		if _, seen := elimOrder[serial]; !seen {
+			elimOrder[serial] = i + 1
+		}
+	}
+	out := make([]PlayerState, 0, len(c.Players))
+	for key, p := range c.Players {
+		if p == nil {
+			continue
+		}
+		serial := p.Serial
+		if serial == "" {
+			serial = key
+		}
+		out = append(out, PlayerState{
+			Serial:           serial,
+			Alive:            p.Active != nil && *p.Active,
+			Intensity:        p.MovementIntensity,
+			Variance:         p.MovementVariance,
+			Skill:            p.SkillLevel,
+			BatteryPct:       p.BatteryPct,
+			EliminationOrder: elimOrder[serial],
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Serial < out[j].Serial })
+	return out
+}
+
+func elapsed(c gamecontext.GameContext) time.Duration {
+	d := c.Session.DurationSeconds
+	if d == nil || !finite(*d) || *d <= 0 {
+		return 0
+	}
+	return time.Duration(*d * float64(time.Second))
+}
+
+// renderNarrative is the line-oriented text a remote model reads. Numbers use
+// fixed precision so the rendering is byte-stable for a given snapshot.
+func renderNarrative(c gamecontext.GameContext, st State) string {
+	var b strings.Builder
+	b.WriteString("game: id=" + orUnknown(st.GameID) + " kind=" + orUnknown(st.GameKind) +
+		" mode=" + orUnknown(deref(c.Session.GameMode)) +
+		" elapsed=" + strconv.FormatFloat(st.Elapsed.Seconds(), 'f', 1, 64) + "s\n")
+
+	b.WriteString("session: alive=" + strconv.Itoa(len(st.AliveSerials())) +
+		" eliminated=" + strconv.Itoa(len(c.Session.EliminationSequence)))
+	writeOpt(&b, "tempo", c.Session.MusicTempo)
+	writeOpt(&b, "death_threshold", c.Session.DeathThreshold)
+	b.WriteString("\n")
+
+	b.WriteString("players:\n")
+	for _, p := range st.Players {
+		status := "alive"
+		if !p.Alive {
+			status = "out"
+			if p.EliminationOrder > 0 {
+				status = "eliminated#" + strconv.Itoa(p.EliminationOrder)
+			}
+		}
+		b.WriteString("  " + p.Serial + " " + status)
+		writeOpt(&b, "intensity", p.Intensity)
+		writeOpt(&b, "variance", p.Variance)
+		writeOpt(&b, "skill", p.Skill)
+		writeOpt(&b, "battery", p.BatteryPct)
+		if src := c.Players[p.Serial]; src != nil && len(src.History) > 0 {
+			b.WriteString(" movement=" + gamecontext.RenderSparkline(src.History, c.Session.DeathThreshold))
+		}
+		b.WriteString("\n")
+	}
+
+	if lines := gamecontext.RenderTimeline(c.Timeline, c.UpdatedAt); len(lines) > 0 {
+		b.WriteString("timeline:\n")
+		for _, l := range lines {
+			b.WriteString("  " + l + "\n")
+		}
+	}
+	return b.String()
+}
+
+// digest hashes the canonical encoding of every State field except Digest
+// itself. The encoding is a fixed field order with exact ('g', -1) float
+// formatting and "-" for an unobserved signal, so it is stable across runs and
+// distinguishes a missing reading from a zero. The narrative is included, which
+// pulls in the session-level signals and the timeline it renders.
+func digest(st State) string {
+	var b strings.Builder
+	b.WriteString("game_id=" + strconv.Quote(st.GameID) + "\n")
+	b.WriteString("game_kind=" + strconv.Quote(st.GameKind) + "\n")
+	b.WriteString("elapsed_ns=" + strconv.FormatInt(int64(st.Elapsed), 10) + "\n")
+	for _, p := range st.Players {
+		b.WriteString("player=" + strconv.Quote(p.Serial) +
+			" alive=" + strconv.FormatBool(p.Alive) +
+			" intensity=" + exact(p.Intensity) +
+			" variance=" + exact(p.Variance) +
+			" skill=" + exact(p.Skill) +
+			" battery_pct=" + exact(p.BatteryPct) +
+			" elimination_order=" + strconv.Itoa(p.EliminationOrder) + "\n")
+	}
+	b.WriteString("narrative=" + strconv.Quote(st.Narrative) + "\n")
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:])
+}
+
+func exact(v *float64) string {
+	if v == nil {
+		return "-"
+	}
+	return strconv.FormatFloat(*v, 'g', -1, 64)
+}
+
+func writeOpt(b *strings.Builder, key string, v *float64) {
+	if v == nil || math.IsNaN(*v) {
+		return
+	}
+	b.WriteString(" " + key + "=" + strconv.FormatFloat(*v, 'f', 2, 64))
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
+}
