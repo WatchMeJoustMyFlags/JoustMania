@@ -283,6 +283,7 @@ class TestMenuServicerControllerCallbacks:
     """ControllerEventCallbacks: connect, disconnect, battery, stream reconnect."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="main", steps=[6])
     async def test_on_connect_registers_connected_with_dim_led(self, real_servicer):
         """on_connect adds the serial as CONNECTED and lights the dim lobby colour."""
         await _connect(real_servicer, "s1", "s2")
@@ -292,6 +293,7 @@ class TestMenuServicerControllerCallbacks:
         real_servicer.led.set_connected_color.assert_any_await("s1", Games.JoustFFA.name)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A1")
     async def test_on_disconnect_removes_ready_controller(self, real_servicer):
         """on_disconnect removes the serial from the lobby, including its ready flag."""
         await _connect(real_servicer, "s1", "s2", "s3")
@@ -311,6 +313,7 @@ class TestMenuServicerControllerCallbacks:
         assert real_servicer.state_manager.battery_levels["s1"] == 4
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A5")
     async def test_stream_reconnect_clears_lobby(self, real_servicer):
         """A button-stream reconnect clears all lobby state, un-readying everyone."""
         await _connect(real_servicer, "s1", "s2", "s3")
@@ -319,7 +322,9 @@ class TestMenuServicerControllerCallbacks:
         await real_servicer.on_stream_reconnected()
 
         assert real_servicer.connected_controllers == set()
-        assert real_servicer.get_connected_serials() == set()
+        assert real_servicer.ready_controllers == set()
+        assert real_servicer.state_manager.button_states == {}
+        assert real_servicer.state_manager.battery_levels == {}
 
 
 class TestMenuServicerOnButton:
