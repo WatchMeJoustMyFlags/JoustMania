@@ -119,9 +119,11 @@ LOW_CONFIDENCE = 0.3
 # decision.act_confidence_threshold default variant (ci/agent.json).
 ACT_THRESHOLD = 0.8
 
-# llm.eligible_game_kinds (CSV string flag, #1221) for the remote cases; see
-# configure_agent for why "primary" is listed.
-ELIGIBLE_GAME_KINDS = "real,primary"
+# llm.eligible_game_kinds (CSV string flag, #1221): the SHIPPED default, left
+# untouched. Menu games reach the agent as game_kind "real" (the coordinator's
+# "primary" label is normalised at ingest, #1249), so the remote cases also prove
+# that a real menu game is eligible for a remote decision under the default.
+ELIGIBLE_GAME_KINDS = "real"
 
 # Remote call budget per decide call (decision.openai.timeout_ms). Long so the
 # held call in the kill-switch case is still in flight after the switch flips and
@@ -306,14 +308,6 @@ def configure_agent(
     _set(doc, "decision.openai.model", FAKE_MODEL)
     _set(doc, "decision.openai.timeout_ms", DECIDE_TIMEOUT_MS)
     _set(doc, "decision.min_interval_ms", 1500)
-    # WORKAROUND (agent bug found by this test, reported on #1230): the
-    # coordinator labels menu games game_kind="primary"
-    # (services/game_coordinator/game_session.py GAME_KIND_PRIMARY) but the agent's
-    # eligibility vocabulary is "real" (llm.eligible_game_kinds=real_only), so with
-    # the shipped default a real menu game is never eligible for a remote decision
-    # and every cycle falls back to rules (llm_not_eligible). Admit both spellings
-    # here so the test exercises the remote path; drop "primary" once the kinds agree.
-    _set(doc, "llm.eligible_game_kinds", ELIGIBLE_GAME_KINDS)
     _dump_in_place(AGENT_PATH, doc)
 
 
@@ -584,8 +578,8 @@ async def test_rules_backend_default_unchanged(
             assert tags.get("decide.backend.requested") == "rules", tags
             assert tags.get("decide.fallback_reason", "") == "", tags
             assert tags.get("decide.outcome") == "act", tags
-            # The coordinator labels menu games "primary" (see configure_agent).
-            assert tags.get("game.kind") in ("real", "primary"), tags
+            # The coordinator's "primary" label is normalised to "real" (#1249).
+            assert tags.get("game.kind") == "real", tags
             # Sync rules path shape: agent.decide and agent.decision share the
             # agent.signal_received parent; no backend chat span.
             parent_ids = {r["spanID"] for r in span.get("references", [])}
@@ -669,6 +663,8 @@ async def test_openai_high_confidence_acts(
             assert tags.get("decide.backend.requested") == "openai", tags
             assert tags.get("decide.fallback_reason", "") == "", tags
             assert tags.get("gen_ai.request.model") == FAKE_MODEL, tags
+            # Eligible under the shipped llm.eligible_game_kinds=real (#1249).
+            assert tags.get("game.kind") == "real", tags
             assert abs(float(tags.get("decide.confidence")) - HIGH_CONFIDENCE) < 1e-9, (
                 tags
             )
