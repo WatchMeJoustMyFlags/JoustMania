@@ -562,3 +562,113 @@ func TestStore_MovementAggregatesSurviveToConclusionSnapshot(t *testing.T) {
 		t.Fatalf("only %d eliminated players retained both movement aggregates at conclusion; balanced spike-survival would not compute", withAggregates)
 	}
 }
+
+// TestStore_ElapsedDuration pins the in-game elapsed time the snapshot carries
+// (#1305): the live game_duration_seconds gauge while it advances, the time since
+// game_active went 0 -> 1 when the gauge is missing or stale, and the observed
+// gauge unchanged once the game is no longer active.
+//
+// UC: UC-041 main A3 BR-003
+func TestStore_ElapsedDuration(t *testing.T) {
+	duration := func(t *testing.T, snap GameContext) float64 {
+		t.Helper()
+		if snap.Session.DurationSeconds == nil {
+			t.Fatal("DurationSeconds is nil, want a value")
+		}
+		return *snap.Session.DurationSeconds
+	}
+	start := func() (*clock, *Store) {
+		clk := &clock{t: time.Unix(1_000, 0)}
+		s := NewStore(time.Hour, time.Hour, clk.now)
+		s.ApplyMetrics(metricsWith(metricGameActive, 1, nil))
+		return clk, s
+	}
+
+	t.Run("UC-041/main live gauge drives elapsed while running", func(t *testing.T) {
+		clk, s := start()
+		s.ApplyMetrics(metricsWith(metricDuration, 3, nil))
+		if got := duration(t, s.Snapshot()); got != 3 {
+			t.Fatalf("elapsed = %v, want 3 (gauge)", got)
+		}
+		clk.advance(time.Second)
+		s.ApplyMetrics(metricsWith(metricDuration, 4, nil))
+		if got := duration(t, s.Snapshot()); got != 4 {
+			t.Fatalf("elapsed = %v, want 4 (gauge advanced)", got)
+		}
+	})
+
+	t.Run("UC-041/A3 missing gauge falls back to time since game start", func(t *testing.T) {
+		clk, s := start()
+		clk.advance(7 * time.Second)
+		snap := s.Snapshot()
+		if got := duration(t, snap); got != 7 {
+			t.Fatalf("elapsed = %v, want 7 (since game_active 0->1)", got)
+		}
+		if !snap.Session.StartedAt.Equal(time.Unix(1_000, 0)) {
+			t.Fatalf("StartedAt = %v, want the game_active 0->1 time", snap.Session.StartedAt)
+		}
+	})
+
+	t.Run("UC-041/A3 stale gauge falls back to time since game start", func(t *testing.T) {
+		clk, s := start()
+		s.ApplyMetrics(metricsWith(metricDuration, 2, nil))
+		// The observable gauge keeps re-exporting the same frozen value.
+		for i := 0; i < 2; i++ {
+			clk.advance(3 * time.Second)
+			s.ApplyMetrics(metricsWith(metricDuration, 2, nil))
+		}
+		if got := duration(t, s.Snapshot()); got != 6 {
+			t.Fatalf("elapsed = %v, want 6 (gauge frozen for 6s > %v)", got, durationStaleAfter)
+		}
+	})
+
+	t.Run("UC-041/A3 gauge within the stale window still wins", func(t *testing.T) {
+		clk, s := start()
+		s.ApplyMetrics(metricsWith(metricDuration, 2, nil))
+		clk.advance(durationStaleAfter)
+		if got := duration(t, s.Snapshot()); got != 2 {
+			t.Fatalf("elapsed = %v, want 2 (gauge not yet stale)", got)
+		}
+	})
+
+	t.Run("UC-041/A3 stale gauge larger than the derived time is kept", func(t *testing.T) {
+		// The agent joined mid-game: its own start time is later than the game's.
+		clk, s := start()
+		s.ApplyMetrics(metricsWith(metricDuration, 100, nil))
+		clk.advance(10 * time.Second)
+		if got := duration(t, s.Snapshot()); got != 100 {
+			t.Fatalf("elapsed = %v, want 100 (never below the stale gauge)", got)
+		}
+	})
+
+	t.Run("UC-041/BR-003 game end carries the observed final gauge unchanged", func(t *testing.T) {
+		clk, s := start()
+		var ended *GameContext
+		s.OnGameEnd = func(gc GameContext) { ended = &gc }
+		clk.advance(40 * time.Second)
+		s.ApplyMetrics(metricsWith(metricDuration, 41.5, nil))
+		s.ApplyMetrics(metricsWith(metricGameActive, 0, nil))
+		if ended == nil {
+			t.Fatal("OnGameEnd did not fire")
+		}
+		if got := duration(t, *ended); got != 41.5 {
+			t.Fatalf("end snapshot elapsed = %v, want the final gauge 41.5", got)
+		}
+		clk.advance(30 * time.Second)
+		if got := duration(t, s.Snapshot()); got != 41.5 {
+			t.Fatalf("post-game elapsed = %v, want 41.5 (no fallback once inactive)", got)
+		}
+	})
+
+	t.Run("UC-041/A3 a new game restarts the fallback clock", func(t *testing.T) {
+		clk, s := start()
+		clk.advance(20 * time.Second)
+		s.ApplyMetrics(metricsWith(metricGameActive, 0, nil))
+		clk.advance(5 * time.Second)
+		s.ApplyMetrics(metricsWith(metricGameActive, 1, nil))
+		clk.advance(2 * time.Second)
+		if got := duration(t, s.Snapshot()); got != 2 {
+			t.Fatalf("elapsed = %v, want 2 (since the new game's start)", got)
+		}
+	})
+}

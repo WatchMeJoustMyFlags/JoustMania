@@ -160,6 +160,13 @@ response_format) are specified in [decide-contract.md §12](decide-contract.md#1
 
 Renaming any of these breaks the agent silently: update this table and the extractor in the same PR.
 
+**Elapsed game time.** The agent's in-game elapsed time (`elapsed_s` in the decide state, `duration` in the rules
+and the `agent.evaluate` log line) is `game_duration_seconds` while that gauge is fresh, i.e. its value advanced
+within the last 5 s. When the gauge is missing or stale during an active game, the agent derives the elapsed time
+from when it saw `game_active` go 0 → 1, never going below the last gauge value. Once the game is no longer active
+the observed gauge is used unchanged (UC-041 A3, BR-003; `services/agent/gamecontext/store.go`
+`effectiveDurationLocked`).
+
 **Traceability:** FR-040 to FR-049, FR-056, FR-063, FR-071, FR-072 / UC-040 to UC-045, UC-050, UC-051 / `services/agent/decision/`, `services/agent/experiment/`, `services/agent/gamecontext/` / `services/agent/decision/*_test.go` (trace_link, signal_telemetry, gameplay_phase_parent), `tests/integration/test_decide_backend_e2e.py`, `tests/integration/test_experiment_cohort_loop.py`.
 
 ## 5. Game events
@@ -196,6 +203,12 @@ argument). 150 unique Python names; the main ones per service:
 | audio | `audio_sounds_played_total{result}`, `audio_playback_errors_total`, `audio_channel_saturation_total` (C); `audio_channels_active`, `audio_music_playing`, `audio_music_tempo` (G) | `services/audio/metrics.py` |
 | pairing-daemon | `psmove_pairing_attempts_total` / `_success_total` / `_failed_total` (C); `bluetooth_device_rssi_dbm{serial,hci_adapter}`, `bluetooth_device_connected`, `bluetooth_adapter_connections` (G); `psmove_pairing_duration_seconds` (H) | `services/pairing_daemon/psmove_pairing/metrics.py` |
 | agent | `agent_llm_gated_total{reason}` (decide path, retro and, since #1270, the experiment proposer), `agent_evaluations_total{signal,outcome}`, `agent_decisions_total{action,blocked,block_reason}`, `agent_interventions_applied_total{action}`, `agent_intervention_writes_total{result}`, `agent_intervention_file_corruption_total{phase}` (C); `agent_intervention_effect_delta` (H); `gen_ai.client.operation.duration`, `gen_ai.client.token.usage` (H) | `services/agent/decision/metrics.go`, `actions/writer.go:199-227`, `decide/backends/claude/metrics.go` |
+
+`game_duration_seconds` is the seconds since the game was started (StartGame, so it includes the countdown). The
+coordinator refreshes it every 1 s while the session is RUNNING (real and shadow sessions alike), sets the final
+value when the game loop ends, and removes the series when the session retires. It carries the same per-game label
+tuple as `game_active` (`game_kind, game_id, experiment_id, arm`), so there is one series per live game (UC-041
+BR-003; `services/game_coordinator/game_session.py` `_publish_duration_while_running`).
 
 ### 6.1 Consumers
 

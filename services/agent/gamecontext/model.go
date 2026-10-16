@@ -79,9 +79,18 @@ type PlayerSignals struct {
 
 // SessionSignals is the per-game (session) view the agent reasons over.
 type SessionSignals struct {
-	// DurationSeconds is the elapsed game time.
-	// Source: game_duration_seconds (live).
+	// DurationSeconds is the elapsed game time in seconds since the game was
+	// started. Source: game_duration_seconds (live: the coordinator refreshes it
+	// ~1 Hz while the game is RUNNING and sets the final value at game end, #1305).
+	// While the game is active, Snapshot() falls back to the time since StartedAt
+	// when the gauge is missing or has not advanced for durationStaleAfter (see
+	// Store.effectiveDurationLocked), so in-game consumers never see a stuck 0.
 	DurationSeconds *float64
+
+	// StartedAt is when the agent saw this session's game_active go 0 -> 1 (agent
+	// clock). It is the fallback base for DurationSeconds while the game is
+	// active (#1305). Zero when no start has been observed for this session.
+	StartedAt time.Time
 
 	// ActivePlayerCount is the number of players still in the game.
 	// Source: game_active_players (live).
