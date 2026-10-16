@@ -130,6 +130,7 @@ type PatternFacts struct {
 	Selection      string   `json:"selection,omitempty"`
 	Archetypes     []string `json:"archetypes,omitempty"`
 	ParamsDigests  []string `json:"params_digests,omitempty"`
+	ParamsJSON     []string `json:"params_json,omitempty"`
 	MaxGameSeconds int      `json:"max_game_seconds,omitempty"`
 	// game_assigned and pattern_game_ended
 	Archetype    string `json:"archetype,omitempty"`
@@ -139,6 +140,8 @@ type PatternFacts struct {
 	// pattern_game_ended
 	SlotSerials      []string   `json:"slot_serials,omitempty"`
 	Outcome          string     `json:"outcome,omitempty"`
+	Censored         *bool      `json:"censored,omitempty"`
+	OrderSource      string     `json:"order_source,omitempty"`
 	EliminationOrder []int      `json:"elimination_order,omitempty"`
 	WinnerSlot       *int       `json:"winner_slot,omitempty"`
 	SignalHashes     []string   `json:"signal_hashes,omitempty"`

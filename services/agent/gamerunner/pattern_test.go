@@ -81,7 +81,9 @@ func TestRunShadowGame_PatternGameEndsWithWinner(t *testing.T) {
 		mock = patternMock(a, map[int]uint64{0: 900, 1: 900, 2: 300}, -1)
 		winnerEv := ev("game_winner")
 		winnerEv.Data = map[string]string{"serial": "MOCK0000"}
-		coord := &fakeCoord{gameID: "game_pat_1", events: []*gcpb.GameEvent{ev("game_starting"), winnerEv, ev("game_ended")}}
+		coord := &fakeCoord{gameID: "game_pat_1", events: []*gcpb.GameEvent{
+			ev("game_starting"), death("MOCK0002"), death("MOCK0001"), winnerEv, ev("game_ended"),
+		}}
 		h := newHarness(t, mock, coord)
 		defer h.stop()
 		tracker := patterngame.NewTracker()
@@ -119,8 +121,8 @@ func TestRunShadowGame_PatternGameEndsWithWinner(t *testing.T) {
 		if rec.Outcome != patterngame.OutcomeWinner || rec.WinnerSlot != 0 {
 			t.Errorf("outcome/winner = %s/%d, want winner/0", rec.Outcome, rec.WinnerSlot)
 		}
-		if fmt.Sprint(rec.EliminationOrder) != "[2 1]" {
-			t.Errorf("elimination order = %v, want [2 1] (winner from game_winner, BR-014)", rec.EliminationOrder)
+		if fmt.Sprint(rec.EliminationOrder) != "[2 1]" || rec.OrderSource != patterngame.OrderFromEvents {
+			t.Errorf("elimination order = %v from %s, want [2 1] from player_death events (BR-014)", rec.EliminationOrder, rec.OrderSource)
 		}
 		if !rec.Exact() {
 			t.Errorf("non-exact %v, want exact", rec.NonExactReasons)
@@ -135,9 +137,12 @@ func TestRunShadowGame_PatternGameEndsWithWinner(t *testing.T) {
 func TestRunShadowGame_PatternSafetyCapIsTimeout(t *testing.T) {
 	t.Run("UC-046/A3 cap reached gives a valid timeout, survivors left out, still exact", func(t *testing.T) {
 		a := testArchetype(t)
-		// slot 2 died early; slots 0 and 1 were alive when the cap force-ended the game.
+		// slot 2 died early and slot 1 died in the last second before the cap: the frame
+		// counts alone would call slot 1 a survivor, the player_death events do not.
 		mock := patternMock(a, map[int]uint64{0: 1800, 1: 1795, 2: 400}, -1)
-		coord := &fakeCoord{gameID: "game_pat_2", events: []*gcpb.GameEvent{ev("game_starting")}, emitTerminalOnForceEnd: "game_force_ended"}
+		coord := &fakeCoord{gameID: "game_pat_2", events: []*gcpb.GameEvent{
+			ev("game_starting"), death("MOCK0002"), death("MOCK0001"),
+		}, emitTerminalOnForceEnd: "game_force_ended"}
 		h := newHarness(t, mock, coord)
 		defer h.stop()
 		h.runner.SetTracker(patterngame.NewTracker())
@@ -157,8 +162,8 @@ func TestRunShadowGame_PatternSafetyCapIsTimeout(t *testing.T) {
 		if rec.Outcome != patterngame.OutcomeTimeout || rec.WinnerSlot != -1 {
 			t.Errorf("outcome/winner = %s/%d, want timeout/-1", rec.Outcome, rec.WinnerSlot)
 		}
-		if fmt.Sprint(rec.EliminationOrder) != "[2]" {
-			t.Errorf("elimination order = %v, want [2] (survivors left out)", rec.EliminationOrder)
+		if fmt.Sprint(rec.EliminationOrder) != "[2 1]" || !rec.Censored {
+			t.Errorf("order/censored = %v/%v, want [2 1] (a death in the last second counts), censored", rec.EliminationOrder, rec.Censored)
 		}
 		if !rec.Exact() {
 			t.Errorf("a timeout alone made the game non-exact: %v", rec.NonExactReasons)
@@ -254,6 +259,85 @@ func TestRunShadowGame_PatternGameError(t *testing.T) {
 		}
 		if rec.Outcome != patterngame.OutcomeError || rec.WinnerSlot != -1 {
 			t.Errorf("record = %s/%d, want error/-1", rec.Outcome, rec.WinnerSlot)
+		}
+	})
+}
+
+func death(serial string) *gcpb.GameEvent {
+	e := ev("player_death")
+	e.Data = map[string]string{"serial": serial}
+	return e
+}
+
+// UC: UC-046 BR-014
+func TestRunShadowGame_PatternTie(t *testing.T) {
+	t.Run("UC-046/BR-014 a tie has outcome tie, no winner and every death in order", func(t *testing.T) {
+		a := testArchetype(t)
+		mock := patternMock(a, map[int]uint64{0: 700, 1: 700, 2: 300}, -1)
+		coord := &fakeCoord{gameID: "game_tie", events: []*gcpb.GameEvent{
+			ev("game_starting"), death("MOCK0002"), death("MOCK0000"), death("MOCK0001"), ev("game_tie"), ev("game_ended"),
+		}}
+		h := newHarness(t, mock, coord)
+		defer h.stop()
+		h.runner.SetTracker(patterngame.NewTracker())
+		res, err := h.runner.RunShadowGame(context.Background(), patternSpec(a))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := res.Pattern
+		if rec.Outcome != patterngame.OutcomeTie || rec.WinnerSlot != -1 || fmt.Sprint(rec.EliminationOrder) != "[2 0 1]" {
+			t.Errorf("record = %s/%d/%v, want tie/-1/[2 0 1]", rec.Outcome, rec.WinnerSlot, rec.EliminationOrder)
+		}
+	})
+}
+
+// UC: UC-046 BR-014
+func TestRunShadowGame_PatternOrderFallsBackToFrames(t *testing.T) {
+	t.Run("UC-046/BR-014 without death events the order comes from delivered frames", func(t *testing.T) {
+		a := testArchetype(t)
+		mock := patternMock(a, map[int]uint64{0: 900, 1: 900, 2: 300}, -1)
+		winnerEv := ev("game_winner")
+		winnerEv.Data = map[string]string{"serial": "MOCK0000"}
+		coord := &fakeCoord{gameID: "game_fb", events: []*gcpb.GameEvent{ev("game_starting"), winnerEv, ev("game_ended")}}
+		h := newHarness(t, mock, coord)
+		defer h.stop()
+		h.runner.SetTracker(patterngame.NewTracker())
+		res, err := h.runner.RunShadowGame(context.Background(), patternSpec(a))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec := res.Pattern; rec.OrderSource != patterngame.OrderFromFrames || fmt.Sprint(rec.EliminationOrder) != "[2 1]" {
+			t.Errorf("order = %v from %s, want [2 1] from frames", rec.EliminationOrder, rec.OrderSource)
+		}
+	})
+}
+
+// UC: UC-046 A8 BR-008
+func TestRunShadowGame_LivenessCheckedEverySecond(t *testing.T) {
+	t.Run("UC-046/A8 another game going live mid-game makes the game non-exact", func(t *testing.T) {
+		a := testArchetype(t)
+		mock := patternMock(a, map[int]uint64{0: 900, 1: 600, 2: 300}, -1)
+		coord := &fakeCoord{gameID: "game_live", events: []*gcpb.GameEvent{ev("game_starting")}, emitTerminalOnForceEnd: "game_force_ended"}
+		h := newHarness(t, mock, coord)
+		defer h.stop()
+		tracker := patterngame.NewTracker()
+		var mu sync.Mutex
+		calls := 0
+		// Live only from the second check on: the start check sees nothing.
+		tracker.SetConcurrencyProbe(func(string) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			return calls == 2
+		})
+		h.runner.SetTracker(tracker)
+		h.runner.capUnit = 40 * time.Millisecond // 60 "s" cap = 2.4 s: two liveness ticks
+		res, err := h.runner.RunShadowGame(context.Background(), patternSpec(a))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(res.Pattern.NonExactReasons) != "[concurrent_game]" {
+			t.Errorf("reasons = %v, want [concurrent_game] from a mid-game check", res.Pattern.NonExactReasons)
 		}
 	})
 }

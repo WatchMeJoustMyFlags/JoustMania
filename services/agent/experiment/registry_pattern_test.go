@@ -213,29 +213,28 @@ func TestRegistryPatternDiscardsAndNoise(t *testing.T) {
 			}
 		})
 	}
-	t.Run("UC-046/A1 an inactive pin spawns noise games at the normal concurrency", func(t *testing.T) {
+	t.Run("UC-046/A1 an empty selection discards the experiment; nothing spawns", func(t *testing.T) {
 		spawner := &patternSpawner{}
+		empty := patterngame.Pin{DiscardReason: patterngame.DiscardSelectionEmpty, Errors: []string{"empty"}}
 		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2, EffectiveConcurrency: 2, Spawner: spawner,
-			Patterns: &queuePinner{pins: []patterngame.Pin{{}}}})
-		startExperiment(t, r)
-		if n := r.AllocateAndSpawn(context.Background()); n != 2 {
-			t.Fatalf("spawned %d, want a full pair of noise games", n)
+			Patterns: &queuePinner{pins: []patterngame.Pin{empty}}})
+		id := startExperiment(t, r)
+		if n := r.AllocateAndSpawn(context.Background()); n != 0 || spawner.count() != 0 {
+			t.Fatalf("spawned %d", n)
 		}
-		for _, ps := range spawner.patterns {
-			if ps != nil {
-				t.Fatal("noise game carried a pattern")
-			}
+		if st, _ := r.Status(id); st != StatusDiscarded {
+			t.Fatalf("status = %s, want discarded", st)
 		}
 	})
-	t.Run("UC-046/BR-010 no noise game starts while a pattern game is in flight", func(t *testing.T) {
+	t.Run("UC-046/BR-010 one shadow game at a time across pattern experiments", func(t *testing.T) {
 		spawner := &patternSpawner{}
 		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 4, EffectiveConcurrency: 4, Spawner: spawner,
-			Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "p"), {}}}})
+			Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "p"), testPin(t, "q")}}})
 		startExperiment(t, r)
 		startExperiment(t, r)
 		r.AllocateAndSpawn(context.Background())
-		if spawner.count() != 1 || spawner.patterns[0] == nil {
-			t.Fatalf("spawns = %d (%v), want only the pattern game", spawner.count(), spawner.patterns)
+		if spawner.count() != 1 {
+			t.Fatalf("spawns = %d, want 1 (concurrency 1 for every experiment)", spawner.count())
 		}
 	})
 }
@@ -256,7 +255,7 @@ func TestRegistryPatternKillSwitch(t *testing.T) {
 		if aborted != 1 {
 			t.Fatalf("abort hook called %d times", aborted)
 		}
-		rec, _ := tracker.Finish(gid, patterngame.OutcomeAborted, "", nil)
+		rec, _ := tracker.Finish(gid, patterngame.OutcomeAborted, patterngame.GameEvents{}, nil)
 		if fmt.Sprint(rec.NonExactReasons) != "[kill_switch]" {
 			t.Errorf("reasons = %v", rec.NonExactReasons)
 		}
@@ -289,6 +288,186 @@ func TestRegistryRecordPatternEnd(t *testing.T) {
 		}
 		if summary := r.entries[id].journal.Summary(); summary.Arms["control"] != nil && summary.Arms["control"].Count != 0 {
 			t.Error("the replay record folded a fitness sample")
+		}
+	})
+}
+
+// failingSpawner fails every spawn with err.
+type failingSpawner struct{ err error }
+
+func (f failingSpawner) Spawn(context.Context, string, string, uint64) (string, error) {
+	return "", f.err
+}
+
+// UC: UC-046 A8 BR-015
+func TestRegistryPatternFailedSpawnUsesNoArchetype(t *testing.T) {
+	for name, err := range map[string]error{
+		"blocked by a real game": fmt.Errorf("start rejected: Shadow games blocked while a real game is running"),
+		"backpressure":           fmt.Errorf("at capacity: %w", ErrSpawnBackpressure),
+	} {
+		t.Run("UC-046/A8 "+name+" consumes no arm", func(t *testing.T) {
+			r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2, EffectiveConcurrency: 1,
+				Spawner: failingSpawner{err: err}, Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "a", "b")}}})
+			id := startExperiment(t, r)
+			for i := 0; i < 20; i++ {
+				r.AllocateAndSpawn(context.Background())
+			}
+			r.mu.Lock()
+			cursor, st := r.entries[id].armCursor, r.entries[id].status
+			r.mu.Unlock()
+			if cursor != 0 || st != StatusRunning {
+				t.Fatalf("after 20 failed ticks: armCursor=%d status=%s, want 0/running", cursor, st)
+			}
+		})
+	}
+}
+
+// UC: UC-046 A6 A9 BR-015
+func TestRegistryPatternReleasedArmRerunsPair(t *testing.T) {
+	t.Run("UC-046/A9 a released arm reruns its whole pair; after 3 reruns the archetype is skipped and the experiment concludes", func(t *testing.T) {
+		spawner := &patternSpawner{}
+		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2, EffectiveConcurrency: 1, MaxGamesPerExperiment: -1,
+			Spawner: spawner, Verdict: alwaysInconclusive{}, Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "only")}}})
+		id := startExperiment(t, r)
+		ctx := context.Background()
+		nextGame := func() (string, *PatternSpawn) {
+			if n := r.AllocateAndSpawn(ctx); n != 1 {
+				t.Fatalf("spawned %d, want 1", n)
+			}
+			spawner.fakeSpawner.mu.Lock()
+			defer spawner.fakeSpawner.mu.Unlock()
+			return spawner.fakeSpawner.calls[len(spawner.fakeSpawner.calls)-1].gameID, spawner.patterns[len(spawner.patterns)-1]
+		}
+		// Experimental concludes, control is released: the pair runs again from the experimental arm.
+		g1, _ := nextGame()
+		_, _ = r.ConcludeGame(ctx, g1, 0.5, 30)
+		g2, _ := nextGame()
+		r.ReleaseGame(g2, "preempted")
+		spawner.fakeSpawner.mu.Lock()
+		arm := spawner.fakeSpawner.calls[len(spawner.fakeSpawner.calls)-1].arm
+		spawner.fakeSpawner.mu.Unlock()
+		if arm != ArmControl {
+			t.Fatalf("setup: second game arm = %s", arm)
+		}
+		g3, ps := nextGame()
+		spawner.fakeSpawner.mu.Lock()
+		arm3 := spawner.fakeSpawner.calls[len(spawner.fakeSpawner.calls)-1].arm
+		spawner.fakeSpawner.mu.Unlock()
+		if arm3 != ArmExperimental || ps.PairIndex != 0 {
+			t.Fatalf("after a release the next game is %s pair %d, want experimental pair 0", arm3, ps.PairIndex)
+		}
+		// Three more releases exhaust the reruns: the archetype is skipped and the
+		// experiment concludes in the next allocation pass, with nothing spawned.
+		r.ReleaseGame(g3, "error")
+		for i := 0; i < 2; i++ {
+			g, _ := nextGame()
+			r.ReleaseGame(g, "error")
+		}
+		before := spawner.count()
+		r.AllocateAndSpawn(ctx)
+		if st, _ := r.Status(id); !st.IsTerminal() || spawner.count() != before {
+			t.Fatalf("status=%s spawns %d->%d, want terminal with no new spawn", st, before, spawner.count())
+		}
+		evs := journalEvents(t, r, id)
+		var reruns, skips int
+		for _, e := range eventsOfKind(evs, journal.KindDecision) {
+			switch e.Note {
+			case notePairRerun:
+				reruns++
+			case noteArchetypeSkipped:
+				skips++
+			}
+		}
+		if reruns != maxPairReruns || skips != 1 {
+			t.Errorf("reruns=%d skips=%d, want %d/1", reruns, skips, maxPairReruns)
+		}
+	})
+}
+
+// UC: UC-046 A5 BR-015
+func TestRegistryPatternRehydrate(t *testing.T) {
+	t.Run("UC-046/A5 a restart restores the pin and resumes at the first unfinished pair", func(t *testing.T) {
+		root := t.TempDir()
+		spawner := &patternSpawner{}
+		cfg := RegistryConfig{Root: root, MaxShadowGames: 2, EffectiveConcurrency: 1, Spawner: spawner,
+			Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "a", "b")}}}
+		r := newTestRegistry(t, cfg)
+		id := startExperiment(t, r)
+		ctx := context.Background()
+		for i := 0; i < 2; i++ { // complete pair 0
+			r.AllocateAndSpawn(ctx)
+			spawner.fakeSpawner.mu.Lock()
+			g := spawner.fakeSpawner.calls[len(spawner.fakeSpawner.calls)-1].gameID
+			spawner.fakeSpawner.mu.Unlock()
+			_, _ = r.ConcludeGame(ctx, g, 0.5, 30)
+		}
+		// A different selection now: the restored experiment must keep "a","b".
+		spawner2 := &patternSpawner{}
+		cfg2 := cfg
+		cfg2.Spawner = spawner2
+		cfg2.Patterns = &queuePinner{pins: []patterngame.Pin{testPin(t, "x", "y")}}
+		r2 := newTestRegistry(t, cfg2)
+		if err := r2.Rehydrate([]string{id}); err != nil {
+			t.Fatal(err)
+		}
+		r2.AllocateAndSpawn(ctx)
+		if len(spawner2.patterns) != 1 || spawner2.patterns[0].Archetype.Name != "b" || spawner2.patterns[0].PairIndex != 1 {
+			t.Fatalf("resumed with %+v, want archetype b pair 1", spawner2.patterns)
+		}
+	})
+	t.Run("UC-046/BR-015 a pattern experiment whose pin is gone is discarded", func(t *testing.T) {
+		root := t.TempDir()
+		r := newTestRegistry(t, RegistryConfig{Root: root, MaxShadowGames: 2, Spawner: &fakeSpawner{}})
+		id := startExperiment(t, r)
+		r.AllocateAndSpawn(context.Background()) // a game assigned with no pin (seam without pinner)
+		r2 := newTestRegistry(t, RegistryConfig{Root: root, MaxShadowGames: 2, Spawner: &patternSpawner{},
+			Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "a")}}})
+		if err := r2.Rehydrate([]string{id}); err != nil {
+			t.Fatal(err)
+		}
+		if st, _ := r2.Status(id); st != StatusDiscarded {
+			t.Fatalf("status = %s, want discarded (%s)", st, patterngame.DiscardPinLost)
+		}
+	})
+}
+
+// UC: UC-046 A3 BR-011 BR-013
+func TestRegistryPatternTimeoutReportingAndDigest(t *testing.T) {
+	t.Run("UC-046/A3 the conclusion reports timeouts per arm and flags a clear difference", func(t *testing.T) {
+		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2})
+		id := startExperiment(t, r)
+		a := testPin(t, "p").Archetypes[0]
+		end := func(arm, outcome string) {
+			r.RecordPatternEnd(patterngame.Record{Info: patterngame.Info{ExperimentID: id, Arm: arm, Archetype: a},
+				Outcome: outcome, Censored: outcome == patterngame.OutcomeTimeout})
+		}
+		end(ArmExperimental, patterngame.OutcomeTimeout)
+		end(ArmExperimental, patterngame.OutcomeTimeout)
+		end(ArmControl, patterngame.OutcomeWinner)
+		end(ArmControl, patterngame.OutcomeTimeout)
+		_, _ = r.conclude(context.Background(), id, journal.Verdict{Outcome: OutcomeInconclusive})
+		outcomes := eventsOfKind(journalEvents(t, r, id), journal.KindOutcome)
+		note := outcomes[len(outcomes)-1].Note
+		for _, want := range []string{"experimental 2/2 (100%)", "control 1/2 (50%)", "experimental arm timed out clearly more often"} {
+			if !strings.Contains(note, want) {
+				t.Errorf("conclusion %q lacks %q", note, want)
+			}
+		}
+		ended := eventsOfKind(journalEvents(t, r, id), journal.KindPatternGameEnded)
+		if len(ended) != 4 || ended[0].Pattern.Censored == nil || !*ended[0].Pattern.Censored {
+			t.Errorf("timeout not journaled as censored: %+v", ended)
+		}
+	})
+	t.Run("UC-046/BR-011 the arm's flag digest is journaled on game_assigned", func(t *testing.T) {
+		spawner := &patternSpawner{}
+		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2, EffectiveConcurrency: 1, Spawner: spawner,
+			Patterns:   &queuePinner{pins: []patterngame.Pin{testPin(t, "p")}},
+			FlagDigest: func(_ context.Context, id, arm string) string { return "digest-" + arm }})
+		id := startExperiment(t, r)
+		r.AllocateAndSpawn(context.Background())
+		assigned := eventsOfKind(journalEvents(t, r, id), journal.KindGameAssigned)
+		if len(assigned) != 1 || assigned[0].Pattern.FlagDigest != "digest-experimental" || spawner.patterns[0].FlagDigest != "digest-experimental" {
+			t.Fatalf("assigned = %+v", assigned)
 		}
 	})
 }

@@ -31,6 +31,9 @@ type PatternSpawn struct {
 	Archetype      patterngame.Archetype
 	MaxGameSeconds int
 	PairIndex      int
+	// FlagDigest is UC-046 BR-011's resolved-values digest for this arm, computed
+	// before the spawn so game_assigned can journal it.
+	FlagDigest string
 }
 
 type patternSpawnKey struct{}
@@ -76,13 +79,18 @@ func (r *Registry) pinPending(ctx context.Context) {
 		if pin.Active() {
 			r.appendEvent(e.journal, journal.Event{
 				Kind: journal.KindPatternPinned,
+				Note: pin.CapNote,
 				Pattern: &journal.PatternFacts{
 					Selection:      pin.Selection,
 					Archetypes:     pin.Names(),
 					ParamsDigests:  pin.Digests(),
+					ParamsJSON:     pin.ParamsJSON(),
 					MaxGameSeconds: pin.MaxGameSeconds,
 				},
 			})
+			if pin.CapNote != "" {
+				r.log.Warn("experiment.pattern_cap_fallback", "experiment_id", id, "note", pin.CapNote)
+			}
 			if e.span != nil {
 				e.span.AddEvent("experiment.pattern_pinned", trace.WithAttributes(
 					attribute.String("pattern.selection", pin.Selection),
@@ -111,19 +119,6 @@ func (e *entry) patternActive() bool { return e.pin != nil && e.pin.Active() }
 func (r *Registry) patternInFlightLocked() bool {
 	for _, e := range r.entries {
 		if e.patternActive() && e.inFlight() > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// patternWaitingLocked reports whether a live pattern experiment still has
-// archetypes left to spawn. While one does, other experiments spawn no new games,
-// so the in-flight games drain and the pattern experiment can run alone (BR-010)
-// instead of starving behind a busy noise experiment. Assumes r.mu is held.
-func (r *Registry) patternWaitingLocked() bool {
-	for _, e := range r.entries {
-		if e.status == StatusRunning && e.patternActive() && !e.patternExhaustedLocked() {
 			return true
 		}
 	}
@@ -164,16 +159,20 @@ func (r *Registry) concludeIfPatternExhausted(ctx context.Context, id string) (S
 }
 
 // patternFactsLocked builds the game_assigned pattern facts of a pair. Assumes r.mu is held.
-func (e *entry) patternFactsLocked(pairIndex int) *journal.PatternFacts {
+func (e *entry) patternFactsLocked(pairIndex int, spawn *PatternSpawn) *journal.PatternFacts {
 	if !e.patternActive() || pairIndex < 0 || pairIndex >= len(e.pin.Archetypes) {
 		return nil
 	}
 	a := e.pin.Archetypes[pairIndex]
-	return &journal.PatternFacts{
+	facts := &journal.PatternFacts{
 		Archetype:    a.Name,
 		ParamsDigest: a.Digest,
 		RngSeed:      pairSeed(e.id, pairIndex),
 	}
+	if spawn != nil {
+		facts.FlagDigest = spawn.FlagDigest
+	}
+	return facts
 }
 
 // RecordPatternStart records a started pattern game of an experiment: the
@@ -207,7 +206,10 @@ func (r *Registry) RecordPatternStart(info patterngame.Info) {
 func (r *Registry) RecordPatternEnd(rec patterngame.Record) {
 	winner := rec.WinnerSlot
 	exact := rec.Exact()
+	censored := rec.Censored
 	facts := &journal.PatternFacts{
+		Censored:         &censored,
+		OrderSource:      rec.OrderSource,
 		Archetype:        rec.Archetype.Name,
 		ParamsDigest:     rec.Archetype.Digest,
 		RngSeed:          rec.Seed,
@@ -228,6 +230,7 @@ func (r *Registry) RecordPatternEnd(rec patterngame.Record) {
 	if e == nil {
 		return
 	}
+	e.countPatternOutcomeLocked(rec.Arm, rec.Outcome)
 	pi := rec.PairIndex
 	r.appendEvent(e.journal, journal.Event{
 		Kind:      journal.KindPatternGameEnded,
@@ -242,6 +245,8 @@ func (r *Registry) RecordPatternEnd(rec patterngame.Record) {
 			attribute.String("pattern.archetype", rec.Archetype.Name),
 			attribute.String("pattern.params_digest", rec.Archetype.Digest),
 			attribute.String("pattern.outcome", rec.Outcome),
+			attribute.Bool("pattern.censored", rec.Censored),
+			attribute.String("pattern.order_source", rec.OrderSource),
 			attribute.IntSlice("pattern.elimination_order", rec.EliminationOrder),
 			attribute.Int("pattern.winner_slot", rec.WinnerSlot),
 			attribute.StringSlice("pattern.signal_hashes", rec.SignalHashes()),
@@ -270,4 +275,204 @@ func (r *Registry) patternGamesLocked(ids []string) []string {
 		}
 	}
 	return games
+}
+
+// maxPairReruns bounds how often one pair runs again before its archetype is
+// skipped (UC-046 BR-015).
+const maxPairReruns = 3
+
+// Journal notes of BR-015 (KindDecision events without a status change).
+const (
+	notePairRerun        = "pattern_pair_rerun"
+	noteArchetypeSkipped = "pattern_archetype_skipped"
+)
+
+// rewindFailedSpawn gives back the arm(s) whose spawn failed: a failed pattern
+// spawn uses up no archetype (UC-046 BR-015).
+func (r *Registry) rewindFailedSpawn(id string, arms int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.entries[id]
+	if e == nil || !e.patternActive() || arms <= 0 {
+		return
+	}
+	e.armCursor -= arms
+	if e.armCursor < 0 {
+		e.armCursor = 0
+	}
+}
+
+// rerunPairLocked makes a pair whose arm ended without a sample run again, both
+// arms, at most maxPairReruns times; then its archetype is skipped (UC-046
+// BR-015). Assumes r.mu is held.
+func (r *Registry) rerunPairLocked(e *entry, pairIndex int, reason string) {
+	if e == nil || !e.patternActive() || len(e.arms) == 0 || e.pairSkipped[pairIndex] {
+		return
+	}
+	n := len(e.arms)
+	pi := pairIndex
+	if e.pairReruns == nil {
+		e.pairReruns = map[int]int{}
+	}
+	if e.pairReruns[pairIndex] >= maxPairReruns {
+		if e.pairSkipped == nil {
+			e.pairSkipped = map[int]bool{}
+		}
+		e.pairSkipped[pairIndex] = true
+		if e.armCursor < (pairIndex+1)*n {
+			e.armCursor = (pairIndex + 1) * n
+		}
+		r.appendEvent(e.journal, journal.Event{Kind: journal.KindDecision, PairIndex: &pi, Note: noteArchetypeSkipped,
+			Pattern: &journal.PatternFacts{Archetype: e.pin.Archetypes[pairIndex].Name}})
+		r.log.Warn("experiment.pattern_archetype_skipped", "experiment_id", e.id, "pair_index", pairIndex, "reason", reason)
+		return
+	}
+	e.pairReruns[pairIndex]++
+	if e.armCursor > pairIndex*n {
+		e.armCursor = pairIndex * n
+	}
+	r.appendEvent(e.journal, journal.Event{Kind: journal.KindDecision, PairIndex: &pi, Note: notePairRerun})
+	r.log.Info("experiment.pattern_pair_rerun", "experiment_id", e.id, "pair_index", pairIndex,
+		"rerun", e.pairReruns[pairIndex], "reason", reason)
+}
+
+// concludeExhaustedPatterns concludes every running pattern experiment that has
+// used or skipped all its archetypes and has nothing in flight (UC-046 A6).
+func (r *Registry) concludeExhaustedPatterns(ctx context.Context) {
+	r.mu.Lock()
+	var ids []string
+	for id, e := range r.entries {
+		if e.status == StatusRunning && e.patternExhaustedLocked() && e.inFlight() == 0 {
+			ids = append(ids, id)
+		}
+	}
+	r.mu.Unlock()
+	for _, id := range ids {
+		r.concludeIfPatternExhausted(ctx, id)
+	}
+}
+
+// countPatternOutcomeLocked counts a finished pattern game per arm (BR-013).
+func (e *entry) countPatternOutcomeLocked(arm, outcome string) {
+	if e.patternGames == nil {
+		e.patternGames = map[string]int{}
+		e.patternTimeouts = map[string]int{}
+	}
+	e.patternGames[arm]++
+	if outcome == patterngame.OutcomeTimeout {
+		e.patternTimeouts[arm]++
+	}
+}
+
+// timeoutSummaryLocked renders the per-arm timeout counts and rates (BR-013), and
+// flags an arm that timed out clearly more often: a rate difference of at least
+// 0.2 with at least 2 pattern games per arm. "" when no pattern game finished.
+func (e *entry) timeoutSummaryLocked() string {
+	if len(e.patternGames) == 0 {
+		return ""
+	}
+	arms := append([]string(nil), e.arms...)
+	parts := make([]string, 0, len(arms))
+	rates := map[string]float64{}
+	for _, arm := range arms {
+		games, timeouts := e.patternGames[arm], e.patternTimeouts[arm]
+		rate := 0.0
+		if games > 0 {
+			rate = float64(timeouts) / float64(games)
+		}
+		rates[arm] = rate
+		parts = append(parts, fmt.Sprintf("%s %d/%d (%.0f%%)", arm, timeouts, games, rate*100))
+	}
+	out := "pattern timeouts (right-censored at the cap): " + strings.Join(parts, ", ")
+	for _, a := range arms {
+		for _, b := range arms {
+			if a != b && e.patternGames[a] >= 2 && e.patternGames[b] >= 2 && rates[a]-rates[b] >= 0.2 {
+				out += fmt.Sprintf("; the %s arm timed out clearly more often than %s", a, b)
+			}
+		}
+	}
+	return out
+}
+
+// flagKeyOf returns an experiment's flag key (for teardown outside the lock).
+func (r *Registry) flagKeyOf(id string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e := r.entries[id]; e != nil {
+		return e.flagKey
+	}
+	return ""
+}
+
+// restorePatternLocked restores a rehydrated experiment's pin and progress from
+// its journal (UC-046 BR-015). It returns false when the experiment ran games but
+// its pin cannot be restored (the caller discards it). An experiment that never
+// pinned (no game assigned yet) is left to pin in its next allocation pass.
+// Assumes r.mu is held.
+func (r *Registry) restorePatternLocked(e *entry) bool {
+	if e.status != StatusRunning {
+		return true
+	}
+	events, err := e.journal.Events()
+	if err != nil {
+		r.log.Warn("experiment.pattern_restore_failed", "experiment_id", e.id, "error", err)
+		return false
+	}
+	var pinned *journal.PatternFacts
+	assigned := false
+	for i := range events {
+		ev := events[i]
+		switch {
+		case ev.Kind == journal.KindPatternPinned && ev.Pattern != nil:
+			pinned = ev.Pattern
+		case ev.Kind == journal.KindGameAssigned:
+			assigned = true
+		}
+	}
+	if pinned == nil {
+		return !assigned
+	}
+	pin, err := patterngame.RestorePin(pinned.Selection, pinned.Archetypes, pinned.ParamsJSON, pinned.ParamsDigests, pinned.MaxGameSeconds)
+	if err != nil {
+		r.log.Warn("experiment.pattern_pin_lost", "experiment_id", e.id, "error", err)
+		return false
+	}
+	e.pin = &pin
+	// Progress: a pair is done when each arm concluded since its last rerun, or skipped.
+	n := len(e.arms)
+	done := map[int]map[string]bool{}
+	for _, ev := range events {
+		if ev.PairIndex == nil {
+			continue
+		}
+		p := *ev.PairIndex
+		switch {
+		case ev.Kind == journal.KindDecision && ev.Note == notePairRerun:
+			if e.pairReruns == nil {
+				e.pairReruns = map[int]int{}
+			}
+			e.pairReruns[p]++
+			delete(done, p)
+		case ev.Kind == journal.KindDecision && ev.Note == noteArchetypeSkipped:
+			if e.pairSkipped == nil {
+				e.pairSkipped = map[int]bool{}
+			}
+			e.pairSkipped[p] = true
+		case ev.Kind == journal.KindGameConcluded:
+			if done[p] == nil {
+				done[p] = map[string]bool{}
+			}
+			done[p][ev.Arm] = true
+		case ev.Kind == journal.KindPatternGameEnded && ev.Pattern != nil:
+			e.countPatternOutcomeLocked(ev.Arm, ev.Pattern.Outcome)
+		}
+	}
+	p := 0
+	for p < len(pin.Archetypes) && (e.pairSkipped[p] || len(done[p]) >= n) {
+		p++
+	}
+	e.armCursor = p * n
+	r.log.Info("experiment.pattern_pin_restored", "experiment_id", e.id,
+		"archetypes", pin.Names(), "resume_pair", p)
+	return true
 }

@@ -55,6 +55,16 @@ type ObjectiveRules struct {
 	seedSource func() (uint64, bool)
 	seeded     bool
 	chaosDraws uint64
+	// lateSeed is called when the engine is seeded after it already drew chaos
+	// rolls from the time-seeded RNG (the game is then non-exact, BR-007).
+	lateSeed func()
+}
+
+// SetLateSeedHook installs the callback for a seed that arrived after chaos draws.
+func (r *ObjectiveRules) SetLateSeedHook(fn func()) {
+	r.mu.Lock()
+	r.lateSeed = fn
+	r.mu.Unlock()
 }
 
 // SetChaosSeedSource installs the per-game chaos seed lookup (UC-046 BR-007).
@@ -81,6 +91,9 @@ func (r *ObjectiveRules) maybeSeedLocked() {
 		// UC-046 BR-007: per-game PCG, so the chaos draws replay with the game.
 		r.rng = rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)) // #nosec G404 -- non-cryptographic chaos jitter
 		r.seeded = true
+		if r.chaosDraws > 0 && r.lateSeed != nil {
+			r.lateSeed()
+		}
 	}
 }
 

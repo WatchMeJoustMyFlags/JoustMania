@@ -41,6 +41,7 @@ func TestStartExperimentGame_InProgressRejectionIsBackpressure(t *testing.T) {
 		RunID: "run-bp", GameName: "JoustFFA", Players: 2, Sensitivity: 2,
 		ExperimentID: "exp_bp", Arm: "experimental",
 	}
+	spec = testPatternSpec(t, spec)
 
 	_, err := h.runner.StartExperimentGame(context.Background(), context.Background(), spec)
 	if err == nil {
@@ -77,6 +78,7 @@ func TestStartExperimentGame_OtherRejectionIsNotBackpressure(t *testing.T) {
 	defer h.stop()
 
 	spec := Spec{RunID: "run-other", GameName: "JoustFFA", Players: 2}
+	spec = testPatternSpec(t, spec)
 
 	_, err := h.runner.StartExperimentGame(context.Background(), context.Background(), spec)
 	if err == nil {

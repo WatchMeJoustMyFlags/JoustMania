@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -76,11 +78,11 @@ func TestResolve(t *testing.T) {
 			}
 		}
 	})
-	t.Run("UC-046/A1 none or empty selection means noise", func(t *testing.T) {
+	t.Run("UC-046/A1 an empty selection discards the experiment, never noise", func(t *testing.T) {
 		for _, sel := range []string{"", "none", "NONE", " , "} {
 			pin := Resolve(ctx, &fakeReader{selection: sel}, SupportedMode, 5, "")
-			if pin.Active() || pin.DiscardReason != "" {
-				t.Errorf("selection %q: active=%v discard=%q", sel, pin.Active(), pin.DiscardReason)
+			if pin.Active() || pin.DiscardReason != DiscardSelectionEmpty {
+				t.Errorf("selection %q: active=%v discard=%q, want %s", sel, pin.Active(), pin.DiscardReason, DiscardSelectionEmpty)
 			}
 		}
 	})
@@ -125,6 +127,16 @@ func TestResolve(t *testing.T) {
 		r.variants["a2"] = params(map[string]any{"base": 2.0})
 		if pin.Archetypes[0].Params["base"] != 1.01 {
 			t.Errorf("a later flag change altered the pinned parameters")
+		}
+	})
+	t.Run("UC-046/BR-013 an out-of-range cap is noted on the pin", func(t *testing.T) {
+		pin := Resolve(ctx, &fakeReader{selection: "a1,a2,a3,a4,a5", variants: fiveArchetypes(), cap: 5}, SupportedMode, 5, "")
+		if pin.MaxGameSeconds != 300 || !strings.Contains(pin.CapNote, "outside 30..3600") {
+			t.Errorf("cap/note = %d/%q", pin.MaxGameSeconds, pin.CapNote)
+		}
+		ok := Resolve(ctx, &fakeReader{selection: "a1,a2,a3,a4,a5", variants: fiveArchetypes(), cap: 600}, SupportedMode, 5, "")
+		if ok.CapNote != "" {
+			t.Errorf("in-range cap noted: %q", ok.CapNote)
 		}
 	})
 	t.Run("UC-046/BR-013 cap outside 30..3600 falls back to 300", func(t *testing.T) {
@@ -236,21 +248,50 @@ func TestSeedsAndDigest(t *testing.T) {
 			t.Error("bad archetype seed")
 		}
 	})
-	t.Run("UC-046/BR-011 flag digest covers both files in order", func(t *testing.T) {
-		dir := t.TempDir()
-		a, g := filepath.Join(dir, "agent.json"), filepath.Join(dir, "game.json")
-		_ = os.WriteFile(a, []byte("A"), 0o600)
-		_ = os.WriteFile(g, []byte("G"), 0o600)
-		d1 := FlagDigest(a, g)
-		if len(d1) != 64 || d1 == FlagDigest(g, a) {
-			t.Fatalf("digest %q not order-sensitive sha256", d1)
+	t.Run("UC-046/BR-011 flag digest covers resolved values of the listed keys only", func(t *testing.T) {
+		values := map[string]map[string]any{
+			"game":          {"sensitivity": 2.0, "thresholds": map[string]any{"slow_max": []any{1.3}}, "num_teams": 2.0},
+			"agent":         {"decision.backend": "rules", "policy.max_interventions_per_minute": 6.0, "experiment.mock_archetypes": "all"},
+			"interventions": {"shield_seconds": 0.0},
 		}
-		_ = os.WriteFile(g, []byte("G2"), 0o600)
-		if FlagDigest(a, g) == d1 {
-			t.Error("digest unchanged after a flag edit")
+		var seenCtx []any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			set := strings.TrimPrefix(req.Header.Get("Flagd-Selector"), "flagSetId=")
+			var body map[string]any
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			seenCtx = append(seenCtx, body["context"])
+			var flags []map[string]any
+			for k, v := range values[set] {
+				flags = append(flags, map[string]any{"key": k, "value": v})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"flags": flags})
+		}))
+		defer srv.Close()
+		ctx := context.Background()
+		evalCtx := map[string]any{"game_kind": "shadow", "experiment_id": "exp", "arm": "control"}
+		d1 := ResolvedFlagDigest(ctx, srv.Client(), srv.URL, evalCtx)
+		if len(d1) != 64 {
+			t.Fatalf("digest %q", d1)
 		}
-		if FlagDigest(a, filepath.Join(dir, "missing")) == FlagDigest(a) {
-			t.Error("a missing file must change the digest")
+		if got := seenCtx[0].(map[string]any)["arm"]; got != "control" {
+			t.Errorf("evaluation context arm = %v", got)
+		}
+		values["game"]["num_teams"] = 4.0 // not a covered key
+		values["agent"]["experiment.mock_archetypes"] = "slow_cascade"
+		if ResolvedFlagDigest(ctx, srv.Client(), srv.URL, evalCtx) != d1 {
+			t.Error("an uncovered key changed the digest")
+		}
+		values["interventions"]["shield_seconds"] = 2.0 // intervention state is covered
+		if ResolvedFlagDigest(ctx, srv.Client(), srv.URL, evalCtx) == d1 {
+			t.Error("the intervention state is not covered")
+		}
+		if got := ResolvedFlagDigest(ctx, srv.Client(), "http://127.0.0.1:1", evalCtx); got != DigestUnavailable {
+			t.Errorf("unreachable flagd = %q, want unavailable", got)
+		}
+		for _, key := range []string{"policy.x", "fitness.y", "perception.ema_weight", CapFlagKey} {
+			if !DigestKeysCovered("agent", key) {
+				t.Errorf("agent/%s not covered", key)
+			}
 		}
 	})
 }
@@ -285,7 +326,7 @@ func TestTracker(t *testing.T) {
 			t.Errorf("non-player target slot = %d", slot)
 		}
 		obs.MarkNonExact(ReasonRemoteBackend)
-		rec, _ := tr.Finish("g", OutcomeWinner, "S0", slots(400, 300, 200, 100))
+		rec, _ := tr.Finish("g", OutcomeWinner, GameEvents{Winner: "S0"}, slots(400, 300, 200, 100))
 		if fmt.Sprint(rec.EliminationOrder) != "[3 2 1]" || rec.WinnerSlot != 0 {
 			t.Errorf("order/winner = %v/%d", rec.EliminationOrder, rec.WinnerSlot)
 		}
@@ -303,14 +344,14 @@ func TestTracker(t *testing.T) {
 		tr := NewTracker()
 		tr.Register(info("g1"))
 		tr.Register(info("g2"))
-		r1, _ := tr.Finish("g1", OutcomeWinner, "", nil)
+		r1, _ := tr.Finish("g1", OutcomeWinner, GameEvents{Winner: ""}, nil)
 		if fmt.Sprint(r1.NonExactReasons) != "[concurrent_game]" {
 			t.Errorf("g1 reasons = %v", r1.NonExactReasons)
 		}
 		tr2 := NewTracker()
 		tr2.SetConcurrencyProbe(func(string) bool { return true })
 		tr2.Register(info("g3"))
-		r3, _ := tr2.Finish("g3", OutcomeWinner, "", nil)
+		r3, _ := tr2.Finish("g3", OutcomeWinner, GameEvents{Winner: ""}, nil)
 		if fmt.Sprint(r3.NonExactReasons) != "[concurrent_game]" {
 			t.Errorf("probe reasons = %v", r3.NonExactReasons)
 		}
@@ -320,7 +361,7 @@ func TestTracker(t *testing.T) {
 		tr.Register(info("g"))
 		s := slots(400, 300, 200, 100)
 		s[1].FrameOverruns = 1
-		rec, _ := tr.Finish("g", OutcomeWinner, "", s)
+		rec, _ := tr.Finish("g", OutcomeWinner, GameEvents{Winner: ""}, s)
 		if fmt.Sprint(rec.NonExactReasons) != "[frame_overrun]" {
 			t.Errorf("reasons = %v", rec.NonExactReasons)
 		}
@@ -333,7 +374,7 @@ func TestTracker(t *testing.T) {
 		tr.Register(in)
 		tr.Abort("g", ReasonKillSwitch)
 		tr.Abort("unknown", ReasonKillSwitch)
-		rec, _ := tr.Finish("g", OutcomeAborted, "", nil)
+		rec, _ := tr.Finish("g", OutcomeAborted, GameEvents{Winner: ""}, nil)
 		if called != 1 || fmt.Sprint(rec.NonExactReasons) != "[kill_switch]" {
 			t.Errorf("called=%d reasons=%v", called, rec.NonExactReasons)
 		}
@@ -341,7 +382,7 @@ func TestTracker(t *testing.T) {
 	t.Run("UC-046/BR-013 a timeout alone stays exact", func(t *testing.T) {
 		tr := NewTracker()
 		tr.Register(info("g"))
-		rec, _ := tr.Finish("g", OutcomeTimeout, "", slots(9000, 120, 8995, 300))
+		rec, _ := tr.Finish("g", OutcomeTimeout, GameEvents{Winner: ""}, slots(9000, 120, 8995, 300))
 		if !rec.Exact() {
 			t.Errorf("timeout non-exact: %v", rec.NonExactReasons)
 		}
@@ -368,6 +409,31 @@ func TestTracker(t *testing.T) {
 		}
 		if HasDuplicate([]string{"a", "b", "a"}) != "a" || HasDuplicate([]string{"a"}) != "" {
 			t.Error("HasDuplicate")
+		}
+	})
+}
+
+// UC: UC-046 A5 BR-015
+func TestRestorePin(t *testing.T) {
+	r := &fakeReader{selection: "a1,a2,a3,a4,a5", variants: fiveArchetypes(), cap: 600}
+	pin := Resolve(context.Background(), r, SupportedMode, 5, "")
+	t.Run("UC-046/A5 a journaled pin restores the same archetypes after a restart", func(t *testing.T) {
+		got, err := RestorePin(pin.Selection, pin.Names(), pin.ParamsJSON(), pin.Digests(), pin.MaxGameSeconds)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got.Digests(), pin.Digests()) || got.MaxGameSeconds != 600 {
+			t.Errorf("restored %v/%d", got.Digests(), got.MaxGameSeconds)
+		}
+	})
+	t.Run("UC-046/BR-015 a tampered or incomplete pin cannot be restored", func(t *testing.T) {
+		digests := pin.Digests()
+		digests[1] = "0000000000000000"
+		if _, err := RestorePin(pin.Selection, pin.Names(), pin.ParamsJSON(), digests, 600); err == nil {
+			t.Error("digest mismatch restored")
+		}
+		if _, err := RestorePin(pin.Selection, pin.Names(), nil, pin.Digests(), 600); err == nil {
+			t.Error("missing parameters restored")
 		}
 	})
 }

@@ -137,6 +137,7 @@ func TestStartExperimentGame_InjectsTraceparent(t *testing.T) {
 		Arm:                   "experimental",
 		ExperimentSpanContext: sc,
 	}
+	spec = testPatternSpec(t, spec)
 	if _, err := h.runner.StartExperimentGame(context.Background(), driveCtx, spec); err != nil {
 		t.Fatalf("StartExperimentGame error: %v", err)
 	}
@@ -174,6 +175,7 @@ func TestStartExperimentGame_NoTraceparentWhenNoSpanContext(t *testing.T) {
 	// No ExperimentSpanContext set (zero value) — mirrors a real game / unbound
 	// shadow game.
 	spec := Spec{RunID: "run-plain", GameName: "JoustFFA", Players: 2, Sensitivity: 2}
+	spec = testPatternSpec(t, spec)
 	if _, err := h.runner.StartExperimentGame(context.Background(), driveCtx, spec); err != nil {
 		t.Fatalf("StartExperimentGame error: %v", err)
 	}

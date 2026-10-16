@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flags"
@@ -44,34 +46,71 @@ func otherGameLive(mux *gamecontext.Multiplexer) func(gameID string) bool {
 	}
 }
 
-// flagDigestPaths are the files of UC-046 BR-011: agent.json then game.json.
-func flagDigestPaths() []string {
-	dir := getEnv("FLAGD_FLAG_DIR", "/etc/flagd")
-	return []string{
-		filepath.Join(dir, "agent.json"),
-		getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath),
+// ofrepURL is flagd's OFREP base URL (UC-046 BR-011): FLAGD_OFREP_URL, or
+// http://<FLAGD_HOST>:8016.
+func ofrepURL() string {
+	if v := strings.TrimSpace(os.Getenv("FLAGD_OFREP_URL")); v != "" {
+		return v
 	}
+	return "http://" + getEnv("FLAGD_HOST", "flagd") + ":8016"
+}
+
+var digestHTTPClient = &http.Client{Timeout: 5 * time.Second}
+
+// resolvedFlagDigest computes UC-046 BR-011's digest for a shadow game with the
+// given experiment id and arm ("" for a one-shot game).
+func resolvedFlagDigest(ctx context.Context, experimentID, arm string) string {
+	evalCtx := map[string]any{experiment.GameKindVar: "shadow"}
+	if experimentID != "" {
+		evalCtx[experiment.ExperimentIDVar] = experimentID
+		evalCtx[experiment.ArmVar] = arm
+	}
+	return patterngame.ResolvedFlagDigest(ctx, digestHTTPClient, ofrepURL(), evalCtx)
 }
 
 // flagPatternPinner is the production experiment.PatternPinner: it reads the
-// live agent flags at an experiment's first spawn (UC-046 step 2).
+// live agent flags in an experiment's first allocation pass (UC-046 step 2).
 type flagPatternPinner struct {
 	flags    *flags.Flags
 	mode     string
 	minPairs func(ctx context.Context) int
+	log      *slog.Logger
+	logOnce  sync.Once
 }
 
 // Pin implements experiment.PatternPinner.
-func (p flagPatternPinner) Pin(ctx context.Context) patterngame.Pin {
-	return patterngame.Resolve(ctx, p.flags, p.mode, p.minPairs(ctx), "")
+func (p *flagPatternPinner) Pin(ctx context.Context) patterngame.Pin {
+	pin := patterngame.Resolve(ctx, p.flags, p.mode, p.minPairs(ctx), "")
+	p.logActive(pin)
+	return pin
 }
 
-// oneShotPatternSpec turns a one-shot shadow spec into a pattern game when
-// SHADOW_GAME_ARCHETYPE or experiment.mock_archetypes selects an archetype (the
-// first name of a list). ok is false for noise; err carries a discard reason.
-func oneShotPatternSpec(ctx context.Context, f *flags.Flags, spec gamerunner.Spec) (gamerunner.Spec, bool, string) {
+// PinAny resolves the selection without the verdict_min_pairs size check, for
+// the M7-7 validation batch (any valid archetype will do).
+func (p *flagPatternPinner) PinAny(ctx context.Context) patterngame.Pin {
+	pin := patterngame.Resolve(ctx, p.flags, p.mode, 0, "")
+	p.logActive(pin)
+	return pin
+}
+
+// logActive logs the archetype selection once at INFO (flags.md §3.1).
+func (p *flagPatternPinner) logActive(pin patterngame.Pin) {
+	if p.log == nil || !pin.Active() {
+		return
+	}
+	p.logOnce.Do(func() {
+		p.log.Info("Shadow experiments run on motion archetypes (UC-046)",
+			"selection", pin.Selection, "archetypes", pin.Names(), "max_game_seconds", pin.MaxGameSeconds)
+	})
+}
+
+// oneShotPatternSpec turns the one-shot shadow spec into a pattern game with
+// SHADOW_GAME_ARCHETYPE or the first archetype of experiment.mock_archetypes. The
+// one-shot runner is archetype-only too: ok false means the run is refused, with
+// the reason in refused.
+func oneShotPatternSpec(ctx context.Context, f *flags.Flags, spec gamerunner.Spec) (gamerunner.Spec, string) {
 	if f == nil {
-		return spec, false, ""
+		return spec, patterngame.DiscardSelectionEmpty + ": no agent flags"
 	}
 	override := strings.TrimSpace(os.Getenv(envShadowArchetype))
 	if override == "" {
@@ -79,28 +118,22 @@ func oneShotPatternSpec(ctx context.Context, f *flags.Flags, spec gamerunner.Spe
 			override = names[0]
 		}
 	}
-	if override == "" {
-		return spec, false, ""
-	}
 	pin := patterngame.Resolve(ctx, f, spec.GameName, 0, override)
 	if !pin.Active() {
-		if pin.DiscardReason == "" {
-			return spec, false, ""
-		}
-		return spec, false, pin.DiscardReason + ": " + strings.Join(pin.Errors, "; ")
+		return spec, pin.DiscardReason + ": " + strings.Join(pin.Errors, "; ")
 	}
 	a := pin.Archetypes[0]
 	spec.Pattern = a
 	spec.MaxGameSeconds = pin.MaxGameSeconds
 	spec.PairIndex = -1
-	spec.FlagDigest = patterngame.FlagDigest(flagDigestPaths()...)
+	spec.FlagDigest = resolvedFlagDigest(ctx, "", "")
 	spec.Seed = patterngame.ArchetypeSeed(a.Name)
 	if v := strings.TrimSpace(os.Getenv(envShadowSeed)); v != "" {
 		if seed, err := strconv.ParseUint(v, 10, 64); err == nil && seed != 0 {
 			spec.Seed = seed
 		}
 	}
-	return spec, true, ""
+	return spec, ""
 }
 
 // replayRecordJSON is the pattern_replay_record log payload read by

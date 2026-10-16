@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/gamerunner"
+	"github.com/joustmania/agent/patterngame"
 )
 
 // shadow_validation_runner_test.go covers the #965 live SyntheticRunner: it spawns
@@ -22,10 +25,14 @@ type validationSpawner struct {
 	ids            []string
 	gotExperiments []string
 	gotArms        []string
+	gotArchetypes  []string
 }
 
-func (s *validationSpawner) Spawn(_ context.Context, experimentID, arm string, _ uint64) (string, error) {
+func (s *validationSpawner) Spawn(ctx context.Context, experimentID, arm string, _ uint64) (string, error) {
 	s.calls++
+	if p, ok := experiment.PatternSpawnFrom(ctx); ok {
+		s.gotArchetypes = append(s.gotArchetypes, p.Archetype.Name)
+	}
 	s.gotExperiments = append(s.gotExperiments, experimentID)
 	s.gotArms = append(s.gotArms, arm)
 	id := "game_s" + string(rune('0'+len(s.ids)))
@@ -43,7 +50,7 @@ func (alwaysErrSpawner) Spawn(context.Context, string, string, uint64) (string, 
 // newTestRunner builds a runner with a fake spawner + a real store and a fast,
 // no-real-sleep poll so the await loop turns quickly in tests.
 func newTestRunner(spawner experiment.ShadowSpawner, store *experiment.FitnessStore) *shadowValidationRunner {
-	r := newShadowValidationRunner(spawner, store, 2*time.Second, discardLogger())
+	r := newShadowValidationRunner(spawner, store, 2*time.Second, discardLogger()).withPinner(testValidationPin)
 	r.pollInterval = time.Millisecond
 	r.sleep = func(ctx context.Context, _ time.Duration) error {
 		select {
@@ -136,4 +143,52 @@ func TestRunner_TimeoutReturnsFinalizedSoFar(t *testing.T) {
 	if len(ids) != 1 || ids[0] != "game_s0" {
 		t.Fatalf("run ids = %v, want [game_s0] (only finalized game)", ids)
 	}
+}
+
+// testValidationPin selects two archetypes for the validation batch.
+func testValidationPin(context.Context) patterngame.Pin {
+	pin := patterngame.Pin{Selection: "va,vb", MaxGameSeconds: 300}
+	for _, name := range []string{"va", "vb"} {
+		a, errs := patterngame.NewArchetype(name, map[string]any{
+			"players": 2.0, "stream_rate_hz": 30.0, "base": 1.0, "drift": 0.02, "amp": 0.0,
+			"period_s": 1.0, "phase": 0.0, "burst_h": 0.0, "burst_period_s": 0.0,
+			"d_base": 0.0, "d_drift": 0.01, "d_amp": 0.0, "d_phase": 0.0,
+		})
+		if len(errs) > 0 {
+			panic(errs)
+		}
+		pin.Archetypes = append(pin.Archetypes, a)
+	}
+	return pin
+}
+
+// UC: UC-046 A1
+func TestRunner_ValidationGamesRunOnArchetypes(t *testing.T) {
+	t.Run("UC-046/A1 validation games cycle the selected archetypes; no selection fails closed without spawning", func(t *testing.T) {
+		spawner := &validationSpawner{}
+		r := newTestRunner(spawner, experiment.NewFitnessStore(16))
+		r.gameTimeout = 10 * time.Millisecond
+		_, _ = r.Run(context.Background(), experiment.Proposal{ExperimentID: "exp_v"}, 3)
+		if fmt.Sprint(spawner.gotArchetypes) != "[va vb va]" {
+			t.Errorf("archetypes = %v, want [va vb va]", spawner.gotArchetypes)
+		}
+		empty := &validationSpawner{}
+		r2 := newTestRunner(empty, experiment.NewFitnessStore(16)).withPinner(func(context.Context) patterngame.Pin {
+			return patterngame.Pin{DiscardReason: patterngame.DiscardSelectionEmpty}
+		})
+		if _, err := r2.Run(context.Background(), experiment.Proposal{ExperimentID: "exp_v"}, 2); err == nil || empty.calls != 0 {
+			t.Fatalf("err=%v calls=%d, want an error and no spawn", err, empty.calls)
+		}
+	})
+}
+
+// UC: UC-046 A1 BR-004
+func TestShadowSpawner_RefusesGamesWithoutArchetype(t *testing.T) {
+	t.Run("UC-046/A1 no random-motion game is reachable from the experiment loop", func(t *testing.T) {
+		s := newShadowSpawner(gamerunner.Config{CoordinatorAddr: "127.0.0.1:1", MockAddr: "127.0.0.1:1"}, discardLogger())
+		_, err := s.Spawn(context.Background(), "exp_x", experiment.ArmControl, 7)
+		if !errors.Is(err, errSpawnNeedsArchetype) {
+			t.Fatalf("err = %v, want errSpawnNeedsArchetype", err)
+		}
+	})
 }

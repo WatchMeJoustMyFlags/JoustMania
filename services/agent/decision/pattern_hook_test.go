@@ -164,3 +164,35 @@ func TestPatternObserver_RecordsDecisionsWithTargetSlot(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-046 BR-007 BR-008
+func TestChaosSeedSource_LateSeedIsNonExact(t *testing.T) {
+	t.Run("UC-046/BR-007 chaos draws before the seed arrived mark the game unseeded_draws", func(t *testing.T) {
+		c := activeContext("A", "B")
+		registered := false
+		late := 0
+		r := NewObjectiveRulesLive(nil)
+		r.SetChaosSeedSource(func() (uint64, bool) { return 1, registered })
+		r.SetLateSeedHook(func() { late++ })
+		r.mu.Lock()
+		r.chaosRoll(c) // drawn from the time-seeded RNG
+		r.mu.Unlock()
+		registered = true
+		r.mu.Lock()
+		r.chaosRoll(c)
+		r.chaosRoll(c)
+		r.mu.Unlock()
+		if late != 1 {
+			t.Fatalf("late-seed hook called %d times, want 1", late)
+		}
+		fresh := NewObjectiveRulesLive(nil)
+		fresh.SetChaosSeedSource(func() (uint64, bool) { return 1, true })
+		fresh.SetLateSeedHook(func() { late++ })
+		fresh.mu.Lock()
+		fresh.chaosRoll(c)
+		fresh.mu.Unlock()
+		if late != 1 {
+			t.Error("a game seeded before its first draw was marked late")
+		}
+	})
+}

@@ -320,6 +320,16 @@ func buildExperimentLoop(
 		experiment.DefaultAnchorMargin,
 	)
 
+	// UC-046: experiments are archetype-only; the pinner resolves the selection in
+	// each experiment's first allocation pass.
+	pinner := &flagPatternPinner{
+		flags: flagsClient,
+		mode:  spawner.spec.GameName,
+		minPairs: func(ctx context.Context) int {
+			return flagsClient.Experiment(ctx, expDefaults).VerdictMinPairs
+		},
+		log: logger,
+	}
 	registry := experiment.NewRegistry(experiment.RegistryConfig{
 		Root:      journal.DirFromEnv(),
 		Spawner:   spawner,
@@ -329,13 +339,8 @@ func buildExperimentLoop(
 		Log:       logger,
 		// UC-046: pin experiment.mock_archetypes at each experiment's first spawn;
 		// the kill switch force-ends in-flight pattern games through the tracker.
-		Patterns: flagPatternPinner{
-			flags: flagsClient,
-			mode:  spawner.spec.GameName,
-			minPairs: func(ctx context.Context) int {
-				return flagsClient.Experiment(ctx, expDefaults).VerdictMinPairs
-			},
-		},
+		Patterns:       pinner,
+		FlagDigest:     resolvedFlagDigest,
 		PatternTracker: patterngame.Default,
 	})
 	spawner.SetPatternCallbacks(registry.RecordPatternStart, registry.RecordPatternEnd)
@@ -365,7 +370,7 @@ func buildExperimentLoop(
 	// autonomous-promotion path to invoke; merely building it is inert.
 	loop.validator = experiment.NewValidator(
 		experiment.NewStoreBaseline(fitnessStore, validatorObjectiveResolver(registry), validationBaselineRecentN(), validationBaselineMinSamples()),
-		newShadowValidationRunner(spawner, fitnessStore, validationGameTimeout(), logger),
+		newShadowValidationRunner(spawner, fitnessStore, validationGameTimeout(), logger).withPinner(pinner.PinAny),
 		experiment.NewStoreMeasurer(fitnessStore),
 		experiment.NewWriterReverter(writer),
 		nil, logger,

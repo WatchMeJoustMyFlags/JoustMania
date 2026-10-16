@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/patterngame"
 )
 
 // shadow_validation_runner.go is the REAL SyntheticRunner seam (#965) the M7-7
@@ -69,6 +70,16 @@ type shadowValidationRunner struct {
 	// now/sleep are injected for deterministic tests; production uses the wall clock.
 	now   func() time.Time
 	sleep func(context.Context, time.Duration) error
+
+	// pin resolves the archetypes the validation games run on (UC-046: shadow
+	// games are archetype-only). nil ⇒ every spawn is refused (fail closed).
+	pin func(context.Context) patterngame.Pin
+}
+
+// withPinner sets the archetype source of the validation batch.
+func (r *shadowValidationRunner) withPinner(pin func(context.Context) patterngame.Pin) *shadowValidationRunner {
+	r.pin = pin
+	return r
 }
 
 // newShadowValidationRunner builds the runner over the shared shadow spawner and
@@ -117,13 +128,26 @@ func (r *shadowValidationRunner) Run(ctx context.Context, p experiment.Proposal,
 	if games < 1 {
 		games = 1
 	}
+	// UC-046: validation games run on archetypes too, cycling through the current
+	// selection; no selection means no evidence, so the run fails closed.
+	var pin patterngame.Pin
+	if r.pin != nil {
+		pin = r.pin(ctx)
+	}
+	if !pin.Active() {
+		return experiment.Run{}, fmt.Errorf("synthetic run: no motion archetype selected (%s %v)", pin.DiscardReason, pin.Errors)
+	}
 
 	spawned := make([]string, 0, games)
 	for i := 0; i < games; i++ {
 		// seed 0 = entropy: the validation batch is not a CRN-paired cohort (it measures
 		// the experimental arm against the recent-real baseline, not a within-batch
 		// control), so each game gets independent entropy.
-		gameID, err := r.spawner.Spawn(ctx, p.ExperimentID, experiment.ArmExperimental, 0)
+		a := pin.Archetypes[len(spawned)%len(pin.Archetypes)]
+		spawnCtx := experiment.WithPatternSpawn(ctx, experiment.PatternSpawn{
+			Archetype: a, MaxGameSeconds: pin.MaxGameSeconds, PairIndex: -1,
+		})
+		gameID, err := r.spawner.Spawn(spawnCtx, p.ExperimentID, experiment.ArmExperimental, 0)
 		if err != nil {
 			if errors.Is(err, experiment.ErrSpawnBackpressure) {
 				// Coordinator at capacity: not a failure. Wait a beat and retry the SAME

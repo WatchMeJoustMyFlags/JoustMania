@@ -2,6 +2,7 @@ package patterngame
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -25,10 +26,21 @@ type Pin struct {
 	Archetypes []Archetype
 	// MaxGameSeconds is the pinned safety cap (BR-013).
 	MaxGameSeconds int
+	// CapNote is set when the flag value fell back to the default (BR-013).
+	CapNote string
 	// DiscardReason is set when the experiment must be discarded (A2, A4, A13).
 	DiscardReason string
 	// Errors are the failed rules behind DiscardReason.
 	Errors []string
+}
+
+// ParamsJSON returns the pinned canonical parameter objects in pair order.
+func (p Pin) ParamsJSON() []string {
+	out := make([]string, len(p.Archetypes))
+	for i, a := range p.Archetypes {
+		out[i] = a.ParamsJSON
+	}
+	return out
 }
 
 // Active reports whether the experiment runs pattern games.
@@ -63,9 +75,16 @@ func Resolve(ctx context.Context, r FlagReader, mode string, minPairs int, overr
 	}
 	names := ParseSelection(pin.Selection)
 	if len(names) == 0 {
-		return pin // A1: noise
+		// UC-046 A1: experiments are archetype-only; nothing selected, nothing runs.
+		pin.DiscardReason = DiscardSelectionEmpty
+		pin.Errors = []string{fmt.Sprintf("%s selects no archetype", SelectionFlagKey)}
+		return pin
 	}
-	pin.MaxGameSeconds = ClampCap(r.MaxGameSeconds(ctx))
+	raw := r.MaxGameSeconds(ctx)
+	pin.MaxGameSeconds = ClampCap(raw)
+	if pin.MaxGameSeconds != raw {
+		pin.CapNote = fmt.Sprintf("%s=%d outside %d..%d, using %d", CapFlagKey, raw, MinMaxGameSeconds, MaxMaxGameSeconds, pin.MaxGameSeconds)
+	}
 	if mode != SupportedMode {
 		pin.DiscardReason = DiscardModeUnsupported
 		pin.Errors = []string{fmt.Sprintf("mode %s (pattern games are %s only)", mode, SupportedMode)}
@@ -101,4 +120,31 @@ func Resolve(ctx context.Context, r FlagReader, mode string, minPairs int, overr
 		pin.Archetypes = nil
 	}
 	return pin
+}
+
+// RestorePin rebuilds a pin from its journaled form (UC-046 BR-015): the names,
+// canonical parameter objects and digests of the pattern_pinned event. Every
+// archetype is re-validated and its digest must match; any mismatch is an error
+// (the caller discards the experiment with DiscardPinLost).
+func RestorePin(selection string, names, paramsJSON, digests []string, maxGameSeconds int) (Pin, error) {
+	if len(names) == 0 || len(names) != len(paramsJSON) || len(names) != len(digests) {
+		return Pin{}, fmt.Errorf("pinned archetypes incomplete: %d names, %d parameter objects, %d digests",
+			len(names), len(paramsJSON), len(digests))
+	}
+	pin := Pin{Selection: selection, MaxGameSeconds: ClampCap(maxGameSeconds)}
+	for i, name := range names {
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(paramsJSON[i]), &raw); err != nil {
+			return Pin{}, fmt.Errorf("%s: pinned parameters unreadable: %w", name, err)
+		}
+		a, errs := NewArchetype(name, raw)
+		if len(errs) > 0 {
+			return Pin{}, fmt.Errorf("%s: pinned parameters invalid: %s", name, strings.Join(errs, "; "))
+		}
+		if a.Digest != digests[i] {
+			return Pin{}, fmt.Errorf("%s: digest %s != pinned %s", name, a.Digest, digests[i])
+		}
+		pin.Archetypes = append(pin.Archetypes, a)
+	}
+	return pin, nil
 }

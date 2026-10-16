@@ -11,8 +11,10 @@ import (
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/gamerunner"
-	"github.com/joustmania/agent/patterngame"
 )
+
+// errSpawnNeedsArchetype: every shadow experiment game is a pattern game (UC-046).
+var errSpawnNeedsArchetype = errors.New("no motion archetype on the spawn (UC-046: experiments are archetype-only)")
 
 // shadow_spawner.go is the REAL ShadowSpawner seam (#976) the experiment registry
 // (#978) injects — the production replacement for the registry_test.go fakeSpawner.
@@ -116,13 +118,17 @@ func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string, see
 	// the game stays own-rooted — graceful.
 	spec.ExperimentSpanContext = trace.SpanContextFromContext(ctx)
 
-	// UC-046 step 3: a pattern arm carries its pinned archetype and cap on the ctx.
-	if p, ok := experiment.PatternSpawnFrom(ctx); ok {
-		spec.Pattern = p.Archetype
-		spec.MaxGameSeconds = p.MaxGameSeconds
-		spec.PairIndex = p.PairIndex
-		spec.FlagDigest = patterngame.FlagDigest(flagDigestPaths()...)
+	// UC-046 step 3: the arm carries its pinned archetype, cap and flag digest on
+	// the ctx. Shadow experiment games are archetype-only (maintainer decision on
+	// #1258): a spawn without an archetype is refused, never run on random motion.
+	p, ok := experiment.PatternSpawnFrom(ctx)
+	if !ok {
+		return "", fmt.Errorf("shadow spawn for experiment %s arm %s: %w", experimentID, arm, errSpawnNeedsArchetype)
 	}
+	spec.Pattern = p.Archetype
+	spec.MaxGameSeconds = p.MaxGameSeconds
+	spec.PairIndex = p.PairIndex
+	spec.FlagDigest = p.FlagDigest
 
 	runner := gamerunner.New(s.cfg, s.log)
 	if s.onTerminal != nil {

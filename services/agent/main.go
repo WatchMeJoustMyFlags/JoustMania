@@ -398,16 +398,15 @@ func runShadowGame(ctx context.Context, logger *slog.Logger, agentFlags *flags.F
 	runner := gamerunner.New(cfg, logger)
 	// UC-046: SHADOW_GAME_ARCHETYPE (or experiment.mock_archetypes) makes this a
 	// pattern game; an invalid selection or mode refuses the run (A2, A13).
-	spec, isPattern, refused := oneShotPatternSpec(ctx, agentFlags, spec)
+	// UC-046: the one-shot runner is archetype-only; without one it refuses to run.
+	spec, refused := oneShotPatternSpec(ctx, agentFlags, spec)
 	if refused != "" {
 		logger.Error("Shadow pattern game refused", "run_id", runID, "reason", refused)
 		return
 	}
-	if isPattern {
-		runner.SetPatternCallback(func(rec patterngame.Record) { logReplayRecord(logger, rec) })
-		logger.Info("Shadow game is a pattern game (UC-046)", "archetype", spec.Pattern.Name,
-			"params_digest", spec.Pattern.Digest, "seed", spec.Seed, "max_game_seconds", spec.MaxGameSeconds)
-	}
+	runner.SetPatternCallback(func(rec patterngame.Record) { logReplayRecord(logger, rec) })
+	logger.Info("Shadow game is a pattern game (UC-046)", "archetype", spec.Pattern.Name,
+		"params_digest", spec.Pattern.Digest, "seed", spec.Seed, "max_game_seconds", spec.MaxGameSeconds)
 
 	logger.Info("Shadow-game runner enabled (#778)",
 		"coordinator", cfg.CoordinatorAddr, "mock", cfg.MockAddr, "spec", spec.String())
@@ -681,6 +680,7 @@ func main() {
 		patternObs := patterngame.LoopObserver{Tracker: patterngame.Default, GameID: gameID}
 		loop.SetPatternObserver(patternObs)
 		rules.SetChaosSeedSource(patternObs.SeedSource())
+		rules.SetLateSeedHook(patternObs.LateSeed)
 		loop.Rules = rules
 		if probeDecisions {
 			// Demo/verification mode: emit a synthetic noop decision (and thus the

@@ -39,10 +39,25 @@ type DecisionRecord struct {
 	Backend      string
 }
 
+// GameEvents is what the shadow runner saw on the game's event stream (UC-046 BR-014).
+type GameEvents struct {
+	Deaths []string // serials of player_death events, in order
+	Winner string   // serial of the game_winner event, "" when none
+	Tie    bool     // a game_tie event was seen
+}
+
+// Order sources of Record.OrderSource.
+const (
+	OrderFromEvents = "events"
+	OrderFromFrames = "frames"
+)
+
 // Record is the replay record of one finished pattern game (UC-046 step 8).
 type Record struct {
 	Info
-	Outcome          string // OutcomeWinner, OutcomeTimeout, OutcomeAborted, OutcomeError
+	Outcome          string // OutcomeWinner, OutcomeTie, OutcomeTimeout, OutcomeAborted, OutcomeError
+	Censored         bool   // right-censored at the safety cap (outcome timeout, BR-013)
+	OrderSource      string // OrderFromEvents, or OrderFromFrames as the fallback
 	Slots            []SlotRecord
 	EliminationOrder []int
 	WinnerSlot       int // -1 when no winner
@@ -80,7 +95,23 @@ func (r Record) DecisionSequence() []string {
 	return out
 }
 
-// EliminationOrder is UC-046 BR-014. An FFA player stops receiving frames when the
+// eventOrder maps player_death serials to slots in event order (first death first),
+// skipping unknown serials, duplicates and the winner.
+func eventOrder(deaths []string, slotOf map[string]int, winner int) ([]int, string) {
+	seen := map[int]bool{}
+	var order []int
+	for _, serial := range deaths {
+		slot, ok := slotOf[serial]
+		if !ok || seen[slot] || slot == winner {
+			continue
+		}
+		seen[slot] = true
+		order = append(order, slot)
+	}
+	return order, OrderFromEvents
+}
+
+// EliminationOrder is the frame-count fallback of UC-046 BR-014. An FFA player stops receiving frames when the
 // coordinator drops it from the alive filter, so among the dead the slot with the
 // fewest delivered frames died first. The winner comes from the coordinator's
 // game_winner event (winnerSlot), not from frame counts: the coordinator ends the
@@ -237,7 +268,7 @@ func (t *Tracker) CheckConcurrency(gameID string) {
 // Finish removes the game and builds its replay record from the controllers' slot
 // records. Frame overruns add their non-exact reason; a timeout alone does not
 // (UC-046 BR-008, BR-013).
-func (t *Tracker) Finish(gameID, outcome, winnerSerial string, slots []SlotRecord) (Record, bool) {
+func (t *Tracker) Finish(gameID, outcome string, events GameEvents, slots []SlotRecord) (Record, bool) {
 	t.CheckConcurrency(gameID)
 	t.mu.Lock()
 	g, ok := t.games[gameID]
@@ -255,13 +286,21 @@ func (t *Tracker) Finish(gameID, outcome, winnerSerial string, slots []SlotRecor
 			g.reasons[ReasonFrameOverrun] = struct{}{}
 		}
 	}
+	if outcome == OutcomeWinner && events.Tie && events.Winner == "" {
+		outcome = OutcomeTie
+	}
 	winner := -1
 	if outcome == OutcomeWinner {
-		if slot, ok := g.slotOf[winnerSerial]; ok {
+		if slot, ok := g.slotOf[events.Winner]; ok {
 			winner = slot
 		}
 	}
-	order := EliminationOrder(sorted, winner, g.info.Archetype.StreamRateHz)
+	// UC-046 BR-014: the coordinator's player_death events give the order; the
+	// delivered-frame counts are only the fallback for a stream that carried none.
+	order, source := eventOrder(events.Deaths, g.slotOf, winner)
+	if len(order) == 0 {
+		order, source = EliminationOrder(sorted, winner, g.info.Archetype.StreamRateHz), OrderFromFrames
+	}
 	reasons := make([]string, 0, len(g.reasons))
 	for r := range g.reasons {
 		reasons = append(reasons, r)
@@ -270,6 +309,8 @@ func (t *Tracker) Finish(gameID, outcome, winnerSerial string, slots []SlotRecor
 	return Record{
 		Info:             g.info,
 		Outcome:          outcome,
+		Censored:         outcome == OutcomeTimeout,
+		OrderSource:      source,
 		Slots:            sorted,
 		EliminationOrder: order,
 		WinnerSlot:       winner,
@@ -306,6 +347,10 @@ func (o LoopObserver) MarkNonExact(reason string) { o.Tracker.MarkNonExact(o.Gam
 func (o LoopObserver) RecordDecision(intervention, targetSerial, backend string) (int, bool) {
 	return o.Tracker.RecordDecision(o.GameID, intervention, targetSerial, backend)
 }
+
+// LateSeed marks the loop's game non-exact when its rules engine drew chaos rolls
+// before it could be seeded (UC-046 BR-007).
+func (o LoopObserver) LateSeed() { o.Tracker.MarkNonExact(o.GameID, ReasonUnseededDraws) }
 
 // SeedSource returns the rules engine's chaos seed lookup for the loop's game.
 func (o LoopObserver) SeedSource() func() (uint64, bool) {

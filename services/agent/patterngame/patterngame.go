@@ -10,12 +10,8 @@
 package patterngame
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
-	"fmt"
 	"hash/fnv"
-	"os"
 	"strings"
 )
 
@@ -48,11 +44,13 @@ const (
 	ReasonFrameOverrun   = "frame_overrun"
 	ReasonConcurrentGame = "concurrent_game"
 	ReasonKillSwitch     = "kill_switch"
+	ReasonUnseededDraws  = "unseeded_draws"
 )
 
 // Game outcomes on the replay record (telemetry.md §9 pattern.outcome).
 const (
 	OutcomeWinner  = "winner"
+	OutcomeTie     = "tie"
 	OutcomeTimeout = "timeout"
 	OutcomeAborted = "aborted"
 	OutcomeError   = "error"
@@ -60,6 +58,8 @@ const (
 
 // Experiment discard reasons (UC-046 A2, A4, A13).
 const (
+	DiscardSelectionEmpty   = "pattern_selection_empty"
+	DiscardPinLost          = "pattern_pin_lost"
 	DiscardArchetypeInvalid = "pattern_archetype_invalid"
 	DiscardSelectionSmall   = "pattern_selection_too_small"
 	DiscardModeUnsupported  = "pattern_mode_unsupported"
@@ -71,8 +71,8 @@ const (
 )
 
 // ParseSelection splits the selection flag value into archetype names. "", "none"
-// (any case) and blank entries yield no names (today's noise, UC-046 A1). Order is
-// preserved and duplicates are kept so the caller can reject them (A4).
+// (any case) and blank entries yield no names, which discards an experiment (UC-046
+// A1). Order is preserved and duplicates are kept so the caller can reject them (A4).
 func ParseSelection(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.EqualFold(raw, selectionNone) {
@@ -130,20 +130,4 @@ func ArchetypeSeed(name string) uint64 {
 		return s
 	}
 	return 1
-}
-
-// FlagDigest is UC-046 BR-011: SHA-256 (lowercase hex) of the bytes of each file
-// in order. A missing file contributes its path and "<missing>" so the digest
-// still differs from a run where the file existed.
-func FlagDigest(paths ...string) string {
-	h := sha256.New()
-	for _, p := range paths {
-		data, err := os.ReadFile(p) // #nosec G304 -- operator-configured flag file paths
-		if err != nil {
-			_, _ = fmt.Fprintf(h, "%s<missing>", p)
-			continue
-		}
-		_, _ = h.Write(data)
-	}
-	return hex.EncodeToString(h.Sum(nil))
 }
