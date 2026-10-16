@@ -394,6 +394,9 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		req:       buildDecideRequest(c, fired.InterventionsAllowed, false),
 		start:     start,
 	}
+	// Fire-time threshold: only a placeholder for spans that end before landing
+	// (none are routed then); the landing re-read below overwrites it with the
+	// LIVE effective threshold, which is what routing uses.
 	rec.threshold, rec.thresholdSource = fired.Decision.ActThreshold(rec.used)
 	defer func() { l.endDecideSpan(span, rec, c) }()
 

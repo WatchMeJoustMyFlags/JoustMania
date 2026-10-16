@@ -134,7 +134,11 @@ type RemoteBackendConfig struct {
 	// when HasActConfidenceThreshold is true, otherwise the backend inherits
 	// decision.act_confidence_threshold. Only jev has the flag (#1287); the zero
 	// value (claude, openai, hand-built test snapshots) inherits.
-	ActConfidenceThreshold    float64
+	ActConfidenceThreshold float64
+	// HasActConfidenceThreshold reports whether ActConfidenceThreshold applies:
+	// true when the backend's own flag resolved to a value in [0,1], false for
+	// the "inherit" sentinel, an out-of-range value or a backend without the flag
+	// (then DecisionBackend.ActThreshold returns the global threshold).
 	HasActConfidenceThreshold bool
 }
 
