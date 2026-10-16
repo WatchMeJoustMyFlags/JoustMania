@@ -3,15 +3,15 @@
   "answers": {
     "about_to_end": {
       "type": "noul",
-      "noul": 0.54
+      "noul": 0.62
     },
     "lopsided": {
       "type": "noul",
-      "noul": 0.4
+      "noul": 0.29
     }
   },
   "usage": {
-    "input_tokens": 882,
+    "input_tokens": 1062,
     "output_tokens": 40
   }
 }

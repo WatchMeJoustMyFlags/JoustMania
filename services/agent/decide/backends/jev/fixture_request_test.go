@@ -71,3 +71,114 @@ func noulRequest() decide.Request {
 		},
 	}
 }
+
+// calmContext is an early, even FFA round: four players alive, everyone well
+// below the death threshold, nobody out yet. Doing nothing is right.
+func calmContext() gamecontext.GameContext {
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	return gamecontext.GameContext{
+		SessionID: "game_1c0d5e7a9b42",
+		GameKind:  "real",
+		UpdatedAt: at,
+		Session: gamecontext.SessionSignals{
+			DurationSeconds: f64(18),
+			GameMode:        strp("FFA"),
+			MusicTempo:      f64(1.05),
+			DeathThreshold:  f64(2.3),
+		},
+		Players: map[string]*gamecontext.PlayerSignals{
+			"MOCK0001": {Serial: "MOCK0001", Active: boolp(true), MovementIntensity: f64(0.7), MovementVariance: f64(0.1), SkillLevel: f64(0.55), BatteryPct: f64(80)},
+			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(0.8), MovementVariance: f64(0.12), SkillLevel: f64(0.5), BatteryPct: f64(75)},
+			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(0.9), MovementVariance: f64(0.1), SkillLevel: f64(0.6), BatteryPct: f64(70)},
+			"MOCK0004": {Serial: "MOCK0004", Active: boolp(true), MovementIntensity: f64(0.75), MovementVariance: f64(0.09), SkillLevel: f64(0.5), BatteryPct: f64(90)},
+		},
+	}
+}
+
+// calmRequest asks the FFA questions about calmContext.
+func calmRequest() decide.Request {
+	st := decide.BuildState(calmContext())
+	return decide.Request{State: st, Questions: decide.FFAQuestions(st, fullInterventions)}
+}
+
+// draggingContext is a long FFA round that has stalled: two careful players
+// left, nobody eliminated for two minutes, both far below the threshold. A
+// session-wide nudge (tempo, difficulty) is warranted.
+func draggingContext() gamecontext.GameContext {
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	return gamecontext.GameContext{
+		SessionID: "game_5e2b8d0c7f13",
+		GameKind:  "real",
+		UpdatedAt: at,
+		Session: gamecontext.SessionSignals{
+			DurationSeconds:     f64(185),
+			EliminationSequence: []string{"MOCK0001", "MOCK0004"},
+			GameMode:            strp("FFA"),
+			MusicTempo:          f64(1.0),
+			DeathThreshold:      f64(1.8),
+		},
+		Players: map[string]*gamecontext.PlayerSignals{
+			"MOCK0001": {Serial: "MOCK0001", Active: boolp(false), SkillLevel: f64(0.3)},
+			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(0.35), MovementVariance: f64(0.02), SkillLevel: f64(0.85), BatteryPct: f64(60)},
+			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(0.4), MovementVariance: f64(0.03), SkillLevel: f64(0.8), BatteryPct: f64(55)},
+			"MOCK0004": {Serial: "MOCK0004", Active: boolp(false), SkillLevel: f64(0.4)},
+		},
+		Timeline: []gamecontext.TimelineEvent{
+			{At: at.Add(-170 * time.Second), Kind: gamecontext.EventElimination, Serial: "MOCK0001", Order: 1},
+			{At: at.Add(-130 * time.Second), Kind: gamecontext.EventElimination, Serial: "MOCK0004", Order: 2},
+		},
+	}
+}
+
+// draggingRequest asks the FFA questions about draggingContext.
+func draggingRequest() decide.Request {
+	st := decide.BuildState(draggingContext())
+	return decide.Request{State: st, Questions: decide.FFAQuestions(st, fullInterventions)}
+}
+
+// detailsRequest is the details-stage request of req for a chosen
+// intervention, exactly as Decide builds it after stage 1 (#1262).
+func detailsRequest(req decide.Request, iv string) detailsPlan {
+	_, details, _ := splitStages(req)
+	return planDetails(req.State, decide.Answer{QuestionID: decide.QuestionFFAIntervention, Choice: iv, Confidence: 0.5}, details)
+}
+
+// tooFastContext is an FFA round that is collapsing: four of six players out
+// within 20 seconds, both survivors near the death threshold. Without a
+// session-wide relief (faster music raises the threshold, higher sensitivity)
+// the game is over in seconds.
+func tooFastContext() gamecontext.GameContext {
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	return gamecontext.GameContext{
+		SessionID: "game_9a4f1e6b2c80",
+		GameKind:  "real",
+		UpdatedAt: at,
+		Session: gamecontext.SessionSignals{
+			DurationSeconds:     f64(20),
+			EliminationSequence: []string{"MOCK0001", "MOCK0004", "MOCK0005", "MOCK0006"},
+			GameMode:            strp("FFA"),
+			MusicTempo:          f64(1.0),
+			DeathThreshold:      f64(1.5),
+		},
+		Players: map[string]*gamecontext.PlayerSignals{
+			"MOCK0001": {Serial: "MOCK0001", Active: boolp(false)},
+			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(1.35), MovementVariance: f64(0.3), SkillLevel: f64(0.5)},
+			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(1.4), MovementVariance: f64(0.35), SkillLevel: f64(0.45)},
+			"MOCK0004": {Serial: "MOCK0004", Active: boolp(false)},
+			"MOCK0005": {Serial: "MOCK0005", Active: boolp(false)},
+			"MOCK0006": {Serial: "MOCK0006", Active: boolp(false)},
+		},
+		Timeline: []gamecontext.TimelineEvent{
+			{At: at.Add(-16 * time.Second), Kind: gamecontext.EventElimination, Serial: "MOCK0001", Order: 1},
+			{At: at.Add(-12 * time.Second), Kind: gamecontext.EventElimination, Serial: "MOCK0004", Order: 2},
+			{At: at.Add(-7 * time.Second), Kind: gamecontext.EventElimination, Serial: "MOCK0005", Order: 3},
+			{At: at.Add(-3 * time.Second), Kind: gamecontext.EventElimination, Serial: "MOCK0006", Order: 4},
+		},
+	}
+}
+
+// tooFastRequest asks the FFA questions about tooFastContext.
+func tooFastRequest() decide.Request {
+	st := decide.BuildState(tooFastContext())
+	return decide.Request{State: st, Questions: decide.FFAQuestions(st, fullInterventions)}
+}

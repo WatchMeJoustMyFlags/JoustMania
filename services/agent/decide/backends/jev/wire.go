@@ -21,9 +21,14 @@ package jev
 //
 //	KindChoice -> "choice": criteria = ordered {option: description} (criteria.go);
 //	              answer {choice, probabilities (every option, sum 1), confidence}.
-//	KindScore  -> "score":  criteria = an ordered ladder of scoreLevels level
-//	              descriptions; Jev's score s in [0, N-1] maps linearly onto
-//	              Question.Range: lo + s/(N-1)*(hi-lo).
+//	KindScore  -> "score":  criteria = an ordered ladder of N level
+//	              descriptions; Jev's fractional score s in [0, N-1] is
+//	              SNAPPED to the nearest level round(s) (TypeSafe: score levels
+//	              are not calibrated for interpolation), and that level's
+//	              position maps onto Question.Range: lo + l/(N-1)*(hi-lo). A
+//	              details-stage ffa.magnitude uses the chosen intervention's own
+//	              levels (criteria.go magnitudeLevels), so its answer is the
+//	              normalized position of a concrete value of that lever.
 //	KindNoul   -> "noul":   no criteria; answer {noul: P(yes)}.
 //
 // Confidence. decide's contract is "confidence that ACTING on the answer is
@@ -110,12 +115,18 @@ type jevRequest struct {
 // jevState is decide.State as Jev's structured state. It never carries
 // Request.Context, and leaves out the digest and game id (noise to the model).
 type jevState struct {
-	Game           string               `json:"game"`
-	GameKind       string               `json:"game_kind,omitempty"`
-	ElapsedSeconds float64              `json:"elapsed_s"`
-	AlivePlayers   []string             `json:"alive_players"`
-	Players        []decide.PlayerState `json:"players"`
-	Narrative      string               `json:"narrative"`
+	Game string `json:"game"`
+	// ChosenIntervention is set in the details stage (#1262): the intervention
+	// the agent will apply, which target and magnitude are conditioned on.
+	ChosenIntervention string               `json:"chosen_intervention,omitempty"`
+	GameKind           string               `json:"game_kind,omitempty"`
+	ElapsedSeconds     float64              `json:"elapsed_s"`
+	AlivePlayers       []string             `json:"alive_players"`
+	Players            []decide.PlayerState `json:"players"`
+	Narrative          string               `json:"narrative"`
+	// MostHeadroom / Struggling are decide.State's session-level hints (#1262).
+	MostHeadroom string `json:"most_headroom,omitempty"`
+	Struggling   string `json:"struggling,omitempty"`
 }
 
 type jevQuestion struct {
@@ -165,32 +176,33 @@ func (c orderedCriteria) MarshalJSON() ([]byte, error) {
 const maxChoiceOptions = 255
 
 // encodeRequest maps req (State + Questions only, never Context) to Jev's
-// request body.
-func encodeRequest(model string, req decide.Request) (wireRequestOut, error) {
+// request body. chosen is the intervention a details-stage request is
+// conditioned on ("" otherwise).
+func encodeRequest(model string, req decide.Request, chosen string) (wireRequestOut, error) {
 	questions := make(map[string]jevQuestion, len(req.Questions))
 	for _, q := range req.Questions {
-		jq, err := encodeQuestion(q, req)
+		jq, err := encodeQuestion(q, req, chosen)
 		if err != nil {
 			return wireRequestOut{}, fmt.Errorf("jev: %w: question %q: %v", decide.ErrInvalid, q.ID, err)
 		}
 		questions[q.ID] = jq
 	}
-	body, err := json.Marshal(jevRequest{Model: model, State: encodeState(req.State), Questions: questions})
+	body, err := json.Marshal(jevRequest{Model: model, State: encodeState(req.State, chosen), Questions: questions})
 	if err != nil {
 		return wireRequestOut{}, fmt.Errorf("jev: marshal request: %w", err)
 	}
 	return wireRequestOut{Body: body, Content: llmio.Prompt{User: string(body)}}, nil
 }
 
-func encodeQuestion(q decide.Question, req decide.Request) (jevQuestion, error) {
+func encodeQuestion(q decide.Question, req decide.Request, chosen string) (jevQuestion, error) {
 	switch q.Kind {
 	case decide.KindChoice:
 		if len(q.Options) == 0 || len(q.Options) > maxChoiceOptions {
 			return jevQuestion{}, fmt.Errorf("%d options, want 1..%d", len(q.Options), maxChoiceOptions)
 		}
-		return jevQuestion{Type: typeChoice, Instructions: q.Text, Criteria: choiceCriteria(q, req.State)}, nil
+		return jevQuestion{Type: typeChoice, Instructions: q.Text, Criteria: choiceCriteria(q, req.State, chosen)}, nil
 	case decide.KindScore:
-		instructions, ladder := scoreLadder(q, req)
+		instructions, ladder := scoreLadder(q, req, chosen)
 		return jevQuestion{Type: typeScore, Instructions: instructions, Criteria: ladder}, nil
 	case decide.KindNoul:
 		return jevQuestion{Type: typeNoul, Instructions: q.Text}, nil
@@ -201,7 +213,7 @@ func encodeQuestion(q decide.Question, req decide.Request) (jevQuestion, error) 
 
 // encodeState copies st into the wire state. Jev rejects non-finite numbers
 // (400), so an unobservable NaN/Inf reading is dropped like a missing one.
-func encodeState(st decide.State) jevState {
+func encodeState(st decide.State, chosen string) jevState {
 	players := make([]decide.PlayerState, len(st.Players))
 	for i, p := range st.Players {
 		p.Intensity = finiteOrNil(p.Intensity)
@@ -225,6 +237,10 @@ func encodeState(st decide.State) jevState {
 		AlivePlayers:   alive,
 		Players:        players,
 		Narrative:      st.Narrative,
+		MostHeadroom:   st.MostHeadroom,
+		Struggling:     st.Struggling,
+
+		ChosenIntervention: chosen,
 	}
 }
 
@@ -278,7 +294,7 @@ const exactSumTolerance = 1e-9
 // error.type) and an error; malformed or invalid answers wrap
 // decide.ErrInvalid. The partially filled wireResult is still returned so the
 // span gets whatever telemetry the body carried.
-func decodeResponse(req decide.Request, body []byte) (wireResult, string, error) {
+func decodeResponse(req decide.Request, chosen string, body []byte) (wireResult, string, error) {
 	var r jevResponse
 	if err := json.Unmarshal(body, &r); err != nil {
 		return wireResult{}, "invalid_response", fmt.Errorf("jev: %w: unparseable response body: %v", llmio.ErrMalformed, err)
@@ -310,7 +326,7 @@ func decodeResponse(req decide.Request, body []byte) (wireResult, string, error)
 		if err := json.Unmarshal(raw, &ja); err != nil {
 			return res, "invalid_output", fmt.Errorf("jev: %w: answer %q: %v", llmio.ErrMalformed, q.ID, err)
 		}
-		a, native, err := toAnswer(q, ja)
+		a, native, err := toAnswer(q, ja, chosen)
 		if err != nil {
 			return res, "invalid_output", fmt.Errorf("jev: %w: answer %q: %v", decide.ErrInvalid, q.ID, err)
 		}
@@ -327,8 +343,9 @@ func decodeResponse(req decide.Request, body []byte) (wireResult, string, error)
 }
 
 // toAnswer maps one Jev answer onto q's decide.Answer. native is Jev's own
-// confidence (nil for a noul, which has none).
-func toAnswer(q decide.Question, ja jevAnswer) (decide.Answer, *float64, error) {
+// confidence (nil for a noul, which has none). chosen is the intervention of a
+// details-stage request ("" otherwise).
+func toAnswer(q decide.Question, ja jevAnswer, chosen string) (decide.Answer, *float64, error) {
 	a := decide.Answer{QuestionID: q.ID}
 	switch q.Kind {
 	case decide.KindChoice:
@@ -349,7 +366,7 @@ func toAnswer(q decide.Question, ja jevAnswer) (decide.Answer, *float64, error) 
 		if ja.Type != typeScore || ja.Score == nil || ja.Confidence == nil {
 			return a, nil, fmt.Errorf("want a score answer with score and confidence, got type %q", clip(ja.Type, 32))
 		}
-		s, err := scoreToRange(*ja.Score, q.Range)
+		s, err := scoreToRange(*ja.Score, q, chosen)
 		if err != nil {
 			return a, nil, err
 		}
@@ -425,16 +442,38 @@ func renormalize(in map[string]float64) map[string]float64 {
 // scoreEpsilon tolerates float noise at the ends of Jev's [0, N-1] score.
 const scoreEpsilon = 1e-6
 
-// scoreToRange maps Jev's fractional level s in [0, scoreLevels-1] linearly
-// onto rng: lo + s/(N-1)*(hi-lo).
-func scoreToRange(s float64, rng [2]float64) (float64, error) {
-	top := float64(scoreLevels - 1)
+// snapLevel rounds Jev's fractional score s in [0, n-1] to the nearest level
+// (half rounds up, math.Round).
+func snapLevel(s float64, n int) (int, error) {
+	top := float64(n - 1)
 	if !isFinite(s) || s < -scoreEpsilon || s > top+scoreEpsilon {
 		return 0, fmt.Errorf("score %v outside [0, %v]", s, top)
 	}
-	frac := math.Max(0, math.Min(1, s/top))
-	v := rng[0] + frac*(rng[1]-rng[0])
-	return math.Max(rng[0], math.Min(rng[1], v)), nil
+	return int(math.Max(0, math.Min(top, math.Round(s)))), nil
+}
+
+// scoreToRange snaps Jev's score to the nearest level of q's ladder and maps
+// that level onto q.Range. For a details-stage ffa.magnitude the ladder is the
+// chosen intervention's own values: the answer is that value's normalized
+// position (decide.NormalizeMagnitude), so decide.ResolveMagnitude returns
+// exactly the level's value (integer levers included). Every other score
+// question uses the evenly spaced scoreLevels ladder: lo + l/(N-1)*(hi-lo).
+func scoreToRange(s float64, q decide.Question, chosen string) (float64, error) {
+	lo, hi := q.Range[0], q.Range[1]
+	if levels := conditionedLevels(q, chosen); levels != nil {
+		l, err := snapLevel(s, len(levels))
+		if err != nil {
+			return 0, err
+		}
+		norm, _ := decide.NormalizeMagnitude(chosen, levels[l])
+		return math.Max(lo, math.Min(hi, lo+norm*(hi-lo))), nil
+	}
+	l, err := snapLevel(s, scoreLevels)
+	if err != nil {
+		return 0, err
+	}
+	v := lo + float64(l)/float64(scoreLevels-1)*(hi-lo)
+	return math.Max(lo, math.Min(hi, v)), nil
 }
 
 // nativeConfidenceJSON renders the per-question native confidences as a

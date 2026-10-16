@@ -8,6 +8,7 @@ package jev
 // in code instead of leaving them to the model.
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -65,13 +66,17 @@ var interventionDescriptions = map[string]string{
 const targetNoneDescription = "No specific player: the intervention is session-wide (music tempo, volume, " +
 	"global sensitivity or difficulty, pacing, ending the game) or the agent does nothing."
 
-// choiceCriteria builds q's ordered {option: description} criteria.
-func choiceCriteria(q decide.Question, st decide.State) orderedCriteria {
+// choiceCriteria builds q's ordered {option: description} criteria. chosen is
+// the intervention a details-stage ffa.target is conditioned on ("" otherwise).
+func choiceCriteria(q decide.Question, st decide.State, chosen string) orderedCriteria {
 	var describe func(string) string
-	switch q.ID {
-	case decide.QuestionFFAIntervention:
+	switch {
+	case q.ID == decide.QuestionFFAIntervention:
 		describe = func(o string) string { return interventionDescriptions[o] }
-	case decide.QuestionFFATarget:
+	case q.ID == decide.QuestionFFATarget && chosen != "":
+		players := describeCandidates(st, chosen)
+		describe = func(o string) string { return players[o] }
+	case q.ID == decide.QuestionFFATarget:
 		players := describePlayers(st)
 		describe = func(o string) string {
 			if o == decide.TargetNone {
@@ -118,6 +123,9 @@ func describePlayers(st decide.State) map[string]string {
 		switch {
 		case p.Alive:
 			b.WriteString(", still in the game.")
+			if d := dangerPhrase(p); d != "" {
+				b.WriteString(" " + d)
+			}
 		case p.EliminationOrder > 0:
 			b.WriteString(", eliminated (" + ordinal(p.EliminationOrder) + " out).")
 		default:
@@ -233,7 +241,10 @@ const magnitudeInstructions = "If the agent intervenes now, which setting should
 // resolves to (decide.ResolveMagnitude at level/(N-1)), and at the two ends what
 // that value does; any other score question gets the bare position ladder over
 // its own text.
-func scoreLadder(q decide.Question, req decide.Request) (string, []string) {
+func scoreLadder(q decide.Question, req decide.Request, chosen string) (string, []string) {
+	if levels := conditionedLevels(q, chosen); levels != nil {
+		return conditionedMagnitude(q, chosen, levels)
+	}
 	ladder := make([]string, scoreLevels)
 	var interventions []string
 	if q.ID == decide.QuestionFFAMagnitude {
@@ -280,4 +291,319 @@ func magnitudeOptions(req decide.Request) []string {
 		}
 	}
 	return out
+}
+
+// --- danger and the details stage (#1262) ---
+
+// dangerPhrase renders decide.State's precomputed danger signals of an alive
+// player as one sentence; empty when unknown.
+func dangerPhrase(p decide.PlayerState) string {
+	var s string
+	switch p.Danger {
+	case decide.DangerNearThreshold:
+		s = "Near the death threshold: one twitch from elimination"
+	case decide.DangerElevated:
+		s = "Elevated danger: moving hard, some headroom left"
+	case decide.DangerSafe:
+		s = "Safe: well below the death threshold"
+	default:
+		return ""
+	}
+	if p.ThresholdMargin != nil {
+		s += " (margin " + strconv.FormatFloat(*p.ThresholdMargin, 'f', 2, 64) + ")"
+	}
+	return s + "."
+}
+
+// targetInstructions is the details-stage ffa.target instruction: it names
+// the intervention that WILL be applied, directly (TypeSafe: no indirection).
+func targetInstructions(iv string) string {
+	return interventionPhrase(iv) + ". Which player should receive it?"
+}
+
+// Suitability families of the player-targeted interventions.
+var (
+	protectInterventions = map[string]bool{"grant_shield": true, "partial_shield": true}
+	balanceInterventions = map[string]bool{"adjust_player_sensitivity": true, "set_player_handicap": true}
+	// pressureInterventions put recoverable pressure on one player.
+	// eliminate_player is deliberately NOT here: the agent must never be nudged
+	// toward eliminating a player because they are momentarily calm.
+	pressureInterventions = map[string]bool{"soft_penalty": true}
+)
+
+// suitability says how well player p of st fits intervention iv, judged in Go
+// from the danger signals, so Jev matches a sentence instead of comparing
+// numbers. Empty for interventions without a family (e.g. a controller
+// effect): their description then carries the player's state only.
+func suitability(iv string, p decide.PlayerState, st decide.State) string {
+	calmest, struggling := p.Serial == st.MostHeadroom, p.Serial == st.Struggling
+	switch {
+	case protectInterventions[iv]:
+		if p.Shielded {
+			return "Already shielded a moment ago: another shield would be wasted."
+		}
+		switch p.Danger {
+		case decide.DangerNearThreshold:
+			return "About to be eliminated: protecting this player now matters most."
+		case decide.DangerElevated:
+			return "Under some pressure: protection would help a little."
+		case decide.DangerSafe:
+			return "In no danger: protection would be wasted on this player."
+		}
+	case balanceInterventions[iv]:
+		switch {
+		case struggling || p.Danger == decide.DangerNearThreshold:
+			return "Struggling: helping this player would even the game."
+		case calmest:
+			return "Most headroom below the death threshold right now: reining this player in would even the game."
+		default:
+			return "Neither the calmest nor struggling: little to balance."
+		}
+	case pressureInterventions[iv]:
+		switch {
+		case calmest:
+			return "Most headroom below the death threshold right now: pressure here keeps the game close."
+		case struggling || p.Danger == decide.DangerNearThreshold:
+			return "Already about to be eliminated: pressure here would pile on a struggling player."
+		default:
+			return "In the middle of the field: pressure here has a moderate effect."
+		}
+	}
+	return ""
+}
+
+// describeCandidates describes each alive player of st as a candidate for iv:
+// danger, intensity rank, skill, then the suitability sentence.
+func describeCandidates(st decide.State, iv string) map[string]string {
+	ranked := st.RankedCount()
+	out := map[string]string{}
+	for _, p := range st.Players {
+		if !p.Alive {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString("Player " + p.Serial + ".")
+		if d := dangerPhrase(p); d != "" {
+			b.WriteString(" " + d)
+		}
+		if p.IntensityRank > 0 && ranked > 1 {
+			b.WriteString(" Moving the " + rankWord(p.IntensityRank, ranked) + " of " + strconv.Itoa(ranked) + " alive players.")
+		}
+		switch p.Serial {
+		case st.MostHeadroom:
+			b.WriteString(" Most headroom of the alive players right now.")
+		case st.Struggling:
+			b.WriteString(" Currently struggling.")
+		}
+		if p.Shielded {
+			b.WriteString(" Shielded a moment ago.")
+		}
+		if v := finiteOrNil(p.Skill); v != nil {
+			b.WriteString(" Skill " + strconv.FormatFloat(*v, 'f', 2, 64) + ".")
+		}
+		if s := suitability(iv, p, st); s != "" {
+			b.WriteString(" " + s)
+		}
+		out[p.Serial] = b.String()
+	}
+	return out
+}
+
+// rankWord is "most" for rank 1, "least" for the last rank, else "2nd most".
+func rankWord(rank, n int) string {
+	switch rank {
+	case 1:
+		return "most"
+	case n:
+		return "least"
+	default:
+		return ordinal(rank) + " most"
+	}
+}
+
+// magnitudeLevels are intervention iv's own ACTING magnitude levels, low to
+// high: scoreLevels evenly spaced values over its bounds
+// (decide.ResolveMagnitude, so integer levers are whole numbers), fewer for an
+// integer lever with a narrower range, so no two levels share a value. The
+// neutral value ("no change") is never a level: an acting round must not spend
+// an intervention on a no-op. nil without bounds.
+func magnitudeLevels(iv string) []float64 {
+	b, ok := decide.MagnitudeBounds(iv)
+	if !ok {
+		return nil
+	}
+	n := scoreLevels
+	if b.Integer {
+		n = min(n, int(b.Max-b.Min)+1)
+	}
+	if n < 2 {
+		return []float64{b.Min, b.Max}
+	}
+	out := make([]float64, 0, n)
+	for i := 0; i < n; i++ {
+		v, _ := decide.ResolveMagnitude(iv, float64(i)/float64(n-1))
+		if b.HasNeutral && math.Abs(v-b.Neutral) < 1e-9 {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// Two-way levers (#1262 review I1). For a per-player lever whose two ends do
+// opposite things (protect vs handicap), Jev must not pick the target and the
+// direction independently: it could pick the struggling player AND the
+// handicap end. The DIRECTION is decided in Go from the chosen target's
+// computed signals (direction), and Jev only answers the STRENGTH within that
+// half of the lever. Both half-ladders are asked in the same details call (Jev
+// answers questions independently anyway), and Decide keeps the one matching
+// the chosen target's direction: no third call.
+
+// Directions of a two-way lever.
+const (
+	directionHelp   = "help"
+	directionReinIn = "rein_in"
+)
+
+// twoWay maps each two-way lever to whether its HELP side is the high end
+// (set_player_handicap: 1.75 = big help) or the low end
+// (adjust_player_sensitivity: 0.7 = most protected).
+var twoWay = map[string]struct{ helpIsHigh bool }{
+	"adjust_player_sensitivity": {helpIsHigh: false},
+	"set_player_handicap":       {helpIsHigh: true},
+}
+
+// isTwoWay reports whether iv is a two-way per-player lever.
+func isTwoWay(iv string) bool { _, ok := twoWay[iv]; return ok }
+
+// halfLevels is the number of strength levels on each side of the neutral.
+const halfLevels = 3
+
+// strengthQuestionID is the internal details-stage question id of a
+// two-way lever's strength in direction dir; it never leaves the backend.
+func strengthQuestionID(dir string) string { return decide.QuestionFFAMagnitude + "." + dir }
+
+// strengthDirection returns the direction of an internal strength question id
+// ("" for any other id).
+func strengthDirection(id string) string {
+	for _, dir := range []string{directionHelp, directionReinIn} {
+		if id == strengthQuestionID(dir) {
+			return dir
+		}
+	}
+	return ""
+}
+
+// direction decides, in Go, which side of a two-way lever the target gets:
+// help for the struggling / near-threshold player, rein in for the player with
+// the most headroom, help when ambiguous (fail-safe: helping never eliminates
+// anyone).
+func direction(st decide.State, target string) string {
+	for _, p := range st.Players {
+		if p.Serial != target {
+			continue
+		}
+		switch {
+		case p.Serial == st.Struggling || p.Danger == decide.DangerNearThreshold:
+			return directionHelp
+		case p.Serial == st.MostHeadroom:
+			return directionReinIn
+		}
+	}
+	return directionHelp
+}
+
+// strengthLevels are a two-way lever's values on side dir, weakest (nearest
+// the neutral, which is excluded) to strongest (the bound), rounded to two
+// decimals so they read like flag variants. nil for any other lever.
+func strengthLevels(iv, dir string) []float64 {
+	tw, ok := twoWay[iv]
+	b, bok := decide.MagnitudeBounds(iv)
+	if !ok || !bok || !b.HasNeutral {
+		return nil
+	}
+	end := b.Min
+	if tw.helpIsHigh == (dir == directionHelp) {
+		end = b.Max
+	}
+	out := make([]float64, halfLevels)
+	for k := 1; k <= halfLevels; k++ {
+		v := b.Neutral + (end-b.Neutral)*float64(k)/halfLevels
+		out[k-1] = math.Round(v*100) / 100
+	}
+	return out
+}
+
+// conditionedLevels returns the chosen intervention's levels when q is a
+// details-stage magnitude question (ffa.magnitude, or a two-way lever's
+// internal strength question), else nil.
+func conditionedLevels(q decide.Question, chosen string) []float64 {
+	if chosen == "" {
+		return nil
+	}
+	if dir := strengthDirection(q.ID); dir != "" {
+		return strengthLevels(chosen, dir)
+	}
+	if q.ID != decide.QuestionFFAMagnitude {
+		return nil
+	}
+	return magnitudeLevels(chosen)
+}
+
+// interventionPhrase is "The agent will apply <iv> (<description>)".
+func interventionPhrase(iv string) string {
+	s := "The agent will apply " + iv
+	if d := interventionDescriptions[iv]; d != "" {
+		s += " (" + strings.TrimSuffix(d, ".") + ")"
+	}
+	return s
+}
+
+// conditionedMagnitude is the details-stage magnitude question for q: the
+// chosen intervention's own levels, each saying what it does, or for a
+// two-way lever's strength question the levels of one side, weakest first.
+func conditionedMagnitude(q decide.Question, iv string, levels []float64) (string, []string) {
+	b, _ := decide.MagnitudeBounds(iv)
+	if dir := strengthDirection(q.ID); dir != "" {
+		effect := "help a struggling player (make them harder to eliminate)"
+		if dir == directionReinIn {
+			effect = "rein in the player with the most headroom (make them easier to eliminate)"
+		}
+		names := [halfLevels]string{"A slight change", "A moderate change", "The strongest change"}
+		ladder := make([]string, len(levels))
+		for i, v := range levels {
+			ladder[i] = names[min(i, halfLevels-1)] + ": " + strconv.FormatFloat(v, 'g', 3, 64) + " " + b.Unit +
+				" (neutral is " + strconv.FormatFloat(b.Neutral, 'g', 3, 64) + ")."
+		}
+		return interventionPhrase(iv) + " to " + effect + ". How strong should the change be?", ladder
+	}
+	ends := magnitudeEnds[iv]
+	n := len(levels)
+	ladder := make([]string, n)
+	for i, v := range levels {
+		name := "A middle setting"
+		switch {
+		case i == 0:
+			name = "The lowest setting"
+		case i == n-1:
+			name = "The highest setting"
+		case 2*i < n-1:
+			name = "A low setting"
+		case 2*i > n-1:
+			name = "A high setting"
+		}
+		text := name + ": " + strconv.FormatFloat(v, 'g', 3, 64) + " " + b.Unit
+		switch {
+		case i == 0 && ends[0] != "":
+			text += " (" + ends[0] + ")"
+		case i == n-1 && ends[1] != "":
+			text += " (" + ends[1] + ")"
+		case b.HasNeutral && b.Neutral > b.Min && v < b.Neutral:
+			text += " (toward " + ends[0] + ")"
+		case b.HasNeutral && b.Neutral > b.Min && v > b.Neutral:
+			text += " (toward " + ends[1] + ")"
+		}
+		ladder[i] = text + "."
+	}
+	return interventionPhrase(iv) + ". Which setting should it use?", ladder
 }

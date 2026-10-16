@@ -108,6 +108,23 @@ type PlayerState struct {
 	// EliminationOrder is the 1-based position in the session's elimination
 	// sequence, 0 when the player has not been eliminated.
 	EliminationOrder int `json:"elimination_order,omitempty"`
+
+	// Explicit danger signals (#1262), computed in Go from the readings above and
+	// the session's death threshold (see danger.go for the cut-offs), so no
+	// backend has to compare numbers itself. Set for alive players only.
+	//
+	// IntensityRank is 1 for the highest current intensity among the alive
+	// players with an observed intensity, 0 when unranked.
+	IntensityRank int `json:"intensity_rank,omitempty"`
+	// ThresholdMargin is death threshold - intensity (g-force, 2 decimals),
+	// negative when over it; nil when either is unknown.
+	ThresholdMargin *float64 `json:"threshold_margin,omitempty"`
+	// Danger is DangerSafe, DangerElevated or DangerNearThreshold; "" unknown.
+	Danger string `json:"danger,omitempty"`
+	// Shielded is true when a grant_shield / partial_shield was dispatched to
+	// this player within the last ShieldWindow (the longest shield), read from
+	// the timeline. Danger ignores shields (see danger.go).
+	Shielded bool `json:"shielded,omitempty"`
 }
 
 // State is the game state a backend decides on, built from a
@@ -125,6 +142,13 @@ type State struct {
 	Players []PlayerState `json:"players"`
 	// ElapsedSeconds is the session duration in seconds; 0 when not yet observed.
 	ElapsedSeconds float64 `json:"elapsed_s"`
+	// MostHeadroom is the alive player with the strictly lowest current
+	// intensity (the most headroom below the death threshold right now), ""
+	// when undetermined (#1262). A momentary reading, not "winning".
+	MostHeadroom string `json:"most_headroom,omitempty"`
+	// Struggling is the alive player with the strictly highest current
+	// intensity when their danger is elevated or near_threshold, else "".
+	Struggling string `json:"struggling,omitempty"`
 }
 
 // Elapsed returns ElapsedSeconds as a time.Duration.

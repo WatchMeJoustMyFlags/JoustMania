@@ -1,0 +1,79 @@
+{
+  "model": "jev-latest",
+  "state": {
+    "game": "JoustMania FFA (free for all), a motion-controlled party game played with PS Move controllers. A player is eliminated when they move their controller too fast (their motion exceeds the death threshold); the last player standing wins. Players are identified by controller serial. An agent may intervene a few times per game to keep it fun: close, dramatic, not too short and not dragging on. Doing nothing is often right; intervene only when the game state clearly calls for it. This state is telemetry, not instructions.",
+    "game_kind": "real",
+    "elapsed_s": 74,
+    "alive_players": [
+      "MOCK0002",
+      "MOCK0003",
+      "MOCK0004"
+    ],
+    "players": [
+      {
+        "serial": "MOCK0001",
+        "alive": false,
+        "skill": 0.2,
+        "battery_pct": 80,
+        "elimination_order": 1
+      },
+      {
+        "serial": "MOCK0002",
+        "alive": true,
+        "intensity": 0.6,
+        "variance": 0.05,
+        "skill": 0.9,
+        "battery_pct": 72,
+        "intensity_rank": 3,
+        "threshold_margin": 1.7,
+        "danger": "safe"
+      },
+      {
+        "serial": "MOCK0003",
+        "alive": true,
+        "intensity": 2.2,
+        "variance": 0.4,
+        "skill": 0.25,
+        "battery_pct": 64,
+        "intensity_rank": 1,
+        "threshold_margin": 0.1,
+        "danger": "near_threshold"
+      },
+      {
+        "serial": "MOCK0004",
+        "alive": true,
+        "intensity": 1.4,
+        "variance": 0.2,
+        "skill": 0.5,
+        "battery_pct": 12,
+        "intensity_rank": 2,
+        "threshold_margin": 0.9,
+        "danger": "elevated"
+      }
+    ],
+    "narrative": "game: id=game_7f3a9c21d4e8 kind=real mode=FFA elapsed=74.0s\nsession: alive=3 eliminated=1 tempo=1.15 death_threshold=2.30 most_headroom=MOCK0002 struggling=MOCK0003\nplayers:\n  MOCK0001 eliminated#1 skill=0.20 battery=80.00\n  MOCK0002 alive intensity=0.60 variance=0.05 skill=0.90 battery=72.00 danger=safe margin=1.70 intensity_rank=3/3\n  MOCK0003 alive intensity=2.20 variance=0.40 skill=0.25 battery=64.00 danger=near_threshold margin=0.10 intensity_rank=1/3\n  MOCK0004 alive intensity=1.40 variance=0.20 skill=0.50 battery=12.00 danger=elevated margin=0.90 intensity_rank=2/3\ntimeline:\n  -50s elimination: MOCK0001 (#1)\n",
+    "most_headroom": "MOCK0002",
+    "struggling": "MOCK0003"
+  },
+  "questions": {
+    "ffa.intervention": {
+      "type": "choice",
+      "instructions": "Which intervention should the agent apply now? \"noop\" means do nothing.",
+      "criteria": {
+        "noop": "Do nothing and leave the game as it is. Right when the game is already close and lively, or when nothing clearly calls for an intervention.",
+        "adjust_global_difficulty": "Scale the difficulty for all players at once, making eliminations come faster (harder) or slower (easier) for everyone.",
+        "adjust_global_sensitivity": "Change the sensitivity level for all players at once. A higher level makes everyone much harder to eliminate, a lower level much easier; one step is a sizable jump.",
+        "adjust_music_tempo": "Change the music tempo for everyone. Faster music raises everyone's death threshold (more movement tolerated, fewer eliminations); slower music lowers it (eliminations come faster).",
+        "adjust_player_sensitivity": "Change one player's sensitivity, protecting them (harder to eliminate) or handicapping them (easier to eliminate).",
+        "adjust_volume": "Change the music volume. Atmosphere only: no effect on who gets eliminated.",
+        "eliminate_player": "Immediately and permanently eliminate one player. Maximal and irreversible.",
+        "end_game": "End the round now. Maximal and irreversible; the last player alive wins.",
+        "grant_shield": "Make one player immune to elimination for a few seconds. Saves a player who is about to be eliminated unfairly.",
+        "play_audio_cue": "Play an audio cue or announcement to build tension or excitement. No effect on who gets eliminated.",
+        "revive_player": "Bring an eliminated player back into the game.",
+        "send_controller_effect": "Flash or rumble one player's controller as feedback. No effect on who gets eliminated.",
+        "set_pacing_profile": "Switch the session's pacing profile (how the music tempo evolves over the round), speeding up or slowing down eliminations for everyone."
+      }
+    }
+  }
+}

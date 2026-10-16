@@ -10,6 +10,8 @@ import (
 	"github.com/joustmania/agent/decide"
 )
 
+// TestScoreToRange: Jev's fractional score snaps to the NEAREST level (#1262),
+// never an interpolation between levels.
 func TestScoreToRange(t *testing.T) {
 	cases := []struct {
 		s    float64
@@ -20,6 +22,9 @@ func TestScoreToRange(t *testing.T) {
 		{0, [2]float64{0, 1}, 0, true},
 		{4, [2]float64{0, 1}, 1, true},
 		{2, [2]float64{0, 1}, 0.5, true},
+		{2.19, [2]float64{0, 1}, 0.5, true}, // nearest level 2, not 2.19/4
+		{2.5, [2]float64{0, 1}, 0.75, true}, // half rounds up
+		{0.49, [2]float64{0, 1}, 0, true},
 		{1, [2]float64{10, 20}, 12.5, true},
 		{4 + 1e-9, [2]float64{0, 1}, 1, true}, // float noise at the top is clamped
 		{-1e-9, [2]float64{0, 1}, 0, true},
@@ -30,10 +35,43 @@ func TestScoreToRange(t *testing.T) {
 		{math.Inf(1), [2]float64{0, 1}, 0, false},
 	}
 	for _, c := range cases {
-		got, err := scoreToRange(c.s, c.rng)
+		q := decide.Question{ID: "s", Kind: decide.KindScore, Range: c.rng}
+		got, err := scoreToRange(c.s, q, "")
 		if (err == nil) != c.ok || (c.ok && math.Abs(got-c.want) > 1e-12) {
 			t.Errorf("scoreToRange(%v, %v) = %v, %v; want %v ok=%v", c.s, c.rng, got, err, c.want, c.ok)
 		}
+	}
+}
+
+// TestScoreToRange_Conditioned: a details-stage ffa.magnitude snaps onto the
+// chosen intervention's own levels, and the normalized answer resolves back to
+// exactly that level's value (integer levers stay whole).
+func TestScoreToRange_Conditioned(t *testing.T) {
+	mag := decide.Question{ID: decide.QuestionFFAMagnitude, Kind: decide.KindScore, Range: [2]float64{0, 1}}
+	for _, c := range []struct {
+		iv    string
+		s     float64
+		value float64
+	}{
+		{"grant_shield", 0, 3},
+		{"grant_shield", 3.6, 10},
+		{"grant_shield", 2.19, 6.5},
+		{"adjust_global_sensitivity", 1.4, 1},
+		{"adjust_global_sensitivity", 2.5, 3},
+		{"adjust_music_tempo", 1.2, 1.075},
+		{"adjust_player_sensitivity", 0.2, 0.7},
+	} {
+		norm, err := scoreToRange(c.s, mag, c.iv)
+		if err != nil {
+			t.Fatalf("%s %v: %v", c.iv, c.s, err)
+		}
+		v, _ := decide.ResolveMagnitude(c.iv, norm)
+		if math.Abs(v-c.value) > 1e-9 {
+			t.Errorf("%s score %v -> norm %v -> %v, want %v", c.iv, c.s, norm, v, c.value)
+		}
+	}
+	if _, err := scoreToRange(4.5, mag, "grant_shield"); err == nil {
+		t.Error("score above the ladder must fail")
 	}
 }
 
@@ -129,7 +167,7 @@ func TestEncodeRequest_Shapes(t *testing.T) {
 			{ID: "n", Kind: decide.KindNoul, Text: "yes?"},
 		},
 	}
-	out, err := encodeRequest("jev-latest", req)
+	out, err := encodeRequest("jev-latest", req, "")
 	if err != nil {
 		t.Fatal(err) // NaN/Inf state readings must be dropped, not fail the marshal
 	}
@@ -158,7 +196,7 @@ func TestEncodeRequest_Shapes(t *testing.T) {
 
 	bad := req
 	bad.Questions = []decide.Question{{ID: "x", Kind: "boolean"}}
-	if _, err := encodeRequest("m", bad); !errors.Is(err, decide.ErrInvalid) {
+	if _, err := encodeRequest("m", bad, ""); !errors.Is(err, decide.ErrInvalid) {
 		t.Errorf("unknown kind: %v", err)
 	}
 	many := make([]string, maxChoiceOptions+1)
@@ -166,7 +204,7 @@ func TestEncodeRequest_Shapes(t *testing.T) {
 		many[i] = strings.Repeat("o", i+1)
 	}
 	bad.Questions = []decide.Question{{ID: "x", Kind: decide.KindChoice, Options: many}}
-	if _, err := encodeRequest("m", bad); !errors.Is(err, decide.ErrInvalid) {
+	if _, err := encodeRequest("m", bad, ""); !errors.Is(err, decide.ErrInvalid) {
 		t.Errorf("too many options: %v", err)
 	}
 }
@@ -182,7 +220,7 @@ func TestMagnitudeLadder(t *testing.T) {
 			mag = q
 		}
 	}
-	instr, ladder := scoreLadder(mag, req)
+	instr, ladder := scoreLadder(mag, req, "")
 	if instr != magnitudeInstructions || len(ladder) != scoreLevels {
 		t.Fatalf("instructions %q, %d levels", instr, len(ladder))
 	}

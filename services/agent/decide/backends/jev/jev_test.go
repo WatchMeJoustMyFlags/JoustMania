@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,16 +49,37 @@ type fakeAPI struct {
 	calls    atomic.Int32
 	lastBody atomic.Value // []byte
 	lastHdr  atomic.Value // http.Header
+	mu       sync.Mutex
+	bodies   [][]byte // every request body, in order
+}
+
+// fakeReply is one scripted response of a fakeAPI.
+type fakeReply struct {
+	status int
+	body   []byte
+	delay  time.Duration
 }
 
 func newFakeAPI(t *testing.T, status int, body []byte, delay time.Duration) *fakeAPI {
 	t.Helper()
+	return newScriptedAPI(t, fakeReply{status, body, delay})
+}
+
+// newScriptedAPI answers the n-th call with script[n] (the last entry repeats),
+// so a test can serve a two-stage round (#1262).
+func newScriptedAPI(t *testing.T, script ...fakeReply) *fakeAPI {
+	t.Helper()
 	f := &fakeAPI{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.calls.Add(1)
+		n := int(f.calls.Add(1)) - 1
+		reply := script[min(n, len(script)-1)]
+		status, body, delay := reply.status, reply.body, reply.delay
 		b, _ := io.ReadAll(r.Body)
 		f.lastBody.Store(b)
 		f.lastHdr.Store(r.Header.Clone())
+		f.mu.Lock()
+		f.bodies = append(f.bodies, b)
+		f.mu.Unlock()
 		if r.URL.Path != "/api"+wirePath {
 			http.Error(w, "bad path "+r.URL.Path, http.StatusNotFound)
 			return
@@ -89,6 +111,19 @@ func (f *fakeAPI) backend(model string, capture bool) *Backend {
 	})
 }
 
+// chatSpans returns the chat spans against this server, oldest first.
+func (f *fakeAPI) chatSpans() []sdktrace.ReadOnlySpan {
+	u, _ := url.Parse(f.srv.URL)
+	port, _ := strconv.ParseInt(u.Port(), 10, 64)
+	var out []sdktrace.ReadOnlySpan
+	for _, s := range recorder.Ended() {
+		if strings.HasPrefix(s.Name(), "chat") && attrs(s)["server.port"].AsInt64() == port {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // lastSpan returns the most recent chat span against this server.
 func (f *fakeAPI) lastSpan(t *testing.T) sdktrace.ReadOnlySpan {
 	t.Helper()
@@ -105,7 +140,7 @@ func (f *fakeAPI) lastSpan(t *testing.T) sdktrace.ReadOnlySpan {
 }
 
 func TestDecide_HappyPathSpan(t *testing.T) {
-	api := newFakeAPI(t, 200, loadFixture(t, "response_ok.json"), 0)
+	api := newFakeAPI(t, 200, loadFixture(t, "noop_response_intervention.json"), 0)
 	ctx, parent := otel.Tracer("test").Start(context.Background(), "agent.decide")
 	resp, err := api.backend(fixtureModel, false).Decide(ctx, testRequest())
 	parent.End()
@@ -141,10 +176,11 @@ func TestDecide_HappyPathSpan(t *testing.T) {
 		"gen_ai.response.model":      "jev-1.13.0",
 		"gen_ai.response.id":         "req_test_001",
 		"gen_ai.output.type":         "json",
-		"gen_ai.usage.input_tokens":  int64(2184),
-		"gen_ai.usage.output_tokens": int64(225),
+		"gen_ai.usage.input_tokens":  int64(1531),
+		"gen_ai.usage.output_tokens": int64(146),
 		"server.address":             "127.0.0.1",
-		AttrNativeConfidence:         `{"ffa.intervention":0.75,"ffa.magnitude":0.13,"ffa.target":0.17}`,
+		AttrNativeConfidence:         `{"ffa.intervention":0.64}`,
+		AttrStage:                    StageIntervention,
 	}
 	for k, v := range want {
 		if got, ok := a[k]; !ok || got.AsInterface() != v {
@@ -165,7 +201,7 @@ func TestDecide_HappyPathSpan(t *testing.T) {
 // TestDecide_DefaultModel: the API requires a model, so an unset one is
 // DefaultModel on the wire, the span and Model().
 func TestDecide_DefaultModel(t *testing.T) {
-	api := newFakeAPI(t, 200, loadFixture(t, "response_ok.json"), 0)
+	api := newFakeAPI(t, 200, loadFixture(t, "noop_response_intervention.json"), 0)
 	b := api.backend("  ", false)
 	if _, err := b.Decide(context.Background(), testRequest()); err != nil {
 		t.Fatal(err)
@@ -185,7 +221,7 @@ func TestDecide_DefaultModel(t *testing.T) {
 }
 
 func TestDecide_ContentCapture(t *testing.T) {
-	api := newFakeAPI(t, 200, loadFixture(t, "response_ok.json"), 0)
+	api := newFakeAPI(t, 200, loadFixture(t, "noop_response_intervention.json"), 0)
 	if _, err := api.backend(fixtureModel, true).Decide(context.Background(), testRequest()); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +299,7 @@ func TestDecide_Failures(t *testing.T) {
 // touches the network, so the decision wiring falls back to rules with
 // fallback_reason=unavailable. The base URL and model have defaults.
 func TestAvailable(t *testing.T) {
-	api := newFakeAPI(t, 200, loadFixture(t, "response_ok.json"), 0)
+	api := newFakeAPI(t, 200, loadFixture(t, "noop_response_intervention.json"), 0)
 	for name, cfg := range map[string]Config{
 		"zero config": {},
 		"no key":      {BaseURL: api.srv.URL + "/api", Model: "m"},
@@ -300,7 +336,7 @@ func TestAvailable(t *testing.T) {
 }
 
 func TestDecide_NoQuestions(t *testing.T) {
-	api := newFakeAPI(t, 200, loadFixture(t, "response_ok.json"), 0)
+	api := newFakeAPI(t, 200, loadFixture(t, "noop_response_intervention.json"), 0)
 	_, err := api.backend(fixtureModel, false).Decide(context.Background(), decide.Request{})
 	if !errors.Is(err, decide.ErrInvalid) || api.calls.Load() != 0 {
 		t.Errorf("err = %v, calls = %d", err, api.calls.Load())
