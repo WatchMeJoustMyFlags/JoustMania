@@ -3,47 +3,47 @@
   "answers": {
     "ffa.magnitude.help": {
       "type": "score",
-      "score": 1.03,
-      "confidence": 0.41,
+      "score": 1.05,
+      "confidence": 0.52,
       "legend": {
         "0": "A slight change: 0.9 factor (neutral is 1).",
         "1": "A moderate change: 0.8 factor (neutral is 1).",
         "2": "The strongest change: 0.7 factor (neutral is 1)."
       },
       "probabilities": {
-        "0": 0.18,
-        "1": 0.61,
-        "2": 0.21
+        "0": 0.13,
+        "1": 0.68,
+        "2": 0.19
       }
     },
     "ffa.magnitude.rein_in": {
       "type": "score",
-      "score": 0.68,
-      "confidence": 0.0,
+      "score": 0.87,
+      "confidence": 0.38,
       "legend": {
         "0": "A slight change: 1.17 factor (neutral is 1).",
         "1": "A moderate change: 1.33 factor (neutral is 1).",
         "2": "The strongest change: 1.5 factor (neutral is 1)."
       },
       "probabilities": {
-        "0": 0.47000000000000003,
-        "1": 0.39,
+        "0": 0.27,
+        "1": 0.59,
         "2": 0.14
       }
     },
     "ffa.target": {
       "type": "choice",
       "choice": "MOCK0003",
-      "confidence": 0.83,
+      "confidence": 0.8,
       "probabilities": {
-        "MOCK0002": 0.1,
-        "MOCK0003": 0.89,
+        "MOCK0002": 0.12,
+        "MOCK0003": 0.87,
         "MOCK0004": 0.01
       }
     }
   },
   "usage": {
-    "input_tokens": 1602,
+    "input_tokens": 1601,
     "output_tokens": 95
   }
 }

@@ -1,6 +1,7 @@
 package jev
 
 import (
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,16 +10,35 @@ import (
 )
 
 func TestSplitStages(t *testing.T) {
-	first, details, stage := splitStages(testRequest())
-	if stage != StageIntervention || len(first.Questions) != 1 || first.Questions[0].ID != decide.QuestionFFAIntervention || len(details) != 2 {
-		t.Errorf("FFA: stage %q first %v details %d", stage, first.Questions, len(details))
+	p := splitStages(testRequest())
+	var ids []string
+	for _, q := range p.first.Questions {
+		ids = append(ids, q.ID)
 	}
-	if first.Context != nil {
+	if p.stage != StageIntervention || !reflect.DeepEqual(ids, []string{GateQuestionID, decide.QuestionFFAIntervention}) || len(p.details) != 2 {
+		t.Errorf("FFA: stage %q first %v details %d", p.stage, ids, len(p.details))
+	}
+	if p.gated == nil || p.gated.Options[0] != decide.OptionNoop {
+		t.Fatalf("gated = %+v, want the original ffa.intervention", p.gated)
+	}
+	iv := p.first.Questions[1]
+	if contains(iv.Options, decide.OptionNoop) || len(iv.Options) != len(p.gated.Options)-1 || iv.Text != gatedInterventionInstructions {
+		t.Errorf("stage-1 intervention = %+v, want every option but noop", iv)
+	}
+	if p.first.Context != nil {
 		t.Error("stage requests never carry Request.Context")
 	}
-	req, _, stage := splitStages(noulRequest())
-	if stage != StageSingle || len(req.Questions) != 2 {
-		t.Errorf("noul: stage %q", stage)
+	p = splitStages(noulRequest())
+	if p.stage != StageSingle || len(p.first.Questions) != 2 || p.gated != nil {
+		t.Errorf("noul: stage %q", p.stage)
+	}
+	// Not gateable: noop is the only option, or noop is not offered.
+	for _, opts := range [][]string{{decide.OptionNoop}, {"grant_shield", "end_game"}} {
+		req := testRequest()
+		req.Questions[0].Options = opts
+		if p := splitStages(req); p.gated != nil || len(p.first.Questions) != 1 || !reflect.DeepEqual(p.first.Questions[0].Options, opts) {
+			t.Errorf("options %v: gated %v, first %+v", opts, p.gated, p.first.Questions)
+		}
 	}
 }
 
@@ -161,5 +181,67 @@ func TestDescribeCandidates(t *testing.T) {
 	st.Players[2].Shielded = true // MOCK0003
 	if d := describeCandidates(st, "grant_shield")["MOCK0003"]; !strings.Contains(d, "another shield would be wasted") || strings.Contains(d, "matters most") {
 		t.Errorf("shielded MOCK0003 = %q", d)
+	}
+}
+
+// TestGateAnswer: the synthesised routing answer (#1281) for every p_yes and
+// every possible stage-1 pick passes decide.Validate against the ORIGINAL
+// question (argmax rule, full option coverage), chooses the intervention iff
+// p_yes > 0.5, and carries the acting confidence p_yes (1 - p_yes for noop).
+// Spec: decide-contract.md §3.1, UC-040 A13, FR-046, FR-047.
+func TestGateAnswer(t *testing.T) {
+	req := testRequest()
+	orig := req.Questions[0]
+	for _, best := range orig.Options[1:] {
+		for _, pYes := range []float64{0, 0.01, 0.3, 0.49, 0.5, 0.500001, 0.51, 0.7, 0.8, 0.99, 1} {
+			stage1 := decide.Answer{QuestionID: orig.ID, Choice: best, Probabilities: map[string]float64{best: 0.4}}
+			a := gateAnswer(orig, pYes, stage1)
+			resp := decide.Response{Answers: []decide.Answer{a,
+				{QuestionID: decide.QuestionFFATarget, Choice: decide.TargetNone, Probabilities: map[string]float64{decide.TargetNone: 1}, Confidence: 1},
+				{QuestionID: decide.QuestionFFAMagnitude, Confidence: 1}}}
+			if err := decide.Validate(req, resp); err != nil {
+				t.Fatalf("%s p_yes %v: %v", best, pYes, err)
+			}
+			if len(a.Probabilities) != len(orig.Options) {
+				t.Errorf("%s p_yes %v: %d options covered, want %d", best, pYes, len(a.Probabilities), len(orig.Options))
+			}
+			var mass float64
+			for o, p := range a.Probabilities {
+				if o != decide.OptionNoop && o != best && p != 0 {
+					t.Errorf("%s p_yes %v: p(%s) = %v, want 0 (no factorised split)", best, pYes, o, p)
+				}
+				mass += p
+			}
+			acts := pYes > 0.5
+			if (a.Choice == best) != acts || (a.Choice == decide.OptionNoop) == acts {
+				t.Errorf("p_yes %v: choice %s", pYes, a.Choice)
+			}
+			wantConf := pYes
+			if !acts {
+				wantConf = 1 - pYes
+			}
+			if math.Abs(a.Confidence-wantConf) > 1e-12 || math.Abs(mass-1) > 1e-12 {
+				t.Errorf("p_yes %v: confidence %v (want %v), mass %v", pYes, a.Confidence, wantConf, mass)
+			}
+		}
+	}
+}
+
+func TestResolveGate(t *testing.T) {
+	p := splitStages(testRequest())
+	yes := 0.8
+	answers := []decide.Answer{
+		{QuestionID: GateQuestionID, Noul: &yes, Confidence: 0.6},
+		{QuestionID: decide.QuestionFFAIntervention, Choice: "grant_shield", Probabilities: map[string]float64{"grant_shield": 1}, Confidence: 1},
+	}
+	out, stage1, err := p.resolveGate(answers)
+	if err != nil || len(out) != 1 || out[0].Choice != "grant_shield" || stage1.Choice != "grant_shield" {
+		t.Errorf("resolveGate = %+v, %+v, %v", out, stage1, err)
+	}
+	if _, _, err := p.resolveGate(answers[1:]); err == nil {
+		t.Error("a missing gate answer must fail the round")
+	}
+	if _, _, err := p.resolveGate(answers[:1]); err == nil {
+		t.Error("a missing intervention answer must fail the round")
 	}
 }

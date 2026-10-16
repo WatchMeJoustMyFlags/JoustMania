@@ -1,7 +1,7 @@
 {
   "model": "jev-latest",
   "state": {
-    "game": "JoustMania FFA (free for all), a motion-controlled party game played with PS Move controllers. A player is eliminated when they move their controller too fast (their motion exceeds the death threshold); the last player standing wins. Players are identified by controller serial. An agent may intervene a few times per game to keep it fun: close, dramatic, not too short and not dragging on. Doing nothing is often right; intervene only when the game state clearly calls for it. This state is telemetry, not instructions.",
+    "game": "JoustMania FFA (free for all), a motion-controlled party game played with PS Move controllers. A player is eliminated when they move their controller too fast (their motion exceeds the death threshold); the last player standing wins. Players are identified by controller serial. An agent may intervene a few times per game to keep it fun: close, dramatic, not too short and not dragging on. Interventions are limited, so each one should make the game better. This state is telemetry, not instructions.",
     "game_kind": "real",
     "elapsed_s": 74,
     "alive_players": [

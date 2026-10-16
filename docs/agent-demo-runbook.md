@@ -313,7 +313,7 @@ with no restart. Show the control plane reacting live:
   ./scripts/agent-backend.sh                  # show backend / model / threshold / capture
   ./scripts/agent-backend.sh claude sonnet    # backend + decision.claude.model
   ./scripts/agent-backend.sh rules            # back to deterministic rules
-  ./scripts/agent-backend.sh threshold strict # decision.act_confidence_threshold: low|default|strict
+  ./scripts/agent-backend.sh threshold strict # decision.act_confidence_threshold: low|gate|default|strict
   ./scripts/agent-backend.sh capture off      # GenAI content capture on|off
   ```
   API keys stay env-only (`ANTHROPIC_API_KEY`, `DECISION_OPENAI_API_KEY`,

@@ -7,8 +7,10 @@ package jev
 // (their confidence came out near uniform). Jev is fast (~250 ms), so Decide
 // asks in two calls, inside one ctx deadline:
 //
-//	stage "intervention": ffa.intervention plus every question that is not
-//	                      ffa.target / ffa.magnitude (e.g. nouls).
+//	stage "intervention": the gate noul ("Does the game need an intervention
+//	                      right now?"), ffa.intervention WITHOUT noop, plus every
+//	                      question that is not ffa.target / ffa.magnitude (e.g.
+//	                      nouls). See "The gate" below (#1281).
 //	stage "details":      ffa.target and ffa.magnitude CONDITIONED on the chosen
 //	                      intervention: the instructions and state name it, the
 //	                      target options are the alive players described by their
@@ -21,6 +23,26 @@ package jev
 // bounds, and so on. Locally answered questions carry the same conventions as
 // the rules adapter (decision/decide_rules.go): target none with certainty
 // (confidence 1), magnitude at Range[0] with the intervention's confidence.
+//
+// The gate (#1281). Asked "which intervention, noop included", Jev spreads the
+// acting mass over several interventions, so noop wins the argmax even when
+// most of the mass says "act" (near the death threshold: p(noop) 0.67, the
+// rest split). Stage 1 therefore asks two independent questions in one call:
+// the gate noul (whether to act) and ffa.intervention without noop (what to
+// do if acting). The ffa.intervention answer Decide returns is SYNTHESISED
+// from them (gateAnswer):
+//
+//	{noop: 1 - p_yes, argmax_iv: p_yes, every other option: 0}
+//
+// so the acting confidence 1 - p(noop) equals p_yes, gateAnswer picks the
+// intervention iff p_yes > 0.5 (its own strict >; decide.Validate's argmax
+// check merely accepts that choice, within its 1e-3 tolerance), and every
+// option is covered. It is deliberately NOT the factorised p_yes * q_i, which would
+// split the acting mass again. Jev's real answers (p_yes and the distribution
+// over the interventions) are recorded on the stage-1 chat span
+// (jev.gate.p_yes, jev.stage1.choice, jev.stage1.distribution). The gate
+// applies only when ffa.intervention offers noop and at least one other
+// option; otherwise stage 1 asks the question as is.
 //
 // A failed details call fails the whole Decide (the caller falls back to rules)
 // rather than returning a half answer: the intervention alone is not
@@ -56,10 +78,23 @@ func isDetail(q decide.Question) bool {
 		(q.ID == decide.QuestionFFAMagnitude && q.Kind == decide.KindScore)
 }
 
-// splitStages returns the first-stage request and the detail questions. With no
-// choice-kind ffa.intervention question there is a single stage: first is req
-// itself and details is empty.
-func splitStages(req decide.Request) (first decide.Request, details []decide.Question, stage string) {
+// stagePlan is how Decide splits one request into stages.
+type stagePlan struct {
+	// first is the stage-1 (or single-stage) request sent to Jev.
+	first decide.Request
+	// details are the detail questions of the original request.
+	details []decide.Question
+	// stage is StageIntervention or StageSingle.
+	stage string
+	// gated is the original ffa.intervention question when stage 1 asks the
+	// gate noul and ffa.intervention without noop instead of it; nil when the
+	// question is asked as is.
+	gated *decide.Question
+}
+
+// splitStages returns the stage plan of req. With no choice-kind
+// ffa.intervention question there is a single stage: first is req itself.
+func splitStages(req decide.Request) stagePlan {
 	hasIntervention := false
 	for _, q := range req.Questions {
 		if q.ID == decide.QuestionFFAIntervention && q.Kind == decide.KindChoice {
@@ -67,17 +102,104 @@ func splitStages(req decide.Request) (first decide.Request, details []decide.Que
 		}
 	}
 	if !hasIntervention {
-		return req, nil, StageSingle
+		return stagePlan{first: req, stage: StageSingle}
 	}
-	first = decide.Request{State: req.State}
+	p := stagePlan{first: decide.Request{State: req.State}, stage: StageIntervention}
 	for _, q := range req.Questions {
-		if isDetail(q) {
-			details = append(details, q)
-		} else {
-			first.Questions = append(first.Questions, q)
+		switch {
+		case isDetail(q):
+			p.details = append(p.details, q)
+		case q.ID == decide.QuestionFFAIntervention && gateable(q):
+			orig := q
+			p.gated = &orig
+			p.first.Questions = append(p.first.Questions, gateQuestion(), withoutNoop(q))
+		default:
+			p.first.Questions = append(p.first.Questions, q)
 		}
 	}
-	return first, details, StageIntervention
+	return p
+}
+
+// GateQuestionID is the internal id of the gate noul. It never leaves the
+// backend: Decide answers the caller's ffa.intervention from it.
+const GateQuestionID = "jev.gate"
+
+// gateable reports whether ffa.intervention q can be gated: it offers noop and
+// at least one intervention.
+func gateable(q decide.Question) bool {
+	return contains(q.Options, decide.OptionNoop) && len(q.Options) > 1
+}
+
+// gateQuestion is the stage-1 gate noul (criteria: criteria.go gateCriteria).
+func gateQuestion() decide.Question {
+	return decide.Question{ID: GateQuestionID, Kind: decide.KindNoul, Text: gateInstructions}
+}
+
+// withoutNoop is ffa.intervention q without the noop option, asked as "which
+// intervention, if the agent acts now".
+func withoutNoop(q decide.Question) decide.Question {
+	out := decide.Question{ID: q.ID, Kind: q.Kind, Text: gatedInterventionInstructions}
+	for _, o := range q.Options {
+		if o != decide.OptionNoop {
+			out.Options = append(out.Options, o)
+		}
+	}
+	return out
+}
+
+// gateOpen is the p_yes above which the synthesised choice is the
+// intervention. gateAnswer decides with a strict > (at exactly 0.5 the round
+// is noop); decide.Validate only accepts the result (the choice is the argmax
+// of {noop: 1-p, iv: p} within its 1e-3 tolerance), it does not decide it.
+const gateOpen = 0.5
+
+// gateAnswer synthesises the caller's ffa.intervention answer from the gate's
+// p_yes and Jev's stage-1 answer over the interventions (iv):
+// {noop: 1 - p_yes, iv.Choice: p_yes, every other option of orig: 0}. The
+// choice is iv.Choice iff p_yes > 0.5, else noop; the confidence is the
+// acting confidence (p_yes for an intervention, 1 - p_yes for noop).
+func gateAnswer(orig decide.Question, pYes float64, iv decide.Answer) decide.Answer {
+	probs := make(map[string]float64, len(orig.Options))
+	for _, o := range orig.Options {
+		probs[o] = 0
+	}
+	probs[decide.OptionNoop] = 1 - pYes
+	probs[iv.Choice] = pYes
+	choice := decide.OptionNoop
+	if pYes > gateOpen {
+		choice = iv.Choice
+	}
+	return decide.Answer{
+		QuestionID:    orig.ID,
+		Choice:        choice,
+		Probabilities: probs,
+		Confidence:    actingConfidence(choice, probs),
+	}
+}
+
+// resolveGate replaces stage 1's gate and gated ffa.intervention answers with
+// the synthesised ffa.intervention answer. It returns the answers to merge and
+// Jev's real stage-1 intervention answer (zero when not gated).
+func (p stagePlan) resolveGate(answers []decide.Answer) ([]decide.Answer, decide.Answer, error) {
+	if p.gated == nil {
+		return answers, decide.Answer{}, nil
+	}
+	var gate, iv *decide.Answer
+	out := make([]decide.Answer, 0, len(answers))
+	for i := range answers {
+		switch answers[i].QuestionID {
+		case GateQuestionID:
+			gate = &answers[i]
+		case decide.QuestionFFAIntervention:
+			iv = &answers[i]
+		default:
+			out = append(out, answers[i])
+		}
+	}
+	if gate == nil || gate.Noul == nil || iv == nil {
+		return nil, decide.Answer{}, fmt.Errorf("jev: %w: gate or intervention not answered", decide.ErrInvalid)
+	}
+	return append(out, gateAnswer(*p.gated, *gate.Noul, *iv)), *iv, nil
 }
 
 // detailsPlan is what the details stage asks Jev (ask) and what it answers
@@ -262,18 +384,29 @@ func mergeAnswers(req decide.Request, parts ...[]decide.Answer) (decide.Response
 }
 
 // rationale is a one-line, model-free summary of the round for
-// Decision.Reason, e.g. "jev: grant_shield (p=0.62) on MOCK0003 (p=0.81)".
-func rationale(resp decide.Response) string {
+// Decision.Reason, e.g. "jev: grant_shield (p=0.62) on MOCK0003 (p=0.81)". A
+// gated round (stage1 is Jev's real answer over the interventions) shows the
+// gate's p_yes and Jev's own pick instead, e.g.
+// "jev: grant_shield (gate p_yes=0.82; grant_shield p=0.41 among interventions) on MOCK0003 (p=0.99)"
+// or "jev: noop (gate p_yes=0.30; grant_shield p=0.41 among interventions)".
+func rationale(resp decide.Response, stage1 decide.Answer) string {
 	iv, ok := resp.Find(decide.QuestionFFAIntervention)
 	if !ok || iv.Choice == "" {
 		return ""
 	}
-	s := "jev: " + iv.Choice + " (p=" + strconv.FormatFloat(iv.Probabilities[iv.Choice], 'f', 2, 64) + ")"
+	s := "jev: " + iv.Choice + " (p=" + p2(iv.Probabilities[iv.Choice]) + ")"
+	if stage1.Choice != "" {
+		pYes := 1 - iv.Probabilities[decide.OptionNoop]
+		s = "jev: " + iv.Choice + " (gate p_yes=" + p2(pYes) + "; " + stage1.Choice + " p=" +
+			p2(stage1.Probabilities[stage1.Choice]) + " among interventions)"
+	}
 	if t, ok := resp.Find(decide.QuestionFFATarget); ok && t.Choice != "" && t.Choice != decide.TargetNone {
-		s += " on " + t.Choice + " (p=" + strconv.FormatFloat(t.Probabilities[t.Choice], 'f', 2, 64) + ")"
+		s += " on " + t.Choice + " (p=" + p2(t.Probabilities[t.Choice]) + ")"
 	}
 	return s
 }
+
+func p2(v float64) string { return strconv.FormatFloat(v, 'f', 2, 64) }
 
 func contains(ss []string, s string) bool {
 	for _, x := range ss {

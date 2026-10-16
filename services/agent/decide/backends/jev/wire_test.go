@@ -4,14 +4,16 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/joustmania/agent/decide"
 )
 
-// TestScoreToRange: Jev's fractional score snaps to the NEAREST level (#1262),
-// never an interpolation between levels.
+// TestScoreToRange: without level probabilities Jev's fractional score snaps
+// to the NEAREST level (#1262), never an interpolation between levels; with
+// them the most likely level wins (TestMostLikelyLevel, #1281).
 func TestScoreToRange(t *testing.T) {
 	cases := []struct {
 		s    float64
@@ -36,7 +38,7 @@ func TestScoreToRange(t *testing.T) {
 	}
 	for _, c := range cases {
 		q := decide.Question{ID: "s", Kind: decide.KindScore, Range: c.rng}
-		got, err := scoreToRange(c.s, q, "")
+		got, err := scoreToRange(c.s, nil, q, "")
 		if (err == nil) != c.ok || (c.ok && math.Abs(got-c.want) > 1e-12) {
 			t.Errorf("scoreToRange(%v, %v) = %v, %v; want %v ok=%v", c.s, c.rng, got, err, c.want, c.ok)
 		}
@@ -61,7 +63,7 @@ func TestScoreToRange_Conditioned(t *testing.T) {
 		{"adjust_music_tempo", 1.2, 1.075},
 		{"adjust_player_sensitivity", 0.2, 0.7},
 	} {
-		norm, err := scoreToRange(c.s, mag, c.iv)
+		norm, err := scoreToRange(c.s, nil, mag, c.iv)
 		if err != nil {
 			t.Fatalf("%s %v: %v", c.iv, c.s, err)
 		}
@@ -70,7 +72,7 @@ func TestScoreToRange_Conditioned(t *testing.T) {
 			t.Errorf("%s score %v -> norm %v -> %v, want %v", c.iv, c.s, norm, v, c.value)
 		}
 	}
-	if _, err := scoreToRange(4.5, mag, "grant_shield"); err == nil {
+	if _, err := scoreToRange(4.5, nil, mag, "grant_shield"); err == nil {
 		t.Error("score above the ladder must fail")
 	}
 }
@@ -241,10 +243,10 @@ func TestMagnitudeLadder(t *testing.T) {
 }
 
 func TestNativeConfidenceJSON(t *testing.T) {
-	if got := nativeConfidenceJSON(map[string]float64{"b": 0.5, "a": 0.25}); got != `{"a":0.25,"b":0.5}` {
+	if got := floatMapJSON(map[string]float64{"b": 0.5, "a": 0.25}); got != `{"a":0.25,"b":0.5}` {
 		t.Errorf("got %s", got)
 	}
-	if nativeConfidenceJSON(nil) != "" {
+	if floatMapJSON(nil) != "" {
 		t.Error("empty map must render empty")
 	}
 }
@@ -262,5 +264,65 @@ func TestScrub(t *testing.T) {
 	}
 	if got := scrub("apikey_ab"); got != "apikey_ab" {
 		t.Errorf("too short to be a key: %q", got)
+	}
+}
+
+// TestMostLikelyLevel (#1281): the magnitude level is the argmax of Jev's
+// level probabilities; a tie goes to the gentler level (nearer the lever's
+// neutral, else the lower level).
+// Spec: decide-contract.md §3.2, UC-040 A13, FR-046.
+func TestMostLikelyLevel(t *testing.T) {
+	levels := func(ps ...float64) map[string]float64 {
+		m := map[string]float64{}
+		for i, p := range ps {
+			m[strconv.Itoa(i)] = p
+		}
+		return m
+	}
+	diff := magnitudeLevels("adjust_global_difficulty") // 0.5, 0.875, 1.25, 1.625, 2 (neutral 1)
+	for _, c := range []struct {
+		name    string
+		probs   map[string]float64
+		gentler func(i, j int) bool
+		want    int
+		wantErr bool
+	}{
+		{"argmax", levels(0.29, 0.28, 0.30, 0.10, 0.03), lowerIsGentler, 2, false},
+		{"argmax at the top", levels(0.1, 0.1, 0.1, 0.1, 0.6), lowerIsGentler, 4, false},
+		{"tie, no neutral: lower", levels(0.05, 0.10, 0.35, 0.35, 0.15), lowerIsGentler, 2, false},
+		{"tie, neutral: nearer neutral wins over lower", levels(0.4, 0.0, 0.4, 0.1, 0.1), nearerNeutral("adjust_global_difficulty", diff), 2, false},
+		{"tie, neutral: nearer neutral", levels(0.1, 0.35, 0.35, 0.1, 0.1), nearerNeutral("adjust_global_difficulty", diff), 1, false},
+		{"three-way tie", levels(0.3, 0.3, 0.3, 0.1), lowerIsGentler, 0, false},
+		{"missing level", levels(0.5, 0.5), lowerIsGentler, 0, true},
+		{"extra level", levels(0.2, 0.2, 0.2, 0.2, 0.1, 0.1), lowerIsGentler, 0, true},
+		{"NaN", levels(math.NaN(), 0.2, 0.2, 0.2, 0.2), lowerIsGentler, 0, true},
+		{"all zero", levels(0, 0, 0, 0, 0), lowerIsGentler, 0, true},
+		{"sum far from 1", levels(0.1, 0.1, 0.1, 0.1, 0.1), lowerIsGentler, 0, true},
+		{"rounding slack accepted", levels(0.2, 0.2, 0.2, 0.2, 0.23), lowerIsGentler, 4, false},
+	} {
+		n := 5
+		if c.name == "three-way tie" {
+			n = 4
+		}
+		got, err := mostLikelyLevel(c.probs, n, c.gentler)
+		if (err != nil) != c.wantErr || (!c.wantErr && got != c.want) {
+			t.Errorf("%s: level %d, err %v; want %d (err %v)", c.name, got, err, c.want, c.wantErr)
+		}
+	}
+	// A two-way half-ladder (weakest first): a tie goes to the weaker change.
+	help := strengthLevels("set_player_handicap", directionHelp) // 1.25, 1.5, 1.75
+	if got, _ := mostLikelyLevel(levels(0.1, 0.45, 0.45), 3, nearerNeutral("set_player_handicap", help)); got != 1 {
+		t.Errorf("half-ladder tie = level %d, want 1 (1.5, the weaker)", got)
+	}
+	// Probabilities decide the level; without them the score is rounded.
+	q := decide.Question{ID: "s", Kind: decide.KindScore, Range: [2]float64{0, 1}}
+	if v, _ := scoreToRange(1.3, levels(0.29, 0.28, 0.30, 0.10, 0.03), q, ""); v != 0.5 {
+		t.Errorf("with probabilities = %v, want 0.5 (level 2)", v)
+	}
+	if v, _ := scoreToRange(1.3, nil, q, ""); v != 0.25 {
+		t.Errorf("without probabilities = %v, want 0.25 (round(1.3) = level 1)", v)
+	}
+	if _, err := scoreToRange(4.5, levels(0.2, 0.2, 0.2, 0.2, 0.2), q, ""); err == nil {
+		t.Error("a score outside the ladder is invalid even with probabilities")
 	}
 }

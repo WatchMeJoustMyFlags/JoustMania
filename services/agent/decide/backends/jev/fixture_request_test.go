@@ -139,7 +139,7 @@ func draggingRequest() decide.Request {
 // detailsRequest is the details-stage request of req for a chosen
 // intervention, exactly as Decide builds it after stage 1 (#1262).
 func detailsRequest(req decide.Request, iv string) detailsPlan {
-	_, details, _ := splitStages(req)
+	details := splitStages(req).details
 	return planDetails(req.State, decide.Answer{QuestionID: decide.QuestionFFAIntervention, Choice: iv, Confidence: 0.5}, details)
 }
 

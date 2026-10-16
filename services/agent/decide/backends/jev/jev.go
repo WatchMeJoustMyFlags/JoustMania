@@ -4,7 +4,7 @@
 //
 // Available() is false until Config.APIKey (JEV_API_KEY) is set, so with
 // decision.backend=jev and no key the decision wiring falls back to rules with
-// fallback_reason=unavailable. The base URL and model default to
+// fallback_reason=backend_unavailable. The base URL and model default to
 // DefaultBaseURL / DefaultModel. The wire format (typed state + questions, typed
 // answers with probabilities and confidence) lives in wire.go and criteria.go.
 //
@@ -143,33 +143,42 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	ctx, cancel := context.WithTimeout(ctx, b.cfg.Timeout)
 	defer cancel()
 
-	first, details, stage := splitStages(req)
-	firstResp, err := b.call(ctx, stage, first, "")
+	plan := splitStages(req)
+	firstResp, err := b.call(ctx, plan.stage, plan.first, "")
 	if err != nil {
 		return decide.Response{}, err
 	}
-	if stage == StageSingle {
+	if plan.stage == StageSingle {
 		return firstResp, nil
 	}
-	iv, _ := firstResp.Find(decide.QuestionFFAIntervention)
-	plan := planDetails(req.State, iv, details)
+	first, stage1, err := plan.resolveGate(firstResp.Answers)
+	if err != nil {
+		return decide.Response{}, err
+	}
+	var iv decide.Answer
+	for _, a := range first {
+		if a.QuestionID == decide.QuestionFFAIntervention {
+			iv = a
+		}
+	}
+	details := planDetails(req.State, iv, plan.details)
 	var detailAnswers []decide.Answer
-	if len(plan.ask.Questions) > 0 {
-		detailResp, err := b.call(ctx, StageDetails, plan.ask, plan.intervention)
+	if len(details.ask.Questions) > 0 {
+		detailResp, err := b.call(ctx, StageDetails, details.ask, details.intervention)
 		if err != nil {
-			return decide.Response{}, fmt.Errorf("jev: details stage after %q: %w", plan.intervention, err)
+			return decide.Response{}, fmt.Errorf("jev: details stage after %q: %w", details.intervention, err)
 		}
 		detailAnswers = detailResp.Answers
 	}
-	answered, err := plan.resolveTwoWay(req.State, append(detailAnswers, plan.local...))
+	answered, err := details.resolveTwoWay(req.State, append(detailAnswers, details.local...))
 	if err != nil {
 		return decide.Response{}, err
 	}
-	resp, err := mergeAnswers(req, firstResp.Answers, answered)
+	resp, err := mergeAnswers(req, first, answered)
 	if err != nil {
 		return decide.Response{}, err
 	}
-	resp.Rationale = rationale(resp)
+	resp.Rationale = rationale(resp, stage1)
 	return resp, nil
 }
 
@@ -218,6 +227,7 @@ func (b *Backend) call(ctx context.Context, stage string, sub decide.Request, ch
 	if err != nil {
 		return decide.Response{}, err
 	}
+	span.SetAttributes(gateAttributes(res.Response)...)
 	return res.Response, nil
 }
 
@@ -238,6 +248,36 @@ func (b *Backend) requestAttributes() []attribute.KeyValue {
 // confidence decide uses, which differs for ffa.intervention (see wire.go).
 const AttrNativeConfidence = "jev.native_confidence"
 
+// Gate span attributes (#1281), on the stage-1 chat span of a gated round:
+// Jev's REAL answers. The ffa.intervention answer Decide returns (and the
+// agent.decide span's decide.answers) is synthesised from them (stages.go).
+const (
+	// AttrGatePYes is the gate noul's P(yes): "does the game need an
+	// intervention right now?".
+	AttrGatePYes = "jev.gate.p_yes"
+	// AttrStage1Choice is Jev's pick among the interventions (noop excluded).
+	AttrStage1Choice = "jev.stage1.choice"
+	// AttrStage1Distribution is Jev's distribution over the interventions
+	// (noop excluded) as a JSON object with sorted keys.
+	AttrStage1Distribution = "jev.stage1.distribution"
+)
+
+// gateAttributes returns the gate span attributes when resp answers the gate
+// noul (a gated stage 1), else nil.
+func gateAttributes(resp decide.Response) []attribute.KeyValue {
+	gate, ok := resp.Find(GateQuestionID)
+	if !ok || gate.Noul == nil {
+		return nil
+	}
+	out := []attribute.KeyValue{attribute.Float64(AttrGatePYes, *gate.Noul)}
+	if iv, ok := resp.Find(decide.QuestionFFAIntervention); ok {
+		out = append(out,
+			attribute.String(AttrStage1Choice, iv.Choice),
+			attribute.String(AttrStage1Distribution, floatMapJSON(iv.Probabilities)))
+	}
+	return out
+}
+
 // finish records the response attributes, content (when captured), error and
 // GenAI client metrics. res is nil when no 2xx body was decoded.
 func (b *Backend) finish(ctx context.Context, span trace.Span, start time.Time, res *wireResult, errType string) {
@@ -248,7 +288,7 @@ func (b *Backend) finish(ctx context.Context, span trace.Span, start time.Time, 
 		if res.Model != "" {
 			span.SetAttributes(semconv.GenAIResponseModel(res.Model))
 		}
-		if nc := nativeConfidenceJSON(res.NativeConfidence); nc != "" {
+		if nc := floatMapJSON(res.NativeConfidence); nc != "" {
 			span.SetAttributes(attribute.String(AttrNativeConfidence, nc))
 		}
 		if u := res.Usage; u != nil {

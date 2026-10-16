@@ -3,7 +3,7 @@
 > Technical spec. Part of the [spec tree](../README.md). Realises FR-044 to FR-054
 > in [requirements.md](../requirements.md) and [UC-040](../use_cases/UC-040.md),
 > [UC-044](../use_cases/UC-044.md), [UC-045](../use_cases/UC-045.md).
-> State: `main` @ 81c9ecea (2026-10-16, includes PRs #1257, #1261 and #1265). Code references use `file:Symbol` where practical, because line numbers rot. Planned or in-flight items carry their issue / PR number and are marked **Planned** / **In flight**.
+> State: `main` @ 81c9ecea (2026-10-16, includes PRs #1257, #1261 and #1265) plus the Jev gate and most-likely-level magnitude of #1281. Code references use `file:Symbol` where practical, because line numbers rot. Planned or in-flight items carry their issue / PR number and are marked **Planned** / **In flight**.
 
 The agent answers "should I intervene in this game, how, and on whom" through one
 contract, independent of who answers: the in-process **rules** engine or a remote
@@ -49,7 +49,7 @@ Notes on `noul` (TypeSafe Jev's yes/no primitive, #1229): backward compatible (`
 choice / score answers). Support per backend: **jev** answers natively; **rules** answers 0.5 at confidence
 0; **claude** and **openai** reject a request containing a noul before any network I/O with an error
 wrapping `ErrInvalid` (`llmio.Supported`, `decide/llmio/llmio.go:Supported`), which the loop records as
-`fallback_reason=invalid_answer`. No FFA question asks a noul yet.
+`fallback_reason=invalid_answer`. No caller-level FFA question is a noul; the Jev backend asks the internal `jev.gate` noul every stage-1 round (§3.1).
 
 ### 1.2 State
 
@@ -124,20 +124,22 @@ Source: `ffa.go:magnitudeBounds`.
 as JSON without the digest or game id; choice criteria carry one description per option (lever effects for
 `ffa.intervention`, one sentence per player with computed signal ranks for `ffa.target`, `criteria.go`), and
 every option must be covered by the returned probabilities. Jev `score` in [0, 4] maps linearly onto the
-question range. Option order puts `noop` / `none` first on purpose: Jev's known first-option bias then fails
-safe (measured in PR #1265: about 0.03 of p(noop); the noop wording matters more). Confidence: `ffa.intervention` is recomputed as the acting confidence
-1 − p(noop) (p(noop) when noop is chosen), the same definition as the rules adapter; other questions keep
-Jev's native confidence; noul uses \|2p − 1\|. Jev's native values are recorded on the chat span as
-`jev.native_confidence`. HTTP errors (400 / 401 / 413 / 415 / 422 / 429 / 529 / 5xx) map to `error`;
+question range through Jev's **most likely level** (§3.2). Option order puts `noop` / `none` first on purpose
+where they are options (`ffa.target`; `ffa.intervention` only when it is not gated, §3.1): Jev's known
+first-option bias then fails safe (measured in PR #1265: about 0.03 of p(noop); the noop wording matters
+more). Confidence: `ffa.intervention` is the acting confidence 1 − p(noop) (p(noop) when noop is chosen),
+the same definition as the rules adapter, computed on the synthesised routing distribution of the gate
+(§3.1), so it equals the gate's p_yes when acting; other questions keep Jev's native confidence; noul uses
+\|2p − 1\|. Jev's native values are recorded on the chat span as `jev.native_confidence`. HTTP errors (400 / 401 / 413 / 415 / 422 / 429 / 529 / 5xx) map to `error`;
 unparseable or incomplete answers to `invalid_answer`.
 
 **Two-stage Jev round** (PR #1265, `decide/backends/jev/stages.go`, `jev.go:Backend.Decide`). The hook still
 makes one `Decide` call; inside it Jev answers an FFA request in up to two HTTP calls that share the
 `decision.jev.timeout_ms` deadline:
 
-| Stage-1 choice (`ffa.intervention`) | Stage 2 asks | Answered locally |
+| Stage-1 outcome | Stage 2 asks | Answered locally |
 |---|---|---|
-| `noop` | nothing (1 call) | target `none`, magnitude at the range minimum |
+| gate closed (p_yes ≤ 0.5): `noop` | nothing (1 call) | target `none`, magnitude at the range minimum |
 | player intervention with bounds (e.g. `grant_shield`, `adjust_player_sensitivity`) | target and magnitude | nothing |
 | player intervention without bounds (e.g. `send_controller_effect`) | target | magnitude |
 | session intervention with bounds (e.g. `adjust_music_tempo`) | magnitude | target `none` |
@@ -146,15 +148,65 @@ makes one `Decide` call; inside it Jev answers an FFA request in up to two HTTP 
 Stage 2 is conditioned on the chosen intervention: target options are the alive players described by their
 suitability for it (judged in Go from the danger signals), and magnitude options are that intervention's own
 levels; the neutral value is never a level. For two-way levers (factors with a neutral) Go decides the
-direction from the chosen target's signals and Jev only picks the strength. Jev's fractional score is snapped
-to the nearest level. A stage-2 failure fails the whole round (rules fallback with `error`, `timeout` or
+direction from the chosen target's signals and Jev only picks the strength, a level chosen as in §3.2.
+A stage-2 failure fails the whole round (rules fallback with `error`, `timeout` or
 `invalid_answer`); there are no half answers. Each call gets its own chat span with `jev.stage` =
 `intervention`, `details` or `single` (requests without `ffa.intervention`, e.g. nouls). The rationale is a
-model-free summary such as `jev: grant_shield (p=0.64) on MOCK0003 (p=0.99)`.
+model-free summary such as
+`jev: adjust_player_sensitivity (gate p_yes=0.70; adjust_player_sensitivity p=0.38 among interventions) on MOCK0003 (p=0.89)`.
 
 API keys are read from the environment **once at startup** and never appear in
 flags or spans (`decide_backends.go:40-54`; `decision/decide_registry.go:16-18`).
 Changing a key needs an agent restart.
+
+### 3.1 The Jev gate (#1281)
+
+Maintainer decision (2026-10-16): Jev's acting decision is gated by a noul. Asked "which intervention,
+`noop` included", Jev spread the acting mass over several interventions, so `noop` won the argmax even near
+the death threshold (p(noop) 0.67, the rest split). Stage 1 therefore asks, **in the same call**:
+
+- the **gate** noul, internal id `jev.gate` (never returned to the caller): "Does the game need an
+  intervention right now?", with `true` / `false` criteria (a collapsing, dragging or lopsided round vs a
+  round going well on its own; `criteria.go:noulCriteria`);
+- `ffa.intervention` **without `noop`**: "If the agent intervenes now, which intervention fits the game best?".
+
+The `ffa.intervention` answer the backend returns is **synthesised** (`stages.go:gateAnswer`):
+`{noop: 1 − p_yes, argmax_iv: p_yes, every other option: 0}`, where `argmax_iv` is Jev's stage-1 pick.
+Consequences:
+
+- **Confidence = p_yes** when acting (1 − p_yes for noop), so the unchanged `decision.act_confidence_threshold`
+  routing (§5) gates the gate. Nothing in `decision/` changes.
+- **Choice = argmax_iv iff p_yes > 0.5**, else `noop`, decided by `gateAnswer`'s strict `>` (exactly 0.5 is
+  `noop`; `decide.Validate` only accepts the result within its 1e-3 argmax tolerance); a closed gate makes no
+  details call.
+- **Full option coverage**: every option of the caller's question is in the distribution.
+- Deliberately **not** the factorised `p_yes × q_i`, which would split the acting mass again.
+- `decide.answers` on `agent.decide` shows the synthesised distribution; Jev's **real** answers are on the
+  stage-1 chat span: `jev.gate.p_yes`, `jev.stage1.choice`, `jev.stage1.distribution` (JSON over the
+  interventions, no noop).
+- The gate applies when `ffa.intervention` offers `noop` and at least one intervention; otherwise stage 1 asks
+  the question unchanged.
+- Jev's static game description no longer says "Doing nothing is often right; intervene only when the game
+  state clearly calls for it": it biased the gate (near-threshold p_yes 0.48 → 0.55). The description is in
+  the state of every Jev call, so the details stage and caller nouls shift slightly too (e.g. the recorded
+  `about_to_end` noul 0.62 → 0.60).
+
+**Calibration** (live, jev-1.13.0, 2026-10-16, `TestLiveGate`, shipped wording, 2 runs): calm 0.16 / 0.16,
+dragging 0.36 / 0.35, collapsing 0.67 / 0.68, near-threshold 0.72 / 0.71. None reaches the default threshold
+0.8; the new variant `decision.act_confidence_threshold=gate` (0.6) makes near-threshold and collapsing act and
+leaves calm and dragging as noop. `gate` is not the default (the flag is global and also gates claude and
+openai). Dragging stays low because Jev does not derive "nobody eliminated for 130 s" from the timeline; a
+precomputed pace signal is a follow-up.
+
+### 3.2 Jev score levels (#1281)
+
+A Jev score answer carries a probability per level. The answer is the **most likely level** (argmax); a tie
+goes to the **gentler** level: the value nearer the lever's neutral, else the lower level (a shorter shield,
+a slighter change). Rounding the expected score was dropped: it lands between modes (0.29 / 0.28 / 0.30 gave
+1.3 → level 1 although level 2 is the mode). Only an answer without level probabilities falls back to the
+rounded score; level probabilities that miss a level, are negative or do not sum to 1 (e.g. all zero) are
+`invalid_answer`, like a choice distribution. The level's normalized position is the answer, so `decide.ResolveMagnitude` returns exactly
+that level's value. The help / rein-in direction of two-way levers is unchanged (Go decides it).
 
 ## 4. Validation
 
@@ -234,7 +286,7 @@ Blocked decisions are recorded on the `agent.decision` span
   (`decision/decide_rules.go:21-42,147-229`).
 - **Remote:** the model reports `confidence` per answer.
 - **Routing (remote path only)** uses the `ffa.intervention` confidence against
-  `decision.act_confidence_threshold` (default 0.8; NaN or out of range → default),
+  `decision.act_confidence_threshold` (default 0.8, variants low 0.5 / gate 0.6 / strict 0.95; NaN or out of range → default),
   read **live at landing** (`decide_hook.go:440-441,517-522`):
   ≥ threshold → `act`; < threshold → `held` (no action). The rules path does not
   route by confidence.
@@ -321,6 +373,7 @@ PR #1257): the cadence, the global budget and the per-game in-flight guard are t
 | Claude Sonnet 5.5 after PR #1257 | ≈ 2.85 s warm | PR #1257 body |
 | Jev 1.13.0, single call | 240 to 315 ms (3 questions, 13 interventions), ≈ 250 ms typical | PR #1261 body |
 | Jev two-stage round | noop round (1 call) 228 to 322 ms; act round (2 calls) 469 ms warm, 525 ms cold | PR #1265 body |
+| Jev gated round (#1281) | gated stage 1 (gate + intervention, 1 call) 219 to 336 ms over 16 samples (one 910 ms outlier); act round (2 calls) 473 ms warm, 567 ms cold | #1281 PR body |
 
 The first two rows predate PR #1257 and exceeded the then-default 2500 ms timeout. Since PR #1257 the Claude
 default is 5000 ms, which warm calls fit (resolved discrepancy D-K6); cold calls can still exceed it.
@@ -349,7 +402,7 @@ an empty value means `rules`.
 
 `scripts/agent-backend.sh` flips `defaultVariant`s in `services/flagd/ci/agent.json`
 (override with `AGENT_FLAG_FILE`): `status`, `{rules|claude|openai|jev} [model]`,
-`threshold {low|default|strict}`, `capture {on|off}`, `effort {…}`. flagd reloads the
+`threshold {low|gate|default|strict}`, `capture {on|off}`, `effort {…}`. flagd reloads the
 file on change; the script states "~1 s" (`scripts/agent-backend.sh`). See NFR-014.
 
 ## 11. From decision to game effect
@@ -420,7 +473,7 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   Changing this shape breaks both.
 - `chat {model}` (CLIENT) per remote call: OTel GenAI semantic conventions
   (`gen_ai.operation.name=chat`, `gen_ai.provider.name`, request / response model,
-  token usage, finish reasons, `error.type`; jev adds `jev.native_confidence` and `jev.stage`, one span per stage). Prompt and completion content only when
+  token usage, finish reasons, `error.type`; jev adds `jev.native_confidence` and `jev.stage`, one span per stage, and on a gated stage 1 `jev.gate.p_yes`, `jev.stage1.choice`, `jev.stage1.distribution`). Prompt and completion content only when
   `decision.capture_content` is on (`decide/llmio/genai.go`).
 - Metrics: `gen_ai.client.operation.duration`, `gen_ai.client.token.usage`,
   `agent_llm_gated_total{reason}`, `agent_decisions_total`, `agent_interventions_applied_total`.

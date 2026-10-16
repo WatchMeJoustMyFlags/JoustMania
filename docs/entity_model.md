@@ -228,7 +228,7 @@ A question in a decide request (`services/agent/decide/decide.go:64-74`, FFA set
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
 | question_id | Id, unique within a request | String | 30 | Primary Key, Values: ffa.intervention, ffa.target, ffa.magnitude |
-| kind | Question kind; `noul` (yes/no answered with P(yes)) shipped in PR #1261, supported by jev and rules only, no FFA question uses it yet | String | 6 | Not Null, Values: choice, score, noul |
+| kind | Question kind; `noul` (yes/no answered with P(yes)) shipped in PR #1261, supported by jev and rules only; no caller-level FFA question is a noul; the Jev backend asks the internal `jev.gate` noul every stage-1 round (decide-contract §3.1) | String | 6 | Not Null, Values: choice, score, noul |
 | text | Prompt text for remote backends | String | 2000 | Not Null |
 | options | Choice options | String | 1000 | Optional |
 | range_min | Score lower bound | Decimal | 6,3 | Optional |

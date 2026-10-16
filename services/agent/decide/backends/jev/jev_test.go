@@ -140,7 +140,7 @@ func (f *fakeAPI) lastSpan(t *testing.T) sdktrace.ReadOnlySpan {
 }
 
 func TestDecide_HappyPathSpan(t *testing.T) {
-	api := newFakeAPI(t, 200, loadFixture(t, "noop_response_intervention.json"), 0)
+	api := newFakeAPI(t, 200, noopStage1(t), 0)
 	ctx, parent := otel.Tracer("test").Start(context.Background(), "agent.decide")
 	resp, err := api.backend(fixtureModel, false).Decide(ctx, testRequest())
 	parent.End()
@@ -176,11 +176,13 @@ func TestDecide_HappyPathSpan(t *testing.T) {
 		"gen_ai.response.model":      "jev-1.13.0",
 		"gen_ai.response.id":         "req_test_001",
 		"gen_ai.output.type":         "json",
-		"gen_ai.usage.input_tokens":  int64(1531),
-		"gen_ai.usage.output_tokens": int64(146),
+		"gen_ai.usage.input_tokens":  int64(1622),
+		"gen_ai.usage.output_tokens": int64(163),
 		"server.address":             "127.0.0.1",
-		AttrNativeConfidence:         `{"ffa.intervention":0.64}`,
+		AttrNativeConfidence:         `{"ffa.intervention":0.32}`,
 		AttrStage:                    StageIntervention,
+		AttrGatePYes:                 0.3,
+		AttrStage1Choice:             "adjust_player_sensitivity",
 	}
 	for k, v := range want {
 		if got, ok := a[k]; !ok || got.AsInterface() != v {
@@ -201,7 +203,7 @@ func TestDecide_HappyPathSpan(t *testing.T) {
 // TestDecide_DefaultModel: the API requires a model, so an unset one is
 // DefaultModel on the wire, the span and Model().
 func TestDecide_DefaultModel(t *testing.T) {
-	api := newFakeAPI(t, 200, loadFixture(t, "noop_response_intervention.json"), 0)
+	api := newFakeAPI(t, 200, noopStage1(t), 0)
 	b := api.backend("  ", false)
 	if _, err := b.Decide(context.Background(), testRequest()); err != nil {
 		t.Fatal(err)
@@ -221,7 +223,7 @@ func TestDecide_DefaultModel(t *testing.T) {
 }
 
 func TestDecide_ContentCapture(t *testing.T) {
-	api := newFakeAPI(t, 200, loadFixture(t, "noop_response_intervention.json"), 0)
+	api := newFakeAPI(t, 200, noopStage1(t), 0)
 	if _, err := api.backend(fixtureModel, true).Decide(context.Background(), testRequest()); err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +301,7 @@ func TestDecide_Failures(t *testing.T) {
 // touches the network, so the decision wiring falls back to rules with
 // fallback_reason=unavailable. The base URL and model have defaults.
 func TestAvailable(t *testing.T) {
-	api := newFakeAPI(t, 200, loadFixture(t, "noop_response_intervention.json"), 0)
+	api := newFakeAPI(t, 200, noopStage1(t), 0)
 	for name, cfg := range map[string]Config{
 		"zero config": {},
 		"no key":      {BaseURL: api.srv.URL + "/api", Model: "m"},
@@ -336,7 +338,7 @@ func TestAvailable(t *testing.T) {
 }
 
 func TestDecide_NoQuestions(t *testing.T) {
-	api := newFakeAPI(t, 200, loadFixture(t, "noop_response_intervention.json"), 0)
+	api := newFakeAPI(t, 200, noopStage1(t), 0)
 	_, err := api.backend(fixtureModel, false).Decide(context.Background(), decide.Request{})
 	if !errors.Is(err, decide.ErrInvalid) || api.calls.Load() != 0 {
 		t.Errorf("err = %v, calls = %d", err, api.calls.Load())

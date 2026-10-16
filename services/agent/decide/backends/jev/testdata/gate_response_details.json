@@ -1,0 +1,49 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "ffa.magnitude.help": {
+      "type": "score",
+      "score": 1.1,
+      "confidence": 0.49,
+      "legend": {
+        "0": "A slight change: 0.9 factor (neutral is 1).",
+        "1": "A moderate change: 0.8 factor (neutral is 1).",
+        "2": "The strongest change: 0.7 factor (neutral is 1)."
+      },
+      "probabilities": {
+        "0": 0.12,
+        "1": 0.66,
+        "2": 0.22
+      }
+    },
+    "ffa.magnitude.rein_in": {
+      "type": "score",
+      "score": 0.85,
+      "confidence": 0.43,
+      "legend": {
+        "0": "A slight change: 1.17 factor (neutral is 1).",
+        "1": "A moderate change: 1.33 factor (neutral is 1).",
+        "2": "The strongest change: 1.5 factor (neutral is 1)."
+      },
+      "probabilities": {
+        "0": 0.27,
+        "1": 0.62,
+        "2": 0.11
+      }
+    },
+    "ffa.target": {
+      "type": "choice",
+      "choice": "MOCK0003",
+      "confidence": 0.83,
+      "probabilities": {
+        "MOCK0002": 0.1,
+        "MOCK0003": 0.89,
+        "MOCK0004": 0.01
+      }
+    }
+  },
+  "usage": {
+    "input_tokens": 1601,
+    "output_tokens": 95
+  }
+}
