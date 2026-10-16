@@ -174,16 +174,37 @@ class FFAGame(BaseGameMode):
         """
         return [Phase(name="color_assignment", execute=self._assign_ffa_colors)]
 
+    def _winner_serial(self) -> str | None:
+        """The winner's serial, or None (tie, force-ended, or still several alive).
+
+        A force-ended game has no winner even if one player was left (UC-020 BR-003).
+        """
+        if self.force_ended:
+            return None
+        alive_players = [p for p in self.players.values() if p.alive]
+        return alive_players[0].serial if len(alive_players) == 1 else None
+
+    def _natural_game_outcome(self) -> dict:
+        """``winner`` (one alive) or ``tie`` (none alive) per UC-020 BR-001 / BR-003."""
+        winner_serial = self._winner_serial()
+        if winner_serial is not None:
+            return {"game.outcome": "winner", "game.winner": winner_serial}
+        if not any(p.alive for p in self.players.values()):
+            return {"game.outcome": "tie"}
+        # Several alive without a force-end: the loop stopped for another reason
+        # (e.g. the gameplay stream ended). No winner is claimed.
+        return {"game.outcome": "completed"}
+
     def _close_all_player_spans(self):
         """
         Close all player lifecycle spans with analytics data.
 
-        Override base implementation to add victory event and analytics
-        summary to surviving players' spans.
+        Override base implementation to add the end event and analytics summary to
+        surviving players' spans (UC-020 BR-003, #1328): ``victory`` only on the
+        winner; ``player_survived`` (with the force-end reason) on every survivor
+        of a force-ended game.
         """
-        # Find winner for victory event
-        alive_players = [p for p in self.players.values() if p.alive]
-        winner_serial = alive_players[0].serial if len(alive_players) == 1 else None
+        winner_serial = self._winner_serial()
 
         for serial, player in self.players.items():
             if player.span:
@@ -192,18 +213,21 @@ class FFAGame(BaseGameMode):
 
                 # Build attributes including analytics summary if available
                 if player.alive:
-                    victory_attrs = {
+                    end_attrs = {
                         "game_duration": time.time() - self.start_time if self.start_time else 0,
                         "winner": serial == winner_serial,
                     }
+                    if self.force_ended:
+                        end_attrs.update(self._game_outcome_attributes())
 
                     # Add analytics summary to span
                     if player.analytics is not None:
                         analytics_summary = player.analytics.get_summary()
                         for key, value in analytics_summary.items():
-                            victory_attrs[f"analytics.{key}"] = value
+                            end_attrs[f"analytics.{key}"] = value
 
-                    player.span.add_event("victory", attributes=victory_attrs)
+                    event_name = "victory" if serial == winner_serial else "player_survived"
+                    player.span.add_event(event_name, attributes=end_attrs)
 
                 player.span.set_status(Status(StatusCode.OK))
                 player.span.end()
@@ -219,9 +243,8 @@ class FFAGame(BaseGameMode):
         logger.info("Ending game...")
         self.state = GameState.ENDING
 
-        # Find winner (if any)
-        alive_players = [p for p in self.players.values() if p.alive]
-        winner_serial = alive_players[0].serial if len(alive_players) == 1 else None
+        # Find winner (if any); a force-ended game has none (UC-020 A4 / BR-003)
+        winner_serial = self._winner_serial()
         logger.info(f"End game: winner_serial={winner_serial}, gameplay_stream={self.gameplay_stream is not None}")
 
         # Show rainbow effect on winner's controller and play victory sound
@@ -276,12 +299,14 @@ class FFAGame(BaseGameMode):
                 )
 
         self.state = GameState.ENDED
-        await self.event_publisher(
-            GameEvent.GAME_ENDED,
-            {
-                "game_id": self.game_id,
-                "duration": time.time() - self.start_time if self.start_time else 0,
-            },
-        )
+        outcome = self._game_outcome_attributes()
+        ended_data = {
+            "game_id": self.game_id,
+            "duration": time.time() - self.start_time if self.start_time else 0,
+            "outcome": outcome["game.outcome"],
+        }
+        if self.force_ended:
+            ended_data["reason"] = self.force_end_reason
+        await self.event_publisher(GameEvent.GAME_ENDED, ended_data)
 
         logger.info("Game ended")

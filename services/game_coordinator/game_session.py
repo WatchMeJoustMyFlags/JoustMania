@@ -603,7 +603,7 @@ class GameSession:
             game_thread = self.game_thread
 
         if current_game and hasattr(current_game, "force_end"):
-            current_game.force_end()
+            current_game.force_end(reason)
 
         # Join in executor to avoid blocking the gRPC server.
         if game_thread and game_thread.is_alive():

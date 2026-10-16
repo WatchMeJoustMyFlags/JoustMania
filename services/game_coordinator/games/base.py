@@ -728,6 +728,11 @@ class BaseGameMode(ABC):
         self.initial_players = initial_players  # Players from StartGame RPC
         self.start_time = None
         self.running = False
+        # Set by force_end(): the reason the game was stopped from outside, or
+        # None for a game that ended on its own win condition (#1328).
+        self.force_end_reason: str | None = None
+        # The game root span (current when run() starts); the outcome lands on it.
+        self._game_root_span: trace.Span | None = None
         self.gameplay_stream = None  # Phase 46: Bidirectional stream for feedback commands
         # Shield feedback still running per serial: wall-clock end time (#1301,
         # UC-040 A16/A17). Only a record for the game-end clear; no task.
@@ -2676,10 +2681,45 @@ class BaseGameMode(ABC):
 
         return True
 
-    def force_end(self):
-        """Force the game to end (called externally)."""
-        logger.info("Force ending game...")
+    def force_end(self, reason: str = ""):
+        """Force the game to end (called externally).
+
+        Records the reason so the game's outcome is ``force_ended`` (UC-020 BR-003,
+        #1328), never a winner or a set of victories.
+        """
+        logger.info(f"Force ending game... (reason: {reason or 'unspecified'})")
+        self.force_end_reason = reason or "unspecified"
         self.running = False
+
+    @property
+    def force_ended(self) -> bool:
+        """True once the game was force-ended (#1328)."""
+        return self.force_end_reason is not None
+
+    def _natural_game_outcome(self) -> dict:
+        """Outcome attributes of a game that ended on its own (not force-ended).
+
+        Modes that classify their end (JoustFFA: ``winner`` / ``tie``) override this.
+        Default ``completed``: the mode's own winner events carry the detail.
+        """
+        return {"game.outcome": "completed"}
+
+    def _game_outcome_attributes(self) -> dict:
+        """The game's end-of-game outcome (UC-020 BR-003, #1328).
+
+        ``force_ended`` (with ``game.end_reason``) takes precedence over any natural
+        outcome: a force-ended game did not reach its win condition.
+        """
+        if self.force_ended:
+            return {"game.outcome": "force_ended", "game.end_reason": self.force_end_reason}
+        return self._natural_game_outcome()
+
+    def _record_game_outcome(self, teardown_span: trace.Span) -> None:
+        """Put the outcome on the game root span and a ``game.outcome`` teardown event."""
+        attrs = self._game_outcome_attributes()
+        if self._game_root_span is not None:
+            self._game_root_span.set_attributes(attrs)
+        teardown_span.add_event("game.outcome", attributes=attrs)
 
     # ========================================================================
     # Task Tracking and Lifecycle Hooks
@@ -2752,6 +2792,7 @@ class BaseGameMode(ABC):
             self.state = GameState.STARTING
             self.running = True  # Set early to allow force_end during countdown
             current_span = trace.get_current_span()
+            self._game_root_span = current_span
             current_span.add_event(
                 "game.state_changed",
                 {
@@ -2937,6 +2978,7 @@ class BaseGameMode(ABC):
                 await self._end_shield_feedback()
 
                 await self._end_game_impl()
+                self._record_game_outcome(teardown_span)
 
                 # Cleanup stream reference after winner effects are sent
                 self.gameplay_stream = None
