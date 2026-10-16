@@ -792,6 +792,24 @@ func (f *Flags) RolloutEnabled(ctx context.Context) bool {
 	return f.boolFlag(ctx, keyRolloutEnabled, DefaultRolloutEnabled)
 }
 
+// AgentEnabled resolves ONLY the `enabled` kill switch, without the full Evaluate
+// snapshot. It is the narrow USE-TIME read the post-game experiment proposer makes
+// at each game end (#1270). It FAILS CLOSED (DefaultEnabled=false) when flagd is
+// unreachable, exactly like the decision loop's read.
+func (f *Flags) AgentEnabled(ctx context.Context) bool {
+	return f.enabled(ctx)
+}
+
+// ExperimentsEnabled resolves ONLY the `experiments_enabled` gate (#1270), with def
+// as the fallback when the flag is absent or flagd is unreachable. Callers pass the
+// same env-derived bootstrap default the experiment loop uses
+// (ExperimentDefaults.Enabled, AGENT_EXPERIMENTS_ENABLED, default false), so the
+// post-game proposer and the experiment loop always agree on whether experiments
+// are on.
+func (f *Flags) ExperimentsEnabled(ctx context.Context, def bool) bool {
+	return f.boolFlag(ctx, keyExperimentsEnabled, def)
+}
+
 // stringFlag resolves a string flag, falling back to def on any error.
 func (f *Flags) stringFlag(ctx context.Context, key, def string) string {
 	v, err := f.client.StringValue(ctx, key, def, openfeature.EvaluationContext{})

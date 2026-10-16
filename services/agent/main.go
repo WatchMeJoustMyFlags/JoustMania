@@ -787,9 +787,21 @@ func main() {
 		nil,
 		logger,
 	)
-	// Propose on each GAME END, behind the cadence floor (code_improvement.
-	// min_interval_seconds, read live): proposing is an expensive LLM call, so it
-	// fires far less often than a decision cycle. The hook renders the current
+	// #1270: a REAL proposer model call is one LLM request, so it draws from the SAME
+	// shared global budget (and the same AGENT_LLM_MAX_REQUESTS_PER_MINUTE override)
+	// as the per-game loops and the retro, and only for a game kind in
+	// llm.eligible_game_kinds. Installed only when a real text backend is wired: the
+	// stub makes no model call and so never charges the budget.
+	proposer.SetLLMAdmission(proposerAdmissionFor(inferDelegate,
+		decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCapOverride, logger)))
+	// #1270: the kill-switch gate, read at USE time on every game end (never cached
+	// at startup: flagd may be down then). Both `enabled` and `experiments_enabled`
+	// must be on, the same two gates the experiment loop obeys (FR-066).
+	permitPropose := proposerPermit(agentFlags, experimentsEnabled())
+	// Propose on each GAME END, behind the kill switch + experiments_enabled, the
+	// cadence floor (code_improvement.min_interval_seconds, read live) and, for a
+	// real backend, the shared LLM call gate: proposing is an expensive LLM call, so
+	// it fires far less often than a decision cycle. The hook renders the current
 	// cross-game window as the narrative and fires ProposeOnce in a ctx-bounded
 	// goroutine so a slow inference never blocks the game-end path. ProposeOnce
 	// never returns an error (a failed/gated cycle is a recorded no-op).
@@ -805,6 +817,8 @@ func main() {
 			proposer.ProposeOnce(ctx, n, experiment.ProposerConfig{
 				Engine:      cfg.Engine,
 				MinInterval: cfg.MinInterval,
+				Permit:      permitPropose,
+				GameKind:    c.GameKind,
 			})
 		}()
 	}
@@ -1024,6 +1038,43 @@ type inferBackend struct {
 
 func (b inferBackend) Infer(ctx context.Context, prompt llm.Prompt) (string, error) {
 	return b.infer(ctx, prompt)
+}
+
+// proposerGateFlags is the narrow flag surface the proposer's kill-switch gate
+// reads (#1270). *flags.Flags satisfies it; tests supply a fake.
+type proposerGateFlags interface {
+	AgentEnabled(ctx context.Context) bool
+	ExperimentsEnabled(ctx context.Context, def bool) bool
+}
+
+// proposerPermit builds the experiment.ProposerConfig.Permit gate (#1270): a
+// proposal cycle may run only while the agent `enabled` kill switch AND the
+// `experiments_enabled` gate are both on — the same two gates the experiment loop
+// obeys (allocateIfEnabled). Both are read LIVE on every call. `enabled` fails
+// closed when flagd is unreachable; `experiments_enabled` falls back to
+// experimentsDefault (AGENT_EXPERIMENTS_ENABLED, default false), the same fallback
+// the experiment loop uses, so the two never disagree.
+func proposerPermit(src proposerGateFlags, experimentsDefault bool) func(ctx context.Context) (bool, string) {
+	return func(ctx context.Context) (bool, string) {
+		if !src.AgentEnabled(ctx) {
+			return false, experiment.SkipReasonAgentDisabled
+		}
+		if !src.ExperimentsEnabled(ctx, experimentsDefault) {
+			return false, experiment.SkipReasonExperimentsDisabled
+		}
+		return true, ""
+	}
+}
+
+// proposerAdmissionFor returns the shared LLM call gate the proposer consults
+// before a model call (#1270), or nil when delegate is nil (the stub backend). The
+// stub makes no model call, so it must never charge the shared budget. The nil is
+// returned as an untyped interface nil, never a typed nil pointer.
+func proposerAdmissionFor(delegate inferFunc, admission *decision.LLMAdmission) experiment.LLMAdmission {
+	if delegate == nil || admission == nil {
+		return nil
+	}
+	return admission
 }
 
 // proposeBackendFor selects the proposer's inference backend (#1048, #1234): the

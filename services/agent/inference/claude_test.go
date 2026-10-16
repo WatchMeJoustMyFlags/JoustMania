@@ -363,7 +363,7 @@ func TestClaude_FeedsProposerSeam(t *testing.T) {
 	gate := experiment.NewGate(experiment.NewWriter(path, nil), nil, nil)
 	proposer := experiment.NewProposer(c, gate, gameVocab(path), nil, nil)
 
-	res := proposer.ProposeOnce(context.Background(), experiment.Narrative{GameMode: "joust"}, experiment.ProposerConfig{Engine: "claude"})
+	res := proposer.ProposeOnce(context.Background(), experiment.Narrative{GameMode: "joust"}, experiment.ProposerConfig{Engine: "claude", Permit: func(context.Context) (bool, string) { return true, "" }})
 	if res.Outcome != experiment.ProposeProposed {
 		t.Fatalf("outcome = %q, want proposed (err=%v)", res.Outcome, res.Err)
 	}

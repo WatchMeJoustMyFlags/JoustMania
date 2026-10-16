@@ -111,7 +111,7 @@ func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 	}
 	p, path, rec, _ := proposerWithRecorder(t, backend)
 
-	res := p.ProposeOnce(context.Background(), Narrative{GameMode: "joust"}, ProposerConfig{Engine: "stub"})
+	res := p.ProposeOnce(context.Background(), Narrative{GameMode: "joust"}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
 	if res.Outcome != ProposeProposed {
 		t.Fatalf("outcome = %q, want proposed (err=%v)", res.Outcome, res.Err)
@@ -143,7 +143,7 @@ func TestProposeOnce_UndecodableReplyMakesNoProposal(t *testing.T) {
 	backend := &fakeProposerBackend{response: "I really think you should raise the grace period."}
 	p, path, rec, _ := proposerWithRecorder(t, backend)
 
-	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Engine: "stub"})
+	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
 	if res.Outcome != ProposeUndecodable {
 		t.Fatalf("outcome = %q, want undecodable", res.Outcome)
@@ -171,7 +171,7 @@ func TestProposeOnce_UnknownFlagRejectedByDecoderNoWrite(t *testing.T) {
 	}
 	p, path, rec, _ := proposerWithRecorder(t, backend)
 
-	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Engine: "stub"})
+	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
 	if res.Outcome != ProposeUndecodable {
 		t.Fatalf("outcome = %q, want undecodable (decoder rejects out-of-vocab)", res.Outcome)
@@ -198,7 +198,7 @@ func TestProposeOnce_TypeMismatchBlockedByGate(t *testing.T) {
 	}
 	p, path, rec, _ := proposerWithRecorder(t, backend)
 
-	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Engine: "stub"})
+	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
 	if res.Outcome != ProposeBlocked {
 		t.Fatalf("outcome = %q, want blocked", res.Outcome)
@@ -224,7 +224,7 @@ func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
 	backend := &fakeProposerBackend{err: errors.New("inference not implemented")}
 	p, path, rec, _ := proposerWithRecorder(t, backend)
 
-	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Engine: "stub"})
+	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
 	if res.Outcome != ProposeNoBackend {
 		t.Fatalf("outcome = %q, want no_backend", res.Outcome)
@@ -244,7 +244,7 @@ func TestProposeOnce_CadenceGatesSecondCycleWithinInterval(t *testing.T) {
 		response: `{"flag":"death_grace_period_seconds","value":0.75,"rationale":"longer grace"}`,
 	}
 	p, _, _, clk := proposerWithRecorder(t, backend)
-	cfg := ProposerConfig{Engine: "stub", MinInterval: 60 * time.Second}
+	cfg := ProposerConfig{Permit: allowPropose, Engine: "stub", MinInterval: 60 * time.Second}
 
 	// First cycle: admitted (no prior attempt) -> proposes, calls Infer once.
 	r1 := p.ProposeOnce(context.Background(), Narrative{}, cfg)
@@ -278,7 +278,7 @@ func TestProposeOnce_ZeroIntervalDisablesCadence(t *testing.T) {
 		response: `{"flag":"death_grace_period_seconds","value":0.75,"rationale":"longer grace"}`,
 	}
 	p, _, _, _ := proposerWithRecorder(t, backend)
-	cfg := ProposerConfig{Engine: "stub"} // MinInterval 0 => no floor
+	cfg := ProposerConfig{Permit: allowPropose, Engine: "stub"} // MinInterval 0 => no floor
 
 	for i := 0; i < 3; i++ {
 		if got := p.ProposeOnce(context.Background(), Narrative{}, cfg).Outcome; got != ProposeProposed {

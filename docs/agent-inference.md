@@ -60,6 +60,16 @@ With the stub, the proposer proposes nothing and the retro is capture-only
 budget that real-game decisions need. A retro that calls the model draws one slot
 from `llm.max_requests_per_minute` (or `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`).
 
+The proposer runs on every game end, but only while the `enabled` kill switch and
+`experiments_enabled` are both on (read at each game end; `enabled` fails closed
+when flagd is unreachable). It checks again just before writing `game.json`, so
+switching the agent off during a model call still blocks the write. With `claude`, a
+proposal that passes the cadence floor (`code_improvement.min_interval_seconds`)
+calls the model only for game kinds in `llm.eligible_game_kinds` and only when a slot
+of the same shared budget is free. Otherwise it records
+`agent_llm_gated_total{reason=llm_not_eligible|llm_budget_exhausted}` and retries
+at the next game end (#1270). The stub never draws from the budget.
+
 The `code_improvement.engine` flag (`stub` / `claude`) is only recorded on the
 propose span; it does not select anything. `AGENT_INFERENCE_BACKEND` does.
 
