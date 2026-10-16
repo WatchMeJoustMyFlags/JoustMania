@@ -860,6 +860,11 @@ class BaseGameMode(ABC):
         # Incremented on each kill; the value at kill time is the player's order
         # index (1 = first eliminated). In respawn modes this counts each death.
         self._elimination_count = 0
+        # Serials whose _kill_player is mid-flight. _kill_player awaits (death
+        # sound) before the mode impl flips player.alive, so a concurrent kill
+        # of the same serial (e.g. motion death racing a disconnect) would
+        # otherwise pass the alive check and count the death twice.
+        self._kills_in_progress: set[str] = set()
         self.gameplay_span: trace.Span | None = None  # Reference for span events
         self.gameplay_span_context = None  # Context for child spans in background tasks
         self._players_span: trace.Span | None = None  # Parent span grouping all player lifecycles
@@ -2570,9 +2575,17 @@ class BaseGameMode(ABC):
                 natural ones while still emitting identical spans/events/metrics.
         """
         player = self.players.get(serial)
-        if not player or not player.alive:
+        if not player or not player.alive or serial in self._kills_in_progress:
             return
 
+        self._kills_in_progress.add(serial)
+        try:
+            await self._run_kill(serial, player, accel_mag, reason)
+        finally:
+            self._kills_in_progress.discard(serial)
+
+    async def _run_kill(self, serial: str, player: Player, accel_mag: float, reason: str) -> None:
+        """Body of _kill_player; runs at most once at a time per serial."""
         alive_count_before = len([p for p in self.players.values() if p.alive])
         logger.info(f"Player died: {serial}, {alive_count_before - 1} players remaining")
 
@@ -2590,6 +2603,10 @@ class BaseGameMode(ABC):
         # Makes session.elimination_sequence queryable per game.
         self._elimination_count += 1
         metrics.player_elimination_order.labels(serial=serial, game_id=self.game_id).set(self._elimination_count)
+
+        # UC-030 step 9: one increment per death. The agent's live elimination
+        # fallback (gamecontext RecordDeathTotal) reads this counter.
+        metrics.player_deaths_total.labels(mode=self.get_game_name(), serial=serial, game_id=self.game_id).inc()
 
         # Extract trace context BEFORE _kill_player_impl() which may close the span.
         # This ensures the death effect and sound are parented to the player_lifecycle
