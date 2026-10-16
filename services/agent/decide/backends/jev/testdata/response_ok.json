@@ -1,0 +1,22 @@
+{
+  "_fixture": "HAND-WRITTEN placeholder, NOT recorded Jev traffic. Shape ASSUMED OpenAI-compatible (see wire.go). Replace with recorded Jev traffic once the API docs arrive (#1229).",
+  "id": "jev-resp-001",
+  "object": "chat.completion",
+  "model": "jev-test-model-2026-10",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"answers\":[{\"id\":\"ffa.intervention\",\"choice\":\"grant_shield\",\"score\":0,\"probabilities\":[{\"option\":\"grant_shield\",\"p\":0.75},{\"option\":\"noop\",\"p\":0.25}],\"confidence\":0.88},{\"id\":\"ffa.target\",\"choice\":\"MOCK0002\",\"score\":0,\"probabilities\":[{\"option\":\"MOCK0002\",\"p\":0.9},{\"option\":\"MOCK0001\",\"p\":0.1}],\"confidence\":0.8},{\"id\":\"ffa.magnitude\",\"choice\":\"\",\"score\":0.5,\"probabilities\":[],\"confidence\":0.65}],\"rationale\":\"MOCK0002 is one move from elimination; a short shield keeps the duel alive.\"}",
+        "reasoning_content": "Two players left, MOCK0002 is close to the threshold."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 850,
+    "completion_tokens": 160,
+    "completion_tokens_details": {"reasoning_tokens": 30}
+  }
+}
