@@ -54,6 +54,7 @@ func TestStartExperimentGame_TerminalCallbackFiresOnError(t *testing.T) {
 		RunID: "r", GameName: "JoustFFA", Players: 2, Sensitivity: 2,
 		ExperimentID: "exp_x", Arm: "experimental",
 	}
+	spec = testPatternSpec(t, spec)
 	gameID, err := h.runner.StartExperimentGame(context.Background(), driveCtx, spec)
 	if err != nil {
 		t.Fatalf("StartExperimentGame error: %v", err)
@@ -100,6 +101,7 @@ func TestStartExperimentGame_TerminalCallbackFiresOnComplete(t *testing.T) {
 		RunID: "r", GameName: "JoustFFA", Players: 2, Sensitivity: 2,
 		ExperimentID: "exp_x", Arm: "control",
 	}
+	spec = testPatternSpec(t, spec)
 	if _, err := h.runner.StartExperimentGame(context.Background(), driveCtx, spec); err != nil {
 		t.Fatalf("StartExperimentGame error: %v", err)
 	}

@@ -38,6 +38,7 @@ func TestStartExperimentGame_BindsCohortAndReturnsID(t *testing.T) {
 		RunID: "run-exp", GameName: "JoustFFA", Players: 2, Sensitivity: 2,
 		ExperimentID: "exp_abc123def456", Arm: "experimental",
 	}
+	spec = testPatternSpec(t, spec)
 
 	driveCtx, cancelDrive := context.WithCancel(context.Background())
 	defer cancelDrive()
@@ -82,20 +83,23 @@ func TestStartExperimentGame_BindsCohortAndReturnsID(t *testing.T) {
 
 // TestStartExperimentGame_ValidatesSpec confirms the async start rejects an invalid
 // spec without spawning a goroutine or leaving controllers reserved.
+// UC: UC-046 main BR-004
 func TestStartExperimentGame_ValidatesSpec(t *testing.T) {
-	mock := &fakeMock{}
-	coord := &fakeCoord{gameID: "g"}
-	h := newHarness(t, mock, coord)
-	defer h.stop()
+	t.Run("UC-046/BR-004 a shadow game without an archetype is refused and reserves nothing", func(t *testing.T) {
+		mock := &fakeMock{}
+		coord := &fakeCoord{gameID: "g"}
+		h := newHarness(t, mock, coord)
+		defer h.stop()
 
-	_, err := h.runner.StartExperimentGame(context.Background(), context.Background(),
-		Spec{RunID: "r", GameName: "JoustFFA", Players: 1})
-	if err == nil {
-		t.Fatal("expected a spec-validation error for Players < 2")
-	}
-	if added, _, _, _ := mock.snapshot(); len(added) != 0 {
-		t.Fatalf("invalid spec reserved %d controllers, want 0", len(added))
-	}
+		_, err := h.runner.StartExperimentGame(context.Background(), context.Background(),
+			Spec{RunID: "r", GameName: "JoustFFA", Players: 4})
+		if !errors.Is(err, errNotPattern) {
+			t.Fatalf("err = %v, want errNotPattern", err)
+		}
+		if added, _, _, _ := mock.snapshot(); len(added) != 0 {
+			t.Fatalf("refused spec reserved %d controllers, want 0", len(added))
+		}
+	})
 }
 
 func TestRunShadowGame_HappyPath(t *testing.T) {
@@ -112,12 +116,11 @@ func TestRunShadowGame_HappyPath(t *testing.T) {
 	h := newHarness(t, mock, coord)
 	defer h.stop()
 
-	spec := Spec{RunID: "run1", GameName: "JoustFFA", Players: 3, Sensitivity: 2}
+	spec := testPatternSpec(t, Spec{RunID: "run1", Sensitivity: 2})
 	res, err := h.runner.RunShadowGame(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("RunShadowGame error: %v", err)
 	}
-
 	if res.GameID != "game_abc123" {
 		t.Errorf("GameID = %q, want game_abc123", res.GameID)
 	}
@@ -132,22 +135,12 @@ func TestRunShadowGame_HappyPath(t *testing.T) {
 	if res.EventsSeen != 3 {
 		t.Errorf("EventsSeen = %d, want 3", res.EventsSeen)
 	}
-	if res.Duration <= 0 {
-		t.Errorf("Duration not recorded: %v", res.Duration)
+	added, removed, deaths, movements := mock.snapshot()
+	if len(added) != 2 || len(removed) != 2 {
+		t.Fatalf("added %v removed %v, want the archetype's 2 players reserved and removed", added, removed)
 	}
-
-	added, removed, _, _ := mock.snapshot()
-	if len(added) != 3 {
-		t.Fatalf("added %d controllers, want 3", len(added))
-	}
-	// Cleanup must remove exactly the reserved controllers it created.
-	if len(removed) != 3 {
-		t.Errorf("removed %d controllers, want 3 (added=%v removed=%v)", len(removed), added, removed)
-	}
-	for _, s := range added {
-		if !contains(removed, s) {
-			t.Errorf("reserved controller %q was not removed", s)
-		}
+	if len(deaths) != 0 || movements != 0 {
+		t.Errorf("scripted motion sent: deaths=%v movements=%d (UC-046 BR-004)", deaths, movements)
 	}
 	if mock.reservedTag != "agent:run1" {
 		t.Errorf("reservation tag = %q, want agent:run1", mock.reservedTag)
@@ -156,36 +149,25 @@ func TestRunShadowGame_HappyPath(t *testing.T) {
 
 func TestRunShadowGame_TimeoutForceEnds(t *testing.T) {
 	mock := &fakeMock{}
-	// Stream emits a start event (with game_id) then blocks forever — no
-	// terminal event arrives, so the runner must force-end. ForceEnd pushes the
-	// terminal event back onto the stream.
 	coord := &fakeCoord{
 		gameID:                 "game_timeout",
 		events:                 []*gcpb.GameEvent{ev("game_started")},
 		emitTerminalOnForceEnd: eventGameForceEnded,
 	}
 	h := newHarness(t, mock, coord)
-	h.runner.cfg.GameTimeout = 80 * time.Millisecond
 	defer h.stop()
 
-	spec := Spec{RunID: "runTO", GameName: "JoustFFA", Players: 2}
+	spec := testPatternSpec(t, Spec{RunID: "runTO", MaxGameSeconds: 30}) // 30 units = 600 ms
 	res, err := h.runner.RunShadowGame(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("RunShadowGame error: %v", err)
 	}
-
-	if res.Outcome != OutcomeForceEnded {
-		t.Errorf("Outcome = %q, want force_ended", res.Outcome)
+	if res.Outcome != OutcomeTimeout {
+		t.Errorf("Outcome = %q, want timeout", res.Outcome)
 	}
-	forceEnds := coord.forceEndGameIDs()
-	if len(forceEnds) == 0 {
-		t.Fatal("ForceEndGame was never called")
+	if forceEnds := coord.forceEndGameIDs(); len(forceEnds) == 0 || forceEnds[0] != "game_timeout" {
+		t.Fatalf("ForceEndGame calls = %v, want game_timeout", forceEnds)
 	}
-	if forceEnds[0] != "game_timeout" {
-		t.Errorf("ForceEndGame game_id = %q, want game_timeout", forceEnds[0])
-	}
-
-	// Controllers cleaned up even though the game timed out.
 	added, removed, _, _ := mock.snapshot()
 	if len(removed) != len(added) || len(added) == 0 {
 		t.Errorf("cleanup mismatch: added=%v removed=%v", added, removed)
@@ -194,7 +176,6 @@ func TestRunShadowGame_TimeoutForceEnds(t *testing.T) {
 
 func TestRunShadowGame_CleanupOnStreamError(t *testing.T) {
 	mock := &fakeMock{}
-	// Stream sends the start event (so game_id is captured) then errors out.
 	coord := &fakeCoord{
 		gameID:    "game_err",
 		events:    []*gcpb.GameEvent{ev("game_started")},
@@ -203,10 +184,7 @@ func TestRunShadowGame_CleanupOnStreamError(t *testing.T) {
 	h := newHarness(t, mock, coord)
 	defer h.stop()
 
-	spec := Spec{RunID: "runErr", GameName: "JoustFFA", Players: 2}
-	res, _ := h.runner.RunShadowGame(context.Background(), spec)
-
-	// Even though the stream errored, the reserved controllers must be removed.
+	res, _ := h.runner.RunShadowGame(context.Background(), testPatternSpec(t, Spec{RunID: "runErr"}))
 	added, removed, _, _ := mock.snapshot()
 	if len(added) == 0 {
 		t.Fatal("no controllers were reserved")
@@ -221,67 +199,53 @@ func TestRunShadowGame_CleanupOnStreamError(t *testing.T) {
 
 func TestRunShadowGame_StartRejected(t *testing.T) {
 	mock := &fakeMock{}
-	// Coordinator rejects the start: emits game_start_error and no game_id.
-	coord := &fakeCoord{
-		events: []*gcpb.GameEvent{ev("game_start_error")},
-	}
+	coord := &fakeCoord{events: []*gcpb.GameEvent{ev("game_start_error")}}
 	h := newHarness(t, mock, coord)
 	defer h.stop()
 
-	spec := Spec{RunID: "runReject", GameName: "BogusMode", Players: 2}
-	_, err := h.runner.RunShadowGame(context.Background(), spec)
-	if err == nil {
+	if _, err := h.runner.RunShadowGame(context.Background(), testPatternSpec(t, Spec{RunID: "runReject"})); err == nil {
 		t.Fatal("expected error on rejected start")
 	}
-
-	// Controllers reserved before the start must still be cleaned up.
 	added, removed, _, _ := mock.snapshot()
 	if len(removed) != len(added) || len(added) == 0 {
 		t.Errorf("cleanup on rejected start failed: added=%v removed=%v", added, removed)
 	}
 }
 
-func TestRunShadowGame_DrivesKills(t *testing.T) {
-	mock := &fakeMock{}
-	// Block after start so the drive loop runs long enough to issue kills, then
-	// rely on the timeout force-end to terminate.
-	coord := &fakeCoord{
-		gameID:                 "game_kills",
-		events:                 []*gcpb.GameEvent{ev("game_started")},
-		emitTerminalOnForceEnd: eventGameForceEnded,
-	}
-	h := newHarness(t, mock, coord)
-	h.runner.cfg.GameTimeout = 120 * time.Millisecond
-	h.runner.cfg.KillInterval = 15 * time.Millisecond
-	defer h.stop()
+// UC: UC-046 A8
+func TestRunShadowGame_PreemptedIsAborted(t *testing.T) {
+	t.Run("UC-046/A8 a force-end the agent did not request is an abort, not a completed game", func(t *testing.T) {
+		mock := &fakeMock{}
+		preempt := ev(eventGameForceEnded)
+		preempt.Data = map[string]string{"reason": "preempted_by_real_game"}
+		coord := &fakeCoord{gameID: "game_pre", events: []*gcpb.GameEvent{ev("game_started"), preempt}}
+		h := newHarness(t, mock, coord)
+		defer h.stop()
+		outcomes := make(chan Outcome, 1)
+		h.runner.SetTerminalCallback(func(_ string, o Outcome) { outcomes <- o })
 
-	spec := Spec{RunID: "runKills", GameName: "JoustFFA", Players: 3}
-	_, err := h.runner.RunShadowGame(context.Background(), spec)
-	if err != nil {
-		t.Fatalf("RunShadowGame error: %v", err)
-	}
-
-	_, _, deaths, movements := mock.snapshot()
-	// With 3 players the drive loop kills at most 2 (leaves a survivor).
-	if len(deaths) == 0 {
-		t.Error("expected at least one SimulateDeath call")
-	}
-	if len(deaths) > 2 {
-		t.Errorf("killed %d players, want <= 2 (one survivor)", len(deaths))
-	}
-	if movements == 0 {
-		t.Error("expected at least one SimulateMovement liveliness call")
-	}
+		spec := testPatternSpec(t, Spec{RunID: "runPre", ExperimentID: "exp", Arm: "control"})
+		if _, err := h.runner.StartExperimentGame(context.Background(), context.Background(), spec); err != nil {
+			t.Fatal(err)
+		}
+		if o := <-outcomes; o != OutcomeForceEnded {
+			t.Fatalf("outcome = %s, want force_ended (released without a sample)", o)
+		}
+		if calls := coord.forceEndGameIDs(); len(calls) != 0 {
+			t.Errorf("the agent force-ended a preempted game: %v", calls)
+		}
+	})
 }
 
 func TestRunShadowGame_ValidatesSpec(t *testing.T) {
 	r := New(Config{}, nil)
-	cases := []Spec{
-		{RunID: "", GameName: "JoustFFA", Players: 2},
-		{RunID: "x", GameName: "", Players: 2},
-		{RunID: "x", GameName: "JoustFFA", Players: 1},
-	}
-	for i, spec := range cases {
+	base := testPatternSpec(t, Spec{RunID: "x"})
+	noName := base
+	noName.RunID = ""
+	noMode := base
+	noMode.GameName = ""
+	noPattern := Spec{RunID: "x", GameName: "JoustFFA", Players: 2}
+	for i, spec := range []Spec{noName, noMode, noPattern} {
 		if _, err := r.RunShadowGame(context.Background(), spec); err == nil {
 			t.Errorf("case %d: expected validation error for spec %+v", i, spec)
 		}

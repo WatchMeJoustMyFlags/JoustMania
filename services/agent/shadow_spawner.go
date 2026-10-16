@@ -13,6 +13,9 @@ import (
 	"github.com/joustmania/agent/gamerunner"
 )
 
+// errSpawnNeedsArchetype: every shadow experiment game is a pattern game (UC-046).
+var errSpawnNeedsArchetype = errors.New("no motion archetype on the spawn (UC-046: experiments are archetype-only)")
+
 // shadow_spawner.go is the REAL ShadowSpawner seam (#976) the experiment registry
 // (#978) injects — the production replacement for the registry_test.go fakeSpawner.
 //
@@ -54,6 +57,16 @@ type shadowSpawner struct {
 	// in-flight slot released directly, independent of the telemetry path — the
 	// deadlock backstop for effective_concurrency=1.
 	onTerminal gamerunner.TerminalCallback
+
+	// onPatternStart / onPatternEnd report pattern games to the registry (UC-046).
+	onPatternStart gamerunner.PatternStartCallback
+	onPatternEnd   gamerunner.PatternCallback
+}
+
+// SetPatternCallbacks registers the UC-046 start and replay-record hooks.
+func (s *shadowSpawner) SetPatternCallbacks(start gamerunner.PatternStartCallback, end gamerunner.PatternCallback) {
+	s.onPatternStart = start
+	s.onPatternEnd = end
 }
 
 // SetTerminalCallback registers the #1014 terminal-outcome hook, propagated to
@@ -105,9 +118,27 @@ func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string, see
 	// the game stays own-rooted — graceful.
 	spec.ExperimentSpanContext = trace.SpanContextFromContext(ctx)
 
+	// UC-046 step 3: the arm carries its pinned archetype, cap and flag digest on
+	// the ctx. Shadow experiment games are archetype-only (maintainer decision on
+	// #1258): a spawn without an archetype is refused, never run on random motion.
+	p, ok := experiment.PatternSpawnFrom(ctx)
+	if !ok {
+		return "", fmt.Errorf("shadow spawn for experiment %s arm %s: %w", experimentID, arm, errSpawnNeedsArchetype)
+	}
+	spec.Pattern = p.Archetype
+	spec.MaxGameSeconds = p.MaxGameSeconds
+	spec.PairIndex = p.PairIndex
+	spec.FlagDigest = p.FlagDigest
+
 	runner := gamerunner.New(s.cfg, s.log)
 	if s.onTerminal != nil {
 		runner.SetTerminalCallback(s.onTerminal)
+	}
+	if s.onPatternStart != nil {
+		runner.SetPatternStartCallback(s.onPatternStart)
+	}
+	if s.onPatternEnd != nil {
+		runner.SetPatternCallback(s.onPatternEnd)
 	}
 
 	gameID, err := runner.StartExperimentGame(ctx, s.root, spec)

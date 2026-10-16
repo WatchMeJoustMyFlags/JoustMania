@@ -1255,7 +1255,7 @@ func TestBindAfterTeardownDropsTombstone(t *testing.T) {
 	r.mu.Lock()
 	r.releaseTombstones["game_zzz"] = "stale (test)"
 	r.mu.Unlock()
-	if bound := r.bindGame("exp_missing", "game_zzz", ArmControl, 0); bound {
+	if bound := r.bindGame("exp_missing", "game_zzz", ArmControl, 0, nil); bound {
 		t.Fatalf("bindGame on a missing experiment returned bound=true, want false")
 	}
 	r.mu.Lock()

@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/goleak"
 
+	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/flags"
@@ -918,4 +919,59 @@ func TestExperimentLoop_RunShutdownNoLeak(t *testing.T) {
 		t.Fatal("experiment loop run() did not return within 5s of ctx cancellation")
 	}
 	_ = journal.DefaultDir // keep the journal import meaningful for the suite
+}
+
+// UC: UC-046 A3 BR-013
+func TestExperimentLoop_OnGameTerminal_TimeoutKeepsSample(t *testing.T) {
+	t.Run("UC-046/A3 a pattern game that hit the safety cap is left for the telemetry conclude path", func(t *testing.T) {
+		spawner := &recordingSpawner{}
+		resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+		loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+		ctx := context.Background()
+		id, err := loop.registry.Declare(experiment.Intent{
+			Hypothesis: "h", FlagKey: "death_grace_period_seconds",
+			ExperimentalValue: 0.5, Objective: "balanced", TargetNPerArm: 3,
+		})
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		if err := loop.registry.Start(ctx, id); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n := loop.registry.AllocateAndSpawn(ctx); n == 0 {
+			t.Fatal("expected a spawn")
+		}
+		gameID := spawner.drain()[0].gameID
+		loop.onGameTerminal(gameID, gamerunner.OutcomeTimeout)
+		if !gameStillBound(loop, id, gameID) {
+			t.Fatal("OutcomeTimeout released the game; its fitness sample must count (BR-013)")
+		}
+	})
+}
+
+// UC: UC-046 A3 BR-013
+func TestDefaultGameFitness_TimeoutAtCap(t *testing.T) {
+	at := func(seconds float64) gamecontext.GameContext {
+		var gc gamecontext.GameContext
+		gc.Session.DurationSeconds = &seconds
+		return gc
+	}
+	capped, decided := at(300), at(60) // a timed-out arm (cap 300 s) vs an arm that ended at 60 s
+	t.Run("UC-046/A3 under endurance the arm that lasted to the cap scores higher", func(t *testing.T) {
+		c, d := defaultGameFitness(capped, decision.ObjectiveEndurance), defaultGameFitness(decided, decision.ObjectiveEndurance)
+		if !(c > d) || c != 1 {
+			t.Fatalf("endurance: capped=%v decided=%v, want capped=1 > decided", c, d)
+		}
+	})
+	t.Run("UC-046/A3 under accelerate the capped arm scores lower", func(t *testing.T) {
+		c, d := defaultGameFitness(capped, decision.ObjectiveAccelerate), defaultGameFitness(decided, decision.ObjectiveAccelerate)
+		if !(c < d) || c != 0 {
+			t.Fatalf("accelerate: capped=%v decided=%v, want capped=0 < decided", c, d)
+		}
+	})
+	t.Run("UC-046/A3 two capped arms give a near-zero difference and still count", func(t *testing.T) {
+		if a, b := defaultGameFitness(capped, decision.ObjectiveEndurance), defaultGameFitness(at(300), decision.ObjectiveEndurance); a != b {
+			t.Fatalf("capped pair differs: %v vs %v", a, b)
+		}
+	})
 }

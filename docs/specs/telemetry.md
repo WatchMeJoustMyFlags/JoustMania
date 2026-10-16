@@ -185,7 +185,7 @@ Published on each game's event bus (`StreamGameEvents`) and recorded as span eve
 | Traitor / Werewolf | `traitor_signal_start` / `_end`, `traitor_winner`, `werewolf_intro_start` / `_end`, `werewolf_reveal`, `werewolf_winner` | `traitor.py`, `werewolf.py` |
 | Zombies / Swapper | `zombie_intro_start` / `_end`, `time_announcement`, `human_converted`, `zombie_winner`, `player_swapped`, `swapper_winner` | `zombie.py`, `swapper.py` |
 | 1v1 | `round_start`, `round_end`, `round_timeout`, `tournament_intro`, `match_start`, `match_end`, `tournament_champion`, `tournament_no_winner` | `fight_club.py`, `tournament.py` |
-| NonStop | `player_death` (only mode that publishes it), `player_respawned` | `nonstop_joust.py:285,519` |
+| NonStop, JoustFFA | `player_death` (`serial`; FFA adds `alive_remaining`, used by the agent for the pattern-game elimination order, UC-046 BR-014), `player_respawned` (NonStop) | `nonstop_joust.py:285,519` |
 
 Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `score_update`,
 `team_eliminated`. Game-ending events for the menu: `game_ended`, `game_force_ended`, `game_error`.
@@ -269,35 +269,52 @@ coordinator / menu spans in snake_case; rust `grpc.server` vs Python `{Service}/
 
 **Traceability:** NFR-030, NFR-031 / UC-035 / `.claude/rules/development.md`.
 
-## 9. Planned: pattern games (#1258)
+## 9. Pattern games (#1258)
 
-Not on `main`. Names for [UC-046](../use_cases/UC-046.md); they enter the sections above when they ship. New
+Shipped by PR #1308 for [UC-046](../use_cases/UC-046.md). New
 namespace `pattern.*` (producers: controller-manager, agent). Goal: a pattern game can be replayed from its trace
 alone, and the trace proves whether the inputs matched.
 
 | Producer | Span / event | Attributes | When |
 |---|---|---|---|
-| controller-manager | span `controller.mock.pattern_install` | `pattern.set` (set id), `pattern.set_version`, `pattern.stream_rate_hz`, `pattern.max_game_seconds`, `pattern.slot_count`, `mock.tag`; status error plus `pattern.validation_errors` when the set is unknown or invalid | `AddControllers` with `pattern_set` |
-| controller-manager | event `pattern.slot` on `controller.mock.pattern_install`, one per controller | `pattern.slot_index`, `controller.serial`, `pattern.params` (the slot's segments as canonical JSON: sorted keys, no whitespace) | same |
-| controller-manager | span `controller.mock.pattern_release` | `controller.serial`, `pattern.set`, `pattern.slot_index`, `pattern.frames_delivered`, `pattern.signal_hash`, `pattern.frame_overruns` | `RemoveController` of a pattern controller |
-| game-coordinator | game root span (§3.2) | `game.rng_seed` (decimal string; shadow sessions with a non-zero seed only) | game start |
-| agent | event `experiment.pattern_pinned` on `agent.experiment` | `pattern.selection` (flag value as read), `pattern.sets` (pinned ids in pair order), `pattern.set_versions` | first spawn of an experiment |
-| agent | event `experiment.pattern_game` on `agent.experiment`; the same attributes on `agent.shadow_game.run` for a one-shot game | `game.id`, `experiment.arm`, `experiment.pair_index`, `pattern.set`, `pattern.set_version`, `game.rng_seed`, `pattern.stream_rate_hz`, `pattern.slot_serials` (serials in slot order) | each spawned arm |
-| agent | event `experiment.pattern_game_ended` on `agent.experiment` (or `agent.shadow_game.run`) | `game.id`, `pattern.elimination_order` (slot indices in death order), `pattern.winner_slot`, `pattern.signal_hashes` (in slot order), `pattern.replay_exact`, `pattern.non_exact_reasons` (`remote_backend`, `frame_overrun`, `concurrent_game`, `no_termination`) | game end |
-| agent | `agent.decision` / `agent.decide` in a pattern game | `pattern.target_slot` (slot of the targeted player, when the target is a player), `decision.chaos_draw_index` (index of the chaos RNG draw in the game, rules only) | each decision |
+| controller-manager | span `controller.mock.pattern_install` | `pattern.archetype`, `pattern.stream_rate_hz`, `pattern.players`, `pattern.params` (the parameter object as canonical JSON: sorted keys, no whitespace), `mock.tag`; status error plus `pattern.validation_errors` when the parameters are invalid | `AddControllers` with `archetype` |
+| controller-manager | event `pattern.slot` on `controller.mock.pattern_install`, one per controller | `pattern.slot_index`, `controller.serial` | same |
+| controller-manager | span `controller.mock.pattern_release` | `controller.serial`, `pattern.archetype`, `pattern.slot_index`, `pattern.frames_delivered`, `pattern.signal_hash`, `pattern.signal_checkpoints`, `pattern.frame_overruns` | `RemoveController` of a pattern controller |
+| agent | event `experiment.pattern_pinned` on `agent.experiment` | `pattern.selection` (flag value as read), `pattern.archetypes` (pinned names in pair order), `pattern.params_digests` (same order), `pattern.max_game_seconds` | first spawn of an experiment |
+| agent | event `experiment.pattern_game` on `agent.experiment`; the same attributes on `agent.shadow_game.run` for a one-shot game | `game.id`, `experiment.arm`, `experiment.pair_index`, `pattern.archetype`, `pattern.params_digest`, `game.rng_seed` (decimal string), `pattern.stream_rate_hz`, `pattern.slot_serials` (serials in slot order), `pattern.max_game_seconds`, `pattern.flag_digest` (SHA-256 hex of the canonical resolved values of the flags listed in UC-046 BR-011, or `unavailable`) | each spawned arm |
+| agent | event `experiment.pattern_game_ended` on `agent.experiment` (or `agent.shadow_game.run`) | `game.id`, `pattern.archetype`, `pattern.params_digest`, `pattern.outcome` (`winner`, `tie`, `timeout`, `aborted`, `error`), `pattern.censored` (true for `timeout`), `pattern.elimination_order` (slot indices in the order of the coordinator's `player_death` events), `pattern.winner_slot` (−1 = none), `pattern.order_source` (`events` or the `frames` fallback), `pattern.signal_hashes` (slot order), `pattern.replay_exact`, `pattern.non_exact_reasons` (`remote_backend`, `frame_overrun`, `concurrent_game`, `kill_switch`, `unseeded_draws`), `pattern.decisions` (`intervention:slot` in order), `pattern.flag_digest` | game end |
+| agent | `agent.decision` in a pattern game | `pattern.target_slot` (slot of the targeted player, when the target is a player), `decision.chaos_draw_index` (number of chaos draws of the game's rules engine so far) | each decision |
 
 **Signal hash:** FNV-1a/64 over the controller's delivered frames in order, each frame encoded as the signed
-32-bit little-endian integer round(f · 1000) (milli-g); rendered as 16 lowercase hex digits. f is computed in IEEE-754
-double precision; the milli-g rounding keeps the hash stable across Python builds, and golden tests pin it.
+32-bit little-endian integer ⌊intensity · 1000 + 0.5⌋ (milli-g, rounded half up); rendered as 16 lowercase hex digits.
+intensity is computed in IEEE-754 double precision; the milli-g rounding keeps the hash stable across Python builds,
+and golden tests pin it. **Checkpoints:** the hash value after every r delivered frames (one per second of game time).
+The total number of delivered frames depends on wall-clock lag (a dead player leaves the stream filter a few frames
+after its death; the winner's stream runs until the game is torn down), so replays compare the checkpoints on their
+common prefix, not the final hash.
 
-**Journal:** the experiment journal records the same facts: a `pattern_pinned` event (selection, pinned ids and
-versions), `pattern_set`, `pattern_set_version` and `rng_seed` on each `game_assigned`, and `replay_exact`,
-`non_exact_reasons`, `elimination_order` and `signal_hashes` on `game_concluded` / `game_released`.
+**Journal:** the experiment journal records the same facts: a `pattern_pinned` event (selection, pinned names,
+parameter objects, parameter digests, safety cap and a note when the cap fell back to 300), `archetype`,
+`params_digest`, `rng_seed` and `flag_digest` on each `game_assigned`, a `pattern_game_ended` event (outcome,
+`censored`, elimination order and its source, winner slot, signal hashes, checkpoints, replay classification, decision
+sequence) per pattern game, and a `pattern_pair_rerun` / `pattern_archetype_skipped` decision note when a pair runs
+again or an archetype is skipped (UC-046 BR-015). The experiment's conclusion (`outcome` event) reports the timeout
+count and rate per arm and whether one arm timed out clearly more often (UC-046 BR-013).
 
-**Replay check:** read `pattern.set`, `pattern.set_version`, `game.rng_seed`, `pattern.stream_rate_hz`, the game
-mode and sensitivity off the trace, run one shadow game with them (`SHADOW_GAME_SEED`), and compare: per-slot
-`pattern.signal_hash` equal (NFR-040), `pattern.elimination_order` and `pattern.winner_slot` equal (NFR-041),
-and the sequence of rules decisions as (`intervention` type, `pattern.target_slot`) equal (NFR-042). Only games with
-`pattern.replay_exact=true` on both sides are compared.
+**Liveness check (BR-008):** the runner asks the agent's telemetry multiplexer at the game's start, once per
+second while it runs and at its end whether another partition reports `game_active` with an update in the last
+10 s; stale partitions are ignored.
 
-**Traceability:** FR-107, FR-108, FR-109, FR-110, NFR-040 to NFR-042 / UC-046 / planned in `services/controller_manager/`, `services/game_coordinator/game_session.py`, `services/agent/experiment/`, `services/agent/gamerunner/` / none yet.
+**Replay check:** read `pattern.archetype`, `pattern.params_digest`, `game.rng_seed`, `pattern.stream_rate_hz`, the
+game mode and sensitivity off the trace, run one shadow game with them (`SHADOW_GAME_ARCHETYPE`, `SHADOW_GAME_SEED`),
+and compare: per-slot checkpoints equal on their common prefix (NFR-040), `pattern.elimination_order` and
+`pattern.winner_slot` equal (NFR-041), and the sequence of rules decisions as (`intervention` type,
+`pattern.target_slot`) equal (NFR-042). Only games with `pattern.replay_exact=true` and the same
+`pattern.params_digest` and `pattern.flag_digest` on both sides are compared. `scripts/pattern-replay-check.sh
+<archetype> [seed]` runs the archetype twice with the one-shot runner and performs this comparison on the two runs
+(it reads the `PATTERN_REPLAY_RECORD` line the one-shot runner prints), and `scripts/pattern-replay-check.sh --against
+<record>` replays one recorded game: the record is a saved `PATTERN_REPLAY_RECORD` JSON or a `pattern_game_ended`
+journal event (a line of the experiment's `events.jsonl`). The checkpoint hashes prove identical input; the
+elimination order, winner and decisions are the evidence that the game played out the same (UC-046 BR-001).
+
+**Traceability:** FR-107, FR-108, FR-109, FR-110, NFR-040 to NFR-042 / UC-046 / `services/controller_manager/mock_control_service.py`, `services/agent/experiment/registry_pattern.go`, `services/agent/gamerunner/operations.go`, `services/agent/decision/pattern_hook.go`, `services/agent/pattern_wiring.go` / `services/agent/gamerunner/pattern_test.go`, `services/agent/decision/pattern_hook_test.go`, `services/agent/experiment/registry_pattern_test.go`.

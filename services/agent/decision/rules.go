@@ -47,6 +47,54 @@ type ObjectiveRules struct {
 	// the decision loop can lift its cycle-level values onto the span as
 	// fitness.evaluated (#731).
 	lastFitness FitnessEvaluation
+
+	// UC-046 BR-007: in a pattern game the chaos RNG is a per-game PCG seeded from
+	// the game's rng_seed. seedSource is consulted until it answers (the game may be
+	// registered as a pattern game after its loop was built); nil = never seeded,
+	// the time-seeded RNG stays, and the rules path is byte-unchanged.
+	seedSource func() (uint64, bool)
+	seeded     bool
+	chaosDraws uint64
+	// lateSeed is called when the engine is seeded after it already drew chaos
+	// rolls from the time-seeded RNG (the game is then non-exact, BR-007).
+	lateSeed func()
+}
+
+// SetLateSeedHook installs the callback for a seed that arrived after chaos draws.
+func (r *ObjectiveRules) SetLateSeedHook(fn func()) {
+	r.mu.Lock()
+	r.lateSeed = fn
+	r.mu.Unlock()
+}
+
+// SetChaosSeedSource installs the per-game chaos seed lookup (UC-046 BR-007).
+func (r *ObjectiveRules) SetChaosSeedSource(src func() (uint64, bool)) {
+	r.mu.Lock()
+	r.seedSource = src
+	r.mu.Unlock()
+}
+
+// ChaosDraws is the number of chaos draws this engine made (decision.chaos_draw_index).
+func (r *ObjectiveRules) ChaosDraws() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.chaosDraws
+}
+
+// maybeSeedLocked switches to the per-game seeded RNG once the seed is known.
+// Caller holds r.mu.
+func (r *ObjectiveRules) maybeSeedLocked() {
+	if r.seeded || r.seedSource == nil {
+		return
+	}
+	if seed, ok := r.seedSource(); ok {
+		// UC-046 BR-007: per-game PCG, so the chaos draws replay with the game.
+		r.rng = rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)) // #nosec G404 -- non-cryptographic chaos jitter
+		r.seeded = true
+		if r.chaosDraws > 0 && r.lateSeed != nil {
+			r.lateSeed()
+		}
+	}
 }
 
 // NewObjectiveRules builds the engine. cfg may be nil, in which case
@@ -224,6 +272,8 @@ func (r *ObjectiveRules) chaosRoll(c gamecontext.GameContext) (float64, string) 
 	if len(active) == 0 {
 		return 0, ""
 	}
+	r.maybeSeedLocked()
+	r.chaosDraws++
 	return r.rng.Float64(), active[r.rng.IntN(len(active))].Serial
 }
 

@@ -12,14 +12,21 @@ import time
 from typing import TYPE_CHECKING
 
 import grpc
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from proto import controller_manager_mock_pb2, controller_manager_mock_pb2_grpc
+from services.controller_manager.multiplexer.motion_patterns import validate_archetype
 
 if TYPE_CHECKING:
     from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
+
+# UC-046 BR-004: scripted motion is refused for pattern controllers.
+PATTERN_REFUSAL = "pattern controller: deaths are organic only (UC-046 BR-004)"
 
 # Number of gameplay-stream frames the death-level acceleration is guaranteed
 # to be DELIVERED to the game (#926). The death latch is counted in DELIVERED
@@ -122,6 +129,11 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
         """
         try:
             serial = request.serial
+            if self.backend.has_pattern(serial):
+                if context is not None:
+                    context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
+                    context.set_details(PATTERN_REFUSAL)
+                return controller_manager_mock_pb2.MovementResponse(success=False, error=PATTERN_REFUSAL)
             try:
                 held = self.backend.hold_accel(serial, request.accel_x, request.accel_y, request.accel_z)
             except ValueError as e:
@@ -144,11 +156,16 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             logger.error(f"SimulateMovement error: {e}")
             return controller_manager_mock_pb2.MovementResponse(success=False, error=str(e))
 
-    def SimulateDeath(self, request, _context):
+    def SimulateDeath(self, request, context):
         """Simulate death by setting high acceleration and holding it briefly."""
         try:
             serial = request.serial
             if serial not in self.backend.controllers:
+                return controller_manager_mock_pb2.DeathResponse(success=False, accel_magnitude=0.0)
+            if self.backend.has_pattern(serial):
+                if context is not None:
+                    context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
+                    context.set_details(PATTERN_REFUSAL)
                 return controller_manager_mock_pb2.DeathResponse(success=False, accel_magnitude=0.0)
 
             # Set death-level acceleration. Sized (~9.95g) so that 2 DELIVERED
@@ -327,8 +344,9 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             logger.info(f"Mock: Waiting {duration}s before auto-ending game...")
             await asyncio.sleep(duration)
 
-            # Kill all but one player (leave winner)
-            serials = list(self.backend.controllers.keys())
+            # Kill all but one player (leave winner). Pattern controllers die
+            # organically only, so the scripted kill never touches them (UC-046 BR-004).
+            serials = [s for s in self.backend.controllers if not self.backend.has_pattern(s)]
             if len(serials) > 1:
                 # Leave the last player alive (winner)
                 players_to_kill = serials[:-1]
@@ -393,12 +411,15 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             return controller_manager_mock_pb2.AddControllerResponse(success=False, error=str(e), serial="")
 
     def RemoveController(self, request, _context):
-        """Remove a mock controller."""
+        """Remove a mock controller; a pattern controller returns its replay record (UC-046 step 8)."""
         try:
             serial = request.serial
+            pattern = self.backend.pattern_info(serial)
             removed = self.backend.remove_controller(serial)
             if removed:
                 logger.info(f"Mock: Removed controller {serial}")
+                if pattern is not None:
+                    return self._pattern_release(serial, pattern.record())
                 return controller_manager_mock_pb2.RemoveControllerResponse(success=True)
             return controller_manager_mock_pb2.RemoveControllerResponse(
                 success=False, error=f"Controller {serial} not found"
@@ -410,8 +431,13 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
     def AddControllers(self, request, _context):
         """Add multiple mock controllers at once.
 
-        request.reserved/request.tag apply to every added controller.
+        request.reserved/request.tag apply to every added controller. With
+        request.archetype the agent-pinned parameters are validated and slot i is
+        installed on the i-th returned serial (UC-046 step 4); invalid parameters
+        add nothing. The controller manager never reads flagd for archetypes.
         """
+        if request.archetype:
+            return self._add_pattern_controllers(request)
         try:
             serials = []
             for _ in range(request.count):
@@ -479,3 +505,70 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
                 )
 
         return proto_event
+
+    # ------------------------------------------------------------------
+    # Motion patterns (UC-046, #1258)
+    # ------------------------------------------------------------------
+
+    def _add_pattern_controllers(self, request):
+        """AddControllers with an archetype: validate, reserve one controller per player, install.
+
+        Pattern controllers are always reserved (hidden from the lobby, UC-046
+        Post-F-2), whatever request.reserved says.
+        """
+        try:
+            return self._install_pattern(request)
+        except Exception as e:
+            logger.error(f"AddControllers (archetype) error: {e}", exc_info=True)
+            return controller_manager_mock_pb2.AddControllersResponse(success=False, error=str(e))
+
+    def _install_pattern(self, request):
+        with tracer.start_as_current_span("controller.mock.pattern_install") as span:
+            span.set_attribute("pattern.archetype", request.archetype)
+            span.set_attribute("mock.tag", request.tag)
+            archetype, errors = validate_archetype(request.archetype, request.archetype_params)
+            if archetype is None:
+                span.set_attribute("pattern.validation_errors", errors)
+                span.set_status(Status(StatusCode.ERROR, "invalid archetype"))
+                error = f"archetype {request.archetype!r} rejected: " + "; ".join(errors)
+                return controller_manager_mock_pb2.AddControllersResponse(success=False, error=error)
+            span.set_attribute("pattern.stream_rate_hz", archetype.stream_rate_hz)
+            span.set_attribute("pattern.players", archetype.players)
+            # The agent's own canonical JSON (its params digest is computed over it).
+            span.set_attribute("pattern.params", request.archetype_params)
+            if request.count != archetype.players:
+                error = f"count {request.count} != players {archetype.players} of {archetype.name}"
+                span.set_status(Status(StatusCode.ERROR, error))
+                return controller_manager_mock_pb2.AddControllersResponse(success=False, error=error)
+            serials = [self.backend.add_controller(reserved=True, tag=request.tag) for _ in range(archetype.players)]
+            self.backend.install_pattern(serials, archetype)
+            for slot, serial in enumerate(serials):
+                span.add_event("pattern.slot", {"pattern.slot_index": slot, "controller.serial": serial})
+            logger.info(f"Mock: Added pattern controllers {serials} for {archetype.name} (tag={request.tag!r})")
+            return controller_manager_mock_pb2.AddControllersResponse(
+                success=True,
+                serials=serials,
+                archetype=archetype.name,
+                stream_rate_hz=archetype.stream_rate_hz,
+                players=archetype.players,
+            )
+
+    def _pattern_release(self, serial: str, record: dict):
+        """Emit controller.mock.pattern_release and return the replay record."""
+        with tracer.start_as_current_span("controller.mock.pattern_release") as span:
+            span.set_attribute("controller.serial", serial)
+            span.set_attribute("pattern.archetype", record["archetype"])
+            span.set_attribute("pattern.slot_index", record["slot"])
+            span.set_attribute("pattern.frames_delivered", record["frames_delivered"])
+            span.set_attribute("pattern.signal_hash", f"{record['signal_hash']:016x}")
+            span.set_attribute("pattern.signal_checkpoints", record["signal_checkpoints"])
+            span.set_attribute("pattern.frame_overruns", record["frame_overruns"])
+        return controller_manager_mock_pb2.RemoveControllerResponse(
+            success=True,
+            pattern_slot=record["slot"],
+            frames_delivered=record["frames_delivered"],
+            signal_hash=record["signal_hash"],
+            frame_overruns=record["frame_overruns"],
+            signal_checkpoints=record["signal_checkpoints"],
+            archetype=record["archetype"],
+        )

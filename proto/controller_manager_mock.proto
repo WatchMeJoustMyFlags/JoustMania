@@ -210,6 +210,13 @@ message RemoveControllerRequest {
 message RemoveControllerResponse {
     bool success = 1;
     string error = 2;
+    // Replay record of a pattern controller (UC-046 step 8); zero for others.
+    int32 pattern_slot = 3;
+    uint64 frames_delivered = 4;
+    fixed64 signal_hash = 5;          // FNV-1a/64 over delivered milli-g frames
+    uint32 frame_overruns = 6;
+    repeated string signal_checkpoints = 7;  // hash after every r frames (one per second of game time)
+    string archetype = 8;             // empty = not a pattern controller
 }
 
 // AddControllers - add multiple mock controllers at once
@@ -220,10 +227,18 @@ message AddControllersRequest {
     bool reserved = 2;
     // Identifies the owning agent/game — applied to all added controllers.
     string tag = 3;
+    // Motion archetype (UC-046): its name and parameter object as JSON, resolved
+    // and pinned by the agent. Empty = random noise. count must equal the
+    // archetype's players; slot i drives the i-th serial.
+    string archetype = 4;
+    string archetype_params = 5;
 }
 
 message AddControllersResponse {
     bool success = 1;
     string error = 2;
     repeated string serials = 3;
+    string archetype = 4;
+    int32 stream_rate_hz = 5;
+    int32 players = 6;
 }

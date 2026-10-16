@@ -146,6 +146,7 @@ lint:
 	./scripts/tests/test-agent-backend.sh >/dev/null
 	./scripts/tests/test-talk-preflight.sh >/dev/null
 	./scripts/tests/test-talk-stage.sh >/dev/null
+	./scripts/tests/test-pattern-replay-check.sh >/dev/null
 
 .PHONY: format
 format:

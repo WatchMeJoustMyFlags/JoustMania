@@ -15,7 +15,30 @@ import (
 
 	mockpb "github.com/joustmania/agent/gen/controller_manager_mock"
 	gcpb "github.com/joustmania/agent/gen/game_coordinator"
+	"github.com/joustmania/agent/patterngame"
 )
+
+// testPatternSpec returns spec as a 2-player pattern game with a 100-unit cap
+// (shadow games are archetype-only, UC-046).
+func testPatternSpec(t *testing.T, spec Spec) Spec {
+	t.Helper()
+	a, errs := patterngame.NewArchetype("unit_duel", map[string]any{
+		"players": 2.0, "stream_rate_hz": 30.0, "base": 1.0, "drift": 0.0, "amp": 0.0,
+		"period_s": 1.0, "phase": 0.0, "burst_h": 0.0, "burst_period_s": 0.0,
+		"d_base": 0.0, "d_drift": 0.01, "d_amp": 0.0, "d_phase": 0.0,
+	})
+	if len(errs) > 0 {
+		t.Fatalf("archetype: %v", errs)
+	}
+	spec.Pattern = a
+	if spec.MaxGameSeconds == 0 {
+		spec.MaxGameSeconds = 100
+	}
+	if spec.GameName == "" {
+		spec.GameName = patterngame.SupportedMode
+	}
+	return spec
+}
 
 // fakeMock is an in-process MockControllerService recording the calls the
 // runner makes. Behavior is configurable per-test via the func fields.
@@ -39,11 +62,16 @@ type fakeMock struct {
 	addControllers func(*mockpb.AddControllersRequest) (*mockpb.AddControllersResponse, error)
 	// list overrides ListMockControllers. Default reports `added` as reserved.
 	list func() (*mockpb.ListResponse, error)
+	// removeResponse overrides the RemoveController answer (UC-046 replay record).
+	removeResponse func(serial string) *mockpb.RemoveControllerResponse
+	// lastAdd is the last AddControllers request.
+	lastAdd *mockpb.AddControllersRequest
 }
 
 func (f *fakeMock) AddControllers(_ context.Context, req *mockpb.AddControllersRequest) (*mockpb.AddControllersResponse, error) {
 	f.mu.Lock()
 	f.reservedTag = req.GetTag()
+	f.lastAdd = req
 	f.mu.Unlock()
 	if f.addControllers != nil {
 		return f.addControllers(req)
@@ -55,13 +83,17 @@ func (f *fakeMock) AddControllers(_ context.Context, req *mockpb.AddControllersR
 	f.mu.Lock()
 	f.added = append(f.added, serials...)
 	f.mu.Unlock()
-	return &mockpb.AddControllersResponse{Success: true, Serials: serials}, nil
+	return &mockpb.AddControllersResponse{Success: true, Serials: serials, Archetype: req.GetArchetype()}, nil
 }
 
 func (f *fakeMock) RemoveController(_ context.Context, req *mockpb.RemoveControllerRequest) (*mockpb.RemoveControllerResponse, error) {
 	f.mu.Lock()
 	f.removed = append(f.removed, req.GetSerial())
+	override := f.removeResponse
 	f.mu.Unlock()
+	if override != nil {
+		return override(req.GetSerial()), nil
+	}
 	return &mockpb.RemoveControllerResponse{Success: true}, nil
 }
 
@@ -260,14 +292,15 @@ func newHarness(t *testing.T, mock *fakeMock, coord *fakeCoord) *testHarness {
 	}
 
 	r := New(Config{
-		CoordinatorAddr:  "coordinator",
-		MockAddr:         "mock",
-		GameTimeout:      2 * time.Second,
-		MovementInterval: 5 * time.Millisecond,
-		KillInterval:     10 * time.Millisecond,
-		RPCTimeout:       2 * time.Second,
+		CoordinatorAddr: "coordinator",
+		MockAddr:        "mock",
+		RPCTimeout:      2 * time.Second,
 	}, nil)
 	r.dial = dial
+	// Every shadow game is a pattern game; its safety cap is MaxGameSeconds units.
+	// Tests run with 1 unit = 20 ms (a 100 "s" cap = 2 s) and a private tracker.
+	r.capUnit = 20 * time.Millisecond
+	r.tracker = patterngame.NewTracker()
 
 	return &testHarness{
 		runner: r,

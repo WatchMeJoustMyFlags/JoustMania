@@ -1180,22 +1180,25 @@ Unlike the action sink (#730), which acts through flagd file writes, game-start
 has no flag representation — it is a **direct gRPC** capability, and these are
 the agent's first gRPC clients toward the game stack.
 
-`RunShadowGame(ctx, spec)`:
+Every shadow game is a **pattern game** (UC-046; maintainer decision on #1258:
+experiments are archetype-only). `RunShadowGame(ctx, spec)` and
+`StartExperimentGame` refuse a spec without a motion archetype, so no random-motion
+or scripted-kill game can be started from the agent.
 
-1. `AddControllers(count=N, reserved=true, tag="agent:<runID>")` → serials
-   (menu-invisible synthetic players).
-2. `StreamGameEvents(StartGameConfig{...})` — headless start (no lobby); the
-   coordinator-assigned `game_id` is captured from the first stamped event
-   (`GameEvent.game_id`, #776).
-3. Drives the game: `SimulateMovement(0.2, 0.2, 1.0)`, which the mock holds as a
-   constant ~1.04g until changed (UC-003 BR-002, #1279; the periodic resend is
-   now redundant but kept), + paced `SimulateDeath` per player (the mock latches
-   each death for 2 delivered frames, #926; the pacing lets each death and its
-   post-death grace pass) to reach the last-player-standing condition.
-4. Awaits a terminal event (`game_ended` / `game_force_ended` / `game_error`)
-   with a timeout; on timeout calls `ForceEndGame{game_id}`.
-5. ALWAYS removes its reserved controllers (deferred), so a failed run never
-   orphans controllers.
+1. `AddControllers(count=players, reserved=true, tag="agent:<runID>",
+   archetype=<name>, archetype_params=<canonical JSON>)` → serials; slot i drives
+   the i-th serial with intensity_i(k / r).
+2. `StreamGameEvents(StartGameConfig{...})` — headless start (no lobby) with the
+   pair's `rng_seed`; the `game_id` is captured from the first stamped event.
+3. No drive: players die organically. The runner records `player_death`,
+   `game_winner` and `game_tie` events for the elimination order, and checks once
+   per second whether another game is live (non-exact `concurrent_game`).
+4. Awaits a terminal event; at the safety cap (`experiment.max_game_seconds`,
+   default 300 s) calls `ForceEndGame{game_id}`: outcome `timeout`, a valid,
+   right-censored sample. A force-end the agent did not request (a real game
+   preempting shadows) is an abort.
+5. ALWAYS removes its reserved controllers (deferred) and builds the replay record
+   from their `RemoveController` answers.
 
 `SweepOrphans(ctx, "agent:")` is the crash backstop: it removes reserved
 controllers whose tag has the prefix but which no live game (`ListGames`)
@@ -1217,9 +1220,10 @@ startup, then continues its normal observe loop.
 |---------|---------|---------|
 | `AGENT_SHADOW_GAME` | `false` | Enable the one-shot shadow game |
 | `SHADOW_GAME_MODE` | `JoustFFA` | Game mode |
-| `SHADOW_GAME_PLAYERS` | `4` | Reserved controller count (≥2) |
 | `SHADOW_GAME_SENSITIVITY` | `2` | Death sensitivity 0-4 |
-| `SHADOW_GAME_TIMEOUT_SECONDS` | `90` | Force-end deadline |
+| `SHADOW_GAME_ARCHETYPE` | first of `experiment.mock_archetypes` | Archetype of the one-shot game (required: the runner refuses without one) |
+| `SHADOW_GAME_SEED` | FNV-1a/64 of the archetype name | Game seed, for replays (`scripts/pattern-replay-check.sh`) |
+| `FLAGD_OFREP_URL` | `http://<FLAGD_HOST>:8016` | flagd OFREP endpoint for the pattern flag digest (UC-046 BR-011) |
 | `GAME_COORDINATOR_ADDR` | `game-coordinator:50053` | Coordinator gRPC |
 | `MOCK_CONTROLLER_ADDR` | `controller-manager:50062` | Mock control gRPC |
 

@@ -452,6 +452,132 @@
       },
       "defaultVariant": "default"
     },
+    "experiment.mock_archetypes": {
+      "state": "ENABLED",
+      "variants": {
+        "all": "calm_long,slow_cascade,jittery_novices,close_race,late_burst,quick_cascade",
+        "quick_cascade": "quick_cascade",
+        "slow_cascade": "slow_cascade"
+      },
+      "defaultVariant": "all"
+    },
+    "experiment.mock_archetype": {
+      "state": "ENABLED",
+      "variants": {
+        "off": {},
+        "calm_long": {
+          "drift": 0.0,
+          "amp": 0.15,
+          "period_s": 4.0,
+          "phase": 0.0,
+          "burst_h": 0.0,
+          "burst_period_s": 0.0,
+          "d_base": 0.0,
+          "d_drift": 0.0,
+          "d_amp": 0.0,
+          "d_phase": 0.25,
+          "players": 4,
+          "stream_rate_hz": 30,
+          "base": 1.0
+        },
+        "slow_cascade": {
+          "drift": 0.01,
+          "amp": 0.1,
+          "period_s": 3.0,
+          "phase": 0.0,
+          "burst_h": 0.0,
+          "burst_period_s": 0.0,
+          "d_base": 0.0,
+          "d_drift": 0.01,
+          "d_amp": 0.0,
+          "d_phase": 0.25,
+          "players": 4,
+          "stream_rate_hz": 30,
+          "base": 1.0
+        },
+        "jittery_novices": {
+          "drift": 0.002,
+          "amp": 0.3,
+          "period_s": 1.5,
+          "phase": 0.0,
+          "burst_h": 0.7,
+          "burst_period_s": 7.0,
+          "d_base": 0.05,
+          "d_drift": 0.0,
+          "d_amp": 0.05,
+          "d_phase": 0.25,
+          "players": 4,
+          "stream_rate_hz": 30,
+          "base": 1.1
+        },
+        "close_race": {
+          "drift": 0.02,
+          "amp": 0.2,
+          "period_s": 2.5,
+          "phase": 0.0,
+          "burst_h": 0.0,
+          "burst_period_s": 0.0,
+          "d_base": 0.0,
+          "d_drift": 0.003,
+          "d_amp": 0.0,
+          "d_phase": 0.33,
+          "players": 3,
+          "stream_rate_hz": 30,
+          "base": 1.0
+        },
+        "late_burst": {
+          "drift": 0.004,
+          "amp": 0.05,
+          "period_s": 5.0,
+          "phase": 0.0,
+          "burst_h": 0.9,
+          "burst_period_s": 9.0,
+          "d_base": 0.0,
+          "d_drift": 0.002,
+          "d_amp": 0.0,
+          "d_phase": 0.25,
+          "players": 4,
+          "stream_rate_hz": 15,
+          "base": 1.0
+        },
+        "quick_cascade": {
+          "players": 3,
+          "stream_rate_hz": 30,
+          "base": 1.0,
+          "drift": 0.02,
+          "amp": 0.05,
+          "period_s": 3.0,
+          "phase": 0.0,
+          "burst_h": 0.0,
+          "burst_period_s": 0.0,
+          "d_base": 0.0,
+          "d_drift": 0.03,
+          "d_amp": 0.0,
+          "d_phase": 0.25
+        }
+      },
+      "defaultVariant": "off",
+      "targeting": {
+        "if": [
+          {
+            "var": "archetype"
+          },
+          {
+            "var": "archetype"
+          },
+          "off"
+        ]
+      }
+    },
+    "experiment.max_game_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 300,
+        "long": 600,
+        "soak": 1800
+      },
+      "defaultVariant": "default"
+    },
     "experiment_shadow_effective_concurrency": {
       "state": "ENABLED",
       "variants": {

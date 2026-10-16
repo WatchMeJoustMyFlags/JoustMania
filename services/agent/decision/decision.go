@@ -293,6 +293,9 @@ type Loop struct {
 	// backends; rules is the built-in floor and needs no entry. Nil = no remote
 	// backend known (any non-rules value falls back to rules, unknown_backend).
 	decideBackends *DecideRegistry
+	// pattern observes pattern games (UC-046): remote-backend marking and the
+	// decision sequence. nil = not wired (no pattern bookkeeping).
+	pattern PatternObserver
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -678,6 +681,8 @@ func (l *Loop) startSignalReceivedSpan(ctx context.Context, c gamecontext.GameCo
 // decide. The legacy mode=llm path (#739/#741/#847/#917/#1207) was retired in #1234.
 func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger) ([]Decision, *decideRecord) {
 	if !snapshot.Decision.IsRules() {
+		// UC-046 A7: a remote backend may decide in a pattern game, which makes it non-exact.
+		l.markPatternRemote()
 		return l.decideRemote(ctx, snapshot, c, trig)
 	}
 	// The remote call gate is not reached on rules: leave the empty-allow-list
@@ -740,6 +745,8 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	}
 	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision, startOpts...)
 	defer dSpan.End()
+	// UC-046 step 7 / NFR-042: record the decision in the pattern game's sequence.
+	l.recordPatternDecision(dSpan, snapshot, d)
 
 	// The interventions.allowed evaluation as a feature_flag.* span event
 	// (semconv) — same shape the openfeature OTel hooks emit in the Python

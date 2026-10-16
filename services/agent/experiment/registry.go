@@ -20,6 +20,7 @@ import (
 
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment/journal"
+	"github.com/joustmania/agent/patterngame"
 )
 
 // registry.go is the agent-owned experiment COORDINATOR (design §7, #978). It is
@@ -265,6 +266,19 @@ type entry struct {
 	// be appended to anyway.
 	span    trace.Span
 	spanCtx trace.SpanContext
+
+	// pin is the experiment's pinned archetype selection (UC-046 step 2): nil until
+	// its first allocation pass resolves it; restored from the journal on rehydrate
+	// (BR-015).
+	pin *patterngame.Pin
+	// pairReruns counts reruns per pair; pairSkipped marks archetypes given up
+	// after maxPairReruns (BR-015).
+	pairReruns  map[int]int
+	pairSkipped map[int]bool
+	// patternGames / patternTimeouts count finished pattern games and timeouts per
+	// arm (BR-013 reporting).
+	patternGames    map[string]int
+	patternTimeouts map[string]int
 }
 
 // inFlight returns the experiment's current count of live (unconcluded) shadow
@@ -344,6 +358,15 @@ type Registry struct {
 	// bindGame (the only window in which a real game_id can be reported-terminal before
 	// it is bound). It gates and bounds releaseTombstones (see above).
 	spawnsInFlight int
+
+	// patterns pins archetype selections (UC-046). Production always wires it; nil
+	// is a test-only seam for the allocation mechanics (the production spawner
+	// refuses any spawn without an archetype).
+	patterns PatternPinner
+	// flagDigest computes UC-046 BR-011's digest for an arm before it spawns.
+	flagDigest func(ctx context.Context, experimentID, arm string) string
+	// patternTracker force-ends in-flight pattern games on the kill switch (A12).
+	patternTracker *patterngame.Tracker
 }
 
 // RegistryConfig configures a Registry. Every seam may be nil — a nil seam
@@ -409,6 +432,16 @@ type RegistryConfig struct {
 	// assert the root span, or leave it nil to disable the span. The root span and its
 	// re-parenting are OBSERVABILITY ONLY — a nil tracer changes no lifecycle behavior.
 	Tracer trace.Tracer
+	// Patterns pins the experiment.mock_archetypes selection in each experiment's
+	// first allocation pass (UC-046). Production always wires it; nil is a test-only
+	// seam for the allocation mechanics.
+	Patterns PatternPinner
+	// FlagDigest computes the arm's resolved-values flag digest (UC-046 BR-011)
+	// before the spawn; nil ⇒ no digest.
+	FlagDigest func(ctx context.Context, experimentID, arm string) string
+	// PatternTracker is the live pattern-game tracker the kill switch force-ends
+	// games through (UC-046 A12). nil ⇒ no force-end.
+	PatternTracker *patterngame.Tracker
 }
 
 // NewRegistry builds a Registry over the injected seams. It does NOT touch the
@@ -483,6 +516,9 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 		tracer:            tracer,
 		entries:           make(map[string]*entry),
 		releaseTombstones: make(map[string]string),
+		patterns:          cfg.Patterns,
+		flagDigest:        cfg.FlagDigest,
+		patternTracker:    cfg.PatternTracker,
 	}
 }
 
@@ -697,6 +733,11 @@ func (r *Registry) AllocateAndSpawn(ctx context.Context) int {
 	if r.spawner == nil {
 		return 0
 	}
+	// UC-046 step 2: pin the archetype selection of experiments that have not spawned yet.
+	r.pinPending(ctx)
+	// UC-046 A6 / BR-015: conclude pattern experiments whose archetypes are all used
+	// or skipped, also when the last arms failed at spawn.
+	defer r.concludeExhaustedPatterns(ctx)
 	spawned := 0
 	for {
 		// Each iteration is one round-robin PASS: pick the next live experiment (from
@@ -733,6 +774,8 @@ type pairPlan struct {
 	seed      uint64
 	pairIndex int
 	arms      []string // arm(s) reserved this tick, in reservation order
+	// pattern is set for a pattern experiment's arm (UC-046 step 3).
+	pattern *PatternSpawn
 }
 
 // startedArm is one arm of a CRN pair that successfully spawned a live game. It is
@@ -761,6 +804,12 @@ func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, sto
 	if sc, ok := r.ExperimentSpanContext(plan.id); ok {
 		spawnCtx = trace.ContextWithRemoteSpanContext(ctx, sc)
 	}
+	if plan.pattern != nil {
+		if r.flagDigest != nil {
+			plan.pattern.FlagDigest = r.flagDigest(ctx, plan.id, plan.arms[0])
+		}
+		spawnCtx = WithPatternSpawn(spawnCtx, *plan.pattern)
+	}
 	var live []startedArm
 	for i, arm := range plan.arms {
 		gameID, err := r.spawner.Spawn(spawnCtx, plan.id, arm, plan.seed)
@@ -779,7 +828,7 @@ func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, sto
 				"experiment_id", plan.id, "arm", arm, "seed", plan.seed, "error", err)
 			return 0, true
 		}
-		if r.bindGame(plan.id, gameID, arm, plan.pairIndex) {
+		if r.bindGame(plan.id, gameID, arm, plan.pairIndex, plan.pattern) {
 			live = append(live, startedArm{arm: arm, gameID: gameID})
 		}
 		// If bindGame did NOT bind (the #1014 bind-vs-fast-terminal race freed the
@@ -809,6 +858,10 @@ func (r *Registry) rollbackPair(plan pairPlan, failedIdx int, liveSiblings []sta
 	for _, s := range liveSiblings {
 		r.ReleaseGame(s.gameID, "crn pair rollback: sibling arm spawn failed (#1003)")
 	}
+	// UC-046 BR-015: a failed pattern spawn uses up no archetype; reserve it again.
+	if plan.pattern != nil {
+		r.rewindFailedSpawn(plan.id, len(plan.arms)-failedIdx)
+	}
 }
 
 // nextPair reserves the next Common-Random-Numbers PAIR (#1003) for a live
@@ -828,6 +881,10 @@ func (r *Registry) nextPair() (pairPlan, bool) {
 	// is required to make any progress.
 	free := r.effectiveCap - r.inFlightLocked()
 	if free <= 0 {
+		return pairPlan{}, false
+	}
+	// UC-046 BR-010: no other shadow game while a pattern game is in flight.
+	if r.patternInFlightLocked() {
 		return pairPlan{}, false
 	}
 	live := r.liveIDsLocked()
@@ -879,6 +936,26 @@ func (r *Registry) nextPair() (pairPlan, bool) {
 		if toReserve <= 0 {
 			continue
 		}
+		var pattern *PatternSpawn
+		if e.pin == nil && r.patterns != nil {
+			continue // not pinned yet (pinPending runs first; a fresh Start waits a tick)
+		}
+		if r.patterns != nil && !e.patternActive() {
+			continue // archetype-only: never spawn without a pinned archetype (UC-046 A1)
+		}
+		if e.patternActive() {
+			// UC-046 BR-010: a pattern arm spawns only when no shadow game is in flight,
+			// one at a time. A6: one pair per pinned archetype, then no more.
+			if r.inFlightLocked() > 0 || pairIndex >= len(e.pin.Archetypes) {
+				continue
+			}
+			toReserve = 1
+			pattern = &PatternSpawn{
+				Archetype:      e.pin.Archetypes[pairIndex],
+				MaxGameSeconds: e.pin.MaxGameSeconds,
+				PairIndex:      pairIndex,
+			}
+		}
 
 		seed := pairSeed(cand, pairIndex)
 		r.rrCursor = (start + i + 1) % len(live)
@@ -898,7 +975,7 @@ func (r *Registry) nextPair() (pairPlan, bool) {
 			r.spawnsInFlight++
 			arms = append(arms, arm)
 		}
-		return pairPlan{id: cand, seed: seed, pairIndex: pairIndex, arms: arms}, true
+		return pairPlan{id: cand, seed: seed, pairIndex: pairIndex, arms: arms, pattern: pattern}, true
 	}
 	return pairPlan{}, false
 }
@@ -963,7 +1040,7 @@ func pairSeed(experimentID string, pairIndex int) uint64 {
 // pairIndex is the Common-Random-Numbers pair this game belongs to (#1003); it is
 // stamped onto the game_assigned event (Event.PairIndex) so the paired-difference
 // verdict (#1004) can recover which two games share a seed.
-func (r *Registry) bindGame(id, gameID, arm string, pairIndex int) bool {
+func (r *Registry) bindGame(id, gameID, arm string, pairIndex int, pattern *PatternSpawn) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// The spawn that produced this game_id has resolved (whichever branch we take
@@ -1010,6 +1087,8 @@ func (r *Registry) bindGame(id, gameID, arm string, pairIndex int) bool {
 			Arm:    arm,
 			Note:   reason,
 		})
+		// UC-046 BR-015: the pattern arm ended without a sample; its pair runs again.
+		r.rerunPairLocked(e, pairIndex, reason)
 		r.log.Warn("experiment.game_released_before_bind (#1014)",
 			"experiment_id", id, "game_id", gameID, "arm", arm, "reason", reason)
 		return false
@@ -1026,6 +1105,7 @@ func (r *Registry) bindGame(id, gameID, arm string, pairIndex int) bool {
 		GameID:    gameID,
 		Arm:       arm,
 		PairIndex: &pi,
+		Pattern:   e.patternFactsLocked(pairIndex, pattern),
 	})
 	r.log.Info("experiment.game_assigned",
 		"experiment_id", id, "game_id", gameID, "arm", arm, "pair_index", pairIndex)
@@ -1172,6 +1252,11 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 		return r.conclude(ctx, id, final)
 	}
 
+	// UC-046 A6: a pattern experiment whose archetypes are all used concludes once
+	// its last game has ended.
+	if st, done := r.concludeIfPatternExhausted(ctx, id); done {
+		return st, nil
+	}
 	return StatusRunning, nil
 }
 
@@ -1235,10 +1320,16 @@ func (r *Registry) ReleaseGame(gameID, reason string) bool {
 		PairIndex: pairIdx,
 		Note:      reason,
 	})
+	// UC-046 BR-015: a pattern arm released without a sample reruns its pair.
+	if pairIdx != nil {
+		r.rerunPairLocked(e, *pairIdx, reason)
+	}
 	r.mu.Unlock()
 
 	r.log.Info("experiment.game_released",
 		"experiment_id", id, "game_id", gameID, "arm", arm, "reason", reason)
+	// UC-046 A6: a released last game of an exhausted pattern experiment concludes it.
+	r.concludeIfPatternExhausted(context.Background(), id)
 	return true
 }
 
@@ -1328,6 +1419,13 @@ func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verd
 		return "", nil
 	}
 	e.status = StatusConcluded
+	// UC-046 BR-013: report pattern timeouts per arm with the conclusion.
+	if summary := e.timeoutSummaryLocked(); summary != "" {
+		if verdict.Reason != "" {
+			verdict.Reason += "; "
+		}
+		verdict.Reason += summary
+	}
 	r.recordDecision(e.journal, StatusConcluded, "target N reached / verdict "+verdict.Outcome)
 	jrnl := e.journal
 	flagKey := e.flagKey
@@ -1431,6 +1529,16 @@ func (r *Registry) AbortAll(ctx context.Context, reason string) []string {
 	r.mu.Unlock()
 
 	sort.Strings(ids) // deterministic order (tests + stable logs)
+	// UC-046 A12: force-end in-flight pattern games, marked non-exact kill_switch.
+	var patternGames []string
+	if r.patternTracker != nil {
+		r.mu.Lock()
+		patternGames = r.patternGamesLocked(ids)
+		r.mu.Unlock()
+	}
+	for _, gid := range patternGames {
+		r.patternTracker.Abort(gid, patterngame.ReasonKillSwitch)
+	}
 	for _, id := range ids {
 		_ = r.Abort(ctx, id, reason)
 	}
@@ -1500,7 +1608,14 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 // restart semantics and keeps Rehydrate free of an event replay.
 func (r *Registry) Rehydrate(ids []string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	var lost []string
+	defer func() {
+		r.mu.Unlock()
+		// UC-046 BR-015: a pattern experiment whose pin cannot be restored is discarded.
+		for _, id := range lost {
+			r.teardown(context.Background(), id, r.flagKeyOf(id), StatusDiscarded, patterngame.DiscardPinLost)
+		}
+	}()
 	for _, id := range ids {
 		jrnl, err := journal.Load(r.root, id)
 		if err != nil {
@@ -1533,6 +1648,9 @@ func (r *Registry) Rehydrate(ids []string) error {
 		// (idempotent), so no double span.
 		r.startSpanLocked(e, jrnl.Intent())
 		r.entries[id] = e
+		if r.patterns != nil && !r.restorePatternLocked(e) {
+			lost = append(lost, id)
+		}
 	}
 	return nil
 }

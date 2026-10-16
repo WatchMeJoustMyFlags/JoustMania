@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -16,6 +18,7 @@ import (
 
 	mockpb "github.com/joustmania/agent/gen/controller_manager_mock"
 	gcpb "github.com/joustmania/agent/gen/game_coordinator"
+	"github.com/joustmania/agent/patterngame"
 )
 
 // ErrGameInProgress is the sentinel the coordinator's single-game cap surfaces:
@@ -42,12 +45,19 @@ func (r *Runner) reserveControllers(ctx context.Context, cl *clients, spec Spec)
 		Count:    int32(spec.Players),
 		Reserved: true,
 		Tag:      spec.Tag(),
+		// UC-046 step 3: the agent-pinned archetype (every shadow game has one).
+		Archetype:       spec.Pattern.Name,
+		ArchetypeParams: spec.Pattern.ParamsJSON,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("AddControllers: %w", err)
 	}
 	if !resp.GetSuccess() {
 		return nil, fmt.Errorf("AddControllers rejected: %s", resp.GetError())
+	}
+	if spec.IsPattern() && resp.GetArchetype() != spec.Pattern.Name {
+		return resp.GetSerials(), fmt.Errorf("AddControllers installed archetype %q, want %q",
+			resp.GetArchetype(), spec.Pattern.Name)
 	}
 	serials := resp.GetSerials()
 	if len(serials) != spec.Players {
@@ -139,13 +149,156 @@ func (r *Runner) missingControllers(ctx context.Context, cl *clients, want []str
 }
 
 // removeControllers removes each serial best-effort. Cleanup must not fail the
-// run, so errors are logged and swallowed.
-func (r *Runner) removeControllers(ctx context.Context, cl *clients, serials []string) {
+// run, so errors are logged and swallowed. For pattern controllers it returns the
+// replay records the controller manager answers with (UC-046 step 8).
+func (r *Runner) removeControllers(ctx context.Context, cl *clients, serials []string) []patterngame.SlotRecord {
+	var slots []patterngame.SlotRecord
 	for _, serial := range serials {
-		_, err := cl.mock.RemoveController(ctx, &mockpb.RemoveControllerRequest{Serial: serial})
+		resp, err := cl.mock.RemoveController(ctx, &mockpb.RemoveControllerRequest{Serial: serial})
 		if err != nil {
 			r.log.Warn("shadow game cleanup: RemoveController failed", "serial", serial, "error", err)
+			continue
 		}
+		if resp.GetArchetype() != "" {
+			slots = append(slots, patterngame.SlotRecord{
+				Slot:            int(resp.GetPatternSlot()),
+				Serial:          serial,
+				FramesDelivered: resp.GetFramesDelivered(),
+				SignalHash:      resp.GetSignalHash(),
+				Checkpoints:     resp.GetSignalCheckpoints(),
+				FrameOverruns:   resp.GetFrameOverruns(),
+			})
+		}
+	}
+	return slots
+}
+
+// withPatternPlayers sets Players to the archetype's players for a pattern game.
+func withPatternPlayers(spec Spec) Spec {
+	if spec.IsPattern() && spec.Pattern.Players > 0 {
+		spec.Players = spec.Pattern.Players
+	}
+	return spec
+}
+
+// registerPattern records a started pattern game with the tracker and returns the
+// channel that force-ends it (kill switch, UC-046 A12).
+func (r *Runner) registerPattern(spec Spec, gameID string, serials []string) (<-chan struct{}, patterngame.Info, bool) {
+	if !spec.IsPattern() || r.tracker == nil {
+		return nil, patterngame.Info{}, false
+	}
+	abort := make(chan struct{})
+	var once sync.Once
+	info := patterngame.Info{
+		GameID:         gameID,
+		Archetype:      spec.Pattern,
+		MaxGameSeconds: patterngame.ClampCap(spec.MaxGameSeconds),
+		Seed:           spec.Seed,
+		Serials:        append([]string(nil), serials...),
+		FlagDigest:     spec.FlagDigest,
+		ExperimentID:   spec.ExperimentID,
+		Arm:            spec.Arm,
+		PairIndex:      spec.PairIndex,
+		Abort:          func() { once.Do(func() { close(abort) }) },
+	}
+	r.tracker.Register(info)
+	r.tracker.CheckConcurrency(gameID)
+	if r.onStart != nil {
+		r.onStart(info)
+	}
+	return abort, info, true
+}
+
+// finishPattern turns the removed controllers' records into the game's replay record.
+func (r *Runner) finishPattern(spec Spec, gameID string, outcome Outcome, events patterngame.GameEvents, slots []patterngame.SlotRecord) (patterngame.Record, bool) {
+	if !spec.IsPattern() || r.tracker == nil || gameID == "" {
+		return patterngame.Record{}, false
+	}
+	return r.tracker.Finish(gameID, patternOutcome(outcome), events, slots)
+}
+
+// livenessTick returns the once-per-second UC-046 BR-008 check: is another game
+// live while this pattern game runs?
+func (r *Runner) livenessTick(gameID string) func() {
+	if r.tracker == nil {
+		return nil
+	}
+	return func() { r.tracker.CheckConcurrency(gameID) }
+}
+
+// Game events the elimination order is read from (UC-046 BR-014, games/ffa.py).
+const (
+	eventPlayerDeath = "player_death"
+	eventGameWinner  = "game_winner"
+	eventGameTie     = "game_tie"
+)
+
+// eventWatcher records deaths, the winner and a tie from the event stream.
+type eventWatcher struct {
+	mu     sync.Mutex
+	events patterngame.GameEvents
+}
+
+func (w *eventWatcher) observe(ev *gcpb.GameEvent) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	switch ev.GetEventType() {
+	case eventPlayerDeath:
+		if serial := ev.GetData()["serial"]; serial != "" {
+			w.events.Deaths = append(w.events.Deaths, serial)
+		}
+	case eventGameWinner:
+		w.events.Winner = ev.GetData()["serial"]
+	case eventGameTie:
+		w.events.Tie = true
+	}
+}
+
+func (w *eventWatcher) get() patterngame.GameEvents {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return patterngame.GameEvents{
+		Deaths: append([]string(nil), w.events.Deaths...),
+		Winner: w.events.Winner,
+		Tie:    w.events.Tie,
+	}
+}
+
+// PatternGameAttributes are the attributes of experiment.pattern_game (telemetry.md §9).
+func PatternGameAttributes(info patterngame.Info) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String("game.id", info.GameID),
+		attribute.String("experiment.arm", info.Arm),
+		attribute.Int("experiment.pair_index", info.PairIndex),
+		attribute.String("pattern.archetype", info.Archetype.Name),
+		attribute.String("pattern.params_digest", info.Archetype.Digest),
+		attribute.String("game.rng_seed", fmt.Sprintf("%d", info.Seed)),
+		attribute.Int("pattern.stream_rate_hz", info.Archetype.StreamRateHz),
+		attribute.StringSlice("pattern.slot_serials", info.Serials),
+		attribute.Int("pattern.max_game_seconds", info.MaxGameSeconds),
+		attribute.String("pattern.flag_digest", info.FlagDigest),
+	}
+}
+
+// addPatternEndedEvent stamps experiment.pattern_game_ended on the run span.
+func addPatternEndedEvent(span trace.Span, rec patterngame.Record) {
+	span.AddEvent("experiment.pattern_game_ended", trace.WithAttributes(PatternEndedAttributes(rec)...))
+}
+
+// PatternEndedAttributes are the attributes of experiment.pattern_game_ended (telemetry.md §9).
+func PatternEndedAttributes(rec patterngame.Record) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String("game.id", rec.GameID),
+		attribute.String("pattern.archetype", rec.Archetype.Name),
+		attribute.String("pattern.params_digest", rec.Archetype.Digest),
+		attribute.String("pattern.outcome", rec.Outcome),
+		attribute.IntSlice("pattern.elimination_order", rec.EliminationOrder),
+		attribute.Int("pattern.winner_slot", rec.WinnerSlot),
+		attribute.StringSlice("pattern.signal_hashes", rec.SignalHashes()),
+		attribute.Bool("pattern.replay_exact", rec.Exact()),
+		attribute.StringSlice("pattern.non_exact_reasons", rec.NonExactReasons),
+		attribute.StringSlice("pattern.decisions", rec.DecisionSequence()),
+		attribute.String("pattern.flag_digest", rec.FlagDigest),
 	}
 }
 
@@ -182,6 +335,12 @@ func buildStartConfig(spec Spec, serials []string) *gcpb.StartGameConfig {
 		// the started shadow session builds its per-instance RNG from it. 0 means
 		// entropy (today's behavior); the coordinator honors it only for a shadow
 		// session (same real-protection guard as experiment_id/arm).
+		cfg.RngSeed = spec.Seed
+	}
+	// A one-shot pattern game (UC-046 BR-006) carries its seed too, so a replay
+	// with the same SHADOW_GAME_SEED faces the same game RNG. Honored
+	// coordinator-side only for a shadow session, like the experiment seed.
+	if spec.IsPattern() && spec.Seed != 0 {
 		cfg.RngSeed = spec.Seed
 	}
 	switch spec.GameName {
@@ -308,78 +467,6 @@ func startRejectedInProgress(data map[string]string) bool {
 	return false
 }
 
-// driveGame keeps the game alive and pushes it toward its win condition (step
-// d). It periodically sends SimulateMovement(0.2, 0.2, 1.0) to every controller,
-// which the mock now HOLDS as a constant ~1.04g (UC-003 BR-002, #1279) — well
-// under every death threshold — and, on a slower cadence, sends SimulateDeath to one player at a time until
-// all but one are dead — reaching the last-player-standing condition for the
-// elimination modes.
-//
-// Because the hold persists, the periodic resend is redundant (the first call
-// would suffice); it is kept as a cheap safeguard, e.g. against a controller
-// reset mid-game. SimulateDeath latches death-level acceleration for 2
-// DELIVERED gameplay frames (#926), after which the held ~1.04g vector resumes;
-// kills are paced by KillInterval so each death lands and its post-death grace
-// window passes before the next player is killed. driveGame returns when
-// ctx is cancelled (the await loop saw a terminal event) or it runs out of
-// players to kill.
-func (r *Runner) driveGame(ctx context.Context, cl *clients, serials []string) {
-	moveTicker := time.NewTicker(r.cfg.MovementInterval)
-	defer moveTicker.Stop()
-	killTicker := time.NewTicker(r.cfg.KillInterval)
-	defer killTicker.Stop()
-
-	// Kill all but the last player; the final survivor triggers the win
-	// condition. nextKill walks the serial list.
-	nextKill := 0
-	lastToKill := len(serials) - 1
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-moveTicker.C:
-			for _, serial := range serials {
-				r.simulateMovement(ctx, cl, serial)
-			}
-		case <-killTicker.C:
-			if nextKill >= lastToKill {
-				continue // leave one survivor; await loop ends the run
-			}
-			r.simulateDeath(ctx, cl, serials[nextKill])
-			nextKill++
-		}
-	}
-}
-
-// simulateMovement (re)sends the held ~1.04g resting vector to one controller.
-// The mock holds it until changed (#1279), so the resend is redundant but kept.
-func (r *Runner) simulateMovement(ctx context.Context, cl *clients, serial string) {
-	rpcCtx, cancel := context.WithTimeout(ctx, r.cfg.RPCTimeout)
-	defer cancel()
-	_, err := cl.mock.SimulateMovement(rpcCtx, &mockpb.MovementRequest{
-		Serial: serial,
-		AccelX: 0.2,
-		AccelY: 0.2,
-		AccelZ: 1.0, // ~1g gravity baseline, well below the death threshold
-	})
-	if err != nil && ctx.Err() == nil {
-		r.log.Debug("SimulateMovement failed", "serial", serial, "error", err)
-	}
-}
-
-// simulateDeath triggers a held death-level spike on one controller.
-func (r *Runner) simulateDeath(ctx context.Context, cl *clients, serial string) {
-	rpcCtx, cancel := context.WithTimeout(ctx, r.cfg.RPCTimeout)
-	defer cancel()
-	_, err := cl.mock.SimulateDeath(rpcCtx, &mockpb.DeathRequest{Serial: serial})
-	if err != nil && ctx.Err() == nil {
-		r.log.Debug("SimulateDeath failed", "serial", serial, "error", err)
-		return
-	}
-	r.log.Debug("shadow game kill", "serial", serial)
-}
-
 // awaitTerminal consumes the event stream until a terminal event arrives or the
 // game timeout elapses (step e). On timeout it force-ends the game by id and
 // keeps reading for the resulting terminal event. It returns the terminal event
@@ -389,9 +476,20 @@ func (r *Runner) awaitTerminal(
 	cl *clients,
 	stream grpc.ServerStreamingClient[gcpb.GameEvent],
 	gameID string,
+	timeout time.Duration,
+	abort <-chan struct{},
+	onEvent func(*gcpb.GameEvent),
+	tick func(),
 ) (terminal string, eventsSeen int, outcome Outcome) {
-	deadline := time.NewTimer(r.cfg.GameTimeout)
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
+	// UC-046 BR-008: once per second, check whether another game is live.
+	var tickC <-chan time.Time
+	if tick != nil {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		tickC = ticker.C
+	}
 
 	// Recv blocks, so run it on a goroutine and select against the timeout.
 	type recvResult struct {
@@ -416,6 +514,7 @@ func (r *Runner) awaitTerminal(
 	}()
 
 	forced := false
+	aborted := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -423,44 +522,79 @@ func (r *Runner) awaitTerminal(
 		case <-deadline.C:
 			if forced {
 				// Already force-ended and still no terminal event; give up.
-				return terminal, eventsSeen, OutcomeForceEnded
+				return terminal, eventsSeen, forcedOutcome(aborted)
 			}
 			r.log.Warn("shadow game timed out, force-ending", "game_id", gameID,
-				"timeout", r.cfg.GameTimeout)
+				"timeout", timeout)
 			r.forceEnd(ctx, cl, gameID)
 			forced = true
 			// Allow a short grace for the force-end terminal event to arrive.
 			deadline.Reset(r.cfg.RPCTimeout)
+		case <-tickC:
+			tick()
+		case <-abort:
+			// Kill switch (UC-046 A12): force-end now; a nil channel never fires.
+			abort = nil
+			if !forced {
+				aborted = true
+				r.log.Info("pattern game aborted, force-ending", "game_id", gameID)
+				r.forceEnd(ctx, cl, gameID)
+				forced = true
+				if !deadline.Stop() {
+					select {
+					case <-deadline.C:
+					default:
+					}
+				}
+				deadline.Reset(r.cfg.RPCTimeout)
+			}
 		case res := <-events:
 			if res.err == io.EOF {
 				// Stream closed without a terminal event; treat a prior
 				// force-end as the outcome, else error.
 				if forced {
-					return terminal, eventsSeen, OutcomeForceEnded
+					return terminal, eventsSeen, forcedOutcome(aborted)
 				}
 				return terminal, eventsSeen, OutcomeError
 			}
 			if res.err != nil {
 				if forced {
-					return terminal, eventsSeen, OutcomeForceEnded
+					return terminal, eventsSeen, forcedOutcome(aborted)
 				}
 				return terminal, eventsSeen, OutcomeError
 			}
 			eventsSeen++
+			if onEvent != nil {
+				onEvent(res.event)
+			}
 			et := res.event.GetEventType()
 			if _, isTerminal := terminalEvents[et]; isTerminal {
 				terminal = et
 				switch {
 				case forced:
-					return terminal, eventsSeen, OutcomeForceEnded
+					return terminal, eventsSeen, forcedOutcome(aborted)
 				case et == eventGameError:
 					return terminal, eventsSeen, OutcomeError
+				case et == eventGameForceEnded:
+					// UC-046 A8: a force-end the agent did not request (e.g. a real game
+					// preempting shadows) is an abort: released without a sample.
+					return terminal, eventsSeen, OutcomeForceEnded
 				default:
 					return terminal, eventsSeen, OutcomeCompleted
 				}
 			}
 		}
 	}
+}
+
+// forcedOutcome classifies a game the agent force-ended. Ended by the safety cap
+// it is a valid timeout (UC-046 BR-013); ended by the kill switch it is
+// force_ended (aborted).
+func forcedOutcome(aborted bool) Outcome {
+	if aborted {
+		return OutcomeForceEnded
+	}
+	return OutcomeTimeout
 }
 
 // forceEnd force-ends the game by id, best-effort.

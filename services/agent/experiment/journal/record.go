@@ -114,7 +114,42 @@ const (
 	KindDecision EventKind = "decision"
 	// KindOutcome — the terminal result (promoted/rejected/inconclusive).
 	KindOutcome EventKind = "outcome"
+	// KindPatternPinned — the experiment pinned its archetypes and safety cap at its
+	// first spawn (UC-046 step 2). Audit only; folds into nothing.
+	KindPatternPinned EventKind = "pattern_pinned"
+	// KindPatternGameEnded — the replay record of one pattern game (UC-046 step 8).
+	// Audit only; the fitness sample still arrives on game_concluded.
+	KindPatternGameEnded EventKind = "pattern_game_ended"
 )
+
+// PatternFacts carries the UC-046 pattern fields of game_assigned, pattern_pinned
+// and pattern_game_ended events (telemetry.md §9 "Journal"). A union: each kind
+// sets its own fields.
+type PatternFacts struct {
+	// pattern_pinned
+	Selection      string   `json:"selection,omitempty"`
+	Archetypes     []string `json:"archetypes,omitempty"`
+	ParamsDigests  []string `json:"params_digests,omitempty"`
+	ParamsJSON     []string `json:"params_json,omitempty"`
+	MaxGameSeconds int      `json:"max_game_seconds,omitempty"`
+	// game_assigned and pattern_game_ended
+	Archetype    string `json:"archetype,omitempty"`
+	ParamsDigest string `json:"params_digest,omitempty"`
+	RngSeed      uint64 `json:"rng_seed,omitempty"`
+	FlagDigest   string `json:"flag_digest,omitempty"`
+	// pattern_game_ended
+	SlotSerials      []string   `json:"slot_serials,omitempty"`
+	Outcome          string     `json:"outcome,omitempty"`
+	Censored         *bool      `json:"censored,omitempty"`
+	OrderSource      string     `json:"order_source,omitempty"`
+	EliminationOrder []int      `json:"elimination_order,omitempty"`
+	WinnerSlot       *int       `json:"winner_slot,omitempty"`
+	SignalHashes     []string   `json:"signal_hashes,omitempty"`
+	Checkpoints      [][]string `json:"signal_checkpoints,omitempty"`
+	ReplayExact      *bool      `json:"replay_exact,omitempty"`
+	NonExactReasons  []string   `json:"non_exact_reasons,omitempty"`
+	Decisions        []string   `json:"decisions,omitempty"`
+}
 
 // Event is one entry in the append-only log (design §9.4b, one JSON object per
 // line in events.jsonl). It is a UNION across event kinds: Seq/At/Kind are always
@@ -153,6 +188,8 @@ type Event struct {
 	Status string `json:"status,omitempty"`
 	// Note is a short free-text annotation for any event (optional audit context).
 	Note string `json:"note,omitempty"`
+	// Pattern carries the UC-046 pattern-game facts (nil for every other event).
+	Pattern *PatternFacts `json:"pattern,omitempty"`
 }
 
 // ArmStat is the per-arm rolling sufficient statistics (design §9.4c). It embeds

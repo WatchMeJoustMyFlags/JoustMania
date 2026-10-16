@@ -5,7 +5,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Trigger gating + spec are resolved from environment variables. This is the
@@ -20,9 +19,7 @@ import (
 const (
 	envEnabled     = "AGENT_SHADOW_GAME"
 	envMode        = "SHADOW_GAME_MODE"
-	envPlayers     = "SHADOW_GAME_PLAYERS"
 	envSensitivity = "SHADOW_GAME_SENSITIVITY"
-	envTimeoutSecs = "SHADOW_GAME_TIMEOUT_SECONDS"
 
 	// Endpoint overrides (default to the docker-compose service addresses).
 	envCoordinatorAddr = "GAME_COORDINATOR_ADDR"
@@ -32,7 +29,6 @@ const (
 // Defaults for the env-triggered spec.
 const (
 	defaultMode        = "JoustFFA"
-	defaultPlayers     = 4
 	defaultSensitivity = 2
 )
 
@@ -48,19 +44,12 @@ func ConfigFromEnv() Config {
 		CoordinatorAddr: getEnv(envCoordinatorAddr, DefaultCoordinatorAddr),
 		MockAddr:        getEnv(envMockAddr, DefaultMockAddr),
 	}
-	if secs, ok := envInt(envTimeoutSecs); ok && secs > 0 {
-		cfg.GameTimeout = time.Duration(secs) * time.Second
-	}
 	return cfg.withDefaults()
 }
 
 // SpecFromEnv builds the shadow-game Spec from SHADOW_GAME_* env vars, applying
 // defaults. runID is supplied by the caller (a per-run unique id).
 func SpecFromEnv(runID string) Spec {
-	players := defaultPlayers
-	if n, ok := envInt(envPlayers); ok && n >= 2 {
-		players = n
-	}
 	sensitivity := defaultSensitivity
 	if n, ok := envInt(envSensitivity); ok && n >= 0 && n <= 4 {
 		sensitivity = n
@@ -68,7 +57,6 @@ func SpecFromEnv(runID string) Spec {
 	return Spec{
 		RunID:       runID,
 		GameName:    getEnv(envMode, defaultMode),
-		Players:     players,
 		Sensitivity: sensitivity,
 	}
 }
