@@ -591,6 +591,7 @@ git checkout services/flagd/agent.json services/flagd/rollout.json services/flag
 | Dashboard Decisions panel empty / stale, Jaeger slow | Jaeger query slow on the Pi (whole game traces) | Open the Jaeger search directly | Narrow the Jaeger lookback; restart jaeger as a last resort (`docker compose restart jaeger`); present from the captured screenshots |
 | `invalid_answer` rows on the vendor (6b) | Model does not follow the JSON schema / rejects `reasoning_effort` | `error.type`, `decide.invalid_reason` | `backend.sh effort omit`; pick another model; or skip 6b |
 | Real controllers will not pair or keep dropping (venue Bluetooth) | 2.4 GHz congestion, dongle, batteries | `talk-preflight.sh` real-controller line | Try re-pairing once; then [Fallback: Bluetooth down](#fallback-bluetooth-down) |
+| Fallback on, screen empty right after the kill-switch beat | `enabled=off` aborted every experiment and force-ended its shadow games | `talk-stage.sh status`; Experiments tab | `agent-killswitch.sh on`; the next tick (about 10 s with the fallback) declares a new experiment. See [Fallback: Bluetooth down](#fallback-bluetooth-down) |
 | Whole demo wedged | anything | `docker compose ps` | `backend.sh rules`: rules need no network and no key. Last resort: screenshots and captured traces |
 
 
@@ -603,22 +604,24 @@ like on a real game, so every beat from 2 to 7 still shows.
 
 ```bash
 ./scripts/talk-stage.sh fallback on    # llm.eligible_game_kinds=real_and_shadow, experiments_enabled=on,
-                                       # experiment_dynamic_enabled=on (in place, live in about 1 s)
+                                       # experiment_dynamic_enabled=on, experiment_tick_seconds=fast
+                                       # (in place, live in about 1 s)
 ./scripts/talk-preflight.sh            # real-controller check now WARNs; fallback variants accepted
 # ... beats 2-7 as usual (agent-backend.sh jev, threshold, claude, kill switch, ...)
-./scripts/talk-stage.sh fallback off   # back to real_only, experiments off (reset does this too)
+./scripts/talk-stage.sh fallback off   # back to real_only, experiments off, tick default (reset does this too)
 ```
 
 **Where the games come from.** `experiments_enabled=on` starts the experiment
 loop; `experiment_dynamic_enabled=on` lets the agent declare experiments
-itself (on `game.json` flags, shadow games only, promotion stays gated), so no
+itself (on game-tuning `game.json` flags only: plumbing, lobby and ceremony
+flags are excluded, UC-070 BR-008; shadow games only, promotion stays gated), so no
 env change or agent restart is needed. An `AGENT_EXPERIMENT_SEED_*` seed in
 `.env.local` (what `make dry-run` sets) also works, but it is declared only
 once per agent start: after the kill-switch beat (`enabled=off` aborts every
 experiment) or a `fallback off`, only the dynamic declarer brings games back.
-The loop refills on each experiment tick (`experiment_tick_seconds`, default
-30 s): for a quicker first game run `setflag "$AF" experiment_tick_seconds fast`
-(10 s; `reset` restores `default`). The controller-manager always loads the mock adapter, so pattern
+The loop refills on each experiment tick: `fallback on` selects the `fast`
+variant of `experiment_tick_seconds` (10 s instead of 30 s); `fallback off`
+and `reset` restore `default`. The controller-manager always loads the mock adapter, so pattern
 controllers work on the stage stack next to the real ones. **Verify in
 rehearsal** how long the first shadow game takes to appear.
 
@@ -633,11 +636,18 @@ newest live shadow game and stays on it while it runs:
 
 - Agent tab: the current-backend strip describes that game, with the dashed
   `shadow` badge; decide rows of the shadow games carry the same badge.
-- Controllers tab: a "following shadow game" banner and only that game's
-  tiles: live LED colour, the shield badge when the agent shields a player,
-  alive or dead. The lobby and the menu never show these controllers
-  (pattern controllers are reserved).
+- Controllers tab: a "following shadow game" banner and that game's tiles
+  added to the grid: live LED colour, the shield badge when the agent shields
+  a player, alive or dead. Players of the other shadow games are hidden; real
+  and lobby controllers always stay. The lobby and the menu never show the
+  shadow controllers (pattern controllers are reserved).
 - Jaeger: `agent.decide` spans with `game.kind=shadow`.
+
+**Warning: the kill-switch beat empties the screen.** `agent-killswitch.sh off`
+aborts every experiment and force-ends its shadow games. Nothing is followed
+until you switch the agent back on and the next tick (about 10 s) has declared
+an experiment and spawned its games. Narrate the gap ("the agent is off, so
+its games are gone too") or skip beat 5 in the fallback.
 
 Say it: "Bluetooth is not on our side tonight, so you are watching the agent
 steer the games it runs on its own. Same flags, same traces."

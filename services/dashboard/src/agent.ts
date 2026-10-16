@@ -831,16 +831,17 @@ export interface DecideFollow {
  * The current-backend strip. By default it describes the newest NON-shadow game
  * (the one on stage): a shadow decide must never flip the strip while the real
  * game is on. When no real game is live (the screen-only fallback, UC-070 A9) it
- * describes the followed shadow game, else the newest shadow row's game, so an
- * older real game's rows do not hold the strip. Without any non-shadow row it
- * falls back to the game of the newest row. `rows` must be newest first.
+ * describes the followed shadow game, else the game of the newest row of any
+ * kind, so an older real game's rows do not hold the strip and an older shadow
+ * row does not beat a newer real one. Without any non-shadow row it falls back to
+ * the game of the newest row. `rows` must be newest first.
  */
 export function currentFrom(rows: DecideRow[], follow?: DecideFollow): DecideCurrent | null {
   if (rows.length === 0) return null;
   const followed = follow?.followGameId ? rows.find((r) => r.gameId === follow.followGameId) : undefined;
-  const shadowFallback =
-    follow?.realGameLive === false ? rows.find((r) => isShadowGame(r.gameKind)) : undefined;
-  const anchor = followed ?? shadowFallback ?? rows.find((r) => !isShadowGame(r.gameKind)) ?? rows[0];
+  // No real game live and nothing followed with rows: the newest row of any kind.
+  const newestOverall = follow?.realGameLive === false ? rows[0] : undefined;
+  const anchor = followed ?? newestOverall ?? rows.find((r) => !isShadowGame(r.gameKind)) ?? rows[0];
   const gameRows = rows.filter((r) => r.gameId === anchor.gameId);
   const newest = gameRows[0] ?? anchor;
   let threshold = newest.threshold;

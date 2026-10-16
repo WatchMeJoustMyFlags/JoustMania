@@ -110,6 +110,7 @@ flags = {
     "rollout_enabled": f(onoff, "off"),
     "experiments_enabled": f(onoff, "off"),
     "experiment_dynamic_enabled": f(onoff, "off"),
+    "experiment_tick_seconds": f({"fast": 10, "default": 30, "slow": 60}, "default"),
     "decision.backend": f({"rules": "rules", "claude": "claude"}, "rules"),
     "decision.act_confidence_threshold": f({"default": 0.8, "strict": 0.95}, "default"),
     "decision.jev.act_confidence_threshold": f({"inherit": -1.0, "gate": 0.6, "strict": 0.95}, "gate"),
@@ -345,9 +346,11 @@ fixture
 STUB_BUDGET=30 STUB_CM_DOWN=1 run_preflight
 if [[ "${RC}" -eq 1 ]]; then ok "controller-manager down exits 1"; else not_ok "controller-manager down exits 1 (rc=${RC})"; fi
 check "controller-manager down degrades to a named FAIL" "FAIL  controller-manager not reachable at http://localhost (GetConnectedControllers)"
+check "controller-manager down names the containers, not a pairing fix" "check the containers section; the fallback needs controller-manager as well"
+if grep -q "FAIL  controller-manager not reachable.*fallback on" <<<"${OUT}"; then not_ok "controller-manager down does not suggest fallback on"; else ok "controller-manager down does not suggest fallback on"; fi
 
 # --- screen-only fallback on (UC-070 A9, BR-006, BR-007) --------------------
-fixture llm.eligible_game_kinds=real_and_shadow experiments_enabled=on experiment_dynamic_enabled=on
+fixture llm.eligible_game_kinds=real_and_shadow experiments_enabled=on experiment_dynamic_enabled=on experiment_tick_seconds=fast
 STUB_BUDGET=30 STUB_CONTROLLERS='{"connectedSerials":["MOCK0001"]}' run_preflight
 if [[ "${RC}" -eq 0 ]]; then ok "fallback on + no real controllers exits 0"; else not_ok "fallback on + no real controllers exits 0 (rc=${RC}): $(grep FAIL <<<"${OUT}")"; fi
 check "fallback on is announced" "WARN  screen-only fallback is ON"
@@ -355,13 +358,15 @@ check "fallback names its cost bound" "cost bounded by llm.max_requests_per_minu
 check "fallback variant accepted" "PASS  llm.eligible_game_kinds = real_and_shadow"
 check "fallback experiment loop accepted" "PASS  experiments_enabled = on"
 check "fallback dynamic declarer accepted" "PASS  experiment_dynamic_enabled = on"
+check "fallback fast tick accepted" "PASS  experiment_tick_seconds = fast"
 check "too few real controllers only warn in fallback" "WARN  0 real controller(s) connected, need 2 (1 mock not counted) (fallback on"
 check "calm_long in the selection" "PASS  experiment.mock_archetypes = all includes calm_long"
 STUB_BUDGET=30 STUB_CM_DOWN=1 run_preflight
 if [[ "${RC}" -eq 0 ]]; then ok "fallback on + controller-manager down exits 0"; else not_ok "fallback on + controller-manager down exits 0 (rc=${RC})"; fi
 check "controller-manager down only warns in fallback" "WARN  controller-manager not reachable"
+check "fallback warning says the shadow games need controller-manager" "the fallback's shadow games need controller-manager too"
 
-fixture llm.eligible_game_kinds=real_and_shadow experiments_enabled=on experiment_dynamic_enabled=on experiment.mock_archetypes=quick_cascade
+fixture llm.eligible_game_kinds=real_and_shadow experiments_enabled=on experiment_dynamic_enabled=on experiment_tick_seconds=fast experiment.mock_archetypes=quick_cascade
 STUB_BUDGET=30 run_preflight
 check "fallback without calm_long warns" "WARN  experiment.mock_archetypes = quick_cascade (quick_cascade) has no calm_long"
 

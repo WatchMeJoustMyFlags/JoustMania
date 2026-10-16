@@ -32,7 +32,8 @@
 #      controllers connected, as controller-manager reports them through envoy
 #      (UC-070 BR-006). FAIL, or WARN while the screen-only fallback is on
 #      (llm.eligible_game_kinds=real_and_shadow, `talk-stage.sh fallback on`,
-#      UC-070 A9); with the fallback on, section 3 expects the baseline's
+#      UC-070 A9); controller-manager unreachable FAILs (WARN in fallback) without
+#      suggesting the fallback, which needs it too; with the fallback on, section 3 expects the baseline's
 #      `fallback` variants and a calm_long archetype in the selection
 #
 # Usage:
@@ -545,7 +546,14 @@ print(len(real), len(serials) - len(real), " ".join(real) or "-")
 ' <<<"${roster}")"
     read -r n_real n_mock real_serials <<<"${counted}"
     if [[ -z "${roster}" || "${n_real}" == "ERR" || -z "${n_real}" ]]; then
-      short_of "controller-manager not reachable at ${BASE_URL} (GetConnectedControllers): cannot count real controllers"
+      # Not a pairing problem, and the fallback cannot help: its shadow games run
+      # on controller-manager's pattern controllers too.
+      msg="controller-manager not reachable at ${BASE_URL} (GetConnectedControllers): cannot count real controllers"
+      if [[ "${fallback_on}" == "1" ]]; then
+        warn "${msg}; the fallback's shadow games need controller-manager too (check the containers section)"
+      else
+        fail "${msg} (check the containers section; the fallback needs controller-manager as well)"
+      fi
     elif [[ "${n_real}" -ge "${MIN_CONTROLLERS}" ]]; then
       pass "${n_real} real controller(s) connected (need ${MIN_CONTROLLERS}): ${real_serials}"
     else

@@ -156,6 +156,7 @@ out="$("${HELPER}" fallback on)"
 expect "fallback on: shadow games eligible for remote backends" llm.eligible_game_kinds real_and_shadow
 expect "fallback on: experiment loop on" experiments_enabled on
 expect "fallback on: the agent declares experiments" experiment_dynamic_enabled on
+expect "fallback on: fast experiment tick" experiment_tick_seconds fast
 expect "fallback on: other baseline flags untouched" interventions_allowed standard
 [[ "$(stat -c %i "${AGENT_FLAG_FILE}")" == "${inode_before}" ]] && ok "fallback on writes in place (same inode)" || not_ok "fallback on writes in place"
 [[ "${out}" == *"set    llm.eligible_game_kinds: real_only -> real_and_shadow"* ]] && ok "fallback on reports what it changed" || not_ok "fallback on reports what it changed: ${out}"
@@ -169,6 +170,7 @@ before="$(cat "${AGENT_FLAG_FILE}")"
 expect "fallback off: real games only" llm.eligible_game_kinds real_only
 expect "fallback off: experiment loop off" experiments_enabled off
 expect "fallback off: dynamic declarer off" experiment_dynamic_enabled off
+expect "fallback off: default experiment tick" experiment_tick_seconds default
 [[ "$(stat -c %i "${AGENT_FLAG_FILE}")" == "${inode_before}" ]] && ok "fallback off writes in place (same inode)" || not_ok "fallback off writes in place"
 out="$("${HELPER}" status)"
 [[ "${out}" == "at the stage baseline" ]] && ok "status after fallback off" || not_ok "status after fallback off: ${out}"
@@ -178,6 +180,7 @@ setv "${AGENT_FLAG_FILE}" experiment.mock_archetypes quick_cascade
 expect "reset after fallback on: real games only" llm.eligible_game_kinds real_only
 expect "reset after fallback on: experiment loop off" experiments_enabled off
 expect "reset after fallback on: dynamic declarer off" experiment_dynamic_enabled off
+expect "reset after fallback on: default experiment tick" experiment_tick_seconds default
 expect "reset restores the archetype selection with calm_long" experiment.mock_archetypes all
 setv "${AGENT_FLAG_FILE}" experiment.mock_archetypes quick_cascade
 out="$("${HELPER}" fallback on)"

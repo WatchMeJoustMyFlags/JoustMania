@@ -30,7 +30,8 @@
   "fallback": {
     "llm.eligible_game_kinds": "real_and_shadow",
     "experiments_enabled": "on",
-    "experiment_dynamic_enabled": "on"
+    "experiment_dynamic_enabled": "on",
+    "experiment_tick_seconds": "fast"
   },
   "fallback_archetype": "calm_long",
   "perceptible_interventions": [

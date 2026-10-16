@@ -491,3 +491,36 @@ func TestDeclareDynamic_KillSwitchOffDeclaresNothing(t *testing.T) {
 		t.Fatalf("kill-switch on should let the declarer declare, LiveCount = %d", got)
 	}
 }
+
+// UC: UC-070 A9 BR-008
+// TestDynamicDeclarer_DefaultRotationSkipsPlumbingFlags asserts the default
+// rotation over the SHIPPED game.json files never offers a plumbing, lobby/admin
+// or ceremony-timing flag (#1316), while game-tuning flags stay candidates.
+func TestDynamicDeclarer_DefaultRotationSkipsPlumbingFlags(t *testing.T) {
+	plumbing := []string{
+		"shadow_policy", "max_concurrent_games", "max_shadow_games", "tempo_schedule_mode",
+		"force_all_start", "force_all_start_seconds", "countdown_phase_duration_ms",
+		"winner_rainbow_duration_ms",
+	}
+	for _, shipped := range []string{"../flagd/ci/game.json", "../flagd/game.json"} {
+		t.Run("UC-070/BR-008 "+shipped, func(t *testing.T) {
+			d := &dynamicDeclarer{gameFlagPath: shipped, defaultObjective: decision.ObjectiveBalanced}
+			flagsRead := d.readCandidateFlags()
+			if len(flagsRead) == 0 {
+				t.Fatalf("no candidate flags read from %s", shipped)
+			}
+			order := map[string]bool{}
+			for _, k := range d.candidateOrder(flagsRead) {
+				order[k] = true
+			}
+			for _, k := range plumbing {
+				if order[k] {
+					t.Errorf("plumbing flag %q is a dynamic candidate", k)
+				}
+			}
+			if !order["sensitivity"] {
+				t.Errorf("game-tuning flag sensitivity missing from the rotation: %v", order)
+			}
+		})
+	}
+}

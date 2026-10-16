@@ -22,7 +22,8 @@
 #       The screen-only fallback when Bluetooth fails at the venue (UC-070 A9,
 #       #1316). `on` applies the `fallback` section of the baseline
 #       (llm.eligible_game_kinds=real_and_shadow, experiments_enabled=on,
-#       experiment_dynamic_enabled=on): the experiment loop declares experiments
+#       experiment_dynamic_enabled=on, experiment_tick_seconds=fast): the
+#       experiment loop declares experiments
 #       and runs archetype shadow games, and remote backends may decide on them;
 #       the dashboard follows the newest live shadow game. `off` restores the
 #       stage baseline of those flags (so does `reset`). The archetype selection

@@ -13,8 +13,7 @@ import { AgentView } from "./components/AgentView.js";
 import { DecideStore, fetchAgentView, fetchDecideFeed } from "./agent.js";
 import { createPoller } from "./poller.js";
 import { ShieldStore } from "./shield.js";
-import { NO_FOLLOW, chooseFollow, followBanner, visibleTiles } from "./follow.js";
-import type { FollowState } from "./follow.js";
+import { FollowTracker, followBanner, visibleTiles } from "./follow.js";
 import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
@@ -42,6 +41,7 @@ const DECIDE_TIMEOUT_MS = 4000;
 // GetGameState on the game coordinator, two small unary calls. Decides whether
 // the dashboard follows a shadow game (no real game live) and which one.
 const FOLLOW_POLL_MS = 2000;
+const FOLLOW_MAX_BACKOFF_MS = 15_000;
 const FOLLOW_TIMEOUT_MS = 3000;
 
 // State
@@ -68,8 +68,10 @@ const shields = new ShieldStore();
 
 // The followed game (UC-070 BR-005): a live shadow game when no real game is.
 // Its shields come from its own event stream, kept apart from the real game's.
-let follow: FollowState = NO_FOLLOW;
+const followTracker = new FollowTracker();
 const shadowShields = new ShieldStore();
+// The game shadowShields belongs to: cleared only when the followed game changes.
+let shadowShieldsFor = "";
 let shadowStream: { gameId: string; abort: AbortController } | null = null;
 
 // agent.decide rows across polls; the follow poller tells it which game to describe.
@@ -180,11 +182,8 @@ async function startControllerStream() {
         state.controllers.set(controller.serial, controller);
       }
 
-      state.totalPlayers = update.controllers.length;
-
-      // Render controllers
-      renderGrid();
-      gameStatus.updatePlayerCount(state.totalPlayers, state.alivePlayers);
+      // Render controllers; the count covers the tiles shown (UC-070 BR-005)
+      updatePlayerCount(renderGrid());
     }
   } catch (error) {
     console.error("Controller stream error:", error);
@@ -340,9 +339,11 @@ function startDecidePolling() {
   decidePoller.poke();
 }
 
-// The controller tiles: the followed shadow game's players only, or everything
-// but the players of live shadow games (UC-070 BR-005, follow.ts).
-function renderGrid() {
+// The controller tiles: everything but the players of live shadow games, plus
+// the followed shadow game's players (UC-070 BR-005, follow.ts). Returns the
+// number of tiles drawn (the player count shows only those).
+function renderGrid(): number {
+  const follow = followTracker.state;
   const tiles = visibleTiles(Array.from(state.controllers.values()), follow);
   const following = follow.shadowGameId !== "";
   controllerGrid.render(
@@ -351,12 +352,13 @@ function renderGrid() {
     Date.now(),
     following ? follow.shadowPlayers : null,
   );
+  return tiles.length;
 }
 
 function renderFollowBanner() {
   const banner = document.getElementById("follow-banner");
   if (!banner) return;
-  const text = followBanner(follow);
+  const text = followBanner(followTracker.state);
   banner.hidden = text === "";
   banner.innerHTML = text
     ? `<span class="decide-game decide-game-shadow">shadow</span> ${escapeText(text)}`
@@ -374,6 +376,11 @@ function escapeText(text: string): string {
 function followShadowEvents(gameId: string) {
   shadowStream?.abort.abort();
   shadowStream = null;
+  if (gameId !== shadowShieldsFor) {
+    // Another game: its shields are not ours. A reopen of the same game keeps them.
+    shadowShields.apply({ eventType: "game_ended", data: {} });
+    shadowShieldsFor = gameId;
+  }
   if (!gameId) return;
   const abort = new AbortController();
   const current = { gameId, abort };
@@ -392,34 +399,51 @@ function followShadowEvents(gameId: string) {
   })();
 }
 
+function applyFollow() {
+  const follow = followTracker.state;
+  if (follow.shadowGameId !== (shadowStream?.gameId ?? "")) followShadowEvents(follow.shadowGameId);
+  decideStore.setFollow({ realGameLive: follow.realGameLive, followGameId: follow.shadowGameId });
+  renderFollowBanner();
+  if (state.isStreaming) updatePlayerCount(renderGrid());
+}
+
+function updatePlayerCount(visible: number) {
+  state.totalPlayers = visible;
+  gameStatus.updatePlayerCount(state.totalPlayers, state.alivePlayers);
+}
+
+// Same single-chain poller with timeout and backoff as the decide feed: a
+// coordinator outage backs off to FOLLOW_MAX_BACKOFF_MS instead of erroring
+// every 2 s, and a transient error keeps the followed game (FollowTracker).
 function startFollowPolling() {
-  const tick = async () => {
-    if (!document.hidden) {
-      const abort = new AbortController();
-      const timer = setTimeout(() => abort.abort(), FOLLOW_TIMEOUT_MS);
-      try {
-        const [primary, list] = await Promise.all([
-          gameClient.getGameState({}, abort.signal),
-          gameClient.listGames(abort.signal),
-        ]);
-        follow = chooseFollow(primary.gameInfo, list.games ?? [], follow.shadowGameId);
-      } catch (error) {
-        console.error("Follow poll error:", error);
-        follow = NO_FOLLOW;
-      } finally {
-        clearTimeout(timer);
-      }
-      if (follow.shadowGameId !== (shadowStream?.gameId ?? "")) {
-        shadowShields.apply({ eventType: "game_ended", data: {} });
-        followShadowEvents(follow.shadowGameId);
-      }
-      decideStore.setFollow({ realGameLive: follow.realGameLive, followGameId: follow.shadowGameId });
-      renderFollowBanner();
-      if (state.isStreaming) renderGrid();
-    }
-    setTimeout(tick, FOLLOW_POLL_MS);
-  };
-  tick();
+  let failing = false;
+  const poller = createPoller({
+    baseMs: FOLLOW_POLL_MS,
+    maxMs: FOLLOW_MAX_BACKOFF_MS,
+    timeoutMs: FOLLOW_TIMEOUT_MS,
+    isActive: () => !document.hidden,
+    run: async (signal) => {
+      const [primary, list] = await Promise.all([
+        gameClient.getGameState({}, signal),
+        gameClient.listGames(signal),
+      ]);
+      followTracker.update(primary.gameInfo, list.games ?? []);
+      failing = false;
+      applyFollow();
+    },
+    onError: (error) => {
+      // Log the first error of an outage only; the backoff spaces the retries.
+      if (!failing) console.warn("Follow poll error (retrying with backoff):", error);
+      failing = true;
+      followTracker.fail();
+      applyFollow();
+    },
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) poller.stop();
+    else poller.poke();
+  });
+  poller.poke();
 }
 
 // Handle game events

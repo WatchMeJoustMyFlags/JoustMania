@@ -3,7 +3,7 @@
  * real game is live, for the current-backend strip and the controller tiles.
  */
 import { describe, expect, it } from "vitest";
-import { NO_FOLLOW, chooseFollow, followBanner, isLiveGame, visibleTiles } from "../follow.js";
+import { FollowTracker, NO_FOLLOW, chooseFollow, followBanner, isLiveGame, isRealGameLive, visibleTiles } from "../follow.js";
 import type { GameInfoLike } from "../follow.js";
 import { DecideStore, currentFrom } from "../agent.js";
 import type { DecideRow } from "../agent.js";
@@ -81,6 +81,15 @@ describe("UC-070: A9 BR-005 which game the dashboard follows", () => {
     expect(f.shadowGameMode).toBe("JoustFFA");
   });
 
+  it("UC-070/BR-005 a real game in ENDING still holds the stage", () => {
+    const ending = { ...REAL, state: "ENDING" };
+    const f = chooseFollow(ending, [ending, SHADOW_OLD], "");
+    expect(f.realGameLive).toBe(true);
+    expect(f.shadowGameId).toBe("");
+    expect(isRealGameLive(ending)).toBe(true);
+    expect(isLiveGame(ending)).toBe(false);
+  });
+
   it("UC-070/A9 an ended real game does not hold the view", () => {
     const ended = { ...REAL, state: "ENDED" };
     const f = chooseFollow(ended, [ended, SHADOW_OLD], "");
@@ -113,11 +122,17 @@ describe("UC-070: A9 BR-005 which game the dashboard follows", () => {
 });
 
 describe("UC-070: A9 BR-005 controller tiles of the followed shadow game", () => {
-  it("UC-070/A9 following a shadow game shows only its players, alive or dead from its roster", () => {
+  it("UC-070/A9 following a shadow game adds its players; other shadow players stay hidden, nothing real is hidden", () => {
     const f = chooseFollow(undefined, [SHADOW_OLD, SHADOW_NEW], "game_shadow00001");
     const shown = visibleTiles(tiles, f);
-    expect(shown.map((t) => t.controller.serial)).toEqual(["MOCK0001", "MOCK0002"]);
-    expect(shown.map((t) => t.alive)).toEqual([true, false]);
+    expect(shown.map((t) => t.controller.serial)).toEqual([
+      "00:06:f7:aa:bb:01",
+      "00:06:f7:aa:bb:02",
+      "MOCK0001",
+      "MOCK0002",
+      "MOCK0009",
+    ]);
+    expect(shown.map((t) => t.alive)).toEqual([undefined, undefined, true, false, undefined]);
     expect(followBanner(f)).toBe(
       "No real game live: following shadow game game_shadow00001 (JoustFFA, 1/2 alive)",
     );
@@ -132,6 +147,24 @@ describe("UC-070: A9 BR-005 controller tiles of the followed shadow game", () =>
       "MOCK0009",
     ]);
     expect(shown.every((t) => t.alive === undefined)).toBe(true);
+  });
+
+  it("UC-070/BR-005 lobby with experiments running: real lobby controllers are never hidden", () => {
+    // no primary game at all (menu lobby), shadow games running in the background
+    const f = chooseFollow({ gameId: "", state: "IDLE" }, [SHADOW_OLD, SHADOW_NEW], "");
+    expect(f.shadowGameId).toBe("game_shadow00002");
+    const serials = visibleTiles(tiles, f).map((t) => t.controller.serial);
+    expect(serials).toContain("00:06:f7:aa:bb:01");
+    expect(serials).toContain("00:06:f7:aa:bb:02");
+    expect(serials).toContain("MOCK0009");
+    expect(serials).not.toContain("MOCK0001"); // the other, unfollowed shadow game
+  });
+
+  it("UC-070/BR-005 real game ENDING with a live shadow game: the real controllers stay", () => {
+    const ending = { ...REAL, state: "ENDING" };
+    const f = chooseFollow(ending, [ending, SHADOW_NEW], "");
+    const shown = visibleTiles([{ serial: "AA" }, { serial: "MOCK0003" }, { serial: "MOCK0009" }], f);
+    expect(shown.map((t) => t.controller.serial)).toEqual(["AA", "MOCK0009"]);
   });
 
   it("UC-070/BR-005 unknown follow state (coordinator unreachable) shows every tile", () => {
@@ -165,6 +198,16 @@ describe("UC-070: A9 BR-005 current-backend strip anchors on the followed game",
     expect(cur?.gameId).toBe("game_shadow00002");
   });
 
+  it("UC-070/BR-005 no real game live, nothing followed: a newer real row beats an older shadow row", () => {
+    const mixed = [
+      row("R2", 2000, "game_real00000002", "real", "jev"),
+      row("S9", 1000, "game_shadow00009", "shadow", "rules"),
+    ];
+    const cur = currentFrom(mixed, { realGameLive: false, followGameId: "" });
+    expect(cur?.gameId).toBe("game_real00000002");
+    expect(cur?.backend).toBe("jev");
+  });
+
   it("UC-070/A9 the decide store applies the follow state", () => {
     const store = new DecideStore();
     store.merge(rows);
@@ -173,5 +216,31 @@ describe("UC-070: A9 BR-005 current-backend strip anchors on the followed game",
     expect(store.feed().current?.gameId).toBe("game_shadow00001");
     store.setFollow({ realGameLive: true, followGameId: "" });
     expect(store.feed().current?.gameId).toBe("game_real00000001");
+  });
+});
+
+describe("UC-070: A9 BR-005 follow state across polls", () => {
+  it("UC-070/BR-005 a transient poll error keeps the followed game", () => {
+    const tracker = new FollowTracker(3);
+    tracker.update(undefined, [SHADOW_OLD]);
+    expect(tracker.state.shadowGameId).toBe("game_shadow00001");
+    tracker.fail();
+    expect(tracker.state.shadowGameId).toBe("game_shadow00001");
+    // a newer shadow game started meanwhile: the previous one is still kept
+    tracker.update(undefined, [SHADOW_OLD, SHADOW_NEW]);
+    expect(tracker.state.shadowGameId).toBe("game_shadow00001");
+  });
+
+  it("UC-070/BR-005 a sustained outage resets to unknown, then resumes the same game", () => {
+    const tracker = new FollowTracker(3);
+    tracker.update(undefined, [SHADOW_OLD, SHADOW_NEW]);
+    tracker.update(undefined, [SHADOW_OLD, SHADOW_NEW]);
+    const followed = tracker.state.shadowGameId;
+    tracker.fail();
+    tracker.fail();
+    tracker.fail();
+    expect(tracker.state).toBe(NO_FOLLOW);
+    tracker.update(undefined, [SHADOW_OLD, SHADOW_NEW]);
+    expect(tracker.state.shadowGameId).toBe(followed);
   });
 });

@@ -11,12 +11,11 @@
  * EVERY tracked controller, reserved pattern controllers included (the reserved
  * flag only hides them from the button stream, i.e. the lobby and the menu). The
  * stream has no game id per controller, so the grid joins it with the game
- * coordinator's `ListGames` / `GetGameState` rosters:
- *   - following a shadow game: only that game's players, alive or dead from its
- *     `PlayerInfo.alive`;
- *   - otherwise (a real game, or nothing live): every controller except the
- *     players of live shadow games, so shadow tiles never mix into the real view.
- * Nothing changes for the lobby: the filter is dashboard-only.
+ * coordinator's `ListGames` / `GetGameState` rosters. Players of live shadow games
+ * are hidden, except the followed shadow game's players, which are added with
+ * alive or dead from its `PlayerInfo.alive`. A controller that is in no live
+ * shadow game (a real or lobby controller) is never hidden. The menu is unchanged:
+ * the filter is dashboard-only.
  *
  * The game coordinator answers in proto3 JSON (connect-proxy): camelCase names,
  * enums as names, int64 as strings, and false / zero fields omitted.
@@ -71,11 +70,19 @@ export const NO_FOLLOW: FollowState = {
 };
 
 const LIVE_STATES = new Set(["STARTING", "RUNNING", "1", "2"]);
+/** The real game still holds the stage while it ends (winner ceremony). */
+const REAL_LIVE_STATES = new Set([...LIVE_STATES, "ENDING", "3"]);
 
-/** STARTING or RUNNING (a game in ENDING / ENDED / IDLE is not followed). */
+/** STARTING or RUNNING (a shadow game in ENDING / ENDED / IDLE is not followed). */
 export function isLiveGame(game: GameInfoLike | undefined | null): boolean {
   if (!game || !game.gameId) return false;
   return LIVE_STATES.has(String(game.state ?? ""));
+}
+
+/** The real (primary) game is on stage: STARTING, RUNNING or ENDING. */
+export function isRealGameLive(primary: GameInfoLike | undefined | null): boolean {
+  if (!primary || !primary.gameId) return false;
+  return REAL_LIVE_STATES.has(String(primary.state ?? ""));
 }
 
 function startMs(game: GameInfoLike): number {
@@ -98,7 +105,7 @@ export function chooseFollow(
   previous: string,
 ): FollowState {
   const primaryId = primary?.gameId ?? "";
-  const realGameLive = isLiveGame(primary);
+  const realGameLive = isRealGameLive(primary);
   const liveShadows = games
     .filter((g) => isLiveGame(g) && g.gameId !== primaryId)
     .sort((a, b) => startMs(b) - startMs(a) || String(b.gameId).localeCompare(String(a.gameId)));
@@ -134,18 +141,19 @@ export interface Tile<T> {
 }
 
 /**
- * The controller tiles to draw (UC-070 BR-005). Pure. Following a shadow game:
- * only its players. Otherwise: everything but the players of live shadow games.
+ * The controller tiles to draw (UC-070 BR-005). Pure. Every controller that is
+ * in no live shadow game (real or lobby controllers) is shown; players of live
+ * shadow games are hidden, except the followed shadow game's players, which are
+ * shown with alive or dead from its roster.
  */
 export function visibleTiles<T extends { serial: string }>(controllers: T[], follow: FollowState): Tile<T>[] {
-  if (follow.shadowGameId) {
-    return controllers
-      .filter((c) => follow.shadowPlayers.has(c.serial))
-      .map((c) => ({ controller: c, alive: follow.shadowPlayers.get(c.serial) }));
+  const tiles: Tile<T>[] = [];
+  for (const c of controllers) {
+    const followedAlive = follow.shadowGameId ? follow.shadowPlayers.get(c.serial) : undefined;
+    if (followedAlive !== undefined) tiles.push({ controller: c, alive: followedAlive });
+    else if (!follow.liveShadowSerials.has(c.serial)) tiles.push({ controller: c, alive: undefined });
   }
-  return controllers
-    .filter((c) => !follow.liveShadowSerials.has(c.serial))
-    .map((c) => ({ controller: c, alive: undefined }));
+  return tiles;
 }
 
 /** Banner text above the grid while a shadow game is followed ("" when none). */
@@ -154,4 +162,35 @@ export function followBanner(follow: FollowState): string {
   const alive = Array.from(follow.shadowPlayers.values()).filter(Boolean).length;
   const mode = follow.shadowGameMode ? `${follow.shadowGameMode}, ` : "";
   return `No real game live: following shadow game ${follow.shadowGameId} (${mode}${alive}/${follow.shadowPlayers.size} alive)`;
+}
+
+/**
+ * The follow state across polls (UC-070 BR-005). A transient poll error keeps the
+ * last state, so the followed game does not switch; after `maxErrors` consecutive
+ * errors the state becomes unknown (NO_FOLLOW, every tile shown). The previously
+ * followed shadow game is remembered through errors and resumed when it is live.
+ */
+export class FollowTracker {
+  private current: FollowState = NO_FOLLOW;
+  private previous = "";
+  private errors = 0;
+
+  constructor(private readonly maxErrors = 3) {}
+
+  get state(): FollowState {
+    return this.current;
+  }
+
+  update(primary: GameInfoLike | null | undefined, games: GameInfoLike[]): FollowState {
+    this.errors = 0;
+    this.current = chooseFollow(primary, games, this.previous);
+    if (this.current.shadowGameId) this.previous = this.current.shadowGameId;
+    return this.current;
+  }
+
+  fail(): FollowState {
+    this.errors += 1;
+    if (this.errors >= this.maxErrors) this.current = NO_FOLLOW;
+    return this.current;
+  }
 }
