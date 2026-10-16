@@ -34,10 +34,13 @@ active_game = Gauge(
     ["game_kind", "game_id", "experiment_id", "arm"],
 )
 
+# Per-game mode marker (FR-041): value 1 while the game is live, one series per
+# game (mode, game_kind, game_id). Set at StartGame, removed at retire
+# (GameSession.clear_metrics).
 current_game_mode = Gauge(
     "game_current_mode",
-    "Current game mode",
-    ["mode"],  # 'ffa', 'teams_simple', 'teams_random', 'nonstop_joust', 'none'
+    "Mode of a live game (always 1 while the game is live)",
+    ["mode", "game_kind", "game_id"],
 )
 
 # Trace-correlation signal (#1133, Phase 2 of #1088). A dedicated, low-rate
@@ -187,31 +190,56 @@ grpc_request_duration_seconds = Histogram(
     buckets=[0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0],
 )
 
+# Game-state gauges (FR-041). One series per live game, labelled
+# (game_kind, game_id), so a concurrent real game and shadow game never overwrite
+# each other. Each game removes its own series when it ends
+# (clear_game_state_gauges); there is no "0 = no game" sentinel any more.
+#
+# The effective thresholds are the game-wide values for the game's sensitivity at
+# the current tempo. They do NOT include per-player factors (sensitivity_factor,
+# handicap, soft_penalty, shields), which _compute_effective_thresholds applies
+# per player per frame.
+GAME_STATE_LABELS = ["game_kind", "game_id"]
+
 # Music tempo metric (Phase 70)
 music_tempo = Gauge(
     "game_music_tempo",
-    "Current music playback speed (1.0=slow, 1.3=fast, 0=no game)",
+    "Current music playback speed of a live game (1.0=slow, 1.3=fast)",
+    GAME_STATE_LABELS,
 )
 
 # Sensitivity and threshold metrics (Phase 80)
 game_sensitivity = Gauge(
     "game_sensitivity",
-    "Current game sensitivity level (0=ultra_slow, 1=slow, 2=medium, 3=fast, 4=ultra_fast)",
+    "Sensitivity level of a live game (0=ultra_slow, 1=slow, 2=medium, 3=fast, 4=ultra_fast)",
+    GAME_STATE_LABELS,
 )
 
 effective_warning_threshold = Gauge(
     "game_effective_warning_threshold",
-    "Current effective warning threshold after LERP (g-force)",
+    "Game-wide effective warning threshold after the tempo LERP (g-force), before per-player factors",
+    GAME_STATE_LABELS,
 )
 
 effective_death_threshold = Gauge(
     "game_effective_death_threshold",
-    "Current effective death threshold after LERP (g-force)",
+    "Game-wide effective death threshold after the tempo LERP (g-force), before per-player factors",
+    GAME_STATE_LABELS,
 )
 
 # Runtime metrics (Phase 43)
 actual_update_frequency_hz = Gauge(
-    "game_actual_update_frequency_hz", "Actual measured update frequency during gameplay"
+    "game_actual_update_frequency_hz",
+    "Actual measured update frequency of a live game loop",
+    GAME_STATE_LABELS,
+)
+
+GAME_STATE_GAUGES = (
+    music_tempo,
+    game_sensitivity,
+    effective_warning_threshold,
+    effective_death_threshold,
+    actual_update_frequency_hz,
 )
 
 config_changes_total = Counter(
@@ -421,10 +449,20 @@ def clear_player_analytics(serial: str, game_id: str = "") -> None:
             player_elimination_order.remove(serial, game_id)
 
 
+def clear_game_state_gauges(game_kind: str, game_id: str) -> None:
+    """Remove one game's game-state gauge series (FR-041).
+
+    Idempotent: a series that was never set (or was already removed) is ignored.
+    """
+    for gauge in GAME_STATE_GAUGES:
+        with suppress(KeyError, ValueError):
+            gauge.remove(game_kind, game_id)
+
+
 def clear_session_player_analytics(
     serials: list[str],
     game_id: str = "",
-    reset_global_gauges: bool = True,
+    game_kind: str = "primary",
 ) -> None:
     """
     Clear analytics metrics for a single game session at game end (#775).
@@ -434,24 +472,19 @@ def clear_session_player_analytics(
     rather than globally wiping every player gauge. With two concurrent games
     this prevents the first game to end from erasing the live game's dashboard.
 
-    The game-state gauges (music_tempo, game_sensitivity, effective_*_threshold)
-    are genuinely single-game/primary concepts, so they are reset to 0 only when
-    ``reset_global_gauges`` is True (i.e. the PRIMARY session ending). A shadow
-    session ending must not zero them out from under the primary game.
+    The game-state gauges (music_tempo, game_sensitivity, effective_*_threshold,
+    actual_update_frequency_hz) are per game (game_kind, game_id), so the ending
+    session removes only its own series and never touches a concurrent game's.
 
     Args:
         serials: Controller serials of the ending session's players.
         game_id: The ending session's game_id (for serial+game_id gauges).
-        reset_global_gauges: Reset the single-game state gauges (primary only).
+        game_kind: The ending session's game_kind ("primary" / "shadow").
     """
     for serial in serials:
         clear_player_analytics(serial, game_id)
 
-    if reset_global_gauges:
-        music_tempo.set(0)
-        game_sensitivity.set(0)
-        effective_warning_threshold.set(0)
-        effective_death_threshold.set(0)
+    clear_game_state_gauges(game_kind, game_id)
 
 
 def clear_all_player_analytics() -> None:
@@ -485,11 +518,8 @@ def clear_all_player_analytics() -> None:
     player_elimination_order._values.clear()
     player_alive._metrics.clear()
     player_alive._values.clear()
-    # Reset game state gauges to 0 to indicate no game running
-    music_tempo.set(0)
-    game_sensitivity.set(0)
-    effective_warning_threshold.set(0)
-    effective_death_threshold.set(0)
+    for gauge in GAME_STATE_GAUGES:
+        gauge.clear()
 
 
 # Agent intervention audit metric (#730, #722 §7).

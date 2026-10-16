@@ -703,13 +703,10 @@ class BaseGameMode(ABC):
         # default to the single-game/primary values so a standalone game (and
         # every existing test) behaves exactly as before:
         #   game_kind: "primary" or "shadow" — labels lifecycle metrics.
-        #   _reset_global_gauges_on_end: only the primary session resets the
-        #     single-game state gauges (music_tempo, sensitivity, thresholds).
         #   experiment_id / arm: experiment attribution within a shadow session
         #     (#975); empty for a non-experiment game. The servicer overrides
         #     these from the owning GameSession (set by #976's spawn binding).
         self.game_kind = "primary"
-        self._reset_global_gauges_on_end = True
         self.experiment_id = ""
         self.arm = ""
         # Callback the owning GameSession sets so the game can publish its
@@ -1381,7 +1378,7 @@ class BaseGameMode(ABC):
         if loop_iterations % 10 == 0:
             elapsed = time.time() - loop_start_time
             actual_hz = loop_iterations / elapsed if elapsed > 0 else 0
-            metrics.actual_update_frequency_hz.set(actual_hz)
+            metrics.actual_update_frequency_hz.labels(**self._game_state_labels()).set(actual_hz)
 
             consistency_percent = (frames_on_target / loop_iterations) * 100
             metrics.game_loop_frame_consistency_percent.set(consistency_percent)
@@ -2784,8 +2781,7 @@ class BaseGameMode(ABC):
                 init_span.set_attribute("game.id", self.game_id)
                 init_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
 
-                # Emit sensitivity metric for dashboard
-                metrics.game_sensitivity.set(self.sensitivity.value)
+                self._emit_sensitivity_metric()
                 logger.info(f"Sensitivity: {self.sensitivity.name} ({self.sensitivity.value})")
 
                 # Initialize players
@@ -2960,11 +2956,12 @@ class BaseGameMode(ABC):
 
                 # Clear THIS session's analytics so dashboards show no data when
                 # the game is over, without clobbering other concurrent sessions
-                # (#775). Only the primary session resets the single-game gauges.
+                # (#775). Game-state gauges are per game_id, so each session
+                # removes only its own series (FR-041).
                 metrics.clear_session_player_analytics(
                     list(self.players.keys()),
                     self.game_id,
-                    reset_global_gauges=self._reset_global_gauges_on_end,
+                    game_kind=self.game_kind,
                 )
 
         except Exception as e:
@@ -2995,7 +2992,7 @@ class BaseGameMode(ABC):
             metrics.clear_session_player_analytics(
                 list(self.players.keys()),
                 self.game_id,
-                reset_global_gauges=self._reset_global_gauges_on_end,
+                game_kind=self.game_kind,
             )
             logger.info(f"{self.get_game_name()} game finished: {self.game_id}")
 
@@ -3176,8 +3173,21 @@ class BaseGameMode(ABC):
         effective_warn = self._lerp(self.slow_warning[sens_idx], self.fast_warning[sens_idx], speed_percent)
         effective_death = self._lerp(self.slow_max[sens_idx], self.fast_max[sens_idx], speed_percent)
 
-        metrics.effective_warning_threshold.set(effective_warn)
-        metrics.effective_death_threshold.set(effective_death)
+        labels = self._game_state_labels()
+        metrics.effective_warning_threshold.labels(**labels).set(effective_warn)
+        metrics.effective_death_threshold.labels(**labels).set(effective_death)
+
+    def _game_state_labels(self) -> dict[str, str]:
+        """Label set of this game's game-state gauges (FR-041)."""
+        return {"game_kind": self.game_kind, "game_id": self.game_id}
+
+    def _emit_sensitivity_metric(self) -> None:
+        """Emit this game's sensitivity level for the dashboard and the agent."""
+        metrics.game_sensitivity.labels(**self._game_state_labels()).set(self.sensitivity.value)
+
+    def _emit_music_tempo_metric(self) -> None:
+        """Emit this game's current music tempo (Phase 80)."""
+        metrics.music_tempo.labels(**self._game_state_labels()).set(self.music_speed)
 
     async def _start_game_music(self, volume: float | None = None):
         """
@@ -3216,7 +3226,7 @@ class BaseGameMode(ABC):
                 self.change_time = self._get_music_change_time()
                 next_change = self.change_time - time.time()
                 # Update metrics for dashboard (Phase 80)
-                metrics.music_tempo.set(self.music_speed)
+                self._emit_music_tempo_metric()
                 self._emit_threshold_metrics()
                 logger.info(f"Game music started: {response.track_id}, next change at +{next_change:.1f}s")
             else:
@@ -3379,7 +3389,7 @@ class BaseGameMode(ABC):
         self.speed_up = not self.speed_up
         self.change_time = self._get_music_change_time()
         # Update metrics for dashboard (Phase 80)
-        metrics.music_tempo.set(self.music_speed)
+        self._emit_music_tempo_metric()
         self._emit_threshold_metrics()
 
         logger.debug(f"Next tempo change at +{self.change_time - time.time():.1f}s")
@@ -3417,7 +3427,7 @@ class BaseGameMode(ABC):
             )
 
         self.music_speed = target_tempo
-        metrics.music_tempo.set(self.music_speed)
+        self._emit_music_tempo_metric()
         self._emit_threshold_metrics()
 
     async def _check_music_speed(self):

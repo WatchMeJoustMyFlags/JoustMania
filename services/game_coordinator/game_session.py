@@ -16,10 +16,11 @@ ordering from the original servicer is replicated here exactly.
 Session kinds:
 - ``primary``: the menu-driven game. Publishes to the servicer's persistent
   primary EventBus (so zero-arg ``StreamGameEvents`` subscribers — the menu —
-  keep working with no changes). Only the primary session resets the
-  single-game state gauges (music_tempo, sensitivity, thresholds) at end.
-- ``shadow``: agent/test sessions. Each gets its OWN EventBus and never touches
-  the primary game's gauges.
+  keep working with no changes).
+- ``shadow``: agent/test sessions. Each gets its OWN EventBus.
+
+Every session writes its own game_id-labelled game-state gauges (music_tempo,
+sensitivity, thresholds, loop Hz, mode) and removes only its own series (FR-041).
 """
 
 import asyncio
@@ -63,8 +64,7 @@ class GameSession:
     """State container + runtime for a single concurrent game.
 
     The session owns its EventBus, background thread, asyncio loop, gRPC clients,
-    and lifecycle state. ``game_kind`` drives the metric label and whether the
-    single-game state gauges are reset on end.
+    and lifecycle state. ``game_kind`` drives the metric labels.
     """
 
     def __init__(
@@ -186,6 +186,13 @@ class GameSession:
         # then. Remove with the CURRENT phase span ids: each is "" until its span
         # opens and is then updated in lockstep with the gauge re-emit, so this
         # always matches the live series tuple.
+        # Per-game mode marker and game-state gauges (FR-041). The game removes
+        # its game-state series when run() ends; removing them again here is
+        # idempotent and catches a game that never reached its own cleanup.
+        with suppress(KeyError, ValueError):
+            metrics.current_game_mode.remove(self.game_name, self.game_kind, self.game_id)
+        metrics.clear_game_state_gauges(self.game_kind, self.game_id)
+
         if self.game_trace_id:
             with suppress(KeyError, ValueError):
                 metrics.game_trace_correlation.remove(*self._correlation_labels())
@@ -238,6 +245,18 @@ class GameSession:
         published it falls back to gameplay_phase, then the game root.
         """
         self._republish_trace_correlation("game_cycle_span_id", game_cycle_span_id)
+
+    def publish_game_mode(self) -> None:
+        """Set this game's game_current_mode series to 1 (FR-041).
+
+        One series per game (mode, game_kind, game_id) so the agent attributes
+        the mode to the right game; ``clear_metrics`` removes it at retire.
+        """
+        metrics.current_game_mode.labels(
+            mode=self.game_name,
+            game_kind=self.game_kind,
+            game_id=self.game_id,
+        ).set(1)
 
     def publish_gameplay_phase_span_id(self, gameplay_phase_span_id: str) -> None:
         """Re-emit the correlation gauge carrying the gameplay_phase span_id (#1195).
@@ -492,10 +511,9 @@ class GameSession:
                     return
 
                 # Tell the game which session it belongs to so its end-of-game
-                # analytics cleanup is per-session and only the primary resets
-                # the single-game state gauges (#775).
+                # analytics cleanup and game-state gauges are per-session (#775,
+                # FR-041).
                 game.game_kind = self.game_kind
-                game._reset_global_gauges_on_end = self.is_primary
                 # Thread experiment attribution onto the game so its in-loop
                 # set_game_transaction_context carries it for flag evaluation (#975).
                 game.experiment_id = self.experiment_id

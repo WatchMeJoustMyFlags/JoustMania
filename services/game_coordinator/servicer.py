@@ -635,6 +635,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 experiment_id=session.experiment_id,
                 arm=session.arm,
             ).set(len(session.players))
+            session.publish_game_mode()
 
             # Publish game_start on this session's bus.
             await session.event_bus.publish(

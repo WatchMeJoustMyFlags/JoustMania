@@ -413,55 +413,41 @@ class TestMultiSession:
         assert servicer.sessions[gid2].game_kind == "primary"
         assert servicer._primary_game_id == gid2
 
-    def test_shadow_end_clears_only_its_serials_and_keeps_global_gauges(self):
+    def test_shadow_end_clears_only_its_serials_and_game_state_series(self):
         """Cross-wipe fix: a shadow session's cleanup is targeted, not global.
 
-        ``clear_session_player_analytics`` for a shadow session must remove ONLY
-        the shadow's serials (via the targeted ``clear_player_analytics``) and
-        must NOT reset the global single-game gauges (music_tempo etc.), so the
-        live primary game's dashboard survives a shadow game ending.
+        ``clear_session_player_analytics`` for a shadow session removes ONLY the
+        shadow's serials and the shadow's own (game_kind, game_id) game-state
+        series (FR-041), so the live primary game's series survive.
         """
         from services.game_coordinator import metrics
 
         with (
             patch.object(metrics, "clear_player_analytics") as mock_clear,
-            patch.object(metrics, "music_tempo") as mock_tempo,
-            patch.object(metrics, "game_sensitivity") as mock_sens,
-            patch.object(metrics, "effective_warning_threshold") as mock_warn,
-            patch.object(metrics, "effective_death_threshold") as mock_death,
+            patch.object(metrics, "clear_game_state_gauges") as mock_state,
         ):
             metrics.clear_session_player_analytics(
-                ["shadow_p1", "shadow_p2"], game_id="shadow_game", reset_global_gauges=False
+                ["shadow_p1", "shadow_p2"], game_id="shadow_game", game_kind="shadow"
             )
 
             # Targeted per-serial cleanup for exactly the shadow's serials.
             mock_clear.assert_any_call("shadow_p1", "shadow_game")
             mock_clear.assert_any_call("shadow_p2", "shadow_game")
             assert mock_clear.call_count == 2
-            # Global single-game gauges untouched by the shadow end.
-            mock_tempo.set.assert_not_called()
-            mock_sens.set.assert_not_called()
-            mock_warn.set.assert_not_called()
-            mock_death.set.assert_not_called()
+            mock_state.assert_called_once_with("shadow", "shadow_game")
 
-    def test_primary_end_resets_global_gauges(self):
-        """The primary session's cleanup DOES reset the single-game gauges."""
+    def test_primary_end_removes_its_game_state_series(self):
+        """The primary session's cleanup removes its own game-state series."""
         from services.game_coordinator import metrics
 
         with (
             patch.object(metrics, "clear_player_analytics") as mock_clear,
-            patch.object(metrics, "music_tempo") as mock_tempo,
-            patch.object(metrics, "game_sensitivity") as mock_sens,
-            patch.object(metrics, "effective_warning_threshold") as mock_warn,
-            patch.object(metrics, "effective_death_threshold") as mock_death,
+            patch.object(metrics, "clear_game_state_gauges") as mock_state,
         ):
-            metrics.clear_session_player_analytics(["primary_p1"], game_id="primary_game", reset_global_gauges=True)
+            metrics.clear_session_player_analytics(["primary_p1"], game_id="primary_game", game_kind="primary")
 
             mock_clear.assert_called_once_with("primary_p1", "primary_game")
-            mock_tempo.set.assert_called_once_with(0)
-            mock_sens.set.assert_called_once_with(0)
-            mock_warn.set.assert_called_once_with(0)
-            mock_death.set.assert_called_once_with(0)
+            mock_state.assert_called_once_with("primary", "primary_game")
 
 
 class TestConcurrentShadowGames:
