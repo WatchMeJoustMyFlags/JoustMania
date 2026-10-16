@@ -29,7 +29,7 @@ if [[ "$1" == "inspect" ]]; then
   case "${fmt}" in
     *State.Status*) echo "running healthy" ;;
     *Mounts*) echo "${STUB_MOUNT}" ;;
-    *Config.Env*) printf '%s\n' "PATH=/usr/bin" "ANTHROPIC_API_KEY=${STUB_SECRET}" "JEV_API_KEY=${STUB_JEV_KEY-${STUB_SECRET}}" "DECISION_OPENAI_API_KEY=" "AGENT_INFERENCE_BACKEND=${STUB_INFERENCE-claude}" "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${STUB_BUDGET:-}" ;;
+    *Config.Env*) printf '%s\n' "PATH=/usr/bin" "ANTHROPIC_API_KEY=${STUB_CLAUDE_KEY-${STUB_SECRET}}" "JEV_API_KEY=${STUB_JEV_KEY-${STUB_SECRET}}" "DECISION_OPENAI_API_KEY=" "AGENT_INFERENCE_BACKEND=${STUB_INFERENCE-claude}" "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${STUB_BUDGET:-}" ;;
   esac
   exit 0
 fi
@@ -99,7 +99,7 @@ flags = {
     "decision.claude.timeout_ms": f({"fast": 1500, "tight": 2500, "default": 5000, "patient": 8000}, "default"),
     "decision.jev.timeout_ms": f({"fast": 1500, "default": 2500, "patient": 5000}, "default"),
     "decision.jev.model": f({"latest": "jev-latest", "pinned": "jev-1.13.0"}, "latest"),
-    "decision.jev.base_url": f({"default": "https://api.typesafe.ai/v1", "blackhole": "http://10.255.255.1/v1"}, "default"),
+    "decision.jev.base_url": f({"default": "https://api.typesafe.ai/v1", "blackhole": "https://192.0.2.1/v1"}, "default"),
     "llm.eligible_game_kinds": f({"real_only": "real"}, "real_only"),
     "decision.openai.model": f({"unset": "", "vendor": "m"}, "unset"),
     "decision.openai.base_url": f({"default": "https://api.openai.com/v1"}, "default"),
@@ -166,6 +166,25 @@ check "missing jev key fails" "FAIL  jev: JEV_API_KEY missing"
 check "stub summary backend warns" "WARN  AGENT_INFERENCE_BACKEND=stub (not claude)"
 STUB_BUDGET=10 run_preflight
 check "low env budget warns" "WARN  AGENT_LLM_MAX_REQUESTS_PER_MINUTE=10 replaces the flag"
+
+# --- missing claude key; secret still never printed ------------------------
+fixture
+STUB_BUDGET=30 STUB_CLAUDE_KEY="" run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "missing claude key exits 1"; else not_ok "missing claude key exits 1 (rc=${RC})"; fi
+check "missing claude key fails" "FAIL  claude: ANTHROPIC_API_KEY missing"
+if has "${SECRET}"; then not_ok "key value never printed (missing-key run)"; else ok "key value never printed (missing-key run)"; fi
+
+# --- blackhole variant missing ------------------------------------------------
+fixture
+python3 - "${AGENT_FLAG_FILE}" <<'PY2'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+del data["flags"]["decision.jev.base_url"]["variants"]["blackhole"]
+json.dump(data, open(path, "w"), indent=2)
+PY2
+STUB_BUDGET=30 run_preflight
+check "missing blackhole variant fails" "FAIL  decision.jev.base_url has no blackhole variant"
 
 # --- expected backend override ---------------------------------------------
 fixture decision.backend=claude

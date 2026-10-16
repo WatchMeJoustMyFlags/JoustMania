@@ -187,7 +187,8 @@ if jev_model is not None:
     print(f"INFO  decision.jev.model = {shown(jev_model)} (gate calibrated on jev-1.13.0 = variant pinned)")
 jev_url = flags.get("decision.jev.base_url", {})
 if "blackhole" not in jev_url.get("variants", {}):
-    print("WARN  decision.jev.base_url has no blackhole variant: add it for the degrade beat (option B)")
+    print("FAIL  decision.jev.base_url has no blackhole variant: the degrade beat (option B) needs the "
+          "shipped https://192.0.2.1/v1 variant (restore the flag file from git)")
 elif jev_url.get("defaultVariant") == "blackhole":
     print("FAIL  decision.jev.base_url = blackhole: every jev call times out (reset: default)")
 else:
