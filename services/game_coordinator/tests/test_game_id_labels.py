@@ -166,9 +166,12 @@ class TestMetricDeclarationsCarryGameId:
             metrics.player_skill_level,
             metrics.player_peak_accel,
             metrics.player_elimination_order,
-            metrics.player_deaths_total,
         ):
             assert "game_id" in metric.labelnames
+
+    def test_deaths_total_is_an_aggregate_counter(self):
+        """A cumulative counter must not carry serial/game_id (unbounded series, #1334)."""
+        assert set(metrics.player_deaths_total.labelnames) == {"mode", "game_kind"}
 
 
 class TestCleanupRemovesGameIdScopedSeries:

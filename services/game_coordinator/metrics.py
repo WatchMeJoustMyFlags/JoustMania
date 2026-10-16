@@ -137,7 +137,11 @@ active_players = Gauge(
 
 players_alive = Gauge("game_players_alive", "Number of players currently alive")
 
-player_deaths_total = Counter("game_player_deaths_total", "Total player deaths", ["mode", "serial", "game_id"])
+# Aggregate death count (UC-030 step 9). A cumulative counter, so it carries no
+# serial / game_id: those would leave one permanent series per (serial, game) with
+# nothing to remove them. Per-game, per-player death order is
+# game_player_elimination_order{serial,game_id} (a gauge cleared at game end).
+player_deaths_total = Counter("game_player_deaths_total", "Total player deaths", ["mode", "game_kind"])
 
 player_kills_total = Counter("game_player_kills_total", "Total player kills", ["mode", "serial"])
 

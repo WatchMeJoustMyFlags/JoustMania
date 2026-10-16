@@ -87,8 +87,7 @@ func TestApplySpans_DeathEventAppendsElimination(t *testing.T) {
 func TestApplySpans_DedupeAgainstMetricPath(t *testing.T) {
 	s := newTestStore()
 	// Metric-path elimination first.
-	s.ApplyMetrics(metricsWith(metricDeathsTotal, 0, serial("A")))
-	s.ApplyMetrics(metricsWith(metricDeathsTotal, 1, serial("A")))
+	s.ApplyMetrics(metricsWith(metricEliminationOrder, 1, serial("A")))
 	// Span confirmation for same serial must not double-append.
 	s.ApplySpans(spanWith(map[string]string{"player.serial": "A"}, []string{"player_death"}))
 	if seq := s.Snapshot().Session.EliminationSequence; len(seq) != 1 {

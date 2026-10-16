@@ -2604,9 +2604,9 @@ class BaseGameMode(ABC):
         self._elimination_count += 1
         metrics.player_elimination_order.labels(serial=serial, game_id=self.game_id).set(self._elimination_count)
 
-        # UC-030 step 9: one increment per death. The agent's live elimination
-        # fallback (gamecontext RecordDeathTotal) reads this counter.
-        metrics.player_deaths_total.labels(mode=self.get_game_name(), serial=serial, game_id=self.game_id).inc()
+        # UC-030 step 9: one increment per death (respawn modes count each death).
+        # Aggregate {mode, game_kind} only; per-player order is the gauge above.
+        metrics.player_deaths_total.labels(mode=self.get_game_name(), game_kind=self.game_kind).inc()
 
         # Extract trace context BEFORE _kill_player_impl() which may close the span.
         # This ensures the death effect and sound are parented to the player_lifecycle
