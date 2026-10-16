@@ -228,7 +228,6 @@ services/controller_manager/
 │   └── validation.py      # Backend combination validation
 ├── discovery_loop.py      # Discovery loop management
 ├── button_detector.py     # Button event detection
-├── controller_state.py    # Controller state tracking
 ├── state_cache.py         # State caching layer
 ├── effects_base.py        # Visual effect animations
 ├── feedback_manager.py    # LED/rumble feedback
