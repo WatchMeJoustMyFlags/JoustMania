@@ -446,6 +446,11 @@ jobs:
       !cancelled() && !contains(needs.*.result, 'failure') &&
       (github.repository == 'WatchMeJoustMyFlags/JoustMania' || vars.ENABLE_SONARCLOUD == 'true')
     timeout-minutes: 15
+    # Informational only: a Sonar failure (quality gate, or an expired
+    # SONAR_TOKEN returning 403) must not fail CI Complete, the one required
+    # check. With job-level continue-on-error, needs.sonarcloud.result reports
+    # success while the job itself still shows red.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
         with:
