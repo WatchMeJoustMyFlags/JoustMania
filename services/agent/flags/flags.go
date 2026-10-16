@@ -842,6 +842,10 @@ type Snapshot struct {
 	Fitness Fitness
 	// BluetoothFitness holds the infrastructure fitness thresholds (#735).
 	BluetoothFitness BluetoothFitness
+	// Decision holds the decision-backend flags (#1226): which backend answers
+	// the decide contract, the act-confidence threshold, content capture, and
+	// each remote backend's model / base URL / timeout. Read every cycle.
+	Decision DecisionBackend
 }
 
 // Permits reports whether the named intervention is in the allow-list.
@@ -906,6 +910,7 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 			AccelerateTargetSessionSeconds: f.intFlag(ctx, keyAccelerateTargetSessionSecs, DefaultAccelerateTargetSessionSeconds),
 		},
 		BluetoothFitness: f.BluetoothFitness(ctx),
+		Decision:         f.DecisionBackend(ctx),
 	}
 }
 

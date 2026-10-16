@@ -75,7 +75,14 @@ func (b *RulesBackend) Decide(_ context.Context, req decide.Request) (decide.Res
 		ranked, _, _ = b.engine.rankLocked(*req.Context, b.engine.now())
 		b.engine.mu.Unlock()
 	}
+	return answerFromRanked(ranked, req, known), nil
+}
 
+// answerFromRanked answers req's questions from an already-ranked candidate list.
+// It is shared by RulesBackend.Decide and ObjectiveRules.EvaluateDecide, so the
+// decide answers and the emitted decisions can come from ONE ranking (#1226).
+// known=false (no context or engine) zeroes every confidence.
+func answerFromRanked(ranked []scoredCandidate, req decide.Request, known bool) decide.Response {
 	qs := indexQuestions(req.Questions)
 	eligible := filterEligible(ranked, qs)
 
@@ -98,7 +105,7 @@ func (b *RulesBackend) Decide(_ context.Context, req decide.Request) (decide.Res
 		}
 		resp.Answers = append(resp.Answers, a)
 	}
-	return resp, nil
+	return resp
 }
 
 // interventionPick is the adapter's answer to ffa.intervention plus the
