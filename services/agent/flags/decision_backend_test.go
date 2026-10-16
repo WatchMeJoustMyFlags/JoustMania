@@ -20,7 +20,7 @@ func defaultDecisionBackend() DecisionBackend {
 		Claude:                 RemoteBackendConfig{Model: DefaultDecisionClaudeModel, Timeout: timeout},
 		OpenAI: RemoteBackendConfig{BaseURL: DefaultDecisionOpenAIBaseURL, Timeout: timeout,
 			ReasoningEffort: DefaultDecisionOpenAIReasoningEffort},
-		Jev: RemoteBackendConfig{Timeout: timeout},
+		Jev: RemoteBackendConfig{BaseURL: DefaultDecisionJevBaseURL, Model: DefaultDecisionJevModel, Timeout: timeout},
 	}
 }
 

@@ -323,7 +323,9 @@ func TestValidate(t *testing.T) {
 			r.Answers[0].Confidence = 0.95
 		}, true},
 
-		{"question unknown kind", func(q *Request, _ *Response) { q.Questions[1].Kind = "noul" }, false},
+		{"question unknown kind", func(q *Request, _ *Response) { q.Questions[1].Kind = "boolean" }, false},
+		{"score answer with a noul", func(_ *Request, r *Response) { r.Answers[1].Noul = fptr(0.5) }, false},
+		{"choice answer with a noul", func(_ *Request, r *Response) { r.Answers[0].Noul = fptr(0.5) }, false},
 		{"question duplicate id", func(q *Request, r *Response) {
 			q.Questions[1].ID = "iv"
 			r.Answers[1].QuestionID = "iv"
@@ -392,5 +394,56 @@ func TestResponse_Find(t *testing.T) {
 	}
 	if _, ok := resp.Find("nope"); ok {
 		t.Fatal("Find(nope) found something")
+	}
+}
+
+// TestValidate_Noul covers the KindNoul question (#1229): Text only, answered
+// with a finite P(yes) in [0,1] and nothing else.
+func TestValidate_Noul(t *testing.T) {
+	req := Request{Questions: []Question{{ID: "yn", Kind: KindNoul, Text: "Is the game close?"}}}
+	cases := []struct {
+		name string
+		a    Answer
+		ok   bool
+	}{
+		{"valid", Answer{QuestionID: "yn", Noul: fptr(0.8), Confidence: 0.6}, true},
+		{"zero is a valid noul", Answer{QuestionID: "yn", Noul: fptr(0), Confidence: 1}, true},
+		{"one is a valid noul", Answer{QuestionID: "yn", Noul: fptr(1), Confidence: 1}, true},
+		{"missing noul", Answer{QuestionID: "yn", Confidence: 0.5}, false},
+		{"noul above 1", Answer{QuestionID: "yn", Noul: fptr(1.01)}, false},
+		{"noul negative", Answer{QuestionID: "yn", Noul: fptr(-0.01)}, false},
+		{"noul NaN", Answer{QuestionID: "yn", Noul: fptr(math.NaN())}, false},
+		{"noul Inf", Answer{QuestionID: "yn", Noul: fptr(math.Inf(1))}, false},
+		{"noul with choice", Answer{QuestionID: "yn", Noul: fptr(0.5), Choice: "yes"}, false},
+		{"noul with probabilities", Answer{QuestionID: "yn", Noul: fptr(0.5), Probabilities: map[string]float64{"yes": 1}}, false},
+		{"noul with score", Answer{QuestionID: "yn", Noul: fptr(0.5), Score: 0.5}, false},
+		{"noul confidence above 1", Answer{QuestionID: "yn", Noul: fptr(0.5), Confidence: 1.5}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Validate(req, Response{Answers: []Answer{tc.a}})
+			if (err == nil) != tc.ok {
+				t.Fatalf("Validate = %v, want ok=%v", err, tc.ok)
+			}
+			if err != nil && !errors.Is(err, ErrInvalid) {
+				t.Errorf("error does not wrap ErrInvalid: %v", err)
+			}
+		})
+	}
+}
+
+// TestAnswerJSON_NoulOmitted: choice and score answers serialize exactly as
+// before the noul kind existed (no "noul" key).
+func TestAnswerJSON_NoulOmitted(t *testing.T) {
+	b, err := json.Marshal(Answer{QuestionID: "iv", Choice: "noop", Probabilities: map[string]float64{"noop": 1}, Confidence: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "noul") {
+		t.Errorf("choice answer JSON carries a noul: %s", b)
+	}
+	b, _ = json.Marshal(Answer{QuestionID: "yn", Noul: fptr(0), Confidence: 1})
+	if !strings.Contains(string(b), `"noul":0`) {
+		t.Errorf("noul 0 must serialize: %s", b)
 	}
 }

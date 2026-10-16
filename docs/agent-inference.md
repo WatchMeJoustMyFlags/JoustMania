@@ -28,7 +28,7 @@ an invalid answer, or the game is not eligible, the rules engine decides and the
 | `decision.min_interval_ms` | per-game cadence of remote calls |
 | `decision.claude.model`, `decision.claude.timeout_ms` | Claude backend |
 | `decision.openai.base_url`, `.model`, `.timeout_ms`, `.reasoning_effort` | any hosted OpenAI-compatible endpoint |
-| `decision.jev.*` | Jev (stub until access) |
+| `decision.jev.base_url`, `.model`, `.timeout_ms` | Jev, TypeSafe's System One API (`latest` = `jev-latest`, `pinned` = `jev-1.13.0`) |
 | `llm.eligible_game_kinds` | game kinds that may call a remote backend (default `real`: shadow games stay on rules) |
 | `llm.max_requests_per_minute` | global per-minute cap across all remote decide calls and retros |
 

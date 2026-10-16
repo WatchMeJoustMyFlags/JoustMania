@@ -141,6 +141,9 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	if len(req.Questions) == 0 {
 		return decide.Response{}, fmt.Errorf("%w: no questions", decide.ErrInvalid)
 	}
+	if err := llmio.Supported(req); err != nil {
+		return decide.Response{}, fmt.Errorf("%s: %w", Name, err)
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, b.cfg.Timeout)
 	defer cancel()

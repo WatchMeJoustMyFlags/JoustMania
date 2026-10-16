@@ -82,3 +82,23 @@ func TestMetricsNoPanic(t *testing.T) {
 	m.RecordDuration(context.Background(), Call{Provider: "jev"}, "timeout", time.Second)
 	m.RecordTokens(context.Background(), c, 10, 5)
 }
+
+func TestPostResponse_Header(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "req_1")
+		if r.URL.Path == "/big" {
+			_, _ = w.Write([]byte(strings.Repeat("x", 11)))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	r, err := PostResponse(context.Background(), srv.Client(), srv.URL, nil, nil, 10)
+	if err != nil || r.Status != 200 || r.Header.Get("X-Request-Id") != "req_1" || string(r.Body) != "{}" {
+		t.Errorf("response = %+v, %v", r, err)
+	}
+	r, err = PostResponse(context.Background(), srv.Client(), srv.URL+"/big", nil, nil, 10)
+	if !errors.Is(err, ErrTooLarge) || r.Header.Get("X-Request-Id") != "req_1" || r.Body != nil {
+		t.Errorf("big = %+v, %v (headers must survive an oversized body)", r, err)
+	}
+}

@@ -537,3 +537,15 @@ func TestFinishReasonMapping(t *testing.T) {
 		}
 	}
 }
+
+// TestDecide_NoulUnsupported: a noul question (#1229) is rejected before any
+// network I/O with an error wrapping decide.ErrInvalid.
+func TestDecide_NoulUnsupported(t *testing.T) {
+	api := newFakeAPI(t, 200, message("end_turn", textBlock(answerJSON)), 0)
+	req := testRequest()
+	req.Questions = append(req.Questions, decide.Question{ID: "close", Kind: decide.KindNoul, Text: "Is the game close?"})
+	_, err := api.backend("claude-haiku-4-5", false).Decide(context.Background(), req)
+	if !errors.Is(err, decide.ErrInvalid) || !errors.Is(err, llmio.ErrUnsupportedKind) || api.calls.Load() != 0 {
+		t.Errorf("err = %v, calls = %d", err, api.calls.Load())
+	}
+}

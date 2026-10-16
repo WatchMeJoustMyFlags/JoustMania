@@ -247,3 +247,19 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+func TestSupported(t *testing.T) {
+	ok := decide.Request{Questions: []decide.Question{
+		{ID: "a", Kind: decide.KindChoice, Options: []string{"x"}},
+		{ID: "b", Kind: decide.KindScore},
+	}}
+	if err := Supported(ok); err != nil {
+		t.Errorf("choice+score: %v", err)
+	}
+	bad := ok
+	bad.Questions = append(bad.Questions, decide.Question{ID: "c", Kind: decide.KindNoul, Text: "?"})
+	err := Supported(bad)
+	if !errors.Is(err, decide.ErrInvalid) || !errors.Is(err, ErrUnsupportedKind) {
+		t.Errorf("noul: err = %v", err)
+	}
+}

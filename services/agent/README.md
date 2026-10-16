@@ -990,7 +990,7 @@ by `docker-compose.yml`, read once at startup) plus its flag config:
 |---------|---------|---------------------|
 | `claude` | `ANTHROPIC_API_KEY` | `decision.claude.model` (defaults to haiku) |
 | `openai` | `DECISION_OPENAI_API_KEY` | `decision.openai.model` (unset by default), `decision.openai.base_url` (any OpenAI-compatible vendor), `decision.openai.reasoning_effort` (`auto` / `none` / `minimal` / `low` / `omit`; set with `./scripts/agent-backend.sh effort <variant>`) |
-| `jev` | `JEV_API_KEY` | `decision.jev.base_url` (unset by default; stub backend) |
+| `jev` | `JEV_API_KEY` | none: `decision.jev.base_url` defaults to `https://api.typesafe.ai/v1`, `decision.jev.model` to `latest` (`jev-latest`; `pinned` = `jev-1.13.0`) |
 
 `reasoning_effort=auto` sends `minimal` to the original gpt-5 family and `low` to
 other reasoning models; `omit` never sends the field (for models that reject

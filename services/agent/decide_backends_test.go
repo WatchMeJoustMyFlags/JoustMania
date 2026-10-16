@@ -68,7 +68,7 @@ func decisionFlags(t *testing.T, strs map[string]string) flags.DecisionBackend {
 var remoteBackends = []string{flags.DecisionBackendClaude, flags.DecisionBackendOpenAI, flags.DecisionBackendJev}
 
 // fullyConfigured sets the model / base URL flags every remote backend needs (the
-// shipped defaults leave openai's model and jev's base URL unset).
+// shipped defaults leave openai's model unset).
 func fullyConfigured(backend string) map[string]string {
 	return map[string]string{
 		"decision.backend":                 backend,
@@ -101,14 +101,15 @@ func TestDecideRegistry_NoKeysFallsBackToRules(t *testing.T) {
 }
 
 // TestDecideRegistry_KeyWithoutConfigFallsBack: a key alone is not enough when the
-// shipped defaults leave openai's model and jev's base URL empty. claude has a
-// default model, so its key alone makes it available.
+// shipped defaults leave openai's model empty. claude and jev have a default
+// model (and jev a default base URL), so their key alone makes them available:
+// scripts/agent-backend.sh jev works with only JEV_API_KEY set (#1229).
 func TestDecideRegistry_KeyWithoutConfigFallsBack(t *testing.T) {
 	reg := newDecideRegistry(allKeys, newDecideHTTPClient())
 	for name, wantAvailable := range map[string]bool{
 		flags.DecisionBackendClaude: true,
 		flags.DecisionBackendOpenAI: false,
-		flags.DecisionBackendJev:    false,
+		flags.DecisionBackendJev:    true,
 	} {
 		b, reason := reg.Resolve(decisionFlags(t, map[string]string{"decision.backend": name}))
 		if got := b != nil; got != wantAvailable {
@@ -294,3 +295,16 @@ var (
 	_ modeler = (*openai.Backend)(nil)
 	_ modeler = (*jev.Backend)(nil)
 )
+
+// TestJevFlagDefaultsMatchBackend: the flag fail-safe defaults are the jev
+// backend's own defaults, so a flagd outage changes nothing for jev.
+func TestJevFlagDefaultsMatchBackend(t *testing.T) {
+	if flags.DefaultDecisionJevBaseURL != jev.DefaultBaseURL || flags.DefaultDecisionJevModel != jev.DefaultModel {
+		t.Errorf("flags %q/%q vs backend %q/%q", flags.DefaultDecisionJevBaseURL, flags.DefaultDecisionJevModel, jev.DefaultBaseURL, jev.DefaultModel)
+	}
+	b, _ := newDecideRegistry(decideBackendEnv{JevAPIKey: "jev-test"}, newDecideHTTPClient()).
+		Resolve(decisionFlags(t, map[string]string{"decision.backend": flags.DecisionBackendJev}))
+	if b == nil || b.(modeler).Model() != jev.DefaultModel {
+		t.Fatalf("jev with key + shipped defaults = %v", b)
+	}
+}

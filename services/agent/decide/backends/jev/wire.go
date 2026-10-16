@@ -1,245 +1,447 @@
 package jev
 
-// wire.go is the ONLY file that knows Jev's wire format. Everything else in
-// this package (jev.go: availability, timeout, HTTP call, span, metrics) is
-// format-agnostic and talks to this file through four things:
+// wire.go is the ONLY file that knows Jev's wire format (TypeSafe's System One
+// API, https://docs.typesafe.ai/api). criteria.go holds the natural-language
+// option/level descriptions it sends. Everything else in this package (jev.go:
+// availability, timeout, HTTP call, span, metrics) is format-agnostic and talks
+// to this file through:
 //
 //	wirePath        the path appended to Config.BaseURL
 //	setAuth         the auth header(s)
 //	encodeRequest   decide.Request -> request body (+ what to record as content)
 //	decodeResponse  2xx response body -> decide.Response (+ telemetry fields)
 //
-// !!! ASSUMPTION, NOT KNOWLEDGE !!!
-// We do not have Jev's API docs yet (#1229). Until we do, this file ASSUMES an
-// OpenAI-compatible /chat/completions API: Bearer auth, system+user messages,
-// response_format json_schema, the answer as JSON text in
-// choices[0].message.content, OpenAI-style usage. That is a placeholder so the
-// backend, its telemetry and the contract test exist end to end; it is very
-// likely wrong in detail. Jev may well take the typed questions natively and
-// return per-option probabilities itself (it is a "System One" style API), in
-// which case encodeRequest/decodeResponse stop using llmio's prompt and parser.
+// The API is typed, not prompt-based:
 //
-// To switch to the real format: replace the TODO(jev-api) parts below and the
-// hand-written fixtures in testdata/ with recorded Jev traffic, then update the
-// expectations in contract_test.go. Nothing outside wire.go + testdata/ +
-// contract_test.go should need to change.
+//	POST {base_url}/systemone   Authorization: Bearer <JEV_API_KEY>
+//	{"model": "jev-latest", "state": {...}, "questions": {"<id>": {type, instructions, criteria}}}
+//	-> {"model": "jev-1.13.0", "answers": {"<id>": {...}}, "usage": {input_tokens, output_tokens}}
+//
+// Mapping of our contract (decide.Question kinds) to Jev's primitives:
+//
+//	KindChoice -> "choice": criteria = ordered {option: description} (criteria.go);
+//	              answer {choice, probabilities (every option, sum 1), confidence}.
+//	KindScore  -> "score":  criteria = an ordered ladder of scoreLevels level
+//	              descriptions; Jev's score s in [0, N-1] maps linearly onto
+//	              Question.Range: lo + s/(N-1)*(hi-lo).
+//	KindNoul   -> "noul":   no criteria; answer {noul: P(yes)}.
+//
+// Confidence. decide's contract is "confidence that ACTING on the answer is
+// right"; Jev's is the peakedness of the distribution (choice:
+// (p_max-1/n)/(1-1/n), score: 1 - spread/MAD_uniform). We keep Jev's native
+// confidence for every question EXCEPT ffa.intervention, where we use the same
+// acting-confidence as the rules adapter, computed from Jev's calibrated
+// probabilities: 1 - p(noop) when the choice is an intervention, p(noop) when it
+// is noop. Jev's peakedness would punish two competing interventions that
+// together dominate noop (the case the contract explicitly calls a confident
+// call to act), and with ~15 options it collapses to roughly p_max. Jev's own
+// value is still recorded on the chat span (jev.native_confidence). A noul has
+// no Jev confidence; we use |2p-1|, the formula TypeSafe documents for it.
 
 import (
+	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
-
-	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/decide/llmio"
 )
 
-// TODO(jev-api): the real endpoint path (relative to decision.jev.base_url).
-const wirePath = "/chat/completions"
+// wirePath is the System One evaluation endpoint, relative to
+// decision.jev.base_url (https://api.typesafe.ai/v1 by default).
+const wirePath = "/systemone"
 
-// TODO(jev-api): the real auth scheme (Bearer? an X-Api-Key header? signed
-// requests?).
+// requestIDHeader carries Jev's request id (there is none in the body); it
+// becomes gen_ai.response.id.
+const requestIDHeader = "X-Typesafe-Request-Id"
+
 func setAuth(h http.Header, apiKey string) {
 	h.Set("Authorization", "Bearer "+apiKey)
 }
 
-// wireMaxTokens bounds the answer length, if Jev takes such a parameter.
-// TODO(jev-api): drop if Jev's API has no output-length knob.
-const wireMaxTokens = 2048
+// Jev answer/question type names.
+const (
+	typeChoice = "choice"
+	typeScore  = "score"
+	typeNoul   = "noul"
+)
 
 // wireRequestOut is what encodeRequest hands to jev.go.
 type wireRequestOut struct {
 	// Body is the JSON request body.
 	Body []byte
-	// Content is what gen_ai.system_instructions / gen_ai.input.messages
-	// record when content capture is on. For a prompt-based API it is the
-	// prompt; for a typed API put the JSON body in Content.User.
+	// Content is what gen_ai.input.messages records when content capture is on:
+	// the request body as the user message (the API has no prompt).
 	Content llmio.Prompt
-	// MaxTokens and Temperature are recorded as gen_ai.request.max_tokens /
-	// gen_ai.request.temperature when > 0 / non-nil.
-	MaxTokens   int
-	Temperature *float64
 }
 
 // wireResult is what decodeResponse hands back to jev.go.
 type wireResult struct {
-	// Response is the parsed and validated answer.
+	// Response is the mapped and validated answer.
 	Response decide.Response
-	// ID / Model are gen_ai.response.id / gen_ai.response.model (may be "").
-	ID, Model string
-	// FinishReasons are the raw gen_ai.response.finish_reasons.
-	FinishReasons []string
-	// OutputFinishReason is the semconv output-message finish_reason
-	// (llmio.Finish*).
-	OutputFinishReason string
+	// Model is gen_ai.response.model (the versioned id, e.g. jev-1.13.0).
+	Model string
 	// Usage is nil when Jev reports no token usage.
 	Usage *wireUsage
-	// Text is the raw model output and Reasoning any reasoning text, for the
-	// gen_ai.output.messages content capture.
-	Text      string
-	Reasoning []string
+	// Text is the raw answers JSON, for the gen_ai.output.messages capture.
+	Text string
+	// NativeConfidence is Jev's own confidence per question id (choice and
+	// score only), recorded on the span as jev.native_confidence.
+	NativeConfidence map[string]float64
 }
 
 type wireUsage struct {
-	InputTokens, OutputTokens, ReasoningTokens int
+	InputTokens, OutputTokens int
 }
 
-// --- TODO(jev-api): request/response structs (ASSUMED OpenAI-compatible) ---
-
-type jevMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type jevJSONSchema struct {
-	Name   string         `json:"name"`
-	Strict bool           `json:"strict"`
-	Schema map[string]any `json:"schema"`
-}
-
-type jevResponseFormat struct {
-	Type       string        `json:"type"`
-	JSONSchema jevJSONSchema `json:"json_schema"`
-}
+// --- request ---
 
 type jevRequest struct {
-	Model          string            `json:"model,omitempty"`
-	Messages       []jevMessage      `json:"messages"`
-	ResponseFormat jevResponseFormat `json:"response_format"`
-	MaxTokens      int               `json:"max_tokens"`
-	Temperature    float64           `json:"temperature"`
-	Stream         bool              `json:"stream"`
+	Model     string                 `json:"model"`
+	State     jevState               `json:"state"`
+	Questions map[string]jevQuestion `json:"questions"`
 }
 
-type jevResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Message struct {
-			Content          *string `json:"content"`
-			ReasoningContent string  `json:"reasoning_content"`
-			Refusal          string  `json:"refusal"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage *struct {
-		PromptTokens            int `json:"prompt_tokens"`
-		CompletionTokens        int `json:"completion_tokens"`
-		CompletionTokensDetails *struct {
-			ReasoningTokens int `json:"reasoning_tokens"`
-		} `json:"completion_tokens_details"`
-	} `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+// jevState is decide.State as Jev's structured state. It never carries
+// Request.Context, and leaves out the digest and game id (noise to the model).
+type jevState struct {
+	Game           string               `json:"game"`
+	GameKind       string               `json:"game_kind,omitempty"`
+	ElapsedSeconds float64              `json:"elapsed_s"`
+	AlivePlayers   []string             `json:"alive_players"`
+	Players        []decide.PlayerState `json:"players"`
+	Narrative      string               `json:"narrative"`
 }
 
-// --- mapping ---
+type jevQuestion struct {
+	Type         string `json:"type"`
+	Instructions string `json:"instructions"`
+	// Criteria is an orderedCriteria (choice), a []string ladder (score) or nil
+	// (noul).
+	Criteria any `json:"criteria,omitempty"`
+}
+
+// orderedCriteria is a choice's {option: description} map serialized in
+// Question.Options order (Go maps marshal sorted). Order matters: Jev 1.13 leans
+// toward the first option, and ours is noop / none, the conservative one.
+// An empty description is sent as null ("needs no extra detail").
+type orderedCriteria []criterion
+
+type criterion struct{ option, description string }
+
+func (c orderedCriteria) MarshalJSON() ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, kv := range c {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		k, err := json.Marshal(kv.option)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(k)
+		b.WriteByte(':')
+		if kv.description == "" {
+			b.WriteString("null")
+			continue
+		}
+		v, err := json.Marshal(kv.description)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(v)
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
+}
+
+// maxChoiceOptions is Jev's documented per-choice option limit.
+const maxChoiceOptions = 255
 
 // encodeRequest maps req (State + Questions only, never Context) to Jev's
 // request body.
-// TODO(jev-api): ASSUMED OpenAI-compatible: the llmio prompt as system+user
-// messages and llmio.AnswerSchema as a strict json_schema response format.
 func encodeRequest(model string, req decide.Request) (wireRequestOut, error) {
-	prompt := llmio.Render(req)
-	zero := 0.0
-	body, err := json.Marshal(jevRequest{
-		Model: model,
-		Messages: []jevMessage{
-			{Role: "system", Content: prompt.System},
-			{Role: "user", Content: prompt.User},
-		},
-		ResponseFormat: jevResponseFormat{
-			Type:       "json_schema",
-			JSONSchema: jevJSONSchema{Name: "joustmania_decision", Strict: true, Schema: llmio.AnswerSchema()},
-		},
-		MaxTokens:   wireMaxTokens,
-		Temperature: zero,
-	})
+	questions := make(map[string]jevQuestion, len(req.Questions))
+	for _, q := range req.Questions {
+		jq, err := encodeQuestion(q, req)
+		if err != nil {
+			return wireRequestOut{}, fmt.Errorf("jev: %w: question %q: %v", decide.ErrInvalid, q.ID, err)
+		}
+		questions[q.ID] = jq
+	}
+	body, err := json.Marshal(jevRequest{Model: model, State: encodeState(req.State), Questions: questions})
 	if err != nil {
 		return wireRequestOut{}, fmt.Errorf("jev: marshal request: %w", err)
 	}
-	return wireRequestOut{Body: body, Content: prompt, MaxTokens: wireMaxTokens, Temperature: &zero}, nil
+	return wireRequestOut{Body: body, Content: llmio.Prompt{User: string(body)}}, nil
 }
 
-// errEndpoint is returned for an error envelope in a 2xx body (not an
-// invalid answer, so it does not wrap decide.ErrInvalid).
-var errEndpoint = errors.New("jev: endpoint error")
+func encodeQuestion(q decide.Question, req decide.Request) (jevQuestion, error) {
+	switch q.Kind {
+	case decide.KindChoice:
+		if len(q.Options) == 0 || len(q.Options) > maxChoiceOptions {
+			return jevQuestion{}, fmt.Errorf("%d options, want 1..%d", len(q.Options), maxChoiceOptions)
+		}
+		return jevQuestion{Type: typeChoice, Instructions: q.Text, Criteria: choiceCriteria(q, req.State)}, nil
+	case decide.KindScore:
+		instructions, ladder := scoreLadder(q, req)
+		return jevQuestion{Type: typeScore, Instructions: instructions, Criteria: ladder}, nil
+	case decide.KindNoul:
+		return jevQuestion{Type: typeNoul, Instructions: q.Text}, nil
+	default:
+		return jevQuestion{}, fmt.Errorf("unsupported question kind %q", clip(string(q.Kind), 32))
+	}
+}
+
+// encodeState copies st into the wire state. Jev rejects non-finite numbers
+// (400), so an unobservable NaN/Inf reading is dropped like a missing one.
+func encodeState(st decide.State) jevState {
+	players := make([]decide.PlayerState, len(st.Players))
+	for i, p := range st.Players {
+		p.Intensity = finiteOrNil(p.Intensity)
+		p.Variance = finiteOrNil(p.Variance)
+		p.Skill = finiteOrNil(p.Skill)
+		p.BatteryPct = finiteOrNil(p.BatteryPct)
+		players[i] = p
+	}
+	alive := st.AliveSerials()
+	if alive == nil {
+		alive = []string{}
+	}
+	elapsed := st.ElapsedSeconds
+	if !isFinite(elapsed) {
+		elapsed = 0
+	}
+	return jevState{
+		Game:           gameDescription,
+		GameKind:       st.GameKind,
+		ElapsedSeconds: elapsed,
+		AlivePlayers:   alive,
+		Players:        players,
+		Narrative:      st.Narrative,
+	}
+}
+
+func finiteOrNil(v *float64) *float64 {
+	if v == nil || !isFinite(*v) {
+		return nil
+	}
+	return v
+}
+
+func isFinite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+
+// --- response ---
+
+type jevResponse struct {
+	Model   string                     `json:"model"`
+	Answers map[string]json.RawMessage `json:"answers"`
+	Usage   *struct {
+		InputTokens  *int `json:"input_tokens"`
+		OutputTokens *int `json:"output_tokens"`
+	} `json:"usage"`
+}
+
+type jevAnswer struct {
+	Type          string             `json:"type"`
+	Choice        *string            `json:"choice"`
+	Probabilities map[string]float64 `json:"probabilities"`
+	Confidence    *float64           `json:"confidence"`
+	Score         *float64           `json:"score"`
+	Noul          *float64           `json:"noul"`
+}
+
+// renormalizeTolerance: Jev's probabilities are floats rounded to two decimals
+// (observed on jev-1.13.0), so with many options their sum can miss 1 by a few
+// hundredths; a sum this close to 1 is rescaled before decide.Validate's
+// tighter check. A sum further off is left for Validate to reject.
+const renormalizeTolerance = 5e-2
+
+// exactSumTolerance: a sum this close to 1 is left as is (no float noise from
+// rescaling an already normalized distribution).
+const exactSumTolerance = 1e-9
 
 // decodeResponse maps a 2xx response body to a validated decide.Response.
 // On failure it returns a non-empty low-cardinality errType (the span's
 // error.type) and an error; malformed or invalid answers wrap
 // decide.ErrInvalid. The partially filled wireResult is still returned so the
 // span gets whatever telemetry the body carried.
-// TODO(jev-api): ASSUMED OpenAI-compatible response; the answer is JSON text
-// parsed with llmio.Parse. If Jev returns typed answers with probabilities,
-// map them to decide.Answer here and call decide.Validate directly.
 func decodeResponse(req decide.Request, body []byte) (wireResult, string, error) {
 	var r jevResponse
 	if err := json.Unmarshal(body, &r); err != nil {
 		return wireResult{}, "invalid_response", fmt.Errorf("jev: %w: unparseable response body: %v", llmio.ErrMalformed, err)
 	}
-	res := wireResult{ID: r.ID, Model: r.Model}
+	res := wireResult{Model: r.Model, NativeConfidence: map[string]float64{}}
 	if u := r.Usage; u != nil {
-		res.Usage = &wireUsage{InputTokens: u.PromptTokens, OutputTokens: u.CompletionTokens}
-		if d := u.CompletionTokensDetails; d != nil {
-			res.Usage.ReasoningTokens = d.ReasoningTokens
+		res.Usage = &wireUsage{}
+		if u.InputTokens != nil {
+			res.Usage.InputTokens = *u.InputTokens
+		}
+		if u.OutputTokens != nil {
+			res.Usage.OutputTokens = *u.OutputTokens
 		}
 	}
-	if r.Error != nil && r.Error.Message != "" {
-		return res, semconv.ErrorTypeOther.Value.AsString(), fmt.Errorf("%w: %s", errEndpoint, scrub(clip(r.Error.Message, 256)))
+	if raw, err := json.Marshal(r.Answers); err == nil && r.Answers != nil {
+		res.Text = string(raw)
 	}
-	if len(r.Choices) == 0 {
-		return res, "no_choices", fmt.Errorf("jev: %w: no choices", llmio.ErrMalformed)
-	}
-	for _, c := range r.Choices {
-		res.FinishReasons = append(res.FinishReasons, c.FinishReason)
-	}
-	c := r.Choices[0]
-	if c.Message.Content != nil {
-		res.Text = *c.Message.Content
-	}
-	if strings.TrimSpace(c.Message.ReasoningContent) != "" {
-		res.Reasoning = []string{c.Message.ReasoningContent}
-	}
-	res.OutputFinishReason = outputFinishReason(c.FinishReason)
-
-	errType := ""
-	switch {
-	case c.Message.Refusal != "":
-		errType = "refusal"
-	case c.FinishReason == "stop" || c.FinishReason == "":
-	case c.FinishReason == "length":
-		errType = "max_tokens"
-	default:
-		errType = "finish_reason_" + c.FinishReason
-	}
-	if errType != "" {
-		return res, errType, fmt.Errorf("%w: jev: %s", decide.ErrInvalid, errType)
+	if len(r.Answers) == 0 {
+		return res, "no_answers", fmt.Errorf("jev: %w: no answers", llmio.ErrMalformed)
 	}
 
-	resp, err := llmio.Parse(req, []byte(res.Text), Name)
-	if err != nil {
+	resp := decide.Response{Backend: Name, Answers: make([]decide.Answer, 0, len(req.Questions))}
+	for _, q := range req.Questions {
+		raw, ok := r.Answers[q.ID]
+		if !ok {
+			return res, "invalid_output", fmt.Errorf("jev: %w: question %q not answered", decide.ErrInvalid, q.ID)
+		}
+		var ja jevAnswer
+		if err := json.Unmarshal(raw, &ja); err != nil {
+			return res, "invalid_output", fmt.Errorf("jev: %w: answer %q: %v", llmio.ErrMalformed, q.ID, err)
+		}
+		a, native, err := toAnswer(q, ja)
+		if err != nil {
+			return res, "invalid_output", fmt.Errorf("jev: %w: answer %q: %v", decide.ErrInvalid, q.ID, err)
+		}
+		if native != nil {
+			res.NativeConfidence[q.ID] = *native
+		}
+		resp.Answers = append(resp.Answers, a)
+	}
+	if err := decide.Validate(req, resp); err != nil {
 		return res, "invalid_output", fmt.Errorf("jev: %w", err)
 	}
 	res.Response = resp
 	return res, "", nil
 }
 
-// outputFinishReason maps the (assumed OpenAI) finish_reason onto the semconv
-// enum. TODO(jev-api): Jev's own finish/stop reasons.
-func outputFinishReason(r string) string {
-	switch r {
-	case "stop", "":
-		return llmio.FinishStop
-	case "length":
-		return llmio.FinishLength
-	case "content_filter":
-		return llmio.FinishContentFilter
-	default:
-		return r
+// toAnswer maps one Jev answer onto q's decide.Answer. native is Jev's own
+// confidence (nil for a noul, which has none).
+func toAnswer(q decide.Question, ja jevAnswer) (decide.Answer, *float64, error) {
+	a := decide.Answer{QuestionID: q.ID}
+	switch q.Kind {
+	case decide.KindChoice:
+		if ja.Type != typeChoice || ja.Choice == nil || ja.Confidence == nil {
+			return a, nil, fmt.Errorf("want a choice answer with choice and confidence, got type %q", clip(ja.Type, 32))
+		}
+		a.Choice = *ja.Choice
+		a.Probabilities = renormalize(ja.Probabilities)
+		a.Confidence = *ja.Confidence
+		if q.ID == decide.QuestionFFAIntervention {
+			a.Confidence = actingConfidence(a.Choice, a.Probabilities)
+		}
+		return a, ja.Confidence, nil
+	case decide.KindScore:
+		if ja.Type != typeScore || ja.Score == nil || ja.Confidence == nil {
+			return a, nil, fmt.Errorf("want a score answer with score and confidence, got type %q", clip(ja.Type, 32))
+		}
+		s, err := scoreToRange(*ja.Score, q.Range)
+		if err != nil {
+			return a, nil, err
+		}
+		a.Score = s
+		a.Confidence = *ja.Confidence
+		return a, ja.Confidence, nil
+	case decide.KindNoul:
+		if ja.Type != typeNoul || ja.Noul == nil {
+			return a, nil, fmt.Errorf("want a noul answer, got type %q", clip(ja.Type, 32))
+		}
+		p := *ja.Noul
+		a.Noul = &p
+		// Jev returns no confidence for a noul; |2p-1| is its documented
+		// equivalent (the choice formula for two outcomes). A NaN p is left to
+		// decide.Validate.
+		a.Confidence = math.Abs(2*p - 1)
+		return a, nil, nil
 	}
+	return a, nil, fmt.Errorf("unsupported question kind %q", clip(string(q.Kind), 32))
+}
+
+// actingConfidence is ffa.intervention's confidence that acting on the choice
+// is right, the rules adapter's definition: 1 - p(noop) for an intervention,
+// p(noop) for noop.
+func actingConfidence(choice string, probs map[string]float64) float64 {
+	pNoop := probs[decide.OptionNoop]
+	c := pNoop
+	if choice != decide.OptionNoop {
+		c = 1 - pNoop
+	}
+	return math.Max(0, math.Min(1, c))
+}
+
+// renormalize rescales a distribution whose sum is within renormalizeTolerance
+// of 1; anything else is left for decide.Validate to reject.
+func renormalize(in map[string]float64) map[string]float64 {
+	if len(in) == 0 {
+		return in
+	}
+	var sum float64
+	for _, p := range in {
+		sum += p
+	}
+	if !isFinite(sum) || sum <= 0 || math.Abs(sum-1) <= exactSumTolerance || math.Abs(sum-1) > renormalizeTolerance {
+		return in
+	}
+	out := make(map[string]float64, len(in))
+	for k, p := range in {
+		out[k] = p / sum
+	}
+	return out
+}
+
+// scoreEpsilon tolerates float noise at the ends of Jev's [0, N-1] score.
+const scoreEpsilon = 1e-6
+
+// scoreToRange maps Jev's fractional level s in [0, scoreLevels-1] linearly
+// onto rng: lo + s/(N-1)*(hi-lo).
+func scoreToRange(s float64, rng [2]float64) (float64, error) {
+	top := float64(scoreLevels - 1)
+	if !isFinite(s) || s < -scoreEpsilon || s > top+scoreEpsilon {
+		return 0, fmt.Errorf("score %v outside [0, %v]", s, top)
+	}
+	frac := math.Max(0, math.Min(1, s/top))
+	v := rng[0] + frac*(rng[1]-rng[0])
+	return math.Max(rng[0], math.Min(rng[1], v)), nil
+}
+
+// nativeConfidenceJSON renders the per-question native confidences as a
+// compact JSON object with sorted keys, for the jev.native_confidence span
+// attribute.
+func nativeConfidenceJSON(m map[string]float64) string {
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		kq, _ := json.Marshal(k)
+		b.Write(kq)
+		b.WriteByte(':')
+		b.WriteString(strconv.FormatFloat(m[k], 'g', 6, 64))
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
+// statusErrorType is the error.type of a non-2xx response: the status code,
+// except a 400 for a request over the model's context length, which Jev marks
+// with max_tokens_exceeded.
+func statusErrorType(status int, body []byte) string {
+	if status == http.StatusBadRequest && bytes.Contains(body, []byte("max_tokens_exceeded")) {
+		return "max_tokens_exceeded"
+	}
+	return strconv.Itoa(status)
 }

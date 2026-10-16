@@ -441,3 +441,24 @@ func TestRulesAnswer_ExactMinScoreTie(t *testing.T) {
 		t.Fatalf("invalid: %v", err)
 	}
 }
+
+// TestRulesBackend_NoulIsNeutral: the rules adapter has no view on a noul
+// question (#1229): it answers an even 0.5 at confidence 0, and the response
+// still validates.
+func TestRulesBackend_NoulIsNeutral(t *testing.T) {
+	fx := decideFixtures()[0]
+	clock := time.Unix(10_000, 0)
+	req := ffaRequest(fx.ctx, allInterventions())
+	req.Questions = append(req.Questions, decide.Question{ID: "close", Kind: decide.KindNoul, Text: "Is the game close?"})
+	resp, err := NewRulesBackend(newTestEngine(fx.cfg, &clock)).Decide(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, ok := resp.Find("close")
+	if !ok || a.Noul == nil || *a.Noul != 0.5 || a.Confidence != 0 {
+		t.Errorf("noul answer = %+v", a)
+	}
+	if err := decide.Validate(req, resp); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+}

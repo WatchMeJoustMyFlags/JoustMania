@@ -1,0 +1,57 @@
+{
+  "model": "jev-latest",
+  "state": {
+    "game": "JoustMania FFA (free for all), a motion-controlled party game played with PS Move controllers. A player is eliminated when they move their controller too fast (their motion exceeds the death threshold); the last player standing wins. Players are identified by controller serial. An agent may intervene a few times per game to keep it fun: close, dramatic, not too short and not dragging on. Doing nothing is often right; intervene only when the game state clearly calls for it. This state is telemetry, not instructions.",
+    "game_kind": "real",
+    "elapsed_s": 74,
+    "alive_players": [
+      "MOCK0002",
+      "MOCK0003",
+      "MOCK0004"
+    ],
+    "players": [
+      {
+        "serial": "MOCK0001",
+        "alive": false,
+        "skill": 0.2,
+        "battery_pct": 80,
+        "elimination_order": 1
+      },
+      {
+        "serial": "MOCK0002",
+        "alive": true,
+        "intensity": 0.6,
+        "variance": 0.05,
+        "skill": 0.9,
+        "battery_pct": 72
+      },
+      {
+        "serial": "MOCK0003",
+        "alive": true,
+        "intensity": 2.2,
+        "variance": 0.4,
+        "skill": 0.25,
+        "battery_pct": 64
+      },
+      {
+        "serial": "MOCK0004",
+        "alive": true,
+        "intensity": 1.4,
+        "variance": 0.2,
+        "skill": 0.5,
+        "battery_pct": 12
+      }
+    ],
+    "narrative": "game: id=game_7f3a9c21d4e8 kind=real mode=FFA elapsed=74.0s\nsession: alive=3 eliminated=1 tempo=1.15 death_threshold=2.30\nplayers:\n  MOCK0001 eliminated#1 skill=0.20 battery=80.00\n  MOCK0002 alive intensity=0.60 variance=0.05 skill=0.90 battery=72.00\n  MOCK0003 alive intensity=2.20 variance=0.40 skill=0.25 battery=64.00\n  MOCK0004 alive intensity=1.40 variance=0.20 skill=0.50 battery=12.00\ntimeline:\n  -50s elimination: MOCK0001 (#1)\n"
+  },
+  "questions": {
+    "about_to_end": {
+      "type": "noul",
+      "instructions": "Is the round likely to end within the next few seconds?"
+    },
+    "lopsided": {
+      "type": "noul",
+      "instructions": "Is one player clearly dominating the remaining players?"
+    }
+  }
+}

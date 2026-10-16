@@ -73,10 +73,13 @@ const (
 	// never sends the field; any other value (none, minimal, low, ...) is sent
 	// verbatim to reasoning models.
 	DefaultDecisionOpenAIReasoningEffort = "auto"
-	// DefaultDecisionJevBaseURL / DefaultDecisionJevModel are empty until we have
-	// a jev endpoint.
-	DefaultDecisionJevBaseURL = ""
-	DefaultDecisionJevModel   = ""
+	// DefaultDecisionJevBaseURL is TypeSafe's Jev API root (#1229); the jev
+	// backend posts to {base_url}/systemone.
+	DefaultDecisionJevBaseURL = "https://api.typesafe.ai/v1"
+	// DefaultDecisionJevModel is TypeSafe's alias for the latest stable Jev
+	// (variant "latest"); variant "pinned" is a fixed version (jev-1.13.0) for
+	// thresholds tuned against one release.
+	DefaultDecisionJevModel = "jev-latest"
 	// DefaultDecisionTimeoutMs bounds one remote decide call ("degrade, never
 	// stall"): a call that has not answered within it falls back to rules.
 	DefaultDecisionTimeoutMs = 2500

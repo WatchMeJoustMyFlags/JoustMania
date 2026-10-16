@@ -31,7 +31,9 @@ var ErrInvalid = errors.New("decide: invalid response")
 //     Confidence is NOT tied to p(choice): it is the backend's confidence that
 //     acting on the answer is right (see Answer.Confidence);
 //   - a score answer is finite, within the inclusive range, and carries no
-//     choice or probabilities.
+//     choice or probabilities;
+//   - a noul answer carries a finite Noul in [0,1] and no choice, probabilities
+//     or score; only noul answers may carry a Noul.
 //
 // The returned error wraps ErrInvalid and names the first offending question.
 // Backend-supplied strings in the message are truncated (see clip), so a
@@ -111,6 +113,8 @@ func validateQuestion(q Question) error {
 		if !finite(lo) || !finite(hi) || lo > hi {
 			return fmt.Errorf("bad range [%v, %v]", lo, hi)
 		}
+	case KindNoul:
+		// Text only.
 	default:
 		return fmt.Errorf("unknown kind %s", clip(string(q.Kind)))
 	}
@@ -121,9 +125,22 @@ func validateAnswer(q Question, a Answer) error {
 	if !finite(a.Confidence) || a.Confidence < 0 || a.Confidence > 1 {
 		return fmt.Errorf("confidence %v outside [0,1]", a.Confidence)
 	}
+	if q.Kind != KindNoul && a.Noul != nil {
+		return errors.New("non-noul answer carries a noul")
+	}
 	switch q.Kind {
 	case KindChoice:
 		return validateChoice(q, a)
+	case KindNoul:
+		if a.Choice != "" || len(a.Probabilities) != 0 || a.Score != 0 {
+			return errors.New("noul answer carries a choice, probabilities or a score")
+		}
+		if a.Noul == nil {
+			return errors.New("noul answer without a noul")
+		}
+		if p := *a.Noul; !finite(p) || p < 0 || p > 1 {
+			return fmt.Errorf("noul %v outside [0,1]", p)
+		}
 	case KindScore:
 		if a.Choice != "" || len(a.Probabilities) != 0 {
 			return errors.New("score answer carries a choice or probabilities")

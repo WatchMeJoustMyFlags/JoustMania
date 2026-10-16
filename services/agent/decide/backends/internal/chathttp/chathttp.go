@@ -48,9 +48,25 @@ var DefaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
 // response. It returns the status and body of any HTTP response (2xx or not);
 // err is set only for transport failures and an oversized body (ErrTooLarge).
 func Post(ctx context.Context, client *http.Client, url string, header http.Header, body []byte, maxBody int64) (int, []byte, error) {
+	r, err := PostResponse(ctx, client, url, header, body, maxBody)
+	return r.Status, r.Body, err
+}
+
+// Response is what PostResponse read: the status, the (size-capped) body and
+// the response headers (for a request id the vendor sends only as a header).
+type Response struct {
+	Status int
+	Body   []byte
+	Header http.Header
+}
+
+// PostResponse is Post that also returns the response headers. Status and
+// Header are set whenever an HTTP response arrived, even when err is
+// ErrTooLarge or a body read error.
+func PostResponse(ctx context.Context, client *http.Client, url string, header http.Header, body []byte, maxBody int64) (Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return 0, nil, err
+		return Response{}, err
 	}
 	for k, vs := range header {
 		for _, v := range vs {
@@ -63,17 +79,19 @@ func Post(ctx context.Context, client *http.Client, url string, header http.Head
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return Response{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	out := Response{Status: resp.StatusCode, Header: resp.Header}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
-		return resp.StatusCode, nil, err
+		return out, err
 	}
 	if int64(len(raw)) > maxBody {
-		return resp.StatusCode, nil, ErrTooLarge
+		return out, ErrTooLarge
 	}
-	return resp.StatusCode, raw, nil
+	out.Body = raw
+	return out, nil
 }
 
 // TransportErrorType is the error.type of a call that got no HTTP response:
