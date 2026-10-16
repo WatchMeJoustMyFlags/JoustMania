@@ -1,6 +1,6 @@
 # Telemetry
 
-> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 84c3ba15 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1297, #1303, #1307, #1309, #1312, #1315, #1324 and #1308 (#1258 pattern games)). The metric catalog (§6.2) and the span-event inventory were generated from the code at 84c3ba15 by script; remaining `file:line` references were re-based to 84c3ba15.
+> Technical spec. Part of the [spec tree](../README.md). State: `main` @ c78a33fe (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1297, #1303, #1307, #1309, #1312, #1315, #1324, #1308 (#1258 pattern games), #1332 (#1325 span parents), #1378 (validator spans removed), #1351 (#1326 budget) and #1333 (#1327 one `player_death` event)). The metric catalog (§6.2) and the span-event inventory were generated from the code at 84c3ba15 by script; remaining `file:line` references were re-based to 84c3ba15 and then to c78a33fe.
 > Telemetry is the agent's only view of the game (C-001), so span names, attribute keys, metric names and the
 > log lines below are a **contract**: the agent, the dashboard SPA, Grafana, alerts and integration tests match
 > on them. Change a name here first.
@@ -15,7 +15,7 @@
 | Exporters | Jaeger (OTLP), VictoriaMetrics (`prometheusremotewrite`), Prometheus exporter :8889, Loki (OTLP HTTP), **agent** (`otlp/agent`, 2 s timeout, no retries, queue 1000) | `config.yaml:317-355` |
 | Pipelines | traces → Jaeger + agent; OTLP metrics → VictoriaMetrics + Prometheus exporter + agent; other metrics → VictoriaMetrics; logs → Loki (agent gets no logs) | `config.yaml:358-406` |
 | Prometheus | scrapes the collector every 500 ms (alert rules), controller-manager `:8000`, flagd; global 10 s | `services/prometheus/prometheus.yml` |
-| Retention | VictoriaMetrics 7 d, Prometheus 30 d, Loki 24 h, Jaeger bounded badger TTL | `docker-compose.yml:507,539`; `services/loki/config.yaml` (`retention_period`); `services/jaeger/config.yaml` |
+| Retention | VictoriaMetrics 7 d, Prometheus 30 d, Loki 24 h, Jaeger bounded badger TTL | `docker-compose.yml:519,551`; `services/loki/config.yaml` (`retention_period`); `services/jaeger/config.yaml` |
 
 Label mapping: `prometheusremotewrite` maps `service.name` to `job` prefixed with `service.namespace`
 (VictoriaMetrics: `job="joustmania/game-coordinator-service"`); Prometheus strips the prefix
@@ -48,12 +48,12 @@ Service identities (`OTEL_SERVICE_NAME` / namespace): `controller-manager-servic
 | game id | `game.id` (agent also `session.id`) | label `game_id` on per-game and per-player metrics; the game-wide gauges of §6 (tempo, thresholds, sensitivity, mode, loop rate) have none (#1336) | `game_<12 hex>`; the agent partitions all signals by it |
 | game kind | coordinator: `game.kind` = `primary` / `shadow`; agent: `game.kind` = `real` / `shadow` | coordinator label `game_kind` = `primary` / `shadow` | **Two vocabularies under one key** (#1249). Flags use `real` / `shadow`; the agent normalises `primary → real` at ingest (`services/agent/gamecontext/gamekind.go`). |
 | experiment, arm | `experiment.id`, `experiment.arm` | `experiment_id`, `arm` on per-game gauges only (never on cumulative counters) | |
-| trace context | `game.trace_id`, `game.trace_span_id`, Links | gauge `game_trace_correlation{game_trace_id, game_trace_span_id, gameplay_phase_span_id, game_cycle_span_id}` = 1 while live; the two phase ids are empty until their span opens and the gauge is re-emitted when each is published (UC-041 BR-004) | metric-carried because observable gauges cannot carry exemplars (`services/game_coordinator/metrics.py:44-85`) |
+| trace context | `game.trace_id`, `game.trace_span_id`, Links | gauge `game_trace_correlation{game_trace_id, game_trace_span_id, gameplay_phase_span_id, game_cycle_span_id}` = 1 while live; the two phase ids are empty until their span opens and the gauge is re-emitted when each is published (UC-041 BR-004) | metric-carried because observable gauges cannot carry exemplars (`services/game_coordinator/metrics.py:44-97`) |
 | serial | `player.serial`, `controller.serial` | `serial` | `player.serial` is ONE key on both sides (#1295): the coordinator's player spans and intervention events, and the agent's targeted `agent.decision` / `agent.action`, so one Jaeger search `player.serial=<serial>` finds both |
 | intervention | `intervention.id`, `decision.intervention_id` | | joins decision and effect |
 | W3C propagation | menu events carry `_traceparent` / `_tracestate`; the agent injects traceparent into shadow-game spawns and model calls | | |
 
-**Traceability:** FR-041, FR-043 / UC-035, UC-041 / `lib/feature_flags.py:63-64`, `services/game_coordinator/game_session.py:55-56,322-331`, `services/agent/gamecontext/` / `services/agent/gamecontext/*_test.go`.
+**Traceability:** FR-041, FR-043 / UC-035, UC-041 / `lib/feature_flags.py:63-64`, `services/game_coordinator/game_session.py:55-56,351-360`, `services/agent/gamecontext/` / `services/agent/gamecontext/*_test.go`.
 
 ## 3. Spans
 
@@ -185,7 +185,7 @@ name from `controller_info{serial,name}`, §4.4; absent when no name was seen fo
 
 | Signal | Matched on | Source |
 |---|---|---|
-| Metrics | names `game_player_accel_magnitude`, `controller_battery_level`, `controller_battery_pct`, `game_player_playstyle`, `game_player_alive`, `controller_connected`, `game_duration_seconds`, `game_active_players`, `game_active`, `game_current_mode`, `game_player_deaths_total`, `game_player_peak_accel`, `game_trace_correlation`, `game_music_tempo`, `game_effective_death_threshold`, `game_effective_warning_threshold`, `game_player_movement_variance`, `game_player_movement_variance_aggregate`, `game_player_skill_level`, `game_player_elimination_order` (`game_player_deaths_total` and `game_current_mode` are never emitted by the coordinator, so those two inputs stay empty: Known gaps tracked in #1334 and #1336; `game_current_mode`, `game_music_tempo` and the two threshold gauges carry no `game_id`, see #1336); `controller_info` (labels `serial`, `name`: identity only, kept process-wide as the serial → display-name view for `player.name`, never routed to a game partition and never a trigger, #1295); labels `serial`, `mode`, `game_id`, `game_kind`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id`, `experiment_id`, `arm` | `services/agent/gamecontext/extract_metrics.go:13-88`; `controller_info`: `gamecontext/multiplexer.go` (`PlayerName`) |
+| Metrics | names `game_player_accel_magnitude`, `controller_battery_level`, `controller_battery_pct`, `game_player_playstyle`, `game_player_alive`, `controller_connected`, `game_duration_seconds`, `game_active_players`, `game_active`, `game_current_mode`, `game_player_deaths_total`, `game_player_peak_accel`, `game_trace_correlation`, `game_music_tempo`, `game_effective_death_threshold`, `game_effective_warning_threshold`, `game_player_movement_variance`, `game_player_movement_variance_aggregate`, `game_player_skill_level`, `game_player_elimination_order` (`game_player_deaths_total` and `game_current_mode` are never emitted by the coordinator, so those two inputs stay empty: Known gaps tracked in #1334 and #1336; `game_current_mode`, `game_music_tempo` and the two threshold gauges carry no `game_id`, see #1336); `controller_info` (labels `serial`, `name`: identity only, kept process-wide as the serial → display-name view for `player.name`, never routed to a game partition and never a trigger, #1295); labels `serial`, `mode`, `game_id`, `game_kind`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id`, `experiment_id`, `arm` | `services/agent/gamecontext/extract_metrics.go:13-92`; `controller_info`: `gamecontext/multiplexer.go` (`PlayerName`) |
 | Spans | any span: `player.serial`, `game.mode`, `game.id`, `game.kind`, `experiment.id`, `experiment.arm`; event `player_death` | `gamecontext/extract_spans.go:10-135` |
 | Infra spans | `controller.bluetooth_health` + event `bluetooth_controller_sample` | `infracontext/extract_spans.go:14-78` |
 
@@ -210,7 +210,7 @@ Published on each game's event bus (`StreamGameEvents`) and recorded as span eve
 |---|---|---|
 | Coordinator | `game_start`, `game_start_error`, `game_error`, `game_force_ended`, `agent_intervention` | `servicer.py` (`_start_game_from_config`, `StreamGameEvents`); `game_session.py` (`_run_game_loop_async`, `force_end`); `interventions.py:_record` |
 | Lifecycle | `game_starting`, `players_initialized`, `countdown_start`, `countdown_end`, `game_started`, `player_revived`, `game_ended` (`game_id`, `duration`; JoustFFA adds `outcome` = `winner` / `tie` / `force_ended` and, for `force_ended`, `reason`, #1328), `game_winner`, `game_tie`, `player_analytics`, `player_shielded` (`serial`, `kind` = full / partial, `seconds`, `until_ms`; UC-040 A16) | `games/base.py`, mode files |
-| Teams | `team_winner`, `team_formation_start`, `team_formation_end` | `teams_base.py:348`, `random_teams.py:198,222` |
+| Teams | `team_winner`, `team_formation_start`, `team_formation_end` | `teams_base.py:354`, `random_teams.py:198,222` |
 | Traitor / Werewolf | `traitor_signal_start` / `_end`, `traitor_winner`, `werewolf_intro_start` / `_end`, `werewolf_reveal`, `werewolf_winner` | `traitor.py`, `werewolf.py` |
 | Zombies / Swapper | `zombie_intro_start` / `_end`, `time_announcement`, `human_converted`, `zombie_winner`, `player_swapped`, `swapper_winner` | `zombie.py`, `swapper.py` |
 | 1v1 | `round_start`, `round_end`, `round_timeout`, `tournament_intro`, `match_start`, `match_end`, `tournament_champion`, `tournament_no_winner` | `fight_club.py`, `tournament.py`. **Known gap:** `tournament_champion` is never published (the match loop exits before the win check), tracked in #1337 |
@@ -435,14 +435,14 @@ key breaks them.
 | Message | Keys consumers parse | Consumers | Emitted at |
 |---|---|---|---|
 | `agent.evaluate` | `session_id`, `game_mode`, `decision_backend`, `battery_threshold`, `variance_window`, `max_per_minute` (also emitted: `player_count`, `duration`) | dashboard Agent tab (Loki `{service_name="agent"}`, `services/dashboard/src/agent.ts`); `tools/demo/validation_harness.py:397` (`decision_backend=`); `tests/integration/test_experiment_cohort_loop.py:133-136` (`decision_backend=rules`) | `services/agent/decision/decision.go:541-550` |
-| `agent.decision_blocked` | `intervention`, `reason` (also: `blocked`, `target_serial`, `decision_reason`, `allowed`) | dashboard Agent tab (feed rows; its blocked tallies come from `agent_decisions_total`, the lines only as fallback, #1326); `tools/demo/validation_harness.py:398` | `services/agent/decision/decision.go:788-794`; a `rate_limit` refusal that repeats while the budget is unchanged is not logged here, only as debug `agent.decision_rate_limit_repeat` (`intervention`, `target_serial`; UC-040 A21, #1326) |
+| `agent.decision_blocked` | `intervention`, `reason` (also: `blocked`, `target_serial`, `decision_reason`, `allowed`) | dashboard Agent tab (feed rows; its blocked tallies come from `agent_decisions_total`, the lines only as fallback, #1326); `tools/demo/validation_harness.py:398` | `services/agent/decision/decision.go:793-799`; a `rate_limit` refusal that repeats while the budget is unchanged is not logged here, only as debug `agent.decision_rate_limit_repeat` (`intervention`, `target_serial`; UC-040 A21, #1326) |
 | `agent.rollout_expand`, `agent.rollout_rollback`, `agent.rollout_rollback_recommended` | message only | dashboard Agent tab | `services/agent/decision/infra_loop.go:498-506` |
-| `experiment.game_assigned` | `experiment_id`, `game_id`, `arm`, `pair_index` | dashboard Experiments tab (`services/dashboard/src/experiments.ts`) | `services/agent/experiment/registry.go:1110` |
-| `experiment.game_concluded` | `experiment_id`, `game_id`, `arm`, `fitness` | Experiments tab; `tests/integration/test_experiment_cohort_loop.py:461` (`fitness=`, `arm=control`, `arm=experimental`) | `registry.go:1226` |
-| `experiment.concluded` | `experiment_id`, `outcome` | Experiments tab; cohort-loop test | `registry.go:1434` |
-| `experiment.torn_down` | `experiment_id`, `status`, `reason` | Experiments tab; cohort-loop test | `registry.go:1589` |
-| `experiment.declared`, `code_improvement.promoted`, `experiment.promote_failed`, absence of `panic:` | message only | `tests/integration/test_experiment_cohort_loop.py` | `registry.go:596,1485`, `promote/promote.go:475` |
-| `Proposer/retro inference backend selected` | `backend` (`backend=stub` asserted) | `tests/integration/test_experiment_cohort_loop.py:131-132` | `services/agent/main.go:571` |
+| `experiment.game_assigned` | `experiment_id`, `game_id`, `arm`, `pair_index` | dashboard Experiments tab (`services/dashboard/src/experiments.ts`) | `services/agent/experiment/registry.go:1107` |
+| `experiment.game_concluded` | `experiment_id`, `game_id`, `arm`, `fitness` | Experiments tab; `tests/integration/test_experiment_cohort_loop.py:461` (`fitness=`, `arm=control`, `arm=experimental`) | `registry.go:1223` |
+| `experiment.concluded` | `experiment_id`, `outcome` | Experiments tab; cohort-loop test | `registry.go:1431` |
+| `experiment.torn_down` | `experiment_id`, `status`, `reason` | Experiments tab; cohort-loop test | `registry.go:1586` |
+| `experiment.declared`, `code_improvement.promoted`, `experiment.promote_failed`, absence of `panic:` | message only | `tests/integration/test_experiment_cohort_loop.py` | `registry.go:593,1482`, `promote/promote.go:475` |
+| `Proposer/retro inference backend selected` | `backend` (`backend=stub` asserted) | `tests/integration/test_experiment_cohort_loop.py:131-132` | `services/agent/main.go:570` |
 | `agent.llm.system_prompt`, `agent.llm.retro_response`, `agent.llm.retro_captured`, `agent.llm.retro_failed` | prompt SHA, response | prompt resolution by hand | `decision/prompt_fingerprint.go`, `decision/retro_capture.go` |
 | `Agent intervention writes gated by LIVE interventions_enabled flag` | message only | runbooks | `services/agent/main.go:150` |
 

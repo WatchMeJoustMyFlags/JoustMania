@@ -415,7 +415,7 @@ The archetype an experiment's pair runs, pinned in the experiment journal when t
 
 ### TRACE_CORRELATION
 
-The identifiers that tie a game's telemetry together (`services/game_coordinator/metrics.py:81-85` `game_trace_correlation`; [telemetry.md](specs/telemetry.md)).
+The identifiers that tie a game's telemetry together (`services/game_coordinator/metrics.py:86-97` `game_trace_correlation`; [telemetry.md](specs/telemetry.md)).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|

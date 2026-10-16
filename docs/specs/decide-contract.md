@@ -332,7 +332,7 @@ decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #
 
 ## 6. Outcomes
 
-`decide.outcome` on the `agent.decide` span (`decide_hook.go:109-126`):
+`decide.outcome` on the `agent.decide` span (`decide_hook.go:110-127`):
 
 | Outcome | Meaning |
 |---|---|
@@ -352,10 +352,10 @@ So a rules decision blocked by the allow-list reads `outcome=act`, `decide.block
 
 `decide.discarded_reason`: `stale_context`, `game_ended`, `target_gone`,
 `kill_switch`, `backend_changed`, `shutdown` (`decision/telemetry.go:57-65`;
-`decide_hook.go:424-434`).
+`decide_hook.go:425-435`).
 
 Outcomes are recorded **only as span attributes**; no metric counts them (the
-dashboard Agent tab reads them from Jaeger, `services/dashboard/src/agent.ts:396-501`).
+dashboard Agent tab reads them from Jaeger, `services/dashboard/src/agent.ts:455-560`).
 
 ## 7. Fallback reasons
 
