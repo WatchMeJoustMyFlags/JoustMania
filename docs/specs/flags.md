@@ -21,6 +21,7 @@ changed default or a new reader/writer updates this file in the same PR.
 | Flag directory | host `./services/flagd` mounted **as a directory** so flagd's 1 s mtime stat-poll sees editor saves; writers write in place (no temp+rename, which fails with EBUSY on the bind mount) | `docker-compose.yml:108-110`; `lib/flag_config_writer.py` (`FlagConfigWriter`) |
 | CI / dry-run / demo flag set | `services/flagd/ci/` replaces the base mount via `!override` | `docker-compose.ci.yml:36-38,77,86` |
 | Flag-set scoping | each file's `metadata.flagSetId`; Python clients select with `flagSetId=<set>` | `lib/feature_flags.py:169-181` |
+| Planned: flag service | flagd fed by the in-memory flag service over `flagd.sync.v1` instead of `file:` sources; writers call typed RPCs; runtime-mutable flags listed in §13 (epic #1407, UC-053) | [architecture/flag-service.md](../architecture/flag-service.md) |
 
 ### 1.1 Clients
 
@@ -372,3 +373,111 @@ The demo / dry-run helper scripts (`scripts/agent-backend.sh`, `scripts/agent-ki
 `scripts/agent-dryrun-enable.sh`) edit `services/flagd/ci/agent.json` by default, not the base file.
 
 **Traceability:** NFR-014 / UC-003, UC-070 / `services/flagd/ci/`, `docker-compose.ci.yml`, `scripts/agent-*.sh` / `tests/integration/conftest.py`.
+
+## 13. Mutable-flag registry
+
+> **Planned** (epic #1407, [UC-053](../use_cases/UC-053.md), FR-122, FR-123; design:
+> [architecture/flag-service.md](../architecture/flag-service.md)). Nothing below is enforced on `main` yet:
+> today every writer edits the flag files directly (§1.1, §2).
+
+Once the flag service serves a flag set, a flag of that set changes at runtime **only** if it has a row
+here, only by a listed writer role, only within its bounds and only in its scope. Every other flag of
+every set is the **read-only baseline**: it changes by a reviewed edit of the flag file and a restart of
+the flag service (C-033). The registry file `services/flag-service/registry.yaml` encodes this table; a
+change to one updates the other in the same PR.
+
+**Roles:** `coordinator` (game lifecycle only, no flag writes), `agent` (in-game interventions, rollout), `experiment` (agent experiment loop), `promotion`
+(agent autonomous promotion, env-gated), `admin` (menu on behalf of the host), `operator` (connect-proxy,
+`flagctl`, validation harness), `stage` (talk scripts), `test` (integration fixtures; accepted only with
+`FLAG_SERVICE_TEST_ROLE=on`, CI compose files only). Role `test` may set any registry flag to any value
+of the flag's type, in any scope the row allows; it cannot write a flag without a row.
+
+**Scopes:** `game` = targeting on `gameId` of a registered game; `game+serial` = `gameId` and
+`targetingKey` (serial of a player of that game); `stack` = an overlay on the default for every reader;
+`experiment+arm` = `game_kind != "real"` and `experiment_id` and `arm`; `fraction` = `fractional` on
+`targetingKey`. Game-scoped values are dropped when the game ends (FR-125).
+
+**Bounds** are the declared variants of the baseline file unless a range or schema is given. Ranges are
+inclusive; #1409 pins each range against the reader's own clamp before the registry ships.
+
+### 13.1 `interventions` (all writes are game-scoped)
+
+| Key | Scope | Roles | Bounds | Today's writer ([architecture note §3](../architecture/flag-service.md#3-today-the-writer-inventory)) |
+|---|---|---|---|---|
+| `music_tempo_override` | game | agent | 1.0 to 1.3 | W1 state flag |
+| `global_sensitivity_override` | game | agent | int 0 to 4 | W1 state flag |
+| `global_difficulty_factor` | game | agent | 0.5 to 2.0 | W1 state flag |
+| `volume_override` | game | agent | 0.3 to 1.0 | W1 state flag |
+| `pacing_profile` | game | agent | `default`, `calm`, `frantic` | W1 state flag |
+| `tempo_ramp` | game | agent | `<target 1.0 to 1.3>:<seconds 1 to 30>:<linear\|ease>` | W1 state flag |
+| `auto_rubberband` | game | agent | `off`, `gentle`, `strong` | W1 state flag |
+| `player_sensitivity_factor` | game+serial | agent | 0.7 to 1.5 | W1 level ladder |
+| `player_handicap_factor` | game+serial | agent | 0.75 to 1.75 | W1 level ladder |
+| `shield_seconds` | game+serial, new variant per grant | agent | int 1 to 10 | W1 grant ladder |
+| `partial_shield_seconds` | game+serial, new variant per grant | agent | `<seconds 1 to 10>:<factor 1.0 to 3.0>` | W1 grant ladder |
+| `soft_penalty_action` | game+serial, new variant per grant | agent | `warn`, `tighten`, `tighten:<seconds 1 to 10>:<factor 0.1 to 1.0>` | W1 grant ladder |
+| `eliminate_player` | game+serial, one-shot sequence | agent | serial of a live player of the game | W1 edge flag |
+| `revive_player` | game+serial, one-shot sequence | agent | serial of a player of the game | W1 edge flag |
+| `controller_effect` | game+serial, one-shot sequence | agent | effect in the controller-manager effect set | W1 edge flag |
+| `audio_cue` | game, one-shot sequence | agent | sound id registered in `services/audio/sound_catalog.py` | W1 edge flag |
+| `end_game` | game, one-shot sequence | agent | none: the game is the scope (replaces the `<nonce>:<game_id>` payload) | W1 edge flag |
+
+The one-shot value is `<seq>:<payload>`, `seq` a per-game, per-flag counter assigned by the service
+(UC-053 BR-006). `interventions_enabled` (FR-051) and `interventions_allowed` (FR-050) stay the agent's
+own gates before it writes; the coordinator's re-check (decide-contract §11) is unchanged.
+
+### 13.2 `agent`
+
+| Key | Scope | Roles | Bounds | Today's writer |
+|---|---|---|---|---|
+| `enabled` | stack | operator, stage | `on`, `off` | `agent-killswitch.sh`, `agent-dryrun-enable.sh`, `talk-stage.sh` |
+| `interventions_allowed` | stack | admin, operator, stage | declared variants (`none`, `probe`, `ambient`, `standard`, `full`, `shadow_experimental`) | menu admin (FR-019), `talk-stage.sh permissions` |
+| `interventions_enabled` | stack | operator, stage | `on`, `off` | `talk-stage.sh` |
+| `experiments_enabled`, `experiment_dynamic_enabled` | stack | operator, stage | `on`, `off` | `agent-dryrun-enable.sh`, `talk-stage.sh` |
+| `rollout_enabled` | stack | operator, stage | `on`, `off` | `talk-stage.sh` |
+| `decision.backend` | stack | operator, stage | `rules`, `claude`, `openai`, `jev` | `agent-backend.sh`, `talk-stage.sh` |
+| `decision.act_confidence_threshold`, `decision.jev.act_confidence_threshold` | stack | operator, stage | declared variants | `agent-backend.sh`, `talk-stage.sh` |
+| `decision.capture_content` | stack | operator, stage | `on`, `off` | `agent-backend.sh` |
+| `decision.claude.model`, `decision.openai.model`, `decision.openai.reasoning_effort`, `decision.jev.model` | stack | operator, stage | declared variants | `agent-backend.sh` |
+| `llm.max_requests_per_minute` | stack | operator, stage | declared variants (incl. `stage`) | `talk-stage.sh` |
+| `policy.max_interventions_per_minute`, `policy.coordinator_backstop_per_minute` | stack | operator | declared variants | integration fixtures (`set_policy_budget`) |
+| `fitness.accelerate.target_session_seconds` | stack | operator | declared variants | validation harness |
+
+Every other `agent` flag (decision timeouts and URLs, `fitness.*`, `perception.*`, `lifecycle.*`,
+`verdict_*`, `experiment_*` tuning, `code_improvement.*`, `experiment.mock_archetype*`) is read-only
+baseline; the cohort-loop test sets `verdict_*` and `experiment_*` tuning through role `test` only.
+No row gives role `agent`, `experiment` or `promotion` any `agent` flag (OWNERSHIP_MODEL §1, C-008).
+
+### 13.3 `game`
+
+| Key | Scope | Roles | Bounds | Today's writer |
+|---|---|---|---|---|
+| `sensitivity` | stack | admin | declared variants (5 levels) | menu admin (FR-017) |
+| `num_teams` | stack | admin | declared variants | menu admin |
+| `force_all_start` | stack | admin | `on`, `off` | menu admin |
+| every flag the experiment catalog allows (#1092; today the dynamic declarer's candidates) | experiment+arm | experiment | declared variants, or the catalog range | W3 experiment writer |
+| the flag of a promoted experiment | stack (real default) | promotion | the experiment's tested value | W5 `SetRealDefault` |
+
+An `experiment+arm` value never resolves for `game_kind == "real"` (FR-062, FR-128): the service
+generates the condition, so the invariant gate (`experiment/gate.go`) becomes a second check. A
+promotion overlay lasts until the flag service restarts; the durable change is the promotion PR
+(FR-064, C-007).
+
+### 13.4 `user`, `controller`, `rollout`
+
+| Set | Key | Scope | Roles | Bounds | Today's writer |
+|---|---|---|---|---|---|
+| user | `current_game` | stack | admin | declared variants (10 modes) | menu selection |
+| user | `game_instructions` | stack | admin | `on`, `off` | menu admin |
+| controller | `bluetooth_backend` | stack or fraction | operator | declared variants, fraction 0 to 100 | connect-proxy `/canary/*` |
+| controller | `chaos_fault_type` | stack or fraction | operator | declared variants, fraction 0 to 100 | connect-proxy `/chaos/*` |
+| rollout | `current_controller_count` | stack | agent | `none`, `one`, `three`, `six`, `all` | W2 rollout writer |
+| rollout | `target_backend`, `strategy`, `remediation_allowed` | stack | operator, stage | declared variants | hand edits today |
+
+### 13.5 Read-only sets
+
+`system` and `observability` have no runtime-mutable flag: they change by a file edit and a restart.
+Several of their flags are read only at process start anyway (§1.3).
+
+**Traceability:** FR-122, FR-123, FR-124, FR-126, FR-128, C-008, C-032, C-033 / UC-053 / planned
+`services/flag-service/registry.yaml` / planned tests in #1409.

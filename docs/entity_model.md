@@ -41,6 +41,11 @@ erDiagram
     EXPERIMENT ||--o{ PATTERN_PAIR_ASSIGNMENT : "pins"
     MOTION_ARCHETYPE ||--o{ PATTERN_PAIR_ASSIGNMENT : "is run by"
     MOTION_ARCHETYPE |o--o{ GAME_SESSION : "drives"
+    FLAG ||--o| MUTABLE_FLAG_POLICY : "may change at runtime under"
+    GAME_SESSION ||--o| GAME_SCOPE : "is registered as (planned)"
+    GAME_SCOPE ||--o{ FLAG_OVERLAY : "holds game-scoped"
+    FLAG ||--o{ FLAG_OVERLAY : "is overridden by"
+    EXPERIMENT ||--o{ FLAG_OVERLAY : "holds arm values as"
 ```
 
 ### CONTROLLER
@@ -220,6 +225,63 @@ A named value of a flag.
 | value | JSON value | String | 4000 | Not Null |
 
 **Constraints:** the agent experiment writer may add a variant named `agent_experiment__<experiment_id>` and shadow-scoped targeting, but may not change `default_variant` or an existing variant (`services/agent/experiment/gate.go`).
+
+### MUTABLE_FLAG_POLICY
+
+**Planned** (epic #1407, UC-053, FR-122). One row of the flag service's mutable-flag registry
+([flags.md §13](specs/flags.md#13-mutable-flag-registry)): a flag that may change at runtime, by whom and within
+which bounds. A flag without a policy is read-only baseline.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| flag_key | The flag | String | 60 | Primary Key, Foreign Key (FLAG.key) |
+| flag_set_id | Its flag set | String | 20 | Not Null, Foreign Key (FLAG_SET.flag_set_id) |
+| scope | Where a write applies | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, fraction |
+| roles | Writer roles allowed to change it | String | 100 | Not Null, Values: agent, experiment, promotion, admin, operator, stage, test (comma list) |
+| allowed_variants | Declared variants a write may select | String | 400 | Optional |
+| min_value | Inclusive lower bound of a numeric value | Decimal | 10,3 | Optional |
+| max_value | Inclusive upper bound of a numeric value | Decimal | 10,3 | Optional, >= min_value |
+| payload_schema | Format of a composite string value (e.g. `<seconds>:<factor>`) | String | 100 | Optional |
+
+### GAME_SCOPE
+
+**Planned** (FR-125). The flag service's in-memory record of one live game, registered by the game coordinator
+at admission and dropped at the game's end, on `SyncLiveGames` or after the maximum game age.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| game_id | Game id | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id), Format: `game_<12 hex>` |
+| game_kind | Flag vocabulary | String | 6 | Not Null, Values: real, shadow (an unspecified kind is never real) |
+| serials | Serials of the game's players | String | 400 | Not Null |
+| experiment_id | Experiment of a shadow experiment game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
+| arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
+| registered_at | Registration time | DateTime | | Not Null |
+
+**Constraints:** at most 64 KiB of values per scope (NFR-051); a write naming a game without a scope is rejected
+(`game_not_live`).
+
+### FLAG_OVERLAY
+
+**Planned** (FR-124, FR-126 to FR-128). One runtime value the flag service holds on top of the baseline, in memory
+only (C-030).
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| overlay_id | Generated id; also the opaque variant name it renders (`r<n>`) | String | 20 | Primary Key |
+| flag_key | The flag | String | 60 | Not Null, Foreign Key (MUTABLE_FLAG_POLICY.flag_key) |
+| scope | Scope of this value | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, fraction |
+| game_id | Game for a game-scoped value | String | 17 | Optional, Foreign Key (GAME_SCOPE.game_id) |
+| serial | Player for a game+serial value | String | 20 | Optional, must be in GAME_SCOPE.serials |
+| experiment_id | Experiment for an arm value | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
+| arm | Arm for an arm value | String | 12 | Optional |
+| fraction_percent | Share of serials for a fraction value | Integer | 3 | Optional, 1 to 100 |
+| value | Resolved value as JSON | String | 4000 | Not Null, within the policy's bounds |
+| sequence | Per-game sequence of a one-shot value | Integer | 10 | Optional, > 0, strictly increasing per game and flag |
+| writer_role | Role that wrote it | String | 12 | Not Null |
+| decision_id | Agent decision or intervention id | String | 60 | Optional |
+| written_at | Write time | DateTime | | Not Null |
+
+**Constraints:** dropped with its GAME_SCOPE, by `ClearExperiment`, `ResetOverlays`, `RevertPromotion`, or a restart.
 
 ### DECISION
 

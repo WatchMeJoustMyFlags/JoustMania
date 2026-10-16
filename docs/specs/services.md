@@ -258,4 +258,189 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - Registration reset (operator tool, C-011): `python -m psmove_pairing.registrations [--dry-run]` in the pairing-daemon container (wrapped by `scripts/hardware/reset_bluetooth_connections.sh`; `tools/clear_devices.py` runs the same module on the host). It removes only PS Move registrations: live BlueZ `Device1` objects whose Modalias is Sony `054c` with `03d5` / `0c5e` (fallback when there is no Modalias: name "Motion Controller", class `0x002508` and the HID service UUID) via `Adapter1.RemoveDevice`, and saved `/var/lib/bluetooth/<adapter>/<controller>` directories whose `[DeviceID]` is a PS Move, only under adapters BlueZ does not currently present (when bluetoothd is absent, i.e. `ServiceUnknown` / `NameHasNoOwner` or no bus socket: saved directories only, for any adapter; any other D-Bus error such as `AccessDenied` or `NoReply` is a failure: nothing is removed, exit 1). Navigation controllers (`042f`) and all other devices are never touched. Each removal is attempted independently and reported (`removed`, `already absent` for `org.bluez.Error.DoesNotExist` / a vanished directory, `failed`); exit code 1 on any failure. After a real run the wrapper script restarts `pairing-daemon`, because `UsbPairingManager` keeps the serials it verified this session in memory and would skip re-pairing them until restart.
 - Unpair one controller (UC-005) and stale-registration cleanup after a re-pair (UC-001 A5, BR-004) use the same module: `remove_controller_registrations(address, keep_adapter=None, require_psmove=True)` returns one `RemovalResult` per registration found (`removed`, `already_absent`, `failed`), removing through `clear_psmove_registrations`; the unpair takes the address's registrations only if one is a PS Move (then identity-less copies too, UC-005 BR-001), the re-pair cleanup matches by address alone (`require_psmove=False`). One `asyncio.Lock` serialises USB pairing (adapter selection through trust) and unpairs (409 when held). A controller unpaired while on USB is not paired again until it leaves USB or reappears under another HID device path, re-checked under the lock (UC-005 A8). rust-hid `GetUSBControllers` / `PairController` calls carry a 15 s gRPC deadline and the pair step a 20 s `asyncio.wait_for`. The HTTP port binds only to `CONTROL_BIND` (default `127.0.0.1`).
 
-**Traceability:** FR-001 to FR-008, FR-040, FR-053, FR-070 to FR-074, FR-123, FR-124, NFR-001 to NFR-003, NFR-018, C-011 / UC-001 to UC-003, UC-005, UC-040, UC-050 to UC-052 / service directories above / `services/*/tests/`, `tests/integration/`.
+**Traceability:** FR-001 to FR-008, FR-040, FR-053, FR-070 to FR-074, NFR-001 to NFR-003, NFR-018, C-011 / UC-001 to UC-003, UC-040, UC-050 to UC-052 / service directories above / `services/*/tests/`, `tests/integration/`.
+
+## 7. Flag service (planned, epic #1407)
+
+> **Planned.** Nothing in this section exists on `main`. Use case [UC-053](../use_cases/UC-053.md);
+> requirements FR-120 to FR-129, NFR-050 to NFR-053, C-030 to C-033; design and migration plan in
+> [architecture/flag-service.md](../architecture/flag-service.md). The `.proto` files are added by #1408
+> (sync) and #1410 (write API); the sketches below are the contract they implement.
+
+| Item | Value |
+|---|---|
+| Compose name | `flag-service` (Go, `services/flag-service/`), in every compose file that runs flagd (base, lite, ci, dry-run, decide-e2e) |
+| Port | `50064` gRPC: `flagd.sync.v1.FlagSyncService` and `joustmania.flags.v1.FlagService` on one listener; `13135` HTTP `/healthz`. Not published to the host (C-015); scripts use `docker compose exec -T flag-service flagctl ...` |
+| Inputs | `services/flagd/*.json` (or `ci/*.json`) mounted **read-only**, read once at start (FR-120, C-030); `FLAG_SERVICE_SETS` (sets served over sync during the migration); `FLAG_SERVICE_TEST_ROLE` (CI only); `FLAG_SERVICE_TOKEN_<ROLE>` (optional, C-016) |
+| Clients | flagd (sync, one stream per flag set); agent, menu, connect-proxy, game coordinator, `flagctl`, integration fixtures (write API) |
+| flagd wiring | `--sources` with one `{"uri":"flag-service:50064","provider":"grpc","selector":"flagSetId=<set>"}` per migrated set; `depends_on: flag-service: {condition: service_healthy, restart: true}` |
+| Memory | limit 64 MiB (NFR-051) |
+| Dependencies | none at start; the game coordinator calls it (lifecycle), the agent calls it (writes) |
+
+### 7.1 `flagd.sync.v1.FlagSyncService` (server)
+
+The upstream schema (`buf.build/open-feature/flagd`, `flagd/sync/v1/sync.proto`), implemented unchanged:
+
+| RPC | Behaviour |
+|---|---|
+| `SyncFlags(SyncFlagsRequest{provider_id, selector}) → stream SyncFlagsResponse{flag_configuration}` | Selector `flagSetId=<set>` from the `flagd-selector` metadata header, else the body; an unknown set or filter key is `INVALID_ARGUMENT`. Sends the rendered set at once, then one full snapshot of the set after every accepted write or game-scope change of that set. `flag_configuration` is flagd JSON with top-level `metadata.flagSetId`. No `sync_context`. |
+| `FetchAllFlags(FetchAllFlagsRequest{provider_id, selector}) → FetchAllFlagsResponse{flag_configuration}` | The current rendered set. |
+| `GetMetadata` | Deprecated upstream; `UNIMPLEMENTED`. |
+
+Server keepalive: `EnforcementPolicy{MinTime: 10s, PermitWithoutStream: true}` (flagd and the Go provider ping every 30 s).
+
+### 7.2 `joustmania.flags.v1.FlagService` (write API, sketch)
+
+Every write RPC carries the writer role in metadata `x-flag-writer-role` (plus `authorization: Bearer <token>`
+when a token is configured) and returns a `WriteResult`. Errors: `PERMISSION_DENIED` (`role_not_allowed`,
+`flag_read_only`, `test_role_disabled`), `INVALID_ARGUMENT` (`out_of_bounds`, `unknown_flag`,
+`serial_not_in_game`), `FAILED_PRECONDITION` (`game_not_live`, `experiment_unknown`), `UNAUTHENTICATED`.
+Writers use a 500 ms deadline and fail closed (NFR-052).
+
+```proto
+syntax = "proto3";
+package joustmania.flags.v1;
+
+service FlagService {
+  // Game lifecycle (game coordinator only, role "coordinator").
+  rpc RegisterGame(RegisterGameRequest) returns (RegisterGameResponse);
+  rpc EndGame(EndGameRequest) returns (EndGameResponse);
+  rpc SyncLiveGames(SyncLiveGamesRequest) returns (SyncLiveGamesResponse);
+
+  // In-game interventions (role "agent"; FR-124, FR-126, FR-127).
+  rpc SetIntervention(SetInterventionRequest) returns (WriteResult);   // game-wide state flag
+  rpc SetPlayerLevel(SetPlayerLevelRequest) returns (WriteResult);     // per-serial level
+  rpc GrantPlayer(GrantPlayerRequest) returns (WriteResult);           // shield, partial shield, soft penalty
+  rpc FireOneShot(FireOneShotRequest) returns (WriteResult);           // end_game, eliminate, revive, cue, effect
+
+  // Experiments and promotion (roles "experiment", "promotion"; FR-128).
+  rpc SetExperimentArm(SetExperimentArmRequest) returns (WriteResult);
+  rpc ClearExperiment(ClearExperimentRequest) returns (WriteResult);
+  rpc PromoteDefault(PromoteDefaultRequest) returns (WriteResult);
+  rpc RevertPromotion(RevertPromotionRequest) returns (WriteResult);
+
+  // Stack-wide settings (roles "admin", "operator", "stage", "agent" for the rollout count).
+  rpc SetAgentSetting(SetAgentSettingRequest) returns (WriteResult);   // decision.backend, enabled, thresholds, ...
+  rpc SetAdminSetting(SetAdminSettingRequest) returns (WriteResult);   // sensitivity, num_teams, current_game, ...
+  rpc SetRolloutCount(SetRolloutCountRequest) returns (WriteResult);
+  rpc SetControllerRouting(SetControllerRoutingRequest) returns (WriteResult); // canary, chaos (fraction)
+  rpc SetFlag(SetFlagRequest) returns (WriteResult);                   // role "test" only
+  rpc ResetOverlays(ResetOverlaysRequest) returns (ResetOverlaysResponse);
+
+  // Read side (any role; FR-122, FR-129).
+  rpc GetRegistry(GetRegistryRequest) returns (GetRegistryResponse);
+  rpc GetState(GetStateRequest) returns (GetStateResponse);
+}
+
+enum GameKind { GAME_KIND_UNSPECIFIED = 0; GAME_KIND_REAL = 1; GAME_KIND_SHADOW = 2; }
+
+message RegisterGameRequest {
+  string game_id = 1;            // game_<12 hex>
+  GameKind game_kind = 2;        // unspecified is never treated as real (FR-041)
+  repeated string serials = 3;
+  string experiment_id = 4;      // empty for non-experiment games
+  string arm = 5;
+}
+message RegisterGameResponse { bool already_registered = 1; }
+message EndGameRequest { string game_id = 1; string reason = 2; }
+message EndGameResponse { int32 dropped_values = 1; }
+message SyncLiveGamesRequest { repeated RegisterGameRequest live_games = 1; }
+message SyncLiveGamesResponse { repeated string dropped_game_ids = 1; }
+
+message WriteContext {           // on every write; becomes span attributes
+  string decision_id = 1;        // agent decision / intervention id, when any
+  string reason = 2;             // free text for the audit span
+}
+
+message SetInterventionRequest {
+  string game_id = 1;
+  string flag = 2;               // music_tempo_override, global_difficulty_factor, ...
+  oneof value { double number = 3; string text = 4; bool clear = 5; }
+  WriteContext context = 6;
+}
+message SetPlayerLevelRequest {
+  string game_id = 1; string serial = 2;
+  string flag = 3;               // player_sensitivity_factor, player_handicap_factor
+  double factor = 4;
+  WriteContext context = 5;
+}
+message GrantPlayerRequest {
+  string game_id = 1; string serial = 2;
+  oneof grant {
+    int32 shield_seconds = 3;
+    PartialShield partial_shield = 4;
+    string soft_penalty = 5;     // warn | tighten | tighten:<s>:<f>
+  }
+  WriteContext context = 6;
+}
+message PartialShield { int32 seconds = 1; double factor = 2; }
+message FireOneShotRequest {
+  string game_id = 1;
+  string flag = 2;               // end_game | eliminate_player | revive_player | audio_cue | controller_effect
+  string serial = 3;             // for eliminate, revive, effect
+  string payload = 4;            // sound id for audio_cue, effect name for controller_effect
+  WriteContext context = 5;
+}
+
+message SetExperimentArmRequest {
+  string experiment_id = 1; string arm = 2;   // experimental | control
+  string flag_set = 3; string flag = 4;
+  oneof value { string variant = 5; double number = 6; string text = 7; }
+  WriteContext context = 8;
+}
+message ClearExperimentRequest { string experiment_id = 1; WriteContext context = 2; }
+message PromoteDefaultRequest { string flag_set = 1; string flag = 2; string experiment_id = 3; WriteContext context = 4; }
+message RevertPromotionRequest { string flag_set = 1; string flag = 2; WriteContext context = 3; }
+
+message SetAgentSettingRequest { string flag = 1; string variant = 2; WriteContext context = 3; }
+message SetAdminSettingRequest { string flag_set = 1; string flag = 2; string variant = 3; WriteContext context = 4; }
+message SetRolloutCountRequest { string variant = 1; WriteContext context = 2; }  // none|one|three|six|all
+message SetControllerRoutingRequest {
+  string flag = 1;               // bluetooth_backend | chaos_fault_type
+  string variant = 2;
+  int32 fraction_percent = 3;    // 0 = stack-wide default, 1..100 = fractional on serial
+  WriteContext context = 4;
+}
+message SetFlagRequest {         // role test only
+  string flag_set = 1; string flag = 2; string game_id = 3; string serial = 4;
+  oneof value { string variant = 5; double number = 6; string text = 7; bool boolean = 8; string object_json = 9; }
+}
+message ResetOverlaysRequest { string flag_set = 1; string role = 2; }   // empty = all sets / the caller's role
+message ResetOverlaysResponse { int32 cleared = 1; }
+
+message WriteResult {
+  string flag_set = 1; string flag = 2;
+  string variant = 3;            // generated variant name (opaque)
+  int64 sequence = 4;            // one-shot sequence, 0 otherwise
+  int64 snapshot_version = 5;    // monotonic per flag set; flagd has it once the stream sent it
+}
+
+message GetRegistryRequest {}
+message GetRegistryResponse { repeated MutableFlagPolicy flags = 1; }
+message MutableFlagPolicy {
+  string flag_set = 1; string flag = 2;
+  string scope = 3;              // stack | game | game+serial | experiment+arm | fraction
+  repeated string roles = 4;
+  repeated string allowed_variants = 5;
+  double min = 6; double max = 7; string payload_schema = 8;
+}
+message GetStateRequest { string flag_set = 1; }
+message GetStateResponse {
+  repeated LiveGame games = 1;   // registered scopes with their values
+  repeated Overlay overlays = 2; // stack-wide overlays with writer role and time
+  repeated ExperimentArm arms = 3;
+  map<string, int64> snapshot_versions = 4;
+  int32 sync_streams = 5;
+}
+message LiveGame { RegisterGameRequest game = 1; map<string, string> values = 2; int64 registered_unix_ms = 3; }
+message Overlay { string flag_set = 1; string flag = 2; string variant = 3; string role = 4; int64 set_unix_ms = 5; }
+message ExperimentArm { string experiment_id = 1; string arm = 2; string flag_set = 3; string flag = 4; string value = 5; }
+```
+
+Lifecycle callers: the game coordinator calls `RegisterGame` at admission (where it calls
+`InterventionManager.prime_session` today) and `EndGame` at retire (`forget_session`), and `SyncLiveGames` at its
+start and whenever its channel to the flag service reconnects. A registration failure never blocks the game
+(C-004); the coordinator retries in the background.
+
+**Traceability:** FR-120 to FR-129, NFR-050 to NFR-053, C-030 to C-033 / UC-053 / planned `services/flag-service/`,
+`proto/flag_service.proto` / planned tests in #1408 to #1413.
