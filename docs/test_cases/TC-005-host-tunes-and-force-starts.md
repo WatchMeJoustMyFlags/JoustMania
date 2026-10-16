@@ -5,7 +5,7 @@
 **ID:** TC-005  
 **Goal:** The host enters admin mode, changes the sensitivity and the game mode, and force-starts a game that uses the new settings.  
 **Priority:** High  
-**Status:** Automated  
+**Status:** Draft  
 **Use cases:** [UC-012](../use_cases/UC-012.md) main, A1; [UC-011](../use_cases/UC-011.md) main; [UC-014](../use_cases/UC-014.md) main; [UC-010](../use_cases/UC-010.md) main
 
 ## Roles
@@ -43,4 +43,4 @@
 ## Automation
 
 - `tests/integration/test_admin_flow.py`: `test_combo_entry_lights_admin_white` (step 1), `test_sensitivity_change_persists` (steps 2 and 3), `test_option_cycle_and_value_change_persists` (UC-012 main steps 3 to 6), `test_force_start_requests_game` (steps 5 and 6), `test_force_start_respects_selected_game_mode` (steps 4 to 6), `test_ps_exit_restores_lobby_color` (UC-012 steps 7 and 8).
-- The steps run as separate tests, not as one chained journey. Gaps (planned, #1359): mode announcement and colour pulse (UC-011 step 3), the early release of the trigger (UC-014 A1) and the admin timeout (UC-012 A4) are not covered end to end.
+- **Partly automated**: the steps run as separate tests, not as one chained journey; in CI the trigger hold is about 1.5 s (the force-start duration is shortened by flag), not 3 s. Step 6 asserts only that the coordinator start path is reached (`game_started` or `game_start_cancelled`); step 7 and Validations 1 and 2 are not asserted. Gaps (planned, #1359): mode announcement and colour pulse (UC-011 step 3), the early release of the trigger (UC-014 A1) and the admin timeout (UC-012 A4) are not covered end to end.

@@ -6,18 +6,18 @@
 **Goal:** When a real Free-for-All game ends, the agent runs its game-end chain in order (retro, game summary, proposer) and the proposal becomes a shadow-scoped experiment in `game.json`, while real players keep the shipped values.  
 **Priority:** High  
 **Status:** Draft  
-**Use cases:** [UC-020](../use_cases/UC-020.md) main; [UC-041](../use_cases/UC-041.md) main, A3; [UC-042](../use_cases/UC-042.md) main, A2, A4; [UC-043](../use_cases/UC-043.md) main
+**Use cases:** [UC-020](../use_cases/UC-020.md) main; [UC-041](../use_cases/UC-041.md) main; [UC-042](../use_cases/UC-042.md) main, A2; [UC-043](../use_cases/UC-043.md) main
 
 ## Roles
 
 - Players (mock controllers driven by the operator)
 - Agent (reviews the game and proposes)
-- Inference backend (stub, or a fake Claude-compatible server for the model path)
+- Inference backend (Claude for the model path, or the stub for Validation 3)
 
 ## Preconditions
 
-- The integration stack and the agent built at HEAD are up; `enabled` and `experiments_enabled` on; `code_improvement.min_interval_seconds` set to `0` so the first game end may propose; `llm.eligible_game_kinds` = `real`.
-- Inference backend scripted to return a retro with one suggestion and a proposal that changes `sensitivity` for shadow games.
+- The integration stack and the agent built at HEAD are up; `enabled` and `experiments_enabled` on; `code_improvement.min_interval_seconds` set to `0` so the first game end may propose; `llm.eligible_game_kinds` = `real_only` (the shipped default, value `real`).
+- The retro and proposer reach a model only with `AGENT_INFERENCE_BACKEND=claude` and an Anthropic API key in the agent's environment (value not part of this document); there is no fake Claude-compatible server yet, so the model path is manual or needs one (#1362). The expected model output: a retro with one suggestion and a proposal that changes `sensitivity` for shadow games.
 - Mock controllers `MOCK0001` … `MOCK0004` connected; `current_game` is `JoustFFA`.
 
 ## Flow
@@ -46,4 +46,4 @@
 ## Automation
 
 - **Partly automated**: `tests/integration/test_experiment_cohort_loop.py::test_inference_absent_backend_is_stub` asserts the agent selects the stub backend for retro and proposer (the precondition of Validation 3); `tests/integration/test_experiment_shadow_isolation.py::test_experiment_reaches_shadow_never_real` proves steps 6 and 7 for a hand-written experiment.
-- Gaps (planned, #1362 "agent game-end chain"): no test plays a game to its end and asserts the retro, summary and proposer spans in order, the gate rejection (UC-042 A4) or the shadow-game capture-only retro (UC-042 A1).
+- Gaps (planned, #1362 "agent game-end chain"): no test plays a game to its end and asserts the retro, summary and proposer spans in order, the gate rejection (UC-042 A4) or the shadow-game capture-only retro (UC-042 A1); a fake Claude-compatible inference server is needed to automate the model path.

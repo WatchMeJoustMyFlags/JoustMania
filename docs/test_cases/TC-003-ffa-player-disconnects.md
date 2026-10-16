@@ -6,7 +6,7 @@
 **Goal:** In a three-player Free-for-All game one controller disconnects and another dies, and the game ends with the last player as winner without waiting for motion from the disconnected controller.  
 **Priority:** High  
 **Status:** Draft  
-**Use cases:** [UC-003](../use_cases/UC-003.md) main, A3; [UC-010](../use_cases/UC-010.md) main; [UC-020](../use_cases/UC-020.md) A2; [UC-030](../use_cases/UC-030.md) A5; [UC-002](../use_cases/UC-002.md) A1
+**Use cases:** [UC-003](../use_cases/UC-003.md) main; [UC-010](../use_cases/UC-010.md) main; [UC-020](../use_cases/UC-020.md) A2; [UC-030](../use_cases/UC-030.md) A5; [UC-002](../use_cases/UC-002.md) A1
 
 ## Roles
 
@@ -42,4 +42,3 @@
 ## Automation
 
 - **Planned** (#1360, FFA disconnect journey). Unit coverage exists in `services/game_coordinator/tests/test_disconnect.py`.
-- A pattern-game variant can reset a controller instead of removing it (UC-003 A3) to check that the death latch clears.

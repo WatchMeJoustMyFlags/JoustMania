@@ -16,8 +16,8 @@
 
 ## Preconditions
 
-- The integration stack and the agent built at HEAD are up; mock controllers `MOCK0001` … `MOCK0006` connected on the default backend.
-- `rollout_enabled` on in `agent.json`; `remediation_allowed` on, `current_controller_count` = `none`, `strategy` = `immediate` in `rollout.json`; `AGENT_ROLLOUT_DWELL_SECONDS` = `5`, `AGENT_ROLLOUT_COOLDOWN_SECONDS` = `30`.
+- The full stack and the agent are up with **real controllers** `A` … `F` connected on the python backend. Mock controllers cannot run this journey today: with only the mock adapter loaded the controller manager skips rollout targeting, and the `unstable` adapter wraps only the python adapter (see #1390).
+- `rollout_enabled` on in `agent.json`; `remediation_allowed` on, `current_controller_count` = `none`, `strategy` = `off` (the shipped default, so nothing rolls out before step 1) in `rollout.json`; `AGENT_ROLLOUT_DWELL_SECONDS` = `5`, `AGENT_ROLLOUT_COOLDOWN_SECONDS` = `30`.
 
 ## Flow
 
@@ -26,9 +26,9 @@
 | 1    | Start the rollout         | Operator sets the target backend, then the progressive strategy                                 | `target_backend` = `unstable`, `strategy` = `progressive` | [UC-050](../use_cases/UC-050.md) |
 | 2    | Observe the rollout       | The agent reads the rollout state from the controller manager's health span                     | -                                             | [UC-041](../use_cases/UC-041.md)    |
 | 3    | Expand the first stage    | Fitness passes on stage 0; after the dwell the agent writes the first stage                     | `current_controller_count` 0 → 1              | [UC-050](../use_cases/UC-050.md)    |
-| 4    | Verify routing            | `MOCK0001` is routed to `unstable`; `MOCK0002` … `MOCK0006` stay on the default                 | -                                             | -                                   |
+| 4    | Verify routing            | The first controller by serial (`A`) is routed to `unstable`; `B` … `F` stay on python                 | -                                             | -                                   |
 | 5    | Detect degradation        | The unstable adapter delivers about 8 Hz with gaps over 50 ms; the agent finds a violation      | -                                             | [UC-051](../use_cases/UC-051.md)    |
-| 6    | Roll back                 | The agent writes `none`, the controller manager routes `MOCK0001` back, and `agent.infrastructure.decision` records the rollback with the log `agent.rollout_rollback` | `current_controller_count` = `none` | [UC-051](../use_cases/UC-051.md) |
+| 6    | Roll back                 | The agent writes `none`, the controller manager routes `A` back, and `agent.infrastructure.decision` records the rollback with the log `agent.rollout_rollback` | `current_controller_count` = `none` | [UC-051](../use_cases/UC-051.md) |
 | 7    | Verify cooldown           | No expansion is written for 30 s although fitness passes again on stage 0                       | 30 s window                                   | -                                   |
 | 8    | Recommend only            | Operator sets `remediation_allowed` off and repeats steps 3 to 5; the agent logs `agent.rollout_rollback_recommended` and writes nothing | `remediation_allowed` = `off` | [UC-045](../use_cases/UC-045.md) |
 
@@ -43,5 +43,5 @@
 
 ## Automation
 
-- **Planned** (#1390). Today `tests/integration/test_rollout_plumbing.py` proves only that the rollout flag shape the agent writes resolves through live flagd (`test_rollout_write_shape_resolves_via_live_flagd`, `test_remediation_allowed_flag_is_resolvable_shape`); the rollback, cooldown and dry-run logic is unit-tested in `services/agent/decision/infra_loop_rollback_test.go`.
+- **Manual** (real controllers). Automating it needs a code change first (an `unstable` wrapper over the mock adapter and rollout-routable mock serials, with its spec change), tracked with the e2e test in #1390. Today `tests/integration/test_rollout_plumbing.py` proves only that the rollout flag shape the agent writes resolves through live flagd (`test_rollout_write_shape_resolves_via_live_flagd`, `test_remediation_allowed_flag_is_resolvable_shape`); the rollback, cooldown and dry-run logic is unit-tested in `services/agent/decision/infra_loop_rollback_test.go`.
 - Known bug affecting the dry-run variant: #1339.

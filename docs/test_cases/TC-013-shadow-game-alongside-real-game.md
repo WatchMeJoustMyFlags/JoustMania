@@ -15,7 +15,7 @@
 
 ## Preconditions
 
-- The integration stack is up with `shadow_policy` = `allow` (the CI default in `services/flagd/ci/game.json`); the flag-file fixture snapshots and restores `interventions.json`.
+- The integration stack is up with `shadow_policy` = `allow` (the CI default in `services/flagd/ci/game.json`); `interventions_allowed` = `full` in `agent.json` (so `eliminate_player` and `end_game` pass the coordinator's allow-list); the flag-file fixture snapshots and restores `agent.json` and `interventions.json`.
 - Mock controllers `MOCK0001` … `MOCK0004` connected and unreserved; `current_game` is `JoustFFA`.
 
 ## Flow
@@ -43,4 +43,4 @@
 ## Automation
 
 - **Partly automated**: `tests/integration/test_concurrent_games.py::test_shadow_game_isolated_from_menu` (steps 1 to 3 and Validation 2); `tests/integration/test_gameid_intervention_isolation.py::test_gameid_scoped_intervention_isolates_shadow_from_real` (steps 4 and 5).
-- Gaps (planned): the addressed `end_game` (steps 6 and 7, UC-040 A18) is unit-tested in `services/game_coordinator/tests/test_intervention_scoping.py` only (#1360); preemption under `shadow_policy=block` (step 8, UC-043 A2) has no end-to-end test (#1362).
+- Gaps (planned, #1404): the addressed `end_game` (steps 6 and 7, UC-040 A18) is unit-tested only (#1315: `services/game_coordinator/tests/test_intervention_scoping.py`, the agent's `writer_scoping_test.go`); preemption under `shadow_policy=block` (step 8, UC-043 A2) has no end-to-end test.

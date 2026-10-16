@@ -45,4 +45,4 @@
 ## Automation
 
 - `tests/integration/test_decide_backend_e2e.py`: `test_openai_high_confidence_acts` (steps 1 to 3), `test_openai_low_confidence_held` (steps 4 and 5), `test_openai_garbage_falls_back_to_rules` (steps 6 and 7), `test_rules_backend_default_unchanged` (step 8). Each case runs in its own game, as the journey does.
-- Gaps (planned, #1363): Jev and Claude backends (only `openai` is faked), timeout fallback (UC-040 A2 `timeout`), backend switch while a call is in flight (UC-044 A2), missing key (UC-044 A1). The `scripts/agent-backend.sh` helper of UC-044 step 1 is tested by `scripts/tests/test-agent-backend.sh`.
+- Gaps (planned): Jev and Claude backends (only `openai` is faked) and missing key (UC-044 A1): #1404; timeout fallback (UC-040 A2 `timeout`) and backend switch while a call is in flight (UC-044 A2, UC-040 A7 `backend_changed`): #1363. The `scripts/agent-backend.sh` helper of UC-044 step 1 is tested by `scripts/tests/test-agent-backend.sh`.

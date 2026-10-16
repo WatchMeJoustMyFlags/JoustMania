@@ -36,7 +36,7 @@
 
 ## Validation
 
-1. **One game, one winner**: the game trace in Jaeger (`/jaeger/`, service `game-coordinator`) has one `JoustFFA` root span with `player_death` for B and `game_winner` for A, then `game_ended`.
+1. **One game, one winner**: the game's event stream has `player_death` for B, `game_winner` for A, then `game_ended`; in Jaeger (`/jaeger/`, service `game-coordinator`) the game has one root span `Joust Free-for-All`, and A's player span carries the `victory` event.
 2. **Pairing kept**: turning controller A off and on again reconnects it with the PS button alone (no USB step, UC-002 A4) under the same name.
 3. **Lobby restored**: A is CONNECTED with the FFA lobby colour at 30 % brightness; B is gone from the lobby and `controller_connected` for B is 0.
 

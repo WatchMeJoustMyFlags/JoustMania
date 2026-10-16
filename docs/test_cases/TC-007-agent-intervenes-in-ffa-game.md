@@ -46,4 +46,4 @@
 ## Automation
 
 - **Partly automated**: `tests/integration/test_decide_backend_e2e.py::test_rules_backend_default_unchanged` implements steps 1 to 5 (with interventions off, so it observes the decision, not its effect); `tests/integration/test_intervention_smoke.py::test_shadow_experimental_interventions_apply` and `tests/integration/test_f6_flow.py::test_pacing_profile_applies_and_reverts` prove step 6 for hand-written interventions.
-- Gaps (planned): rules decision applied end to end in one game (#1363), music override audible effect (#1362), dashboard Agent tab and Jaeger parenting (#1365). Shield feedback (UC-040 A16) is unit-tested in `services/game_coordinator/tests/test_shield_feedback.py`.
+- Gaps (planned): rules decision applied end to end in one game, dashboard Agent tab and Jaeger parenting (#1404); music override audible effect (#1362). Shield feedback (UC-040 A16) is unit-tested in `services/game_coordinator/tests/test_shield_feedback.py`.

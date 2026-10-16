@@ -5,7 +5,7 @@
 **ID:** TC-002  
 **Goal:** An operator adds four mock controllers, selects Joust Free-for-All, readies everyone up and eliminates three players, and the game ends with one winner and the lobby restored.  
 **Priority:** Critical  
-**Status:** Automated  
+**Status:** Draft  
 **Use cases:** [UC-003](../use_cases/UC-003.md) main; [UC-002](../use_cases/UC-002.md) main; [UC-011](../use_cases/UC-011.md) A1; [UC-010](../use_cases/UC-010.md) main; [UC-020](../use_cases/UC-020.md) main; [UC-030](../use_cases/UC-030.md) main
 
 ## Roles
@@ -42,5 +42,5 @@
 
 ## Automation
 
-- `tests/integration/test_full_game_lifecycle.py::test_full_game_lifecycle[JoustFFA]` implements steps 1 to 8.
-- Gaps (planned, #1360): the test does not assert `players_initialized`, one `player_death` per eliminated player with the players-left count, `game_winner` naming `MOCK0004`, the winner rainbow, or `player_analytics`; it uses simulated deaths, so the warning effect (UC-030 step 7) is not observed. Add `@pytest.mark.uc(..., tc="TC-002")` markers when the test is retagged (#1356).
+- **Partly automated**: `tests/integration/test_full_game_lifecycle.py::test_full_game_lifecycle[JoustFFA]` drives steps 1 to 8.
+- Gaps (planned, #1360): step 5 checks only that every LED is non-black, not a unique game colour per player; step 7 and Validation 1 accept any of `game_ended`, `game_force_ended`, `game_error`, so a force-ended or failed game passes; the test does not assert `players_initialized`, one `player_death` per eliminated player with the players-left count, `game_winner` naming `MOCK0004`, the winner rainbow, or `player_analytics`; it uses simulated deaths, so the warning effect (UC-030 step 7) is not observed. Add `@pytest.mark.uc(..., tc="TC-002")` markers when the test is retagged (#1356).

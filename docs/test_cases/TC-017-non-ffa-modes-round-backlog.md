@@ -28,7 +28,8 @@ Backlog: the current focus is Free-for-All. This single journey keeps the non-FF
 | 4    | Swapper              | Operator kills players until one team holds everyone                                                | `Swapper`                                 | [UC-024](../use_cases/UC-024.md)    |
 | 5    | 1v1 formats          | Operator plays Tournament to a champion and Fight Club to its end                                   | `Tournament`, `FightClub`                 | [UC-025](../use_cases/UC-025.md)    |
 | 6    | Non-Stop             | Operator plays Non-Stop until the time limit ends it                                                | `NonStop`                                 | [UC-026](../use_cases/UC-026.md)    |
-| 7    | Verify terminal events | Every game published exactly one terminal event (`game_ended` or `game_force_ended`) and no `game_error` | -                                  | -                                   |
+| 7    | Verify mode-specific deaths | In Zombies a death converts a human, in Swapper it switches team, in Non-Stop the player respawns, in Tournament it ends the match; Werewolf and Zombie roles use their fixed thresholds | - | [UC-030](../use_cases/UC-030.md) |
+| 8    | Verify terminal events | Every game published exactly one terminal event (`game_ended` or `game_force_ended`) and no `game_error` | -                                  | -                                   |
 
 ## Validation
 
@@ -41,5 +42,5 @@ Backlog: the current focus is Free-for-All. This single journey keeps the non-FF
 
 ## Automation
 
-- **Partly automated**: `tests/integration/test_full_game_lifecycle.py::test_full_game_lifecycle[JoustTeams]` (step 1 through the menu); `tests/integration/test_parallel_lifecycle.py::test_parallel_mode_lifecycle[slow-batch]` and `[fast-batch]` run the other modes headless (steps 1 to 6). Traitor and NonStop end by force in those batches, not by their own win condition.
+- **Partly automated**: `tests/integration/test_full_game_lifecycle.py::test_full_game_lifecycle[JoustTeams]` (step 1 through the menu); `tests/integration/test_parallel_lifecycle.py::test_parallel_mode_lifecycle[slow-batch]` and `[fast-batch]` run the other modes headless (steps 1 to 6). Traitor and NonStop end by force in those batches, not by their own win condition; step 7 (UC-030 A2, A3) is asserted only per mode in the unit tests (`services/game_coordinator/tests/test_zombie.py`, `test_werewolf.py`, `test_swapper.py`, `test_nonstop.py`, `test_tournament.py`).
 - Backlog (#1361): mode-specific win paths and the known mode bugs #1337 (Tournament champion), #1338 (NonStop time limit), #1342, #1343, #1344, #1345, #1346, #1347, #1354.
