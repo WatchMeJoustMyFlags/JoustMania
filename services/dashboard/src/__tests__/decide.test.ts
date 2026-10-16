@@ -14,10 +14,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DecideStore,
-  DECIDE_COLD_WINDOW_MS,
   DECIDE_OVERLAP_MS,
   confidenceBar,
+  decideQueryParams,
   decideQueryStartMs,
+  fetchDecideFeed,
   jaegerTraceUrl,
   parseDecideAnswers,
   parseDecideTraces,
@@ -307,27 +308,29 @@ describe("current strip with real + shadow games", () => {
 });
 
 describe("incremental query window", () => {
-  const now = 1_760_000_000_000;
-
-  it("cold start: the last 2 minutes", () => {
-    expect(decideQueryStartMs(null, now)).toBe(now - DECIDE_COLD_WINDOW_MS);
+  it("cold start: no start (Jaeger's server-side default window)", () => {
+    expect(decideQueryStartMs(null)).toBeNull();
+    const q = decideQueryParams(null);
+    expect(q.has("start")).toBe(false);
+    expect(q.has("end")).toBe(false);
+    expect(q.get("limit")).toBe("5");
   });
 
-  it("warm: 30s behind the newest decide seen", () => {
-    expect(decideQueryStartMs(now - 5_000, now)).toBe(now - 5_000 - DECIDE_OVERLAP_MS);
-  });
-
-  it("never wider than the cold window, however old the newest decide is", () => {
-    expect(decideQueryStartMs(now - 3_600_000, now)).toBe(now - DECIDE_COLD_WINDOW_MS);
+  it("warm: 30s behind the newest decide seen, in microseconds, no end", () => {
+    const newest = 1_760_000_012_000;
+    expect(decideQueryStartMs(newest)).toBe(newest - DECIDE_OVERLAP_MS);
+    const q = decideQueryParams(decideQueryStartMs(newest));
+    expect(q.get("start")).toBe(String((newest - DECIDE_OVERLAP_MS) * 1000));
+    expect(q.has("end")).toBe(false);
   });
 
   it("DecideStore tracks the newest decide, replaces re-fetched rows, and stays bounded", () => {
     const store = new DecideStore(3);
-    expect(store.queryStartMs(now)).toBe(now - DECIDE_COLD_WINDOW_MS);
+    expect(store.queryStartMs()).toBeNull();
     const multi = parseDecideTraces(asResp(multiFixture)).rows;
     store.merge(multi);
     const newest = Math.max(...multi.map((r) => r.tsMs));
-    expect(store.queryStartMs(newest + 1000)).toBe(newest - DECIDE_OVERLAP_MS);
+    expect(store.queryStartMs()).toBe(newest - DECIDE_OVERLAP_MS);
     // Re-fetch of the same spans: no duplicates.
     store.merge(multi);
     expect(store.size).toBe(3);
@@ -507,5 +510,45 @@ describe("AgentView.renderDecide skips unchanged renders", () => {
     view.renderDecide(parseDecideTraces(merged(multiFixture, shadowFixture)));
     expect(writes.strip).toBe(1);
     expect(writes.dfeed).toBe(2);
+  });
+});
+
+describe("clock skew: browser clock hours off the agent/Jaeger clock", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("never sends browser-derived times, and the rows still render", async () => {
+    vi.useFakeTimers();
+    // Fixture spans are at ~1_760_000_000_000 ms; the presenter laptop is 7h ahead.
+    const browserNow = 1_760_000_000_000 + 7 * 3_600_000;
+    vi.setSystemTime(browserNow);
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return { ok: true, json: async () => merged(multiFixture) } as unknown as Response;
+    });
+
+    const store = new DecideStore();
+    const first = await fetchDecideFeed(store.queryStartMs());
+    store.merge(first.rows);
+    await fetchDecideFeed(store.queryStartMs());
+
+    const [cold, warm] = urls.map((u) => new URLSearchParams(u.split("?")[1]));
+    expect(cold.has("start")).toBe(false);
+    expect(cold.has("end")).toBe(false);
+    const newest = Math.max(...first.rows.map((r) => r.tsMs));
+    expect(warm.get("start")).toBe(String((newest - DECIDE_OVERLAP_MS) * 1000));
+    expect(warm.has("end")).toBe(false);
+    // The only time in either query is span-derived (agent clock).
+    expect([...cold.keys()].sort()).toEqual(["limit", "operation", "service"]);
+    expect([...warm.keys()].sort()).toEqual(["limit", "operation", "service", "start"]);
+    expect(Number(warm.get("start")) / 1000).toBeLessThan(browserNow - 6 * 3_600_000);
+
+    const feed = store.feed();
+    expect(feed.rows.map((r) => r.spanId)).toEqual(["D2", "D1", "R1"]);
+    expect(renderDecideRow(feed.rows[0])).toContain("decide-outcome-noop");
+    expect(feed.current?.backend).toBe("claude");
   });
 });

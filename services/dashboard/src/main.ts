@@ -294,7 +294,7 @@ function startDecidePolling() {
     timeoutMs: DECIDE_TIMEOUT_MS,
     isActive: () => activeTab === "agent" && !document.hidden,
     run: async (signal) => {
-      const feed = await fetchDecideFeed(store.queryStartMs(Date.now()), signal);
+      const feed = await fetchDecideFeed(store.queryStartMs(), signal);
       store.merge(feed.rows);
       agentView.renderDecide(store.feed());
     },

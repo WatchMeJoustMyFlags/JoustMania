@@ -121,7 +121,7 @@ export class AgentView {
 
     if (feed.rows.length === 0) {
       this.decideFeedEl.innerHTML =
-        '<div class="loading">No agent.decide spans in the last 2 minutes. ' +
+        '<div class="loading">No agent.decide spans found in Jaeger yet. ' +
         "Rows appear here as soon as the agent decides in an FFA game.</div>";
       return;
     }

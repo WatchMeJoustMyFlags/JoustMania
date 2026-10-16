@@ -432,11 +432,18 @@ export async function fetchAgentView(): Promise<AgentView> {
 /** Jaeger operation the decide feed searches for. */
 export const DECIDE_OPERATION = "agent.decide";
 
-/**
- * Cold-start window, and the widest window any poll asks for. Rows older than
- * that are already held client-side (DecideStore), so re-fetching them is waste.
+/*
+ * CLOCK SKEW: the stage Pi has no RTC and venue WiFi may block NTP, so the
+ * agent + Jaeger clock (same host) can be hours off the presenter's browser
+ * clock. The decide query therefore NEVER uses Date.now(): it sends no `end`
+ * (Jaeger defaults it to its own now) and, on a cold start, no `start` either.
+ * Jaeger 2.19's /api/traces ignores a `lookback` param (it is only read by the
+ * dependencies/metrics endpoints): a missing `start` means Jaeger-now minus its
+ * built-in 48h trace-query lookback (default_params.go). That is bounded by
+ * limit=DECIDE_TRACE_LIMIT, and Jaeger returns the most recent matching traces,
+ * so a cold start costs the same 5 traces as a short window would. Once a decide
+ * is held, `start` is that span's own (agent-clock) timestamp minus the overlap.
  */
-export const DECIDE_COLD_WINDOW_MS = 2 * 60 * 1000;
 
 /**
  * Overlap behind the newest decide already seen: spans are exported when they
@@ -794,14 +801,24 @@ function newestFirst(a: DecideRow, b: DecideRow): number {
 }
 
 /**
- * Start of the next decide query window (epoch ms): DECIDE_OVERLAP_MS behind the
- * newest decide already held, but never wider than DECIDE_COLD_WINDOW_MS (which
- * is also the cold-start window when nothing is held yet).
+ * Start of the next decide query window (epoch ms, AGENT clock): DECIDE_OVERLAP_MS
+ * behind the newest decide already held, derived only from span timestamps.
+ * null on a cold start: the query then sends no `start` and Jaeger applies its
+ * own server-side default (see CLOCK SKEW above).
  */
-export function decideQueryStartMs(newestSeenMs: number | null, nowMs: number): number {
-  const floor = nowMs - DECIDE_COLD_WINDOW_MS;
-  if (newestSeenMs === null) return floor;
-  return Math.max(newestSeenMs - DECIDE_OVERLAP_MS, floor);
+export function decideQueryStartMs(newestSeenMs: number | null): number | null {
+  return newestSeenMs === null ? null : newestSeenMs - DECIDE_OVERLAP_MS;
+}
+
+/** Query string for the decide search. Never contains browser-clock times. */
+export function decideQueryParams(startMs: number | null): URLSearchParams {
+  const params = new URLSearchParams({
+    service: "agent",
+    operation: DECIDE_OPERATION,
+    limit: String(DECIDE_TRACE_LIMIT),
+  });
+  if (startMs !== null) params.set("start", String(Math.floor(startMs) * 1000));
+  return params;
 }
 
 /**
@@ -828,8 +845,9 @@ export class DecideStore {
     }
   }
 
-  queryStartMs(nowMs: number): number {
-    return decideQueryStartMs(this.newestMs, nowMs);
+  /** Next query start (agent clock), null before the first decide is held. */
+  queryStartMs(): number | null {
+    return decideQueryStartMs(this.newestMs);
   }
 
   get size(): number {
@@ -875,21 +893,16 @@ export function jaegerTraceUrl(traceId: string, spanId: string): string {
 }
 
 /**
- * Query Jaeger for the agent.decide spans that started at or after `startMs`.
- * Throws on transport errors and on abort (the poller's per-request timeout) so
- * the caller can back off. Polled separately from the Loki view so a Loki outage
- * never hides the decide feed (and vice versa).
+ * Query Jaeger for the agent.decide spans that started at or after `startMs`
+ * (agent clock; null = Jaeger's default window). Throws on transport errors and
+ * on abort (the poller's per-request timeout) so the caller can back off. Polled
+ * separately from the Loki view so a Loki outage never hides the decide feed.
  */
-export async function fetchDecideFeed(startMs: number, signal?: AbortSignal): Promise<DecideFeed> {
-  const endUs = Date.now() * 1000;
-  const params = new URLSearchParams({
-    service: "agent",
-    operation: DECIDE_OPERATION,
-    start: String(Math.floor(startMs) * 1000),
-    end: String(endUs),
-    limit: String(DECIDE_TRACE_LIMIT),
-  });
-  const url = `${BASE_URL}/jaeger/api/traces?${params.toString()}`;
+export async function fetchDecideFeed(
+  startMs: number | null,
+  signal?: AbortSignal,
+): Promise<DecideFeed> {
+  const url = `${BASE_URL}/jaeger/api/traces?${decideQueryParams(startMs).toString()}`;
   const response = await fetch(url, { headers: { Accept: "application/json" }, signal });
   if (!response.ok) {
     throw new Error(`Jaeger query failed: ${response.status} ${response.statusText}`);
