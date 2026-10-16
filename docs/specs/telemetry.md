@@ -1,6 +1,6 @@
 # Telemetry
 
-> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 2d162b33 (2026-10-16).
+> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 354f36c5 (2026-10-16, includes PRs #1257, #1259, #1261).
 > Telemetry is the agent's only view of the game (C-001), so span names, attribute keys, metric names and the
 > log lines below are a **contract**: the agent, the dashboard SPA, Grafana, alerts and integration tests match
 > on them. Change a name here first.
@@ -97,7 +97,7 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 | Span | Kind / parent | Source |
 |---|---|---|
 | `agent.signal_received` | SERVER; remote child of the game's `gameplay_phase` (fallback: game root, else own root); attrs `otlp.signal`, `game.id`, `game.trace_id` | `services/agent/decision/decision.go:585-620`; constant `decision/telemetry.go:34` |
-| `agent.decide` | rules path: sibling of `agent.decision` under `agent.signal_received`; remote path: remote child of `gameplay_phase`, Link `link.kind=fire_cycle`, parent of `chat {model}` and `agent.decision` | `decision/decide_hook.go:44-127,620-704` |
+| `agent.decide` | rules path: sibling of `agent.decision` under `agent.signal_received`; remote path: remote child of `gameplay_phase`, Link `link.kind=fire_cycle`, parent of `chat {model}` and `agent.decision` | `decision/decide_hook.go:44-127,622-706` |
 | `agent.decision` → `agent.action` | Link to the game trace; event `feature_flag` | `decision/decision.go:677-699` |
 | `agent.disabled` | throttled kill-switch audit | `decision/decision.go:796` |
 | `agent.intervention.effect` | child of the decision span context | `decision/effect.go:312-331` |
@@ -129,6 +129,7 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 | Span | `gen_ai.*` usage |
 |---|---|
 | `chat {model}` (decide) | `gen_ai.operation.name=chat`, `gen_ai.provider.name` (`anthropic`; openai-compatible: derived from the base URL host; `jev`), `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.output.type=json`, `gen_ai.request.temperature`, `gen_ai.request.reasoning.level`, `gen_ai.response.id` / `.model` / `.finish_reasons`, `gen_ai.usage.input_tokens` / `.output_tokens` / cache / reasoning tokens, `error.type` |
+| `chat {model}` (jev) | `gen_ai.provider.name=jev`, request / response model, usage tokens, `gen_ai.response.id` from the `x-typesafe-request-id` header, plus `jev.native_confidence` (JSON map of Jev's native confidences) (PR #1261) |
 | `chat {model}` (retro / proposer) | same minus `gen_ai.output.type`; no content capture; no client metrics |
 | `agent.decide` | `gen_ai.agent.name=joustmania-agent`, `gen_ai.conversation.id=<game id>`, `gen_ai.request.model`; event `gen_ai.evaluation.result` (`gen_ai.evaluation.name=act_confidence_threshold`, score value, label `pass` / `fail`, explanation). No `gen_ai.operation.name` (semconv suggests `invoke_agent`). |
 | `agent.llm.retro` | `gen_ai.operation.name=chat`, `gen_ai.request.model` |
