@@ -3,11 +3,12 @@
 > AIUP stage 2 of 5: [vision](vision.md) → **requirements** → [entity model](entity_model.md) →
 > [use cases](use_cases.puml) → [technical specs](specs/). Index: [docs/README.md](README.md).
 >
-> State: `main` @ 7d25ade4 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1266, #1282, #1284). **Status** follows the AIUP reference: `Open` (not built),
+> State: `main` @ 551d5b9d (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1266, #1282, #1284, #1286). **Status** follows the AIUP reference: `Open` (not built),
 > `In Progress` (open PR), `Implemented` (on `main`), `Verified` (for an FR: every use case that lists it
 > under `Requirements:` is `Tested`, i.e. has tagged tests; otherwise an FR is at most `Implemented`, and the Notes
-> column records untagged tests as "tests exist: …; untagged"), `Deferred`, `Rejected`. NFRs are exempt from this
-> derivation and from the weakest-requirement rule: an NFR's status reflects its own measurement or test. Planned items carry their issue / PR number.
+> column records untagged tests as "tests exist: …; untagged"), `Deferred`, `Rejected`. NFRs and constraints are exempt
+> from this derivation and from the weakest-requirement rule: an NFR's status reflects its own measurement or test,
+> a constraint's is verified by review and the technical specs; only FRs derive their status from their use cases. Planned items carry their issue / PR number.
 > Measured values cite their source; numbers taken from code cite the file. Some NFRs deliberately pin **code constants**
 > (rates, defaults) so that changing one is a visible spec change; NFRs whose target is not agreed yet say
 > "Target TBD (to measure)". The **Notes** column holds context; the Status column holds exactly one AIUP status.
@@ -169,7 +170,7 @@
 
 | ID | Title | Constraint | Category | Priority | Status | Notes |
 |---|---|---|---|---|---|---|
-| C-001 | OTel only | The agent observes the game only through OpenTelemetry spans and metrics; it never reads game code or game state through other channels ([NORTHSTAR.md](NORTHSTAR.md)), except the shadow-game driver's own `StreamGameEvents` stream and `ListGames`, used for controller hygiene (C-005; `services/agent/gamerunner/operations.go`, `services/agent/gamerunner/sweep.go`). | Technical | High | Implemented |  |
+| C-001 | OTel only | The agent observes the game only through OpenTelemetry spans and metrics; it never reads game code or game state through other channels ([NORTHSTAR.md](NORTHSTAR.md)), except `StreamGameEvents` (lifecycle of the agent's own shadow games) and `ListGames` / `ListMockControllers` (controller hygiene) (C-005; `services/agent/gamerunner/operations.go`, `services/agent/gamerunner/sweep.go`). | Technical | High | Implemented |  |
 | C-002 | Flags only | Every change the agent makes to the game, and every human setting, is an OpenFeature flag change (flagd JSON files). | Technical | High | Implemented |  |
 | C-003 | Shadow gate | Persistent (tier 2) changes reach real players only after shadow validation; tier 1 interventions apply directly because they are scoped, observable and reversible. | Technical | High | Implemented | FR-062 enforces variant isolation; FR-069 per-game scoping open |
 | C-004 | Degrade, never stall | Hosted inference may be used; when it is slow or unreachable the rules engine decides and the game keeps playing. | Technical | High | Implemented |  |

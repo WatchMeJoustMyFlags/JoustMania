@@ -42,8 +42,9 @@ The agent observes only through OTel, but it may *write* code proposals at tier 
 These are what make this a northstar rather than a feature list:
 
 - **OTel only.** The agent's view of the game is spans and metrics, nothing else,
-  except the shadow-game driver's own `StreamGameEvents` stream and `ListGames`
-  used for controller hygiene (the named exceptions under "No control plane" below).
+  except `StreamGameEvents` (lifecycle of the agent's own shadow games) and
+  `ListGames` / `ListMockControllers` (controller hygiene), the named exceptions
+  under "No control plane" below.
 - **Flags only.** Every change the agent makes to the game is an OpenFeature
   flag change.
 - **Shadow gate always for persistent changes.** Tier 2 changes never reach

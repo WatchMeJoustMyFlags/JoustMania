@@ -1011,7 +1011,13 @@ func (e *experimentLoop) recordFinalizedRealFitness(gc gamecontext.GameContext, 
 	// labeled real may seed the recent-real baseline. An agent-spawned shadow game
 	// never reaches here (it carries an ExperimentID), but a defensively-labeled
 	// shadow game with no ExperimentID must not pollute the real baseline.
-	if normalizedGameKind(gc) != experiment.GameKindReal {
+	if kind := normalizedGameKind(gc); kind != experiment.GameKindReal {
+		// An empty or unknown kind is dropped too (FR-041, fail closed). Log it so an
+		// empty recent-real baseline is diagnosable (unlabeled real games).
+		if kind != gamecontext.GameKindShadow && e.log != nil {
+			e.log.Debug("experiment: game skipped for the real baseline: game_kind empty or unknown",
+				"game_id", gc.SessionID, "game_kind", kind)
+		}
 		return
 	}
 	eval := decision.EvaluateFitness(gc, decision.DefaultStaticConfig().FitnessThresholds)

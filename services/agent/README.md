@@ -947,11 +947,14 @@ All configuration is via environment variables:
 > agent writes three flagd files: `interventions.json` (in-game interventions,
 > `actions/writer.go`), `rollout.json` (`current_controller_count`,
 > `actions/rollout_writer.go`) and `game.json` (shadow-scoped experiment targeting via
-> `experiment.Writer`, plus the real default on gated autonomous promotion). It never
-> writes `agent.json`; that is guarded in code (hardcoded writer paths and the
-> `agent.json` path / symlink rejection in `experiment/gate.go`), not by the mount:
-> the agent bind-mounts `./services/flagd:/etc/flagd` read-write (`docker-compose.yml`)
-> and there is no `:ro` mount.
+> `experiment.Writer`, plus the real default on gated autonomous promotion). It must
+> never write `agent.json`. The guards are in code, not in the mount: experiment
+> writes are pinned to a `game.json` basename by `experiment/gate.go` (basename,
+> path-component and symlink-target checks); the autonomous promotion writes the file
+> named by `AGENT_REAL_DEFAULT_FLAG_PATH` (operator-set, currently unchecked, tracked
+> in #1293); the intervention and rollout writers use fixed paths. The agent
+> bind-mounts `./services/flagd:/etc/flagd` read-write (`docker-compose.yml`) and
+> there is no `:ro` mount.
 >
 > **Stays env (NOT migrated):** `AGENT_EXPERIMENT_DIR` (filesystem concern), the
 > one-shot `AGENT_EXPERIMENT_SEED_*` (startup seed), and the two **list-valued**

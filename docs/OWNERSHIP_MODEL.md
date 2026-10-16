@@ -93,12 +93,13 @@ agent policy; the agent cannot persist its own governor (§1, §6.2).
 > **code discipline, not a container-mount restriction.** The agent bind-mounts
 > the whole flag directory `./services/flagd:/etc/flagd` **read-write** (it
 > legitimately writes `interventions.json`, `rollout.json` and `game.json`),
-> so the filesystem does *not* protect `agent.json`. Two code-level guards do: (1)
-> the agent's experiment `Writer` is constructed with **hardcoded target paths**
-> that never point at `agent.json`, and (2)
-> [`services/agent/experiment/gate.go`](../services/agent/experiment/gate.go) **rejects any
-> intent whose resolved path is `agent.json`** (path-component + symlink-target
-> checks) before any write syscall. A per-file `agent.json` `:ro` mount on top of
+> so the filesystem does *not* protect `agent.json`. The code guards are narrower
+> than a blanket ban: experiment writes are pinned to a `game.json` basename by
+> [`services/agent/experiment/gate.go`](../services/agent/experiment/gate.go)
+> (basename, path-component and symlink-target checks before any write syscall);
+> the autonomous promotion writes the file named by `AGENT_REAL_DEFAULT_FLAG_PATH`
+> (operator-set, currently unchecked, tracked in #1293); the intervention and
+> rollout writers use fixed paths. A per-file `agent.json` `:ro` mount on top of
 > the RW dir would be a sound defense-in-depth addition, but is not what the
 > guarantee currently rests on.
 

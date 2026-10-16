@@ -93,7 +93,8 @@ are where docs drifted from code in the past.
    docstring, test name or comment), e.g. `# UC-040 A2: remote timeout → rules`.
    Existing tests are not retrofitted.
 4. **Close the loop.** When the code ships, move the status forward
-   (`Open` → `Implemented` → `Verified` once an automated test covers it) and
+   (`Open` → `Implemented` → `Verified`, where an FR is `Verified` only when every use case that lists it
+   under `Requirements:` is `Tested`; see [Status vocabularies](#status-vocabularies)) and
    update the "Traceability" line of the technical spec section with the code
    path and test. In a same-PR spec change, set the post-merge status
    (`Implemented` / `Verified`) directly; do not leave `In Progress` for a
@@ -118,11 +119,12 @@ Requirements use the AIUP requirement statuses (`Open`, `In Progress`, `Implemen
 `Deferred`, `Rejected`); use cases use the use-case statuses, which map as follows: `Draft` / `Review` /
 `Approved` = requirement `Open` or `In Progress`, `Implemented` = `Implemented`, `Tested` / `Done` =
 `Verified`, `Obsolete` = `Rejected`. UC `Tested` = every main-scenario and alternative-flow step has a
-tagged test (see /coverage-check). A use case's status is never above the weakest FR on its
+tagged test (see the `/coverage-check` skill, added by #1289). A use case's status is never above the weakest FR on its
 `Requirements:` line; FRs that only a planned flow needs go on a separate `Planned:` line with their
 issue number, so the use case can be `Implemented` while they stay `Open`. Conversely, an FR's status is
 derived from its use cases: it is `Verified` only when every use case that lists it under `Requirements:` is
-`Tested`, otherwise at most `Implemented`. NFRs are exempt from both rules; they are measured separately.
+`Tested`, otherwise at most `Implemented`. NFRs and constraints are exempt from both rules: NFRs are measured separately, constraints are verified by
+review and the technical specs; only FRs derive their status from their use cases.
 
 ### Identifiers in use cases (documented deviation)
 
