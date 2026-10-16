@@ -69,6 +69,8 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 
 ### 3.2 game-coordinator
 
+Flag-provider readiness at game admission (#1329, UC-010 A5 / BR-004): the game root span carries `feature_flag.providers_wait_ms`, the time spent waiting for the coordinator's NOT_READY flag providers (`system`, `controller`, `game`, `agent`, `user`, `interventions`; STALE / ERROR are not waited on) to be READY before the game was created. When that bounded wait (5 s) runs out, the root span gets the event `feature_flag.providers_not_ready` (attrs `feature_flag.domains`, the domains still not READY; `feature_flag.wait_seconds`; `feature_flag.fallback` = `code_defaults`). Flag reads of those domains then fall back to code defaults and show as `ProviderNotReadyError` exceptions on the span where they were read.
+
 | Span | Notes | Source |
 |---|---|---|
 | `<mode display name>` (e.g. `Joust Free-for-All`, `Non Stop Joust`) | **game root**, own trace (#1157); child of `agent.experiment` for experiment shadow games (#1182); attrs `game.name`, `game.id`, `game.kind`, `experiment.id`, `experiment.arm`, `player.count`; at game end `game.outcome` (`winner`, `tie`, `force_ended`; `completed` for modes that do not classify their natural end yet), `game.end_reason` (the force-end reason, only for `force_ended`), `game.winner` (serial, only for `winner`); latched when the game loop ends, so a later force-end does not rewrite it; recorded by every mode, including the `run()` overrides (Fight Club, Werewolf, Zombies, Tournament) (#1328, UC-020 BR-003) | `game_session.py:319-380` |

@@ -185,10 +185,44 @@ def init_flag_domain(domain: str) -> None:
         logger.error(f"Failed to initialize domain '{domain}': {e}")
 
 
+# One OpenFeature client per domain for readiness waits: the SDK keys client
+# handlers by client object, so a fresh client per wait would leave one
+# ``_client_handlers`` entry behind for every wait (#1329).
+_readiness_clients: dict = {}
+
+
+def _readiness_client(domain: str):
+    client = _readiness_clients.get(domain)
+    if client is None:
+        client = api.get_client(domain=domain)
+        _readiness_clients[domain] = client
+    return client
+
+
+def provider_status(domain: str):
+    """The OpenFeature ProviderStatus of a domain's provider (#1329).
+
+    Goes through the domain's client: ``api.provider_registry.get_provider_status``
+    takes a provider OBJECT and returns NOT_READY for anything it does not know,
+    so passing it a domain string always read NOT_READY.
+    """
+    return _readiness_client(domain).get_provider_status()
+
+
 async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) -> bool:
     """Wait for a domain's provider to reach READY status.
 
-    Uses an asyncio.Event triggered by the PROVIDER_READY handler.
+    Uses an asyncio.Event set by the PROVIDER_READY handler. The SDK runs that
+    handler on whichever thread emits the event: the background thread that
+    ``api.set_provider`` starts to initialize the provider (first READY), or the
+    flagd connector's watcher thread (READY again after a reconnect). When the
+    provider is already READY as the handler is added, ``add_handler`` runs it at
+    once on the calling thread. None of these is guaranteed to be the waiting
+    coroutine's event-loop thread, and asyncio.Event is not thread-safe, so the
+    handler wakes the waiter through ``loop.call_soon_threadsafe`` (#1329, #1250).
+    The handler is removed once the wait ends, so repeated waits do not pile up
+    handlers.
+
     Returns True if ready within deadline, False otherwise.
 
     Args:
@@ -196,21 +230,25 @@ async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) ->
         deadline_seconds: Maximum seconds to wait (default 5.0)
     """
     import asyncio
+    import contextlib
 
     from openfeature.provider import ProviderEvent, ProviderStatus
 
     # Already ready?
-    status = api.provider_registry.get_provider_status(domain)
-    if status == ProviderStatus.READY:
+    if provider_status(domain) == ProviderStatus.READY:
         logger.debug(f"Domain '{domain}' provider already READY")
         return True
 
+    loop = asyncio.get_running_loop()
     ready_event = asyncio.Event()
 
     def _on_ready(_event_details):
-        ready_event.set()
+        # RuntimeError: the waiting loop is already closed (the waiter gave up and
+        # its loop ended), so there is nothing left to wake.
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(ready_event.set)
 
-    client = api.get_client(domain=domain)
+    client = _readiness_client(domain)
     client.add_handler(ProviderEvent.PROVIDER_READY, _on_ready)
 
     try:
@@ -221,6 +259,8 @@ async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) ->
     except TimeoutError:
         logger.warning(f"Domain '{domain}' provider not ready after {deadline_seconds}s")
         return False
+    finally:
+        client.remove_handler(ProviderEvent.PROVIDER_READY, _on_ready)
 
 
 def get_flag_client(domain: str):
