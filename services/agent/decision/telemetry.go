@@ -221,6 +221,10 @@ const (
 	DefaultInference = "none"
 	// FallbackNoBackend is inference.fallback_reason on a capture-only retro span.
 	FallbackNoBackend = "no_backend_available"
+	// FallbackAgentDisabled is inference.fallback_reason on a capture-only retro
+	// span when the agent `enabled` kill switch is off at game end (#1270): a text
+	// backend is wired, but "agent off" means no model call and no budget slot.
+	FallbackAgentDisabled = "agent_disabled"
 	// LLM call-gate reasons (#847), on agent_llm_gated_total and as the remote
 	// decide path's decide.fallback_reason:
 	//

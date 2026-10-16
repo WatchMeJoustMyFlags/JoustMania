@@ -101,13 +101,13 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 | `agent.decision` → `agent.action` | Link to the game trace; event `feature_flag` | `decision/decision.go:677-699` |
 | `agent.disabled` | throttled kill-switch audit | `decision/decision.go:796` |
 | `agent.intervention.effect` | child of the decision span context | `decision/effect.go:312-331` |
-| `agent.llm.retro` | own root, or child of `agent.experiment`; Link to the game; event `retro.suggestion` | `decision/retro_capture.go:469` |
+| `agent.llm.retro` | own root, or child of `agent.experiment`; Link to the game; event `retro.suggestion`. Capture-only spans carry `inference.used=none` and `inference.fallback_reason` = `no_backend_available` / `llm_not_eligible` / `agent_disabled` (kill switch off, #1270) | `decision/retro_capture.go` |
 | `agent.game.summary` | own root or child of `agent.experiment` | `gamesummary/coordinator.go:195` |
 | `agent.experiment` | long-lived **root**; its traceparent is injected into shadow-game spawns | `experiment/registry.go:657` |
 | `experiment.fitness`, `experiment.evaluate`, `experiment.verdict` | children of `agent.experiment` | `experiment_loop.go:869-967` |
 | `agent.infrastructure.decision` | per active infra cycle | `decision/infra_loop.go:478` |
 | `agent.shadow_game.run` | legacy single shadow game | `gamerunner/runner.go:335` |
-| `code_improvement.proposed`, `code_improvement.propose_attempt`, `code_improvement.synthetic_validation`, `code_improvement.apply` / `.discard`, `code_improvement.promote` | proposal, validation, promotion | `experiment/gate.go:117`, `experiment/proposer.go:220`, `experiment/validate.go:309-419`, `promote/promote.go:424` |
+| `code_improvement.proposed`, `code_improvement.propose_attempt`, `code_improvement.synthetic_validation`, `code_improvement.apply` / `.discard`, `code_improvement.promote` | proposal, validation, promotion. `propose_attempt` carries `code_improvement.outcome` = `proposed` / `no_backend` / `undecodable` / `blocked` / `disabled` (+ `code_improvement.reason` when the kill switch flipped during the model call, #1270); `gated`, `llm_gated` and a `disabled` cycle before the call emit no span | `experiment/gate.go:117`, `experiment/proposer.go`, `experiment/validate.go:309-419`, `promote/promote.go:424` |
 | `chat {model}` | CLIENT; decide backends (claude, openai, jev) and the retro / proposer backend | `decide/backends/*/`, `inference/claude.go:182` |
 
 ```text
@@ -195,7 +195,7 @@ argument). 150 unique Python names; the main ones per service:
 | menu | `menu_player_ready`, `menu_idle_mode_active`, `menu_stream_connections_active` (G); `menu_button_presses_total`, `menu_ghost_controllers_pruned_total`, `menu_force_start_reconcile_failed_total`, `menu_button_event_errors_total{event_type}` (C) | `services/menu/metrics.py` |
 | audio | `audio_sounds_played_total{result}`, `audio_playback_errors_total`, `audio_channel_saturation_total` (C); `audio_channels_active`, `audio_music_playing`, `audio_music_tempo` (G) | `services/audio/metrics.py` |
 | pairing-daemon | `psmove_pairing_attempts_total` / `_success_total` / `_failed_total` (C); `bluetooth_device_rssi_dbm{serial,hci_adapter}`, `bluetooth_device_connected`, `bluetooth_adapter_connections` (G); `psmove_pairing_duration_seconds` (H) | `services/pairing_daemon/psmove_pairing/metrics.py` |
-| agent | `agent_llm_gated_total{reason}`, `agent_evaluations_total{signal,outcome}`, `agent_decisions_total{action,blocked,block_reason}`, `agent_interventions_applied_total{action}`, `agent_intervention_writes_total{result}`, `agent_intervention_file_corruption_total{phase}` (C); `agent_intervention_effect_delta` (H); `gen_ai.client.operation.duration`, `gen_ai.client.token.usage` (H) | `services/agent/decision/metrics.go`, `actions/writer.go:199-227`, `decide/backends/claude/metrics.go` |
+| agent | `agent_llm_gated_total{reason}` (decide path, retro and, since #1270, the experiment proposer), `agent_evaluations_total{signal,outcome}`, `agent_decisions_total{action,blocked,block_reason}`, `agent_interventions_applied_total{action}`, `agent_intervention_writes_total{result}`, `agent_intervention_file_corruption_total{phase}` (C); `agent_intervention_effect_delta` (H); `gen_ai.client.operation.duration`, `gen_ai.client.token.usage` (H) | `services/agent/decision/metrics.go`, `actions/writer.go:199-227`, `decide/backends/claude/metrics.go` |
 
 ### 6.1 Consumers
 

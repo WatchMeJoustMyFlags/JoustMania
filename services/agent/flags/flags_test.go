@@ -802,3 +802,35 @@ func TestSafetyGateDefaultsAreFailClosed(t *testing.T) {
 		t.Error("DefaultRolloutEnabled must be false (fail-closed)")
 	}
 }
+
+// TestProposerGateAccessors covers the narrow #1270 reads the post-game proposer
+// makes at each game end: `enabled` fails CLOSED on a flagd error, and
+// `experiments_enabled` falls back to the caller's env-derived default (the same
+// fallback the experiment loop uses).
+func TestProposerGateAccessors(t *testing.T) {
+	down := errors.New("flagd unreachable")
+	t.Run("flags on", func(t *testing.T) {
+		f := New(stubEvaluator{booleans: map[string]bool{keyEnabled: true, keyExperimentsEnabled: true}}, nil)
+		if !f.AgentEnabled(context.Background()) || !f.ExperimentsEnabled(context.Background(), false) {
+			t.Fatal("want both gates on")
+		}
+	})
+	t.Run("flags off", func(t *testing.T) {
+		f := New(stubEvaluator{booleans: map[string]bool{keyEnabled: false, keyExperimentsEnabled: false}}, nil)
+		if f.AgentEnabled(context.Background()) || f.ExperimentsEnabled(context.Background(), true) {
+			t.Fatal("want both gates off (flag value beats the env default)")
+		}
+	})
+	t.Run("flagd down", func(t *testing.T) {
+		f := New(stubEvaluator{errs: map[string]error{keyEnabled: down, keyExperimentsEnabled: down}}, nil)
+		if f.AgentEnabled(context.Background()) {
+			t.Fatal("SAFETY: kill switch must fail closed when flagd is unreachable")
+		}
+		if f.ExperimentsEnabled(context.Background(), false) {
+			t.Fatal("experiments_enabled must fall back to the env default (false)")
+		}
+		if !f.ExperimentsEnabled(context.Background(), true) {
+			t.Fatal("experiments_enabled must fall back to the env default (true)")
+		}
+	})
+}

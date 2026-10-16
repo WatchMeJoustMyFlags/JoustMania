@@ -361,9 +361,12 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	// gate below reads the live llm.max_requests_per_minute.
 	snapshot := rc.Flags.Evaluate(context.Background())
 
-	// Model-call gate (#847, #1234). Only a retro that will actually call the text
-	// backend counts as an LLM request:
+	// Model-call gate (#847, #1234, #1270). Only a retro that will actually call the
+	// text backend counts as an LLM request:
 	//   - no backend (the stub default): capture-only, no budget slot charged;
+	//   - the `enabled` kill switch is off (read here, at use time; Evaluate fails
+	//     closed when flagd is unreachable): capture-only with fallback
+	//     agent_disabled, no call, no budget slot — "agent off" stops paid calls too;
 	//   - game kind not in llm.eligible_game_kinds (default real, so shadow games):
 	//     capture-only with fallback llm_not_eligible, no call, no budget slot — so
 	//     shadow-game retros can never starve real-game remote decide calls of the
@@ -373,12 +376,18 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	//     When it is exhausted the retro is GATED: record the gated metric and
 	//     capture nothing (no prompt build, no span). A nil budget (tests / unshared
 	//     wiring) skips this check.
-	eligible := snapshot.LLMGate.EligibleFor(c.GameKind)
-	if rc.backend != nil && !eligible {
-		rc.llmGated.Add(context.Background(), 1,
-			otelmetric.WithAttributes(attribute.String("reason", FallbackNotEligible)))
+	skipReason := ""
+	if rc.backend != nil {
+		switch {
+		case !snapshot.Enabled:
+			skipReason = FallbackAgentDisabled
+		case !snapshot.LLMGate.EligibleFor(c.GameKind):
+			skipReason = FallbackNotEligible
+			rc.llmGated.Add(context.Background(), 1,
+				otelmetric.WithAttributes(attribute.String("reason", FallbackNotEligible)))
+		}
 	}
-	callBackend := rc.backend != nil && eligible
+	callBackend := rc.backend != nil && skipReason == ""
 	if callBackend && rc.budget != nil && !rc.budget.allow(now(), rc.budgetCap(snapshot.LLMGate.MaxRequestsPerMinute)) {
 		rc.llmGated.Add(context.Background(), 1,
 			otelmetric.WithAttributes(attribute.String("reason", FallbackBudgetExhausted)))
@@ -414,7 +423,7 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 
 	// Inference attribution (#1234): the wired backend's model and name, or
 	// used=none / no_backend_available when the retro is capture-only.
-	attr := rc.retroInference(callBackend)
+	attr := rc.retroInference(callBackend, skipReason)
 	prompt.Model = attr.configured
 
 	// #1168: the retro span carries only the System-prompt fingerprint; emit the full
@@ -654,20 +663,22 @@ type retroAttribution struct {
 // retroInference computes the retro span/log inference attribution (#1234):
 //   - no backend wired (the stub default): configured="", used="none"
 //     (DefaultInference: a retro has no rules fallback), fallback=no_backend_available;
-//   - backend wired but the game kind is not eligible: configured=its model,
-//     used="none", fallback=llm_not_eligible;
+//   - backend wired but not called (the kill switch is off, or the game kind is not
+//     eligible): configured=its model, used="none", fallback=skipReason
+//     (agent_disabled / llm_not_eligible);
 //   - backend wired and called: configured=its model, used=its name, fallback="".
-func (rc *RetroCoordinator) retroInference(callBackend bool) retroAttribution {
+func (rc *RetroCoordinator) retroInference(callBackend bool, skipReason string) retroAttribution {
 	if rc.backend == nil {
 		return retroAttribution{used: DefaultInference, fallback: FallbackNoBackend}
 	}
 	if !callBackend {
-		// A backend is wired but this game kind is not eligible (shadow games by
-		// default): capture-only, attributed to the model that would have served.
+		// A backend is wired but not called (kill switch off, or a game kind not
+		// eligible — shadow games by default): capture-only, attributed to the model
+		// that would have served.
 		return retroAttribution{
 			configured: rc.backend.Model(),
 			used:       DefaultInference,
-			fallback:   FallbackNotEligible,
+			fallback:   skipReason,
 		}
 	}
 	return retroAttribution{
