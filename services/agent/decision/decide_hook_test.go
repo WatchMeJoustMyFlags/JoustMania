@@ -1,0 +1,717 @@
+package decision
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	"github.com/joustmania/agent/decide"
+	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/gamecontext"
+)
+
+// decide_hook_test.go covers the #1226 wiring: the default rules path stays
+// byte-identical while gaining an agent.decide span, and decision.backend != rules
+// hands the decision to a (fake) remote decide.Backend on the async path.
+
+// ---- characterization: one ranking, unchanged decisions ----
+
+// evaluateOnly hides EvaluateDecide so the loop takes the pre-#1226 plain
+// Evaluate path: the reference the hooked path must match.
+type evaluateOnly struct{ r *ObjectiveRules }
+
+func (e evaluateOnly) Evaluate(ctx context.Context, c gamecontext.GameContext) []Decision {
+	return e.r.Evaluate(ctx, c)
+}
+
+// TestEvaluateDecide_MatchesEvaluate pins that EvaluateDecide returns exactly
+// Evaluate's decisions (including the seeded R9 chaos picks and the evalInterval
+// throttle) and leaves the RNG in the same state: one draw per evaluation.
+func TestEvaluateDecide_MatchesEvaluate(t *testing.T) {
+	for _, fx := range decideFixtures() {
+		t.Run(fx.name, func(t *testing.T) {
+			clockA, clockB := time.Unix(10_000, 0), time.Unix(10_000, 0)
+			a := newTestEngine(fx.cfg, &clockA)
+			b := newTestEngine(fx.cfg, &clockB)
+			for step := 0; step < 6; step++ {
+				want := a.Evaluate(context.Background(), fx.ctx)
+				got, req, resp, ranked := b.EvaluateDecide(context.Background(), fx.ctx, func() decide.Request {
+					return ffaRequest(fx.ctx, allInterventions())
+				})
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("step %d: EvaluateDecide decisions = %+v, Evaluate = %+v", step, got, want)
+				}
+				if ranked {
+					if err := decide.Validate(req, resp); err != nil {
+						t.Fatalf("step %d: answers do not validate: %v", step, err)
+					}
+					iv, _ := resp.Find(decide.QuestionFFAIntervention)
+					if len(want) > 0 && iv.Choice != want[0].Intervention {
+						t.Errorf("step %d: answer %q, first decision %q: not from the same ranking", step, iv.Choice, want[0].Intervention)
+					}
+				}
+				// Half the steps land inside evalInterval (throttled, no ranking).
+				d := 600 * time.Millisecond
+				advance(&clockA, d)
+				advance(&clockB, d)
+			}
+			if a.rng.Float64() != b.rng.Float64() {
+				t.Fatal("RNG diverged: EvaluateDecide drew a different number of chaos rolls than Evaluate")
+			}
+		})
+	}
+}
+
+// capturingSink records the decisions the loop applied.
+type capturingSink struct {
+	mu  sync.Mutex
+	got []Decision
+}
+
+func (s *capturingSink) Apply(_ context.Context, d Decision) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.got = append(s.got, d)
+	return nil
+}
+
+func (s *capturingSink) decisions() []Decision {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Decision(nil), s.got...)
+}
+
+func decideRecordingLoop(t *testing.T, snap flags.Snapshot) (*Loop, *tracetest.SpanRecorder) {
+	t.Helper()
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	l := NewLoop(&settableFlags{snap: snap}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	l.Tracer = tp.Tracer("test")
+	return l, sr
+}
+
+func rulesSnapshot() flags.Snapshot {
+	return flags.Snapshot{
+		Enabled:              true,
+		Mode:                 "rules",
+		InterventionsAllowed: allInterventions(),
+		Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
+		Decision: flags.DecisionBackend{
+			Backend:                flags.DecisionBackendRules,
+			ActConfidenceThreshold: flags.DefaultDecisionActConfidenceThreshold,
+		},
+	}
+}
+
+// TestDefaultRulesPath_ByteIdentical drives two loops with identically seeded
+// engines through the same contexts: one via the plain Evaluate path (the pre-#1226
+// behavior), one via the decide hook. Applied decisions and outcomes must match.
+func TestDefaultRulesPath_ByteIdentical(t *testing.T) {
+	totalDecided := 0
+	t.Cleanup(func() {
+		if totalDecided == 0 {
+			t.Error("no fixture produced a decision: the comparison is vacuous")
+		}
+	})
+	for _, fx := range decideFixtures() {
+		t.Run(fx.name, func(t *testing.T) {
+			clockA, clockB := time.Unix(10_000, 0), time.Unix(10_000, 0)
+			ref, _ := decideRecordingLoop(t, rulesSnapshot())
+			hooked, sr := decideRecordingLoop(t, rulesSnapshot())
+			ref.Rules = evaluateOnly{newTestEngine(fx.cfg, &clockA)}
+			hooked.Rules = newTestEngine(fx.cfg, &clockB)
+			refSink, hookedSink := &capturingSink{}, &capturingSink{}
+			ref.Actions, hooked.Actions = refSink, hookedSink
+
+			decided := 0
+			for step := 0; step < 6; step++ {
+				sa := ref.OnEvaluate(context.Background(), fx.ctx, testTrigger())
+				sb := hooked.OnEvaluate(context.Background(), fx.ctx, testTrigger())
+				if !reflect.DeepEqual(sa.Outcomes, sb.Outcomes) {
+					t.Fatalf("step %d: outcomes differ: %+v vs %+v", step, sa.Outcomes, sb.Outcomes)
+				}
+				if len(sb.Outcomes) > 0 {
+					decided++
+				}
+				advance(&clockA, 600*time.Millisecond)
+				advance(&clockB, 600*time.Millisecond)
+			}
+			if !reflect.DeepEqual(refSink.decisions(), hookedSink.decisions()) {
+				t.Fatalf("applied decisions differ:\nref    %+v\nhooked %+v", refSink.decisions(), hookedSink.decisions())
+			}
+			totalDecided += decided
+			if n := len(spansByName(sr.Ended(), SpanDecide)); n != decided {
+				t.Fatalf("agent.decide spans = %d, want one per decided cycle (%d)", n, decided)
+			}
+		})
+	}
+}
+
+func strAttr(t *testing.T, span sdktrace.ReadOnlySpan, key string) string {
+	t.Helper()
+	v, ok := attrValue(span, key)
+	if !ok {
+		t.Fatalf("%s: attribute %s missing", span.Name(), key)
+	}
+	return v.AsString()
+}
+
+func TestDefaultRulesPath_DecideSpan(t *testing.T) {
+	fx := decideFixtures()[0] // endurance: rules decide on the first evaluation
+	fx.ctx.GameKind = "real"
+	clock := time.Unix(10_000, 0)
+	l, sr := decideRecordingLoop(t, rulesSnapshot())
+	l.Rules = newTestEngine(fx.cfg, &clock)
+	l.OnEvaluate(context.Background(), fx.ctx, testTrigger())
+
+	spans := sr.Ended()
+	ds := spansByName(spans, SpanDecide)
+	if len(ds) != 1 {
+		t.Fatalf("agent.decide spans = %d, want 1", len(ds))
+	}
+	span := ds[0]
+	roots := spansByName(spans, SignalReceived)
+	if len(roots) != 1 || span.Parent().SpanID() != roots[0].SpanContext().SpanID() {
+		t.Fatal("agent.decide must be a child of agent.signal_received on the rules path")
+	}
+	for key, want := range map[string]string{
+		AttrDecideBackend:          "rules",
+		AttrDecideBackendRequested: "rules",
+		AttrDecideFallbackReason:   "",
+		AttrDecideOutcome:          DecideOutcomeAct,
+		"gen_ai.agent.name":        AgentName,
+		"gen_ai.conversation.id":   "s-1",
+		AttrGameID:                 "s-1",
+		AttrGameKind:               "real",
+	} {
+		if got := strAttr(t, span, key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+	if d := strAttr(t, span, AttrDecideStateDigest); len(d) != 64 {
+		t.Errorf("digest = %q, want sha256 hex", d)
+	}
+	var qs []map[string]any
+	if err := json.Unmarshal([]byte(strAttr(t, span, AttrDecideQuestions)), &qs); err != nil || len(qs) != 3 {
+		t.Fatalf("decide.questions not the 3 FFA questions as JSON: %v %v", qs, err)
+	}
+	var as []decide.Answer
+	if err := json.Unmarshal([]byte(strAttr(t, span, AttrDecideAnswers)), &as); err != nil || len(as) != 3 {
+		t.Fatalf("decide.answers not 3 answers as JSON: %v", err)
+	}
+	if as[0].Choice != InterventionAdjustMusicTempo {
+		t.Errorf("rules answer = %q, want the top-ranked adjust_music_tempo", as[0].Choice)
+	}
+	for _, key := range []string{AttrDecideConfidence, AttrDecideConfidenceMin, AttrDecideLatencyMs, AttrDecideActThreshold} {
+		if _, ok := attrValue(span, key); !ok {
+			t.Errorf("attribute %s missing", key)
+		}
+	}
+	if len(span.Events()) != 0 {
+		t.Error("rules path does not route by confidence: no gen_ai.evaluation.result event")
+	}
+	dec := spansByName(spans, SpanDecision)
+	if len(dec) == 0 || strAttr(t, dec[0], AttrDecideBackend) != "rules" {
+		t.Error("agent.decision must carry decide.backend=rules")
+	}
+}
+
+// ---- remote path with a fake decide.Backend ----
+
+type fakeDecideBackend struct {
+	name      string
+	available bool
+	answer    func(req decide.Request) (decide.Response, error)
+	block     bool // wait for ctx cancellation (timeout) or release
+
+	mu      sync.Mutex
+	calls   int
+	reqs    []decide.Request
+	started chan struct{}
+	release chan struct{}
+}
+
+func newFakeDecideBackend(answer func(decide.Request) (decide.Response, error)) *fakeDecideBackend {
+	return &fakeDecideBackend{
+		name: "claude", available: true, answer: answer,
+		started: make(chan struct{}), release: make(chan struct{}),
+	}
+}
+
+func (b *fakeDecideBackend) Name() string    { return b.name }
+func (b *fakeDecideBackend) Available() bool { return b.available }
+
+func (b *fakeDecideBackend) Decide(ctx context.Context, req decide.Request) (decide.Response, error) {
+	b.mu.Lock()
+	b.calls++
+	b.reqs = append(b.reqs, req)
+	first := b.calls == 1
+	b.mu.Unlock()
+	if first {
+		close(b.started)
+	}
+	if b.block {
+		select {
+		case <-ctx.Done():
+			return decide.Response{}, ctx.Err()
+		case <-b.release:
+		}
+	}
+	return b.answer(req)
+}
+
+func (b *fakeDecideBackend) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
+// ffaAnswer builds a Validate-clean response: intervention with confidence conf,
+// target, normalized magnitude.
+func ffaAnswer(intervention string, conf float64, target string, magnitude float64, rationale string) func(decide.Request) (decide.Response, error) {
+	return func(decide.Request) (decide.Response, error) {
+		return decide.Response{
+			Backend:   "claude",
+			Rationale: rationale,
+			Answers: []decide.Answer{
+				{QuestionID: decide.QuestionFFAIntervention, Choice: intervention,
+					Probabilities: map[string]float64{intervention: 1}, Confidence: conf},
+				{QuestionID: decide.QuestionFFATarget, Choice: target,
+					Probabilities: map[string]float64{target: 1}, Confidence: conf},
+				{QuestionID: decide.QuestionFFAMagnitude, Score: magnitude, Confidence: conf},
+			},
+		}, nil
+	}
+}
+
+const remoteGameID = "s-1"
+
+// remoteContext is an active real game in which the rules engine decides
+// (endurance: adjust_music_tempo), so a fallback is observable.
+func remoteContext() gamecontext.GameContext {
+	c := gameCtx(20, []string{"GONE"}, map[string]testPlayer{"A": {active: true}, "B": {active: true}})
+	c.GameKind = "real"
+	return c
+}
+
+func remoteSnapshot(timeout time.Duration) flags.Snapshot {
+	s := rulesSnapshot()
+	s.Mode = "llm" // ignored while decision.backend != rules
+	s.Capability = flags.Capability{Model: "phi4-mini"}
+	s.InterventionsAllowed = []string{"noop", "grant_shield", "adjust_music_tempo", "play_audio_cue", "adjust_global_sensitivity"}
+	s.LLMGate = flags.LLMGate{EligibleGameKinds: []string{"real"}, MaxRequestsPerMinute: 100}
+	s.Decision = flags.DecisionBackend{
+		Backend:                flags.DecisionBackendClaude,
+		ActConfidenceThreshold: 0.8,
+		Claude:                 flags.RemoteBackendConfig{Model: "claude-haiku-4-5-20251001", Timeout: timeout},
+	}
+	return s
+}
+
+type remoteHarness struct {
+	loop     *Loop
+	sr       *tracetest.SpanRecorder
+	sink     *capturingSink
+	engine   *ObjectiveRules
+	provider *fakeContextProvider
+	clock    *time.Time
+}
+
+func newRemoteHarness(t *testing.T, snap flags.Snapshot, be decide.Backend) remoteHarness {
+	t.Helper()
+	l, sr := decideRecordingLoop(t, snap)
+	clock := time.Unix(10_000, 0)
+	engine := newTestEngine(DefaultStaticConfig(), &clock)
+	l.Rules = engine
+	sink := &capturingSink{}
+	l.Actions = sink
+	l.SetLLMBudget(NewLLMBudget())
+	provider := newFakeContextProvider()
+	provider.set(remoteGameID, remoteContext())
+	l.SetGameID(remoteGameID)
+	l.SetContextProvider(provider)
+	// Cancel the root at cleanup and join every background goroutine (the #918
+	// effect samplers scheduled for dispatched decisions), so nothing leaks into
+	// other tests' goleak checks.
+	root, cancel := context.WithCancel(context.Background())
+	l.SetRootContext(root)
+	t.Cleanup(func() {
+		cancel()
+		l.AwaitInflight()
+	})
+	reg := NewDecideRegistry()
+	if be != nil {
+		reg.Register(flags.DecisionBackendClaude, func(flags.DecisionBackend) decide.Backend { return be })
+	}
+	l.SetDecideRegistry(reg)
+	return remoteHarness{loop: l, sr: sr, sink: sink, engine: engine, provider: provider, clock: &clock}
+}
+
+// run fires one cycle and waits for the async decision to land.
+func (h remoteHarness) run(t *testing.T) sdktrace.ReadOnlySpan {
+	t.Helper()
+	state := h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+	if len(state.Outcomes) != 0 {
+		t.Fatalf("remote path decided synchronously: %+v", state.Outcomes)
+	}
+	h.loop.AwaitInflight()
+	ds := spansByName(h.sr.Ended(), SpanDecide)
+	if len(ds) != 1 {
+		t.Fatalf("agent.decide spans = %d, want 1", len(ds))
+	}
+	return ds[0]
+}
+
+func TestRemote_ActAboveThreshold(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, "  shield the\nweak player "))
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	span := h.run(t)
+
+	got := h.sink.decisions()
+	want := []Decision{{Intervention: "grant_shield", TargetSerial: "A", Value: "6.5", Reason: "shield the weak player"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("applied = %+v, want %+v", got, want)
+	}
+	for key, w := range map[string]string{
+		AttrDecideBackend:          "claude",
+		AttrDecideBackendRequested: "claude",
+		AttrDecideOutcome:          DecideOutcomeAct,
+		AttrDecideRationale:        "shield the weak player",
+		"gen_ai.request.model":     "claude-haiku-4-5-20251001",
+	} {
+		if g := strAttr(t, span, key); g != w {
+			t.Errorf("%s = %q, want %q", key, g, w)
+		}
+	}
+	if v, _ := attrValue(span, AttrDecideConfidence); v.AsFloat64() != 0.9 {
+		t.Errorf("decide.confidence = %v, want 0.9", v.AsFloat64())
+	}
+	assertEvaluation(t, span, evaluationLabelPass, 0.9)
+
+	// agent.decision -> agent.action nest under agent.decide.
+	dec := spansByName(h.sr.Ended(), SpanDecision)
+	if len(dec) != 1 || dec[0].Parent().SpanID() != span.SpanContext().SpanID() {
+		t.Fatal("agent.decision must be a child of agent.decide on the remote path")
+	}
+	if strAttr(t, dec[0], AttrDecideBackend) != "claude" {
+		t.Error("agent.decision must carry decide.backend=claude")
+	}
+	// Remote backends never see the raw GameContext.
+	if be.reqs[0].Context != nil {
+		t.Fatal("remote request carried Request.Context")
+	}
+}
+
+func assertEvaluation(t *testing.T, span sdktrace.ReadOnlySpan, label string, score float64) {
+	t.Helper()
+	for _, ev := range span.Events() {
+		if ev.Name != evaluationEventName {
+			continue
+		}
+		attrs := map[string]any{}
+		for _, kv := range ev.Attributes {
+			attrs[string(kv.Key)] = kv.Value.AsInterface()
+		}
+		if attrs["gen_ai.evaluation.name"] != evaluationActThreshold ||
+			attrs["gen_ai.evaluation.score.label"] != label ||
+			attrs["gen_ai.evaluation.score.value"] != score {
+			t.Fatalf("evaluation event = %v, want label %s score %v", attrs, label, score)
+		}
+		return
+	}
+	t.Fatal("no gen_ai.evaluation.result event")
+}
+
+func TestRemote_HeldBelowThreshold(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.5, "A", 0.5, "maybe"))
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	span := h.run(t)
+	if n := len(h.sink.decisions()); n != 0 {
+		t.Fatalf("held answer applied %d decisions", n)
+	}
+	if g := strAttr(t, span, AttrDecideOutcome); g != DecideOutcomeHeld {
+		t.Fatalf("outcome = %q, want held", g)
+	}
+	assertEvaluation(t, span, evaluationLabelFail, 0.5)
+	if len(spansByName(h.sr.Ended(), SpanDecision)) != 0 {
+		t.Fatal("a held answer must not reach the permission chain")
+	}
+}
+
+func TestRemote_NoopAndInvalid(t *testing.T) {
+	cases := []struct {
+		name, intervention, target, outcome, reason string
+	}{
+		{"noop", "noop", "none", DecideOutcomeNoop, ""},
+		{"noop with target", "noop", "A", DecideOutcomeInvalid, invalidNoopWithTarget},
+		{"player intervention without target", "grant_shield", "none", DecideOutcomeInvalid, invalidPlayerTargetMissing},
+		{"session intervention with target", "adjust_music_tempo", "B", DecideOutcomeInvalid, invalidSessionTargetedAtPlayer},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			be := newFakeDecideBackend(ffaAnswer(tc.intervention, 0.95, tc.target, 0, "x"))
+			h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+			span := h.run(t)
+			if n := len(h.sink.decisions()); n != 0 {
+				t.Fatalf("applied %d decisions, want none", n)
+			}
+			if g := strAttr(t, span, AttrDecideOutcome); g != tc.outcome {
+				t.Fatalf("outcome = %q, want %q", g, tc.outcome)
+			}
+			if tc.reason != "" && strAttr(t, span, AttrDecideInvalidReason) != tc.reason {
+				t.Fatalf("invalid_reason = %q, want %q", strAttr(t, span, AttrDecideInvalidReason), tc.reason)
+			}
+		})
+	}
+}
+
+// assertRulesFallback checks a remote failure fell back to the rules engine for
+// the current context, which applied its endurance decision.
+func assertRulesFallback(t *testing.T, h remoteHarness, span sdktrace.ReadOnlySpan, reason, errType string) {
+	t.Helper()
+	for key, w := range map[string]string{
+		AttrDecideBackend:          "rules",
+		AttrDecideBackendRequested: "claude",
+		AttrDecideFallbackReason:   reason,
+		AttrDecideOutcome:          DecideOutcomeFallback,
+		"error.type":               errType,
+	} {
+		if g := strAttr(t, span, key); g != w {
+			t.Errorf("%s = %q, want %q", key, g, w)
+		}
+	}
+	got := h.sink.decisions()
+	if len(got) == 0 || got[0].Intervention != InterventionAdjustMusicTempo {
+		t.Fatalf("fallback applied %+v, want the rules decision adjust_music_tempo", got)
+	}
+	if strAttr(t, span, AttrDecideAnswers) == "" {
+		t.Error("fallback span must carry the rules answers")
+	}
+}
+
+func TestRemote_TimeoutFallsBackToRules(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, ""))
+	be.block = true
+	h := newRemoteHarness(t, remoteSnapshot(20*time.Millisecond), be)
+	span := h.run(t)
+	assertRulesFallback(t, h, span, DecideFallbackTimeout, DecideFallbackTimeout)
+}
+
+func TestRemote_ErrorFallsBackToRules(t *testing.T) {
+	be := newFakeDecideBackend(func(decide.Request) (decide.Response, error) {
+		return decide.Response{}, errors.New("boom")
+	})
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	span := h.run(t)
+	assertRulesFallback(t, h, span, DecideFallbackError, "*errors.errorString")
+}
+
+func TestRemote_InvalidAnswerFallsBackToRules(t *testing.T) {
+	be := newFakeDecideBackend(func(decide.Request) (decide.Response, error) {
+		// Probabilities do not sum to 1: decide.Validate rejects it.
+		resp, _ := ffaAnswer("grant_shield", 0.9, "A", 0.5, "")(decide.Request{})
+		resp.Answers[0].Probabilities = map[string]float64{"grant_shield": 0.4}
+		return resp, nil
+	})
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	span := h.run(t)
+	assertRulesFallback(t, h, span, DecideFallbackInvalidAnswer, DecideFallbackInvalidAnswer)
+}
+
+func TestRemote_UnknownOrUnavailableFallsBackSynchronously(t *testing.T) {
+	unavailable := newFakeDecideBackend(nil)
+	unavailable.available = false
+	cases := []struct {
+		name   string
+		be     decide.Backend
+		reason string
+	}{
+		{"unknown", nil, DecideFallbackUnknownBackend},
+		{"unavailable", unavailable, DecideFallbackUnavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRemoteHarness(t, remoteSnapshot(time.Second), tc.be)
+			state := h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+			if len(state.Outcomes) == 0 {
+				t.Fatal("rules must decide synchronously when the backend cannot be called")
+			}
+			ds := spansByName(h.sr.Ended(), SpanDecide)
+			if len(ds) != 1 {
+				t.Fatalf("agent.decide spans = %d, want 1", len(ds))
+			}
+			if g := strAttr(t, ds[0], AttrDecideFallbackReason); g != tc.reason {
+				t.Fatalf("fallback_reason = %q, want %q", g, tc.reason)
+			}
+			if g := strAttr(t, ds[0], AttrDecideOutcome); g != DecideOutcomeFallback {
+				t.Fatalf("outcome = %q, want fallback", g)
+			}
+		})
+	}
+}
+
+// TestRemote_InflightRulesDoNotAct: while a call is in flight for the game, a
+// second cycle neither fires another call nor lets rules act.
+func TestRemote_InflightRulesDoNotAct(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
+	be.block = true
+	h := newRemoteHarness(t, remoteSnapshot(5*time.Second), be)
+
+	h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+	<-be.started
+	advance(h.clock, 2*time.Second) // rules would be due again
+	state := h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+	if len(state.Outcomes) != 0 || len(h.sink.decisions()) != 0 {
+		t.Fatal("rules acted while a remote call was in flight")
+	}
+	close(be.release)
+	h.loop.AwaitInflight()
+	if be.callCount() != 1 {
+		t.Fatalf("backend calls = %d, want 1", be.callCount())
+	}
+}
+
+// TestRemote_ActArmsVarianceCooldown: a dispatched remote difficulty intervention
+// arms the rules engine's variance cooldown like a rules one.
+func TestRemote_ActArmsVarianceCooldown(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("adjust_music_tempo", 0.9, "none", 1, ""))
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	h.run(t)
+	got := h.sink.decisions()
+	if len(got) != 1 || got[0].Value != "1.3" {
+		t.Fatalf("applied %+v, want adjust_music_tempo at the top of its bounds", got)
+	}
+	h.engine.mu.Lock()
+	armed := h.engine.lastDifficultyAt.Equal(*h.clock)
+	h.engine.mu.Unlock()
+	if !armed {
+		t.Fatal("variance cooldown not armed by the remote difficulty intervention")
+	}
+}
+
+func TestRemote_DiscardedWhenGameEnded(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, ""))
+	be.block = true
+	h := newRemoteHarness(t, remoteSnapshot(5*time.Second), be)
+	h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+	<-be.started
+	ended := remoteContext()
+	ended.Session.GameActive = boolPtr(false)
+	h.provider.set(remoteGameID, ended)
+	close(be.release)
+	h.loop.AwaitInflight()
+	span := spansByName(h.sr.Ended(), SpanDecide)[0]
+	if strAttr(t, span, AttrDecideOutcome) != DecideOutcomeDiscarded || strAttr(t, span, AttrDecideDiscardedReason) != DiscardGameEnded {
+		t.Fatal("an answer landing after the game ended must be discarded")
+	}
+	if len(h.sink.decisions()) != 0 {
+		t.Fatal("discarded answer was applied")
+	}
+}
+
+// ---- units ----
+
+func TestMapAnswers_MagnitudeAndRationale(t *testing.T) {
+	resp, _ := ffaAnswer("adjust_global_sensitivity", 0.9, "none", 0.6, strings.Repeat("x", 400))(decide.Request{})
+	d, outcome, _ := mapAnswers(resp)
+	if outcome != DecideOutcomeAct || d.Value != "2" || d.TargetSerial != "" {
+		t.Fatalf("got %+v %s, want adjust_global_sensitivity value 2 (rounded), session-scoped", d, outcome)
+	}
+	if n := len([]rune(d.Reason)); n != maxRationaleRunes+3 {
+		t.Fatalf("reason runes = %d, want truncated to %d+...", n, maxRationaleRunes)
+	}
+	resp, _ = ffaAnswer("play_audio_cue", 0.9, "none", 0.6, "")(decide.Request{})
+	d, _, _ = mapAnswers(resp)
+	if d.Value != "" || d.Reason != "decided by claude" {
+		t.Fatalf("bounds-less intervention: %+v, want empty Value and a default reason", d)
+	}
+}
+
+func TestCapJSON(t *testing.T) {
+	long := strings.Repeat("é", maxDecideJSONBytes)
+	got := capJSON(long)
+	if len(got) > maxDecideJSONBytes || !strings.HasSuffix(got, truncatedJSONMarker) {
+		t.Fatalf("capJSON len %d, want <= %d with marker", len(got), maxDecideJSONBytes)
+	}
+}
+
+func TestDecideRegistry(t *testing.T) {
+	cfg := flags.DecisionBackend{Backend: "claude"}
+	var nilReg *DecideRegistry
+	if b, r := nilReg.Resolve(cfg); b != nil || r != DecideFallbackUnknownBackend {
+		t.Fatalf("nil registry: %v %q", b, r)
+	}
+	reg := NewDecideRegistry()
+	if b, r := reg.Resolve(cfg); b != nil || r != DecideFallbackUnknownBackend {
+		t.Fatalf("unregistered: %v %q", b, r)
+	}
+	reg.Register("claude", func(flags.DecisionBackend) decide.Backend { return nil })
+	if b, r := reg.Resolve(cfg); b != nil || r != DecideFallbackUnavailable {
+		t.Fatalf("nil factory result: %v %q", b, r)
+	}
+	fake := newFakeDecideBackend(nil)
+	fake.available = false
+	var seen flags.DecisionBackend
+	reg.Register("claude", func(d flags.DecisionBackend) decide.Backend { seen = d; return fake })
+	cfg.Claude.Model = "m1"
+	if b, r := reg.Resolve(cfg); b != nil || r != DecideFallbackUnavailable {
+		t.Fatalf("unavailable: %v %q", b, r)
+	}
+	if seen.Claude.Model != "m1" {
+		t.Fatal("factory must receive the current flag snapshot")
+	}
+	fake.available = true
+	if b, r := reg.Resolve(cfg); b != fake || r != "" {
+		t.Fatalf("available: %v %q", b, r)
+	}
+	reg.Register("rules", func(flags.DecisionBackend) decide.Backend { return fake })
+	if b, _ := reg.Resolve(flags.DecisionBackend{Backend: "rules"}); b != nil {
+		t.Fatal("rules must not be registrable: it is the built-in floor")
+	}
+}
+
+// TestRemote_CadenceRulesDoNotAct: between remote calls (the #847 per-game
+// cadence) the remote backend still owns the decision, so rules stay quiet.
+func TestRemote_CadenceRulesDoNotAct(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
+	snap := remoteSnapshot(time.Second)
+	snap.LLMGate.MinDecisionInterval = time.Minute
+	h := newRemoteHarness(t, snap, be)
+	h.run(t)
+	advance(h.clock, 2*time.Second) // rules would be due again
+	state := h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+	h.loop.AwaitInflight()
+	if len(state.Outcomes) != 0 || len(h.sink.decisions()) != 0 {
+		t.Fatal("rules acted between remote calls")
+	}
+	if be.callCount() != 1 || len(spansByName(h.sr.Ended(), SpanDecide)) != 1 {
+		t.Fatal("cadence-gated cycle must not call the backend or emit a decide span")
+	}
+}
+
+// TestRemote_ShadowGameFallsBackToRules: ineligible game kinds stay rules-only.
+func TestRemote_ShadowGameFallsBackToRules(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	c := remoteContext()
+	c.GameKind = "shadow"
+	state := h.loop.OnEvaluate(context.Background(), c, testTrigger())
+	if be.callCount() != 0 || len(state.Outcomes) == 0 {
+		t.Fatal("a shadow game must be decided by rules without a remote call")
+	}
+	ds := spansByName(h.sr.Ended(), SpanDecide)
+	if len(ds) != 1 || strAttr(t, ds[0], AttrDecideFallbackReason) != FallbackNotEligible {
+		t.Fatal("shadow fallback must record fallback_reason=llm_not_eligible")
+	}
+}

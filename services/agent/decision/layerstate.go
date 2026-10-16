@@ -110,6 +110,11 @@ type LayerState struct {
 	// the per-decision fitness.evaluated attribute; this is the cycle-wide view.
 	FitnessEvaluated map[string]float64
 
+	// DecideBackend is the decision backend that produced this cycle's decisions
+	// (#1226): "rules", or the remote backend's name. Empty when the decide hook
+	// did not run (engines without the decide seam), so their spans are unchanged.
+	DecideBackend string
+
 	// --- Per-decision outcomes ---
 	Candidates int
 	Dispatched int

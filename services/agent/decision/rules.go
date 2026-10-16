@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -91,12 +92,33 @@ func (r *ObjectiveRules) LastFitness() FitnessEvaluation {
 // evalInterval), score candidates by the objective weights, apply policy
 // filters, and emit the best decisions the weighted budget allows.
 func (r *ObjectiveRules) Evaluate(_ context.Context, c gamecontext.GameContext) []Decision {
+	out, _, _, _ := r.evaluate(c, nil)
+	return out
+}
+
+// EvaluateDecide is Evaluate plus the decide-contract answers (#1226), both
+// derived from ONE ranking: one rankLocked call and therefore one chaos (R9) RNG
+// draw per evaluation, exactly as Evaluate alone. The returned decisions are
+// byte-for-byte what Evaluate would have returned for the same engine state.
+//
+// build constructs the decide.Request lazily: it is called (under the engine
+// lock, so it must be pure and cheap enough) only when the evalInterval throttle
+// lets this evaluation actually rank, so the per-Export hot path never builds a
+// State it would throw away. ranked is false on a throttled call (no decisions,
+// no answers, req and resp are zero).
+func (r *ObjectiveRules) EvaluateDecide(_ context.Context, c gamecontext.GameContext, build func() decide.Request) (out []Decision, req decide.Request, resp decide.Response, ranked bool) {
+	return r.evaluate(c, build)
+}
+
+// evaluate is the shared body of Evaluate and EvaluateDecide. With a nil build it
+// is exactly the pre-#1226 Evaluate.
+func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func() decide.Request) ([]Decision, decide.Request, decide.Response, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	now := r.now()
 	if now.Sub(r.lastEval) < evalInterval {
-		return nil
+		return nil, decide.Request{}, decide.Response{}, false
 	}
 	r.lastEval = now
 
@@ -124,7 +146,40 @@ func (r *ObjectiveRules) Evaluate(_ context.Context, c gamecontext.GameContext) 
 			r.lastDifficultyAt = now
 		}
 	}
-	return out
+
+	if build == nil {
+		return out, decide.Request{}, decide.Response{}, true
+	}
+	req := build()
+	return out, req, answerFromRanked(ranked, req, true), true
+}
+
+// RecordActed arms the variance cooldown for a decision some OTHER backend made
+// and the loop dispatched (#1226): a remote backend's difficulty intervention
+// invalidates the movement-variance baseline exactly like a rules one, so the
+// chaos rules must stay quiet for one window. The rules engine's own emissions
+// arm it inside Evaluate.
+func (r *ObjectiveRules) RecordActed(d Decision) {
+	if !difficultyInterventions[d.Intervention] {
+		return
+	}
+	r.mu.Lock()
+	r.lastDifficultyAt = r.now()
+	r.mu.Unlock()
+}
+
+// difficultyInterventions are the interventions that change difficulty or
+// movement demand (the rule set marks its own candidates with difficulty=true;
+// this is the name-level view for decisions made elsewhere). They arm the
+// variance cooldown when dispatched.
+var difficultyInterventions = map[string]bool{
+	InterventionAdjustMusicTempo:        true,
+	InterventionRampTempo:               true,
+	InterventionAdjustPlayerSensitivity: true,
+	InterventionAdjustGlobalSensitivity: true,
+	InterventionAdjustGlobalDifficulty:  true,
+	InterventionSetPacingProfile:        true,
+	InterventionSetPlayerHandicap:       true,
 }
 
 // rankLocked runs the rule set against c and returns every candidate that

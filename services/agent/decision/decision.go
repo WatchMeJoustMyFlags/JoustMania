@@ -307,6 +307,12 @@ type Loop struct {
 	// reaches is mutex-guarded (#916), so this is race-safe under the concurrent
 	// trace + metrics Export-handler goroutines that drive runDecision.
 	interventionRecorder func(intervention, serial string, blocked bool)
+
+	// decideBackends is the SHARED decision-backend registry (#1226), injected via
+	// SetDecideRegistry. It maps decision.backend to a factory for the remote
+	// backends; rules is the built-in floor and needs no entry. Nil = no remote
+	// backend known (any non-rules value falls back to rules, unknown_backend).
+	decideBackends *DecideRegistry
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -569,7 +575,7 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		)
 	}
 
-	decisions := l.decide(ctx, snapshot, c, trig, emit, &state)
+	decisions, decideRec := l.decide(ctx, snapshot, c, trig, emit, &state)
 
 	// Lift the cycle-level fitness evaluation the engine just computed onto the
 	// LayerState so it rides the decision span as fitness.evaluated (#731). Read
@@ -609,6 +615,14 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// avoid a duplicate server span for the same RPC.
 	rootCtx, root := l.startSignalReceivedSpan(ctx, c, trig)
 	defer root.End()
+
+	// #1226: the decide-contract record of this cycle's rules ranking (the answers
+	// from the SAME ranking that produced these decisions), as an agent.decide
+	// sibling of the agent.decision spans. Nil when the engine has no decide seam.
+	if decideRec != nil {
+		l.emitDecideSpan(rootCtx, decideRec, c)
+		state.DecideBackend = decideRec.used
+	}
 
 	for _, d := range decisions {
 		l.runDecision(rootCtx, snapshot, c, d, now(), &state)
@@ -712,7 +726,26 @@ func (l *Loop) startSignalReceivedSpan(ctx context.Context, c gamecontext.GameCo
 //
 // emit is this cycle's shared throttle decision (from OnEvaluate); the prompt
 // capture span/log only fire when it is true.
-func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger, emit bool, state *LayerState) []Decision {
+//
+// #1226: decision.backend comes first. Any value other than rules hands the
+// decision to that remote backend (decideRemote, see decide_hook.go) and the legacy
+// mode / model flags are IGNORED. With decision.backend=rules (the default) and
+// mode=rules the rules engine runs through rulesDecide, which returns Evaluate's
+// decisions unchanged plus the agent.decide record from the same ranking. The
+// legacy mode=llm path below is untouched.
+func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger, emit bool, state *LayerState) ([]Decision, *decideRecord) {
+	if !snapshot.Decision.IsRules() {
+		return l.decideRemote(ctx, snapshot, c, trig)
+	}
+	if snapshot.Mode != "llm" {
+		return l.rulesDecide(ctx, snapshot, c, flags.DecisionBackendRules, "")
+	}
+	return l.decideLegacy(ctx, snapshot, c, trig, emit, state), nil
+}
+
+// decideLegacy is the pre-#1226 mode=llm path (#847 gate, #741 resolver, #917
+// async inference, #1207 rules-first upgrade), unchanged.
+func (l *Loop) decideLegacy(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger, emit bool, state *LayerState) []Decision {
 	if snapshot.Mode == "llm" {
 		// Resolve the gate BEFORE any prompt work so a gated cycle never serializes
 		// a prompt it will not send. The reason rides the decision span (#729) via
@@ -1470,6 +1503,11 @@ func layerStateAttributes(state *LayerState) []attribute.KeyValue {
 		attribute.Int(AttrPolicyBatteryThreshold, state.PolicyBatteryThreshold),
 		attribute.Int(AttrPolicyMovementVarianceWindow, state.PolicyMovementVarianceWin),
 		attribute.Int(AttrPolicyMaxPerMinute, state.PolicyMaxPerMinute),
+	}
+	// Decision backend (#1226): only present when the decide hook ran, so spans of
+	// engines without the decide seam keep their exact pre-#1226 attribute set.
+	if state.DecideBackend != "" {
+		attrs = append(attrs, attribute.String(AttrDecideBackend, state.DecideBackend))
 	}
 	// Fitness layer (#731 hook): only present when populated, so the attribute
 	// stays absent until the fitness engine lands rather than carrying an

@@ -565,6 +565,97 @@
         "on": true
       },
       "defaultVariant": "off"
+    },
+    "decision.backend": {
+      "state": "ENABLED",
+      "variants": {
+        "rules": "rules",
+        "claude": "claude",
+        "openai": "openai",
+        "jev": "jev"
+      },
+      "defaultVariant": "rules"
+    },
+    "decision.act_confidence_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "low": 0.5,
+        "default": 0.8,
+        "strict": 0.95
+      },
+      "defaultVariant": "default"
+    },
+    "decision.capture_content": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "decision.claude.model": {
+      "state": "ENABLED",
+      "variants": {
+        "haiku": "claude-haiku-4-5-20251001",
+        "sonnet": "claude-sonnet-5-5",
+        "opus": "claude-opus-5-5"
+      },
+      "defaultVariant": "haiku"
+    },
+    "decision.claude.timeout_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 1500,
+        "default": 2500,
+        "patient": 5000
+      },
+      "defaultVariant": "default"
+    },
+    "decision.openai.base_url": {
+      "state": "ENABLED",
+      "variants": {
+        "default": "https://api.openai.com/v1"
+      },
+      "defaultVariant": "default"
+    },
+    "decision.openai.model": {
+      "state": "ENABLED",
+      "variants": {
+        "unset": ""
+      },
+      "defaultVariant": "unset"
+    },
+    "decision.openai.timeout_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 1500,
+        "default": 2500,
+        "patient": 5000
+      },
+      "defaultVariant": "default"
+    },
+    "decision.jev.base_url": {
+      "state": "ENABLED",
+      "variants": {
+        "unset": ""
+      },
+      "defaultVariant": "unset"
+    },
+    "decision.jev.model": {
+      "state": "ENABLED",
+      "variants": {
+        "unset": ""
+      },
+      "defaultVariant": "unset"
+    },
+    "decision.jev.timeout_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 1500,
+        "default": 2500,
+        "patient": 5000
+      },
+      "defaultVariant": "default"
     }
   }
 }

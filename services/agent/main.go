@@ -648,6 +648,18 @@ func main() {
 	// CURRENT context from this Multiplexer when an async inference result lands. It is
 	// assigned below (mux = ...) before any signal arrives, so the closure never sees nil.
 	var mux *gamecontext.Multiplexer
+	// Decision-backend registry (#1226): maps the decision.backend flag to a factory
+	// that builds the remote decide.Backend from the CURRENT flag snapshot (model,
+	// base URL, timeout) plus env secrets on every call, so a backend/model switch is
+	// one flagd edit with no restart. `rules` is the built-in floor and needs no
+	// entry; an unregistered or unavailable backend falls back to rules. Each remote
+	// backend adds one Register call here (#1227 claude, #1228 openai, #1229 jev),
+	// reading its API key from env inside the factory, e.g.:
+	//   decideBackends.Register(flags.DecisionBackendClaude, func(d flags.DecisionBackend) decide.Backend {
+	//   	return claude.New(claude.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY"), Model: d.Claude.Model,
+	//   		Timeout: d.Claude.Timeout, CaptureContent: d.CaptureContent})
+	//   })
+	decideBackends := decision.NewDecideRegistry()
 	loopFactory := func(gameID string) *decision.Loop {
 		// The decision loop is driven by the OpenFeature/flagd control layer (#727):
 		// flags are evaluated every cycle, the kill switch / objectives / permission
@@ -710,6 +722,8 @@ func main() {
 		// global cross-session memory, mirroring the shared budget/resolver. The async
 		// path (above) reads it in runInfer; the sync path (un-wired loops) in llmDecide.
 		loop.SetContextWindow(sharedContextWindow)
+		// Shared decision-backend registry (#1226): decision.backend selects who decides.
+		loop.SetDecideRegistry(decideBackends)
 		// The objective-weighted rules engine (#726) is the active default, built
 		// FRESH per loop (see the factory doc above). Its objective weights are driven
 		// live from the `objectives` flag each cycle; policy/fitness run on
