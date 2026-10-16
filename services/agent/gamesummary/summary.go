@@ -8,8 +8,8 @@
 //   - BuildSummary is a PURE function over a GameContext snapshot. It never reads
 //     a clock, the network, or the filesystem — every time it needs is injected
 //     (BuildOptions.Now) so the same snapshot always yields a byte-identical
-//     Summary. The writer (writer.go) and the once-per-game span emission
-//     (coordinator.go) are the only impure parts, and they are thin.
+//     Summary. The once-per-game span emission (coordinator.go) is the only
+//     impure part, and it is thin.
 //   - It DERIVES rather than re-collects: engagement trend, elimination spread,
 //     and the per-player elimination order all come straight off the #916
 //     Timeline carried on the snapshot; player arcs and dominance fold the
@@ -57,6 +57,11 @@ type Summary struct {
 	// GameKind is "real" or "shadow" (or "" if never labeled). The builder runs for
 	// BOTH so a reader can tell a live game from a synthetic evaluation one (#928).
 	GameKind string `json:"game_kind"`
+	// ExperimentID / Arm link a shadow game to its experiment (UC-043); "" for a
+	// real game. The cross-game window keys its linked shadow sets on ExperimentID
+	// (UC-042 BR-005).
+	ExperimentID string `json:"experiment_id,omitempty"`
+	Arm          string `json:"arm,omitempty"`
 	// GameMode is the mode that was played (e.g. "joust"), or "" if unobserved.
 	GameMode string `json:"game_mode,omitempty"`
 	// GeneratedAt is the injected build time (BuildOptions.Now), RFC3339. The ONLY
@@ -244,6 +249,8 @@ func BuildSummary(c gamecontext.GameContext, opts BuildOptions) Summary {
 		SchemaVersion:     SchemaVersion,
 		GameID:            c.SessionID,
 		GameKind:          c.GameKind,
+		ExperimentID:      c.ExperimentID,
+		Arm:               c.Arm,
 		GameMode:          deref(c.Session.GameMode),
 		GeneratedAt:       opts.Now,
 		DurationSeconds:   c.Session.DurationSeconds,

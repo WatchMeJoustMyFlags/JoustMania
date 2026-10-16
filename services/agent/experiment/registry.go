@@ -292,6 +292,10 @@ func (e *entry) inFlight() int { return len(e.games) }
 // single-writer-per-experiment invariant the journal package requires).
 type Registry struct {
 	root string
+	// onTerminal, when set, is told an experiment's id once it reaches a terminal
+	// status (teardown), outside the registry lock. The cross-game window uses it to
+	// evict the experiment's linked shadow set (UC-042 BR-005). Set before serving.
+	onTerminal func(experimentID string)
 	// maxCap is the registry's capacity-bookkeeping cap on total in-flight shadow
 	// games across all experiments (AGENT_MAX_SHADOW_GAMES). It governs the fair
 	// per-experiment share split.
@@ -1548,6 +1552,10 @@ func (r *Registry) AbortAll(ctx context.Context, reason string) []string {
 // game map so the freed slots are available to other experiments on the next
 // AllocateAndSpawn). Idempotent on a terminal experiment.
 func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal Status, reason string) {
+	// Runs after the registry lock below is released (defers are LIFO).
+	if r.onTerminal != nil {
+		defer r.onTerminal(id)
+	}
 	// Strip the targeting OUTSIDE the registry lock (it does file I/O). Stripping a
 	// shadow branch only ever affects shadow games, so it is invariant-safe.
 	if r.target != nil {
@@ -1585,6 +1593,11 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	})
 	r.log.Info("experiment.torn_down", "experiment_id", id, "status", string(terminal), "reason", reason)
 }
+
+// SetTerminalHook registers f to be told an experiment's id when it reaches a
+// terminal status (UC-042 BR-005: its linked shadow history is evicted). Call it
+// before the registry serves; f must not call back into the registry.
+func (r *Registry) SetTerminalHook(f func(experimentID string)) { r.onTerminal = f }
 
 // Rehydrate rebuilds the live registry from the durable journal on startup (the
 // #831 fix, design §7.2): it scans the journal root for experiment dirs, Loads

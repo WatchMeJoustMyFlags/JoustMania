@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -17,18 +16,37 @@ import (
 	"github.com/joustmania/agent/gamecontext"
 )
 
-// recordingCoordinator builds a Coordinator with a recording tracer writing to a
-// temp dir, plus the span recorder for assertions.
-func recordingCoordinator(t *testing.T) (*Coordinator, *tracetest.SpanRecorder, string) {
+// observed is a test Observer that records every Summary handed to it.
+type observed struct {
+	mu  sync.Mutex
+	ids []string
+}
+
+func (o *observed) Record(s Summary) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.ids = append(o.ids, s.GameID)
+}
+
+func (o *observed) gameIDs() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.ids...)
+}
+
+// recordingCoordinator builds a Coordinator with a recording tracer and a recording
+// observer, plus the span recorder for assertions.
+func recordingCoordinator(t *testing.T) (*Coordinator, *tracetest.SpanRecorder, *observed) {
 	t.Helper()
-	dir := t.TempDir()
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	c := NewCoordinator(NewWriter(dir), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c := NewCoordinator(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	c.tracer = tp.Tracer("test")
 	c.now = func() time.Time { return at(61) }
-	return c, sr, dir
+	obs := &observed{}
+	c.SetObserver(obs)
+	return c, sr, obs
 }
 
 func spansByName(spans []sdktrace.ReadOnlySpan, name string) []sdktrace.ReadOnlySpan {
@@ -50,16 +68,16 @@ func spanAttr(s sdktrace.ReadOnlySpan, key string) (attribute.Value, bool) {
 	return attribute.Value{}, false
 }
 
-// TestCoordinator_WritesFileAndSpan: a real game end writes a summary file AND
-// emits exactly one agent.game.summary span carrying the key counts.
+// TestCoordinator_ObservesAndSpans: a real game end hands the summary to the
+// observer AND emits exactly one agent.game.summary span carrying the key counts.
 // UC: UC-042 main
-func TestCoordinator_WritesFileAndSpan(t *testing.T) {
-	c, sr, _ := recordingCoordinator(t)
+func TestCoordinator_ObservesAndSpans(t *testing.T) {
+	c, sr, obs := recordingCoordinator(t)
 	snap := representativeGame(t)
 	c.OnGameEnd(snap)
 
-	if _, err := os.Stat(c.writer.Path(snap.SessionID)); err != nil {
-		t.Errorf("summary file not written: %v", err)
+	if got := obs.gameIDs(); len(got) != 1 || got[0] != snap.SessionID {
+		t.Errorf("observer saw %v, want [%s]", got, snap.SessionID)
 	}
 
 	spans := spansByName(sr.Ended(), SpanGameSummary)
@@ -129,15 +147,15 @@ func TestCoordinator_LinksToGameTrace(t *testing.T) {
 // games too (#928 — both real AND shadow).
 // UC: UC-042 A1
 func TestCoordinator_RunsForShadowGames(t *testing.T) {
-	c, sr, _ := recordingCoordinator(t)
+	c, sr, obs := recordingCoordinator(t)
 	c.OnGameEnd(gamecontext.GameContext{
 		SessionID: "game_shadow1",
 		GameKind:  "shadow",
 		Session:   gamecontext.SessionSignals{GameActive: bptr(false)},
 		Players:   map[string]*gamecontext.PlayerSignals{"AA:11": {Serial: "AA:11"}},
 	})
-	if _, err := os.Stat(c.writer.Path("game_shadow1")); err != nil {
-		t.Errorf("shadow-game summary not written: %v", err)
+	if got := obs.gameIDs(); len(got) != 1 {
+		t.Errorf("shadow-game summary not observed: %v", got)
 	}
 	if len(spansByName(sr.Ended(), SpanGameSummary)) != 1 {
 		t.Error("shadow game must emit an agent.game.summary span")
@@ -165,7 +183,7 @@ func TestCoordinator_OncePerGame(t *testing.T) {
 // TestCoordinator_SkipsNonEnd: an active-game or empty-id snapshot is not a game
 // end and must not write or span.
 func TestCoordinator_SkipsNonEnd(t *testing.T) {
-	c, sr, dir := recordingCoordinator(t)
+	c, sr, obs := recordingCoordinator(t)
 
 	c.OnGameEnd(gamecontext.GameContext{SessionID: "active", Session: gamecontext.SessionSignals{GameActive: bptr(true)}})
 	c.OnGameEnd(gamecontext.GameContext{SessionID: "", Session: gamecontext.SessionSignals{GameActive: bptr(false)}})
@@ -173,16 +191,15 @@ func TestCoordinator_SkipsNonEnd(t *testing.T) {
 	if len(spansByName(sr.Ended(), SpanGameSummary)) != 0 {
 		t.Error("non-end snapshots must not emit a span")
 	}
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 0 {
-		t.Errorf("non-end snapshots must not write files, found %d", len(entries))
+	if got := obs.gameIDs(); len(got) != 0 {
+		t.Errorf("non-end snapshots must not be observed, got %v", got)
 	}
 }
 
 // TestCoordinator_TwoConcurrentGames: two independent game ids produce two
 // independent summary files — the #845 per-game guarantee.
 func TestCoordinator_TwoConcurrentGames(t *testing.T) {
-	c, _, dir := recordingCoordinator(t)
+	c, _, obs := recordingCoordinator(t)
 	var wg sync.WaitGroup
 	for _, id := range []string{"game_p1", "game_p2"} {
 		wg.Add(1)
@@ -196,9 +213,8 @@ func TestCoordinator_TwoConcurrentGames(t *testing.T) {
 		}(id)
 	}
 	wg.Wait()
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 2 {
-		t.Errorf("want 2 independent summary files, got %d", len(entries))
+	if got := obs.gameIDs(); len(got) != 2 {
+		t.Errorf("want 2 independent summaries, got %v", got)
 	}
 }
 
@@ -206,9 +222,10 @@ func TestCoordinator_TwoConcurrentGames(t *testing.T) {
 // coordinator writes a summary on the GameActive true->false transition, proving
 // the full game-end path produces a file with no manual snapshot.
 func TestCoordinator_EndToEndFromStore(t *testing.T) {
-	dir := t.TempDir()
-	c := NewCoordinator(NewWriter(dir), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c := NewCoordinator(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	c.now = func() time.Time { return at(100) }
+	obs := &observed{}
+	c.SetObserver(obs)
 
 	clock := base
 	s := gamecontext.NewStore(time.Hour, time.Hour, func() time.Time { return clock })
@@ -223,8 +240,8 @@ func TestCoordinator_EndToEndFromStore(t *testing.T) {
 	clock = at(40)
 	s.SetGameActive(false) // fires OnGameEnd -> summary written
 
-	if _, err := os.Stat(c.writer.Path("game_e2e")); err != nil {
-		t.Errorf("end-to-end store summary not written: %v", err)
+	if got := obs.gameIDs(); len(got) != 1 || got[0] != "game_e2e" {
+		t.Errorf("end-to-end store summary not observed: %v", got)
 	}
 }
 

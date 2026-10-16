@@ -234,6 +234,16 @@ type experimentLoop struct {
 // aggregator folds. The default (defaultGameFitness) reuses the M7 fitness engine.
 type gameFitnessFunc func(gc gamecontext.GameContext, objective string) float64
 
+// recordPatternEndsInto chains the cross-game window's RecordPattern after the
+// registry's replay-record hook, so every finished pattern game contributes its
+// per-slot rows (keyed by archetype, no serial) to the window (UC-042 BR-006).
+func (e *experimentLoop) recordPatternEndsInto(record func(patterngame.Record)) {
+	e.spawner.SetPatternCallbacks(e.registry.RecordPatternStart, func(rec patterngame.Record) {
+		e.registry.RecordPatternEnd(rec)
+		record(rec)
+	})
+}
+
 // buildExperimentLoop constructs the experiment loop with the REAL seams. Since the
 // #1044 startup-gate inversion the loop is ALWAYS built (no nil return) so an off→on
 // flip of the live experiments_enabled flag starts it with no restart. While the flag
