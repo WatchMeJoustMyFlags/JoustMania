@@ -60,6 +60,7 @@ jobs:
       lib: ${{ steps.f.outputs.lib }}
       rust: ${{ steps.f.outputs.rust }}
       agent: ${{ steps.f.outputs.agent }}
+      agent_tests: ${{ steps.f.outputs.agent_tests }}
       dockerfiles: ${{ steps.f.outputs.dockerfiles }}
       specs: ${{ steps.f.outputs.specs }}
       spec_code: ${{ steps.f.outputs.spec_code }}
@@ -93,11 +94,22 @@ jobs:
             lib:
               - 'lib/**'
               - 'proto/**'
+              # lib/tests read the shipped flag files and pinned sources
+              # (test_flagd_ci_drift.py, test_shipped_safety_defaults.py)
+              - 'services/flagd/**'
+              - 'services/agent/experiment/targeting.go'
+              - 'tests/integration/test_experiment_shadow_isolation.py'
             rust:
               - 'services/rust-hid/**'
               - 'proto/psmove_hid.proto'
             agent:
               - 'services/agent/**'
+            # Agent tests that read shipped flag files (e.g.
+            # rollout_fixture_test.go, decide_bounds_test.go). Kept separate
+            # from `agent` so a flag edit does not rebuild the agent image.
+            agent_tests:
+              - 'services/agent/**'
+              - 'services/flagd/**'
             dockerfiles:
               - '**/Dockerfile'
               - '.hadolint.yaml'
@@ -443,7 +455,7 @@ jobs:
     name: Agent Tests
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.agent == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    if: needs.changes.outputs.agent_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
