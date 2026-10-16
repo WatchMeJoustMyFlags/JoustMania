@@ -203,17 +203,38 @@ class AdminModeHandler:
         Args:
             serial: Controller serial number
         """
-        if self.is_held_by_other(serial):
+        if self._owned_by_other(serial):
             logger.warning(f"Ignoring admin on_exit for {serial}: session owned by {self.controller_serial}")
             return
         await self.exit()
 
+    def _owned_by_other(self, serial: str) -> bool:
+        """True if an admin session is recorded for a controller other than ``serial``."""
+        return self.active and self.controller_serial is not None and self.controller_serial != serial
+
+    def _session_is_stale(self) -> bool:
+        """True if a session is recorded but its owner is no longer in ADMIN state.
+
+        Lobby resets, stream reconnects and StopMenu clear controller state
+        without running on_exit; such a session must not keep the admin lock.
+        """
+        if not self.active or self._state_manager is None or self.controller_serial is None:
+            return False
+        return self._state_manager.get_controller_state(self.controller_serial) != ControllerState.ADMIN
+
     def is_held_by_other(self, serial: str) -> bool:
-        """True if admin mode is active on a controller other than ``serial``.
+        """True if admin mode is actively held by a controller other than ``serial``.
 
         UC-012 precondition: only one controller may be in admin mode at a time.
+        A stale session (owner no longer in ADMIN state) does not hold the lock.
         """
-        return self.active and self.controller_serial is not None and self.controller_serial != serial
+        return self._owned_by_other(serial) and not self._session_is_stale()
+
+    def release_stale_session(self) -> None:
+        """Abandon the recorded session if its owner is no longer in ADMIN state."""
+        if self._session_is_stale():
+            logger.warning(f"Releasing stale admin session of {self.controller_serial}")
+            self.abandon_session()
 
     # Helper properties for StateManager access
 
@@ -369,11 +390,26 @@ class AdminModeHandler:
             # Start timeout task to auto-exit after 60 seconds
             self._start_timeout_task(serial)
 
+    def _cancel_timeout_task(self) -> None:
+        """Cancel the auto-exit timeout, unless it is the task running this code.
+
+        The timeout itself exits via exit(); cancelling the current task there
+        would abort exit() at its next await, leaving the session active.
+        """
+        task = self._timeout_task
+        self._timeout_task = None
+        if task is None or task.done():
+            return
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:  # no running event loop (sync caller)
+            current = None
+        if task is not current:
+            task.cancel()
+
     def _start_timeout_task(self, serial: str) -> None:
         """Start background task to auto-exit admin mode after timeout."""
-        # Cancel existing timeout task if any
-        if self._timeout_task and not self._timeout_task.done():
-            self._timeout_task.cancel()
+        self._cancel_timeout_task()
 
         async def timeout_exit():
             try:
@@ -381,6 +417,10 @@ class AdminModeHandler:
                 if self.active and self.controller_serial == serial:
                     logger.info(f"Admin mode auto-exit after {self._timeout_seconds}s timeout")
                     await self._exit_to_connected(serial)
+                    # transition_to is a no-op if the controller is no longer
+                    # ADMIN (state cleared elsewhere): end the session directly.
+                    if self.active and self.controller_serial == serial:
+                        await self.exit()
             except asyncio.CancelledError:  # NOSONAR — intentional: timeout task cancelled on early exit
                 pass
 
@@ -395,10 +435,7 @@ class AdminModeHandler:
         if not self.active:
             return
 
-        # Cancel timeout task
-        if self._timeout_task and not self._timeout_task.done():
-            self._timeout_task.cancel()
-            self._timeout_task = None
+        self._cancel_timeout_task()
 
         from proto import controller_manager_pb2
 
@@ -1596,19 +1633,29 @@ class AdminModeHandler:
         """
         if self.active and serial == self.controller_serial:
             logger.info(f"Admin controller {serial} disconnected, resetting admin mode")
+            self.abandon_session(span_attribute="disconnect")
 
-            # Cancel timeout task
-            if self._timeout_task and not self._timeout_task.done():
-                self._timeout_task.cancel()
-                self._timeout_task = None
+    def abandon_session(self, span_attribute: str = "abandoned") -> None:
+        """
+        Drop the admin session without the exit effect or a state transition.
 
-            self.active = False
-            self.controller_serial = None
-            self.entry_time = 0
+        Used when controller state is cleared wholesale (lobby reset, stream
+        reconnect, StopMenu) so the single-admin lock (UC-012) is released.
 
-            # End span if active
-            if self.session_span:
-                self.session_span.set_attribute("disconnect", True)
-                self.session_span.end()
-                self.session_span = None
-                self.session_span_context = None
+        Args:
+            span_attribute: Boolean attribute set on the session span to record why.
+        """
+        if not self.active:
+            return
+
+        self._cancel_timeout_task()
+
+        self.active = False
+        self.controller_serial = None
+        self.entry_time = 0
+
+        if self.session_span:
+            self.session_span.set_attribute(span_attribute, True)
+            self.session_span.end()
+            self.session_span = None
+            self.session_span_context = None

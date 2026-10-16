@@ -263,6 +263,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             preview_state = dict(button_state)
             preview_state[button] = True
             if self.admin_handler.check_combo_from_state(preview_state):
+                self.admin_handler.release_stale_session()
                 if self.admin_handler.is_held_by_other(serial):
                     # UC-012 precondition: only one admin at a time. Ignore the
                     # combo and handle the press as an ordinary button.
@@ -374,6 +375,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             # Clear all lobby state
             self._clear_ready_state()
             self.state_manager.controller_states.clear()
+            # Controller state is gone, so release the single-admin lock (UC-012).
+            self.admin_handler.abandon_session()
 
             await self.event_publisher.publish("menu_stopped", {})
 
