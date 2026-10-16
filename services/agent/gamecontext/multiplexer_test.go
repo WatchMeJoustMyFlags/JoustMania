@@ -582,9 +582,9 @@ func TestMux_GameStateGaugesPerGame(t *testing.T) {
 	})
 }
 
-// UC: UC-040 A23
+// UC: UC-040 A25
 func TestMux_EvictStaleReturnsRetiredPartitions(t *testing.T) {
-	t.Run("UC-040/A23 EvictStale names the partitions it removed so their entries can be pruned", func(t *testing.T) {
+	t.Run("UC-040/A25 EvictStale names the partitions it removed so their entries can be pruned", func(t *testing.T) {
 		clk := &muxClock{t: time.Unix(5000, 0)}
 		mux := newTestMux(clk, 5*time.Second, 5*time.Second, nil, nil)
 		mux.ApplyMetrics(gameActiveFor("game-A", 1))

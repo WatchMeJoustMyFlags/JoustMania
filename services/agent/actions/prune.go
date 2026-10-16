@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Pruning per-player entries (UC-040 A23 / BR-016, #1323).
+// Pruning per-player entries (UC-040 A25 / BR-016, #1323).
 //
 // Every per-player write leaves one variant and one targeting rung for its serial
 // in the per-player flags. Shadow serials are never reused, so without pruning
@@ -144,7 +144,7 @@ func (w *Writer) pruneSerials(doc *orderedDoc, serials map[string]bool) (bool, e
 	return changed, nil
 }
 
-// PruneGame removes the per-player entries of a game that ended (UC-040 A23 step
+// PruneGame removes the per-player entries of a game that ended (UC-040 A25 step
 // 1): every serial last written for gameID, plus every player of the game that
 // the Writer has no owner for (for example after an agent restart) unless it is
 // in protect, the players of other active games. A serial last written for
@@ -182,7 +182,7 @@ func (w *Writer) PruneGame(gameID string, players []string, protect map[string]b
 }
 
 // PruneExcept removes every per-player entry whose serial is not in keep and
-// whose owner game is not in liveGames (UC-040 A23 step 2: partition retired, or
+// whose owner game is not in liveGames (UC-040 A25 step 2: partition retired, or
 // once after startup). It returns the number of serials removed; nothing is
 // written when that is zero. Safe for concurrent use.
 func (w *Writer) PruneExcept(keep, liveGames map[string]bool) (int, error) {

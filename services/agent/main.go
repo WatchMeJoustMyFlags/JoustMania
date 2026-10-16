@@ -540,7 +540,7 @@ func main() {
 	// migrated). The Writer holds no per-game state, so sharing is safe.
 	sharedWriter := actions.NewWriterFromEnv(logger)
 	sharedSink := actionSink(agentFlags, sharedWriter, logger)
-	// Per-player prune (UC-040 A23 / BR-016, #1323): removes a game's per-player
+	// Per-player prune (UC-040 A25 / BR-016, #1323): removes a game's per-player
 	// entries from the interventions file when it ends or its partition retires,
 	// and once after startup, so the file stays bounded by the live games. Not
 	// gated by interventions_enabled: it only moves values toward neutral.

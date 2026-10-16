@@ -9,7 +9,7 @@ import (
 )
 
 // targetedPruner keeps the per-player intervention flags bounded by the live
-// games (UC-040 A23 / BR-016, #1323). It prunes a game's per-player entries when
+// games (UC-040 A25 / BR-016, #1323). It prunes a game's per-player entries when
 // the game ends (the store's OnGameEnd hook), when the eviction loop retires a
 // partition, and once after startup. The Writer owns the file I/O and the
 // per-serial owner records; this type only decides when to prune and which
@@ -49,7 +49,7 @@ func newTargetedPruner(writer prunerWriter, settle func() time.Duration, log *sl
 	return &targetedPruner{writer: writer, settle: settle, log: log, now: time.Now, start: time.Now()}
 }
 
-// OnGameEnd prunes the ended game's per-player entries (A23 step 1). Players of
+// OnGameEnd prunes the ended game's per-player entries (A25 step 1). Players of
 // other active games are protected when the Writer has no owner record for
 // them. Chained onto every partition's OnGameEnd.
 func (p *targetedPruner) OnGameEnd(c gamecontext.GameContext) {
@@ -77,7 +77,7 @@ func (p *targetedPruner) OnGameEnd(c gamecontext.GameContext) {
 
 // OnEvictTick runs after each eviction tick with the partitions it removed. The
 // first tick at least one settle period after startup prunes every entry that
-// belongs to no live game (A23 step 2, agent restart); later ticks do so only
+// belongs to no live game (A25 step 2, agent restart); later ticks do so only
 // when a partition was retired.
 func (p *targetedPruner) OnEvictTick(removed []string) {
 	if p == nil || p.writer == nil {

@@ -57,7 +57,7 @@ type serverComponents struct {
 
 	// pruner, when non-nil, is told after every eviction tick which partitions
 	// were removed, so it can prune retired games' per-player intervention entries
-	// and run the startup prune (UC-040 A23, #1323). Nil in tests that do not
+	// and run the startup prune (UC-040 A25, #1323). Nil in tests that do not
 	// exercise it.
 	pruner evictObserver
 

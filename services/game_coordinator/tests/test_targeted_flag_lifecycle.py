@@ -1,13 +1,13 @@
 """
 Per-player flag lifecycle on the coordinator (#1317, #1323, #1269).
 
-UC-040 A22 / BR-017: when every player's ``player_sensitivity_factor`` or
+UC-040 A24 / BR-017: when every player's ``player_sensitivity_factor`` or
 ``player_handicap_factor`` resolves to neutral again, the coordinator resets the
 factors in the game. Before #1317 the all-neutral transition dispatched nothing,
 so the last factor stayed for the rest of the game. A level present when a game
 starts belongs to an earlier game and is never applied in the new one.
 
-UC-040 A23 / BR-016: the agent prunes a retired game's players from the
+UC-040 A25 / BR-016: the agent prunes a retired game's players from the
 per-player flags. A pruned player resolves to the neutral variant, which never
 fires a grant.
 
@@ -70,9 +70,9 @@ def factors(game, flag_key) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# A22 / BR-017: levels reset to neutral in the game (#1317)
+# A24 / BR-017: levels reset to neutral in the game (#1317)
 # --------------------------------------------------------------------------- #
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
 @pytest.mark.asyncio
 async def test_level_resets_to_neutral_when_every_player_reverts(flag_key):
@@ -92,7 +92,7 @@ async def test_level_resets_to_neutral_when_every_player_reverts(flag_key):
     assert factors(game, flag_key) == {"p1": 1.0, "p2": 0.75}
 
 
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.asyncio
 async def test_level_reset_is_a_revert_not_an_enforced_intervention():
     """The reset runs even when the level is no longer allowed and records no
@@ -112,7 +112,7 @@ async def test_level_reset_is_a_revert_not_an_enforced_intervention():
     assert h.recorded(REAL, "adjust_player_sensitivity", blocked="true") == []
 
 
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.asyncio
 async def test_partial_revert_resets_only_the_reverted_player():
     h = LevelHarness()
@@ -127,7 +127,7 @@ async def test_partial_revert_resets_only_the_reverted_player():
     assert factors(game, "player_sensitivity_factor") == {"p1": 1.0, "p2": 0.7}
 
 
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.asyncio
 async def test_never_applied_neutral_levels_dispatch_nothing():
     """A game whose levels were never non-neutral resets nobody: a manual factor
@@ -143,7 +143,7 @@ async def test_never_applied_neutral_levels_dispatch_nothing():
 # --------------------------------------------------------------------------- #
 # BR-017: no carry-over into the next game (#1269 level part)
 # --------------------------------------------------------------------------- #
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
 @pytest.mark.asyncio
 async def test_next_game_does_not_inherit_levels(flag_key):
@@ -171,7 +171,7 @@ async def test_next_game_does_not_inherit_levels(flag_key):
     assert factors(game_n1, flag_key) == {"p1": 1.0, "p2": 1.25}
 
 
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.asyncio
 async def test_new_decision_for_a_leftover_player_applies():
     """A level decided in N+1 for p1 (whose N entry was left over) applies."""
@@ -187,7 +187,7 @@ async def test_new_decision_for_a_leftover_player_applies():
     assert game.players["p1"].sensitivity_factor == 0.7
 
 
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.asyncio
 async def test_concurrent_shadow_does_not_inherit_the_real_games_level():
     h = LevelHarness()
@@ -204,9 +204,9 @@ async def test_concurrent_shadow_does_not_inherit_the_real_games_level():
 
 
 # --------------------------------------------------------------------------- #
-# A23 / BR-016: a prune never re-fires a grant
+# A25 / BR-016: a prune never re-fires a grant
 # --------------------------------------------------------------------------- #
-@pytest.mark.uc("UC-040", flow="A23", br=["BR-016", "BR-012"])
+@pytest.mark.uc("UC-040", flow="A25", br=["BR-016", "BR-012"])
 @pytest.mark.parametrize("flag_key", GRANT_FLAGS)
 @pytest.mark.asyncio
 async def test_prune_never_refires_a_grant(flag_key):
@@ -228,7 +228,7 @@ async def test_prune_never_refires_a_grant(flag_key):
     assert blocked == []
 
 
-@pytest.mark.uc("UC-040", flow="A23", br=["BR-016"])
+@pytest.mark.uc("UC-040", flow="A25", br=["BR-016"])
 @pytest.mark.asyncio
 async def test_prune_of_a_retired_games_players_touches_no_live_game():
     """Shadow S ended; pruning its serials changes nothing in the live real game:
@@ -295,7 +295,7 @@ async def test_two_grants_within_one_poll_apply_the_later_once():
 # --------------------------------------------------------------------------- #
 # BR-017: the level baseline fails closed on flagd errors
 # --------------------------------------------------------------------------- #
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
 @pytest.mark.asyncio
 async def test_level_read_error_at_game_start_never_applies_the_leftover(flag_key):
@@ -318,7 +318,7 @@ async def test_level_read_error_at_game_start_never_applies_the_leftover(flag_ke
     assert factors(game, flag_key)["p1"] == 0.75
 
 
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.asyncio
 async def test_level_read_error_mid_game_keeps_the_baseline():
     """An error read mid-game neither resets nor moves the baseline."""
@@ -337,9 +337,9 @@ async def test_level_read_error_mid_game_keeps_the_baseline():
 
 
 # --------------------------------------------------------------------------- #
-# A22: a move to neutral is a revert, never blocked by the chain
+# A24: a move to neutral is a revert, never blocked by the chain
 # --------------------------------------------------------------------------- #
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.parametrize("blocker", ["kill_switch", "budget_exhausted"])
 @pytest.mark.asyncio
 async def test_partial_revert_to_neutral_bypasses_a_blocked_chain(blocker):
@@ -367,7 +367,7 @@ async def test_partial_revert_to_neutral_bypasses_a_blocked_chain(blocker):
     assert h.recorded(REAL, "adjust_player_sensitivity", blocked="true") == []
 
 
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
 @pytest.mark.asyncio
 async def test_revived_player_missing_from_the_level_baseline_adopts_without_applying(flag_key):
@@ -396,7 +396,7 @@ async def test_revived_player_missing_from_the_level_baseline_adopts_without_app
     assert factors(game, flag_key)["p2"] == 0.75
 
 
-@pytest.mark.uc("UC-040", flow="A22", br=["BR-017"])
+@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
 @pytest.mark.asyncio
 async def test_low_battery_player_gets_no_new_level(flag_key):

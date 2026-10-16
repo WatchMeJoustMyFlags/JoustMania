@@ -118,9 +118,9 @@ func perPlayerSerials(t *testing.T, path string) []string {
 	return out
 }
 
-// UC: UC-040 A23 BR-016
+// UC: UC-040 A25 BR-016
 func TestTargetedPrunerOnGameEnd(t *testing.T) {
-	t.Run("UC-040/A23 game end prunes the ended game and protects other active games' players", func(t *testing.T) {
+	t.Run("UC-040/A25 game end prunes the ended game and protects other active games' players", func(t *testing.T) {
 		rec := &recordingWriter{}
 		parts := &fakeParts{snaps: map[string]gamecontext.GameContext{
 			"game_a": gameCtx("game_a", false, "A1", "SHARED"),
@@ -143,7 +143,7 @@ func TestTargetedPrunerOnGameEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-040/A23 real Writer and Store: a shadow game's end leaves only the live game's entries", func(t *testing.T) {
+	t.Run("UC-040/A25 real Writer and Store: a shadow game's end leaves only the live game's entries", func(t *testing.T) {
 		path := copyFixture(t)
 		w := actions.NewWriter(path, discardLogger())
 		apply := func(gameID, serial string) {
@@ -179,9 +179,9 @@ func TestTargetedPrunerOnGameEnd(t *testing.T) {
 	})
 }
 
-// UC: UC-040 A23 BR-016
+// UC: UC-040 A25 BR-016
 func TestTargetedPrunerEvictTicks(t *testing.T) {
-	t.Run("UC-040/A23 startup prune waits one settle period, then runs once; later only on retirement", func(t *testing.T) {
+	t.Run("UC-040/A25 startup prune waits one settle period, then runs once; later only on retirement", func(t *testing.T) {
 		rec := &recordingWriter{}
 		parts := &fakeParts{snaps: map[string]gamecontext.GameContext{
 			"game_live":                gameCtx("game_live", true, "LIVE1"),

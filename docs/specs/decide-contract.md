@@ -571,9 +571,9 @@ level left over from an earlier game is never applied: players moving to neutral
 flag's revert handler (factor back to 1.0, no permission chain, so a blocked chain cannot
 leave a factor stuck), the others go through the chain as a `{serial: level}` value the
 handler applies
-([UC-040 BR-017](../use_cases/UC-040.md#br-017-per-player-levels-belong-to-one-game), A22, #1317).
+([UC-040 BR-017](../use_cases/UC-040.md#br-017-per-player-levels-belong-to-one-game), A24, #1317).
 
-Per-player entries are pruned when their game retires ([UC-040 BR-016](../use_cases/UC-040.md#br-016-per-player-entries-live-only-as-long-as-their-game), A23, #1323).
+Per-player entries are pruned when their game retires ([UC-040 BR-016](../use_cases/UC-040.md#br-016-per-player-entries-live-only-as-long-as-their-game), A25, #1323).
 The `Writer` records the game id of its last per-player write per serial. The agent's
 store `OnGameEnd` hook calls `Writer.PruneGame(game_id, players, protect)`: it drops the
 serials recorded for that game and the unrecorded players of that game, except those in

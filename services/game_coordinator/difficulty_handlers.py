@@ -271,14 +271,14 @@ def _reset_player_factor(ctx: InterventionContext, attr: str, neutral: float, ev
 
 async def handle_player_sensitivity_factor_revert(ctx: InterventionContext) -> None:
     """Every player's sensitivity factor is neutral again: reset them all to 1.0
-    (UC-040 A22 / BR-017, #1317). Before this, the targeted path returned on an
+    (UC-040 A24 / BR-017, #1317). Before this, the targeted path returned on an
     empty change key and the last non-neutral factor stayed for the whole game."""
     _reset_player_factor(ctx, "sensitivity_factor", SENSITIVITY_FACTOR_DEFAULT, "sensitivity_factor_applied")
 
 
 async def handle_player_handicap_factor_revert(ctx: InterventionContext) -> None:
     """Every player's handicap factor is neutral again: reset them all to 1.0
-    (UC-040 A22 / BR-017, #1317)."""
+    (UC-040 A24 / BR-017, #1317)."""
     _reset_player_factor(ctx, "handicap_factor", HANDICAP_FACTOR_DEFAULT, "handicap_factor_applied")
 
 
@@ -449,7 +449,7 @@ def register_difficulty_handlers(manager: InterventionManager) -> None:
     # A PARTIAL revert of either level is handled inside the apply handler
     # (unmatched serials resolve to the neutral 1.0 default). The transition to
     # every player neutral dispatches nothing through the apply handler, so the
-    # targeted-state path runs these revert handlers instead (UC-040 A22, #1317).
+    # targeted-state path runs these revert handlers instead (UC-040 A24, #1317).
     manager.register_handler(
         "player_handicap_factor",
         lambda ctx: handle_player_handicap_factor(ctx, manager),

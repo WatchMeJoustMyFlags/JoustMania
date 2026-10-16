@@ -251,7 +251,7 @@ func (m *Multiplexer) Partitions() []string {
 // lazily recreates the partition.
 //
 // It returns the ids of the partitions it removed, so the caller can prune the
-// retired games' per-player intervention entries (UC-040 A23, #1323).
+// retired games' per-player intervention entries (UC-040 A25, #1323).
 func (m *Multiplexer) EvictStale() []string {
 	// Snapshot the partition pointers under RLock, then release before the
 	// per-store eviction (long work) so Apply*/Snapshot are not blocked.

@@ -73,9 +73,9 @@ func readBytes(t *testing.T, path string) []byte {
 	return b
 }
 
-// UC: UC-040 A23 BR-016
+// UC: UC-040 A25 BR-016
 func TestPruneGameRemovesTheEndedGamesEntries(t *testing.T) {
-	t.Run("UC-040/A23 game end prunes the game's serials from all five per-player flags", func(t *testing.T) {
+	t.Run("UC-040/A25 game end prunes the game's serials from all five per-player flags", func(t *testing.T) {
 		w, path := newTestWriter(t)
 		writeAllPerPlayer(t, w, "game_a", "A1")
 		writeAllPerPlayer(t, w, "game_a", "A2")
@@ -96,7 +96,7 @@ func TestPruneGameRemovesTheEndedGamesEntries(t *testing.T) {
 		assertStructurallyValid(t, path)
 	})
 
-	t.Run("UC-040/A23 the last game's prune drops the targeting block entirely", func(t *testing.T) {
+	t.Run("UC-040/A25 the last game's prune drops the targeting block entirely", func(t *testing.T) {
 		w, path := newTestWriter(t)
 		writeAllPerPlayer(t, w, "game_a", "A1")
 		if _, err := w.PruneGame("game_a", nil, nil); err != nil {
@@ -110,7 +110,7 @@ func TestPruneGameRemovesTheEndedGamesEntries(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-040/A23 a serial last written for another game is kept even if it played the ended game", func(t *testing.T) {
+	t.Run("UC-040/A25 a serial last written for another game is kept even if it played the ended game", func(t *testing.T) {
 		w, path := newTestWriter(t)
 		writeAllPerPlayer(t, w, "game_a", "P1")
 		writeAllPerPlayer(t, w, "game_b", "P1") // the controller moved on to game_b
@@ -120,7 +120,7 @@ func TestPruneGameRemovesTheEndedGamesEntries(t *testing.T) {
 		assertSerials(t, path, "P1")
 	})
 
-	t.Run("UC-040/A23 without an owner record (agent restart) players of other active games are protected", func(t *testing.T) {
+	t.Run("UC-040/A25 without an owner record (agent restart) players of other active games are protected", func(t *testing.T) {
 		w, path := newTestWriter(t)
 		writeAllPerPlayer(t, w, "game_a", "P1")
 		writeAllPerPlayer(t, w, "game_a", "P2")
@@ -136,7 +136,7 @@ func TestPruneGameRemovesTheEndedGamesEntries(t *testing.T) {
 	})
 }
 
-// UC: UC-040 A23 BR-016
+// UC: UC-040 A25 BR-016
 func TestPruneWritesNothingWhenNothingChanges(t *testing.T) {
 	t.Run("UC-040/BR-016 a prune with nothing to remove leaves the file and its mtime untouched", func(t *testing.T) {
 		w, path := newTestWriter(t)
@@ -171,7 +171,7 @@ func TestPruneWritesNothingWhenNothingChanges(t *testing.T) {
 	})
 }
 
-// UC: UC-040 A23 BR-016
+// UC: UC-040 A25 BR-016
 func TestPerPlayerFlagsStayBoundedAcrossGames(t *testing.T) {
 	t.Run("UC-040/BR-016 shadow games with fresh serials: the file holds only the live game after N games", func(t *testing.T) {
 		w, path := newTestWriter(t)
@@ -210,9 +210,9 @@ func TestPerPlayerFlagsStayBoundedAcrossGames(t *testing.T) {
 	})
 }
 
-// UC: UC-040 A23 BR-016
+// UC: UC-040 A25 BR-016
 func TestPruneExceptKeepsLiveGames(t *testing.T) {
-	t.Run("UC-040/A23 startup prune drops every entry of no live game", func(t *testing.T) {
+	t.Run("UC-040/A25 startup prune drops every entry of no live game", func(t *testing.T) {
 		w, path := newTestWriter(t)
 		writeAllPerPlayer(t, w, "game_old", "OLD1")
 		writeAllPerPlayer(t, w, "game_live", "LIVE1")
@@ -227,7 +227,7 @@ func TestPruneExceptKeepsLiveGames(t *testing.T) {
 		assertSerials(t, path, "LIVE1")
 	})
 
-	t.Run("UC-040/A23 an entry whose game is still a live partition survives its player going silent", func(t *testing.T) {
+	t.Run("UC-040/A25 an entry whose game is still a live partition survives its player going silent", func(t *testing.T) {
 		w, path := newTestWriter(t)
 		writeAllPerPlayer(t, w, "game_live", "SILENT")
 		if _, err := w.PruneExcept(nil, map[string]bool{"game_live": true}); err != nil {

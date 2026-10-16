@@ -1224,7 +1224,7 @@ class InterventionManager:
         are dispatched (as a ``{serial: level}`` value), so a level left over
         from an earlier game is never applied (UC-040 BR-017). Players whose
         level moved to neutral go through the flag's revert handler, which
-        resets their factors without the permission chain (UC-040 A22, #1317).
+        resets their factors without the permission chain (UC-040 A24, #1317).
         """
         game = session.game
         if game is None:
@@ -1273,7 +1273,7 @@ class InterventionManager:
         # level left over from an earlier game is never applied (UC-040 BR-017).
         # A move to neutral is a revert: it bypasses the permission chain and the
         # backstop, so a blocked chain (kill switch, exhausted budget) can never
-        # leave a factor stuck after the baseline moved (UC-040 A22, #1317).
+        # leave a factor stuck after the baseline moved (UC-040 A24, #1317).
         to_neutral = {s: v for s, v in changed.items() if _is_none_value(spec, v)}
         applied = {s: v for s, v in changed.items() if s not in to_neutral}
         if to_neutral:
