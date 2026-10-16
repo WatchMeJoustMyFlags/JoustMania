@@ -93,7 +93,7 @@ observability), `.ci.yml` (CI flag dir, profiles), `.ci-rust.yml`, `.dev.yml` (s
 
 | RPC | Kind | Request → Response | Description | Line |
 |---|---|---|---|---|
-| `SimulateMovement` | unary | `MovementRequest` → `MovementResponse` | Simulate controller movement: holds the acceleration vector on that controller (every poll and gameplay frame reports it) until the next call or `ResetController`; a `SimulateDeath` latch overrides it for its frames (UC-003 BR-002, #1279) | `proto/controller_manager_mock.proto:10` |
+| `SimulateMovement` | unary | `MovementRequest` → `MovementResponse` | Simulate controller movement: holds the acceleration vector on that controller (every poll and gameplay frame reports it) until the next call or `ResetController`; a `SimulateDeath` latch overrides it for its frames; a NaN/infinite component returns `INVALID_ARGUMENT` (UC-003 BR-002, #1279) | `proto/controller_manager_mock.proto:10` |
 | `SimulateDeath` | unary | `DeathRequest` → `DeathResponse` | Simulate death (high acceleration) | `proto/controller_manager_mock.proto:13` |
 | `SimulateButton` | unary | `ButtonRequest` → `ButtonResponse` | Simulate button press | `proto/controller_manager_mock.proto:16` |
 | `SetColor` | unary | `ColorRequest` → `ColorResponse` | Set LED color | `proto/controller_manager_mock.proto:19` |

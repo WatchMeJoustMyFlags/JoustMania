@@ -131,17 +131,25 @@ Response:
 Set acceleration (for warning-level movement). The vector is **held**: every poll
 and gameplay frame reports it until the next `SimulateMovement` or
 `ResetController` (UC-003 BR-002, #1279). A `SimulateDeath` latch overrides it for
-its 2 delivered frames, then the held vector resumes:
+its 2 delivered frames, then the held vector resumes. This example is ~1.65g,
+a WARNING-zone vector (1.5-2.0g) that stays under the default death threshold:
 
 ```bash
 grpcurl -plaintext -d '{
   "serial": "mock_controller_0",
-  "accel_x": 2.0,
-  "accel_y": 1.5,
+  "accel_x": 0.8,
+  "accel_y": 0.8,
   "accel_z": 1.2
 }' localhost:50062 \
   controller_manager_mock.MockControllerService/SimulateMovement
 ```
+
+**Lethal range:** because the vector is held, it feeds the game's death EMA on
+every frame. A magnitude above the player's death threshold kills them, and
+kills them again after every respawn grace for as long as it is held. Thresholds
+run from 1.3g (sensitivity 0, slow music) to 3.5g (sensitivity 4, fast music);
+the default (medium, slow music) is 1.8g. Stay below the threshold for
+non-lethal movement and use `SimulateDeath` for a single kill.
 
 ### Simulate Death
 

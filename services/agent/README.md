@@ -1187,9 +1187,11 @@ the agent's first gRPC clients toward the game stack.
 2. `StreamGameEvents(StartGameConfig{...})` — headless start (no lobby); the
    coordinator-assigned `game_id` is captured from the first stamped event
    (`GameEvent.game_id`, #776).
-3. Drives the game: periodic `SimulateMovement` for liveliness + paced
-   `SimulateDeath` per player (paced above the mock's ~1s death-hold) to reach
-   the last-player-standing condition.
+3. Drives the game: `SimulateMovement(0.2, 0.2, 1.0)`, which the mock holds as a
+   constant ~1.04g until changed (UC-003 BR-002, #1279; the periodic resend is
+   now redundant but kept), + paced `SimulateDeath` per player (the mock latches
+   each death for 2 delivered frames, #926; the pacing lets each death and its
+   post-death grace pass) to reach the last-player-standing condition.
 4. Awaits a terminal event (`game_ended` / `game_force_ended` / `game_error`)
    with a timeout; on timeout calls `ForceEndGame{game_id}`.
 5. ALWAYS removes its reserved controllers (deferred), so a failed run never

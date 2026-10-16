@@ -11,6 +11,8 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+import grpc
+
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from proto import controller_manager_mock_pb2, controller_manager_mock_pb2_grpc
 
@@ -109,17 +111,25 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
         self.auto_end_task: asyncio.Task | None = None  # Background task for auto-ending games
         logger.info("MockControllerService initialized")
 
-    def SimulateMovement(self, request, _context):
+    def SimulateMovement(self, request, context):
         """Hold an acceleration vector on a controller until changed or reset.
 
         The value persists across polls (UC-003 BR-002, #1279): every poll and
         so every streamed gameplay frame reports it until the next
         SimulateMovement or ResetController. A SimulateDeath latch overrides it
-        for its delivered frames, after which the held value resumes.
+        for its delivered frames, after which the held value resumes. A NaN or
+        infinite component is rejected with INVALID_ARGUMENT.
         """
         try:
             serial = request.serial
-            if not self.backend.hold_accel(serial, request.accel_x, request.accel_y, request.accel_z):
+            try:
+                held = self.backend.hold_accel(serial, request.accel_x, request.accel_y, request.accel_z)
+            except ValueError as e:
+                if context is not None:
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    context.set_details(str(e))
+                return controller_manager_mock_pb2.MovementResponse(success=False, error=str(e))
+            if not held:
                 return controller_manager_mock_pb2.MovementResponse(
                     success=False, error=f"Controller {serial} not found"
                 )

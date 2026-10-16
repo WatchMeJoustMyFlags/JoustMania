@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import random
 import time
 
@@ -167,15 +168,20 @@ class MockAdapter(ControllerIOAdapter):
                 # Scripted motion persists until changed (#1279).
                 controller[StateKey.ACCEL] = dict(held_accel)
             else:
-                # Unscripted: resting noise around 1 g.
-                controller[StateKey.ACCEL][AxisKey.X] = random.gauss(0.0, 0.1)
-                controller[StateKey.ACCEL][AxisKey.Y] = random.gauss(0.0, 0.1)
-                controller[StateKey.ACCEL][AxisKey.Z] = random.gauss(1.0, 0.1)
+                # Unscripted: resting noise around 1 g. Built whole and assigned
+                # once so a concurrent reader never sees a half-updated frame.
+                controller[StateKey.ACCEL] = {
+                    AxisKey.X: random.gauss(0.0, 0.1),
+                    AxisKey.Y: random.gauss(0.0, 0.1),
+                    AxisKey.Z: random.gauss(1.0, 0.1),
+                }
 
-        # Add noise to gyroscope
-        controller[StateKey.GYRO][AxisKey.X] = random.gauss(0.0, 0.5)
-        controller[StateKey.GYRO][AxisKey.Y] = random.gauss(0.0, 0.5)
-        controller[StateKey.GYRO][AxisKey.Z] = random.gauss(0.0, 0.5)
+        # Gyroscope noise, assigned once for the same reason.
+        controller[StateKey.GYRO] = {
+            AxisKey.X: random.gauss(0.0, 0.5),
+            AxisKey.Y: random.gauss(0.0, 0.5),
+            AxisKey.Z: random.gauss(0.0, 0.5),
+        }
 
         # Simulate battery drain
         time_since_connected = current_time - controller["connected_at"]
@@ -211,7 +217,12 @@ class MockAdapter(ControllerIOAdapter):
         An active death latch still wins for its delivered frames; the held
         vector resumes once the latch drains. Returns False for an unknown
         controller.
+
+        Raises:
+            ValueError: if any component is NaN or infinite.
         """
+        if not all(math.isfinite(v) for v in (x, y, z)):
+            raise ValueError(f"acceleration must be finite, got ({x}, {y}, {z})")
         controller = self.controllers.get(serial)
         if not controller:
             return False

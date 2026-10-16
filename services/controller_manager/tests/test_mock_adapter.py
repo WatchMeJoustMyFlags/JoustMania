@@ -2,9 +2,12 @@
 Unit tests for MockAdapter — thin I/O adapter for simulated controllers.
 """
 
+import math
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -402,3 +405,11 @@ class TestMockAdapterHeldAccel:
         adapter = MockAdapter(num_controllers=0)
         assert not adapter.hold_accel("NOPE", 1.0, 0.0, 0.0)
         assert not adapter.clear_held_accel("NOPE")
+
+    @pytest.mark.parametrize("bad", [math.nan, math.inf])
+    def test_hold_accel_rejects_non_finite(self, bad):
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        with pytest.raises(ValueError, match="finite"):
+            adapter.hold_accel("mock_controller_0", 0.0, bad, 1.0)
+        assert adapter.controllers["mock_controller_0"]["held_accel"] is None
