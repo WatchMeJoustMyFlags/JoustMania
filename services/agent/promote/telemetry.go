@@ -9,10 +9,8 @@ package promote
 //	{flag, value} Proposal; the Writer/Gate apply it to game.json SHADOW-scoped
 //	(game_kind != "real") — real games untouched by construction.
 //	    ↓
-//	M7-7 (experiment/validate.go, #935): run the shadow experiment through the
-//	synthetic suite, measure fitness against a real-game baseline, and DECIDE —
-//	PROMOTE / DISCARD / REVERT. M7-7 returns the verdict ONLY; it does NOT change
-//	the real defaultVariant.
+//	Cohort verdict (experiment/verdict.go, #979): paired shadow games decide
+//	PROMOTE / DISCARD. The verdict does NOT change the real defaultVariant.
 //	    ↓
 //	M7-8 (THIS package, #936): take a PROMOTE verdict + its fitness evidence and
 //	ACT, per two live flags — open a GitHub issue (hypothesis), open a PR
@@ -25,14 +23,12 @@ package promote
 const (
 	// SpanPromote wraps one Promoter.Promote of a validated experiment. It carries
 	// the resolved gate (mode) + target + the final outcome, so a single span answers
-	// "what did the agent do with this promotion, and where". It is the M7-8 node
-	// under the M7-7 synthetic_validation tree.
+	// "what did the agent do with this promotion, and where".
 	SpanPromote = "code_improvement.promote"
 )
 
 // Attribute keys of the promotion span schema (#936 AC: gate/target/outcome on
-// the trace). These intentionally do NOT collide with experiment.Attr* (the
-// VALIDATE-gate keys live in experiment/validate_telemetry.go) — distinct phases.
+// the trace).
 const (
 	// AttrGate is the resolved code_improvement.mode the promotion acted under:
 	// issue | pr | autonomous. The #936 AC names this "code_improvement.gate" — the
@@ -59,10 +55,8 @@ const (
 	// AttrURL is the issue/PR URL a github-target promotion opened (empty for a
 	// local apply or a no-op). On the span so a trace links straight to the artifact.
 	AttrURL = "code_improvement.url"
-	// AttrFitnessBefore / AttrFitnessAfter / AttrFitnessDelta echo the M7-7 evidence
-	// onto the promotion span so the trace shows what justified the action without a
-	// cross-span join (same keys as experiment/validate_telemetry.go by design —
-	// they describe the SAME fitness numbers, now carried on the promote node).
+	// AttrFitnessBefore / AttrFitnessAfter / AttrFitnessDelta put the verdict's
+	// evidence on the promotion span so the trace shows what justified the action.
 	AttrFitnessBefore = "code_improvement.fitness_before"
 	AttrFitnessAfter  = "code_improvement.fitness_after"
 	AttrFitnessDelta  = "code_improvement.fitness_delta"

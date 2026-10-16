@@ -11,7 +11,7 @@ import (
 
 // experiment_fitness_store_test.go covers the #965/#1017 instrumentation: onGameEnd
 // recording finalized per-game fitness into the store for BOTH real and shadow
-// games (the previously-DROPPED real-game fitness the Validator's Baseline needs).
+// games (the previously-DROPPED real-game fitness the recent-real anchor needs).
 
 // loopWithStore builds a minimal experimentLoop with a real fitness store and the
 // default fitness func, for exercising the onGameEnd recording paths in isolation.

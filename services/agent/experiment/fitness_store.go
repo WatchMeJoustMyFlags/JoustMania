@@ -6,29 +6,27 @@ import (
 	"time"
 )
 
-// fitness_store.go is the FINALIZED-PER-GAME fitness store (#965, #1017): the
-// missing instrumentation seam that turns the M7-7 Validator's INJECTED fitness
-// reads (Baseline / FitnessMeasurer) into REAL ones.
+// fitness_store.go is the FINALIZED-PER-GAME fitness store (#965, #1017). It
+// backs the #992 recent-real anchor and the autonomous Watcher's real-game
+// fitness source.
 //
 // THE #1017 GAP, precisely: shadow and real games already emit the SAME fitness
 // inputs through the SAME code path, and decision.EvaluateFitness is
 // substrate-agnostic — so fitness is COMPUTABLE today; it is simply never STORED
-// for the validation path. The experiment loop already computes a per-game
+// anywhere. The experiment loop already computes a per-game
 // fitness scalar at conclusion (defaultGameFitness → EvaluateFitness) but folds
 // it ONLY into the cohort journal for experiment-bound games and DROPS it for
 // everything else. This store is the rolling, in-memory, game_id-keyed sink that
 // captures that already-computed sample for BOTH:
 //
-//   - a SHADOW validation game (the SyntheticRunner spawns it; the FitnessMeasurer
-//     reads its finalized fitness back by game_id — the StoreMeasurer here), and
-//   - a REAL primary game (the StoreBaseline reads the mean of the last N real
-//     games as the validation baseline — the #965 Baseline.Fitness seam).
+//   - a SHADOW experiment game (read back by game_id), and
+//   - a REAL primary game (RecentReal returns the last N real games; the anchor
+//     averages them).
 //
 // FINALIZED, NOT A LIVE SCRAPE (#958 / #1017): Record is called from onGameEnd
 // AFTER the game has concluded and its duration has been recovered
 // (withEffectiveDuration), so a reader sees the SETTLED per-game fitness — it
-// never races the ~10s OTel span flush. This is the explicit requirement the
-// validate.go Baseline doc and the #958 strategy doc both call out.
+// never races the ~10s OTel span flush (the #958 strategy doc requirement).
 //
 // NO-PLAYER-IDENTITY (#23): a sample is keyed by game_id and carries only
 // per-game aggregates (the objective's fitness scalar, the resolved flag config,
@@ -37,35 +35,33 @@ import (
 // assembled here.
 
 // DefaultFitnessStoreCapacity bounds the store's ring. A few hundred finalized
-// samples is ample: the Baseline only ever reads the last N real games (N is a
-// handful), and a validation batch reads a handful of just-spawned shadow
-// game_ids, so the working set is tiny. The ring keeps the store O(1) in memory
+// samples is ample: readers only ever read the last N real games (N is a
+// handful) or a single game_id, so the working set is tiny. The ring keeps the store O(1) in memory
 // regardless of how long the agent runs.
 const DefaultFitnessStoreCapacity = 512
 
 // GameKindReal (the game_kind label a live, player-facing game carries —
-// game_session.py:52-53) is defined in targeting.go. The Baseline reads only
-// samples with this kind so a shadow validation game can never pollute the
-// recent-real baseline.
+// game_session.py:52-53) is defined in targeting.go. RecentReal reads only
+// samples with this kind so a shadow game can never pollute the recent-real
+// baseline.
 
 // FitnessSample is one finalized per-game fitness datapoint (#965). It is the unit
-// the store holds and both validation seams read.
+// the store holds.
 type FitnessSample struct {
 	// GameID is the coordinator-assigned game id this sample finalized for. It is
-	// the store key and the join key the FitnessMeasurer uses against a Run's ids.
+	// the store key.
 	GameID string
 	// Fitness is the game's finalized objective fitness scalar in [0,1] (higher =
 	// better) — the SAME defaultGameFitness → EvaluateFitness value the cohort
-	// journal folds, captured here for the validation path.
+	// journal folds.
 	Fitness float64
 	// Objective is the fitness objective the Fitness scalar scored (endurance /
-	// balanced / accelerate). The Baseline filters recent-real samples by it so a
+	// balanced / accelerate). RecentReal filters recent-real samples by it so a
 	// baseline is per-objective (the #958 study is per-objective: only
 	// endurance/accelerate carry real signal today, #1015).
 	Objective string
-	// GameKind is "real" for a primary game or "shadow" for a validation/cohort
-	// game. The Baseline reads only GameKindReal; the FitnessMeasurer keys purely
-	// by game_id (a Run only ever holds shadow ids).
+	// GameKind is "real" for a primary game or "shadow" for a cohort game.
+	// RecentReal reads only GameKindReal.
 	GameKind string
 	// DurationS is the game's recovered effective duration in seconds (#997), kept
 	// alongside the fitness for the audit trail / drift monitor (#1017 §4).
@@ -81,9 +77,8 @@ type FitnessSample struct {
 }
 
 // FitnessStore is a bounded, thread-safe, finalized-per-game fitness store keyed
-// by game_id (#965). It is the production backing for the StoreBaseline and
-// StoreMeasurer validation seams. Construct with NewFitnessStore; the experiment
-// loop's onGameEnd Records into it, and the Validator's seams read from it.
+// by game_id (#965). Construct with NewFitnessStore; the experiment loop's
+// onGameEnd Records into it, and the recent-real anchor and the Watcher read it.
 type FitnessStore struct {
 	mu  sync.Mutex
 	cap int
@@ -151,9 +146,8 @@ func (s *FitnessStore) Record(sample FitnessSample) {
 	s.evictLocked()
 }
 
-// Get returns a finalized sample for a game_id and whether one is present. The
-// FitnessMeasurer uses it to read a just-completed SHADOW game's fitness — a shadow
-// game holds exactly one (game_id, objective) sample, so Get returns it. For a game
+// Get returns a finalized sample for a game_id and whether one is present. A
+// shadow game holds exactly one (game_id, objective) sample, so Get returns it. For a game
 // id with several per-objective samples (a real game) Get returns an arbitrary one;
 // callers needing a specific objective use RecentReal, which filters by objective.
 func (s *FitnessStore) Get(gameID string) (FitnessSample, bool) {
@@ -169,8 +163,8 @@ func (s *FitnessStore) Get(gameID string) (FitnessSample, bool) {
 
 // RecentReal returns the most-recent (newest-first) finalized samples from REAL
 // (game_kind="real") games for the given objective, up to n. An empty objective
-// matches any objective (the caller filters). It is the read side of the
-// StoreBaseline: the validation baseline is the mean over what this returns.
+// matches any objective (the caller filters). The recent-real anchor averages
+// what this returns.
 func (s *FitnessStore) RecentReal(objective string, n int) []FitnessSample {
 	if n <= 0 {
 		return nil
