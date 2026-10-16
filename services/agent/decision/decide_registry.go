@@ -46,9 +46,11 @@ const (
 	DecideFallbackUnavailable = "backend_unavailable"
 	// DecideFallbackTimeout: the backend did not answer within its timeout flag.
 	DecideFallbackTimeout = "timeout"
-	// DecideFallbackError: the backend returned an error (transport, HTTP, parse).
+	// DecideFallbackError: the backend returned an error (transport, HTTP).
 	DecideFallbackError = "error"
-	// DecideFallbackInvalidAnswer: the response failed decide.Validate.
+	// DecideFallbackInvalidAnswer: the response failed decide.Validate, or the
+	// backend returned an error wrapping decide.ErrInvalid (its own parse or
+	// validation of the model output failed).
 	DecideFallbackInvalidAnswer = "invalid_answer"
 	// DecideFallbackNotWired: the loop has no async wiring (no ContextProvider), so
 	// a remote call cannot run off the decision loop. Production always wires it.
