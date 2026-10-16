@@ -1483,27 +1483,29 @@ class TestAgentControlOption:
         )
 
     @pytest.mark.asyncio
-    async def test_panic_off_wraps_from_none_backward(self, handler, mock_state_manager):
-        """Restricting from 'none' wraps to the most-permissive 'full' (cycle)."""
+    @pytest.mark.uc("UC-013", flow="main", steps=[3])
+    async def test_panic_off_clamps_at_none(self, handler, mock_state_manager):
+        """Restricting from 'none' stays at 'none' — the kill switch never wraps to 'full' (UC-013)."""
         handler.current_option = handler.option_names.index("agent_control")
         mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = "none"
 
         await handler.handle_decrease_value("test_serial")
 
         mock_state_manager.agent_settings_writer.update_default_variant.assert_called_once_with(
-            "interventions_allowed", "full"
+            "interventions_allowed", "none"
         )
 
     @pytest.mark.asyncio
-    async def test_full_escalates_to_none_wrap(self, handler, mock_state_manager):
-        """Escalating from 'full' wraps to 'none' (cycle through 4 levels)."""
+    @pytest.mark.uc("UC-013", flow="main", steps=[3])
+    async def test_full_clamps_at_full(self, handler, mock_state_manager):
+        """Escalating from 'full' stays at 'full' — no wrap to 'none' (UC-013)."""
         handler.current_option = handler.option_names.index("agent_control")
         mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = "full"
 
         await handler.handle_increase_value("test_serial")
 
         mock_state_manager.agent_settings_writer.update_default_variant.assert_called_once_with(
-            "interventions_allowed", "none"
+            "interventions_allowed", "full"
         )
 
     @pytest.mark.asyncio
@@ -1543,13 +1545,16 @@ class TestAgentControlOption:
         # Should not raise.
         await handler.handle_increase_value("test_serial")
 
-    def test_next_agent_level_cycle(self):
-        """_next_agent_level cycles the 4 levels forward and backward."""
+    @pytest.mark.uc("UC-013", flow="main", steps=[3])
+    def test_next_agent_level_ladder_clamps(self):
+        """_next_agent_level steps the 4-level ladder and clamps at both ends (UC-013)."""
         assert AdminModeHandler._next_agent_level("none", forward=True) == "ambient"
         assert AdminModeHandler._next_agent_level("ambient", forward=True) == "standard"
         assert AdminModeHandler._next_agent_level("standard", forward=True) == "full"
-        assert AdminModeHandler._next_agent_level("full", forward=True) == "none"
+        assert AdminModeHandler._next_agent_level("full", forward=True) == "full"
+        assert AdminModeHandler._next_agent_level("full", forward=False) == "standard"
         assert AdminModeHandler._next_agent_level("ambient", forward=False) == "none"
+        assert AdminModeHandler._next_agent_level("none", forward=False) == "none"
         # Unknown current value: forward starts the ladder, backward = panic-off.
         assert AdminModeHandler._next_agent_level(None, forward=True) == "none"
         assert AdminModeHandler._next_agent_level("bogus", forward=False) == "none"

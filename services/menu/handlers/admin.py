@@ -50,7 +50,8 @@ AGENT_POLICY_FLAG = "interventions_allowed"
 
 # Ordered policy levels for the kill-switch, most-restrictive first. "none" is the
 # panic-off floor (agent applies no deltas — the coordinator allow-list rejects
-# every intervention). Cycling forward escalates permissiveness.
+# every intervention). Stepping forward escalates permissiveness; the ladder
+# clamps at both ends and never wraps (UC-013).
 AGENT_POLICY_LEVELS = ["none", "ambient", "standard", "full"]
 
 
@@ -1401,7 +1402,12 @@ class AdminModeHandler:
 
     @staticmethod
     def _next_agent_level(current: str | None, forward: bool = True) -> str:
-        """Return the next policy level, cycling AGENT_POLICY_LEVELS."""
+        """Return the next policy level along AGENT_POLICY_LEVELS, clamped at both ends.
+
+        The ladder deliberately does NOT wrap (UC-013): Start ("restrict") at
+        `none` must stay `none` — a kill switch that escalates to `full` when
+        pressed while already off is unsafe — and Select at `full` stays `full`.
+        """
         levels = AGENT_POLICY_LEVELS
         if current not in levels:
             # Unknown/missing current value: forward starts permissive ladder at
@@ -1411,7 +1417,7 @@ class AdminModeHandler:
             # so the next press collapses it to the ladder start (none).
             return levels[0] if forward else "none"
         idx = levels.index(current)
-        new_idx = (idx + 1) % len(levels) if forward else (idx - 1) % len(levels)
+        new_idx = min(idx + 1, len(levels) - 1) if forward else max(idx - 1, 0)
         return levels[new_idx]
 
     @staticmethod
