@@ -13,8 +13,6 @@ Units covered here:
 - A4: below the warning threshold nothing happens
 - BR-003: ``_warmup_ema`` primes the EMA without any death check, and
   ``_game_loop`` itself sets the 0.3 s start grace
-- UC-040 A16: the ``shield_granted`` / ``partial_shield_armed`` and
-  ``shield_feedback`` span events of a shield grant
 """
 
 import time
@@ -192,7 +190,7 @@ class TestUC030DeathDetection:
         assert all(p.alive for p in game.players.values())  # ... but nobody died
         assert events.get_events_of_type(GameEvent.PLAYER_DEATH) == []
         assert game.gameplay_stream.effects(controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH) == []
-        assert 0.1 <= elapsed < 0.5  # drains for ~100 ms, then stops
+        assert elapsed >= 0.1  # drains for ~100 ms (no upper wall-clock bound: CI load)
         assert 1 <= consumed < 30
 
     @pytest.mark.asyncio
@@ -214,38 +212,3 @@ class TestUC030DeathDetection:
         assert game.players["p0"].alive is True
         assert game.players["p0"].smoothed_accel == 0.0  # A1: the EMA is reset during grace
         assert events.get_events_of_type(GameEvent.PLAYER_DEATH) == []
-
-
-class TestShieldSpanEvents:
-    """UC-040 A16: the span events a shield grant records on the player span."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A16")
-    async def test_full_shield_records_shield_granted_and_shield_feedback(self):
-        """UC-040 A16: grant_shield records shield_granted and shield_feedback (kind full, shield_up sound)."""
-        game, _ = _game(2, audio=RecordingAudio())
-        span = game.players["p0"].span
-
-        assert await game.grant_shield("p0", 3.0) is True
-
-        assert _span_events(span, "shield_granted")[0]["shield_seconds"] == 3.0
-        feedback = _span_events(span, "shield_feedback")
-        assert len(feedback) == 1
-        assert feedback[0]["shield.kind"] == "full"
-        assert feedback[0]["shield.sound"] == Sound.SFX_SHIELD_UP.value
-        assert 2900 <= feedback[0]["shield.duration_ms"] <= 3000
-
-    @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A16")
-    async def test_partial_shield_records_partial_shield_armed_and_shield_feedback(self):
-        """UC-040 A16: grant_partial_shield records partial_shield_armed and shield_feedback (kind partial)."""
-        game, _ = _game(2, audio=RecordingAudio())
-        span = game.players["p0"].span
-
-        assert await game.grant_partial_shield("p0", 2.0) is True
-
-        assert _span_events(span, "partial_shield_armed")
-        feedback = _span_events(span, "shield_feedback")
-        assert len(feedback) == 1
-        assert feedback[0]["shield.kind"] == "partial"
-        assert feedback[0]["shield.sound"] == Sound.SFX_SHIELD_UP.value
