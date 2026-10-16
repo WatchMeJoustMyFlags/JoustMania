@@ -156,7 +156,7 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 | D-C4 | Pairing daemon is a host systemd service; LED feedback during pairing | Compose container (`docker-compose.yml:277-315`); no LED writes in `psmove_pairing/`. | stale doc |
 | D-C5 | RSSI metric `controller_rssi_dbm`, weak-signal LED | `bluetooth_device_rssi_dbm` from the pairing daemon; CM hardcodes rssi 0 (`state_cache.py:226`); `lib/hci_rssi.py` is dead code. | stale doc |
 | D-C6 | Pairing backend flag values `hidapi` / `rust` | Flag values are `python` / `rust` / `unstable`; anything but `rust` falls back to hidapi (`psmove_pairing/config.py:65-77`). | vocabulary mismatch |
-| D-C7 | `SimulateMovement` sets a persistent acceleration (`tools/demo/demo_driver.py:32`) | The next mock poll (100 Hz) overwrites it with noise, so scripted motion lasts about 10 ms; demo scenarios and the shadow-game runner drive mostly noise; only `SimulateDeath` is reliable (`services/controller_manager/multiplexer/mock_adapter.py:159-168`). | likely bug (issue #1279) |
+| D-C7 | `SimulateMovement` sets a persistent acceleration (`tools/demo/demo_driver.py:32`) | The next mock poll (100 Hz) overwrites it with noise, so scripted motion lasts about 10 ms; demo scenarios and the shadow-game runner drive mostly noise; only `SimulateDeath` is reliable (`services/controller_manager/multiplexer/mock_adapter.py:159-168`). | **Resolved by PR #1296** (issue #1279: `SimulateMovement` holds its vector until the next call or `ResetController`; the death latch still wins for its 2 frames; UC-003 BR-002 / A3) |
 
 ### 4.6 Agent (D-A)
 
