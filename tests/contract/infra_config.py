@@ -91,7 +91,12 @@ def resolve_route(path: str) -> dict:
     raise AssertionError(f"no envoy route matches {path}")
 
 
-_PORT_IN_TEXT_RE = re.compile(r"(?:localhost|127\.0\.0\.1|0\.0\.0\.0)?:(\d{2,5})\b")
+# Host-less ``:PORT`` (``AGENT_HEALTH_ADDR=:13134``) or a local listen/probe address.
+# ``http://otel-collector:4317`` in an env value names ANOTHER service's port and
+# must not count as this service's own.
+_PORT_IN_TEXT_RE = re.compile(
+    r"(?:(?<![\w.-])|\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)):(\d{2,5})\b"
+)
 
 
 def compose_container_ports(service: str) -> set[int]:

@@ -153,3 +153,18 @@ def test_envoy_config_validates_with_the_compose_image():
         capture_output=True, text=True, check=False, timeout=300,
     )  # fmt: skip
     assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+
+
+@pytest.mark.parametrize(
+    ("text", "ports"),
+    [
+        (":13134", {13134}),
+        ("http://localhost:13134/healthz", {13134}),
+        ("wget -qO- http://127.0.0.1:8428/-/healthy", {8428}),
+        ("0.0.0.0:8889", {8889}),
+        ("http://otel-collector:4317", set()),  # another service's port
+        ("flagd:8013", set()),
+    ],
+)
+def test_compose_port_scan_ignores_other_services_addresses(text, ports):
+    assert {int(p) for p in ic._PORT_IN_TEXT_RE.findall(text)} == ports
