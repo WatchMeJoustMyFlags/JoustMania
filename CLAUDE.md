@@ -74,3 +74,4 @@ When editing YAML config files (Docker Compose, OTEL Collector, dashboards), val
 - [Development Guide](docs/DEVELOPMENT.md) - Building, running, debugging services
 - [Architecture](docs/ARCHITECTURE.md) - System design and service interactions
 - [Ownership Model](docs/OWNERSHIP_MODEL.md) - Human/agent settings arbitration & composition rules
+- [Talk runbook](docs/talk/two-standards-runbook.md) - "Two Standards" stage demo: beats, flag flips, pre-flight (`scripts/talk-preflight.sh`)
