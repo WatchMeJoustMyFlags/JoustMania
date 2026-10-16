@@ -43,5 +43,9 @@ in-memory services).
 | Go | `// UC: UC-040 A2 BR-003` directly above `func Test...` and subtests `t.Run("UC-040/A2 ...")` |
 | Dashboard (vitest) | `describe('UC-040: ...')` / `it('A2: ...')` (AIUP JS convention) |
 | Code enforcing a rule | `# UC-040 BR-004: <one line>` / `// UC-040 BR-004: ...` above the enforcing code |
+| NFR measurement / check (pytest) | `@pytest.mark.nfr("NFR-014")` (several ids allowed), on the test or class that measures or verifies the NFR; print the measured numbers. Registered next to `uc` |
+| NFR measurement / check (Go) | `// NFR: NFR-012 NFR-013` directly above `func Test...` (next to a `// UC:` line if both apply) |
 
 A use case may be `Tested` only when every main scenario and alternative flow has a tagged test.
+An NFR may be `Verified` only when a test tagged with its id measures or checks the stated limit.
+Find them with `grep -rn 'mark.nfr("NFR-014"' services lib tests` and `grep -rn '^// NFR: .*NFR-012' services/agent`.
