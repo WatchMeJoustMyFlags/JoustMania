@@ -42,8 +42,9 @@ import (
 // decide.* attributes for the rest.
 
 // SpanDecide is the per-decision decide-contract span (#1226). On the remote path
-// it is the root of the async trace (a remote child of the game's gameplay_phase
-// span when known, Linked to the fire cycle) and wraps the backend call — the
+// it is the root of the async trace (a remote child of the game's game_cycle span
+// when known, else gameplay_phase / the game root, UC-040 BR-013; Linked to the fire
+// cycle) and wraps the backend call — the
 // backend's own `chat {model}` CLIENT span nests under it — and the resulting
 // agent.decision -> agent.action spans. On the rules path it is a sibling of the
 // agent.decision spans under agent.signal_received, so the existing trace shape is
@@ -453,7 +454,7 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 	}
 
 	parent := root
-	if p, ok := inGameRemoteParent(root, c.GameTraceID, c.GameTraceSpanID, c.GameplayPhaseSpanID); ok {
+	if p, ok := inGameRemoteParent(root, c.GameTraceID, c.GameTraceSpanID, c.GameplayPhaseSpanID, c.GameCycleSpanID); ok {
 		parent = p
 	}
 	opts := []trace.SpanStartOption{

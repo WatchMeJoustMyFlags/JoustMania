@@ -265,58 +265,66 @@ type pendingEffect struct {
 // metric. If the partition is gone (game ended/evicted before the window elapsed) it emits
 // a single ABORTED record — clearly marked, no delta, no metric — so the cancellation is
 // visible rather than silent.
+//
+// Span shape (#1325, UC-040 BR-013): every agent.intervention.effect span — one per
+// evaluated signal, or the single aborted one — is a DIRECT remote child of the CAUSING
+// agent.decision span (#1178), backdated to dispatch time so it covers the follow-up
+// window. There is deliberately NO intermediate effect span: before #1325 a per-sample
+// effect "root" parented the per-signal spans of the same name, which Jaeger rendered as
+// effect spans nesting under the previous effect span (trace c8e9aa27: 7 decisions x
+// (1 root + 12 signals) = 91 spans, 84 of them under another effect span). Every span is
+// started from the SAME decision-parent context (effectParent), never from a sibling's
+// returned context.
+//
+// The effect outlives its decision (the window is 20 s, the decision span milliseconds).
+// That is valid OTel (a child may end after its parent) and keeps the cause one click
+// away; parenting under game_cycle with a Link to the decision would hide the cause
+// behind a Link and still outlive game_cycle when the game ends inside the window.
+// Graceful fallback: an invalid decisionSC (no-op tracer / no active decision span) yields
+// no remote parent, so the effect spans are their own roots.
 func (l *Loop) emitEffectSample(ctx context.Context, s pendingEffect) {
 	current, ok := l.ctxProvider.Current(l.gameID)
 	windowSeconds := s.window.Seconds()
 
-	// One backdated root span (to dispatch time) parents the per-objective effect spans,
-	// so a Jaeger trace shows the dispatch->follow-up arc, mirroring the #917 apply root.
-	//
-	// In-game re-parenting (#1178, refining #1174): the effect measurement is part of the
-	// game (it measures what an in-game decision did), so the effect span is started as a
-	// remote CHILD of its CAUSING agent.decision span instead of LINKED to the game trace.
-	// The decision span is itself (transitively) under the game span — its cycle root
-	// agent.signal_received was re-parented under the game span — so the effect lands INSIDE
-	// the game trace, nested under the decision that caused it: the "no clue what it relates
-	// to" gap is closed structurally. The separate game-trace Link is DROPPED (it is now
-	// transitive); the standalone decisionLink is likewise dropped (the decision is now the
-	// PARENT, so a Link to it would be a self-link). game.id stays the query axis, and the
-	// game trace ids stay as searchable span attributes. Graceful fallback: an invalid
-	// decisionSC (no-op tracer / no active decision span) yields no remote parent, so the
-	// effect span stays its own root exactly as the nil-safe decisionLink did before.
-	startOpts := []trace.SpanStartOption{
-		trace.WithTimestamp(s.dispatchedAt),
-		trace.WithSpanKind(trace.SpanKindInternal),
-		trace.WithAttributes(
-			attribute.String(AttrSessionID, l.gameID),
-			attribute.String(AttrGameID, l.gameID),
-			attribute.String(AttrEffectInterventionID, s.id),
-			// Stamp the SAME key the decision span uses (#1174 consistency) so one tag
-			// joins decision<->effect even on backends that don't surface Link attrs.
-			attribute.String(AttrDecisionInterventionID, s.id),
-			attribute.String(AttrEffectIntervention, s.intervention),
-			attribute.String(AttrEffectObjective, s.objective),
-			attribute.Float64(AttrEffectWindowSeconds, windowSeconds),
-		),
-	}
-	if s.gameTraceID != "" {
-		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceID, s.gameTraceID)))
-	}
-	if s.gameTraceSpanID != "" {
-		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceSpanID, s.gameTraceSpanID)))
-	}
 	effectParent := ctx
 	if s.decisionSC.IsValid() {
 		effectParent = trace.ContextWithRemoteSpanContext(ctx, s.decisionSC)
 	}
-	rootCtx, root := l.Tracer.Start(effectParent, SpanInterventionEffect, startOpts...)
-	defer root.End()
+	// Attributes every effect span carries. game.id + the intervention id (#1174) make a
+	// span found in isolation attributable to its game and cause; the SAME key the
+	// decision span uses joins decision<->effect even on backends that don't surface Link
+	// attrs. The game trace ids stay as searchable attributes.
+	common := []attribute.KeyValue{
+		attribute.String(AttrSessionID, l.gameID),
+		attribute.String(AttrGameID, l.gameID),
+		attribute.String(AttrEffectInterventionID, s.id),
+		attribute.String(AttrDecisionInterventionID, s.id),
+		attribute.String(AttrEffectIntervention, s.intervention),
+		attribute.String(AttrEffectObjective, s.objective),
+		attribute.Float64(AttrEffectWindowSeconds, windowSeconds),
+	}
+	if s.gameTraceID != "" {
+		common = append(common, attribute.String(AttrGameTraceID, s.gameTraceID))
+	}
+	if s.gameTraceSpanID != "" {
+		common = append(common, attribute.String(AttrGameTraceSpanID, s.gameTraceSpanID))
+	}
+	startEffect := func(extra ...attribute.KeyValue) trace.Span {
+		_, span := l.Tracer.Start(effectParent, SpanInterventionEffect,
+			trace.WithTimestamp(s.dispatchedAt),
+			trace.WithSpanKind(trace.SpanKindInternal),
+			trace.WithAttributes(common...),
+			trace.WithAttributes(extra...),
+		)
+		return span
+	}
 
 	if !ok {
 		// Game ended / partition evicted before the window elapsed (#918 cancellation):
-		// there is no current context to sample, so the effect is unmeasurable. Mark it
-		// aborted on the root and emit nothing further — no fabricated delta, no metric.
-		root.SetAttributes(attribute.Bool(AttrEffectAborted, true))
+		// there is no current context to sample, so the effect is unmeasurable. One span
+		// marked aborted — no fabricated delta, no metric.
+		span := startEffect(attribute.Bool(AttrEffectAborted, true))
+		span.End()
 		return
 	}
 
@@ -328,20 +336,9 @@ func (l *Loop) emitEffectSample(ctx context.Context, s pendingEffect) {
 	for _, key := range sortedKeys(s.baseline) {
 		base := s.baseline[key]
 		fu, present := followUp[key]
-		_, span := l.Tracer.Start(rootCtx, SpanInterventionEffect,
-			trace.WithSpanKind(trace.SpanKindInternal),
-			trace.WithAttributes(
-				// game.id + the intervention id on the per-signal child too (#1174), so a
-				// child span found in isolation is still attributable to its game + cause.
-				attribute.String(AttrGameID, l.gameID),
-				attribute.String(AttrEffectInterventionID, s.id),
-				attribute.String(AttrDecisionInterventionID, s.id),
-				attribute.String(AttrEffectIntervention, s.intervention),
-				attribute.String(AttrEffectObjective, s.objective),
-				attribute.String(AttrEffectSignal, key),
-				attribute.Float64(AttrEffectWindowSeconds, windowSeconds),
-				attribute.Float64(AttrEffectBaseline, base),
-			),
+		span := startEffect(
+			attribute.String(AttrEffectSignal, key),
+			attribute.Float64(AttrEffectBaseline, base),
 		)
 		if !present {
 			// The signal was evaluable at dispatch but not at follow-up (the objective's

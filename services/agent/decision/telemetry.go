@@ -256,11 +256,10 @@ const (
 // loop — the infra path already has fitness->rollback, the game path had nothing
 // (#918). It is MEASUREMENT ONLY: it never reverts the intervention.
 //
-// Because the dispatch cycle's agent.signal_received root has long since ended (the
-// follow-up window is seconds later), the effect cannot hang off it — so the sampler
-// opens its OWN root span backdated to dispatch time, parenting an
-// agent.intervention.effect span per evaluated objective, so a Jaeger trace shows the
-// full "dispatched at T0, measured at T0+window, delta=..." story. The metric
+// One span per evaluated fitness signal (or one aborted span), each a DIRECT remote
+// child of the causing agent.decision, backdated to dispatch time so a Jaeger trace
+// shows the full "dispatched at T0, measured at T0+window, delta=..." story. No effect
+// span parents another (#1325, UC-040 BR-013). The metric
 // agent_intervention_effect_delta (see metrics.go) carries the same delta for
 // dashboards/alerts; the M5 dashboard (#791/#792) and the #844 retro consume both.
 const SpanInterventionEffect = "agent.intervention.effect"

@@ -113,7 +113,7 @@ func TestInGameRemoteParent_TwoTierFallback(t *testing.T) {
 	}
 
 	t.Run("gameplay_phase wins", func(t *testing.T) {
-		ctx, ok := inGameRemoteParent(context.Background(), hubGameTrace, hubGameSpanID, hubGameplayPhaseSpanID)
+		ctx, ok := inGameRemoteParent(context.Background(), hubGameTrace, hubGameSpanID, hubGameplayPhaseSpanID, "")
 		want, _ := trace.SpanIDFromHex(hubGameplayPhaseSpanID)
 		if !ok || parentSpanID(ctx) != want {
 			t.Errorf("want gameplay_phase parent %s (ok=%v), got %s", want, ok, parentSpanID(ctx))
@@ -121,7 +121,7 @@ func TestInGameRemoteParent_TwoTierFallback(t *testing.T) {
 	})
 
 	t.Run("falls back to game root when gameplay_phase empty", func(t *testing.T) {
-		ctx, ok := inGameRemoteParent(context.Background(), hubGameTrace, hubGameSpanID, "")
+		ctx, ok := inGameRemoteParent(context.Background(), hubGameTrace, hubGameSpanID, "", "")
 		want, _ := trace.SpanIDFromHex(hubGameSpanID)
 		if !ok || parentSpanID(ctx) != want {
 			t.Errorf("want game-root parent %s (ok=%v), got %s", want, ok, parentSpanID(ctx))
@@ -129,7 +129,7 @@ func TestInGameRemoteParent_TwoTierFallback(t *testing.T) {
 	})
 
 	t.Run("falls back to game root when gameplay_phase invalid", func(t *testing.T) {
-		ctx, ok := inGameRemoteParent(context.Background(), hubGameTrace, hubGameSpanID, "not-hex")
+		ctx, ok := inGameRemoteParent(context.Background(), hubGameTrace, hubGameSpanID, "not-hex", "")
 		want, _ := trace.SpanIDFromHex(hubGameSpanID)
 		if !ok || parentSpanID(ctx) != want {
 			t.Errorf("want game-root parent %s (ok=%v), got %s", want, ok, parentSpanID(ctx))
@@ -138,14 +138,14 @@ func TestInGameRemoteParent_TwoTierFallback(t *testing.T) {
 
 	t.Run("own-root when both empty", func(t *testing.T) {
 		base := context.Background()
-		ctx, ok := inGameRemoteParent(base, hubGameTrace, "", "")
+		ctx, ok := inGameRemoteParent(base, hubGameTrace, "", "", "")
 		if ok || trace.SpanContextFromContext(ctx).IsValid() {
 			t.Errorf("want own-root (ok=false), got ok=%v parent=%v", ok, trace.SpanContextFromContext(ctx))
 		}
 	})
 
 	t.Run("own-root when trace id empty", func(t *testing.T) {
-		ctx, ok := inGameRemoteParent(context.Background(), "", hubGameSpanID, hubGameplayPhaseSpanID)
+		ctx, ok := inGameRemoteParent(context.Background(), "", hubGameSpanID, hubGameplayPhaseSpanID, "")
 		if ok || trace.SpanContextFromContext(ctx).IsValid() {
 			t.Errorf("want own-root when trace id empty (ok=false), got ok=%v", ok)
 		}

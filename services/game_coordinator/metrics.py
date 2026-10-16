@@ -73,15 +73,27 @@ current_game_mode = Gauge(
 # (#1174) and the retro/experiment Links deliberately KEEP targeting game_trace_span_id
 # (the root) — only the in-game decision chain retargets to gameplay_phase.
 #
-# Cardinality: game_trace_id / game_trace_span_id / gameplay_phase_span_id are each
-# 1:1 with game_id (one trace/root span/gameplay_phase span per game), so they
+# Since #1325 it ALSO carries the hex span_id of the game_cycle span (a child of
+# gameplay_phase, sibling of players) as game_cycle_span_id. The agent parents its
+# in-game spans under game_cycle when this is set, falling back to
+# gameplay_phase_span_id, then game_trace_span_id (UC-040 BR-013, UC-041 BR-004).
+#
+# Cardinality: game_trace_id / game_trace_span_id / gameplay_phase_span_id /
+# game_cycle_span_id are each 1:1 with game_id (one of each span per game), so they
 # multiply NO series beyond the already-unbounded game_id. Like the other per-game
 # gauges it is SET to 1 inside the live game span and REMOVED at retire (clear_metrics,
 # #1018) so the series does not accumulate.
 game_trace_correlation = Gauge(
     "game_trace_correlation",
     "Correlation marker tying a live game_id to its root span trace_id (always 1 while live)",
-    ["game_kind", "game_id", "game_trace_id", "game_trace_span_id", "gameplay_phase_span_id"],
+    [
+        "game_kind",
+        "game_id",
+        "game_trace_id",
+        "game_trace_span_id",
+        "gameplay_phase_span_id",
+        "game_cycle_span_id",
+    ],
 )
 
 game_duration_seconds = Gauge(

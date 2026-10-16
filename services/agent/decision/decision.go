@@ -645,20 +645,19 @@ func (l *Loop) startSignalReceivedSpan(ctx context.Context, c gamecontext.GameCo
 			attribute.String(AttrGameID, c.SessionID),
 		),
 	}
-	// In-game re-parenting (#1195, refining #1178/#1174): the agent's in-game
-	// decisions/actions ARE part of the game's ACTIVE PLAY — they happen within the
-	// gameplay_phase span's duration and shape it — so this cycle-root span is started
-	// as a remote CHILD of the coordinator's gameplay_phase span instead of LINKED to
-	// the game. Because it is the parent of the whole sync decision->action subtree AND
-	// the #1140 async fire anchor (both call this shared helper), that whole subtree is
-	// pulled INSIDE the game trace, nested under gameplay_phase, in one change. The
-	// gameplay_phase span is remote (we hold only its span_id from the #1133/#1195
-	// correlation gauge); a remote child can be started under it regardless of its
-	// liveness, and inherits the game trace's sampling fate. Two-tier fallback
-	// (inGameRemoteParent): gameplay_phase span_id -> game ROOT span_id (#1187) -> own
+	// In-game re-parenting (#1325, refining #1195/#1178/#1174; UC-040 BR-013): the
+	// agent's in-game decisions/actions belong to the running game CYCLE, so this
+	// cycle-root span is started as a remote CHILD of the coordinator's game_cycle span
+	// instead of LINKED to the game. Because it is the parent of the whole sync
+	// decision->action subtree AND the #1140 async fire anchor (both call this shared
+	// helper), that whole subtree is pulled INSIDE the game trace, nested under
+	// game_cycle. The parent is remote (we hold only its span_id from the
+	// game_trace_correlation gauge); a remote child can be started under it regardless
+	// of its liveness, and inherits the game trace's sampling fate. Fallback
+	// (inGameRemoteParent): game_cycle -> gameplay_phase -> game ROOT (#1187) -> own
 	// root, so correlation is never lost. The game trace ids are still stamped as
 	// searchable attributes.
-	if parentCtx, ok := inGameRemoteParent(ctx, c.GameTraceID, c.GameTraceSpanID, c.GameplayPhaseSpanID); ok {
+	if parentCtx, ok := inGameRemoteParent(ctx, c.GameTraceID, c.GameTraceSpanID, c.GameplayPhaseSpanID, c.GameCycleSpanID); ok {
 		ctx = parentCtx
 	}
 	if c.GameTraceID != "" {
@@ -979,30 +978,34 @@ func gameRemoteParent(ctx context.Context, gameTraceID, gameTraceSpanID string) 
 	return gamecontext.RemoteParent(ctx, gameTraceID, gameTraceSpanID)
 }
 
-// inGameRemoteParent re-parents the agent's IN-GAME decision chain (#1195, refining
-// #1187). It is the target-swap entry point: the in-game cycle root, the async
-// infer-call span, and the async apply root all parent under the coordinator's
-// gameplay_phase span — the stable active-play window — instead of the game ROOT
-// span, so a reader sees interventions nested where they actually occurred.
+// inGameRemoteParent re-parents the agent's IN-GAME decision chain (#1325, refining
+// #1195/#1187; UC-040 BR-013). It is the target-swap entry point: the in-game cycle
+// root (agent.signal_received) and the async remote agent.decide landing parent under
+// the coordinator's game_cycle span — the running game cycle — so a reader sees
+// interventions nested where they actually occurred.
 //
-// Two-tier fallback (the safety property — correlation is never lost):
-//  1. gameplay_phase span_id (gameplayPhaseSpanID), if a valid hex id -> child of
-//     gameplay_phase.
-//  2. else the game ROOT span_id (gameTraceSpanID) -> child of the game root (the
-//     #1187 behavior) — used until gameplay_phase opens / when it is unsampled.
-//  3. else (both empty/invalid) -> ctx unchanged, ok=false: own-root span.
+// Fallback order (the safety property — correlation is never lost):
+//  1. game_cycle span_id (gameCycleSpanID), if a valid hex id -> child of game_cycle.
+//  2. else gameplay_phase span_id (gameplayPhaseSpanID) -> child of gameplay_phase
+//     (the #1195 target) — used until game_cycle opens / when it is unsampled.
+//  3. else the game ROOT span_id (gameTraceSpanID) -> child of the game root (the
+//     #1187 behavior) — modes with their own run() publish neither phase id.
+//  4. else (all empty/invalid) -> ctx unchanged, ok=false: own-root span. The
+//     agent.decision spans keep their game-trace Link (gameTraceLink) regardless.
 //
-// gameTraceID (the trace_id) is identical for both spans (same trace), so the same
-// id selects either parent. Delegates to gameRemoteParent for the actual remote
+// gameTraceID (the trace_id) is identical for all three spans (same trace), so the
+// same id selects any parent. Delegates to gameRemoteParent for the actual remote
 // SpanContext construction + validation (gameSpanContext rejects empty/invalid ids,
 // which is what drives the fallback to the next tier). The POST-game spans
 // (retro/summary/experiment.*) deliberately do NOT use this — they keep targeting
 // the game root via their existing Links/experiment-parenting.
-func inGameRemoteParent(ctx context.Context, gameTraceID, gameTraceSpanID, gameplayPhaseSpanID string) (context.Context, bool) {
-	if parentCtx, ok := gameRemoteParent(ctx, gameTraceID, gameplayPhaseSpanID); ok {
-		return parentCtx, true
+func inGameRemoteParent(ctx context.Context, gameTraceID, gameTraceSpanID, gameplayPhaseSpanID, gameCycleSpanID string) (context.Context, bool) {
+	for _, spanID := range []string{gameCycleSpanID, gameplayPhaseSpanID, gameTraceSpanID} {
+		if parentCtx, ok := gameRemoteParent(ctx, gameTraceID, spanID); ok {
+			return parentCtx, true
+		}
 	}
-	return gameRemoteParent(ctx, gameTraceID, gameTraceSpanID)
+	return ctx, false
 }
 
 // GameTraceLink is the exported entry point to the gameTraceLink primitive so other

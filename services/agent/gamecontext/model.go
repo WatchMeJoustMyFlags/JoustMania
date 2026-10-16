@@ -184,9 +184,16 @@ type GameContext struct {
 	// re-parent uses GameTraceSpanID (the game root, #1187 behavior); when that is
 	// also empty the span stays own-root. Never breaks span emission.
 	GameplayPhaseSpanID string
-	Session             SessionSignals
-	Players             map[string]*PlayerSignals
-	UpdatedAt           time.Time
+	// GameCycleSpanID is the hex span_id of the coordinator's game_cycle span (a
+	// child of gameplay_phase) for this session (#1325, UC-041 BR-004). Source: the
+	// game_cycle_span_id label on the same game_trace_correlation gauge. It is the
+	// PREFERRED remote parent of the in-game agent spans (UC-040 BR-013); when empty
+	// (not yet open, unsampled, or a mode without game_cycle) the parent falls back to
+	// GameplayPhaseSpanID, then GameTraceSpanID, then own root.
+	GameCycleSpanID string
+	Session         SessionSignals
+	Players         map[string]*PlayerSignals
+	UpdatedAt       time.Time
 
 	// Timeline is a bounded, oldest-first slice of the partition's recent rolling
 	// narrative (#916): periodic state deltas, eliminations, and session phase
