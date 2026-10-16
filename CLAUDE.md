@@ -69,6 +69,7 @@ When editing YAML config files (Docker Compose, OTEL Collector, dashboards), val
 
 ## Key Documentation
 
+- [Northstar](docs/NORTHSTAR.md) - The "dark factory" goal and its hard constraints; read before agent work
 - [Contributing Guide](docs/CONTRIBUTING.md) - Development workflow, CI checks, code style
 - [Development Guide](docs/DEVELOPMENT.md) - Building, running, debugging services
 - [Architecture](docs/ARCHITECTURE.md) - System design and service interactions
