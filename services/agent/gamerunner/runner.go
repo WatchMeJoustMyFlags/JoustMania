@@ -242,10 +242,11 @@ type Spec struct {
 // IsPattern reports whether the spec runs a pattern game.
 func (s Spec) IsPattern() bool { return s.Pattern.Name != "" }
 
-// gameTimeout is the await bound: the config timeout, or the safety cap for a pattern game.
-func (s Spec) gameTimeout(def time.Duration) time.Duration {
+// gameTimeout is the await bound: the config timeout, or the safety cap for a
+// pattern game (unit is one second in production; tests shrink it).
+func (s Spec) gameTimeout(def, unit time.Duration) time.Duration {
 	if s.IsPattern() {
-		return time.Duration(patterngame.ClampCap(s.MaxGameSeconds)) * time.Second
+		return time.Duration(patterngame.ClampCap(s.MaxGameSeconds)) * unit
 	}
 	return def
 }
@@ -319,6 +320,8 @@ type Runner struct {
 	onPattern  PatternCallback
 	onStart    PatternStartCallback
 	tracker    *patterngame.Tracker
+	// capUnit scales the pattern safety cap (time.Second; tests shrink it).
+	capUnit time.Duration
 }
 
 // SetPatternCallback registers the UC-046 replay-record hook.
@@ -341,6 +344,7 @@ func New(cfg Config, log *slog.Logger) *Runner {
 		tracer:  otel.Tracer(tracerName),
 		dial:    defaultDialer,
 		tracker: patterngame.Default,
+		capUnit: time.Second,
 	}
 }
 
@@ -542,7 +546,7 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 			go r.driveGame(runDrive, cl, serials)
 		}
 
-		terminal, _, outcome := r.awaitTerminal(driveCtx, cl, stream, gameID, spec.gameTimeout(r.cfg.GameTimeout), abortCh)
+		terminal, _, outcome := r.awaitTerminal(driveCtx, cl, stream, gameID, spec.gameTimeout(r.cfg.GameTimeout, r.capUnit), abortCh)
 		finalOutcome = outcome
 		stopDrive()
 		r.log.Debug("experiment shadow game finished",
@@ -610,7 +614,7 @@ func (r *Runner) run(ctx context.Context, cl *clients, spec Spec, span trace.Spa
 	}
 
 	// (e) Await a terminal event; force-end on timeout.
-	terminal, eventsSeen, outcome := r.awaitTerminal(ctx, cl, stream, gameID, spec.gameTimeout(r.cfg.GameTimeout), abortCh)
+	terminal, eventsSeen, outcome := r.awaitTerminal(ctx, cl, stream, gameID, spec.gameTimeout(r.cfg.GameTimeout, r.capUnit), abortCh)
 	result.EventsSeen = eventsSeen
 	result.TerminalEvent = terminal
 	result.Outcome = outcome

@@ -39,11 +39,16 @@ type fakeMock struct {
 	addControllers func(*mockpb.AddControllersRequest) (*mockpb.AddControllersResponse, error)
 	// list overrides ListMockControllers. Default reports `added` as reserved.
 	list func() (*mockpb.ListResponse, error)
+	// removeResponse overrides the RemoveController answer (UC-046 replay record).
+	removeResponse func(serial string) *mockpb.RemoveControllerResponse
+	// lastAdd is the last AddControllers request.
+	lastAdd *mockpb.AddControllersRequest
 }
 
 func (f *fakeMock) AddControllers(_ context.Context, req *mockpb.AddControllersRequest) (*mockpb.AddControllersResponse, error) {
 	f.mu.Lock()
 	f.reservedTag = req.GetTag()
+	f.lastAdd = req
 	f.mu.Unlock()
 	if f.addControllers != nil {
 		return f.addControllers(req)
@@ -61,7 +66,11 @@ func (f *fakeMock) AddControllers(_ context.Context, req *mockpb.AddControllersR
 func (f *fakeMock) RemoveController(_ context.Context, req *mockpb.RemoveControllerRequest) (*mockpb.RemoveControllerResponse, error) {
 	f.mu.Lock()
 	f.removed = append(f.removed, req.GetSerial())
+	override := f.removeResponse
 	f.mu.Unlock()
+	if override != nil {
+		return override(req.GetSerial()), nil
+	}
 	return &mockpb.RemoveControllerResponse{Success: true}, nil
 }
 

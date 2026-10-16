@@ -913,6 +913,9 @@ func (r *Registry) nextPair() (pairPlan, bool) {
 		if e.pin == nil && r.patterns != nil {
 			continue // not pinned yet (pinPending runs first; a fresh Start waits a tick)
 		}
+		if !e.patternActive() && r.patternWaitingLocked() {
+			continue // UC-046 BR-010: drain for the waiting pattern experiment
+		}
 		if e.patternActive() {
 			// UC-046 BR-010: a pattern arm spawns only when no shadow game is in flight,
 			// one at a time. A6: one pair per pinned archetype, then no more.

@@ -117,6 +117,19 @@ func (r *Registry) patternInFlightLocked() bool {
 	return false
 }
 
+// patternWaitingLocked reports whether a live pattern experiment still has
+// archetypes left to spawn. While one does, other experiments spawn no new games,
+// so the in-flight games drain and the pattern experiment can run alone (BR-010)
+// instead of starving behind a busy noise experiment. Assumes r.mu is held.
+func (r *Registry) patternWaitingLocked() bool {
+	for _, e := range r.entries {
+		if e.status == StatusRunning && e.patternActive() && !e.patternExhaustedLocked() {
+			return true
+		}
+	}
+	return false
+}
+
 // patternExhaustedLocked reports whether a pattern experiment has spawned one pair
 // per pinned archetype (UC-046 A6). Assumes r.mu is held.
 func (e *entry) patternExhaustedLocked() bool {
