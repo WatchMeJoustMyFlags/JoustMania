@@ -46,6 +46,7 @@ from lib.types import get_game_display_name
 from proto import game_coordinator_pb2
 from services.game_coordinator import metrics
 from services.game_coordinator.event_bus import EventBus
+from services.game_coordinator.flag_readiness import await_flag_providers_ready
 from services.game_coordinator.game_factory import GameFactory
 from services.game_coordinator.grpc_clients import GrpcClientManager
 
@@ -503,6 +504,11 @@ class GameSession:
                     await self.event_bus.publish("game_error", {"error": error_msg})
                     await self.clients.close()
                     return
+
+                # UC-010 A5 / BR-004 (#1329): no game reads its start flags from a
+                # provider that is not READY yet: wait (bounded), else record the
+                # code-default fallback on this root span.
+                await await_flag_providers_ready(game_span)
 
                 # Create game instance using factory
                 try:

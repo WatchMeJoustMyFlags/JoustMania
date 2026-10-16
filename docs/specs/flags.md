@@ -33,6 +33,8 @@ changed default or a new reader/writer updates this file in the same PR.
 | connect-proxy | **no flagd client**; reads and writes `controller.json` directly for `/canary/*` and `/chaos/*` | file | `services/connect-proxy/canary.go`, `services/connect-proxy/chaos.go` |
 | Menu (writer) | `FlagConfigWriter` rewrites `defaultVariant` in `game.json`, `user.json` and `agent.json` (`interventions_allowed` only) | file | `lib/flag_config_writer.py:36-77`; `services/menu/servicer.py:101-108` |
 
+**Provider readiness (#1329, UC-010 A5 / BR-004).** A named provider is READY only after its first sync from flagd. Until then, every evaluation returns the code default with `ProviderNotReadyError`, and the `TracingHook` records that error on the current span. `lib/feature_flags.py` `wait_for_provider_ready(domain, deadline_seconds)` waits for READY, bounded by the deadline. The provider calls the READY handler on its own thread, and the waiter is woken on its own event loop with `loop.call_soon_threadsafe`. The handler is removed once the wait ends. The controller manager waits at startup (5 s per domain). The game coordinator waits per game, before the game is created: up to 5 s for `system`, `controller`, `game`, `agent`, `user` and `interventions` (`services/game_coordinator/flag_readiness.py`).
+
 ### 1.2 Evaluation context
 
 - API level (Python): `service_name`, `service_namespace`, `language`, `environment`, `hostname`, `game_kind=real` (`lib/feature_flags.py:114-131`).

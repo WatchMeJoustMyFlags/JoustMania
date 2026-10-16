@@ -188,7 +188,15 @@ def init_flag_domain(domain: str) -> None:
 async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) -> bool:
     """Wait for a domain's provider to reach READY status.
 
-    Uses an asyncio.Event triggered by the PROVIDER_READY handler.
+    Uses an asyncio.Event set by the PROVIDER_READY handler. The provider runs
+    that handler on ITS OWN thread (the flagd sync thread), and asyncio.Event is
+    not thread-safe, so the handler wakes the waiter through
+    ``loop.call_soon_threadsafe`` on the waiting coroutine's loop (#1329, #1250).
+    If the provider is already READY when the handler is added, the SDK runs the
+    handler immediately on the calling thread; that path goes through the same
+    call. The handler is removed once the wait ends, so repeated waits do not
+    pile up handlers.
+
     Returns True if ready within deadline, False otherwise.
 
     Args:
@@ -196,6 +204,7 @@ async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) ->
         deadline_seconds: Maximum seconds to wait (default 5.0)
     """
     import asyncio
+    import contextlib
 
     from openfeature.provider import ProviderEvent, ProviderStatus
 
@@ -205,10 +214,14 @@ async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) ->
         logger.debug(f"Domain '{domain}' provider already READY")
         return True
 
+    loop = asyncio.get_running_loop()
     ready_event = asyncio.Event()
 
     def _on_ready(_event_details):
-        ready_event.set()
+        # RuntimeError: the waiting loop is already closed (the waiter gave up and
+        # its loop ended), so there is nothing left to wake.
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(ready_event.set)
 
     client = api.get_client(domain=domain)
     client.add_handler(ProviderEvent.PROVIDER_READY, _on_ready)
@@ -221,6 +234,8 @@ async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) ->
     except TimeoutError:
         logger.warning(f"Domain '{domain}' provider not ready after {deadline_seconds}s")
         return False
+    finally:
+        client.remove_handler(ProviderEvent.PROVIDER_READY, _on_ready)
 
 
 def get_flag_client(domain: str):

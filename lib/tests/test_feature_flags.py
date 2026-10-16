@@ -770,3 +770,134 @@ def test_grace_window_never_suppresses_type_mismatch():
     finally:
         vis._PROCESS_START = original
         vis.reset_for_tests()
+
+
+# --------------------------------------------------------------------------- #
+# wait_for_provider_ready (#1329, UC-010 BR-004; #1250 bug class)
+# --------------------------------------------------------------------------- #
+import asyncio  # noqa: E402
+import threading  # noqa: E402
+
+import pytest  # noqa: E402
+from openfeature.provider import ProviderEvent, ProviderStatus  # noqa: E402
+
+from lib.feature_flags import wait_for_provider_ready  # noqa: E402
+
+
+class _FakeClient:
+    """Records PROVIDER_READY handlers; ``fire_from_thread`` runs them on a foreign thread."""
+
+    def __init__(self, ready_on_add: bool = False):
+        self.handlers = []
+        self.removed = []
+        self.ready_on_add = ready_on_add
+
+    def add_handler(self, event, handler):
+        assert event == ProviderEvent.PROVIDER_READY
+        self.handlers.append(handler)
+        if self.ready_on_add:  # the SDK runs a handler immediately when already READY
+            handler(None)
+
+    def remove_handler(self, event, handler):
+        assert event == ProviderEvent.PROVIDER_READY
+        self.removed.append(handler)
+
+    def fire_from_thread(self):
+        errors = []
+
+        def _run():
+            try:
+                for h in list(self.handlers):
+                    h(None)
+            except Exception as e:  # surfaced to the test thread below
+                errors.append(e)
+
+        t = threading.Thread(target=_run)
+        t.start()
+        t.join()
+        if errors:
+            raise errors[0]
+
+
+def _patch_provider(status, client):
+    return (
+        patch.object(ff_module.api.provider_registry, "get_provider_status", return_value=status),
+        patch.object(ff_module.api, "get_client", return_value=client),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A5", br=["BR-004"])
+async def test_wait_returns_true_when_already_ready():
+    """UC-010 BR-004: an already-READY provider returns at once, without adding a handler."""
+    client = _FakeClient()
+    p1, p2 = _patch_provider(ProviderStatus.READY, client)
+    with p1, p2:
+        assert await wait_for_provider_ready("system", deadline_seconds=0.5) is True
+    assert client.handlers == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A5", br=["BR-004"])
+async def test_ready_from_foreign_thread_wakes_waiter_on_its_loop():
+    """UC-010 BR-004 / #1250: READY fired on the provider's thread sets the Event on the waiter's loop thread."""
+    client = _FakeClient()
+    set_threads = []
+    loop_thread = threading.get_ident()
+
+    class _RecordingEvent(asyncio.Event):
+        def set(self):
+            set_threads.append(threading.get_ident())
+            super().set()
+
+    p1, p2 = _patch_provider(ProviderStatus.NOT_READY, client)
+    with p1, p2, patch("asyncio.Event", _RecordingEvent):
+        waiter = asyncio.create_task(wait_for_provider_ready("system", deadline_seconds=2.0))
+        for _ in range(50):
+            if client.handlers:
+                break
+            await asyncio.sleep(0.01)
+        client.fire_from_thread()
+        assert await waiter is True
+
+    # Event.set ran on the event-loop thread, never on the provider's thread.
+    assert set_threads == [loop_thread]
+    # The handler is removed once the wait ends (no pile-up across games).
+    assert client.removed == client.handlers
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A5", br=["BR-004"])
+async def test_ready_on_add_race_is_handled():
+    """UC-010 BR-004: READY between the status check and add_handler (SDK runs the handler at once) is not missed."""
+    client = _FakeClient(ready_on_add=True)
+    p1, p2 = _patch_provider(ProviderStatus.NOT_READY, client)
+    with p1, p2:
+        assert await wait_for_provider_ready("system", deadline_seconds=1.0) is True
+    assert client.removed == client.handlers
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A5", br=["BR-004"])
+async def test_wait_times_out_and_removes_handler():
+    """UC-010 A5: a provider that never becomes READY returns False after the deadline."""
+    client = _FakeClient()
+    p1, p2 = _patch_provider(ProviderStatus.NOT_READY, client)
+    with p1, p2:
+        assert await wait_for_provider_ready("system", deadline_seconds=0.05) is False
+    assert len(client.handlers) == 1
+    assert client.removed == client.handlers
+
+
+@pytest.mark.uc("UC-010", flow="A5", br=["BR-004"])
+def test_late_ready_after_loop_closed_does_not_raise():
+    """UC-010 BR-004: a READY that arrives after the waiter's loop closed is ignored, not an error."""
+    client = _FakeClient()
+    p1, p2 = _patch_provider(ProviderStatus.NOT_READY, client)
+    with p1, p2:
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(wait_for_provider_ready("system", deadline_seconds=0.01)) is False
+        finally:
+            loop.close()
+    client.fire_from_thread()  # handler captured the closed loop; must not raise

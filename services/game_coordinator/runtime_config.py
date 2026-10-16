@@ -403,6 +403,20 @@ def get_config_manager() -> RuntimeConfigManager:
     return _global_config_manager
 
 
+def refresh_runtime_config() -> None:
+    """Re-read the runtime configuration from the flags (#1329).
+
+    Creates the manager on first use, which already reads the flags. An existing
+    manager re-reads them, replacing values it cached while its providers were
+    not READY yet (code defaults).
+    """
+    global _global_config_manager
+    if _global_config_manager is None:
+        _global_config_manager = RuntimeConfigManager()
+        return
+    _global_config_manager._refresh_from_flags()
+
+
 def get_current_config() -> GamePerformanceConfig:
     """Quick access to current configuration."""
     return get_config_manager().get_config()

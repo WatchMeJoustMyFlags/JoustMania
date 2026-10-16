@@ -213,3 +213,18 @@ def mock_controller_manager():
 def event_collector():
     """Fixture providing event collector."""
     return EventCollector()
+
+
+@pytest.fixture(autouse=True)
+def _flag_providers_ready_instantly(monkeypatch):
+    """Skip the game-admission wait for flag providers (#1329, UC-010 A5).
+
+    Unit tests have no flagd, so every provider stays NOT_READY and each session
+    start would wait the full bound (5 s). The wait itself and its wiring are
+    tested in test_flag_readiness.py, which patches this attribute itself.
+    """
+
+    async def _ready(_span, *_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("services.game_coordinator.game_session.await_flag_providers_ready", _ready)
