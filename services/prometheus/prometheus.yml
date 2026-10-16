@@ -5,9 +5,6 @@ global:
     cluster: 'joustmania'
     environment: 'production'
 
-rule_files:
-  - 'alerts.yml'
-
 scrape_configs:
   # OTEL Collector - aggregates metrics from real-time services (Issue #106)
   # Services push metrics via OTLP; collector exposes them on :8889

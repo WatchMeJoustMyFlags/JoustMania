@@ -247,7 +247,7 @@ test-pulled: clean-test-venv
 		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
 
 # Telemetry producer/consumer contract (#1357): static scan, no stack needed.
-# promtool runs via docker when available.
+# envoy --mode validate runs via docker when available.
 .PHONY: test-contract
 test-contract:
 	uv run --no-project --with pytest --with pyyaml pytest tests/contract -v -p no:cacheprovider

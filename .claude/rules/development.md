@@ -28,4 +28,3 @@ Python services: `server.py` (entry), `servicer.py` (gRPC impl), `metrics.py`, `
 ## Observability
 - Envoy on host port 80: `http://localhost/` (dashboard), `/jaeger/`, `/grafana/`, `/prometheus/`
 - Dashboards: `services/grafana/dashboards/`
-- Alerts: `services/prometheus/alerts.yml`

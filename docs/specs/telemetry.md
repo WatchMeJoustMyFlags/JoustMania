@@ -2,7 +2,7 @@
 
 > Technical spec. Part of the [spec tree](../README.md). State: `main` @ 2b8d979c (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1297, #1303, #1307, #1309, #1312, #1315, #1324, #1308 (#1258 pattern games), #1332 (#1325 span parents), #1378 (validator spans removed), #1351 (#1326 budget), #1333 (#1327 one `player_death` event), #1375 (rollout dry run), #1376 (deaths counter, input lag), #1377 (quiet-cycle fallbacks) , #1387 (`audio.silent`) and #1370 (`game.outcome`)). The metric catalog (§6.2) and the span-event inventory were generated from the code at 84c3ba15 by script; remaining `file:line` references were re-based to 84c3ba15 and then to 2b8d979c.
 > Telemetry is the agent's only view of the game (C-001), so span names, attribute keys, metric names and the
-> log lines below are a **contract**: the agent, the dashboard SPA, Grafana, alerts and integration tests match
+> log lines below are a **contract**: the agent, the dashboard SPA, Grafana and integration tests match
 > on them. Change a name here first.
 
 ## 1. Pipeline
@@ -14,7 +14,7 @@
 | Processors | `memory_limiter` (600 MiB, spike 150 MiB, env-overridable), batch (traces 2 s, metrics 100 ms, logs 5 s), resource attributes; **no sampling** | `config.yaml:160-309` |
 | Exporters | Jaeger (OTLP), VictoriaMetrics (`prometheusremotewrite`), Prometheus exporter :8889, Loki (OTLP HTTP), **agent** (`otlp/agent`, 2 s timeout, no retries, queue 1000) | `config.yaml:317-355` |
 | Pipelines | traces → Jaeger + agent; OTLP metrics → VictoriaMetrics + Prometheus exporter + agent; other metrics → VictoriaMetrics; logs → Loki (agent gets no logs) | `config.yaml:358-406` |
-| Prometheus | scrapes the collector every 500 ms (alert rules), controller-manager `:8000`, flagd; global 10 s | `services/prometheus/prometheus.yml` |
+| Prometheus | scrapes the collector every 500 ms, controller-manager `:8000`, flagd; global 10 s; no alert rules (Prometheus alerting removed in #1425, FR-083 Rejected) | `services/prometheus/prometheus.yml` |
 | Retention | VictoriaMetrics 7 d, Prometheus 30 d, Loki 24 h, Jaeger bounded badger TTL | `docker-compose.yml:519,551`; `services/loki/config.yaml` (`retention_period`); `services/jaeger/config.yaml` |
 
 Label mapping: `prometheusremotewrite` maps `service.name` to `job` prefixed with `service.namespace`
@@ -252,36 +252,34 @@ BR-003; `services/game_coordinator/game_session.py` `_publish_duration_while_run
 
 | Consumer | Uses | Source |
 |---|---|---|
-| Grafana (20 dashboards, datasource VictoriaMetrics) | agent-operations, interventions, game-quality, game-analytics, player-insights, controller-overview, backend-comparison, bluetooth-adapter, feature-flags, fleet-overview, host-metrics, presentation-chaos, ... Every referenced app metric name is defined, and three service-health-overview panels filter on a `grpc_code` label that `grpc_client_request_duration_seconds` does not have, so they count every call as an error (Known gap tracked in #1353). No dashboard queries Loki or Jaeger. | `services/grafana/dashboards/` |
-| Prometheus alerts | 16 alerts; `GameCrashRate` and `ServiceUpdatePending` use undefined metrics (D-T3); `HighInputLatency` queries `controller_input_lag_seconds_bucket` (sample age on game streams, #1335); `LowGameLoopHz` (< 55 Hz) fires permanently at the 15 / 30 Hz variants of `game_loop.update_frequency_hz` (#1353) | `services/prometheus/alerts.yml` |
+| Grafana (20 dashboards, datasource VictoriaMetrics) | agent-operations, interventions, game-quality, game-analytics, player-insights, controller-overview, backend-comparison, bluetooth-adapter, feature-flags, fleet-overview, host-metrics, presentation-chaos, ... Every referenced app metric is recorded and every label matcher on a Python metric names a label it carries (checked by `tests/contract/test_telemetry_contract.py`). The service-health-overview "gRPC client errors" panels read `grpc_client_errors_total` (Python outbound calls, by callee `service`, `method`, `code`; #1353); mid-stream and non-Python client errors are not counted yet (#1426). No dashboard queries Loki or Jaeger. | `services/grafana/dashboards/` |
 | Dashboard SPA | Jaeger `service=agent operation=agent.decide` (tags `decide.*` incl. the `decide.answers` shape, `gen_ai.request.model`, `gen_ai.response.model`, `game.id`, `game.kind`, `decision.*`, `player.serial` / `player.name` on `agent.decision` for the Decisions row target (#1295); a child is a chat span when its name starts with `chat ` or `gen_ai.operation.name=chat`); Loki agent log lines (§7); VictoriaMetrics `sum(agent_intervention_writes_total) by (result)` | `services/dashboard/src/agent.ts`, `experiments.ts` |
 | Agent | §4.4 | |
 | Integration tests | span names `agent.decide`, `agent.signal_received`, `agent.decision`, `chat {model}`, `agent.disabled`; `decide.*` tags; event `gen_ai.evaluation.result` | `tests/integration/test_decide_backend_e2e.py` |
 | Demo validation harness | span chain `agent.signal_received` → `agent.decision` → `agent.action` per game; Prometheus queries | `tools/demo/validation_harness.py` |
 | Talk pre-flight | Jaeger `service=agent operation=agent.decide`, tags `decide.backend`, `decide.outcome`, `decide.fallback_reason`; flag **variant names** of the stage baseline (`ambient`, `default`, `haiku`, `real_only`, ...) | `scripts/talk-preflight.sh` |
 
-83 of the 151 Python metric names have no consumer in a dashboard, alert, the agent, the dashboard SPA, the demo
+83 of the 151 Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo
 harness or a script (all `menu_*`, `psmove_*`, `python_hid_*`, `audio_*` and others); they are kept for ad-hoc
-analysis. No test checks producer names against these consumers (contract test tracked in #1357).
+analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers.
 
 ### 6.2 Python metric catalog
 
 Generated from the `Counter` / `Gauge` / `Histogram` definitions in `services/*/metrics.py`, `lib/grpc_metrics.py`
 and `lib/flag_eval_visibility.py` at 84c3ba15. **Emitted** = some non-test code in the defining service records it
-(`.inc` / `.set` / `.observe` / `.labels`); **Consumers** = the directories whose dashboards (`grafana`), alert rules
-or scrape config (`prometheus`), agent extractor (`agent`), SPA (`dashboard`), demo harness (`tools`) or scripts
+(`.inc` / `.set` / `.observe` / `.labels`); **Consumers** = the directories whose dashboards (`grafana`), agent extractor (`agent`), SPA (`dashboard`), demo harness (`tools`) or scripts
 (`scripts`) name it. Types: counter (C), gauge (G, observable), histogram (H). 16 names are defined but never
 recorded by any service; they are listed so a consumer does not trust them.
 
 | Metric | Type | Labels | Defined in | Emitted | Consumers |
 |---|---|---|---|---|---|
-| `flag_eval_errors_total` | counter | `flag_key`, `reason` | lib (all Python) | yes | grafana, prometheus |
-| `grpc_request_duration_seconds` | histogram | `method` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in game-coordinator, audio, controller-manager | grafana, prometheus |
+| `flag_eval_errors_total` | counter | `flag_key`, `reason` | lib (all Python) | yes | grafana |
+| `grpc_request_duration_seconds` | histogram | `method` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in game-coordinator, audio, controller-manager | grafana |
 | `grpc_requests_total` | counter | `method`, `status` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in game-coordinator, audio, controller-manager | (none) |
-| `process_cpu_seconds_total` | counter | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana, prometheus |
-| `process_resident_memory_bytes` | gauge | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana, prometheus |
+| `process_cpu_seconds_total` | counter | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |
+| `process_resident_memory_bytes` | gauge | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |
 | `process_threads` | gauge | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |
-| `grpc_client_errors_total` | counter | `service`, `method`, `code` | lib (all Python gRPC clients) | yes | prometheus |
+| `grpc_client_errors_total` | counter | `service`, `method`, `code` | lib (all Python gRPC clients) | yes | grafana |
 | `grpc_client_request_duration_seconds` | histogram | `service`, `method` | lib (all Python gRPC clients) | yes | grafana |
 | `event_bus_active_subscribers` | gauge | (none) | game-coordinator | yes | (none) |
 | `event_bus_publish_drops_total` | counter | `event_type` | game-coordinator | yes | (none) |
@@ -290,7 +288,7 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `game_active_controllers` | gauge | (none) | game-coordinator | yes | (none) |
 | `game_active_players` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana |
 | `game_active` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana |
-| `game_actual_update_frequency_hz` | gauge | (none) | game-coordinator | yes | grafana, prometheus |
+| `game_actual_update_frequency_hz` | gauge | (none) | game-coordinator | yes | grafana |
 | `game_analytics_replay_bytes` | histogram | `game_mode` | game-coordinator | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
 | `game_analytics_samples_total` | counter | `game_mode` | game-coordinator | yes | grafana |
 | `game_config_changes_total` | counter | `parameter` | game-coordinator | yes | (none) |
@@ -305,8 +303,8 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `game_flag_configuration_changes_total` | counter | (none) | game-coordinator | yes | grafana |
 | `game_flag_evaluations_total` | counter | `flag_key` | game-coordinator | yes | grafana |
 | `game_gameplay_stream_reconnects_total` | counter | `game_mode` | game-coordinator | yes | (none) |
-| `game_interventions_total` | counter | `type`, `objective`, `blocked`, `block_reason` | game-coordinator | yes | grafana, prometheus, tools |
-| `game_loop_frame_consistency_percent` | gauge | (none) | game-coordinator | yes | grafana, prometheus |
+| `game_interventions_total` | counter | `type`, `objective`, `blocked`, `block_reason` | game-coordinator | yes | grafana, tools |
+| `game_loop_frame_consistency_percent` | gauge | (none) | game-coordinator | yes | grafana |
 | `game_loop_frames_dropped_total` | counter | `mode` | game-coordinator | yes | grafana |
 | `game_loop_jitter_ms` | gauge | (none) | game-coordinator | yes | grafana |
 | `game_music_tempo` | gauge | (none) | game-coordinator | yes | agent, grafana |
@@ -331,7 +329,7 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `game_trace_correlation` | gauge | `game_kind`, `game_id`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id` | game-coordinator | yes | agent |
 | `game_winner_announcement_delay_seconds` | histogram | (none) | game-coordinator | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
 | `games_completed_total` | counter | `mode`, `game_kind` | game-coordinator | yes | (none) |
-| `games_started_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana, prometheus |
+| `games_started_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana |
 | `active_controllers_total` | gauge | (none) | controller-manager | yes | (none) |
 | `bluetooth_adapter_count` | gauge | (none) | controller-manager | yes | (none) |
 | `controller_accel_magnitude` | gauge | `serial` | controller-manager | yes | grafana |
@@ -344,7 +342,7 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `controller_backend_info` | gauge | `serial`, `backend` | controller-manager | yes | grafana |
 | `controller_battery_check_duration_seconds` | histogram | (none) | controller-manager | yes | (none) |
 | `controller_battery_checks_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_battery_level` | gauge | `serial` | controller-manager | yes | agent, grafana, prometheus |
+| `controller_battery_level` | gauge | `serial` | controller-manager | yes | agent, grafana |
 | `controller_battery_pct` | gauge | `serial` | controller-manager | yes | agent |
 | `controller_bluetooth_dropped_events_ratio_window` | gauge | (none) | controller-manager | yes | (none) |
 | `controller_bluetooth_dropped_events_ratio` | gauge | `serial` | controller-manager | yes | (none) |
@@ -356,14 +354,14 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `controller_color_g` | gauge | `serial` | controller-manager | yes | (none) |
 | `controller_color_hex` | gauge | `serial` | controller-manager | yes | grafana |
 | `controller_color_r` | gauge | `serial` | controller-manager | yes | (none) |
-| `controller_connected` | gauge | `serial` | controller-manager | yes | agent, grafana, prometheus |
+| `controller_connected` | gauge | `serial` | controller-manager | yes | agent, grafana |
 | `controller_disconnect_total` | counter | `serial` | controller-manager | yes | grafana |
 | `controller_discovery_check_duration_seconds` | histogram | (none) | controller-manager | yes | grafana |
 | `controller_discovery_checks_total` | counter | (none) | controller-manager | yes | (none) |
 | `controller_discovery_full_enumerate_total` | counter | (none) | controller-manager | yes | (none) |
 | `controller_discovery_verify_only_total` | counter | (none) | controller-manager | yes | (none) |
 | `controller_info` | gauge | `serial`, `name` | controller-manager | yes | agent, grafana |
-| `controller_input_lag_seconds` | histogram | `serial` | controller-manager | yes (#1376; game streams only) | grafana, prometheus |
+| `controller_input_lag_seconds` | histogram | `serial` | controller-manager | yes (#1376; game streams only) | grafana |
 | `controller_led_batch_updates_total` | counter | (none) | controller-manager | yes | (none) |
 | `controller_led_controllers_updated_per_batch` | histogram | (none) | controller-manager | yes | (none) |
 | `controller_object_pool_utilization` | gauge | `pool_type` | controller-manager | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
@@ -427,7 +425,7 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `python_hid_poll_duration_seconds` | histogram | (none) | python-hid | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
 | `python_hid_sensor_data_total` | counter | (none) | python-hid | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
 
-**Traceability:** FR-081, FR-083, FR-084, NFR-022 / UC-035 / metrics files above / `services/*/tests/` (metric patches), `tests/integration/test_decide_backend_e2e.py`.
+**Traceability:** FR-081, FR-084, NFR-022 / UC-035 / metrics files above / `services/*/tests/` (metric patches), `tests/integration/test_decide_backend_e2e.py`.
 
 ## 7. Log lines that are part of the contract
 

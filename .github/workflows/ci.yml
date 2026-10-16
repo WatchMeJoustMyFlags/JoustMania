@@ -137,7 +137,7 @@ jobs:
               # self-test edits to this job
               - '.github/workflows/ci.yml'
             # Telemetry contract (#1357) and infra config tests (#1365):
-            # producers, agent extractors, dashboards, alerts, envoy and the
+            # producers, agent extractors, dashboards, envoy and the
             # collector config, plus the compose file (image tags, host ports).
             telemetry:
               - 'services/**'
@@ -530,9 +530,8 @@ jobs:
 
   # Telemetry producer/consumer contract (#1357): static scan of Python/Go/Rust
   # metric and span producers vs the agent extractors, Grafana dashboards and
-  # Prometheus alerts, plus `promtool check rules`. Infra config tests (#1365):
-  # envoy routing (+ `envoy --mode validate`), `promtool test rules` for the key
-  # alerts, collector best-effort fan-out. Docker images are the compose tags.
+  # the dashboard SPA. Infra config tests (#1365): envoy routing (+ `envoy --mode
+  # validate`), collector best-effort fan-out. Docker images are the compose tags.
   # Runs in ~30 s, no service build.
   telemetry-contract:
     name: Telemetry Contract

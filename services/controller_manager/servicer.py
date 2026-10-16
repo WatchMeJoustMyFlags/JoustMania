@@ -394,7 +394,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         now = time.time()
         # Input lag is a game-path signal: only game streams (which always send a
         # controller filter) record it, not the dashboard's unfiltered stream, so
-        # menu/dashboard traffic can never trip HighInputLatency.
+        # menu/dashboard traffic never skews the latency panels.
         record_input_lag = current_filter is not None
         # No dict copy needed — _build_gameplay_update is synchronous (no await
         # points), so no dict mutation can happen during iteration.

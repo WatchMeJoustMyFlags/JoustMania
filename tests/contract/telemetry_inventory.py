@@ -19,8 +19,8 @@ Consumers
     * Go agent ingest (docs/specs/telemetry.md §4.4): the metric-name and label
       constants of ``gamecontext/extract_metrics.go``, the span attribute/event
       constants of ``gamecontext/extract_spans.go`` and ``infracontext/extract_spans.go``.
-    * Grafana dashboards (``services/grafana/dashboards/*.json``) and Prometheus
-      alerts (``services/prometheus/alerts.yml``): metric names in PromQL.
+    * Grafana dashboards (``services/grafana/dashboards/*.json``) and the dashboard
+      SPA's VictoriaMetrics queries: metric names in PromQL.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -577,10 +576,9 @@ def agent_ingest() -> AgentIngest:
 
 
 # --------------------------------------------------------------------------- #
-# Dashboards and alerts (consumers)
+# Dashboards (consumers)
 # --------------------------------------------------------------------------- #
 DASHBOARD_DIR = REPO_ROOT / "services" / "grafana" / "dashboards"
-ALERTS_FILE = REPO_ROOT / "services" / "prometheus" / "alerts.yml"
 
 _PROMQL_FUNCS_AND_KEYWORDS = {
     # aggregations / keywords
@@ -665,11 +663,6 @@ def dashboard_queries() -> list[tuple[str, str, str]]:
         _walk_json(json.loads(path.read_text()), found, path.stem)
         out.extend((path.name, title, q) for title, q in found)
     return out
-
-
-def alert_rules() -> list[dict]:
-    doc = yaml.safe_load(ALERTS_FILE.read_text())
-    return [rule for group in doc["groups"] for rule in group["rules"]]
 
 
 _SELECTOR_RE = re.compile(r"(?<![\w.:])([a-zA-Z_:][a-zA-Z0-9_:]*)\s*\{([^{}]*)\}")

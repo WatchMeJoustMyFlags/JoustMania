@@ -1,5 +1,5 @@
 """
-Tests for controller_input_lag_seconds (FR-083, UC-035 A2 HighInputLatency alert).
+Tests for controller_input_lag_seconds (UC-035 step 6: backend-comparison latency panels).
 
 What is measured: the age of the controller sample each gameplay frame carries,
 i.e. the time from the controller-manager poll loop picking up a fresh sample
@@ -55,12 +55,12 @@ async def _poll_at(loop: DiscoveryLoop, now: float) -> None:
 
 
 class TestSampleAge:
-    @pytest.mark.uc("UC-035", flow="A2")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_no_sample_yet_has_no_age(self):
         loop = _make_loop(MagicMock())
         assert loop.sample_age_seconds(SERIAL, 100.0) is None
 
-    @pytest.mark.uc("UC-035", flow="A2")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @pytest.mark.asyncio
     async def test_fresh_sample_age_counts_from_poll_pickup(self):
         backend = MagicMock()
@@ -74,7 +74,7 @@ class TestSampleAge:
         await _poll_at(loop, 100.010)
         assert loop.sample_age_seconds(SERIAL, 100.012) == pytest.approx(0.002)
 
-    @pytest.mark.uc("UC-035", flow="A2")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @pytest.mark.asyncio
     async def test_stale_replay_keeps_aging(self):
         """Same frame object returned again (stalled backend) is not a new sample."""
@@ -118,7 +118,7 @@ class TestGameplayFrameObservesLag:
             servicer.tracked_controllers[SERIAL] = {}
             yield servicer, mock_loop
 
-    @pytest.mark.uc("UC-035", flow="A2")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_frame_observes_sample_age_per_controller(self, servicer):
         servicer, mock_loop = servicer
         mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
@@ -132,7 +132,7 @@ class TestGameplayFrameObservesLag:
         assert lag.labels.return_value.observe.call_count == 2
         lag.labels.return_value.observe.assert_called_with(0.012)
 
-    @pytest.mark.uc("UC-035", flow="A2")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_unfiltered_dashboard_stream_records_nothing(self, servicer):
         servicer, mock_loop = servicer
         mock_loop.sample_age_seconds = MagicMock(return_value=0.5)
@@ -143,7 +143,7 @@ class TestGameplayFrameObservesLag:
         assert len(update.controllers) == 1
         lag.labels.return_value.observe.assert_not_called()
 
-    @pytest.mark.uc("UC-035", flow="A2")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_pattern_controller_records_nothing(self, servicer):
         """Pattern controllers synthesise accel per delivered frame; the polled sample's age is meaningless."""
         servicer, mock_loop = servicer
@@ -163,7 +163,7 @@ class TestGameplayFrameObservesLag:
 
         lag.labels.return_value.observe.assert_not_called()
 
-    @pytest.mark.uc("UC-035", flow="A2")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_no_sample_yet_records_nothing(self, servicer):
         servicer, mock_loop = servicer
         mock_loop.sample_age_seconds = MagicMock(return_value=None)
@@ -173,7 +173,7 @@ class TestGameplayFrameObservesLag:
 
         lag.labels.return_value.observe.assert_not_called()
 
-    @pytest.mark.uc("UC-035", flow="A2")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_filtered_out_controller_records_nothing(self, servicer):
         servicer, mock_loop = servicer
         mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
