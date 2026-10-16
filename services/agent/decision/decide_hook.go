@@ -281,8 +281,9 @@ const DecideGateInterval = "decide_interval"
 // gateRemoteDecide is the call gate for remote decide calls: eligibility
 // (llm.eligible_game_kinds, so shadow games stay rules-only), the per-game cadence
 // decision.min_interval_ms, and the GLOBAL per-minute budget
-// llm.max_requests_per_minute shared with the post-game retro (the spend bound). Cadence and budget are charged only on admission, and
-// only after the caller won the inflight claim. It returns "" when admitted.
+// llm.max_requests_per_minute shared with the post-game retro (the spend bound).
+// Cadence and budget are charged only on admission, and only after the caller
+// won the inflight claim. It returns "" when admitted.
 func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) string {
 	if !snapshot.LLMGate.EligibleFor(c.GameKind) {
 		l.recordGated(ctx, FallbackNotEligible)

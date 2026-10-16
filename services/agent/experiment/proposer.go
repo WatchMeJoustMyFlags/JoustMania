@@ -87,11 +87,9 @@ type Narrative struct {
 // an OpenFeature dependency: the caller resolves these and passes the value in.
 // (Named ProposerConfig, not Config — the validate stage already owns Config.)
 type ProposerConfig struct {
-	// Engine is agent.code_improvement.engine — the flag-selectable backend
-	// identifier (#931 AC). The Proposer records it on the span for attribution;
-	// the actual backend selection happens in main.go (today every value selects
-	// the stub backend, so a non-stub value still degrades to no-proposal until a
-	// real transport lands). Recorded, not branched on, here.
+	// Engine is agent.code_improvement.engine (#931 AC). It is RECORDED ON THE
+	// SPAN ONLY: nothing branches on it. The propose backend is selected by the
+	// AGENT_INFERENCE_BACKEND env (stub | claude) in main.go (#1234).
 	Engine string
 	// MinInterval is agent.code_improvement.min_interval_seconds — the per-Proposer
 	// cadence floor (#847 gating concept). Proposing is expensive (an LLM call), so

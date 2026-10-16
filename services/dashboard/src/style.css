@@ -724,10 +724,6 @@ body {
   border-left-color: var(--accent-primary);
 }
 
-.agent-feed-discarded {
-  border-left-color: var(--accent-warning);
-}
-
 .agent-feed-rollout {
   border-left-color: var(--accent-info);
 }
@@ -751,11 +747,6 @@ body {
 .agent-badge-blocked {
   background: rgba(233, 69, 96, 0.2);
   color: var(--accent-primary);
-}
-
-.agent-badge-discarded {
-  background: rgba(255, 152, 0, 0.2);
-  color: var(--accent-warning);
 }
 
 .agent-badge-rollout {

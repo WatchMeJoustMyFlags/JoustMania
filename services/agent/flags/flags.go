@@ -492,9 +492,9 @@ func (f *Flags) Validation(ctx context.Context) ValidationConfig {
 // and maps them, the same "package owns logic, caller owns flagd" split the
 // Gate/Writer/Validator use).
 type CodeImprovementConfig struct {
-	// Engine is code_improvement.engine — the flag-selectable propose backend
-	// (default "stub"). main.go uses it to select the backend; today every value
-	// resolves to the inert stub until a real transport lands (#738/#742).
+	// Engine is code_improvement.engine (default "stub"). It is recorded on the
+	// propose span only; the propose backend itself is selected by the
+	// AGENT_INFERENCE_BACKEND env (stub | claude, #1234).
 	Engine string
 	// MinInterval is code_improvement.min_interval_seconds as a Duration (default
 	// 300s): the propose cadence floor. <= 0 in the flag falls back to the default

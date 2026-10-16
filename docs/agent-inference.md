@@ -53,8 +53,15 @@ implements that with the official Anthropic Go SDK.
 | `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | per-call deadline, also the retro's deadline |
 
 With the stub, the proposer proposes nothing and the retro is capture-only
-(`inference.used=none`, `inference.fallback_reason=no_backend_available`). The
-retro also draws one slot from `llm.max_requests_per_minute`.
+(`inference.used=none`, `inference.fallback_reason=no_backend_available`). With
+`claude`, a retro calls the model only for game kinds in `llm.eligible_game_kinds`
+(default `real`); a shadow-game retro stays capture-only
+(`inference.fallback_reason=llm_not_eligible`), so shadow games cannot use up the
+budget that real-game decisions need. A retro that calls the model draws one slot
+from `llm.max_requests_per_minute` (or `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`).
+
+The `code_improvement.engine` flag (`stub` / `claude`) is only recorded on the
+propose span; it does not select anything. `AGENT_INFERENCE_BACKEND` does.
 
 On the models that accept it (Opus 5.5, Opus 5, Sonnet 5.5, Fable 5.1) the client
 sends `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`), so a policy

@@ -727,6 +727,9 @@ func main() {
 	// budget the in-game gate uses (#847 acceptance #7): inject the one instance the
 	// per-game loops also hold, so a retro at game end cannot blow the per-minute cap.
 	retro.SetLLMBudget(sharedLLMBudget)
+	// The AGENT_LLM_MAX_REQUESTS_PER_MINUTE override applies to the retro's budget
+	// check too, so the shared cap is the same number on both paths.
+	retro.SetLLMBudgetOverride(llmBudgetCapOverride)
 	// #1234: the retro calls the proposer/retro text backend directly (Claude, or
 	// nil = capture-only with used="none"/no_backend_available for the stub default),
 	// bounded by AGENT_INFERENCE_TIMEOUT_SECONDS.

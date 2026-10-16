@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -142,6 +143,11 @@ func NewClaude(cfg Config) *Claude {
 		cfg.Model = DefaultModel
 	}
 	cfg.Effort = strings.ToLower(strings.TrimSpace(cfg.Effort))
+	if cfg.Effort != "" && !validEfforts[cfg.Effort] {
+		slog.Warn("AGENT_INFERENCE_EFFORT is not one of low|medium|high|xhigh|max; sending no effort",
+			"value", cfg.Effort)
+		cfg.Effort = ""
+	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
@@ -237,9 +243,13 @@ var fallbackModels = map[string]bool{
 	"claude-sonnet-5-5": true,
 }
 
-// noEffortModels reject output_config.effort.
+// validEfforts are the output_config.effort levels the API accepts.
+var validEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+
+// noEffortModels reject output_config.effort (a 400 if sent).
 var noEffortModels = map[string]bool{
-	"claude-haiku-4-5": true,
+	"claude-haiku-4-5":  true,
+	"claude-sonnet-4-5": true,
 }
 
 func (c *Claude) usesFallback() bool { return fallbackModels[stripDateSuffix(c.cfg.Model)] }

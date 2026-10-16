@@ -25,9 +25,9 @@ const (
 )
 
 const (
-	// AttrEngine is the resolved agent.code_improvement.engine identifier (#931 AC
-	// "engine backend is flag-selectable"). Attribution only — the backend
-	// selection happens in main.go.
+	// AttrEngine is the resolved agent.code_improvement.engine value (#931 AC).
+	// Attribution only: the propose backend is selected by AGENT_INFERENCE_BACKEND
+	// (stub | claude) in main.go, not by this flag (#1234).
 	AttrEngine = "code_improvement.engine"
 	// AttrProposedDiffSummary records the structured experiment the model proposed
 	// (#931 AC "proposed diff summary + full reasoning visible as a span"). Since

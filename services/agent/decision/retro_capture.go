@@ -38,9 +38,11 @@ import (
 // (injected via SetLLMBudget from main.go, the same instance every per-game Loop
 // holds). When the budget is exhausted at game end the retro is GATED: it records
 // agent_llm_gated_total{reason=llm_budget_exhausted} and captures nothing — a
-// retrospective cannot blow the global LLM cap. NOTE the retro is intentionally
-// NOT subject to the eligibility or cadence layers: it is a once-per-session,
-// game-kind-agnostic offline analysis, so only the global budget bounds it.
+// retrospective cannot blow the global LLM cap. Only a retro that actually calls
+// the text backend is charged (#1234): a stub retro is capture-only, and a game
+// kind outside llm.eligible_game_kinds (shadow games by default) is capture-only
+// too, so shadow-game retros never starve real-game remote decide calls. The
+// retro is not subject to the per-game cadence: it runs once per session.
 
 // SpanLLMRetro is the post-game retrospective capture span (#844): emitted once
 // per session at game end, carrying the prompt the agent would send to an offline
@@ -158,6 +160,9 @@ type RetroCoordinator struct {
 	// ungated by the global cap (used by tests / single-purpose wiring that does not
 	// share a budget — capture proceeds as before #847). Injected via SetLLMBudget.
 	budget *llmBudget
+	// budgetOverride, when > 0, replaces llm.max_requests_per_minute as the cap
+	// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE), like Loop.budgetOverride.
+	budgetOverride int
 	// backend is the text backend the retro calls (#1234), injected via SetBackend.
 	// Nil (the stub default, tests) keeps the retro capture-only: the span records
 	// inference.used=none / fallback no_backend_available and ends at once.
@@ -257,6 +262,25 @@ func (rc *RetroCoordinator) SetLLMBudget(b *llmBudget) { rc.budget = b }
 // construction.
 func (rc *RetroCoordinator) SetBackend(b TextBackend) { rc.backend = b }
 
+// SetLLMBudgetOverride sets a per-minute cap that REPLACES the
+// llm.max_requests_per_minute flag value for the retro's budget check, mirroring
+// Loop.SetLLMBudgetOverride (AGENT_LLM_MAX_REQUESTS_PER_MINUTE, #964). A
+// non-positive value is ignored. Set during construction.
+func (rc *RetroCoordinator) SetLLMBudgetOverride(maxPerMinute int) {
+	if maxPerMinute > 0 {
+		rc.budgetOverride = maxPerMinute
+	}
+}
+
+// budgetCap returns the per-minute cap for this retro: the override when set,
+// else the live flag value.
+func (rc *RetroCoordinator) budgetCap(flagValue int) int {
+	if rc.budgetOverride > 0 {
+		return rc.budgetOverride
+	}
+	return flagValue
+}
+
 // SetTimeout sets the per-call retro inference deadline (AGENT_INFERENCE_TIMEOUT_SECONDS
 // in main.go). A non-positive value keeps DefaultRetroTimeout. Set during construction.
 func (rc *RetroCoordinator) SetTimeout(d time.Duration) { rc.timeout = d }
@@ -337,12 +361,25 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	// gate below reads the live llm.max_requests_per_minute.
 	snapshot := rc.Flags.Evaluate(context.Background())
 
-	// Global LLM budget gate (#847 acceptance #7): a retrospective is one LLM
-	// request, so it must fit the shared per-minute cap the in-game gate honors.
-	// When a budget is wired and exhausted, the retro is GATED — record the gated
-	// metric and capture nothing (no prompt build, no span). A nil budget (tests /
-	// unshared wiring) skips this check, preserving pre-#847 behavior.
-	if rc.budget != nil && !rc.budget.allow(now(), snapshot.LLMGate.MaxRequestsPerMinute) {
+	// Model-call gate (#847, #1234). Only a retro that will actually call the text
+	// backend counts as an LLM request:
+	//   - no backend (the stub default): capture-only, no budget slot charged;
+	//   - game kind not in llm.eligible_game_kinds (default real, so shadow games):
+	//     capture-only with fallback llm_not_eligible, no call, no budget slot — so
+	//     shadow-game retros can never starve real-game remote decide calls of the
+	//     shared budget;
+	//   - otherwise one slot from the shared llm.max_requests_per_minute budget (or
+	//     the AGENT_LLM_MAX_REQUESTS_PER_MINUTE override, as on the decide path).
+	//     When it is exhausted the retro is GATED: record the gated metric and
+	//     capture nothing (no prompt build, no span). A nil budget (tests / unshared
+	//     wiring) skips this check.
+	eligible := snapshot.LLMGate.EligibleFor(c.GameKind)
+	if rc.backend != nil && !eligible {
+		rc.llmGated.Add(context.Background(), 1,
+			otelmetric.WithAttributes(attribute.String("reason", FallbackNotEligible)))
+	}
+	callBackend := rc.backend != nil && eligible
+	if callBackend && rc.budget != nil && !rc.budget.allow(now(), rc.budgetCap(snapshot.LLMGate.MaxRequestsPerMinute)) {
 		rc.llmGated.Add(context.Background(), 1,
 			otelmetric.WithAttributes(attribute.String("reason", FallbackBudgetExhausted)))
 		rc.Log.Info("agent.llm.retro_gated",
@@ -377,7 +414,7 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 
 	// Inference attribution (#1234): the wired backend's model and name, or
 	// used=none / no_backend_available when the retro is capture-only.
-	attr := rc.retroInference()
+	attr := rc.retroInference(callBackend)
 	prompt.Model = attr.configured
 
 	// #1168: the retro span carries only the System-prompt fingerprint; emit the full
@@ -617,10 +654,21 @@ type retroAttribution struct {
 // retroInference computes the retro span/log inference attribution (#1234):
 //   - no backend wired (the stub default): configured="", used="none"
 //     (DefaultInference: a retro has no rules fallback), fallback=no_backend_available;
-//   - backend wired: configured=its model, used=its name, fallback="".
-func (rc *RetroCoordinator) retroInference() retroAttribution {
+//   - backend wired but the game kind is not eligible: configured=its model,
+//     used="none", fallback=llm_not_eligible;
+//   - backend wired and called: configured=its model, used=its name, fallback="".
+func (rc *RetroCoordinator) retroInference(callBackend bool) retroAttribution {
 	if rc.backend == nil {
 		return retroAttribution{used: DefaultInference, fallback: FallbackNoBackend}
+	}
+	if !callBackend {
+		// A backend is wired but this game kind is not eligible (shadow games by
+		// default): capture-only, attributed to the model that would have served.
+		return retroAttribution{
+			configured: rc.backend.Model(),
+			used:       DefaultInference,
+			fallback:   FallbackNotEligible,
+		}
 	}
 	return retroAttribution{
 		configured: rc.backend.Model(),

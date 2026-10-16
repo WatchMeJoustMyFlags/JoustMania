@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,8 @@ func retroFlagSnapshot() flags.Snapshot {
 		Enabled:              true,
 		Objectives:           map[string]float64{"endurance": 0.7, "chaos": 0.3},
 		InterventionsAllowed: []string{"noop", "grant_shield"},
+		// endedSession() is a real game; real games may call the text backend.
+		LLMGate: flags.LLMGate{EligibleGameKinds: []string{"real"}, MaxRequestsPerMinute: 6},
 	}
 }
 
@@ -79,52 +82,155 @@ func TestRetroCapture_EmitsSpan(t *testing.T) {
 	}
 }
 
-// TestRetroCapture_DrawsFromGlobalBudget: a retro is one LLM request and draws
-// from the SAME shared budget the in-game gate uses (#847 acceptance #7). When the
-// budget is exhausted, the retro is GATED: no agent.llm.retro span is emitted.
-func TestRetroCapture_DrawsFromGlobalBudget(t *testing.T) {
-	snap := retroFlagSnapshot()
-	snap.LLMGate = flags.LLMGate{MaxRequestsPerMinute: 1}
+// countingText is a TextBackend that counts Infer calls and returns a valid reply.
+type countingText struct {
+	mu    sync.Mutex
+	calls int
+}
 
+func (c *countingText) Name() string  { return "claude" }
+func (c *countingText) Model() string { return "claude-test" }
+func (c *countingText) Infer(context.Context, llm.Prompt) (string, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return `{"session_assessment":"ok","suggestions":[],"session_focus":"balanced"}`, nil
+}
+
+func (c *countingText) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// budgetedRetro builds a retro with a fresh budget, a frozen clock and the given
+// per-minute cap; backend may be nil (the stub).
+func budgetedRetro(t *testing.T, maxPerMinute int, backend TextBackend) (*RetroCoordinator, *tracetest.SpanRecorder, *llmBudget, time.Time) {
+	t.Helper()
+	snap := retroFlagSnapshot()
+	snap.LLMGate.MaxRequestsPerMinute = maxPerMinute
 	rc, sr := recordingRetro(t, snap)
 	budget := NewLLMBudget()
 	rc.SetLLMBudget(budget)
 	now := time.Unix(1000, 0)
 	rc.now = func() time.Time { return now }
+	if backend != nil {
+		rc.SetBackend(backend)
+	}
+	return rc, sr, budget, now
+}
 
-	// Pre-spend the single budget slot, mimicking an in-game LLM attempt this minute.
+// slotsLeft drains the budget at cap and reports how many slots were still free.
+func slotsLeft(b *llmBudget, now time.Time, limit int) int {
+	n := 0
+	for b.allow(now, limit) {
+		n++
+	}
+	return n
+}
+
+// TestRetroCapture_DrawsFromGlobalBudget: a retro that calls the backend is one
+// LLM request and draws from the SAME shared budget the remote decide gate uses
+// (#847 acceptance #7). When the budget is exhausted, the retro is GATED: no call,
+// no agent.llm.retro span.
+func TestRetroCapture_DrawsFromGlobalBudget(t *testing.T) {
+	be := &countingText{}
+	rc, sr, budget, now := budgetedRetro(t, 1, be)
+
+	// Pre-spend the single budget slot, mimicking a remote decide call this minute.
 	if !budget.allow(now, 1) {
 		t.Fatal("pre-spend of the single budget slot should succeed")
 	}
 
 	rc.OnGameEnd(endedSession())
+	rc.AwaitInflight()
 	if n := len(spansByName(sr.Ended(), SpanLLMRetro)); n != 0 {
 		t.Errorf("agent.llm.retro spans = %d, want 0 (budget exhausted, retro gated)", n)
 	}
+	if be.count() != 0 {
+		t.Errorf("Infer calls = %d, want 0 (gated)", be.count())
+	}
 }
 
-// TestRetroCapture_CapturesWhenBudgetAvailable: with a budget wired and a free
-// slot, the retro captures normally AND consumes one budget slot.
-func TestRetroCapture_CapturesWhenBudgetAvailable(t *testing.T) {
-	snap := retroFlagSnapshot()
-	snap.LLMGate = flags.LLMGate{MaxRequestsPerMinute: 2}
+// TestRetroCapture_RealGameCallsAndCharges: a real game end with a backend wired
+// calls the backend once and consumes one budget slot.
+func TestRetroCapture_RealGameCallsAndCharges(t *testing.T) {
+	be := &countingText{}
+	rc, sr, budget, now := budgetedRetro(t, 2, be)
 
-	rc, sr := recordingRetro(t, snap)
-	budget := NewLLMBudget()
-	rc.SetLLMBudget(budget)
-	now := time.Unix(1000, 0)
-	rc.now = func() time.Time { return now }
+	rc.OnGameEnd(endedSession())
+	rc.AwaitInflight()
+	if n := len(spansByName(sr.Ended(), SpanLLMRetro)); n != 1 {
+		t.Errorf("agent.llm.retro spans = %d, want 1", n)
+	}
+	if be.count() != 1 {
+		t.Errorf("Infer calls = %d, want 1", be.count())
+	}
+	if left := slotsLeft(budget, now, 2); left != 1 {
+		t.Errorf("free budget slots = %d, want 1 (the retro took one of two)", left)
+	}
+}
+
+// TestRetroCapture_ShadowGameNoCallNoCharge (#1234): a shadow game end (not in
+// llm.eligible_game_kinds) is capture-only even with a backend wired — no call, no
+// budget slot — so shadow retros cannot starve real-game remote decide calls.
+func TestRetroCapture_ShadowGameNoCallNoCharge(t *testing.T) {
+	be := &countingText{}
+	rc, sr, budget, now := budgetedRetro(t, 2, be)
+	c := endedSession()
+	c.GameKind = "shadow"
+
+	rc.OnGameEnd(c)
+	rc.AwaitInflight()
+	spans := spansByName(sr.Ended(), SpanLLMRetro)
+	if len(spans) != 1 {
+		t.Fatalf("agent.llm.retro spans = %d, want 1 (capture-only)", len(spans))
+	}
+	if be.count() != 0 {
+		t.Errorf("Infer calls = %d, want 0 for a shadow game", be.count())
+	}
+	if left := slotsLeft(budget, now, 2); left != 2 {
+		t.Errorf("free budget slots = %d, want 2 (no charge)", left)
+	}
+	for key, want := range map[string]string{
+		AttrInferenceUsed:       DefaultInference,
+		AttrInferenceFallback:   FallbackNotEligible,
+		AttrInferenceConfigured: "claude-test",
+	} {
+		if v, ok := attrValue(spans[0], key); !ok || v.AsString() != want {
+			t.Errorf("%s = %q (present=%v), want %q", key, v.AsString(), ok, want)
+		}
+	}
+}
+
+// TestRetroCapture_StubNoCharge (#1234): with no backend (the stub default) the
+// retro is capture-only and charges no budget slot.
+func TestRetroCapture_StubNoCharge(t *testing.T) {
+	rc, sr, budget, now := budgetedRetro(t, 2, nil)
 
 	rc.OnGameEnd(endedSession())
 	if n := len(spansByName(sr.Ended(), SpanLLMRetro)); n != 1 {
-		t.Errorf("agent.llm.retro spans = %d, want 1 (budget available)", n)
+		t.Errorf("agent.llm.retro spans = %d, want 1 (capture-only)", n)
 	}
-	// The retro consumed one of the two slots; only one remains.
-	if !budget.allow(now, 2) {
-		t.Error("one budget slot should remain after the retro")
+	if left := slotsLeft(budget, now, 2); left != 2 {
+		t.Errorf("free budget slots = %d, want 2 (stub is not charged)", left)
 	}
-	if budget.allow(now, 2) {
-		t.Error("budget should be exhausted after retro + one more (cap 2)")
+}
+
+// TestRetroCapture_BudgetOverride: AGENT_LLM_MAX_REQUESTS_PER_MINUTE replaces the
+// flag cap on the retro's budget check, as on the decide path.
+func TestRetroCapture_BudgetOverride(t *testing.T) {
+	be := &countingText{}
+	rc, _, budget, now := budgetedRetro(t, 1, be)
+	rc.SetLLMBudgetOverride(2)
+	if !budget.allow(now, 2) { // one slot already used this minute
+		t.Fatal("pre-spend should succeed")
+	}
+
+	rc.OnGameEnd(endedSession())
+	rc.AwaitInflight()
+	if be.count() != 1 {
+		t.Errorf("Infer calls = %d, want 1 (override cap 2 > flag cap 1)", be.count())
 	}
 }
 

@@ -5,9 +5,9 @@
  * telemetry (see ../agent.ts):
  *
  *   1. Decision feed     — a rolling tail of the agent's recent decisions
- *                          (blocked decisions + discarded LLM results + rollout
- *                          activity), allowed-vs-blocked at a glance.
- *   2. Flag panel        — the resolved effective mode/model/policy values the
+ *                          (blocked decisions + rollout activity),
+ *                          allowed-vs-blocked at a glance.
+ *   2. Flag panel        — the resolved effective decision backend/policy values the
  *                          agent last evaluated against.
  *   3. Intervention      — applied vs blocked tallies (blocked by action and by
  *      overlay             reason from Loki, applied from VictoriaMetrics).
@@ -186,7 +186,7 @@ export class AgentView {
       this.feedEl.innerHTML =
         '<div class="loading">No agent decisions in the last 10 minutes. ' +
         "Allowed decisions appear in the Jaeger trace (link above); this feed shows " +
-        "blocked decisions, discarded LLM results, and rollout activity.</div>";
+        "blocked decisions and rollout activity. Remote-backend fallbacks are in the decide strip below.</div>";
       return;
     }
     this.feedEl.innerHTML = feed.map((row) => this.renderFeedRow(row)).join("");

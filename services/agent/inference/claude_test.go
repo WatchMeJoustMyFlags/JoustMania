@@ -371,3 +371,27 @@ func TestClaude_FeedsProposerSeam(t *testing.T) {
 		t.Fatalf("proposal = %+v", res.Proposal)
 	}
 }
+
+func TestClaude_InvalidEffortDropped(t *testing.T) {
+	f := &fakeMessages{body: messageBody("x", "end_turn")}
+	c := newTestClaude(t, f, Config{Effort: "turbo"})
+	if _, err := c.Infer(context.Background(), llm.Prompt{User: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := f.last(t)
+	if _, ok := req["output_config"]; ok {
+		t.Errorf("invalid effort must be dropped, got output_config=%v", req["output_config"])
+	}
+}
+
+func TestClaude_Sonnet45GetsNoEffort(t *testing.T) {
+	f := &fakeMessages{body: messageBody("x", "end_turn")}
+	c := newTestClaude(t, f, Config{Model: "claude-sonnet-4-5-20250929", Effort: "high"})
+	if _, err := c.Infer(context.Background(), llm.Prompt{User: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := f.last(t)
+	if _, ok := req["output_config"]; ok {
+		t.Errorf("output_config sent to sonnet 4.5: %v", req["output_config"])
+	}
+}
