@@ -207,6 +207,7 @@ def servicer():
 
 class TestInitialConnectionSuppression:
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="main", steps=[5], br=["BR-002"])
     async def test_only_unreserved_announced_and_in_roster(self, servicer):
         """2 reserved + 2 unreserved: subscriber gets connect events for only
         the 2 unreserved, and every roster contains only unreserved serials."""
@@ -285,6 +286,7 @@ def _make_discovery_loop(tracked, backend, button_detector):
 
 class TestLiveDisconnectSuppression:
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A1", br=["BR-002"])
     async def test_reserved_disconnect_not_published(self):
         """When a reserved controller disconnects, no disconnect ButtonEvent is
         published; the unreserved one is, with a reserved-free roster."""
@@ -310,6 +312,8 @@ class TestLiveDisconnectSuppression:
         assert set(call.kwargs["connected_serials"]) == {"U2"}
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="main", steps=[5], br=["BR-002"])
+    @pytest.mark.uc("UC-003", flow="A2")
     async def test_reserved_connect_not_published(self):
         """When a reserved controller appears, no connect ButtonEvent is
         published; an unreserved newcomer is."""

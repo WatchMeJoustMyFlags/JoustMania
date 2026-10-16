@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add lib to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -86,6 +88,7 @@ class TestUpdateDefaultVariant:
 
         assert result is False
 
+    @pytest.mark.uc("UC-012", flow="A5")
     def test_permission_error_logged_loudly_not_swallowed(self, tmp_path, monkeypatch, caplog):
         """#1031: a nonroot write that fails with PermissionError must NOT be
         silently swallowed — it is logged at CRITICAL so non-persistence is

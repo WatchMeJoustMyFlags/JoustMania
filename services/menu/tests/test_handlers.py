@@ -132,6 +132,7 @@ class TestConnectedHandler:
         assert handler.state == ControllerState.CONNECTED
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="main", steps=[6])
     async def test_on_enter_sets_dim_color(self, handler, mock_state_manager):
         """on_enter should set dim LED color."""
         handler.set_state_manager(mock_state_manager)
@@ -141,6 +142,7 @@ class TestConnectedHandler:
         mock_state_manager.led.set_connected_color.assert_called_once_with("serial1", "JoustFFA")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[2])
     async def test_handle_button_trigger(self, handler, mock_state_manager):
         """Trigger press should transition to READY."""
         mock_state_manager.register_handler(handler)
@@ -151,6 +153,7 @@ class TestConnectedHandler:
         assert mock_state_manager.get_controller_state("serial1") == ControllerState.READY
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="A2")
     async def test_handle_button_select_cycles_game(self, handler, mock_state_manager):
         """UC-011 A2 / FR-011 (#1272): SELECT in the lobby advances to the next playable mode.
 
@@ -174,6 +177,7 @@ class TestConnectedHandler:
         mock_state_manager.audio.play_game_mode_voice.assert_awaited_once_with(expected.name)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="A2", br=["BR-001"])
     async def test_handle_button_select_wraps_around(self, handler, mock_state_manager):
         """Repeated SELECT presses cycle through every playable mode and wrap (UC-011 BR-001)."""
         mock_state_manager.register_handler(handler)
@@ -188,6 +192,7 @@ class TestConnectedHandler:
         assert mock_state_manager.current_game_mode == Games.JoustFFA
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="A2")
     async def test_handle_button_select_uses_selection_callback(self, handler):
         """With a servicer callback wired, SELECT routes through it (single selection path)."""
         select_cb = AsyncMock()
@@ -255,6 +260,7 @@ class TestReadyHandler:
         assert handler.state == ControllerState.READY
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[2])
     async def test_on_enter_sets_bright_color(self, handler, mock_state_manager):
         """on_enter should set bright LED color."""
         handler.set_state_manager(mock_state_manager)
@@ -264,6 +270,7 @@ class TestReadyHandler:
         mock_state_manager.led.set_ready_color.assert_called_once_with("serial1", "JoustFFA")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[4])
     async def test_on_enter_starts_game_when_all_ready(self, handler, mock_state_manager, start_game_callback):
         """on_enter should start game when all controllers are ready."""
         mock_state_manager.all_ready.return_value = True
@@ -274,6 +281,7 @@ class TestReadyHandler:
         start_game_callback.assert_called_once_with("serial1")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A1")
     async def test_handle_button_move_unreadies(self, handler, mock_state_manager):
         """Move press should transition back to CONNECTED."""
         handler.set_state_manager(mock_state_manager)

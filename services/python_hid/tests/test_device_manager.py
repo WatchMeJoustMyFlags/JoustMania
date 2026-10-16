@@ -9,6 +9,8 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -88,6 +90,7 @@ class TestCommandDispatch:
         assert result[0]["serial"] == FAKE_SERIAL_NORMALIZED
 
     @patch("services.python_hid.device_manager.hid")
+    @pytest.mark.uc("UC-002", flow="main", steps=[2])
     def test_open_returns_true_on_success(self, mock_hid):
         """Open command returns True when device is found."""
         mock_hid.enumerate.return_value = [_make_dev_info()]
@@ -162,6 +165,7 @@ class TestReadDevice:
     @patch("services.python_hid.device_manager.battery_to_percent", return_value=100)
     @patch("services.python_hid.device_manager.parse_input_report")
     @patch("services.python_hid.device_manager.hid")
+    @pytest.mark.uc("UC-002", flow="main", steps=[2])
     def test_read_device_produces_sensor_data(self, mock_hid, mock_parse, mock_battery):
         """_read_device returns SensorData with correct fields."""
         mock_device = MagicMock()

@@ -102,6 +102,7 @@ class TestControllerEventLoopDispatch:
         mock_callbacks.update_battery.assert_called_once_with("serial1", 5)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A1")
     async def test_dispatch_disconnect_event(self, event_loop_instance, mock_callbacks, mock_metrics):
         """Disconnect events should call on_disconnect callback."""
         event = MagicMock()
@@ -296,6 +297,7 @@ class TestReconciliation:
     """Tests for ghost controller reconciliation."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A6")
     async def test_ghost_controller_pruned(self, event_loop_instance, mock_callbacks, mock_metrics):
         """Ghost controllers not in backend list should be disconnected."""
         # Menu thinks serial1 and serial2 are connected
@@ -335,6 +337,7 @@ class TestReconciliation:
         mock_callbacks.get_connected_serials.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A6")
     async def test_no_pruning_when_lists_match(self, event_loop_instance, mock_callbacks, mock_metrics):
         """No pruning when menu and backend agree on connected controllers."""
         mock_callbacks.get_connected_serials.return_value = {"serial1", "serial2"}
@@ -416,6 +419,7 @@ class TestHandlerErrorIsolation:
     """#1272: one handler exception must not drop the stream or wipe the lobby."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", br=["BR-003"])
     async def test_dispatch_safely_swallows_and_counts(self, event_loop_instance, mock_callbacks, mock_metrics):
         """A raising callback is logged and counted, not propagated."""
         mock_callbacks.on_button.side_effect = AttributeError("boom")
@@ -426,6 +430,7 @@ class TestHandlerErrorIsolation:
         mock_metrics.button_event_errors_total.labels.return_value.inc.assert_called_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", br=["BR-003"])
     async def test_handler_exception_keeps_stream_and_ready_state(self, mock_metrics):
         """A handler raising mid-stream leaves the stream up and READY controllers READY.
 

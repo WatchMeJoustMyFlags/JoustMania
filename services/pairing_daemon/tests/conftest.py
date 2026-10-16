@@ -27,6 +27,7 @@ _mock_hid.device = MagicMock
 sys.modules.setdefault("hidraw", _mock_hid)
 
 import pytest
+from dbus_fast import Variant
 
 
 class MockCommandRunner:
@@ -187,3 +188,31 @@ def sample_hcitool_con():
 @pytest.fixture
 def sample_hcitool_rssi():
     return SAMPLE_HCITOOL_RSSI
+
+
+# --- BlueZ ObjectManager fixtures (UC-001 BR-001) ---
+
+
+def bluez_tree(adapters: dict[str, tuple[str, list[dict]]]) -> dict:
+    """Build a GetManagedObjects reply.
+
+    Args:
+        adapters: {"hci0": (adapter_address, [device_props, ...])}; device_props
+            holds plain values ("Address", "Connected", "Name").
+    """
+    objects: dict = {"/org/bluez": {"org.bluez.AgentManager1": {}}}
+    for hci, (address, device_list) in adapters.items():
+        objects[f"/org/bluez/{hci}"] = {"org.bluez.Adapter1": {"Address": Variant("s", address)}}
+        for i, device in enumerate(device_list):
+            props = {
+                "Address": Variant("s", device["Address"]),
+                "Connected": Variant("b", device.get("Connected", False)),
+                "Name": Variant("s", device.get("Name", "Motion Controller")),
+            }
+            objects[f"/org/bluez/{hci}/dev_{i}"] = {"org.bluez.Device1": props}
+    return objects
+
+
+def devices(count: int, *, connected: bool = False, prefix: str = "00:06:F7") -> list[dict]:
+    """`count` BlueZ device entries with distinct addresses under `prefix`."""
+    return [{"Address": f"{prefix}:00:00:{i:02X}", "Connected": connected} for i in range(count)]

@@ -110,6 +110,8 @@ ALL_GAME_MODES = [
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-003", flow="main", steps=[1, 2, 3, 4, 5, 6])
+@pytest.mark.uc("UC-010", flow="main", steps=[1, 3, 4, 5, 7])
 @pytest.mark.parametrize("game_mode,_min_players,end_strategy,game_timeout", ALL_GAME_MODES)
 async def test_full_game_lifecycle(
     docker_compose, game_mode: str, _min_players: int, end_strategy: EndStrategy, game_timeout: int

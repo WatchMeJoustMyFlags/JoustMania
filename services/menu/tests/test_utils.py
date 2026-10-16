@@ -255,6 +255,51 @@ class TestGameModesConstant:
         """All game modes should be unique."""
         assert len(GAME_MODES) == len(set(GAME_MODES))
 
+    @pytest.mark.uc("UC-011", flow="main", steps=[2], br=["BR-001"])
     def test_random_not_in_game_modes(self):
         """Random should not be in GAME_MODES (it's meta)."""
         assert "Random" not in GAME_MODES
+
+
+class TestUC011ModeSelectionRules:
+    """UC-011 BR-001 (playable modes only) and A3 (modes without voice or colour)."""
+
+    @pytest.mark.uc("UC-011", flow="main", steps=[2], br=["BR-001"])
+    def test_ten_playable_modes_never_commander_ninja_random(self):
+        """Exactly the ten implemented modes are offered; Commander, Ninja and Random never are."""
+        from lib.types import Games
+
+        assert len(GAME_MODES) == 10
+        for excluded in (Games.Commander, Games.Ninja, Games.Random):
+            assert excluded.name not in GAME_MODES
+        # Cycling from every playable mode never lands on an excluded one.
+        for name in GAME_MODES:
+            assert get_next_game_mode(Games[name]).name in GAME_MODES
+            assert get_next_game_mode(Games[name], forward=False).name in GAME_MODES
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="A3")
+    @pytest.mark.parametrize("mode", ["Zombies", "NonStop"])
+    async def test_mode_without_voice_or_colour(self, mode):
+        """Zombies and NonStop: no announcement and the default orange (key mismatch, D-M8)."""
+        audio = AudioHelper(MagicMock())
+        audio.play_voice = AsyncMock()
+        led = LedController(MagicMock())
+
+        await audio.play_game_mode_voice(mode)
+
+        audio.play_voice.assert_not_called()
+        assert led.get_game_color(mode) == DEFAULT_COLOR
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", steps=[3])
+    async def test_other_modes_have_voice_and_colour(self):
+        """Every other playable mode has its own announcement and lobby colour."""
+        audio = AudioHelper(MagicMock())
+        audio.play_voice = AsyncMock()
+        led = LedController(MagicMock())
+
+        for mode in set(GAME_MODES) - {"Zombies", "NonStop"}:
+            await audio.play_game_mode_voice(mode)
+            assert audio.play_voice.await_args.args[0] == GAME_MODE_VOICE[mode]
+            assert led.get_game_color(mode) == GAME_MODE_COLORS[mode]

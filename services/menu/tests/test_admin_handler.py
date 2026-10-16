@@ -152,6 +152,7 @@ class TestAdminOptionNavigation:
         ]
         assert handler.option_names == expected
 
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-002"])
     def test_moved_options_not_cycled(self, handler):
         """The 5 moved-to-flag-only options must NOT be in the controller cycle."""
         moved = {
@@ -163,6 +164,7 @@ class TestAdminOptionNavigation:
         }
         assert moved.isdisjoint(handler.option_names)
 
+    @pytest.mark.uc("UC-012", flow="main", steps=[3])
     def test_option_colors_match_names(self, handler):
         """Each option should have a corresponding color."""
         assert len(handler.option_colors) == len(handler.option_names)
@@ -173,6 +175,7 @@ class TestAdminOptionNavigation:
             assert isinstance(color, Colors)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3])
     async def test_cycle_option_increments(self, handler):
         """handle_cycle_option should increment current_option."""
         handler.current_option = 0
@@ -187,6 +190,7 @@ class TestAdminOptionNavigation:
         assert handler.current_option == 0
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3])
     async def test_cycle_option_full_loop(self, handler):
         """A full MOVE-cycle should visit each option in order and wrap.
 
@@ -213,6 +217,7 @@ class TestIncreaseValueSensitivity:
     """Tests for sensitivity increase via FlagConfigWriter."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
     async def test_sensitivity_cycles_forward(self, handler, mock_state_manager):
         """Sensitivity increase should call cycle_variant with forward=True."""
         handler.current_option = 0  # sensitivity
@@ -236,6 +241,7 @@ class TestIncreaseValueNumTeams:
     """Tests for num_teams increase via FlagConfigWriter."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
     async def test_num_teams_cycles_forward(self, handler, mock_state_manager):
         """num_teams increase should call cycle_variant with forward=True."""
         handler.current_option = 1  # num_teams
@@ -249,6 +255,7 @@ class TestIncreaseValueBoolean:
     """Tests for boolean settings increase (toggle) via FlagConfigWriter."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
     async def test_force_all_start_cycles_forward(self, handler, mock_state_manager):
         """force_all_start toggle should call cycle_variant with forward=True."""
         handler.current_option = 2  # force_all_start (index 2 in reduced surface)
@@ -258,10 +265,30 @@ class TestIncreaseValueBoolean:
         mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with("force_all_start", forward=True)
 
 
+class TestWriteFailure:
+    """UC-012 A5: a flag write that fails persists nothing and gives no success feedback."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A5")
+    @pytest.mark.parametrize("handler_method", ["handle_increase_value", "handle_decrease_value"])
+    async def test_failed_cycle_gives_no_feedback_and_stays_in_admin(self, handler, mock_state_manager, handler_method):
+        """cycle_variant returns None (write failed): no pulse, no voice, the host stays in admin (step 3)."""
+        handler.current_option = 0  # sensitivity
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = None
+
+        await getattr(handler, handler_method)("test_serial")
+
+        mock_state_manager.led.send_game_effect.assert_not_called()
+        mock_state_manager.audio.play_voice.assert_not_called()
+        assert handler.active is True
+        assert handler.controller_serial == "test_serial"
+
+
 class TestDecreaseValueSensitivity:
     """Tests for sensitivity decrease via FlagConfigWriter."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
     async def test_sensitivity_cycles_backward(self, handler, mock_state_manager):
         """Sensitivity decrease should call cycle_variant with forward=False."""
         handler.current_option = 0  # sensitivity
@@ -275,6 +302,7 @@ class TestDecreaseValueNumTeams:
     """Tests for num_teams decrease via FlagConfigWriter."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
     async def test_num_teams_cycles_backward(self, handler, mock_state_manager):
         """num_teams decrease should call cycle_variant with forward=False."""
         handler.current_option = 1  # num_teams
@@ -288,6 +316,7 @@ class TestDecreaseValueForceAllStart:
     """Tests for force_all_start decrease via FlagConfigWriter."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
     async def test_force_all_start_cycles_backward(self, handler, mock_state_manager):
         """force_all_start decrease should call cycle_variant with forward=False."""
         handler.current_option = 2  # force_all_start (index 2 in reduced surface)
@@ -312,6 +341,7 @@ class TestShowValueFeedback:
         assert call_args[0][1] == controller_manager_pb2.GAME_EFFECT_PULSE
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5])
     async def test_sensitivity_feedback_uses_correct_color(self, handler, mock_state_manager):
         """Sensitivity feedback should use the correct color for each level."""
         expected_colors = [
@@ -330,6 +360,7 @@ class TestShowValueFeedback:
             assert call_kwargs["color"] == expected_color
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5])
     async def test_boolean_feedback_green_for_true(self, handler, mock_state_manager):
         """Boolean True should show green feedback."""
         await handler._show_value_feedback("test_serial", "force_all_start", True)
@@ -338,6 +369,7 @@ class TestShowValueFeedback:
         assert call_kwargs["color"] == Colors.Green.value
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5])
     async def test_boolean_feedback_red_for_false(self, handler, mock_state_manager):
         """Boolean False should show red feedback."""
         await handler._show_value_feedback("test_serial", "force_all_start", False)
@@ -374,6 +406,7 @@ class TestHandleSensitivityLocalStorage:
     """Tests for handle_sensitivity using FlagConfigWriter."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A1")
     async def test_handle_sensitivity_uses_flag_config_writer(self, handler, mock_state_manager):
         """handle_sensitivity should use FlagConfigWriter.cycle_variant."""
         mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
@@ -398,6 +431,7 @@ class TestHandleForceStartFlagd:
     """Tests for handle_force_start using flagd."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[3])
     async def test_handle_force_start_reads_from_flagd(self, handler, mock_state_manager):
         """handle_force_start should read force_all_start from flagd."""
         mock_state_manager.connected_controllers = {"s1", "s2"}
@@ -423,6 +457,7 @@ class TestHandleForceStartFlagd:
         assert call_args[0] == "game_requested"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[5])
     async def test_handle_force_start_invokes_coordinator_start(self, handler, mock_state_manager):
         """Force start must actually launch the game through the coordinator start
         path (#1029) — not merely publish the menu event. The selected mode +
@@ -452,6 +487,7 @@ class TestHandleForceStartFlagd:
         assert set(roster) == {"s1", "s2", "s3"}
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[3])
     async def test_handle_force_start_roster_uses_ready_when_not_force_all(self, handler, mock_state_manager):
         """Without force_all_start, the start roster is the ready controllers
         plus the admin controller (#1029)."""
@@ -476,6 +512,7 @@ class TestHandleForceStartFlagd:
         assert set(roster) == {"s1", "s2", "admin_serial"}
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[3])
     async def test_force_start_not_blocked_by_ghost_controller(self, handler, mock_state_manager):
         """Regression for #551: a ghost controller (the menu tracks more
         connected controllers than are ready, e.g. after a missed DISCONNECT
@@ -538,6 +575,7 @@ class TestForceStartLiveRosterReconcile:
     """#1153/#551: force-start prunes ghosts against the CM live-roster RPC."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[4], br=["BR-001"])
     async def test_force_all_prunes_ghost_via_live_roster(self, handler, mock_state_manager):
         """force_all_start=True uses the full connected set, which still contains
         a ghost after a missed DISCONNECT. The live-roster RPC returns the real
@@ -567,6 +605,7 @@ class TestForceStartLiveRosterReconcile:
         handler.metrics.ghost_controllers_pruned_total.inc.assert_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A2")
     async def test_force_start_fail_soft_on_rpc_error(self, handler, mock_state_manager):
         """If the live-roster RPC errors, force-start keeps the menu roster and
         still launches (must never be blocked by a reconcile failure)."""
@@ -601,6 +640,7 @@ class TestForceStartLiveRosterReconcile:
         handler.metrics.force_start_reconcile_failed_total.inc.assert_called_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[4], br=["BR-001"])
     async def test_admin_serial_preserved_when_absent_from_roster(self, handler, mock_state_manager):
         """The admin controller that triggered the start is never pruned, even if
         the live roster omits it (avoids starting with an empty roster)."""
@@ -667,6 +707,7 @@ class TestEnter:
         mock_metrics.button_presses_total.labels().inc.assert_called_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[2])
     async def test_enter_sends_admin_enter_effect(self, inactive_handler, mock_state_manager):
         """enter() should send GAME_EFFECT_ADMIN_ENTER."""
         from proto import controller_manager_pb2
@@ -677,6 +718,7 @@ class TestEnter:
         assert call_args[0][1] == controller_manager_pb2.GAME_EFFECT_ADMIN_ENTER
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[2])
     async def test_enter_starts_timeout_task(self, inactive_handler):
         """enter() should create a timeout task."""
         await inactive_handler.enter("s1")
@@ -769,6 +811,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_cycle_option.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A6")
     async def test_dispatch_trigger_to_hold_tracking(self, handler):
         """TRIGGER button should dispatch to _start_trigger_hold_tracking."""
         handler._start_trigger_hold_tracking = AsyncMock()
@@ -790,6 +833,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_decrease_value.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", steps=[1])
     async def test_dispatch_cross_to_game_mode(self, handler):
         """CROSS button should dispatch to handle_game_mode."""
         handler.handle_game_mode = AsyncMock()
@@ -797,6 +841,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_game_mode.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A1")
     async def test_dispatch_circle_to_sensitivity(self, handler):
         """CIRCLE button should dispatch to handle_sensitivity."""
         handler.handle_sensitivity = AsyncMock()
@@ -804,6 +849,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_sensitivity.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A2")
     async def test_dispatch_triangle_to_battery(self, handler):
         """TRIANGLE button should dispatch to handle_battery."""
         handler.handle_battery = AsyncMock()
@@ -811,6 +857,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_battery.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A3")
     async def test_dispatch_square_to_instructions(self, handler):
         """SQUARE button should dispatch to handle_instructions."""
         handler.handle_instructions = AsyncMock()
@@ -818,6 +865,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_instructions.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[7])
     async def test_dispatch_ps_to_exit(self, handler):
         """PS button should dispatch to _exit_to_connected."""
         handler._exit_to_connected = AsyncMock()
@@ -825,6 +873,7 @@ class TestHandleButtonEventDispatch:
         handler._exit_to_connected.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A4")
     async def test_timeout_exits_after_60_seconds(self, handler):
         """Should auto-exit if entry_time was more than 60 seconds ago."""
         handler.entry_time = time.time() - 61
@@ -1025,6 +1074,7 @@ class TestHandleGameMode:
     """Tests for game mode cycling (cross button)."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", steps=[1, 2])
     async def test_cycles_to_next_mode(self, handler, mock_state_manager):
         """Should cycle to next game mode."""
         mock_state_manager.current_game_mode.name = "JoustFFA"
@@ -1038,6 +1088,7 @@ class TestHandleGameMode:
         assert call_args[1]["game_name"] == "JoustTeams"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", steps=[2])
     async def test_wraps_to_first_mode(self, handler, mock_state_manager):
         """Should wrap to first mode when at end."""
         mock_state_manager.current_game_mode.name = "JoustTeams"
@@ -1049,6 +1100,7 @@ class TestHandleGameMode:
         assert call_args[1]["game_name"] == "JoustFFA"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", steps=[3])
     async def test_sends_pulse_and_plays_voice(self, handler, mock_state_manager):
         """Should send color pulse and play game mode voice."""
         from proto import controller_manager_pb2
@@ -1071,6 +1123,7 @@ class TestHandleGameMode:
         handler.callbacks.select_game_mode.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", steps=[4])
     async def test_applies_selection_via_callback(self, handler, mock_state_manager):
         """Cross cycling must actually apply the new selection through the menu
         (#1030) — not just publish a fire-and-forget event."""
@@ -1138,6 +1191,7 @@ class TestHandleBattery:
     """Tests for battery display (triangle button)."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A2")
     async def test_sends_show_battery_with_empty_serial(self, handler, mock_state_manager):
         """Should send GAME_EFFECT_SHOW_BATTERY with empty serial (affects all)."""
         from proto import controller_manager_pb2
@@ -1161,6 +1215,7 @@ class TestHandleInstructions:
     """Tests for instruction toggle (square button)."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A3")
     async def test_cycles_variant(self, handler, mock_state_manager):
         """Should cycle game_instructions variant."""
         await handler.handle_instructions("test_serial")
@@ -1168,6 +1223,7 @@ class TestHandleInstructions:
         mock_state_manager.user_prefs_writer.cycle_variant.assert_called_once_with("game_instructions", forward=True)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A3")
     async def test_enabled_shows_green_and_on_voice(self, handler, mock_state_manager):
         """When toggled to 'on', should show green and play on voice."""
         mock_state_manager.user_prefs_writer.cycle_variant.return_value = "on"
@@ -1179,6 +1235,7 @@ class TestHandleInstructions:
         mock_state_manager.audio.play_voice.assert_called_once_with(Sound.MENU_VOX_INSTRUCTIONS_ON)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A3")
     async def test_disabled_shows_red_and_off_voice(self, handler, mock_state_manager):
         """When toggled to 'off', should show red and play off voice."""
         mock_state_manager.user_prefs_writer.cycle_variant.return_value = "off"
@@ -1201,6 +1258,7 @@ class TestTriggerHoldAndRelease:
     """Tests for trigger hold tracking and force start."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[1, 2])
     async def test_hold_starts_effect_and_creates_task(self, handler, mock_state_manager):
         """Trigger press should start force start effect and create hold task."""
         from proto import controller_manager_pb2
@@ -1216,6 +1274,7 @@ class TestTriggerHoldAndRelease:
         handler._trigger_hold_task.cancel()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A1")
     async def test_release_cancels_task_and_restores_white(self, handler, mock_state_manager):
         """Trigger release should cancel hold task and restore white."""
         # Start the hold first
@@ -1240,6 +1299,7 @@ class TestExitToConnected:
     """Tests for _exit_to_connected."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[8])
     async def test_with_state_manager_calls_transition(self, handler, mock_state_manager):
         """Should call state_manager.transition_to with CONNECTED."""
         mock_state_manager.transition_to = AsyncMock()
@@ -1263,6 +1323,7 @@ class TestForceStartEffect:
     """Tests for force start LED effects."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[2])
     async def test_start_sends_charge_effect(self, handler, mock_state_manager):
         """start_force_start_effect should send GAME_EFFECT_FORCE_START_CHARGE."""
         from proto import controller_manager_pb2
@@ -1339,6 +1400,7 @@ class TestPlayValueVoice:
         mock_state_manager.audio.play_voice.assert_called_once_with(Sound.MENU_VOX_ADMINOP_3)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5])
     async def test_num_teams_voice_all_values(self, handler, mock_state_manager):
         """All num_teams values (2-6) should play correct voice."""
         expected = {
@@ -1354,6 +1416,7 @@ class TestPlayValueVoice:
             mock_state_manager.audio.play_voice.assert_called_once_with(expected_sound)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5])
     async def test_force_all_start_true_plays_true_voice(self, handler, mock_state_manager):
         """force_all_start=True should play TRUE voice (bug fix proof).
 
@@ -1364,6 +1427,7 @@ class TestPlayValueVoice:
         mock_state_manager.audio.play_voice.assert_called_once_with(Sound.MENU_VOX_ADMINOP_TRUE)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5])
     async def test_force_all_start_false_plays_false_voice(self, handler, mock_state_manager):
         """force_all_start=False should play FALSE voice."""
         await handler._play_value_voice("force_all_start", False)
@@ -1482,6 +1546,7 @@ class TestHelperProperties:
 class TestAgentControlOption:
     """Tests for the on-device agent kill-switch admin option (#819)."""
 
+    @pytest.mark.uc("UC-013", flow="main", steps=[1])
     def test_agent_control_in_option_cycle(self, handler):
         """agent_control must be a controller-cycled option with a color."""
         from services.menu.handlers.admin import AGENT_CONTROL_OPTION
@@ -1491,6 +1556,7 @@ class TestAgentControlOption:
         assert isinstance(handler.option_colors[idx], Colors)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="main", steps=[2, 3], br=["BR-001"])
     async def test_increase_routes_to_agent_control(self, handler, mock_state_manager):
         """SELECT on the agent option escalates policy, not a game.json write."""
         from services.menu.handlers.admin import AGENT_CONTROL_OPTION
@@ -1508,6 +1574,7 @@ class TestAgentControlOption:
         mock_state_manager.game_settings_writer.cycle_variant.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="main", steps=[2, 3])
     async def test_decrease_restricts_agent_policy(self, handler, mock_state_manager):
         """START on the agent option restricts policy one level toward none."""
         from services.menu.handlers.admin import AGENT_CONTROL_OPTION
@@ -1549,6 +1616,7 @@ class TestAgentControlOption:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="main", steps=[4])
     async def test_agent_control_led_and_voice_feedback(self, handler, mock_state_manager):
         """Cycling agent policy emits an LED pulse and a voice line."""
         from proto import controller_manager_pb2
@@ -1584,6 +1652,29 @@ class TestAgentControlOption:
 
         # Should not raise.
         await handler.handle_increase_value("test_serial")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A1")
+    @pytest.mark.parametrize("off_ladder", ["probe", "shadow_experimental"])
+    @pytest.mark.parametrize("button", ["increase", "decrease"])
+    async def test_off_ladder_level_jumps_to_none(self, handler, mock_state_manager, off_ladder, button):
+        """UC-013 A1: probe / shadow_experimental jump to none in either direction, with feedback."""
+        from proto import controller_manager_pb2
+
+        handler.current_option = handler.option_names.index("agent_control")
+        mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = off_ladder
+        mock_state_manager.agent_settings_writer.get_current_variant.return_value = off_ladder
+
+        if button == "increase":
+            await handler.handle_increase_value("test_serial")
+        else:
+            await handler.handle_decrease_value("test_serial")
+
+        mock_state_manager.agent_settings_writer.update_default_variant.assert_called_once_with(
+            "interventions_allowed", "none"
+        )
+        assert mock_state_manager.led.send_game_effect.call_args[0][1] == controller_manager_pb2.GAME_EFFECT_PULSE
+        mock_state_manager.audio.play_voice.assert_called()
 
     @pytest.mark.uc("UC-013", flow="main", steps=[3])
     def test_next_agent_level_ladder_clamps(self):
@@ -1752,6 +1843,7 @@ class TestForceStartThresholdFlag:
             metrics=mock_metrics,
         )
 
+    @pytest.mark.uc("UC-014", flow="main", steps=[2])
     def test_threshold_read_from_flag(self, mock_tracer, mock_callbacks, mock_metrics):
         handler = self._build(mock_tracer, mock_callbacks, mock_metrics)
         with patch("services.menu.handlers.admin.read_float_flag", return_value=0.6) as mock_read:
@@ -1968,6 +2060,7 @@ class TestSingleAdminSession:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", flow="A4")
     async def test_timeout_releases_lock(self, stack):
         """The auto-exit timeout releases the lock and returns the admin to CONNECTED."""
         servicer, state_manager, admin_handler = stack
