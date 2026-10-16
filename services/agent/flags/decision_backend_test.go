@@ -17,7 +17,8 @@ func defaultDecisionBackend() DecisionBackend {
 		ActConfidenceThreshold: DefaultDecisionActConfidenceThreshold,
 		CaptureContent:         DefaultDecisionCaptureContent,
 		MinInterval:            DefaultDecisionMinIntervalMs * time.Millisecond,
-		Claude:                 RemoteBackendConfig{Model: DefaultDecisionClaudeModel, Timeout: timeout},
+		Claude: RemoteBackendConfig{Model: DefaultDecisionClaudeModel,
+			Timeout: DefaultDecisionClaudeTimeoutMs * time.Millisecond},
 		OpenAI: RemoteBackendConfig{BaseURL: DefaultDecisionOpenAIBaseURL, Timeout: timeout,
 			ReasoningEffort: DefaultDecisionOpenAIReasoningEffort},
 		Jev: RemoteBackendConfig{Timeout: timeout},
@@ -129,7 +130,7 @@ func TestDecisionBackend_FlagFilesMatchDefaults(t *testing.T) {
 		keyDecisionBackend:                DefaultDecisionBackend,
 		keyDecisionActConfidenceThreshold: DefaultDecisionActConfidenceThreshold,
 		keyDecisionClaudeModel:            DefaultDecisionClaudeModel,
-		keyDecisionClaudeTimeoutMs:        float64(DefaultDecisionTimeoutMs),
+		keyDecisionClaudeTimeoutMs:        float64(DefaultDecisionClaudeTimeoutMs),
 		keyDecisionOpenAIBaseURL:          DefaultDecisionOpenAIBaseURL,
 		keyDecisionOpenAIModel:            DefaultDecisionOpenAIModel,
 		keyDecisionOpenAITimeoutMs:        float64(DefaultDecisionTimeoutMs),
@@ -169,6 +170,38 @@ func TestDecisionBackend_FlagFilesMatchDefaults(t *testing.T) {
 			if got := f.Variants[f.DefaultVariant]; got != w {
 				t.Errorf("%s: %s default = %v, want %v", path, key, got, w)
 			}
+		}
+	}
+}
+
+// TestDecisionBackend_StageBudgetVariant pins the presenter's live switch for the
+// global remote-call budget (#1231): llm.max_requests_per_minute has a "stage"
+// variant of 30 in both flag files, while the default stays
+// DefaultLLMMaxRequestsPerMinute.
+func TestDecisionBackend_StageBudgetVariant(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "flagd", "agent.json"),
+		filepath.Join("..", "..", "flagd", "ci", "agent.json"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Flags map[string]struct {
+				Variants       map[string]any `json:"variants"`
+				DefaultVariant string         `json:"defaultVariant"`
+			} `json:"flags"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		f := doc.Flags[keyLLMMaxRequestsPerMin]
+		if got := f.Variants["stage"]; got != float64(30) {
+			t.Errorf("%s: %s stage = %v, want 30", path, keyLLMMaxRequestsPerMin, got)
+		}
+		if got := f.Variants[f.DefaultVariant]; got != float64(DefaultLLMMaxRequestsPerMinute) {
+			t.Errorf("%s: %s default = %v, want %d", path, keyLLMMaxRequestsPerMin, got, DefaultLLMMaxRequestsPerMinute)
 		}
 	}
 }

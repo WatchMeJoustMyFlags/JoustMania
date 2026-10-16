@@ -101,7 +101,8 @@
       "variants": {
         "conservative": 3,
         "default": 6,
-        "aggressive": 12
+        "aggressive": 12,
+        "stage": 30
       },
       "defaultVariant": "default"
     },
@@ -516,8 +517,9 @@
       "state": "ENABLED",
       "variants": {
         "fast": 1500,
-        "default": 2500,
-        "patient": 5000
+        "tight": 2500,
+        "default": 5000,
+        "patient": 8000
       },
       "defaultVariant": "default"
     },

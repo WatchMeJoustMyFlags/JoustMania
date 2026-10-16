@@ -12,9 +12,9 @@ import (
 	"github.com/joustmania/agent/decide"
 )
 
-// Limits on model output. A legitimate FFA answer is well under 2 KiB with 3
-// answers and at most 5 probability entries each; the caps only stop a hostile
-// or runaway model from costing memory or CPU.
+// Limits on model output. A legitimate FFA answer is well under 1 KiB with 3
+// answers and at most 3 probability entries each (the prompt asks for the top
+// 3); the caps only stop a hostile or runaway model from costing memory or CPU.
 const (
 	// MaxOutputBytes caps the raw JSON Parse accepts.
 	MaxOutputBytes = 64 << 10
@@ -32,6 +32,15 @@ const (
 // or 1.01 are honest answers; anything further off is left for decide.Validate
 // to reject.
 const renormalizeTolerance = 0.02
+
+// truncatedMinSum is the smallest sum a TRUNCATED probability list (fewer
+// entries than the question has options) may have and still be rescaled to sum
+// to 1. The prompt asks for the top 3 options only, and models sometimes list
+// just the chosen option at p=0.95 and drop the tail instead of spreading it
+// (seen live on claude-haiku-4-5, #1231). Rescaling keeps the ranking (the
+// choice must still be the argmax for decide.Validate); a list carrying less
+// than half the mass is not a top-k answer and is left for Validate to reject.
+const truncatedMinSum = 0.5
 
 // ErrMalformed wraps every structural Parse failure (not JSON, wrong shape,
 // too large). It wraps decide.ErrInvalid, so a caller maps it to the same
@@ -67,7 +76,10 @@ type wireOutput struct {
 //   - for a score question the choice/probabilities fields are dropped, and for
 //     a choice question the score field is dropped (the schema forces every
 //     field to be present, so the "unused" value is noise, not a contradiction);
-//   - choice probabilities summing to within 0.02 of 1 are rescaled to sum to 1.
+//   - choice probabilities summing to within 0.02 of 1 are rescaled to sum to 1;
+//   - a truncated choice distribution (fewer entries than options, summing to
+//     at least 0.5 but less than 1) is rescaled to sum to 1: the omitted
+//     options keep probability 0 and the listed ones keep their ranking.
 //
 // Everything else (unknown question ids, duplicate answers, out-of-range
 // numbers, a choice that is not the most probable option) is left for
@@ -98,9 +110,9 @@ func Parse(req decide.Request, raw []byte, backend string) (decide.Response, err
 		return decide.Response{}, fmt.Errorf("%w: %d answers, limit %d", ErrMalformed, len(out.Answers), MaxAnswers)
 	}
 
-	kinds := make(map[string]decide.QuestionKind, len(req.Questions))
+	questions := make(map[string]decide.Question, len(req.Questions))
 	for _, q := range req.Questions {
-		kinds[q.ID] = q.Kind
+		questions[q.ID] = q
 	}
 
 	resp := decide.Response{
@@ -109,7 +121,7 @@ func Parse(req decide.Request, raw []byte, backend string) (decide.Response, err
 		Answers:   make([]decide.Answer, 0, len(out.Answers)),
 	}
 	for i, wa := range out.Answers {
-		a, err := toAnswer(wa, kinds[wa.ID])
+		a, err := toAnswer(wa, questions[wa.ID])
 		if err != nil {
 			return decide.Response{}, fmt.Errorf("%w: answer %d: %v", ErrMalformed, i, err)
 		}
@@ -121,12 +133,12 @@ func Parse(req decide.Request, raw []byte, backend string) (decide.Response, err
 	return resp, nil
 }
 
-func toAnswer(wa wireAnswer, kind decide.QuestionKind) (decide.Answer, error) {
+func toAnswer(wa wireAnswer, q decide.Question) (decide.Answer, error) {
 	if wa.Confidence == nil {
 		return decide.Answer{}, errors.New("missing confidence")
 	}
 	a := decide.Answer{QuestionID: wa.ID, Confidence: *wa.Confidence}
-	switch kind {
+	switch q.Kind {
 	case decide.KindScore:
 		if wa.Score == nil {
 			return decide.Answer{}, errors.New("score question without a score")
@@ -134,7 +146,7 @@ func toAnswer(wa wireAnswer, kind decide.QuestionKind) (decide.Answer, error) {
 		a.Score = *wa.Score
 	case decide.KindChoice:
 		a.Choice = wa.Choice
-		probs, err := toProbabilities(wa.Probabilities)
+		probs, err := toProbabilities(wa.Probabilities, len(q.Options))
 		if err != nil {
 			return decide.Answer{}, err
 		}
@@ -149,7 +161,9 @@ func toAnswer(wa wireAnswer, kind decide.QuestionKind) (decide.Answer, error) {
 	return a, nil
 }
 
-func toProbabilities(in []wireProbability) (map[string]float64, error) {
+// toProbabilities decodes one choice distribution; options is how many options
+// the question has (to tell a truncated top-k list from a full one).
+func toProbabilities(in []wireProbability, options int) (map[string]float64, error) {
 	if len(in) > MaxProbabilities {
 		return nil, fmt.Errorf("%d probabilities, limit %d", len(in), MaxProbabilities)
 	}
@@ -165,8 +179,7 @@ func toProbabilities(in []wireProbability) (map[string]float64, error) {
 		out[p.Option] = *p.P
 		sum += *p.P
 	}
-	if sum > 0 && !math.IsInf(sum, 0) && !math.IsNaN(sum) &&
-		sum != 1 && math.Abs(sum-1) <= renormalizeTolerance {
+	if rescalable(sum, len(out) < options) {
 		for k, v := range out {
 			if v > 0 {
 				out[k] = v / sum
@@ -174,6 +187,19 @@ func toProbabilities(in []wireProbability) (map[string]float64, error) {
 		}
 	}
 	return out, nil
+}
+
+// rescalable reports whether a distribution summing to sum is rescaled to 1:
+// within renormalizeTolerance of 1 (rounding), or a truncated top-k list
+// carrying at least truncatedMinSum of the mass.
+func rescalable(sum float64, truncated bool) bool {
+	if sum <= 0 || sum == 1 || math.IsInf(sum, 0) || math.IsNaN(sum) {
+		return false
+	}
+	if math.Abs(sum-1) <= renormalizeTolerance {
+		return true
+	}
+	return truncated && sum >= truncatedMinSum && sum < 1
 }
 
 // stripFence removes one surrounding ``` / ```json fence.

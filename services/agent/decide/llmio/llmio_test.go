@@ -176,6 +176,36 @@ func TestParse_Normalizations(t *testing.T) {
 	}
 }
 
+// TestParse_TruncatedTopK: the prompt asks for the top 3 options only, and a
+// model may list just the chosen one below 1 (claude-haiku-4-5 answered
+// [{"none", 0.95}] live, #1231). A truncated list carrying at least half the mass
+// is rescaled to sum to 1 (omitted options stay 0); a full list or a list with
+// too little mass is not rescaled and decide.Validate rejects it.
+func TestParse_TruncatedTopK(t *testing.T) {
+	req := testRequest() // ffa.target options: none, MOCK0001, MOCK0002
+	target := `{"option": "MOCK0002", "p": 0.9}, {"option": "MOCK0001", "p": 0.1}`
+
+	resp, err := Parse(req, []byte(strings.Replace(validAnswer, target, `{"option": "MOCK0002", "p": 0.95}`, 1)), "claude")
+	if err != nil {
+		t.Fatalf("truncated top-1 at 0.95: %v", err)
+	}
+	a, _ := resp.Find(decide.QuestionFFATarget)
+	if len(a.Probabilities) != 1 || a.Probabilities["MOCK0002"] != 1 {
+		t.Errorf("probabilities = %v, want MOCK0002 rescaled to 1", a.Probabilities)
+	}
+
+	rejects := map[string]string{
+		"too little mass": `{"option": "MOCK0002", "p": 0.4}`,
+		"full list short": `{"option": "MOCK0002", "p": 0.6}, {"option": "MOCK0001", "p": 0.2}, {"option": "none", "p": 0.1}`,
+		"argmax lost":     `{"option": "MOCK0002", "p": 0.3}, {"option": "MOCK0001", "p": 0.5}`,
+	}
+	for name, probs := range rejects {
+		if _, err := Parse(req, []byte(strings.Replace(validAnswer, target, probs, 1)), "claude"); !errors.Is(err, decide.ErrInvalid) {
+			t.Errorf("%s: err = %v, want decide.ErrInvalid", name, err)
+		}
+	}
+}
+
 func TestParse_Rejects(t *testing.T) {
 	req := testRequest()
 	cases := map[string]string{

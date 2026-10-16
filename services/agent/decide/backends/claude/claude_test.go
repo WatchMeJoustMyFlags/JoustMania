@@ -197,7 +197,7 @@ func TestDecide_HappyPath(t *testing.T) {
 
 	// Request shape.
 	body := api.requestBody(t)
-	if body["model"] != "claude-haiku-4-5" || body["max_tokens"].(float64) != MaxTokens {
+	if body["model"] != "claude-haiku-4-5" || body["max_tokens"].(float64) != MaxTokensNoThinking {
 		t.Errorf("model/max_tokens = %v/%v", body["model"], body["max_tokens"])
 	}
 	if body["temperature"] != 0.0 {
@@ -213,6 +213,9 @@ func TestDecide_HappyPath(t *testing.T) {
 	}
 	if _, ok := oc["effort"]; ok {
 		t.Error("haiku does not take effort")
+	}
+	if sys := body["system"].([]any); len(sys) != 1 || sys[0].(map[string]any)["cache_control"] != nil {
+		t.Errorf("haiku system = %v, want one block without cache_control", body["system"])
 	}
 	raw := string(api.lastBody.Load().([]byte))
 	if strings.Contains(raw, "CONTEXT-SENTINEL") {
@@ -245,7 +248,7 @@ func TestDecide_HappyPath(t *testing.T) {
 		"gen_ai.request.model":                     "claude-haiku-4-5",
 		"gen_ai.response.model":                    "claude-haiku-4-5-20251001",
 		"gen_ai.response.id":                       "msg_test_123",
-		"gen_ai.request.max_tokens":                int64(MaxTokens),
+		"gen_ai.request.max_tokens":                int64(MaxTokensNoThinking),
 		"gen_ai.request.temperature":               0.0,
 		"gen_ai.output.type":                       "json",
 		"gen_ai.usage.input_tokens":                int64(900), // 800 + 100 cache read
@@ -464,7 +467,7 @@ func TestNewDefaults(t *testing.T) {
 
 func TestShapeFor(t *testing.T) {
 	sonnet := shapeFor("claude-sonnet-5-5")
-	if sonnet.thinking.OfBetweenTools == nil || sonnet.effort != "low" || sonnet.temperature != nil {
+	if sonnet.thinking.OfAdaptive == nil || sonnet.effort != "low" || sonnet.temperature != nil {
 		t.Errorf("sonnet 5.5 shape = %+v", sonnet)
 	}
 	sonnet5 := shapeFor("claude-sonnet-5")
@@ -479,11 +482,12 @@ func TestShapeFor(t *testing.T) {
 	}
 	for _, m := range []string{"some-future-model", "claude-sonnet-5-6", "claude-opus-5-6", "claude-opus-5-5-fast",
 		"claude-fable-5", "claude-fable-5-1", "claude-haiku-4-5-2025", "claude-sonnet-5-5-x20251001"} {
-		if s := shapeFor(m); s.effort != "" || s.temperature != nil || s.thinking.OfDisabled != nil || s.thinking.OfBetweenTools != nil {
+		if s := shapeFor(m); s.effort != "" || s.temperature != nil || s.thinking.OfDisabled != nil ||
+			s.thinking.OfBetweenTools != nil || s.thinking.OfAdaptive != nil {
 			t.Errorf("%s: unknown model must get the empty shape, got %+v", m, s)
 		}
 	}
-	if s := shapeFor("claude-sonnet-5-5-20260901"); s.thinking.OfBetweenTools == nil {
+	if s := shapeFor("claude-sonnet-5-5-20260901"); s.thinking.OfAdaptive == nil {
 		t.Errorf("dated sonnet 5.5 shape = %+v", s)
 	}
 }
@@ -494,8 +498,38 @@ func TestDecide_SonnetRequestShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := api.requestBody(t)
-	if th, _ := body["thinking"].(map[string]any); th["type"] != "between_tools" || len(th) != 1 {
+	if th, _ := body["thinking"].(map[string]any); th["type"] != "adaptive" || len(th) != 1 {
 		t.Errorf("thinking = %v", body["thinking"])
+	}
+	if oc, _ := body["output_config"].(map[string]any); oc["effort"] != "low" {
+		t.Errorf("output_config = %v, want effort low", body["output_config"])
+	}
+	if body["max_tokens"].(float64) != MaxTokens {
+		t.Errorf("max_tokens = %v, want %d (adaptive may think)", body["max_tokens"], MaxTokens)
+	}
+	// No prompt caching (see the package doc, #1231): cache_control on the
+	// system block correlated with empty answers on Sonnet 5.5.
+	if raw := string(api.lastBody.Load().([]byte)); strings.Contains(raw, "cache_control") {
+		t.Error("request must not carry cache_control")
+	}
+}
+
+// TestShapeFor_MaxTokens: thinking-off shapes size max_tokens to the answer;
+// shapes that may think (Sonnet 5.5 and Opus 5.5 adaptive, unknown models) keep
+// MaxTokens.
+func TestShapeFor_MaxTokens(t *testing.T) {
+	cases := map[string]int64{
+		"claude-haiku-4-5":  MaxTokensNoThinking,
+		"claude-sonnet-5-5": MaxTokens,
+		"claude-sonnet-5":   MaxTokensNoThinking,
+		"claude-opus-5":     MaxTokensNoThinking,
+		"claude-opus-5-5":   MaxTokens,
+		"some-future-model": MaxTokens,
+	}
+	for model, want := range cases {
+		if got := shapeFor(model).maxTokensOf(); got != want {
+			t.Errorf("%s: max_tokens %d, want %d", model, got, want)
+		}
 	}
 }
 

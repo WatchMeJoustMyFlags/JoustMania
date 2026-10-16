@@ -176,6 +176,8 @@ const (
 	// DefaultLLMMaxRequestsPerMinute is the GLOBAL per-minute request cap across
 	// ALL games combined plus the retro (llm.max_requests_per_minute). Each
 	// admitted remote decide call or retro is one request; defaults to 6/min total.
+	// The agent.json "stage" variant (30/min) is for a live remote-backend demo:
+	// one game at decision.min_interval_ms=3000 asks ~15-20 times a minute (#1231).
 	DefaultLLMMaxRequestsPerMinute = 6
 
 	// Fitness threshold defaults (#731), mirroring the services/flagd/agent.json

@@ -11,14 +11,22 @@
 // is pure Go and CGO-free, so the agent stays a static binary, and it gives the
 // typed request surface this call needs (output_config.format, the per-model
 // thinking/effort union, typed usage and stop reasons, typed API errors). The
-// SDK's own retries are turned OFF: inside a ~2.5s in-game budget a retry after
+// SDK's own retries are turned OFF: inside a few-second in-game budget a retry after
 // a 429/5xx would only stall; the rules backend is the retry.
 //
-// Latency: the in-game budget is ~2.5s, so extended thinking stays off wherever
-// the model allows it and effort is "low" where it does not (see shapeFor). The
-// "why" comes from the short rationale field of the structured answer instead.
-// If the model nevertheless returns thinking text, it is recorded as a GenAI
-// "reasoning" output part.
+// Latency: the in-game budget is a few seconds (decision.claude.timeout_ms), so
+// thinking stays off or minimal: off where the model allows it cleanly, and
+// adaptive at "low" effort (which skips thinking on requests this simple)
+// elsewhere (see shapeFor). The "why" comes from the short rationale field of
+// the structured answer instead. If the model nevertheless returns thinking
+// text, it is recorded as a GenAI "reasoning" output part.
+//
+// Prompt caching is deliberately NOT used (#1231). The static system prompt
+// (~490-630 tokens, plus ~480 the API adds for the output schema) reaches the
+// 512-token minimum only on Sonnet 5.5 / Opus 5.5 / Opus 5 (Haiku 4.5 needs
+// 4096), and on Sonnet 5.5 a cached ~1.1k-token prefix measured no TTFT gain
+// (cache reads verified, TTFT within the uncached spread); the cost saving is
+// ~$0.002 per call.
 package claude
 
 import (
@@ -54,11 +62,19 @@ const (
 	// DefaultBaseURL is the Anthropic API root.
 	DefaultBaseURL = "https://api.anthropic.com"
 	// DefaultTimeout is the per-call budget when Config.Timeout is not positive.
-	DefaultTimeout = 2500 * time.Millisecond
-	// MaxTokens bounds the answer. A full FFA answer is ~150-300 output tokens;
-	// the headroom covers low-effort thinking on models where it cannot be
-	// turned off. Hitting it is an error (truncated JSON), never a partial act.
+	// It matches the decision.claude.timeout_ms flag default (#1231): measured
+	// live, Haiku 4.5 and Sonnet 5.5 answer in ~2-3.5s warm and up to ~5s on a
+	// cold connection, so 2.5s timed nearly every call out.
+	DefaultTimeout = 5000 * time.Millisecond
+	// MaxTokens bounds the answer on models that think (or might: unknown
+	// models). A full FFA answer is ~150-300 output tokens; the headroom covers
+	// low-effort thinking on models where it cannot be turned off. Hitting it is
+	// an error (truncated JSON), never a partial act.
 	MaxTokens = 2048
+	// MaxTokensNoThinking bounds the answer on models whose request shape turns
+	// thinking off: only the JSON answer counts, ~200-300 tokens with the top-3
+	// probability lists, so 1024 is >3x headroom.
+	MaxTokensNoThinking = 1024
 )
 
 // instrumentationName scopes the tracer and meter.
@@ -77,7 +93,7 @@ type Config struct {
 	Timeout time.Duration
 	// HTTPClient overrides the shared default client. Leave nil in production:
 	// the default is shared across New calls so the TLS connection to the API
-	// is reused, which matters at a 2.5s budget.
+	// is reused: a cold connection measured ~1-2s slower on the first call (#1231).
 	HTTPClient *http.Client
 	// CaptureContent records the prompt and model output on the span
 	// (gen_ai.system_instructions / gen_ai.input.messages /
@@ -176,7 +192,7 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	case anthropic.StopReasonEndTurn, anthropic.StopReasonStopSequence:
 	case anthropic.StopReasonRefusal:
 		// Server-side refusal fallbacks are deliberately not requested: a second
-		// model call does not fit the 2.5s budget, and rules is the fallback.
+		// model call does not fit the in-game budget, and rules is the fallback.
 		call.errType = "refusal"
 		if cat := string(msg.StopDetails.Category); cat != "" {
 			span.SetAttributes(attrRefusalCategory.String(cat))
@@ -255,12 +271,22 @@ func systemSHA(system string) string {
 }
 
 // requestShape is the per-model latency tuning: thinking off where the model
-// allows it, low effort where it does not, temperature 0 where sampling
-// parameters are accepted.
+// allows it cleanly, low effort elsewhere, temperature 0 where sampling
+// parameters are accepted, and max_tokens sized to the answer.
 type requestShape struct {
 	thinking    anthropic.ThinkingConfigParamUnion
 	effort      anthropic.OutputConfigEffort
 	temperature *float64
+	// maxTokens is the request max_tokens; zero means MaxTokens.
+	maxTokens int64
+}
+
+// maxTokensOf is the request max_tokens for a shape.
+func (s requestShape) maxTokensOf() int64 {
+	if s.maxTokens > 0 {
+		return s.maxTokens
+	}
+	return MaxTokens
 }
 
 // shapeFor picks the request shape for model by EXACT id (after stripping a
@@ -270,18 +296,23 @@ type requestShape struct {
 // Unknown models get no extra fields.
 //
 // Opus 5.5 is listed for completeness; even at low effort it is not expected
-// to fit the ~2.5s in-game budget (Fable is intentionally absent).
+// to fit the in-game budget (Fable is intentionally absent).
 func shapeFor(model string) requestShape {
 	zero := 0.0
 	switch stripDateSuffix(model) {
 	case "claude-haiku-4-5":
 		// No thinking unless asked for; sampling parameters accepted; effort is not.
-		return requestShape{temperature: &zero}
+		return requestShape{temperature: &zero, maxTokens: MaxTokensNoThinking}
 	case "claude-sonnet-5-5":
-		// "disabled" is a 400 here; between_tools turns thinking off for a
-		// tool-less call and is accepted at effort high or below.
+		// "disabled" is a 400 here. Adaptive thinking at low effort, the
+		// recommended way to cut thinking on this model: at low it skips
+		// thinking on simple requests (0 thinking tokens in every live call,
+		// #1231) at the same latency as between_tools. between_tools (thinking
+		// fully off) was used before and returned a schema-valid but empty answer
+		// (question id "x" or "", rejected by Validate) on 5 of 21 live calls;
+		// adaptive+low on 0 of 14. MaxTokens leaves room should it think.
 		return requestShape{
-			thinking: anthropic.ThinkingConfigParamUnion{OfBetweenTools: &anthropic.ThinkingConfigBetweenToolsParam{}},
+			thinking: anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{}},
 			effort:   anthropic.OutputConfigEffortLow,
 		}
 	case "claude-opus-5-5":
@@ -290,8 +321,9 @@ func shapeFor(model string) requestShape {
 	case "claude-opus-5", "claude-sonnet-5":
 		// Thinking on by default; disabled is accepted at effort high or below.
 		return requestShape{
-			thinking: anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}},
-			effort:   anthropic.OutputConfigEffortLow,
+			thinking:  anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}},
+			effort:    anthropic.OutputConfigEffortLow,
+			maxTokens: MaxTokensNoThinking,
 		}
 	default:
 		return requestShape{}
@@ -315,7 +347,7 @@ func stripDateSuffix(model string) string {
 func (b *Backend) params(p llmio.Prompt, shape requestShape) anthropic.MessageNewParams {
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(b.cfg.Model),
-		MaxTokens: MaxTokens,
+		MaxTokens: shape.maxTokensOf(),
 		System:    []anthropic.TextBlockParam{{Text: p.System}},
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(p.User)),
@@ -337,7 +369,7 @@ func (b *Backend) requestAttributes(shape requestShape, system string) []attribu
 		semconv.GenAIOperationNameChat,
 		semconv.GenAIProviderNameAnthropic,
 		semconv.GenAIRequestModel(b.cfg.Model),
-		semconv.GenAIRequestMaxTokens(MaxTokens),
+		semconv.GenAIRequestMaxTokens(int(shape.maxTokensOf())),
 		semconv.GenAIOutputTypeJSON,
 		semconv.ServerAddress(b.host),
 		semconv.ServerPort(b.port),
