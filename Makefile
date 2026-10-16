@@ -142,6 +142,7 @@ dry-run:
 .PHONY: lint
 lint:
 	uv run ruff check .
+	./scripts/tests/test-agent-backend.sh >/dev/null
 
 .PHONY: format
 format:
