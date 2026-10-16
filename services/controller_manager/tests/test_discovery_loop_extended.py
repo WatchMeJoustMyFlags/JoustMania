@@ -620,6 +620,7 @@ class TestCheckForNewControllersAsync:
         assert len(button_det.connection_events) == 0
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A4")
     async def test_base_color_restored_on_reconnect(self):
         """_check_for_new_controllers should restore base color when controller reconnects."""
         backend = MockBackend()
