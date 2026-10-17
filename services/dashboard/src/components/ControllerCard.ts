@@ -7,6 +7,8 @@ import type { ConnectionQuality, GameplayData, RGB } from "../gen/controller_man
 import { qualityBadge } from "../quality.js";
 import { shieldBadge } from "../shield.js";
 import type { ShieldState } from "../shield.js";
+import { controllerClient } from "../client.js";
+import { identifyController } from "../identify.js";
 
 /**
  * CSS for the LED circle. `color` is the colour last written to the LED, so a
@@ -33,6 +35,9 @@ export class ControllerCard {
   private readonly statusBadge: HTMLElement;
   private readonly shieldElement: HTMLElement;
   private readonly qualityElement: HTMLElement;
+  private readonly identifyButton: HTMLButtonElement;
+  private readonly identifyElement: HTMLElement;
+  private identifyTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(serial: string) {
     this.serial = serial;
@@ -44,6 +49,23 @@ export class ControllerCard {
     this.statusBadge = this.element.querySelector(".status-badge")!;
     this.shieldElement = this.element.querySelector(".shield-badge")!;
     this.qualityElement = this.element.querySelector(".quality-badge")!;
+    this.identifyButton = this.element.querySelector(".identify-btn")!;
+    this.identifyElement = this.element.querySelector(".identify-status")!;
+    this.identifyButton.addEventListener("click", () => void this.identify());
+  }
+
+  /** UC-004: flash + rumble this controller; show the answer on the card. */
+  private async identify() {
+    this.identifyButton.disabled = true;
+    const status = await identifyController(this.serial, (req) => controllerClient.identifyController(req));
+    clearTimeout(this.identifyTimer);
+    this.identifyElement.hidden = false;
+    this.identifyElement.textContent = status.text;
+    this.identifyElement.classList.toggle("refused", !status.ok);
+    this.identifyButton.disabled = false;
+    this.identifyTimer = setTimeout(() => {
+      this.identifyElement.hidden = true;
+    }, status.showForMs);
   }
 
   private createElement(): HTMLElement {
@@ -61,6 +83,8 @@ export class ControllerCard {
       <div class="status-badge connected">Connected</div>
       <div class="shield-badge" hidden></div>
       <div class="quality-badge" hidden></div>
+      <button type="button" class="identify-btn" title="Flash and rumble this controller">Identify</button>
+      <div class="identify-status" hidden></div>
     `;
     return card;
   }
@@ -179,6 +203,7 @@ export class ControllerCard {
   }
 
   remove() {
+    clearTimeout(this.identifyTimer);
     this.element.remove();
   }
 }

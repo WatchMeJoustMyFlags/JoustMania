@@ -38,6 +38,22 @@ tracer = get_tracer(__name__)
 # Span attribute keys (S1192 - avoid duplicate string literals)
 CONTROLLER_SERIAL_ATTR = "controller.serial"
 
+# Identify a controller (UC-004 BR-001): white 2 Hz flash plus a short rumble.
+IDENTIFY_DEFAULT_MS = 3000
+IDENTIFY_MIN_MS = 500
+IDENTIFY_MAX_MS = 10_000
+IDENTIFY_FLASH_HZ = 2
+IDENTIFY_RUMBLE_INTENSITY = 150
+IDENTIFY_RUMBLE_MS = 500
+
+
+def clamp_identify_duration(duration_ms: int) -> int:
+    """Identify duration: 0 or negative means the default, else clamped (UC-004 BR-001)."""
+    if duration_ms <= 0:
+        return IDENTIFY_DEFAULT_MS
+    return max(IDENTIFY_MIN_MS, min(IDENTIFY_MAX_MS, duration_ms))
+
+
 # Module-level cache for winner rainbow duration from flagd
 _winner_rainbow_duration_ms: int | None = None
 
@@ -439,7 +455,8 @@ class FeedbackManager(ControllerEffectsBase):
                     self.active_effects.pop(serial, None)
                 # Restore the current base colour, or hand the LED back to an
                 # active agent shield (#1301, UC-040 BR-010).
-                await self._finish_effect(serial, bool(restore_color))
+                fallback = restore_color if isinstance(restore_color, tuple) else None
+                await self._finish_effect(serial, bool(restore_color), fallback)
 
         task = asyncio.create_task(effect_with_restore())
         async with self.effect_lock:
@@ -629,6 +646,19 @@ class FeedbackManager(ControllerEffectsBase):
         effect_speed = speed if speed > 0 else 5
         await self.play_effect_with_restore(serial, "flash", effect_color, effect_duration, effect_speed, restore_color)
 
+    async def _effect_identify(self, serial: str, restore_color: tuple | None, duration_ms: int = 0, **_kwargs) -> None:
+        """Identify (UC-004 BR-001, BR-002): white 2 Hz flash + short rumble, then restore.
+
+        Restores the base colour; a controller without one gets back the colour
+        its LED showed when the identify started.
+        """
+        effect_duration = clamp_identify_duration(duration_ms)
+        restore_to = restore_color or self.current_colors.get(serial) or True
+        await self.set_vibration(serial, IDENTIFY_RUMBLE_INTENSITY, min(IDENTIFY_RUMBLE_MS, effect_duration))
+        await self.play_effect_with_restore(
+            serial, "flash", Colors.White.value, effect_duration, IDENTIFY_FLASH_HZ, restore_to
+        )
+
     # =========================================================================
     # Agent shield layer (#1301, UC-040 A16 / A17, BR-008..BR-010)
     # =========================================================================
@@ -651,13 +681,17 @@ class FeedbackManager(ControllerEffectsBase):
             del layers[kind]
         return layers.get("full") or layers.get("partial")
 
-    async def _finish_effect(self, serial: str, restore: bool) -> None:
-        """After an effect: hand the LED back to the shield, else restore the base colour."""
+    async def _finish_effect(self, serial: str, restore: bool, fallback: tuple[int, int, int] | None = None) -> None:
+        """After an effect: hand the LED back to the shield, else restore the base colour.
+
+        The current base colour wins (one set during the effect included); without
+        one, ``fallback`` (the colour captured when the effect started) is shown.
+        """
         if self.shield_active(serial):
             # The shield renderer paints its current frame on its next tick.
             return
         self.backend.set_effect_active(serial, False)
-        current_restore = self.base_colors.get(serial) if restore else None
+        current_restore = (self.base_colors.get(serial) or fallback) if restore else None
         if current_restore:
             await self._set_led_color(serial, current_restore)
 
@@ -784,6 +818,7 @@ class FeedbackManager(ControllerEffectsBase):
             controller_manager_pb2.GAME_EFFECT_RUMBLE: self._effect_rumble,
             controller_manager_pb2.GAME_EFFECT_PULSE: self._game_effect_pulse,
             controller_manager_pb2.GAME_EFFECT_FLASH: self._game_effect_flash,
+            controller_manager_pb2.GAME_EFFECT_IDENTIFY: self._effect_identify,
         }
 
     async def handle_game_effect(

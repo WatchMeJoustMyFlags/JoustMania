@@ -23,6 +23,11 @@ service ControllerManagerService {
   // a client (the menu) can reconcile ghosts after a missed disconnect.
   rpc GetConnectedControllers(GetConnectedControllersRequest) returns (GetConnectedControllersResponse);
 
+  // Identify a controller (UC-004, FR-121): flash it white and rumble it briefly,
+  // then restore its colour. Lobby only: refused for controllers that are not
+  // connected, reserved, or players of an open game gameplay stream.
+  rpc IdentifyController(IdentifyControllerRequest) returns (IdentifyControllerResponse);
+
 }
 
 // Controller state data
@@ -227,6 +232,9 @@ enum GameEffect {
   // Partial shield (#1301, UC-040 BR-009): the weaker variant, a slow 0.5 Hz breathing at
   // 10-50% brightness, last-second blink at 50%, then restore. duration_ms=0 ends it.
   GAME_EFFECT_PARTIAL_SHIELD = 15;
+  // Identify (UC-004 BR-001, BR-002): white 2 Hz flash for duration_ms (default 3000ms)
+  // plus a 500ms rumble, then the base color (or the color shown before, without one).
+  GAME_EFFECT_IDENTIFY = 16;
 }
 
 // Trigger a game effect via stream
@@ -271,4 +279,18 @@ message GetConnectedControllersResponse {
   // don't have to unpack the richer messages.
   repeated string connected_serials = 1;
   repeated ConnectedController controllers = 2;
+}
+
+// Identify a controller (UC-004, FR-121).
+message IdentifyControllerRequest {
+  string serial = 1;       // Controller serial to identify
+  int32 duration_ms = 2;   // Effect duration (0 = 3000ms; clamped to 500..10000ms)
+}
+
+message IdentifyControllerResponse {
+  bool success = 1;        // True when the effect started
+  // started / not_connected / in_game / reserved / invalid (UC-004; same values as
+  // the controller.identify span's identify.outcome and the metric's outcome label)
+  string outcome = 2;
+  string error = 3;        // Human-readable reason when success is false
 }

@@ -49,3 +49,16 @@ export interface GameplayDataUpdate {
 export interface GameplayStreamRequest {
   updateFrequencyHz: number;
 }
+
+// IdentifyController (UC-004, FR-121): flash + rumble one controller
+export interface IdentifyControllerRequest {
+  serial: string;
+  durationMs: number; // 0 = 3000 ms; clamped to 500..10000 ms
+}
+
+export interface IdentifyControllerResponse {
+  success: boolean;
+  // started / not_connected / in_game / reserved / invalid
+  outcome: string;
+  error: string;
+}
