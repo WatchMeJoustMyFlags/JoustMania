@@ -729,3 +729,66 @@ def spa_queries() -> list[tuple[str, str, str]]:
             if "LOG" not in name:
                 out.append((path.name, name, body))
     return out
+
+
+# --------------------------------------------------------------------------- #
+# docs/specs/telemetry.md §6 prose counts (#1456)
+# --------------------------------------------------------------------------- #
+TELEMETRY_SPEC = REPO_ROOT / "docs" / "specs" / "telemetry.md"
+
+# The §6 sentences whose numbers are checked against the code, as templates:
+# the contract test parses the numbers with the template (any line wrapping)
+# and, on a mismatch, prints the template filled with the correct values.
+SPEC_COUNT_TEMPLATES: dict[str, str] = {
+    "names_and_definitions": "**{names} unique Python metric names** ({definitions} definitions:",
+    "no_consumer": "{no_consumer} of the {names} Python metric names have no consumer",
+    "never_recorded": "{never_recorded} names are defined but never recorded by any service",
+}
+_PLACEHOLDER_RE = re.compile(r"\\\{(\w+)\\\}")
+
+
+def _template_pattern(template: str) -> re.Pattern[str]:
+    """``template`` as a regex: each ``{field}`` captures a number, a space matches any whitespace."""
+    escaped = re.escape(template)
+    escaped = _PLACEHOLDER_RE.sub(lambda m: f"(?P<{m.group(1)}>\\d+)", escaped)
+    return re.compile(escaped.replace(r"\ ", r"\s+"))
+
+
+def python_metric_definition_count(root: Path = REPO_ROOT) -> int:
+    """Metric definitions before merging same-named ones (``process_*`` per service, ...)."""
+    return len(_python_metric_definitions(root))
+
+
+def spec_section(text: str, heading: str) -> str:
+    """The body of the ``### heading`` / ``## heading`` section, up to the next heading."""
+    start = text.index(heading)
+    rest = text[start + len(heading) :]
+    end = re.search(r"^#{2,3} ", rest, re.M)
+    return rest[: end.start()] if end else rest
+
+
+@dataclass
+class SpecCatalogRow:
+    name: str
+    emitted: str
+    consumers: str
+
+
+def spec_metric_catalog(text: str) -> list[SpecCatalogRow]:
+    """The §6.2 Python metric catalog rows (Metric | Type | Labels | Defined in | Emitted | Consumers)."""
+    rows = []
+    for line in spec_section(text, "### 6.2 Python metric catalog").splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        rows.append(SpecCatalogRow(cells[0].strip("`"), cells[4], cells[-1]))
+    return rows
+
+
+def spec_counts(text: str) -> dict[str, dict[str, int] | None]:
+    """The numbers in each ``SPEC_COUNT_TEMPLATES`` sentence, by field (None when it is missing)."""
+    out: dict[str, dict[str, int] | None] = {}
+    for key, template in SPEC_COUNT_TEMPLATES.items():
+        m = _template_pattern(template).search(text)
+        out[key] = {k: int(v) for k, v in m.groupdict().items()} if m else None
+    return out

@@ -309,6 +309,43 @@ def test_python_metric_definitions_are_recorded(python_metrics):
 
 
 # --------------------------------------------------------------------------- #
+# docs/specs/telemetry.md §6 counts follow the code (#1456).
+# --------------------------------------------------------------------------- #
+def test_telemetry_spec_metric_counts_match_the_code(python_metrics):
+    """The §6 prose numbers are derived, so a metrics PR that forgets them fails here."""
+    text = ti.TELEMETRY_SPEC.read_text()
+    catalog = ti.spec_metric_catalog(text)
+    catalog_names = [row.name for row in catalog]
+    missing = sorted(set(python_metrics) - set(catalog_names))
+    extra = sorted(set(catalog_names) - set(python_metrics))
+    duplicated = sorted({n for n in catalog_names if catalog_names.count(n) > 1})
+    assert not (missing or extra or duplicated), (
+        "docs/specs/telemetry.md §6.2 catalog must have exactly one row per Python metric "
+        f"name; add rows for {missing}, remove rows for {extra}, dedupe {duplicated}"
+    )
+
+    expected = {
+        "names": len(python_metrics),
+        "definitions": ti.python_metric_definition_count(),
+        "no_consumer": sum(row.consumers == "(none)" for row in catalog),
+        "never_recorded": sum(not m.recorded_at for m in python_metrics.values()),
+    }
+    found = ti.spec_counts(text)
+    wrong = [
+        f"  found:      {'(sentence not found)' if got is None else got}\n"
+        f"  write:      {ti.SPEC_COUNT_TEMPLATES[key].format(**expected)}"
+        for key, got in found.items()
+        if got is None or any(got[field] != expected[field] for field in got)
+    ]
+    assert not wrong, (
+        "docs/specs/telemetry.md §6 metric counts are out of date (names = Python metric "
+        "names, definitions = Counter/Gauge/Histogram definitions before merging same-named "
+        "ones, no_consumer = §6.2 rows whose Consumers cell is (none), never_recorded = names "
+        "no service records). Replace these sentences:\n" + "\n".join(wrong)
+    )
+
+
+# --------------------------------------------------------------------------- #
 # The known-gap lists only shrink.
 # --------------------------------------------------------------------------- #
 def test_known_gaps_are_still_gaps(python_metrics, produced, consumer_queries, defined):
