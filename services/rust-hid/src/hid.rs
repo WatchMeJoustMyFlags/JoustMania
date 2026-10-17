@@ -12,12 +12,15 @@ use hidapi::{HidApi, HidDevice};
 use std::path::Path;
 use tracing::{debug, info, warn};
 
-// PS Move USB vendor/product IDs
+// PS Move USB vendor/product IDs (C-012)
 const VENDOR_ID: u16 = 0x054C; // Sony
-const PRODUCT_ID_ZCM1: u16 = 0x03D5; // PS Move (PS3 era)
-const PRODUCT_ID_ZCM2: u16 = 0x042F; // PS Move (PS4 era)
-const PRODUCT_ID_ZCM2E: u16 = 0x0C5E; // PS Move (PS4 era variant)
-const ALL_PRODUCT_IDS: [u16; 3] = [PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E];
+const PRODUCT_ID_ZCM1: u16 = 0x03D5; // PS Move motion controller, PS3 era (ZCM1)
+const PRODUCT_ID_ZCM2: u16 = 0x0C5E; // PS Move motion controller, PS4 era (ZCM2)
+// PS Move Navigation controller: no light, no motion sensors, no trigger.
+// Never enumerated, paired or opened (UC-001 BR-006, #1442).
+#[cfg(test)]
+const PRODUCT_ID_NAVIGATION: u16 = 0x042F;
+const ALL_PRODUCT_IDS: [u16; 2] = [PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2];
 
 // Feature report IDs and sizes (USB pairing)
 const FEATURE_REPORT_GET_BTADDR: u8 = 0x04;
@@ -383,7 +386,7 @@ pub fn normalize_serial(serial: &str) -> String {
 
 /// Check if a product ID is a ZCM2 (PS4-era) controller.
 pub fn is_zcm2(product_id: u16) -> bool {
-    product_id == PRODUCT_ID_ZCM2 || product_id == PRODUCT_ID_ZCM2E
+    product_id == PRODUCT_ID_ZCM2
 }
 
 /// Resolve the Bluetooth adapter name from a hidraw device path via sysfs.
@@ -864,7 +867,15 @@ mod tests {
     fn test_is_zcm2_detection() {
         assert!(!is_zcm2(PRODUCT_ID_ZCM1));
         assert!(is_zcm2(PRODUCT_ID_ZCM2));
-        assert!(is_zcm2(PRODUCT_ID_ZCM2E));
+        assert!(!is_zcm2(PRODUCT_ID_NAVIGATION));
+    }
+
+    // UC-001 BR-006 (#1442): 0x0C5E is the ZCM2; 0x042F is the Navigation controller
+    #[test]
+    fn test_supported_product_ids_exclude_navigation() {
+        assert_eq!(PRODUCT_ID_ZCM2, 0x0C5E);
+        assert_eq!(ALL_PRODUCT_IDS, [0x03D5, 0x0C5E]);
+        assert!(!ALL_PRODUCT_IDS.contains(&PRODUCT_ID_NAVIGATION));
     }
 
     // --- sysfs adapter resolution tests ---

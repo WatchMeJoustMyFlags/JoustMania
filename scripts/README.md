@@ -88,7 +88,7 @@ Installs system dependencies and configures the host environment.
 - Updates system packages
 - Installs Python, Docker, build tools
 - Creates Python virtual environment
-- Configures audio (ALSA) and Bluetooth
+- Configures audio (ALSA) and Bluetooth (disables the Pi's internal radio; saved Bluetooth pairings are kept, #1443)
 - Installs supervisor configuration
 
 ```bash

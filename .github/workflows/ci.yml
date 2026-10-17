@@ -129,6 +129,8 @@ jobs:
             # scripts, their tests, and the inputs they read.
             script_tests:
               - 'scripts/*.sh'
+              - 'scripts/setup/**'
+              - 'setup.sh'
               - 'scripts/talk-baseline.json'
               - 'scripts/tests/**'
               - 'services/flagd/**'

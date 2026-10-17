@@ -150,7 +150,7 @@ archetypes: the agent resolves and pins the parameters and passes them in `AddCo
 
 | RPC | Kind | Request → Response | Description | Line |
 |---|---|---|---|---|
-| `Discover` | unary | `DiscoverRequest` → `DiscoverResponse` | Enumerate devices (`force`, `verify_only`, `exclude_serials`) | `proto/psmove_hid.proto:47` |
+| `Discover` | unary | `DiscoverRequest` → `DiscoverResponse` | Enumerate devices (`force`, `verify_only`, `exclude_serials`); each `DiscoveredController` carries `product_id` `0x03D5` (ZCM1) or `0x0C5E` (ZCM2), never `0x042F` (Navigation, UC-001 BR-006) | `proto/psmove_hid.proto:47` |
 | `Open` | unary | `OpenRequest` → `OpenResponse` | Open a device handle | `proto/psmove_hid.proto:48` |
 | `Close` | unary | `CloseRequest` → `CloseResponse` | Close a device handle | `proto/psmove_hid.proto:49` |
 | `CloseAll` | unary | `CloseAllRequest` → `CloseAllResponse` | Close all handles | `proto/psmove_hid.proto:50` |

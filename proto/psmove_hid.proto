@@ -62,7 +62,7 @@ message DiscoverRequest {
 message DiscoveredController {
   string serial = 1;
   string adapter_name = 2;  // "hci0", empty if unknown (USB or sysfs unavailable)
-  uint32 product_id = 3;    // 0x03D5, 0x042F, 0x0C5E
+  uint32 product_id = 3;    // 0x03D5 (ZCM1), 0x0C5E (ZCM2)
 }
 
 message DiscoverResponse {

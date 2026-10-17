@@ -72,6 +72,23 @@ class TestHidapiBackendGetUSBControllers:
         mock_device.close.assert_called_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-001", flow="main", steps=[2], br=["BR-006"])
+    @patch("psmove_pairing.pairing_backend.hid")
+    async def test_navigation_controller_is_not_paired(self, mock_hid):
+        """0x042F is the PS Move Navigation controller: never enumerated, so never paired (#1442)."""
+        mock_hid.enumerate.side_effect = lambda _v, p: (
+            [make_dev_info(product_id=p)] if p in (0x03D5, 0x0C5E, 0x042F) else []
+        )
+        mock_device = MagicMock()
+        mock_device.get_feature_report.return_value = SAMPLE_FEATURE_REPORT
+        mock_hid.device.return_value = mock_device
+
+        controllers = await HidapiBackend().get_usb_controllers()
+
+        assert len(controllers) == 2  # ZCM1 and ZCM2
+        assert sorted(c.args[1] for c in mock_hid.enumerate.call_args_list) == [0x03D5, 0x0C5E]
+
+    @pytest.mark.asyncio
     @patch("psmove_pairing.pairing_backend.hid")
     async def test_feature_report_as_list(self, mock_hid):
         """Handles feature report returned as list (hidraw quirk)."""

@@ -18,12 +18,20 @@ References:
 import struct
 from enum import IntEnum, IntFlag
 
-# PS Move USB vendor/product IDs
+# PS Move USB vendor/product IDs (C-012)
 VENDOR_ID = 0x054C  # Sony
-PRODUCT_ID_ZCM1 = 0x03D5  # PS Move (PS3 era, ZCM1)
-PRODUCT_ID_ZCM2 = 0x042F  # PS Move (PS4 era, ZCM2)
-PRODUCT_ID_ZCM2E = 0x0C5E  # PS Move (PS4 era, ZCM2E variant)
-ALL_PRODUCT_IDS = (PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E)
+PRODUCT_ID_ZCM1 = 0x03D5  # PS Move motion controller, PS3 era (ZCM1)
+PRODUCT_ID_ZCM2 = 0x0C5E  # PS Move motion controller, PS4 era (ZCM2)
+# PS Move Navigation controller: no light, no motion sensors, no trigger, so it
+# cannot play. Never enumerated, paired or opened (UC-001 BR-006, #1442).
+PRODUCT_ID_NAVIGATION = 0x042F
+ALL_PRODUCT_IDS = (PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2)
+
+
+def is_zcm2(product_id: int) -> bool:
+    """True for the PS4-era Move, whose IMU values are signed (see parse_input_report)."""
+    return product_id == PRODUCT_ID_ZCM2
+
 
 # HID report sizes
 INPUT_REPORT_SIZE = 49

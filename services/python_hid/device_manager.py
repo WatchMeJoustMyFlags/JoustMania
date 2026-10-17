@@ -25,12 +25,11 @@ import hidraw as hid
 from lib.psmove_hid import (
     ALL_PRODUCT_IDS,
     INPUT_REPORT_SIZE,
-    PRODUCT_ID_ZCM2,
-    PRODUCT_ID_ZCM2E,
     VENDOR_ID,
     Button,
     battery_to_percent,
     build_output_report,
+    is_zcm2,
     parse_input_report,
 )
 
@@ -441,8 +440,7 @@ class DeviceManager:
             if any(b != 0 for b in data[1:5]):
                 logger.debug(f"HID raw [{len(data)}B]: {data[:8].hex(' ')}")
 
-            is_zcm2 = self._product_ids.get(serial) in (PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E)
-            parsed = parse_input_report(data, zcm2=is_zcm2)
+            parsed = parse_input_report(data, zcm2=is_zcm2(self._product_ids.get(serial, 0)))
 
             ax_raw, ay_raw, az_raw = parsed["accel"][1]
             gx_raw, gy_raw, gz_raw = parsed["gyro"][1]

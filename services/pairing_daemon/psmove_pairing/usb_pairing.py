@@ -9,8 +9,11 @@ import logging
 import time
 from dataclasses import dataclass
 
+from dbus_fast import Variant
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
+
+from lib import bluez_dbus
 
 from .adapter_manager import AdapterManager
 from .bluez_reload import BluezReloader
@@ -27,7 +30,6 @@ from .metrics import (
 )
 from .pairing_backend import HidapiBackend, PairingBackend, RustServiceBackend
 from .registrations import RemovalResult, normalize_address, remove_controller_registrations
-from .utils import run_command
 
 logger = logging.getLogger("psmove-pairing")
 
@@ -69,6 +71,17 @@ def _record_results(span, results: list[RemovalResult]) -> None:
 
 # Upper bound for one backend pair_controller call (rust-hid gRPC deadline is 15 s)
 PAIR_TIMEOUT_SECONDS = 20.0
+
+# BlueZ has no device object for the address on that adapter (UC-001 A2, BR-007):
+# a retry cannot help, so the trust step gives up at once.
+_UNKNOWN_DEVICE_ERRORS = frozenset(
+    {
+        "org.freedesktop.DBus.Error.UnknownObject",
+        "org.freedesktop.DBus.Error.UnknownMethod",
+        "org.freedesktop.DBus.Error.UnknownInterface",
+    }
+)
+TRUST_RETRY_DELAY_SECONDS = 2.0
 
 # Span attribute constants
 _ATTR_CONTROLLER_SERIAL = "controller.serial"
@@ -220,35 +233,39 @@ class USBPairing:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 return False
 
-    async def bluez_trust_controller(self, serial: str) -> bool:
-        """Trust a controller in BlueZ so it can connect later.
+    async def bluez_trust_controller(self, serial: str, hci: str) -> bool:
+        """Trust a controller on adapter ``hci`` so BlueZ accepts it later (UC-001 step 5, BR-007).
 
-        Pre-registers the device as trusted so when the user unplugs USB and
-        presses PS, BlueZ will accept the incoming connection. For ZCM2
-        controllers, the bluetoothctl agent (registered at daemon startup)
-        handles the PIN exchange at connection time.
+        Sets ``Device1.Trusted`` on ``/org/bluez/<hci>/dev_<address>``, the copy on
+        the adapter the controller was just paired to. ``bluetoothctl trust``
+        would act on bluetoothctl's default adapter instead (#1445). For ZCM2
+        controllers the pairing agent (registered at daemon startup) handles
+        the PIN exchange at connection time. Nothing is restarted (BR-005).
 
-        We only run ``trust`` here — ``pair`` cannot work because the
-        controller is still on USB and not broadcasting over Bluetooth.
-        ``trust`` sets ``Device1.Trusted`` in the running bluetoothd; nothing
-        is restarted (UC-001 BR-005).
-
-        Retries once after a short delay in case BlueZ is busy.
+        Retries once after a short delay in case BlueZ is busy, but not when
+        BlueZ has no device object for the address on that adapter. A failure
+        is non-fatal (A2).
         """
-        import asyncio
-
-        logger.info(f"Running bluetoothctl trust for {serial}...")
+        path = bluez_dbus.device_object_path(hci, serial)
+        logger.info(f"Trusting {serial} on {hci} ({path})")
         for attempt in range(2):
-            exit_code, output = await run_command(["bluetoothctl", "trust", serial])
-            if exit_code == 0:
-                logger.info(f"bluetoothctl trust succeeded for {serial}")
+            try:
+                bus = await bluez_dbus.get_system_bus()
+                await bluez_dbus.set_device_property(bus, path, "Trusted", Variant("b", True))
+                logger.info(f"Trusted {serial} on {hci}")
                 return True
-            logger.warning(f"bluetoothctl trust attempt {attempt + 1} failed: {output}")
+            except bluez_dbus.DBusError as e:
+                if e.error_name in _UNKNOWN_DEVICE_ERRORS:
+                    logger.warning(f"BlueZ does not know {serial} on {hci} yet; not trusted ({e.error_name})")
+                    return False
+                logger.warning(f"Trust attempt {attempt + 1} for {serial} on {hci} failed: {e.error_name}: {e}")
+            except Exception as e:
+                logger.warning(f"Trust attempt {attempt + 1} for {serial} on {hci} failed: {e}")
             if attempt == 0:
-                await asyncio.sleep(2)
+                await asyncio.sleep(TRUST_RETRY_DELAY_SECONDS)
 
-        # Trust failure is non-fatal — the agent can still handle PIN at connect time
-        logger.warning(f"bluetoothctl trust failed for {serial}, continuing anyway")
+        # Trust failure is non-fatal: the agent can still handle the PIN at connect time
+        logger.warning(f"Trusting {serial} on {hci} failed, continuing anyway")
         return False
 
     async def process_controller(self, device_path: bytes, serial: str) -> bool:
@@ -329,8 +346,8 @@ class USBPairing:
         restart = await self.bluez_reloader.after_pairing(record_written=False)
         span.set_attribute("pairing.bluez_restart", restart)
 
-        # Trust device in BlueZ (for ZCM2, agent handles PIN at connect time)
-        await self.bluez_trust_controller(serial)
+        # Trust it on the adapter it was paired to (BR-007; for ZCM2 the agent handles the PIN)
+        await self.bluez_trust_controller(serial, adapter.hci)
 
         # Mark as verified so we don't re-process every poll cycle
         self._verified_serials.add(serial)
