@@ -151,6 +151,8 @@ services:
       - FLAGD_PORT=8015
       - RUST_HID_HOST=rust-hid
       - RUST_HID_PORT=50058
+      # Primary game state for pairing.bluez_restart_mode=when_idle (UC-001 BR-005)
+      - GAME_STATE_URL=http://envoy/joustmania.game_coordinator.GameCoordinatorService/GetGameState
     depends_on:
       flagd:
         condition: service_started

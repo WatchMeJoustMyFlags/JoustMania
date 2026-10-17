@@ -13,6 +13,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from .adapter_manager import AdapterManager
+from .bluez_reload import BluezReloader
 from .config import DEBUG, get_adapter_routing_default, get_poll_interval
 from .metrics import (
     pairing_adapter_device_count,
@@ -151,6 +152,8 @@ class USBPairing:
         # Unpaired while possibly on USB -> its device path then (None: not seen on USB).
         # Not paired again until it leaves USB or shows up under another path (UC-005 A8).
         self._awaiting_replug: dict[str, bytes | None] = {}
+        # pairing.bluez_restart_mode, and a restart deferred by a running game (UC-001 BR-005)
+        self.bluez_reloader = BluezReloader()
 
     def _get_backend(self) -> tuple[PairingBackend, str]:
         """Return the cached backend, or resolve a new one.
@@ -319,10 +322,12 @@ class USBPairing:
         # Drop its registrations on other adapters (UC-001 A5, BR-004)
         await self.remove_stale_registrations(serial, adapter.address)
 
-        # No bluetoothd restart and no adapter power-cycle (UC-001 BR-005, #1446):
-        # the backend wrote only the host address into the controller, no BlueZ
-        # storage file, so there is nothing to reload. A restart would power
-        # every adapter off and drop every connected controller mid-game.
+        # No bluetoothd restart unless pairing.bluez_restart_mode asks (UC-001 BR-005, #1446):
+        # a restart powers every adapter off and drops every connected controller.
+        # The backend wrote only the host address into the controller, no BlueZ
+        # device record (that is #1466), so when_idle has nothing to reload yet.
+        restart = await self.bluez_reloader.after_pairing(record_written=False)
+        span.set_attribute("pairing.bluez_restart", restart)
 
         # Trust device in BlueZ (for ZCM2, agent handles PIN at connect time)
         await self.bluez_trust_controller(serial)
@@ -418,6 +423,11 @@ class USBPairing:
                 self._current_backend = backend
                 self._current_backend_name = backend_name
             span.set_attribute("pairing.backend", backend_name)
+
+            # A restart deferred by a running real game (UC-001 A6, BR-005)
+            if self.bluez_reloader.pending:
+                async with self._pairing_lock:
+                    span.set_attribute("pairing.bluez_restart", await self.bluez_reloader.run_pending())
 
             # Reset gauge before enumeration (prevents stale value if backend raises)
             pairing_usb_controllers.set(0)

@@ -15,6 +15,10 @@ _DEFAULT_POLL_INTERVAL = 10
 _DEFAULT_BT_MONITOR_INTERVAL = 5
 # bluetooth_backend fallback when flagd is unavailable: rust-hid is the default (#1371)
 _DEFAULT_BLUETOOTH_BACKEND = "rust"
+# pairing.bluez_restart_mode (UC-001 BR-005, #1446): unknown values and an
+# unreachable flagd mean "never", the mode that cannot disconnect controllers
+BLUEZ_RESTART_MODES = ("never", "always", "when_idle")
+_DEFAULT_BLUEZ_RESTART_MODE = "never"
 
 # Feature flag clients (initialized lazily via init_flag_domain)
 # system: pairing.* intervals; controller: bluetooth_backend routing
@@ -96,6 +100,28 @@ def get_bt_monitor_interval() -> int:
         )
     except Exception:
         return _DEFAULT_BT_MONITOR_INTERVAL
+
+
+def get_bluez_restart_mode() -> str:
+    """Whether pairing restarts bluetoothd: "never", "always" or "when_idle" (UC-001 BR-005).
+
+    Read at use time. Fails closed to "never" when flagd is unavailable or the
+    value is not one of BLUEZ_RESTART_MODES.
+    """
+    if _system_client is None:
+        return _DEFAULT_BLUEZ_RESTART_MODE
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        mode = _system_client.get_string_value(
+            "pairing.bluez_restart_mode", _DEFAULT_BLUEZ_RESTART_MODE, EvaluationContext()
+        )
+    except Exception:
+        return _DEFAULT_BLUEZ_RESTART_MODE
+    if mode not in BLUEZ_RESTART_MODES:
+        logger.warning(f"Unknown pairing.bluez_restart_mode {mode!r}, using {_DEFAULT_BLUEZ_RESTART_MODE}")
+        return _DEFAULT_BLUEZ_RESTART_MODE
+    return mode
 
 
 # PS Move Bluetooth MAC prefix (Sony)

@@ -690,7 +690,64 @@ class TestPairingNeverRestartsBluez(_PairingFlowEnv):
         removed = [c.args[0].body for c in self.bus.call.await_args_list if c.args[0].member == "RemoveDevice"]
         assert removed == [["/org/bluez/hci0/dev_0"]]  # dev_0 is self.SERIAL, not a playing controller
 
+    @pytest.mark.uc("UC-001", flow="A2", br=["BR-005"])
+    async def test_never_seen_controller_trust_fails_pairing_succeeds_nothing_restarts(self, usb_pairing, env, metrics):
+        """A never-seen controller: bluetoothctl trust exits 1 "not available"; pairing still succeeds, no restart."""
+        backend, runner, set_tree, restart = env
+        set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, devices(3, connected=True)), "hci1": (self.ADAPTER_FREE, [])}))
+        runner.add_response(["bluetoothctl", "trust", self.SERIAL], (1, f"Device {self.SERIAL} not available"))
+
+        result = await usb_pairing.process_controller(FAKE_PATH_1, self.SERIAL)
+
+        assert result is True
+        assert runner.calls.count(["bluetoothctl", "trust", self.SERIAL]) == 2
+        metrics["pairing_success_total"].inc.assert_called_once()
+        self._assert_nothing_disruptive(runner, restart)
+
+
+class TestBluezRestartModeInPairing(_PairingFlowEnv):
+    """pairing.bluez_restart_mode through a real pairing (UC-001 BR-005, A6)."""
+
+    def _restart_units(self) -> list:
+        return [c.args[0].body for c in self.bus.call.await_args_list if c.args[0].member == "RestartUnit"]
+
     @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
-    def test_usb_pairing_has_no_bluetooth_restart_step(self, usb_pairing):
-        """The restart step from the psmoveapi era is gone (it wrote BlueZ files; #610 stopped that)."""
-        assert not hasattr(usb_pairing, "restart_bluetooth_service")
+    async def test_always_restarts_bluetoothd_after_pairing(self, usb_pairing, env, metrics):
+        """always: the pre-#1446 behaviour, a RestartUnit on systemd after the pairing, before trust."""
+        _backend, runner, _set_tree, _restart = env
+        with patch("psmove_pairing.bluez_reload.get_bluez_restart_mode", return_value="always"):
+            await usb_pairing.poll()
+
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+        assert ["bluetoothctl", "trust", self.SERIAL] in runner.calls
+        metrics["pairing_success_total"].inc.assert_called_once()
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_when_idle_without_a_new_device_record_restarts_nothing(self, usb_pairing, env, metrics):
+        """when_idle: no device record is written today (#1466), so no restart and no game-state read."""
+        game_busy = AsyncMock(return_value=False)
+        usb_pairing.bluez_reloader._game_busy = game_busy
+        with patch("psmove_pairing.bluez_reload.get_bluez_restart_mode", return_value="when_idle"):
+            await usb_pairing.poll()
+
+        assert self._restart_units() == []
+        game_busy.assert_not_awaited()
+        assert usb_pairing.bluez_reloader.pending is False
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_deferred_restart_runs_on_a_poll_after_the_game_ended(self, usb_pairing, env, metrics):
+        """when_idle: a restart pending while the real game runs is run by the first poll after it ended."""
+        backend, _runner, _set_tree, _restart = env
+        backend.get_usb_controllers.return_value = []
+        states = iter([True, False])
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(side_effect=lambda: next(states))
+        usb_pairing.bluez_reloader.pending = True
+
+        with patch("psmove_pairing.bluez_reload.get_bluez_restart_mode", return_value="when_idle"):
+            await usb_pairing.poll()  # game running: deferred
+            assert self._restart_units() == []
+            assert usb_pairing.bluez_reloader.pending is True
+            await usb_pairing.poll()  # game ended: restarted
+
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+        assert usb_pairing.bluez_reloader.pending is False

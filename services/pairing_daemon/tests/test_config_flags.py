@@ -8,6 +8,7 @@ from psmove_pairing.config import (
     _DEFAULT_BT_MONITOR_INTERVAL,
     _DEFAULT_POLL_INTERVAL,
     get_adapter_routing_default,
+    get_bluez_restart_mode,
     get_bt_monitor_interval,
     get_poll_interval,
 )
@@ -145,3 +146,48 @@ class TestInitPerformanceFlags:
             # Intervals should still return defaults
             assert get_poll_interval() == _DEFAULT_POLL_INTERVAL
             assert get_bt_monitor_interval() == _DEFAULT_BT_MONITOR_INTERVAL
+
+
+class TestGetBluezRestartMode:
+    """pairing.bluez_restart_mode (UC-001 BR-005): read at use time, fails closed to never."""
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    def test_never_when_no_flag_client(self):
+        with patch("psmove_pairing.config._system_client", None):
+            assert get_bluez_restart_mode() == "never"
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    @pytest.mark.parametrize("mode", ["never", "always", "when_idle"])
+    def test_returns_flag_value(self, mode):
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = mode
+        with patch("psmove_pairing.config._system_client", mock_client):
+            assert get_bluez_restart_mode() == mode
+        assert mock_client.get_string_value.call_args[0][:2] == ("pairing.bluez_restart_mode", "never")
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    @pytest.mark.parametrize("value", ["", "sometimes", "ALWAYS"])
+    def test_unknown_value_is_never(self, value):
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = value
+        with patch("psmove_pairing.config._system_client", mock_client):
+            assert get_bluez_restart_mode() == "never"
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    def test_never_on_exception(self):
+        mock_client = MagicMock()
+        mock_client.get_string_value.side_effect = RuntimeError("flagd down")
+        with patch("psmove_pairing.config._system_client", mock_client):
+            assert get_bluez_restart_mode() == "never"
+
+    def test_shipped_flag_variants_match_the_daemon(self):
+        """Every variant in services/flagd/system.json is a mode the daemon knows; default is never."""
+        import json
+        from pathlib import Path
+
+        from psmove_pairing.config import BLUEZ_RESTART_MODES
+
+        flagd = Path(__file__).resolve().parents[3] / "services" / "flagd" / "system.json"
+        flag = json.loads(flagd.read_text())["flags"]["pairing.bluez_restart_mode"]
+        assert set(flag["variants"].values()) == set(BLUEZ_RESTART_MODES)
+        assert flag["variants"][flag["defaultVariant"]] == "never"

@@ -317,6 +317,9 @@ services:
       # Rust HID service (localhost because network_mode:host connects via exposed port)
       - RUST_HID_HOST=localhost
       - RUST_HID_PORT=50058
+      # Primary game state for pairing.bluez_restart_mode=when_idle (UC-001 BR-005),
+      # through envoy's published port 80 (the coordinator has no host port)
+      - GAME_STATE_URL=http://localhost/joustmania.game_coordinator.GameCoordinatorService/GetGameState
     depends_on:
       rust-hid:
         condition: service_healthy
