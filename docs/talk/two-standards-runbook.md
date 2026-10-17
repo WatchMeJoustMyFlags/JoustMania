@@ -56,8 +56,8 @@ flag service (the "flag service" section).
 
 | | Stage stack (Pi, real controllers) | Rehearsal / fallback stack (mock controllers) |
 |---|---|---|
-| Bring-up | `docker compose --env-file .env --env-file .env.local up -d` | `COMPOSE_ENV_FILES=.env,.env.local make dry-run` |
-| Compose files | `docker-compose.yml` + the auto-loaded `docker-compose.override.yml` | `docker-compose.yml` + `override` + `ci` + `dry-run`, profiles `agent` + `dashboard` |
+| Bring-up | `docker compose -f docker-compose.yml --env-file .env --env-file .env.local up -d` | `COMPOSE_ENV_FILES=.env,.env.local make dry-run` |
+| Compose files | `docker-compose.yml` only, named with `-f` so the dev `docker-compose.override.yml` is **not** loaded (it publishes the gRPC and mock control ports on the venue network, #1319) | `docker-compose.yml` + `override` + `ci` + `dry-run`, profiles `agent` + `dashboard` |
 | Baseline the flag service loads (read-only) | `services/flagd/` | `services/flagd/ci/` |
 | Gameplay | real players | `tools/demo/demo_driver.py` (scripted mock movement) |
 | Infra rollback beat | possible (needs the python HID adapter) | not possible (see section 4) |
@@ -94,7 +94,7 @@ AGENT_INFERENCE_BACKEND=claude         # post-game summary (retro) on Claude; de
 
 The agent reads all of these **once at startup**. Changing one means
 recreating the agent:
-`docker compose --env-file .env --env-file .env.local up -d agent` (add the
+`docker compose -f docker-compose.yml --env-file .env --env-file .env.local up -d agent` (use the
 dry-run `-f` files and profiles on the rehearsal stack). With
 `AGENT_INFERENCE_BACKEND=claude` but no `ANTHROPIC_API_KEY` the agent logs
 `AGENT_INFERENCE_BACKEND=claude but ANTHROPIC_API_KEY is empty` and the summary
@@ -356,7 +356,12 @@ degradation. Since #1371 the baseline `controller.json` default backend is
 `rust`, which loads no python adapter; `backend` is not runtime-mutable, so this
 beat needs a baseline with a python variant (`python_rust`, a reviewed edit of
 `services/flagd/controller.json` plus `scripts/flags.sh restart`, then
-`talk-stage.sh reset`) and the `python-hid` compose profile.
+`talk-stage.sh reset`) and the `python-hid` compose profile (add
+`--profile python-hid` to the section 1 bring-up, or use the systemd drop-in
+described in `scripts/setup/joustmania.service`; never put `COMPOSE_PROFILES`
+in the tracked `.env`). The rollout routes its serials itself; outside this
+beat, real controllers reach python-hid only with `bluetooth_backend=python`
+as well (#1402).
 
 What happens: the agent watches the `controller.bluetooth_health` span (~1 Hz)
 and checks it against the `fitness.bluetooth.*` thresholds (gap 50 ms, drops 2%,
@@ -396,7 +401,7 @@ last written stage live in memory, and the flag reset below does not clear them)
 setflag rollout strategy off; setflag rollout target_backend python
 setflag rollout current_controller_count none; setflag rollout remediation_allowed off
 setflag agent rollout_enabled off
-docker compose --env-file .env --env-file .env.local restart agent
+docker compose -f docker-compose.yml --env-file .env --env-file .env.local restart agent
 ```
 
 The infra loop is not gated by the `enabled` kill switch, only by
@@ -409,8 +414,16 @@ The infra loop is not gated by the `enabled` kill switch, only by
 ### T-24h
 
 - [ ] Pi updated, images pulled with the tag from `.env.local`
-      (`docker compose --env-file .env --env-file .env.local pull`). Run on the
+      (`docker compose -f docker-compose.yml --env-file .env --env-file .env.local pull`). Run on the
       Pi itself: arm64 images, **verify in rehearsal**.
+- [ ] No dev ports on the venue network (#1319): `sudo ss -tlnp | grep -v 127.0.0.1`
+      lists port 80 (envoy) and no 50052-50062, 8013, 8015, 4317 or 50058.
+      If 50062 shows up, the stack was started without `-f docker-compose.yml`
+      (the dev override got loaded): bring it up again as in section 1.
+- [ ] No stale `joustmania-python-hid` from an older install (#1402):
+      `docker ps -a --filter name=joustmania-python-hid` is empty. The start
+      script removes it when the `python-hid` profile is off; by hand:
+      `docker rm -f joustmania-python-hid`.
 - [ ] `.env.local` holds `JEV_API_KEY`, `ANTHROPIC_API_KEY`,
       `AGENT_INFERENCE_BACKEND=claude`, `IMAGE_TAG` (pinned to the rehearsed
       tag); `DECISION_OPENAI_API_KEY` only if beat 6b stays in. Nothing in
