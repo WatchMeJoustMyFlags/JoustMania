@@ -78,7 +78,7 @@ from tools.demo import demo_driver as dd  # noqa: E402
 #   * agent logs:  `docker logs joustmania-agent` (slog text handler). The agent
 #                  emits `agent.evaluate decision_backend=…`, `agent.decision_blocked
 #                  intervention=… reason=…`, experiment lifecycle lines, etc.
-#   * VictoriaMetrics: the envoy ingress at http://localhost:8080/victoria-metrics/
+#   * VictoriaMetrics: the envoy ingress at http://localhost/victoria-metrics/
 #                  proxies to VictoriaMetrics, which serves the Prometheus
 #                  instant-query API at `/victoria-metrics/api/v1/query?query=<promql>`
 #                  (the Prometheus container was removed in #1449).
@@ -130,19 +130,19 @@ class LiveCollector:
             return "", f"docker logs rc={proc.returncode}: {proc.stderr.strip()[:200]}"
         return proc.stdout + proc.stderr, None
 
-    # -- Prometheus -------------------------------------------------------
+    # -- VictoriaMetrics --------------------------------------------------
     def metric(self, promql: str) -> tuple[float | None, str | None]:
-        """Instant-query Prometheus; return (scalar, error). Sums the result
-        vector so label-split series collapse to one number (what the report
-        cares about: did the counter move at all)."""
+        """Instant-query VictoriaMetrics (Prometheus query API); return
+        (scalar, error). Sums the result vector so label-split series collapse
+        to one number (what the report cares about: did the counter move at all)."""
         url = f"{self.prom_base}/api/v1/query?" + urllib.parse.urlencode({"query": promql})
         try:
             with urllib.request.urlopen(url, timeout=15) as resp:
                 payload = json.loads(resp.read().decode())
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            return None, f"prometheus query failed: {exc}"
+            return None, f"victoria-metrics query failed: {exc}"
         if payload.get("status") != "success":
-            return None, f"prometheus status={payload.get('status')}"
+            return None, f"victoria-metrics status={payload.get('status')}"
         result = payload.get("data", {}).get("result", [])
         if not result:
             return 0.0, None  # query valid, series absent -> 0 (a real, reportable signal)
@@ -645,9 +645,9 @@ def print_report(results: list[ScenarioResult]) -> int:
                     if where not in seen:
                         seen.add(where)
                         print(f"  * {where}")
-    print("\nDashboards:  http://localhost:8080/grafana/ (agent + experiments tabs)")
-    print("Jaeger:      http://localhost:8080/jaeger/  service=agent")
-    print("VictoriaMetrics: http://localhost:8080/victoria-metrics/vmui/")
+    print("\nDashboards:  http://localhost/grafana/ (agent + experiments tabs)")
+    print("Jaeger:      http://localhost/jaeger/  service=agent")
+    print("VictoriaMetrics: http://localhost/victoria-metrics/vmui/")
     return hard_anomalies
 
 
@@ -689,9 +689,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mock-port", type=int, default=50062)
     p.add_argument("--menu-port", type=int, default=50054)
     p.add_argument("--coord-port", type=int, default=50053)
-    p.add_argument("--prom-base", default="http://localhost:8080/victoria-metrics",
+    p.add_argument("--prom-base", default="http://localhost/victoria-metrics",
                    help="Prometheus-query-API base URL: VictoriaMetrics via envoy ingress")
-    p.add_argument("--jaeger-base", default="http://localhost:8080/jaeger",
+    p.add_argument("--jaeger-base", default="http://localhost/jaeger",
                    help="Jaeger base URL (via envoy ingress)")
     p.add_argument("--agent-container", default=AGENT_CONTAINER,
                    help="agent container name for `docker logs`")

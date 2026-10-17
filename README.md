@@ -37,14 +37,14 @@ cd JoustMania
 make up-mock
 ```
 
-**Open the dashboard:** http://localhost:8080
+**Open the dashboard:** http://localhost
 
 | Interface | URL | Purpose |
 |-----------|-----|---------|
-| Dashboard | http://localhost:8080 | Main UI, controller visualization |
-| Jaeger | http://localhost:8080/jaeger/ | Distributed tracing |
-| VictoriaMetrics | http://localhost:8080/victoria-metrics/vmui/ | Metrics (Prometheus query API) |
-| Grafana | http://localhost:8080/grafana/ | Dashboards (admin/joustmania) |
+| Dashboard | http://localhost | Main UI, controller visualization |
+| Jaeger | http://localhost/jaeger/ | Distributed tracing |
+| VictoriaMetrics | http://localhost/victoria-metrics/vmui/ | Metrics (Prometheus query API) |
+| Grafana | http://localhost/grafana/ | Dashboards (admin/joustmania) |
 
 ## Game Modes
 

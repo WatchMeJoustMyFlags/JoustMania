@@ -1,5 +1,11 @@
 apiVersion: 1
 
+# Drop the datasource that pointed at the removed Prometheus container (#1449)
+# from Grafana databases persisted in the grafana-data volume.
+deleteDatasources:
+  - name: "Prometheus (Direct)"
+    orgId: 1
+
 datasources:
   # VictoriaMetrics (Prometheus-compatible) for high-frequency metrics
   - name: Prometheus

@@ -512,7 +512,7 @@ services:
 
   # VictoriaMetrics: the only metrics store (the Prometheus container was removed
   # in #1449). Receives metrics via Prometheus remote write from the OTEL Collector
-  # and serves the Prometheus query API to Grafana, the agent and the dashboard.
+  # and serves the Prometheus query API to Grafana, the dashboard and the tools.
   victoria-metrics:
     image: victoriametrics/victoria-metrics:v1.144.0
     container_name: joustmania-victoria-metrics

@@ -222,7 +222,7 @@ controller_routing_decisions_total{serial="aa:bb:cc:dd:ee:ff", adapter="rust", m
 ### Key metrics to watch
 
 Run these queries in Grafana Explore or the VictoriaMetrics UI at
-`http://localhost:8080/victoria-metrics/vmui/`:
+`http://localhost/victoria-metrics/vmui/`:
 
 **Poll batch duration by backend** (join with backend info):
 

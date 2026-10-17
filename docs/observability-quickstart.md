@@ -66,13 +66,13 @@ python3 tools/monitor_multi_hub_performance.py
 **Access:**
 ```bash
 # Prometheus query API served by VictoriaMetrics (via the envoy reverse proxy)
-curl 'http://localhost:8080/victoria-metrics/api/v1/query?query=game_configured_update_frequency_hz' | jq .
+curl 'http://localhost/victoria-metrics/api/v1/query?query=game_configured_update_frequency_hz' | jq .
 
 # Or view in Grafana (via dashboard reverse proxy)
-open http://localhost:8080/grafana/
+open http://localhost/grafana/
 
 # VictoriaMetrics UI
-open http://localhost:8080/victoria-metrics/vmui/
+open http://localhost/victoria-metrics/vmui/
 ```
 
 **When to use:**
@@ -242,7 +242,7 @@ python3 tools/live_dashboard.py --hz 30
 
 ```bash
 # Instant query against VictoriaMetrics (Prometheus query API)
-curl 'http://localhost:8080/victoria-metrics/api/v1/query?query=game_configured_update_frequency_hz' | jq .
+curl 'http://localhost/victoria-metrics/api/v1/query?query=game_configured_update_frequency_hz' | jq .
 
 # Example output:
 # .data.result[0].value[1] == "30"
@@ -316,7 +316,7 @@ nothing received the alerts. Watch the Grafana dashboards and the dashboard SPA 
 **Symptom:** Grafana shows old/stale metrics
 
 **Fix:**
-1. Check that VictoriaMetrics receives samples: `curl 'http://localhost:8080/victoria-metrics/api/v1/query?query=up' | jq .` and `docker compose logs otel-collector | grep -i error`
+1. Check that VictoriaMetrics receives samples: `curl 'http://localhost/victoria-metrics/api/v1/query?query=up' | jq .` and `docker compose logs otel-collector | grep -i error`
 2. Services push over OTLP; the collector batches metrics every 100 ms
 3. Refresh Grafana dashboard (Ctrl+R)
 

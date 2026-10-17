@@ -115,9 +115,9 @@ Or, with `grpcio`+`protobuf` on your PATH and the repo root importable, run
 | Tool | URL | What |
 |------|-----|------|
 | agent logs | `docker compose logs -f agent` | `agent.signal_received → agent.decision (→ agent.action)` |
-| Jaeger | `http://localhost:8080/jaeger/` (service `agent`) | the decision audit trace + span attrs `decision.action`, `decision.objective_served`, `decision.reason`, `decision.blocked`/`decision.block_reason` |
-| VictoriaMetrics | `http://localhost:8080/victoria-metrics/vmui/` | `agent_evaluations_total` (#1053), `game_interventions_total{type,objective,blocked}` |
-| Grafana | `http://localhost:8080/grafana/` | agent / experiments dashboards |
+| Jaeger | `http://localhost/jaeger/` (service `agent`) | the decision audit trace + span attrs `decision.action`, `decision.objective_served`, `decision.reason`, `decision.blocked`/`decision.block_reason` |
+| VictoriaMetrics | `http://localhost/victoria-metrics/vmui/` | `agent_evaluations_total` (#1053), `game_interventions_total{type,objective,blocked}` |
+| Grafana | `http://localhost/grafana/` | agent / experiments dashboards |
 
 **Even with the act gates closed**, the OBSERVE/DECIDE pipeline still emits
 `agent.signal_received → agent.decision` spans and `agent_evaluations_total` — that

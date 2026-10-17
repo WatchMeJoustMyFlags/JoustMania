@@ -265,9 +265,9 @@ not at normal play.
 
 | Tool | Path | Use |
 |------|------|-----|
-| **Jaeger** | `http://localhost:8080/jaeger/` | Decision audit traces: `agent.signal_received → agent.decision → agent.action`, and `agent.disabled` kill-switch traces. Service: `agent` |
-| **Grafana** | `http://localhost:8080/grafana/` | Dashboards in `services/grafana/dashboards/` |
-| **VictoriaMetrics** | `http://localhost:8080/victoria-metrics/vmui/` | `game_interventions_total`, agent process metrics |
+| **Jaeger** | `http://localhost/jaeger/` | Decision audit traces: `agent.signal_received → agent.decision → agent.action`, and `agent.disabled` kill-switch traces. Service: `agent` |
+| **Grafana** | `http://localhost/grafana/` | Dashboards in `services/grafana/dashboards/` |
+| **VictoriaMetrics** | `http://localhost/victoria-metrics/vmui/` | `game_interventions_total`, agent process metrics |
 | **agent logs** | `docker compose logs -f agent` | Sink-enabled warning, flag evaluation, block reasons |
 
 ### Span attributes to watch (see the agent README for the full table)
