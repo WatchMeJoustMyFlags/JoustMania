@@ -250,7 +250,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 ### connect-proxy
 
-- No flagd client: `/canary/*` and `/chaos/*` rewrite `controller.json` directly (`FLAGD_CONFIG_PATH`).
+- No flagd client: `/canary/*` and `/chaos/*` change `bluetooth_backend` and `chaos_fault_type` through the flag service (`FLAG_SERVICE_URL`, writer `connect-proxy`, #1420): a full rollout is a stack overlay, `?fraction=N` a fraction overlay (`scope.fraction_percent`, the rest of the serials resolve the default, for a canary the stable counterpart), rollback / reset clear the overlays; `/canary/status` and `/chaos/status` return the flag service's view. A refusal keeps its 4xx, the flag service unreachable is 502. The proxy mounts no flag file.
 
 ### pairing-daemon
 

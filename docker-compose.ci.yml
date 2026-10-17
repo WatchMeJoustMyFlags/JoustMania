@@ -23,21 +23,8 @@ services:
       FLAGD_HOST: flagd
       FLAGD_PORT: "8015"
 
-  # flagd - Use the complete CI flag directory (play_audio=off, backend=mock).
-  # Single source of truth (#959): instead of overlaying per-file <domain>.ci.json
-  # onto the base path — which made flagd serve different content at the same
-  # in-container path, invisibly (the #957 trap) — mount the whole
-  # services/flagd/ci directory in place of base services/flagd. flagd's
-  # --uri file:/etc/flagd/<domain>.json list is unchanged; the directory CONTENT
-  # differs. The integration harness sets FLAGD_FLAG_DIR to this same host
-  # directory, so the file a test writes IS the file flagd serves. !override
-  # REPLACES the base [./services/flagd:/etc/flagd] mount (compose MERGES array
-  # values by default; !override replaces the whole list).
-  flagd:
-    volumes: !override
-      - ./services/flagd/ci:/etc/flagd
-
-  # Flag service: load the SAME CI flag directory flagd serves (read-only), and
+  # Flag service: load the CI flag directory (play_audio=off, backend=mock) as
+  # the read-only baseline flagd serves through it (#959: one directory), and
   # keep its admin state in a CI-only state file (re-review N4: one state file
   # per stack, so a test or demo stack never reads the production admin values).
   # !override replaces the base mount list.

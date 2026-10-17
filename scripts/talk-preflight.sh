@@ -8,10 +8,9 @@
 #
 # Checks:
 #   1. the stack containers are running (and healthy where they have a check)
-#   1b. the controller backend: when the `backend` flag in controller.json (still
-#      a flagd file source until #1420, so read from TALK_FLAG_DIR) names rust
-#      (the default, #1371), the rust-hid container is running and healthy
-#      (UC-002 BR-003)
+#   1b. the controller backend: when the `backend` flag of the controller set (read
+#      from the flag service) names rust (the default, #1371), the rust-hid
+#      container is running and healthy (UC-002 BR-003)
 #   2. the flag service: flagd holds an open sync stream (else every write is
 #      refused with 503 no_sync_stream), the boot epoch, the agent set served
 #   3. the stage baseline of the decision.* + safety flags (the effective variant
@@ -45,8 +44,6 @@
 #
 # Environment:
 #   FLAG_SERVICE_URL     the flag service (default $TALK_BASE_URL/flags, the envoy route)
-#   TALK_FLAG_DIR        flag dir of the sets still on flagd file sources
-#                        (default services/flagd/ci; on the Pi hardware stack: services/flagd)
 #   TALK_BASE_URL        envoy entry point (default http://localhost)
 #   TALK_EXPECT_BACKEND  expected decision.backend variant (default rules: the
 #                        session starts on the floor, beat 2 flips to jev)
@@ -59,7 +56,6 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-FLAG_DIR="${TALK_FLAG_DIR:-${REPO_ROOT}/services/flagd/ci}"
 BASE_URL="${TALK_BASE_URL:-http://localhost}"
 BASE_URL="${BASE_URL%/}"
 export FLAG_SERVICE_URL="${FLAG_SERVICE_URL:-${BASE_URL}/flags}"
@@ -131,19 +127,15 @@ fi
 
 # --- 1b. controller backend: rust-hid up when backend=rust (#1371) --------
 section "controller backend (rust-hid when backend=rust)"
-CONTROLLER_FLAG_FILE="${FLAG_DIR}/controller.json"
-backend_value="$(python3 -c '
-import json, sys
+backend_value="$(PYTHONPATH="${SCRIPT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c '
+from flagservice import FlagService
 try:
-    flag = json.load(open(sys.argv[1]))["flags"]["backend"]
-    print(flag["variants"][flag["defaultVariant"]])
-except (OSError, ValueError, KeyError, TypeError):
+    print(FlagService.from_env().effective("controller")["backend"][1])
+except Exception:
     print("?")
-' "${CONTROLLER_FLAG_FILE}" 2>/dev/null)"
-if [[ ! -f "${CONTROLLER_FLAG_FILE}" ]]; then
-  info "no ${CONTROLLER_FLAG_FILE}; rust-hid check skipped"
-elif [[ -z "${backend_value}" || "${backend_value}" == "?" ]]; then
-  warn "cannot read the backend flag from ${CONTROLLER_FLAG_FILE}; rust-hid check skipped"
+' 2>/dev/null)"
+if [[ -z "${backend_value}" || "${backend_value}" == "?" ]]; then
+  warn "cannot read the controller backend flag from the flag service (${FLAG_SERVICE_URL}); rust-hid check skipped"
 elif [[ ",${backend_value// /}," != *",rust,"* ]]; then
   info "backend = ${backend_value}: rust-hid not needed"
 elif [[ "${docker_ok}" -ne 1 ]]; then

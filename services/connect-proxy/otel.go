@@ -285,4 +285,3 @@ func readRSSBytes() (int64, error) {
 	}
 	return rss * int64(os.Getpagesize()), nil
 }
-

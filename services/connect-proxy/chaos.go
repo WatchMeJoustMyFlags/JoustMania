@@ -1,37 +1,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 )
 
-// flagdConfig represents the top-level flagd JSON file structure.
-type flagdConfig struct {
-	Metadata map[string]interface{} `json:"metadata"`
-	Flags    map[string]*flagdFlag  `json:"flags"`
-}
-
-// flagdFlag represents a single feature flag in flagd.
-type flagdFlag struct {
-	State          string                 `json:"state"`
-	Variants       map[string]interface{} `json:"variants"`
-	DefaultVariant string                 `json:"defaultVariant"`
-	Targeting      interface{}            `json:"targeting,omitempty"`
-}
-
+// flags is the flag service the canary and chaos endpoints write through
+// (epic #1407). Tests replace it.
 var (
-	flagdConfigPath string
-	flagdMu         sync.Mutex
+	flags   flagService = newFlagServiceFromEnv()
+	flagsMu sync.Mutex
 )
-
-func init() {
-	flagdConfigPath = getEnv("FLAGD_CONFIG_PATH", "/etc/flagd/flags/controller.json")
-}
 
 // registerChaosHandlers adds chaos fault injection endpoints to the mux.
 func registerChaosHandlers(mux *http.ServeMux) {
@@ -43,7 +27,7 @@ func registerChaosHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/chaos/reset", sameOriginOnly(chaosResetHandler))
 	mux.HandleFunc("/chaos/status", chaosStatusHandler)
 
-	slog.Info("Chaos handlers registered", "flagd_config", flagdConfigPath)
+	slog.Info("Chaos handlers registered", "flag_set", controllerFlagSet)
 }
 
 // faultRouteToVariant maps URL path segments to flagd variant names.
@@ -91,9 +75,9 @@ func chaosSetHandler(fault string) http.HandlerFunc {
 		}
 
 		variant := faultRouteToVariant(fault)
-		if err := setChaosVariant(variant, fraction); err != nil {
+		if err := setChaosVariant(r.Context(), variant, fraction); err != nil {
 			slog.Error("chaos: failed to set fault", "variant", variant, "error", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, err.Error(), statusFor(err))
 			return
 		}
 
@@ -114,9 +98,9 @@ func chaosResetHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := setChaosVariant("none", 100); err != nil {
+	if err := setChaosVariant(r.Context(), "none", 100); err != nil {
 		slog.Error("chaos: failed to reset", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), statusFor(err))
 		return
 	}
 
@@ -128,119 +112,51 @@ func chaosResetHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// chaosStatusHandler returns the current chaos_fault_type flag config.
+// chaosStatusHandler returns the flag service's view of chaos_fault_type.
 func chaosStatusHandler(w http.ResponseWriter, r *http.Request) {
+	flagStatus(w, r, "chaos_fault_type")
+}
+
+// flagStatus serves GET /controller/{flag} from the flag service.
+func flagStatus(w http.ResponseWriter, r *http.Request, flag string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	flagdMu.Lock()
-	defer flagdMu.Unlock()
-
-	cfg, err := readFlagdConfig()
+	view, err := flags.Get(r.Context(), flag)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), statusFor(err))
 		return
 	}
-
-	flag, ok := cfg.Flags["chaos_fault_type"]
-	if !ok {
-		http.Error(w, "chaos_fault_type flag not found", http.StatusNotFound)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(flag)
+	json.NewEncoder(w).Encode(view)
 }
 
-// buildFractionalTargeting creates flagd fractional targeting rules.
-// With fraction=100, returns nil (use defaultVariant for all).
-// With fraction<100, returns a fractional rule that hashes targetingKey (serial)
-// to give `fraction`% of controllers the fault and the rest "none".
-func buildFractionalTargeting(variant string, fraction int) interface{} {
-	if fraction >= 100 {
-		return nil
+// setChaosVariant changes chaos_fault_type through the flag service.
+//   - "none": both overlays are cleared, the baseline (none) returns.
+//   - fraction 100: a stack overlay; any fraction overlay is cleared.
+//   - fraction < 100: a fraction overlay, so that share of serials resolves the
+//     fault and the rest the default (no stack overlay: the baseline none).
+func setChaosVariant(ctx context.Context, variant string, fraction int) error {
+	flagsMu.Lock()
+	defer flagsMu.Unlock()
+	const flag = "chaos_fault_type"
+
+	switch {
+	case variant == "none":
+		if err := flags.Clear(ctx, flag, true); err != nil {
+			return err
+		}
+		return flags.Clear(ctx, flag, false)
+	case fraction >= 100:
+		if err := flags.PutVariant(ctx, flag, variant, 0); err != nil {
+			return err
+		}
+		return flags.Clear(ctx, flag, true)
+	default:
+		if err := flags.Clear(ctx, flag, false); err != nil {
+			return err
+		}
+		return flags.PutVariant(ctx, flag, variant, fraction)
 	}
-	// flagd fractional operator: deterministic bucketing by targetingKey (serial)
-	// https://flagd.dev/reference/custom-operations/fractional-operation/
-	// First element selects the bucketing value — the controller serial passed
-	// as targetingKey in the ChaosAdapter's EvaluationContext.
-	return map[string]interface{}{
-		"fractional": []interface{}{
-			map[string]interface{}{"var": "targetingKey"},
-			[]interface{}{variant, fraction},
-			[]interface{}{"none", 100 - fraction},
-		},
-	}
-}
-
-// setChaosVariant updates the chaos_fault_type flag in the flagd config file.
-// fraction=100 targets all controllers (defaultVariant only).
-// fraction<100 uses flagd fractional targeting to affect a subset of controllers.
-func setChaosVariant(variant string, fraction int) error {
-	flagdMu.Lock()
-	defer flagdMu.Unlock()
-
-	cfg, err := readFlagdConfig()
-	if err != nil {
-		return fmt.Errorf("read config: %w", err)
-	}
-
-	flag, ok := cfg.Flags["chaos_fault_type"]
-	if !ok {
-		return fmt.Errorf("chaos_fault_type flag not found in %s", flagdConfigPath)
-	}
-
-	if _, ok := flag.Variants[variant]; !ok {
-		return fmt.Errorf("unknown variant %q", variant)
-	}
-
-	if variant == "none" {
-		// Reset: clear targeting and set default to none
-		flag.DefaultVariant = "none"
-		flag.Targeting = nil
-	} else if fraction >= 100 {
-		// All controllers: set default, clear targeting
-		flag.DefaultVariant = variant
-		flag.Targeting = nil
-	} else {
-		// Fractional: keep default as "none" (fallback), set targeting
-		flag.DefaultVariant = "none"
-		flag.Targeting = buildFractionalTargeting(variant, fraction)
-	}
-
-	return writeFlagdConfig(cfg)
-}
-
-// readFlagdConfig reads and parses the flagd JSON config file.
-func readFlagdConfig() (*flagdConfig, error) {
-	data, err := os.ReadFile(flagdConfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", flagdConfigPath, err)
-	}
-
-	var cfg flagdConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", flagdConfigPath, err)
-	}
-
-	return &cfg, nil
-}
-
-// writeFlagdConfig writes the flagd config back to disk with consistent formatting.
-func writeFlagdConfig(cfg *flagdConfig) error {
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-
-	// Append newline for POSIX compliance
-	data = append(data, '\n')
-
-	if err := os.WriteFile(flagdConfigPath, data, 0644); err != nil {
-		return fmt.Errorf("write %s: %w", flagdConfigPath, err)
-	}
-
-	return nil
 }

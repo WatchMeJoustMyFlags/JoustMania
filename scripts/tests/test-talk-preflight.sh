@@ -19,7 +19,8 @@ source "${SCRIPT_DIR}/lib-fake-flag-service.sh"
 trap 'stop_fake_flag_service; rm -rf "${WORK}"' EXIT
 mkdir -p "${WORK}/bin" "${WORK}/flags"
 export FAKE_AGENT_FLAGS="${WORK}/flags/agent.json"
-export TALK_FLAG_DIR="${WORK}/flags"
+export FAKE_CONTROLLER_FLAGS="${WORK}/flags/controller.json"
+echo '{"flags": {}}' >"${FAKE_CONTROLLER_FLAGS}"
 export TALK_CLOCK_URLS="https://clock.test"
 REAL_DATE="$(command -v date)"
 export PATH="${WORK}/bin:${PATH}"
@@ -253,16 +254,17 @@ check "missing flag-service container named" "FAIL  joustmania-flag-service: not
 
 # --- controller backend: rust-hid up when backend=rust (#1371, UC-002 BR-003)
 controller_fixture() {
-  python3 - "${WORK}/flags/controller.json" "$1" <<'PY'
+  python3 - "${FAKE_CONTROLLER_FLAGS}" "$1" <<'PY'
 import json, sys
 variants = {"python": "python", "mock": "mock", "rust": "rust", "mock_rust": "mock,rust", "python_rust": "python,rust"}
 json.dump({"flags": {"backend": {"state": "ENABLED", "variants": variants, "defaultVariant": sys.argv[2]}}},
           open(sys.argv[1], "w"), indent=2)
 PY
+  restart_fake
 }
 fixture
 STUB_BUDGET=30 run_preflight
-check "no controller.json skips the rust-hid check" "INFO  no ${WORK}/flags/controller.json; rust-hid check skipped"
+check "no backend flag skips the rust-hid check" "WARN  cannot read the controller backend flag from the flag service"
 
 controller_fixture rust
 STUB_BUDGET=30 run_preflight
@@ -287,7 +289,8 @@ controller_fixture mock
 STUB_BUDGET=30 STUB_MISSING=joustmania-rust-hid run_preflight
 check "backend=mock does not need rust-hid" "INFO  backend = mock: rust-hid not needed"
 if has "joustmania-rust-hid is not running"; then not_ok "backend=mock never fails on rust-hid"; else ok "backend=mock never fails on rust-hid"; fi
-rm -f "${WORK}/flags/controller.json"
+echo '{"flags": {}}' >"${FAKE_CONTROLLER_FLAGS}"
+restart_fake
 
 # --- stage permission baseline and perceptibility (UC-070 BR-003/BR-004, #1301)
 fixture interventions_allowed=none

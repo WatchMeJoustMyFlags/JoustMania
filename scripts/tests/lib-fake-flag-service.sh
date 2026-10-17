@@ -2,7 +2,8 @@
 # Sourced by the script tests: start/stop scripts/tests/fake_flag_service.py.
 #
 #   start_fake_flag_service <workdir> [extra fake args...]
-#       starts the fake over services/flagd/ci/agent.json (+ the real registry),
+#       starts the fake over services/flagd/ci/agent.json and ci/controller.json
+#       (FAKE_AGENT_FLAGS / FAKE_CONTROLLER_FLAGS override them) + the real registry,
 #       exports FLAG_SERVICE_URL and FAKE_FLAG_LOG; stop_fake_flag_service kills it.
 
 _FAKE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,7 +19,7 @@ start_fake_flag_service() {
   rm -f "${port_file}"
   python3 "${_FAKE_DIR}/fake_flag_service.py" \
     --flags "agent=${FAKE_AGENT_FLAGS:-${_REPO_ROOT}/services/flagd/ci/agent.json}" \
-    --flags "controller=${_REPO_ROOT}/services/flagd/ci/controller.json" \
+    --flags "controller=${FAKE_CONTROLLER_FLAGS:-${_REPO_ROOT}/services/flagd/ci/controller.json}" \
     --registry "${_REPO_ROOT}/services/flag-service/registry.yaml" \
     --port-file "${port_file}" --log "${FAKE_FLAG_LOG}" "$@" &
   FAKE_FLAG_PID=$!

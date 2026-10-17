@@ -78,10 +78,8 @@ services:
   # Flag service (epic #1407, UC-053, docs/specs/services.md §7): holds the
   # runtime flag state in memory and serves it to flagd as ONE flagd.sync.v1
   # gRPC sync source; every flag carries its metadata.flagSetId, so clients keep
-  # their flagSetId selectors. It loads the flag files read-only at start and
-  # never writes them (C-030, C-033). Migration (architecture note §12): only
-  # the sets in FLAG_SERVICE_SETS are served by it; the others stay on flagd's
-  # file: sources until their writers move (#1420: controller).
+  # their flagSetId selectors. It loads the flag files (all eight sets) read-only
+  # at start and never writes them (C-030, C-033); flagd has no other source.
   # Writers: HTTP/JSON on 8070 (envoy /flags/ from the host, C-015). flagd: 50064.
   flag-service:
     image: ghcr.io/watchmejoustmyflags/joustmania/flag-service:${IMAGE_TAG:-latest}
@@ -93,7 +91,7 @@ services:
       - "50064"  # flagd.sync.v1 gRPC (flagd only)
       - "8070"   # HTTP/JSON write/read API + /healthz
     environment:
-      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user
+      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
       # Admin settings persisted on request (D10, re-review N4). One state file
       # per stack: the ci, dry-run and decide-e2e stacks override the name.
@@ -123,9 +121,9 @@ services:
           cpus: '0.25'
     logging: *default-logging
 
-  # flagd for feature flag evaluation. The sets the flag service serves come
-  # over ONE gRPC sync source (grpc://flag-service:50064); the others are still
-  # file: sources (architecture note §12). flagd exits when a gRPC source is
+  # flagd for feature flag evaluation. Every flag set comes over ONE gRPC sync
+  # source (grpc://flag-service:50064); flagd reads no flag file and has no
+  # flag mount (C-033). flagd exits when a gRPC source is
   # unreachable at its own start, so it starts only once the flag service is
   # healthy, and restarts with it (restart: true; `scripts/flags.sh restart`).
   # No readyz health check: in v0.16.0 readyz never turns true with a gRPC
@@ -137,8 +135,6 @@ services:
       - "start"
       - "--uri"
       - "grpc://flag-service:50064"
-      - "--uri"
-      - "file:/etc/flagd/controller.json"
       - "--metrics-exporter"
       - "otel"
       - "--otel-collector-uri"
@@ -146,10 +142,6 @@ services:
     environment:
       - OTEL_SERVICE_NAME=flagd
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
-    volumes:
-      # Mount directory (not individual files) so inotify detects edits
-      # (editors do atomic save via temp+rename, which changes the inode)
-      - ./services/flagd:/etc/flagd
     depends_on:
       flag-service:
         condition: service_healthy
@@ -676,19 +668,14 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
-      # Pairing daemon control API (UC-005 unpair); the daemon runs on the host network
-      - PAIRING_DAEMON_URL=http://host.docker.internal:8002
-      - FLAGD_CONFIG_PATH=/etc/flagd/flags/controller.json
+      # Canary and chaos endpoints write the controller set through the flag
+      # service (#1420); the proxy mounts no flag file.
+      - FLAG_SERVICE_URL=http://flag-service:8070
       - OTEL_SERVICE_NAME=connect-proxy
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-    volumes:
-      - ./services/flagd:/etc/flagd/flags
-    extra_hosts:
-      # Reach the host-networked pairing daemon (:8002) for UC-005 unpair
-      - "host.docker.internal:host-gateway"
     networks:
       - joustmania
     restart: unless-stopped

@@ -59,7 +59,6 @@ flag service (the "flag service" section).
 | Bring-up | `docker compose --env-file .env --env-file .env.local up -d` | `COMPOSE_ENV_FILES=.env,.env.local make dry-run` |
 | Compose files | `docker-compose.yml` + the auto-loaded `docker-compose.override.yml` | `docker-compose.yml` + `override` + `ci` + `dry-run`, profiles `agent` + `dashboard` |
 | Baseline the flag service loads (read-only) | `services/flagd/` | `services/flagd/ci/` |
-| `TALK_FLAG_DIR` (pre-flight, `controller` set until #1420) | `export TALK_FLAG_DIR=$PWD/services/flagd` | unset (default `services/flagd/ci`) |
 | Gameplay | real players | `tools/demo/demo_driver.py` (scripted mock movement) |
 | Infra rollback beat | possible (needs the python HID adapter) | not possible (see section 4) |
 
@@ -461,7 +460,7 @@ The infra loop is not gated by the `enabled` kill switch, only by
       search (pre-filled), Jaeger held search, Jaeger retro search, Grafana
       (optional), terminal.
 - [ ] Terminal: an ssh session on the Pi, big font, `cd` to the repo,
-      `setflag` pasted (and `TALK_FLAG_DIR` exported on the stage stack),
+      `setflag` pasted,
       history cleared of anything with a key.
 - [ ] Notifications off on laptop and phone; phone hotspot on standby.
 
