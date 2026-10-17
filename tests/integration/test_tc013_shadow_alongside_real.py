@@ -72,6 +72,9 @@ _TERMINAL_EVENTS = ("game_ended", "game_force_ended", "game_error")
 FFA_LOBBY_COLOR = tuple(int(c * 0.3) for c in Colors.Orange.value)
 _LOBBY_TOLERANCE = 2
 _SENSITIVITY_FACTOR = 1.5  # the "handicap" variant value of player_sensitivity_factor
+_SECOND_FACTOR = (
+    0.7  # the "protect" value; the marker that flagd served the re-sent nonce
+)
 
 
 # =============================================================================
@@ -120,6 +123,15 @@ def write_edge_untargeted(flag_key: str, value: str) -> None:
     _dump_in_place(INTERVENTIONS_PATH, doc)
 
 
+def _set_player_factor(doc: dict, game_id: str, serial: str, value: float) -> None:
+    flag = doc["flags"]["player_sensitivity_factor"]
+    name = "g_" + uuid.uuid5(uuid.NAMESPACE_OID, f"{game_id}\x00{serial}").hex
+    flag["variants"][name] = value
+    flag.setdefault("_branches", {})[name] = {"gameId": game_id, "serial": serial}
+    flag["targeting"] = _game_rule(game_id, name, "default", serial=serial)
+    flag["defaultVariant"] = "default"
+
+
 def write_player_factor_for_game(game_id: str, serial: str, value: float) -> None:
     """``player_sensitivity_factor`` for one (gameId, serial); neutral ``default`` elsewhere.
 
@@ -127,12 +139,24 @@ def write_player_factor_for_game(game_id: str, serial: str, value: float) -> Non
     serves the restored baseline for exactly this scope.
     """
     doc = _load(INTERVENTIONS_PATH)
-    flag = doc["flags"]["player_sensitivity_factor"]
-    name = "g_" + uuid.uuid5(uuid.NAMESPACE_OID, f"{game_id}\x00{serial}").hex
-    flag["variants"][name] = value
-    flag.setdefault("_branches", {})[name] = {"gameId": game_id, "serial": serial}
-    flag["targeting"] = _game_rule(game_id, name, "default", serial=serial)
-    flag["defaultVariant"] = "default"
+    _set_player_factor(doc, game_id, serial, value)
+    _dump_in_place(INTERVENTIONS_PATH, doc)
+
+
+def reserve_edge_with_factor(
+    game_id: str, edge_value: str, serial: str, factor: float
+) -> None:
+    """ONE file write: serve the same ``eliminate_player`` value to ``game_id`` again
+    and change ``serial``'s factor. Once the new factor is observed, flagd has
+    served the file that carries the repeated nonce, so the absence window that
+    follows is not vacuous."""
+    doc = _load(INTERVENTIONS_PATH)
+    flag = doc["flags"]["eliminate_player"]
+    flag["variants"]["active"] = edge_value
+    flag["targeting"] = _game_rule(game_id, "active", "none")
+    flag["defaultVariant"] = "none"
+    flag["_reload_marker"] = int(flag.get("_reload_marker", 0)) + 1
+    _set_player_factor(doc, game_id, serial, factor)
     _dump_in_place(INTERVENTIONS_PATH, doc)
 
 
@@ -265,8 +289,8 @@ async def test_tc013_shadow_game_alongside_real_game(
             f"Step 3: reserved controllers {sorted(leaked)} reached the menu's button stream"
         )
         roster = set(buttons.latest_roster())
-        assert set(menu_serials) <= roster, (
-            f"Step 3: lobby controllers missing from roster {sorted(roster)}"
+        assert roster == set(menu_serials), (
+            f"Step 3: the menu's roster must hold only the lobby controllers {sorted(menu_serials)}, got {sorted(roster)}"
         )
         assert set(await _players(game_client, r1)) == set(menu_serials), (
             "Step 3: R1 roster is not the lobby"
@@ -338,11 +362,22 @@ async def test_tc013_shadow_game_alongside_real_game(
         ), f"Step 5: un-targeted shadow player {factor_other} factor changed"
 
         # Exactly once: flagd may emit several change events per write, and the
-        # same nonce served again (file rewritten, value unchanged) must not re-apply.
-        write_edge_for_game("eliminate_player", s1, eliminate_value)
+        # same nonce served again must not re-apply. The same write also moves
+        # the factor to 0.7: once that is observed, flagd is serving the file
+        # with the repeated nonce, so the absence check below is not vacuous.
+        reserve_edge_with_factor(s1, eliminate_value, factor_target, _SECOND_FACTOR)
+
+        async def _second_factor_applied() -> bool:
+            p = await _players(game_client, s1)
+            return abs(p[factor_target].sensitivity_factor - _SECOND_FACTOR) <= 0.01
+
+        await _until(
+            _second_factor_applied,
+            f"Step 5: flagd never served the re-sent nonce (factor stayed off {_SECOND_FACTOR})",
+        )
         await asyncio.sleep(
-            RELOAD_SETTLE_SECONDS + 1.0
-        )  # absence window: nothing may happen
+            RELOAD_SETTLE_SECONDS
+        )  # absence window: no re-apply may follow
         assert len(_interventions(shadow, s1, "eliminate_player")) == 1, (
             f"Step 5: eliminate applied more than once: {[dict(e.data) for e in _interventions(shadow, s1, 'eliminate_player')]}"
         )
@@ -392,6 +427,12 @@ async def test_tc013_shadow_game_alongside_real_game(
         assert force_ended[0].data["reason"] == "agent_intervention", (
             f"Step 6: {dict(force_ended[0].data)}"
         )
+        # The unblocked end_game event is recorded after the handler ran.
+        await _until(
+            lambda: _interventions(shadow, s1, "end_game", blocked="false"),
+            f"Step 6: no unblocked agent_intervention end_game on S1: "
+            f"{[dict(e.data) for e in shadow.get_events('agent_intervention')]}",
+        )
 
         # Step 7: Verify the real game runs on: R1 RUNNING, no game_force_ended
         # and no end_game event on R1; S1 has exactly one game_force_ended.
@@ -420,9 +461,10 @@ async def test_tc013_shadow_game_alongside_real_game(
             assert all(e.game_id == s1 for e in shadow.get_events(event_type)), (
                 f"Validation 1: {event_type} without S1's id on S1's stream"
             )
-            assert not [
-                e for e in primary.get_events(event_type) if e.game_id not in (r1, "")
-            ], f"Validation 1: foreign {event_type} on R1's stream"
+            assert all(e.game_id == r1 for e in primary.get_events(event_type)), (
+                f"Validation 1: {event_type} without R1's id on R1's stream: "
+                f"{[(e.game_id, dict(e.data)) for e in primary.get_events(event_type)]}"
+            )
 
         # Validation 2: R1 ends; the menu restores the lobby colour of the lobby
         # controllers only (the reserved controllers never get it).
