@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import indexHtml from "../index.html?raw";
-import { DEFAULT_MODE, FALLBACK_CHOICES, loadModeChoices, modeChoices } from "../modes.js";
+import { DEFAULT_MODE, FALLBACK_CHOICES, loadModeChoices, modeChoices, startGameEvent } from "../modes.js";
 
 const PLAYABLE = [
   "JoustFFA",
@@ -52,6 +52,17 @@ describe("UC-011 BR-002: dashboard mode selector options", () => {
     error.mockRestore();
 
     expect(choices).toEqual({ options: [{ value: "JoustFFA", label: "Joust FFA" }], selected: "JoustFFA" });
+  });
+
+  it("UC-011 BR-002 reports a rejected start from an error-only answer (Connect omits success=false)", () => {
+    expect(startGameEvent("Commander", { error: "Unknown or unimplemented game mode: Commander" })).toBe(
+      "Start rejected: Unknown or unimplemented game mode: Commander"
+    );
+    expect(startGameEvent("Commander", {})).toBe("Start rejected: unknown error");
+  });
+
+  it("UC-011 BR-002 reports an accepted start", () => {
+    expect(startGameEvent("JoustFFA", { success: true })).toBe("Starting JoustFFA...");
   });
 
   it("UC-011 BR-002 loads the choices from ListGameModes", async () => {

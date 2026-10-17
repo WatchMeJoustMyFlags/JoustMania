@@ -9,10 +9,10 @@ export interface ProcessInputRequest {
   data: { [key: string]: string };
 }
 
-// Process input response
+// Process input response (Connect JSON omits false / empty fields)
 export interface ProcessInputResponse {
-  success: boolean;
-  error: string;
+  success?: boolean;
+  error?: string;
 }
 
 // List game modes request

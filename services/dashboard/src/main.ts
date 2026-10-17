@@ -15,7 +15,7 @@ import { DecideStore, fetchAgentView, fetchDecideFeed } from "./agent.js";
 import { createPoller } from "./poller.js";
 import { ShieldStore } from "./shield.js";
 import { FollowTracker, followBanner, visibleTiles } from "./follow.js";
-import { loadModeChoices } from "./modes.js";
+import { loadModeChoices, startGameEvent } from "./modes.js";
 import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
@@ -529,11 +529,7 @@ async function handleStartGame() {
       inputType: "web_command",
       data: { command: "start_game", mode },
     });
-    if (response.success === false) {
-      addEvent(`Start rejected: ${response.error}`);
-      return;
-    }
-    addEvent(`Starting ${mode}...`);
+    addEvent(startGameEvent(mode, response));
   } catch (error) {
     console.error("Failed to start game:", error);
     addEvent("Failed to start game");

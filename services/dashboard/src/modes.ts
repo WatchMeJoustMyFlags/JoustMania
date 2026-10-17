@@ -3,7 +3,7 @@
  * ListGameModes, so the dashboard offers exactly the playable modes the menu
  * accepts (UC-011 BR-001) instead of a hardcoded list.
  */
-import type { ListGameModesResponse } from "./gen/menu_pb.js";
+import type { ListGameModesResponse, ProcessInputResponse } from "./gen/menu_pb.js";
 
 export const DEFAULT_MODE = "JoustFFA";
 
@@ -39,6 +39,15 @@ export function modeChoices(response: Partial<ListGameModesResponse>): ModeChoic
     options: modes.map((mode) => ({ value: mode, label: modeLabel(mode) })),
     selected: modes.includes(preferred) ? preferred : modes[0],
   };
+}
+
+/**
+ * Event-log line for a start_game answer. Connect JSON omits `success: false`,
+ * so anything but an explicit `success: true` is a rejection.
+ */
+export function startGameEvent(mode: string, response: Partial<ProcessInputResponse>): string {
+  if (!response.success) return `Start rejected: ${response.error || "unknown error"}`;
+  return `Starting ${mode}...`;
 }
 
 /** Only the default mode, while the menu is unreachable: Start still works. */
