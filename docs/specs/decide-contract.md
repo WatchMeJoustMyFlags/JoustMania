@@ -529,7 +529,7 @@ Full flag shapes: [flags.md § interventions](flags.md#5-interventions).
 The agent targets by **serial only**; it never writes `gameId` targeting (the one exception is `end_game`, addressed by payload, below), although
 the coordinator evaluates every intervention flag with `{targetingKey=serial,
 gameId}` and supports gameId-scoped rules (#838,
-`tests/integration/test_gameid_intervention_isolation.py`). An un-targeted state flip
+`tests/integration/test_tc013_shadow_alongside_real.py`). An un-targeted state flip
 therefore resolves for every live session. Design follow-up: #920. Logged as a
 discrepancy in [specs-inventory.md](../specs-inventory.md#4-discrepancies-found).
 
@@ -657,4 +657,4 @@ The contract tests live in `decide/*_test.go`, the backend tests `decide/backend
 
 **Traceability:** FR-044, FR-045, FR-046, FR-047, FR-048, FR-049, FR-050, FR-051, FR-052, FR-053, FR-054 / UC-040, UC-044, UC-045 /
 `services/agent/decide/`, `services/agent/decision/decide_hook.go`, `decide_registry.go`, `decide_rules.go`, `decision.go`, `services/agent/decide_backends.go`, `services/agent/actions/`, `services/game_coordinator/interventions.py` /
-`services/agent/decide/*_test.go`, `services/agent/decision/decide_hook_test.go`, `tests/integration/test_decide_backend_e2e.py`, `tests/integration/test_gameid_intervention_isolation.py`.
+`services/agent/decide/*_test.go`, `services/agent/decision/decide_hook_test.go`, `tests/integration/test_decide_backend_e2e.py`, `tests/integration/test_tc013_shadow_alongside_real.py`.
