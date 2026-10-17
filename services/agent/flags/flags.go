@@ -256,17 +256,17 @@ const (
 	// env default these replace (AGENT_INTERVENTIONS_ENABLED / AGENT_ROLLOUT_ENABLED,
 	// both `:-false` in docker-compose.yml). These defaults are deliberately the SAFE
 	// state, applied when flagd is undefined or UNREACHABLE (#1177): a missing/down
-	// control plane must NOT actuate — the agent does not write interventions.json /
+	// control plane must NOT actuate — the agent does not write interventions /
 	// does not flip the rollout stage. Fail CLOSED, never fail open to acting.
 
 	// DefaultInterventionsEnabled is fail-closed OFF: when flagd is unreachable the
-	// agent's ActionSink does NOT write interventions.json — a decided, fully-gated
+	// agent's ActionSink does NOT write interventions — a decided, fully-gated
 	// intervention is RECORDED/spanned but never applied (the no-op sink behavior the
 	// old AGENT_INTERVENTIONS_ENABLED=false produced).
 	DefaultInterventionsEnabled = false
 	// DefaultRolloutEnabled is fail-closed OFF: when flagd is unreachable the rollout
 	// actuator is a DRY-RUN — the infra loop still decides+spans the expansion
-	// (rollout.dry_run=true) but never flips current_controller_count in rollout.json
+	// (rollout.dry_run=true) but never flips current_controller_count on the flag service
 	// (the old AGENT_ROLLOUT_ENABLED=false behavior).
 	DefaultRolloutEnabled = false
 )
@@ -702,7 +702,7 @@ func (f *Flags) BluetoothFitness(ctx context.Context) BluetoothFitness {
 
 // InterventionsEnabled resolves the runtime intervention-actuation gate (#1213,
 // interventions_enabled). It is the migrated AGENT_INTERVENTIONS_ENABLED env
-// master: when true the agent's ActionSink WRITES decisions to interventions.json;
+// master: when true the agent's ActionSink WRITES decisions to the flag service (interventions set);
 // when false (or flagd unreachable) it records/spans the decision but applies
 // nothing. Read at USE-TIME (per Apply), NOT cached at startup — flipping the flag
 // in flagd starts/stops actuation with no restart, and a flagd outage at any moment
@@ -724,7 +724,7 @@ func (f *Flags) RemediationAllowed(ctx context.Context) bool {
 
 // RolloutEnabled resolves the runtime rollout-actuation gate (#1213,
 // rollout_enabled). It is the migrated AGENT_ROLLOUT_ENABLED env master: when true
-// the infra loop's actuator FLIPS current_controller_count in rollout.json; when
+// the infra loop's actuator FLIPS current_controller_count on the flag service (rollout set); when
 // false (or flagd unreachable) it is a DRY-RUN — the loop decides+spans the
 // expansion (rollout.dry_run=true) but writes nothing. Read at USE-TIME (per
 // SetControllerCount / DryRun call), NOT cached at startup — flipping the flag in

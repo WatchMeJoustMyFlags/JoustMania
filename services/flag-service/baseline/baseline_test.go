@@ -54,11 +54,12 @@ func TestLoad(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
-	t.Run("UC-053/main the unused controller.ci-rust.json is not loaded: it would duplicate bluetooth_backend", func(t *testing.T) {
-		if _, err := os.Stat(filepath.Join(flagdDir(t, ""), "controller.ci-rust.json")); err != nil {
-			t.Skip("controller.ci-rust.json is gone (deleted with the file mechanism)")
-		}
-		if _, err := Load(flagdDir(t, ""), append(append([]string{}, DefaultFiles...), "controller.ci-rust.json")); err == nil {
+	t.Run("UC-053/main a second file for the same set is refused", func(t *testing.T) {
+		dir := writeFiles(t, map[string]string{
+			"controller.json":         `{"metadata":{"flagSetId":"controller"},"flags":{"a":{"state":"ENABLED","variants":{"x":1},"defaultVariant":"x"}}}`,
+			"controller.ci-rust.json": `{"metadata":{"flagSetId":"controller"},"flags":{"b":{"state":"ENABLED","variants":{"x":1},"defaultVariant":"x"}}}`,
+		})
+		if _, err := Load(dir, []string{"controller.json", "controller.ci-rust.json"}); err == nil {
 			t.Fatal("a second controller set must be refused")
 		}
 	})

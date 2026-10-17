@@ -2,8 +2,8 @@
 Unit tests for the InterventionManager core (#730, PR A).
 
 Covers the enforcement chain (allowed-membership, weighted rate limit, battery
-guard, mode-capability matrix), nonce exactly-once semantics for edge-triggered
-flags, state-shaped change detection, and registry dispatch. Handlers are
+guard, mode-capability matrix), exactly-once semantics for edge-triggered
+flags read as per-game event lists, state-shaped change detection, and registry dispatch. Handlers are
 no-op stubs in PR A; tests assert dispatch + metric/event emission, not game
 effects.
 
@@ -31,8 +31,8 @@ from services.game_coordinator.interventions import (
     _edge_target_serial,
     _is_none_value,
     _RateLimiter,
-    _split_nonce,
 )
+from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
 
@@ -52,8 +52,11 @@ class FakeFlagClient:
     def get_string_value(self, key, default, _ctx=None):
         return str(self.values.get(key, default))
 
+    def get_object_details(self, key, _default, _ctx=None):
+        # One-shot flags are per-game event lists read via details (FR-127).
+        return object_details(key, self.values.get(key))
+
     def get_string_details(self, key, default, _ctx=None):
-        # The manager reads edge flags via details to see errors (#1299).
         return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, _ctx))
 
     def get_float_details(self, key, default, _ctx=None):
@@ -164,13 +167,6 @@ class Clock:
 # --------------------------------------------------------------------------- #
 # Pure helpers
 # --------------------------------------------------------------------------- #
-def test_split_nonce():
-    assert _split_nonce("5:abc") == ("5", "abc")
-    assert _split_nonce("7") == ("7", "")
-    assert _split_nonce("") == ("", "")
-    assert _split_nonce("9:a:b") == ("9", "a:b")
-
-
 def test_edge_target_serial():
     elim = next(s for s in INTERVENTION_SPECS if s.flag_key == "eliminate_player")
     eff = next(s for s in INTERVENTION_SPECS if s.flag_key == "controller_effect")
@@ -220,55 +216,48 @@ def test_rate_limiter_window_slide():
 
 
 # --------------------------------------------------------------------------- #
-# Nonce exactly-once (edge-triggered)
+# Exactly-once per event (edge-triggered, per-game event lists, FR-127)
 # --------------------------------------------------------------------------- #
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.asyncio
-async def test_nonce_same_value_applies_once():
-    mgr, events = make_manager(interventions={"eliminate_player": "1:ctrl_a"})
+async def test_event_applies_once():
+    mgr, events = make_manager(interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")})
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
-        await mgr.evaluate_all()  # same nonce -> no second apply
+        await mgr.evaluate_all()  # same list re-read -> no second apply
     applied = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "eliminate_player"]
     assert len(applied) == 1
     assert applied[0]["target"] == "ctrl_a"
     assert applied[0]["blocked"] == "false"
 
 
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.asyncio
-async def test_nonce_change_applies_again():
-    mgr, events = make_manager(interventions={"eliminate_player": "1:ctrl_a"})
+async def test_new_event_applies_again():
+    mgr, events = make_manager(interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")})
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
-        mgr._interventions_client.set("eliminate_player", "2:ctrl_b")  # new nonce
+        mgr._interventions_client.set("eliminate_player", edge_event("eliminate_player", "ctrl_b", seq=2))
         await mgr.evaluate_all()
     applied = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "eliminate_player"]
     assert len(applied) == 2
     assert applied[1]["target"] == "ctrl_b"
 
 
-@pytest.mark.asyncio
-async def test_nonce_reconnect_reread_no_reapply():
-    """Priming the baseline (startup / flagd reconnect) must not re-fire."""
-    mgr, events = make_manager(interventions={"eliminate_player": "1:ctrl_a"})
-    mgr._prime_baseline()  # simulates startup baseline capture
-    with patch("services.game_coordinator.metrics.interventions_total"):
-        await mgr.evaluate_all()  # re-read after reconnect, same nonce
-    applied = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "eliminate_player"]
-    assert applied == []
-
-
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.asyncio
 async def test_edge_empty_payload_is_noop():
-    mgr, events = make_manager(interventions={"eliminate_player": "5:"})
+    mgr, events = make_manager(interventions={"eliminate_player": edge_event("eliminate_player", "")})
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     elim = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "eliminate_player"]
     assert elim == []
 
 
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.asyncio
-async def test_end_game_nonce_only_shape():
-    mgr, events = make_manager(interventions={"end_game": "1"})
+async def test_end_game_event_needs_no_payload():
+    mgr, events = make_manager(interventions={"end_game": edge_event("end_game")})
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     end = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "end_game"]
@@ -308,7 +297,7 @@ async def test_state_flag_revert_to_none_not_dispatched():
 @pytest.mark.uc("UC-013", br=["BR-002"])
 async def test_allowed_membership_blocks():
     mgr, events = make_manager(
-        interventions={"eliminate_player": "1:ctrl_a"},
+        interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")},
         allowed="play_audio_cue",  # eliminate not allowed
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
@@ -322,7 +311,7 @@ async def test_allowed_membership_blocks():
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
 async def test_empty_allowed_blocks_everything():
-    mgr, events = make_manager(interventions={"audio_cue": "1:beep"}, allowed=[])
+    mgr, events = make_manager(interventions={"audio_cue": edge_event("audio_cue", "beep")}, allowed=[])
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     cue = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "play_audio_cue"]
@@ -342,13 +331,15 @@ async def test_empty_allowed_blocks_everything():
 async def test_backstop_blocks_after_global_budget_exhausted():
     clock = Clock()
     mgr, events = make_manager(
-        interventions={"eliminate_player": "1:ctrl_a"},  # hard = 2.0
+        interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")},  # hard = 2.0
         backstop=2,  # tiny backstop so the flood trips it immediately
         time_fn=clock,
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # consumes 2.0 (applied)
-        mgr._interventions_client.set("eliminate_player", "2:ctrl_b")  # new trigger
+        mgr._interventions_client.set(
+            "eliminate_player", edge_event("eliminate_player", "ctrl_b", seq=2)
+        )  # new trigger
         await mgr.evaluate_all()  # backstop exhausted -> blocked
     elim = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "eliminate_player"]
     assert elim[0]["blocked"] == "false"
@@ -359,11 +350,13 @@ async def test_backstop_blocks_after_global_budget_exhausted():
 @pytest.mark.asyncio
 async def test_backstop_window_slide_allows_again():
     clock = Clock()
-    mgr, events = make_manager(interventions={"eliminate_player": "1:ctrl_a"}, backstop=2, time_fn=clock)
+    mgr, events = make_manager(
+        interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")}, backstop=2, time_fn=clock
+    )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
         clock.advance(61.0)
-        mgr._interventions_client.set("eliminate_player", "2:ctrl_b")
+        mgr._interventions_client.set("eliminate_player", edge_event("eliminate_player", "ctrl_b", seq=2))
         await mgr.evaluate_all()
     elim = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "eliminate_player"]
     assert elim[1]["blocked"] == "false"
@@ -374,7 +367,7 @@ async def test_blocked_intervention_does_not_consume_backstop_budget():
     """A type blocked by membership must not eat backstop budget."""
     clock = Clock()
     mgr, _ = make_manager(
-        interventions={"eliminate_player": "1:ctrl_a"},
+        interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")},
         allowed="eliminate_player",
         backstop=2,
         time_fn=clock,
@@ -456,7 +449,7 @@ async def test_normal_multi_session_traffic_does_not_trip_backstop():
     mgr, events = make_manager(time_fn=clock)  # backstop defaults to 60
     with patch("services.game_coordinator.metrics.interventions_total"):
         for i in range(8):
-            mgr._interventions_client.set("eliminate_player", f"{i}:ctrl_{i}")
+            mgr._interventions_client.set("eliminate_player", edge_event("eliminate_player", f"ctrl_{i}", seq=i + 1))
             await mgr.evaluate_all()
     elim = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "eliminate_player"]
     assert len(elim) == 8
@@ -472,7 +465,7 @@ async def test_normal_multi_session_traffic_does_not_trip_backstop():
 @pytest.mark.uc("UC-040", flow="A22")
 async def test_battery_guard_blocks_low():
     mgr, events = make_manager(
-        interventions={"eliminate_player": "1:ctrl_a"},
+        interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")},
         battery={"ctrl_a": 10},  # below default threshold 20
         threshold=20,
     )
@@ -486,7 +479,7 @@ async def test_battery_guard_blocks_low():
 @pytest.mark.asyncio
 async def test_battery_guard_passes_when_above_threshold():
     mgr, events = make_manager(
-        interventions={"eliminate_player": "1:ctrl_a"},
+        interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")},
         battery={"ctrl_a": 90},
         threshold=20,
     )
@@ -499,7 +492,7 @@ async def test_battery_guard_passes_when_above_threshold():
 @pytest.mark.asyncio
 async def test_battery_guard_missing_does_not_block():
     mgr, events = make_manager(
-        interventions={"eliminate_player": "1:ctrl_a"},
+        interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")},
         battery={},  # no battery reading for ctrl_a
         threshold=20,
     )
@@ -517,7 +510,7 @@ async def test_battery_guard_missing_does_not_block():
 @pytest.mark.uc("UC-040", flow="A22")
 async def test_mode_matrix_blocks_revive_in_ffa():
     mgr, events = make_manager(
-        interventions={"revive_player": "1:ctrl_a"},
+        interventions={"revive_player": edge_event("revive_player", "ctrl_a")},
         game=FakeGame("FFA"),
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
@@ -530,7 +523,7 @@ async def test_mode_matrix_blocks_revive_in_ffa():
 @pytest.mark.asyncio
 async def test_mode_matrix_blocks_led_effect_in_werewolf():
     mgr, events = make_manager(
-        interventions={"controller_effect": "1:ctrl_a:pulse"},
+        interventions={"controller_effect": edge_event("controller_effect", "ctrl_a:pulse")},
         game=FakeGame("Werewolf"),
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
@@ -542,7 +535,7 @@ async def test_mode_matrix_blocks_led_effect_in_werewolf():
 @pytest.mark.asyncio
 async def test_mode_matrix_allows_revive_in_nonstop():
     mgr, events = make_manager(
-        interventions={"revive_player": "1:ctrl_a"},
+        interventions={"revive_player": edge_event("revive_player", "ctrl_a")},
         game=FakeGame("Nonstop Joust"),
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
@@ -556,7 +549,7 @@ async def test_mode_matrix_allows_revive_in_nonstop():
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_registry_dispatch_calls_registered_handler():
-    mgr, _ = make_manager(interventions={"audio_cue": "1:beep"})
+    mgr, _ = make_manager(interventions={"audio_cue": edge_event("audio_cue", "beep")})
     handler = AsyncMock()
     mgr.register_handler("audio_cue", handler)
     with patch("services.game_coordinator.metrics.interventions_total"):
@@ -570,7 +563,7 @@ async def test_registry_dispatch_calls_registered_handler():
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A22")
 async def test_blocked_intervention_skips_handler():
-    mgr, _ = make_manager(interventions={"audio_cue": "1:beep"}, allowed=[])
+    mgr, _ = make_manager(interventions={"audio_cue": edge_event("audio_cue", "beep")}, allowed=[])
     handler = AsyncMock()
     mgr.register_handler("audio_cue", handler)
     with patch("services.game_coordinator.metrics.interventions_total"):
@@ -588,7 +581,7 @@ async def test_register_handler_unknown_key_raises():
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A22")
 async def test_handler_error_records_blocked():
-    mgr, events = make_manager(interventions={"audio_cue": "1:beep"})
+    mgr, events = make_manager(interventions={"audio_cue": edge_event("audio_cue", "beep")})
 
     async def boom(_ctx):
         raise RuntimeError("handler failed")
@@ -607,7 +600,7 @@ async def test_handler_error_records_blocked():
 @pytest.mark.asyncio
 async def test_metric_recorded_with_labels():
     mgr, _ = make_manager(
-        interventions={"audio_cue": "1:beep"},
+        interventions={"audio_cue": edge_event("audio_cue", "beep")},
         objectives={"endurance": 0.7, "balanced": 0.1, "accelerate": 0.1, "chaos": 0.1},
     )
     with patch("services.game_coordinator.metrics.interventions_total") as metric:
@@ -618,7 +611,7 @@ async def test_metric_recorded_with_labels():
 
 @pytest.mark.asyncio
 async def test_dominant_objective_default_balanced():
-    mgr, _ = make_manager(interventions={"audio_cue": "1:beep"})
+    mgr, _ = make_manager(interventions={"audio_cue": edge_event("audio_cue", "beep")})
     assert mgr._dominant_objective() == "balanced"
 
 
@@ -630,7 +623,7 @@ async def test_multiple_flags_evaluated_in_one_pass():
     mgr, events = make_manager(
         interventions={
             "music_tempo_override": 1.15,
-            "audio_cue": "1:beep",
+            "audio_cue": edge_event("audio_cue", "beep"),
             "shield_seconds": 5,
         },
         # shield_seconds is player-targeted: it resolves per active serial, so a

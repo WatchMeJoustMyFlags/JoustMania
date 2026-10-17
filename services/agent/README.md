@@ -249,11 +249,12 @@ event_gap_ms 87.5>50; movement_update_hz[AA:BB] 8.3<10
 
 `decision.InfraLoop` consumes the infra fitness result to **expand the Bluetooth
 backend rollout controller-by-controller**. When fitness passes it advances
-`rollout.current_controller_count` one stage up a fixed ladder by rewriting
-`services/flagd/rollout.json` (the controller-manager watches the file and
-converges on it). The agent is the **sole writer** of `rollout.json`, via the
-same order-preserving in-place RMW as the interventions writer
-(`actions.RolloutWriter`); untouched flags round-trip byte-for-byte.
+`rollout.current_controller_count` one stage up a fixed ladder with one stack
+overlay write to the flag service, `PUT /rollout/current_controller_count
+{"variant": <stage>}` (`actions.RolloutWriter`, epic #1407); flagd serves it and
+the controller-manager converges on it. The overlay is in memory: a flag-service
+restart returns the rollout to its baseline stage. The baseline
+`services/flagd/rollout.json` is never written.
 
 **Stage ladder** (`current_controller_count` variants):
 
@@ -306,8 +307,8 @@ failure sets the span status to error and records the error.
 
 | Env / flag | Default | Effect |
 |-----|---------|--------|
-| `rollout_enabled` (**flagd flag**, `agent.json`) | `off` | **#1213: migrated from the `AGENT_ROLLOUT_ENABLED` env var to a LIVE flag**, read per `SetControllerCount`/`DryRun` (never cached at startup). `on` → real `RolloutWriter` applies flips (`rollout.dry_run=false`). `off` (or flagd unreachable — **fail-closed**) → **dry-run**: the loop still decides and spans expansions (`remediation.action="expand"`, `rollout.controller_count` set, **`rollout.dry_run=true`**) but does **not** write `rollout.json` (decided-but-not-applied; logged `agent.rollout_dry_run`). Flip the flag in flagd, no restart. |
-| `ROLLOUT_FLAG_PATH` | `/etc/flagd/rollout.json` | rollout flag file path (read for `remediation_allowed`, written on expand/rollback) |
+| `rollout_enabled` (**flagd flag**, `agent.json`) | `off` | **#1213: migrated from the `AGENT_ROLLOUT_ENABLED` env var to a LIVE flag**, read per `SetControllerCount`/`DryRun` (never cached at startup). `on` → real `RolloutWriter` applies flips (`rollout.dry_run=false`). `off` (or flagd unreachable — **fail-closed**) → **dry-run**: the loop still decides and spans expansions (`remediation.action="expand"`, `rollout.controller_count` set, **`rollout.dry_run=true`**) but does **not** write the rollout stage (decided-but-not-applied; logged `agent.rollout_dry_run`). Flip it through the flag service (`scripts/flags.sh set agent rollout_enabled on`), no restart. |
+| `FLAG_SERVICE_URL` | `http://flag-service:8070` | flag service the rollout writer (and every other agent writer) calls |
 | `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | per-stage dwell before re-expansion |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | post-rollback cooldown: re-expansion is suppressed this long after a rollback |
 
@@ -333,14 +334,13 @@ if not fitness.passing and stage > none:
 ```
 
 **`remediation_allowed` gating.** Auto-rollback is gated on the
-`remediation_allowed` flag. That flag lives in the **`rollout` flagd domain**
-(`services/flagd/rollout.json`, `flagSetId: "rollout"`), **not** the agent
-domain. The agent already owns that file (it is the sole writer of
-`rollout.json`), so it resolves the gate by reading the flag's `defaultVariant`
-**directly from that document** each cycle (`actions.RemediationReader`), rather
-than standing up a second flagd RPC domain client. Any read/parse error →
-**`false`** (recommend-only) — the fail-closed safe default. Flip the flag's
-`defaultVariant` to `on`/`off` to enable/disable auto-rollback live (no restart).
+`remediation_allowed` flag. That flag lives in the **`rollout` flag set**
+(baseline `services/flagd/rollout.json`), **not** the agent set. The agent
+evaluates it through flagd each cycle like every other flag
+(`actions.RemediationReader`, #1411). Any evaluation error → **`false`**
+(recommend-only) — the fail-closed safe default. Enable/disable auto-rollback
+live through the flag service (`scripts/flags.sh set rollout remediation_allowed
+on` / `clear rollout remediation_allowed`), no restart.
 
 **Cooldown.** After a successful rollback the loop starts a cooldown
 (`AGENT_ROLLOUT_COOLDOWN_SECONDS`, default **30s**), wired through the
@@ -396,7 +396,7 @@ attribute builder** (`infraDecisionAttributes`), so **every** decision span — 
 | `fitness.passing` | bool | yes | did the Bluetooth fitness check pass this cycle |
 | `fitness.violations` | string | yes (**empty when passing**, never absent) | the failing checks, e.g. `movement_update_hz[AA:BB] 8.3<10` |
 | `remediation.action` | string | yes | `none \| expand \| rollback \| recommended_only` |
-| `rollout.dry_run` | bool | yes | did the actuator only **rehearse** this decision (no write to `rollout.json`) rather than apply it — `true` when the `rollout_enabled` flag is `off` (flagd flag, #1213; the fail-closed default, re-read per cycle) and when there is no actuator; `false` when `rollout_enabled` is `on` and the real `RolloutWriter` applies. Lets a trace tell a rehearsed `expand`/`rollback` apart from a real one. |
+| `rollout.dry_run` | bool | yes | did the actuator only **rehearse** this decision (no write to the flag service) rather than apply it — `true` when the `rollout_enabled` flag is `off` (flagd flag, #1213; the fail-closed default, re-read per cycle) and when there is no actuator; `false` when `rollout_enabled` is `on` and the real `RolloutWriter` applies. Lets a trace tell a rehearsed `expand`/`rollback` apart from a real one. |
 
 plus the observed `bluetooth.*` window signals (`target_backend` + `rollout_count`
 always; `event_gap_ms` / `dropped_events_pct` / `movement_update_hz` /
@@ -509,10 +509,11 @@ The two decision hooks:
 - **Action sink** (#730) — applies permitted intents via OpenFeature/flagd.
   **No-op by default**: the gated sink consults the live `interventions_enabled`
   flag (flagd flag, #1213; re-read per `Apply`). With it `on` the real
-  `actions.Writer` is dispatched and decisions are written to the flagd
-  `interventions` domain (see **Action sink** below); `off`/undefined/flagd-
-  unreachable is **fail-closed** — decisions are traced and discarded. Flip the
-  flag in flagd, no restart.
+  `actions.Writer` is dispatched and decisions are written to the
+  `interventions` set through the flag service (see **Action sink** below);
+  `off`/undefined/flagd-unreachable is **fail-closed** — decisions are traced and
+  discarded. Flip the flag through the flag service
+  (`scripts/flags.sh set agent interventions_enabled on`), no restart.
 
 The flags wrapper lives in [`flags/`](flags/) and uses the OpenFeature Go SDK
 with the flagd **RPC** resolver against flagd's gRPC evaluation port. Flag keys
@@ -905,9 +906,9 @@ All configuration is via environment variables:
 | `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | Per-call deadline of the text backend, also the retro's deadline |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | _unset_ | Overrides the `llm.max_requests_per_minute` flag as the per-minute cap on remote decide calls and retros (#964) |
 | `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions. See [Probe mode](#probe-mode-agent_probe_decisions) |
-| `interventions_enabled` (**flagd flag**, `agent.json`) | `off` | **#1213: migrated from the `AGENT_INTERVENTIONS_ENABLED` env var to a LIVE flag**, read per `Apply` against the live `Flags` (never cached at startup). `on` → the gated action sink writes a fully-permitted decision to the interventions file via the real **Writer** (#730); `off` (or flagd unreachable — **fail-closed**) → the decision is still recorded/spanned but **not** written (inert scaffold). Distinct from the `enabled` kill switch (gates whether the loop **decides**) and `interventions_allowed` (gates **which** intervention types may dispatch); this gates whether a permitted decision is **applied**. Flip the flag in flagd, no restart. |
-| `INTERVENTIONS_FLAG_PATH` | `/etc/flagd/interventions.json` | Path of the flagd interventions file the Writer rewrites (must be the bind-mounted file flagd watches) |
-| `AGENT_EXPERIMENTS_ENABLED` | `false` | **Bootstrap default for the live `experiments_enabled` flag** gating the #991 experiment cohort loop (epic #982). When on, the `experiment.Registry` (built with the real spawner/targeting/verdict/promoter seams) runs the declare→spawn→conclude→verdict→(gated)promote loop. Since #1044 the loop is always built + run and self-gates on the live flag; **default off ⇒ the loop is behaviorally inert — no shadow spawns, no targeting writes, no promotions (the only residual work is one ~30 s no-op tick).** Promotion still routes through the existing `code_improvement` gates + kill-switch |
+| `interventions_enabled` (**flagd flag**, `agent.json`) | `off` | **#1213: migrated from the `AGENT_INTERVENTIONS_ENABLED` env var to a LIVE flag**, read per `Apply` against the live `Flags` (never cached at startup). `on` → the gated action sink writes a fully-permitted decision to the flag service via the real **Writer** (#730); `off` (or flagd unreachable — **fail-closed**) → the decision is still recorded/spanned but **not** written (inert scaffold). Distinct from the `enabled` kill switch (gates whether the loop **decides**) and `interventions_allowed` (gates **which** intervention types may dispatch); this gates whether a permitted decision is **applied**. Flip it through the flag service (`scripts/flags.sh set agent interventions_enabled on`), no restart. |
+| `FLAG_SERVICE_URL` | `http://flag-service:8070` | Flag service HTTP API every agent writer calls (interventions, rollout stage, experiment arms, promotion); the agent mounts no flag file |
+| `AGENT_EXPERIMENTS_ENABLED` | `false` | **Bootstrap default for the live `experiments_enabled` flag** gating the #991 experiment cohort loop (epic #982). When on, the `experiment.Registry` (built with the real spawner/targeting/verdict/promoter seams) runs the declare→spawn→conclude→verdict→(gated)promote loop. Since #1044 the loop is always built + run and self-gates on the live flag; **default off ⇒ the loop is behaviorally inert — no shadow spawns, no experiment-arm writes, no promotions (the only residual work is one ~30 s no-op tick).** Promotion still routes through the existing `code_improvement` gates + kill-switch |
 | `AGENT_MAX_SHADOW_GAMES` | `20` | Fixed cap on concurrent shadow games across all live experiments (epic #982 decision 2); the registry round-robins this **capacity-bookkeeping** cap across experiments |
 | `AGENT_SHADOW_EFFECTIVE_CONCURRENCY` | `4` | **Effective** in-flight shadow-spawn concurrency, bounding how many concurrent shadow starts the registry holds at once. Since #1018 (option b) the game-coordinator runs shadow games **concurrently** (the single-game guard is REAL-only; shadows run in parallel up to `GAME_MAX_SHADOW_GAMES`), so the registry can keep several in flight without each being a doomed "Game already in progress" start. Default 4 makes #1003's same-tick atomic pair reservation activate (it needs >= 2 to reserve BOTH arms in one tick). Clamped to `AGENT_MAX_SHADOW_GAMES`. A coordinator-at-capacity rejection (cap full) is still treated as **backpressure** (release + retry next tick), not a spawn failure |
 | `AGENT_EXPERIMENT_TICK_SECONDS` | `30` | Cadence of the registry's `AllocateAndSpawn` (refills free shadow capacity) |
@@ -917,8 +918,8 @@ All configuration is via environment variables:
 | `verdict_min_raw_effect` (flag) | `0.02` | #1042 practical-significance floor: minimum RAW effect (\|mean_d\| paired / \|mean_exp − mean_ctl\| two-arm) for a promote/discard. Below it ⇒ inconclusive regardless of how large the standardized d_z / Cohen's d is — stops near-deterministic shadow games promoting on a trivially-tiny but perfectly-consistent delta. 0.02 = 2% of the ~0..1 fitness range. **Migrated to a live `agent.json` flag (#1214)** — fail-open fallback `DefaultMinRawEffect` |
 | `verdict_sd_floor` (flag) | `0.0001` | #1042 minimum-SD floor (defense in depth): floors the d_z / Cohen's d denominator so the standardized stat stays finite when the spread collapses toward 0 (sd→0). 1e-4 is two orders below any real-play spread, so it never distorts a real-noise verdict. **Migrated to a live `agent.json` flag (#1214)** — fail-open fallback `DefaultSDFloor` |
 | `verdict_anchor_margin` (flag) | `0.02` | #992 recent-real regression margin: a PROMOTE is downgraded to inconclusive only when the experimental arm regresses below the recent-real baseline by MORE than this. Mirrors the #1042 raw-effect floor. **Migrated to a live `agent.json` flag (#1214)** — fail-open fallback `DefaultAnchorMargin` |
-| `AGENT_EXPERIMENT_SEED_FLAG` | _unset_ | When set (and the loop is enabled), declares ONE env-seeded experiment at startup on this game.json flag — the simplest declaration trigger for the demo. Paired with `AGENT_EXPERIMENT_SEED_VALUE` / `_OBJECTIVE` / `_TARGET_N` / `_HYPOTHESIS` |
-| `AGENT_EXPERIMENT_SEED_VALUE` | _unset_ | The seed experiment's experimental value. Parsed as a number when it parses as a float, else bool for `true`/`false`, else a JSON object/array when the text begins with `{`/`[` and parses as valid JSON (#1090 — lets an object-valued FFA lever such as `windows` or `thresholds` be seeded), else the raw string. Its JSON kind must match the flag's existing variants (the Gate's type guard rejects a mistyped seed at the targeting write) |
+| `AGENT_EXPERIMENT_SEED_FLAG` | _unset_ | When set (and the loop is enabled), declares ONE env-seeded experiment at startup on this `game` set flag (it must be in the experiment catalog, flags.md §13.3) — the simplest declaration trigger for the demo. Paired with `AGENT_EXPERIMENT_SEED_VALUE` / `_OBJECTIVE` / `_TARGET_N` / `_HYPOTHESIS` |
+| `AGENT_EXPERIMENT_SEED_VALUE` | _unset_ | The seed experiment's experimental value. Parsed as a number when it parses as a float, else bool for `true`/`false`, else a JSON object/array when the text begins with `{`/`[` and parses as valid JSON (#1090 — lets an object-valued FFA lever such as `windows` or `thresholds` be seeded), else the raw string. Its JSON kind must match the flag's existing variants (the Gate's type guard rejects a mistyped seed) and the value must be within the registry bounds (else the flag service answers `422 out_of_bounds`) |
 | `AGENT_EXPERIMENT_SEED_OBJECTIVE` | `balanced` | The seed experiment's fitness objective (`endurance` / `balanced` / `accelerate` / `chaos`) |
 | `AGENT_EXPERIMENT_SEED_TARGET_N` | _unset_ | Target games per arm for the seed experiment (positive int; falls back to the registry default when unset) |
 | `AGENT_EXPERIMENT_SEED_HYPOTHESIS` | _generated_ | Free-text hypothesis recorded on the seed experiment's intent |
@@ -927,8 +928,13 @@ All configuration is via environment variables:
 > The experiment loop reads these on **every tick** from the `agent` flagd domain,
 > with the env var above as the **bootstrap default** the flag falls back to when
 > absent/unreadable (the kill-switch pattern: flag overrides, env is the floor). So
-> they are hot-reloadable / dashboard-controllable with **no container restart**, and
-> a fresh `agent.json` (no new flags) reproduces byte-identical env behavior. The
+> a change takes effect with **no container restart**: through the flag service
+> (`scripts/flags.sh set agent <flag> <variant>`) for the flags in its mutable
+> registry (`experiments_enabled`, `experiment_dynamic_enabled`,
+> `experiment_tick_seconds`, `experiment_max_games`, `verdict_min_n`,
+> `verdict_min_pairs`), or by a baseline edit plus `scripts/flags.sh restart` for
+> the rest. A baseline `agent.json` without these flags reproduces byte-identical
+> env behavior. The
 > migrated flags (see [`services/flagd/agent.json`](../flagd/agent.json)):
 >
 > | flag (`agent.json`) | env bootstrap default |
@@ -950,21 +956,19 @@ All configuration is via environment variables:
 > run**; they self-gate each tick on the live `experiments_enabled` /
 > `experiment_dynamic_enabled` flags. An off→on flip **starts** the loop (it runs the
 > deferred rehydrate + seed bootstrap and begins allocating); an on→off flip **stops**
-> it cleanly (`AbortAll` strips targeting and frees capacity — in-flight shadow games
+> it cleanly (`AbortAll` clears the experiment-arm values and frees capacity — in-flight shadow games
 > conclude/release normally). The master `enabled` kill-switch still wins: a disabled
-> agent does nothing regardless of these flags. **`agent.json` is human-owned** — the
-> agent has **no** write path to it, so it can never enable its own experiments. The
-> agent writes three flagd files: `interventions.json` (in-game interventions,
-> `actions/writer.go`), `rollout.json` (`current_controller_count`,
-> `actions/rollout_writer.go`) and `game.json` (shadow-scoped experiment targeting via
-> `experiment.Writer`, plus the real default on gated autonomous promotion). It must
-> never write `agent.json`. The guards are in code, not in the mount: experiment
-> writes are pinned to a `game.json` basename by `experiment/gate.go` (basename,
-> path-component and symlink-target checks); the autonomous promotion writes the file
-> named by `AGENT_REAL_DEFAULT_FLAG_PATH` (operator-set, currently unchecked, tracked
-> in #1293); the intervention and rollout writers use fixed paths. The agent
-> bind-mounts `./services/flagd:/etc/flagd` read-write (`docker-compose.yml`) and
-> there is no `:ro` mount.
+> agent does nothing regardless of these flags. **The `agent` set is human-owned** —
+> the agent has **no** write path to it, so it can never enable its own experiments.
+> The agent writes three flag sets, all through the flag service (epic #1407):
+> `interventions` (game-scoped in-game interventions, `actions/writer.go`), `rollout`
+> (`current_controller_count`, `actions/rollout_writer.go`) and `game` (experiment-arm
+> values via `experiment.Writer`, plus a `real` overlay on gated autonomous
+> promotion). It must never write the `agent` set. The guards are in the client code:
+> `experiment/gate.go` rejects a proposal that names another set
+> (`non_game_target`), the promotion writer's set is always `game` (#1293), and the
+> intervention and rollout writers use fixed sets. The agent mounts no flag file;
+> only the flag service mounts the baseline directory, read-only.
 >
 > **Stays env (NOT migrated):** `AGENT_EXPERIMENT_DIR` (filesystem concern), the
 > one-shot `AGENT_EXPERIMENT_SEED_*` (startup seed), and the two **list-valued**
@@ -993,8 +997,8 @@ All configuration is via environment variables:
 `decision.backend` (agent.json) picks who answers the in-game decide questions:
 `rules` (default, in-process) or a remote backend, `claude`, `openai` or `jev`,
 called directly with no gateway. Flip it, and the backend's model, with
-`./scripts/agent-backend.sh` (edits `services/flagd/ci/agent.json`, applied live on
-the next cycle with no restart):
+`./scripts/agent-backend.sh` (a `stage` overlay through the flag service, applied
+live on the next cycle with no restart; a flag-service restart drops it):
 
 ```bash
 ./scripts/agent-backend.sh                 # show current settings
@@ -1041,7 +1045,8 @@ recorded only as `error.type`. Wiring: `decide_backends.go`.
 images, mock controllers, full observability, the loop enabled, and one seeded
 experiment. See the [dry-run runbook](../../docs/agent-dry-run-runbook.md) for
 the operator steps and the silent-failure traps it avoids (stale `IMAGE_TAG`,
-the kill-switch default, and the agent↔flagd flag-dir mismatch under the ci dir).
+and the kill-switch default; the former agent↔flagd flag-dir mismatch is gone
+since the agent writes through the flag service).
 
 The loop ACTS only when **three independent gates** are all satisfied — kept
 separate so a dry run can spawn shadow games without ever risking a real-default
@@ -1050,17 +1055,18 @@ change:
 1. **Experiments opt-in** — `AGENT_EXPERIMENTS_ENABLED=true`. Builds the
    `experiment.Registry` and runs declare → spawn → conclude → verdict →
    (gated) promote. Default `false` ⇒ no Registry, no shadow spawns, no
-   targeting writes, no promotions.
-2. **Master kill-switch** — `agent.json` `enabled` = `on` (read live each
+   experiment-arm writes, no promotions.
+2. **Master kill-switch** — `agent` set `enabled` = `on` (read live each
    cycle; `off` is the fail-closed default). When `off` the decision loop
    short-circuits with a throttled `agent.disabled` span (`decision/telemetry.go`
    `SpanDisabled`), and the experiment loop aborts running experiments with the
-   teardown reason `kill-switch: agent disabled`. Flip the **dry-run** copy
-   with `./scripts/agent-killswitch.sh on` — production default stays `off`.
+   teardown reason `kill-switch: agent disabled`. Flip it with
+   `./scripts/agent-killswitch.sh on` (an in-memory overlay through the flag
+   service) — the baseline stays `off`.
 3. **`code_improvement.*` promotion gates** — separate flags that gate the
    **real-default promotion** action only (still subject to the invariant gate +
    kill-switch). They stay at defaults in the dry run, so a concluded experiment
-   yields a **verdict** but does **not** rewrite the real game.json default.
+   yields a **verdict** but does **not** set a `real` promotion overlay.
 
 ### Probe mode (`AGENT_PROBE_DECISIONS`)
 
@@ -1080,10 +1086,10 @@ exercised — only the `agent.action` dispatch is withheld.
 
 **To make probe decisions dispatch** (exercise the *whole* path including
 `agent.action`), flip `interventions_allowed` to the dedicated **`probe`**
-variant (`["noop"]`) in [`services/flagd/agent.json`](../flagd/agent.json):
+variant (`"noop"`) through the flag service:
 
-```json
-"interventions_allowed": { "defaultVariant": "probe" }
+```bash
+scripts/flags.sh set agent interventions_allowed probe
 ```
 
 `noop` is a **harmless no-op in the action sink**: the `Writer` recognizes it and
@@ -1091,26 +1097,27 @@ returns success **without writing any flag** (`actions/writer.go`,
 `InterventionNoop`). So with the `probe` variant + `interventions_enabled=on`
 (flagd flag, #1213) + `enabled=on`, a probe decision flows through allow-list, battery, and rate-limit
 gates, reaches the real `Writer`, and completes the `agent.action` span — all
-without touching the game. Revert by flipping `interventions_allowed` back to
-`ambient` (or `none`).
+without touching the game. Revert with `scripts/flags.sh clear agent
+interventions_allowed` (back to the baseline `ambient`) or set `none`.
 
-### Lifecycle flags — hot-reloaded via OpenFeature config-change (#766 F5, #927)
+### Lifecycle flags — live via OpenFeature config-change (#766 F5, #927)
 
 The agent's lifecycle and throttle calibration values live in the flagd `agent`
 domain ([`services/flagd/agent.json`](../flagd/agent.json)). Like the four
-decision-cycle flag layers above they are **hot-reloadable** — but via a
+decision-cycle flag layers above they are **live** — but via a
 different mechanism. #766 F5 originally read them once at startup, so retuning
 the store TTLs / eviction cadence / throttle needed a restart. **#927 makes them
 live** by wiring the **OpenFeature provider's configuration-change event
 listener** (`openfeature.ProviderConfigChange`, the mechanism the maintainer
-requested): flagd emits a config-change when its source changes, the Go SDK
+requested): flagd emits a config-change when its source (the flag service's
+sync stream) changes, the Go SDK
 surfaces the event, and a domain-scoped handler re-evaluates these four flags
 into a shared, concurrency-safe `flags.LifecycleHolder`
 ([`flags/holder.go`](flags/holder.go)). The consumers read the holder on their
 hot path — the GameContext store reads the TTLs at eviction time, `main.go`'s
 eviction ticker re-reads (and `Reset`s to) the interval each loop, and the
 decision loop reads the throttle in `shouldLog()` — so **changing one takes
-effect with no restart**, and **without** polling the flag client per decision
+effect with no agent restart**, and **without** polling the flag client per decision
 cycle (a holder read is a lock-free atomic load; only the rare config-change
 event re-reads flagd). The holder is **primed once at startup**, so values are
 correct before any event arrives; if flagd is not yet reachable each value falls
@@ -1124,48 +1131,59 @@ back to its safe default, which reproduces the former hardcoded constant exactly
 | `decision.throttle_seconds` | `1` | How often the `agent.evaluate` log line and the `agent.disabled` span are emitted |
 
 A non-positive value for any of these falls back to its default (a zero TTL or
-ticker interval would be unsafe), both at startup and on every hot-reload, so a
+ticker interval would be unsafe), both at startup and on every config change, so a
 transient bad flag read during a config-change can never collapse a TTL.
+
+These four flags are not in the flag service's mutable registry: a change is a
+reviewed edit of the baseline `services/flagd/agent.json` plus `scripts/flags.sh
+restart`; the agent picks the new values up from the config-change event.
 
 ## Action sink (#730) — applying decisions as flag writes
 
-The agent **never calls the game services over gRPC**. It applies a decision by
-**rewriting the flagd `interventions` flag file**
-(`services/flagd/interventions.json`); flagd's file-watch fires
-`PROVIDER_CONFIGURATION_CHANGED` in <100 ms, the game coordinator re-evaluates
-the intervention flags and converges on their contents
-(see `docs/research/722-intervention-surface.md` §8). The agent is the **sole
-writer** of this file; the `Writer` serializes its own dispatches with a mutex.
+The agent **never calls the game services over gRPC**. It applies a decision as
+a write to the flag service's HTTP API (`FLAG_SERVICE_URL`, epic #1407,
+[services.md §7](../../docs/specs/services.md#7-flag-service-epic-1407));
+the flag service renders the value as targeting on the deciding game and pushes
+the merged configuration to flagd over its gRPC sync stream, flagd fires
+`PROVIDER_CONFIGURATION_CHANGED`, and the game coordinator re-evaluates the
+intervention flags with its `gameId` (see
+`docs/research/722-intervention-surface.md` §8). The agent writes no flag file;
+the baseline `services/flagd/interventions.json` holds only the neutral values.
 
 ### Transport / write semantics
 
-- **Read-modify-write IN PLACE.** The file is truncated and rewritten at the same
-  fd — **no temp+rename**, because `rename(2)` over a docker bind mount that flagd
-  is inotify-watching fails with `EBUSY`. This mirrors the proven admin-mode
-  pattern in `lib/flag_config_writer.py`.
-- **Byte-stable.** Only the flags being mutated change; every untouched flag
-  round-trips byte-for-byte (order-preserving document model). Output is
-  `indent=2` + trailing newline — identical formatting to admin-mode writes.
+- **One HTTP call per decision**, 500 ms deadline, fails closed. The flag service
+  validates the write against its mutable-flag registry
+  ([flags.md §13.1](../../docs/specs/flags.md#13-mutable-flag-registry)) and
+  answers `422 out_of_bounds` / `flag_read_only`, `409 game_not_live` (game not
+  registered or already ended; the `Writer` retries once after 250 ms) or
+  `503 no_sync_stream` (flagd not connected). A rejected write changes nothing and
+  is visible as `flagservice_writes_total{result="rejected"}` and a
+  `flagservice.write` span.
+- **Game-scoped.** Every write carries `scope.game_id`; a game's values and events
+  die with the game when the coordinator ends it (UC-053 BR-003), so nothing has
+  to be reverted or pruned between games.
 
 ### Flag shapes (game-side reader contract)
 
-- **Edge-triggered one-shots** (`audio_cue`, `controller_effect`,
-  `eliminate_player`, `revive_player`, `end_game`): the dedicated `active`
-  variant is overwritten with `"<nonce>:<payload>"` (`end_game` is nonce-only)
-  and `defaultVariant` flips to it. A **fresh unique nonce per dispatch**
-  (monotonic counter + random suffix) makes the reader apply exactly once on
-  nonce change. Payloads: eliminate/revive = `<serial>`; `audio_cue` =
-  `<sound_id>`; `controller_effect` = `<serial>:<effect>` (empty serial =
-  broadcast).
-- **Session state-shaped** (`music_tempo_override`, `volume_override`,
-  `global_sensitivity_override`): the `active` variant is set to the typed value
-  and `defaultVariant` flips to it; reverting flips `defaultVariant` back to the
-  neutral variant (`none`).
-- **Per-player state-shaped** (`player_sensitivity_factor`, `shield_seconds`):
-  written via a flagd **targeting** JsonLogic if-ladder keyed on
-  `targetingKey == serial`. Each driven serial gets an `agent_<serial>` variant;
-  unmatched serials fall through to `defaultVariant`. Removing a player drops its
-  branch and variant; the last removal drops the targeting block entirely.
+- **One-shot events** (`audio_cue`, `controller_effect`, `eliminate_player`,
+  `revive_player`, `end_game`): `POST /interventions/<flag>` with
+  `scope.game_id` appends an event to the game's event list
+  (`{"epoch","seq","events"}`, last 16 events). The coordinator applies every
+  event with a `seq` above the last one it applied, once. Payloads: eliminate /
+  revive = `{"serial"}`; `audio_cue` = `{"sound"}`; `controller_effect` =
+  `{"serial","effect"}` (empty serial = broadcast); `end_game` = `{}`.
+- **Game state** (`music_tempo_override`, `volume_override`,
+  `global_sensitivity_override`, `global_difficulty_factor`, `pacing_profile`,
+  `tempo_ramp`, `auto_rubberband`): `PUT /interventions/<flag>` with
+  `scope.game_id` and the typed value; reverting is `DELETE
+  /interventions/<flag>?game_id=<id>`, and the game resolves the neutral
+  baseline again.
+- **Per-player levels and grants** (`player_sensitivity_factor`,
+  `player_handicap_factor`; `shield_seconds`, `partial_shield_seconds`,
+  `soft_penalty_action`): `PUT` with `scope.game_id` + `scope.serial`; the flag
+  service renders a rung on `gameId` + `targetingKey`. Every write gets a fresh
+  variant, so a re-grant is a change the coordinator applies once (UC-040 BR-012).
 
 ### Decision value contract
 
@@ -1186,7 +1204,7 @@ decimal string) overrides the default.
 The `gamerunner/` package launches **mock-only "shadow" games** on the live
 stack: games fielded entirely with RESERVED mock controllers (#777), so they
 never appear in the menu lobby and never collide with a real, menu-driven game.
-Unlike the action sink (#730), which acts through flagd file writes, game-start
+Unlike the action sink (#730), which acts through flag-service writes, game-start
 has no flag representation — it is a **direct gRPC** capability, and these are
 the agent's first gRPC clients toward the game stack.
 
@@ -1253,7 +1271,7 @@ services/agent/
 ├── infracontext/   # InfraContext: controller.bluetooth_health observe path (#733)
 ├── gate/           # should_evaluate gating logic
 ├── flags/          # OpenFeature/flagd four-layer control flags (existence, objective, capability, permission)
-├── actions/        # Action sink (#730): rewrites the flagd interventions file in place
+├── actions/        # Action sink (#730): game-scoped intervention writes to the flag service
 ├── decision/       # Decision loop + LayerState + rate limiter + rules engine (#726) + ActionSink interface
 ├── gamerunner/     # Shadow-game runner (#778): mock-only games driven via direct gRPC
 ├── gen/            # Committed grpc-go stubs for GameCoordinator + MockController (make protos-agent)

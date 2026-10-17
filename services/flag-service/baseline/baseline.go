@@ -1,9 +1,8 @@
 // Package baseline loads the read-only flag files (services/flagd/<set>.json)
 // that the flag service serves as its baseline (FR-120, UC-053).
 //
-// The files are read once at start from an explicit list (never a glob:
-// services/flagd/controller.ci-rust.json duplicates bluetooth_backend) and
-// never written. Each file is one flag set; its flags are later merged into
+// The files are read once at start from an explicit list (never a glob, so a
+// stray file in the directory is never served) and never written. Each file is one flag set; its flags are later merged into
 // one flagd configuration in which every flag carries metadata.flagSetId
 // (architecture note §5.2). A duplicate flag key across sets, or two files
 // declaring the same set, refuses the start.

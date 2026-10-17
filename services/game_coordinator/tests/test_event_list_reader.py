@@ -21,11 +21,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from lib.types import GameEvent
 from services.game_coordinator.interventions import (
-    EVENT_LIST_READER_ENV,
     INTERVENTION_SPECS,
     InterventionManager,
     SessionView,
-    _event_list_reader_from_env,
 )
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
 
@@ -125,7 +123,6 @@ class Harness:
             get_sessions=lambda: list(self.views),
             time_fn=lambda: 1000.0 + next(counter) * 0.0,
             end_game_fn=self.end_game_fn,
-            event_list_reader=True,
         )
         self.mgr._interventions_client = self.flags
         self.mgr._agent_client = AgentStub()
@@ -142,7 +139,6 @@ class Harness:
         return publish
 
     def start_game(self, game_id, real=True) -> FakeGame:
-        self.mgr.prime_session(game_id)
         game = FakeGame()
         self.views.append(SessionView(game_id=game_id, game=game, publish=self._publisher(game_id), is_real=real))
         return game
@@ -334,6 +330,7 @@ async def test_seq_advances_before_dispatch():
     apply the same event again: the seq moved before dispatch."""
     h = Harness()
     h.start_game("game_a")
+    await h.flag_change()  # the game's first pass creates its (epoch, seq) bucket
     gate = asyncio.Event()
     calls = []
 
@@ -352,11 +349,3 @@ async def test_seq_advances_before_dispatch():
     with patch("services.game_coordinator.metrics.interventions_total"):
         await first
     assert calls == ["MOCK0001"]
-
-
-@pytest.mark.uc("UC-053", flow="A4")
-def test_reader_switch_defaults_off(monkeypatch):
-    monkeypatch.delenv(EVENT_LIST_READER_ENV, raising=False)
-    assert _event_list_reader_from_env() is False
-    monkeypatch.setenv(EVENT_LIST_READER_ENV, "on")
-    assert _event_list_reader_from_env() is True

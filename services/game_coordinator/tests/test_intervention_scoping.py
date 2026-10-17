@@ -1,18 +1,19 @@
 """
 Interventions act only on the game they were decided for (#1310, #1313).
 
-UC-040 A18 / BR-011: ``end_game`` is addressed to the deciding game
-(``"<nonce>:<game_id>"``). Every live session consumes the nonce, but only the
-addressed session is force-ended, through the servicer's session-scoped
-force-end path. An un-addressed value ends only the real game. Before #1310 a
-shadow session's evaluation called a force-end that always resolved the
-PRIMARY game, so a shadow decision could end the game humans were playing.
+UC-040 A18 / BR-011: one-shot flags (``end_game``, ``eliminate_player``,
+``revive_player``) are per-game event lists served on ``gameId`` (FR-127,
+UC-053 A4 / BR-006). Only the game whose list carries the event acts on it,
+and ``end_game`` force-ends exactly that session through the servicer's
+session-scoped force-end path. Before #1310 a shadow session's evaluation
+called a force-end that always resolved the PRIMARY game, so a shadow decision
+could end the game humans were playing.
 
 UC-040 A19 / BR-012: per-player grants (``shield_seconds``,
 ``partial_shield_seconds``, ``soft_penalty_action``) apply once per decision to
 the player they target. Before #1313 shielding B re-granted every player still
-in the flag's if-ladder, and a new game re-applied the whole leftover list at
-its start.
+in the flag's if-ladder. Grants are game-scoped in the flag service, so a new
+game never sees a grant of an earlier game.
 
 Telemetry is disabled via conftest; the intervention metric is patched.
 """
@@ -39,6 +40,7 @@ from services.game_coordinator.interventions import (
 )
 from services.game_coordinator.lifecycle_handlers import handle_shield_seconds, register_lifecycle_handlers
 from services.game_coordinator.servicer import GameCoordinatorServicer
+from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
 SPEC_BY_KEY = {spec.flag_key: spec for spec in INTERVENTION_SPECS}
@@ -55,10 +57,14 @@ SHADOW = "game_shadow00"
 class ScopedFlagClient:
     """flagd stand-in that resolves like the real interventions flag set.
 
-    - ``values``: un-targeted value (the agent writes no gameId targeting);
-    - ``per_game``: a gameId-scoped value, ``(flag, game_id) -> value``;
+    - ``values``: un-targeted value, resolved for any gameId;
+    - ``per_game``: a value in one game's scope, ``(flag, game_id) -> value``
+      (one-shot flags: the game's event list);
     - ``per_serial``: the per-player if-ladder, ``(flag, serial) -> (variant,
-      value)``, resolved for any gameId (as the agent writes it);
+      value)``, resolved for any gameId;
+    - ``scoped_serial``: a per-player entry in one game's scope,
+      ``(flag, game_id, serial) -> (variant, value)``; ``drop_scope`` removes
+      a game's scope like the flag service does when the game ends;
     - ``failing``: flags that resolve like the OpenFeature client on a flagd
       error (no exception, the default, ``reason=ERROR``).
     """
@@ -67,11 +73,20 @@ class ScopedFlagClient:
         self.values: dict[str, object] = {}
         self.per_game: dict[tuple[str, str], object] = {}
         self.per_serial: dict[tuple[str, str], tuple[str, object]] = {}
+        self.scoped_serial: dict[tuple[str, str, str], tuple[str, object]] = {}
         self.failing: set[str] = set()
+
+    def drop_scope(self, game_id):
+        for key in [k for k in self.per_game if k[1] == game_id]:
+            del self.per_game[key]
+        for key in [k for k in self.scoped_serial if k[1] == game_id]:
+            del self.scoped_serial[key]
 
     def _resolve(self, key, default, ctx):
         serial = getattr(ctx, "targeting_key", None)
         game_id = (getattr(ctx, "attributes", None) or {}).get("gameId")
+        if serial and (key, game_id, serial) in self.scoped_serial:
+            return self.scoped_serial[(key, game_id, serial)]
         if serial and (key, serial) in self.per_serial:
             return self.per_serial[(key, serial)]
         if (key, game_id) in self.per_game:
@@ -91,6 +106,11 @@ class ScopedFlagClient:
             )
         variant, value = self._resolve(key, default, ctx)
         return FlagEvaluationDetails(flag_key=key, value=cast(value), variant=variant)
+
+    def get_object_details(self, key, default, ctx=None):
+        if key in self.failing:
+            return self._details(key, default, ctx, dict)
+        return object_details(key, self._resolve(key, default, ctx)[1])
 
     def get_string_details(self, key, default, ctx=None):
         return self._details(key, default, ctx, str)
@@ -216,15 +236,16 @@ class Harness:
         return publish
 
     def start_game(self, game_id, *, real, serials=("p1", "p2")) -> FakeGame:
-        """Admit a game like the servicer: prime with its players, then go live."""
-        self.mgr.prime_session(game_id, serials)
+        """Admit a game like the servicer and let it go live."""
         game = FakeGame(serials)
         self.views.append(SessionView(game_id=game_id, game=game, publish=self._publisher(game_id), is_real=real))
         return game
 
     def end(self, game_id):
+        """Retire a game like the servicer: forget it and end its flag scope."""
         self.views = [v for v in self.views if v.game_id != game_id]
         self.mgr.forget_session(game_id)
+        self.flags.drop_scope(game_id)
 
     async def flag_change(self):
         with patch("services.game_coordinator.metrics.interventions_total"):
@@ -245,15 +266,16 @@ class Harness:
 # #1310 end_game: UC-040 A18 / BR-011 at the manager seam
 # --------------------------------------------------------------------------- #
 @pytest.mark.uc("UC-040", flow="A18", br=["BR-011"])
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.asyncio
 async def test_shadow_end_game_ends_the_shadow_and_never_the_real_game():
-    """A shadow loop's end_game (addressed to the shadow) ends only the shadow:
-    the real session consumes the nonce without acting."""
+    """An end_game event in the shadow's list ends only the shadow: the real
+    game's list is empty, so it records nothing."""
     h = Harness()
     h.start_game(REAL, real=True)
     h.start_game(SHADOW, real=False)
 
-    h.flags.values["end_game"] = f"1-a:{SHADOW}"
+    h.flags.per_game[("end_game", SHADOW)] = edge_event("end_game")
     await h.flag_change()
 
     assert h.ended_game_ids() == [SHADOW]
@@ -262,81 +284,35 @@ async def test_shadow_end_game_ends_the_shadow_and_never_the_real_game():
 
 
 @pytest.mark.uc("UC-040", flow="A18", br=["BR-011"])
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.asyncio
 async def test_real_end_game_ends_the_real_game_only():
     h = Harness()
     h.start_game(REAL, real=True)
     h.start_game(SHADOW, real=False)
 
-    h.flags.values["end_game"] = f"1-a:{REAL}"
+    h.flags.per_game[("end_game", REAL)] = edge_event("end_game")
     await h.flag_change()
-    await h.flag_change()  # re-evaluation never fires the same nonce again
+    await h.flag_change()  # re-evaluation never applies the same event again
 
     assert h.ended_game_ids() == [REAL]
     assert h.recorded(SHADOW, "end_game") == []
 
 
 @pytest.mark.uc("UC-040", flow="A18", br=["BR-011"])
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.asyncio
-async def test_unaddressed_end_game_ends_only_the_real_game():
-    """A hand-written ``"<nonce>"`` (no game id) is meant for the real game:
-    shadows ignore it and record nothing."""
+async def test_end_game_for_a_game_that_is_not_live_ends_nothing():
+    """Events in the list of a game that is not live never reach a live game."""
     h = Harness()
     h.start_game(REAL, real=True)
     h.start_game(SHADOW, real=False)
 
-    h.flags.values["end_game"] = "1-a:"
+    h.flags.per_game[("end_game", "game_gone0000")] = edge_event("end_game")
     await h.flag_change()
-
-    assert h.ended_game_ids() == [REAL]
-    assert h.recorded(SHADOW, "end_game") == []
-
-
-@pytest.mark.uc("UC-040", flow="A18", br=["BR-011"])
-@pytest.mark.asyncio
-async def test_unaddressed_end_game_with_only_shadows_live_ends_nothing():
-    """With only shadow games live (shadow_policy=block), an un-addressed
-    end_game ends no game; each shadow's runner ends its own game."""
-    h = Harness()
-    h.start_game(SHADOW, real=False)
-    h.start_game("game_shadow01", real=False)
-
-    h.flags.values["end_game"] = "1-a"
     await h.flag_change()
 
     h.end_game_fn.assert_not_awaited()
-
-
-@pytest.mark.uc("UC-040", flow="A18", br=["BR-011"])
-@pytest.mark.asyncio
-async def test_end_game_for_unknown_game_ends_nothing_and_is_consumed():
-    """An end_game addressed to a game that is not live ends no game, and does
-    not fire later for any live game (the nonce is consumed everywhere)."""
-    h = Harness()
-    h.start_game(REAL, real=True)
-    h.start_game(SHADOW, real=False)
-
-    h.flags.values["end_game"] = "1-a:game_gone0000"
-    await h.flag_change()
-    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
-    await h.flag_change()
-
-    h.end_game_fn.assert_not_awaited()
-
-
-@pytest.mark.uc("UC-040", flow="A18", br=["BR-011"])
-@pytest.mark.asyncio
-async def test_gameid_targeted_end_game_ends_only_the_targeted_shadow():
-    """A gameId-scoped flag value (flagd targeting) addressed to the shadow ends
-    the shadow alone; the real game resolves no end_game."""
-    h = Harness()
-    h.start_game(REAL, real=True)
-    h.start_game(SHADOW, real=False)
-
-    h.flags.per_game[("end_game", SHADOW)] = f"1-a:{SHADOW}"
-    await h.flag_change()
-
-    assert h.ended_game_ids() == [SHADOW]
 
 
 # --------------------------------------------------------------------------- #
@@ -346,7 +322,7 @@ async def test_gameid_targeted_end_game_ends_only_the_targeted_shadow():
 @pytest.mark.parametrize("flag_key", ["eliminate_player", "revive_player"])
 @pytest.mark.asyncio
 async def test_shadow_scoped_lifecycle_edge_acts_only_on_the_shadow(flag_key):
-    """A gameId-scoped eliminate/revive for the shadow acts on the shadow's
+    """An eliminate/revive event in the shadow's list acts on the shadow's
     player, never on the real game's player with the same serial."""
     h = Harness()
     real = h.start_game(REAL, real=True)
@@ -355,7 +331,7 @@ async def test_shadow_scoped_lifecycle_edge_acts_only_on_the_shadow(flag_key):
         for game in (real, shadow):
             game.players["p1"].alive = False
 
-    h.flags.per_game[(flag_key, SHADOW)] = "1-a:p1"
+    h.flags.per_game[(flag_key, SHADOW)] = edge_event(flag_key, "p1")
     await h.flag_change()
 
     effect = "killed" if flag_key == "eliminate_player" else "revived"
@@ -374,7 +350,7 @@ async def test_real_scoped_lifecycle_edge_acts_only_on_the_real_game(flag_key):
         for game in (real, shadow):
             game.players["p1"].alive = False
 
-    h.flags.per_game[(flag_key, REAL)] = "1-a:p1"
+    h.flags.per_game[(flag_key, REAL)] = edge_event(flag_key, "p1")
     await h.flag_change()
 
     effect = "killed" if flag_key == "eliminate_player" else "revived"
@@ -445,13 +421,13 @@ def _id_of_kind(servicer, real: bool) -> str:
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-027", flow="A3", br=["BR-001"])
 async def test_servicer_shadow_end_game_ends_shadow_session_not_the_real_game():
-    """Through the servicer's real wiring: a shadow-addressed end_game retires
+    """Through the servicer's real wiring: an end_game in the shadow's list retires
     the shadow session and leaves the real (primary) session running."""
     servicer, flags, _ = await _servicer_with_games(True, False)
     mgr = servicer.intervention_manager
     real_id, shadow_id = _id_of_kind(servicer, True), _id_of_kind(servicer, False)
     try:
-        flags.values["end_game"] = f"1-a:{shadow_id}"
+        flags.per_game[("end_game", shadow_id)] = edge_event("end_game")
         with patch("services.game_coordinator.metrics.interventions_total"):
             await mgr.evaluate_all()
 
@@ -471,7 +447,7 @@ async def test_servicer_real_end_game_ends_the_real_game():
     mgr = servicer.intervention_manager
     real_id, shadow_id = _id_of_kind(servicer, True), _id_of_kind(servicer, False)
     try:
-        flags.values["end_game"] = f"1-a:{real_id}"
+        flags.per_game[("end_game", real_id)] = edge_event("end_game")
         with patch("services.game_coordinator.metrics.interventions_total"):
             await mgr.evaluate_all()
 
@@ -501,12 +477,16 @@ async def test_force_end_session_never_falls_back_to_the_primary():
 # --------------------------------------------------------------------------- #
 # #1313 per-player grants: UC-040 A19 / BR-012
 # --------------------------------------------------------------------------- #
-def _grant(h_or_flags, flag_key, serial, nonce, value=None):
+def _grant(h_or_flags, flag_key, serial, write_id, value=None, *, game_id=None):
+    """Write a grant for ``serial``. The flag service generates a fresh opaque
+    ``r<epoch>_<n>`` variant per write; ``write_id`` stands in for ``<n>``. With
+    ``game_id`` the grant lives in that game's scope only."""
     flags = getattr(h_or_flags, "flags", h_or_flags)
-    flags.per_serial[(flag_key, serial)] = (
-        f"agent_{serial}#{nonce}",
-        GRANT_VALUE[flag_key] if value is None else value,
-    )
+    entry = (f"r1_{write_id}", GRANT_VALUE[flag_key] if value is None else value)
+    if game_id is None:
+        flags.per_serial[(flag_key, serial)] = entry
+    else:
+        flags.scoped_serial[(flag_key, game_id, serial)] = entry
 
 
 @pytest.mark.uc("UC-040", flow="A19", br=["BR-012"])
@@ -518,11 +498,11 @@ async def test_granting_b_does_not_regrant_a(flag_key):
     h = Harness()
     game = h.start_game(REAL, real=True)
 
-    _grant(h, flag_key, "p1", "n1")
+    _grant(h, flag_key, "p1", "1")
     await h.flag_change()
     assert game.grants(flag_key) == ["p1"]
 
-    _grant(h, flag_key, "p2", "n2")
+    _grant(h, flag_key, "p2", "2")
     await h.flag_change()
     await h.flag_change()  # unrelated re-evaluation
 
@@ -535,21 +515,21 @@ async def test_granting_b_does_not_regrant_a(flag_key):
 @pytest.mark.parametrize("flag_key", GRANT_FLAGS)
 @pytest.mark.asyncio
 async def test_new_game_does_not_reapply_previous_games_grants(flag_key):
-    """Game N granted p1; game N+1 starts with p1's entry still in the flag. An
-    unrelated flag change in N+1 grants nobody; a fresh grant still applies."""
+    """Game N granted p1 in its scope; the scope ends with game N. Game N+1
+    (same serial) grants nobody on re-evaluation; a fresh grant still applies."""
     h = Harness()
     game_n = h.start_game("game_n", real=True)
-    _grant(h, flag_key, "p1", "n1")
+    _grant(h, flag_key, "p1", "1", game_id="game_n")
     await h.flag_change()
     assert game_n.grants(flag_key) == ["p1"]
     h.end("game_n")
 
     game_n1 = h.start_game("game_n1", real=True)
-    h.flags.values["global_difficulty_factor"] = 1.5  # unrelated write
     await h.flag_change()
     assert game_n1.grants(flag_key) == []
 
-    _grant(h, flag_key, "p1", "n2")  # a new decision for p1 in N+1
+    _grant(h, flag_key, "p1", "2", game_id="game_n1")  # a new decision for p1 in N+1
+    await h.flag_change()
     await h.flag_change()
     assert game_n1.grants(flag_key) == ["p1"]
 
@@ -562,9 +542,9 @@ async def test_same_value_regrant_is_a_new_decision():
     h = Harness()
     game = h.start_game(REAL, real=True)
 
-    _grant(h, "shield_seconds", "p1", "n1", 5.0)
+    _grant(h, "shield_seconds", "p1", "1", 5.0)
     await h.flag_change()
-    _grant(h, "shield_seconds", "p1", "n2", 5.0)
+    _grant(h, "shield_seconds", "p1", "2", 5.0)
     await h.flag_change()
 
     assert game.shields == [("p1", 5.0), ("p1", 5.0)]
@@ -573,15 +553,14 @@ async def test_same_value_regrant_is_a_new_decision():
 @pytest.mark.uc("UC-040", flow="A19", br=["BR-012"])
 @pytest.mark.asyncio
 async def test_grant_baseline_is_per_game_for_concurrent_games():
-    """A shadow starting later primes its own baseline: p1's grant decided while
-    only the real game ran is not applied to the shadow's p1."""
+    """A shadow starting later has its own scope: p1's grant decided for the
+    real game is not applied to the shadow's p1."""
     h = Harness()
     real = h.start_game(REAL, real=True)
-    _grant(h, "shield_seconds", "p1", "n1")
+    _grant(h, "shield_seconds", "p1", "1", game_id=REAL)
     await h.flag_change()
 
     shadow = h.start_game(SHADOW, real=False)
-    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
     await h.flag_change()
 
     assert real.grants("shield_seconds") == ["p1"]
@@ -597,11 +576,11 @@ async def test_low_battery_grant_is_blocked_per_serial_and_consumed():
     h = Harness(battery=battery, battery_threshold=20)
     game = h.start_game(REAL, real=True)
 
-    _grant(h, "shield_seconds", "p1", "n1")
-    _grant(h, "shield_seconds", "p2", "n2")
+    _grant(h, "shield_seconds", "p1", "1")
+    _grant(h, "shield_seconds", "p2", "2")
     await h.flag_change()
     battery["p1"] = 90.0
-    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
+    h.flags.values["volume_override"] = 0.5  # unrelated write
     await h.flag_change()
 
     assert game.grants("shield_seconds") == ["p2"]
@@ -616,8 +595,8 @@ async def test_grant_handler_applies_only_the_dispatched_serial():
     ladder still holds other players' grants."""
     h = Harness()
     game = FakeGame()
-    _grant(h, "shield_seconds", "p1", "n1")
-    _grant(h, "shield_seconds", "p2", "n2", 3.0)
+    _grant(h, "shield_seconds", "p1", "1")
+    _grant(h, "shield_seconds", "p2", "2", 3.0)
     ctx = InterventionContext(
         spec=SPEC_BY_KEY["shield_seconds"],
         value=3.0,
@@ -633,21 +612,20 @@ async def test_grant_handler_applies_only_the_dispatched_serial():
 
 @pytest.mark.uc("UC-040", flow="A19", br=["BR-012"])
 @pytest.mark.asyncio
-async def test_grant_read_error_at_game_start_fails_closed():
-    """flagd erroring while the game is primed: the leftover p1 grant seen on
-    recovery is adopted as the baseline, not applied; a later decision is."""
+async def test_grant_read_error_at_game_start_never_fires():
+    """flagd errors on the game's first reads: the getter would return the
+    neutral default; the failed read fires nothing and moves no baseline. On
+    recovery the game's grant applies, once."""
     h = Harness()
-    _grant(h, "shield_seconds", "p1", "n1")  # left over from an earlier game
+    _grant(h, "shield_seconds", "p1", "1")
     h.flags.failing = {"shield_seconds"}
     game = h.start_game(REAL, real=True)
     await h.flag_change()
+    assert game.grants("shield_seconds") == []
+    assert "p1" not in h.mgr._state_bucket(REAL)["shield_seconds"]
 
     h.flags.failing = set()
-    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
     await h.flag_change()
-    assert game.grants("shield_seconds") == []
-
-    _grant(h, "shield_seconds", "p1", "n2")
     await h.flag_change()
     assert game.grants("shield_seconds") == ["p1"]
 
@@ -659,7 +637,7 @@ async def test_grant_read_error_mid_game_keeps_the_baseline():
     grant does not re-fire, and a grant written during the outage fires once."""
     h = Harness()
     game = h.start_game(REAL, real=True)
-    _grant(h, "shield_seconds", "p1", "n1")
+    _grant(h, "shield_seconds", "p1", "1")
     await h.flag_change()
 
     h.flags.failing = {"shield_seconds"}
@@ -670,7 +648,7 @@ async def test_grant_read_error_mid_game_keeps_the_baseline():
 
     h.flags.failing = {"shield_seconds"}
     await h.flag_change()
-    _grant(h, "shield_seconds", "p1", "n2")  # a new decision while flagd errored
+    _grant(h, "shield_seconds", "p1", "2")  # a new decision while flagd errored
     h.flags.failing = set()
     await h.flag_change()
     await h.flag_change()
@@ -679,22 +657,20 @@ async def test_grant_read_error_mid_game_keeps_the_baseline():
 
 @pytest.mark.uc("UC-040", flow="A19", br=["BR-012"])
 @pytest.mark.asyncio
-async def test_servicer_start_primes_grants_with_the_games_players():
-    """Starting a game through the servicer seeds the grant baseline for its
-    players: p1's leftover shield is not re-granted on the next flag change."""
-    servicer, flags, games = await _servicer_with_games(
-        True, per_serial={("shield_seconds", "p1"): ("agent_p1#old", 5.0)}
-    )
+async def test_servicer_started_game_applies_its_grants_once():
+    """A game started through the servicer needs no seeding: its first grant
+    applies on the next flag change, once."""
+    servicer, flags, games = await _servicer_with_games(True)
     mgr = servicer.intervention_manager
     (game,) = games.values()
     try:
-        flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
         with patch("services.game_coordinator.metrics.interventions_total"):
             await mgr.evaluate_all()
         assert game.grants("shield_seconds") == []
 
-        flags.per_serial[("shield_seconds", "p2")] = ("agent_p2#new", 5.0)
+        flags.per_serial[("shield_seconds", "p2")] = ("r1_1", 5.0)
         with patch("services.game_coordinator.metrics.interventions_total"):
+            await mgr.evaluate_all()
             await mgr.evaluate_all()
         assert game.grants("shield_seconds") == ["p2"]
     finally:

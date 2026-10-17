@@ -144,11 +144,10 @@ CONCLUDE_TIMEOUT = 300.0
 # before reaching a terminal verdict (the effective target N per arm is
 # max(seed target_n, verdict_min_n) — see registry.shouldGiveUp), blowing past
 # CONCLUDE_TIMEOUT. So the test must DRIVE THESE LIVE FLAGS DOWN (not just the
-# env), exactly as it drives the boolean gates. We write a bespoke ``it`` variant
-# rather than reuse an existing one so the values are explicit and small; flagd
-# tolerates extra variant keys (precedent: the suite's other
-# numeric flag writers). intFlag/durationFlag read these via the TYPED getters
-# (IntValue/FloatValue) off the in-process resolver, so file values are honored.
+# env), exactly as it drives the boolean gates. The values are set as stack
+# overlays on the flag service (registry ranges, flags.md §13.2) and deleted at
+# teardown. intFlag/durationFlag read these via the TYPED getters
+# (IntValue/FloatValue), so the overlay values are honored.
 _TUNING = {
     # effective target N per arm = max(seed target_n=2, verdict_min_n) => keep small
     "verdict_min_n": 1,

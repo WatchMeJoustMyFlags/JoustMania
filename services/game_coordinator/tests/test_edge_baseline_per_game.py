@@ -1,15 +1,17 @@
 """
-Edge-triggered interventions fire only in the game that saw them change (#1299).
+One-shot interventions fire only in the game whose event list carries them
+(#1299, FR-127).
 
-UC-040 BR-006 / A15: an edge flag value present when a game starts is that
-game's consumed baseline. Before the fix the per-game nonce bucket started empty
-for any game that began after the coordinator started, so the first unrelated
-flag change replayed the previous game's last ``audio_cue`` / ``end_game`` /
-``eliminate_player`` into the new game.
+UC-040 BR-006 / A15, UC-053 A4 / BR-006: one-shot flags are per-game event
+lists served on ``gameId``. A game's list dies with its scope when the game
+ends, so a new game starts with an empty list and can never replay an earlier
+game's ``audio_cue`` / ``end_game`` / ``eliminate_player``. A failed read never
+fires, and a session retired while a pass is suspended in it never gets a fresh
+bucket that would let later specs fire into it.
 
-The flag client models the real write surface: the agent writes no ``gameId``
-targeting, so every live session (real or shadow) resolves the same value.
-Telemetry is disabled via conftest; the intervention metric is patched.
+The flag client models the flag service: event lists and state values are
+rendered per ``gameId``, and ending a game drops its scope. Telemetry is
+disabled via conftest; the intervention metric is patched.
 """
 
 import itertools
@@ -34,13 +36,13 @@ from services.game_coordinator.interventions import (
 )
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
 from services.game_coordinator.servicer import GameCoordinatorServicer
+from services.game_coordinator.tests.event_list_helpers import BASELINE, EDGE_FLAGS, edge_event
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
-EDGE_FLAGS = sorted(spec.flag_key for spec in INTERVENTION_SPECS if spec.edge_triggered)
 GAME_KINDS = ["real", "shadow"]
 
-# A representative stale / fresh value per edge flag (eliminate/revive carry a
-# serial; controller_effect "<serial>:<effect>"; end_game is nonce-only).
+# A representative payload per one-shot flag (eliminate/revive carry a serial;
+# controller_effect "<serial>:<effect>"; end_game carries none).
 _PAYLOAD = {
     "audio_cue": "agent_cue",
     "controller_effect": ":rumble",
@@ -50,31 +52,32 @@ _PAYLOAD = {
 }
 
 
-def _edge_value(flag_key: str, nonce: str) -> str:
-    return f"{nonce}:{_PAYLOAD[flag_key]}"
-
-
 # --------------------------------------------------------------------------- #
 # Fakes
 # --------------------------------------------------------------------------- #
-class UntargetedFlagClient:
-    """flagd stand-in: one value per flag, whatever the gameId (agent writes no
-    gameId targeting, decide-contract §11).
+class GameScopedFlagClient:
+    """flagd stand-in for the flag service's per-game rendering.
 
-    Keys in ``failing`` resolve like the real OpenFeature client does on a flagd
-    error: no exception, the DEFAULT value, ``reason=ERROR`` and an error code.
+    ``scoped[(flag, game_id)]`` is the value in one game's scope (an event list
+    for one-shot flags, a plain value for state flags); ``end(game_id)`` drops
+    the scope like the flag service does when the game ends. Keys in
+    ``failing`` resolve like the OpenFeature client on a flagd error: no
+    exception, the default, ``reason=ERROR`` and an error code.
     """
 
     def __init__(self):
-        self.values: dict[str, object] = {}
+        self.scoped: dict[tuple[str, str], object] = {}
         self.failing: set[str] = set()
 
-    def get_string_value(self, key, default, _ctx=None):
-        if key in self.failing:
-            return default
-        return str(self.values.get(key, default))
+    def end(self, game_id):
+        for key in [k for k in self.scoped if k[1] == game_id]:
+            del self.scoped[key]
 
-    def get_string_details(self, key, default, _ctx=None):
+    def _lookup(self, key, default, ctx):
+        game_id = (getattr(ctx, "attributes", None) or {}).get("gameId", "")
+        return self.scoped.get((key, game_id), default)
+
+    def get_object_details(self, key, default, ctx=None):
         if key in self.failing:
             return FlagEvaluationDetails(
                 flag_key=key,
@@ -83,16 +86,25 @@ class UntargetedFlagClient:
                 error_code=ErrorCode.PROVIDER_NOT_READY,
                 error_message="flagd unavailable",
             )
-        return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default))
+        return FlagEvaluationDetails(flag_key=key, value=self._lookup(key, BASELINE, ctx))
 
-    def get_integer_value(self, key, default, _ctx=None):
-        return int(self.values.get(key, default))
+    def get_string_details(self, key, default, ctx=None):
+        return FlagEvaluationDetails(flag_key=key, value=str(self._lookup(key, default, ctx)), variant="none")
 
-    def get_float_value(self, key, default, _ctx=None):
-        return float(self.values.get(key, default))
+    def get_float_details(self, key, default, ctx=None):
+        return FlagEvaluationDetails(flag_key=key, value=float(self._lookup(key, default, ctx)), variant="none")
 
-    def get_object_value(self, key, default, _ctx=None):
-        return self.values.get(key, default)
+    def get_string_value(self, key, default, ctx=None):
+        return str(self._lookup(key, default, ctx))
+
+    def get_integer_value(self, key, default, ctx=None):
+        return int(self._lookup(key, default, ctx))
+
+    def get_float_value(self, key, default, ctx=None):
+        return float(self._lookup(key, default, ctx))
+
+    def get_object_value(self, key, default, ctx=None):
+        return self._lookup(key, default, ctx)
 
 
 class AgentStub:
@@ -125,7 +137,7 @@ class FakePlayer:
 
 
 class FakeGame:
-    """Records the effects the edge handlers apply to a live game."""
+    """Records the effects the one-shot handlers apply to a live game."""
 
     def __init__(self):
         self.players = {"p1": FakePlayer("p1"), "p2": FakePlayer("p2")}
@@ -147,7 +159,7 @@ class Harness:
     """A manager plus a mutable live-session list, mimicking the servicer."""
 
     def __init__(self):
-        self.flags = UntargetedFlagClient()
+        self.flags = GameScopedFlagClient()
         self.views: list[SessionView] = []
         self.events: dict[str, list] = {}
         self.end_game_fn = AsyncMock(return_value=(True, ""))
@@ -172,21 +184,19 @@ class Harness:
 
         return publish
 
-    def start_game(self, game_id: str, *, prime: bool = True, real: bool = True) -> FakeGame:
-        """Admit a game the way the servicer does: prime, then go live. The
-        game is the real one unless ``real=False`` (an un-addressed ``end_game``
-        applies only to the real game, UC-040 BR-011)."""
-        if prime:
-            self.mgr.prime_session(game_id)
+    def start_game(self, game_id: str, *, real: bool = True) -> FakeGame:
         game = FakeGame()
         self.views.append(SessionView(game_id=game_id, game=game, publish=self._publisher(game_id), is_real=real))
         return game
 
     def end_game(self, game_id: str) -> None:
+        """Retire a game like the servicer: forget it and end its flag scope."""
         self.views = [v for v in self.views if v.game_id != game_id]
+        self.mgr.forget_session(game_id)
+        self.flags.end(game_id)
 
     async def flag_change(self) -> None:
-        """Any flagd file write: the coordinator re-evaluates every flag."""
+        """Any flag write: the coordinator re-evaluates every flag."""
         with patch("services.game_coordinator.metrics.interventions_total"):
             await self.mgr.evaluate_all()
 
@@ -203,209 +213,122 @@ class Harness:
 # BR-006 / A15 at the manager seam
 # --------------------------------------------------------------------------- #
 @pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.parametrize("flag_key", EDGE_FLAGS)
 @pytest.mark.asyncio
-async def test_stale_edge_from_previous_game_does_not_fire_in_next_game(flag_key):
-    """Game N applies an edge value; game N+1 starts with it still in flagd; an
-    unrelated flag change in N+1 must apply nothing (the #1299 replay)."""
+async def test_event_of_an_ended_game_is_not_replayed_in_the_next_game(flag_key):
+    """Game N applies an event; game N+1 starts after N's scope ended. A flag
+    change in N+1 applies nothing; an event written for N+1 applies once."""
     h = Harness()
     h.start_game("game_n")
-    h.flags.values[flag_key] = _edge_value(flag_key, "7-abc")
+    h.flags.scoped[(flag_key, "game_n")] = edge_event(flag_key, _PAYLOAD[flag_key])
     await h.flag_change()
     assert len(h.applied("game_n", flag_key)) == 1
     h.end_game("game_n")
 
     h.start_game("game_n1")
-    h.flags.values["global_difficulty_factor"] = 1.5  # unrelated write
-    await h.flag_change()
-
-    assert h.applied("game_n1", flag_key) == []
-
-
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.parametrize("flag_key", EDGE_FLAGS)
-@pytest.mark.asyncio
-async def test_fresh_edge_in_next_game_fires_once(flag_key):
-    """A new nonce written during game N+1 differs from its baseline: it fires
-    exactly once, and re-evaluation does not fire it again."""
-    h = Harness()
-    h.flags.values[flag_key] = _edge_value(flag_key, "7-abc")  # stale from game N
-    h.start_game("game_n1")
+    h.flags.scoped[("global_difficulty_factor", "game_n1")] = 1.5  # unrelated write
     await h.flag_change()
     assert h.applied("game_n1", flag_key) == []
 
-    h.flags.values[flag_key] = _edge_value(flag_key, "8-def")
+    h.flags.scoped[(flag_key, "game_n1")] = edge_event(flag_key, _PAYLOAD[flag_key])
     await h.flag_change()
     await h.flag_change()
-
     assert len(h.applied("game_n1", flag_key)) == 1
 
 
 @pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.asyncio
-async def test_stale_end_game_does_not_end_next_game_but_fresh_one_does():
-    """end_game path: the stale nonce never reaches the force-end function; a
-    fresh nonce in the new game does, once."""
-    h = Harness()
-    h.flags.values["end_game"] = "5-old:"
-    h.start_game("game_n1")
-    h.flags.values["audio_cue"] = "none"  # unrelated write
-    await h.flag_change()
-    h.end_game_fn.assert_not_awaited()
-
-    h.flags.values["end_game"] = "6-new:"
-    await h.flag_change()
-    h.end_game_fn.assert_awaited_once_with("game_n1", "agent_intervention")
-
-
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.asyncio
-async def test_stale_eliminate_player_does_not_kill_in_next_game_but_fresh_one_does():
-    """eliminate_player path: no one dies from the stale nonce; a fresh nonce
-    in the new game eliminates the target through the game's kill path."""
-    h = Harness()
-    h.flags.values["eliminate_player"] = "3-old:p1"
-    game = h.start_game("game_n1")
-    h.flags.values["volume_override"] = 0.3  # unrelated write
-    await h.flag_change()
-    assert game.killed == []
-
-    h.flags.values["eliminate_player"] = "4-new:p2"
-    await h.flag_change()
-    assert game.killed == ["p2"]
-
-
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.parametrize("game_kind", GAME_KINDS)
-@pytest.mark.asyncio
-async def test_coordinator_restart_does_not_replay_stale_audio_cue(game_kind):
-    """The dry-run 13:56:56 case: the coordinator restarts with no live game
-    (start() primes nothing), a later game starts and an unrelated flag change
-    arrives. The leftover audio_cue must not play."""
-    h = Harness()
-    h.flags.values["audio_cue"] = "2-n0nce:agent_cue"
-    h.mgr._prime_baseline()  # start() with no live sessions
-    game = h.start_game(f"game_{game_kind}")
-    h.flags.values["tempo_ramp"] = "1.3:8:linear"
-    await h.flag_change()
-
-    assert game.sounds == []
-    assert h.applied(f"game_{game_kind}", "audio_cue") == []
-
-
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.asyncio
-async def test_primed_baseline_survives_evaluation_before_game_is_live():
-    """A flag change between admission and the game instance being built must
-    not prune the primed baseline (the session is not yet in get_sessions)."""
-    h = Harness()
-    h.flags.values["end_game"] = "5-old:"
-    h.mgr.prime_session("game_starting")
-    await h.flag_change()  # no live session yet: prune runs
-    h.views.append(SessionView(game_id="game_starting", game=FakeGame(), publish=h._publisher("game_starting")))
-    await h.flag_change()
-
-    h.end_game_fn.assert_not_awaited()
-
-
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.asyncio
-async def test_unprimed_live_game_fails_closed():
-    """A live game that was never primed treats the current edge values as
-    consumed on first evaluation (it never replays them), then fires fresh ones."""
-    h = Harness()
-    h.flags.values["end_game"] = "5-old:"
-    h.start_game("game_unprimed", prime=False)
-    await h.flag_change()
-    h.end_game_fn.assert_not_awaited()
-
-    h.flags.values["end_game"] = "6-new:"
-    await h.flag_change()
-    h.end_game_fn.assert_awaited_once()
-
-
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-def test_forget_session_drops_primed_baseline():
-    """A retired session (even one whose game was never built) leaves no
-    pending entry or baseline behind."""
-    h = Harness()
-    h.mgr.prime_session("game_never_built")
-    assert "game_never_built" in h.mgr._pending_primed
-    h.mgr.forget_session("game_never_built")
-    assert "game_never_built" not in h.mgr._pending_primed
-    assert "game_never_built" not in h.mgr._last_nonce
-
-
-# --------------------------------------------------------------------------- #
-# BR-006 fail-closed on flagd read errors (the client never raises; it returns
-# the default "" with reason=ERROR)
-# --------------------------------------------------------------------------- #
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.parametrize("flag_key", ["end_game", "eliminate_player"])
 @pytest.mark.parametrize("all_flags_failing", [True, False], ids=["flagd-down", "one-flag-error"])
 @pytest.mark.asyncio
-async def test_prime_during_flagd_error_does_not_replay_stale_value_on_recovery(flag_key, all_flags_failing):
-    """Game primed while flagd errors (all flags, or only this one); flagd
-    recovers with the stale value; an unrelated change must apply nothing. A
-    fresh nonce afterwards still fires."""
+async def test_read_error_on_the_games_first_read_never_fires(flag_key, all_flags_failing):
+    """flagd errors on the game's first read (all flags, or only this one): the
+    error default is never taken for an event and nothing fires. On recovery
+    the game's own event applies, once."""
     h = Harness()
-    h.flags.values[flag_key] = _edge_value(flag_key, "5-stale")
-    h.flags.failing = set(EDGE_FLAGS) if all_flags_failing else {flag_key}
     game = h.start_game("game_n1")
-
-    h.flags.failing = set()  # recovery
-    h.flags.values["global_difficulty_factor"] = 1.5  # unrelated write
+    h.flags.scoped[(flag_key, "game_n1")] = edge_event(flag_key, "p1")
+    h.flags.failing = set(EDGE_FLAGS) if all_flags_failing else {flag_key}
     await h.flag_change()
     assert h.applied("game_n1", flag_key) == []
     h.end_game_fn.assert_not_awaited()
     assert game.killed == []
+    assert flag_key not in h.mgr._last_event["game_n1"]
 
-    h.flags.values[flag_key] = _edge_value(flag_key, "6-fresh")
+    h.flags.failing = set()  # recovery
+    await h.flag_change()
     await h.flag_change()
     assert len(h.applied("game_n1", flag_key)) == 1
 
 
 @pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.parametrize("flag_key", ["end_game", "eliminate_player"])
-@pytest.mark.asyncio
-async def test_mid_game_flagd_error_does_not_refire_consumed_nonce(flag_key):
-    """A nonce applied mid-game, then a transient flagd error, then recovery
-    with the same value: the consumed nonce must not fire again."""
+def test_forget_session_drops_all_per_game_state():
+    """A retired session leaves no event position, baseline or dispatcher."""
     h = Harness()
-    game = h.start_game("game_n1")
-    h.flags.values[flag_key] = _edge_value(flag_key, "7-once")
-    await h.flag_change()
-    assert len(h.applied("game_n1", flag_key)) == 1
-
-    h.flags.failing = {flag_key}
-    await h.flag_change()  # error read: baseline must not move to ""
-    h.flags.failing = set()
-    await h.flag_change()
-
-    assert len(h.applied("game_n1", flag_key)) == 1
-    if flag_key == "end_game":
-        h.end_game_fn.assert_awaited_once()
-    else:
-        assert game.killed == ["p1"]
-
-
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.asyncio
-async def test_unprimed_game_during_flagd_error_fails_closed():
-    """The never-primed fallback during a flagd error records unknown, then
-    adopts the recovered stale value without firing."""
-    h = Harness()
-    h.flags.values["end_game"] = "5-old:"
-    h.flags.failing = {"end_game"}
-    h.start_game("game_unprimed", prime=False)
-    await h.flag_change()
-    h.flags.failing = set()
-    await h.flag_change()
-    h.end_game_fn.assert_not_awaited()
+    h.mgr._last_event["game_x"] = {"end_game": ("e1", 3)}
+    h.mgr._state_bucket("game_x")["volume_override"] = 0.5
+    h.mgr._dispatcher_for(SessionView(game_id="game_x", game=None, publish=h._publisher("game_x")))
+    h.mgr.forget_session("game_x")
+    assert "game_x" not in h.mgr._last_event
+    assert "game_x" not in h.mgr._last_state_value
+    assert "game_x" not in h.mgr._dispatchers
 
 
 # --------------------------------------------------------------------------- #
-# BR-006 at the servicer seam: every admitted game is primed, real and shadow
+# A session retired WHILE evaluate_all is suspended inside it (handler awaits)
+# must not get a fresh, empty bucket for its remaining specs (#1299 review)
+# --------------------------------------------------------------------------- #
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_retire_mid_evaluation_does_not_fire_later_end_game():
+    """Shadow S retires while evaluate_all awaits S's eliminate handler; S's
+    later end_game spec must not fire into the retired game."""
+    h = Harness()
+    game = h.start_game("shadow_s", real=False)
+    h.flags.scoped[("end_game", "shadow_s")] = edge_event("end_game")
+    original_kill = game._kill_player
+
+    async def kill_and_retire(serial, accel, reason=None):
+        h.mgr.forget_session("shadow_s")  # the servicer retires S concurrently
+        h.views = [v for v in h.views if v.game_id != "shadow_s"]
+        await original_kill(serial, accel, reason)
+
+    game._kill_player = kill_and_retire
+    h.flags.scoped[("eliminate_player", "shadow_s")] = edge_event("eliminate_player", "p2")
+    await h.flag_change()
+
+    assert game.killed == ["p2"]
+    h.end_game_fn.assert_not_awaited()
+    assert "shadow_s" not in h.mgr._last_event
+    assert "shadow_s" not in h.mgr._last_state_value
+
+
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_retire_mid_evaluation_does_not_apply_later_state_flags():
+    """Same race for state flags: once S is forgotten mid-pass, a later state
+    flag is not applied to the dead game and no bucket is re-created."""
+    h = Harness()
+    h.start_game("shadow_s", real=False)
+
+    async def tempo_handler_that_retires(_ctx):
+        h.mgr.forget_session("shadow_s")
+        h.views = [v for v in h.views if v.game_id != "shadow_s"]
+
+    h.mgr.register_handler("music_tempo_override", tempo_handler_that_retires)
+    h.flags.scoped[("music_tempo_override", "shadow_s")] = 1.3  # first spec in registry order
+    h.flags.scoped[("global_difficulty_factor", "shadow_s")] = 1.5  # later state spec
+    await h.flag_change()
+
+    assert len(h.applied("shadow_s", "music_tempo_override")) == 1
+    assert h.applied("shadow_s", "global_difficulty_factor") == []
+    assert "shadow_s" not in h.mgr._last_state_value
+    assert "shadow_s" not in h.mgr._last_event
+
+
+# --------------------------------------------------------------------------- #
+# BR-006 at the servicer seam: real and shadow games alike
 # --------------------------------------------------------------------------- #
 class _MockSpanContext:
     trace_id = 0
@@ -433,16 +356,15 @@ def _start_config(game_kind: str):
     )
 
 
-async def _start_through_servicer(game_kind: str, stale_values: dict[str, str]):
+async def _start_through_servicer(game_kind: str):
     """Start a real or shadow game through the servicer with fake flag clients.
 
-    Returns (servicer, flags, end_game_fn, game). The game thread is not run;
-    the test installs the built game instance itself.
+    Returns (servicer, flags, end_game_fn, game_id, game). The game thread is
+    not run; the test installs the built game instance itself.
     """
     servicer = GameCoordinatorServicer()
     mgr = servicer.intervention_manager
-    flags = UntargetedFlagClient()
-    flags.values.update(stale_values)
+    flags = GameScopedFlagClient()
     mgr._interventions_client = flags
     mgr._agent_client = AgentStub()
     mgr._rate_limiter.set_budget(1000.0)
@@ -459,137 +381,51 @@ async def _start_through_servicer(game_kind: str, stale_values: dict[str, str]):
     assert session.game_kind == ("primary" if game_kind == "real" else "shadow")
     game = FakeGame()
     session.current_game = game  # the game thread built the instance
-    return servicer, flags, end_game_fn, game
-
-
-def _assert_fired(flag_key, end_game_fn, game, *, times):
-    if flag_key == "end_game":
-        assert end_game_fn.await_count == times
-    else:
-        assert game.killed == (["p2"] if times else [])
+    return servicer, flags, end_game_fn, game_id, game
 
 
 @pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.parametrize("flag_key", ["end_game", "eliminate_player"])
 @pytest.mark.parametrize("game_kind", GAME_KINDS)
 @pytest.mark.asyncio
-async def test_servicer_start_primes_new_game_so_stale_edge_is_not_replayed(game_kind, flag_key):
-    """Starting a real or shadow game through the servicer seeds its baseline:
-    a stale value left in flagd is not applied on the next flag change, while
-    a fresh value written during the game is."""
-    stale = {"end_game": "9-stale:", "eliminate_player": "9-stale:p1"}[flag_key]
-    servicer, flags, end_game_fn, game = await _start_through_servicer(game_kind, {flag_key: stale})
+async def test_servicer_started_game_applies_its_first_event_once(game_kind, flag_key):
+    """The very first flag change in a game started through the servicer is an
+    event in the game's list: it applies, once, with no seeding at start."""
+    servicer, flags, end_game_fn, game_id, game = await _start_through_servicer(game_kind)
     mgr = servicer.intervention_manager
-    # end_game is addressed to the deciding game (UC-040 BR-011, #1310).
-    game_id = next(iter(servicer.sessions))
-    fresh = {"end_game": f"10-fresh:{game_id}", "eliminate_player": "10-fresh:p2"}[flag_key]
     try:
-        with patch("services.game_coordinator.metrics.interventions_total"):
-            flags.values["global_difficulty_factor"] = 1.5  # unrelated write
-            await mgr.evaluate_all()
-            _assert_fired(flag_key, end_game_fn, game, times=0)
-            assert game.killed == []
-
-            flags.values[flag_key] = fresh
-            await mgr.evaluate_all()
-        _assert_fired(flag_key, end_game_fn, game, times=1)
-    finally:
-        mgr.stop()
-
-
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.parametrize("flag_key", ["end_game", "eliminate_player"])
-@pytest.mark.parametrize("game_kind", GAME_KINDS)
-@pytest.mark.asyncio
-async def test_servicer_primes_at_start_so_first_change_fresh_edge_fires(game_kind, flag_key):
-    """The very first flag change in the game is a fresh edge write: it must
-    fire. This pins the servicer's start-time prime: without it the never-primed
-    fallback would adopt the fresh value as the baseline and swallow it."""
-    servicer, flags, end_game_fn, game = await _start_through_servicer(game_kind, {})
-    mgr = servicer.intervention_manager
-    game_id = next(iter(servicer.sessions))
-    fresh = {"end_game": f"10-fresh:{game_id}", "eliminate_player": "10-fresh:p2"}[flag_key]
-    try:
-        flags.values[flag_key] = fresh
+        flags.scoped[(flag_key, game_id)] = edge_event(flag_key, "p2")
         with patch("services.game_coordinator.metrics.interventions_total"):
             await mgr.evaluate_all()
-        _assert_fired(flag_key, end_game_fn, game, times=1)
+            await mgr.evaluate_all()
+        if flag_key == "end_game":
+            end_game_fn.assert_awaited_once_with(game_id, "agent_intervention")
+        else:
+            assert game.killed == ["p2"]
     finally:
         mgr.stop()
 
 
 # --------------------------------------------------------------------------- #
-# A session retired WHILE evaluate_all is suspended inside it (handler awaits)
-# must not get a fresh, empty baseline for its remaining specs (#1299 review)
-# --------------------------------------------------------------------------- #
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.asyncio
-async def test_retire_mid_evaluation_does_not_replay_stale_end_game():
-    """Shadow S retires while evaluate_all awaits S's eliminate handler; S's
-    later end_game spec must not see an empty bucket and fire the stale nonce
-    (end_game_fn ends the PRIMARY, so this would end the real game)."""
-    h = Harness()
-    h.flags.values["end_game"] = "5-old:"
-    game = h.start_game("shadow_s")
-    original_kill = game._kill_player
-
-    async def kill_and_retire(serial, accel, reason=None):
-        h.mgr.forget_session("shadow_s")  # the servicer retires S concurrently
-        h.end_game("shadow_s")
-        await original_kill(serial, accel, reason)
-
-    game._kill_player = kill_and_retire
-    h.flags.values["eliminate_player"] = "4-new:p2"  # fresh write during S
-    await h.flag_change()
-
-    assert game.killed == ["p2"]
-    h.end_game_fn.assert_not_awaited()
-    assert "shadow_s" not in h.mgr._last_nonce
-    assert "shadow_s" not in h.mgr._last_state_value
-
-
-@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
-@pytest.mark.asyncio
-async def test_retire_mid_evaluation_does_not_apply_later_state_flags():
-    """Same race for state flags: once S is forgotten mid-pass, a later state
-    flag is not applied to the dead game and no bucket is re-created."""
-    h = Harness()
-    h.start_game("shadow_s")
-
-    async def tempo_handler_that_retires(_ctx):
-        h.mgr.forget_session("shadow_s")
-        h.end_game("shadow_s")
-
-    h.mgr.register_handler("music_tempo_override", tempo_handler_that_retires)
-    h.flags.values["music_tempo_override"] = 1.3  # first spec in registry order
-    h.flags.values["global_difficulty_factor"] = 1.5  # later state spec
-    await h.flag_change()
-
-    assert len(h.applied("shadow_s", "music_tempo_override")) == 1
-    assert h.applied("shadow_s", "global_difficulty_factor") == []
-    assert "shadow_s" not in h.mgr._last_state_value
-    assert "shadow_s" not in h.mgr._last_nonce
-
-
-# --------------------------------------------------------------------------- #
-# The servicer forgets a session's baseline on every retire path
+# The servicer forgets a session's per-game state on every retire path
 # --------------------------------------------------------------------------- #
 def _assert_forgotten(mgr, game_id):
-    assert game_id not in mgr._pending_primed
-    assert game_id not in mgr._last_nonce
+    assert game_id not in mgr._last_event
     assert game_id not in mgr._last_state_value
+    assert game_id not in mgr._dispatchers
 
 
 @pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 @pytest.mark.parametrize("game_kind", GAME_KINDS)
 @pytest.mark.asyncio
-async def test_servicer_retire_forgets_intervention_baseline(game_kind):
-    servicer, _flags, _end_game_fn, _game = await _start_through_servicer(game_kind, {"end_game": "1-x:"})
+async def test_servicer_retire_forgets_intervention_state(game_kind):
+    servicer, _flags, _end_game_fn, game_id, _game = await _start_through_servicer(game_kind)
     mgr = servicer.intervention_manager
     try:
-        game_id = next(iter(servicer.sessions))
-        assert game_id in mgr._pending_primed
-        assert game_id in mgr._last_nonce
+        with patch("services.game_coordinator.metrics.interventions_total"):
+            await mgr.evaluate_all()
+        assert game_id in mgr._last_event
         servicer._retire_session(game_id)
         _assert_forgotten(mgr, game_id)
     finally:
@@ -598,13 +434,15 @@ async def test_servicer_retire_forgets_intervention_baseline(game_kind):
 
 @pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
 @pytest.mark.asyncio
-async def test_servicer_ended_session_sweep_forgets_intervention_baseline():
-    """A naturally ENDED session is swept at the next admission; its baseline
-    goes with it (covers a game that errored before it was ever built)."""
-    servicer, _flags, _end_game_fn, _game = await _start_through_servicer("shadow", {"end_game": "1-x:"})
+async def test_servicer_ended_session_sweep_forgets_intervention_state():
+    """A naturally ENDED session is swept at the next admission; its per-game
+    state goes with it."""
+    servicer, _flags, _end_game_fn, ended_id, _game = await _start_through_servicer("shadow")
     mgr = servicer.intervention_manager
     try:
-        ended_id = next(iter(servicer.sessions))
+        with patch("services.game_coordinator.metrics.interventions_total"):
+            await mgr.evaluate_all()
+        assert ended_id in mgr._last_event
         servicer.sessions[ended_id].game_state = game_coordinator_pb2.GameState.ENDED
         with (
             patch("services.game_coordinator.servicer._shadow_policy", lambda: "allow"),
@@ -614,6 +452,5 @@ async def test_servicer_ended_session_sweep_forgets_intervention_baseline():
         assert ok, new_id
         assert ended_id not in servicer.sessions
         _assert_forgotten(mgr, ended_id)
-        assert new_id in mgr._pending_primed
     finally:
         mgr.stop()

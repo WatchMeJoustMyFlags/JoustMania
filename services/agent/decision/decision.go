@@ -85,10 +85,9 @@ type Decision struct {
 	Objectives map[string]float64
 	// GameID is the game this decision was made for (the deciding loop's
 	// GameContext.SessionID). runDecision stamps it just before the ActionSink
-	// call; engines leave it empty. Today only end_game uses it: the writer
-	// addresses the end_game nonce to this game so the coordinator ends only
-	// that game (UC-040 BR-011, #1310). Other writes are not game-scoped yet
-	// (#1269).
+	// call; engines leave it empty. The writer scopes every intervention to this
+	// game on the flag service (UC-053, FR-126/FR-127), so it reaches only this
+	// game and dies with it; a decision without a game id is not written.
 	GameID string `json:",omitempty"`
 }
 

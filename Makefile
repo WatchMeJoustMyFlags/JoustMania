@@ -84,9 +84,8 @@ up-mock:
 # loop out-of-the-box: latest images (not the stale release IMAGE_TAG=0.7.0 from
 # .env), mock controllers + full observability (ci flag dir), the agent & the
 # dashboard profiles, the experiment loop enabled, and one seeded experiment.
-# The agent and flagd share the SAME flag dir (services/flagd/ci) so the agent's
-# game.json targeting writes actually reach the running flagd (the #999 dir-
-# mismatch fix lives in docker-compose.dry-run.yml).
+# The flag service loads the CI baseline (services/flagd/ci) and is flagd's
+# only source, so every agent write reaches the running flagd (epic #1407).
 #
 # Gating chain (all must be satisfied for the loop to ACT):
 #   1. flagd `experiments_enabled` flag = on  -> the LIVE gate post-#1044. It

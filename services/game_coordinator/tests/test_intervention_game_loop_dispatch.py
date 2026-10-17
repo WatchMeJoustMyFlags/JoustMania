@@ -30,6 +30,7 @@ from services.game_coordinator.game_loop_dispatch import (
 )
 from services.game_coordinator.games.base import GAME_VOLUME
 from services.game_coordinator.interventions import InterventionManager, SessionView
+from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
 
 UC040_A26 = pytest.mark.uc("UC-040", flow="A26", br=["BR-018"])
 
@@ -149,6 +150,10 @@ class FakeFlagClient:
 
     def get_string_value(self, key, default, _ctx=None):
         return str(self.values.get(key, default))
+
+    def get_object_details(self, key, _default, _ctx=None):
+        # One-shot flags are per-game event lists read via details (FR-127).
+        return object_details(key, self.values.get(key))
 
     def get_string_details(self, key, default, _ctx=None):
         return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, _ctx))
@@ -288,10 +293,10 @@ async def test_controller_effect_writes_stream_on_owning_game_loop(game_loop):
     game = FakeGame(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
-    mgr, _ = make_manager(lambda: [view], interventions={"controller_effect": ""})
+    mgr, _ = make_manager(lambda: [view], interventions={})
 
     await mgr.evaluate_all()
-    mgr._interventions_client.set("controller_effect", "n1:S1:pulse")
+    mgr._interventions_client.set("controller_effect", edge_event("controller_effect", "S1:pulse"))
     await mgr.evaluate_all()
 
     assert len(game.gameplay_stream.writes) == 1
@@ -312,9 +317,9 @@ async def test_end_game_stays_on_main_loop(game_loop):
         seen["loop"] = asyncio.get_running_loop()
         return True, ""
 
-    mgr, _ = make_manager(lambda: [view], interventions={"end_game": ""}, end_game_fn=end_game_fn)
+    mgr, _ = make_manager(lambda: [view], interventions={}, end_game_fn=end_game_fn)
     await mgr.evaluate_all()
-    mgr._interventions_client.set("end_game", "n1:g1")
+    mgr._interventions_client.set("end_game", edge_event("end_game"))
     await mgr.evaluate_all()
 
     assert seen["loop"] is asyncio.get_running_loop()
@@ -442,10 +447,10 @@ async def test_end_game_that_closes_the_loop_logs_no_failure(game_loop, metrics_
         await asyncio.to_thread(game_loop.stop)
         return True, ""
 
-    mgr, _ = make_manager(lambda: [view], interventions={"end_game": ""}, end_game_fn=end_game_fn)
+    mgr, _ = make_manager(lambda: [view], interventions={}, end_game_fn=end_game_fn)
     mgr._user_client.set("agent_intervention_cue", True)
     await mgr.evaluate_all()
-    mgr._interventions_client.set("end_game", "n1:g1")
+    mgr._interventions_client.set("end_game", edge_event("end_game"))
     with patch("services.game_coordinator.interventions.logger") as log:
         await mgr.evaluate_all()
 
@@ -462,7 +467,7 @@ async def test_agent_cue_runs_on_game_loop_and_respects_mute(game_loop, metrics_
     game = FakeGame(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
-    mgr, _ = make_manager(lambda: [view], interventions={"eliminate_player": ""})
+    mgr, _ = make_manager(lambda: [view], interventions={})
 
     async def noop(_ctx):
         return None
@@ -470,13 +475,15 @@ async def test_agent_cue_runs_on_game_loop_and_respects_mute(game_loop, metrics_
     mgr.register_handler("eliminate_player", noop)
     await mgr.evaluate_all()
 
-    mgr._interventions_client.set("eliminate_player", "n1:S1")  # cue muted (fixture default)
+    mgr._interventions_client.set(
+        "eliminate_player", edge_event("eliminate_player", "S1")
+    )  # cue muted (fixture default)
     with patch.object(mgr, "_emit_agent_cue") as emit:
         await mgr.evaluate_all()
     emit.assert_not_called()  # muted on the main loop: never dispatched
 
     mgr._user_client.set("agent_intervention_cue", True)
-    mgr._interventions_client.set("eliminate_player", "n2:S1")
+    mgr._interventions_client.set("eliminate_player", edge_event("eliminate_player", "S1", seq=2))
     await mgr.evaluate_all()
     assert len(game.gameplay_stream.writes) == 1  # pulse written through the game-loop stream
     metrics_patched.labels.assert_not_called()

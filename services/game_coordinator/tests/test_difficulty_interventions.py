@@ -54,6 +54,7 @@ from services.game_coordinator.interventions import (
     InterventionManager,
     SessionView,
 )
+from services.game_coordinator.tests.event_list_helpers import object_details
 
 
 # --------------------------------------------------------------------------- #
@@ -483,8 +484,8 @@ class TestRegistration:
         mgr._interventions_client = _ScalarFlagClient({"music_tempo_override": 0})
         mgr._agent_client = _AllowAllAgent()
         register_difficulty_handlers(mgr)
-        # Baseline: override currently none (so the later change is detected).
-        mgr._prime_baseline()
+        # Baseline pass: override currently none (so the later change is detected).
+        await mgr.evaluate_all()
 
         # Now the agent sets the override; evaluate the single flag.
         mgr._interventions_client.values["music_tempo_override"] = 1.15
@@ -518,7 +519,7 @@ class TestRegistration:
         mgr._interventions_client = _ScalarFlagClient({"music_tempo_override": 0})
         mgr._agent_client = _AllowAllAgent()
         register_difficulty_handlers(mgr)
-        mgr._prime_baseline()
+        await mgr.evaluate_all()  # baseline pass: override currently none
 
         primary = SessionView(game_id="", game=game, publish=publisher)
 
@@ -554,8 +555,11 @@ class _ScalarFlagClient:
     def get_string_value(self, key, default, _ctx=None):
         return str(self.values.get(key, default))
 
+    def get_object_details(self, key, _default, _ctx=None):
+        # One-shot flags are per-game event lists read via details (FR-127).
+        return object_details(key, self.values.get(key))
+
     def get_string_details(self, key, default, _ctx=None):
-        # The manager reads edge flags via details to see errors (#1299).
         return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, _ctx))
 
 

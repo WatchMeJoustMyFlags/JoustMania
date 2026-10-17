@@ -620,11 +620,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 if not is_real or attempt == 1:
                     return False, "Game already in progress"
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
-            # Seed this game's edge-intervention baseline from the current flag
-            # values BEFORE it runs: a value already present belongs to an
-            # earlier game and is consumed, so it can never replay into this one
-            # (UC-040 BR-006, #1299). Real and shadow sessions alike.
-            self._prime_intervention_baseline(game_id, session.players)
             # Register the game with the flag service BEFORE it runs, so agent
             # writes for it are accepted from its first frame (FR-125). Bounded
             # to 200 ms and outside _sessions_lock; on a timeout or an error the
@@ -724,21 +719,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         with self._sessions_lock:
             sessions = list(self.sessions.values())
         return [self._game_record(s) for s in sessions if s.game_state != game_coordinator_pb2.GameState.ENDED]
-
-    def _prime_intervention_baseline(self, game_id: str, players=()) -> None:
-        """Prime the InterventionManager's edge and per-player grant baselines
-        for a new game (#1299, #1313). ``players`` are the game's Player protos.
-
-        Never fails a start. If priming raises, the manager's fallback primes the
-        session the first time it is evaluated live, recording current edge
-        values as consumed (``_UNKNOWN`` on a flagd read error), so a stale value
-        is never replayed; at worst one fresh write made before that first
-        evaluation is not applied.
-        """
-        try:
-            self.intervention_manager.prime_session(game_id, [player.serial for player in players])
-        except Exception as e:
-            logger.error(f"Failed to prime intervention baseline for {game_id}: {e}")
 
     def _retire_session(self, game_id: str) -> None:
         """Remove a finished session from the registry and free the primary slot

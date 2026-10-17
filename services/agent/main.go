@@ -714,7 +714,7 @@ func main() {
 	// accessor falls back to the flagd-schema defaults.
 	bluetoothFitness := decision.NewFlagBluetoothFitness(agentFlags)
 	// Rollout actuator (#734/#1213): a GatedRolloutActuator wrapping the real
-	// RolloutWriter — it flips current_controller_count in rollout.json ONLY when the
+	// RolloutWriter — it flips current_controller_count on the flag service ONLY when the
 	// LIVE rollout_enabled flag is on, else it dry-runs (decides+spans but does not
 	// write). Gate read per SetControllerCount/DryRun against agentFlags, fail-closed
 	// (dry-run) on a flagd outage. ctx is the agent's long-lived context.

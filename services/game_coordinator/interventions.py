@@ -14,13 +14,17 @@ Design (from docs/research/722-intervention-surface.md §5/§6/§8/§9):
     * State-shaped flags (music_tempo_override, global_sensitivity_override,
       player_sensitivity_factor, shield_seconds, volume_override) — the game
       converges on the flag value; re-applied whenever the value changes.
-    * Edge-triggered flags (eliminate_player, revive_player, audio_cue,
-      controller_effect, end_game) — value is ``"<nonce>:<payload>"``; a changed
-      nonce triggers exactly one application (idempotent across flagd
-      reconnects / re-reads). The per-game nonce baseline is seeded when the
-      game starts (``prime_session``), so a value left over from an earlier
-      game counts as already consumed and is never replayed (UC-040 BR-006,
-      #1299).
+    * Edge-triggered (one-shot) flags (eliminate_player, revive_player,
+      audio_cue, controller_effect, end_game) — per-game EVENT LISTS
+      ``{"epoch","seq","events":[{"seq","payload"}]}`` served by the flag
+      service on ``gameId`` (FR-127, UC-053 A4 / BR-006). Each event with a seq
+      above the game's last applied one is applied exactly once (idempotent
+      across flagd reconnects / re-reads). The list belongs to the game's scope,
+      which the flag service drops when the game ends, so a new game starts
+      with an empty list and can never replay an earlier game's event.
+- Game-scoped values (state, per-player levels and grants) die with the game's
+  scope the same way, so a new game never sees a value left over from an
+  earlier game.
 - Enforcement chain, evaluated *before* any handler runs (defense in depth; the
   agent also self-checks in #726):
     1. allowed-membership   — type must be in ``interventions_allowed`` (agent
@@ -46,7 +50,6 @@ NO game effects are applied in this PR.
 import asyncio
 import contextlib
 import logging
-import os
 import threading
 import time
 from collections import deque
@@ -95,7 +98,7 @@ RATE_LIMIT_WINDOW_SECONDS = 60.0
 #      game in this coordinator process. Its job is NOT to govern normal
 #      per-game pacing — that is the agent's. Its job is to cap a *runaway or
 #      buggy* agent that floods flag writes far beyond any sane per-game rate
-#      (e.g. a crash-loop rewriting nonces, or a misconfigured agent ignoring
+#      (e.g. a crash-loop appending events, or a misconfigured agent ignoring
 #      its own limiter). It is therefore deliberately set to a GENEROUS budget
 #      that normal multi-session traffic — several concurrent games each at
 #      their own authoritative per-game budget — will never reach. It reads its
@@ -121,34 +124,20 @@ RATE_LIMIT_WINDOW_SECONDS = 60.0
 DEFAULT_COORDINATOR_BACKSTOP_BUDGET = 60.0
 
 
-class _UnknownNonce:
-    """Edge baseline whose value could not be read (flagd error, #1299).
+class _ReadFailed:
+    """A per-player flag read that failed (flagd error, #1299/#1313).
 
-    A game primed (or evaluated) while flagd returns an error must not treat the
-    next good read as a fresh trigger: the value it then sees may be the stale
-    one from an earlier game. ``_UNKNOWN`` marks "baseline not known yet"; the
-    next good read is adopted as the baseline WITHOUT firing (fail closed).
+    OpenFeature's value getters return the default on an error, which would
+    look like "neutral" and move the change-detection baseline. A failed read
+    is reported as ``_UNKNOWN`` instead: it never moves a baseline and never
+    fires (fail closed); the next good read is compared as usual.
     """
 
     def __repr__(self) -> str:
-        return "<unknown nonce>"
+        return "<read failed>"
 
 
-_UNKNOWN = _UnknownNonce()
-
-# Event-list reader switch (FR-127, #1410). When on, the five one-shot flags are
-# read as per-game event lists ``{"epoch","seq","events"}`` served by the flag
-# service (architecture note §6) instead of ``"<nonce>:<payload>"`` strings.
-# Default off until the interventions set is cut over to the flag service (#1411).
-EVENT_LIST_READER_ENV = "INTERVENTION_EVENT_LIST_READER"
-
-
-def _event_list_reader_from_env() -> bool:
-    return os.getenv(EVENT_LIST_READER_ENV, "off").strip().lower() in ("1", "on", "true", "yes")
-
-
-# Sentinel "no payload / no-op" values for edge-triggered flags.
-_EDGE_EMPTY_VALUES = {"", "none"}
+_UNKNOWN = _ReadFailed()
 
 
 @dataclass(frozen=True)
@@ -165,11 +154,11 @@ class InterventionSpec:
             differs from ``flag_key`` (e.g. flag ``audio_cue`` -> type
             ``play_audio_cue``).
         weight: Rate-limit cost class (WEIGHT_SOFT / MEDIUM / HARD).
-        edge_triggered: True for one-shot ``"<nonce>:<payload>"`` flags; False
-            for state-shaped flags.
+        edge_triggered: True for one-shot flags, read as per-game event lists
+            (FR-127, UC-053 A4 / BR-006); False for state-shaped flags.
         player_targeted: True if the intervention targets a specific player
-            (subject to the battery guard); the payload's first ``:``-delimited
-            field is the target serial.
+            (subject to the battery guard); the payload string's first
+            ``:``-delimited field is the target serial.
         none_value: The flag value that means "no intervention" for
             state-shaped flags (e.g. ``0`` for shield_seconds, ``-1`` for
             overrides). Ignored for edge-triggered flags.
@@ -185,19 +174,14 @@ class InterventionSpec:
     value_kind: str = "string"
     none_value: object = None
     # Edge-triggered only: whether a non-empty payload is required to fire.
-    # True for serial/sound/effect-carrying flags; False for ``end_game`` whose
-    # value is nonce-only (``"<nonce>"``) so a present nonce alone is the
-    # command.
+    # True for serial/sound/effect-carrying flags; False for ``end_game``, whose
+    # event alone is the command. An event list is per game, so ``end_game``
+    # ends exactly the game whose list carries the event (UC-040 BR-011).
     payload_required: bool = True
-    # Edge-triggered only: the payload names the game the decision was made for
-    # (``end_game``: ``"<nonce>:<game_id>"``). The intervention applies only in
-    # that session; an un-addressed value applies only in the real game
-    # (UC-040 BR-011, #1310).
-    game_addressed: bool = False
     # Player-targeted state only: a one-shot, time-boxed GRANT (shield, partial
     # shield, soft penalty), not a level. Change-detected per serial on the
-    # resolved (variant, value), baselined at game start, and dispatched only for
-    # the serials whose grant changed (UC-040 BR-012, #1313).
+    # resolved (variant, value) and dispatched only for the serials whose grant
+    # changed (UC-040 BR-012, #1313).
     per_serial_grant: bool = False
 
 
@@ -402,9 +386,8 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         weight=WEIGHT_HARD,
         edge_triggered=True,
         player_targeted=False,
-        # value is "<nonce>:<game_id>" (addressed, #1310) or legacy "<nonce>"
+        # the event alone ends the game whose list carries it (#1310)
         payload_required=False,
-        game_addressed=True,
     ),
 )
 
@@ -454,12 +437,13 @@ class InterventionContext:
 
     Attributes:
         spec: The InterventionSpec for this flag.
-        value: The raw evaluated flag value (typed per ``spec.value_kind`` for
-            state-shaped flags; the raw ``"<nonce>:<payload>"`` string for
-            edge-triggered flags).
-        payload: For edge-triggered flags, the part after the nonce
+        value: The evaluated flag value, typed per ``spec.value_kind`` for
+            state-shaped flags. For edge-triggered flags, the event's payload
+            string (same as ``payload``).
+        payload: For edge-triggered flags, the event payload as a string
             (``"<serial>"``, ``"<sound_id>"``, ``"<serial>:<effect>"`` or ``""``
-            for end_game). Empty string for state-shaped flags.
+            for end_game; see ``_event_payload_string``). Empty string for
+            state-shaped flags.
         target_serial: Resolved target controller serial, or ``None`` if the
             intervention is not player-targeted / is a broadcast.
         game: The live game instance (BaseGameMode) or ``None`` if no game is
@@ -575,8 +559,7 @@ class SessionView:
     game_id: str
     game: object
     publish: "Callable[[str, dict], Awaitable[None]]"
-    # True only for the real (primary) game. An un-addressed ``end_game`` applies
-    # only to the real game (UC-040 BR-011); unknown kind fails closed (shadow).
+    # True only for the real (primary) game; unknown kind fails closed (shadow).
     is_real: bool = False
     loop: asyncio.AbstractEventLoop | None = None
 
@@ -598,7 +581,6 @@ class InterventionManager:
         time_fn: Callable[[], float] = time.monotonic,
         end_game_fn: Callable[[str, str], Awaitable[tuple[bool, str]]] | None = None,
         get_sessions: Callable[[], list["SessionView"]] | None = None,
-        event_list_reader: bool | None = None,
     ):
         """
         Args:
@@ -628,14 +610,13 @@ class InterventionManager:
                 ``{gameId, targetingKey=serial}`` context and applies/publishes
                 on THAT session. A flag with no ``gameId`` targeting rule (the
                 agent writes none) resolves to the same value for every live
-                session; ``end_game`` is addressed by payload instead (BR-011).
+                session; one-shot flags are per-game event lists, so each
+                session reads only its own events (FR-127, BR-011).
         """
         self._publish = event_publisher
-        # Event-list reader (FR-127): None reads INTERVENTION_EVENT_LIST_READER.
-        self._event_lists = _event_list_reader_from_env() if event_list_reader is None else event_list_reader
         # Per game, per one-shot flag: the last applied (epoch, seq). Starts at
-        # ("", 0) when the game registers; advanced under the lock BEFORE the
-        # events are dispatched (re-review N1/N2).
+        # ("", 0) when the game is first evaluated; advanced under the lock
+        # BEFORE the events are dispatched (re-review N1/N2).
         self._last_event: dict[str, dict[str, tuple[str, int]]] = {}
         # Single-flight evaluate_all (re-review N1): one flag-service write
         # wakes every flagd domain watcher, so PROVIDER_CONFIGURATION_CHANGED
@@ -653,21 +634,12 @@ class InterventionManager:
         self._agent_client = None  # agent domain (backstop reads)
         self._user_client = None  # user domain (on-device cue gate, #818)
 
-        # Per-session, per-flag last-applied nonce (edge-triggered exactly-once)
-        # and last-applied state value (state-shaped change detection). Keyed
+        # Per-session, per-flag last-applied state value (state-shaped change
+        # detection; per-serial maps for levels and grants). Keyed
         # ``game_id -> flag_key -> value`` so each live session tracks its own
         # baseline independently (#838). The legacy single-primary path uses the
         # ``_PRIMARY_SENTINEL_GAME_ID`` ("") bucket.
-        # A nonce baseline is a nonce string, or ``_UNKNOWN`` when the read
-        # failed (adopt the next good value without firing, #1299).
-        self._last_nonce: dict[str, dict[str, str | _UnknownNonce]] = {}
         self._last_state_value: dict[str, dict[str, object]] = {}
-        # Sessions whose edge baseline was primed at game start (prime_session)
-        # but which are not yet live (their game instance is still being built,
-        # so get_sessions skips them). Pruning keeps their buckets until they are
-        # first seen live; the servicer calls forget_session when it retires a
-        # session, so a game that never gets built does not linger (#1299).
-        self._pending_primed: set[str] = set()
 
         # Global BACKSTOP limiter (#919): generous, process-global, NOT the
         # per-game governor (that is the agent's). See the defense-in-depth
@@ -871,9 +843,10 @@ class InterventionManager:
     async def _handle_end_game(self, ctx: InterventionContext) -> None:
         """End the session this intervention was evaluated for (UC-040 BR-011).
 
-        The manager only dispatches ``end_game`` to the session it is addressed
-        to (``_addressed_to``), and this handler ends exactly that session
-        (``ctx.game_id``) via the servicer's shared force-end path. It never
+        ``end_game`` is a per-game event list, so the manager only dispatches it
+        to the session whose list carries the event, and this handler ends
+        exactly that session (``ctx.game_id``) via the servicer's shared
+        force-end path. It never
         resolves the primary: before #1310 a shadow session's evaluation ended
         the real game. No-ops safely when the session is gone or no end_game_fn
         is wired.
@@ -931,10 +904,7 @@ class InterventionManager:
             logger.error(f"InterventionManager: failed to initialize: {e}")
             return
 
-        # Initial evaluation establishes the nonce/state baseline so that flags
-        # already set at startup are NOT re-fired as fresh edge triggers.
         self._refresh_budget()
-        self._prime_baseline()
 
     def stop(self) -> None:
         """Remove the change handler."""
@@ -948,98 +918,17 @@ class InterventionManager:
             logger.debug(f"InterventionManager: handler removal failed: {e}")
         self._started = False
 
-    def _prime_baseline(self) -> None:
-        """Record current flag values without applying them.
-
-        Prevents flags that were already non-default before the game coordinator
-        started (or after a flagd reconnect on first connect) from being treated
-        as brand-new triggers. Primes every live session's baseline (#838) so a
-        flag already set for a specific gameId is not re-fired on first connect.
-        """
-        for session in self._live_sessions():
-            self._prime_edge_bucket(session)
-            serials = _active_player_serials(session.game)
-            self._prime_grant_bucket(session.game_id, serials)
-            if session.game is not None:
-                self._prime_level_bucket(session.game_id, serials)
-            for spec in INTERVENTION_SPECS:
-                if spec.edge_triggered or spec.per_serial_grant or _is_level_spec(spec):
-                    continue
-                try:
-                    raw = self._read_flag(spec, session)
-                except Exception:
-                    continue
-                with self._lock:
-                    self._state_bucket(session.game_id)[spec.flag_key] = raw
-
-    def prime_session(self, game_id: str, serials=()) -> None:
-        """Seed a new game's edge-trigger baseline from the current flag values.
-
-        Called by the servicer when a game session is admitted, before its game
-        runs (UC-040 BR-006, #1299). Each edge-triggered flag's current nonce is
-        recorded for ``game_id`` WITHOUT applying it: any value present when the
-        game starts belongs to an earlier game and counts as already consumed.
-        Only a nonce change observed during this game fires. Without this, the
-        game's bucket started empty and the first unrelated flag change replayed
-        the previous game's last ``audio_cue`` / ``end_game`` /
-        ``eliminate_player`` into the new game.
-
-        Per-serial grant flags (shield, partial shield, soft penalty) are primed
-        the same way for ``serials``, the players of the new game: a grant still
-        in the flag belongs to an earlier decision (UC-040 BR-012, #1313).
-
-        Per-player level flags (sensitivity / handicap factor) are primed too:
-        a level still in the flag was decided for an earlier game, so the new
-        game does not inherit it (UC-040 BR-017, #1317/#1269).
-
-        Session-scoped state flags are not primed: their contract is "the game
-        converges on the current value", so a still-set state value applies to a
-        new game (not game-scoped yet, #1269).
-        """
-        if self._event_lists:
-            # A fresh game scope starts with empty event lists, neutral grants
-            # and neutral levels: the flag service drops a game's values with
-            # its scope, so nothing of an earlier game is left (BR-006, #1317).
-            with self._lock:
-                self._last_event[game_id] = {}
-                self._state_bucket(game_id)
-                self._pending_primed.add(game_id)
-            return
-        serials = list(serials)
-        session = SessionView(game_id=game_id, game=None, publish=self._publish)
-        self._prime_edge_bucket(session)
-        self._prime_grant_bucket(game_id, serials)
-        self._prime_level_bucket(game_id, serials)
-        with self._lock:
-            self._pending_primed.add(game_id)
-
     def forget_session(self, game_id: str) -> None:
-        """Drop all change-detection state for a retired session (#1299).
+        """Drop all per-game state for a retired session (#1299).
 
         Called by the servicer when it retires a session, including one whose
-        game was never built, so primed-but-never-live baselines do not linger.
+        game was never built. A pass suspended in that session sees no bucket
+        afterwards and never fires into it.
         """
         with self._lock:
-            self._pending_primed.discard(game_id)
-            self._last_nonce.pop(game_id, None)
             self._last_state_value.pop(game_id, None)
             self._dispatchers.pop(game_id, None)
             self._last_event.pop(game_id, None)
-
-    def _prime_edge_bucket(self, session: "SessionView") -> None:
-        """Record every edge flag's current nonce for ``session`` (no apply).
-
-        A flag whose read fails is recorded as ``_UNKNOWN``: the next good read
-        becomes the baseline without firing, so a stale value can never look
-        fresh just because flagd was erroring at game start.
-        """
-        for spec in INTERVENTION_SPECS:
-            if not spec.edge_triggered:
-                continue
-            raw = self._read_edge_value(spec, session)
-            nonce = raw if raw is _UNKNOWN else _split_nonce(raw)[0]
-            with self._lock:
-                self._nonce_bucket(session.game_id)[spec.flag_key] = nonce
 
     # ------------------------------------------------------------------ #
     # Session resolution + per-session change-detection buckets (#838)
@@ -1062,17 +951,11 @@ class InterventionManager:
         game = self._get_game() if self._get_game is not None else None
         return [SessionView(game_id=_PRIMARY_SENTINEL_GAME_ID, game=game, publish=self._publish, is_real=True)]
 
-    def _nonce_bucket(self, game_id: str) -> dict[str, str]:
-        return self._last_nonce.setdefault(game_id, {})
-
     def _state_bucket(self, game_id: str) -> dict[str, object]:
         return self._last_state_value.setdefault(game_id, {})
 
-    # Mid-pass accessors: never (re)create a bucket. ``None`` means the session
+    # Mid-pass accessor: never (re)creates a bucket. ``None`` means the session
     # was forgotten (retired) while evaluate_all was suspended in it (#1299).
-    def _existing_nonce_bucket(self, game_id: str) -> "dict[str, str | _UnknownNonce] | None":
-        return self._last_nonce.get(game_id)
-
     def _existing_state_bucket(self, game_id: str) -> dict[str, object] | None:
         return self._last_state_value.get(game_id)
 
@@ -1084,12 +967,7 @@ class InterventionManager:
         baseline. The sentinel primary bucket is always retained.
         """
         with self._lock:
-            # A session seen live is no longer pending; a primed session not yet
-            # live keeps its baseline (#1299).
-            self._pending_primed -= live_ids
-            keep = live_ids | self._pending_primed | {_PRIMARY_SENTINEL_GAME_ID}
-            for stale in [gid for gid in self._last_nonce if gid not in keep]:
-                self._last_nonce.pop(stale, None)
+            keep = live_ids | {_PRIMARY_SENTINEL_GAME_ID}
             for stale in [gid for gid in self._last_state_value if gid not in keep]:
                 self._last_state_value.pop(stale, None)
             for stale in [gid for gid in self._dispatchers if gid not in live_ids]:
@@ -1170,18 +1048,14 @@ class InterventionManager:
         sessions = self._live_sessions()
         self._prune_stale_buckets({s.game_id for s in sessions})
         for session in sessions:
-            # Create both buckets once, at the start of this session's
-            # iteration. Inside the pass they are only read with .get(): if the
-            # servicer retires the session while a handler is awaited
-            # (forget_session), the remaining specs see no bucket and skip,
-            # instead of starting from an empty baseline and replaying a stale
-            # nonce (#1299).
-            self._ensure_edge_baseline(session)
+            # Create the session's buckets once, at the start of its iteration.
+            # Inside the pass they are only read with .get(): if the servicer
+            # retires the session while a handler is awaited (forget_session),
+            # the remaining specs see no bucket and skip instead of firing into
+            # a retired game (#1299).
             with self._lock:
-                self._nonce_bucket(session.game_id)
                 self._state_bucket(session.game_id)
-                if self._event_lists:
-                    self._last_event.setdefault(session.game_id, {})
+                self._last_event.setdefault(session.game_id, {})
             for spec in INTERVENTION_SPECS:
                 try:
                     await self._evaluate_one(spec, session)
@@ -1190,33 +1064,6 @@ class InterventionManager:
                         f"InterventionManager: error evaluating {spec.flag_key} "
                         f"for game {session.game_id or '<primary>'}: {e}"
                     )
-
-    def _ensure_edge_baseline(self, session: "SessionView") -> None:
-        """Fail-closed fallback for a live session that was never primed (#1299).
-
-        The servicer primes every session at game start (``prime_session``). If a
-        live session still has no edge baseline (for example priming raised in
-        the servicer), record the current edge values as consumed instead of
-        treating them as fresh triggers (``_UNKNOWN`` where the read fails). This
-        can at worst swallow one write; it can never replay a stale ``end_game``
-        or ``eliminate_player``.
-        """
-        # The legacy single-primary path (sentinel id) is primed once in start()
-        # and its bucket outlives games, so it never replays a stale value.
-        if session.game_id == _PRIMARY_SENTINEL_GAME_ID or self._event_lists:
-            # Event lists need no baseline: a game scope starts empty (BR-006).
-            return
-        with self._lock:
-            if session.game_id in self._last_nonce:
-                return
-        logger.warning(
-            f"InterventionManager: game {session.game_id or '<primary>'} had no edge baseline; "
-            "treating current edge values and per-player grants as consumed (#1299, #1313)"
-        )
-        self._prime_edge_bucket(session)
-        serials = _active_player_serials(session.game)
-        self._prime_grant_bucket(session.game_id, serials)
-        self._prime_level_bucket(session.game_id, serials)
 
     async def _evaluate_one(self, spec: InterventionSpec, session: "SessionView") -> None:
         # Player-targeted state flags are driven entirely through flagd's
@@ -1233,75 +1080,35 @@ class InterventionManager:
             await self._evaluate_targeted_state(spec, session)
             return
 
-        if spec.edge_triggered and self._event_lists:
+        if spec.edge_triggered:
             await self._evaluate_event_list(spec, session)
             return
 
-        if spec.edge_triggered:
-            raw = self._read_edge_value(spec, session)
-            if raw is _UNKNOWN:
-                # Never move the baseline on an error read: the default ("")
-                # would make the consumed nonce look fresh on recovery (#1299).
-                return
-            nonce, payload = _split_nonce(raw)
-            # A missing nonce is always a no-op. A payload-carrying flag with an
-            # empty payload is also a no-op. ``end_game`` (payload_required=False)
-            # fires on the nonce alone. The baseline is still advanced so a later
-            # real trigger with a new nonce fires.
-            no_nonce = nonce.strip().lower() in _EDGE_EMPTY_VALUES
-            empty_payload = payload.strip().lower() in _EDGE_EMPTY_VALUES
-            is_noop = no_nonce or (spec.payload_required and empty_payload)
-            with self._lock:
-                bucket = self._existing_nonce_bucket(session.game_id)
-                if bucket is None:
-                    return  # session retired mid-pass: never fire into it
-                last = bucket.get(spec.flag_key)
-                bucket[spec.flag_key] = nonce
-            # An unknown baseline (read failed at priming) adopts this value
-            # without firing: it may be a stale nonce from an earlier game.
-            changed = last is not _UNKNOWN and nonce != last
-            if not changed or is_noop:
-                return
-            if spec.game_addressed and not _addressed_to(session, payload):
-                # Consumed for this session (baseline advanced above) but meant
-                # for another game: no dispatch, no event, no budget (#1310).
-                logger.debug(
-                    f"{spec.flag_key}: nonce addressed to {payload.strip() or '<real game>'}, "
-                    f"not game {session.game_id or '<primary>'}; skipping"
-                )
-                return
-            target = _edge_target_serial(spec, payload)
-            value = raw
-        else:
-            raw = self._read_flag(spec, session)
-            # State-shaped: only act on value change away from the none-value.
-            with self._lock:
-                bucket = self._existing_state_bucket(session.game_id)
-                if bucket is None:
-                    return  # session retired mid-pass
-                last = bucket.get(spec.flag_key)
-                changed = raw != last
-                bucket[spec.flag_key] = raw
-            if not changed:
-                return
-            if _is_none_value(spec, raw):
-                # Reverting to neutral is not an enforced intervention, but some
-                # state flags need to actively restore a default on revert (e.g.
-                # volume_override -> configured game volume, #730 PR E). Such
-                # flags register a revert handler; it runs without enforcement
-                # (restoring a default is always safe / not rate-limited).
-                # Only fire when the PREVIOUS value was a real (non-none)
-                # intervention — a fresh none-to-none transition (unknown prior
-                # baseline) must not spuriously restore.
-                was_active = last is not None and not _is_none_value(spec, last)
-                if was_active:
-                    await self._run_revert(spec, raw, session)
-                return
-            payload = ""
-            target = self._state_target_serial(spec)
-            value = raw
-
-        await self._enforce_and_dispatch(spec, value, payload, target, session)
+        raw = self._read_flag(spec, session)
+        # State-shaped: only act on value change away from the none-value.
+        with self._lock:
+            bucket = self._existing_state_bucket(session.game_id)
+            if bucket is None:
+                return  # session retired mid-pass
+            last = bucket.get(spec.flag_key)
+            changed = raw != last
+            bucket[spec.flag_key] = raw
+        if not changed:
+            return
+        if _is_none_value(spec, raw):
+            # Reverting to neutral is not an enforced intervention, but some
+            # state flags need to actively restore a default on revert (e.g.
+            # volume_override -> configured game volume, #730 PR E). Such
+            # flags register a revert handler; it runs without enforcement
+            # (restoring a default is always safe / not rate-limited).
+            # Only fire when the PREVIOUS value was a real (non-none)
+            # intervention — a fresh none-to-none transition (unknown prior
+            # baseline) must not spuriously restore.
+            was_active = last is not None and not _is_none_value(spec, last)
+            if was_active:
+                await self._run_revert(spec, raw, session)
+            return
+        await self._enforce_and_dispatch(spec, raw, "", self._state_target_serial(spec), session)
 
     async def _evaluate_event_list(self, spec: InterventionSpec, session: "SessionView") -> None:
         """Apply every new event of a one-shot flag's per-game event list (FR-127).
@@ -1405,12 +1212,13 @@ class InterventionManager:
         With no live game there are no serials to target, so this is a no-op
         (and the baseline is reset to empty so a later game picks up the flag).
 
-        The per-serial baseline is seeded at game start (``prime_session``), and
-        only the players whose level changed since the last read in this game
-        are dispatched (as a ``{serial: level}`` value), so a level left over
-        from an earlier game is never applied (UC-040 BR-017). Players whose
-        level moved to neutral go through the flag's revert handler, which
-        resets their factors without the permission chain (UC-040 A24, #1317).
+        Only the players whose level changed since the last read in this game
+        are dispatched (as a ``{serial: level}`` value); a serial the game has
+        not read yet counts as neutral. Levels are game-scoped in the flag
+        service, so a new game never sees a level of an earlier game
+        (UC-040 BR-017). Players whose level moved to neutral go through the
+        flag's revert handler, which resets their factors without the
+        permission chain (UC-040 A24, #1317).
         """
         game = session.game
         if game is None:
@@ -1428,27 +1236,21 @@ class InterventionManager:
         default = _spec_default(spec)
         reads = self._read_levels(spec, session.game_id, _active_player_serials(game))
 
-        # Per-serial baseline for this game: ``{serial: level | _UNKNOWN}``,
-        # seeded at game start (``prime_session``). Once primed, a serial with no
-        # entry adopts its current level without applying it (e.g. a revived
-        # player the fallback prime skipped, or one battery-gated at prime). An
-        # unprimed bucket (legacy single-primary path) treats a missing serial
-        # as neutral, so a first non-neutral level applies.
+        # Per-serial baseline for this game: ``{serial: level}``. A serial with
+        # no entry is neutral, so a first non-neutral level applies.
         changed: dict = {}
         with self._lock:
             bucket = self._existing_state_bucket(session.game_id)
             if bucket is None:
                 return  # session retired mid-pass
             last = bucket.get(spec.flag_key)
-            primed = isinstance(last, dict)
-            baseline = dict(last) if primed else {}
-            missing = _UNKNOWN if primed else default
+            baseline = dict(last) if isinstance(last, dict) else {}
             for serial, value in reads.items():
                 if value is _UNKNOWN:
                     continue  # never move the baseline on an error read
-                previous = baseline.get(serial, missing)
+                previous = baseline.get(serial, default)
                 baseline[serial] = value
-                if previous is _UNKNOWN or _same_value(value, previous):
+                if _same_value(value, previous):
                     continue
                 changed[serial] = value
             bucket[spec.flag_key] = baseline
@@ -1512,38 +1314,23 @@ class InterventionManager:
             reads[serial] = grant if grant is _UNKNOWN else grant[1]
         return reads
 
-    def _prime_level_bucket(self, game_id: str, serials) -> None:
-        """Record each per-player LEVEL flag's per-serial level for ``game_id``'s
-        players without applying it (UC-040 BR-017, #1317/#1269). A level still
-        in the flag when the game starts was decided for an earlier game; the
-        new game's players start neutral and keep it that way until a level
-        changes during this game. A read error records ``_UNKNOWN`` (adopt the
-        next good read, never apply it). Battery-gated serials are left out at
-        prime; once readable they adopt their level without applying it.
-        """
-        serials = list(serials)
-        for spec in INTERVENTION_SPECS:
-            if not _is_level_spec(spec):
-                continue
-            reads = self._read_levels(spec, game_id, serials)
-            with self._lock:
-                self._state_bucket(game_id)[spec.flag_key] = reads
-
     async def _evaluate_targeted_grant(self, spec: InterventionSpec, session: "SessionView") -> None:
         """Change-detect a per-serial GRANT flag and dispatch only new grants.
 
         Grants (shield, partial shield, soft penalty) are one-shot effects, so a
         serial whose grant did not change since this game last read it must not
         be granted again (UC-040 BR-012, #1313). Each live serial's
-        ``(variant, value)`` is compared with the game's per-serial baseline
-        (seeded at game start by ``prime_session``); the agent writes a fresh
-        variant per decision, so even a same-value re-grant is a change. One
+        ``(variant, value)`` is compared with the game's per-serial baseline;
+        the flag service generates a fresh opaque ``r<epoch>_<n>`` variant per
+        write, so even a same-value re-grant is a change. A serial the game has
+        not read yet has no grant, so its first non-neutral grant fires. One
         intervention is dispatched per changed, non-neutral serial with
         ``target`` = that serial, so the battery guard and the backstop apply
-        per grant. Fail closed: an error read never moves that serial's
-        baseline, and an ``_UNKNOWN`` or missing baseline adopts the next good
-        read without firing. A serial pruned by the agent (UC-040 BR-016)
-        resolves to the neutral variant, which is a change but never fires.
+        per grant. Fail closed: a failed read never moves that serial's
+        baseline and never fires. Grants are game-scoped, so a new game never
+        sees a grant of an earlier game. A serial pruned by the agent
+        (UC-040 BR-016) resolves to the neutral variant, which is a change but
+        never fires.
         """
         game = session.game
         if game is None:
@@ -1555,21 +1342,15 @@ class InterventionManager:
             if bucket is None:
                 return  # session retired mid-pass
             baseline = bucket.get(spec.flag_key)
-            primed = isinstance(baseline, dict)
-            if not primed:
+            if not isinstance(baseline, dict):
                 baseline = {}
                 bucket[spec.flag_key] = baseline
-            # Once the bucket is primed, a serial with no baseline entry (e.g.
-            # revived after the fallback prime, which records alive players
-            # only) adopts its current grant like ``_UNKNOWN``: it may predate
-            # this game (UC-040 A19, #1323).
-            missing = _UNKNOWN if primed else None
             for serial, grant in reads.items():
                 if grant is _UNKNOWN:
                     continue  # never move the baseline on an error read
-                last = baseline.get(serial, missing)
+                last = baseline.get(serial)
                 baseline[serial] = grant
-                if last is _UNKNOWN or grant == last:
+                if grant == last:
                     continue
                 value = grant[1]
                 if not _is_none_value(spec, value):
@@ -1577,26 +1358,13 @@ class InterventionManager:
         for serial, value in fired:
             await self._enforce_and_dispatch(spec, value, "", serial, session)
 
-    def _prime_grant_bucket(self, game_id: str, serials) -> None:
-        """Record each grant flag's current per-serial grant for ``game_id``
-        without applying it (UC-040 BR-012, #1313). An entry present when the
-        game starts belongs to an earlier decision; ``_UNKNOWN`` on a read error.
-        """
-        serials = list(serials)
-        for spec in INTERVENTION_SPECS:
-            if not spec.per_serial_grant:
-                continue
-            grants = {serial: self._read_grant(spec, game_id, serial) for serial in serials}
-            with self._lock:
-                self._state_bucket(game_id)[spec.flag_key] = grants
-
-    def _read_grant(self, spec: InterventionSpec, game_id: str, serial: str) -> "tuple[object, object] | _UnknownNonce":
+    def _read_grant(self, spec: InterventionSpec, game_id: str, serial: str) -> "tuple[object, object] | _ReadFailed":
         """Read one serial's grant as ``(variant, value)`` or ``_UNKNOWN``.
 
         Read with evaluation details: the value getters never raise and return
         the default on error, which would look like "no grant" and move the
         baseline (#1299). The variant is part of the grant identity because the
-        agent writes a fresh ``agent_<serial>#<nonce>`` variant per decision.
+        flag service generates a fresh opaque ``r<epoch>_<n>`` variant per write.
         """
         client = self._interventions_client
         if client is None:
@@ -1887,33 +1655,9 @@ class InterventionManager:
         if spec.value_kind == "float":
             return client.get_float_value(spec.flag_key, float(spec.none_value), ctx)
         # State-shaped string flags carry a string none_value (e.g. pacing_profile
-        # "none"); edge-triggered flags leave none_value None and default to "".
+        # "none").
         string_default = spec.none_value if isinstance(spec.none_value, str) else ""
         return client.get_string_value(spec.flag_key, string_default, ctx)
-
-    def _read_edge_value(self, spec: InterventionSpec, session: "SessionView") -> "str | _UnknownNonce":
-        """Read an edge flag's raw ``"<nonce>:<payload>"`` or ``_UNKNOWN`` on error.
-
-        OpenFeature's value getters never raise: on a resolution error they
-        return the default (``""``), which is indistinguishable from "no
-        intervention" and would move the nonce baseline. Read the details
-        instead and report any error as ``_UNKNOWN`` (#1299).
-        """
-        client = self._interventions_client
-        if client is None:
-            return _UNKNOWN
-        ctx = self._session_context(session.game_id)
-        try:
-            details = client.get_string_details(spec.flag_key, "", ctx)
-        except Exception as e:
-            record_flag_fallback(spec.flag_key, type(e).__name__, str(e))
-            return _UNKNOWN
-        if details.error_code is not None or details.reason == Reason.ERROR:
-            error_code = getattr(details.error_code, "value", None) or str(details.error_code or "ERROR")
-            record_flag_fallback(spec.flag_key, error_code, details.error_message or "")
-            return _UNKNOWN
-        value = details.value
-        return value if isinstance(value, str) else _UNKNOWN
 
     def _state_target_serial(self, _spec: InterventionSpec) -> str | None:
         """Player-targeted state flags fan out across all active serials via
@@ -2087,34 +1831,6 @@ def _event_payload_string(spec: InterventionSpec, payload: dict) -> str:
     if spec.flag_key == "end_game":
         return ""
     return serial
-
-
-def _split_nonce(raw: str) -> tuple[str, str]:
-    """Split an edge-triggered value ``"<nonce>:<payload>"``.
-
-    Returns ``(nonce, payload)``. A value with no ``:`` is treated as
-    nonce-only (payload empty) — matches ``end_game`` shape ``"<nonce>"``.
-    Empty string -> ("", "").
-    """
-    if raw == "":
-        return "", ""
-    if ":" not in raw:
-        return raw, ""
-    nonce, payload = raw.split(":", 1)
-    return nonce, payload
-
-
-def _addressed_to(session: "SessionView", payload: str) -> bool:
-    """Whether a game-addressed edge payload (``end_game``) targets ``session``.
-
-    A payload names the deciding game's id: only that session applies it. An
-    empty payload (legacy / hand-written ``"<nonce>"``) applies only to the real
-    game, never to a shadow (UC-040 BR-011, #1310).
-    """
-    addressed = payload.strip()
-    if addressed:
-        return addressed == session.game_id
-    return session.is_real
 
 
 def _edge_target_serial(spec: InterventionSpec, payload: str) -> str | None:
