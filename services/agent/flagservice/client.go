@@ -276,7 +276,9 @@ type FlagView struct {
 	EffectiveDefault string                     `json:"effective_default"`
 	Variants         []string                   `json:"variants"`
 	VariantValues    map[string]json.RawMessage `json:"variant_values"`
-	RealOverlay      *ValueView                 `json:"real_overlay"`
+	// StackOverlay is the stack-scoped overlay (operator, stage, agent), with its writer.
+	StackOverlay *ValueView `json:"stack_overlay"`
+	RealOverlay  *ValueView `json:"real_overlay"`
 	// Rendered is the flag as flagd reads it (GET /{set}/{flag} only).
 	Rendered json.RawMessage `json:"rendered"`
 }

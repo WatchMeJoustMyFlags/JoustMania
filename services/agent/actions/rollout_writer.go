@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flagservice"
 )
 
@@ -140,6 +141,47 @@ func (w *RolloutWriter) NextStage(current int) (variant string, value int, ok bo
 func (w *RolloutWriter) StageVariantForValue(value int) (string, bool) {
 	return StageVariantForValue(value)
 }
+
+// rolloutStateService is the read side of the flag service ServedStage needs.
+// *flagservice.Client and the fake satisfy it; a FlagService without it makes
+// ServedStage an error, so the loop keeps its state (fail safe).
+type rolloutStateService interface {
+	GetFlag(ctx context.Context, set, flag string) (flagservice.FlagView, error)
+	Epoch(ctx context.Context) (string, error)
+}
+
+// ServedStage reads what the flag service serves for current_controller_count
+// now: the stage, whether it is the agent's own stack overlay, and the boot
+// epoch. It satisfies decision.RolloutStageReader, so the InfraLoop drops its
+// in-memory rollout state when an operator reset the stage or the flag service
+// restarted (#1384). The epoch is read first: a restart between the two reads
+// then shows up as an epoch change on the next check (the safe direction).
+func (w *RolloutWriter) ServedStage(ctx context.Context) (decision.ServedRolloutStage, error) {
+	svc, ok := w.svc.(rolloutStateService)
+	if !ok {
+		return decision.ServedRolloutStage{}, fmt.Errorf("flag service client cannot read flags")
+	}
+	epoch, err := svc.Epoch(ctx)
+	if err != nil {
+		return decision.ServedRolloutStage{}, err
+	}
+	view, err := svc.GetFlag(ctx, FlagSetRollout, flagCurrentControllerCount)
+	if err != nil {
+		return decision.ServedRolloutStage{}, err
+	}
+	served := decision.ServedRolloutStage{
+		Epoch:   epoch,
+		ByAgent: view.StackOverlay != nil && view.StackOverlay.Writer == writerLabel,
+	}
+	for _, stage := range rolloutLadder {
+		if stage.variant == view.EffectiveDefault {
+			served.Value, served.OnLadder = stage.value, true
+		}
+	}
+	return served, nil
+}
+
+var _ decision.RolloutStageReader = (*RolloutWriter)(nil)
 
 // DryRun reports false: the real writer applies flips through the flag service. The loop
 // records this on the rollout.dry_run span attribute.
