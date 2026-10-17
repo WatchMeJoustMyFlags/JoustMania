@@ -38,6 +38,22 @@ tracer = get_tracer(__name__)
 # Span attribute keys (S1192 - avoid duplicate string literals)
 CONTROLLER_SERIAL_ATTR = "controller.serial"
 
+# Identify a controller (UC-004 BR-001): white 2 Hz flash plus a short rumble.
+IDENTIFY_DEFAULT_MS = 3000
+IDENTIFY_MIN_MS = 500
+IDENTIFY_MAX_MS = 10_000
+IDENTIFY_FLASH_HZ = 2
+IDENTIFY_RUMBLE_INTENSITY = 150
+IDENTIFY_RUMBLE_MS = 500
+
+
+def clamp_identify_duration(duration_ms: int) -> int:
+    """Identify duration: 0 or negative means the default, else clamped (UC-004 BR-001)."""
+    if duration_ms <= 0:
+        return IDENTIFY_DEFAULT_MS
+    return max(IDENTIFY_MIN_MS, min(IDENTIFY_MAX_MS, duration_ms))
+
+
 # Module-level cache for winner rainbow duration from flagd
 _winner_rainbow_duration_ms: int | None = None
 
@@ -247,6 +263,9 @@ class FeedbackManager(ControllerEffectsBase):
         self._shield_layers: dict[str, dict[str, ShieldLayer]] = {}
         self._shield_tasks: dict[str, asyncio.Task] = {}
 
+        # Colour shown before an identify started, for controllers without a base colour (UC-004 BR-002)
+        self._identify_fallback: dict[str, tuple[int, int, int] | None] = {}
+
         # Vibration duration tasks
         self.vibration_tasks: dict[str, asyncio.Task] = {}
 
@@ -401,18 +420,7 @@ class FeedbackManager(ControllerEffectsBase):
         """
         # Cancel any existing effect, preserving the effect_type if already set
         # (handle_game_effect sets effect_type before calling handler)
-        existing_task = None
-        current_effect_type = 0
-        async with self.effect_lock:
-            if serial in self.active_effects:
-                current_effect_type = self.active_effects[serial].effect_type
-                existing_task = self.active_effects[serial].task
-                existing_task.cancel()
-                del self.active_effects[serial]
-        # Await cancelled task outside lock to avoid deadlock with task's finally block
-        if existing_task:
-            with contextlib.suppress(asyncio.CancelledError):
-                await existing_task
+        current_effect_type = await self._take_over_effect(serial)
 
         # Mark effect as active (polling skips LED refresh)
         self.backend.set_effect_active(serial, True)
@@ -434,16 +442,50 @@ class FeedbackManager(ControllerEffectsBase):
             except asyncio.CancelledError:
                 raise
             finally:
-                # Remove from active_effects so new base colors can be applied immediately
-                async with self.effect_lock:
-                    self.active_effects.pop(serial, None)
-                # Restore the current base colour, or hand the LED back to an
-                # active agent shield (#1301, UC-040 BR-010).
-                await self._finish_effect(serial, bool(restore_color))
+                # Remove from active_effects so new base colors can be applied immediately,
+                # unless another effect already owns the LED (#1430).
+                if await self._release_effect(serial):
+                    # Restore the current base colour, or hand the LED back to an
+                    # active agent shield (#1301, UC-040 BR-010).
+                    fallback = restore_color if isinstance(restore_color, tuple) else None
+                    await self._finish_effect(serial, bool(restore_color), fallback)
 
         task = asyncio.create_task(effect_with_restore())
         async with self.effect_lock:
             self.active_effects[serial] = ActiveEffect(task=task, effect_type=current_effect_type)
+
+    async def _take_over_effect(self, serial: str) -> int:
+        """Cancel and await the running effect so a new one owns the LED.
+
+        Returns the effect_type of the replaced entry (handle_game_effect types
+        the entry before calling the handler), 0 when there was none.
+        """
+        existing_task = None
+        effect_type = 0
+        async with self.effect_lock:
+            active = self.active_effects.pop(serial, None)
+            if active is not None:
+                effect_type = active.effect_type
+                existing_task = active.task
+                existing_task.cancel()
+        # Await cancelled task outside lock to avoid deadlock with task's finally block
+        if existing_task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await existing_task
+        return effect_type
+
+    async def _release_effect(self, serial: str) -> bool:
+        """At an effect task's end: drop its entry if it still owns the LED.
+
+        False when another effect replaced it; that effect owns the LED, so the
+        ending task must neither pop its entry nor restore the colour (#1430).
+        """
+        async with self.effect_lock:
+            active = self.active_effects.get(serial)
+            if active is not None and active.task is not asyncio.current_task():
+                return False
+            self.active_effects.pop(serial, None)
+            return True
 
     # =========================================================================
     # Individual effect handlers
@@ -548,6 +590,8 @@ class FeedbackManager(ControllerEffectsBase):
         """Full countdown sequence: Red → Yellow → Green."""
         # Use provided duration or default to 750ms per phase
         phase_duration_ms = duration_ms if duration_ms > 0 else 750
+        # A running effect (e.g. an identify, UC-004) must not keep painting over the countdown.
+        await self._take_over_effect(serial)
         task = asyncio.create_task(self._countdown_sequence(serial, restore_color, trace_context, phase_duration_ms))
         async with self.effect_lock:
             self.active_effects[serial] = ActiveEffect(
@@ -629,6 +673,69 @@ class FeedbackManager(ControllerEffectsBase):
         effect_speed = speed if speed > 0 else 5
         await self.play_effect_with_restore(serial, "flash", effect_color, effect_duration, effect_speed, restore_color)
 
+    def _identify_running(self, serial: str) -> bool:
+        active = self.active_effects.get(serial)
+        return (
+            active is not None
+            and active.effect_type == controller_manager_pb2.GAME_EFFECT_IDENTIFY
+            and not active.task.done()
+        )
+
+    async def start_identify(self, serial: str, duration_ms: int = 0) -> bool:
+        """Identify (UC-004 BR-001, BR-002): white 2 Hz flash + short rumble, then restore.
+
+        Only the IdentifyController RPC starts it; GAME_EFFECT_IDENTIFY is not a
+        stream GameEffectCommand. Restores the base colour; a controller without
+        one gets back the colour its LED showed when the first identify started
+        (a repeat press, A5, keeps that colour instead of a flash frame).
+        """
+        if serial not in self.tracked_controllers:
+            return False
+        effect_duration = clamp_identify_duration(duration_ms)
+        async with self.effect_lock:
+            if not self._identify_running(serial):
+                self._identify_fallback[serial] = self.current_colors.get(serial)
+            active = self.active_effects.get(serial)
+            if active is not None:
+                active.effect_type = controller_manager_pb2.GAME_EFFECT_IDENTIFY
+            else:
+                placeholder = asyncio.get_running_loop().create_future()
+                placeholder.set_result(None)
+                self.active_effects[serial] = ActiveEffect(
+                    task=placeholder, effect_type=controller_manager_pb2.GAME_EFFECT_IDENTIFY
+                )
+        restore_to = self.base_colors.get(serial) or self._identify_fallback.get(serial) or True
+        await self.set_vibration(serial, IDENTIFY_RUMBLE_INTENSITY, min(IDENTIFY_RUMBLE_MS, effect_duration))
+        async with self.effect_lock:
+            active = self.active_effects.get(serial)
+            claimed = active is None or active.effect_type != controller_manager_pb2.GAME_EFFECT_IDENTIFY
+        if claimed:
+            # Cancelled while starting (a game claimed the controller, UC-004 BR-003).
+            await self._stop_identify_rumble(serial)
+            return False
+        await self.play_effect_with_restore(
+            serial, "flash", Colors.White.value, effect_duration, IDENTIFY_FLASH_HZ, restore_to
+        )
+        return True
+
+    async def cancel_identify(self, serial: str) -> bool:
+        """End a running identify and its rumble at once (UC-004 BR-003: a game claims the controller).
+
+        Also ends one that is still starting (its entry is the IDENTIFY placeholder).
+        """
+        active = self.active_effects.get(serial)
+        if active is None or active.effect_type != controller_manager_pb2.GAME_EFFECT_IDENTIFY:
+            return False
+        await self.cancel_effect(serial)
+        await self._stop_identify_rumble(serial)
+        return True
+
+    async def _stop_identify_rumble(self, serial: str) -> None:
+        vibration = self.vibration_tasks.pop(serial, None)
+        if vibration is not None:
+            vibration.cancel()
+        await self.backend.set_rumble(serial, 0)
+
     # =========================================================================
     # Agent shield layer (#1301, UC-040 A16 / A17, BR-008..BR-010)
     # =========================================================================
@@ -651,13 +758,17 @@ class FeedbackManager(ControllerEffectsBase):
             del layers[kind]
         return layers.get("full") or layers.get("partial")
 
-    async def _finish_effect(self, serial: str, restore: bool) -> None:
-        """After an effect: hand the LED back to the shield, else restore the base colour."""
+    async def _finish_effect(self, serial: str, restore: bool, fallback: tuple[int, int, int] | None = None) -> None:
+        """After an effect: hand the LED back to the shield, else restore the base colour.
+
+        The current base colour wins (one set during the effect included); without
+        one, ``fallback`` (the colour captured when the effect started) is shown.
+        """
         if self.shield_active(serial):
             # The shield renderer paints its current frame on its next tick.
             return
         self.backend.set_effect_active(serial, False)
-        current_restore = self.base_colors.get(serial) if restore else None
+        current_restore = (self.base_colors.get(serial) or fallback) if restore else None
         if current_restore:
             await self._set_led_color(serial, current_restore)
 
@@ -955,6 +1066,7 @@ class FeedbackManager(ControllerEffectsBase):
         if shield_task is not None:
             shield_task.cancel()
         self.current_colors.pop(serial, None)
+        self._identify_fallback.pop(serial, None)
         self._color_gauges.pop(serial, None)
 
     def _get_battery_color(self, battery_percent: int) -> tuple[int, int, int]:
@@ -1032,8 +1144,8 @@ class FeedbackManager(ControllerEffectsBase):
                 span.add_event("countdown_cancelled")
                 raise
             finally:
-                # Remove from active_effects so new base colors can be applied immediately
-                async with self.effect_lock:
-                    self.active_effects.pop(serial, None)
-                # Restore to base color (or hand back to an agent shield, #1301)
-                await self._finish_effect(serial, bool(restore_color))
+                # Remove from active_effects so new base colors can be applied immediately,
+                # unless another effect already owns the LED (#1430).
+                if await self._release_effect(serial):
+                    # Restore to base color (or hand back to an agent shield, #1301)
+                    await self._finish_effect(serial, bool(restore_color))

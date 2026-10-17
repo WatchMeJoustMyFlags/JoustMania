@@ -91,6 +91,7 @@ observability; still runs rust-hid and the pairing daemon, so the Pi reads real 
 | `StreamGameplayData` | bidi stream | `GameplayStreamControl` → `GameplayDataUpdate` | Motion data at the requested rate, with each controller's connection quality on the unfiltered (dashboard) stream (`GameplayData.connection_quality`: class and p95 / longest report gap, UC-035 BR-005; game streams leave it unset); the client changes filters, colours and effects mid-stream | `proto/controller_manager.proto:15` |
 | `RenameController` | unary | `RenameControllerRequest` → `RenameControllerResponse` | Rename a controller (set custom human-readable name) | `proto/controller_manager.proto:18` |
 | `GetConnectedControllers` | unary | `GetConnectedControllersRequest` → `GetConnectedControllersResponse` | Query the controller manager's authoritative live roster on demand (#1153). Unlike the event-piggybacked connected_serials (only refreshed on the next CONNECT/DISCONNECT), this returns the current connected set synchronously so a client (the menu) can reconcile ghosts after a missed disconnect. Also read by `scripts/talk-preflight.sh` through envoy to count real controllers (UC-070 BR-006). | `proto/controller_manager.proto:24` |
+| `IdentifyController` | unary | `IdentifyControllerRequest` (`serial`, `duration_ms`: 0 = 3000 ms, clamped to 500..10000) → `IdentifyControllerResponse` (`success`, `outcome`: `started` / `not_connected` / `in_game` / `reserved` / `invalid`, `error`, `duration_ms`: the duration used) | Flash a controller white at 2 Hz and rumble it briefly, then restore its colour, so the operator can find it; refused for controllers that are not connected, reserved, or players of an open game gameplay stream, and cancelled when a game stream claims the controller (UC-004, FR-121) | `proto/controller_manager.proto:29` |
 
 ### `controller_manager_mock.MockControllerService` (proto/controller_manager_mock.proto)
 
@@ -162,11 +163,11 @@ services (`services/agent/receiver.go`); they are not JoustMania protos.
 
 ### Browser-reachable RPCs (connect-proxy)
 
-All four `ControllerManagerService` RPCs, all four `GameCoordinatorService` RPCs and all four `MenuService`
+All five `ControllerManagerService` RPCs, all four `GameCoordinatorService` RPCs and all four `MenuService`
 RPCs are forwarded under `/joustmania` (`services/connect-proxy/main.go`, the `ControllerManagerProxy`, `GameCoordinatorProxy` and `MenuProxy` methods). Audio, HID, pairing and mock
 RPCs are not.
 
-**Traceability:** C-014 / UC-002, UC-003, UC-010, UC-027, UC-031 / `proto/*.proto`, `services/connect-proxy/main.go` / `tests/integration/`.
+**Traceability:** C-014 / UC-002, UC-003, UC-004, UC-010, UC-027, UC-031 / `proto/*.proto`, `services/connect-proxy/main.go` / `tests/integration/`.
 
 ## 4. Key messages
 
@@ -176,7 +177,7 @@ RPCs are not.
 | `GameEvent` | `event_type`, `data` (string map), `timestamp` ms, `game_id` | `proto/game_coordinator.proto` |
 | `GameInfo` / `PlayerInfo` | mode, state, players (team, colour, alive, `sensitivity_factor`; score always 0), `game_id`, `start_time_ms` | `proto/game_coordinator.proto` |
 | `ControllerState` | serial, battery, buttons, accel, gyro, colour (the LED colour last written to the controller, effect frames included; #1301), rssi (always 0 from CM), name | `proto/controller_manager.proto` |
-| `GameEffectCommand` | `serial` (empty = all), `effect` (`GameEffect`), optional `color`, `duration_ms`, `speed`. `GameEffect`: `NONE`, `PLAYER_WARNING`, `PLAYER_DEATH`, `PLAYER_RESPAWN`, `WINNER_RAINBOW`, `COUNTDOWN`, `ADMIN_ENTER`, `ADMIN_EXIT`, `LOW_BATTERY`, `FORCE_START_CHARGE`, `SHOW_BATTERY`, `RUMBLE`, `PULSE`, `FLASH`, `SHIELD` (14, agent shield as a persistent LED layer: fade, last-second blink, restore; short LED effects overlay it, a new base colour shows after it; death, the winner rainbow and `duration_ms=0` end it) and `PARTIAL_SHIELD` (15, the weaker breathing variant) (UC-040 BR-008 to BR-010) | `proto/controller_manager.proto:197-227`; `services/controller_manager/feedback_manager.py` |
+| `GameEffectCommand` | `serial` (empty = all), `effect` (`GameEffect`), optional `color`, `duration_ms`, `speed`. `GameEffect`: `NONE`, `PLAYER_WARNING`, `PLAYER_DEATH`, `PLAYER_RESPAWN`, `WINNER_RAINBOW`, `COUNTDOWN`, `ADMIN_ENTER`, `ADMIN_EXIT`, `LOW_BATTERY`, `FORCE_START_CHARGE`, `SHOW_BATTERY`, `RUMBLE`, `PULSE`, `FLASH`, `SHIELD` (14, agent shield as a persistent LED layer: fade, last-second blink, restore; short LED effects overlay it, a new base colour shows after it; death, the winner rainbow and `duration_ms=0` end it), `PARTIAL_SHIELD` (15, the weaker breathing variant) (UC-040 BR-008 to BR-010) and `IDENTIFY` (16, white 2 Hz flash plus a 500 ms rumble, then the base colour or the colour shown before; RPC-only: started by `IdentifyController`, a `GameEffectCommand` with it is rejected; a game stream configuration cancels it on its players, UC-004 BR-001 to BR-004) | `proto/controller_manager.proto:202-245`; `services/controller_manager/feedback_manager.py` |
 | `MenuEvent` | `event_type` (`menu_started`, `menu_stopped`, `selection_changed`, `game_selection_changed`, `game_requested`, `game_start_cancelled`, `game_ended`), `data`, `timestamp` | `proto/menu.proto:46-50`; `services/menu/` |
 
 Game event types actually published are listed in [UC-020](../use_cases/UC-020.md) to

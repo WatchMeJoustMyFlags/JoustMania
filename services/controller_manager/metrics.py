@@ -318,6 +318,13 @@ stream_frame_overruns_total = Counter(
     "Total number of stream frames that took longer than target interval",
 )
 
+# Identify a controller (UC-004, FR-121): one increment per IdentifyController call.
+controller_identify_requests_total = Counter(
+    "controller_identify_requests_total",
+    "IdentifyController calls by outcome (started, not_connected, in_game, reserved, invalid)",
+    ["outcome"],
+)
+
 # Streaming frequency flag metrics (direct flagd integration)
 stream_frequency_changes_total = Counter(
     "controller_stream_frequency_changes_total",

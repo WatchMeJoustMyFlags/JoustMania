@@ -6,6 +6,8 @@
 import type {
   GameplayStreamRequest,
   GameplayDataUpdate,
+  IdentifyControllerRequest,
+  IdentifyControllerResponse,
 } from "./gen/controller_manager_pb.js";
 import type {
   ForceEndGameRequest,
@@ -106,6 +108,15 @@ export const controllerClient = {
       "joustmania.controller_manager.ControllerManagerService",
       "StreamGameplayData",
       request
+    );
+  },
+  // UC-004: flash + rumble one controller so the operator can find it
+  identifyController(request: IdentifyControllerRequest, signal?: AbortSignal): Promise<IdentifyControllerResponse> {
+    return unaryCall(
+      "joustmania.controller_manager.ControllerManagerService",
+      "IdentifyController",
+      request,
+      signal
     );
   },
 };

@@ -287,6 +287,18 @@ func (p *ControllerManagerProxy) RenameController(
 	return connect.NewResponse(resp), nil
 }
 
+// IdentifyController flashes and rumbles one controller (UC-004, FR-121).
+func (p *ControllerManagerProxy) IdentifyController(
+	ctx context.Context,
+	req *connect.Request[controllerpb.IdentifyControllerRequest],
+) (*connect.Response[controllerpb.IdentifyControllerResponse], error) {
+	resp, err := p.client.IdentifyController(ctx, req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
 func (p *ControllerManagerProxy) GetConnectedControllers(
 	ctx context.Context,
 	req *connect.Request[controllerpb.GetConnectedControllersRequest],

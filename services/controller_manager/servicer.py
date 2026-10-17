@@ -21,6 +21,7 @@ import contextlib
 from opentelemetry import trace
 
 from lib.controller_constants import ControllerInfoKey, normalize_serial
+from lib.telemetry import get_tracer
 from proto import controller_manager_pb2, controller_manager_pb2_grpc
 from services.controller_manager import metrics
 
@@ -31,12 +32,14 @@ from services.controller_manager.discovery import PeriodicRescanTimer
 from services.controller_manager.discovery_loop import DiscoveryLoop, visible_serials
 from services.controller_manager.effects_base import ControllerEffectsBase
 from services.controller_manager.event_publisher import EventPublisher as EventPublisherHelper
-from services.controller_manager.feedback_manager import FeedbackManager
+from services.controller_manager.feedback_manager import FeedbackManager, clamp_identify_duration
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.name_manager import NameManager
 from services.controller_manager.state_cache import StateCache
 
 logger = logging.getLogger(__name__)
+
+tracer = get_tracer(__name__)
 
 
 class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerServiceServicer, ControllerEffectsBase):
@@ -78,6 +81,10 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # Button event streaming (Phase 41, Phase 34: async queue and lock)
         self.button_event_subscribers: dict[str, asyncio.Queue] = {}
         self.button_event_lock = asyncio.Lock()
+
+        # Players of each open game gameplay stream (a stream configured with
+        # player colours), by subscriber id: Identify is lobby-only (UC-004 BR-003).
+        self._game_stream_serials: dict[str, set[str]] = {}
 
         # Delta update tracking (Phase 26 - Part 3)
         # Store last sent state per subscriber per controller
@@ -328,6 +335,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         if config.colors:
             current_filter = set()
+            # A game claims these controllers: end any running identify first so
+            # it cannot paint over the game's colours or countdown (UC-004 BR-003).
+            for color_config in config.colors:
+                if color_config.serial:
+                    await self.feedback_manager.cancel_identify(color_config.serial)
             for color_config in config.colors:
                 serial = color_config.serial
                 if serial:
@@ -337,6 +349,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                     if serial in self.tracked_controllers:
                         await self.feedback_manager.set_controller_color(serial, color)
             logger.info(f"[{subscriber_id}] Set base colors for {len(current_filter)} controllers")
+            # The game's whole roster, dead players included (UC-004 BR-003).
+            self._game_stream_serials[subscriber_id] = set(current_filter)
 
         logger.info(
             f"[{subscriber_id}] Stream configured: {current_hz}Hz, "
@@ -630,6 +644,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             with contextlib.suppress(asyncio.CancelledError):
                 await update_task
 
+            self._release_game_stream(subscriber_id)
+
             # A reconnecting game stream may claim this stream's pattern controllers.
             release_patterns = getattr(self.backend, "release_pattern_stream", None)
             if release_patterns is not None:
@@ -678,6 +694,56 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             span.record_exception(e)
             logger.error(f"RenameController error: {e}", exc_info=True)
             return controller_manager_pb2.RenameControllerResponse(success=False, error=str(e))
+
+    def _release_game_stream(self, subscriber_id: str) -> None:
+        """Forget a closed game stream's players (UC-004 BR-003)."""
+        self._game_stream_serials.pop(subscriber_id, None)
+
+    def _in_game(self, serial: str) -> bool:
+        """Whether the controller is a player of an open game gameplay stream."""
+        return any(serial in serials for serials in self._game_stream_serials.values())
+
+    def _identify_refusal(self, serial: str) -> tuple[str, str] | None:
+        """(outcome, error) when Identify must be refused, else None (UC-004 A1-A3, A6)."""
+        if not serial:
+            return "invalid", "Serial number is required"
+        info = self.tracked_controllers.get(serial)
+        if info is None:
+            return "not_connected", f"Controller {serial} is not connected"
+        if info.get(ControllerInfoKey.RESERVED, False):
+            return "reserved", f"Controller {serial} is reserved for a shadow game"
+        if self._in_game(serial):
+            return "in_game", f"Controller {serial} is in a running game"
+        return None
+
+    async def IdentifyController(self, request, _context):
+        """Flash a controller white and rumble it so the operator can find it (UC-004, FR-121)."""
+        serial = normalize_serial(request.serial) if request.serial else ""
+        duration_ms = clamp_identify_duration(request.duration_ms)
+
+        with tracer.start_as_current_span("controller.identify") as span:
+            span.set_attribute("controller.serial", serial)
+            span.set_attribute("effect.duration_ms", duration_ms)
+
+            refusal = self._identify_refusal(serial)
+            if refusal is None:
+                started = await self.feedback_manager.start_identify(serial, duration_ms)
+                if self._in_game(serial):
+                    # A game claimed the controller while the identify was starting (UC-004 BR-003).
+                    await self.feedback_manager.cancel_identify(serial)
+                    refusal = ("in_game", f"Controller {serial} is in a running game")
+                elif not started:
+                    # start_identify otherwise only fails if the controller vanished meanwhile.
+                    refusal = ("not_connected", f"Controller {serial} is not connected")
+
+            outcome, error = refusal if refusal else ("started", "")
+            span.set_attribute("identify.outcome", outcome)
+            metrics.controller_identify_requests_total.labels(outcome=outcome).inc()
+            logger.info(f"IdentifyController {serial or '<empty>'}: {outcome}")
+
+            return controller_manager_pb2.IdentifyControllerResponse(
+                success=outcome == "started", outcome=outcome, error=error, duration_ms=duration_ms
+            )
 
     async def GetConnectedControllers(self, _request, _context):
         """Return the authoritative live roster of connected controllers (#1153).

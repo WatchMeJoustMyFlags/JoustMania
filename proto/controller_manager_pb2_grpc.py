@@ -55,6 +55,11 @@ class ControllerManagerServiceStub:
                 request_serializer=controller__manager__pb2.GetConnectedControllersRequest.SerializeToString,
                 response_deserializer=controller__manager__pb2.GetConnectedControllersResponse.FromString,
                 _registered_method=True)
+        self.IdentifyController = channel.unary_unary(
+                '/joustmania.controller_manager.ControllerManagerService/IdentifyController',
+                request_serializer=controller__manager__pb2.IdentifyControllerRequest.SerializeToString,
+                response_deserializer=controller__manager__pb2.IdentifyControllerResponse.FromString,
+                _registered_method=True)
 
 
 class ControllerManagerServiceServicer:
@@ -94,6 +99,15 @@ class ControllerManagerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def IdentifyController(self, request, context):
+        """Identify a controller (UC-004, FR-121): flash it white and rumble it briefly,
+        then restore its colour. Lobby only: refused for controllers that are not
+        connected, reserved, or players of an open game gameplay stream.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ControllerManagerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -116,6 +130,11 @@ def add_ControllerManagerServiceServicer_to_server(servicer, server):
                     servicer.GetConnectedControllers,
                     request_deserializer=controller__manager__pb2.GetConnectedControllersRequest.FromString,
                     response_serializer=controller__manager__pb2.GetConnectedControllersResponse.SerializeToString,
+            ),
+            'IdentifyController': grpc.unary_unary_rpc_method_handler(
+                    servicer.IdentifyController,
+                    request_deserializer=controller__manager__pb2.IdentifyControllerRequest.FromString,
+                    response_serializer=controller__manager__pb2.IdentifyControllerResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -227,6 +246,33 @@ class ControllerManagerService:
             '/joustmania.controller_manager.ControllerManagerService/GetConnectedControllers',
             controller__manager__pb2.GetConnectedControllersRequest.SerializeToString,
             controller__manager__pb2.GetConnectedControllersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def IdentifyController(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/joustmania.controller_manager.ControllerManagerService/IdentifyController',
+            controller__manager__pb2.IdentifyControllerRequest.SerializeToString,
+            controller__manager__pb2.IdentifyControllerResponse.FromString,
             options,
             channel_credentials,
             insecure,
