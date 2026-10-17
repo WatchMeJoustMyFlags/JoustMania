@@ -5,7 +5,9 @@ description: >
   or test case (TC-XXX), several, or all: maps every main-scenario step,
   alternative flow, business rule, precondition and postcondition to the tests
   that carry its traceability tag (@pytest.mark.uc, Go `// UC:` lines and
-  `UC-XXX/` subtests, dashboard describe('UC-XXX ...')) and to the code, lists
+  `UC-XXX/` subtests in services/agent and services/connect-proxy, shell
+  `# UC:` header lines in scripts/tests, dashboard describe('UC-XXX ...'),
+  and `nfr` markers / `// NFR:` lines for linked NFRs) and to the code, lists
   gaps, derives the status the evidence allows (Tested only if every main
   scenario and alternative flow has a tagged test) and flags UC/REQ status
   drift. Use when the user asks to "check coverage of UC-040", "is UC-011
