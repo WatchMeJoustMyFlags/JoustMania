@@ -82,6 +82,10 @@ class TargetingFlagClient:
     def get_float_value(self, key, default, ctx=None):
         return float(self._resolve(key, default, ctx))
 
+    def get_float_details(self, key, default, ctx=None):
+        # Per-player grants and levels are read via details (#1313, BR-017).
+        return FlagEvaluationDetails(flag_key=key, value=self.get_float_value(key, default, ctx))
+
     def get_object_value(self, key, default, ctx=None):
         return self._resolve(key, default, ctx)
 
@@ -165,8 +169,8 @@ def make_multisession_manager(*, sessions, rules=None):
     mgr._rate_limiter.set_budget(50.0)
     # Model the servicer: every session is primed at game start (#1299), before
     # the test writes the intervention it expects to fire.
-    for game_id, _game in sessions:
-        mgr.prime_session(game_id)
+    for game_id, game in sessions:
+        mgr.prime_session(game_id, list(game.players))
     return mgr, events_by_game
 
 

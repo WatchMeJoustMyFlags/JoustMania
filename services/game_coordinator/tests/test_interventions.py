@@ -777,5 +777,5 @@ async def test_float_targeted_state_still_works_with_string_fix():
         mgr._interventions_client.set("player_handicap_factor", 1.5)
         await mgr.evaluate_all()  # 1.5 -> dispatch
     assert len(_applied(events, "set_player_handicap")) == 1
-    # Baseline holds the coerced float value, not a string.
-    assert mgr._state_bucket("").get("player_handicap_factor") == (("p1", 1.5),)
+    # Per-serial baseline (UC-040 BR-017) holds the coerced float value, not a string.
+    assert mgr._state_bucket("").get("player_handicap_factor") == {"p1": 1.5}

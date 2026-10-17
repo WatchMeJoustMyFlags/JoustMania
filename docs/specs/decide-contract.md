@@ -542,8 +542,10 @@ flagd error read never moves the baseline, and a baseline that could not be read
 at game start adopts the next good value without firing (fail closed) ([UC-040 BR-006](../use_cases/UC-040.md#br-006-an-edge-intervention-fires-only-in-the-game-that-saw-it-change), #1299).
 
 `end_game` is addressed: the writer sets `Decision.GameID` from the deciding loop's
-`GameContext.SessionID` and writes `<nonce>:<game_id>`; it refuses an `end_game` with no
-game id. The coordinator consumes the nonce in every live session but force-ends only the
+`GameContext.SessionID` and writes `<nonce>:<game_id>`; it refuses an `end_game` whose id is
+empty or does not start with `game_` (the coordinator's id format), such as the `session-<n>` id of
+the agent's partition for unlabeled signals, and records the refusal as a failed write
+(`result=error`) instead of writing an end that addresses no game (#1323). The coordinator consumes the nonce in every live session but force-ends only the
 session whose `game_id` is the payload (`InterventionManager._evaluate_one` →
 `_handle_end_game` → `end_game_fn(game_id, reason)` = `GameCoordinatorServicer._force_end_session`,
 the same path as `ForceEndGame` with a `game_id`). A session that is not addressed records
@@ -557,10 +559,31 @@ coordinator (`InterventionManager._evaluate_targeted_grant`) reads each player's
 variant and value with evaluation details, seeds the game's per-player baseline at
 `prime_session` (the servicer passes the game's serials), and dispatches one intervention
 per player whose variant or value changed and is not neutral, with `target` = that
-serial. An error read never moves that player's baseline; an unknown baseline adopts the
-next good value without firing. Per-serial **level** flags (`player_sensitivity_factor`,
-`player_handicap_factor`) keep the whole-map change key: the handler re-applies every
-player's factor, which is idempotent ([UC-040 BR-012](../use_cases/UC-040.md#br-012-a-per-player-grant-applies-once-per-decision), #1313).
+serial. An error read never moves that player's baseline; an unknown baseline, or a player
+with no baseline entry, adopts the next good value without firing (#1323). Two grants to one
+player within one flagd poll (1 s) collapse to the later one. Per-serial **level** flags
+(`player_sensitivity_factor`, `player_handicap_factor`) keep a per-player baseline of the
+alive, battery-eligible players' levels, read with evaluation details and seeded at
+`prime_session` for the new game's players (an error read is recorded as unknown and
+adopts the next good value; it never moves a baseline). On a change the coordinator
+dispatches only the players whose level differs from the last read in this game, so a
+level left over from an earlier game is never applied: players moving to neutral go to the
+flag's revert handler (factor back to 1.0, no permission chain, so a blocked chain cannot
+leave a factor stuck), the others go through the chain as a `{serial: level}` value the
+handler applies
+([UC-040 BR-017](../use_cases/UC-040.md#br-017-per-player-levels-belong-to-one-game), A24, #1317).
+
+Per-player entries are pruned when their game retires ([UC-040 BR-016](../use_cases/UC-040.md#br-016-per-player-entries-live-only-as-long-as-their-game), A25, #1323).
+The `Writer` records the game id of its last per-player write per serial. The agent's
+store `OnGameEnd` hook calls `Writer.PruneGame(game_id, players, protect)`: it drops the
+serials recorded for that game and the unrecorded players of that game, except those in
+another active partition. The eviction loop calls `Writer.PruneExcept(serials, games)`
+once after startup (after one `lifecycle.player_ttl_seconds`) and whenever a partition is
+retired: it drops every serial that is in no partition and whose recorded game is not a
+partition. Both use the same per-serial removal as `RevertTargeted`, remove a serial from
+all five per-player flags in one in-place read-modify-write, and write nothing when nothing
+changes. Session-scoped state flags are not reverted at game end (not game-scoped yet,
+#1269).
 
 The coordinator re-checks independently before any handler runs
 (`InterventionManager._enforce_and_dispatch` → `_check_chain` in `interventions.py`): allow-list membership → mode capability deny matrix

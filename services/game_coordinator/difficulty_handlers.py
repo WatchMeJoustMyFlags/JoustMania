@@ -158,6 +158,14 @@ def _record_factor_event(player: object, serial: str, event: str, key: str, valu
     span.add_event(event, attributes={key: value, **player_identity_attributes(serial, getattr(player, "name", ""))})
 
 
+def _changed_levels(ctx: InterventionContext) -> dict | None:
+    """The ``{serial: level}`` map the manager dispatches for a per-player level
+    (only the players whose level changed in this game, UC-040 BR-017), or None
+    when the handler is called with a scalar value and must resolve every
+    player itself."""
+    return ctx.value if isinstance(ctx.value, dict) else None
+
+
 async def handle_player_sensitivity_factor(ctx: InterventionContext, manager: InterventionManager) -> None:
     """Apply per-player sensitivity factors via per-serial targeting resolution.
 
@@ -173,7 +181,7 @@ async def handle_player_sensitivity_factor(ctx: InterventionContext, manager: In
         logger.debug("player_sensitivity_factor: no live game, ignoring")
         return
 
-    factors = manager.resolve_player_targets(
+    factors = _changed_levels(ctx) or manager.resolve_player_targets(
         flag_key=ctx.spec.flag_key,
         default=SENSITIVITY_FACTOR_DEFAULT,
         game=game,
@@ -218,7 +226,7 @@ async def handle_player_handicap_factor(ctx: InterventionContext, manager: Inter
         logger.debug("player_handicap_factor: no live game, ignoring")
         return
 
-    factors = manager.resolve_player_targets(
+    factors = _changed_levels(ctx) or manager.resolve_player_targets(
         flag_key=ctx.spec.flag_key,
         default=HANDICAP_FACTOR_DEFAULT,
         game=game,
@@ -238,6 +246,40 @@ async def handle_player_handicap_factor(ctx: InterventionContext, manager: Inter
         logger.info(f"player_handicap_factor: {serial} -> {clamped:.2f}")
         if clamped != previous:
             _record_factor_event(player, serial, "handicap_factor_applied", "handicap_factor", clamped)
+
+
+def _reset_player_factor(ctx: InterventionContext, attr: str, neutral: float, event: str) -> None:
+    """Set ``attr`` back to ``neutral`` for the players in ``ctx.value`` (the
+    ``{serial: level}`` map of changed players), or for every player of the game
+    when no map is given; a changed player gets the same span event as an
+    applied factor (#1295)."""
+    game = ctx.game
+    if game is None:
+        return
+    players = getattr(game, "players", {})
+    serials = list(ctx.value) if isinstance(ctx.value, dict) else list(players)
+    for serial in serials:
+        player = players.get(serial)
+        if player is None:
+            continue
+        previous = getattr(player, attr, neutral)
+        setattr(player, attr, neutral)
+        if previous != neutral:
+            logger.info(f"{attr}: {serial} reset to {neutral:.2f}")
+            _record_factor_event(player, serial, event, attr, neutral)
+
+
+async def handle_player_sensitivity_factor_revert(ctx: InterventionContext) -> None:
+    """Every player's sensitivity factor is neutral again: reset them all to 1.0
+    (UC-040 A24 / BR-017, #1317). Before this, the targeted path returned on an
+    empty change key and the last non-neutral factor stayed for the whole game."""
+    _reset_player_factor(ctx, "sensitivity_factor", SENSITIVITY_FACTOR_DEFAULT, "sensitivity_factor_applied")
+
+
+async def handle_player_handicap_factor_revert(ctx: InterventionContext) -> None:
+    """Every player's handicap factor is neutral again: reset them all to 1.0
+    (UC-040 A24 / BR-017, #1317)."""
+    _reset_player_factor(ctx, "handicap_factor", HANDICAP_FACTOR_DEFAULT, "handicap_factor_applied")
 
 
 async def handle_global_difficulty_factor(ctx: InterventionContext) -> None:
@@ -403,16 +445,17 @@ def register_difficulty_handlers(manager: InterventionManager) -> None:
         "player_sensitivity_factor",
         lambda ctx: handle_player_sensitivity_factor(ctx, manager),
     )
-    # player_handicap_factor (#1107) mirrors player_sensitivity_factor exactly:
-    # it is a player-targeted state flag, so reverts are handled inside the apply
-    # handler (unmatched serials resolve to the neutral 1.0 default), NOT via
-    # _revert_handlers — the targeted-state evaluation path never consults that
-    # map (see InterventionManager._evaluate_targeted_state). Same closure-binds-
-    # the-manager shape as sensitivity above.
+    # player_handicap_factor (#1107) mirrors player_sensitivity_factor exactly.
+    # A PARTIAL revert of either level is handled inside the apply handler
+    # (unmatched serials resolve to the neutral 1.0 default). The transition to
+    # every player neutral dispatches nothing through the apply handler, so the
+    # targeted-state path runs these revert handlers instead (UC-040 A24, #1317).
     manager.register_handler(
         "player_handicap_factor",
         lambda ctx: handle_player_handicap_factor(ctx, manager),
     )
+    manager._revert_handlers["player_sensitivity_factor"] = handle_player_sensitivity_factor_revert
+    manager._revert_handlers["player_handicap_factor"] = handle_player_handicap_factor_revert
     # #766 F6: two new state-shaped levers. Both restore their baseline on revert.
     manager.register_handler("global_difficulty_factor", handle_global_difficulty_factor)
     manager._revert_handlers["global_difficulty_factor"] = handle_global_difficulty_factor_revert

@@ -249,7 +249,10 @@ func (m *Multiplexer) Partitions() []string {
 // under a read lock. An evaluate already holding a removed partition's snapshot
 // finishes against that snapshot; if signals for the removed game resume, store()
 // lazily recreates the partition.
-func (m *Multiplexer) EvictStale() {
+//
+// It returns the ids of the partitions it removed, so the caller can prune the
+// retired games' per-player intervention entries (UC-040 A25, #1323).
+func (m *Multiplexer) EvictStale() []string {
 	// Snapshot the partition pointers under RLock, then release before the
 	// per-store eviction (long work) so Apply*/Snapshot are not blocked.
 	m.mu.RLock()
@@ -271,20 +274,23 @@ func (m *Multiplexer) EvictStale() {
 	}
 
 	if len(removable) == 0 {
-		return
+		return nil
 	}
 
 	// Re-check under the write lock so a concurrent Apply that recreated/refreshed
 	// the partition between the read above and now is not clobbered. Only drop the
 	// exact pointer we evaluated and only if it is still drained.
+	var removed []string
 	m.mu.Lock()
 	for _, id := range removable {
 		s := m.stores[id]
 		if s != nil && s == stores[id] && s.isDrained() {
 			delete(m.stores, id)
+			removed = append(removed, id)
 		}
 	}
 	m.mu.Unlock()
+	return removed
 }
 
 // ownServiceName reads ownService under the read lock.
