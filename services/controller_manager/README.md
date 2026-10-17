@@ -95,14 +95,10 @@ grpcurl -plaintext -d '{"serial": "CTRL001", "effect": 2, "color": {"r": 255, "g
 
 ## Metrics
 
-Prometheus metrics available on port 8001:
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `controller_manager_active_controllers` | Gauge | Number of active controllers |
-| `controller_manager_controller_battery_level` | Gauge | Battery level per controller (0-5) |
-| `controller_manager_button_events_total` | Counter | Button press/release events |
-| `controller_manager_discovery_checks_total` | Counter | Discovery loop iterations |
+Metrics are pushed over OTLP (no `/metrics` endpoint; the prometheus_client server on :8000 was
+removed in #1447). The full list is in [docs/specs/telemetry.md §6](../../docs/specs/telemetry.md#6-metrics).
+Poll-loop health: `controller_poll_loop_lateness_seconds` (how late each 100 Hz poll started) and
+`controller_poll_batch_duration_seconds`.
 
 ## Backend Interfaces
 

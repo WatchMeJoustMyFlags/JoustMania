@@ -1028,3 +1028,49 @@ class TestDiscoveryThrottling:
         mock_time.monotonic.return_value = 0.6
         mux.get_connected_controllers()
         a1.discover.assert_called_once_with(force=False, verify_only=False, exclude_serials=ANY)
+
+
+class TestLedBatchVersusDiscoveryCleanup:
+    """The LED batch and discovery run in separate worker threads (#1447)."""
+
+    @pytest.mark.nfr("NFR-002")
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_batch_skips_a_serial_removed_while_it_waited_for_the_lock(self, _metrics):
+        import threading
+        import time
+
+        adapter = _make_adapter("mock", serials=["BB:BB"])
+        mux = MultiplexerBackend(adapters=[adapter])
+        mux.get_connected_controllers()
+        mux._led_colors["BB:BB"] = (255, 0, 0)  # colour change pending
+
+        # Discovery holds the lock while it swaps routing and drops BB:BB.
+        mux._led_lock.acquire()
+        try:
+            batch = threading.Thread(target=mux.update_all_leds)
+            batch.start()
+            time.sleep(0.2)  # the batch is now waiting for the lock
+            mux._serial_to_adapter = {}
+            mux._cleanup_stale_state({})
+        finally:
+            mux._led_lock.release()
+        batch.join(timeout=2.0)
+        assert not batch.is_alive()
+
+        adapter.set_output.assert_not_called()
+        assert "BB:BB" not in mux._last_sent_color
+        assert "BB:BB" not in mux._last_led_update
+        assert "BB:BB" not in mux._led_failures
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_cleanup_drops_led_failures_of_a_lost_serial(self, _metrics):
+        adapter = _make_adapter("mock", serials=["BB:BB"])
+        mux = MultiplexerBackend(adapters=[adapter])
+        mux.get_connected_controllers()
+        mux._led_colors["BB:BB"] = (1, 2, 3)
+        mux._led_failures["BB:BB"] = 4
+        adapter.discover.return_value = []
+
+        mux.get_connected_controllers()
+
+        assert "BB:BB" not in mux._led_failures

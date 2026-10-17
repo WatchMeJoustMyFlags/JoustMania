@@ -264,7 +264,6 @@ services:
     # Ports exposed only within Docker network (no host binding)
     expose:
       - "50052"  # gRPC service
-      - "8000"   # Prometheus metrics
     environment:
       - CONTROLLER_NAMES_FILE=/app/data/controller_names.txt
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
@@ -423,7 +422,6 @@ services:
     # Ports exposed only within Docker network (no host binding)
     expose:
       - "50053"  # gRPC service
-      - "8000"   # Prometheus metrics (Phase 38)
     environment:
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME_GAME_COORDINATOR:-game-coordinator-service}
       - OTEL_SERVICE_NAMESPACE=joustmania
