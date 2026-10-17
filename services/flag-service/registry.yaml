@@ -108,7 +108,6 @@ flags:
   - {set: user, key: current_game, kind: overlay, scope: [stack], persist: true}
   - {set: user, key: game_instructions, kind: overlay, scope: [stack], persist: true, bounds: {variants: ["on", "off"]}}
   - {set: controller, key: bluetooth_backend, kind: overlay, scope: [stack, fraction], bounds: {fraction: [1, 100]}}
-  - {set: controller, key: chaos_fault_type, kind: overlay, scope: [stack, fraction], bounds: {fraction: [1, 100]}}
   - {set: rollout, key: current_controller_count, kind: overlay, scope: [stack], bounds: {variants: [none, one, three, six, all]}}
   - {set: rollout, key: target_backend, kind: overlay, scope: [stack]}
   - {set: rollout, key: strategy, kind: overlay, scope: [stack]}
