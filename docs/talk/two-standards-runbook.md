@@ -423,14 +423,9 @@ The infra loop is not gated by the `enabled` kill switch, only by
       network). Anything else from docker is a finding.
       If 50062 shows up, the stack was started without `-f docker-compose.yml`
       (the dev override got loaded): bring it up again as in section 1.
-- [ ] Pairing daemon still reaches flagd, the collector and rust-hid (#1319):
-      8015, 4317 and 50058 now listen on `127.0.0.1` only (no `::1`), while
-      the daemon dials `localhost`. Check it falls back from `::1` to
-      `127.0.0.1`: `docker compose -f docker-compose.yml logs pairing-daemon`
-      shows no repeated connection errors to `localhost:8015/4317/50058`, a
-      USB pairing works, and its spans reach Jaeger. If not, set
-      `FLAGD_HOST`, `RUST_HID_HOST` and `OTEL_EXPORTER_OTLP_ENDPOINT` to
-      `127.0.0.1` for the pairing daemon.
+- [ ] Pairing daemon still reaches rust-hid, the collector and flagd over
+      `127.0.0.1` (#1319): a USB pairing works, its spans show up in Jaeger,
+      and a runtime pairing flag change applies.
 - [ ] No stale `joustmania-python-hid` from an older install (#1402):
       `docker ps -a --filter name=joustmania-python-hid` is empty. The start
       script removes it when the `python-hid` profile is off; by hand:
