@@ -28,13 +28,13 @@ flags:
   - {set: interventions, key: global_difficulty_factor, kind: state, scope: [game], bounds: {range: [0.5, 2.0]}}
   - {set: interventions, key: volume_override, kind: state, scope: [game], bounds: {range: [0.3, 1.0]}}
   - {set: interventions, key: pacing_profile, kind: state, scope: [game], bounds: {variants: [default, calm, frantic]}}
-  - {set: interventions, key: tempo_ramp, kind: state, scope: [game], bounds: {pattern: [["float 1.0 1.3", "float 1 30", "enum linear|ease"]]}}
+  - {set: interventions, key: tempo_ramp, kind: state, scope: [game], bounds: {pattern: [["float 1.0 1.3", "float 0.1 60", "enum linear|ease"]]}}
   - {set: interventions, key: auto_rubberband, kind: state, scope: [game], bounds: {variants: ["off", gentle, strong]}}
-  - {set: interventions, key: player_sensitivity_factor, kind: level, scope: [game+serial], bounds: {range: [0.7, 1.5]}}
-  - {set: interventions, key: player_handicap_factor, kind: level, scope: [game+serial], bounds: {range: [0.75, 1.75]}}
-  - {set: interventions, key: shield_seconds, kind: grant, scope: [game+serial], bounds: {range: [1, 10], integer: true}}
-  - {set: interventions, key: partial_shield_seconds, kind: grant, scope: [game+serial], bounds: {pattern: [["float 1 10", "float 1.0 3.0"]]}}
-  - {set: interventions, key: soft_penalty_action, kind: grant, scope: [game+serial], bounds: {pattern: [["enum warn|tighten"], ["enum tighten", "float 1 10", "float 0.1 1.0"]]}}
+  - {set: interventions, key: player_sensitivity_factor, kind: level, scope: [game+serial], bounds: {range: [0.5, 2.0]}}
+  - {set: interventions, key: player_handicap_factor, kind: level, scope: [game+serial], bounds: {range: [0.5, 2.0]}}
+  - {set: interventions, key: shield_seconds, kind: grant, scope: [game+serial], bounds: {range: [1, 10]}}
+  - {set: interventions, key: partial_shield_seconds, kind: grant, scope: [game+serial], bounds: {pattern: [["float 0.1 30"], ["float 0.1 30", "float 1.0 2.0"]]}}
+  - {set: interventions, key: soft_penalty_action, kind: grant, scope: [game+serial], bounds: {pattern: [["enum warn|tighten"], ["enum tighten", "float 0.1 30", "float 0.5 1.0"]]}}
   - {set: interventions, key: eliminate_player, kind: event, scope: [game], bounds: {payload: {serial: serial}}}
   - {set: interventions, key: revive_player, kind: event, scope: [game], bounds: {payload: {serial: serial}}}
   - {set: interventions, key: controller_effect, kind: event, scope: [game], bounds: {payload: {serial: serial_or_empty, effect: "enum rumble|pulse|flash|show_battery"}}}

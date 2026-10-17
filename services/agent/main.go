@@ -147,11 +147,10 @@ func parseLevel(s string) slog.Level {
 // fail safe on a boot-time flagd outage (#1217). Returning decision.ActionSink keeps
 // main()'s wiring to one line and makes the gate unit-testable.
 //
-// writer is the one shared interventions Writer; main() also hands it to the
-// per-player prune (UC-040 BR-016, #1323) and the startup self-heal.
+// writer is the one shared interventions Writer (writes go to the flag service).
 func actionSink(gate actions.InterventionGate, writer *actions.Writer, logger *slog.Logger) decision.ActionSink {
 	logger.Info("Agent intervention writes gated by LIVE interventions_enabled flag (#1213; default fail-closed off)",
-		"path", getEnv("INTERVENTIONS_FLAG_PATH", actions.DefaultPath))
+		"flag_service", getEnv("FLAG_SERVICE_URL", "http://flag-service:8070"))
 	return actions.NewGatedActionSink(gate, writer, logger)
 }
 
@@ -165,7 +164,7 @@ func actionSink(gate actions.InterventionGate, writer *actions.Writer, logger *s
 // env gate that selected RolloutWriter-or-DryRun ONCE (#1217).
 func rolloutActuator(rootCtx context.Context, gate actions.RolloutGate, logger *slog.Logger) decision.RolloutActuator {
 	logger.Info("Agent rollout expansion gated by LIVE rollout_enabled flag (#1213; default fail-closed dry-run)",
-		"path", getEnv("ROLLOUT_FLAG_PATH", actions.DefaultRolloutPath))
+		"flag_service", getEnv("FLAG_SERVICE_URL", "http://flag-service:8070"))
 	return actions.NewGatedRolloutActuator(rootCtx, gate, actions.NewRolloutWriterFromEnv(logger), logger)
 }
 
@@ -540,11 +539,9 @@ func main() {
 	// migrated). The Writer holds no per-game state, so sharing is safe.
 	sharedWriter := actions.NewWriterFromEnv(logger)
 	sharedSink := actionSink(agentFlags, sharedWriter, logger)
-	// Per-player prune (UC-040 A25 / BR-016, #1323): removes a game's per-player
-	// entries from the interventions file when it ends or its partition retires,
-	// and once after startup, so the file stays bounded by the live games. Not
-	// gated by interventions_enabled: it only moves values toward neutral.
-	pruner := newTargetedPruner(sharedWriter, lifecycleHolder.PlayerTTL, logger)
+	// No per-player prune any more (#1323 is closed by construction, #1416): every
+	// intervention is written for one registered game and the flag service drops
+	// it when the coordinator ends that game (UC-053 BR-003).
 	// Shared GLOBAL LLM request budget (#847). Constructed ONCE here and injected
 	// into every per-game Loop and the retro below, so all remote decide calls and
 	// retros draw down a SINGLE per-minute request cap (llm.max_requests_per_minute).
@@ -558,16 +555,6 @@ func main() {
 	llmBudgetCapOverride := llmBudgetOverride()
 	if llmBudgetCapOverride > 0 {
 		slog.Info("LLM request budget override enabled (#964)", "max_per_minute", llmBudgetCapOverride)
-	}
-	// Startup self-heal (#924): when the real action sink is enabled, validate the
-	// interventions file and repair a poisoned (unparseable) one to the neutral
-	// document before the first decision cycle. A corrupt file would otherwise make
-	// flagd reject the whole flag set, silently defaulting every intervention. The
-	// heal is best-effort: a failure logs and the agent still starts.
-	if healed, err := sharedWriter.HealIfCorrupt(ctx); err != nil {
-		slog.Error("Interventions file startup self-heal failed (continuing)", "error", err)
-	} else if healed {
-		slog.Warn("Interventions file was corrupt at startup; restored neutral document (#924)")
 	}
 	// Proposer/retro text backend (#1234): the direct Claude client, or nil for the
 	// stub default (the proposer proposes nothing, the retro is capture-only). It is
@@ -730,13 +717,12 @@ func main() {
 	// write). Gate read per SetControllerCount/DryRun against agentFlags, fail-closed
 	// (dry-run) on a flagd outage. ctx is the agent's long-lived context.
 	infraLoop := decision.NewInfraLoop(logger, rolloutDwell(), bluetoothFitness, rolloutActuator(ctx, agentFlags, logger))
-	// Auto-remediation gate (#736): remediation_allowed lives in the ROLLOUT flagd
-	// domain (rollout.json), so the loop reads it directly from that file (the agent
-	// already owns the path). When false, fitness failures are RECOMMENDED only (span,
-	// no write). Default on any read error is false (fail-closed). The dry-run
-	// actuator above also applies to rollback, so a disabled rollout records the
-	// rollback decision without writing.
-	infraLoop.SetRemediationSource(actions.NewRemediationReaderFromEnv(logger))
+	// Auto-remediation gate (#736): remediation_allowed (rollout set) is evaluated
+	// through flagd like every other flag (#1411, R1). When false, fitness failures
+	// are RECOMMENDED only (span, no write). Default on any error is false
+	// (fail-closed). The dry-run actuator above also applies to rollback, so a
+	// disabled rollout records the rollback decision without writing.
+	infraLoop.SetRemediationSource(actions.NewRemediationReader(agentFlags))
 	// Post-rollback cooldown (#736): suppress re-expansion for this long after a
 	// rollback so fitness can recover before the loop climbs again.
 	infraLoop.SetCooldown(rolloutCooldown())
@@ -987,11 +973,10 @@ func main() {
 		if expLoop != nil {
 			experimentOnGameEnd = expLoop.onGameEnd
 		}
-		s.OnGameEnd = chainGameEnd(experimentOnGameEnd, retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd, pruner.OnGameEnd)
+		s.OnGameEnd = chainGameEnd(experimentOnGameEnd, retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd)
 		return s
 	})
 	mux.SetOwnService(ownService)
-	pruner.parts = mux
 	// UC-046 A8: a pattern game is non-exact when any other game is live.
 	patterngame.Default.SetConcurrencyProbe(otherGameLive(mux))
 
@@ -1033,7 +1018,6 @@ func main() {
 		retro:            retro,
 		evictInterval:    lifecycleHolder.EvictInterval(),
 		evictIntervalSrc: lifecycleHolder.EvictInterval,
-		pruner:           pruner,
 		shadow:           shadow,
 		experiments:      experiments,
 		// Read-only experiment-dossier HTTP view (#1183): serves GET /experiments[/{id}]

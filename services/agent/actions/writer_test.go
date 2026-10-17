@@ -2,714 +2,271 @@ package actions
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
-	jsonlogic "github.com/diegoholiveira/jsonlogic/v3"
-
 	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/flagservice"
 )
 
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// call is one request the fake flag service received.
+type call struct {
+	method string // PUT | POST
+	set    string
+	flag   string
+	write  flagservice.Write
+	event  flagservice.Event
 }
 
-// newTestWriter copies the real interventions.json fixture into a temp file and
-// returns a Writer over it plus the temp path.
-func newTestWriter(t *testing.T) (*Writer, string) {
+// fakeService records writes and answers err (nil = accepted).
+type fakeService struct {
+	mu    sync.Mutex
+	calls []call
+	err   error
+}
+
+func (f *fakeService) Put(_ context.Context, set, flag string, w flagservice.Write) (flagservice.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call{method: "PUT", set: set, flag: flag, write: w})
+	return flagservice.Result{FlagSet: set, Flag: flag}, f.err
+}
+
+func (f *fakeService) Post(_ context.Context, set, flag string, ev flagservice.Event) (flagservice.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call{method: "POST", set: set, flag: flag, event: ev})
+	return flagservice.Result{FlagSet: set, Flag: flag, Seq: int64(len(f.calls))}, f.err
+}
+
+func (f *fakeService) all() []call {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]call(nil), f.calls...)
+}
+
+func (f *fakeService) last(t *testing.T) call {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join("testdata", "interventions.json"))
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+	all := f.all()
+	if len(all) == 0 {
+		t.Fatal("no write was sent")
 	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "interventions.json")
-	if err := os.WriteFile(path, src, 0o644); err != nil {
-		t.Fatalf("write temp fixture: %v", err)
-	}
-	return NewWriter(path, discardLogger()), path
+	return all[len(all)-1]
 }
 
-// readFlag returns the parsed flag object from the file at path.
-func readFlag(t *testing.T, path, flagKey string) map[string]any {
+func newTestWriter(t *testing.T) (*Writer, *fakeService) {
 	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read file: %v", err)
-	}
-	var doc struct {
-		Flags map[string]json.RawMessage `json:"flags"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("unmarshal doc (invalid JSON written): %v", err)
-	}
-	fr, ok := doc.Flags[flagKey]
-	if !ok {
-		t.Fatalf("flag %q missing", flagKey)
-	}
-	var flag map[string]any
-	if err := json.Unmarshal(fr, &flag); err != nil {
-		t.Fatalf("unmarshal flag %q: %v", flagKey, err)
-	}
-	return flag
+	svc := &fakeService{}
+	return NewWriter(svc, discardLogger()), svc
 }
 
-// activeValueOf returns the string value of the flag's current defaultVariant.
-func activeValueOf(t *testing.T, path, flagKey string) string {
-	t.Helper()
-	flag := readFlag(t, path, flagKey)
-	dv, _ := flag["defaultVariant"].(string)
-	variants, _ := flag["variants"].(map[string]any)
-	v, ok := variants[dv]
-	if !ok {
-		t.Fatalf("flag %q defaultVariant %q not in variants", flagKey, dv)
-	}
-	s, _ := v.(string)
-	return s
-}
-
-func TestEdgeInterventions(t *testing.T) {
+// UC: UC-053 main A4 BR-003 BR-006
+// UC: UC-040 main
+func TestWriter_EveryInterventionIsOneGameScopedWrite(t *testing.T) {
 	cases := []struct {
-		name     string
-		dec      decision.Decision
-		flagKey  string
-		wantTail string // payload after the nonce, "" for nonce-only
+		name      string
+		d         decision.Decision
+		method    string
+		flag      string
+		serial    string // expected scope serial (PUT) or payload serial (POST)
+		value     any    // PUT value
+		payload   map[string]any
+		wantError bool
 	}{
-		{"audio_cue default", decision.Decision{Intervention: decision.InterventionPlayAudioCue}, flagAudioCue, defaultAudioCue},
-		{"audio_cue value", decision.Decision{Intervention: decision.InterventionPlayAudioCue, Value: "boo"}, flagAudioCue, "boo"},
-		{"controller_effect targeted", decision.Decision{Intervention: decision.InterventionSendControllerEffect, TargetSerial: "AA:BB", Value: "rumble"}, flagControllerEffect, "AA:BB:rumble"},
-		{"controller_effect broadcast", decision.Decision{Intervention: decision.InterventionSendControllerEffect, TargetSerial: "", Value: "flash"}, flagControllerEffect, ":flash"},
-		{"eliminate", decision.Decision{Intervention: decision.InterventionEliminatePlayer, TargetSerial: "CC:DD"}, flagEliminatePlayer, "CC:DD"},
-		{"revive", decision.Decision{Intervention: decision.InterventionRevivePlayer, TargetSerial: "EE:FF"}, flagRevivePlayer, "EE:FF"},
-		{"end_game", decision.Decision{Intervention: decision.InterventionEndGame, GameID: "game_abc"}, flagEndGame, "game_abc"},
+		{name: "UC-053/A4 eliminate is an event with the serial in the payload",
+			d:      decision.Decision{Intervention: decision.InterventionEliminatePlayer, TargetSerial: "MOCK0001"},
+			method: "POST", flag: flagEliminatePlayer, payload: map[string]any{"serial": "MOCK0001"}},
+		{name: "UC-053/A4 revive is an event",
+			d:      decision.Decision{Intervention: decision.InterventionRevivePlayer, TargetSerial: "MOCK0002"},
+			method: "POST", flag: flagRevivePlayer, payload: map[string]any{"serial": "MOCK0002"}},
+		{name: "UC-053/A4 audio cue carries the sound, default agent_cue",
+			d:      decision.Decision{Intervention: decision.InterventionPlayAudioCue},
+			method: "POST", flag: flagAudioCue, payload: map[string]any{"sound": "agent_cue"}},
+		{name: "UC-053/A4 controller effect carries serial and effect; empty serial broadcasts",
+			d:      decision.Decision{Intervention: decision.InterventionSendControllerEffect, Value: "pulse"},
+			method: "POST", flag: flagControllerEffect, payload: map[string]any{"serial": "", "effect": "pulse"}},
+		{name: "UC-053/A4 end_game: the game is the scope",
+			d:      decision.Decision{Intervention: decision.InterventionEndGame},
+			method: "POST", flag: flagEndGame, payload: map[string]any{}},
+		{name: "UC-053/main music tempo is game state",
+			d:      decision.Decision{Intervention: decision.InterventionAdjustMusicTempo, Value: "1.2"},
+			method: "PUT", flag: flagMusicTempoOverride, value: 1.2},
+		{name: "UC-053/main global sensitivity is an integer",
+			d:      decision.Decision{Intervention: decision.InterventionAdjustGlobalSensitivity, Value: "3"},
+			method: "PUT", flag: flagGlobalSensitivityOverride, value: 3},
+		{name: "UC-053/main pacing profile string",
+			d:      decision.Decision{Intervention: decision.InterventionSetPacingProfile},
+			method: "PUT", flag: flagPacingProfile, value: defaultPacingProfile},
+		{name: "UC-053/main a malformed ramp degrades to the safe default",
+			d:      decision.Decision{Intervention: decision.InterventionRampTempo, Value: "9:9:bounce"},
+			method: "PUT", flag: flagTempoRamp, value: defaultTempoRamp},
+		{name: "UC-053/main a level is per player",
+			d:      decision.Decision{Intervention: decision.InterventionAdjustPlayerSensitivity, TargetSerial: "MOCK0003", Value: "0.8"},
+			method: "PUT", flag: flagPlayerSensitivityFactor, serial: "MOCK0003", value: 0.8},
+		{name: "UC-053/main a shield grant is per player",
+			d:      decision.Decision{Intervention: decision.InterventionGrantShield, TargetSerial: "MOCK0003"},
+			method: "PUT", flag: flagShieldSeconds, serial: "MOCK0003", value: float64(defaultShieldSeconds)},
+		{name: "UC-053/main an escalating soft penalty value never escalates",
+			d:      decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "MOCK0003", Value: "explode"},
+			method: "PUT", flag: flagSoftPenaltyAction, serial: "MOCK0003", value: defaultSoftPenalty},
+		{name: "UC-053/main a grant without a serial is refused before any write",
+			d:         decision.Decision{Intervention: decision.InterventionGrantShield},
+			wantError: true},
+		{name: "UC-053/A4 an elimination without a serial is refused",
+			d:         decision.Decision{Intervention: decision.InterventionEliminatePlayer},
+			wantError: true},
+		{name: "UC-053/main an unknown intervention is refused",
+			d:         decision.Decision{Intervention: "teleport"},
+			wantError: true},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w, path := newTestWriter(t)
-			if err := w.Apply(context.Background(), tc.dec); err != nil {
-				t.Fatalf("apply: %v", err)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w, svc := newTestWriter(t)
+			c.d.GameID = "game_0a1b2c3d4e5f"
+			err := w.Apply(context.Background(), c.d)
+			if c.wantError {
+				if err == nil || len(svc.all()) != 0 {
+					t.Fatalf("want a refusal without a write, got err=%v writes=%d", err, len(svc.all()))
+				}
+				return
 			}
-			got := activeValueOf(t, path, tc.flagKey)
-			nonce, tail := splitNonce(got)
-			if nonce == "" {
-				t.Fatalf("edge value %q has empty nonce", got)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if tail != tc.wantTail {
-				t.Fatalf("payload = %q, want %q (full %q)", tail, tc.wantTail, got)
+			got := svc.last(t)
+			if got.method != c.method || got.set != FlagSetInterventions || got.flag != c.flag {
+				t.Fatalf("got %s %s/%s, want %s interventions/%s", got.method, got.set, got.flag, c.method, c.flag)
 			}
-			assertStructurallyValid(t, path)
+			if c.method == "POST" {
+				if got.event.Scope.GameID != c.d.GameID || got.event.Scope.Serial != "" || got.event.Writer != "agent" {
+					t.Fatalf("event scope %+v writer %q", got.event.Scope, got.event.Writer)
+				}
+				if len(got.event.Payload) != len(c.payload) {
+					t.Fatalf("payload %v, want %v", got.event.Payload, c.payload)
+				}
+				for k, v := range c.payload {
+					if got.event.Payload[k] != v {
+						t.Fatalf("payload %v, want %v", got.event.Payload, c.payload)
+					}
+				}
+				return
+			}
+			if got.write.Scope.GameID != c.d.GameID || got.write.Scope.Serial != c.serial {
+				t.Fatalf("scope %+v, want game %s serial %q", got.write.Scope, c.d.GameID, c.serial)
+			}
+			if got.write.Value != c.value || got.write.Variant != "" || got.write.Persist {
+				t.Fatalf("write %+v, want value %v (%T)", got.write, c.value, c.value)
+			}
 		})
 	}
 }
 
-// splitNonce splits "<nonce>:<payload>" into nonce and payload. For a nonce-only
-// value the payload is "".
-func splitNonce(v string) (nonce, payload string) {
-	i := strings.IndexByte(v, ':')
-	if i < 0 {
-		return v, ""
-	}
-	return v[:i], v[i+1:]
-}
-
-func TestEdgeNonceUniqueAcrossDispatches(t *testing.T) {
-	w, path := newTestWriter(t)
-	seen := map[string]bool{}
-	for i := 0; i < 50; i++ {
-		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionEndGame, GameID: "game_abc"}); err != nil {
-			t.Fatalf("apply %d: %v", i, err)
+// UC: UC-053 BR-003
+// UC: UC-040 A11
+func TestWriter_NoGameNoWrite(t *testing.T) {
+	t.Run("UC-053/BR-003 a decision without its game id is never written (FR-126)", func(t *testing.T) {
+		w, svc := newTestWriter(t)
+		err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume})
+		if !errors.Is(err, errNoGame) || len(svc.all()) != 0 {
+			t.Fatalf("err=%v writes=%d", err, len(svc.all()))
 		}
-		nonce, _ := splitNonce(activeValueOf(t, path, flagEndGame))
-		if seen[nonce] {
-			t.Fatalf("nonce %q repeated across dispatches", nonce)
+	})
+	t.Run("UC-040/A23 the probe noop writes nothing and succeeds", func(t *testing.T) {
+		w, svc := newTestWriter(t)
+		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionNoop}); err != nil || len(svc.all()) != 0 {
+			t.Fatalf("err=%v writes=%d", err, len(svc.all()))
 		}
-		seen[nonce] = true
-	}
+	})
 }
 
-func TestNonceGenUnique(t *testing.T) {
-	g := newNonceGen()
-	seen := map[string]bool{}
-	for i := 0; i < 10000; i++ {
-		n := g.next()
-		if seen[n] {
-			t.Fatalf("duplicate nonce %q at %d", n, i)
+// UC: UC-053 A6 A7 A8
+func TestWriter_FailsClosed(t *testing.T) {
+	t.Run("UC-053/A7 a rejected write is an error (fail closed)", func(t *testing.T) {
+		w, svc := newTestWriter(t)
+		svc.err = &flagservice.Error{Status: 503, Reason: flagservice.ReasonNoSyncStream}
+		err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume, GameID: "g"})
+		if !flagservice.IsReason(err, flagservice.ReasonNoSyncStream) {
+			t.Fatalf("err %v", err)
 		}
-		seen[n] = true
-	}
+	})
 }
 
-func TestStateInterventions(t *testing.T) {
-	cases := []struct {
-		name    string
-		dec     decision.Decision
-		flagKey string
-		want    float64
-	}{
-		{"music tempo default", decision.Decision{Intervention: decision.InterventionAdjustMusicTempo}, flagMusicTempoOverride, defaultMusicTempo},
-		{"music tempo value", decision.Decision{Intervention: decision.InterventionAdjustMusicTempo, Value: "1.3"}, flagMusicTempoOverride, 1.3},
-		{"volume default", decision.Decision{Intervention: decision.InterventionAdjustVolume}, flagVolumeOverride, defaultVolume},
-		{"global sensitivity", decision.Decision{Intervention: decision.InterventionAdjustGlobalSensitivity, Value: "3"}, flagGlobalSensitivityOverride, 3},
-		{"global difficulty default", decision.Decision{Intervention: decision.InterventionAdjustGlobalDifficulty}, flagGlobalDifficultyFactor, defaultGlobalDifficulty},
-		{"global difficulty value", decision.Decision{Intervention: decision.InterventionAdjustGlobalDifficulty, Value: "0.5"}, flagGlobalDifficultyFactor, 0.5},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w, path := newTestWriter(t)
-			if err := w.Apply(context.Background(), tc.dec); err != nil {
-				t.Fatalf("apply: %v", err)
-			}
-			flag := readFlag(t, path, tc.flagKey)
-			if dv := flag["defaultVariant"]; dv != activeVariant {
-				t.Fatalf("defaultVariant = %v, want %q", dv, activeVariant)
-			}
-			variants := flag["variants"].(map[string]any)
-			if got := variants[activeVariant].(float64); got != tc.want {
-				t.Fatalf("active value = %v, want %v", got, tc.want)
-			}
-			assertStructurallyValid(t, path)
-		})
-	}
-}
-
-// #766 F6: pacing_profile is a STRING state-shaped flag.
-func TestPacingProfileStateAndRevert(t *testing.T) {
-	w, path := newTestWriter(t)
-
-	// Default value.
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSetPacingProfile}); err != nil {
-		t.Fatalf("apply default: %v", err)
-	}
-	flag := readFlag(t, path, flagPacingProfile)
-	if dv := flag["defaultVariant"]; dv != activeVariant {
-		t.Fatalf("defaultVariant = %v, want %q", dv, activeVariant)
-	}
-	if got := flag["variants"].(map[string]any)[activeVariant].(string); got != defaultPacingProfile {
-		t.Fatalf("active value = %q, want %q", got, defaultPacingProfile)
-	}
-
-	// Explicit value.
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSetPacingProfile, Value: "calm"}); err != nil {
-		t.Fatalf("apply value: %v", err)
-	}
-	if got := readFlag(t, path, flagPacingProfile)["variants"].(map[string]any)[activeVariant].(string); got != "calm" {
-		t.Fatalf("active value = %q, want %q", got, "calm")
-	}
-
-	// Revert flips defaultVariant back to neutral "none".
-	if err := w.RevertState(flagPacingProfile); err != nil {
-		t.Fatalf("revert: %v", err)
-	}
-	if dv := readFlag(t, path, flagPacingProfile)["defaultVariant"]; dv != neutralNone {
-		t.Fatalf("post-revert defaultVariant = %v, want %q", dv, neutralNone)
-	}
-	assertStructurallyValid(t, path)
-}
-
-// #766 F6: global_difficulty_factor reverts to "default" (1.0), not "none".
-func TestGlobalDifficultyRevertNeutral(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustGlobalDifficulty, Value: "1.5"}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if err := w.RevertState(flagGlobalDifficultyFactor); err != nil {
-		t.Fatalf("revert: %v", err)
-	}
-	if dv := readFlag(t, path, flagGlobalDifficultyFactor)["defaultVariant"]; dv != neutralDefault {
-		t.Fatalf("post-revert defaultVariant = %v, want %q", dv, neutralDefault)
-	}
-}
-
-func TestStateRevert(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustMusicTempo, Value: "1.25"}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if dv := readFlag(t, path, flagMusicTempoOverride)["defaultVariant"]; dv != activeVariant {
-		t.Fatalf("pre-revert defaultVariant = %v", dv)
-	}
-	if err := w.RevertState(flagMusicTempoOverride); err != nil {
-		t.Fatalf("revert: %v", err)
-	}
-	if dv := readFlag(t, path, flagMusicTempoOverride)["defaultVariant"]; dv != neutralNone {
-		t.Fatalf("post-revert defaultVariant = %v, want %q", dv, neutralNone)
-	}
-}
-
-func TestTargetedTwoPlayersAndRemoval(t *testing.T) {
-	w, path := newTestWriter(t)
-	// Drive two players' sensitivity.
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustPlayerSensitivity, TargetSerial: "AA", Value: "1.5"}); err != nil {
-		t.Fatalf("apply AA: %v", err)
-	}
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustPlayerSensitivity, TargetSerial: "BB", Value: "0.7"}); err != nil {
-		t.Fatalf("apply BB: %v", err)
-	}
-
-	// Both serials evaluate to their variant; an unknown serial falls through.
-	assertTargetingResolves(t, path, flagPlayerSensitivityFactor, "AA", "agent_AA")
-	assertTargetingResolves(t, path, flagPlayerSensitivityFactor, "BB", "agent_BB")
-	assertTargetingResolves(t, path, flagPlayerSensitivityFactor, "ZZ", neutralDefault)
-
-	// The variant values are correct.
-	variants := readFlag(t, path, flagPlayerSensitivityFactor)["variants"].(map[string]any)
-	if variants["agent_AA"].(float64) != 1.5 || variants["agent_BB"].(float64) != 0.7 {
-		t.Fatalf("variant values wrong: %v", variants)
-	}
-
-	// Remove AA: its branch and variant are gone, BB stays.
-	if err := w.RevertTargeted(flagPlayerSensitivityFactor, "AA"); err != nil {
-		t.Fatalf("revert AA: %v", err)
-	}
-	assertTargetingResolves(t, path, flagPlayerSensitivityFactor, "AA", neutralDefault)
-	assertTargetingResolves(t, path, flagPlayerSensitivityFactor, "BB", "agent_BB")
-	if _, ok := readFlag(t, path, flagPlayerSensitivityFactor)["variants"].(map[string]any)["agent_AA"]; ok {
-		t.Fatalf("agent_AA variant should be removed")
-	}
-
-	// Remove BB: targeting block is dropped entirely.
-	if err := w.RevertTargeted(flagPlayerSensitivityFactor, "BB"); err != nil {
-		t.Fatalf("revert BB: %v", err)
-	}
-	if _, ok := readFlag(t, path, flagPlayerSensitivityFactor)["targeting"]; ok {
-		t.Fatalf("targeting should be removed once no serials remain")
-	}
-	assertStructurallyValid(t, path)
-}
-
-func TestGrantShieldTargeted(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionGrantShield, TargetSerial: "AA", Value: "10"}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	assertTargetingResolves(t, path, flagShieldSeconds, "AA", grantName(t, path, flagShieldSeconds, "AA"))
-	assertTargetingResolves(t, path, flagShieldSeconds, "QQ", neutralNone)
-	if v := grantValue(t, path, flagShieldSeconds, "AA").(float64); v != 10 {
-		t.Fatalf("shield value = %v, want 10", v)
-	}
-}
-
-// TestSetPlayerHandicapTargeted verifies the #1107 set_player_handicap writer
-// case emits the player_handicap_factor flag as a per-serial targeted state flag
-// (mirrors adjust_player_sensitivity), with the neutral "default" fall-through.
-func TestSetPlayerHandicapTargeted(t *testing.T) {
-	w, path := newTestWriter(t)
-	// >1 = "help" (harder to die); <1 = "rein in" (easier).
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSetPlayerHandicap, TargetSerial: "AA", Value: "1.75"}); err != nil {
-		t.Fatalf("apply AA: %v", err)
-	}
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSetPlayerHandicap, TargetSerial: "BB", Value: "0.6"}); err != nil {
-		t.Fatalf("apply BB: %v", err)
-	}
-
-	assertTargetingResolves(t, path, flagPlayerHandicapFactor, "AA", "agent_AA")
-	assertTargetingResolves(t, path, flagPlayerHandicapFactor, "BB", "agent_BB")
-	assertTargetingResolves(t, path, flagPlayerHandicapFactor, "ZZ", neutralDefault)
-
-	variants := readFlag(t, path, flagPlayerHandicapFactor)["variants"].(map[string]any)
-	if variants["agent_AA"].(float64) != 1.75 || variants["agent_BB"].(float64) != 0.6 {
-		t.Fatalf("variant values wrong: %v", variants)
-	}
-	assertStructurallyValid(t, path)
-}
-
-// TestSetPlayerHandicapDefaultValue verifies an empty Value falls back to the
-// writer's neutral-leaning default (within the [0.5,2.0] clamp band).
-func TestSetPlayerHandicapDefaultValue(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSetPlayerHandicap, TargetSerial: "AA"}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	v := readFlag(t, path, flagPlayerHandicapFactor)["variants"].(map[string]any)["agent_AA"].(float64)
-	if v != defaultPlayerHandicap {
-		t.Fatalf("default handicap value = %v, want %v", v, defaultPlayerHandicap)
-	}
-	if v < 0.5 || v > 2.0 {
-		t.Fatalf("default handicap %v outside clamp band [0.5,2.0]", v)
-	}
-}
-
-// TestPartialShieldTargeted verifies the #1129 partial_shield writer case emits
-// the partial_shield_seconds flag as a per-serial targeted STRING state flag with
-// the neutral "none" fall-through, preserving the "<seconds>:<boost>" value.
-func TestPartialShieldTargeted(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPartialShield, TargetSerial: "AA", Value: "8:1.8"}); err != nil {
-		t.Fatalf("apply AA: %v", err)
-	}
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPartialShield, TargetSerial: "BB", Value: "5"}); err != nil {
-		t.Fatalf("apply BB: %v", err)
-	}
-
-	assertTargetingResolves(t, path, flagPartialShieldSeconds, "AA", grantName(t, path, flagPartialShieldSeconds, "AA"))
-	assertTargetingResolves(t, path, flagPartialShieldSeconds, "BB", grantName(t, path, flagPartialShieldSeconds, "BB"))
-	assertTargetingResolves(t, path, flagPartialShieldSeconds, "ZZ", neutralNone)
-
-	if grantValue(t, path, flagPartialShieldSeconds, "AA").(string) != "8:1.8" {
-		t.Fatalf("agent_AA value = %v, want 8:1.8", grantValue(t, path, flagPartialShieldSeconds, "AA"))
-	}
-	// Bare "<seconds>" form is preserved verbatim (boost defaults game-side).
-	if grantValue(t, path, flagPartialShieldSeconds, "BB").(string) != "5" {
-		t.Fatalf("agent_BB value = %v, want 5", grantValue(t, path, flagPartialShieldSeconds, "BB"))
-	}
-	assertStructurallyValid(t, path)
-}
-
-// TestPartialShieldDefaultValue verifies an empty Value falls back to the writer's
-// safe default directive.
-func TestPartialShieldDefaultValue(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPartialShield, TargetSerial: "AA"}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if v := grantValue(t, path, flagPartialShieldSeconds, "AA").(string); v != defaultPartialShield {
-		t.Fatalf("default partial_shield value = %v, want %v", v, defaultPartialShield)
-	}
-}
-
-// TestPartialShieldMalformedFallsBackSafe verifies malformed directives degrade to
-// the safe default (never a garbage flag value): non-numeric, out-of-band boost,
-// non-positive seconds, and too-many fields all fall back.
-func TestPartialShieldMalformedFallsBackSafe(t *testing.T) {
-	for _, bad := range []string{"abc", "0", "-3", "5:9", "5:0.2", "5:2:1", "5:abc"} {
-		w, path := newTestWriter(t)
-		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPartialShield, TargetSerial: "AA", Value: bad}); err != nil {
-			t.Fatalf("apply %q: %v", bad, err)
+// UC: UC-053 main
+func TestRolloutWriter(t *testing.T) {
+	t.Run("UC-053/main a stage move is a stack overlay on rollout/current_controller_count", func(t *testing.T) {
+		svc := &fakeService{}
+		w := NewRolloutWriter(svc, discardLogger())
+		if err := w.SetControllerCount(StageThreeVariant); err != nil {
+			t.Fatal(err)
 		}
-		v := grantValue(t, path, flagPartialShieldSeconds, "AA").(string)
-		if v != defaultPartialShield {
-			t.Fatalf("malformed %q wrote %q, want safe default %q", bad, v, defaultPartialShield)
+		got := svc.last(t)
+		if got.method != "PUT" || got.set != FlagSetRollout || got.flag != flagCurrentControllerCount ||
+			got.write.Variant != StageThreeVariant || got.write.Scope != (flagservice.Scope{}) {
+			t.Fatalf("got %+v", got)
 		}
-		assertStructurallyValid(t, path)
-	}
-}
-
-// TestSoftPenaltyTargeted verifies the #1134 soft_penalty writer case emits the
-// soft_penalty_action flag as a per-serial targeted STRING state flag with the
-// neutral "none" fall-through, preserving the warn/tighten value verbatim.
-func TestSoftPenaltyTargeted(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA", Value: "tighten:8:0.6"}); err != nil {
-		t.Fatalf("apply AA: %v", err)
-	}
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "BB", Value: "warn"}); err != nil {
-		t.Fatalf("apply BB: %v", err)
-	}
-
-	assertTargetingResolves(t, path, flagSoftPenaltyAction, "AA", grantName(t, path, flagSoftPenaltyAction, "AA"))
-	assertTargetingResolves(t, path, flagSoftPenaltyAction, "BB", grantName(t, path, flagSoftPenaltyAction, "BB"))
-	assertTargetingResolves(t, path, flagSoftPenaltyAction, "ZZ", neutralNone)
-
-	if grantValue(t, path, flagSoftPenaltyAction, "AA").(string) != "tighten:8:0.6" {
-		t.Fatalf("agent_AA value = %v, want tighten:8:0.6", grantValue(t, path, flagSoftPenaltyAction, "AA"))
-	}
-	if grantValue(t, path, flagSoftPenaltyAction, "BB").(string) != "warn" {
-		t.Fatalf("agent_BB value = %v, want warn", grantValue(t, path, flagSoftPenaltyAction, "BB"))
-	}
-	assertStructurallyValid(t, path)
-}
-
-// TestSoftPenaltyDefaultValue verifies an empty Value falls back to the writer's
-// safe default directive ("warn" — the gentlest, fully-recoverable action).
-func TestSoftPenaltyDefaultValue(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA"}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if v := grantValue(t, path, flagSoftPenaltyAction, "AA").(string); v != defaultSoftPenalty {
-		t.Fatalf("default soft_penalty value = %v, want %v", v, defaultSoftPenalty)
-	}
-}
-
-// TestSoftPenaltyBareTightenPreserved verifies the bare "tighten" form (game-side
-// defaults) is preserved verbatim, not coerced to a 3-field directive.
-func TestSoftPenaltyBareTightenPreserved(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA", Value: "tighten"}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if v := grantValue(t, path, flagSoftPenaltyAction, "AA").(string); v != "tighten" {
-		t.Fatalf("bare tighten value = %v, want tighten", v)
-	}
-}
-
-// TestSoftPenaltyMalformedFallsBackSafe verifies malformed directives degrade to
-// the safe default "warn" (never a garbage flag, and crucially never escalate an
-// unknown value into a tighten): unknown action, out-of-band factor, non-positive
-// seconds, wrong field count all fall back to warn.
-func TestSoftPenaltyMalformedFallsBackSafe(t *testing.T) {
-	for _, bad := range []string{"abc", "loosen", "tighten:5", "tighten:0:0.6", "tighten:-3:0.6", "tighten:5:0.2", "tighten:5:1.5", "tighten:5:abc", "tighten:5:0.6:1"} {
-		w, path := newTestWriter(t)
-		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA", Value: bad}); err != nil {
-			t.Fatalf("apply %q: %v", bad, err)
+	})
+	t.Run("UC-053/A5 an unknown stage is refused before any write", func(t *testing.T) {
+		svc := &fakeService{}
+		if err := NewRolloutWriter(svc, discardLogger()).SetControllerCount("seven"); err == nil || len(svc.all()) != 0 {
+			t.Fatalf("err=%v writes=%d", err, len(svc.all()))
 		}
-		v := grantValue(t, path, flagSoftPenaltyAction, "AA").(string)
-		if v != defaultSoftPenalty {
-			t.Fatalf("malformed %q wrote %q, want safe default %q", bad, v, defaultSoftPenalty)
+	})
+	t.Run("UC-053/A8 a failed write is returned", func(t *testing.T) {
+		svc := &fakeService{err: errors.New("unreachable")}
+		if err := NewRolloutWriter(svc, discardLogger()).SetControllerCount(StageOneVariant); err == nil {
+			t.Fatal("want an error")
 		}
-		assertStructurallyValid(t, path)
-	}
-}
-
-// TestAutoRubberbandStateAndRevert verifies the #1143 auto_rubberband writer case
-// emits a session-scoped STRING state flag (flips defaultVariant to "active" with
-// the strength value) and that reverting flips back to the neutral "off" variant.
-func TestAutoRubberbandStateAndRevert(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAutoRubberband, Value: "strong"}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if v := activeValueOf(t, path, flagAutoRubberband); v != "strong" {
-		t.Fatalf("auto_rubberband value = %q, want %q", v, "strong")
-	}
-	if dv := readFlag(t, path, flagAutoRubberband)["defaultVariant"]; dv != activeVariant {
-		t.Fatalf("pre-revert defaultVariant = %v, want %q", dv, activeVariant)
-	}
-	if err := w.RevertState(flagAutoRubberband); err != nil {
-		t.Fatalf("revert: %v", err)
-	}
-	if dv := readFlag(t, path, flagAutoRubberband)["defaultVariant"]; dv != neutralOff {
-		t.Fatalf("post-revert defaultVariant = %v, want %q", dv, neutralOff)
-	}
-	assertStructurallyValid(t, path)
-}
-
-// TestAutoRubberbandDefaultValue verifies an empty Value falls back to the
-// writer's gentle default (#1143).
-func TestAutoRubberbandDefaultValue(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAutoRubberband}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if v := activeValueOf(t, path, flagAutoRubberband); v != defaultAutoRubberband {
-		t.Fatalf("default auto_rubberband value = %q, want %q", v, defaultAutoRubberband)
-	}
-}
-
-// TestAutoRubberbandMalformedFallsBackToOff verifies any unknown strength degrades
-// to the neutral "off" no-op — crucially never escalating an unknown value into a
-// compression boost (#1143).
-func TestAutoRubberbandMalformedFallsBackToOff(t *testing.T) {
-	for _, bad := range []string{"abc", "GENTLE2", "1.4", "strong:5", "aggressive"} {
-		w, path := newTestWriter(t)
-		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAutoRubberband, Value: bad}); err != nil {
-			t.Fatalf("apply %q: %v", bad, err)
+	})
+	t.Run("ladder", func(t *testing.T) {
+		if v, val, ok := NextStage(StageThreeValue); !ok || v != StageSixVariant || val != StageSixValue {
+			t.Fatalf("NextStage(3)=%s,%d,%v", v, val, ok)
 		}
-		if v := activeValueOf(t, path, flagAutoRubberband); v != "off" {
-			t.Fatalf("malformed %q wrote %q, want safe %q", bad, v, "off")
+		if _, _, ok := NextStage(StageAllValue); ok {
+			t.Fatal("no stage after all")
 		}
-		assertStructurallyValid(t, path)
-	}
-}
-
-// TestAutoRubberbandCaseInsensitive verifies recognized strengths are normalized
-// to lower case (#1143).
-func TestAutoRubberbandCaseInsensitive(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAutoRubberband, Value: "  Gentle "}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if v := activeValueOf(t, path, flagAutoRubberband); v != "gentle" {
-		t.Fatalf("normalized value = %q, want %q", v, "gentle")
-	}
-}
-
-func TestTargetedRequiresSerial(t *testing.T) {
-	w, _ := newTestWriter(t)
-	err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustPlayerSensitivity})
-	if err == nil {
-		t.Fatal("expected error for targeted intervention without serial")
-	}
-}
-
-func TestUnknownIntervention(t *testing.T) {
-	w, _ := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: "does_not_exist"}); err == nil {
-		t.Fatal("expected error for unknown intervention")
-	}
-}
-
-// TestNoopDispatchIsByteStableSuccess asserts that dispatching the probe-mode
-// `noop` intervention succeeds (it is NOT an unknown-intervention error) and
-// writes nothing — every flag round-trips byte-for-byte. Probe mode can thus
-// exercise the full ACT path harmlessly.
-// UC: UC-040 A23
-func TestNoopDispatchIsByteStableSuccess(t *testing.T) {
-	w, path := newTestWriter(t)
-	before := readAllFlagsRaw(t, path)
-
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionNoop}); err != nil {
-		t.Fatalf("noop dispatch must succeed, got: %v", err)
-	}
-
-	after := readAllFlagsRaw(t, path)
-	for key, rawBefore := range before {
-		if string(after[key]) != string(rawBefore) {
-			t.Fatalf("noop must not mutate flag %q:\n before=%s\n after =%s", key, rawBefore, after[key])
+		if _, ok := StageVariantForValue(4); ok {
+			t.Fatal("4 is not a stage")
 		}
+	})
+}
+
+type staticRemediation bool
+
+func (s staticRemediation) RemediationAllowed(context.Context) bool { return bool(s) }
+
+func TestRemediationReader(t *testing.T) {
+	if !NewRemediationReader(staticRemediation(true)).RemediationAllowed() {
+		t.Fatal("true flag must allow")
+	}
+	if NewRemediationReader(staticRemediation(false)).RemediationAllowed() {
+		t.Fatal("false flag must not allow")
+	}
+	if NewRemediationReader(nil).RemediationAllowed() {
+		t.Fatal("no flag source must fail closed")
 	}
 }
 
-// TestPreservesUnrelatedFlags asserts that flags the agent does not touch are
-// byte-identical before and after a write, and that touched flags are the only
-// difference.
-func TestPreservesUnrelatedFlags(t *testing.T) {
-	w, path := newTestWriter(t)
-	before := readAllFlagsRaw(t, path)
-
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPlayAudioCue, Value: "x"}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	after := readAllFlagsRaw(t, path)
-
-	for key, rawBefore := range before {
-		if key == flagAudioCue {
-			if string(after[key]) == string(rawBefore) {
-				t.Fatalf("touched flag %q unchanged", key)
-			}
-			continue
-		}
-		if string(after[key]) != string(rawBefore) {
-			t.Fatalf("untouched flag %q changed:\n before=%s\n after =%s", key, rawBefore, after[key])
-		}
-	}
-}
-
-// TestRoundTripStableFormatting asserts the written file matches the
-// indent-2 + trailing-newline format admin mode uses, and re-applying the same
-// flag (different nonce) keeps every other flag byte-stable.
-func TestRoundTripStableFormatting(t *testing.T) {
-	w, path := newTestWriter(t)
-	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume, Value: "0.5"}); err != nil {
-		t.Fatalf("first apply: %v", err)
-	}
-	raw, _ := os.ReadFile(path)
-	if !strings.HasSuffix(string(raw), "\n") {
-		t.Fatal("file must end with a trailing newline")
-	}
-	if !strings.Contains(string(raw), "\n  \"flags\"") {
-		t.Fatalf("file is not 2-space indented:\n%s", raw)
-	}
-}
-
-func TestConcurrentApplyRaceSafe(t *testing.T) {
-	w, path := newTestWriter(t)
-	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_ = w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionEndGame, GameID: "game_abc"})
-		}()
-	}
-	wg.Wait()
-	// File still parses and is valid after concurrent writes.
-	assertStructurallyValid(t, path)
-}
-
-// --- helpers ---
-
-func readAllFlagsRaw(t *testing.T, path string) map[string]json.RawMessage {
+// newTestRolloutWriter returns a RolloutWriter over a recording fake service.
+func newTestRolloutWriter(t *testing.T) (*RolloutWriter, *fakeService) {
 	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	var doc struct {
-		Flags map[string]json.RawMessage `json:"flags"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	return doc.Flags
+	svc := &fakeService{}
+	return NewRolloutWriter(svc, discardLogger()), svc
 }
 
-// assertStructurallyValid checks the flagd-shape invariants every flag must
-// hold: ENABLED state, a variants object, and a defaultVariant that names an
-// existing variant.
-func assertStructurallyValid(t *testing.T, path string) {
+// defaultVariantOf is the variant flagd would serve for flag: the last
+// stack-wide variant written to the fake service, else the baseline "none".
+func defaultVariantOf(t *testing.T, svc *fakeService, flag string) string {
 	t.Helper()
-	for key, raw := range readAllFlagsRaw(t, path) {
-		var flag map[string]any
-		if err := json.Unmarshal(raw, &flag); err != nil {
-			t.Fatalf("flag %q invalid JSON: %v", key, err)
-		}
-		if flag["state"] != "ENABLED" {
-			t.Fatalf("flag %q state = %v, want ENABLED", key, flag["state"])
-		}
-		variants, ok := flag["variants"].(map[string]any)
-		if !ok || len(variants) == 0 {
-			t.Fatalf("flag %q missing variants", key)
-		}
-		dv, ok := flag["defaultVariant"].(string)
-		if !ok {
-			t.Fatalf("flag %q missing defaultVariant", key)
-		}
-		if _, ok := variants[dv]; !ok {
-			t.Fatalf("flag %q defaultVariant %q not in variants", key, dv)
+	variant := StageNoneVariant
+	for _, c := range svc.all() {
+		if c.method == "PUT" && c.flag == flag && c.write.Scope == (flagservice.Scope{}) {
+			variant = c.write.Variant
 		}
 	}
-}
-
-// assertTargetingResolves evaluates the flag's targeting if-ladder with the
-// flagd jsonlogic engine (diegoholiveira/jsonlogic, the same library flagd uses)
-// for targetingKey=serial and asserts it returns wantVariant. When the flag has
-// no targeting block, the result is the defaultVariant.
-func assertTargetingResolves(t *testing.T, path, flagKey, serial, wantVariant string) {
-	t.Helper()
-	flag := readFlag(t, path, flagKey)
-	targeting, ok := flag["targeting"]
-	if !ok {
-		if dv := flag["defaultVariant"].(string); dv != wantVariant {
-			t.Fatalf("%s[%s]: no targeting, defaultVariant=%q want %q", flagKey, serial, dv, wantVariant)
-		}
-		return
-	}
-	rule, err := json.Marshal(targeting)
-	if err != nil {
-		t.Fatalf("marshal targeting: %v", err)
-	}
-	data, _ := json.Marshal(map[string]any{"targetingKey": serial})
-	out, err := jsonlogic.ApplyRaw(rule, data)
-	if err != nil {
-		t.Fatalf("jsonlogic apply (%s): %v", flagKey, err)
-	}
-	var got any
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("unmarshal jsonlogic result: %v", err)
-	}
-	if got != wantVariant {
-		t.Fatalf("%s[%s] resolved to %v, want %q", flagKey, serial, got, wantVariant)
-	}
-}
-
-// grantName returns the single grant variant ("agent_<serial>#<nonce>") the
-// writer holds for serial in a per-player grant flag (UC-040 BR-012).
-func grantName(t *testing.T, path, flagKey, serial string) string {
-	t.Helper()
-	var found []string
-	for name := range readFlag(t, path, flagKey)["variants"].(map[string]any) {
-		if s, ok := agentSerial(name); ok && s == serial {
-			found = append(found, name)
-		}
-	}
-	if len(found) != 1 {
-		t.Fatalf("%s: variants for %s = %v, want exactly one", flagKey, serial, found)
-	}
-	if !strings.HasPrefix(found[0], "agent_"+serial+grantSep) {
-		t.Fatalf("%s: variant %q is not a grant variant agent_%s#<nonce>", flagKey, found[0], serial)
-	}
-	return found[0]
-}
-
-// grantValue returns the value of serial's grant variant.
-func grantValue(t *testing.T, path, flagKey, serial string) any {
-	t.Helper()
-	return readFlag(t, path, flagKey)["variants"].(map[string]any)[grantName(t, path, flagKey, serial)]
+	return variant
 }

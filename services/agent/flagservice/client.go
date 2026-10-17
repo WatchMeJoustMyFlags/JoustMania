@@ -1,0 +1,261 @@
+// Package flagservice is the agent's client of the flag service's HTTP/JSON API
+// (epic #1407, docs/specs/services.md §7.2). The agent changes runtime flags
+// ONLY through it: no component writes flag files (C-032, C-033).
+//
+// Every call has a 500 ms deadline and fails closed: a write that did not get a
+// 2xx is reported as an error and never retried for the same decision, except a
+// game-scoped write rejected with 409 game_not_live, which is retried once after
+// 250 ms to cover a game registration still in flight (UC-053 A6).
+package flagservice
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+)
+
+// Defaults (services.md §7.2).
+const (
+	DefaultURL         = "http://flag-service:8070"
+	RequestTimeout     = 500 * time.Millisecond
+	GameNotLiveBackoff = 250 * time.Millisecond
+)
+
+// Reason codes the agent acts on.
+const (
+	ReasonGameNotLive  = "game_not_live"
+	ReasonNoSyncStream = "no_sync_stream"
+)
+
+// Scope is a write's scope properties.
+type Scope struct {
+	GameID          string `json:"game_id,omitempty"`
+	Serial          string `json:"serial,omitempty"`
+	ExperimentID    string `json:"experiment_id,omitempty"`
+	Arm             string `json:"arm,omitempty"`
+	GameKind        string `json:"game_kind,omitempty"`
+	FractionPercent *int   `json:"fraction_percent,omitempty"`
+}
+
+// Write is a PUT body: exactly one of Variant and Value.
+type Write struct {
+	Variant    string   `json:"variant,omitempty"`
+	Value      any      `json:"value,omitempty"`
+	Scope      Scope    `json:"scope,omitempty"`
+	TTLSeconds *float64 `json:"ttl_seconds,omitempty"`
+	Persist    bool     `json:"persist,omitempty"`
+	Writer     string   `json:"writer,omitempty"`
+	DecisionID string   `json:"decision_id,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+}
+
+// Event is a POST body (one event appended to a game's event list).
+type Event struct {
+	Scope      Scope          `json:"scope"`
+	Payload    map[string]any `json:"payload"`
+	Writer     string         `json:"writer,omitempty"`
+	DecisionID string         `json:"decision_id,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+}
+
+// Result is the service's WriteResult.
+type Result struct {
+	FlagSet         string `json:"flag_set"`
+	Flag            string `json:"flag"`
+	Variant         string `json:"variant"`
+	Seq             int64  `json:"seq"`
+	Epoch           string `json:"epoch"`
+	SnapshotVersion uint64 `json:"snapshot_version"`
+	Persisted       bool   `json:"persisted"`
+}
+
+// Error is a rejected request (non-2xx) with the service's reason code.
+type Error struct {
+	Status int
+	Reason string
+	Detail string
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("flag service: HTTP %d %s: %s", e.Status, e.Reason, e.Detail)
+}
+
+// IsReason reports whether err is a rejection with the given reason code.
+func IsReason(err error, reason string) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Reason == reason
+}
+
+// Client talks to one flag service.
+type Client struct {
+	base    string
+	http    *http.Client
+	timeout time.Duration
+	backoff time.Duration
+}
+
+// New builds a client for base (e.g. http://flag-service:8070).
+func New(base string) *Client {
+	return &Client{
+		base:    strings.TrimRight(base, "/"),
+		http:    &http.Client{},
+		timeout: RequestTimeout,
+		backoff: GameNotLiveBackoff,
+	}
+}
+
+// NewFromEnv builds a client for FLAG_SERVICE_URL (default DefaultURL).
+func NewFromEnv() *Client {
+	base := os.Getenv("FLAG_SERVICE_URL")
+	if base == "" {
+		base = DefaultURL
+	}
+	return New(base)
+}
+
+// WithTiming overrides the request deadline and the game_not_live backoff (tests).
+func (c *Client) WithTiming(timeout, backoff time.Duration) *Client {
+	c.timeout, c.backoff = timeout, backoff
+	return c
+}
+
+// BaseURL returns the service URL.
+func (c *Client) BaseURL() string { return c.base }
+
+func flagPath(set, flag string) string {
+	return "/" + url.PathEscape(set) + "/" + url.PathEscape(flag)
+}
+
+// do sends one request with the deadline, propagating the W3C trace context so
+// the service's flagservice.write span sits under the caller's span.
+func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	var rd io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("flag service: encode %s %s: %w", method, path, err)
+		}
+		rd = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rd)
+	if err != nil {
+		return fmt.Errorf("flag service: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("flag service: %s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode/100 != 2 {
+		e := &Error{Status: resp.StatusCode}
+		var body struct {
+			Error  string `json:"error"`
+			Detail string `json:"detail"`
+		}
+		if json.Unmarshal(raw, &body) == nil {
+			e.Reason, e.Detail = body.Error, body.Detail
+		}
+		return e
+	}
+	if out != nil && len(raw) > 0 {
+		if err := json.Unmarshal(raw, out); err != nil {
+			return fmt.Errorf("flag service: decode %s %s: %w", method, path, err)
+		}
+	}
+	return nil
+}
+
+// retryGameNotLive runs fn, and once more after the backoff when a game-scoped
+// write was rejected with 409 game_not_live (registration still in flight).
+func (c *Client) retryGameNotLive(ctx context.Context, gameScoped bool, fn func() error) error {
+	err := fn()
+	if err == nil || !gameScoped || !IsReason(err, ReasonGameNotLive) {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return err
+	case <-time.After(c.backoff):
+	}
+	return fn()
+}
+
+// Put sets a value in a scope (PUT /{set}/{flag}).
+func (c *Client) Put(ctx context.Context, set, flag string, w Write) (Result, error) {
+	var res Result
+	err := c.retryGameNotLive(ctx, w.Scope.GameID != "", func() error {
+		return c.do(ctx, http.MethodPut, flagPath(set, flag), w, &res)
+	})
+	return res, err
+}
+
+// Post appends an event to a game's event list (POST /{set}/{flag}).
+func (c *Client) Post(ctx context.Context, set, flag string, ev Event) (Result, error) {
+	if ev.Payload == nil {
+		ev.Payload = map[string]any{}
+	}
+	var res Result
+	err := c.retryGameNotLive(ctx, ev.Scope.GameID != "", func() error {
+		return c.do(ctx, http.MethodPost, flagPath(set, flag), ev, &res)
+	})
+	return res, err
+}
+
+// Delete clears a value (DELETE /{set}/{flag}?<query>). query holds the scope
+// properties (game_id, serial, experiment_id, arm, game_kind) and writer.
+func (c *Client) Delete(ctx context.Context, set, flag string, query url.Values) error {
+	path := flagPath(set, flag)
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	return c.do(ctx, http.MethodDelete, path, nil, nil)
+}
+
+// FlagView is the part of GET /{set}/{flag} the agent reads.
+type FlagView struct {
+	Flag             string          `json:"flag"`
+	Mutable          bool            `json:"mutable"`
+	BaselineDefault  string          `json:"baseline_default"`
+	EffectiveDefault string          `json:"effective_default"`
+	Variants         []string        `json:"variants"`
+	Rendered         json.RawMessage `json:"rendered"`
+}
+
+// SetView is GET /{set}.
+type SetView struct {
+	FlagSet string     `json:"flag_set"`
+	Served  bool       `json:"served"`
+	Flags   []FlagView `json:"flags"`
+}
+
+// GetFlag reads one flag's effective state with its rendered flagd JSON.
+func (c *Client) GetFlag(ctx context.Context, set, flag string) (FlagView, error) {
+	var v FlagView
+	err := c.do(ctx, http.MethodGet, flagPath(set, flag), nil, &v)
+	return v, err
+}
+
+// GetSet reads every flag of a set.
+func (c *Client) GetSet(ctx context.Context, set string) (SetView, error) {
+	var v SetView
+	err := c.do(ctx, http.MethodGet, "/"+url.PathEscape(set), nil, &v)
+	return v, err
+}

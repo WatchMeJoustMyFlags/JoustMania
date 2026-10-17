@@ -715,6 +715,13 @@ func (f *Flags) InterventionsEnabled(ctx context.Context) bool {
 	return f.boolFlag(ctx, keyInterventionsEnabled, DefaultInterventionsEnabled)
 }
 
+// RemediationAllowed evaluates the rollout set's remediation_allowed flag
+// through flagd (#1411, R1; keys are unique across sets, so no selector is
+// needed). Any error resolves false: auto-rollback stays off (fail closed).
+func (f *Flags) RemediationAllowed(ctx context.Context) bool {
+	return f.boolFlag(ctx, "remediation_allowed", false)
+}
+
 // RolloutEnabled resolves the runtime rollout-actuation gate (#1213,
 // rollout_enabled). It is the migrated AGENT_ROLLOUT_ENABLED env master: when true
 // the infra loop's actuator FLIPS current_controller_count in rollout.json; when

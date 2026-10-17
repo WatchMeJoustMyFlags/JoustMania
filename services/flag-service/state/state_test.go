@@ -216,7 +216,7 @@ func TestPut_Rejections(t *testing.T) {
 		{"UC-053/A5 arm without an experiment id", WriteRequest{Set: "agent", Flag: "enabled", Variant: "on", Scope: Scope{Arm: "experimental"}}, http.StatusBadRequest, fserr.Malformed},
 		{"UC-053/A5 event flag written with PUT", WriteRequest{Set: "interventions", Flag: "end_game", Variant: "none", Scope: Scope{GameID: "game_a"}}, http.StatusBadRequest, fserr.Malformed},
 		{"UC-053/A5 value above the range", WriteRequest{Set: "interventions", Flag: "volume_override", Value: raw("1.5"), Scope: Scope{GameID: "game_a"}}, http.StatusUnprocessableEntity, fserr.OutOfBounds},
-		{"UC-053/A5 non-integer for an int range", WriteRequest{Set: "interventions", Flag: "shield_seconds", Value: raw("2.5"), Scope: Scope{GameID: "game_a", Serial: "MOCK0001"}}, http.StatusUnprocessableEntity, fserr.OutOfBounds},
+		{"UC-053/A5 non-integer for an int range", WriteRequest{Set: "interventions", Flag: "global_sensitivity_override", Value: raw("2.5"), Scope: Scope{GameID: "game_a"}}, http.StatusUnprocessableEntity, fserr.OutOfBounds},
 		{"UC-053/A5 undeclared variant", WriteRequest{Set: "agent", Flag: "decision.backend", Variant: "gpt"}, http.StatusUnprocessableEntity, fserr.OutOfBounds},
 		{"UC-053/A5 declared variant outside the allowed list", WriteRequest{Set: "interventions", Flag: "pacing_profile", Variant: "none", Scope: Scope{GameID: "game_a"}}, http.StatusUnprocessableEntity, fserr.OutOfBounds},
 		{"UC-053/A5 malformed composite value", WriteRequest{Set: "interventions", Flag: "tempo_ramp", Value: raw(`"1.3:8:bounce"`), Scope: Scope{GameID: "game_a"}}, http.StatusUnprocessableEntity, fserr.OutOfBounds},

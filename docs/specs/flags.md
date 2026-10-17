@@ -405,7 +405,7 @@ written without it (a stage script, a test) stays in memory. `no` = a write aski
 Every value not persisted lives in memory only (architecture note §10.1).
 
 **Bounds** are the declared variants of the baseline file unless a range, a payload schema or `free string` is
-given. Ranges are inclusive; #1409 pins each range against the reader's own clamp before the registry ships.
+given. Ranges are inclusive and pinned to the reader's own clamp (`difficulty_handlers.py` factors 0.5 to 2.0, `lifecycle_handlers.py` partial shield and soft penalty, `games/base.py` ramp 60 s), so the registry never rejects a value the game would apply.
 `free string` accepts any string value up to 512 characters (a declared variant name still selects that
 variant); it exists for values only a test fixture or an operator knows, such as a fake server's URL (re-review N5).
 A `variant` naming a declared variant is always within bounds (restricted to the listed variants where a list is
@@ -422,13 +422,13 @@ exists in the audio catalog are checked by the game coordinator and the audio se
 | `global_difficulty_factor` | state | game | 0.5 to 2.0 | no | W1 agent |
 | `volume_override` | state | game | 0.3 to 1.0 | no | W1 agent |
 | `pacing_profile` | state | game | `default`, `calm`, `frantic` | no | W1 agent |
-| `tempo_ramp` | state | game | `<target 1.0 to 1.3>:<seconds 1 to 30>:<linear\|ease>` | no | W1 agent |
+| `tempo_ramp` | state | game | `<target 1.0 to 1.3>:<seconds 0.1 to 60>:<linear\|ease>` | no | W1 agent |
 | `auto_rubberband` | state | game | `off`, `gentle`, `strong` | no | W1 agent |
-| `player_sensitivity_factor` | level | game+serial | 0.7 to 1.5 | no | W1 agent |
-| `player_handicap_factor` | level | game+serial | 0.75 to 1.75 | no | W1 agent |
-| `shield_seconds` | grant | game+serial | int 1 to 10 | no | W1 agent |
-| `partial_shield_seconds` | grant | game+serial | `<seconds 1 to 10>:<factor 1.0 to 3.0>` | no | W1 agent |
-| `soft_penalty_action` | grant | game+serial | `warn`, `tighten`, `tighten:<seconds 1 to 10>:<factor 0.1 to 1.0>` | no | W1 agent |
+| `player_sensitivity_factor` | level | game+serial | 0.5 to 2.0 | no | W1 agent |
+| `player_handicap_factor` | level | game+serial | 0.5 to 2.0 | no | W1 agent |
+| `shield_seconds` | grant | game+serial | 1 to 10 | no | W1 agent |
+| `partial_shield_seconds` | grant | game+serial | `<seconds 0.1 to 30>` or `<seconds 0.1 to 30>:<factor 1.0 to 2.0>` | no | W1 agent |
+| `soft_penalty_action` | grant | game+serial | `warn`, `tighten`, `tighten:<seconds 0.1 to 30>:<factor 0.5 to 1.0>` | no | W1 agent |
 | `eliminate_player` | event | game | payload `{"serial"}`: a live player of the game | no | W1 agent |
 | `revive_player` | event | game | payload `{"serial"}`: a player of the game | no | W1 agent |
 | `controller_effect` | event | game | payload `{"serial","effect"}`: effect in the controller-manager effect set | no | W1 agent |
