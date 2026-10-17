@@ -32,6 +32,7 @@ from lib.controller_constants import (
 )
 from lib.telemetry import SpanAttr, get_tracer
 from services.controller_manager import metrics
+from services.controller_manager.connection_quality import QUALITY_LEVEL, GapStats, ReportGapWindow
 
 if TYPE_CHECKING:
     from services.controller_manager.backend import ControllerBackend
@@ -190,6 +191,13 @@ class DiscoveryLoop:
         # frame. The poll dict carries no sequence/timestamp, so identity is the
         # cheapest reliable freshness signal.
         self._hw_last_obj_id: dict[str, int] = {}
+        # Connection quality (UC-035 BR-005): rolling 10 s window of fresh-frame
+        # gaps per serial, and the stats computed at the last health emission.
+        self._gap_window = ReportGapWindow()
+        self._connection_quality: dict[str, GapStats] = {}
+        # Monotonic pick-up time of the previous poll batch: lateness beyond the
+        # poll interval is the loop's own stall, not the link's (UC-035 BR-005).
+        self._last_pickup_mono: float | None = None
 
         # Gameplay disconnect events: accumulated between stream frames, drained by servicer (#580)
         self._gameplay_disconnects: list[str] = []
@@ -295,7 +303,7 @@ class DiscoveryLoop:
                 # window counters. Decoupled from discovery cadence (#732 M3).
                 now_mono = time.monotonic()
                 if now_mono - self._last_health_emit >= self._health_interval:
-                    self._emit_bluetooth_health(time.time())
+                    self._emit_bluetooth_health(time.time(), now_mono)
                     self._last_health_emit = now_mono
 
                 # Check battery levels every 30 seconds (Phase 39 - Task 4, Phase 70)
@@ -400,10 +408,13 @@ class DiscoveryLoop:
                 self._hw_max_gap_ms.pop(serial, None)
                 self._hw_last_fresh_ts.pop(serial, None)
                 self._hw_last_obj_id.pop(serial, None)
+                self._gap_window.forget(serial)
+                self._connection_quality.pop(serial, None)
                 # Clear per-serial health metric labels so disconnected
                 # controllers don't linger in dashboards.
                 metrics.controller_bluetooth_dropped_events_ratio.remove(serial)
                 metrics.controller_bluetooth_movement_update_hz.remove(serial)
+                _remove_quality_series(serial)
                 # #1295: an untracked controller no longer exports its name.
                 metrics.remove_controller_info(serial, name)
                 # Publish disconnect event to button event stream subscribers —
@@ -528,6 +539,13 @@ class DiscoveryLoop:
                 except Exception as e:
                     results.append(e)
 
+            # Pick-up time of this batch for the connection-quality window; any
+            # lateness beyond one poll interval is the loop's own stall.
+            pickup_mono = time.monotonic()
+            if self._last_pickup_mono is not None:
+                self._gap_window.note_loop_stall(pickup_mono - self._last_pickup_mono - self._poll_interval)
+            self._last_pickup_mono = pickup_mono
+
             # Record metrics
             poll_duration = time.time() - start_time
             metrics.poll_batch_duration_seconds.observe(poll_duration)
@@ -564,6 +582,7 @@ class DiscoveryLoop:
                 if self._hw_last_obj_id.get(serial) != obj_id:
                     self._hw_last_obj_id[serial] = obj_id
                     self._record_fresh_frame(serial, current_time)
+                    self._gap_window.record(serial, pickup_mono)
                 else:
                     # Stale replay: no new frame, but not a hardware drop either.
                     # Counts against the update rate via _hw_polls without bumping
@@ -672,6 +691,23 @@ class DiscoveryLoop:
             return None
         return max(0.0, now - picked_up)
 
+    def connection_quality(self, serial: str) -> GapStats | None:
+        """Connection quality of ``serial`` at the last health emission (UC-035 BR-005)."""
+        return self._connection_quality.get(serial)
+
+    def _update_connection_quality(self, serials: list[str], now: float) -> None:
+        """Refresh the rolling-window gap stats and their metrics for ``serials``."""
+        for serial in serials:
+            stats = self._gap_window.snapshot(serial, now)
+            if stats is None:
+                self._connection_quality.pop(serial, None)
+                _remove_quality_series(serial)
+                continue
+            self._connection_quality[serial] = stats
+            metrics.controller_bluetooth_report_gap_p95_seconds.labels(serial=serial).set(stats.p95_ms / 1000.0)
+            metrics.controller_bluetooth_report_gap_max_seconds.labels(serial=serial).set(stats.max_ms / 1000.0)
+            metrics.controller_connection_quality.labels(serial=serial).set(QUALITY_LEVEL[stats.quality])
+
     def _compute_health_window(self, window_seconds: float) -> dict:
         """Derive per-serial and window-aggregate health signals.
 
@@ -740,7 +776,7 @@ class DiscoveryLoop:
         # frame, and stale replays spanning the boundary are still detected.
         self._window_start = now
 
-    def _emit_bluetooth_health(self, now: float) -> None:
+    def _emit_bluetooth_health(self, now: float, now_mono: float | None = None) -> None:
         """Emit the ~1Hz controller.bluetooth_health span + health metrics.
 
         Decoupled from discovery cadence via ``_last_health_emit``. Skips
@@ -778,6 +814,10 @@ class DiscoveryLoop:
             except Exception:
                 logger.debug("Failed to read rollout strategy for health span", exc_info=True)
 
+        self._update_connection_quality(
+            list(signals["per_serial"]), now_mono if now_mono is not None else time.monotonic()
+        )
+
         # --- Span: periodic root span, like controller.discover ---------------
         with tracer.start_as_current_span("controller.bluetooth_health") as span:
             span.set_attribute("bluetooth.event_gap_ms", float(signals["event_gap_ms"]))
@@ -793,15 +833,18 @@ class DiscoveryLoop:
                 adapter_type = ""
                 if hasattr(self.backend, "get_adapter_type"):
                     adapter_type = self.backend.get_adapter_type(serial)
-                span.add_event(
-                    "bluetooth_controller_sample",
-                    {
-                        "controller.serial": serial,
-                        "bluetooth.movement_update_hz": float(s["update_hz"]),
-                        "bluetooth.dropped_events_pct": float(s["dropped_pct"]),
-                        "controller.adapter": adapter_type,
-                    },
-                )
+                sample = {
+                    "controller.serial": serial,
+                    "bluetooth.movement_update_hz": float(s["update_hz"]),
+                    "bluetooth.dropped_events_pct": float(s["dropped_pct"]),
+                    "controller.adapter": adapter_type,
+                }
+                quality = self._connection_quality.get(serial)
+                if quality is not None:
+                    sample["bluetooth.report_gap_p95_ms"] = float(quality.p95_ms)
+                    sample["bluetooth.report_gap_max_ms"] = float(quality.max_ms)
+                    sample["bluetooth.connection_quality"] = quality.quality
+                span.add_event("bluetooth_controller_sample", sample)
 
         # --- Metrics ----------------------------------------------------------
         # Window-max gap in SECONDS (repo convention for *_seconds histograms).
@@ -951,3 +994,10 @@ class DiscoveryLoop:
 
         except Exception as e:
             logger.error(f"Error starting controller tracking {serial}: {e}", exc_info=True)
+
+
+def _remove_quality_series(serial: str) -> None:
+    """Drop a controller's connection-quality series (UC-035 BR-005)."""
+    metrics.controller_bluetooth_report_gap_p95_seconds.remove(serial)
+    metrics.controller_bluetooth_report_gap_max_seconds.remove(serial)
+    metrics.controller_connection_quality.remove(serial)

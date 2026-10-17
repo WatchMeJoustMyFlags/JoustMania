@@ -366,6 +366,32 @@ body {
   color: white;
 }
 
+/* Connection quality (UC-035 BR-005): p95 / longest report gap over 10 s;
+   the tooltip carries both gaps. */
+.quality-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  margin-top: 4px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  cursor: help;
+  color: #10141f;
+}
+
+.quality-badge.quality-good {
+  background: var(--accent-success);
+}
+
+.quality-badge.quality-fair {
+  background: #ffc107;
+}
+
+.quality-badge.quality-poor {
+  background: var(--accent-primary);
+  color: white;
+}
+
 /* Agent shield (#1301, UC-040 A16): the LED circle shows the live colour; the
    ring and badge say it is a shield and how long it has left. */
 .controller-card.shielded {
