@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from lib.types import GameEvent
 from proto import game_coordinator_pb2
-from services.game_coordinator import metrics
+from services.game_coordinator import game_session, metrics
 from services.game_coordinator.event_bus import EventBus
 from services.game_coordinator.game_session import GAME_KIND_PRIMARY, GAME_KIND_SHADOW, GameSession
 from services.game_coordinator.games.base import BaseGameMode
@@ -186,6 +186,77 @@ class TestRetireBeforeTeardown:
 
         for gauge in SESSION_GAUGES:
             assert _series_for(gauge, GAME_ID) == [], gauge.name
+
+
+REMOVAL_DELAY_S = 0.2
+
+
+def _value_for(gauge, game_id: str):
+    values = [v for k, v in gauge._values.items() if dict(k).get("game_id") == game_id]
+    return values[0] if values else None
+
+
+def _wait_until_removed(gauge, game_id: str, timeout_s: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while _series_for(gauge, game_id) and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+@pytest.fixture
+def delayed_removal():
+    """Retire with a real (short) removal delay, as when metrics are exported."""
+    with patch.object(game_session, "retire_removal_delay_s", autospec=True, return_value=REMOVAL_DELAY_S):
+        yield
+
+
+class TestRetireExportsTheEnd:
+    """#1311 review: the agent detects a game's end only from game_active 1 -> 0,
+    so retire must export a 0 before the series is removed."""
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[7])
+    @pytest.mark.asyncio
+    async def test_retire_wins_still_exports_zero_then_removes(self, live_gauges, completed_counter, delayed_removal):
+        session = _make_session()
+        game = _game_that_retires_before_teardown(session)
+
+        await _run_loop(session, game)
+
+        # The loop's teardown is done and retire won: the series still read 0.
+        assert _value_for(metrics.active_game, GAME_ID) == 0
+        assert _value_for(metrics.active_players, GAME_ID) == 0
+
+        for gauge in SESSION_GAUGES:
+            _wait_until_removed(gauge, GAME_ID)
+            assert _series_for(gauge, GAME_ID) == [], gauge.name
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[7])
+    @pytest.mark.asyncio
+    async def test_force_end_then_retire_exports_zero_then_removes(self, live_gauges, delayed_removal):
+        """Force-end + retire while the game thread has not torn down: game_active
+        goes 1 -> 0 at retire, without blocking on the removal delay."""
+        session = _make_session()
+        session.game_state = game_coordinator_pb2.GameState.RUNNING
+        session.current_game = create_autospec(BaseGameMode, instance=True)
+        assert _value_for(metrics.active_game, GAME_ID) == 1
+
+        ok, _ = await session.force_end("test")
+        started = time.monotonic()
+        session.clear_metrics()  # what the servicer's _retire_session does next
+        assert time.monotonic() - started < REMOVAL_DELAY_S, "retire must not wait for the removal"
+
+        assert ok
+        assert _value_for(metrics.active_game, GAME_ID) == 0
+        assert _value_for(metrics.active_players, GAME_ID) == 0
+        _wait_until_removed(metrics.active_game, GAME_ID)
+        assert _series_for(metrics.active_game, GAME_ID) == []
+        assert _series_for(metrics.active_players, GAME_ID) == []
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[7])
+    def test_removal_delay_is_three_export_intervals(self):
+        with patch.object(game_session, "get_export_interval_ms", autospec=True, return_value=1000):
+            assert game_session.retire_removal_delay_s() == 3.0
+        with patch.object(game_session, "get_export_interval_ms", autospec=True, return_value=None):
+            assert game_session.retire_removal_delay_s() == 0.0
 
 
 class TestWritesAfterRetire:

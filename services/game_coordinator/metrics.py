@@ -295,6 +295,8 @@ flag_configuration_changes_total = Counter(
 # Process-wide on purpose (#1471): the configured rate comes from the
 # RuntimeConfigManager singleton, read in an empty evaluation context, so every
 # game runs at the same configured rate and there is nothing per game to label.
+# A running game keeps the rate it read when its loop started (base.py), so after
+# a flag change this gauge leads the games already running.
 # The per-game measured rate is game_actual_update_frequency_hz.
 current_update_frequency_hz = Gauge(
     "game_current_update_frequency_hz",
