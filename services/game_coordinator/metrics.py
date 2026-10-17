@@ -111,10 +111,12 @@ games_started_total = Counter(
     ["mode", "game_kind"],
 )
 
+# outcome: the game's game.outcome (winner, tie, completed, force_ended; #1328),
+# bounded to those four values by game_session.completed_game_outcome (#1427).
 games_completed_total = Counter(
     "games_completed_total",
-    "Total number of games completed",
-    ["mode", "game_kind"],
+    "Total number of games completed, by outcome",
+    ["mode", "game_kind", "outcome"],
 )
 
 # Shadow game governance (#837).

@@ -283,7 +283,9 @@ class TestGameSessionLoop:
 
         await session._run_game_loop_async()
 
-        mock_metrics.games_completed_total.labels.assert_called_with(mode="FFA", game_kind=GAME_KIND_SHADOW)
+        mock_metrics.games_completed_total.labels.assert_called_with(
+            mode="FFA", game_kind=GAME_KIND_SHADOW, outcome="completed"
+        )
         mock_metrics.games_completed_total.labels.return_value.inc.assert_called_once()
 
     @pytest.mark.asyncio
@@ -353,7 +355,9 @@ class TestGameSessionLoop:
             game_kind=GAME_KIND_SHADOW, game_id="game_abc123", experiment_id="exp_abc123", arm="control"
         )
         # Cumulative counter: mode x game_kind only, no experiment labels.
-        mock_metrics.games_completed_total.labels.assert_called_with(mode="FFA", game_kind=GAME_KIND_SHADOW)
+        mock_metrics.games_completed_total.labels.assert_called_with(
+            mode="FFA", game_kind=GAME_KIND_SHADOW, outcome="completed"
+        )
         mock_metrics.game_duration_seconds.labels.assert_any_call(
             game_kind=GAME_KIND_SHADOW, game_id="game_abc123", experiment_id="exp_abc123", arm="control"
         )
