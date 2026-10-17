@@ -101,7 +101,7 @@ Open the observability stack at `http://localhost:8080/`:
 
 - **Controller Overview** (`/grafana/`) -- verify all controllers connected, LEDs
   responsive
-- **Service Health Overview** -- verify controller-manager CPU/memory normal
+- **Infrastructure & Services** (`/grafana/d/joustmania-service-health`) -- verify controller-manager CPU/memory normal
 
 ### Confirm all controllers on python
 
@@ -488,7 +488,7 @@ process_resident_memory_bytes{job=~".*controller-manager.*"}
 |-----------|---------------|
 | `controller-overview` | Connected controllers, battery, LED colors |
 | `controller-maintenance` | Poll drops, poll errors, backend info |
-| `service-health-overview` | CPU, memory, gRPC latency for controller-manager |
+| `joustmania-service-health` (Infrastructure & Services) | CPU, memory, gRPC latency for controller-manager |
 | `bluetooth-adapter` | BT adapter affinity per controller |
 
 ### Alerting

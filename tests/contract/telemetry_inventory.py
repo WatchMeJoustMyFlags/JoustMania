@@ -655,14 +655,32 @@ def _walk_json(node, out: list[tuple[str, str]], where: str) -> None:
             _walk_json(v, out, where)
 
 
+def dashboard_files() -> list[Path]:
+    return sorted(DASHBOARD_DIR.glob("*.json"))
+
+
 def dashboard_queries() -> list[tuple[str, str, str]]:
     """(dashboard file, panel/variable title, PromQL) for every dashboard query."""
     out = []
-    for path in sorted(DASHBOARD_DIR.glob("*.json")):
+    for path in dashboard_files():
         found: list[tuple[str, str]] = []
         _walk_json(json.loads(path.read_text()), found, path.stem)
         out.extend((path.name, title, q) for title, q in found)
     return out
+
+
+_RAW_EXPR_RE = re.compile(r'"expr"\s*:\s*"(?:[^"\\]|\\.)+"')
+
+
+def raw_dashboard_expr_counts() -> dict[str, int]:
+    """Non-empty ``"expr"`` fields per dashboard file, by a plain text scan.
+
+    Independent of the JSON walk in ``dashboard_queries``, so the contract test can
+    check the walk against it: the walk must find at least this many queries per
+    file (it also picks up variable ``query`` / ``definition`` strings). A Loki or
+    Jaeger panel's ``expr`` is counted here but skipped by the walk.
+    """
+    return {p.name: len(_RAW_EXPR_RE.findall(p.read_text())) for p in dashboard_files()}
 
 
 _SELECTOR_RE = re.compile(r"(?<![\w.:])([a-zA-Z_:][a-zA-Z0-9_:]*)\s*\{([^{}]*)\}")
