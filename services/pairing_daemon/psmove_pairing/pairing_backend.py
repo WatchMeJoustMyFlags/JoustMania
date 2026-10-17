@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, runtime_checkable
 
 import hidraw as hid
 
@@ -24,6 +24,14 @@ from lib.psmove_hid import (
 )
 
 logger = logging.getLogger("psmove-pairing")
+
+
+class UsbController(NamedTuple):
+    """A PS Move on USB, as enumerated by a pairing backend."""
+
+    device_path: bytes  # opaque identifier for pair_controller()
+    serial: str  # controller Bluetooth address
+    product_id: int = 0  # USB product id; 0 = not reported (older rust-hid)
 
 
 @dataclass
@@ -47,11 +55,11 @@ class PairingBackend(Protocol):
     delegates to whichever backend is selected by feature flags.
     """
 
-    async def get_usb_controllers(self) -> list[tuple[bytes, str]]:
+    async def get_usb_controllers(self) -> list[UsbController]:
         """Enumerate USB-connected PS Move controllers.
 
         Returns:
-            List of (device_path, serial) tuples for USB controllers.
+            One UsbController (device_path, serial, product_id) per controller.
             device_path is an opaque identifier used by pair_controller().
         """
         ...
@@ -77,7 +85,7 @@ class HidapiBackend:
     No tracing or metrics — the caller (USBPairing) handles observability.
     """
 
-    async def get_usb_controllers(self) -> list[tuple[bytes, str]]:
+    async def get_usb_controllers(self) -> list[UsbController]:
         """Enumerate USB-connected PS Move controllers via hidapi.
 
         Filters to USB-only devices (interface_number >= 0) and reads
@@ -86,7 +94,7 @@ class HidapiBackend:
         Note: HID calls are synchronous blocking I/O. Wrapping in
         asyncio.to_thread() is deferred until profiling shows it matters.
         """
-        usb_controllers: list[tuple[bytes, str]] = []
+        usb_controllers: list[UsbController] = []
         devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
 
         for dev_info in devices:
@@ -102,7 +110,7 @@ class HidapiBackend:
                     if isinstance(report, list):
                         report = bytes(report)
                     serial, _ = parse_btaddr_report(report)
-                    usb_controllers.append((path, serial.upper()))
+                    usb_controllers.append(UsbController(path, serial.upper(), dev_info.get("product_id", 0)))
                     logger.debug(f"USB controller at {path!r}: {serial}")
                 finally:
                     device.close()
@@ -169,14 +177,14 @@ class RustServiceBackend:
         self._channel = create_channel(f"{host}:{port}")
         self._stub = psmove_hid_pb2_grpc.PairingServiceStub(self._channel)
 
-    async def get_usb_controllers(self) -> list[tuple[bytes, str]]:
+    async def get_usb_controllers(self) -> list[UsbController]:
         """Enumerate USB-connected PS Move controllers via Rust HID service."""
         from proto import psmove_hid_pb2
 
         response = await self._stub.GetUSBControllers(
             psmove_hid_pb2.GetUSBControllersRequest(), timeout=RUST_HID_RPC_TIMEOUT_SECONDS
         )
-        return [(c.device_path.encode(), c.serial) for c in response.controllers]
+        return [UsbController(c.device_path.encode(), c.serial, c.product_id) for c in response.controllers]
 
     async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> PairingResult:
         """Write the host BT address via Rust HID service."""

@@ -42,6 +42,7 @@ def _make_rust_adapter():
     adapter._latest_data = {}
     adapter._last_state = {}
     adapter._data_lock = threading.Lock()
+    adapter._closed = set()
     adapter._stream_thread = None
     adapter._stream_running = False
     adapter._adapter_names = {}

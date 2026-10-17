@@ -39,7 +39,7 @@ class TestHidapiBackendGetUSBControllers:
         controllers = await backend.get_usb_controllers()
 
         assert len(controllers) == 1
-        assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")
+        assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", 0x03D5)
         mock_device.open_path.assert_called_once_with(FAKE_PATH_1)
         mock_device.close.assert_called_once()
 
@@ -102,7 +102,7 @@ class TestHidapiBackendGetUSBControllers:
         controllers = await backend.get_usb_controllers()
 
         assert len(controllers) == 1
-        assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")
+        assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", 0x03D5)
 
 
 class TestHidapiBackendPairController:
@@ -176,14 +176,16 @@ class TestRustServiceBackend:
     """Tests for RustServiceBackend gRPC client."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-008"])
     async def test_get_usb_controllers_returns_list(self):
-        """Delegates to gRPC stub and converts proto response to (bytes, str) tuples."""
-        mock_controller = MagicMock()
-        mock_controller.device_path = "/dev/hidraw3"
-        mock_controller.serial = "AA:BB:CC:DD:EE:FF"
+        """Delegates to gRPC stub; each proto controller becomes (path bytes, serial, product id)."""
+        from proto import psmove_hid_pb2
 
-        mock_response = MagicMock()
-        mock_response.controllers = [mock_controller]
+        mock_response = psmove_hid_pb2.GetUSBControllersResponse(
+            controllers=[
+                psmove_hid_pb2.USBController(device_path="/dev/hidraw3", serial="AA:BB:CC:DD:EE:FF", product_id=0x0C5E)
+            ]
+        )
 
         mock_stub = MagicMock()
         mock_stub.GetUSBControllers = AsyncMock(return_value=mock_response)
@@ -195,7 +197,8 @@ class TestRustServiceBackend:
         controllers = await backend.get_usb_controllers()
 
         assert len(controllers) == 1
-        assert controllers[0] == (b"/dev/hidraw3", "AA:BB:CC:DD:EE:FF")
+        assert controllers[0] == (b"/dev/hidraw3", "AA:BB:CC:DD:EE:FF", 0x0C5E)
+        assert controllers[0].product_id == 0x0C5E
 
     @pytest.mark.asyncio
     async def test_get_usb_controllers_encodes_path(self):
@@ -213,7 +216,7 @@ class TestRustServiceBackend:
         backend._stub = mock_stub
 
         controllers = await backend.get_usb_controllers()
-        path, serial = controllers[0]
+        path = controllers[0].device_path
         assert isinstance(path, bytes)
         assert path == b"/dev/hidraw0"
 

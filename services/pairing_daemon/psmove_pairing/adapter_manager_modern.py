@@ -82,6 +82,39 @@ async def get_attached_addresses(hci: str) -> list[str]:
     return addresses
 
 
+# A Device1 with one of these true is a registration bluetoothd keeps in its storage;
+# a temporary (discovered, not yet expired) device has none of them.
+_REGISTERED_PROPERTIES = ("Paired", "Bonded", "Trusted")
+
+
+def _flag(props: dict, name: str) -> bool:
+    value = props.get(name)
+    return bool(value.value if isinstance(value, Variant) else value)
+
+
+async def get_registered_addresses(hci: str) -> set[str]:
+    """Addresses of the devices BlueZ keeps as registrations on adapter ``hci`` (UC-001 A7).
+
+    Only Paired, Bonded or Trusted devices count: a temporary device that BlueZ
+    created for a discovery or an incoming connection does not.
+    """
+    bus = await get_system_bus()
+    adapter_path = f"{ORG_BLUEZ_PATH}/{hci}"
+    objects = await get_managed_objects(bus)
+
+    registered: set[str] = set()
+    for path, interfaces in objects.items():
+        if not path.startswith(adapter_path + "/"):
+            continue
+        props = interfaces.get("org.bluez.Device1")
+        if props is None or props.get("Address") is None:
+            continue
+        if any(_flag(props, name) for name in _REGISTERED_PROPERTIES):
+            address = props["Address"]
+            registered.add(str(address.value if isinstance(address, Variant) else address).upper())
+    return registered
+
+
 class AdapterManager:
     """Manages Bluetooth adapters and provides load-balanced selection.
 
@@ -91,6 +124,7 @@ class AdapterManager:
     def __init__(self):
         self._hci_dict: dict[str, str] = {}  # hci -> address
         self._bt_devices: dict[str, list[str]] = {}  # address -> [device_addrs]
+        self._registered: dict[str, set[str]] = {}  # address -> Paired/Bonded/Trusted device addrs
 
     async def refresh_adapters(self) -> dict[str, list[str]]:
         """Refresh the list of adapters and their paired devices.
@@ -105,14 +139,17 @@ class AdapterManager:
             self._hci_dict = {}
 
         self._bt_devices = {}
+        self._registered = {}
 
         for hci, addr in self._hci_dict.items():
             try:
                 devices = await get_attached_addresses(hci)
+                registered = await get_registered_addresses(hci)
             except DBusError as e:
                 logger.debug(f"Error getting devices for {hci}: {e}")
-                devices = []
+                devices, registered = [], set()
             self._bt_devices[addr] = devices
+            self._registered[addr] = registered
             logger.debug(f"Adapter {addr} ({hci}): {len(devices)} devices")
 
         return self._bt_devices
@@ -189,3 +226,12 @@ class AdapterManager:
         """
         controller_upper = controller_addr.upper()
         return all(controller_upper not in [d.upper() for d in devices] for devices in self._bt_devices.values())
+
+    def is_known_on(self, adapter_address: str, controller_addr: str) -> bool:
+        """Whether BlueZ keeps a registration of the controller on that adapter (UC-001 A7).
+
+        Paired, Bonded or Trusted only: a temporary or discovered Device1 is not
+        stored, so it does not make a device record unnecessary. Call
+        refresh_adapters() first to ensure data is current.
+        """
+        return controller_addr.upper() in self._registered.get(adapter_address, set())

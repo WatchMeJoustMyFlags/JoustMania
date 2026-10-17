@@ -58,7 +58,6 @@ services:
     # host binding, so it cannot collide with the override's 50053 host map.
     expose:
       - "50053"
-      - "8000"
     environment:
       - OTEL_SERVICE_NAME=agent-game-coordinator-service
       - OTEL_SERVICE_NAMESPACE=joustmania

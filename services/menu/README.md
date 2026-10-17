@@ -354,7 +354,7 @@ Admin mode automatically exits after 60 seconds of inactivity.
 
 ## Metrics
 
-Prometheus metrics are exposed at `http://localhost:8000/metrics`.
+Metrics are pushed over OTLP to the collector (no `/metrics` endpoint); names are listed in [docs/specs/telemetry.md §6](../../docs/specs/telemetry.md#6-metrics).
 
 ### gRPC Metrics
 

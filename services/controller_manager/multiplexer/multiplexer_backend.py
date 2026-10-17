@@ -134,8 +134,18 @@ class MultiplexerBackend(ControllerBackend):
 
     def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
         seen = self._route_controllers(force_rescan)
-        self._serial_to_adapter = seen
-        self._cleanup_stale_state(seen)
+        # Discovery and the 20 Hz LED batch run in separate worker threads
+        # (#1447). The routing swap and the stale-state cleanup happen under
+        # the LED lock, and update_all_leds re-reads the colour and the adapter
+        # under the same lock, so a batch never writes to a serial this cleanup
+        # removed and never re-creates its LED bookkeeping. Loser / switched
+        # adapters are closed earlier, in _route_controllers, outside the lock:
+        # a batch that runs between that close and this swap may still write
+        # to the closed handle once; set_output then fails and the failure is
+        # counted in _led_failures.
+        with self._led_lock:
+            self._serial_to_adapter = seen
+            self._cleanup_stale_state(seen)
         self._update_controller_metrics(seen)
         return list(seen.keys())
 
@@ -332,6 +342,7 @@ class MultiplexerBackend(ControllerBackend):
             self._rumble.pop(serial, None)
             self._last_sent_color.pop(serial, None)
             self._last_led_update.pop(serial, None)
+            self._led_failures.pop(serial, None)
             self._effect_active.discard(serial)
             # Clear backend info metric so disconnected controllers don't
             # appear in dashboard counts
@@ -359,38 +370,44 @@ class MultiplexerBackend(ControllerBackend):
         updated_count = 0
 
         # list() is intentional — dict may be modified by concurrent disconnect
-        for serial, stored_color in list(self._led_colors.items()):  # NOSONAR(S7504)
+        for serial in list(self._led_colors):  # NOSONAR(S7504)
             if serial in self._effect_active:
                 continue
 
-            adapter = self._serial_to_adapter.get(serial)
-            if not adapter:
-                continue
-
             try:
-                last_sent = self._last_sent_color.get(serial)
-                last_update = self._last_led_update.get(serial, 0)
+                # Re-read colour and adapter under the lock: discovery swaps the
+                # routing table and drops stale serials under the same lock
+                # (#1447), so a serial removed mid-batch is skipped, not revived.
+                with self._led_lock:
+                    stored_color = self._led_colors.get(serial)
+                    adapter = self._serial_to_adapter.get(serial)
+                    if stored_color is None or adapter is None:
+                        continue
 
-                color_changed = stored_color != last_sent
-                keepalive_needed = current_time - last_update >= 2.0
+                    last_sent = self._last_sent_color.get(serial)
+                    last_update = self._last_led_update.get(serial, 0)
+                    color_changed = stored_color != last_sent
+                    keepalive_needed = current_time - last_update >= 2.0
+                    if not (color_changed or keepalive_needed):
+                        continue
 
-                if color_changed or keepalive_needed:
                     r, g, b = stored_color
                     rumble = self._rumble.get(serial, 0)
-                    with self._led_lock:
-                        result = adapter.set_output(serial, r, g, b, rumble)
+                    result = adapter.set_output(serial, r, g, b, rumble)
                     if not result:
                         self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
                     self._last_sent_color[serial] = stored_color
                     self._last_led_update[serial] = current_time
-                    updated_count += 1
+                updated_count += 1
 
-                    if color_changed:
-                        logger.debug(f"LED color changed for {serial}: {last_sent} -> {stored_color}")
+                if color_changed:
+                    logger.debug(f"LED color changed for {serial}: {last_sent} -> {stored_color}")
 
             except Exception as e:
                 logger.debug(f"Error updating LED for {serial}: {e}")
-                self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
+                with self._led_lock:
+                    if serial in self._led_colors:
+                        self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
 
         return updated_count
 

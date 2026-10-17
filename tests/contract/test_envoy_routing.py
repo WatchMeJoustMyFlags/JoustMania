@@ -28,6 +28,16 @@ DOCUMENTED_ROUTES = {
     ),
 }
 
+# Non-UI Connect routes the host-networked pairing daemon relies on.
+PAIRING_DAEMON_ROUTES = {
+    # UC-001 BR-005: pairing.bluez_restart_mode=when_idle reads the primary game's state here
+    # (bluez_reload.DEFAULT_GAME_STATE_URL); a missing route reads as "game running" forever.
+    "/joustmania.game_coordinator.GameCoordinatorService/GetGameState": (
+        "connect_proxy",
+        "/joustmania.game_coordinator.GameCoordinatorService/GetGameState",
+    ),
+}
+
 # Bare UI paths redirect to their trailing-slash form.
 DOCUMENTED_REDIRECTS = {
     "/grafana": "/grafana/",
@@ -173,3 +183,37 @@ def test_envoy_config_validates_with_the_compose_image():
 )
 def test_compose_port_scan_ignores_other_services_addresses(text, ports):
     assert {int(p) for p in ic._PORT_IN_TEXT_RE.findall(text)} == ports
+
+
+@pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+@pytest.mark.parametrize(("path", "expected"), sorted(PAIRING_DAEMON_ROUTES.items()))
+def test_pairing_daemon_game_state_route(path, expected):
+    """UC-001 BR-005: envoy forwards the GetGameState Connect path unchanged to the connect-proxy."""
+    cluster, upstream_path = expected
+    assert ic.resolve_route(path) == {
+        "cluster": cluster,
+        "upstream_path": upstream_path,
+    }
+
+
+@pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+def test_pairing_daemon_default_url_uses_the_routed_path():
+    """The daemon's default GAME_STATE_URL is exactly the routed path on envoy's host port 80."""
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "services/pairing_daemon/psmove_pairing/bluez_reload.py"
+    ).read_text()
+    urls = [
+        node.value.value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "DEFAULT_GAME_STATE_URL"
+            for t in node.targets
+        )
+    ]
+    assert urls == ["http://localhost" + next(iter(PAIRING_DAEMON_ROUTES))]
+    assert ic.envoy_listener_port() == 80

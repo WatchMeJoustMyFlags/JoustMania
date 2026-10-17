@@ -55,6 +55,8 @@ impl Button {
 pub struct UsbController {
     pub device_path: String,
     pub serial: String,
+    /// USB product id (0x03D5 ZCM1, 0x0C5E ZCM2), for the BlueZ device record (UC-001 BR-008)
+    pub product_id: u16,
 }
 
 /// Result of reading the current BT address configuration from a controller.
@@ -165,6 +167,7 @@ pub fn enumerate_usb_controllers(api: &HidApi) -> Vec<UsbController> {
                                     controllers.push(UsbController {
                                         device_path: path,
                                         serial,
+                                        product_id: pid,
                                     });
                                 }
                                 Err(e) => {
