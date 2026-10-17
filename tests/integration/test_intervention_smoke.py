@@ -21,9 +21,7 @@ load-bearing, model-independent apply-proof is therefore the coordinator's own
 InterventionManager emits that event ONLY AFTER the action passed the permission
 + mode + battery chain AND its handler ran to completion without error (a
 handler error records ``blocked="true", block_reason="handler_error"`` instead —
-interventions.py ``_dispatch_one`` / ``_record``). This is exactly the apply
-signal the sibling ``test_parallel_intervention_flow.py`` uses for the
-non-sensitivity actions (eliminate, global_difficulty).
+interventions.py ``_dispatch_one`` / ``_record``).
 
 SCOPE: this driver asserts APPLY only (one ``blocked="false"`` event per action).
 Revert/neutral-transition assertions are intentionally NOT made here: the
@@ -63,33 +61,36 @@ import asyncio
 import json
 import os
 import sys
+import threading
+import time
+import uuid
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
+from proto import game_coordinator_pb2  # noqa: E402
+
 from tests.integration.helpers import (  # noqa: E402
+    GameEventCollector,
     async_poll_until,
     build_start_config,
     flagd_probe_client,
     force_end_game_by_id,
     get_game_client,
     get_mock_client,
+    list_games,
     remove_reserved_controllers,
     setup_mock_controllers,
+    start_game_headless,
+    verify_controllers_have_color,
 )
 from tests.integration.test_intervention_flow import (  # noqa: E402
     AGENT_PATH,
+    APPLY_TIMEOUT_SECONDS,
+    INTERVENTIONS_PATH,
     flag_files,  # re-exported: snapshot/restore + suite-wide rate-limit budget pin
     set_interventions_allowed,
-)
-from tests.integration.test_parallel_intervention_flow import (  # noqa: E402
-    _await_running,
-    _start_headless_with_retry,
-    _wait_for_game_colors,
-    _wait_for_intervention,
-    write_state_for_game,
-    write_targeted_for_game,
 )
 
 # The single permission variant that allow-lists every advanced action under
@@ -99,6 +100,169 @@ PERMISSION_VARIANT = "shadow_experimental"
 
 # Keep re-exported fixture referenced so linters don't flag it unused.
 __all__ = ["flag_files"]
+
+
+# =============================================================================
+# gameId-scoped flag-file writers (moved from test_parallel_intervention_flow.py,
+# #1422). Every write is scoped to one game_id by a flagd targeting rule on the
+# ``gameId`` context var, with the default variant left neutral, so a write for
+# game A resolves to a no-op for every other live session. flagd's side of this
+# is checked in tests/contract/test_flagd_resolution.py
+# (test_gameid_scoped_ladders_resolve_only_for_their_game).
+#
+# The writers are synchronous (no ``await`` between the in-place read and
+# write), so two gathered coroutines cannot interleave mid-write; the lock is
+# defense in depth.
+# =============================================================================
+
+_FILE_LOCK = threading.Lock()
+
+
+def _load(path: str) -> dict:
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def _dump_in_place(path: str, doc: dict) -> None:
+    """In-place truncate+write (rename over a watched bind mount triggers EBUSY)."""
+    text = json.dumps(doc, indent=2) + "\n"
+    with open(path, "w") as fh:
+        fh.write(text)
+
+
+def _branch_var_name(game_id: str, serial: str | None) -> str:
+    """A flagd variant name unique per (game_id[, serial]).
+
+    game_id contains an underscore (``game_<hex>``), so the name is a hash and
+    is never parsed; the routing lives in the ``_branches`` side registry.
+    """
+    key = f"{game_id}\x00{serial or ''}"
+    return "g_" + uuid.uuid5(uuid.NAMESPACE_OID, key).hex
+
+
+def _rebuild_ladder(flag: dict, neutral: str) -> None:
+    """Rebuild the flag's targeting if-ladder from its ``_branches`` registry.
+
+    Each ``variant_name -> {gameId, serial?}`` entry becomes one branch matching
+    ``gameId`` (and ``targetingKey`` for player-targeted flags), falling through
+    to the neutral default, so concurrent writes for distinct games compose.
+    """
+    branches = flag.get("_branches", {})
+    expr: object = neutral
+    for name in sorted(branches, reverse=True):
+        meta = branches[name]
+        serial = meta.get("serial")
+        if serial:
+            cond = {
+                "and": [
+                    {"===": [{"var": "gameId"}, meta["gameId"]]},
+                    {"===": [{"var": "targetingKey"}, serial]},
+                ]
+            }
+        else:
+            cond = {"===": [{"var": "gameId"}, meta["gameId"]]}
+        expr = {"if": [cond, name, expr]}
+    flag["targeting"] = expr
+    flag["defaultVariant"] = neutral
+
+
+def write_targeted_for_game(
+    flag_key: str, game_id: str, serial: str, value, *, neutral: str = "default"
+) -> None:
+    """Per-player write scoped to one gameId AND one serial."""
+    with _FILE_LOCK:
+        doc = _load(INTERVENTIONS_PATH)
+        flag = doc["flags"][flag_key]
+        var_name = _branch_var_name(game_id, serial)
+        flag["variants"][var_name] = value
+        flag.setdefault("_branches", {})[var_name] = {"gameId": game_id, "serial": serial}
+        _rebuild_ladder(flag, neutral)
+        _dump_in_place(INTERVENTIONS_PATH, doc)
+
+
+def write_state_for_game(flag_key: str, game_id: str, value, *, neutral: str) -> None:
+    """Session-state write scoped to one gameId."""
+    with _FILE_LOCK:
+        doc = _load(INTERVENTIONS_PATH)
+        flag = doc["flags"][flag_key]
+        var_name = _branch_var_name(game_id, None)
+        flag["variants"][var_name] = value
+        flag.setdefault("_branches", {})[var_name] = {"gameId": game_id, "serial": None}
+        _rebuild_ladder(flag, neutral)
+        _dump_in_place(INTERVENTIONS_PATH, doc)
+
+
+# =============================================================================
+# Game helpers (moved from test_parallel_intervention_flow.py, #1422)
+# =============================================================================
+
+
+async def _wait_for_intervention(
+    collector: GameEventCollector, type_id: str, *, blocked=None, timeout: float = APPLY_TIMEOUT_SECONDS
+):
+    """Poll the game's stream for an ``agent_intervention`` of ``type_id``."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        hits = [
+            e
+            for e in collector.get_events("agent_intervention")
+            if e.data.get("type") == type_id and (blocked is None or e.data.get("blocked") == blocked)
+        ]
+        if hits:
+            return hits[-1]
+        await asyncio.sleep(0.2)
+    raise AssertionError(
+        f"no agent_intervention(type={type_id}, blocked={blocked}) within {timeout}s; "
+        f"saw: {[dict(e.data) for e in collector.get_events('agent_intervention')]}"
+    )
+
+
+async def _wait_for_game_colors(mock_client, serials: list[str], timeout: float = 10.0) -> None:
+    """Poll until every controller shows a non-zero LED (parallel load lags it)."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            await verify_controllers_have_color(mock_client, serials)
+            return
+        except AssertionError:
+            if loop.time() > deadline:
+                raise
+            await asyncio.sleep(0.5)
+
+
+async def _start_headless_with_retry(game_client, start_config, attempts: int = 4, backoff: float = 2.0):
+    """Start headless, retrying brief "Game already in progress" cap windows.
+
+    A sibling batch coroutine's force-ended game may still be in its ENDING
+    window when this start hits the concurrency cap; the slot frees moments
+    later, so a short retry is correct (mirrors test_parallel_lifecycle).
+    """
+    last_exc: Exception | None = None
+    for _ in range(attempts):
+        try:
+            return await start_game_headless(game_client, start_config, timeout=25.0)
+        except Exception as exc:  # noqa: BLE001 - only the cap window is retryable
+            if "Game already in progress" not in str(exc):
+                raise
+            last_exc = exc
+            await asyncio.sleep(backoff)
+    raise last_exc
+
+
+async def _await_running(game_client, game_id: str, timeout: float = 12.0) -> None:
+    """Poll ListGames until this game is RUNNING (start returns on STARTING)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        running = {
+            g.game_id
+            for g in await list_games(game_client)
+            if g.state == game_coordinator_pb2.RUNNING
+        }
+        if game_id in running:
+            return
+        await asyncio.sleep(0.3)
+    raise AssertionError(f"game {game_id} never reached RUNNING within {timeout}s")
 
 
 def _shadow_experimental_string() -> str:
@@ -159,8 +323,8 @@ async def _scenario_set_player_handicap(docker_compose, tag: str) -> None:
     passed and ``handle_player_handicap_factor`` ran without error. (Player-
     targeted state flags dispatch as a fan-out with an EMPTY event ``target``;
     the targeting is enforced in flagd's per-serial ladder, so the per-player
-    scoping is asserted by the dedicated sensitivity test in
-    test_parallel_intervention_flow.py, not re-asserted on this event.)
+    scoping is asserted by the TC-013 journey and the flagd contract tier,
+    not re-asserted on this event.)
     """
     mock_client, mock_channel = await get_mock_client(docker_compose)
     game_client, game_channel = await get_game_client(docker_compose)

@@ -11,13 +11,15 @@ v0.16.0) serving a temporary copy of ``services/flagd/ci`` (see flagd_harness):
   TYPE_MISMATCH, so an intervention or calibration flag silently stops working
   (#903, #1127). The getter is derived from the coordinator source, not copied;
 - server-side targeting: the per-player ladder the agent's Writer writes, the
-  ``windows`` preset ladder, the rollout ladder the RolloutWriter walks, and
+  gameId-scoped ladders that keep concurrent games apart, the ``windows`` preset
+  ladder, the rollout ladder the RolloutWriter walks, and
   the shadow-only experiment rule (a REAL game never sees an experiment);
 - NFR-014: how long an in-place flag-file edit takes to reach live readers.
 
 These tests moved here from tests/integration (they never needed the game
 services): test_intervention_flow.py, test_f6_flow.py, test_rollout_plumbing.py,
-test_experiment_shadow_isolation.py and test_flag_propagation.py.
+test_experiment_shadow_isolation.py, test_flag_propagation.py and
+test_parallel_intervention_flow.py.
 
 Docker is required: a missing docker fails in CI (``CI`` set) and skips locally.
 """
@@ -883,6 +885,149 @@ def test_per_player_targeting_resolves_against_live_flagd(flagd, flag_files):
         assert abs(_eval(unknown) - 1.0) <= 0.01, (
             f"unknown resolved to {_eval(unknown)}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# 2b. gameId-scoped ladders (from test_parallel_intervention_flow.py)
+# --------------------------------------------------------------------------- #
+# The coordinator evaluates every intervention flag per live session with
+# ``{gameId, targetingKey=serial}`` (#838), so a rule on ``gameId`` scopes a
+# write to one game. The integration suite wrote these shapes to run
+# intervention games side by side; the scoping itself is a flagd property and
+# is checked here. The extra ``_branches`` / ``_reload_marker`` keys those
+# writers keep in the flag must not make flagd reject the file.
+GAME_A, GAME_B = "game_aaaaaaaaaaaa", "game_bbbbbbbbbbbb"  # ids contain "_"
+SERIAL_1, SERIAL_2 = "MOCK0001", "MOCK0002"
+
+
+def _game_is(game_id: str) -> dict:
+    return {"===": [{"var": "gameId"}, game_id]}
+
+
+def _write_gameid_scoped(path: Path) -> None:
+    """Sibling branches for two games, composed into one ladder per flag.
+
+    Level: (A, SERIAL_1) -> 1.5 and (B, SERIAL_2) -> 0.7. State: A -> 1.5 and
+    B -> 0.7. Edge: one ``active`` slot per flag, scoped to A.
+    """
+    doc = fh.load(path)
+    flags = doc["flags"]
+
+    level = flags["player_sensitivity_factor"]
+    level["variants"].update({"g_a_s1": 1.5, "g_b_s2": 0.7})
+    level["_branches"] = {
+        "g_a_s1": {"gameId": GAME_A, "serial": SERIAL_1},
+        "g_b_s2": {"gameId": GAME_B, "serial": SERIAL_2},
+    }
+    level["targeting"] = {
+        "if": [
+            {"and": [_game_is(GAME_A), {"===": [{"var": "targetingKey"}, SERIAL_1]}]},
+            "g_a_s1",
+            {
+                "if": [
+                    {
+                        "and": [
+                            _game_is(GAME_B),
+                            {"===": [{"var": "targetingKey"}, SERIAL_2]},
+                        ]
+                    },
+                    "g_b_s2",
+                    "default",
+                ]
+            },
+        ]
+    }
+    level["defaultVariant"] = "default"
+
+    state = flags["global_difficulty_factor"]
+    state["variants"].update({"g_a": 1.5, "g_b": 0.7})
+    state["_branches"] = {
+        "g_a": {"gameId": GAME_A, "serial": None},
+        "g_b": {"gameId": GAME_B, "serial": None},
+    }
+    state["targeting"] = {
+        "if": [_game_is(GAME_A), "g_a", {"if": [_game_is(GAME_B), "g_b", "default"]}]
+    }
+    state["defaultVariant"] = "default"
+
+    edge = flags["eliminate_player"]
+    edge["variants"]["active"] = f"nonce1:{SERIAL_1}"
+    edge["targeting"] = {"if": [_game_is(GAME_A), "active", "none"]}
+    edge["defaultVariant"] = "none"
+    edge["_reload_marker"] = 1
+
+    fh.dump_in_place(path, doc)
+
+
+@pytest.mark.parametrize("resolver", ["rpc", "in_process"])
+def test_gameid_scoped_ladders_resolve_only_for_their_game(flagd, flag_files, resolver):
+    """Branches for two games compose in one ladder: a per-player level and a
+    session state flag resolve game A's value for A and game B's value for B
+    (the level only for each game's own targeted serial), and an edge flag
+    scoped to A serves its nonce to A only. Every other context resolves the
+    neutral variant with no evaluation error. This is what lets two
+    intervention games share one flagd without cross-talk.
+    """
+    path = flagd.file("interventions")
+    _write_gameid_scoped(path)
+
+    def ctx(game_id: str | None, serial: str | None = None) -> EvaluationContext:
+        attrs = {"gameId": game_id} if game_id else {}
+        return EvaluationContext(targeting_key=serial, attributes=attrs)
+
+    with _ready_client(flagd, "interventions", resolver) as client:
+
+        def level(game_id, serial):
+            return client.get_float_details(
+                "player_sensitivity_factor", -1.0, ctx(game_id, serial)
+            )
+
+        def state(game_id):
+            return client.get_float_details(
+                "global_difficulty_factor", -1.0, ctx(game_id)
+            )
+
+        def edge(game_id):
+            return client.get_string_details("eliminate_player", "<err>", ctx(game_id))
+
+        def scoped_values():
+            return (
+                level(GAME_A, SERIAL_1).value,
+                level(GAME_B, SERIAL_2).value,
+                state(GAME_A).value,
+                state(GAME_B).value,
+                edge(GAME_A).value,
+            )
+
+        expected = (1.5, 0.7, 1.5, 0.7, f"nonce1:{SERIAL_1}")
+        assert fh.poll_until(
+            lambda: scoped_values() == expected,
+            rewrite=lambda: _write_gameid_scoped(path),
+        ), f"scoped writes did not resolve: got {scoped_values()}, want {expected}"
+
+        neutral = {
+            "level, game A other serial": (level(GAME_A, SERIAL_2), "default", 1.0),
+            "level, game B serial of A's branch": (
+                level(GAME_B, SERIAL_1),
+                "default",
+                1.0,
+            ),
+            "level, no gameId": (level(None, SERIAL_1), "default", 1.0),
+            "state, unknown game": (state("game_cccccccccccc"), "default", 1.0),
+            "state, no gameId": (state(None), "default", 1.0),
+            "edge, game B": (edge(GAME_B), "none", ""),
+            "edge, no gameId": (edge(None), "none", ""),
+        }
+        for what, (details, variant, value) in neutral.items():
+            assert details.error_code is None, (
+                f"{what}: evaluation error {details.error_code}"
+            )
+            assert details.variant == variant, (
+                f"{what}: variant {details.variant!r}, want {variant!r}"
+            )
+            assert details.value == value, (
+                f"{what}: value {details.value!r}, want {value!r}"
+            )
 
 
 # --------------------------------------------------------------------------- #

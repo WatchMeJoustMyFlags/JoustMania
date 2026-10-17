@@ -101,18 +101,6 @@ def _dump_in_place(path: str, doc: dict) -> None:
         fh.write(text)
 
 
-def write_state(flag_key: str, value) -> None:
-    """State-shaped write: set the ``active`` variant + flip defaultVariant.
-
-    Mirrors Writer.setState (services/agent/actions/writer.go).
-    """
-    doc = _load(INTERVENTIONS_PATH)
-    flag = doc["flags"][flag_key]
-    flag["variants"][ACTIVE_VARIANT] = value
-    flag["defaultVariant"] = ACTIVE_VARIANT
-    _dump_in_place(INTERVENTIONS_PATH, doc)
-
-
 def write_edge(flag_key: str, payload: str = "") -> str:
     """Edge-triggered write: ``active`` variant holds ``<nonce>:<payload>``.
 
@@ -128,21 +116,6 @@ def write_edge(flag_key: str, payload: str = "") -> str:
     flag["defaultVariant"] = ACTIVE_VARIANT
     _dump_in_place(INTERVENTIONS_PATH, doc)
     return nonce
-
-
-def rewrite_edge_value(flag_key: str, raw_value: str) -> None:
-    """Force flagd to re-serve a specific ``active`` value (re-read with the SAME
-    nonce, to assert the exactly-once guard). Touches another field so the file
-    changes byte-wise and flagd reloads, but the edge value itself is unchanged.
-    """
-    doc = _load(INTERVENTIONS_PATH)
-    flag = doc["flags"][flag_key]
-    flag["variants"][ACTIVE_VARIANT] = raw_value
-    flag["defaultVariant"] = ACTIVE_VARIANT
-    # Toggle a harmless metadata marker to guarantee a byte-level change.
-    flag.setdefault("_reload_marker", 0)
-    flag["_reload_marker"] = int(flag["_reload_marker"]) + 1
-    _dump_in_place(INTERVENTIONS_PATH, doc)
 
 
 def set_interventions_allowed(variant: str) -> None:
@@ -303,23 +276,6 @@ async def _player(game_client, serial: str):
         if p.serial == serial:
             return p
     return None
-
-
-async def _wait_for_sensitivity_factor(
-    game_client, serial: str, expected: float, *, tol: float = 0.01, timeout: float = APPLY_TIMEOUT_SECONDS
-) -> None:
-    deadline = time.time() + timeout
-    last = None
-    while time.time() < deadline:
-        p = await _player(game_client, serial)
-        if p is not None:
-            last = p.sensitivity_factor
-            if abs(p.sensitivity_factor - expected) <= tol:
-                return
-        await asyncio.sleep(0.3)
-    raise AssertionError(
-        f"{serial} sensitivity_factor did not reach {expected} (last={last}) within {timeout}s"
-    )
 
 
 # =============================================================================
