@@ -56,7 +56,7 @@ flag service (the "flag service" section).
 
 | | Stage stack (Pi, real controllers) | Rehearsal / fallback stack (mock controllers) |
 |---|---|---|
-| Bring-up | `docker compose -f docker-compose.yml --env-file .env --env-file .env.local up -d` | `COMPOSE_ENV_FILES=.env,.env.local make dry-run` |
+| Bring-up | `./scripts/setup/joustmania-compose.sh up -d` (= `docker compose -f docker-compose.yml --env-file .env --env-file .env.local up -d`; also what systemd autostart runs, #1488) | `COMPOSE_ENV_FILES=.env,.env.local make dry-run` |
 | Compose files | `docker-compose.yml` only, named with `-f` so the dev `docker-compose.override.yml` is **not** loaded (it publishes the gRPC and mock control ports on the venue network, #1319) | `docker-compose.yml` + `override` + `ci` + `dry-run`, profiles `agent` + `dashboard` |
 | Baseline the flag service loads (read-only) | `services/flagd/` | `services/flagd/ci/` |
 | Gameplay | real players | `tools/demo/demo_driver.py` (scripted mock movement) |
@@ -78,7 +78,10 @@ Notes:
 
 `.env` is tracked in git and pins `IMAGE_TAG=0.7.0`, which predates the
 decision backends. Put everything below in the git-ignored `.env.local`
-(later `--env-file` wins). Use `latest` while rehearsing, then **pin the exact
+(later `--env-file` wins). `scripts/setup/joustmania-compose.sh` passes both
+env files (`.env.local` only when it exists) to every compose call, and the
+systemd autostart uses it too, so a reboot comes back with the same tag and
+keys as the manual bring-up (#1488). Use `latest` while rehearsing, then **pin the exact
 tag you rehearsed with** (a release or `sha-...` tag) for the talk, so a new
 push to `main` cannot change the stage images:
 
@@ -94,7 +97,7 @@ AGENT_INFERENCE_BACKEND=claude         # post-game summary (retro) on Claude; de
 
 The agent reads all of these **once at startup**. Changing one means
 recreating the agent:
-`docker compose -f docker-compose.yml --env-file .env --env-file .env.local up -d agent` (use the
+`./scripts/setup/joustmania-compose.sh up -d agent` (use the
 dry-run `-f` files and profiles on the rehearsal stack). With
 `AGENT_INFERENCE_BACKEND=claude` but no `ANTHROPIC_API_KEY` the agent logs
 `AGENT_INFERENCE_BACKEND=claude but ANTHROPIC_API_KEY is empty` and the summary
@@ -401,7 +404,7 @@ last written stage live in memory, and the flag reset below does not clear them)
 setflag rollout strategy off; setflag rollout target_backend python
 setflag rollout current_controller_count none; setflag rollout remediation_allowed off
 setflag agent rollout_enabled off
-docker compose -f docker-compose.yml --env-file .env --env-file .env.local restart agent
+./scripts/setup/joustmania-compose.sh restart agent
 ```
 
 The infra loop is not gated by the `enabled` kill switch, only by
@@ -414,8 +417,21 @@ The infra loop is not gated by the `enabled` kill switch, only by
 ### T-24h
 
 - [ ] Pi updated, images pulled with the tag from `.env.local`
-      (`docker compose -f docker-compose.yml --env-file .env --env-file .env.local pull`). Run on the
+      (`./scripts/setup/joustmania-compose.sh pull`). Run on the
       Pi itself: arm64 images, **verify in rehearsal**.
+- [ ] The running agent has its backend keys (values never printed; also
+      section 4 of `./scripts/talk-preflight.sh`):
+      ```bash
+      for k in JEV_API_KEY ANTHROPIC_API_KEY DECISION_OPENAI_API_KEY; do
+        docker exec joustmania-agent sh -c "test -n \"\$$k\"" && echo "$k set" || echo "$k MISSING"
+      done
+      ```
+      `JEV_API_KEY` and `ANTHROPIC_API_KEY` must be set; `DECISION_OPENAI_API_KEY`
+      only if beat 6b stays in.
+- [ ] Reboot test (#1488): `sudo systemctl restart joustmania`, wait for it,
+      then `docker inspect -f '{{.Config.Image}}' joustmania-agent` ends in the
+      `IMAGE_TAG` from `.env.local` (not `0.7.0`), the journal shows
+      `Env files: .env + .env.local`, and the key check above still says `set`.
 - [ ] No dev ports on the venue network (#1319): `sudo ss -tlnp | grep -v 127.0.0.1`
       lists port 80 (envoy) and no 50052-50062, 8013, 8015, 4317 or 50058.
       Also expected: sshd on :22 and the pairing daemon's 8002 on

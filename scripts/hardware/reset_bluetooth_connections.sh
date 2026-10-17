@@ -22,9 +22,8 @@ for arg in "$@"; do
 done
 
 CMD=(python -m psmove_pairing.registrations "$@")
-# Name the compose file: a bare `docker compose` also loads the dev override
-# (docker-compose.override.yml), which the Pi never runs (#1319).
-COMPOSE=(docker compose -f docker-compose.yml)
+# Compose as the Pi runs it (no dev override, #1319; .env + .env.local, #1488)
+COMPOSE=("$REPO_ROOT/scripts/setup/joustmania-compose.sh")
 
 status=0
 if "${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -qx pairing-daemon; then
