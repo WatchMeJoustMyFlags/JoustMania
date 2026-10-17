@@ -1116,7 +1116,7 @@
       },
       "id": 16,
       "panels": [],
-      "title": "Game Loop Health",
+      "title": "Game Loop Health ($game_kind)",
       "type": "row"
     },
     {
@@ -1226,7 +1226,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_actual_update_frequency_hz{game_kind=~\"$game_kind\"}",
+          "expr": "max by (game_kind, game_id) (game_actual_update_frequency_hz{game_kind=~\"$game_kind\"})",
           "refId": "A",
           "legendFormat": "actual {{game_kind}} {{game_id}}"
         },
@@ -1235,12 +1235,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_current_update_frequency_hz",
+          "expr": "max(game_current_update_frequency_hz)",
           "refId": "B",
           "legendFormat": "configured"
         }
       ],
-      "description": "Measured loop rate of each live game against the configured rate (game_loop.update_frequency_hz flag)."
+      "description": "Measured loop rate of each live game of the selected kind against the configured rate (game_current_update_frequency_hz: the process-wide game_loop.update_frequency_hz value, the same for every game)."
     },
     {
       "type": "timeseries",
@@ -1331,19 +1331,19 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_loop_jitter_ms",
+          "expr": "max by (game_id) (game_loop_jitter_ms{game_kind=~\"$game_kind\"})",
           "refId": "A",
-          "legendFormat": "jitter (stddev)"
+          "legendFormat": "{{game_id}}"
         }
       ],
-      "description": "Standard deviation of the last 60 frame times, in milliseconds (game_loop_jitter_ms). One game-wide series, written by every running game."
+      "description": "Standard deviation of the last 60 frame times of each live game of the selected kind, in milliseconds (game_loop_jitter_ms, one series per game_id, removed when the game ends)."
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Share of frames within 1.5x the target frame time since the loop started. One game-wide series.",
+      "description": "Share of frames within 1.5x the target frame time since the loop started, per live game of the selected kind (game_loop_frame_consistency_percent, one series per game_id).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1400,8 +1400,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_loop_frame_consistency_percent",
-          "refId": "A"
+          "expr": "max by (game_id) (game_loop_frame_consistency_percent{game_kind=~\"$game_kind\"})",
+          "refId": "A",
+          "legendFormat": "{{game_id}}"
         }
       ],
       "title": "Frame Consistency",
@@ -1412,7 +1413,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Latest frame-time standard deviation (ms).",
+      "description": "Latest frame-time standard deviation (ms) per live game of the selected kind.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1467,8 +1468,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_loop_jitter_ms",
-          "refId": "A"
+          "expr": "max by (game_id) (game_loop_jitter_ms{game_kind=~\"$game_kind\"})",
+          "refId": "A",
+          "legendFormat": "{{game_id}}"
         }
       ],
       "title": "Frame Jitter",
