@@ -24,7 +24,7 @@ type servedRollout struct {
 
 func newServedRollout() *servedRollout { return &servedRollout{epoch: "e1"} }
 
-func (s *servedRollout) ServedStage() (ServedRolloutStage, error) {
+func (s *servedRollout) ServedStage(context.Context) (ServedRolloutStage, error) {
 	s.smu.Lock()
 	defer s.smu.Unlock()
 	s.reads++
@@ -85,15 +85,15 @@ func TestInfraLoop_InactiveRolloutResetsState(t *testing.T) {
 }
 
 // After a real rollback the cooldown runs; the operator ends the rollout and
-// starts the next one inside the cooldown. The cooldown belonged to the old run,
-// so the new one expands at once.
-// UC: UC-051 A2
+// starts the next one inside the cooldown. The reset drops the last written stage
+// but not the cooldown: the new rollout waits for it, then expands.
+// UC: UC-051 main
 // UC: UC-070 A1
-func TestInfraLoop_InactiveRolloutClearsCooldown(t *testing.T) {
-	t.Run("UC-051/A2 a manual reset clears the cooldown like an agent restart", func(t *testing.T) {
+func TestInfraLoop_InactiveRolloutKeepsCooldown(t *testing.T) {
+	t.Run("UC-051/main a manual reset does not clear the cooldown", func(t *testing.T) {
 		clock := time.Unix(1000, 0)
 		rollout := &fakeRollout{}
-		l, sr := newInfraLoop(t, rollout, &clock)
+		l, _ := newInfraLoop(t, rollout, &clock)
 		l.SetRemediationSource(StaticRemediation(true))
 		l.SetCooldown(30 * time.Second)
 
@@ -102,15 +102,59 @@ func TestInfraLoop_InactiveRolloutClearsCooldown(t *testing.T) {
 		l.OnInfraEvaluate(context.Background(), infraSnap("", 0, clock, passingHz)) // reset
 		clock = clock.Add(2 * time.Second)
 		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz))
-
-		if got := rollout.calls(); len(got) != 2 || got[0] != "none" || got[1] != "one" {
-			t.Fatalf("writes = %v, want [none one] (no cooldown carried into the new rollout)", got)
+		if got := rollout.calls(); len(got) != 1 {
+			t.Fatalf("writes = %v, want [none] (the cooldown still holds)", got)
 		}
-		spans := infraSpans(sr)
-		if v, _ := spanStr(spans[len(spans)-1], AttrRemediationAction); v != RemediationExpand {
-			t.Errorf("last action = %q, want %q", v, RemediationExpand)
+
+		clock = clock.Add(30 * time.Second) // past the cooldown
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz))
+		if got := rollout.calls(); len(got) != 2 || got[1] != "one" {
+			t.Fatalf("writes = %v, want [none one] (expands once the cooldown ends)", got)
 		}
 	})
+}
+
+// The controller manager also reports no target backend when its flag read
+// fails. A single such blip right after a rollback must not re-open expansion:
+// not at the reset stage, and not from a lagging observation of the old stage
+// (which would overwrite the rollback with a wider stage).
+// UC: UC-051 main
+// UC: UC-050 BR-001
+func TestInfraLoop_InactiveBlipKeepsRollbackCooldown(t *testing.T) {
+	cases := []struct {
+		name     string
+		observed int // stage observed after the blip
+		rollout  RolloutActuator
+	}{
+		{"UC-051/main blip in the cooldown at stage none", 0, &fakeRollout{}},
+		{"UC-051/main blip with the rollback in flight, lagging observation", 3, &fakeRollout{}},
+		{"UC-051/main blip with the rollback in flight, served-stage reader", 3, newServedRollout()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := time.Unix(1000, 0)
+			l, _ := newInfraLoop(t, tc.rollout, &clock)
+			l.SetRemediationSource(StaticRemediation(true))
+			l.SetCooldown(30 * time.Second)
+			calls := func() []string {
+				if s, ok := tc.rollout.(*servedRollout); ok {
+					return s.calls()
+				}
+				return tc.rollout.(*fakeRollout).calls()
+			}
+
+			l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 3, clock, failingHz)) // rollback → none
+			clock = clock.Add(6 * time.Second)
+			l.OnInfraEvaluate(context.Background(), infraSnap("", 0, clock, passingHz)) // blip
+			for i := 0; i < 3; i++ {
+				clock = clock.Add(time.Second)
+				l.OnInfraEvaluate(context.Background(), infraSnap("unstable", tc.observed, clock, passingHz))
+			}
+			if got := calls(); len(got) != 1 || got[0] != "none" {
+				t.Fatalf("writes = %v, want [none] (a blip must not re-open expansion inside the cooldown)", got)
+			}
+		})
+	}
 }
 
 // The operator resets only current_controller_count (target and strategy
@@ -169,33 +213,47 @@ func TestInfraLoop_ServedOwnWriteKeepsReconcileGuard(t *testing.T) {
 	})
 }
 
-// The flag service restarts: a new boot epoch, every overlay gone. The agent's
-// record of its write is void and the rollout climbs again from what is served.
+// The flag service restarts: a new boot epoch. The agent's record of its write is
+// void and the rollout climbs again from the observed stage; a running cooldown
+// is kept. (With the real service the restart also drops the agent's overlay, so
+// ByAgent alone would catch it; here the overlay is still marked as the agent's,
+// so only the epoch tells the restart apart.)
 // UC: UC-050 BR-001
-// UC: UC-051 A2
 func TestInfraLoop_FlagServiceRestartResetsState(t *testing.T) {
-	t.Run("UC-051/A2 new epoch clears the last write and the cooldown", func(t *testing.T) {
+	t.Run("UC-050/BR-001 new epoch clears the last write", func(t *testing.T) {
+		clock := time.Unix(1000, 0)
+		rollout := newServedRollout()
+		l, _ := newInfraLoop(t, rollout, &clock)
+
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz)) // expand → one
+		clock = clock.Add(time.Minute)
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz)) // lag, epoch e1 seen
+		if got := rollout.calls(); len(got) != 1 {
+			t.Fatalf("writes = %v, want [one] (lagging observation of the agent's own write)", got)
+		}
+
+		rollout.serve(ServedRolloutStage{Value: 1, OnLadder: true, ByAgent: true, Epoch: "e2"})
+		clock = clock.Add(time.Second)
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz))
+		if got := rollout.calls(); len(got) != 2 || got[1] != "one" {
+			t.Fatalf("writes = %v, want [one one] (the restart voided the last write)", got)
+		}
+	})
+	t.Run("UC-050/BR-001 new epoch keeps the cooldown", func(t *testing.T) {
 		clock := time.Unix(1000, 0)
 		rollout := newServedRollout()
 		l, _ := newInfraLoop(t, rollout, &clock)
 		l.SetRemediationSource(StaticRemediation(true))
 		l.SetCooldown(30 * time.Second)
 
-		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 1, clock, failingHz)) // rollback → none
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 3, clock, failingHz)) // rollback → none
 		clock = clock.Add(time.Second)
-		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz)) // cooldown, epoch e1 seen
-		if got := rollout.calls(); len(got) != 1 {
-			t.Fatalf("writes = %v, want [none] (cooldown holds while e1 serves the agent's none)", got)
-		}
-
-		// Same served value, still marked as the agent's, but a new epoch: only the
-		// epoch tells the restart apart.
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 3, clock, passingHz)) // in flight, e1 seen
 		rollout.serve(ServedRolloutStage{Value: 0, OnLadder: true, ByAgent: true, Epoch: "e2"})
 		clock = clock.Add(time.Second)
-		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz))
-
-		if got := rollout.calls(); len(got) != 2 || got[1] != "one" {
-			t.Fatalf("writes = %v, want [none one] (the restart voided the cooldown)", got)
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 3, clock, passingHz))
+		if got := rollout.calls(); len(got) != 1 {
+			t.Fatalf("writes = %v, want [none] (the cooldown survives the restart)", got)
 		}
 	})
 }
@@ -236,6 +294,44 @@ func TestInfraLoop_ServedStageReadOnlyWhenBlocked(t *testing.T) {
 		}
 		if n := rollout.readCount(); n != 0 {
 			t.Fatalf("served stage read %d times, want 0", n)
+		}
+	})
+}
+
+// The served stage is read only while a write is in flight. After a rollback the
+// reads stop once the observation is back at none, through the rest of the
+// cooldown and after it.
+// UC: UC-051 main
+func TestInfraLoop_ServedStageReadsStopAfterRollbackLands(t *testing.T) {
+	t.Run("UC-051/main no reads once the rollback is observed", func(t *testing.T) {
+		clock := time.Unix(1000, 0)
+		rollout := newServedRollout()
+		l, _ := newInfraLoop(t, rollout, &clock)
+		l.SetRemediationSource(StaticRemediation(true))
+		l.SetCooldown(30 * time.Second)
+
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 3, clock, failingHz)) // rollback → none
+		clock = clock.Add(time.Second)
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 3, clock, failingHz)) // in flight: read
+		clock = clock.Add(time.Second)
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz)) // lands: last read
+		inFlight := rollout.readCount()
+		if inFlight == 0 {
+			t.Fatal("served stage never read while the rollback was in flight")
+		}
+
+		for i := 0; i < 5; i++ { // rest of the cooldown
+			clock = clock.Add(time.Second)
+			l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz))
+		}
+		clock = clock.Add(30 * time.Second) // cooldown over; failing at none writes nothing
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, failingHz))
+
+		if n := rollout.readCount(); n != inFlight {
+			t.Fatalf("served stage read %d times, want %d (no reads after the rollback landed)", n, inFlight)
+		}
+		if got := rollout.calls(); len(got) != 1 {
+			t.Fatalf("writes = %v, want [none]", got)
 		}
 	})
 }

@@ -46,7 +46,7 @@ func TestRolloutWriter_ServedStage(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("UC-050/BR-001 baseline is not the agent's", func(t *testing.T) {
-		got, err := w.ServedStage()
+		got, err := w.ServedStage(ctx)
 		if err != nil || got.ByAgent || !got.OnLadder || got.Value != StageNoneValue || got.Epoch == "" {
 			t.Fatalf("ServedStage() = (%+v, %v), want baseline none, not by agent, with an epoch", got, err)
 		}
@@ -55,7 +55,7 @@ func TestRolloutWriter_ServedStage(t *testing.T) {
 		if err := w.SetControllerCount(StageThreeVariant); err != nil {
 			t.Fatal(err)
 		}
-		got, err := w.ServedStage()
+		got, err := w.ServedStage(ctx)
 		if err != nil || !got.ByAgent || got.Value != StageThreeValue {
 			t.Fatalf("ServedStage() = (%+v, %v), want three by agent", got, err)
 		}
@@ -65,15 +65,15 @@ func TestRolloutWriter_ServedStage(t *testing.T) {
 			flagservice.Write{Variant: StageNoneVariant, Writer: "stage"}); err != nil {
 			t.Fatal(err)
 		}
-		got, err := w.ServedStage()
+		got, err := w.ServedStage(ctx)
 		if err != nil || got.ByAgent || got.Value != StageNoneValue {
 			t.Fatalf("ServedStage() = (%+v, %v), want none, not by agent", got, err)
 		}
 	})
-	t.Run("UC-051/A2 a flag-service restart changes the epoch", func(t *testing.T) {
-		before, _ := w.ServedStage()
+	t.Run("UC-050/BR-001 a flag-service restart changes the epoch", func(t *testing.T) {
+		before, _ := w.ServedStage(ctx)
 		svc.Restart()
-		got, err := w.ServedStage()
+		got, err := w.ServedStage(ctx)
 		if err != nil || got.Epoch == before.Epoch || got.ByAgent {
 			t.Fatalf("ServedStage() = (%+v, %v), want a new epoch and no agent overlay (before %q)", got, err, before.Epoch)
 		}
@@ -85,7 +85,7 @@ func TestRolloutWriter_ServedStage(t *testing.T) {
 // UC: UC-050 BR-001
 func TestRolloutWriter_ServedStageWithoutReader(t *testing.T) {
 	w, _ := newTestRolloutWriter(t)
-	if _, err := w.ServedStage(); err == nil {
+	if _, err := w.ServedStage(context.Background()); err == nil {
 		t.Fatal("ServedStage() on a write-only service: want an error")
 	}
 }
@@ -95,7 +95,6 @@ func TestRolloutWriter_ServedStageWithoutReader(t *testing.T) {
 // the agent's back (an operator write, or a flag-service restart). The observed
 // stage drops to none and the loop climbs again, without an agent restart.
 // UC: UC-050 BR-001
-// UC: UC-051 A2
 // UC: UC-070 A1
 func TestGatedRolloutActuator_LoopRecoversFromExternalReset(t *testing.T) {
 	cases := []struct {
@@ -108,7 +107,7 @@ func TestGatedRolloutActuator_LoopRecoversFromExternalReset(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"UC-051/A2 flag service restarts", func(t *testing.T, svc *fake.Service) { svc.Restart() }},
+		{"UC-050/BR-001 flag service restarts", func(t *testing.T, svc *fake.Service) { svc.Restart() }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

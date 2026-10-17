@@ -146,8 +146,8 @@ func (a *GatedRolloutActuator) StageVariantForValue(value int) (string, bool) {
 // ServedStage delegates to the wrapped writer regardless of the gate: reading the
 // served stage writes nothing, and the loop needs it to notice an operator reset
 // or a flag-service restart even while rollout_enabled is off (#1384).
-func (a *GatedRolloutActuator) ServedStage() (decision.ServedRolloutStage, error) {
-	return a.writer.ServedStage()
+func (a *GatedRolloutActuator) ServedStage(ctx context.Context) (decision.ServedRolloutStage, error) {
+	return a.writer.ServedStage(ctx)
 }
 
 var _ decision.RolloutStageReader = (*GatedRolloutActuator)(nil)

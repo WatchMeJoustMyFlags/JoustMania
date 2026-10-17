@@ -390,8 +390,10 @@ A dry run (`rollout_enabled` off) keeps no rollout state, so flipping it back
 on resumes without a restart.
 
 Reset after a run (no agent restart: once the agent sees the rollout inactive, or
-sees a `current_controller_count` it did not write, it drops its last written stage
-and the post-rollback cooldown, so the next run starts fresh; #1384):
+sees a `current_controller_count` it did not write, it drops its last written stage;
+#1384). The post-rollback cooldown is kept, so after a reset that follows a
+rollback the next run's first expansion can wait up to the cooldown (about 30 s,
+`AGENT_ROLLOUT_COOLDOWN_SECONDS`):
 
 ```bash
 setflag rollout strategy off; setflag rollout target_backend python

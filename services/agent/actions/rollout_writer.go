@@ -156,12 +156,11 @@ type rolloutStateService interface {
 // in-memory rollout state when an operator reset the stage or the flag service
 // restarted (#1384). The epoch is read first: a restart between the two reads
 // then shows up as an epoch change on the next check (the safe direction).
-func (w *RolloutWriter) ServedStage() (decision.ServedRolloutStage, error) {
+func (w *RolloutWriter) ServedStage(ctx context.Context) (decision.ServedRolloutStage, error) {
 	svc, ok := w.svc.(rolloutStateService)
 	if !ok {
 		return decision.ServedRolloutStage{}, fmt.Errorf("flag service client cannot read flags")
 	}
-	ctx := context.Background()
 	epoch, err := svc.Epoch(ctx)
 	if err != nil {
 		return decision.ServedRolloutStage{}, err

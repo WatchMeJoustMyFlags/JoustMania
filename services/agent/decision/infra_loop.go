@@ -86,7 +86,7 @@ type ServedRolloutStage struct {
 // or the flag service restarted (#1384). An actuator without it keeps the old
 // behaviour (the state is cleared only when the rollout becomes inactive).
 type RolloutStageReader interface {
-	ServedStage() (ServedRolloutStage, error)
+	ServedStage(ctx context.Context) (ServedRolloutStage, error)
 }
 
 // RemediationSource resolves the `remediation_allowed` gate that decides
@@ -165,8 +165,8 @@ const (
 // before the loop starts climbing the ladder again. Without it the loop would
 // roll back, immediately see passing fitness at stage none, and re-expand into
 // the same failure. Tunable via AGENT_ROLLOUT_COOLDOWN_SECONDS (read at
-// construction in main.go); held in-memory. An agent restart clears it, and so
-// does an operator ending or resetting the rollout (#1384).
+// construction in main.go); held in-memory, so an agent restart clears it. An
+// operator reset does not: it expires on its own (#1384).
 const DefaultRolloutCooldown = 30 * time.Second
 
 // AttrRolloutControllerCount is the new rollout stage VALUE recorded on the
@@ -235,9 +235,8 @@ type InfraLoop struct {
 	// "nothing written yet", so the first expansion is never blocked.
 	lastWritten int
 	// cooldownUntil is the wall-clock time until which re-expansion is suppressed
-	// after a rollback. Zero = no cooldown. In-memory only; cleared with the rest of
-	// the rollout state when the rollout becomes inactive or the served stage is no
-	// longer the agent's write (resetRolloutStateLocked, #1384).
+	// after a rollback. Zero = no cooldown. In-memory only; resetRolloutStateLocked
+	// keeps it (a blip of the inactive signal must not re-open expansion, #1384).
 	cooldownUntil time.Time
 	// rollbackInFlight is true between writing a rollback and observing the
 	// rollout count return to 0. While set, further failing cycles record "none"
@@ -381,8 +380,10 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	stage := snap.Window.RolloutCount
 	if target == "" {
 		// Rollout inactive → no decision span. An operator ended the rollout (strategy
-		// off), so forget everything kept about it: the next active rollout starts
-		// fresh instead of inheriting a last written stage or a cooldown (#1384).
+		// off), so forget the last written stage: the next active rollout climbs from
+		// the observed stage instead of waiting for a write it will never see (#1384).
+		// The cooldown is kept: the controller manager also reports "" when a flag
+		// read fails, so a single blip must not re-open expansion after a rollback.
 		l.mu.Lock()
 		l.resetRolloutStateLocked("rollout_inactive")
 		l.mu.Unlock()
@@ -406,7 +407,7 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	// The flag service, not this process, owns the stage: if what it serves is no
 	// longer the agent's last write (an operator reset, a flag-service restart),
 	// drop the in-memory state that would otherwise block expansion (#1384).
-	l.reconcileServedLocked(now, stage)
+	l.reconcileServedLocked(ctx, stage)
 
 	// Episode bookkeeping: once a rollback's reset has been observed to land
 	// (RolloutCount back to 0), the failure episode is over — clear the in-flight
@@ -499,13 +500,13 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	l.emitDecisionSpan(ctx, now, snap, fit, target, stage, action, expandedTo, wroteVariant, dryRun, writeErr)
 }
 
-// holdsBlockingStateLocked reports whether in-memory rollout state would hold
-// back the loop this cycle: an expansion the observation has not caught up with,
-// a rollback in flight, or a running post-rollback cooldown. Only then is the
-// served stage worth a read. Caller holds mu.
-func (l *InfraLoop) holdsBlockingStateLocked(now time.Time, observedStage int) bool {
-	return observedStage < l.lastWritten || l.rollbackInFlight ||
-		(!l.cooldownUntil.IsZero() && now.Before(l.cooldownUntil))
+// holdsBlockingStateLocked reports whether the agent's record of its last write
+// holds back the loop this cycle: an expansion the observation has not caught up
+// with, or a rollback in flight. Only then is the served stage worth a read (two
+// requests per cycle). The cooldown is not a reason to read: no reset clears it,
+// it expires on its own. Caller holds mu.
+func (l *InfraLoop) holdsBlockingStateLocked(observedStage int) bool {
+	return observedStage < l.lastWritten || l.rollbackInFlight
 }
 
 // reconcileServedLocked checks the loop's state against the stage the flag
@@ -520,17 +521,21 @@ func (l *InfraLoop) holdsBlockingStateLocked(now time.Time, observedStage int) b
 // only through an actuator that implements RolloutStageReader. A read error
 // keeps the state (fail safe: an unreachable flag service never unblocks an
 // expansion). Caller holds mu.
-func (l *InfraLoop) reconcileServedLocked(now time.Time, observedStage int) {
+func (l *InfraLoop) reconcileServedLocked(ctx context.Context, observedStage int) {
 	reader, ok := l.rollout.(RolloutStageReader)
-	if !ok || !l.holdsBlockingStateLocked(now, observedStage) {
+	if !ok || !l.holdsBlockingStateLocked(observedStage) {
 		return
 	}
-	served, err := reader.ServedStage()
+	served, err := reader.ServedStage(ctx)
 	if err != nil {
 		l.log.Debug("agent.rollout_served_stage_unreadable", "error", err)
 		return
 	}
 	switch {
+	// Defence in depth: with the real flag service a restart also drops the
+	// agent's overlay, so ByAgent is false and the next case fires anyway. The
+	// epoch check only matters for a service that kept the overlay across a new
+	// epoch.
 	case l.servedEpoch != "" && served.Epoch != "" && served.Epoch != l.servedEpoch:
 		l.resetRolloutStateLocked("flag_service_restarted")
 	case !served.ByAgent || !served.OnLadder || served.Value != l.lastWritten:
@@ -540,14 +545,16 @@ func (l *InfraLoop) reconcileServedLocked(now time.Time, observedStage int) {
 	}
 }
 
-// resetRolloutStateLocked forgets everything the loop keeps about the current
-// rollout, real and rehearsed, so the next active rollout starts as after an
-// agent restart. A no-op (and silent) when there is nothing to forget. Caller
-// holds mu.
+// resetRolloutStateLocked forgets the loop's record of its last write (stage,
+// expansion time, rollback in flight), real and rehearsed, so the next active
+// rollout climbs from the observed stage. The cooldowns (cooldownUntil,
+// dryRunCooldownUntil) are deliberately kept: the inactive signal can be a flag
+// read blip in the controller manager, and clearing the cooldown on it would
+// re-expand into the stage that just failed. They expire on their own. A no-op
+// (and silent) when there is nothing to forget. Caller holds mu.
 func (l *InfraLoop) resetRolloutStateLocked(reason string) {
 	if l.lastWritten == 0 && l.lastExpansion.IsZero() && !l.rollbackInFlight &&
-		l.cooldownUntil.IsZero() && l.servedEpoch == "" &&
-		l.dryRunLastExpansion.IsZero() && l.dryRunCooldownUntil.IsZero() {
+		l.servedEpoch == "" && l.dryRunLastExpansion.IsZero() {
 		return
 	}
 	l.log.Info("agent.rollout_state_reset", "reason", reason,
@@ -555,10 +562,8 @@ func (l *InfraLoop) resetRolloutStateLocked(reason string) {
 	l.lastWritten = rolloutStageNoneValue
 	l.lastExpansion = time.Time{}
 	l.rollbackInFlight = false
-	l.cooldownUntil = time.Time{}
 	l.servedEpoch = ""
 	l.dryRunLastExpansion = time.Time{}
-	l.dryRunCooldownUntil = time.Time{}
 }
 
 // applyLocked writes variant through the actuator and reports whether this cycle
