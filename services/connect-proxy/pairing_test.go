@@ -96,3 +96,38 @@ func TestUnpairHandler(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-005 BR-003
+func TestSameOriginOnly(t *testing.T) {
+	called := 0
+	h := sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
+		called++
+		w.WriteHeader(http.StatusOK)
+	})
+	cases := []struct {
+		name, origin string
+		want         int
+	}{
+		{"UC-005/BR-003 no Origin (curl, scripts) passes", "", http.StatusOK},
+		{"UC-005/BR-003 same-origin dashboard passes", "http://joustmania.local", http.StatusOK},
+		{"UC-005/BR-003 foreign page is rejected", "https://evil.example", http.StatusForbidden},
+		{"UC-005/BR-003 same host other port is rejected", "http://joustmania.local:8080", http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := called
+			req := httptest.NewRequest(http.MethodPost, "http://joustmania.local/pairing/unpair", nil)
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			rec := httptest.NewRecorder()
+			h(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("got %d, want %d", rec.Code, tc.want)
+			}
+			if (tc.want == http.StatusOK) != (called == before+1) {
+				t.Fatalf("handler called=%v, want %v", called != before, tc.want == http.StatusOK)
+			}
+		})
+	}
+}

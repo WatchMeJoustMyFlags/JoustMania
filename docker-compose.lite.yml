@@ -140,6 +140,9 @@ services:
       - POLL_INTERVAL=10
       - BT_MONITOR_INTERVAL=5
       - METRICS_PORT=8002
+      # Bridge network: bind all container interfaces (reachable only on the
+      # joustmania network, port not published; UC-005 BR-003)
+      - CONTROL_BIND=0.0.0.0
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SDK_DISABLED=true
       # bluetooth_backend (default rust) pairs through rust-hid's PairingService

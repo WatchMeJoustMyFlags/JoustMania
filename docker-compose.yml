@@ -298,9 +298,12 @@ services:
       - /var/lib/bluetooth:/var/lib/bluetooth
       # USB device access
       - /dev:/dev:rslave
-    # Port 8002 (health) binds directly on host via network_mode: host
+    # Port 8002 (health + UC-005 unpair) binds on the host via network_mode: host,
+    # only on loopback and the docker0 gateway (what host.docker.internal resolves
+    # to), so the connect-proxy reaches it but the LAN does not (UC-005 BR-003).
     environment:
       - METRICS_PORT=8002
+      - CONTROL_BIND=${PAIRING_CONTROL_BIND:-127.0.0.1,172.17.0.1}
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SERVICE_NAME=pairing-daemon
       - OTEL_SERVICE_NAMESPACE=infrastructure

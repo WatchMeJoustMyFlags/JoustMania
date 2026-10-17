@@ -27,8 +27,27 @@ const maxDaemonResponseBytes = 64 << 10
 // no authentication (UC-005 BR-003), like the chaos and canary endpoints.
 func registerPairingHandlers(mux *http.ServeMux) {
 	client := &http.Client{Timeout: 35 * time.Second}
-	mux.HandleFunc("/pairing/unpair", unpairHandler(pairingDaemonURL, client))
+	mux.HandleFunc("/pairing/unpair", sameOriginOnly(unpairHandler(pairingDaemonURL, client)))
 	slog.Info("Pairing handlers registered", "pairing_daemon", pairingDaemonURL)
+}
+
+// sameOriginOnly rejects cross-site browser requests to an operator action
+// (CSRF, UC-005 BR-003): the CORS middleware allows any origin for the Connect
+// RPCs, so without this any web page open on the operator's laptop could POST
+// here. The dashboard is same-origin (served by envoy); curl and scripts send no
+// Origin header and pass.
+func sameOriginOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" {
+			parsed, err := url.Parse(origin)
+			if err != nil || !strings.EqualFold(parsed.Host, r.Host) {
+				slog.Warn("rejected cross-origin operator request", "path", r.URL.Path, "origin", origin, "host", r.Host)
+				writeJSONError(w, http.StatusForbidden, "cross-origin request rejected")
+				return
+			}
+		}
+		next(w, r)
+	}
 }
 
 type unpairRequest struct {

@@ -114,6 +114,8 @@ static_resources:
                             prefix: "/pairing/"
                           route:
                             cluster: connect_proxy
+                            # above the proxy's 35 s client and the daemon's 30 s unpair timeout
+                            timeout: 40s
 
                         # Health check endpoint
                         - match:

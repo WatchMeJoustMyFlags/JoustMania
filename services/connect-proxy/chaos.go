@@ -38,9 +38,9 @@ func registerChaosHandlers(mux *http.ServeMux) {
 	faults := []string{"poll-drop", "accel-spike", "led-failure", "disconnect"}
 	for _, fault := range faults {
 		f := fault
-		mux.HandleFunc("/chaos/"+f, chaosSetHandler(f))
+		mux.HandleFunc("/chaos/"+f, sameOriginOnly(chaosSetHandler(f)))
 	}
-	mux.HandleFunc("/chaos/reset", chaosResetHandler)
+	mux.HandleFunc("/chaos/reset", sameOriginOnly(chaosResetHandler))
 	mux.HandleFunc("/chaos/status", chaosStatusHandler)
 
 	slog.Info("Chaos handlers registered", "flagd_config", flagdConfigPath)
