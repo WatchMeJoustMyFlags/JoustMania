@@ -945,6 +945,21 @@
               {
                 "id": "color",
                 "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
                   "fixedColor": "red",
                   "mode": "fixed"
                 }
@@ -1001,7 +1016,7 @@
           "legendFormat": "{{outcome}}"
         }
       ],
-      "description": "Completed games by outcome over the time range: winner and tie (JoustFFA's natural end), completed (a natural end of a mode that does not classify it yet, or a session that ended on an error), force_ended (ForceEndGame, preemption by a real game). The game.outcome span attribute, as the outcome label of games_completed_total (UC-020 BR-003, #1427)."
+      "description": "Completed games by outcome over the time range: winner and tie (JoustFFA's natural end), completed (a natural end of a mode that does not classify it yet), force_ended (ForceEndGame, preemption by a real game), error (the session published game_error: no gRPC clients, mode creation failed, or the game loop raised). The game.outcome span attribute, as the outcome label of games_completed_total (UC-020 BR-003, #1427)."
     },
     {
       "type": "timeseries",

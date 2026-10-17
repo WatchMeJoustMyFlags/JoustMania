@@ -1,8 +1,10 @@
 """games_completed_total{outcome} (#1427, maintainer decision 3).
 
 The session labels each completed game with the game's own ``game.outcome``
-(UC-020 BR-003, #1328): winner, tie, completed or force_ended. Nothing else
-reaches the label, so it adds at most four series per (mode, game_kind).
+(UC-020 BR-003, #1328): winner, tie, completed or force_ended, or with
+``error`` when the session published game_error (no gRPC clients, mode creation
+failed, game.run() raised). Nothing else reaches the label, so it adds at most
+five series per (mode, game_kind).
 """
 
 import sys
@@ -119,15 +121,50 @@ class TestGamesCompletedOutcomeLabel:
     @patch("services.game_coordinator.game_session.metrics")
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
-    async def test_session_without_a_game_counts_completed(self, mock_tracer_mod, mock_factory, mock_metrics):
-        """Mode creation failed: there is no game outcome, so the session counts ``completed``."""
+    async def test_clients_not_connected_counts_error(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """No gRPC clients: the session publishes game_error and never builds a game: ``error``."""
+        session = _make_session()
+        session.clients.is_connected = False
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+
+        await session._run_game_loop_async()
+
+        mock_factory.create_game.assert_not_called()
+        assert mock_metrics.games_completed_total.labels.call_args.kwargs["outcome"] == "error"
+
+    @pytest.mark.uc("UC-020", br=["BR-003"])
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_mode_creation_failure_counts_error(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """GameFactory raised ValueError (unknown mode): game_error, ``error``."""
         session = _make_session()
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         mock_factory.create_game.side_effect = ValueError("Unknown game mode: 'BadGame'")
 
         await session._run_game_loop_async()
 
-        assert mock_metrics.games_completed_total.labels.call_args.kwargs["outcome"] == "completed"
+        assert mock_metrics.games_completed_total.labels.call_args.kwargs["outcome"] == "error"
+
+    @pytest.mark.uc("UC-020", br=["BR-003"])
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_game_run_raising_counts_error(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """game.run() raised: game_error, ``error``, not the game's (natural) outcome."""
+        game = _completed_game()
+        session = _make_session()
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        game.run = AsyncMock(side_effect=RuntimeError("loop crashed"))
+        mock_factory.create_game.return_value = game
+
+        await session._run_game_loop_async()
+
+        error_calls = [c for c in session.event_bus.publish.call_args_list if c.args[0] == "game_error"]
+        assert error_calls
+        assert mock_metrics.games_completed_total.labels.call_args.kwargs["outcome"] == "error"
 
     @pytest.mark.uc("UC-020", flow="A4", br=["BR-003"])
     @pytest.mark.asyncio
@@ -156,8 +193,8 @@ class TestGamesCompletedOutcomeLabel:
 
 class TestCompletedGameOutcomeIsBounded:
     @pytest.mark.uc("UC-020", br=["BR-003"])
-    def test_only_the_four_outcomes(self):
-        expected = {"winner", "tie", "completed", "force_ended"}
+    def test_only_the_five_outcomes(self):
+        expected = {"winner", "tie", "completed", "force_ended", "error"}
         assert expected == GAME_OUTCOMES
 
     @pytest.mark.uc("UC-020", br=["BR-003"])
