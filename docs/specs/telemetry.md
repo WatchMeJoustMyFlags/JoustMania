@@ -336,7 +336,7 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `game_player_skill_level` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |
 | `game_player_warnings_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |
 | `game_players_alive` | gauge | (none) | game-coordinator | yes | grafana |
-| `game_sensitivity` | gauge | (none) | game-coordinator | yes | grafana |
+| `game_sensitivity` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana |
 | `game_flag_service_calls_total` | counter | `call` (`register`, `end`, `reconcile`), `result` (`ok`, `error`, `timeout`) | game-coordinator | yes (when `FLAG_SERVICE_URL` is set; FR-135, #1410) | (none) |
 | `game_intervention_event_gaps_total` | counter | `flag` | game-coordinator | yes (event-list reader on; FR-137, #1410) | (none) |
 | `game_shadow_games_blocked_total` | counter | (none) | game-coordinator | yes | (none) |
