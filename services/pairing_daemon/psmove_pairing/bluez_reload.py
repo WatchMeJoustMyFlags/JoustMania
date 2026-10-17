@@ -6,7 +6,8 @@ controller, so it is governed by the ``pairing.bluez_restart_mode`` flag:
 - ``when_idle`` (shipped default, #1466): restart only after a new BlueZ device
   record was written (UC-001 A7, BR-008), and only while the real (primary)
   game is not starting, running or ending. The restart is otherwise left
-  pending and retried on each USB poll (under the pairing lock).
+  pending and retried on each USB poll (under the pairing lock); so is a
+  restart that failed, with a growing wait between attempts (#1490).
 - ``never`` (fallback when flagd is unreachable): never restart.
 - ``always``: restart after every successful pairing (pre-#1446 behaviour).
 
@@ -26,6 +27,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -45,6 +47,8 @@ GAME_STATE_TIMEOUT_SECONDS = 2.0
 BUSY_GAME_STATES = frozenset({"STARTING", "RUNNING", "ENDING"})
 # Time for bluetoothd to come back and re-read its storage
 RESTART_SETTLE_SECONDS = 3.0
+# Wait before the next attempt after 1, 2, 3, 4+ consecutive failed restarts (#1490)
+RESTART_RETRY_BACKOFF_SECONDS = (10.0, 30.0, 60.0, 300.0)
 # No proxy handler: HTTP_PROXY / ALL_PROXY must not intercept the local envoy route
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -75,11 +79,14 @@ async def restart_bluetoothd() -> None:
     """Restart bluetooth.service through systemd's D-Bus API, let it settle, re-register the agent.
 
     The restart ends the bluetoothctl agent session (#632); without a new one a
-    ZCM2 has no PIN agent. The agent is registered again even when the restart
-    call failed, since bluetoothd may have restarted anyway.
+    ZCM2 has no PIN agent. Once systemd has accepted the restart, the agent is
+    registered again even if the wait is cut short. When ``RestartUnit`` itself
+    fails, no job was queued and bluetoothd keeps running with the current agent
+    session, so the agent is left alone: a new one would only open a window
+    without any agent.
     """
+    await bluez_dbus.restart_systemd_unit("bluetooth.service")
     try:
-        await bluez_dbus.restart_systemd_unit("bluetooth.service")
         await asyncio.sleep(RESTART_SETTLE_SECONDS)
     finally:
         await register_pairing_agent()
@@ -106,12 +113,17 @@ class BluezReloader:
         self,
         game_busy: Callable[[], Awaitable[bool]] = primary_game_busy,
         restart: Callable[[], Awaitable[None]] = restart_bluetoothd,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self._game_busy = game_busy
         self._restart = restart
+        self._clock = clock
         self.pending = False
         # Records waiting for the restart, by (adapter, controller)
         self.records: dict[tuple[str, str], PendingRecord] = {}
+        # Consecutive failed restarts, and the clock time before which none is tried again
+        self.failures = 0
+        self._retry_at = 0.0
 
     def request(self, record: PendingRecord | None = None) -> str:
         """Called after a successful pairing; ``record`` = a record bluetoothd must load.
@@ -132,7 +144,11 @@ class BluezReloader:
         """Run a pending restart if the mode allows it now; returns the outcome.
 
         Outcomes: ``skipped`` (nothing to do), ``restarted``, ``deferred``
-        (when_idle and a real game is busy), ``failed``.
+        (when_idle and a real game is busy), ``failed``, ``backoff`` (an earlier
+        attempt failed and its retry wait has not passed). After ``deferred``,
+        ``failed`` and ``backoff`` the restart and its records stay pending.
+        Failed restarts are retried at most once per poll, after 10 s, 30 s,
+        60 s, then every 5 min until one succeeds (#1490).
         """
         if not self.pending:
             return "skipped"
@@ -141,17 +157,24 @@ class BluezReloader:
             logger.info("Dropping a pending bluetoothd restart: pairing.bluez_restart_mode is never")
             self._clear()
             return "skipped"
+        if self.failures and self._clock() < self._retry_at:
+            return "backoff"
         if mode == "when_idle" and await self._game_busy():
             logger.info("Deferring the bluetoothd restart until the real game has ended")
             return "deferred"
         await self._rewrite_missing_records()
-        self._clear()
         logger.info(f"Restarting bluetoothd (pairing.bluez_restart_mode={mode})")
         try:
             await self._restart()
         except Exception as e:
-            logger.error(f"Failed to restart bluetooth service: {e}")
+            # bluetoothd has not loaded the records: keep them for a later attempt
+            wait = RESTART_RETRY_BACKOFF_SECONDS[min(self.failures, len(RESTART_RETRY_BACKOFF_SECONDS) - 1)]
+            self.failures += 1
+            self._retry_at = self._clock() + wait
+            log = logger.error if self.failures == 1 else logger.warning
+            log(f"Failed to restart bluetooth service ({self.failures} in a row): {e}; retrying in {wait:.0f} s")
             return "failed"
+        self._clear()
         return "restarted"
 
     async def _rewrite_missing_records(self) -> None:
@@ -172,3 +195,5 @@ class BluezReloader:
     def _clear(self) -> None:
         self.pending = False
         self.records.clear()
+        self.failures = 0
+        self._retry_at = 0.0

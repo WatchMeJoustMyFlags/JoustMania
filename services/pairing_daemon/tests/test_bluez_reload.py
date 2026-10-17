@@ -1,5 +1,6 @@
 """pairing.bluez_restart_mode policy and the primary game-state read (UC-001 BR-005, A6; #1446)."""
 
+import asyncio
 import http.server
 import io
 import json
@@ -107,7 +108,91 @@ class TestBluezReloader:
         restart.side_effect = RuntimeError("systemd said no")
         with _mode("always"):
             assert await _after_pairing(reloader, False) == "failed"
+        assert reloader.pending is True  # retried on the next poll (#1490)
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005", "BR-008"])
+    async def test_failed_restart_keeps_its_records_and_is_retried_after_a_wait(self):
+        """#1490: a failed restart must not drop the records bluetoothd still has to load."""
+        now = {"t": 0.0}
+        reloader = BluezReloader(
+            game_busy=AsyncMock(return_value=False),
+            restart=(restart := AsyncMock(side_effect=[RuntimeError("systemd said no"), None])),
+            clock=lambda: now["t"],
+        )
+        with _mode("when_idle"), patch.object(bluez_reload, "write_device_record", return_value=RecordOutcome.EXISTS):
+            reloader.request(_record())
+            assert await reloader.run_pending() == "failed"
+            assert reloader.pending is True
+            assert list(reloader.records) == [(ADAPTER, CONTROLLER)]
+
+            now["t"] = 10.0  # next poll, once the first wait has passed
+            assert await reloader.run_pending() == "restarted"
+        assert restart.await_count == 2
         assert reloader.pending is False
+        assert reloader.records == {}
+        assert reloader.failures == 0
+
+
+class TestFailedRestartBackoff:
+    """#1490 review: failed restarts are retried after 10 s, 30 s, 60 s, then every 5 min (UC-001 BR-005)."""
+
+    @staticmethod
+    def _reloader(restart: AsyncMock) -> tuple[BluezReloader, dict, AsyncMock]:
+        now = {"t": 0.0}
+        game_busy = AsyncMock(return_value=False)
+        reloader = BluezReloader(game_busy=game_busy, restart=restart, clock=lambda: now["t"])
+        reloader.pending = True
+        return reloader, now, game_busy
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_waits_grow_and_are_capped_at_five_minutes(self):
+        restart = AsyncMock(side_effect=RuntimeError("systemd said no"))
+        reloader, now, game_busy = self._reloader(restart)
+        attempts = []
+        with _mode("when_idle"):
+            for second in range(0, 1200, 5):  # a poll every 5 s for 20 min
+                now["t"] = float(second)
+                if await reloader.run_pending() == "failed":
+                    attempts.append(second)
+
+        # 0, +10, +30, +60, then every +300
+        assert attempts[:6] == [0, 10, 40, 100, 400, 700]
+        assert restart.await_count == len(attempts)
+        assert game_busy.await_count == len(attempts)  # waiting attempts read no game state
+        assert reloader.pending is True
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_success_resets_the_wait(self):
+        restart = AsyncMock(side_effect=[RuntimeError("1"), RuntimeError("2"), None, RuntimeError("3")])
+        reloader, now, _game_busy = self._reloader(restart)
+        with _mode("always"):
+            assert await reloader.run_pending() == "failed"  # t=0, wait 10 s
+            now["t"] = 10.0
+            assert await reloader.run_pending() == "failed"  # wait 30 s
+            now["t"] = 39.0
+            assert await reloader.run_pending() == "backoff"
+            now["t"] = 40.0
+            assert await reloader.run_pending() == "restarted"
+            assert reloader.failures == 0
+
+            reloader.request()  # a later pairing
+            assert await reloader.run_pending() == "failed"  # t=40, back to the first wait
+            now["t"] = 49.0
+            assert await reloader.run_pending() == "backoff"
+            now["t"] = 50.0
+            assert await reloader.run_pending() == "failed"
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_first_failure_is_an_error_later_ones_warnings(self, caplog):
+        restart = AsyncMock(side_effect=RuntimeError("systemd said no"))
+        reloader, now, _game_busy = self._reloader(restart)
+        with _mode("always"), caplog.at_level("WARNING", logger="psmove-pairing"):
+            for second in (0.0, 10.0, 40.0):
+                now["t"] = second
+                assert await reloader.run_pending() == "failed"
+
+        levels = [r.levelname for r in caplog.records if "Failed to restart" in r.getMessage()]
+        assert levels == ["ERROR", "WARNING", "WARNING"]
 
 
 class TestOneRestartPerPoll:
@@ -300,13 +385,28 @@ class TestRestartBluetoothd:
         assert calls == ["bluetooth.service", "agent"]
 
     @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
-    async def test_agent_is_registered_even_when_the_restart_fails(self):
+    async def test_agent_is_kept_when_systemd_refuses_the_restart(self):
+        """RestartUnit returned an error: no job, bluetoothd still runs with its agent; a new one would open a gap."""
         agent = AsyncMock()
         with (
             patch.object(bluez_reload.bluez_dbus, "restart_systemd_unit", AsyncMock(side_effect=RuntimeError("no"))),
             patch.object(bluez_reload, "register_pairing_agent", agent),
             patch("asyncio.sleep", AsyncMock()),
             pytest.raises(RuntimeError),
+        ):
+            await bluez_reload.restart_bluetoothd()
+
+        agent.assert_not_awaited()
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_agent_is_registered_when_the_settle_wait_is_cut_short(self):
+        """systemd accepted the restart, so the old session is gone: register the agent even on cancellation."""
+        agent = AsyncMock()
+        with (
+            patch.object(bluez_reload.bluez_dbus, "restart_systemd_unit", AsyncMock()),
+            patch.object(bluez_reload, "register_pairing_agent", agent),
+            patch("asyncio.sleep", AsyncMock(side_effect=asyncio.CancelledError)),
+            pytest.raises(asyncio.CancelledError),
         ):
             await bluez_reload.restart_bluetoothd()
 
