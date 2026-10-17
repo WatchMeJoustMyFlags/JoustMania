@@ -43,6 +43,8 @@ registry — see ``register_handler`` and the handler contract documented there.
 NO game effects are applied in this PR.
 """
 
+import asyncio
+import contextlib
 import logging
 import threading
 import time
@@ -55,6 +57,11 @@ from openfeature.flag_evaluation import Reason
 from openfeature.provider import ProviderEvent
 
 from lib.flag_eval_visibility import record_flag_fallback
+from services.game_coordinator.game_loop_dispatch import (
+    DEFAULT_DISPATCH_TIMEOUT_S,
+    GameLoopDispatcher,
+    GameLoopUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -547,6 +554,10 @@ class SessionView:
         publish: Async ``publish(event_type, data)`` for this session's bus.
         is_real: Whether this is the real (primary) game. Defaults to False so a
             caller that does not say is treated as a shadow (fail closed).
+        loop: The asyncio loop the session's game runs on (its own thread). The
+            game's gRPC clients and gameplay stream belong to it, so handler side
+            effects run there (UC-040 BR-018, #1250). ``None`` (legacy / tests)
+            runs effects inline on the caller's loop.
     """
 
     game_id: str
@@ -555,6 +566,7 @@ class SessionView:
     # True only for the real (primary) game. An un-addressed ``end_game`` applies
     # only to the real game (UC-040 BR-011); unknown kind fails closed (shadow).
     is_real: bool = False
+    loop: asyncio.AbstractEventLoop | None = None
 
 
 class InterventionManager:
@@ -655,6 +667,15 @@ class InterventionManager:
         # is what actually resets the override.
         self._revert_handlers: dict[str, Handler] = {}
 
+        # Flags whose handler must run on the coordinator's main loop instead of
+        # the game's loop (UC-040 BR-018): end_game force-ends the session, which
+        # joins the game's thread, so running it on that thread would deadlock.
+        self._main_loop_flags: set[str] = set()
+        # Per-session dispatchers that run handler side effects on the owning
+        # game's loop, in decision order (UC-040 BR-018, #1250). Keyed by game_id.
+        self._dispatchers: dict[str, GameLoopDispatcher] = {}
+        self._dispatch_timeout_s = DEFAULT_DISPATCH_TIMEOUT_S
+
         self._lock = threading.RLock()
         self._started = False
 
@@ -670,8 +691,12 @@ class InterventionManager:
     # ------------------------------------------------------------------ #
     # Handler registry (the contract PRs C/D/E follow)
     # ------------------------------------------------------------------ #
-    def register_handler(self, flag_key: str, handler: Handler) -> None:
+    def register_handler(self, flag_key: str, handler: Handler, *, on_game_loop: bool = True) -> None:
         """Register the real handler for a flag (PRs C/D/E).
+
+        ``on_game_loop`` (default True): the handler runs on the owning game's
+        event loop (UC-040 BR-018). Pass False only for a handler that must run on
+        the coordinator's main loop (``end_game``: it joins the game thread).
 
         Handler contract:
         - signature: ``async def handler(ctx: InterventionContext) -> None``
@@ -688,6 +713,10 @@ class InterventionManager:
             raise KeyError(f"Unknown intervention flag key: {flag_key}")
         with self._lock:
             self._handlers[flag_key] = handler
+            if on_game_loop:
+                self._main_loop_flags.discard(flag_key)
+            else:
+                self._main_loop_flags.add(flag_key)
             logger.info(f"Registered intervention handler for '{flag_key}'")
 
     async def _noop_handler(self, ctx: InterventionContext) -> None:
@@ -715,7 +744,8 @@ class InterventionManager:
         self.register_handler("audio_cue", self._handle_audio_cue)
         self.register_handler("volume_override", self._handle_volume_override)
         self.register_handler("controller_effect", self._handle_controller_effect)
-        self.register_handler("end_game", self._handle_end_game)
+        # end_game stays on the main loop: force-end joins the game's thread.
+        self.register_handler("end_game", self._handle_end_game, on_game_loop=False)
         # volume_override restores the configured game volume when reverted.
         self._revert_handlers["volume_override"] = self._handle_volume_revert
 
@@ -959,6 +989,7 @@ class InterventionManager:
             self._pending_primed.discard(game_id)
             self._last_nonce.pop(game_id, None)
             self._last_state_value.pop(game_id, None)
+            self._dispatchers.pop(game_id, None)
 
     def _prime_edge_bucket(self, session: "SessionView") -> None:
         """Record every edge flag's current nonce for ``session`` (no apply).
@@ -1026,6 +1057,8 @@ class InterventionManager:
                 self._last_nonce.pop(stale, None)
             for stale in [gid for gid in self._last_state_value if gid not in keep]:
                 self._last_state_value.pop(stale, None)
+            for stale in [gid for gid in self._dispatchers if gid not in live_ids]:
+                self._dispatchers.pop(stale, None)
 
     # ------------------------------------------------------------------ #
     # Flag change handling
@@ -1288,7 +1321,10 @@ class InterventionManager:
         """Run ``spec``'s revert handler for ``session``, if one is registered.
 
         Reverts restore a default; they bypass the permission chain and the
-        backstop, and a failing revert handler is logged, never raised.
+        backstop, and a failing revert handler is logged, never raised. Like an
+        apply, the revert runs on the owning game's loop through the session's
+        dispatcher, so it queues behind any effect already queued there
+        (UC-040 BR-018, #1250).
         """
         revert = self._revert_handlers.get(spec.flag_key)
         if revert is None:
@@ -1303,7 +1339,9 @@ class InterventionManager:
             game_id=session.game_id,
         )
         try:
-            await revert(ctx)
+            await self._run_on_game_loop(session, spec, revert, ctx)
+        except GameLoopUnavailableError:
+            pass  # already logged + counted once by _run_on_game_loop
         except Exception as e:
             logger.error(f"InterventionManager: revert handler for {spec.flag_key} raised: {e}")
 
@@ -1459,7 +1497,16 @@ class InterventionManager:
         )
         handler = self._handlers.get(spec.flag_key, self._noop_handler)
         try:
-            await handler(ctx)
+            if spec.flag_key in self._main_loop_flags:
+                await handler(ctx)
+            else:
+                await self._run_on_game_loop(session, spec, handler, ctx)
+        except GameLoopUnavailableError as e:
+            # UC-040 BR-018, already logged + counted. game_loop_late: the effect
+            # started and may still apply, so it is not reported as blocked;
+            # otherwise it was never applied (fail closed). No cue either way.
+            await self._record(spec, target, objective, session, blocked=not e.applied_unknown, block_reason=e.reason)
+            return
         except Exception as e:
             logger.error(f"InterventionManager: handler for {spec.flag_key} raised: {e}")
             await self._record(spec, target, objective, session, blocked=True, block_reason="handler_error")
@@ -1470,8 +1517,61 @@ class InterventionManager:
         # On-device visibility cue (#818): surface HARD-class agent actions at the
         # controller so an operator can tell agent activity from a malfunction.
         # Gated behind a user.json mute toggle so it can be silenced for demos.
-        if spec.weight >= WEIGHT_HARD:
-            await self._emit_agent_cue(spec, target, game)
+        #
+        # Not for main-loop flags: end_game has just ended the game, so its loop
+        # is gone and there is no controller left to cue. The mute toggle is read
+        # here, on the main loop, so a muted cue is never dispatched.
+        if spec.weight >= WEIGHT_HARD and spec.flag_key not in self._main_loop_flags and self._cue_enabled():
+            # Best-effort cue: a game loop that just ended is not a failure.
+            with contextlib.suppress(GameLoopUnavailableError):
+                await self._run_on_game_loop(session, spec, self._emit_agent_cue, spec, target, game, quiet=True)
+
+    # ------------------------------------------------------------------ #
+    # Game-loop dispatch (UC-040 BR-018, #1250)
+    # ------------------------------------------------------------------ #
+    def _dispatcher_for(self, session: "SessionView") -> GameLoopDispatcher:
+        """Return the session's dispatcher, bound to its current game loop.
+
+        A session id whose loop changed (a new game reusing the id, or the legacy
+        sentinel across games) gets a fresh dispatcher for the new loop.
+        """
+        loop = session.loop
+        with self._lock:
+            dispatcher = self._dispatchers.get(session.game_id)
+            if dispatcher is None or dispatcher.loop is not loop:
+                dispatcher = GameLoopDispatcher(loop, timeout_s=self._dispatch_timeout_s)
+                self._dispatchers[session.game_id] = dispatcher
+            return dispatcher
+
+    async def _run_on_game_loop(
+        self, session: "SessionView", spec: InterventionSpec, fn, *args, quiet: bool = False
+    ) -> None:
+        """Run one side effect ``fn(*args)`` on the session's game loop.
+
+        Raises ``GameLoopUnavailableError`` when the effect did not complete on
+        the game's loop: not applied (closed / stopping loop, or not started in
+        time) or ``game_loop_late`` (started, outcome unknown). It is logged and
+        counted once here; ``quiet`` (the best-effort agent cue) logs at debug
+        and does not count. Errors raised by ``fn`` itself propagate unchanged.
+        """
+        try:
+            await self._dispatcher_for(session).run(fn, *args)
+        except GameLoopUnavailableError as e:
+            if quiet:
+                game_label = session.game_id or "<primary>"
+                logger.debug(f"InterventionManager: {spec.flag_key} cue for game {game_label} skipped ({e})")
+                raise
+            logger.warning(
+                f"InterventionManager: {spec.flag_key} effect for game {session.game_id or '<primary>'} "
+                f"not applied ({e})"
+            )
+            try:
+                from services.game_coordinator import metrics
+
+                metrics.intervention_dispatch_failures_total.labels(type=spec.type_id, reason=e.reason).inc()
+            except Exception as metric_error:
+                logger.debug(f"InterventionManager: dispatch failure metric failed: {metric_error}")
+            raise
 
     def _cue_enabled(self) -> bool:
         """Whether the on-device agent-intervention cue is enabled (#818).

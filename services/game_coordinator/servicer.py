@@ -283,6 +283,9 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     game=game,
                     publish=session.event_bus.publish,
                     is_real=session.is_primary,
+                    # Handler side effects run on this game's own loop, where
+                    # its gRPC clients live (UC-040 BR-018, #1250).
+                    loop=session.game_loop,
                 )
             )
         return views
