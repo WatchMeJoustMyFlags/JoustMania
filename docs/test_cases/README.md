@@ -46,7 +46,7 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-001](TC-001-ffa-game-night-hardware.md) | FFA game night on real controllers | UC-001, UC-002, UC-010, UC-020, UC-030, UC-031 | Critical | Draft | Manual (hardware); mock twin TC-002 |
 | [TC-002](TC-002-ffa-mock-game-to-winner.md) | FFA game to a winner on mock controllers | UC-003, UC-002, UC-011, UC-010, UC-020, UC-030 | Critical | Automated | `test_tc002_ffa_game_to_winner_then_restart`; warning effect unit-tested only |
 | [TC-003](TC-003-ffa-player-disconnects.md) | Player disconnects during an FFA game | UC-003, UC-010, UC-020, UC-030, UC-002 | High | Draft | Planned #1360 |
-| [TC-004](TC-004-operator-stops-ffa-game.md) | Operator stops an FFA game | UC-010, UC-020, UC-027 | High | Draft | Partly (`test_concurrent_games`); #1360 |
+| [TC-004](TC-004-operator-stops-ffa-game.md) | Operator stops an FFA game | UC-010, UC-020, UC-027 | High | Draft | Partly (`test_tc013_shadow_alongside_real`, `test_tc002_ffa_game` step 9); #1360 |
 | [TC-005](TC-005-host-tunes-and-force-starts.md) | Host tunes the game in admin mode and force-starts | UC-012, UC-011, UC-014, UC-010 | High | Draft | Partly (`test_admin_flow`, per step); gaps unit-tested only (#1400) |
 | [TC-006](TC-006-host-restricts-agent-from-controller.md) | Host restricts the agent from the controller | UC-012, UC-013, UC-040, UC-045 | Critical | Draft | Partly (`test_intervention_flow`); ladder and step 5 unit-tested only (#1400, #1395) |
 | [TC-007](TC-007-agent-intervenes-in-ffa-game.md) | Agent intervenes in an FFA game on rules | UC-010, UC-041, UC-040, UC-020, UC-030, UC-031, UC-035 | Critical | Draft | Partly (`test_decide_backend_e2e`, `test_intervention_smoke`, `test_f6_flow`); #1404, #1362 |
@@ -55,7 +55,7 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-010](TC-010-ffa-game-end-retro-and-proposal.md) | FFA game end: retro, summary, proposal | UC-020, UC-041, UC-042, UC-043 | High | Draft | Partly; #1362 |
 | [TC-011](TC-011-shadow-experiment-to-verdict.md) | Shadow experiment runs to a verdict | UC-043, UC-046, UC-003, UC-041, UC-040 | High | Draft | Partly (`test_experiment_cohort_loop`); #1404 |
 | [TC-012](TC-012-pattern-game-replay.md) | Replay a pattern-driven game exactly | UC-046, UC-003, UC-030 | Medium | Automated | `test_pattern_game_replays_identically`; script test in CI (#1389) |
-| [TC-013](TC-013-shadow-game-alongside-real-game.md) | Shadow game alongside a real FFA game | UC-010, UC-003, UC-020, UC-040, UC-027, UC-043 | High | Draft | Partly (`test_concurrent_games`, `test_gameid_intervention_isolation`); #1404 |
+| [TC-013](TC-013-shadow-game-alongside-real-game.md) | Shadow game alongside a real FFA game | UC-010, UC-003, UC-020, UC-040, UC-027, UC-043 | High | Automated | `test_tc013_shadow_game_alongside_real_game`; agent side unit-tested |
 | [TC-014](TC-014-progressive-rollout-and-rollback.md) | Progressive rollout with automatic rollback | UC-050, UC-051, UC-045, UC-041 | High | Draft | Manual (real controllers); mock support + e2e #1390 |
 | [TC-015](TC-015-canary-and-chaos-by-hand.md) | Canary a backend and inject chaos by hand | UC-052, UC-035 | Medium | Draft | Manual; contract tests for routes; `/canary/*` handler tests (#1388); `/chaos/*` #1364 |
 | [TC-016](TC-016-talk-demo-rehearsal.md) | Talk demo rehearsal | UC-070, UC-044, UC-045, UC-040, UC-042, UC-035 | Medium | Draft | Manual; script tests in CI (#1389) |
@@ -63,4 +63,4 @@ stay traceable; their detailed journeys are backlog (#1361).
 
 Status follows the skill: `Automated` = an end-to-end test implements the journey (gaps listed in the
 file), `Draft` = not or only partly automated, or written for review. Tests that implement a journey carry
-`tc="TC-XXX"` (TC-002 so far); tagging the rest is part of #1356 and #1422.
+`tc="TC-XXX"` (TC-002 and TC-013 so far); tagging the rest is part of #1356 and #1422.
