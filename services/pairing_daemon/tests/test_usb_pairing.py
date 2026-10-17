@@ -1,5 +1,6 @@
 """Tests for psmove_pairing.usb_pairing module."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
@@ -1140,6 +1141,8 @@ class TestDeferredRestartRobustness1490(_PairingFlowEnv):
         usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
         restart = AsyncMock(side_effect=[RuntimeError("systemd said no"), None])
         usb_pairing.bluez_reloader._restart = restart
+        now = {"t": 0.0}
+        usb_pairing.bluez_reloader._clock = lambda: now["t"]
 
         with self._mode("when_idle"):
             await usb_pairing.poll()  # paired, record written, restart fails
@@ -1149,12 +1152,16 @@ class TestDeferredRestartRobustness1490(_PairingFlowEnv):
 
             self._info().unlink()  # bluetoothd dropped the unloaded record
             backend.get_usb_controllers.return_value = []
-            await usb_pairing.poll()  # unplugged; the retry rewrites the record, then restarts
+            await usb_pairing.poll()  # unplugged; the retry waits (backoff)
+            assert restart.await_count == 1
+            assert self.SERIAL not in usb_pairing._verified_serials  # a replug pairs it again
+
+            now["t"] = 10.0
+            await usb_pairing.poll()  # the retry rewrites the record, then restarts
 
         assert restart.await_count == 2
         assert self._info().is_file()
         assert usb_pairing.bluez_reloader.pending is False
-        assert self.SERIAL not in usb_pairing._verified_serials  # a replug pairs it again
 
     @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
     async def test_failed_restart_after_a_deferral_keeps_the_replug_retry(self, usb_pairing, env, metrics):
@@ -1185,6 +1192,9 @@ class TestDeferredRestartRobustness1490(_PairingFlowEnv):
             assert self._info().read_text() == ""
             assert self._restart_units() == []
 
+            await usb_pairing.poll()  # still plugged in: verified, not paired again (A1)
+            assert backend.pair_controller.await_count == 1
+
             self._info().unlink()  # the operator deletes it, as the error says
             backend.get_usb_controllers.return_value = []
             await usb_pairing.poll()  # unplugged
@@ -1194,3 +1204,18 @@ class TestDeferredRestartRobustness1490(_PairingFlowEnv):
         assert backend.pair_controller.await_count == 2
         assert "Trusted=true" in self._info().read_text()
         assert self._restart_units() == [["bluetooth.service", "replace"]]
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_cancelled_poll_runs_no_pending_restart(self, usb_pairing, env, metrics):
+        """A daemon shutting down (poll cancelled mid-enumeration) restarts nothing."""
+        backend, _runner, _set_tree, _restart = env
+        backend.get_usb_controllers.side_effect = asyncio.CancelledError
+        run_pending = AsyncMock(return_value="restarted")
+        usb_pairing.bluez_reloader.pending = True
+        usb_pairing.bluez_reloader.run_pending = run_pending
+
+        with pytest.raises(asyncio.CancelledError):
+            await usb_pairing.poll()
+
+        run_pending.assert_not_awaited()
+        assert self._restart_units() == []

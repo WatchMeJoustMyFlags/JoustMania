@@ -474,12 +474,15 @@ class USBPairing:
                 self._current_backend_name = backend_name
             span.set_attribute("pairing.backend", backend_name)
 
+            # One restart for every pairing of this poll, or one deferred or failed earlier
+            # (UC-001 A6, BR-005); also when enumeration failed, e.g. rust-hid is down (#1490).
+            # Not on cancellation: a daemon shutting down restarts nothing.
             try:
                 await self._pair_usb_controllers(backend, span)
-            finally:
-                # One restart for every pairing of this poll, or one deferred or failed earlier
-                # (UC-001 A6, BR-005); also when enumeration failed, e.g. rust-hid is down (#1490)
+            except Exception:
                 await self._run_pending_restart(span)
+                raise
+            await self._run_pending_restart(span)
 
     async def _pair_usb_controllers(self, backend: PairingBackend, span) -> None:
         """Enumerate the controllers on USB and pair each one."""
@@ -515,7 +518,7 @@ class USBPairing:
             waiting = [record.controller for record in self.bluez_reloader.records.values()]
             outcome = await self.bluez_reloader.run_pending()
         span.set_attribute("pairing.bluez_restart", outcome)
-        if outcome in ("deferred", "failed"):
+        if outcome in ("deferred", "failed", "backoff"):
             # Still not loaded: unplugging and plugging it in again pairs it again and rewrites a lost record
             self._replug_retries.update(waiting)
         else:
