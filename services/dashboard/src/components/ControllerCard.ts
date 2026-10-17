@@ -9,7 +9,7 @@ import { shieldBadge } from "../shield.js";
 import type { ShieldState } from "../shield.js";
 import { controllerClient } from "../client.js";
 import { identifyController } from "../identify.js";
-import { canUnpair, requestUnpair } from "../unpair.js";
+import { UNPAIR_NOTICE_EVENT, canUnpair, requestUnpair } from "../unpair.js";
 
 /**
  * CSS for the LED circle. `color` is the colour last written to the LED, so a
@@ -85,6 +85,8 @@ export class ControllerCard {
         baseUrl: import.meta.env.DEV ? "" : globalThis.location.origin,
       });
       if (outcome.kind === "cancelled") return;
+      // The card disappears when the controller disconnects: also log to the event feed
+      document.dispatchEvent(new CustomEvent(UNPAIR_NOTICE_EVENT, { detail: outcome.message }));
       this.unpairResult.hidden = false;
       this.unpairResult.textContent = outcome.message;
       this.unpairResult.classList.toggle("failed", outcome.kind === "failed");

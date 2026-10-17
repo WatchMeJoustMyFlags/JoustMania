@@ -31,6 +31,42 @@ describe("UC-005: Unpair a Controller", () => {
     });
   });
 
+  it("UC-005/A4 all registrations already absent is still success (idempotent)", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, { address: SERIAL, removed: 0, already_absent: 2, failed: 0, adapters: [], on_usb: false }),
+    );
+
+    const outcome = await requestUnpair(SERIAL, { confirm: () => true, fetch: fetchMock as typeof fetch });
+
+    expect(outcome).toEqual({ kind: "unpaired", message: `Unpaired ${SERIAL}: 0 registration(s) removed, 2 already absent` });
+  });
+
+  it("UC-005/A8 a controller still on USB is told to unplug and replug", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, { address: SERIAL, removed: 1, already_absent: 0, failed: 0, adapters: ["AA:00:00:00:00:00"], on_usb: true }),
+    );
+
+    const outcome = await requestUnpair(SERIAL, { confirm: () => true, fetch: fetchMock as typeof fetch });
+
+    expect(outcome.kind).toBe("unpaired");
+    expect(outcome.kind === "unpaired" && outcome.message).toContain("still on USB");
+    expect(unpairConfirmMessage(SERIAL)).toContain("unplug it and plug it back in");
+  });
+
+  it("UC-005/A7 a partial failure shows the counts", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(503, { error: "1 registration(s) could not be removed", removed: 1, already_absent: 0, failed: 1 }),
+    );
+
+    const outcome = await requestUnpair(SERIAL, { confirm: () => true, fetch: fetchMock as typeof fetch });
+
+    expect(outcome).toEqual({
+      kind: "failed",
+      status: 503,
+      message: "1 registration(s) could not be removed (removed 1, failed 1)",
+    });
+  });
+
   it("UC-005/A1 cancelling the confirmation sends nothing", async () => {
     const fetchMock = vi.fn();
 
@@ -72,7 +108,7 @@ describe("UC-005: Unpair a Controller", () => {
   });
 
   it("UC-005/A6 shows the 'being paired' refusal", async () => {
-    const fetchMock = vi.fn(async () => jsonResponse(409, { error: "This controller is being paired over USB" }));
+    const fetchMock = vi.fn(async () => jsonResponse(409, { error: "A USB pairing or another unpair is running; try again in a few seconds." }));
 
     const outcome = await requestUnpair(SERIAL, { confirm: () => true, fetch: fetchMock as typeof fetch });
 

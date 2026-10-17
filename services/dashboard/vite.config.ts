@@ -31,13 +31,15 @@ export default defineConfig({
         target: 'http://localhost:80',
         changeOrigin: true,
       },
-      // Proxy Jaeger HTTP API queries (agent.decide feed, #1233) through envoy,
-      // which routes /jaeger/* to the Jaeger query service. Dev-only, as above.
       // Operator unpair (UC-005) through envoy -> connect-proxy. Dev-only, as above.
+      // changeOrigin stays false: the proxy's same-origin check compares the
+      // browser's Origin with the Host header.
       '/pairing': {
         target: 'http://localhost:80',
-        changeOrigin: true,
+        changeOrigin: false,
       },
+      // Proxy Jaeger HTTP API queries (agent.decide feed, #1233) through envoy,
+      // which routes /jaeger/* to the Jaeger query service. Dev-only, as above.
       '/jaeger': {
         target: 'http://localhost:80',
         changeOrigin: true,
