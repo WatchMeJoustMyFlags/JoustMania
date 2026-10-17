@@ -36,9 +36,9 @@ WHAT STAYS SEQUENTIAL (and lives in ``test_intervention_flow.py`` /
   (un-targeted writes, committed game.json) — order-dependent, kept sequential.
 - The writer-gate test (``AGENT_INTERVENTIONS_ENABLED`` default) is a compose
   file assertion with no game.
-- ``test_gameid_intervention_isolation.py`` keeps the core #838 semantics
-  coverage (un-targeted intervention reaches the primary; gameId-scoped reaches
-  only the shadow) sequentially.
+- ``test_tc013_shadow_alongside_real.py`` (TC-013) keeps the core #838
+  semantics coverage (un-targeted intervention reaches the primary; gameId-scoped
+  reaches only the shadow) sequentially.
 
 RATE LIMITER: the weighted sliding-window limiter on the coordinator's
 InterventionManager is process-GLOBAL (shared across every live session) and is
@@ -96,7 +96,7 @@ __all__ = ["flag_files"]
 
 # =============================================================================
 # gameId-scoped flag-file mutation helpers (mirror services/agent/actions
-# writer.go + the #838 gameId targeting shape from test_concurrent_games).
+# writer.go + the #838 gameId targeting shape from test_tc013_shadow_alongside_real).
 #
 # Every write here is SCOPED to one game_id via a flagd targeting rule on the
 # ``gameId`` context var, with the default variant left on its neutral value.
