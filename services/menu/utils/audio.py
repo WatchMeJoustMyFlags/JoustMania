@@ -42,11 +42,11 @@ GAME_MODE_VOICE: dict[str, Sound] = {
     "Swapper": Sound.MENU_VOX_SWAPPER,
     "Werewolf": Sound.MENU_VOX_WEREWOLVES,
     "Traitor": Sound.MENU_VOX_TRAITOR,
-    "Zombie": Sound.MENU_VOX_ZOMBIES,
+    "Zombies": Sound.MENU_VOX_ZOMBIES,
     "Commander": Sound.MENU_VOX_COMMANDER,
     "FightClub": Sound.MENU_VOX_FIGHT_CLUB,
     "Tournament": Sound.MENU_VOX_TOURNAMENT,
-    "NonstopJoust": Sound.MENU_VOX_NONSTOP_JOUST,
+    "NonStop": Sound.MENU_VOX_NONSTOP_JOUST,
     "SpeedBomb": Sound.MENU_VOX_NINJABOMB,
 }
 

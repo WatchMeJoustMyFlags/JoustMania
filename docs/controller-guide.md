@@ -20,7 +20,7 @@ Navigate the game menu using physical controller buttons:
 
 | Button | Action |
 |--------|--------|
-| **SELECT** | Cycle to the next game mode (announced by voice, except Zombies and NonStop, #1276; kept for the next game) |
+| **SELECT** | Cycle to the next game mode (announced by voice; kept for the next game) |
 | **TRIGGER** | Start selected game / Mark ready |
 
 Any player in the lobby can press SELECT. Available games cycle in this order, wrapping around:
