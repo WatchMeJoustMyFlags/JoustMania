@@ -3,7 +3,8 @@
  *
  * Displays a single controller with LED color, battery, accelerometer visualization.
  */
-import type { GameplayData, RGB } from "../gen/controller_manager_pb.js";
+import type { ConnectionQuality, GameplayData, RGB } from "../gen/controller_manager_pb.js";
+import { qualityBadge } from "../quality.js";
 import { shieldBadge } from "../shield.js";
 import type { ShieldState } from "../shield.js";
 
@@ -31,6 +32,7 @@ export class ControllerCard {
   private readonly accelDot: HTMLElement;
   private readonly statusBadge: HTMLElement;
   private readonly shieldElement: HTMLElement;
+  private readonly qualityElement: HTMLElement;
 
   constructor(serial: string) {
     this.serial = serial;
@@ -41,6 +43,7 @@ export class ControllerCard {
     this.accelDot = this.element.querySelector(".accel-dot")!;
     this.statusBadge = this.element.querySelector(".status-badge")!;
     this.shieldElement = this.element.querySelector(".shield-badge")!;
+    this.qualityElement = this.element.querySelector(".quality-badge")!;
   }
 
   private createElement(): HTMLElement {
@@ -57,6 +60,7 @@ export class ControllerCard {
       </div>
       <div class="status-badge connected">Connected</div>
       <div class="shield-badge" hidden></div>
+      <div class="quality-badge" hidden></div>
     `;
     return card;
   }
@@ -77,6 +81,9 @@ export class ControllerCard {
 
     // Agent shield badge (UC-040 A16)
     this.updateShield(shield, nowMs);
+
+    // Connection-quality badge (UC-035 BR-004)
+    this.updateQuality(data.connectionQuality);
 
     // Update battery level
     this.updateBattery(data.battery);
@@ -107,6 +114,18 @@ export class ControllerCard {
     this.shieldElement.hidden = false;
     this.shieldElement.className = badge.className;
     this.shieldElement.textContent = badge.text;
+  }
+
+  private updateQuality(quality: ConnectionQuality | undefined) {
+    const badge = qualityBadge(quality);
+    if (!badge) {
+      this.qualityElement.hidden = true;
+      return;
+    }
+    this.qualityElement.hidden = false;
+    this.qualityElement.className = badge.className;
+    this.qualityElement.textContent = badge.text;
+    this.qualityElement.title = badge.title;
   }
 
   private updateBattery(level: number) {
