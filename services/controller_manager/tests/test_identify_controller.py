@@ -496,3 +496,50 @@ class TestUC004IdentifyControllerRpc:
         assert servicer._game_stream_serials == {}
         assert (await _rpc(servicer)).outcome == "started"
         await _drain(servicer)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", flow="A2", br=["BR-003"])
+    async def test_game_claiming_controller_while_identify_starts_wins(self, servicer):
+        """UC-004 BR-003: a game config landing while the identify is starting ends it (outcome in_game)."""
+        fm = servicer.feedback_manager
+        real_set_vibration = fm.set_vibration
+
+        async def vibration_then_game_claims(serial, intensity, duration_ms):
+            ok = await real_set_vibration(serial, intensity, duration_ms)
+            # The entry is still the IDENTIFY placeholder here.
+            assert fm.active_effects[serial].effect_type == controller_manager_pb2.GAME_EFFECT_IDENTIFY
+            await servicer._process_gameplay_config(_game_config(SERIAL), "game_stream_1", trace.INVALID_SPAN)
+            return ok
+
+        with patch.object(fm, "set_vibration", side_effect=vibration_then_game_claims):
+            response = await _rpc(servicer)
+
+        assert response.outcome == "in_game"
+        assert response.success is False
+        assert SERIAL not in fm.active_effects or fm.active_effects[SERIAL].task.done()
+        assert servicer.backend.rumble[-1] == (SERIAL, 0)
+        assert servicer.backend.colors[SERIAL] == (255, 0, 0)  # the game's colour
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", br=["BR-003"])
+    async def test_cancel_identify_ends_a_starting_identify(self, servicer):
+        """UC-004 BR-003: the IDENTIFY placeholder (identify still starting) counts as running."""
+        from services.controller_manager.effects_base import ActiveEffect
+
+        fm = servicer.feedback_manager
+        placeholder = asyncio.get_running_loop().create_future()
+        placeholder.set_result(None)
+        fm.active_effects[SERIAL] = ActiveEffect(
+            task=placeholder, effect_type=controller_manager_pb2.GAME_EFFECT_IDENTIFY
+        )
+
+        assert await fm.cancel_identify(SERIAL) is True
+        assert SERIAL not in fm.active_effects
+
+    @pytest.mark.uc("UC-004", br=["BR-002"])
+    def test_clear_controller_forgets_identify_fallback(self, servicer):
+        """UC-004 BR-002: a disconnect drops the captured identify colour."""
+        fm = servicer.feedback_manager
+        fm._identify_fallback[SERIAL] = (1, 2, 3)
+        fm.clear_controller(SERIAL)
+        assert SERIAL not in fm._identify_fallback

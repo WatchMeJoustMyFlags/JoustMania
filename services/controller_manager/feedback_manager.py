@@ -706,21 +706,35 @@ class FeedbackManager(ControllerEffectsBase):
                 )
         restore_to = self.base_colors.get(serial) or self._identify_fallback.get(serial) or True
         await self.set_vibration(serial, IDENTIFY_RUMBLE_INTENSITY, min(IDENTIFY_RUMBLE_MS, effect_duration))
+        async with self.effect_lock:
+            active = self.active_effects.get(serial)
+            claimed = active is None or active.effect_type != controller_manager_pb2.GAME_EFFECT_IDENTIFY
+        if claimed:
+            # Cancelled while starting (a game claimed the controller, UC-004 BR-003).
+            await self._stop_identify_rumble(serial)
+            return False
         await self.play_effect_with_restore(
             serial, "flash", Colors.White.value, effect_duration, IDENTIFY_FLASH_HZ, restore_to
         )
         return True
 
     async def cancel_identify(self, serial: str) -> bool:
-        """End a running identify and its rumble at once (UC-004 BR-003: a game claims the controller)."""
-        if not self._identify_running(serial):
+        """End a running identify and its rumble at once (UC-004 BR-003: a game claims the controller).
+
+        Also ends one that is still starting (its entry is the IDENTIFY placeholder).
+        """
+        active = self.active_effects.get(serial)
+        if active is None or active.effect_type != controller_manager_pb2.GAME_EFFECT_IDENTIFY:
             return False
         await self.cancel_effect(serial)
+        await self._stop_identify_rumble(serial)
+        return True
+
+    async def _stop_identify_rumble(self, serial: str) -> None:
         vibration = self.vibration_tasks.pop(serial, None)
         if vibration is not None:
             vibration.cancel()
         await self.backend.set_rumble(serial, 0)
-        return True
 
     # =========================================================================
     # Agent shield layer (#1301, UC-040 A16 / A17, BR-008..BR-010)
@@ -1052,6 +1066,7 @@ class FeedbackManager(ControllerEffectsBase):
         if shield_task is not None:
             shield_task.cancel()
         self.current_colors.pop(serial, None)
+        self._identify_fallback.pop(serial, None)
         self._color_gauges.pop(serial, None)
 
     def _get_battery_color(self, battery_percent: int) -> tuple[int, int, int]:

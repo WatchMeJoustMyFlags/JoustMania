@@ -728,8 +728,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             refusal = self._identify_refusal(serial)
             if refusal is None:
                 started = await self.feedback_manager.start_identify(serial, duration_ms)
-                # handle_game_effect only fails if the controller vanished meanwhile.
-                refusal = None if started else ("not_connected", f"Controller {serial} is not connected")
+                if self._in_game(serial):
+                    # A game claimed the controller while the identify was starting (UC-004 BR-003).
+                    await self.feedback_manager.cancel_identify(serial)
+                    refusal = ("in_game", f"Controller {serial} is in a running game")
+                elif not started:
+                    # start_identify otherwise only fails if the controller vanished meanwhile.
+                    refusal = ("not_connected", f"Controller {serial} is not connected")
 
             outcome, error = refusal if refusal else ("started", "")
             span.set_attribute("identify.outcome", outcome)
