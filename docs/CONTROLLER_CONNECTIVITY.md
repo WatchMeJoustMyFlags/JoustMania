@@ -226,7 +226,7 @@ sudo rfkill block wifi
 
 ## Monitoring with Grafana
 
-Open the **Controllers & Bluetooth** dashboard at `http://localhost:8080/grafana/d/controller-overview`
+Open the **Controllers & Bluetooth** dashboard at `http://localhost/grafana/d/controller-overview`
 (also embedded in the dashboard's Metrics tab):
 
 - **Weak Signal** counts controllers below -80 dBm (`bluetooth_device_rssi_dbm < -80`), **Low Battery**
@@ -235,8 +235,10 @@ Open the **Controllers & Bluetooth** dashboard at `http://localhost:8080/grafana
 - The **Controller Health** table shows each controller's adapter, RSSI, battery, poll rate and connection
   quality; the **Connection Quality** row shows the p95 and longest report gap per controller.
 - The collapsed **Bluetooth and Adapters (Pi only)** row has the signal per adapter, RSSI history, per-adapter
-  poll rate and errors, adapter identity, HCI errors and link roles. RSSI and adapter data come from the
-  pairing daemon, so they are empty in mock mode.
+  poll rate and errors, adapter identity, HCI errors and link roles. RSSI, adapter identity, HCI errors and
+  link roles come from the pairing daemon (only links it reports as connected are shown); the per-adapter
+  poll panels join `controller_adapter_info`, which the controller manager sets from its python-hid /
+  rust-hid backend (`get_adapter_for_serial`). All of them are empty in mock mode.
 
 No alert rules ship (FR-083 Rejected, #1425): watch the dashboard.
 

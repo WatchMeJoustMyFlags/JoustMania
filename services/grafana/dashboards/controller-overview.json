@@ -236,7 +236,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Controllers with RSSI below -80 dBm (poor), the threshold every dashboard uses (telemetry.md \u00a76.1). RSSI comes from the pairing daemon, so this is 0 off the Pi.",
+      "description": "Controllers with RSSI below -80 dBm (poor), the threshold every dashboard uses (telemetry.md \u00a76.1). RSSI comes from the pairing daemon, so this is 0 off the Pi. Only links the pairing daemon reports as connected count (bluetooth_device_connected == 1): it never removes the RSSI series of a link that went away.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -291,7 +291,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(bluetooth_device_rssi_dbm < -80) or vector(0)",
+          "expr": "count((bluetooth_device_rssi_dbm and on(serial, hci_adapter) bluetooth_device_connected == 1) < -80) or vector(0)",
           "legendFormat": "Controllers",
           "refId": "A"
         }
@@ -1371,7 +1371,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (serial, hci_adapter) (bluetooth_device_rssi_dbm)",
+          "expr": "max by (serial, hci_adapter) (bluetooth_device_rssi_dbm and on(serial, hci_adapter) bluetooth_device_connected == 1)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -1745,7 +1745,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "RSSI of this controller from the pairing daemon (Pi only).",
+      "description": "RSSI of this controller from the pairing daemon (Pi only). Only links the pairing daemon reports as connected count (bluetooth_device_connected == 1): it never removes the RSSI series of a link that went away.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1802,7 +1802,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "bluetooth_device_rssi_dbm{serial=\"$controller\"}",
+          "expr": "bluetooth_device_rssi_dbm{serial=\"$controller\"} and on(serial, hci_adapter) bluetooth_device_connected == 1",
           "legendFormat": "RSSI",
           "refId": "A"
         }
@@ -2979,7 +2979,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "description": "Average signal strength per Bluetooth adapter",
+          "description": "Average signal strength per Bluetooth adapter Only links the pairing daemon reports as connected count (bluetooth_device_connected == 1): it never removes the RSSI series of a link that went away.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3039,7 +3039,7 @@
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "avg by(hci_adapter) (bluetooth_device_rssi_dbm)",
+              "expr": "avg by(hci_adapter) ((bluetooth_device_rssi_dbm and on(serial, hci_adapter) bluetooth_device_connected == 1))",
               "legendFormat": "{{hci_adapter}}",
               "refId": "A"
             }
@@ -3052,7 +3052,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "description": "RSSI signal strength per controller (Bluetooth only, 0 = USB)",
+          "description": "RSSI signal strength per controller (Bluetooth only, 0 = USB) Only links the pairing daemon reports as connected count (bluetooth_device_connected == 1): it never removes the RSSI series of a link that went away.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3112,7 +3112,7 @@
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "(bluetooth_device_rssi_dbm and on(serial) controller_connected == 1) * on(serial) group_left(name) controller_info",
+              "expr": "(bluetooth_device_rssi_dbm and on(serial, hci_adapter) bluetooth_device_connected == 1) * on(serial) group_left(name) controller_info",
               "legendFormat": "{{name}}",
               "refId": "A"
             }
@@ -3125,7 +3125,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "description": "Signal strength over time grouped by Bluetooth adapter",
+          "description": "Signal strength over time grouped by Bluetooth adapter Only links the pairing daemon reports as connected count (bluetooth_device_connected == 1): it never removes the RSSI series of a link that went away.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3213,7 +3213,7 @@
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "bluetooth_device_rssi_dbm * on(serial) group_left(name) controller_info",
+              "expr": "(bluetooth_device_rssi_dbm and on(serial, hci_adapter) bluetooth_device_connected == 1) * on(serial) group_left(name) controller_info",
               "legendFormat": "{{hci_adapter}}: {{name}}",
               "refId": "A"
             }
