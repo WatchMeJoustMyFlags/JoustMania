@@ -420,7 +420,9 @@ class Histogram(LabeledMetric):
         - histogram.labels(key=value).observe(value)
         - histogram.time() context manager
         - histogram.labels(key=value).time() context manager
-        - Custom bucket boundaries (informational, OTEL uses different bucketing)
+        - Custom bucket boundaries, passed to the SDK as explicit bucket boundaries
+          (without them the SDK falls back to 0, 5, 10, 25, ... and every
+          sub-second latency lands in the first bucket, #1434)
     """
 
     def __init__(
@@ -442,6 +444,7 @@ class Histogram(LabeledMetric):
         self._histogram = meter.create_histogram(
             name=self.name,
             description=self.documentation,
+            explicit_bucket_boundaries_advisory=self.buckets,
         )
         self._instrument_initialized = True
 
