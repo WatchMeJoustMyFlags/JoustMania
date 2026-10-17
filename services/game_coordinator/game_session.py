@@ -57,6 +57,35 @@ tracer = get_tracer(__name__)
 GAME_KIND_PRIMARY = "primary"
 GAME_KIND_SHADOW = "shadow"
 
+# games_completed_total{outcome} values: the game.outcome span attribute values
+# (UC-020 BR-003, #1328) plus "error" for a session that published game_error
+# (no gRPC clients, mode creation failed, game.run() raised). An unknown game
+# outcome is recorded as "completed", so the label never grows past these five
+# series per (mode, game_kind).
+OUTCOME_COMPLETED = "completed"
+OUTCOME_FORCE_ENDED = "force_ended"
+OUTCOME_ERROR = "error"
+GAME_OUTCOMES = frozenset({"winner", "tie", OUTCOME_COMPLETED, OUTCOME_FORCE_ENDED, OUTCOME_ERROR})
+
+
+def completed_game_outcome(game) -> str:
+    """The ``outcome`` label for ``games_completed_total`` (#1427).
+
+    The game's own outcome (``game.outcome`` on its root span). A game that
+    reports something unexpected, or whose outcome cannot be read, counts as
+    ``completed``. The session itself records ``error`` and ``force_ended``
+    for the paths that end without a game outcome (``_run_game_loop_async``).
+    """
+    if game is None:
+        return OUTCOME_COMPLETED
+    try:
+        outcome = game.game_outcome()
+    except Exception as e:
+        logger.warning(f"Could not read the game outcome: {e}")
+        return OUTCOME_COMPLETED
+    return outcome if outcome in GAME_OUTCOMES else OUTCOME_COMPLETED
+
+
 # How often game_duration_seconds is refreshed while a game is RUNNING (#1305).
 DURATION_GAUGE_INTERVAL_S = 1.0
 
@@ -499,6 +528,11 @@ class GameSession:
                 # populated label (publish_gameplay_phase_span_id).
                 self._set_trace_correlation()
 
+            # The built game (None until GameFactory created it) and the outcome the
+            # session decides itself (error, or force_ended before the game was
+            # built); both feed games_completed_total{outcome}.
+            game = None
+            session_outcome: str | None = None
             try:
                 # Check if gRPC clients are available
                 if not self.clients.is_connected:
@@ -506,6 +540,7 @@ class GameSession:
                     logger.error(error_msg)
                     with self._state_lock:
                         self.game_state = game_coordinator_pb2.GameState.ENDED
+                    session_outcome = OUTCOME_ERROR
                     await self.event_bus.publish("game_error", {"error": error_msg})
                     await self.clients.close()
                     return
@@ -521,6 +556,7 @@ class GameSession:
                 # (#1329).
                 if admitted and not self.game_running:
                     logger.info(f"Game {self.game_id} was force-ended while waiting for flag providers")
+                    session_outcome = OUTCOME_FORCE_ENDED
                     await self.clients.close()
                     return
 
@@ -542,6 +578,7 @@ class GameSession:
                     logger.error(error_msg)
                     with self._state_lock:
                         self.game_state = game_coordinator_pb2.GameState.ENDED
+                    session_outcome = OUTCOME_ERROR
                     await self.event_bus.publish("game_error", {"error": error_msg})
                     await self.clients.close()
                     return
@@ -588,6 +625,7 @@ class GameSession:
                 logger.error(f"Game loop error: {e}", exc_info=True)
                 with self._state_lock:
                     self.game_state = game_coordinator_pb2.GameState.ENDED
+                session_outcome = OUTCOME_ERROR
                 await self.event_bus.publish("game_error", {"error": str(e)})
             finally:
                 # Thread-safe state cleanup
@@ -629,9 +667,11 @@ class GameSession:
                     # does NOT carry experiment_id/arm (a label on a cumulative
                     # counter is one permanent series per experiment, forever).
                     # Per-experiment counts come from the span attributes (#975).
+                    # outcome is one of the five GAME_OUTCOMES (#1427).
                     metrics.games_completed_total.labels(
                         mode=self.game_name,
                         game_kind=self.game_kind,
+                        outcome=session_outcome or completed_game_outcome(game),
                     ).inc()
                 # Final value: the gauge holds the whole game's duration at end.
                 try:

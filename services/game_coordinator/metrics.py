@@ -111,10 +111,13 @@ games_started_total = Counter(
     ["mode", "game_kind"],
 )
 
+# outcome: the game's game.outcome (winner, tie, completed, force_ended; #1328) or
+# error (the session published game_error), bounded to those five values by
+# game_session (GAME_OUTCOMES, completed_game_outcome; #1427).
 games_completed_total = Counter(
     "games_completed_total",
-    "Total number of games completed",
-    ["mode", "game_kind"],
+    "Total number of games completed, by outcome",
+    ["mode", "game_kind", "outcome"],
 )
 
 # Shadow game governance (#837).
@@ -492,7 +495,7 @@ def clear_all_player_analytics() -> None:
     Clear all player analytics metrics at game end.
 
     This is the single cleanup point for the game lifecycle, removing all
-    label combinations so the Player Insights dashboard shows no data
+    label combinations so the Game & Players dashboard shows no data
     between games. Per-death metric removal was eliminated (Issue #458)
     to prevent dashboard flicker during game transitions.
 

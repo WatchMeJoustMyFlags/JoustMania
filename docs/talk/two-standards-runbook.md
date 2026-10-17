@@ -210,6 +210,7 @@ Replace `localhost` with the Pi's address from the presenter laptop.
 | Jaeger, post-game summary (beat 8) | `http://localhost/jaeger/search?service=agent&operation=agent.llm.retro&lookback=30m&limit=5` |
 | Jaeger, infra decisions (section 4) | `http://localhost/jaeger/search?service=agent&operation=agent.infrastructure.decision&lookback=15m` |
 | Grafana, agent metrics | `http://localhost/grafana/d/agent-operations` (**Agent Operations — Fleet**: "Fleet" is part of this dashboard's title, the [agent demo runbook](../agent-demo-runbook.md)'s "fleet view") |
+| Grafana, game and players | `http://localhost/grafana/d/game-players` (**Game & Players**: live games, games by outcome, game-loop health, and a per-player drill-down row with the 100 Hz acceleration against the warning and death lines; replaced Game Quality, Game Analytics and Player Insights in #1427) |
 | Grafana, service and host health | `http://localhost/grafana/d/joustmania-service-health` (**Infrastructure & Services**; absorbed the separate Fleet Overview dashboard in #1427) |
 | Grafana, controllers and Bluetooth | `http://localhost/grafana/d/controller-overview` (**Controllers & Bluetooth**; the dashboard's Metrics tab embeds it. Expand the collapsed "Bluetooth and Adapters (Pi only)" row for per-adapter load and signal before deciding on the [Bluetooth fallback](#fallback-bluetooth-down)) |
 

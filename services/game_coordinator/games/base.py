@@ -2747,6 +2747,14 @@ class BaseGameMode(ABC):
             return {"game.outcome": "force_ended", "game.end_reason": self.force_end_reason}
         return self._natural_game_outcome()
 
+    def game_outcome(self) -> str:
+        """The ``game.outcome`` value: ``winner``, ``tie``, ``completed`` or ``force_ended``.
+
+        The same value the game root span records; the session labels
+        ``games_completed_total{outcome}`` with it (#1427).
+        """
+        return self._game_outcome_attributes()["game.outcome"]
+
     def _capture_game_root_span(self) -> None:
         """Remember the current span (the session's game root) for the outcome.
 
