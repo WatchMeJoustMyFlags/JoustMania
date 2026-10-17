@@ -254,12 +254,28 @@ actual_update_frequency_hz = Gauge(
     GAME_STATE_LABELS,
 )
 
+# Frame consistency metrics (Issue #183). Per game like the gauges above
+# (#1471): a concurrent real and shadow loop would otherwise overwrite each other.
+game_loop_frame_consistency_percent = Gauge(
+    "game_loop_frame_consistency_percent",
+    "Percentage of a live game loop's frames within target timing (within 50% of target frame time)",
+    GAME_STATE_LABELS,
+)
+
+game_loop_jitter_ms = Gauge(
+    "game_loop_jitter_ms",
+    "Standard deviation of a live game loop's recent frame times in milliseconds",
+    GAME_STATE_LABELS,
+)
+
 GAME_STATE_GAUGES = (
     music_tempo,
     game_sensitivity,
     effective_warning_threshold,
     effective_death_threshold,
     actual_update_frequency_hz,
+    game_loop_frame_consistency_percent,
+    game_loop_jitter_ms,
 )
 
 config_changes_total = Counter(
@@ -280,20 +296,13 @@ flag_configuration_changes_total = Counter(
     "Total number of PROVIDER_CONFIGURATION_CHANGED events received",
 )
 
+# Process-wide on purpose (#1471): the configured rate comes from the
+# RuntimeConfigManager singleton, read in an empty evaluation context, so every
+# game runs at the same configured rate and there is nothing per game to label.
+# The per-game measured rate is game_actual_update_frequency_hz.
 current_update_frequency_hz = Gauge(
     "game_current_update_frequency_hz",
     "Current configured update frequency from feature flags (Hz)",
-)
-
-# Frame consistency metrics (Issue #183)
-game_loop_frame_consistency_percent = Gauge(
-    "game_loop_frame_consistency_percent",
-    "Percentage of frames within target timing (within 50% of target frame time)",
-)
-
-game_loop_jitter_ms = Gauge(
-    "game_loop_jitter_ms",
-    "Standard deviation of frame times in milliseconds",
 )
 
 game_loop_frames_dropped_total = Counter(
@@ -492,8 +501,9 @@ def clear_session_player_analytics(
     rather than globally wiping every player gauge. With two concurrent games
     this prevents the first game to end from erasing the live game's dashboard.
 
-    The game-state gauges (music_tempo, game_sensitivity, effective_*_threshold,
-    actual_update_frequency_hz) are per game (game_kind, game_id), so the ending
+    The game-state gauges (GAME_STATE_GAUGES: music_tempo, game_sensitivity,
+    effective_*_threshold, actual_update_frequency_hz and the loop-health
+    gauges) are per game (game_kind, game_id), so the ending
     session removes only its own series and never touches a concurrent game's.
 
     Args:
