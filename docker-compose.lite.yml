@@ -288,6 +288,8 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
+      # Pairing daemon control API (UC-005 unpair); bridge network here
+      - PAIRING_DAEMON_URL=http://pairing-daemon:8002
       - FLAGD_CONFIG_PATH=/etc/flagd/flags/controller.json
     volumes:
       - ./services/flagd:/etc/flagd/flags

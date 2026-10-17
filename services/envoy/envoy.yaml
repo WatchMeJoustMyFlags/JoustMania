@@ -8,6 +8,7 @@
 #   /jaeger/*       -> jaeger:16686       (PRESERVE prefix, base_path=/jaeger in config.yaml)
 #   /loki/*         -> loki:3100          (STRIP prefix, API expects root)
 #   /victoria-metrics/* -> victoria-metrics:8428 (STRIP prefix, API expects root)
+#   /pairing/*      -> connect-proxy:8080 (PRESERVE prefix, operator unpair, UC-005)
 #   /health         -> envoy internal     (health check)
 #   /*              -> dashboard:8080     (SPA with fallback)
 
@@ -104,6 +105,13 @@ static_resources:
                         # PRESERVE prefix - connect-proxy handles /chaos/* paths
                         - match:
                             prefix: "/chaos/"
+                          route:
+                            cluster: connect_proxy
+
+                        # Operator unpair (UC-005), forwarded to the pairing daemon
+                        # PRESERVE prefix - connect-proxy handles /pairing/* paths
+                        - match:
+                            prefix: "/pairing/"
                           route:
                             cluster: connect_proxy
 

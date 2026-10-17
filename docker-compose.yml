@@ -658,6 +658,8 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
+      # Pairing daemon control API (UC-005 unpair); the daemon runs on the host network
+      - PAIRING_DAEMON_URL=http://host.docker.internal:8002
       - FLAGD_CONFIG_PATH=/etc/flagd/flags/controller.json
       - OTEL_SERVICE_NAME=connect-proxy
       - OTEL_SERVICE_NAMESPACE=infrastructure
@@ -666,6 +668,9 @@ services:
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
     volumes:
       - ./services/flagd:/etc/flagd/flags
+    extra_hosts:
+      # Reach the host-networked pairing daemon (:8002) for UC-005 unpair
+      - "host.docker.internal:host-gateway"
     networks:
       - joustmania
     restart: unless-stopped
