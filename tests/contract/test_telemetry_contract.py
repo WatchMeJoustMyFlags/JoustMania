@@ -76,6 +76,8 @@ EXTERNAL_METRICS = {
     "go_": "Go runtime of VictoriaMetrics / flagd self-metrics",
     "vm_": "VictoriaMetrics self-metrics",
     "system_": "OTel collector hostmetrics receiver (services/otel-collector/config.yaml)",
+    "traces_span_metrics_": "OTel collector spanmetrics connector over agent.decide spans "
+    "(services/otel-collector/config.yaml; test_collector_spanmetrics.py)",
 }
 
 # Labels added by the pipeline (resource attributes, scrape config, histogram buckets).

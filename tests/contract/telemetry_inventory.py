@@ -467,10 +467,15 @@ _GO_INSTRUMENT_RE = re.compile(
 _RUST_INSTRUMENT_RE = re.compile(
     r"\.(?:u64|i64|f64)_(?:counter|up_down_counter|histogram|gauge|observable_gauge|observable_counter|observable_up_down_counter)\(\s*\"([^\"]+)\"",
 )
-# semconv GenAI client instruments created via go.opentelemetry.io/otel/semconv genaiconv.
+# semconv GenAI client instruments created via go.opentelemetry.io/otel/semconv genaiconv:
+# (OTel name, Prometheus name as VictoriaMetrics stores it). prometheusremotewrite
+# appends the unit suffix: `s` becomes `_seconds`; the `{token}` annotation adds none.
 _GO_SEMCONV_INSTRUMENTS = {
-    "NewClientOperationDuration": "gen_ai.client.operation.duration",
-    "NewClientTokenUsage": "gen_ai.client.token.usage",
+    "NewClientOperationDuration": (
+        "gen_ai.client.operation.duration",
+        "gen_ai_client_operation_duration_seconds",
+    ),
+    "NewClientTokenUsage": ("gen_ai.client.token.usage", "gen_ai_client_token_usage"),
 }
 
 
@@ -479,9 +484,9 @@ def go_metrics() -> set[str]:
     for path in _source_files(REPO_ROOT / "services", ".go"):
         text = path.read_text()
         names.update(_GO_INSTRUMENT_RE.findall(text))
-        for ctor, name in _GO_SEMCONV_INSTRUMENTS.items():
+        for ctor, (name, prom_name) in _GO_SEMCONV_INSTRUMENTS.items():
             if f"genaiconv.{ctor}(" in text:
-                names.add(name)
+                names.update((name, prom_name))
     return names
 
 

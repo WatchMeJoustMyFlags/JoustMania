@@ -198,7 +198,7 @@ blocked `not_allowed`; it now returns the live dispatches. Contrast with
 [act (e)](#e-blocked--discarded-decisions) (`decision.blocked":"true"`) to show
 applied vs blocked side by side.
 
-**The matching metrics** (Grafana **Agent Operations — Fleet**,
+**The matching metrics** (Grafana **Agent Decisions & Interventions**,
 [`agent-operations.json`](../services/grafana/dashboards/agent-operations.json),
 or `http://localhost/victoria-metrics/vmui/`):
 

@@ -3,6 +3,7 @@ package decision
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -262,7 +263,8 @@ type pendingEffect struct {
 // through the ContextProvider (same per-game source the #917 async path uses), recomputes
 // the SAME fitness functions with the dispatch-time thresholds, computes the per-signal
 // delta, and emits the agent.intervention.effect span(s) + agent_intervention_effect_delta
-// metric. If the partition is gone (game ended/evicted before the window elapsed) it emits
+// metric (progress-type signals only, see effectMetricSignal). If the partition is
+// gone (game ended/evicted before the window elapsed) it emits
 // a single ABORTED record — clearly marked, no delta, no metric — so the cancellation is
 // visible rather than silent.
 //
@@ -355,12 +357,35 @@ func (l *Loop) emitEffectSample(ctx context.Context, s pendingEffect) {
 		)
 		span.End()
 
+		if !effectMetricSignal(key) {
+			// Elapsed time and constant thresholds stay on the span only (#1444).
+			continue
+		}
 		l.effectDelta.Record(ctx, delta, otelmetric.WithAttributes(
 			attribute.String(AttrEffectIntervention, s.intervention),
 			attribute.String(AttrEffectObjective, s.objective),
 			attribute.String(AttrEffectSignal, key),
 		))
 	}
+}
+
+// effectMetricSignal reports whether a fitness signal's delta is recorded on the
+// agent_intervention_effect_delta metric (#1444). Only the 0..1 progress signals
+// (`*_progress`, `*_ratio`) and the skill gap qualify: their deltas share a unit and
+// fit EffectDeltaBuckets, so a quantile across signals means something. The other
+// Evaluated() keys stay on the agent.intervention.effect spans only:
+//   - `*_seconds` keys are elapsed time (endurance.session_seconds), whose delta is
+//     roughly the follow-up window, or constant thresholds
+//     (endurance.min_session_seconds, accelerate.target_session_seconds);
+//   - threshold keys (balanced.max_skill_gap, balanced.spike_survival_threshold)
+//     are flag values, so their delta is always 0.
+//
+// An allow-list, so a new threshold or time key never leaks into the metric;
+// TestEffect_MetricSignalsClassifyEveryFitnessKey makes a new key a conscious choice.
+func effectMetricSignal(key string) bool {
+	return strings.HasSuffix(key, "_progress") ||
+		strings.HasSuffix(key, "_ratio") ||
+		strings.HasSuffix(key, ".skill_gap")
 }
 
 // sortedKeys returns the map keys sorted, for deterministic span/metric emission order.
