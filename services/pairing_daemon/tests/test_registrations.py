@@ -335,3 +335,244 @@ class TestCli:
         assert "Already absent: PS Move" in captured.out
         assert "FAILED to remove PS Move" in captured.err
         assert "Removed 1, already absent 1, failed 1" in captured.out
+
+
+# --- One controller on every adapter: unpair (UC-005) and re-pair cleanup (UC-001 BR-004) ---
+
+CONTROLLER = "00:06:F7:AA:BB:CC"
+OTHER_CONTROLLER = "00:06:F7:11:22:33"
+ZCM1_MODALIAS = "usb:v054Cp03D5d0001"
+
+
+def adapters_tree(adapters: dict[str, tuple[str, dict[str, dict]]]) -> dict:
+    """{"hci0": (adapter_address, {"dev_x": device(...)})} -> GetManagedObjects reply."""
+    objects: dict = {"/org/bluez": {"org.bluez.AgentManager1": {}}}
+    for hci, (address, devices) in adapters.items():
+        objects[f"/org/bluez/{hci}"] = {"org.bluez.Adapter1": {"Address": Variant("s", address)}}
+        for name, interfaces in devices.items():
+            objects[f"/org/bluez/{hci}/{name}"] = interfaces
+    return objects
+
+
+@pytest.fixture
+def bluez():
+    """Patch the D-Bus edge; yields (bus, set_objects). set_objects(exception) makes the tree call raise."""
+    bus = create_autospec(MessageBus, instance=True)
+    bus.call.return_value = Message(message_type=MessageType.METHOD_RETURN, reply_serial=1)
+    state: dict = {"objects": adapters_tree({})}
+
+    async def managed_objects(_bus):
+        if isinstance(state["objects"], BaseException):
+            raise state["objects"]
+        return state["objects"]
+
+    with (
+        patch.object(registrations, "get_system_bus", AsyncMock(return_value=bus)),
+        patch.object(registrations, "get_managed_objects", side_effect=managed_objects),
+    ):
+        yield bus, lambda objects: state.update(objects=objects)
+
+
+def outcomes(results) -> list[tuple[str, str]]:
+    return [(r.registration.adapter_address, r.outcome) for r in results]
+
+
+class TestNormalizeAddress:
+    @pytest.mark.uc("UC-005", flow="A5")
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("00:06:f7:aa:bb:cc", CONTROLLER),
+            (" 00-06-F7-AA-BB-CC ", CONTROLLER),
+            ("MOCK0001", None),
+            ("00:06:F7:AA:BB", None),
+            ("../../etc", None),
+        ],
+    )
+    def test_normalize(self, raw, expected):
+        assert registrations.normalize_address(raw) == expected
+
+
+class TestRemoveControllerRegistrations:
+    @pytest.mark.uc("UC-005", flow="main", steps=[5], br=["BR-001"])
+    async def test_removes_that_controller_on_every_adapter_only(self, bluez, bluetooth_dir):
+        """Both adapters' registrations of the controller go; other controllers and devices stay."""
+        bus, set_objects = bluez
+        set_objects(
+            adapters_tree(
+                {
+                    "hci0": (
+                        HCI0,
+                        {
+                            "dev_a": device(CONTROLLER, Modalias=ZCM1_MODALIAS),
+                            "dev_b": device(OTHER_CONTROLLER, Modalias=ZCM1_MODALIAS),
+                        },
+                    ),
+                    "hci1": (
+                        HCI1,
+                        {
+                            "dev_a": device(CONTROLLER, Name="Motion Controller", Class=0x002508, UUIDs=[HID_UUID]),
+                            "dev_k": device(KEYBOARD, Modalias="usb:v05ACp0255d0100"),
+                        },
+                    ),
+                }
+            )
+        )
+
+        results = await registrations.remove_controller_registrations(CONTROLLER.lower(), bluetooth_dir=bluetooth_dir)
+
+        assert outcomes(results) == [(HCI0, "removed"), (HCI1, "removed")]
+        assert removed_paths(bus) == [
+            ("/org/bluez/hci0", "/org/bluez/hci0/dev_a"),
+            ("/org/bluez/hci1", "/org/bluez/hci1/dev_a"),
+        ]
+
+    @pytest.mark.uc("UC-005", flow="main", steps=[5], br=["BR-001"])
+    async def test_property_less_copies_go_once_a_ps_move_matched(self, bluez, bluetooth_dir):
+        """FR-123 'every adapter': a never-connected copy (no Modalias/class) goes with the matched PS Move."""
+        bus, set_objects = bluez
+        set_objects(
+            adapters_tree(
+                {
+                    "hci0": (HCI0, {"dev_a": device(CONTROLLER, Modalias=ZCM1_MODALIAS)}),
+                    "hci1": (HCI1, {"dev_a": device(CONTROLLER)}),  # trusted over USB, never connected
+                }
+            )
+        )
+        saved_bare = write_info(bluetooth_dir, GONE_ADAPTER, CONTROLLER, None, None)
+
+        results = await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir)
+
+        assert outcomes(results) == [(HCI0, "removed"), (HCI1, "removed"), (GONE_ADAPTER, "removed")]
+        assert len(removed_paths(bus)) == 2
+        assert not saved_bare.exists()
+
+    @pytest.mark.uc("UC-005", flow="A4", br=["BR-001"])
+    async def test_only_property_less_copies_are_not_enough(self, bluez, bluetooth_dir):
+        """Without any registration identified as a PS Move, nothing is taken (A4)."""
+        bus, set_objects = bluez
+        set_objects(adapters_tree({"hci0": (HCI0, {"dev_a": device(CONTROLLER)})}))
+
+        assert await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir) == []
+        assert removed_paths(bus) == []
+
+    @pytest.mark.uc("UC-005", br=["BR-001"])
+    async def test_non_psmove_device_with_that_address_is_untouched(self, bluez, bluetooth_dir):
+        """BR-001: a copy identified as another device never goes, even when a PS Move copy matched."""
+        bus, set_objects = bluez
+        set_objects(
+            adapters_tree(
+                {
+                    "hci0": (HCI0, {"dev_k": device(CONTROLLER, Modalias="usb:v05ACp0255d0100")}),
+                    "hci1": (HCI1, {"dev_a": device(CONTROLLER, Modalias=ZCM1_MODALIAS)}),
+                }
+            )
+        )
+
+        results = await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir)
+
+        assert outcomes(results) == [(HCI1, "removed")]
+        assert removed_paths(bus) == [("/org/bluez/hci1", "/org/bluez/hci1/dev_a")]
+
+    @pytest.mark.uc("UC-005", flow="main", steps=[5], br=["BR-002"])
+    async def test_saved_only_registration_of_absent_adapter_is_deleted(self, bluez, bluetooth_dir):
+        """BR-002: absent adapter's PS Move dir deleted; a present adapter's storage is left to BlueZ."""
+        bus, set_objects = bluez
+        set_objects(adapters_tree({"hci0": (HCI0, {})}))
+        absent = write_info(bluetooth_dir, GONE_ADAPTER, CONTROLLER, 0x054C, 0x03D5)
+        present = write_info(bluetooth_dir, HCI0, CONTROLLER, 0x054C, 0x03D5)
+        other = write_info(bluetooth_dir, GONE_ADAPTER, OTHER_CONTROLLER, 0x054C, 0x03D5)
+        not_move = write_info(bluetooth_dir, "DD:00:00:00:00:00", CONTROLLER, 0x05AC, 0x0255)
+
+        results = await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir)
+
+        assert outcomes(results) == [(GONE_ADAPTER, "removed")]
+        assert not absent.exists()
+        assert present.exists() and other.exists() and not_move.exists()
+        assert removed_paths(bus) == []
+
+    @pytest.mark.uc("UC-005", flow="A7", br=["BR-002"])
+    async def test_bluetoothd_not_running_falls_back_to_saved_files(self, bluez, bluetooth_dir):
+        """Nobody owns org.bluez: every saved PS Move dir of the address may go (bluetoothd reads them at start)."""
+        bus, set_objects = bluez
+        set_objects(DBusError("org.freedesktop.DBus.Error.ServiceUnknown"))
+        saved = write_info(bluetooth_dir, HCI0, CONTROLLER, 0x054C, 0x03D5)
+
+        results = await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir)
+
+        assert outcomes(results) == [(HCI0, "removed")]
+        assert not saved.exists()
+        bus.call.assert_not_awaited()
+
+    @pytest.mark.uc("UC-005", flow="A7")
+    async def test_other_dbus_error_raises_and_touches_nothing(self, bluez, bluetooth_dir):
+        """bluetoothd may be running (AccessDenied, NoReply): its storage is not touched."""
+        _bus, set_objects = bluez
+        set_objects(DBusError("org.freedesktop.DBus.Error.NoReply"))
+        saved = write_info(bluetooth_dir, HCI0, CONTROLLER, 0x054C, 0x03D5)
+
+        with pytest.raises(DBusError):
+            await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir)
+        assert saved.exists()
+
+    @pytest.mark.uc("UC-005", flow="A4")
+    async def test_unknown_address_finds_nothing(self, bluez, bluetooth_dir):
+        bus, set_objects = bluez
+        set_objects(adapters_tree({"hci0": (HCI0, {"dev_b": device(OTHER_CONTROLLER, Modalias=ZCM1_MODALIAS)})}))
+
+        assert await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir) == []
+        assert removed_paths(bus) == []
+
+    @pytest.mark.uc("UC-005", flow="A4", br=["BR-002"])
+    async def test_already_gone_counts_as_already_absent(self, bluez, bluetooth_dir):
+        """A race with BlueZ: DoesNotExist is 'already_absent', which the API treats as success."""
+        bus, set_objects = bluez
+        set_objects(adapters_tree({"hci0": (HCI0, {"dev_a": device(CONTROLLER, Modalias=ZCM1_MODALIAS)})}))
+        bus.call.return_value = dbus_error_reply("org.bluez.Error.DoesNotExist")
+
+        results = await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir)
+
+        assert outcomes(results) == [(HCI0, "already_absent")]
+
+    @pytest.mark.uc("UC-005", flow="A5")
+    async def test_invalid_address_is_rejected_before_bluez(self, bluez, bluetooth_dir):
+        bus, _ = bluez
+        with pytest.raises(ValueError, match="not a Bluetooth address"):
+            await registrations.remove_controller_registrations("MOCK0001", bluetooth_dir=bluetooth_dir)
+        bus.call.assert_not_awaited()
+
+    @pytest.mark.uc("UC-005", flow="A7")
+    async def test_removal_failure_is_reported_per_registration(self, bluez, bluetooth_dir):
+        bus, set_objects = bluez
+        set_objects(adapters_tree({"hci0": (HCI0, {"dev_a": device(CONTROLLER, Modalias=ZCM1_MODALIAS)})}))
+        bus.call.return_value = dbus_error_reply("org.bluez.Error.Failed")
+
+        results = await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir)
+
+        assert outcomes(results) == [(HCI0, "failed")]
+        assert "org.bluez.Error.Failed" in results[0].error
+
+    @pytest.mark.uc("UC-001", flow="A5", br=["BR-004"])
+    async def test_repair_cleanup_keeps_selected_adapter(self, bluez, bluetooth_dir):
+        """BR-004: other adapters' registrations go (by address alone, even never-connected ones); the target stays."""
+        bus, set_objects = bluez
+        set_objects(
+            adapters_tree(
+                {
+                    "hci0": (HCI0, {"dev_a": device(CONTROLLER)}),  # never connected: no name, class or modalias
+                    "hci1": (HCI1, {"dev_a": device(CONTROLLER, Modalias=ZCM1_MODALIAS)}),
+                    "hci2": ("EE:00:00:00:00:00", {"dev_k": device(KEYBOARD)}),
+                }
+            )
+        )
+        absent = write_info(bluetooth_dir, GONE_ADAPTER, CONTROLLER, None, None)  # saved, no DeviceID
+        loaded_dir = write_info(bluetooth_dir, HCI0, CONTROLLER, None, None)  # BlueZ-owned: removed via D-Bus only
+
+        results = await registrations.remove_controller_registrations(
+            CONTROLLER, keep_adapter=HCI1.lower(), require_psmove=False, bluetooth_dir=bluetooth_dir
+        )
+
+        assert outcomes(results) == [(HCI0, "removed"), (GONE_ADAPTER, "removed")]
+        assert removed_paths(bus) == [("/org/bluez/hci0", "/org/bluez/hci0/dev_a")]
+        assert not absent.exists()
+        assert loaded_dir.exists()  # the fake bus does not delete it; real BlueZ does on RemoveDevice

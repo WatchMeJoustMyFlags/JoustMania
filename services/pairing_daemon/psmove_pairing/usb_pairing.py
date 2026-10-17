@@ -4,8 +4,10 @@ Delegates hardware I/O to a PairingBackend selected by feature flags.
 The backend is resolved once per poll cycle for coherence and hot-switchability.
 """
 
+import asyncio
 import logging
 import time
+from dataclasses import dataclass
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -23,7 +25,7 @@ from .metrics import (
     pairing_usb_controllers,
 )
 from .pairing_backend import HidapiBackend, PairingBackend, RustServiceBackend
-from .registrations import normalize_address, remove_controller_registrations
+from .registrations import RemovalResult, normalize_address, remove_controller_registrations
 from .utils import run_command
 
 logger = logging.getLogger("psmove-pairing")
@@ -38,11 +40,30 @@ class PairingError(Exception):
 
 
 class PairingInProgressError(Exception):
-    """The controller is being paired over USB right now (UC-005 A6)."""
+    """A USB pairing or another unpair is running right now (UC-005 A6)."""
 
 
 class NotRegisteredError(Exception):
     """BlueZ holds no PS Move registration for the address (UC-005 A4)."""
+
+
+@dataclass(frozen=True)
+class UnpairResult:
+    """Outcome of one operator unpair (UC-005)."""
+
+    address: str
+    results: list[RemovalResult]
+    on_usb: bool  # still plugged in: not re-paired until unplugged and plugged in again (A8)
+
+
+def _record_results(span, results: list[RemovalResult]) -> None:
+    """Span attributes for a registration removal (telemetry.md, pairing.remove_registrations)."""
+    span.set_attribute("unpair.removed_count", sum(r.outcome == "removed" for r in results))
+    span.set_attribute("unpair.already_absent_count", sum(r.outcome == "already_absent" for r in results))
+    failed = sum(not r.ok for r in results)
+    span.set_attribute("unpair.failed_count", failed)
+    if failed:
+        span.set_status(Status(StatusCode.ERROR, f"{failed} registration(s) not removed"))
 
 
 # Span attribute constants
@@ -119,8 +140,13 @@ class USBPairing:
         # Cached backend instance — reused across polls when routing is unchanged
         self._current_backend: PairingBackend | None = None
         self._current_backend_name: str | None = None
-        # Upper-case address of the controller being paired right now (UC-005 A6)
-        self._pairing_address: str | None = None
+        # Held from adapter selection through trust, and by an unpair (UC-005 A6):
+        # an unpair never interleaves with a pairing or its BlueZ restart window.
+        self._pairing_lock = asyncio.Lock()
+        # Addresses seen on USB in the last poll
+        self._usb_addresses: set[str] = set()
+        # Unpaired while possibly on USB: not paired again until they leave USB (UC-005 A8)
+        self._awaiting_replug: set[str] = set()
 
     def _get_backend(self) -> tuple[PairingBackend, str]:
         """Return the cached backend, or resolve a new one.
@@ -245,6 +271,12 @@ class USBPairing:
                 span.set_attribute("skip_reason", "verified_this_session")
                 return False
 
+            # Unpaired by the operator while plugged in: wait for unplug and replug (UC-005 A8)
+            if normalize_address(serial) in self._awaiting_replug:
+                span.set_attribute("skipped", True)
+                span.set_attribute("skip_reason", "unpaired_awaiting_replug")
+                return False
+
             already_in_bluez = not self.adapter_manager.check_if_not_paired(serial)
             if already_in_bluez:
                 logger.info(f"Controller {serial} in BlueZ device list, verifying host address")
@@ -254,61 +286,61 @@ class USBPairing:
             span.set_attribute("skipped", False)
             pairing_attempts_total.inc()
 
-            # Select least-loaded adapter for load balancing
-            adapter = self.adapter_manager.select_least_loaded_adapter()
+            async with self._pairing_lock:
+                return await self._pair_to_least_loaded(device_path, serial, span)
 
-            if not adapter:
-                logger.error("No Bluetooth adapters available for pairing")
-                pairing_failed_total.inc()
-                span.record_exception(PairingError("No Bluetooth adapters available"))
-                span.set_status(Status(StatusCode.ERROR, "No adapters available"))
-                return False
+    async def _pair_to_least_loaded(self, device_path: bytes, serial: str, span) -> bool:
+        """Adapter selection through trust; runs under the pairing lock (UC-005 A6)."""
+        # Select least-loaded adapter for load balancing
+        adapter = self.adapter_manager.select_least_loaded_adapter()
 
-            logger.info(
-                f"Load balancing: selected adapter {adapter.address} "
-                f"({adapter.hci}) with {adapter.device_count} existing devices"
-            )
-            span.set_attribute(_ATTR_ADAPTER_ADDRESS, adapter.address)
-            span.set_attribute("adapter.device_count", adapter.device_count)
-            span.set_attribute("adapter.hci", adapter.hci)
-            pairing_adapter_selected_total.labels(adapter=adapter.address).inc()
-            pairing_adapter_device_count.labels(adapter=adapter.address).set(adapter.device_count)
+        if not adapter:
+            logger.error("No Bluetooth adapters available for pairing")
+            pairing_failed_total.inc()
+            span.record_exception(PairingError("No Bluetooth adapters available"))
+            span.set_status(Status(StatusCode.ERROR, "No adapters available"))
+            return False
 
-            self._pairing_address = normalize_address(serial)
-            try:
-                # Pair controller to selected adapter via backend
-                if not await self.pair_controller(device_path, serial, adapter.address):
-                    logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
-                    pairing_failed_total.inc()
-                    span.record_exception(PairingError(f"Controller {serial} pairing failed"))
-                    span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
-                    return False
+        logger.info(
+            f"Load balancing: selected adapter {adapter.address} "
+            f"({adapter.hci}) with {adapter.device_count} existing devices"
+        )
+        span.set_attribute(_ATTR_ADAPTER_ADDRESS, adapter.address)
+        span.set_attribute("adapter.device_count", adapter.device_count)
+        span.set_attribute("adapter.hci", adapter.hci)
+        pairing_adapter_selected_total.labels(adapter=adapter.address).inc()
+        pairing_adapter_device_count.labels(adapter=adapter.address).set(adapter.device_count)
 
-                # Drop its registrations on other adapters (UC-001 A5, BR-004)
-                await self.remove_stale_registrations(serial, adapter.address)
+        # Pair controller to selected adapter via backend
+        if not await self.pair_controller(device_path, serial, adapter.address):
+            logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
+            pairing_failed_total.inc()
+            span.record_exception(PairingError(f"Controller {serial} pairing failed"))
+            span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
+            return False
 
-                # Restart BlueZ so it re-reads the new device files
-                await self.restart_bluetooth_service()
+        # Drop its registrations on other adapters before the restart (UC-001 A5, BR-004)
+        await self.remove_stale_registrations(serial, adapter.address)
 
-                # Trust device in BlueZ (for ZCM2, agent handles PIN at connect time)
-                await self.bluez_trust_controller(serial)
-            finally:
-                self._pairing_address = None
+        # Restart BlueZ so it re-reads the new device files
+        await self.restart_bluetooth_service()
 
-            # Mark as verified so we don't re-process every poll cycle
-            self._verified_serials.add(serial)
+        # Trust device in BlueZ (for ZCM2, agent handles PIN at connect time)
+        await self.bluez_trust_controller(serial)
 
-            # Success message
-            logger.info(
-                f"PAIRING SUCCESS: Controller {serial} paired to adapter "
-                f"{adapter.address} - unplug USB and press PS button"
-            )
+        # Mark as verified so we don't re-process every poll cycle
+        self._verified_serials.add(serial)
 
-            pairing_success_total.inc()
-            span.set_status(Status(StatusCode.OK))
-            return True
+        # Success message
+        logger.info(
+            f"PAIRING SUCCESS: Controller {serial} paired to adapter {adapter.address} - unplug USB and press PS button"
+        )
 
-    async def remove_stale_registrations(self, serial: str, keep_adapter: str) -> list[str]:
+        pairing_success_total.inc()
+        span.set_status(Status(StatusCode.OK))
+        return True
+
+    async def remove_stale_registrations(self, serial: str, keep_adapter: str) -> list[RemovalResult]:
         """Remove the controller's registrations on every adapter but ``keep_adapter`` (UC-001 BR-004).
 
         The address was read from a PS Move on USB, so it alone identifies the
@@ -318,53 +350,52 @@ class USBPairing:
             span.set_attribute(_ATTR_CONTROLLER_SERIAL, serial)
             span.set_attribute("unpair.reason", "repair")
             try:
-                removed = await remove_controller_registrations(serial, keep_adapter=keep_adapter, require_psmove=False)
+                results = await remove_controller_registrations(serial, keep_adapter=keep_adapter, require_psmove=False)
             except Exception as e:
                 logger.warning(f"Could not remove stale registrations of {serial}: {e}")
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 return []
-            span.set_attribute("unpair.removed_count", len(removed))
-            if removed:
-                logger.info(f"Removed stale registrations of {serial} on {', '.join(removed)}")
-            return removed
+            _record_results(span, results)
+            return results
 
-    async def unpair(self, address: str) -> list[str]:
+    async def unpair(self, address: str) -> UnpairResult:
         """Unpair one controller on every adapter (UC-005).
-
-        Returns:
-            Adapter addresses whose registration was removed.
 
         Raises:
             ValueError: not a Bluetooth address (A5).
-            PairingInProgressError: the controller is being paired now (A6).
-            NotRegisteredError: no PS Move registration for it (A4).
-            DBusError: BlueZ failed (A7).
+            PairingInProgressError: a pairing or another unpair is running (A6).
+            NotRegisteredError: no PS Move registration found for it (A4).
+            DBusError: BlueZ answered with an error (A7).
         """
         normalized = normalize_address(address)
         if normalized is None:
             raise ValueError(f"not a Bluetooth address: {address!r}")
-        if normalized == self._pairing_address:
+        if self._pairing_lock.locked():
             raise PairingInProgressError(normalized)
 
-        with self.tracer.start_as_current_span("pairing.remove_registrations") as span:
-            span.set_attribute(_ATTR_CONTROLLER_SERIAL, normalized)
-            span.set_attribute("unpair.reason", "operator")
-            try:
-                removed = await remove_controller_registrations(normalized)
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-            span.set_attribute("unpair.removed_count", len(removed))
+        async with self._pairing_lock:
+            with self.tracer.start_as_current_span("pairing.remove_registrations") as span:
+                span.set_attribute(_ATTR_CONTROLLER_SERIAL, normalized)
+                span.set_attribute("unpair.reason", "operator")
+                try:
+                    results = await remove_controller_registrations(normalized)
+                except Exception as e:
+                    span.record_exception(e)
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    raise
+                _record_results(span, results)
 
-        # Pair it again when it is plugged in over USB (not UC-001 A1)
-        self._verified_serials = {s for s in self._verified_serials if normalize_address(s) != normalized}
-
-        if not removed:
+        if not results:
             raise NotRegisteredError(normalized)
-        logger.info(f"UNPAIRED: Controller {normalized} removed on {', '.join(removed)}")
-        return removed
+
+        # Pair it again only after it leaves USB and comes back (A8), never right away:
+        # a re-pair restarts bluetoothd, which disconnects every controller.
+        self._verified_serials = {s for s in self._verified_serials if normalize_address(s) != normalized}
+        self._awaiting_replug.add(normalized)
+        on_usb = normalized in self._usb_addresses
+        logger.info(f"UNPAIRED: Controller {normalized}: {[r.outcome for r in results]} (on USB: {on_usb})")
+        return UnpairResult(normalized, results, on_usb)
 
     async def poll(self) -> None:
         """Perform one USB polling cycle."""
@@ -395,6 +426,9 @@ class USBPairing:
             # Get USB controllers using resolved backend
             controllers = await backend.get_usb_controllers()
             pairing_usb_controllers.set(len(controllers))
+            self._usb_addresses = {a for _, serial in controllers if (a := normalize_address(serial))}
+            # An unpaired controller that left USB is paired again when it comes back (UC-005 A8)
+            self._awaiting_replug &= self._usb_addresses
             span.set_attribute("controllers.count", len(controllers))
 
             if not controllers:

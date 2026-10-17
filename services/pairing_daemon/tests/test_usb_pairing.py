@@ -531,8 +531,14 @@ class TestPairingFlow:
         backend, _runner, set_tree, restart = env
         known = [{"Address": self.SERIAL}, *devices(2)]
         set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, known), "hci1": (self.ADAPTER_FREE, [])}))
+        removals_before_restart = []
+        restart.side_effect = lambda *_: removals_before_restart.append(
+            sum(c.args[0].member == "RemoveDevice" for c in self.bus.call.await_args_list)
+        )
 
         await usb_pairing.poll()
+
+        assert removals_before_restart == [1], "A5 removes the old registration before the BlueZ restart"
 
         backend.pair_controller.assert_awaited_once_with(FAKE_PATH_1, self.SERIAL, self.ADAPTER_FREE)
         removals = [c.args[0] for c in self.bus.call.await_args_list if c.args[0].member == "RemoveDevice"]
