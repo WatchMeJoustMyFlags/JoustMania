@@ -172,6 +172,7 @@ hz = client.get_integer_value("game_loop.update_frequency_hz", 60)
 | `sentinel.rotation_minutes` | integer | minutes | Sentinel rotation interval |
 | `pairing.poll_interval` | number | seconds | Controller pairing poll interval |
 | `pairing.bt_monitor_interval` | number | seconds | Bluetooth monitor interval |
+| `pairing.bluez_restart_mode` | string | `never`, `always`, `when_idle` (default `never`) | Whether the pairing daemon restarts bluetoothd after a USB pairing (UC-001 BR-005, #1446). `never`: no restart (other controllers stay connected). `always`: restart after every pairing (pre-#1446 behaviour, drops every controller). `when_idle`: restart only after a new BlueZ device record was written and only while no real game is starting / running / ending (state from the coordinator's `GetGameState` via envoy; unreadable = busy, deferred). Read at use time; unknown or unreachable = `never` |
 
 **Sentinel animation (calibration, #766 F7).** The idle sentinel breathing/hue
 animation constants (`menu/idle_monitor.py`), consumed by the **menu** service.

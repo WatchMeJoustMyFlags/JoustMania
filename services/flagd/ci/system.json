@@ -67,6 +67,15 @@
       },
       "defaultVariant": "normal"
     },
+    "pairing.bluez_restart_mode": {
+      "state": "ENABLED",
+      "variants": {
+        "never": "never",
+        "always": "always",
+        "when_idle": "when_idle"
+      },
+      "defaultVariant": "never"
+    },
     "sentinel.update_hz": {
       "state": "ENABLED",
       "variants": {

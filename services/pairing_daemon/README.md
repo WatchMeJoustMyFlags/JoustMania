@@ -195,8 +195,9 @@ address on other adapters go with it.
 | 503 | a removal failed (same body plus `error`), a BlueZ / D-Bus error, or any unexpected error |
 
 A controller unpaired while plugged in over USB (`on_usb: true`) is **not**
-paired again until it is unplugged and plugged back in: a pairing restarts the
-Bluetooth service, which disconnects every controller. The daemon notices the
+paired again until it is unplugged and plugged back in, so the unpair is not
+undone right away. (Pairing never restarts the Bluetooth service or power-cycles
+an adapter, so it is safe while a game runs: UC-001 BR-005.) The daemon notices the
 unplug on its next USB poll (default every 10 s), or by a new HID device path,
 so leave it unplugged for about 10 s.
 

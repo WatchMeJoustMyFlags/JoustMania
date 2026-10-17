@@ -3,7 +3,6 @@
 import logging
 from dataclasses import dataclass
 
-from lib.bluez_dbus import restart_systemd_unit as _restart_impl
 from psmove_pairing.adapter_manager_modern import AdapterManager as ModernManager
 
 logger = logging.getLogger("psmove-pairing")
@@ -43,8 +42,3 @@ class AdapterManager:
     def check_if_not_paired(self, controller_addr: str) -> bool:
         """Check if a controller is not yet paired to any adapter."""
         return self._delegate.check_if_not_paired(controller_addr)
-
-
-async def restart_systemd_unit(unit: str, mode: str = "replace") -> None:
-    """Restart a systemd unit via dbus-fast."""
-    await _restart_impl(unit, mode)
