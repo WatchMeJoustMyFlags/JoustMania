@@ -196,7 +196,9 @@ address on other adapters go with it.
 
 A controller unpaired while plugged in over USB (`on_usb: true`) is **not**
 paired again until it is unplugged and plugged back in: a pairing restarts the
-Bluetooth service, which disconnects every controller.
+Bluetooth service, which disconnects every controller. The daemon notices the
+unplug on its next USB poll (default every 10 s), or by a new HID device path,
+so leave it unplugged for about 10 s.
 
 The dashboard calls it through envoy and the connect-proxy
 (`POST /pairing/unpair` with `{"address": "..."}`):

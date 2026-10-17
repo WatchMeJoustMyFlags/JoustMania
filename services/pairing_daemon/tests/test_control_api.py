@@ -15,7 +15,7 @@ from psmove_pairing.pairing_backend import HidapiBackend
 from psmove_pairing.registrations import PsMoveRegistration, RemovalResult
 from psmove_pairing.usb_pairing import USBPairing
 
-from .conftest import FAKE_PATH_1
+from .conftest import FAKE_PATH_1, FAKE_PATH_2
 
 CONTROLLER = "00:06:F7:AA:BB:CC"
 OTHER = "00:06:F7:11:22:33"
@@ -53,10 +53,10 @@ def stub_pairing_steps(usb_pairing: USBPairing, pair=None) -> None:
     usb_pairing.remove_stale_registrations = AsyncMock(return_value=[])
 
 
-async def poll_with_usb(usb_pairing: USBPairing, serials: list[str]) -> None:
-    """One poll() where the backend reports these serials on USB."""
+async def poll_with_usb(usb_pairing: USBPairing, serials: list[str], path: bytes = FAKE_PATH_1) -> None:
+    """One poll() where the backend reports these serials on USB (at ``path``)."""
     backend = create_autospec(HidapiBackend, instance=True)
-    backend.get_usb_controllers.return_value = [(FAKE_PATH_1, s) for s in serials]
+    backend.get_usb_controllers.return_value = [(path, s) for s in serials]
     usb_pairing._current_backend = None  # poll() caches its backend; use this one
     with (
         patch("psmove_pairing.usb_pairing._resolve_routing", return_value="python"),
@@ -217,6 +217,62 @@ class TestUnpairResponse:
         await asyncio.gather(unpair, pairing)
 
         assert order == ["unpair start", "unpair end", "pair"]
+
+    @pytest.mark.uc("UC-005", flow="A8")
+    async def test_poll_waiting_on_the_lock_does_not_pair_the_unpaired_controller(self, usb_pairing, remove):
+        """A poll already in process_controller for the same controller re-checks A8 under the lock."""
+        release = asyncio.Event()
+
+        async def slow_remove(*_args, **_kwargs):
+            await release.wait()
+            return [result(ADAPTER_0, "removed")]
+
+        remove.side_effect = slow_remove
+        stub_pairing_steps(usb_pairing)
+        usb_pairing._usb_paths = {CONTROLLER: FAKE_PATH_1}  # on USB
+        unpair = asyncio.create_task(unpair_response(usb_pairing, CONTROLLER))
+        await asyncio.sleep(0)
+        pairing = asyncio.create_task(usb_pairing.process_controller(FAKE_PATH_1, CONTROLLER))
+        await asyncio.sleep(0)
+        release.set()
+        (status, body), paired = await asyncio.gather(unpair, pairing)
+
+        assert (status, body["on_usb"]) == (200, True)
+        assert paired is False
+        usb_pairing.pair_controller.assert_not_awaited()
+        usb_pairing.restart_bluetooth_service.assert_not_awaited()
+
+    @pytest.mark.uc("UC-005", flow="A8")
+    async def test_replug_within_one_poll_is_noticed_by_a_new_device_path(self, usb_pairing, remove):
+        """Unplugged and plugged back in between two polls: a new hidraw path re-arms pairing."""
+        stub_pairing_steps(usb_pairing)
+        await poll_with_usb(usb_pairing, [CONTROLLER])
+        await unpair_response(usb_pairing, CONTROLLER)
+
+        await poll_with_usb(usb_pairing, [CONTROLLER])  # same path: still waiting
+        assert usb_pairing.pair_controller.await_count == 1
+        await poll_with_usb(usb_pairing, [CONTROLLER], path=FAKE_PATH_2)  # replugged, new path
+        assert usb_pairing.pair_controller.await_count == 2
+
+    @pytest.mark.uc("UC-005", flow="A6")
+    async def test_hung_backend_releases_the_pairing_lock(self, usb_pairing, remove):
+        """A pair_controller that never answers times out, fails the pairing and frees the lock."""
+        hung = asyncio.Event()
+        backend = create_autospec(HidapiBackend, instance=True)
+
+        async def never(*_args):
+            await hung.wait()
+
+        backend.pair_controller.side_effect = never
+        stub_pairing_steps(usb_pairing)
+        del usb_pairing.pair_controller  # use the real one, with its deadline
+        usb_pairing._current_backend, usb_pairing._current_backend_name = backend, "python"
+
+        with patch("psmove_pairing.usb_pairing.PAIR_TIMEOUT_SECONDS", 0.05):
+            assert await usb_pairing.process_controller(FAKE_PATH_1, OTHER) is False
+
+        assert not usb_pairing._pairing_lock.locked()
+        assert (await unpair_response(usb_pairing, CONTROLLER))[0] == 200
 
     @pytest.mark.uc("UC-005", flow="A7")
     async def test_partial_failure_is_503_with_results(self, usb_pairing, remove):

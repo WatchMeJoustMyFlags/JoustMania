@@ -144,6 +144,11 @@ class HidapiBackend:
             return PairingResult(success=False)
 
 
+# gRPC deadline for rust-hid calls: a hung service must not stall the poll loop
+# or hold the pairing lock (UC-005 A6)
+RUST_HID_RPC_TIMEOUT_SECONDS = 15.0
+
+
 class RustServiceBackend:
     """Pairing backend that delegates to the Rust HID gRPC service.
 
@@ -168,7 +173,9 @@ class RustServiceBackend:
         """Enumerate USB-connected PS Move controllers via Rust HID service."""
         from proto import psmove_hid_pb2
 
-        response = await self._stub.GetUSBControllers(psmove_hid_pb2.GetUSBControllersRequest())
+        response = await self._stub.GetUSBControllers(
+            psmove_hid_pb2.GetUSBControllersRequest(), timeout=RUST_HID_RPC_TIMEOUT_SECONDS
+        )
         return [(c.device_path.encode(), c.serial) for c in response.controllers]
 
     async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> PairingResult:
@@ -181,7 +188,8 @@ class RustServiceBackend:
                 device_path=path_str,
                 serial=serial,
                 adapter_address=adapter_address,
-            )
+            ),
+            timeout=RUST_HID_RPC_TIMEOUT_SECONDS,
         )
         return PairingResult(
             success=response.success,

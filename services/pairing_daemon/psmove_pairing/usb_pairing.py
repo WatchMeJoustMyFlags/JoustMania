@@ -66,6 +66,9 @@ def _record_results(span, results: list[RemovalResult]) -> None:
         span.set_status(Status(StatusCode.ERROR, f"{failed} registration(s) not removed"))
 
 
+# Upper bound for one backend pair_controller call (rust-hid gRPC deadline is 15 s)
+PAIR_TIMEOUT_SECONDS = 20.0
+
 # Span attribute constants
 _ATTR_CONTROLLER_SERIAL = "controller.serial"
 _ATTR_ADAPTER_ADDRESS = "adapter.address"
@@ -143,10 +146,11 @@ class USBPairing:
         # Held from adapter selection through trust, and by an unpair (UC-005 A6):
         # an unpair never interleaves with a pairing or its BlueZ restart window.
         self._pairing_lock = asyncio.Lock()
-        # Addresses seen on USB in the last poll
-        self._usb_addresses: set[str] = set()
-        # Unpaired while possibly on USB: not paired again until they leave USB (UC-005 A8)
-        self._awaiting_replug: set[str] = set()
+        # Address -> HID device path seen on USB in the last poll
+        self._usb_paths: dict[str, bytes] = {}
+        # Unpaired while possibly on USB -> its device path then (None: not seen on USB).
+        # Not paired again until it leaves USB or shows up under another path (UC-005 A8).
+        self._awaiting_replug: dict[str, bytes | None] = {}
 
     def _get_backend(self) -> tuple[PairingBackend, str]:
         """Return the cached backend, or resolve a new one.
@@ -182,7 +186,10 @@ class USBPairing:
                 backend, backend_name = self._get_backend()
                 span.set_attribute("pairing.backend", backend_name)
 
-                result = await backend.pair_controller(device_path, serial, adapter_address)
+                # Deadline: a hung backend must not hold the pairing lock forever (UC-005 A6)
+                result = await asyncio.wait_for(
+                    backend.pair_controller(device_path, serial, adapter_address), PAIR_TIMEOUT_SECONDS
+                )
 
                 duration = time.time() - start_time
                 pairing_duration_seconds.observe(duration)
@@ -291,6 +298,12 @@ class USBPairing:
 
     async def _pair_to_least_loaded(self, device_path: bytes, serial: str, span) -> bool:
         """Adapter selection through trust; runs under the pairing lock (UC-005 A6)."""
+        # An unpair may have run while this call waited for the lock (UC-005 A8)
+        if normalize_address(serial) in self._awaiting_replug:
+            span.set_attribute("skipped", True)
+            span.set_attribute("skip_reason", "unpaired_awaiting_replug")
+            return False
+
         # Select least-loaded adapter for load balancing
         adapter = self.adapter_manager.select_least_loaded_adapter()
 
@@ -392,8 +405,8 @@ class USBPairing:
         # Pair it again only after it leaves USB and comes back (A8), never right away:
         # a re-pair restarts bluetoothd, which disconnects every controller.
         self._verified_serials = {s for s in self._verified_serials if normalize_address(s) != normalized}
-        self._awaiting_replug.add(normalized)
-        on_usb = normalized in self._usb_addresses
+        self._awaiting_replug[normalized] = self._usb_paths.get(normalized)
+        on_usb = normalized in self._usb_paths
         logger.info(f"UNPAIRED: Controller {normalized}: {[r.outcome for r in results]} (on USB: {on_usb})")
         return UnpairResult(normalized, results, on_usb)
 
@@ -426,9 +439,14 @@ class USBPairing:
             # Get USB controllers using resolved backend
             controllers = await backend.get_usb_controllers()
             pairing_usb_controllers.set(len(controllers))
-            self._usb_addresses = {a for _, serial in controllers if (a := normalize_address(serial))}
-            # An unpaired controller that left USB is paired again when it comes back (UC-005 A8)
-            self._awaiting_replug &= self._usb_addresses
+            self._usb_paths = {a: path for path, serial in controllers if (a := normalize_address(serial))}
+            # An unpaired controller is paired again once it left USB, or came back under
+            # another device path between two polls (UC-005 A8)
+            self._awaiting_replug = {
+                address: path
+                for address, path in self._awaiting_replug.items()
+                if path is not None and self._usb_paths.get(address) == path
+            }
             span.set_attribute("controllers.count", len(controllers))
 
             if not controllers:
