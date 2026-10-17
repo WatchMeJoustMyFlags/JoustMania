@@ -15,15 +15,10 @@ This guide helps diagnose and resolve PS Move controller connectivity issues in 
    - **Red** = Poor (below -80 dBm)
    - **Gray** = USB connection
 
-**Via Prometheus Metrics:**
-```bash
-# Check current RSSI for all controllers
-curl localhost:8000/metrics | grep controller_rssi_dbm
-
-# Example output:
-# controller_rssi_dbm{serial="ABCD1234"} -65.0
-# controller_rssi_dbm{serial="EFGH5678"} -72.0
-```
+**Via metrics:** the controller manager pushes its metrics over OTLP; it no longer serves a
+`/metrics` endpoint on :8000 (removed in #1447). Query them in Grafana (`/grafana/`) or the
+VictoriaMetrics query API (`/victoria-metrics/`); names are listed in
+[telemetry.md §6](specs/telemetry.md#6-metrics).
 
 **Via Controller LED Warnings:**
 - **Orange pulse** (3 flashes): Weak signal warning (<-80 dBm)
@@ -324,7 +319,7 @@ A: Controllers work fine while charging via USB (wired mode, RSSI = 0). When unp
 - **Controller Manager:** `services/controller_manager/README.md`
 - **Proto Schema:** `proto/controller_manager.proto` (rssi field)
 - **Bluetooth Module:** `services/controller_manager/bluetooth.py`
-- **Metrics:** http://localhost:8000/metrics (Prometheus endpoint)
+- **Metrics:** Grafana at http://localhost/grafana/ ([telemetry.md §6](specs/telemetry.md#6-metrics))
 - **WebUI:** http://localhost/battery (Signal strength display)
 
 ## Getting Help
