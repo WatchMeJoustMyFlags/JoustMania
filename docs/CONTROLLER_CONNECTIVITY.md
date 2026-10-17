@@ -68,7 +68,7 @@ RSSI (Received Signal Strength Indicator) measures Bluetooth signal quality in d
 - **Check for interference** (turn off nearby 2.4GHz devices)
 - **Use an external CSR adapter** (e.g. Feasycom FSC-BP119) instead of the Pi's internal radio: the internal radio is poor for PS3 Moves (ZCM1)
 - **Check the adapter chipset** with `hciconfig -a | grep Manufacturer`: Realtek (93) adapters time PS3 Moves poorly with fewer than about 5 active links; Actions, Barrot and AIC8800 adapters are poor in general ([hardware guide](hardware-setup-guide.md#chipset-beats-marketing))
-- **Do not force the Peripheral role** (`hcitool sr ... peripheral`): let BlueZ negotiate; forced Peripheral can cap links and worsen timing
+- **Do not force the Peripheral role** (`hcitool sr ... peripheral`): let BlueZ negotiate; forcing Peripheral can lower link capacity and timing
 - **Reposition Pi** to center of play area
 
 ### Issue: Laggy Controller Input

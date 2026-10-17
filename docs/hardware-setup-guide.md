@@ -74,7 +74,7 @@ hciconfig -a | grep -E "^hci|Manufacturer"
 
 | HCI manufacturer (id) | Chipset family | PS Move behaviour |
 |---|---|---|
-| Cambridge Silicon Radio (10) | CSR8510 A10 | **Recommended.** Good timing at any link count |
+| Cambridge Silicon Radio (10) | CSR8510 A10 | **Recommended.** Good timing nearby at 1 to 7 links; at distance it varies by model (Cirago and Sena CSR adapters were poor at distance) |
 | Realtek Semiconductor (93) | RTL8761BU (BT 5.x dongles) | PS3 Move timing poor below about 5 active links, good at 5; some samples accept only 5 links |
 | Broadcom (15) | BCM20702 | Mediocre (7 PS3 Moves about 71 updates/s, p95 report gap about 32 ms) |
 | Cypress (305) | BCM4345C0 (Pi 5 internal radio) | Fine for a few PS4 Moves (ZCM2) indoors; poor for PS3 Moves (see below) |
@@ -87,9 +87,11 @@ workarounds for them). Trust the HCI manufacturer line, then test with real cont
 
 **Feasycom FSC-BP119** (CSR8510 A10, BT 4.0, Class 1, external antenna):
 
-- 7 PS3 Moves on one adapter: about 78 to 83 updates/s per controller, p95 report gap about 24 ms.
-- Two adapters held **12 PS3 Moves (6 + 6)**, nearby and at distance.
-- Not verified yet: 14 on two adapters, long endurance runs, outdoor range.
+- One adapter, 7 PS3 Moves nearby: about 78 updates/s per controller, p95 report gap about 25 ms.
+- Two adapters, 12 PS3 Moves (6 + 6): nearby about 83 to 86 updates/s and p95 about 18 to 20 ms.
+  At distance all 12 stayed connected, but timing was poor (about 48 to 53 updates/s, p95 about
+  45 to 55 ms, gaps up to about 290 ms).
+- Not verified yet: 14 on two adapters (7 + 7), long sessions, outdoor range.
 
 Sena UD100 (also CSR) was similar nearby but poor at distance, and stalled when used alongside a Feasycom.
 
@@ -103,7 +105,7 @@ Krisnorey, Hakimonoe, Techkey, ...) are Realtek RTL8761BU. They work, with cavea
 - Some samples accept **only 5 links**, not 7; a 6th link can take about 20 s to come up.
 
 So "5 per adapter" is Realtek advice, not a general rule: with CSR adapters 6 to 7 per adapter
-works well. The pairing daemon spreads controllers over the least-loaded adapter (UC-001 BR-001)
+had good timing nearby. The pairing daemon spreads controllers over the least-loaded adapter (UC-001 BR-001)
 and does not know the chipset.
 
 ### Pi 5 internal Bluetooth
@@ -116,8 +118,10 @@ for multi-adapter rigs. A tiny PS4-Move-only setup could leave it on.
 ### Central / Peripheral role
 
 Let BlueZ negotiate the link role. **Do not force the Pi to Peripheral** (for example with
-`hcitool sr <addr> peripheral`): upstream measured worse timing with a forced Peripheral link and saw
-a CSR adapter capped at about 2 links; every good capture was all-Central.
+`hcitool sr <addr> peripheral`): forcing Peripheral can lower link capacity and timing. On one
+Realtek sample, six all-Central links were clearly better than six with one Peripheral link; an
+older CSR setup was limited to about 2 links per adapter when forced to Peripheral (a historical
+observation, not a current measurement).
 
 ### Judging link quality
 
@@ -136,13 +140,13 @@ a CSR adapter capped at about 2 links; every good capture was all-Central.
 ### Controllers Per Adapter
 
 Bluetooth Classic allows **at most 7 active links per adapter** (piconet limit). How many work
-*well* depends on the chipset: CSR 6 to 7, Realtek about 5 (some Realtek samples stop at 5).
+*well* depends on the chipset: CSR 6 to 7 (nearby), Realtek about 5 (some Realtek samples stop at 5).
 The pairing daemon does not enforce a cap (C-011).
 
 | Adapters | CSR (6-7 each) | Realtek (5 each) |
 |----------|----------------|------------------|
 | 1 | 6-7 | 5 |
-| 2 | 12-14 (12 verified) | 10 |
+| 2 | 12-14 (12 tested; poor timing at distance) | 10 |
 | 3 | 18-21 | 15 |
 | 4 | 24-28 | 20 |
 | 6 | 36-42 | 30 |
@@ -263,9 +267,16 @@ scripts/hardware/reset_bluetooth_connections.sh --dry-run
 scripts/hardware/reset_bluetooth_connections.sh
 ```
 
-Only PS Moves (Sony vendor `054c`, product `03d5` / `0c5e`) are removed, both live BlueZ
-devices and saved-only registrations under `/var/lib/bluetooth` of adapters that are not
-plugged in. Keyboards, headsets and other Bluetooth devices stay paired. No reboot needed.
+Only PS Moves (Sony vendor `054c`, product `03d5` / `0c5e`) are removed: live BlueZ devices,
+and saved registrations under `/var/lib/bluetooth` of adapters BlueZ does not currently present
+(for example unplugged ones). If bluetoothd is not running, only the saved registrations are
+cleaned. Keyboards, headsets and other Bluetooth devices stay paired. Each removal is reported;
+the script exits non-zero if any failed.
+
+No reboot is needed. After a real run the script restarts `pairing-daemon`, because the running
+daemon remembers controllers it already verified and would not re-pair them over USB until it
+restarts. If you run `tools/clear_devices.py` on the host instead, run
+`docker compose restart pairing-daemon` yourself.
 
 ### Manual Pairing (Alternative)
 

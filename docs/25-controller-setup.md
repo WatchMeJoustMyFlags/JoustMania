@@ -14,13 +14,13 @@
 
 ### Bluetooth Dongle Requirements
 - **Chipset first**: identify each dongle's chipset with `hciconfig -a | grep Manufacturer`, not by brand, BT version or "Class 1". See the [hardware guide](hardware-setup-guide.md#chipset-beats-marketing).
-- **Recommended dongle**: Feasycom FSC-BP119 (CSR8510 A10). Two of them held 12 PS3 Moves (6 + 6); 14 on two is not verified yet.
+- **Recommended dongle**: Feasycom FSC-BP119 (CSR8510 A10). Two of them kept 12 PS3 Moves (6 + 6) connected; timing was good nearby but poor at distance (p95 about 45 to 55 ms, gaps up to about 290 ms). 14 on two is not verified yet.
 - **Controllers per dongle** (at most 7, the Bluetooth piconet limit; not enforced by the pairing daemon):
-  - CSR (manufacturer 10): 6-7 per dongle → 4-5 dongles for 25 controllers
+  - CSR (manufacturer 10): 6-7 per dongle nearby (distance performance varies by model) → 4-5 dongles for 25 controllers
   - Realtek RTL8761BU (manufacturer 93): about 5 per dongle → 5 dongles. Realtek needs about 5 *active* links for good PS3 Move timing, and some samples accept only 5. Spreading few controllers over many Realtek dongles is the worst case.
   - Avoid Actions, Barrot and AIC8800 dongles (poor timing); Broadcom BCM20702 is mediocre.
 - **Pi 5 internal radio**: disabled by `setup_host.sh`; it is poor for PS3 Moves and only suits a few PS4 Moves.
-- **Link role**: let BlueZ negotiate; do not force the Pi to Peripheral.
+- **Link role**: let BlueZ negotiate; do not force the Pi to Peripheral (it can lower link capacity and timing).
 - **Power draw per dongle**: ~100mA + overhead for active connections
 
 > **Not measured yet:** no run with 25 controllers has been recorded (NFR-025). The per-chipset figures come from upstream JoustMania's adapter measurements.

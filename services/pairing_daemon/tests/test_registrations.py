@@ -13,11 +13,13 @@ import pytest
 from dbus_fast import Message, MessageType, Variant
 from dbus_fast.aio import MessageBus
 
+from lib.bluez_dbus import DBusError
 from psmove_pairing import registrations
 from psmove_pairing.registrations import (
     clear_psmove_registrations,
     find_psmove_registrations,
     is_psmove_device,
+    scan_psmove_registrations,
 )
 
 HCI0 = "AA:00:00:00:00:00"
@@ -122,16 +124,42 @@ class TestIsPsMoveDevice:
         assert not is_psmove_device({**props, "UUIDs": []})
         assert not is_psmove_device({**props, "Name": "Keyboard"})
 
+    def test_non_sony_modalias_wins_over_move_like_metadata(self):
+        """A non-Sony Modalias is not a Move even if name, class and HID UUID look like one."""
+        props = {
+            "Modalias": "usb:v05ACp0255d0100",
+            "Name": "Motion Controller",
+            "Class": 0x002508,
+            "UUIDs": [HID_UUID],
+        }
+        assert not is_psmove_device(props)
+
+    def test_navigation_controller_is_excluded(self):
+        assert not is_psmove_device({"Modalias": "usb:v054Cp042Fd0100"})
+
     def test_empty_properties(self):
         assert not is_psmove_device({})
+
+
+async def clear_all(bluetooth_dir: Path):
+    return await clear_psmove_registrations(await find_psmove_registrations(bluetooth_dir))
+
+
+def dbus_error_reply(name: str):
+    reply = create_autospec(Message, instance=True)
+    reply.message_type = MessageType.ERROR
+    reply.error_name = name
+    reply.body = ["boom"]
+    return reply
 
 
 class TestClearPsMoveRegistrations:
     async def test_removes_only_ps_move_devices(self, fake_bus, bluetooth_dir):
         """Keyboards, headsets and name-only look-alikes are never removed."""
-        removed = await clear_psmove_registrations(dry_run=False, bluetooth_dir=bluetooth_dir)
+        results = await clear_all(bluetooth_dir)
 
-        assert sorted(r.address for r in removed) == [ZCM1, ZCM2, FALLBACK_MOVE]
+        assert sorted(r.registration.address for r in results) == [ZCM1, ZCM2, FALLBACK_MOVE]
+        assert all(r.outcome == "removed" for r in results)
         assert sorted(removed_paths(fake_bus)) == [
             ("/org/bluez/hci0", "/org/bluez/hci0/dev_00_06_F7_00_00_01"),
             ("/org/bluez/hci1", "/org/bluez/hci1/dev_00_06_F7_00_00_02"),
@@ -141,15 +169,6 @@ class TestClearPsMoveRegistrations:
         for other in (KEYBOARD, HEADSET, NAME_ONLY):
             assert not any(other.replace(":", "_") in path for path in touched)
 
-    async def test_dry_run_changes_nothing(self, fake_bus, bluetooth_dir):
-        saved = write_info(bluetooth_dir, GONE_ADAPTER, "00:06:F7:00:00:09", 0x054C, 0x03D5)
-
-        found = await clear_psmove_registrations(dry_run=True, bluetooth_dir=bluetooth_dir)
-
-        assert len(found) == 4
-        fake_bus.call.assert_not_awaited()
-        assert saved.exists()
-
     async def test_saved_only_registrations_removed_only_for_ps_moves(self, fake_bus, bluetooth_dir):
         """Registrations of an unplugged adapter are invisible to BlueZ; only Sony Move ones are deleted."""
         saved_zcm1 = write_info(bluetooth_dir, GONE_ADAPTER, "00:06:F7:00:00:09", 0x054C, 0x03D5)
@@ -157,18 +176,78 @@ class TestClearPsMoveRegistrations:
         saved_ds4 = write_info(bluetooth_dir, GONE_ADAPTER, "00:06:F7:00:00:0B", 0x054C, 0x05C4)
         saved_keyboard = write_info(bluetooth_dir, GONE_ADAPTER, "44:55:66:77:88:99", 0x05AC, 0x0255)
         saved_no_id = write_info(bluetooth_dir, GONE_ADAPTER, "55:66:77:88:99:AA", None, None)
-        # A live Move's saved directory belongs to BlueZ: RemoveDevice handles it, not rmtree.
-        live_dir = write_info(bluetooth_dir, HCI0, ZCM1, 0x054C, 0x03D5)
         (bluetooth_dir / GONE_ADAPTER / "settings").write_text("[General]\n")
 
-        removed = await clear_psmove_registrations(dry_run=False, bluetooth_dir=bluetooth_dir)
+        results = await clear_all(bluetooth_dir)
 
-        saved = sorted(r.address for r in removed if r.device_path is None)
+        saved = sorted(r.registration.address for r in results if r.registration.device_path is None)
         assert saved == ["00:06:F7:00:00:09", "00:06:F7:00:00:0A"]
         assert not saved_zcm1.exists()
         assert not saved_zcm2.exists()
-        for kept in (saved_ds4, saved_keyboard, saved_no_id, live_dir):
+        for kept in (saved_ds4, saved_keyboard, saved_no_id):
             assert kept.exists()
+
+    async def test_saved_dirs_of_present_adapters_are_left_to_bluez(self, fake_bus, bluetooth_dir):
+        """A present adapter's storage belongs to BlueZ: even an unloaded Move there is not rmtree'd."""
+        live_dir = write_info(bluetooth_dir, HCI0, ZCM1, 0x054C, 0x03D5)
+        unloaded_on_present = write_info(bluetooth_dir, HCI1, "00:06:F7:00:00:0C", 0x054C, 0x03D5)
+
+        results = await clear_all(bluetooth_dir)
+
+        assert all(r.registration.device_path is not None for r in results)
+        assert live_dir.exists()
+        assert unloaded_on_present.exists()
+
+    async def test_bluez_down_falls_back_to_saved_files(self, bluetooth_dir):
+        """bluetoothd unreachable: every saved PS Move registration is handled, other devices kept."""
+        saved_move = write_info(bluetooth_dir, HCI0, ZCM1, 0x054C, 0x03D5)
+        saved_keyboard = write_info(bluetooth_dir, HCI0, KEYBOARD, 0x05AC, 0x0255)
+        with patch.object(registrations, "get_system_bus", AsyncMock(side_effect=FileNotFoundError("no socket"))):
+            scan = await scan_psmove_registrations(bluetooth_dir)
+            results = await clear_psmove_registrations(scan.registrations)
+
+        assert scan.bluez_reachable is False
+        assert [r.outcome for r in results] == ["removed"]
+        assert not saved_move.exists()
+        assert saved_keyboard.exists()
+
+    async def test_bluez_error_reply_also_falls_back(self, bluetooth_dir):
+        with (
+            patch.object(registrations, "get_system_bus", AsyncMock()),
+            patch.object(
+                registrations,
+                "get_managed_objects",
+                AsyncMock(side_effect=DBusError("org.freedesktop.DBus.Error.ServiceUnknown")),
+            ),
+        ):
+            scan = await scan_psmove_registrations(bluetooth_dir)
+
+        assert scan == registrations.Scan([], bluez_reachable=False)
+
+    async def test_partial_failures_are_reported_per_registration(self, fake_bus, bluetooth_dir):
+        """One failure does not stop the rest; DoesNotExist counts as already absent, not removed."""
+        ok = fake_bus.call.return_value
+        fake_bus.call.side_effect = [
+            ok,
+            dbus_error_reply("org.bluez.Error.DoesNotExist"),
+            dbus_error_reply("org.bluez.Error.Failed"),
+        ]
+        seen = []
+
+        found = await find_psmove_registrations(bluetooth_dir)
+        results = await clear_psmove_registrations(found, on_result=seen.append)
+
+        assert [r.outcome for r in results] == ["removed", "already_absent", "failed"]
+        assert seen == results
+        assert "org.bluez.Error.Failed" in results[2].error
+
+    async def test_rmtree_failure_is_reported(self, fake_bus, bluetooth_dir):
+        write_info(bluetooth_dir, GONE_ADAPTER, "00:06:F7:00:00:09", 0x054C, 0x03D5)
+        with patch.object(registrations.shutil, "rmtree", side_effect=PermissionError("read-only")):
+            results = await clear_all(bluetooth_dir)
+
+        saved = [r for r in results if r.registration.device_path is None]
+        assert [(r.outcome, r.error) for r in saved] == [("failed", "read-only")]
 
     async def test_ignores_non_address_directories(self, fake_bus, bluetooth_dir):
         (bluetooth_dir / "cache").mkdir()
@@ -185,12 +264,39 @@ class TestClearPsMoveRegistrations:
 
 
 class TestCli:
-    async def test_main_dry_run_prints_and_removes_nothing(self, fake_bus, bluetooth_dir, capsys):
+    async def test_dry_run_prints_and_removes_nothing(self, fake_bus, bluetooth_dir, capsys):
+        saved = write_info(bluetooth_dir, GONE_ADAPTER, "00:06:F7:00:00:09", 0x054C, 0x03D5)
+
         code = await registrations.async_main(["--dry-run", "--bluetooth-dir", str(bluetooth_dir)])
 
         out = capsys.readouterr().out
         assert code == 0
         assert "Would remove PS Move 00:06:F7:00:00:01 from hci0" in out
-        assert "Found 3 PS Move registration(s)" in out
+        assert "Found 4 PS Move registration(s)" in out
         assert KEYBOARD not in out
         fake_bus.call.assert_not_awaited()
+        assert saved.exists()
+
+    async def test_success_exits_zero(self, fake_bus, bluetooth_dir, capsys):
+        code = await registrations.async_main(["--bluetooth-dir", str(bluetooth_dir)])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Removed PS Move 00:06:F7:00:00:01 from hci0" in out
+        assert "Removed 3, already absent 0, failed 0" in out
+
+    async def test_any_failure_exits_non_zero_and_is_not_called_removed(self, fake_bus, bluetooth_dir, capsys):
+        ok = fake_bus.call.return_value
+        fake_bus.call.side_effect = [
+            ok,
+            dbus_error_reply("org.bluez.Error.DoesNotExist"),
+            dbus_error_reply("org.bluez.Error.Failed"),
+        ]
+
+        code = await registrations.async_main(["--bluetooth-dir", str(bluetooth_dir)])
+
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "Already absent: PS Move" in captured.out
+        assert "FAILED to remove PS Move" in captured.err
+        assert "Removed 1, already absent 1, failed 1" in captured.out

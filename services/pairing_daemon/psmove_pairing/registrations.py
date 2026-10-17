@@ -12,7 +12,11 @@ Run inside the pairing-daemon container (it has the system D-Bus and
     python -m psmove_pairing.registrations --dry-run
     python -m psmove_pairing.registrations
 
-``scripts/hardware/reset_bluetooth_connections.sh`` wraps this.
+``scripts/hardware/reset_bluetooth_connections.sh`` wraps this and restarts the
+pairing daemon afterwards: the running daemon remembers controllers it already
+verified in this session (``UsbPairingManager._verified_serials``) and would
+not re-pair them over USB until it restarts. Exit code 1 when any removal
+failed.
 """
 
 import argparse
@@ -21,14 +25,17 @@ import configparser
 import re
 import shutil
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from dbus_fast import Message, Variant
 
-from lib.bluez_dbus import ORG_BLUEZ, ORG_BLUEZ_PATH, assert_reply, get_managed_objects, get_system_bus
+from lib.bluez_dbus import ORG_BLUEZ, ORG_BLUEZ_PATH, DBusError, assert_reply, get_managed_objects, get_system_bus
 
 SONY_VENDOR_ID = 0x054C
+# ZCM1 (0x03D5) and ZCM2/ZCM2E (0x0C5E). 0x042F is the PS Move Navigation
+# controller, not a motion controller: deliberately excluded.
 PS_MOVE_PRODUCT_IDS = (0x03D5, 0x0C5E)
 
 # Fallback when BlueZ has no Modalias yet: all three must match.
@@ -51,6 +58,27 @@ class PsMoveRegistration:
     hci: str | None = None  # None for a saved-only registration of an absent adapter
     device_path: str | None = None  # BlueZ object path when BlueZ has it loaded
     saved_dir: Path | None = None  # set for saved-only registrations
+
+
+@dataclass(frozen=True)
+class RemovalResult:
+    """Outcome of removing one registration: ``removed``, ``already_absent`` or ``failed``."""
+
+    registration: PsMoveRegistration
+    outcome: str
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome != "failed"
+
+
+@dataclass
+class Scan:
+    """PS Move registrations plus whether BlueZ could be asked (False: saved files only)."""
+
+    registrations: list[PsMoveRegistration]
+    bluez_reachable: bool
 
 
 def _plain(value):
@@ -87,10 +115,26 @@ def _saved_registration_is_psmove(info_path: Path) -> bool:
     return vendor == SONY_VENDOR_ID and product in PS_MOVE_PRODUCT_IDS
 
 
-async def find_psmove_registrations(bluetooth_dir: Path = DEFAULT_BLUETOOTH_DIR) -> list[PsMoveRegistration]:
-    """List PS Move registrations: live BlueZ devices plus saved-only directories."""
-    bus = await get_system_bus()
-    objects = await get_managed_objects(bus)
+async def _bluez_objects() -> dict | None:
+    """BlueZ's object tree, or None when bluetoothd / the system bus is unreachable."""
+    try:
+        bus = await get_system_bus()
+        return await get_managed_objects(bus)
+    except (DBusError, OSError, ConnectionError):
+        return None
+
+
+async def scan_psmove_registrations(bluetooth_dir: Path = DEFAULT_BLUETOOTH_DIR) -> Scan:
+    """Find PS Move registrations: live BlueZ devices plus saved-only directories.
+
+    Saved-only directories are considered only for adapters BlueZ does not
+    present right now (BlueZ owns the storage of present adapters). When BlueZ
+    is unreachable, every saved PS Move directory is considered (bluetoothd
+    reads them only at startup, so deleting them while it is down is safe).
+    """
+    objects = await _bluez_objects()
+    if objects is None:
+        return Scan(_saved_only_registrations(bluetooth_dir, present_adapters=set()), bluez_reachable=False)
 
     adapters: dict[str, tuple[str, str]] = {}  # object path -> (hci, address)
     for path, interfaces in objects.items():
@@ -110,13 +154,18 @@ async def find_psmove_registrations(bluetooth_dir: Path = DEFAULT_BLUETOOTH_DIR)
         address = str(_plain(props.get("Address", ""))).upper()
         found.append(PsMoveRegistration(adapter_address, address, hci=hci, device_path=path))
 
-    live = {(r.adapter_address, r.address) for r in found}
-    found.extend(_saved_only_registrations(bluetooth_dir, live))
-    return found
+    present = {address for _, address in adapters.values()}
+    found.extend(_saved_only_registrations(bluetooth_dir, present_adapters=present))
+    return Scan(found, bluez_reachable=True)
 
 
-def _saved_only_registrations(bluetooth_dir: Path, live: set[tuple[str, str]]) -> list[PsMoveRegistration]:
-    """PS Move registrations saved on disk that BlueZ has not loaded (e.g. adapter unplugged)."""
+async def find_psmove_registrations(bluetooth_dir: Path = DEFAULT_BLUETOOTH_DIR) -> list[PsMoveRegistration]:
+    """List PS Move registrations (see :func:`scan_psmove_registrations`)."""
+    return (await scan_psmove_registrations(bluetooth_dir)).registrations
+
+
+def _saved_only_registrations(bluetooth_dir: Path, present_adapters: set[str]) -> list[PsMoveRegistration]:
+    """PS Move registrations saved on disk under adapters BlueZ does not present (e.g. unplugged)."""
     if not bluetooth_dir.is_dir():
         return []
     saved: list[PsMoveRegistration] = []
@@ -126,7 +175,7 @@ def _saved_only_registrations(bluetooth_dir: Path, live: set[tuple[str, str]]) -
         address = controller_dir.name.upper()
         if not (_MAC_RE.fullmatch(adapter_address) and _MAC_RE.fullmatch(address)):
             continue
-        if (adapter_address, address) in live or not _saved_registration_is_psmove(info_path):
+        if adapter_address in present_adapters or not _saved_registration_is_psmove(info_path):
             continue
         saved.append(PsMoveRegistration(adapter_address, address, saved_dir=controller_dir))
     return saved
@@ -148,33 +197,66 @@ async def _remove_device(adapter_path: str, device_path: str) -> None:
     )
 
 
+async def _remove_one(registration: PsMoveRegistration) -> RemovalResult:
+    if registration.device_path is not None:
+        try:
+            await _remove_device(registration.device_path.rsplit("/", 1)[0], registration.device_path)
+        except DBusError as error:
+            if error.error_name == "org.bluez.Error.DoesNotExist":
+                return RemovalResult(registration, "already_absent")
+            return RemovalResult(registration, "failed", f"{error.error_name}: {error}")
+        except (OSError, ConnectionError) as error:
+            return RemovalResult(registration, "failed", str(error))
+        return RemovalResult(registration, "removed")
+    if registration.saved_dir is not None:
+        try:
+            shutil.rmtree(registration.saved_dir)
+        except FileNotFoundError:
+            return RemovalResult(registration, "already_absent")
+        except OSError as error:
+            return RemovalResult(registration, "failed", str(error))
+        return RemovalResult(registration, "removed")
+    return RemovalResult(registration, "failed", "registration has neither a BlueZ path nor a saved directory")
+
+
 async def clear_psmove_registrations(
-    dry_run: bool = False, bluetooth_dir: Path = DEFAULT_BLUETOOTH_DIR
-) -> list[PsMoveRegistration]:
-    """Remove every PS Move registration (or only list them when ``dry_run``).
+    registrations: list[PsMoveRegistration],
+    on_result: Callable[[RemovalResult], None] | None = None,
+) -> list[RemovalResult]:
+    """Remove the given PS Move registrations, each one independently.
 
     Live devices go through ``Adapter1.RemoveDevice`` (BlueZ also deletes the
-    saved directory); saved-only directories are deleted from disk.
+    saved directory); saved-only directories are deleted from disk. A failure
+    on one registration does not stop the others; ``on_result`` sees every
+    outcome as it happens.
     """
-    registrations = await find_psmove_registrations(bluetooth_dir)
-    if dry_run:
-        return registrations
+    results = []
     for registration in registrations:
-        if registration.device_path is not None:
-            await _remove_device(registration.device_path.rsplit("/", 1)[0], registration.device_path)
-        elif registration.saved_dir is not None:
-            shutil.rmtree(registration.saved_dir, ignore_errors=True)
-    return registrations
+        result = await _remove_one(registration)
+        if on_result is not None:
+            on_result(result)
+        results.append(result)
+    return results
 
 
-def _describe(registration: PsMoveRegistration, dry_run: bool) -> str:
-    action = "Would remove" if dry_run else "Removed"
+def _where(registration: PsMoveRegistration) -> str:
     if registration.device_path is not None:
-        return f"{action} PS Move {registration.address} from {registration.hci}"
-    return f"{action} saved PS Move {registration.address} from adapter {registration.adapter_address}"
+        return f"PS Move {registration.address} from {registration.hci}"
+    return f"saved PS Move {registration.address} from adapter {registration.adapter_address}"
+
+
+def _print_result(result: RemovalResult) -> None:
+    where = _where(result.registration)
+    if result.outcome == "removed":
+        print(f"Removed {where}", flush=True)
+    elif result.outcome == "already_absent":
+        print(f"Already absent: {where}", flush=True)
+    else:
+        print(f"FAILED to remove {where}: {result.error}", file=sys.stderr, flush=True)
 
 
 async def async_main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Exit code 0 when every registration is gone, 1 on any failure."""
     parser = argparse.ArgumentParser(
         description="Remove PS Move Bluetooth registrations (other Bluetooth devices are left alone)."
     )
@@ -184,12 +266,22 @@ async def async_main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    registrations = await clear_psmove_registrations(dry_run=args.dry_run, bluetooth_dir=args.bluetooth_dir)
-    for registration in registrations:
-        print(_describe(registration, args.dry_run))
-    verb = "Found" if args.dry_run else "Removed"
-    print(f"{verb} {len(registrations)} PS Move registration(s)")
-    return 0
+    scan = await scan_psmove_registrations(args.bluetooth_dir)
+    if not scan.bluez_reachable:
+        print("BlueZ is not reachable: only saved registrations under the storage directory are handled", flush=True)
+
+    if args.dry_run:
+        for registration in scan.registrations:
+            print(f"Would remove {_where(registration)}", flush=True)
+        print(f"Found {len(scan.registrations)} PS Move registration(s)")
+        return 0
+
+    results = await clear_psmove_registrations(scan.registrations, on_result=_print_result)
+    removed = sum(r.outcome == "removed" for r in results)
+    absent = sum(r.outcome == "already_absent" for r in results)
+    failed = sum(not r.ok for r in results)
+    print(f"Removed {removed}, already absent {absent}, failed {failed} PS Move registration(s)")
+    return 1 if failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:

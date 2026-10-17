@@ -6,8 +6,12 @@ Run it where the system D-Bus and /var/lib/bluetooth are reachable, as root:
     sudo uv run --project services/pairing_daemon python tools/clear_devices.py --dry-run
     sudo uv run --project services/pairing_daemon python tools/clear_devices.py
 
-or use ``scripts/hardware/reset_bluetooth_connections.sh``, which runs the same
-module inside the pairing-daemon container.
+After a real run, restart the pairing daemon (``docker compose restart
+pairing-daemon``): it remembers controllers it already verified this session and
+would not re-pair them over USB otherwise. Exit code 1 if any removal failed.
+
+Prefer ``scripts/hardware/reset_bluetooth_connections.sh``, which runs the same
+module inside the pairing-daemon container and restarts the daemon for you.
 """
 
 import sys
