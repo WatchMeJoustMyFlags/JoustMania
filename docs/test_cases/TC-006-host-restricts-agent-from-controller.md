@@ -43,4 +43,4 @@
 ## Automation
 
 - **Partly automated**: `tests/integration/test_intervention_flow.py::test_permission_layer_blocks_disallowed_intervention` covers steps 6 and 7 with `interventions_allowed` set to `ambient` in the flag file (not from the controller).
-- Gaps (planned): the controller ladder (steps 1 to 4, UC-013) has no end-to-end test (#1359; the ladder wraps from `none` to `full` on restrict, #1340); the "no remote call" check of step 5 (UC-040 A14) is covered by Go unit tests only (#1363).
+- Gaps: the controller ladder (steps 1 to 4, UC-013; clamped at both ends since #1373) is unit-tested only (`services/menu/tests/test_admin_handler.py`), with no end-to-end test; the "no remote call" check of step 5 (UC-040 A14) is covered by Go unit tests only (`services/agent/decision/decide_no_allowed_test.go`, #1395).

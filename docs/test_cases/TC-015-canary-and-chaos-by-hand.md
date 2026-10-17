@@ -39,5 +39,5 @@
 
 ## Automation
 
-- **Manual** (needs real controllers for the chaos adapter). Planned handler tests for `/canary/*` and `/chaos/*`: #1364.
+- **Manual** (needs real controllers for the chaos adapter). The `/canary/*` handlers are tested in `services/connect-proxy/canary_test.go` (#1388); the `/chaos/*` handlers are untested (#1364).
 - Contract-level coverage (no live stack, no controllers): `tests/contract/test_envoy_routing.py` checks the envoy routes for `/grafana/`, `/prometheus/` and `/chaos/` (steps 3, 5, 6; `/canary/` has no envoy route, so steps 1 and 7 call the connect-proxy from inside the network, UC-052 A2).

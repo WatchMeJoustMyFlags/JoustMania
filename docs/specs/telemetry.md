@@ -1,6 +1,6 @@
 # Telemetry
 
-> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 2b8d979c (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1297, #1303, #1307, #1309, #1312, #1315, #1324, #1308 (#1258 pattern games), #1332 (#1325 span parents), #1378 (validator spans removed), #1351 (#1326 budget), #1333 (#1327 one `player_death` event), #1375 (rollout dry run), #1376 (deaths counter, input lag), #1377 (quiet-cycle fallbacks) , #1387 (`audio.silent`) and #1370 (`game.outcome`)). The metric catalog (§6.2) and the span-event inventory were generated from the code at 84c3ba15 by script; remaining `file:line` references were re-based to 84c3ba15 and then to 2b8d979c.
+> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 2b8d979c (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1297, #1303, #1307, #1309, #1312, #1315, #1324, #1308 (#1258 pattern games), #1332 (#1325 span parents), #1378 (validator spans removed), #1351 (#1326 budget), #1333 (#1327 one `player_death` event), #1375 (rollout dry run), #1376 (deaths counter, input lag), #1377 (quiet-cycle fallbacks) , #1387 (`audio.silent`), #1370 (`game.outcome`), #1379 (game-state gauge labels), #1392 (telemetry contract test), #1397 (infra tests), #1418 (per-player entry pruning) and #1421 (cross-game window)). The metric catalog (§6.2) and the span-event inventory were generated from the code at 84c3ba15 by script; remaining `file:line` references were re-based to 84c3ba15 and then to 2b8d979c.
 > Telemetry is the agent's only view of the game (C-001), so span names, attribute keys, metric names and the
 > log lines below are a **contract**: the agent, the dashboard SPA, Grafana and integration tests match
 > on them. Change a name here first.
@@ -45,7 +45,7 @@ Service identities (`OTEL_SERVICE_NAME` / namespace): `controller-manager-servic
 
 | Id | On spans | On metrics | Notes |
 |---|---|---|---|
-| game id | `game.id` (agent also `session.id`) | label `game_id` on per-game and per-player metrics; the game-wide gauges of §6 (tempo, thresholds, sensitivity, mode, loop rate) have none (#1336) | `game_<12 hex>`; the agent partitions all signals by it |
+| game id | `game.id` (agent also `session.id`) | label `game_id` on per-game and per-player metrics; the game-state gauges of §6 (tempo, thresholds, sensitivity, mode, loop rate) carry `game_kind, game_id` since #1379 (#1336) | `game_<12 hex>`; the agent partitions all signals by it |
 | game kind | coordinator: `game.kind` = `primary` / `shadow`; agent: `game.kind` = `real` / `shadow` | coordinator label `game_kind` = `primary` / `shadow` | **Two vocabularies under one key** (#1249). Flags use `real` / `shadow`; the agent normalises `primary → real` at ingest (`services/agent/gamecontext/gamekind.go`). |
 | experiment, arm | `experiment.id`, `experiment.arm` | `experiment_id`, `arm` on per-game gauges only (never on cumulative counters) | |
 | trace context | `game.trace_id`, `game.trace_span_id`, Links | gauge `game_trace_correlation{game_trace_id, game_trace_span_id, gameplay_phase_span_id, game_cycle_span_id}` = 1 while live; the two phase ids are empty until their span opens and the gauge is re-emitted when each is published (UC-041 BR-004) | metric-carried because observable gauges cannot carry exemplars (`services/game_coordinator/metrics.py:47-100`) |
@@ -187,7 +187,7 @@ name from `controller_info{serial,name}`, §4.4; absent when no name was seen fo
 
 | Signal | Matched on | Source |
 |---|---|---|
-| Metrics | names `game_player_accel_magnitude`, `controller_battery_level`, `controller_battery_pct`, `game_player_playstyle`, `game_player_alive`, `controller_connected`, `game_duration_seconds`, `game_active_players`, `game_active`, `game_current_mode`, `game_player_peak_accel`, `game_trace_correlation`, `game_music_tempo`, `game_effective_death_threshold`, `game_effective_warning_threshold`, `game_player_movement_variance`, `game_player_movement_variance_aggregate`, `game_player_skill_level`, `game_player_elimination_order` (`game_current_mode` is never emitted by the coordinator, so that input stays empty: Known gap tracked in #1336; the agent does not ingest `game_player_deaths_total` (removed in #1376): per-game deaths and their order come from `game_player_elimination_order` and the `player_death` span event; `game_current_mode`, `game_music_tempo` and the two threshold gauges carry no `game_id`, see #1336); `controller_info` (labels `serial`, `name`: identity only, kept process-wide as the serial → display-name view for `player.name`, never routed to a game partition and never a trigger, #1295); labels `serial`, `mode`, `game_id`, `game_kind`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id`, `experiment_id`, `arm` | `services/agent/gamecontext/extract_metrics.go:13-91`; `controller_info`: `gamecontext/multiplexer.go` (`PlayerName`) |
+| Metrics | names `game_player_accel_magnitude`, `controller_battery_level`, `controller_battery_pct`, `game_player_playstyle`, `game_player_alive`, `controller_connected`, `game_duration_seconds`, `game_active_players`, `game_active`, `game_current_mode`, `game_player_peak_accel`, `game_trace_correlation`, `game_music_tempo`, `game_effective_death_threshold`, `game_effective_warning_threshold`, `game_player_movement_variance`, `game_player_movement_variance_aggregate`, `game_player_skill_level`, `game_player_elimination_order` (the agent does not ingest `game_player_deaths_total` (removed in #1376): per-game deaths and their order come from `game_player_elimination_order` and the `player_death` span event; `game_current_mode`, `game_music_tempo` and the two threshold gauges carry `game_kind, game_id` (#1379) and land in their game's partition); `controller_info` (labels `serial`, `name`: identity only, kept process-wide as the serial → display-name view for `player.name`, never routed to a game partition and never a trigger, #1295); labels `serial`, `mode`, `game_id`, `game_kind`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id`, `experiment_id`, `arm` | `services/agent/gamecontext/extract_metrics.go:13-91`; `controller_info`: `gamecontext/multiplexer.go` (`PlayerName`) |
 | Spans | any span: `player.serial`, `game.mode`, `game.id`, `game.kind`, `experiment.id`, `experiment.arm`; event `player_death` | `gamecontext/extract_spans.go:10-135` |
 | Infra spans | `controller.bluetooth_health` + event `bluetooth_controller_sample` | `infracontext/extract_spans.go:14-78` |
 
@@ -289,16 +289,16 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `game_active_controllers` | gauge | (none) | game-coordinator | yes | (none) |
 | `game_active_players` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana |
 | `game_active` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana |
-| `game_actual_update_frequency_hz` | gauge | (none) | game-coordinator | yes | grafana |
+| `game_actual_update_frequency_hz` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana |
 | `game_analytics_replay_bytes` | histogram | `game_mode` | game-coordinator | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
 | `game_analytics_samples_total` | counter | `game_mode` | game-coordinator | yes | grafana |
 | `game_config_changes_total` | counter | `parameter` | game-coordinator | yes | (none) |
 | `game_countdown_accuracy_seconds` | histogram | (none) | game-coordinator | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `game_current_mode` | gauge | `mode` | game-coordinator | **no**: defined, never recorded. Known gap tracked in #1336 | agent |
+| `game_current_mode` | gauge | `mode`, `game_kind`, `game_id` | game-coordinator | yes (#1379; 1 while the game is live, removed at retire) | agent |
 | `game_current_update_frequency_hz` | gauge | (none) | game-coordinator | yes | grafana |
 | `game_duration_seconds` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana, tools |
-| `game_effective_death_threshold` | gauge | (none) | game-coordinator | yes | agent, grafana |
-| `game_effective_warning_threshold` | gauge | (none) | game-coordinator | yes | agent, grafana |
+| `game_effective_death_threshold` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |
+| `game_effective_warning_threshold` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |
 | `game_filter_updates_total` | counter | `game_mode` | game-coordinator | yes | (none) |
 | `game_filtered_controllers` | gauge | (none) | game-coordinator | yes | (none) |
 | `game_flag_configuration_changes_total` | counter | (none) | game-coordinator | yes | grafana |
@@ -309,7 +309,7 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `game_loop_frame_consistency_percent` | gauge | (none) | game-coordinator | yes | grafana |
 | `game_loop_frames_dropped_total` | counter | `mode` | game-coordinator | yes | grafana |
 | `game_loop_jitter_ms` | gauge | (none) | game-coordinator | yes | grafana |
-| `game_music_tempo` | gauge | (none) | game-coordinator | yes | agent, grafana |
+| `game_music_tempo` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |
 | `game_near_death_events_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |
 | `game_player_accel_magnitude` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana |
 | `game_player_alive` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, tools |
@@ -325,7 +325,7 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `game_player_skill_level` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |
 | `game_player_warnings_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |
 | `game_players_alive` | gauge | (none) | game-coordinator | yes | grafana |
-| `game_sensitivity` | gauge | (none) | game-coordinator | yes | grafana |
+| `game_sensitivity` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana |
 | `game_shadow_games_blocked_total` | counter | (none) | game-coordinator | yes | (none) |
 | `game_shadow_games_preempted_total` | counter | (none) | game-coordinator | yes | (none) |
 | `game_trace_correlation` | gauge | `game_kind`, `game_id`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id` | game-coordinator | yes | agent |

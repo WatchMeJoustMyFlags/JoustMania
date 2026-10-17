@@ -50,4 +50,4 @@
 
 - **Manual** (needs real Bluetooth hardware and USB). The mock-controller equivalent of steps 2 to 9 is [TC-002](TC-002-ffa-mock-game-to-winner.md).
 - Unit tests cover parts: pairing (`services/pairing_daemon/tests/`), death detection (`services/game_coordinator/tests/`).
-- Gaps: no automated check of USB pairing (UC-001) or of audible feedback (UC-031) on hardware; tracked by #1359 (UC-001) and #1362 (UC-031).
+- Gaps: no automated check of USB pairing (UC-001) or of audible feedback (UC-031) on hardware. Pairing logic is unit-tested in `services/pairing_daemon/tests/` (#1400, closing #1359); the hardware check stays manual. Audible feedback is tracked by #1362 (UC-031).

@@ -41,4 +41,4 @@
 
 ## Automation
 
-- **Planned** (#1360, FFA disconnect journey). Unit coverage exists in `services/game_coordinator/tests/test_disconnect.py`.
+- **Planned** (#1360, FFA disconnect journey). Unit coverage exists in `services/game_coordinator/tests/test_disconnect.py` and `services/game_coordinator/tests/test_ffa_uc020.py` (UC-020 A2, #1396).

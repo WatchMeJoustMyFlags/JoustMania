@@ -44,5 +44,5 @@
 ## Automation
 
 - `tests/integration/test_decide_backend_e2e.py::test_kill_switch_discards_inflight_answer` implements steps 1 to 6 (it waits for the `agent.disabled` span for the game before releasing the held answer).
-- Validation 2 (UC-045 A1) has no end-to-end test: `tests/integration/test_intervention_flow.py::test_agent_interventions_disabled_by_default` only reads the shipped flag defaults.
-- Gaps (planned, #1363): step 7 (resume) and Validation 2 are not asserted end to end; aborting running experiments on the next tick (UC-045 step 5) and the capture-only retro after the switch (UC-045 step 6) are covered by Go unit tests only (#1362).
+- Validation 2 (UC-045 A1) has no end-to-end test: `lib/tests/test_shipped_safety_defaults.py::test_agent_interventions_disabled_by_default` only reads the shipped flag defaults (#1424).
+- Gaps (unit-tested only since #1395; #1363 is closed): step 7 (resume) and Validation 2 are not asserted end to end; aborting running experiments on the next tick (UC-045 step 5) and the capture-only retro after the switch (UC-045 step 6) are covered by Go unit tests only (#1362).
