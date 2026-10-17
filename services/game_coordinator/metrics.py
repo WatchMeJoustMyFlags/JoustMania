@@ -268,13 +268,9 @@ config_changes_total = Counter(
     ["parameter"],  # 'update_frequency_hz', 'poll_drop_threshold', etc.
 )
 
-# Feature flag metrics (Phase 44)
-flag_evaluations_total = Counter(
-    "game_flag_evaluations_total",
-    "Total number of feature flag evaluations",
-    ["flag_key"],  # 'update_frequency_hz', 'poll_drop_threshold', etc.
-)
-
+# Feature flag metrics (Phase 44). Evaluations are counted by the standard OpenFeature
+# OTel metrics hook (feature_flag_evaluation_*_total, lib/openfeature_otel_hooks.py, #1427),
+# which replaced the subset counter game_flag_evaluations_total.
 flag_configuration_changes_total = Counter(
     "game_flag_configuration_changes_total",
     "Total number of PROVIDER_CONFIGURATION_CHANGED events received",

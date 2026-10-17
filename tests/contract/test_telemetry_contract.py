@@ -78,6 +78,9 @@ EXTERNAL_METRICS = {
     "system_": "OTel collector hostmetrics receiver (services/otel-collector/config.yaml)",
     "traces_span_metrics_": "OTel collector spanmetrics connector over agent.decide spans "
     "(services/otel-collector/config.yaml; test_collector_spanmetrics.py)",
+    "feature_flag_evaluation_": "standard OpenFeature OTel metrics hook: go-sdk-contrib "
+    "hooks/open-telemetry in the agent (flags/otelhooks.go), the same names from "
+    "lib/openfeature_otel_hooks.py in Python (test_openfeature_hook_metrics_are_the_ones_consumed)",
 }
 
 # Labels added by the pipeline (resource attributes, scrape config, histogram buckets).
@@ -528,3 +531,45 @@ def publish(n):
 """
     pm = ti.python_metrics(_fixture_tree(tmp_path, extra))
     assert pm["svc_active_players"].recorded_at
+
+
+# --------------------------------------------------------------------------- #
+# OpenFeature hook metrics (#1427): the dashboards read the names the hooks emit.
+# --------------------------------------------------------------------------- #
+def _hook_metric_names() -> set[str]:
+    """The four metric-name constants of lib/openfeature_otel_hooks.py, in Prometheus spelling."""
+    import ast
+
+    tree = ast.parse((ti.REPO_ROOT / "lib" / "openfeature_otel_hooks.py").read_text())
+    names = {
+        node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id.startswith("EVALUATION_")
+        and isinstance(node.value, ast.Constant)
+    }
+    return {ti.prometheus_name(n) for n in names}
+
+
+def test_openfeature_hook_metrics_are_the_ones_consumed(consumer_queries, defined):
+    """Every feature_flag_evaluation_* name a dashboard reads is one the hooks emit.
+
+    The Python hook mirrors go-sdk-contrib hooks/open-telemetry, whose names the agent's
+    flags/otelhooks_test.go pins against the real Go hook.
+    """
+    hook = _hook_metric_names()
+    assert hook == {
+        "feature_flag_evaluation_active_count",
+        "feature_flag_evaluation_requests_total",
+        "feature_flag_evaluation_success_total",
+        "feature_flag_evaluation_error_total",
+    }
+    consumed = {
+        name
+        for _, q in consumer_queries
+        for name in ti.promql_metric_names(q)
+        if name.startswith("feature_flag_evaluation_")
+    }
+    assert consumed, "no dashboard reads the OpenFeature evaluation metrics"
+    assert consumed <= hook, sorted(consumed - hook)

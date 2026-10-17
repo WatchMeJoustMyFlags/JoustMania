@@ -349,7 +349,7 @@ and a reason code; a rejected write changes nothing.
 ### Signal
 
 Watch `flagservice_writes_total{flag_set="interventions",result="rejected"}`
-by `reason` (Grafana feature-flags dashboard, "Flag service" row) and the
+by `reason` (Grafana **Flags / OpenFeature** dashboard, uid `feature-flags`, "Flag service" row) and the
 `flagservice.write` spans in Jaeger. No Prometheus alert ships for it (alerting
 removed in #1425, FR-083 Rejected).
 
