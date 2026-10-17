@@ -444,13 +444,13 @@ Where to watch the agent react
 ------------------------------
   * agent logs:   docker compose logs -f agent
                   look for: agent.signal_received -> agent.decision (-> agent.action)
-  * Jaeger:       http://localhost:8080/jaeger/   service=agent
+  * Jaeger:       http://localhost/jaeger/   service=agent
                   decision audit trace: agent.signal_received -> agent.decision -> agent.action
                   span attrs: decision.action, decision.objective_served, decision.reason,
                               decision.blocked / decision.block_reason
-  * Prometheus:   http://localhost:8080/prometheus/
+  * VictoriaMetrics: http://localhost/victoria-metrics/vmui/
                   agent_evaluations_total (#1053), game_interventions_total{type,objective,blocked}
-  * Grafana:      http://localhost:8080/grafana/   (agent / experiments dashboards)
+  * Grafana:      http://localhost/grafana/   (agent / experiments dashboards)
 
 Prerequisites for the agent to ACT (see docs/agent-act-runbook.md)
 ------------------------------------------------------------------

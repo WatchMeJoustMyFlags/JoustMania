@@ -6,7 +6,7 @@ the demo script for the agentic control stack (issues #722–#730).
 
 For the design behind each flag and span, see the
 [agent README](../services/agent/README.md) and
-[feature-flags guide](feature-flags.md). For where to look in Jaeger/Grafana/Prometheus,
+[feature-flags guide](feature-flags.md). For where to look in Jaeger/Grafana/VictoriaMetrics,
 see the observability section of `.claude/rules/development.md`.
 
 ---
@@ -187,10 +187,10 @@ engine selects a permitted, fitting decision:
 1. `agent.action` span completes (no `decision.blocked`), and the agent rewrites
    `services/flagd/interventions.json`.
 2. The **game coordinator** reads the changed file and applies the intervention,
-   incrementing the Prometheus counter
+   incrementing the counter
    **`game_interventions_total{type, objective, blocked="false"}`**.
 
-In Grafana/Prometheus:
+In Grafana (Explore, VictoriaMetrics datasource):
 
 ```promql
 sum by (type) (rate(game_interventions_total{blocked="false"}[1m]))
@@ -265,9 +265,9 @@ not at normal play.
 
 | Tool | Path | Use |
 |------|------|-----|
-| **Jaeger** | `http://localhost:8080/jaeger/` | Decision audit traces: `agent.signal_received → agent.decision → agent.action`, and `agent.disabled` kill-switch traces. Service: `agent` |
-| **Grafana** | `http://localhost:8080/grafana/` | Dashboards in `services/grafana/dashboards/` |
-| **Prometheus** | `http://localhost:8080/prometheus/` | `game_interventions_total`, agent process metrics |
+| **Jaeger** | `http://localhost/jaeger/` | Decision audit traces: `agent.signal_received → agent.decision → agent.action`, and `agent.disabled` kill-switch traces. Service: `agent` |
+| **Grafana** | `http://localhost/grafana/` | Dashboards in `services/grafana/dashboards/` |
+| **VictoriaMetrics** | `http://localhost/victoria-metrics/vmui/` | `game_interventions_total`, agent process metrics |
 | **agent logs** | `docker compose logs -f agent` | Sink-enabled warning, flag evaluation, block reasons |
 
 ### Span attributes to watch (see the agent README for the full table)

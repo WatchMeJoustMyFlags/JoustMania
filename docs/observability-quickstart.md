@@ -53,7 +53,7 @@ python3 tools/monitor_multi_hub_performance.py
 
 ---
 
-### 3. Prometheus Metrics
+### 3. Metrics (VictoriaMetrics)
 **Integration:** Already built into game coordinator
 
 **Key metrics:**
@@ -65,14 +65,14 @@ python3 tools/monitor_multi_hub_performance.py
 
 **Access:**
 ```bash
-# Metrics endpoint (via dashboard reverse proxy)
-curl http://localhost:8080/prometheus/api/v1/targets | jq .
+# Prometheus query API served by VictoriaMetrics (via the envoy reverse proxy)
+curl 'http://localhost/victoria-metrics/api/v1/query?query=game_configured_update_frequency_hz' | jq .
 
 # Or view in Grafana (via dashboard reverse proxy)
-open http://localhost:8080/grafana/
+open http://localhost/grafana/
 
-# Direct access (if needed for debugging)
-curl http://localhost:9090/metrics | grep game_
+# VictoriaMetrics UI
+open http://localhost/victoria-metrics/vmui/
 ```
 
 **When to use:**
@@ -236,16 +236,16 @@ python3 tools/live_dashboard.py --hz 30
 
 ---
 
-## Prometheus Metrics Guide
+## Metrics Guide
 
 ### Viewing Metrics
 
 ```bash
-# Raw Prometheus metrics
-curl http://localhost:9090/metrics | grep game_configured_update_frequency_hz
+# Instant query against VictoriaMetrics (Prometheus query API)
+curl 'http://localhost/victoria-metrics/api/v1/query?query=game_configured_update_frequency_hz' | jq .
 
 # Example output:
-# game_configured_update_frequency_hz 30.0
+# .data.result[0].value[1] == "30"
 ```
 
 ### Grafana Dashboards
@@ -316,8 +316,8 @@ nothing received the alerts. Watch the Grafana dashboards and the dashboard SPA 
 **Symptom:** Grafana shows old/stale metrics
 
 **Fix:**
-1. Check Prometheus scraping: `curl http://localhost:8080/prometheus/api/v1/targets | jq .`
-2. Verify scrape interval (default: 15s)
+1. Check that VictoriaMetrics receives samples: `curl 'http://localhost/victoria-metrics/api/v1/query?query=up' | jq .` and `docker compose logs otel-collector | grep -i error`
+2. Services push over OTLP; the collector batches metrics every 100 ms
 3. Refresh Grafana dashboard (Ctrl+R)
 
 ---
@@ -358,7 +358,7 @@ nothing received the alerts. Watch the Grafana dashboards and the dashboard SPA 
 **Available features:**
 - Live performance monitoring
 - Per-hub USB validation
-- Prometheus metrics integration
+- VictoriaMetrics metrics store (Prometheus query API)
 - Grafana dashboards
 - Health status assessment
 

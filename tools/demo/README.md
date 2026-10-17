@@ -115,9 +115,9 @@ Or, with `grpcio`+`protobuf` on your PATH and the repo root importable, run
 | Tool | URL | What |
 |------|-----|------|
 | agent logs | `docker compose logs -f agent` | `agent.signal_received → agent.decision (→ agent.action)` |
-| Jaeger | `http://localhost:8080/jaeger/` (service `agent`) | the decision audit trace + span attrs `decision.action`, `decision.objective_served`, `decision.reason`, `decision.blocked`/`decision.block_reason` |
-| Prometheus | `http://localhost:8080/prometheus/` | `agent_evaluations_total` (#1053), `game_interventions_total{type,objective,blocked}` |
-| Grafana | `http://localhost:8080/grafana/` | agent / experiments dashboards |
+| Jaeger | `http://localhost/jaeger/` (service `agent`) | the decision audit trace + span attrs `decision.action`, `decision.objective_served`, `decision.reason`, `decision.blocked`/`decision.block_reason` |
+| VictoriaMetrics | `http://localhost/victoria-metrics/vmui/` | `agent_evaluations_total` (#1053), `game_interventions_total{type,objective,blocked}` |
+| Grafana | `http://localhost/grafana/` | agent / experiments dashboards |
 
 **Even with the act gates closed**, the OBSERVE/DECIDE pipeline still emits
 `agent.signal_received → agent.decision` spans and `agent_evaluations_total` — that
@@ -141,7 +141,7 @@ flags** (idempotent — leaves stack state as it found it):
 
 - **agent logs** — `docker logs joustmania-agent` for `agent.evaluate decision_backend=…` and
   `agent.decision_blocked intervention=… reason=…`
-- **Prometheus** (via envoy `/prometheus/`) — `agent_evaluations_total`,
+- **VictoriaMetrics** (Prometheus query API via envoy `/victoria-metrics/`) — `agent_evaluations_total`,
   `game_interventions_total{type,blocked}`
 - **Jaeger** (optional, `--jaeger`) — the `agent.signal_received → agent.decision →
   agent.action` decision span chain

@@ -50,10 +50,9 @@ GAME_WINDOW_METRIC = "game_player_accel_magnitude"
 # Survivor vs eliminated signal (per game_id, serial); presence/value encodes order.
 ELIMINATION_METRIC = "game_player_elimination_order"
 
-DEFAULT_PROM_URLS = (
-    "http://localhost/prometheus",
-    "http://localhost:8080/prometheus",
-)
+# VictoriaMetrics serves the Prometheus query API behind envoy at /victoria-metrics
+# (the Prometheus container was removed in #1449).
+DEFAULT_PROM_URLS = ("http://localhost/victoria-metrics",)
 
 
 class PrometheusUnavailable(RuntimeError):

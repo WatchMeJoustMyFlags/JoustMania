@@ -108,7 +108,7 @@ The whole stack is proxied through envoy on port **80**:
 | **Dashboard (SPA)** | `http://localhost/` | the demo front-of-house: **Agent** tab (decision feed) + **Experiments** tab (cohorts/verdicts) |
 | **Jaeger** | `http://localhost/jaeger/` | agent decision-audit spans (service `agent`): `agent.signal_received → agent.decision → agent.action`, experiment declare/conclude/verdict spans |
 | **Grafana** | `http://localhost/grafana/` | dashboards (see act 3 below) |
-| **Prometheus** | `http://localhost/prometheus/` | `game_interventions_total`, agent process metrics |
+| **VictoriaMetrics** | `http://localhost/victoria-metrics/vmui/` | `game_interventions_total`, agent process metrics |
 
 ### Pre-demo checklist
 
@@ -302,7 +302,7 @@ decision here is *correct behaviour*, not a bug):
   and the per-game join `{"game.id":"game_<id>"}`. The
   [trace-viz guide](agent-trace-viz.md#bonus--what-action-was-taken-agentaction)
   has the click-ready deep links.
-- Prometheus (`http://localhost/prometheus/`): applied dispatches split by action
+- VictoriaMetrics (`http://localhost/victoria-metrics/vmui/`, or Grafana Explore): applied dispatches split by action
   via `sum by (action) (rate(agent_interventions_applied_total[5m]))`, and the
   applied-vs-blocked split via `agent_decisions_total{blocked="false"}` /
   `{blocked="true"}`. The Grafana **Agent Operations — Fleet** dashboard

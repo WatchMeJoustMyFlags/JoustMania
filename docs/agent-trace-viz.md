@@ -200,7 +200,7 @@ applied vs blocked side by side.
 
 **The matching metrics** (Grafana **Agent Operations — Fleet**,
 [`agent-operations.json`](../services/grafana/dashboards/agent-operations.json),
-or `http://localhost/prometheus/`):
+or `http://localhost/victoria-metrics/vmui/`):
 
 - `sum(rate(agent_decisions_total{blocked="false"}[5m]))` — applied decisions/sec
   (the `blocked="true"` complement is split by `block_reason`).

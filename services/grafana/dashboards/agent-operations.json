@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Fleet view of the self-improvement agent for the #789 demo: how many improvement games are running and what the agent is doing across them. Agent metric series are queried WITHOUT a job filter so the same panels resolve against Prometheus (job=\"agent\") and VictoriaMetrics (job=\"infrastructure/agent\"); only the standard OTel process-health panels carry a job filter. See panel descriptions for the game_kind (#775) and #790 forward-compat notes.",
+  "description": "Fleet view of the self-improvement agent for the #789 demo: how many improvement games are running and what the agent is doing across them. Agent metric series are queried WITHOUT a job filter so they do not depend on the namespaced job VictoriaMetrics stores (job=\"infrastructure/agent\"); only the standard OTel process-health panels carry a job filter, with an optional namespace prefix. See panel descriptions for the game_kind (#775) and #790 forward-compat notes.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -721,7 +721,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Agent service CPU usage. Standard OTel process metric (rate of process_cpu_seconds_total) job-filtered to the agent. job=\"agent\" matches the local stack; on the namespaced VictoriaMetrics setup the job carries the infrastructure/ prefix (see #775 gotchas) so adjust the matcher there.",
+      "description": "Agent service CPU usage. Standard OTel process metric (rate of process_cpu_seconds_total) job-filtered to the agent. VictoriaMetrics keeps the service.namespace prefix (job=\"infrastructure/agent\"), so the matcher accepts an optional namespace prefix.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -797,7 +797,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(process_cpu_seconds_total{job=\"agent\"}[5m]) * 100",
+          "expr": "rate(process_cpu_seconds_total{job=~\"(.+/)?agent\"}[5m]) * 100",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
@@ -810,7 +810,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Agent service resident memory. Standard OTel process metric process_resident_memory_bytes job-filtered to the agent (job=\"agent\" locally; infrastructure/-prefixed on VictoriaMetrics).",
+      "description": "Agent service resident memory. Standard OTel process metric process_resident_memory_bytes job-filtered to the agent (job=~\"(.+/)?agent\": VictoriaMetrics keeps the infrastructure/ prefix).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -886,7 +886,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_resident_memory_bytes{job=\"agent\"}",
+          "expr": "process_resident_memory_bytes{job=~\"(.+/)?agent\"}",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }

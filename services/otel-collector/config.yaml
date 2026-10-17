@@ -18,10 +18,6 @@ receivers:
           scrape_interval: 30s
           static_configs:
             - targets: ['victoria-metrics:8428']
-        - job_name: 'prometheus'
-          scrape_interval: 30s
-          static_configs:
-            - targets: ['prometheus:9090']
         # Self-telemetry: the collector exposes its own metrics on :8888.
         # Rename otelcol_process_* to standard process_* for unified dashboards.
         # v0.153.0 exposes them unsuffixed (otelcol_process_cpu_seconds,
@@ -336,10 +332,6 @@ exporters:
     tls:
       insecure: true
 
-  # Prometheus exporter for metrics (exposed on :8889 for backward compatibility)
-  prometheus:
-    endpoint: "0.0.0.0:8889"
-
   # Loki exporter for logs (OTLP native ingestion, Loki 3.x)
   otlphttp/loki:
     endpoint: http://loki:3100/otlp
@@ -374,13 +366,13 @@ service:
       exporters: [otlp/jaeger, otlp/agent, debug]
 
     # Metrics pipeline - uses fast batch processor for sub-second updates
-    # Fan-out to VictoriaMetrics (storage) and Prometheus (backward compat)
+    # Fan-out to VictoriaMetrics (storage) and the agent
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch/fast, resource]
-      exporters: [prometheusremotewrite, prometheus, otlp/agent]
+      exporters: [prometheusremotewrite, otlp/agent]
 
-    # Observability metrics — victoria-metrics, prometheus, otel-collector
+    # Observability metrics — victoria-metrics, otel-collector
     metrics/observability:
       receivers: [prometheus/observability]
       processors: [memory_limiter, resource/observability, batch/fast]

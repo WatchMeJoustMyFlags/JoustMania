@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for the #1070 validation harness — matrix + report logic only.
 
-The LIVE collection path (docker logs / Prometheus / Jaeger) is NOT exercised
+The LIVE collection path (docker logs / VictoriaMetrics / Jaeger) is NOT exercised
 here; those are stubbed with hand-built Observations. This proves the
 matrix is well-formed and the PASS/ANOMALY judgement matches the real log /
 metric / span shapes the harness collects against.

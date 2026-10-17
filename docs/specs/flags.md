@@ -27,7 +27,7 @@ changed default or a new reader/writer updates this file in the same PR.
 | Service | Client / resolver | Endpoint | Source |
 |---|---|---|---|
 | Python services (game-coordinator, menu, controller-manager, audio, pairing-daemon) | OpenFeature Python `FlagdProvider`, **in-process** resolver, one named provider per flag set | `flagd:8015` | `lib/feature_flags.py:169-181`; `docker-compose.yml:313,443,493` |
-| Agent (Go) | go-sdk-contrib flagd provider, **RPC** resolver, domain `agent` | `flagd:8013` | `services/agent/flags/provider.go:44-48`; `docker-compose.yml:700-703` |
+| Agent (Go) | go-sdk-contrib flagd provider, **RPC** resolver, domain `agent` | `flagd:8013` | `services/agent/flags/provider.go:44-48`; `docker-compose.yml:672-673` |
 | Agent (file access) | direct read/write of `interventions.json`, `rollout.json`, `game.json`; reads `remediation_allowed` from `rollout.json` | `$FLAGD_FLAG_DIR` | `services/agent/flagset/flagset.go`; `services/agent/actions/`; `services/agent/experiment/writer.go` |
 | rust-hid | `open_feature_flagd` RPC resolver, default provider | `flagd:8013` | `services/rust-hid/src/feature_flags.rs:23-35` |
 | connect-proxy | **no flagd client**; reads and writes `controller.json` directly for `/canary/*` and `/chaos/*` | file | `services/connect-proxy/canary.go`, `services/connect-proxy/chaos.go` |

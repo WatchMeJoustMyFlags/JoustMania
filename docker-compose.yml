@@ -191,8 +191,6 @@ services:
     ports:
       # OTLP gRPC - exposed for host-network containers (pairing-daemon)
       - "4317:4317"
-      # Only expose Prometheus metrics for external monitoring
-      - "8889:8889"   # Prometheus metrics (Jaeger uses 8888)
     depends_on:
       jaeger:
         condition: service_healthy
@@ -515,8 +513,9 @@ services:
           cpus: '0.5'
     logging: *default-logging
 
-  # VictoriaMetrics for high-frequency metrics storage (replaces Prometheus for storage)
-  # Receives metrics via Prometheus remote write protocol from OTEL Collector
+  # VictoriaMetrics: the only metrics store (the Prometheus container was removed
+  # in #1449). Receives metrics via Prometheus remote write from the OTEL Collector
+  # and serves the Prometheus query API to Grafana, the dashboard and the tools.
   victoria-metrics:
     image: victoriametrics/victoria-metrics:v1.144.0
     container_name: joustmania-victoria-metrics
@@ -547,41 +546,6 @@ services:
           cpus: '0.5'
     logging: *default-logging
 
-  # Prometheus for metrics collection (Phase 38). No alert rules (removed in #1425);
-  # kept for the demo validation harness queries and the /prometheus/ route.
-  prometheus:
-    image: prom/prometheus:v3.12.0
-    container_name: joustmania-prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-      - '--web.external-url=/prometheus/'
-      - '--web.route-prefix=/'
-    # Port exposed only within Docker network (envoy proxies to it)
-    expose:
-      - "9090"
-    volumes:
-      - ./services/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    networks:
-      - joustmania
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    deploy:
-      resources:
-        limits:
-          memory: 384m
-          cpus: '0.5'
-    logging: *default-logging
-
   # Grafana for metrics visualization (Phase 38)
   grafana:
     image: grafana/grafana:13.0.2
@@ -597,8 +561,6 @@ services:
       - grafana-data:/var/lib/grafana
     depends_on:
       victoria-metrics:
-        condition: service_healthy
-      prometheus:
         condition: service_healthy
       loki:
         condition: service_healthy
@@ -884,7 +846,6 @@ networks:
     name: joustmania-network
 
 volumes:
-  prometheus-data:
   victoria-metrics-data:
   grafana-data:
   loki-data:

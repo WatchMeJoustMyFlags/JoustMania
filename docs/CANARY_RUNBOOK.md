@@ -105,7 +105,7 @@ Open the observability stack at `http://localhost:8080/`:
 
 ### Confirm all controllers on python
 
-Query Prometheus / VictoriaMetrics:
+Query VictoriaMetrics (Grafana Explore):
 
 ```promql
 controller_backend_info == 1
@@ -221,8 +221,8 @@ controller_routing_decisions_total{serial="aa:bb:cc:dd:ee:ff", adapter="rust", m
 
 ### Key metrics to watch
 
-Run these queries in Grafana or the Prometheus UI at
-`http://localhost:8080/prometheus/`:
+Run these queries in Grafana Explore or the VictoriaMetrics UI at
+`http://localhost/victoria-metrics/vmui/`:
 
 **Poll batch duration by backend** (join with backend info):
 
@@ -443,7 +443,7 @@ docker compose restart controller-manager
 docker compose logs flagd --tail=20
 ```
 
-### Prometheus queries for debugging
+### PromQL queries for debugging
 
 ```promql
 # Which backend owns each controller right now?

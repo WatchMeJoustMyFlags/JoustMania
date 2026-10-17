@@ -120,12 +120,12 @@ docker compose ps
 
 ### 5. Access UIs
 
-All UIs are accessible through the unified dashboard at **http://localhost:8080**:
+All UIs are accessible through the unified dashboard at **http://localhost**:
 
-- **Dashboard:** http://localhost:8080
-- **Jaeger:** http://localhost:8080/jaeger/
-- **Grafana:** http://localhost:8080/grafana/
-- **Prometheus:** http://localhost:8080/prometheus/
+- **Dashboard:** http://localhost
+- **Jaeger:** http://localhost/jaeger/
+- **Grafana:** http://localhost/grafana/
+- **VictoriaMetrics:** http://localhost/victoria-metrics/vmui/
 
 ### 6. View Logs
 

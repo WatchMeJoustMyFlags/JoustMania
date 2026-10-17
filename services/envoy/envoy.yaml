@@ -4,7 +4,6 @@
 # Route configuration:
 #   /joustmania*    -> connect-proxy:8080 (PRESERVE prefix, gRPC-Web)
 #   /grafana/*      -> grafana:3000       (PRESERVE prefix, serve_from_sub_path=true)
-#   /prometheus/*   -> prometheus:9090    (STRIP prefix, --web.route-prefix=/)
 #   /jaeger/*       -> jaeger:16686       (PRESERVE prefix, base_path=/jaeger in config.yaml)
 #   /loki/*         -> loki:3100          (STRIP prefix, API expects root)
 #   /victoria-metrics/* -> victoria-metrics:8428 (STRIP prefix, API expects root)
@@ -50,18 +49,6 @@ static_resources:
                             path: "/grafana"
                           redirect:
                             path_redirect: "/grafana/"
-
-                        # Prometheus UI
-                        # STRIP prefix - configured with --web.route-prefix=/
-                        - match:
-                            prefix: "/prometheus/"
-                          route:
-                            cluster: prometheus
-                            prefix_rewrite: "/"
-                        - match:
-                            path: "/prometheus"
-                          redirect:
-                            path_redirect: "/prometheus/"
 
                         # Jaeger UI
                         # PRESERVE prefix - configured with --query.base-path=/jaeger/
@@ -183,20 +170,6 @@ static_resources:
                     socket_address:
                       address: grafana
                       port_value: 3000
-
-    # Prometheus metrics
-    - name: prometheus
-      type: STRICT_DNS
-      lb_policy: ROUND_ROBIN
-      load_assignment:
-        cluster_name: prometheus
-        endpoints:
-          - lb_endpoints:
-              - endpoint:
-                  address:
-                    socket_address:
-                      address: prometheus
-                      port_value: 9090
 
     # Jaeger tracing UI
     - name: jaeger

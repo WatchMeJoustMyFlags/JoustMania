@@ -34,7 +34,7 @@ RUN apt-get update && \
 
 COPY --from=builder /build/_output/otelcol-joustmania /otelcol
 
-EXPOSE 4317 4318 8888 8889 13133
+EXPOSE 4317 4318 8888 13133
 
 ENTRYPOINT ["/otelcol"]
 CMD ["--config=/etc/otel-collector-config.yaml"]
