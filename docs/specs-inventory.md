@@ -224,7 +224,7 @@ spec PRs. Verified against `main` @ 2d162b33; rows added or updated by the audit
 
 | ID | Doc claim | Code | Kind |
 |---|---|---|---|
-| D-T1 | Each service exposes `/metrics`; "Jaeger exporter" | OTLP push to the collector; only controller-manager also runs a prometheus_client endpoint on 8000. | stale doc |
+| D-T1 | Each service exposes `/metrics`; "Jaeger exporter" | OTLP push to the collector; no Python service serves `/metrics` (the controller-manager prometheus_client endpoint on 8000 was removed in #1447). | stale doc |
 | D-T2 | `agent.signal_received` is a trace root; `agent.span_received` exists (agent-trace-viz) | Remote child of the coordinator's `game_cycle` (#1325, was `gameplay_phase` since #1195); `agent.span_received` retired (#1053). | stale doc |
 | D-T3 | Alerts `GameCrashRate`, `ServiceUpdatePending` | Use `games_force_ended_total` and `joustmania_service_update_pending`, which no code defines: they can never fire (`services/prometheus/alerts.yml:90-101`). | bug (issue #1275); **resolved by removal** (#1425: Prometheus alerting dropped, FR-083 Rejected) |
 | D-T4 | Span names `player_{serial}_lifecycle`, `ffa_game_loop`, `GrpcInstrumentor*` (DISTRIBUTED_TRACING, PER_PLAYER_TRACING) | `player_lifecycle` (renamed `player: {name}`), `team_lifecycle`, custom interceptors. | stale doc; **superseded**: both docs carry a "Superseded" banner pointing at telemetry.md |

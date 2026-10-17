@@ -119,7 +119,7 @@
         "always": "always",
         "when_idle": "when_idle"
       },
-      "defaultVariant": "never"
+      "defaultVariant": "when_idle"
     }
   }
 }

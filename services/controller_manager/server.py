@@ -90,13 +90,6 @@ async def serve(port=50052):
 
     init_game_settings_listener()
 
-    # Start prometheus_client HTTP server for direct pull scraping (pipeline comparison)
-    from prometheus_client import start_http_server
-
-    metrics_port = int(os.getenv("PROMETHEUS_METRICS_PORT", "8000"))
-    start_http_server(metrics_port)
-    logger.info(f"Prometheus pull metrics available at http://0.0.0.0:{metrics_port}/metrics")
-
     # Start system metrics collection (Phase 61: extracted to lib/system_metrics.py)
     start_system_metrics_collector(
         cpu_counter=metrics.process_cpu_seconds_total,

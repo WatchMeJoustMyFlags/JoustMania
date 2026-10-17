@@ -198,7 +198,8 @@ def bluez_tree(adapters: dict[str, tuple[str, list[dict]]]) -> dict:
 
     Args:
         adapters: {"hci0": (adapter_address, [device_props, ...])}; device_props
-            holds plain values ("Address", "Connected", "Name").
+            holds plain values ("Address", "Connected", "Name", and optionally
+            "Paired" / "Bonded" / "Trusted").
     """
     objects: dict = {"/org/bluez": {"org.bluez.AgentManager1": {}}}
     for hci, (address, device_list) in adapters.items():
@@ -209,6 +210,9 @@ def bluez_tree(adapters: dict[str, tuple[str, list[dict]]]) -> dict:
                 "Connected": Variant("b", device.get("Connected", False)),
                 "Name": Variant("s", device.get("Name", "Motion Controller")),
             }
+            for flag in ("Paired", "Bonded", "Trusted"):  # registration flags (UC-001 A7)
+                if flag in device:
+                    props[flag] = Variant("b", device[flag])
             objects[f"/org/bluez/{hci}/dev_{i}"] = {"org.bluez.Device1": props}
     return objects
 

@@ -11,7 +11,7 @@ from lib.bluez_dbus import DBusError
 from psmove_pairing import registrations
 from psmove_pairing.adapter_manager import AdapterInfo
 from psmove_pairing.control_api import handle_post, unpair_response
-from psmove_pairing.pairing_backend import HidapiBackend
+from psmove_pairing.pairing_backend import HidapiBackend, UsbController
 from psmove_pairing.registrations import PsMoveRegistration, RemovalResult
 from psmove_pairing.usb_pairing import USBPairing
 
@@ -50,12 +50,13 @@ def stub_pairing_steps(usb_pairing: USBPairing, pair=None) -> None:
     usb_pairing.pair_controller = pair or AsyncMock(return_value=True)
     usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
     usb_pairing.remove_stale_registrations = AsyncMock(return_value=[])
+    usb_pairing.write_bluez_record = AsyncMock(return_value=None)
 
 
 async def poll_with_usb(usb_pairing: USBPairing, serials: list[str], path: bytes = FAKE_PATH_1) -> None:
     """One poll() where the backend reports these serials on USB (at ``path``)."""
     backend = create_autospec(HidapiBackend, instance=True)
-    backend.get_usb_controllers.return_value = [(path, s) for s in serials]
+    backend.get_usb_controllers.return_value = [UsbController(path, s, 0x03D5) for s in serials]
     usb_pairing._current_backend = None  # poll() caches its backend; use this one
     with (
         patch("psmove_pairing.usb_pairing._resolve_routing", return_value="python"),

@@ -21,6 +21,16 @@ use proto::{
 
 use crate::hid;
 
+/// Proto form of a USB controller; the product id feeds the pairing daemon's
+/// BlueZ device record (UC-001 BR-008).
+fn usb_controller_to_proto(c: hid::UsbController) -> UsbController {
+    UsbController {
+        device_path: c.device_path,
+        serial: c.serial,
+        product_id: u32::from(c.product_id),
+    }
+}
+
 /// gRPC service implementation for PS Move pairing operations.
 pub struct PairingServiceImpl {
     hid_api: Mutex<HidApi>,
@@ -59,10 +69,7 @@ impl PairingService for PairingServiceImpl {
 
         let proto_controllers: Vec<UsbController> = controllers
             .into_iter()
-            .map(|c| UsbController {
-                device_path: c.device_path,
-                serial: c.serial,
-            })
+            .map(usb_controller_to_proto)
             .collect();
 
         Ok(Response::new(GetUsbControllersResponse {
@@ -127,5 +134,23 @@ impl PairingService for PairingServiceImpl {
                 }))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // UC-001 BR-008: GetUSBControllers carries the USB product id
+    #[test]
+    fn test_usb_controller_to_proto_carries_product_id() {
+        let proto = usb_controller_to_proto(hid::UsbController {
+            device_path: "/dev/hidraw3".to_string(),
+            serial: "00:06:F7:AA:BB:CC".to_string(),
+            product_id: 0x0C5E,
+        });
+        assert_eq!(proto.device_path, "/dev/hidraw3");
+        assert_eq!(proto.serial, "00:06:F7:AA:BB:CC");
+        assert_eq!(proto.product_id, 0x0C5E);
     }
 }

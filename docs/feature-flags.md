@@ -192,7 +192,7 @@ writable.
 | `sentinel.rotation_minutes` | integer | minutes | Sentinel rotation interval |
 | `pairing.poll_interval` | number | seconds | Controller pairing poll interval |
 | `pairing.bt_monitor_interval` | number | seconds | Bluetooth monitor interval |
-| `pairing.bluez_restart_mode` | string | `never`, `always`, `when_idle` (default `never`) | Whether the pairing daemon restarts bluetoothd after a USB pairing (UC-001 BR-005, #1446). `never`: no restart (other controllers stay connected). `always`: restart after every pairing (pre-#1446 behaviour, drops every controller). `when_idle`: restart only after a new BlueZ device record was written and only while no real game is starting / running / ending (state from the coordinator's `GetGameState` via envoy; unreadable = busy, deferred). Read at use time; unknown or unreachable = `never` |
+| `pairing.bluez_restart_mode` | string | `never`, `always`, `when_idle` (default `when_idle`, #1466) | Whether the pairing daemon restarts bluetoothd after a USB pairing (UC-001 BR-005, #1446). `when_idle`: restart only after a new BlueZ device record was written for a controller new to that adapter (UC-001 A7, BR-008) and only while no real game is starting / running / ending (state from the coordinator's `GetGameState` via envoy; unreadable = busy, deferred); the pairing agent is registered again after the restart. `never`: no restart (a controller new to the adapter cannot connect until bluetoothd restarts). `always`: restart after every pairing (pre-#1446 behaviour, drops every controller). Read at use time; unknown or unreachable = `never` |
 
 **Sentinel animation (calibration, #766 F7).** The idle sentinel breathing/hue
 animation constants (`menu/idle_monitor.py`), consumed by the **menu** service.

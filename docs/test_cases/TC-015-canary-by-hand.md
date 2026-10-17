@@ -6,7 +6,7 @@
 **Goal:** An operator routes half of the controllers to the rust adapter, watches the split on the Controllers & Bluetooth dashboard (uid `controller-overview`) and in Grafana Explore queries, and returns everyone to the default backend.  
 **Priority:** Medium  
 **Status:** Draft  
-**Use cases:** [UC-052](../use_cases/UC-052.md) main; [UC-035](../use_cases/UC-035.md) main, A2
+**Use cases:** [UC-052](../use_cases/UC-052.md) main; [UC-035](../use_cases/UC-035.md) main
 
 ## Roles
 

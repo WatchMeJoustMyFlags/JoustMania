@@ -699,7 +699,7 @@ class TestUC003HeldMovement:
         assert adapter.controllers[self.SERIAL]["held_accel"] is None
 
     @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
-    def test_simulated_disconnect_keeps_the_hold(self):
+    def test_dropped_frame_keeps_the_hold(self):
         """UC-003 BR-002: a frame dropped by the Unstable adapter does not lose the hold."""
         service, adapter = _make_service(num_controllers=1)
         self._move(service, self.WARNING_VEC)
