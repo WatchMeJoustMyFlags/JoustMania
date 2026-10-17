@@ -317,7 +317,7 @@ async def test_permission_layer_blocks_disallowed_intervention(
             )
             assert (await _player(game_client, victim)).alive
 
-            game_id = await collector.wait_for_game_id()
+            game_id = await collector.wait_for_started_game_id()
             append_event("eliminate_player", game_id, {"serial": victim})
 
             evt = await _wait_for_intervention_event(

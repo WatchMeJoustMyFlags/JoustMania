@@ -464,6 +464,21 @@ class GameEventCollector:
         except asyncio.CancelledError:
             pass
 
+    async def wait_for_started_game_id(self, timeout: float = 15.0) -> str:
+        """The game id of the newest ``game_started`` event, waiting for one.
+
+        For an unfiltered (menu) collector, whose ``game_id`` stays unset by
+        design: game-scoped flag writes (epic #1407) need the id of the game the
+        menu just started.
+        """
+        await self.wait_for_event("game_started", timeout=timeout)
+        for event in reversed(self.events):
+            if event.event_type == "game_started":
+                game_id = event.game_id or event.data.get("game_id", "")
+                if game_id:
+                    return game_id
+        raise AssertionError("game_started carried no game_id")
+
     async def wait_for_game_id(self, timeout: float = 15.0) -> str:
         """Wait until the assigned/observed game_id is known and return it.
 
