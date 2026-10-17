@@ -261,7 +261,12 @@ tuple as `game_active` (`game_kind, game_id, experiment_id, arm`), so there is o
 BR-003; `services/game_coordinator/game_session.py` `_publish_duration_while_running`). Retire is final (#1311): once
 the session retired, its game-thread teardown writes none of its per-game series (`game_active`,
 `game_active_players`, `game_duration_seconds`, `game_current_mode`, `game_trace_correlation`), even when retire ran
-before the loop's teardown; `games_completed_total` is still counted.
+before the loop's teardown; `games_completed_total` is still counted. Retire (natural-end sweep and force-end alike)
+sets `game_active` and `game_active_players` to 0 itself and removes the session's series three metric export
+intervals later (`metrics_export_interval_ms`, so about 3 s), without blocking, because the agent detects a game's end
+only from the `game_active` 1 → 0 datapoint. Game-state series (`GAME_STATE_GAUGES`) that the game loop writes after
+retire, for example after a force-end whose join timed out, are removed by the game's own `run()` cleanup when the
+loop ends.
 
 ### 6.1 Consumers
 

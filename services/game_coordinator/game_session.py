@@ -42,6 +42,7 @@ from lib.feature_flags import (
 from lib.feature_flags import (
     set_game_session_kind_context,
 )
+from lib.otel_metrics import get_export_interval_ms
 from lib.telemetry import get_tracer
 from lib.types import get_game_display_name
 from proto import game_coordinator_pb2
@@ -89,6 +90,24 @@ def completed_game_outcome(game) -> str:
 
 # How often game_duration_seconds is refreshed while a game is RUNNING (#1305).
 DURATION_GAUGE_INTERVAL_S = 1.0
+
+# Retire keeps a game's zeroed series for this many metric export intervals
+# before it removes them (#1311): the agent detects a game's end only from a
+# game_active 1 -> 0 datapoint, so the 0 must be exported (at least twice)
+# before the series goes.
+RETIRE_REMOVAL_EXPORT_INTERVALS = 3
+
+
+def retire_removal_delay_s() -> float:
+    """Seconds between retire's zeroing and the removal of the series (#1311).
+
+    0 when metrics are not exported (not initialized, or disabled for tests):
+    there is no datapoint to wait for.
+    """
+    interval_ms = get_export_interval_ms()
+    if not interval_ms:
+        return 0.0
+    return RETIRE_REMOVAL_EXPORT_INTERVALS * interval_ms / 1000.0
 
 
 class GameSession:
@@ -221,9 +240,31 @@ class GameSession:
         natural-end sweep sees ENDED before the loop's ``finally:``, or
         ``force_end`` gives up joining). The session is marked retired under
         ``_metrics_lock`` first, so no later session write re-creates a series.
+
+        The game's end stays visible (#1311): the agent detects a game's end
+        only from a ``game_active`` 1 -> 0 datapoint. Retire therefore sets
+        ``game_active`` / ``game_active_players`` to 0 itself (the teardown may
+        not have yet, and will not after retire) and removes the series only
+        ``retire_removal_delay_s()`` later, on a timer thread, so the 0 is
+        exported first. Retire never blocks on that delay.
         """
         with self._metrics_lock:
+            if self._metrics_retired:
+                return  # removal already done or scheduled
             self._metrics_retired = True
+            self._zero_lifecycle_gauges()
+        delay_s = retire_removal_delay_s()
+        if delay_s <= 0:
+            self._remove_metrics_locked()
+            return
+        timer = threading.Timer(delay_s, self._remove_metrics_locked)
+        timer.daemon = True
+        timer.name = f"retire-metrics-{self.game_id}"
+        timer.start()
+
+    def _remove_metrics_locked(self) -> None:
+        """Remove every per-game series of this retired session (#1018, #1311)."""
+        with self._metrics_lock:
             self._remove_metrics()
 
     def _remove_metrics(self) -> None:
@@ -672,7 +713,8 @@ class GameSession:
 
                 # The game is over: its mode series goes now, not at retire, so
                 # it never reads 1 between games (retire removes it again).
-                self._remove_game_mode()
+                with self._metrics_lock:
+                    self._remove_game_mode()
 
                 # Update lifecycle metrics for THIS session's kind (#775) +
                 # experiment attribution (#975). experiment_id/arm are "" for a
