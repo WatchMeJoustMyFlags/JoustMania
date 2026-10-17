@@ -211,6 +211,7 @@ Replace `localhost` with the Pi's address from the presenter laptop.
 | Jaeger, infra decisions (section 4) | `http://localhost/jaeger/search?service=agent&operation=agent.infrastructure.decision&lookback=15m` |
 | Grafana, agent metrics | `http://localhost/grafana/d/agent-operations` (**Agent Operations — Fleet**: "Fleet" is part of this dashboard's title, the [agent demo runbook](../agent-demo-runbook.md)'s "fleet view") |
 | Grafana, service and host health | `http://localhost/grafana/d/joustmania-service-health` (**Infrastructure & Services**; absorbed the separate Fleet Overview dashboard in #1427) |
+| Grafana, controllers and Bluetooth | `http://localhost/grafana/d/controller-overview` (**Controllers & Bluetooth**; the dashboard's Metrics tab embeds it. Expand the collapsed "Bluetooth and Adapters (Pi only)" row for per-adapter load and signal before deciding on the [Bluetooth fallback](#fallback-bluetooth-down)) |
 
 The Jaeger search URL parameters are standard Jaeger UI query parameters;
 **verify in rehearsal** that the pre-filled search opens directly.

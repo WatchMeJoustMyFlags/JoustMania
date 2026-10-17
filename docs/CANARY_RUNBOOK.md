@@ -86,7 +86,7 @@ Key source files:
    ```
 
 4. **At least one PS Move controller connected** and showing up in the
-   controller-overview dashboard.
+   Controllers & Bluetooth dashboard (`/grafana/d/controller-overview`).
 
 ---
 
@@ -97,10 +97,11 @@ while all controllers are on `python`.
 
 ### Check Grafana dashboards
 
-Open the observability stack at `http://localhost:8080/`:
+Open the observability stack at `http://localhost/`:
 
-- **Controller Overview** (`/grafana/`) -- verify all controllers connected, LEDs
-  responsive
+- **Controllers & Bluetooth** (`/grafana/d/controller-overview`) -- verify all
+  controllers connected, LEDs responsive, and every controller on `python` in
+  the "Controllers per Backend" panel
 - **Infrastructure & Services** (`/grafana/d/joustmania-service-health`) -- verify controller-manager CPU/memory normal
 
 ### Confirm all controllers on python
@@ -486,14 +487,12 @@ process_resident_memory_bytes{job=~".*controller-manager.*"}
 
 | Dashboard | What to check |
 |-----------|---------------|
-| `controller-overview` | Connected controllers, battery, LED colors |
-| `controller-maintenance` | Poll drops, poll errors, backend info |
+| `controller-overview` (Controllers & Bluetooth) | Connected controllers, controllers per backend (`controller_backend_info == 1`), health table (backend, adapter, battery, RSSI, poll rate, connection quality), input lag p95, poll drops and errors, LED colors; the collapsed "Bluetooth and Adapters (Pi only)" row has the per-adapter load, signal and poll rate |
 | `joustmania-service-health` (Infrastructure & Services) | CPU, memory, gRPC latency for controller-manager |
-| `bluetooth-adapter` | BT adapter affinity per controller |
 
 ### Alerting
 
 No Prometheus alert rules ship (FR-083 Rejected, #1425): watch the dashboards
-above during migration, in particular `controller_connected`, the backend
-comparison latency panels (`controller_input_lag_seconds`), CPU, and
+above during migration, in particular `controller_connected`, the input lag
+panels (`controller_input_lag_seconds`) on Controllers & Bluetooth, CPU, and
 `rate(controller_poll_errors_total[2m])` per backend.

@@ -15,26 +15,93 @@
       }
     ]
   },
-  "description": "Dynamic controller dashboard with human-readable names",
+  "description": "Controllers and their Bluetooth links: headline counts, one health row per controller, a per-controller drill-down, connection quality, battery, poll health and, collapsed, the Pi-only pairing-daemon and adapter panels. Replaces Controller Overview, Controller Maintenance and Bluetooth Adapter Overview (#1427). The dashboard SPA's Metrics tab embeds it (uid controller-overview).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
   "links": [
     {
-      "asDropdown": false,
+      "asDropdown": true,
       "icon": "external link",
-      "includeVars": true,
+      "includeVars": false,
       "keepTime": true,
-      "tags": [],
-      "targetBlank": false,
-      "title": "Bluetooth Adapters",
-      "tooltip": "Bluetooth adapter health and load balancing",
-      "type": "link",
-      "url": "/d/joustmania-bluetooth-adapter/bluetooth-adapter-overview"
+      "tags": [
+        "joustmania"
+      ],
+      "targetBlank": true,
+      "title": "Related Dashboards",
+      "type": "dashboards"
     }
   ],
   "liveNow": true,
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": [
+    "joustmania",
+    "controllers",
+    "bluetooth"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(controller_info, serial)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Controller",
+        "multi": true,
+        "name": "controller",
+        "options": [],
+        "query": {
+          "query": "label_values(controller_info, serial)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(controller_info{serial=\"$controller\"}, name)",
+        "hide": 2,
+        "includeAll": true,
+        "label": "Controller Name",
+        "multi": true,
+        "name": "controller_name",
+        "options": [],
+        "query": {
+          "query": "label_values(controller_info{serial=\"$controller\"}, name)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Controllers & Bluetooth",
+  "uid": "controller-overview",
+  "version": 1,
+  "weekStart": "",
   "panels": [
     {
       "datasource": {
@@ -61,7 +128,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 3,
         "x": 0,
         "y": 0
       },
@@ -87,20 +154,21 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(controller_connected == 1)",
+          "expr": "count(controller_connected == 1) or vector(0)",
           "legendFormat": "Connected",
           "refId": "A"
         }
       ],
-      "title": "Connected Controllers",
-      "type": "stat"
+      "title": "Connected",
+      "type": "stat",
+      "description": "Controllers the controller manager reports as connected (controller_connected == 1)."
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Controllers with low battery: controller_battery_level < 2 (level 0 or 1 of 5; definition in docs/specs/telemetry.md §6.1)",
+      "description": "Controllers at battery level 0 or 1 of 5 (controller_battery_level < 2), the controller manager's low-battery level; the one threshold every dashboard uses (telemetry.md \u00a76.1). Only connected controllers count (controller_connected == 1): the battery series of a controller that left is never removed.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -129,13 +197,13 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 4,
+        "w": 3,
+        "x": 3,
         "y": 0
       },
       "id": 2,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
@@ -155,8 +223,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(controller_battery_level < 2) or vector(0)",
-          "legendFormat": "Low Battery",
+          "expr": "count((controller_battery_level and on(serial) controller_connected == 1) < 2) or vector(0)",
+          "legendFormat": "Controllers",
           "refId": "A"
         }
       ],
@@ -168,7 +236,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Controllers with weak signal: bluetooth_device_rssi_dbm < -80 (the red band of every RSSI colour scale; definition in docs/specs/telemetry.md §6.1)",
+      "description": "Controllers with RSSI below -80 dBm (poor), the threshold every dashboard uses (telemetry.md \u00a76.1). RSSI comes from the pairing daemon, so this is 0 off the Pi. Only links the pairing daemon reports as connected (bluetooth_device_connected == 1, joined on serial and hci_adapter) of controllers the controller manager reports as connected (controller_connected == 1, joined on serial) count: neither RSSI series is removed when a link or controller goes away (#1468).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -188,7 +256,7 @@
               },
               {
                 "color": "red",
-                "value": 2
+                "value": 3
               }
             ]
           }
@@ -197,13 +265,13 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 8,
+        "w": 3,
+        "x": 6,
         "y": 0
       },
       "id": 3,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
@@ -223,8 +291,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(bluetooth_device_rssi_dbm < -80) or vector(0)",
-          "legendFormat": "Weak Signal",
+          "expr": "count((bluetooth_device_rssi_dbm and on(serial, hci_adapter) bluetooth_device_connected == 1 and on(serial) controller_connected == 1) < -80) or vector(0)",
+          "legendFormat": "Controllers",
           "refId": "A"
         }
       ],
@@ -236,18 +304,11 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "All connected controllers with their names",
+      "description": "Controllers with effective poll rate below 50 Hz (degraded connection). Matches controller_poll_degraded spans in Jaeger.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
           },
           "mappings": [],
           "thresholds": {
@@ -256,322 +317,14 @@
               {
                 "color": "green",
                 "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Name"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 150
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Battery"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 80
               },
               {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "gradient",
-                  "type": "gauge"
-                }
+                "color": "yellow",
+                "value": 1
               },
               {
-                "id": "max",
-                "value": 5
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "orange",
-                      "value": 2
-                    },
-                    {
-                      "color": "yellow",
-                      "value": 3
-                    },
-                    {
-                      "color": "green",
-                      "value": 4
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Signal (dBm)"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 100
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "gradient",
-                  "type": "gauge"
-                }
-              },
-              {
-                "id": "max",
-                "value": -30
-              },
-              {
-                "id": "min",
-                "value": -100
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "yellow",
-                      "value": -80
-                    },
-                    {
-                      "color": "green",
-                      "value": -60
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Status"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 80
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "0": {
-                        "color": "red",
-                        "index": 0,
-                        "text": "Offline"
-                      },
-                      "1": {
-                        "color": "green",
-                        "index": 1,
-                        "text": "Online"
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-background"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "id": 4,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true,
-        "sortBy": [
-          {
-            "desc": false,
-            "displayName": "Name"
-          }
-        ]
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "controller_info",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "refId": "info"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "controller_battery_level",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "refId": "battery"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "bluetooth_device_rssi_dbm",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "refId": "rssi"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "controller_connected",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "refId": "connected"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "controller_backend_info",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "refId": "backend"
-        }
-      ],
-      "title": "Controller Status Table",
-      "transformations": [
-        {
-          "id": "seriesToColumns",
-          "options": {
-            "byField": "serial"
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "Time 1": true,
-              "Time 2": true,
-              "Time 3": true,
-              "Time 4": true,
-              "Time 5": true,
-              "Value #info": true,
-              "Value #backend": true,
-              "__name__": true,
-              "__name__ 1": true,
-              "__name__ 2": true,
-              "__name__ 3": true,
-              "__name__ 4": true,
-              "__name__ 5": true,
-              "instance": true,
-              "instance 1": true,
-              "instance 2": true,
-              "instance 3": true,
-              "instance 4": true,
-              "instance 5": true,
-              "job": true,
-              "job 1": true,
-              "job 2": true,
-              "job 3": true,
-              "job 4": true,
-              "job 5": true
-            },
-            "indexByName": {
-              "name": 0,
-              "serial": 1,
-              "backend": 2,
-              "Value #battery": 3,
-              "Value #rssi": 4,
-              "Value #connected": 5
-            },
-            "renameByName": {
-              "Value #battery": "Battery",
-              "Value #connected": "Status",
-              "Value #rssi": "Signal (dBm)",
-              "backend": "Backend",
-              "name": "Name",
-              "serial": "Serial"
-            }
-          }
-        }
-      ],
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Total button events in last minute",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue",
-                "value": null
+                "color": "red",
+                "value": 3
               }
             ]
           }
@@ -580,14 +333,14 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 0,
-        "y": 4
+        "w": 3,
+        "x": 9,
+        "y": 0
       },
-      "id": 5,
+      "id": 4,
       "options": {
-        "colorMode": "value",
-        "graphMode": "area",
+        "colorMode": "background",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
@@ -606,13 +359,77 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(controller_button_events_total[1m]))",
-          "legendFormat": "Events",
+          "expr": "count(((scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[$__rate_interval])) * on(serial) group_left(name) controller_info or on(serial, name) (controller_info * 0 + scalar(controller_polling_target_hz))) < 50) or vector(0)",
+          "legendFormat": "Controllers",
           "refId": "A"
         }
       ],
-      "title": "Button Events (1m)",
+      "title": "Degraded Poll",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Controllers whose connection quality is poor (controller_connection_quality == 2, UC-035 BR-005).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count(controller_connection_quality == 2) or vector(0)",
+          "legendFormat": "Controllers",
+          "refId": "A"
+        }
+      ],
+      "title": "Poor Connection",
+      "type": "stat",
+      "id": 5,
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 12,
+        "y": 0
+      }
     },
     {
       "datasource": {
@@ -648,9 +465,9 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 4,
-        "y": 4
+        "w": 3,
+        "x": 15,
+        "y": 0
       },
       "id": 6,
       "options": {
@@ -674,12 +491,197 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(controller_disconnect_total[5m]))",
+          "expr": "sum(increase(controller_disconnect_total[5m])) or vector(0)",
           "legendFormat": "Disconnects",
           "refId": "A"
         }
       ],
       "title": "Disconnects (5m)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Controller reconnects in the last 5 minutes (controller_reconnect_total).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(controller_reconnect_total[5m])) or vector(0)",
+          "legendFormat": "Reconnects",
+          "refId": "A"
+        }
+      ],
+      "title": "Reconnects (5m)",
+      "type": "stat",
+      "id": 7,
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 18,
+        "y": 0
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Connected controllers per controller-manager backend. controller_backend_info is set to 0, not removed, when a controller leaves or switches backend, so only the series at 1 are counted (#1427).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count by (backend) (controller_backend_info == 1)",
+          "legendFormat": "{{backend}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Controllers per Backend",
+      "type": "stat",
+      "id": 8,
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 0
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Total button events in last minute",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 4
+      },
+      "id": 9,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(controller_button_events_total[1m])) or vector(0)",
+          "legendFormat": "Events",
+          "refId": "A"
+        }
+      ],
+      "title": "Button Events (1m)",
       "type": "stat"
     },
     {
@@ -709,10 +711,10 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 8,
+        "x": 4,
         "y": 4
       },
-      "id": 7,
+      "id": 10,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -788,11 +790,11 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 2,
-        "x": 12,
+        "w": 4,
+        "x": 8,
         "y": 4
       },
-      "id": 20,
+      "id": 11,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -853,11 +855,11 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 2,
-        "x": 14,
+        "w": 4,
+        "x": 12,
         "y": 4
       },
-      "id": 21,
+      "id": 12,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -884,8 +886,577 @@
           "refId": "A"
         }
       ],
-      "title": "Poll Rate",
+      "title": "Target Poll Rate",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "p95 age of the controller sample when it is sent on a game's gameplay stream (controller_input_lag_seconds, #1335); excludes the Bluetooth / HID hop. Empty when no game streams.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.02
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_input_lag_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "title": "Input Lag p95 (5m)",
+      "type": "stat",
+      "id": 13,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 4
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "poll() exceptions across all controllers in the last 5 minutes (controller_poll_errors_total).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(controller_poll_errors_total[5m])) or vector(0)",
+          "legendFormat": "Errors",
+          "refId": "A"
+        }
+      ],
+      "title": "Poll Errors (5m)",
+      "type": "stat",
+      "id": 14,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 4
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "One row per controller: backend (controller_backend_info == 1, so a stale 0 series of a previous backend is not shown), Bluetooth adapter and RSSI (pairing daemon, Pi only), connection status, battery, effective poll rate and connection quality.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Battery"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "gauge"
+                }
+              },
+              {
+                "id": "max",
+                "value": 5
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 2
+                    },
+                    {
+                      "color": "green",
+                      "value": 3
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RSSI (dBm)"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "gauge"
+                }
+              },
+              {
+                "id": "max",
+                "value": -30
+              },
+              {
+                "id": "min",
+                "value": -100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": -80
+                    },
+                    {
+                      "color": "green",
+                      "value": -60
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Disconnected"
+                      },
+                      "1": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Connected"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Name"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Adapter"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Poll Rate (Hz)"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "gauge"
+                }
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 30
+                    },
+                    {
+                      "color": "green",
+                      "value": 50
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Quality"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Good"
+                      },
+                      "1": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "Fair"
+                      },
+                      "2": {
+                        "color": "red",
+                        "index": 2,
+                        "text": "Poor"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 15,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Name"
+          }
+        ]
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (serial, name) (controller_info)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "Info"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (serial, backend) (controller_backend_info == 1)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "Backend"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (serial) (controller_connected)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "Status"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (serial) (controller_battery_level and on(serial) controller_connected == 1)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "Battery"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (serial, hci_adapter) (bluetooth_device_rssi_dbm and on(serial, hci_adapter) bluetooth_device_connected == 1 and on(serial) controller_connected == 1)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "RSSI"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "scalar(controller_polling_target_hz) - (sum by (serial) (rate(controller_poll_drops_total[$__rate_interval])) or sum by (serial) (controller_info * 0))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "PollRate"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (serial) (controller_connection_quality)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "Quality"
+        }
+      ],
+      "title": "Controller Health",
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "serial",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "name",
+                "serial",
+                "backend",
+                "hci_adapter",
+                "Value #Status",
+                "Value #Battery",
+                "Value #RSSI",
+                "Value #PollRate",
+                "Value #Quality"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "name": 0,
+              "serial": 1,
+              "backend": 2,
+              "hci_adapter": 3,
+              "Value #Status": 4,
+              "Value #Battery": 5,
+              "Value #RSSI": 6,
+              "Value #PollRate": 7,
+              "Value #Quality": 8
+            },
+            "renameByName": {
+              "name": "Name",
+              "serial": "Serial",
+              "backend": "Backend",
+              "hci_adapter": "Adapter",
+              "Value #Status": "Status",
+              "Value #Battery": "Battery",
+              "Value #RSSI": "RSSI (dBm)",
+              "Value #PollRate": "Poll Rate (Hz)",
+              "Value #Quality": "Quality"
+            }
+          }
+        }
+      ],
+      "type": "table"
     },
     {
       "collapsed": false,
@@ -893,14 +1464,14 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 8
+        "y": 17
       },
-      "id": 100,
+      "id": 16,
       "panels": [],
-      "repeat": "controller",
-      "repeatDirection": "h",
       "title": "$controller_name",
-      "type": "row"
+      "type": "row",
+      "repeat": "controller",
+      "repeatDirection": "h"
     },
     {
       "datasource": {
@@ -1029,9 +1600,9 @@
         "h": 4,
         "w": 1,
         "x": 0,
-        "y": 9
+        "y": 18
       },
-      "id": 10,
+      "id": 17,
       "options": {
         "colorMode": "background_solid",
         "graphMode": "none",
@@ -1137,9 +1708,9 @@
         "h": 4,
         "w": 2,
         "x": 1,
-        "y": 9
+        "y": 18
       },
-      "id": 11,
+      "id": 18,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -1174,7 +1745,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Bluetooth signal strength",
+      "description": "RSSI of this controller from the pairing daemon (Pi only). Only links the pairing daemon reports as connected (bluetooth_device_connected == 1, joined on serial and hci_adapter) of controllers the controller manager reports as connected (controller_connected == 1, joined on serial) count: neither RSSI series is removed when a link or controller goes away (#1468).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1198,7 +1769,8 @@
               }
             ]
           },
-          "unit": "dB"
+          "unit": "dB",
+          "noValue": "n/a (Pi)"
         },
         "overrides": []
       },
@@ -1206,9 +1778,9 @@
         "h": 4,
         "w": 2,
         "x": 3,
-        "y": 9
+        "y": 18
       },
-      "id": 12,
+      "id": 19,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -1230,7 +1802,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "bluetooth_device_rssi_dbm{serial=\"$controller\"} or vector(0) * controller_connected{serial=\"$controller\"}",
+          "expr": "bluetooth_device_rssi_dbm{serial=\"$controller\"} and on(serial, hci_adapter) bluetooth_device_connected == 1 and on(serial) controller_connected == 1",
           "legendFormat": "RSSI",
           "refId": "A"
         }
@@ -1286,9 +1858,9 @@
         "h": 4,
         "w": 2,
         "x": 5,
-        "y": 9
+        "y": 18
       },
-      "id": 13,
+      "id": 20,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -1376,11 +1948,11 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
+        "w": 17,
         "x": 7,
-        "y": 9
+        "y": 18
       },
-      "id": 14,
+      "id": 21,
       "options": {
         "legend": {
           "calcs": [],
@@ -1407,73 +1979,1627 @@
       ],
       "title": "Button Events",
       "type": "timeseries"
-    }
-  ],
-  "refresh": "5s",
-  "schemaVersion": 39,
-  "tags": [
-    "joustmania",
-    "controllers",
-    "overview"
-  ],
-  "templating": {
-    "list": [
-      {
-        "current": {},
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "definition": "label_values(controller_info, serial)",
-        "hide": 0,
-        "includeAll": true,
-        "label": "Controller",
-        "multi": true,
-        "name": "controller",
-        "options": [],
-        "query": {
-          "query": "label_values(controller_info, serial)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
-        },
-        "refresh": 2,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 1,
-        "type": "query"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
       },
-      {
-        "current": {},
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
+      "id": 22,
+      "panels": [],
+      "title": "Connection Quality",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Connection quality per controller (UC-035 BR-005): worse of p95 report gap (<=22 good, <=30 fair, >30 ms poor) and longest gap in 10 s (<=30 good, <=50 fair, >50 ms poor). Gaps are taken at the controller manager's 100 Hz poll pick-up with the poll loop's own lateness subtracted; thresholds not yet validated on Pi hardware.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "Good"
+                },
+                "1": {
+                  "color": "yellow",
+                  "index": 1,
+                  "text": "Fair"
+                },
+                "2": {
+                  "color": "red",
+                  "index": 2,
+                  "text": "Poor"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
         },
-        "definition": "label_values(controller_info{serial=\"$controller\"}, name)",
-        "hide": 2,
-        "includeAll": true,
-        "label": "Controller Name",
-        "multi": true,
-        "name": "controller_name",
-        "options": [],
-        "query": {
-          "query": "label_values(controller_info{serial=\"$controller\"}, name)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 23
+      },
+      "id": 23,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "refresh": 2,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 1,
-        "type": "query"
-      }
-    ]
-  },
-  "time": {
-    "from": "now-15m",
-    "to": "now"
-  },
-  "timepicker": {},
-  "timezone": "",
-  "title": "Controller Overview",
-  "uid": "controller-overview",
-  "version": 1,
-  "weekStart": ""
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "controller_connection_quality * on(serial) group_left(name) controller_info",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Connection Quality",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "p95 gap between fresh frames per controller over a rolling 10 s window: <=22 ms good, <=30 ms fair, above poor (UC-035 BR-005)",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 22.001
+              },
+              {
+                "color": "red",
+                "value": 30.001
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 23
+      },
+      "id": 24,
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "text": {},
+        "valueMode": "color"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "controller_bluetooth_report_gap_p95_seconds * 1000 * on(serial) group_left(name) controller_info",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "p95 Report Gap (10 s)",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Longest gap between fresh frames per controller over a rolling 10 s window, still-open gap included: <=30 ms good, <=50 ms fair, above poor (UC-035 BR-005)",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 30.001
+              },
+              {
+                "color": "red",
+                "value": 50.001
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 23
+      },
+      "id": 25,
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "text": {},
+        "valueMode": "color"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "controller_bluetooth_report_gap_max_seconds * 1000 * on(serial) group_left(name) controller_info",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Longest Report Gap (10 s)",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "p95 age of each controller's sample when it is sent on a game's gameplay stream (controller_input_lag_seconds, #1335): from the controller manager's poll pick-up to the gRPC send; excludes the Bluetooth / HID hop. No data outside games.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisLabel": "errors/sec",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 29
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "noDataMessage": "No poll errors recorded"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, serial) (rate(controller_input_lag_seconds_bucket[$__rate_interval]))) * on(serial) group_left(name) controller_info",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Input Lag p95 (per controller)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 27,
+      "panels": [],
+      "title": "Battery and Reconnects",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Battery level per controller (0-5 scale)",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "dark-red",
+                  "index": 0,
+                  "text": "Empty"
+                },
+                "1": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "Critical"
+                },
+                "2": {
+                  "color": "orange",
+                  "index": 2,
+                  "text": "Low"
+                },
+                "3": {
+                  "color": "yellow",
+                  "index": 3,
+                  "text": "Medium"
+                },
+                "4": {
+                  "color": "light-green",
+                  "index": 4,
+                  "text": "Good"
+                },
+                "5": {
+                  "color": "green",
+                  "index": 5,
+                  "text": "Full"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "max": 5,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              },
+              {
+                "color": "green",
+                "value": 4
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 37
+      },
+      "id": 28,
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "text": {},
+        "valueMode": "text"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(controller_battery_level and on(serial) controller_connected == 1) * on(serial) group_left(name) controller_info",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Battery Levels",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Battery drain over time",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "mappings": [],
+          "max": 5,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 37
+      },
+      "id": 29,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "min"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "controller_battery_level * on(serial) group_left(name) controller_info",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Battery History",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Cumulative reconnects over time",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "id": 30,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "controller_reconnect_total * on(serial) group_left(name) controller_info",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Total Reconnects (Cumulative)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
+      "id": 31,
+      "panels": [],
+      "title": "Poll Health",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Effective poll rate per controller (target - drops). Drops below the red threshold indicate degraded connection quality, matching controller_poll_degraded spans in Jaeger.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisLabel": "Hz",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "transparent",
+                "value": 50
+              }
+            ]
+          },
+          "min": 0,
+          "unit": "hertz"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 50
+      },
+      "id": 32,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "min"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[$__rate_interval])) * on(serial) group_left(name) controller_info or on(serial, name) (controller_info * 0 + scalar(controller_polling_target_hz))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Effective Poll Rate (per controller)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Rate of poll() exceptions per controller. Any errors are highlighted red \u2014 errors indicate connection problems.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisLabel": "errors/sec",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 50
+      },
+      "id": 33,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "noDataMessage": "No poll errors recorded"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(controller_poll_errors_total[1m]) * on(serial) group_left(name) controller_info",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Poll Error Rate (per controller)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Total accumulated poll drops per controller",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "drops",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "spanNulls": false
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 58
+      },
+      "id": 34,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "controller_poll_drops_total * on(serial) group_left(name) controller_info",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Total Poll Drops (Cumulative)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Total accumulated poll errors per controller",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "errors",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "spanNulls": false
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 58
+      },
+      "id": 35,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "noDataMessage": "No poll errors recorded"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "controller_poll_errors_total * on(serial) group_left(name) controller_info",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Total Poll Errors (Cumulative)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      },
+      "id": 36,
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Number of controllers connected to each Bluetooth adapter",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 5
+                  },
+                  {
+                    "color": "red",
+                    "value": 7
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 0,
+            "y": 67
+          },
+          "id": 37,
+          "options": {
+            "displayMode": "gradient",
+            "minVizHeight": 10,
+            "minVizWidth": 0,
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "text": {},
+            "valueMode": "color"
+          },
+          "pluginVersion": "10.2.3",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "bluetooth_adapter_connections",
+              "legendFormat": "{{hci_adapter}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Connections per Adapter",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Average signal strength per Bluetooth adapter Only links the pairing daemon reports as connected (bluetooth_device_connected == 1, joined on serial and hci_adapter) of controllers the controller manager reports as connected (controller_connected == 1, joined on serial) count: neither RSSI series is removed when a link or controller goes away (#1468).",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "max": -30,
+              "min": -100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": -80
+                  },
+                  {
+                    "color": "green",
+                    "value": -60
+                  }
+                ]
+              },
+              "unit": "dB"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 6,
+            "y": 67
+          },
+          "id": 38,
+          "options": {
+            "displayMode": "gradient",
+            "minVizHeight": 10,
+            "minVizWidth": 0,
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "text": {},
+            "valueMode": "color"
+          },
+          "pluginVersion": "10.2.3",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "avg by(hci_adapter) ((bluetooth_device_rssi_dbm and on(serial, hci_adapter) bluetooth_device_connected == 1 and on(serial) controller_connected == 1))",
+              "legendFormat": "{{hci_adapter}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Avg Signal per Adapter",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "RSSI signal strength per controller (Bluetooth only, 0 = USB) Only links the pairing daemon reports as connected (bluetooth_device_connected == 1, joined on serial and hci_adapter) of controllers the controller manager reports as connected (controller_connected == 1, joined on serial) count: neither RSSI series is removed when a link or controller goes away (#1468).",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "max": -30,
+              "min": -100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": -80
+                  },
+                  {
+                    "color": "green",
+                    "value": -60
+                  }
+                ]
+              },
+              "unit": "dB"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 12,
+            "y": 67
+          },
+          "id": 39,
+          "options": {
+            "displayMode": "gradient",
+            "minVizHeight": 10,
+            "minVizWidth": 0,
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "text": {},
+            "valueMode": "color"
+          },
+          "pluginVersion": "10.2.3",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "(bluetooth_device_rssi_dbm and on(serial, hci_adapter) bluetooth_device_connected == 1 and on(serial) controller_connected == 1) * on(serial) group_left(name) controller_info",
+              "legendFormat": "{{name}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Signal Strength (RSSI)",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Signal strength over time grouped by Bluetooth adapter Only links the pairing daemon reports as connected (bluetooth_device_connected == 1, joined on serial and hci_adapter) of controllers the controller manager reports as connected (controller_connected == 1, joined on serial) count: neither RSSI series is removed when a link or controller goes away (#1468).",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                },
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "line+area"
+                }
+              },
+              "mappings": [],
+              "max": -30,
+              "min": -100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": -80
+                  },
+                  {
+                    "color": "green",
+                    "value": -60
+                  }
+                ]
+              },
+              "unit": "dB"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 73
+          },
+          "id": 40,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean"
+              ],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "pluginVersion": "10.2.3",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "(bluetooth_device_rssi_dbm and on(serial, hci_adapter) bluetooth_device_connected == 1 and on(serial) controller_connected == 1) * on(serial) group_left(name) controller_info",
+              "legendFormat": "{{hci_adapter}}: {{name}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Signal Strength History (by adapter)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Effective poll rate aggregated by Bluetooth adapter. Shows average poll rate across controllers on each adapter. Low values indicate adapter-level connection issues.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisLabel": "Hz",
+                "fillOpacity": 20,
+                "lineWidth": 2,
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "line+area"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "transparent",
+                    "value": 50
+                  }
+                ]
+              },
+              "min": 0,
+              "unit": "hertz"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 81
+          },
+          "id": 41,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "min"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "noDataMessage": "No adapter affinity data (controller_adapter_info empty)"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "avg by(adapter) ((scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[$__rate_interval])) * on(serial) group_left(adapter) (controller_adapter_info and on(serial) controller_connected == 1) or on(serial, adapter) ((controller_adapter_info and on(serial) controller_connected == 1) * 0 + scalar(controller_polling_target_hz)))",
+              "legendFormat": "{{adapter}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Effective Poll Rate (per adapter)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Poll error rate aggregated by Bluetooth adapter (hci device). Any errors indicate connection problems at the adapter level.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisLabel": "errors/sec",
+                "fillOpacity": 20,
+                "lineWidth": 2,
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 81
+          },
+          "id": 42,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "noDataMessage": "No adapter affinity data (controller_adapter_info empty)"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by(adapter) (rate(controller_poll_errors_total[1m]) * on(serial) group_left(adapter) (controller_adapter_info and on(serial) controller_connected == 1))",
+              "legendFormat": "{{adapter}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Poll Error Rate (per adapter)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Adapter identity from hciconfig -a and sysfs (UC-035 step 6): identify chipsets by HCI manufacturer (Realtek 93, Cambridge Silicon Radio 10, Broadcom 15, Cypress 305), not by brand. 'unknown' when the adapter is down or sysfs is not readable.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 0,
+            "y": 89
+          },
+          "id": 43,
+          "options": {
+            "cellHeight": "sm",
+            "footer": {
+              "countRows": false,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true,
+            "sortBy": [
+              {
+                "desc": false,
+                "displayName": "Adapter"
+              }
+            ]
+          },
+          "pluginVersion": "10.2.3",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "pairing_bluetooth_adapter_info",
+              "legendFormat": "__auto",
+              "refId": "A",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "title": "Adapter Identity",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "Value": true,
+                  "__name__": true,
+                  "instance": true,
+                  "job": true,
+                  "service_name": true,
+                  "service_namespace": true
+                },
+                "indexByName": {
+                  "hci_adapter": 0,
+                  "manufacturer": 1,
+                  "manufacturer_id": 2,
+                  "hci_version": 3,
+                  "bus": 4,
+                  "usb_id": 5,
+                  "onboard": 6,
+                  "address": 7
+                },
+                "renameByName": {
+                  "hci_adapter": "Adapter",
+                  "manufacturer": "HCI Manufacturer",
+                  "manufacturer_id": "Mfr ID",
+                  "hci_version": "HCI Version",
+                  "bus": "Bus",
+                  "usb_id": "USB ID",
+                  "onboard": "Onboard",
+                  "address": "Address"
+                }
+              }
+            }
+          ],
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Increases of the kernel's cumulative HCI RX/TX error counters per adapter (UC-035 step 6). Zero errors do not prove there were no retransmissions.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 12,
+            "y": 89
+          },
+          "id": 44,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (hci_adapter, direction) (increase(pairing_bluetooth_adapter_hci_errors_total[5m]))",
+              "legendFormat": "{{hci_adapter}} {{direction}}",
+              "refId": "A"
+            }
+          ],
+          "title": "HCI Errors (5 min)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Links per adapter by the local adapter's role from hcitool con (UC-035 step 6). Roles are observed only; BlueZ negotiates them.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 18,
+            "y": 89
+          },
+          "id": 45,
+          "options": {
+            "displayMode": "basic",
+            "minVizHeight": 10,
+            "minVizWidth": 0,
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "text": {},
+            "valueMode": "color"
+          },
+          "pluginVersion": "10.2.3",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "count by (hci_adapter, role) (pairing_bluetooth_link_role_info)",
+              "legendFormat": "{{hci_adapter}} {{role}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Link Roles per Adapter",
+          "type": "bargauge"
+        }
+      ],
+      "title": "Bluetooth and Adapters (Pi only)",
+      "type": "row"
+    }
+  ]
 }
