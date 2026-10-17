@@ -86,7 +86,7 @@ The M7-8 Promoter takes a validated PROMOTE verdict + `Evidence` and acts per li
 
 ### 2.6 Compaction precedent (the journal's model)
 
-`gamesummary` distils one game's accumulated `GameContext` (live signals + the #916 rolling timeline) into one compact, self-describing `Summary` — a *derived narrative*, not a re-collection of raw spans (`services/agent/gamesummary/summary.go:1-23`, `BuildSummary` `:209-237`). It is a **pure function** of the snapshot (`:209`). The `Writer` persists it atomically (temp + fsync + rename) one JSON file per game under `/var/lib/joustmania/agent/summaries` (`services/agent/gamesummary/writer.go:24`, `:82-129`), fired once per game on the Store's `OnGameEnd` hook. The journal (§9) is the same idea at *experiment* timescale.
+`gamesummary` distils one game's accumulated `GameContext` (live signals + the #916 rolling timeline) into one compact, self-describing `Summary` — a *derived narrative*, not a re-collection of raw spans (`services/agent/gamesummary/summary.go:1-23`, `BuildSummary` `:209-237`). It is a **pure function** of the snapshot (`:209`). The `Writer` persists it atomically (temp + fsync + rename) one JSON file per game under `/var/lib/joustmania/agent/summaries` (`services/agent/gamesummary/writer.go:24`, `:82-129`), fired once per game on the Store's `OnGameEnd` hook. *(Superseded: the summary file writer and `AGENT_GAME_SUMMARY_DIR` were removed in #1368; summaries now feed only the in-memory cross-game window, see UC-042 BR-004 to BR-006.)* The journal (§9) is the same idea at *experiment* timescale.
 
 ### 2.7 Per-intervention effect analog
 
@@ -264,7 +264,7 @@ The journal is **authoritative on a local mounted volume** (JSON or SQLite), sur
 - Layout option A (JSON, mirrors `gamesummary`): one dir per experiment, `intent.json` (immutable) + `events.jsonl` (append-only) + `summary.json` (rewritten atomically). Append-only JSONL is the natural shape for (b); atomic rename for (c).
 - Layout option B (SQLite): one DB, tables `experiment` / `event` / `arm_stat`. Better for queries/concurrency; heavier dependency. **Open question — §14.**
 
-Default dir e.g. `/var/lib/joustmania/agent/experiments` (env `AGENT_EXPERIMENT_DIR`), mirroring `AGENT_GAME_SUMMARY_DIR` (`writer.go:27`).
+Default dir e.g. `/var/lib/joustmania/agent/experiments` (env `AGENT_EXPERIMENT_DIR`), mirroring `AGENT_GAME_SUMMARY_DIR` (`writer.go:27`). *(Superseded: `AGENT_GAME_SUMMARY_DIR` was removed in #1368.)*
 
 ### 9.4 Example schema
 

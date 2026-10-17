@@ -131,7 +131,7 @@ A mode's `_kill_player_impl` never adds its own `player_death` span event. Mode-
 | `agent.disabled` | throttled kill-switch audit | `decision/decision.go:emitDisabledSpan` |
 | `agent.intervention.effect` | one span per evaluated fitness signal, each a direct remote child of the `agent.decision` that dispatched the intervention, backdated to dispatch time and ended after the follow-up window (#1325; there is no intermediate effect span, so consecutive effect spans never nest). A follow-up whose game is gone emits one span with `intervention.effect_aborted=true`, also under the decision. Without a valid decision span context the span is its own root | `decision/effect.go` (`emitEffectSample`) |
 | `agent.llm.retro` | own root, or child of `agent.experiment`; Link to the game; event `retro.suggestion`; attrs `agent.mode=retro`, `agent.objectives`, `interventions.allowed`. Capture-only spans carry `inference.used=none` and `inference.fallback_reason` = `no_backend_available` / `llm_not_eligible` / `agent_disabled` (kill switch off, #1270) | `decision/retro_capture.go` |
-| `agent.game.summary` | own root or child of `agent.experiment` | `gamesummary/coordinator.go:OnGameEnd` |
+| `agent.game.summary` | own root or child of `agent.experiment` | `gamesummary/coordinator.go` (`Coordinator.OnGameEnd`) |
 | `agent.experiment` | long-lived **root**; its traceparent is injected into shadow-game spawns | `experiment/registry.go:startSpanLocked` |
 | `experiment.fitness`, `experiment.evaluate`, `experiment.verdict` | children of `agent.experiment` | `experiment_loop.go` (`scoreGameFitness` and the evaluate / verdict path) |
 | `agent.infrastructure.decision` | per active infra cycle | `decision/infra_loop.go:emitDecisionSpan` |

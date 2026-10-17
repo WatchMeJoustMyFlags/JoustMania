@@ -12,14 +12,14 @@ import (
 )
 
 // store.go is the on-disk layout + persistence primitives (design §9.3). It
-// reuses the proven gamesummary.Writer pattern (writer.go:24, :82-129): one
+// reuses the atomic temp+rename pattern of the former gamesummary.Writer (removed by #1368): one
 // directory per experiment under a fixed root, atomic temp+fsync+rename for the
 // rewritten files so a reader NEVER observes a half-written intent.json or
 // summary.json. The append-only events.jsonl is opened O_APPEND and fsynced per
 // append — it is never rewritten, so it needs no rename dance.
 
 // DefaultDir is the in-container experiments root. Override with
-// AGENT_EXPERIMENT_DIR. Mirrors gamesummary.DefaultDir / AGENT_GAME_SUMMARY_DIR.
+// AGENT_EXPERIMENT_DIR. Same default-plus-env-override pattern as other agent paths.
 const DefaultDir = "/var/lib/joustmania/agent/experiments"
 
 // experimentDirEnv is the env var that overrides DefaultDir.
@@ -35,7 +35,7 @@ const (
 // experiment_ids are "exp_<hex>" (already safe), but the id is treated defensively
 // as an external label: anything outside [A-Za-z0-9._-] becomes '_' so the id can
 // never escape the experiments root (path traversal) or produce an unwritable name.
-// Mirrors gamesummary.safeFilenameChars.
+// Sanitizes ids to [A-Za-z0-9._-].
 var safeDirChars = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
 // safeDirName sanitizes an experiment_id into a filesystem-safe directory name. An
@@ -51,7 +51,7 @@ func safeDirName(experimentID string) string {
 }
 
 // DirFromEnv resolves the experiments root from AGENT_EXPERIMENT_DIR, falling back
-// to DefaultDir — the single env-override seam, mirroring gamesummary.DirFromEnv.
+// to DefaultDir — the single env-override seam.
 func DirFromEnv() string {
 	if d := strings.TrimSpace(os.Getenv(experimentDirEnv)); d != "" {
 		return d
@@ -114,7 +114,7 @@ func (s *store) dir(experimentID string) string {
 
 // writeJSONAtomic marshals v as indented JSON and persists it to path via a
 // temp+fsync+rename in the SAME directory — so a concurrent reader observes only
-// the complete file (gamesummary.Writer.Write, writer.go:82-129). Used for the two
+// the complete file (temp file, fsync, rename). Used for the two
 // rewritten files (intent.json, summary.json).
 func writeJSONAtomic(path string, v any) error {
 	dir := filepath.Dir(path)

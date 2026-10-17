@@ -583,10 +583,12 @@ func main() {
 	if textBackend != nil {
 		inferDelegate = textBackend.Infer
 	}
-	// Shared rolling cross-game context window (#929, M7-2). Constructed ONCE here as
-	// GLOBAL cross-session memory — one bounded ring of recent game summaries. The
-	// gamesummary coordinator (below) records each freshly-built Summary into it on
-	// game end, and the shadow-experiment proposer renders it as its narrative.
+	// Shared rolling cross-game context window (#929, M7-2; #1368). Constructed ONCE
+	// here, in agent-process memory only: the last 20 REAL games as game-level
+	// aggregates (no serials, C-009 / UC-042 BR-004, BR-005) plus the last 20 pattern
+	// games' per-slot rows keyed by archetype (UC-042 BR-006). The gamesummary
+	// coordinator (below) feeds real games, the pattern-game callbacks feed pattern
+	// games, and the shadow-experiment proposer renders it as its narrative.
 	sharedContextWindow := gamewindow.NewStore()
 	// Intervention-effect follow-up window (#918): how long after a dispatched
 	// intervention the loop re-samples the game's fitness signals to measure the
@@ -776,21 +778,19 @@ func main() {
 
 	// Game narrative builder (#928, M7-1): on the SAME GameActive true->false
 	// transition, aggregate the partition's pre-reset snapshot (live signals + the
-	// #916 rolling timeline) into a compact JSON game summary written to disk
-	// (AGENT_GAME_SUMMARY_DIR, default gamesummary.DefaultDir), one file per game,
-	// for BOTH real and shadow games. It is a SEPARATE once-per-game component from
+	// #916 rolling timeline) into a game summary, for BOTH real and shadow games,
+	// and hands it to the cross-game window (which keeps real games only). Nothing is
+	// written to disk (#1368). It is a SEPARATE once-per-game component from
 	// the retro — the summary must run unconditionally (no LLM budget/eligibility),
 	// so it owns its own dedupe and is chained alongside retro.OnGameEnd below
 	// (chainGameEnd) on the single store hook. The aggregation is itself an
 	// agent.game.summary span.
-	summaryDir := gamesummary.DirFromEnv()
-	summaries := gamesummary.NewCoordinator(gamesummary.NewWriter(summaryDir), logger)
+	summaries := gamesummary.NewCoordinator(logger)
 	// Advance the M7-2 rolling window on every game end (#929): the coordinator
-	// Records each freshly-built Summary into the shared window BEFORE the disk write,
-	// so the cross-game context the proposer renders reflects a game the instant it
-	// ends, with no disk re-read.
+	// Records each freshly-built Summary into the shared window, which reduces a real
+	// game to its aggregates and drops a shadow game (UC-042 BR-004, BR-005).
 	summaries.SetObserver(sharedContextWindow)
-	slog.Info("Game narrative builder enabled (#928, M7-1)", "summary_dir", summaryDir)
+	slog.Info("Game narrative builder enabled (#928, M7-1)")
 	slog.Info("Rolling game context window enabled (#929, M7-2)", "retention_cap", gamewindow.RetentionCap)
 
 	// M7-4 shadow-experiment proposer (#931). The agent turns its rolling game
@@ -839,7 +839,7 @@ func main() {
 		go func() {
 			cfg := agentFlags.CodeImprovement(ctx)
 			n := experiment.Narrative{
-				ContextBlock: gamewindow.Render(sharedContextWindow.Recent(gamewindow.RetentionCap)),
+				ContextBlock: gamewindow.Render(sharedContextWindow.SnapshotFor(c.GameKind, c.ExperimentID)),
 			}
 			if c.Session.GameMode != nil {
 				n.GameMode = *c.Session.GameMode
@@ -907,7 +907,7 @@ func main() {
 	// starts it with no restart. The real-default promotion path stays
 	// behind ALL of #961's gates (the promoter built above + the kill-switch via the
 	// ConfigResolver).
-	expLoop := buildExperimentLoop(agentFlags, promoter, fitnessStore, getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath), logger)
+	expLoop := buildExperimentLoop(agentFlags, promoter, fitnessStore, getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath), sharedContextWindow, logger)
 	if expLoop != nil {
 		// Bind the spawner's background game-drive goroutines to the agent's root
 		// context so shutdown cancels in-flight shadow games (no goroutine leak).

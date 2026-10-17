@@ -8,7 +8,6 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/gamecontext"
@@ -16,15 +15,17 @@ import (
 
 // coordinator.go is the M7-1 game-end glue (#928): it hangs off the same
 // gamecontext.Store.OnGameEnd signal the #844 retrospective uses, builds the
-// Summary from the pre-reset snapshot, writes it to disk, and records the
+// Summary from the pre-reset snapshot, hands it to the observer (the in-memory
+// cross-game window, which keeps real games only, UC-042 BR-005), and records the
 // aggregation as an agent.game.summary span. It fires EXACTLY ONCE per game for
-// BOTH real and shadow games.
+// BOTH real and shadow games. Nothing is written to disk: the per-game summary
+// file writer was removed by #1368 (nothing read it, and it kept per-controller
+// arcs without bound).
 //
 // Why a SEPARATE component (not an extension of the retro path): the retro builds
-// an LLM PROMPT and is gated by the global LLM budget (#847); the summary builds a
-// structured JSON FILE and must run unconditionally for every game (no budget, no
-// eligibility). Bolting it onto the retro would entangle the file write with the
-// LLM gate — a budget-exhausted game would silently produce no summary, violating
+// an LLM PROMPT and is gated by the global LLM budget (#847); the summary must
+// run unconditionally for every game (no budget, no eligibility). Bolting it onto
+// the retro would entangle it with the LLM gate — a budget-exhausted game would silently produce no summary, violating
 // #928's "after EVERY real and synthetic game". So the summary is its own
 // once-per-game component, wired alongside the retro on the SAME store hook (main.go
 // chains both), each with its OWN dedupe — they never double-fire each other
@@ -37,8 +38,7 @@ import (
 const SpanGameSummary = "agent.game.summary"
 
 // Span attribute keys for agent.game.summary. Low-cardinality counts + ids only
-// (per .claude/rules: keep span attributes low-cardinality) — the full narrative
-// lives in the on-disk file, not the span.
+// (per .claude/rules: keep span attributes low-cardinality).
 const (
 	attrGameID            = "game.id"
 	attrGameKind          = "game.kind"
@@ -47,7 +47,6 @@ const (
 	attrInterventionCount = "summary.intervention_count"
 	attrEngagementPoints  = "summary.engagement_points"
 	attrDominated         = "summary.dominated"
-	attrPath              = "summary.path"
 	// attrGameTraceID / attrGameTraceSpanID are the canonical game-session-trace Link
 	// attribute keys (#1133/#1157), matching decision.AttrGameTraceID /
 	// AttrGameTraceSpanID verbatim so the summary's hub Link (#1174) carries the SAME
@@ -63,26 +62,23 @@ const (
 // remembered game. 8 comfortably exceeds GAME_MAX_CONCURRENT_GAMES=4.
 const dedupeWindow = 8
 
-// Observer is notified of each game Summary the moment it is built, BEFORE it is
-// written to disk — the M7-2 rolling-window seam (#929). The window store
-// (gamewindow.Store) satisfies it: chaining it here means the cross-game context
-// window advances on the SAME game-end path that writes the JSON file, with no
-// disk re-read and no staleness. It is OPTIONAL (nil = M7-1 behavior unchanged):
-// the summary file is still written whether or not an observer is wired. Called
-// once per game (inside the dedupe), for BOTH real and shadow games.
+// Observer is notified of each game Summary the moment it is built: the M7-2
+// rolling-window seam (#929). The window store (gamewindow.Store) satisfies it and
+// itself drops shadow games and every per-controller field (UC-042 BR-004/BR-005).
+// It is OPTIONAL (nil = only the span is emitted). Called once per game (inside
+// the dedupe), for BOTH real and shadow games.
 type Observer interface {
 	// Record ingests one freshly-built game Summary. It must not block (the window
 	// store's Record is a mutex-guarded append) — it runs on the game-end path.
 	Record(Summary)
 }
 
-// Coordinator builds + persists one summary per game on the store's OnGameEnd
+// Coordinator builds one summary per game on the store's OnGameEnd
 // signal (#928). It is wired to EVERY gamecontext.Store partition's OnGameEnd in
 // main(), so one coordinator dedupes across all partitions. Safe for concurrent
 // use: per-partition ends are each serialized by their store, but concurrent
 // partitions may fire simultaneously, so the dedupe state is mutex-guarded.
 type Coordinator struct {
-	writer *Writer
 	tracer trace.Tracer
 	log    *slog.Logger
 	// observer, when non-nil, is notified of each built Summary (#929 M7-2): the
@@ -111,14 +107,12 @@ type Coordinator struct {
 	claimedOrder []string
 }
 
-// NewCoordinator builds a Coordinator writing summaries via w (use NewWriter with
-// DirFromEnv() in main). log nil uses slog.Default().
-func NewCoordinator(w *Writer, log *slog.Logger) *Coordinator {
+// NewCoordinator builds a Coordinator. log nil uses slog.Default().
+func NewCoordinator(log *slog.Logger) *Coordinator {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Coordinator{
-		writer:  w,
 		tracer:  otel.Tracer(instrumentationName),
 		log:     log,
 		now:     time.Now,
@@ -150,16 +144,14 @@ func (c *Coordinator) SetExperimentParent(f func(experimentID string) (trace.Spa
 // convention used by the decision package.
 const instrumentationName = "github.com/joustmania/agent"
 
-// OnGameEnd is the gamecontext.Store.OnGameEnd callback (#928). It builds + writes
+// OnGameEnd is the gamecontext.Store.OnGameEnd callback (#928). It builds
 // the game summary exactly once per game, for both real and shadow games. It is
 // defensive, mirroring the retro:
 //   - skips if the snapshot still reports GameActive (only end-of-game summarizes);
-//   - skips if SessionID is empty (no game_id to key the file on);
+//   - skips if SessionID is empty (no game_id to dedupe on);
 //   - skips if SessionID was already summarized (exactly-once per game).
 //
 // The aggregation runs under an agent.game.summary span carrying the key counts.
-// A file-write error marks the span as errored and logs, but never panics — a
-// failed summary must not take the observation path down.
 func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 	if gc.Session.GameActive != nil && *gc.Session.GameActive {
 		return // not actually a game end
@@ -197,10 +189,7 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 
 	summary := BuildSummary(gc, BuildOptions{Now: now()})
 
-	// Advance the M7-2 rolling context window (#929) FIRST — before the disk write —
-	// so the cross-game memory updates on every game end even if persistence fails:
-	// the window is the live LLM-path input, independent of the on-disk file. Skips
-	// cleanly when no observer is wired (M7-1 behavior).
+	// Advance the M7-2 rolling context window (#929); skipped when no observer is wired.
 	if c.observer != nil {
 		c.observer.Record(summary)
 	}
@@ -213,27 +202,15 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 		attribute.Int(attrInterventionCount, summary.InterventionCount),
 		attribute.Int(attrEngagementPoints, len(summary.EngagementTrend)),
 		attribute.Bool(attrDominated, summary.Dominance.Dominated),
-		attribute.String(attrPath, c.writer.Path(summary.GameID)),
 	)
 
-	if err := c.writer.Write(summary); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "summary write failed")
-		c.log.Error("agent.game.summary_write_failed",
-			"game_id", summary.GameID,
-			"game_kind", summary.GameKind,
-			"error", err)
-		return
-	}
-
-	c.log.Info("agent.game.summary_written",
+	c.log.Info("agent.game.summary_built",
 		"game_id", summary.GameID,
 		"game_kind", summary.GameKind,
 		"players", summary.PlayerCount,
 		"eliminations", summary.EliminationCount,
 		"interventions", summary.InterventionCount,
-		"dominated", summary.Dominance.Dominated,
-		"path", c.writer.Path(summary.GameID))
+		"dominated", summary.Dominance.Dominated)
 }
 
 // claimGame records gameID as summarized and reports whether THIS call won the

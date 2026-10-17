@@ -234,6 +234,28 @@ type experimentLoop struct {
 // aggregator folds. The default (defaultGameFitness) reuses the M7 fitness engine.
 type gameFitnessFunc func(gc gamecontext.GameContext, objective string) float64
 
+// crossGameWindow is the part of the cross-game window (gamewindow.Store) the
+// experiment loop feeds: finished pattern games add their per-slot rows to their
+// experiment's linked set (UC-042 BR-006), and a torn-down experiment's linked set
+// is evicted (UC-042 BR-005).
+type crossGameWindow interface {
+	RecordPattern(patterngame.Record)
+	Forget(experimentID string)
+}
+
+// patternEndChain returns the spawner's pattern-end callback: the registry's
+// replay-record hook first (journal + span event), then the window sink when one
+// is wired.
+func patternEndChain(registryEnd gamerunner.PatternCallback, sink func(patterngame.Record)) gamerunner.PatternCallback {
+	if sink == nil {
+		return registryEnd
+	}
+	return func(rec patterngame.Record) {
+		registryEnd(rec)
+		sink(rec)
+	}
+}
+
 // buildExperimentLoop constructs the experiment loop with the REAL seams. Since the
 // #1044 startup-gate inversion the loop is ALWAYS built (no nil return) so an off→on
 // flip of the live experiments_enabled flag starts it with no restart. While the flag
@@ -253,6 +275,7 @@ func buildExperimentLoop(
 	promoter *promote.Promoter,
 	fitnessStore *experiment.FitnessStore,
 	gameFlagPath string,
+	window crossGameWindow,
 	logger *slog.Logger,
 ) *experimentLoop {
 	// #1044 startup-gate inversion: the loop is ALWAYS built now (no nil return).
@@ -331,7 +354,13 @@ func buildExperimentLoop(
 		FlagDigest:     resolvedFlagDigest,
 		PatternTracker: patterngame.Default,
 	})
-	spawner.SetPatternCallbacks(registry.RecordPatternStart, registry.RecordPatternEnd)
+	var windowSink func(patterngame.Record)
+	if window != nil {
+		windowSink = window.RecordPattern
+		// UC-042 BR-005: a torn-down experiment's linked shadow history is evicted.
+		registry.SetTerminalHook(window.Forget)
+	}
+	spawner.SetPatternCallbacks(registry.RecordPatternStart, patternEndChain(registry.RecordPatternEnd, windowSink))
 
 	loop := &experimentLoop{
 		registry:       registry,

@@ -535,6 +535,7 @@ func (s *Store) SetGameActive(active bool) {
 		s.sessionSeq++
 		s.ctx.SessionID = fmt.Sprintf("session-%d", s.sessionSeq)
 		s.ctx.Session.EliminationSequence = nil
+		s.ctx.Session.InterventionCounts = nil
 		s.ctx.Session.DurationSeconds = nil
 		s.ctx.Session.StartedAt = s.now()
 		s.durationAdvancedAt = time.Time{}
@@ -751,6 +752,16 @@ func (s *Store) SetEliminationOrder(serial string, order int) {
 func (s *Store) AppendInterventionEvent(intervention, serial string, blocked bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.ctx.Session.InterventionCounts == nil {
+		s.ctx.Session.InterventionCounts = make(map[string]InterventionCount)
+	}
+	tally := s.ctx.Session.InterventionCounts[intervention]
+	if blocked {
+		tally.Blocked++
+	} else {
+		tally.Dispatched++
+	}
+	s.ctx.Session.InterventionCounts[intervention] = tally
 	s.history.append(TimelineEvent{
 		At:      s.now(),
 		Kind:    EventIntervention,
@@ -820,6 +831,13 @@ func (s *Store) snapshotLocked() GameContext {
 		seq := make([]string, len(s.ctx.Session.EliminationSequence))
 		copy(seq, s.ctx.Session.EliminationSequence)
 		out.Session.EliminationSequence = seq
+	}
+	if s.ctx.Session.InterventionCounts != nil {
+		counts := make(map[string]InterventionCount, len(s.ctx.Session.InterventionCounts))
+		for k, v := range s.ctx.Session.InterventionCounts {
+			counts[k] = v
+		}
+		out.Session.InterventionCounts = counts
 	}
 	// Carry a fresh, oldest-first copy of the rolling narrative on the snapshot
 	// (#916). events() allocates a new slice sharing no backing array with the
