@@ -41,11 +41,15 @@ async def register_pairing_agent() -> bool:
     """
     await _stop_previous_agent()
     try:
+        # stdout/stderr go to /dev/null: bluetoothctl prints device and
+        # property events for as long as it runs, and an undrained pipe fills
+        # after ~64 KB, blocking bluetoothctl and with it every ZCM2 PIN
+        # request (#1477). Nothing here depends on its output.
         proc = await asyncio.create_subprocess_exec(
             "bluetoothctl",
             stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
 
         # Register as default agent with KeyboardOnly capability
@@ -54,22 +58,12 @@ async def register_pairing_agent() -> bool:
         proc.stdin.write(b"default-agent\n")
         await proc.stdin.drain()
 
-        # Give bluetoothctl time to register
+        # Give bluetoothctl time to register; it exits early only on failure
         await asyncio.sleep(1)
-
-        # Read any output to check for errors
-        # Use a short timeout - bluetoothctl stays running
-        try:
-            output = await asyncio.wait_for(proc.stdout.read(4096), timeout=1.0)
-            output_str = output.decode(errors="replace")
-            logger.debug(f"bluetoothctl agent output: {output_str}")
-
-            if "Agent registered" in output_str or "agent" in output_str.lower():
-                logger.info("BlueZ pairing agent registered via bluetoothctl")
-            else:
-                logger.info("BlueZ pairing agent started (bluetoothctl running)")
-        except TimeoutError:
-            logger.info("BlueZ pairing agent started (bluetoothctl running)")
+        if proc.returncode is not None:
+            logger.error(f"bluetoothctl exited with code {proc.returncode} - ZCM2 controller pairing will not work")
+            return False
+        logger.info("BlueZ pairing agent started (bluetoothctl running)")
 
         # Keep the process reference so it doesn't get garbage collected
         register_pairing_agent._proc = proc
