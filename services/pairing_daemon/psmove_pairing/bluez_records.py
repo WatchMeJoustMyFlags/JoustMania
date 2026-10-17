@@ -201,7 +201,12 @@ def write_device_record(
 
     if not written:
         if not _is_valid_info(info):
-            logger.error(f"BlueZ record of {controller} on {adapter} exists but is empty or unreadable: {info}")
+            # Never overwritten (it may be BlueZ's own); the controller stays blocked until it is gone (#1490)
+            logger.error(
+                f"BlueZ record of {controller} on {adapter} exists but is empty or unreadable: {info}. "
+                f"Delete that file (and {adapter_dir / 'cache' / controller}, if it exists), "
+                "then unplug the controller and plug it in again to pair it anew"
+            )
             return RecordOutcome.FAILED
         logger.info(f"BlueZ record of {controller} on {adapter} exists already; kept as is")
         return RecordOutcome.EXISTS

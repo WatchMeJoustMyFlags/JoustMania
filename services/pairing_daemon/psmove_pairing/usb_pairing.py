@@ -171,8 +171,11 @@ class USBPairing:
         self.bluez_reloader = BluezReloader()
         # BlueZ storage, for the device record of a controller BlueZ does not know (UC-001 BR-008)
         self.bluetooth_dir: Path = DEFAULT_BLUETOOTH_DIR
-        # Serials whose record waits for a deferred restart: re-paired once unplugged and replugged
+        # Serials whose record waits for a deferred or failed restart: re-paired once unplugged and replugged
         self._replug_retries: set[str] = set()
+        # Serials whose record could not be written (UC-001 A8): re-paired once unplugged and replugged,
+        # e.g. after the operator deleted an unusable info file (#1490)
+        self._record_failures: set[str] = set()
 
     def _get_backend(self) -> tuple[PairingBackend, str]:
         """Return the cached backend, or resolve a new one.
@@ -361,6 +364,8 @@ class USBPairing:
         # BlueZ refuses a controller it does not know: write its device record (UC-001 A7, BR-008, #1466)
         record = await self.write_bluez_record(serial, adapter.address, product_id)
         span.set_attribute("pairing.bluez_record", record.value if record else "known")
+        if record is not None and not record.needs_reload:
+            self._record_failures.add(serial)
 
         # bluetoothd reads a record only at start; the poll restarts it once after all
         # its pairings, as pairing.bluez_restart_mode allows (UC-001 BR-005): a restart
@@ -469,32 +474,38 @@ class USBPairing:
                 self._current_backend_name = backend_name
             span.set_attribute("pairing.backend", backend_name)
 
-            # Reset gauge before enumeration (prevents stale value if backend raises)
-            pairing_usb_controllers.set(0)
+            try:
+                await self._pair_usb_controllers(backend, span)
+            finally:
+                # One restart for every pairing of this poll, or one deferred or failed earlier
+                # (UC-001 A6, BR-005); also when enumeration failed, e.g. rust-hid is down (#1490)
+                await self._run_pending_restart(span)
 
-            # Get USB controllers using resolved backend
-            controllers = await backend.get_usb_controllers()
-            pairing_usb_controllers.set(len(controllers))
-            self._usb_paths = {a: c.device_path for c in controllers if (a := normalize_address(c.serial))}
-            # An unpaired controller is paired again once it left USB, or came back under
-            # another device path between two polls (UC-005 A8)
-            self._awaiting_replug = {
-                address: path
-                for address, path in self._awaiting_replug.items()
-                if path is not None and self._usb_paths.get(address) == path
-            }
-            span.set_attribute("controllers.count", len(controllers))
-            self._forget_unplugged_deferred()
+    async def _pair_usb_controllers(self, backend: PairingBackend, span) -> None:
+        """Enumerate the controllers on USB and pair each one."""
+        # Reset gauge before enumeration (prevents stale value if backend raises)
+        pairing_usb_controllers.set(0)
 
-            if not controllers:
-                logger.debug("No USB controllers found")
+        # Get USB controllers using resolved backend
+        controllers = await backend.get_usb_controllers()
+        pairing_usb_controllers.set(len(controllers))
+        self._usb_paths = {a: c.device_path for c in controllers if (a := normalize_address(c.serial))}
+        # An unpaired controller is paired again once it left USB, or came back under
+        # another device path between two polls (UC-005 A8)
+        self._awaiting_replug = {
+            address: path
+            for address, path in self._awaiting_replug.items()
+            if path is not None and self._usb_paths.get(address) == path
+        }
+        span.set_attribute("controllers.count", len(controllers))
+        self._forget_unplugged_deferred()
 
-            # Process each controller
-            for controller in controllers:
-                await self.process_controller(controller.device_path, controller.serial, controller.product_id)
+        if not controllers:
+            logger.debug("No USB controllers found")
 
-            # One restart for every pairing of this poll, or one deferred earlier (UC-001 A6, BR-005)
-            await self._run_pending_restart(span)
+        # Process each controller
+        for controller in controllers:
+            await self.process_controller(controller.device_path, controller.serial, controller.product_id)
 
     async def _run_pending_restart(self, span) -> None:
         """Run the pending bluetoothd restart under the pairing lock (UC-005 A6)."""
@@ -504,18 +515,19 @@ class USBPairing:
             waiting = [record.controller for record in self.bluez_reloader.records.values()]
             outcome = await self.bluez_reloader.run_pending()
         span.set_attribute("pairing.bluez_restart", outcome)
-        if outcome == "deferred":
-            # Unplugging and plugging it in again pairs it again and rewrites a lost record
+        if outcome in ("deferred", "failed"):
+            # Still not loaded: unplugging and plugging it in again pairs it again and rewrites a lost record
             self._replug_retries.update(waiting)
         else:
             self._replug_retries.clear()
 
     def _forget_unplugged_deferred(self) -> None:
-        """A controller whose record waits for a deferred restart is paired again after a replug."""
-        for serial in list(self._replug_retries):
-            if normalize_address(serial) not in self._usb_paths:
-                self._verified_serials.discard(serial)
-                self._replug_retries.discard(serial)
+        """A controller whose record waits for a restart or failed (A8) is paired again after a replug."""
+        for retries in (self._replug_retries, self._record_failures):
+            for serial in list(retries):
+                if normalize_address(serial) not in self._usb_paths:
+                    self._verified_serials.discard(serial)
+                    retries.discard(serial)
 
     async def run_loop(self) -> None:
         """USB polling loop.

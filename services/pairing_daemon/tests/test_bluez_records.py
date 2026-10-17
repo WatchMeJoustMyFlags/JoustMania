@@ -198,3 +198,19 @@ class TestNoPartialRecord:
         assert outcome is RecordOutcome.FAILED
         assert not outcome.needs_reload
         assert (device_dir / "info").read_text() == contents  # still never overwritten
+
+    @pytest.mark.uc("UC-001", flow="A8", br=["BR-008"])
+    @pytest.mark.parametrize("contents", ["", "[General\n"])
+    def test_unusable_existing_info_tells_the_operator_to_delete_it(self, bluetooth_dir, contents, caplog):
+        """#1490: the controller stays blocked until the file is gone; the error names the fix."""
+        info = bluetooth_dir / ADAPTER / CONTROLLER / "info"
+        info.parent.mkdir()
+        info.write_text(contents)
+
+        with caplog.at_level("ERROR", logger="psmove-pairing"):
+            write_device_record(ADAPTER, CONTROLLER, 0x03D5, bluetooth_dir)
+
+        [message] = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+        assert str(info) in message
+        assert "delete" in message.lower()
+        assert "plug" in message.lower()  # then plug the controller in again

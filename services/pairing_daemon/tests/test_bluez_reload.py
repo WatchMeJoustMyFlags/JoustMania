@@ -107,7 +107,24 @@ class TestBluezReloader:
         restart.side_effect = RuntimeError("systemd said no")
         with _mode("always"):
             assert await _after_pairing(reloader, False) == "failed"
+        assert reloader.pending is True  # retried on the next poll (#1490)
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005", "BR-008"])
+    async def test_failed_restart_keeps_its_records_and_is_retried_once_per_poll(self):
+        """#1490: a failed restart must not drop the records bluetoothd still has to load."""
+        reloader, _game_busy, restart = _reloader()
+        restart.side_effect = [RuntimeError("systemd said no"), None]
+        with _mode("when_idle"), patch.object(bluez_reload, "write_device_record", return_value=RecordOutcome.EXISTS):
+            reloader.request(_record())
+            assert await reloader.run_pending() == "failed"
+            assert restart.await_count == 1  # one attempt per poll, no hot loop
+            assert reloader.pending is True
+            assert list(reloader.records) == [(ADAPTER, CONTROLLER)]
+
+            assert await reloader.run_pending() == "restarted"  # next poll
+        assert restart.await_count == 2
         assert reloader.pending is False
+        assert reloader.records == {}
 
 
 class TestOneRestartPerPoll:

@@ -1099,3 +1099,98 @@ class TestReviewFindings1476(_PairingFlowEnv):
 
         span = mock_tracer.start_as_current_span.return_value
         assert ("pairing.trusted", expected) in [c.args for c in span.set_attribute.call_args_list]
+
+
+class TestDeferredRestartRobustness1490(_PairingFlowEnv):
+    """#1490: a pending bluetoothd restart survives a failed enumeration and a failed restart (UC-001 BR-005)."""
+
+    def _restart_units(self) -> list:
+        return [c.args[0].body for c in self.bus.call.await_args_list if c.args[0].member == "RestartUnit"]
+
+    def _info(self) -> Path:
+        return self.bluetooth_dir / self.ADAPTER_FREE / self.SERIAL / "info"
+
+    @staticmethod
+    def _mode(mode: str):
+        return patch("psmove_pairing.bluez_reload.get_bluez_restart_mode", return_value=mode)
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_deferred_restart_runs_while_rust_hid_is_down(self, usb_pairing, env, metrics):
+        """The game ended but USB enumeration fails (rust-hid unreachable): the restart still runs."""
+        backend, _runner, _set_tree, _restart = env
+        busy = {"value": True}
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(side_effect=lambda: busy["value"])
+
+        with self._mode("when_idle"):
+            await usb_pairing.poll()  # paired, record written, restart deferred
+            assert self._restart_units() == []
+
+            busy["value"] = False
+            backend.get_usb_controllers.side_effect = RuntimeError("rust-hid unreachable")
+            with pytest.raises(RuntimeError, match="rust-hid unreachable"):
+                await usb_pairing.poll()
+
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+        assert usb_pairing.bluez_reloader.pending is False
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005", "BR-008"])
+    async def test_failed_restart_is_retried_and_a_replug_still_pairs_again(self, usb_pairing, env, metrics):
+        """A failed restart keeps the record pending and the controller re-pairable after a replug."""
+        backend, _runner, _set_tree, _restart = env
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
+        restart = AsyncMock(side_effect=[RuntimeError("systemd said no"), None])
+        usb_pairing.bluez_reloader._restart = restart
+
+        with self._mode("when_idle"):
+            await usb_pairing.poll()  # paired, record written, restart fails
+            assert restart.await_count == 1
+            assert usb_pairing.bluez_reloader.pending is True
+            assert self.SERIAL in usb_pairing._replug_retries
+
+            self._info().unlink()  # bluetoothd dropped the unloaded record
+            backend.get_usb_controllers.return_value = []
+            await usb_pairing.poll()  # unplugged; the retry rewrites the record, then restarts
+
+        assert restart.await_count == 2
+        assert self._info().is_file()
+        assert usb_pairing.bluez_reloader.pending is False
+        assert self.SERIAL not in usb_pairing._verified_serials  # a replug pairs it again
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_failed_restart_after_a_deferral_keeps_the_replug_retry(self, usb_pairing, env, metrics):
+        backend, _runner, _set_tree, _restart = env
+        busy = {"value": True}
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(side_effect=lambda: busy["value"])
+        usb_pairing.bluez_reloader._restart = AsyncMock(side_effect=RuntimeError("systemd said no"))
+
+        with self._mode("when_idle"):
+            await usb_pairing.poll()  # deferred
+            assert self.SERIAL in usb_pairing._replug_retries
+            busy["value"] = False
+            await usb_pairing.poll()  # still on USB; restart fails
+
+        assert self.SERIAL in usb_pairing._replug_retries
+        assert usb_pairing.bluez_reloader.pending is True
+
+    @pytest.mark.uc("UC-001", flow="A8", br=["BR-008"])
+    async def test_deleting_an_unusable_info_and_replugging_pairs_it_anew(self, usb_pairing, env, metrics):
+        """An empty info blocks the record (never overwritten); once the operator deletes it, a replug fixes it."""
+        backend, _runner, _set_tree, _restart = env
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
+        self._info().parent.mkdir()
+        self._info().write_text("")
+
+        with self._mode("when_idle"):
+            await usb_pairing.poll()  # A8: record not usable, no restart
+            assert self._info().read_text() == ""
+            assert self._restart_units() == []
+
+            self._info().unlink()  # the operator deletes it, as the error says
+            backend.get_usb_controllers.return_value = []
+            await usb_pairing.poll()  # unplugged
+            backend.get_usb_controllers.return_value = [UsbController(FAKE_PATH_1, self.SERIAL, 0x03D5)]
+            await usb_pairing.poll()  # plugged in again: paired anew, record written, restarted
+
+        assert backend.pair_controller.await_count == 2
+        assert "Trusted=true" in self._info().read_text()
+        assert self._restart_units() == [["bluetooth.service", "replace"]]

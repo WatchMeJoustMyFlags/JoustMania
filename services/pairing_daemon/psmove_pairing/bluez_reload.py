@@ -6,7 +6,8 @@ controller, so it is governed by the ``pairing.bluez_restart_mode`` flag:
 - ``when_idle`` (shipped default, #1466): restart only after a new BlueZ device
   record was written (UC-001 A7, BR-008), and only while the real (primary)
   game is not starting, running or ending. The restart is otherwise left
-  pending and retried on each USB poll (under the pairing lock).
+  pending and retried on each USB poll (under the pairing lock); so is a
+  restart that failed (#1490).
 - ``never`` (fallback when flagd is unreachable): never restart.
 - ``always``: restart after every successful pairing (pre-#1446 behaviour).
 
@@ -132,7 +133,9 @@ class BluezReloader:
         """Run a pending restart if the mode allows it now; returns the outcome.
 
         Outcomes: ``skipped`` (nothing to do), ``restarted``, ``deferred``
-        (when_idle and a real game is busy), ``failed``.
+        (when_idle and a real game is busy), ``failed``. After ``deferred`` and
+        ``failed`` the restart and its records stay pending; the next poll tries
+        again (one attempt per poll, #1490).
         """
         if not self.pending:
             return "skipped"
@@ -145,13 +148,14 @@ class BluezReloader:
             logger.info("Deferring the bluetoothd restart until the real game has ended")
             return "deferred"
         await self._rewrite_missing_records()
-        self._clear()
         logger.info(f"Restarting bluetoothd (pairing.bluez_restart_mode={mode})")
         try:
             await self._restart()
         except Exception as e:
-            logger.error(f"Failed to restart bluetooth service: {e}")
+            # bluetoothd has not loaded the records: keep them for the next poll's attempt
+            logger.error(f"Failed to restart bluetooth service: {e}; retrying on the next poll")
             return "failed"
+        self._clear()
         return "restarted"
 
     async def _rewrite_missing_records(self) -> None:
