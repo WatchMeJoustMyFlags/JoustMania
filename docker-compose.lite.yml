@@ -35,6 +35,8 @@ services:
       - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
       - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
+      # Go runtime soft limit under the 64 MiB container limit (NFR-051).
+      - GOMEMLIMIT=48MiB
     volumes:
       - ./services/flagd:/etc/flagd:ro
       - flag-service-state:/var/lib/flag-service

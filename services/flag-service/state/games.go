@@ -55,6 +55,9 @@ func (s *State) RegisterGame(g Game) (already bool, err *fserr.Error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, already = s.games[g.ID]
+	if !already && len(s.games) >= s.opts.MaxGames {
+		return false, fserr.Conflict(fserr.TooManyGames, "%d game scopes are live (the cap, NFR-051)", len(s.games))
+	}
 	s.registerLocked(g)
 	return already, nil
 }
@@ -62,6 +65,7 @@ func (s *State) RegisterGame(g Game) (already bool, err *fserr.Error) {
 func (s *State) registerLocked(g Game) {
 	if old := s.games[g.ID]; old != nil {
 		g.RegisteredAt = old.RegisteredAt
+		s.dropRemovedSerialsLocked(g.ID, old.Serials, g.Serials)
 	} else {
 		g.RegisteredAt = s.opts.Now()
 	}
@@ -184,4 +188,33 @@ func (s *State) Game(id string) *Game {
 		return &cp
 	}
 	return nil
+}
+
+// dropRemovedSerialsLocked removes the per-player values of serials a
+// re-registration no longer lists, so a player who left the game keeps no rung.
+func (s *State) dropRemovedSerialsLocked(gameID string, old, now []string) {
+	keep := map[string]bool{}
+	for _, serial := range now {
+		keep[serial] = true
+	}
+	changed := false
+	for _, serial := range old {
+		if keep[serial] {
+			continue
+		}
+		for _, f := range s.flags {
+			if m := f.serials[gameID]; m != nil {
+				if _, ok := m[serial]; ok {
+					delete(m, serial)
+					changed = true
+					if len(m) == 0 {
+						delete(f.serials, gameID)
+					}
+				}
+			}
+		}
+	}
+	if changed {
+		s.changed()
+	}
 }

@@ -195,6 +195,14 @@ def test_rejected_writes(docker_compose):
             "malformed",
         ),
         ("PUT", f"/{PROBE_SET}/{PROBE_FLAG}", {"value": 42}, 422, "out_of_bounds"),
+        # A credential-bearing URL takes declared variants only (no key exfiltration).
+        (
+            "PUT",
+            "/agent/decision.openai.base_url",
+            {"value": "https://attacker.example/v1"},
+            422,
+            "out_of_bounds",
+        ),
         (
             "PUT",
             f"/{PROBE_SET}/{PROBE_FLAG}",

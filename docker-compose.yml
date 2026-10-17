@@ -60,6 +60,8 @@ services:
       # Admin settings persisted on request (D10, re-review N4). One state file
       # per stack: the ci, dry-run and decide-e2e stacks override the name.
       - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
+      # Go runtime soft limit under the 64 MiB container limit (NFR-051).
+      - GOMEMLIMIT=48MiB
       - OTEL_SERVICE_NAME=flag-service
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317

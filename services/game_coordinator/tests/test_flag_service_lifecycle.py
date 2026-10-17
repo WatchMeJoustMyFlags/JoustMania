@@ -220,3 +220,15 @@ async def test_servicer_registers_before_the_game_runs_and_ends_at_retire():
     servicer._retire_session(game_id)
     assert rec.ended == [game_id]
     assert servicer._flag_service_live_games() == []
+
+
+@pytest.mark.uc("UC-053", flow="A10")
+def test_instance_id_is_stable_across_restarts(monkeypatch):
+    """A10: the id survives a restart (hostname, or FLAG_SERVICE_INSTANCE), so the
+    restarted coordinator's reconcile drops the games its previous process left."""
+    from services.game_coordinator import flag_service_client as fsc
+
+    monkeypatch.delenv("FLAG_SERVICE_INSTANCE", raising=False)
+    assert fsc.coordinator_instance_id() == fsc.coordinator_instance_id()
+    monkeypatch.setenv("FLAG_SERVICE_INSTANCE", "game-coordinator")
+    assert fsc.coordinator_instance_id() == "game-coordinator"

@@ -177,3 +177,22 @@ func (s *State) FlagView(set, key string) (*FlagView, *fserr.Error) {
 	fv.Rendered, _ = json.Marshal(rf)
 	return &fv, nil
 }
+
+// MetricLabels returns the flag_set and flag labels for a request path: the
+// registry/baseline keys, or "unknown" for a set or flag that does not exist,
+// so metric cardinality is bounded by the baseline (PR #1417 review).
+func (s *State) MetricLabels(set, flag string) (string, string) {
+	if s.base.Sets[set] == nil {
+		return LabelUnknown, LabelUnknown
+	}
+	if flag == "" {
+		return set, ""
+	}
+	if f := s.flags[flag]; f == nil || f.set != set {
+		return set, LabelUnknown
+	}
+	return set, flag
+}
+
+// LabelUnknown is the metric label value of a set or flag that does not exist.
+const LabelUnknown = "unknown"

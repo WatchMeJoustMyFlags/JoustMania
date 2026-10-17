@@ -328,3 +328,41 @@ func TestParseRejectsBadRows(t *testing.T) {
 		}
 	}
 }
+
+// A URL a backend sends its API key to must never take a free value: the API
+// has no authentication (D11), so a free string would let any LAN client point
+// the key at its own host (PR #1417 review, CRITICAL 1).
+//
+// UC: UC-053 A5 BR-001
+func TestCredentialBearingURLsAcceptOnlyDeclaredVariants(t *testing.T) {
+	for _, dir := range []string{"", "ci"} {
+		b, err := baseline.Load(filepath.Join(root(t), "..", "flagd", dir), baseline.DefaultFiles)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg, err := LoadFile(filepath.Join(root(t), "registry.yaml"), b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range reg.Policies() {
+			k := strings.ToLower(p.Key)
+			if strings.Contains(k, "url") || strings.Contains(k, "host") || strings.Contains(k, "endpoint") || strings.Contains(k, "key") {
+				if p.Bounds.FreeString || p.Bounds.Pattern != nil {
+					t.Errorf("UC-053/A5 %s/%s feeds a URL or credential and takes a free value", p.Set, p.Key)
+				}
+			}
+		}
+		for _, key := range []string{"decision.openai.base_url", "decision.jev.base_url"} {
+			t.Run("UC-053/A5 "+dir+" "+key+" refuses an undeclared URL", func(t *testing.T) {
+				p := reg.Get("agent", key)
+				if p == nil {
+					t.Fatalf("%s is not in the registry", key)
+				}
+				_, ferr := CheckValue(p, b.Flag("agent", key), "", json.RawMessage(`"https://attacker.example/v1"`))
+				if ferr == nil || ferr.Reason != fserr.OutOfBounds || ferr.Status != http.StatusUnprocessableEntity {
+					t.Fatalf("want 422 out_of_bounds, got %v", ferr)
+				}
+			})
+		}
+	}
+}

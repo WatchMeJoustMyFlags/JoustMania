@@ -48,6 +48,14 @@ func (s *State) loadAdmin() LoadReport {
 		s.lastPersistOK = true
 		return report
 	}
+	if err != nil {
+		// A read error (permissions, I/O) is not corruption: keep the file and
+		// do not write over it; admin values apply in memory only.
+		s.persistBlocked = true
+		s.opts.Logger.Error("flag service: state file unreadable; admin settings will not be persisted until the next start",
+			"path", path, "error", err)
+		return report
+	}
 	var doc persistedDoc
 	if err == nil {
 		err = json.Unmarshal(raw, &doc)
@@ -57,6 +65,7 @@ func (s *State) loadAdmin() LoadReport {
 	}
 	if err != nil {
 		report.Corrupt = true
+		pruneCorrupt(path, maxCorruptFiles-1)
 		report.CorruptPath = fmt.Sprintf("%s.corrupt-%d", path, s.opts.Now().Unix())
 		if mvErr := os.Rename(path, report.CorruptPath); mvErr != nil {
 			s.opts.Logger.Error("flag service: state file unreadable and could not be moved aside; starting from the baseline",
@@ -115,6 +124,12 @@ func (s *State) saveAdminLocked() {
 		s.lastPersistOK = false
 		return
 	}
+	if s.persistBlocked {
+		s.persistErrors++
+		s.lastPersistOK = false
+		s.opts.Logger.Error("flag service: the state file was unreadable at start; the value applies in memory only", "path", path)
+		return
+	}
 	doc := persistedDoc{Version: stateFileVersion, Values: []persistedValue{}}
 	for key, f := range s.flags {
 		if f.admin == nil {
@@ -166,7 +181,30 @@ func writeAtomic(path string, doc persistedDoc) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	// fsync the directory so the rename itself survives a power cut.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}
+
+// maxCorruptFiles caps the .corrupt-<ts> copies kept next to the state file.
+const maxCorruptFiles = 3
+
+// pruneCorrupt deletes the oldest .corrupt-<ts> copies so at most keep remain.
+func pruneCorrupt(path string, keep int) {
+	matches, err := filepath.Glob(path + ".corrupt-*")
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Strings(matches) // the unix-seconds suffix has a fixed width for centuries
+	for _, m := range matches[:len(matches)-keep] {
+		_ = os.Remove(m)
+	}
 }
 
 // PersistErrors returns the number of failed state-file writes.

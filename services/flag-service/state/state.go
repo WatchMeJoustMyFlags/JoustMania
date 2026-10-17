@@ -24,6 +24,10 @@ import (
 const (
 	DefaultEventListLen = 16
 	DefaultMaxGameAge   = time.Hour
+	// DefaultMaxGames caps live game scopes (NFR-051): the coordinators run at
+	// most max_concurrent_games (8) real and shadow games, so 64 leaves room for
+	// several coordinators while bounding what an unauthenticated caller can add.
+	DefaultMaxGames = 64
 	// MaxSerialsPerGame bounds a game scope (NFR-051: at most 64 KiB per game).
 	MaxSerialsPerGame = 64
 	// MaxIDLength bounds game ids, serials, experiment ids, arms and writer labels.
@@ -42,6 +46,8 @@ type Options struct {
 	EventListLen int
 	// MaxGameAge expires a game scope whose end was never reported (UC-053 A11).
 	MaxGameAge time.Duration
+	// MaxGames caps the number of live game scopes (NFR-051).
+	MaxGames int
 	// StateFile is the admin state file; "" disables persistence.
 	StateFile string
 	// Now is the clock (tests inject one).
@@ -183,6 +189,9 @@ type State struct {
 
 	persistErrors int64
 	lastPersistOK bool
+	// persistBlocked: the state file exists but could not be read (not a parse
+	// error); writing it would destroy it, so persistence stays off.
+	persistBlocked bool
 }
 
 // LoadReport says what New restored from the admin state file.
@@ -201,6 +210,9 @@ func New(b *baseline.Baseline, r *registry.Registry, opts Options) (*State, Load
 	}
 	if opts.EventListLen <= 0 {
 		opts.EventListLen = DefaultEventListLen
+	}
+	if opts.MaxGames <= 0 {
+		opts.MaxGames = DefaultMaxGames
 	}
 	if opts.MaxGameAge <= 0 {
 		opts.MaxGameAge = DefaultMaxGameAge

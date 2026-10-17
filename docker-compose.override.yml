@@ -18,7 +18,7 @@ services:
   # envoy's /flags/ route (C-015).
   flag-service:
     ports:
-      - "8070:8070"
+      - "127.0.0.1:8070:8070"
 
   # Controller Manager - Expose ports for testing
   controller-manager:

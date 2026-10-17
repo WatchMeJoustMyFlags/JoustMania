@@ -351,7 +351,7 @@ No flag is read that is not defined: all 182 literal evaluation call sites resol
 
 ## 12. `ci/` differences
 
-`services/flagd/ci/*.json` has the same keys; only these defaults differ (plus three added `ci` variants):
+`services/flagd/ci/*.json` has the same keys; only these defaults differ (plus three added `ci` variants, and the `fake` variant of `decision.openai.base_url` (`http://fake-openai:8080/v1`) for the decide-e2e fake server, #1417):
 
 | File | Key | Base default | `ci/` default |
 |---|---|---|---|
@@ -453,7 +453,7 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | `decision.capture_content` | overlay | stack | `on`, `off` | no | `agent-backend.sh` |
 | `decision.claude.model`, `decision.openai.reasoning_effort`, `decision.jev.model` | overlay | stack | declared variants | no | `agent-backend.sh` |
 | `decision.openai.model` | overlay | stack | free string | no | `agent-backend.sh`, integration fixtures (`configure_agent`, fake model name) |
-| `decision.openai.base_url` | overlay | stack | free string | no | integration fixtures (`configure_agent`, fake server URL) |
+| `decision.openai.base_url` | overlay | stack | declared variants (credential-bearing URL: never a free string) | no | integration fixtures (`configure_agent`, the `ci/` `fake` variant) |
 | `decision.min_interval_ms`, `decision.openai.timeout_ms` | overlay | stack | int 100 to 60000 | no | integration fixtures (`configure_agent`) |
 | `llm.max_requests_per_minute` | overlay | stack | declared variants (incl. `stage`) | no | `talk-stage.sh` |
 | `llm.eligible_game_kinds` | overlay | stack | declared variants | no | `talk-stage.sh` (stage baseline, fallback beat) |

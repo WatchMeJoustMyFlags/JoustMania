@@ -18,20 +18,19 @@ const Name = "github.com/joustmania/flag-service"
 
 // Span names (telemetry.md §10.1).
 const (
-	SpanWrite         = "flagservice.write"
-	SpanGameRegister  = "flagservice.game.register"
-	SpanGameEnd       = "flagservice.game.end"
-	SpanSyncPush      = "flagservice.sync.push"
-	SpanBaselineLoad  = "flagservice.baseline.load"
-	OpSet             = "set"
-	OpAppend          = "append"
-	OpClear           = "clear"
-	ResultOK          = "ok"
-	ResultRejected    = "rejected"
-	ResultError       = "error"
-	RejectUnknownSel  = "unknown_selector"
-	RejectUnknownSet  = "unknown_flag_set"
-	RejectBadSelector = "malformed_selector"
+	SpanWrite        = "flagservice.write"
+	SpanGameRegister = "flagservice.game.register"
+	SpanGameEnd      = "flagservice.game.end"
+	SpanSyncPush     = "flagservice.sync.push"
+	SpanBaselineLoad = "flagservice.baseline.load"
+	OpSet            = "set"
+	OpAppend         = "append"
+	OpClear          = "clear"
+	ResultOK         = "ok"
+	ResultRejected   = "rejected"
+	ResultError      = "error"
+	RejectUnknownSel = "unknown_selector"
+	RejectUnknownSet = "unknown_flag_set"
 )
 
 // Metrics are the flag service's instruments (telemetry.md §10.2).

@@ -574,7 +574,7 @@ elimination order, winner and decisions are the evidence that the game played ou
 | `flagservice_write_duration_seconds` | histogram | `op` | validate + render + acknowledge (NFR-053) |
 | `flagservice_propagation_seconds` | histogram | | write accepted → merged configuration handed to every open sync stream; the end-to-end target of NFR-050 is measured by the integration test against flagd |
 | `flagservice_live_games` | gauge | `game_kind` | registered game scopes |
-| `flagservice_game_scopes_expired_total` | counter | | scopes dropped by expiry (UC-053 A10) |
+| `flagservice_game_scopes_expired_total` | counter | | scopes dropped by expiry (UC-053 A11) |
 | `flagservice_scope_values` | gauge | `flag_set` | game-scoped and experiment values held (NFR-051) |
 | `flagservice_snapshot_bytes` | gauge | | size of the last merged configuration (NFR-051) |
 | `flagservice_sync_streams` | gauge | | open `SyncFlags` streams. flagd opens **one** stream that carries every served set, so the value is 1 per connected flagd (no per-set label); 0 means flagd is not connected and flag writes return 503 `no_sync_stream` |

@@ -272,10 +272,10 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 | Item | Value |
 |---|---|
 | Compose name | `flag-service` (Go, `services/flag-service/`), in every compose file that runs flagd (base, lite, ci, dry-run, decide-e2e, agent-coordinator) |
-| Ports | `50064` gRPC: `flagd.sync.v1.FlagSyncService` (flagd only). `8070` HTTP/JSON: the write and read API and `/healthz`. Neither is published to the host (C-015); envoy routes `/flags/` to `flag-service:8070` with the prefix stripped |
+| Ports | `50064` gRPC: `flagd.sync.v1.FlagSyncService` (flagd only). `8070` HTTP/JSON: the write and read API and `/healthz`. 50064 is not published; 8070 is published only on `127.0.0.1` by `docker-compose.override.yml` (tests and host scripts on the same machine, C-015); envoy routes `/flags/` to `flag-service:8070` with the prefix stripped |
 | Inputs | the eight baseline files `services/flagd/{system,controller,observability,game,user,agent,interventions,rollout}.json` (or `ci/`), an explicit list, mounted **read-only** and read once at start (FR-130); refuses to start on a duplicate flag key across sets |
 | State | in memory, except admin settings written with `"persist": true`: the state file `FLAG_SERVICE_STATE_FILE` (default `/var/lib/flag-service/admin.json`) on the stack's own `flag-service-state` volume, loaded over the baseline at start and rewritten atomically (temp file + rename) on each persisted change (C-030, FR-018). A corrupt file is moved aside to `admin.json.corrupt-<ts>` and the service starts from the baseline; stale entries are dropped with a warning ([architecture note §10.1](../architecture/flag-service.md#101-admin-persistence-re-review-n4)). Never `services/flagd/*.json` |
-| Config | `FLAG_SERVICE_SETS` (sets included in the sync payload; every stack lists all eight), `FLAG_SERVICE_BASELINE_DIR`, `FLAG_SERVICE_BASELINE_FILES` (the explicit file list, default the eight set files), `FLAG_SERVICE_STATE_FILE`, `FLAG_SERVICE_REGISTRY` (default the image's `registry.yaml`), `FLAG_SERVICE_EVENT_LIST_LEN` (K, default 16), `FLAG_SERVICE_MAX_GAME_AGE` (default 1 h), `FLAG_SERVICE_GRPC_PORT` (50064), `FLAG_SERVICE_HTTP_PORT` (8070) |
+| Config | `FLAG_SERVICE_SETS` (sets included in the sync payload; every stack lists all eight), `FLAG_SERVICE_MAX_GAMES` (live game scopes, default 64), `GOMEMLIMIT` (48MiB in compose), `FLAG_SERVICE_BASELINE_DIR`, `FLAG_SERVICE_BASELINE_FILES` (the explicit file list, default the eight set files), `FLAG_SERVICE_STATE_FILE`, `FLAG_SERVICE_REGISTRY` (default the image's `registry.yaml`), `FLAG_SERVICE_EVENT_LIST_LEN` (K, default 16), `FLAG_SERVICE_MAX_GAME_AGE` (default 1 h), `FLAG_SERVICE_GRPC_PORT` (50064), `FLAG_SERVICE_HTTP_PORT` (8070) |
 | flagd wiring | one gRPC source `--uri grpc://flag-service:50064` and nothing else; `depends_on: flag-service: {condition: service_healthy, restart: true}`; no flagd `readyz` check (flagd #1985) |
 | Memory | limit 64 MiB (NFR-051) |
 | Authorization | none, by decision (local party game, architecture note D11) |
@@ -286,7 +286,7 @@ The upstream schema (`buf.build/open-feature/flagd`, `flagd/sync/v1/sync.proto`)
 
 | RPC | Behaviour |
 |---|---|
-| `SyncFlags(SyncFlagsRequest{provider_id, selector}) → stream SyncFlagsResponse{flag_configuration}` | Sends the merged configuration of every served set at once, then again after every accepted write, admin change or game-scope change. Every flag carries `metadata.flagSetId` (flagSetIds partition the flags, architecture note §5.2). An empty selector gets every served set; `flagSetId=<set>` (from the `flagd-selector` header or the body) gets that set only; an unknown selector key is `INVALID_ARGUMENT` (counted as `unknown_selector`, alerted); `flagSetId=<set>` naming a set that is not served is `INVALID_ARGUMENT` too (counted as `unknown_flag_set`). No `sync_context`. flagd opens **one** stream for all sets. |
+| `SyncFlags(SyncFlagsRequest{provider_id, selector}) → stream SyncFlagsResponse{flag_configuration}` | Sends the merged configuration of every served set at once, then again after every accepted write, admin change or game-scope change. Every flag carries `metadata.flagSetId` (flagSetIds partition the flags, architecture note §5.2). An empty selector gets every served set; `flagSetId=<set>` (from the `flagd-selector` header or the body) gets that set only; an unknown selector key is `INVALID_ARGUMENT` (counted as `unknown_selector` in `flagservice_sync_rejected_total`; no alert rules, #1425); `flagSetId=<set>` naming a set that is not served is `INVALID_ARGUMENT` too (counted as `unknown_flag_set`). No `sync_context`. flagd opens **one** stream for all sets. |
 | `FetchAllFlags` | The current merged configuration, filtered like `SyncFlags`. |
 | `GetMetadata` | Deprecated upstream; `UNIMPLEMENTED`. |
 
@@ -308,7 +308,7 @@ they go on the write span and are never checked. Writers use a 500 ms deadline a
 | `PUT /{flagSetId}/{flagName}` | set a value in a scope (state, level, grant, overlay, experiment arm, fraction) | 200 `WriteResult` |
 | `POST /{flagSetId}/{flagName}` | append one event to a game's event list (registry kind `event` only) | 200 `WriteResult` with `seq` |
 | `DELETE /{flagSetId}/{flagName}` | clear the value in the scope given by query parameters (`game_id`, `serial`, `experiment_id`, `arm`, `game_kind=real`, `fraction=true`); no scope = the in-memory stack overlay; `?persist=true` clears the persisted admin value instead (it returns to the baseline and leaves the state file). The persisted admin value is a layer under the in-memory overlay: clearing a stage or test overlay shows the host's setting again | 204 |
-| `DELETE /{flagSetId}?writer=stage` | clear every stack overlay of that writer label in the set (talk reset) | 204 |
+| `DELETE /{flagSetId}?writer=stage` | clear every in-memory overlay (stack, real, fraction) of that writer label in the set (talk reset); persisted admin values stay (only `DELETE …?persist=true` removes one) | 204 |
 | `PUT /games/{gameId}` | register a game | 200 (`already_registered` on a repeat) |
 | `DELETE /games/{gameId}` | end a game: drop its scope and every value written for it | 204 |
 | `PUT /coordinators/{instance}/games` | reconcile one coordinator instance's live games; drops that instance's other games only | 200 with the dropped ids |
@@ -354,7 +354,7 @@ K; the flag resolves in that game to `{"epoch": "<boot id>", "seq": n, "events":
 **`WriteResult`**: `{"flag_set", "flag", "variant" (opaque, carries the epoch), "seq" (event writes), "epoch",
 "snapshot_version" (monotonic; flagd has it once the stream sent it), "persisted" (admin flags)}`.
 
-**`PUT /games/{gameId}` body**: `{"coordinator_instance": "<hostname>/<boot uuid>", "game_kind": "real" | "shadow",
+**`PUT /games/{gameId}` body**: `{"coordinator_instance": "<stable id: FLAG_SERVICE_INSTANCE or the hostname; the same after a restart, so the restart's reconcile drops the previous process's games (A10)>", "game_kind": "real" | "shadow",
 "serials": ["MOCK0001", ...], "experiment_id": "", "arm": ""}`. An unspecified kind is stored as is and never
 treated as real (FR-041). **`PUT /coordinators/{instance}/games` body**: `{"games": [<same objects>]}`.
 
@@ -364,7 +364,7 @@ treated as real (FR-041). **`PUT /coordinators/{instance}/games` body**: `{"game
 |---|---|
 | 400 | `malformed` (bad JSON, both or neither of `variant` / `value`, scope does not fit the flag, `persist` on a flag or scope that cannot persist, `persist` with `ttl_seconds`) |
 | 404 | `unknown_flag_set`, `unknown_flag` |
-| 409 | `game_not_live` (game not registered or ended), `set_not_served` (the set is still on its `file:` source during the migration, so flagd would not see the write), `experiment_unknown` (reserved for #1415; not raised before it) |
+| 409 | `game_not_live` (game not registered or ended), `set_not_served` (the set is not in this stack's `FLAG_SERVICE_SETS`, so flagd would not see the write; every stack lists all eight), `too_many_games` (`PUT /games` beyond `FLAG_SERVICE_MAX_GAMES`, default 64, NFR-051), `experiment_unknown` (reserved for #1415; not raised before it) |
 | 422 | `flag_read_only` (no registry row), `out_of_bounds`, `serial_not_in_game` |
 | 503 | `no_sync_stream` (flagd has no open sync stream, so the write would not reach readers). The game lifecycle calls (`/games`, `/coordinators`) are exempt and never return it |
 

@@ -91,6 +91,9 @@ DECIDE_COMPOSE_FILE = "docker-compose.decide-e2e.yml"
 FAKE_URL = "http://localhost:18089"
 # What the agent dials from inside the compose network.
 FAKE_BASE_URL_IN_NETWORK = "http://fake-openai:8080/v1"
+# The ci/agent.json variant with that URL: the base URL carries the API key, so
+# the registry allows only declared variants (no free string).
+FAKE_BASE_URL_VARIANT = "fake"
 FAKE_MODEL = "fake-decider"
 CHAT_SPAN = f"chat {FAKE_MODEL}"
 
@@ -307,13 +310,13 @@ def _onoff(value: bool) -> str:
 
 def configure_agent(*, backend: str, enabled: bool = True, interventions: bool = True) -> None:
     """Every agent-set flag a case needs, as flag-service overlays. The fake's
-    URL and model are free strings (registry, re-review N5)."""
+    URL is the declared `fake` variant of ci/agent.json; the model is a free string."""
     fs = flag_service_default()
     fs.put("agent", "enabled", variant=_onoff(enabled))
     fs.put("agent", "interventions_enabled", variant=_onoff(interventions))
     fs.put("agent", "interventions_allowed", variant=INTERVENTIONS_ALLOWED_VARIANT)
     fs.put("agent", "decision.backend", variant=backend)
-    fs.put("agent", "decision.openai.base_url", value=FAKE_BASE_URL_IN_NETWORK)
+    fs.put("agent", "decision.openai.base_url", variant=FAKE_BASE_URL_VARIANT)
     fs.put("agent", "decision.openai.model", value=FAKE_MODEL)
     fs.put("agent", "decision.openai.timeout_ms", value=DECIDE_TIMEOUT_MS)
     fs.put("agent", "decision.min_interval_ms", value=1500)

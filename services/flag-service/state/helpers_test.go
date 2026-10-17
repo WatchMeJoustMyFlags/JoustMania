@@ -43,6 +43,7 @@ type fixtureOpts struct {
 	epoch     string
 	noStream  bool
 	k         int
+	maxGames  int
 }
 
 // newFixture builds a State over the real CI flag files and registry.yaml,
@@ -65,7 +66,7 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 	}
 	clock := &fakeClock{now: time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)}
 	st, _, err := New(base, reg, Options{
-		Epoch: o.epoch, Served: o.served, StateFile: o.stateFile, EventListLen: o.k,
+		Epoch: o.epoch, Served: o.served, StateFile: o.stateFile, EventListLen: o.k, MaxGames: o.maxGames,
 		Now: clock.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {

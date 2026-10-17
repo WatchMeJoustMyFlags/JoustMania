@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -303,6 +304,39 @@ func TestReadEndpoints(t *testing.T) {
 		_, b := e.do("GET", "/agent/decision.backend", nil)
 		if b["effective_default"] != "rules" {
 			t.Fatalf("%v", b["effective_default"])
+		}
+	})
+}
+
+// Metric labels carry only baseline keys: a request for an unknown set or flag
+// is counted under "unknown", so a client cannot grow the label set (PR #1417
+// review).
+//
+// UC: UC-053 A5 BR-005
+func TestWriteMetricLabelsAreBounded(t *testing.T) {
+	t.Run("UC-053/A5 unknown sets and flags are labelled unknown", func(t *testing.T) {
+		e := newEnv(t, true)
+		for i := 0; i < 3; i++ {
+			e.do("PUT", fmt.Sprintf("/nope%d/x%d", i, i), map[string]any{"variant": "a"})
+			e.do("PUT", fmt.Sprintf("/agent/nope%d", i), map[string]any{"variant": "a"})
+		}
+		var rm metricdata.ResourceMetrics
+		_ = e.reader.Collect(context.Background(), &rm)
+		seen := map[string]bool{}
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if m.Name != "flagservice_writes_total" {
+					continue
+				}
+				for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+					set, _ := dp.Attributes.Value("flag_set")
+					flag, _ := dp.Attributes.Value("flag")
+					seen[set.AsString()+"/"+flag.AsString()] = true
+				}
+			}
+		}
+		if len(seen) != 2 || !seen["unknown/unknown"] || !seen["agent/unknown"] {
+			t.Fatalf("label pairs %v, want only unknown/unknown and agent/unknown", seen)
 		}
 	})
 }

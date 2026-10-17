@@ -61,6 +61,7 @@ type config struct {
 	Served        []string
 	EventListLen  int
 	MaxGameAge    time.Duration
+	MaxGames      int
 	GRPCPort      string
 	HTTPPort      string
 	SweepInterval time.Duration
@@ -85,6 +86,7 @@ func loadConfig() (config, error) {
 		Served:        splitList(os.Getenv("FLAG_SERVICE_SETS")),
 		EventListLen:  state.DefaultEventListLen,
 		MaxGameAge:    state.DefaultMaxGameAge,
+		MaxGames:      state.DefaultMaxGames,
 		GRPCPort:      getEnv("FLAG_SERVICE_GRPC_PORT", "50064"),
 		HTTPPort:      getEnv("FLAG_SERVICE_HTTP_PORT", "8070"),
 		SweepInterval: 5 * time.Second,
@@ -98,6 +100,13 @@ func loadConfig() (config, error) {
 			return cfg, fmt.Errorf("FLAG_SERVICE_EVENT_LIST_LEN=%q: want 1..256", v)
 		}
 		cfg.EventListLen = n
+	}
+	if v := os.Getenv("FLAG_SERVICE_MAX_GAMES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 4096 {
+			return cfg, fmt.Errorf("FLAG_SERVICE_MAX_GAMES=%q: want 1..4096", v)
+		}
+		cfg.MaxGames = n
 	}
 	if v := os.Getenv("FLAG_SERVICE_MAX_GAME_AGE"); v != "" {
 		d, err := time.ParseDuration(v)
@@ -258,7 +267,7 @@ func loadState(ctx context.Context, tracer trace.Tracer, cfg config, epoch strin
 		return fail(err)
 	}
 	st, report, err := state.New(base, reg, state.Options{
-		Epoch: epoch, Served: cfg.Served, EventListLen: cfg.EventListLen, MaxGameAge: cfg.MaxGameAge,
+		Epoch: epoch, Served: cfg.Served, EventListLen: cfg.EventListLen, MaxGameAge: cfg.MaxGameAge, MaxGames: cfg.MaxGames,
 		StateFile: cfg.StateFile, Logger: logger,
 	})
 	if err != nil {

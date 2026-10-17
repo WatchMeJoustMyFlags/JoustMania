@@ -13,7 +13,8 @@ game's values when it ends (UC-053 BR-003):
   coordinator's full set of live games: at start (an empty set after a
   restart, UC-053 A10) and whenever a call failed, until it succeeds. It only
   touches this instance's games; a second coordinator (agent-coordinator stack)
-  has its own instance id (review C3).
+  has its own instance id (review C3). The id is stable across restarts, so a
+  restarted coordinator's first reconcile drops its previous process's games.
 
 Everything here is best effort: the flag service being down never stops a game.
 Disabled when ``FLAG_SERVICE_URL`` is unset (unit tests, stacks without it).
@@ -93,9 +94,18 @@ class FlagServiceClient:
             raise FlagServiceError(f"{method} {path}: {e}") from e
 
 
+# This process's boot id: logged next to the instance id, never part of it.
+BOOT_ID = uuid.uuid4().hex[:8]
+
+
 def coordinator_instance_id() -> str:
-    """``<hostname>/<boot id>``: unique per coordinator process (review C3)."""
-    return f"{socket.gethostname()}/{uuid.uuid4().hex[:8]}"
+    """A STABLE id per coordinator: ``FLAG_SERVICE_INSTANCE``, else the hostname
+    (the container name in compose). It survives a restart on purpose: the
+    restarted coordinator's reconcile then drops the games its previous process
+    registered (UC-053 A10), instead of leaving them for the 1 h expiry. Two
+    coordinators (the agent-coordinator stack) run in different containers, so
+    their ids differ (review C3)."""
+    return os.environ.get("FLAG_SERVICE_INSTANCE") or socket.gethostname()
 
 
 class FlagServiceLifecycle:
@@ -118,8 +128,8 @@ class FlagServiceLifecycle:
         self._queue: asyncio.Queue | None = None
         self._worker: asyncio.Task | None = None
         # Starts "dirty" so the first worker pass reconciles: after a restart the
-        # service may still hold this host's games under an old instance id, but
-        # the new instance must at least announce its (empty) set (UC-053 A10).
+        # service still holds this instance's games from the previous process;
+        # announcing the (empty) set drops them (UC-053 A10).
         self._needs_reconcile = threading.Event()
         self._needs_reconcile.set()
 
@@ -142,7 +152,7 @@ class FlagServiceLifecycle:
             return  # constructed outside a loop (tests); start() again later
         self._queue = asyncio.Queue()
         self._worker = self._loop.create_task(self._run())
-        logger.info("Flag service lifecycle reporting enabled (instance %s)", self.instance)
+        logger.info("Flag service lifecycle reporting enabled (instance %s, boot %s)", self.instance, BOOT_ID)
 
     async def stop(self) -> None:
         if self._worker is not None:

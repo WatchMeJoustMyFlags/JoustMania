@@ -17,6 +17,7 @@ const (
 	UnknownFlag      = "unknown_flag"
 	GameNotLive      = "game_not_live"
 	SetNotServed     = "set_not_served"
+	TooManyGames     = "too_many_games"
 	FlagReadOnly     = "flag_read_only"
 	OutOfBounds      = "out_of_bounds"
 	SerialNotInGame  = "serial_not_in_game"

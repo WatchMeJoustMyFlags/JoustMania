@@ -157,11 +157,11 @@ func TestStackOverlay_SubstitutesDefaultVariant(t *testing.T) {
 	})
 	t.Run("UC-053/A1 a free value gets an opaque o-variant; a TTL expires it", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
-		res := f.put(WriteRequest{Set: "agent", Flag: "decision.openai.base_url", Value: raw(`"http://fake-openai:8080/v1"`), TTLSeconds: ttl(60)})
+		res := f.put(WriteRequest{Set: "agent", Flag: "decision.openai.model", Value: raw(`"vendor-model-1"`), TTLSeconds: ttl(60)})
 		if !strings.HasPrefix(res.Variant, "oe1_") {
 			t.Fatalf("variant %q, want an o<epoch>_<n> name", res.Variant)
 		}
-		if _, val := f.resolve("decision.openai.base_url", nil); val != "http://fake-openai:8080/v1" {
+		if _, val := f.resolve("decision.openai.model", nil); val != "vendor-model-1" {
 			t.Fatalf("resolved %v", val)
 		}
 		f.clock.Advance(61 * time.Second)
@@ -304,6 +304,35 @@ func TestAppend_EventList(t *testing.T) {
 		if len(events) != 3 || events[0].(map[string]any)["seq"] != float64(3) {
 			t.Fatalf("events %v, want seq 3..5", events)
 		}
+	})
+	t.Run("UC-053/A4 a cleared list keeps its seq, so the next event is not dropped", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{k: 3})
+		f.register("game_a", "c/1", "MOCK0001")
+		for i := 0; i < 2; i++ {
+			if _, err := f.state.Append(AppendRequest{Set: "interventions", Flag: "audio_cue", Scope: Scope{GameID: "game_a"}, Payload: map[string]any{"sound": "agent_cue"}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		res, err := f.state.Clear(ClearRequest{Set: "interventions", Flag: "audio_cue", Scope: Scope{GameID: "game_a"}})
+		if err != nil || res.Cleared != 1 {
+			t.Fatalf("clear: %+v %v", res, err)
+		}
+		_, val := f.resolve("audio_cue", map[string]any{"gameId": "game_a"})
+		if l := val.(map[string]any); len(l["events"].([]any)) != 0 || l["seq"] != float64(2) {
+			t.Fatalf("after clear %v, want no events and seq 2", l)
+		}
+		next, err := f.state.Append(AppendRequest{Set: "interventions", Flag: "audio_cue", Scope: Scope{GameID: "game_a"}, Payload: map[string]any{"sound": "agent_cue"}})
+		if err != nil || next.Seq != 3 {
+			t.Fatalf("append after clear: seq %d err %v, want 3 (a restart at 1 is dropped by the coordinator)", next.Seq, err)
+		}
+	})
+	t.Run("UC-053/A7 an append without a sync stream is refused", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{noStream: true})
+		if _, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1"}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := f.state.Append(AppendRequest{Set: "interventions", Flag: "audio_cue", Scope: Scope{GameID: "game_a"}, Payload: map[string]any{"sound": "agent_cue"}})
+		wantReason(t, err, http.StatusServiceUnavailable, fserr.NoSyncStream)
 	})
 	t.Run("UC-053/A4 payload rules", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
@@ -695,6 +724,67 @@ func TestClear_RemovesTheValue(t *testing.T) {
 		res, err := f.state.Clear(ClearRequest{Set: "interventions", Flag: "volume_override", Scope: Scope{GameID: "game_a"}})
 		if err != nil || res.Cleared != 0 {
 			t.Fatalf("a repeat clear: %+v %v", res, err)
+		}
+	})
+}
+
+// UC: UC-053 main
+func TestGameScopeBounds(t *testing.T) {
+	t.Run("UC-053/main the number of live game scopes is capped (NFR-051)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{maxGames: 2})
+		f.register("game_a", "c/1")
+		f.register("game_b", "c/1")
+		_, err := f.state.RegisterGame(Game{ID: "game_c", CoordinatorInstance: "c/1"})
+		wantReason(t, err, http.StatusConflict, fserr.TooManyGames)
+		if _, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1"}); err != nil {
+			t.Fatalf("re-registering a live game must not count against the cap: %v", err)
+		}
+	})
+	t.Run("UC-053/main a re-registration without a serial drops that player's values", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.register("game_a", "c/1", "MOCK0001", "MOCK0002")
+		f.put(WriteRequest{Set: "interventions", Flag: "shield_seconds", Value: raw("3"), Scope: Scope{GameID: "game_a", Serial: "MOCK0002"}})
+		f.register("game_a", "c/1", "MOCK0001")
+		payload, _, _ := f.state.Snapshot("")
+		if containsStr(payload, "MOCK0002") {
+			t.Fatal("the removed serial still has a rung")
+		}
+	})
+}
+
+// UC: UC-053 A2 BR-004
+func TestClearWriter_KeepsPersistedAdminValues(t *testing.T) {
+	t.Run("UC-053/A2 a writer reset never removes the host's persisted setting", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{stateFile: filepath.Join(t.TempDir(), "admin.json")})
+		f.put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "slow", Persist: true, Writer: "menu"})
+		f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Writer: "menu"})
+		n, err := f.state.ClearWriter("game", "menu")
+		if err != nil || n != 1 {
+			t.Fatalf("cleared %d (%v), want only the in-memory overlay", n, err)
+		}
+		if got := f.snapshotFlag("sensitivity")["defaultVariant"]; got != "slow" {
+			t.Fatalf("sensitivity %v after the reset, want the persisted slow", got)
+		}
+	})
+}
+
+// UC: UC-053 A9
+func TestStateFileCorruptCopiesAreCapped(t *testing.T) {
+	t.Run("UC-053/A9 at most three .corrupt copies are kept", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "admin.json")
+		for i := 0; i < 5; i++ {
+			if err := os.WriteFile(fmt.Sprintf("%s.corrupt-%d", path, 1600000000+i), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		newFixture(t, fixtureOpts{stateFile: path, epoch: "e1"})
+		matches, _ := filepath.Glob(path + ".corrupt-*")
+		if len(matches) != 3 {
+			t.Fatalf("%d corrupt copies, want 3: %v", len(matches), matches)
 		}
 	})
 }

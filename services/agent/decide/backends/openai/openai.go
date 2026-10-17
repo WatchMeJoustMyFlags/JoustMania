@@ -29,9 +29,11 @@
 // header (we send Bearer), uses deployment names as model ids, and its
 // reasoning deployments are not detected by shapeFor.
 //
-// Security: BaseURL comes from decision.openai.base_url, a human-owned flag
-// in agent.json (mounted read-only for the agent), so the request target is
-// not agent-reachable (no SSRF via the agent loop).
+// Security: BaseURL comes from decision.openai.base_url, a human-owned flag of
+// the agent set. The agent never writes it, and the flag service accepts only
+// its declared variants (registry: no free string), so neither the agent loop
+// nor an unauthenticated /flags/ caller can point the Bearer key at another
+// host (no SSRF, no key exfiltration; PR #1417 review).
 //
 // Telemetry mirrors the claude backend: one CLIENT span per HTTP call named
 // "chat {model}" with the OTel GenAI semantic conventions (v1.41.0),

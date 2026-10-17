@@ -124,12 +124,15 @@ set one, not both.
 
 `decision.openai.model` ships with only an empty `unset` variant and
 `decision.openai.base_url` with only `default` (`https://api.openai.com/v1`).
-Both take a free string in the flag registry (re-review N5), so set your vendor
-at runtime, no file edit:
+The model takes a free string at runtime. The base URL does **not**: it carries the
+API key (`Authorization: Bearer`), and `/flags/` has no authentication, so the
+registry accepts only declared variants. Add a `vendor` variant with your URL to
+`decision.openai.base_url` in the baseline file (`services/flagd/agent.json`, or
+`ci/agent.json` on the rehearsal stack), run `./scripts/flags.sh restart`, then:
 
 ```bash
 ./scripts/flags.sh set-value agent decision.openai.model '"<VENDOR_MODEL_ID>"' --writer stage
-./scripts/flags.sh set-value agent decision.openai.base_url '"<VENDOR_BASE_URL>/v1"' --writer stage
+./scripts/flags.sh set agent decision.openai.base_url vendor --writer stage
 ```
 
 - `gen_ai.provider.name` is derived from the base URL host

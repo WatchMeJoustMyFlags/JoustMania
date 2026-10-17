@@ -53,8 +53,8 @@ last_request() { tail -n 1 "${STUB_LOG}"; }
   || fail "set: $(last_request)"
 
 # UC-053/A1: a JSON value with a TTL
-"${HELPER}" set-value agent decision.openai.base_url '"http://fake:8080/v1"' --ttl 60 >/dev/null
-[[ "$(last_request)" == 'PUT http://flags.test/flags/agent/decision.openai.base_url {"writer": "operator", "value": "http://fake:8080/v1", "ttl_seconds": 60.0}' ]] \
+"${HELPER}" set-value agent decision.openai.model '"vendor-model-1"' --ttl 60 >/dev/null
+[[ "$(last_request)" == 'PUT http://flags.test/flags/agent/decision.openai.model {"writer": "operator", "value": "vendor-model-1", "ttl_seconds": 60.0}' ]] \
   || fail "set-value: $(last_request)"
 
 # UC-053/A2: persist on request

@@ -186,20 +186,28 @@ async def test_two_eliminations_in_one_read_both_apply_once():
 @pytest.mark.asyncio
 async def test_failed_read_applies_nothing_and_does_not_replay():
     """N2: an error read neither applies nor moves (epoch, seq); the default
-    {"epoch": ""} it returns is never mistaken for a new epoch."""
+    {"epoch": ""} it returns is never mistaken for a new epoch. Uses audio_cue,
+    which is not idempotent (every apply plays the sound again), so a replay
+    would show as a second play (PR #1417 review)."""
     h = Harness()
     game = h.start_game("game_a")
-    h.flags.put_events("eliminate_player", "game_a", "e1", [ev(1, serial="MOCK0001")])
+    h.flags.put_events("audio_cue", "game_a", "e1", [ev(1, sound="agent_cue")])
     await h.flag_change()
-    assert game.killed == ["MOCK0001"]
+    assert game.sounds == ["agent_cue"]
     # Step 1: flagd errors on the next read
-    h.flags.failing.add("eliminate_player")
+    h.flags.failing.add("audio_cue")
     await h.flag_change()
+    assert game.sounds == ["agent_cue"]
+    assert h.mgr._last_event["game_a"]["audio_cue"] == ("e1", 1)
     # Step 2: flagd recovers with the same list: nothing replays
     h.flags.failing.clear()
     await h.flag_change()
-    assert game.killed == ["MOCK0001"]
-    assert h.mgr._last_event["game_a"]["eliminate_player"] == ("e1", 1)
+    assert game.sounds == ["agent_cue"], "the event was applied again after a failed read"
+    assert h.mgr._last_event["game_a"]["audio_cue"] == ("e1", 1)
+    # Step 3: a new event after the recovery applies once
+    h.flags.put_events("audio_cue", "game_a", "e1", [ev(1, sound="agent_cue"), ev(2, sound="agent_cue")])
+    await h.flag_change()
+    assert game.sounds == ["agent_cue", "agent_cue"]
 
 
 @pytest.mark.uc("UC-053", flow="A9", br=["BR-006"], tc="TC-019")

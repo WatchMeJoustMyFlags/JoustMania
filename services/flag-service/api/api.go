@@ -184,10 +184,14 @@ func (a *API) finishWrite(ctx context.Context, span trace.Span, op string, req s
 	span.SetAttributes(telemetry.WriteAttrs(op, req, res, result, reason)...)
 	span.End()
 	if a.Metrics != nil {
-		a.Metrics.RecordWrite(ctx, req.Set, req.Flag, op, result, reason)
+		set, flag := a.State.MetricLabels(req.Set, req.Flag)
+		a.Metrics.RecordWrite(ctx, set, flag, op, result, reason)
 		a.Metrics.WriteDuration.Record(ctx, a.now().Sub(start).Seconds(), metric.WithAttributes(attribute.String("op", op)))
 	}
-	if ferr == nil && a.Links != nil && res.SnapshotVersion > 0 {
+	// A no-op clear changed nothing, so it must not take over the trace link
+	// of the snapshot version a real write produced.
+	noop := op == telemetry.OpClear && res.Cleared == 0
+	if ferr == nil && !noop && a.Links != nil && res.SnapshotVersion > 0 {
 		a.Links.Remember(res.SnapshotVersion, span.SpanContext(), start)
 	}
 }
@@ -282,7 +286,7 @@ func (a *API) clearWriter(w http.ResponseWriter, r *http.Request) {
 	req := state.WriteRequest{Set: r.PathValue("set"), Writer: r.URL.Query().Get("writer")}
 	n, ferr := a.State.ClearWriter(req.Set, req.Writer)
 	span.SetAttributes(attribute.Int("flagservice.cleared", n))
-	res := state.WriteResult{FlagSet: req.Set, Epoch: a.State.Epoch(), ScopeKey: "stack"}
+	res := state.WriteResult{FlagSet: req.Set, Epoch: a.State.Epoch(), ScopeKey: "stack", Cleared: n}
 	if ferr == nil {
 		res.SnapshotVersion = a.State.Version()
 	}

@@ -370,8 +370,13 @@ func (s *State) Clear(req ClearRequest) (WriteResult, *fserr.Error) {
 		}
 	case registry.ScopeGame:
 		if f.policy.Kind == registry.KindEvent {
-			if _, ok := f.events[sc.GameID]; ok {
-				delete(f.events, sc.GameID)
+			// Clearing empties the game's list but keeps its seq: the next
+			// event gets the next seq, so the coordinator (which applies only
+			// a seq above the last one it applied) never drops it (PR #1417
+			// review). The list goes with the game scope at game end.
+			if list, ok := f.events[sc.GameID]; ok && len(list.Events) > 0 {
+				list.Events = []event{}
+				list.Variant = s.nextVariant("r")
 				res.Cleared = 1
 			}
 		} else if _, ok := f.games[sc.GameID]; ok {
@@ -424,18 +429,15 @@ func (s *State) ClearWriter(set, writer string) (int, *fserr.Error) {
 	if err := s.streamCheckLocked(set); err != nil {
 		return 0, err
 	}
-	n, persistedGone := 0, false
+	// Persisted admin values are the host's settings: only an explicit
+	// DELETE ?persist=true removes them, never a writer reset (PR #1417 review).
+	n := 0
 	for _, f := range s.flags {
 		if f.set != set {
 			continue
 		}
 		if f.stack != nil && f.stack.Writer == writer {
 			f.stack = nil
-			n++
-		}
-		if f.admin != nil && f.admin.Writer == writer {
-			f.admin = nil
-			persistedGone = true
 			n++
 		}
 		if f.real != nil && f.real.Writer == writer {
@@ -446,9 +448,6 @@ func (s *State) ClearWriter(set, writer string) (int, *fserr.Error) {
 			f.fraction = nil
 			n++
 		}
-	}
-	if persistedGone {
-		s.saveAdminLocked()
 	}
 	if n > 0 {
 		s.changed()
