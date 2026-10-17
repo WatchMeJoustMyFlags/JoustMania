@@ -152,3 +152,59 @@ func TestOTelHooks_BoundedMetricLabelsAndSpanEvent(t *testing.T) {
 		t.Errorf("UC-035: feature_flag.evaluation events = %d, want 3", events)
 	}
 }
+
+// blockedProvider never finishes Init, so the client stays NOT_READY.
+type blockedProvider struct {
+	openfeature.NoopProvider
+	release chan struct{}
+}
+
+func (p blockedProvider) Metadata() openfeature.Metadata {
+	return openfeature.Metadata{Name: "blocked"}
+}
+func (p blockedProvider) Init(openfeature.EvaluationContext) error {
+	<-p.release
+	return nil
+}
+func (p blockedProvider) Shutdown() {}
+
+// UC: UC-035
+// The SDK short-circuits a NOT_READY provider with the error and finally hooks but no before
+// hook; the active-evaluations gauge must not drift below zero.
+func TestOTelHooks_NotReadyProviderKeepsActiveCountAtZero(t *testing.T) {
+	const domain = "otelhooks-notready-test"
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader), sdkmetric.WithView(MetricViews()...))
+	hooks, err := newOTelHooks(mp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	if err := openfeature.SetNamedProvider(domain, blockedProvider{release: release}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		close(release)
+		_ = openfeature.SetNamedProviderAndWait(domain, openfeature.NoopProvider{})
+	})
+	client := openfeature.NewClient(domain)
+	client.AddHooks(hooks...)
+
+	for i := 0; i < 3; i++ {
+		if _, err := client.BooleanValue(context.Background(), "enabled", false, openfeature.EvaluationContext{}); err == nil {
+			t.Fatal("UC-035: evaluation on a NOT_READY provider returned no error")
+		}
+	}
+	got := collectMetrics(t, reader)
+	if n := len(got["feature_flag.evaluation_error_total"]); n == 0 {
+		t.Fatal("UC-035: not-ready evaluations were not counted as errors")
+	}
+	for _, dp := range got["feature_flag.evaluation_active_count"] {
+		if dp.Value != 0 {
+			t.Errorf("UC-035: active count = %d after not-ready evaluations, want 0", dp.Value)
+		}
+	}
+	if len(got["feature_flag.evaluation_requests_total"]) != 0 {
+		t.Errorf("UC-035: requests counted although no evaluation reached the provider")
+	}
+}

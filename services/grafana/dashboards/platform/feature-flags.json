@@ -639,7 +639,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "feature_flag_evaluation_error_total / feature_flag_evaluation_requests_total over 5 minutes, all services.",
+      "description": "feature_flag_evaluation_error_total / (feature_flag_evaluation_success_total + feature_flag_evaluation_error_total) over 5 minutes, all services. Not over requests_total: an evaluation on a NOT_READY or FATAL provider runs the error hook without the before hook, so it is an error that was never counted as a request.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -695,7 +695,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum(rate(feature_flag_evaluation_error_total[5m])) or vector(0)) / clamp_min(sum(rate(feature_flag_evaluation_requests_total[5m])) or vector(0), 1e-9)",
+          "expr": "(sum(rate(feature_flag_evaluation_error_total[5m])) or vector(0)) / clamp_min((sum(rate(feature_flag_evaluation_success_total[5m])) or vector(0)) + (sum(rate(feature_flag_evaluation_error_total[5m])) or vector(0)), 1e-9)",
           "refId": "A",
           "legendFormat": "errors"
         }
@@ -1082,7 +1082,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(flagservice_sync_streams)",
+          "expr": "sum(flagservice_sync_streams) or vector(0)",
           "refId": "A",
           "legendFormat": "streams"
         }

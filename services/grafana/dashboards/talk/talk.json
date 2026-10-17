@@ -51,7 +51,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
+        "h": 8,
         "w": 6,
         "x": 0,
         "y": 0
@@ -71,8 +71,8 @@
         },
         "textMode": "value_and_name",
         "text": {
-          "titleSize": 22,
-          "valueSize": 72
+          "titleSize": 24,
+          "valueSize": 80
         }
       },
       "targets": [
@@ -103,7 +103,214 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "OTel: decisions per minute by decide.backend and decide.outcome, derived in the OTel collector by the span-metrics connector from the agent.decide spans (traces_span_metrics_calls_total); the agent has no counter for it. A decision.backend flag flip shows here within a minute.",
+      "description": "OTel: agent.decide spans per minute, derived in the OTel collector by the span-metrics connector (traces_span_metrics_calls_total); the agent has no counter for it.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "gray",
+                "value": null
+              },
+              {
+                "color": "blue",
+                "value": 0.1
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "text": {
+          "titleSize": 24,
+          "valueSize": 80
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[1m])) * 60 or vector(0)",
+          "refId": "A",
+          "legendFormat": "decisions / min"
+        }
+      ],
+      "title": "Agent decisions / min",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "OpenFeature: feature_flag_evaluation_requests_total from the standard OpenFeature OTel hooks in every service.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "gray",
+                "value": null
+              },
+              {
+                "color": "purple",
+                "value": 0.1
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "text": {
+          "titleSize": 24,
+          "valueSize": 80
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(feature_flag_evaluation_requests_total[1m])) or vector(0)",
+          "refId": "A",
+          "legendFormat": "evaluations / s"
+        }
+      ],
+      "title": "Flag evaluations / s",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Every flag flip (stage scripts, agent interventions, admin) is a write to the flag service, pushed to flagd: flagservice_writes_total, all flag sets and results.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "gray",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.1
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "text": {
+          "titleSize": 24,
+          "valueSize": 80
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(flagservice_writes_total[1m])) * 60 or vector(0)",
+          "refId": "A",
+          "legendFormat": "writes / min"
+        }
+      ],
+      "title": "Flag writes / min",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "OTel: decisions per minute by decide.backend and decide.outcome (span metrics over agent.decide). A decision.backend flag flip shows here within a minute.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -146,18 +353,17 @@
               }
             ]
           },
-          "unit": "none",
-          "noValue": "no agent.decide spans"
+          "unit": "none"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 9,
-        "w": 18,
-        "x": 6,
-        "y": 0
+        "w": 12,
+        "x": 0,
+        "y": 8
       },
-      "id": 2,
+      "id": 5,
       "options": {
         "legend": {
           "calcs": [
@@ -180,7 +386,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (decide_backend, decide_outcome) (rate(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[1m])) * 60",
+          "expr": "sum by (decide_backend, decide_outcome) (rate(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[1m])) * 60 or on() label_replace(vector(0), \"decide_backend\", \"none\", \"\", \"\")",
           "refId": "A",
           "legendFormat": "{{decide_backend}} \u00b7 {{decide_outcome}}"
         }
@@ -243,10 +449,10 @@
       "gridPos": {
         "h": 9,
         "w": 12,
-        "x": 0,
-        "y": 9
+        "x": 12,
+        "y": 8
       },
-      "id": 3,
+      "id": 6,
       "options": {
         "legend": {
           "calcs": [
@@ -282,7 +488,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "OpenFeature: feature_flag_evaluation_requests_total from the standard OpenFeature OTel hooks in every service, top 8 flags.",
+      "description": "OpenFeature: feature_flag_evaluation_requests_total from the standard OpenFeature OTel hooks, top 8 flags.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -325,18 +531,17 @@
               }
             ]
           },
-          "unit": "ops",
-          "noValue": "no flag evaluations"
+          "unit": "ops"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 9,
         "w": 12,
-        "x": 12,
-        "y": 9
+        "x": 0,
+        "y": 17
       },
-      "id": 4,
+      "id": 7,
       "options": {
         "legend": {
           "calcs": [
@@ -359,7 +564,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(8, sum by (feature_flag_key) (rate(feature_flag_evaluation_requests_total[1m])))",
+          "expr": "topk(8, sum by (feature_flag_key) (rate(feature_flag_evaluation_requests_total[1m]))) or on() label_replace(vector(0), \"feature_flag_key\", \"none\", \"\", \"\")",
           "refId": "A",
           "legendFormat": "{{feature_flag_key}}"
         }
@@ -369,107 +574,17 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Every flag flip (stage scripts, agent interventions, admin) is a write to the flag service, pushed to flagd: flagservice_writes_total by flag_set and result.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisPlacement": "auto",
-            "drawStyle": "bars",
-            "fillOpacity": 30,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            },
-            "axisLabel": "writes/min"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "no flag writes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 0,
-        "y": 18
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "sortBy": "Last *",
-          "sortDesc": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (flag_set, result) (rate(flagservice_writes_total[1m])) * 60",
-          "refId": "A",
-          "legendFormat": "{{flag_set}} \u00b7 {{result}}"
-        }
-      ],
-      "title": "Flag-service writes / min (flag set \u00b7 result)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
         "type": "jaeger",
         "uid": "jaeger"
       },
-      "description": "The most recent agent.decide traces (service agent). Open one for decide.rationale, decide.confidence, the chat {model} child span and the feature_flag.evaluation events of the flags the decision read.",
+      "description": "The most recent agent.decide traces (service agent). Open one for decide.rationale, decide.confidence, the chat {model} child span and the feature_flag.evaluation events of the flags the decision read. The dashboard refreshes every 10 s, not 5 s, because this panel searches Jaeger on every refresh (Jaeger OOM history, #1191).",
       "gridPos": {
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 18
+        "y": 17
       },
-      "id": 6,
+      "id": 8,
       "options": {
         "cellHeight": "md",
         "showHeader": true
@@ -491,7 +606,7 @@
       "type": "table"
     }
   ],
-  "refresh": "5s",
+  "refresh": "10s",
   "schemaVersion": 39,
   "tags": [
     "talk",
@@ -508,9 +623,9 @@
   },
   "timepicker": {
     "refresh_intervals": [
-      "5s",
       "10s",
-      "30s"
+      "30s",
+      "1m"
     ]
   },
   "timezone": "browser",

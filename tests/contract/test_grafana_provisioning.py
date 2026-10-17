@@ -94,3 +94,12 @@ def test_talk_dashboard_is_a_single_stage_view():
     panels = [p for p in talk["panels"] if p["type"] != "row"]
     assert len(panels) <= 8, "keep the stage view to a few large panels"
     assert any(p["datasource"]["type"] == "jaeger" for p in panels)
+
+
+def test_grafana_home_page_is_an_existing_dashboard():
+    """grafana.ini home_page opens the Talk stage view (a missing folder uid shows an error page)."""
+    ini = (GRAFANA / "grafana.ini").read_text()
+    match = re.search(r"^home_page\s*=\s*(\S+)", ini, re.MULTILINE)
+    assert match, "home_page not set"
+    uids = {d["uid"] for d in _dashboards().values()}
+    assert _linked_uids(match.group(1)) == {"talk"} <= uids

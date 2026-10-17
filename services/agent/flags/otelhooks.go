@@ -2,6 +2,7 @@ package flags
 
 import (
 	"context"
+	"errors"
 	"regexp"
 
 	otelhooks "github.com/open-feature/go-sdk-contrib/hooks/open-telemetry/pkg"
@@ -10,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 )
 
 // The standard OpenFeature OpenTelemetry hooks (go-sdk-contrib hooks/open-telemetry, #1427):
@@ -63,11 +65,23 @@ func MetricViews() []sdkmetric.View {
 	}
 }
 
-// boundedVariantHook passes every call to the standard metrics hook, with a generated variant
-// name replaced by its class (MetricVariant). The evaluation result itself is not changed:
-// After receives a copy of the details.
+// MetricActiveInstrument is the standard hook's in-flight up-down counter.
+const MetricActiveInstrument = "feature_flag.evaluation_active_count"
+
+// boundedVariantHook passes every call to the standard metrics hook, with two corrections:
+//
+//   - a generated variant name is replaced by its class (MetricVariant); the evaluation result
+//     itself is not changed, After receives a copy of the details;
+//   - when the SDK short-circuits a NOT_READY or FATAL provider it runs Error and Finally but
+//     not Before (go-sdk client.go evaluate), so the upstream hook's Finally -1 on
+//     feature_flag.evaluation_active_count has no matching +1 and the gauge drifts negative.
+//     Error adds the missing +1 for exactly those two sentinel errors. The go-sdk has no
+//     per-evaluation hook data to carry a "Before ran" marker, so the compensation goes
+//     through the same instrument (same meter scope and name, so the SDK returns the same
+//     instrument).
 type boundedVariantHook struct {
 	openfeature.Hook
+	active metric.Int64UpDownCounter
 }
 
 func (h boundedVariantHook) After(ctx context.Context, hCtx openfeature.HookContext,
@@ -75,6 +89,23 @@ func (h boundedVariantHook) After(ctx context.Context, hCtx openfeature.HookCont
 ) error {
 	details.Variant = MetricVariant(details.Variant)
 	return h.Hook.After(ctx, hCtx, details, hints)
+}
+
+func (h boundedVariantHook) Error(ctx context.Context, hCtx openfeature.HookContext, err error, hints openfeature.HookHints) {
+	h.Hook.Error(ctx, hCtx, err, hints)
+	if skippedBefore(err) {
+		h.active.Add(ctx, 1, metric.WithAttributes(semconv.FeatureFlagKey(hCtx.FlagKey())))
+	}
+}
+
+// skippedBefore reports whether err is one of the SDK's provider-state short circuits, which
+// run the error and finally hooks without the before hooks.
+func skippedBefore(err error) bool {
+	var re openfeature.ResolutionError
+	if !errors.As(err, &re) {
+		return false
+	}
+	return re == openfeature.ProviderNotReadyError || re == openfeature.ProviderFatalError
 }
 
 // NewOTelHooks returns the standard OpenFeature metrics and traces hooks, backed by the global
@@ -88,5 +119,10 @@ func newOTelHooks(provider metric.MeterProvider) ([]openfeature.Hook, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []openfeature.Hook{boundedVariantHook{Hook: metricsHook}, otelhooks.NewTracesHook()}, nil
+	active, err := provider.Meter(otelhooks.ScopeName).Int64UpDownCounter(MetricActiveInstrument,
+		metric.WithDescription("active flag evaluations counter"))
+	if err != nil {
+		return nil, err
+	}
+	return []openfeature.Hook{boundedVariantHook{Hook: metricsHook, active: active}, otelhooks.NewTracesHook()}, nil
 }
