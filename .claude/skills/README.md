@@ -47,6 +47,9 @@ in-memory services).
 | NFR measurement / check (pytest) | `@pytest.mark.nfr("NFR-014")` (several ids allowed), on the test or class that measures or verifies the NFR; print the measured numbers. Registered next to `uc` |
 | NFR measurement / check (Go) | `// NFR: NFR-012 NFR-013` directly above `func Test...` (next to a `// UC:` line if both apply) |
 
-A use case may be `Tested` only when every main scenario and alternative flow has a tagged test.
+A use case may be `Tested` only when every main scenario and alternative flow has a tagged test, it carries no open
+`Known gap` line, and every FR on its `Requirements:` line can be `Verified` (every other use case listing that FR is
+`Tested`): a use case is never above the weakest FR on its `Requirements:` line (docs/CONTRIBUTING.md "Status
+vocabularies"; same rule as `.claude/agents/uc-coverage.md` Step 5).
 An NFR may be `Verified` only when a test tagged with its id measures or checks the stated limit.
 Find them with `grep -rn 'mark.nfr("NFR-014"' services lib tests` and `grep -rn '^// NFR: .*NFR-012' services`.
