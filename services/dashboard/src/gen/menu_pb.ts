@@ -14,3 +14,12 @@ export interface ProcessInputResponse {
   success: boolean;
   error: string;
 }
+
+// List game modes request
+export type ListGameModesRequest = Record<string, never>;
+
+// List game modes response (Connect JSON omits an empty list)
+export interface ListGameModesResponse {
+  gameModes: string[];
+  defaultMode: string;
+}

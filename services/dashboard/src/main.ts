@@ -15,6 +15,7 @@ import { DecideStore, fetchAgentView, fetchDecideFeed } from "./agent.js";
 import { createPoller } from "./poller.js";
 import { ShieldStore } from "./shield.js";
 import { FollowTracker, followBanner, visibleTiles } from "./follow.js";
+import { loadModeChoices } from "./modes.js";
 import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
@@ -97,6 +98,10 @@ async function init() {
     onStopGame: handleStopGame,
     onModeChange: handleModeChange,
   });
+  // The playable modes come from the menu (#1278); FFA stays preselected.
+  loadModeChoices(() => menuClient.listGameModes())
+    .then((choices) => controls.setModeChoices(choices))
+    .catch(console.error);
   experimentsView = new ExperimentsView("experiments-grid", "experiments-freshness");
   agentView = new AgentView("agent-feed", "agent-flags", "agent-overlay", "agent-freshness", {
     strip: "decide-strip",
@@ -520,10 +525,14 @@ async function handleStartGame() {
 
   try {
     // Use menu service to process start command
-    await menuClient.processInput({
+    const response = await menuClient.processInput({
       inputType: "web_command",
       data: { command: "start_game", mode },
     });
+    if (response.success === false) {
+      addEvent(`Start rejected: ${response.error}`);
+      return;
+    }
     addEvent(`Starting ${mode}...`);
   } catch (error) {
     console.error("Failed to start game:", error);
