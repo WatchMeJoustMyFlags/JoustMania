@@ -176,3 +176,26 @@ hcitool rssi <MAC_ADDRESS>   # Get RSSI for connected device
 ```
 
 See `docs/hardware-setup-guide.md` for detailed troubleshooting.
+
+## Unpair a controller (UC-005)
+
+`POST /controllers/{address}/unpair` on the health port (8002) removes every
+PS Move registration of that Bluetooth address on every adapter (BlueZ
+`RemoveDevice`, plus saved-only `/var/lib/bluetooth/<adapter>/<address>`
+directories BlueZ has not loaded) and forgets that the controller was paired
+this session. Answers: 200 `{"address", "removed", "adapters"}`, 400 not a
+Bluetooth address, 404 not registered, 409 being paired over USB, 503 BlueZ
+unavailable.
+
+The dashboard calls it through envoy and the connect-proxy
+(`POST /pairing/unpair` with `{"address": "..."}`); the connect-proxy reaches the
+host-networked daemon via `host.docker.internal:8002` (full stack) or
+`pairing-daemon:8002` (lite stack). There is no authentication: it is an
+operator action with the same trust model as the rest of the stack, so keep the
+Pi on a trusted network.
+
+    curl -X POST http://<pi>/pairing/unpair -d '{"address":"00:06:F7:AA:BB:CC"}'
+
+After a re-pair to another adapter (UC-001 A4) the daemon also removes the
+controller's registrations on the other adapters (UC-001 A5, BR-004). Both use
+`remove_controller_registrations` in `psmove_pairing/registrations.py`.

@@ -23,6 +23,7 @@ from .metrics import (
     pairing_usb_controllers,
 )
 from .pairing_backend import HidapiBackend, PairingBackend, RustServiceBackend
+from .registrations import normalize_address, remove_controller_registrations
 from .utils import run_command
 
 logger = logging.getLogger("psmove-pairing")
@@ -34,6 +35,14 @@ class PairingError(Exception):
     Not raised for control flow — only passed to span.record_exception()
     so failure analysis can group and alert on pairing issues.
     """
+
+
+class PairingInProgressError(Exception):
+    """The controller is being paired over USB right now (UC-005 A6)."""
+
+
+class NotRegisteredError(Exception):
+    """BlueZ holds no PS Move registration for the address (UC-005 A4)."""
 
 
 # Span attribute constants
@@ -110,6 +119,8 @@ class USBPairing:
         # Cached backend instance — reused across polls when routing is unchanged
         self._current_backend: PairingBackend | None = None
         self._current_backend_name: str | None = None
+        # Upper-case address of the controller being paired right now (UC-005 A6)
+        self._pairing_address: str | None = None
 
     def _get_backend(self) -> tuple[PairingBackend, str]:
         """Return the cached backend, or resolve a new one.
@@ -263,19 +274,26 @@ class USBPairing:
             pairing_adapter_selected_total.labels(adapter=adapter.address).inc()
             pairing_adapter_device_count.labels(adapter=adapter.address).set(adapter.device_count)
 
-            # Pair controller to selected adapter via backend
-            if not await self.pair_controller(device_path, serial, adapter.address):
-                logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
-                pairing_failed_total.inc()
-                span.record_exception(PairingError(f"Controller {serial} pairing failed"))
-                span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
-                return False
+            self._pairing_address = normalize_address(serial)
+            try:
+                # Pair controller to selected adapter via backend
+                if not await self.pair_controller(device_path, serial, adapter.address):
+                    logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
+                    pairing_failed_total.inc()
+                    span.record_exception(PairingError(f"Controller {serial} pairing failed"))
+                    span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
+                    return False
 
-            # Restart BlueZ so it re-reads the new device files
-            await self.restart_bluetooth_service()
+                # Drop its registrations on other adapters (UC-001 A5, BR-004)
+                await self.remove_stale_registrations(serial, adapter.address)
 
-            # Trust device in BlueZ (for ZCM2, agent handles PIN at connect time)
-            await self.bluez_trust_controller(serial)
+                # Restart BlueZ so it re-reads the new device files
+                await self.restart_bluetooth_service()
+
+                # Trust device in BlueZ (for ZCM2, agent handles PIN at connect time)
+                await self.bluez_trust_controller(serial)
+            finally:
+                self._pairing_address = None
 
             # Mark as verified so we don't re-process every poll cycle
             self._verified_serials.add(serial)
@@ -289,6 +307,64 @@ class USBPairing:
             pairing_success_total.inc()
             span.set_status(Status(StatusCode.OK))
             return True
+
+    async def remove_stale_registrations(self, serial: str, keep_adapter: str) -> list[str]:
+        """Remove the controller's registrations on every adapter but ``keep_adapter`` (UC-001 BR-004).
+
+        The address was read from a PS Move on USB, so it alone identifies the
+        controller. Failures are logged and never fail the pairing.
+        """
+        with self.tracer.start_as_current_span("pairing.remove_registrations") as span:
+            span.set_attribute(_ATTR_CONTROLLER_SERIAL, serial)
+            span.set_attribute("unpair.reason", "repair")
+            try:
+                removed = await remove_controller_registrations(serial, keep_adapter=keep_adapter, require_psmove=False)
+            except Exception as e:
+                logger.warning(f"Could not remove stale registrations of {serial}: {e}")
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                return []
+            span.set_attribute("unpair.removed_count", len(removed))
+            if removed:
+                logger.info(f"Removed stale registrations of {serial} on {', '.join(removed)}")
+            return removed
+
+    async def unpair(self, address: str) -> list[str]:
+        """Unpair one controller on every adapter (UC-005).
+
+        Returns:
+            Adapter addresses whose registration was removed.
+
+        Raises:
+            ValueError: not a Bluetooth address (A5).
+            PairingInProgressError: the controller is being paired now (A6).
+            NotRegisteredError: no PS Move registration for it (A4).
+            DBusError: BlueZ failed (A7).
+        """
+        normalized = normalize_address(address)
+        if normalized is None:
+            raise ValueError(f"not a Bluetooth address: {address!r}")
+        if normalized == self._pairing_address:
+            raise PairingInProgressError(normalized)
+
+        with self.tracer.start_as_current_span("pairing.remove_registrations") as span:
+            span.set_attribute(_ATTR_CONTROLLER_SERIAL, normalized)
+            span.set_attribute("unpair.reason", "operator")
+            try:
+                removed = await remove_controller_registrations(normalized)
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
+            span.set_attribute("unpair.removed_count", len(removed))
+
+        # Pair it again when it is plugged in over USB (not UC-001 A1)
+        self._verified_serials = {s for s in self._verified_serials if normalize_address(s) != normalized}
+
+        if not removed:
+            raise NotRegisteredError(normalized)
+        logger.info(f"UNPAIRED: Controller {normalized} removed on {', '.join(removed)}")
+        return removed
 
     async def poll(self) -> None:
         """Perform one USB polling cycle."""

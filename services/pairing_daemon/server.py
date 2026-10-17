@@ -27,12 +27,14 @@ Feature Flags (system domain):
 
 Endpoints:
   GET /healthz  - Health check (200 if healthy, 503 if unhealthy)
+  POST /controllers/{address}/unpair - Unpair one controller on every adapter
+      (UC-005; operator-only, no authentication, reached via the connect-proxy)
 """
 
 import asyncio
 import json
 import logging
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
 from lib.otel_logging import init_logging
@@ -40,6 +42,7 @@ from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector_thread
 from psmove_pairing import PairingDaemon, init_telemetry, metrics
 from psmove_pairing.config import DEBUG, METRICS_PORT, init_performance_flags
+from psmove_pairing.control_api import handle_post
 
 # Global daemon reference for health checks
 _daemon: PairingDaemon | None = None
@@ -63,6 +66,24 @@ class HealthHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+
+    def do_POST(self):
+        """Handle POST requests (operator control API, UC-005)."""
+        if _daemon is None:
+            self._send_json(503, {"error": "daemon not started"})
+            return
+        result = handle_post(self.path, _daemon.usb_pairing, _daemon.loop)
+        if result is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self._send_json(*result)
+
+    def _send_json(self, status: int, body: dict) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
 
     def _handle_healthz(self):
         """Handle health check request."""
@@ -91,7 +112,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server(port: int) -> None:
     """Start HTTP server with health endpoint."""
-    server = HTTPServer(("", port), HealthHandler)
+    server = ThreadingHTTPServer(("", port), HealthHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
 

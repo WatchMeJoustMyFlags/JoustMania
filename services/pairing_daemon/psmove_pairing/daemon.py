@@ -32,6 +32,9 @@ class PairingDaemon:
         self._last_bt_monitor: float = 0.0
         self._startup_time: float = time.time()
 
+        # Event loop the daemon runs on; the HTTP thread schedules unpairs onto it (UC-005)
+        self.loop: asyncio.AbstractEventLoop | None = None
+
         logger.info("PairingDaemon initialized")
 
     async def validate_prerequisites(self) -> bool:
@@ -138,6 +141,7 @@ class PairingDaemon:
 
     async def run(self) -> None:
         """Main daemon loop with concurrent USB polling and Bluetooth monitoring."""
+        self.loop = asyncio.get_running_loop()
         logger.info("PS Move Pairing Daemon started")
         logger.info(f"  USB poll interval: {get_poll_interval()}s")
         logger.info(f"  Bluetooth monitor interval: {get_bt_monitor_interval()}s")
