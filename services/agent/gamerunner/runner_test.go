@@ -212,13 +212,18 @@ func TestRunShadowGame_StartRejected(t *testing.T) {
 	}
 }
 
-// UC: UC-046 A8
+// UC: UC-046 A8 BR-016
 func TestRunShadowGame_PreemptedIsAborted(t *testing.T) {
 	t.Run("UC-046/A8 a force-end the agent did not request is an abort, not a completed game", func(t *testing.T) {
 		mock := &fakeMock{}
+		// The coordinator's real order (#1403): JoustFFA publishes game_ended with
+		// the frozen force_ended outcome from the game thread FIRST; game_force_ended
+		// follows only after the coordinator joined the thread.
+		ended := ev(eventGameEnded)
+		ended.Data = map[string]string{"outcome": "force_ended", "reason": "preempted_by_real_game"}
 		preempt := ev(eventGameForceEnded)
 		preempt.Data = map[string]string{"reason": "preempted_by_real_game"}
-		coord := &fakeCoord{gameID: "game_pre", events: []*gcpb.GameEvent{ev("game_started"), preempt}}
+		coord := &fakeCoord{gameID: "game_pre", events: []*gcpb.GameEvent{ev("game_started"), ended, preempt}}
 		h := newHarness(t, mock, coord)
 		defer h.stop()
 		outcomes := make(chan Outcome, 1)

@@ -515,11 +515,24 @@ func (r *Runner) awaitTerminal(
 
 	forced := false
 	aborted := false
+	// endedPending is set by a game_ended without an outcome field (a coordinator
+	// older than #1328): the game is over, but a game_force_ended may still follow
+	// (UC-046 BR-016). graceC fires when the wait for it is over.
+	endedPending := false
+	var graceC <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return terminal, eventsSeen, OutcomeError
+		case <-graceC:
+			// No game_force_ended followed the outcome-less game_ended: the game
+			// ended on its own.
+			return terminal, eventsSeen, OutcomeCompleted
 		case <-deadline.C:
+			if endedPending {
+				// The game already ended; never force-end it at the cap.
+				continue
+			}
 			if forced {
 				// Already force-ended and still no terminal event; give up.
 				return terminal, eventsSeen, forcedOutcome(aborted)
@@ -535,7 +548,7 @@ func (r *Runner) awaitTerminal(
 		case <-abort:
 			// Kill switch (UC-046 A12): force-end now; a nil channel never fires.
 			abort = nil
-			if !forced {
+			if !forced && !endedPending {
 				aborted = true
 				r.log.Info("pattern game aborted, force-ending", "game_id", gameID)
 				r.forceEnd(ctx, cl, gameID)
@@ -549,42 +562,88 @@ func (r *Runner) awaitTerminal(
 				deadline.Reset(r.cfg.RPCTimeout)
 			}
 		case res := <-events:
-			if res.err == io.EOF {
-				// Stream closed without a terminal event; treat a prior
-				// force-end as the outcome, else error.
-				if forced {
-					return terminal, eventsSeen, forcedOutcome(aborted)
-				}
-				return terminal, eventsSeen, OutcomeError
-			}
 			if res.err != nil {
-				if forced {
+				// Stream closed (EOF) or failed without a (further) terminal event.
+				switch {
+				case endedPending:
+					return terminal, eventsSeen, OutcomeCompleted
+				case forced:
 					return terminal, eventsSeen, forcedOutcome(aborted)
+				default:
+					return terminal, eventsSeen, OutcomeError
 				}
-				return terminal, eventsSeen, OutcomeError
 			}
 			eventsSeen++
 			if onEvent != nil {
 				onEvent(res.event)
 			}
 			et := res.event.GetEventType()
-			if _, isTerminal := terminalEvents[et]; isTerminal {
-				terminal = et
-				switch {
-				case forced:
-					return terminal, eventsSeen, forcedOutcome(aborted)
-				case et == eventGameError:
-					return terminal, eventsSeen, OutcomeError
-				case et == eventGameForceEnded:
-					// UC-046 A8: a force-end the agent did not request (e.g. a real game
-					// preempting shadows) is an abort: released without a sample.
-					return terminal, eventsSeen, OutcomeForceEnded
-				default:
-					return terminal, eventsSeen, OutcomeCompleted
-				}
+			if _, isTerminal := terminalEvents[et]; !isTerminal {
+				continue
+			}
+			terminal = et
+			outcome, wait := classifyTerminal(res.event, forced, aborted)
+			if !wait {
+				return terminal, eventsSeen, outcome
+			}
+			if !endedPending {
+				endedPending = true
+				grace := time.NewTimer(r.endedGrace)
+				defer grace.Stop()
+				graceC = grace.C
 			}
 		}
 	}
+}
+
+// Coordinator vocabulary of the game_ended payload (games/ffa.py, #1328) and the
+// reason the runner passes to ForceEndGame.
+const (
+	endedDataOutcome      = "outcome"
+	endedDataReason       = "reason"
+	gameOutcomeForceEnded = "force_ended"
+	agentForceEndReason   = "shadow_game_timeout"
+)
+
+// DefaultEndedGrace bounds the wait for a game_force_ended after a game_ended
+// without an outcome field (UC-046 BR-016): the coordinator publishes
+// game_force_ended only after joining the game thread for up to 2 s
+// (game_session.py force_end), plus a margin.
+const DefaultEndedGrace = 3 * time.Second
+
+// classifyTerminal classifies a terminal event (UC-046 BR-016). forced reports
+// whether the runner force-ended the game itself (aborted: by the kill switch
+// rather than the safety cap). wait is true for a game_ended without an outcome
+// field: the caller waits briefly for a following game_force_ended before
+// classifying the game as completed.
+func classifyTerminal(event *gcpb.GameEvent, forced, aborted bool) (outcome Outcome, wait bool) {
+	et := event.GetEventType()
+	data := event.GetData()
+	forceEnd := et == eventGameForceEnded ||
+		(et == eventGameEnded && data[endedDataOutcome] == gameOutcomeForceEnded)
+	switch {
+	case forceEnd && foreignForceEnd(data[endedDataReason], forced):
+		// UC-046 A8: a force-end the agent did not request (a real game preempting
+		// shadows, or any other) is an abort: released without a sample.
+		return OutcomeForceEnded, false
+	case forced:
+		return forcedOutcome(aborted), false
+	case et == eventGameError:
+		return OutcomeError, false
+	case et == eventGameEnded && data[endedDataOutcome] == "":
+		return OutcomeCompleted, true
+	default:
+		// game_ended with outcome winner / tie / completed: the outcome was frozen
+		// when the game loop ended, so a force-end that follows does not change it.
+		return OutcomeCompleted, false
+	}
+}
+
+// foreignForceEnd reports whether a force-end with this reason was not the
+// runner's own: the runner did not request one, or the coordinator names another
+// reason (e.g. preempted_by_real_game won the race against the runner's request).
+func foreignForceEnd(reason string, forced bool) bool {
+	return !forced || (reason != "" && reason != agentForceEndReason)
 }
 
 // forcedOutcome classifies a game the agent force-ended. Ended by the safety cap
@@ -603,7 +662,7 @@ func (r *Runner) forceEnd(ctx context.Context, cl *clients, gameID string) {
 	defer cancel()
 	gid := gameID
 	_, err := cl.coord.ForceEndGame(rpcCtx, &gcpb.ForceEndGameRequest{
-		Reason: "shadow_game_timeout",
+		Reason: agentForceEndReason,
 		GameId: &gid,
 	})
 	if err != nil {
