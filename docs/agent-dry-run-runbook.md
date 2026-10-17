@@ -12,17 +12,18 @@ The fastest path is:
 ```bash
 make dry-run
 ./scripts/agent-dryrun-enable.sh on   # the loop is inert until you do this
-                                      # (gate flip takes effect live ~1 s — no restart)
+                                      # (flag-service overlay, live — no restart)
 ```
 
-`./scripts/agent-dryrun-enable.sh on` flips **both** live gates in the ci/ flag
-dir in one step — the master `enabled` kill-switch **and** the
+`./scripts/agent-dryrun-enable.sh on` flips **both** live gates in one step,
+as in-memory `operator` overlays through the flag service (`scripts/flags.sh`) — the master `enabled` kill-switch **and** the
 `experiments_enabled` flag (the LIVE experiment gate post-#1044). The in-game
 decision backend is a separate flag (`decision.backend`, default `rules`); flip
 it with `./scripts/agent-backend.sh` (see [agent-inference.md](agent-inference.md)).
 
 Restore the fail-closed defaults afterwards with
-`./scripts/agent-dryrun-enable.sh off`.
+`./scripts/agent-dryrun-enable.sh off` (clears both overlays). A flag-service
+restart or `down` also drops them; nothing is persisted.
 
 `make dry-run` prints the same steps and the observability URLs on completion.
 
@@ -43,16 +44,15 @@ findings):
 | # | Default | Symptom | Fix in the dry-run path |
 |---|---------|---------|-------------------------|
 | 1 | `.env` pins `IMAGE_TAG=0.7.0` (release-please) | A plain `up` runs the last RELEASE images — they predate the experiment framework, so the loop never constructs (no `Experiment cohort loop` log) | `make dry-run` pins `IMAGE_TAG=latest` (override with `IMAGE_TAG=... make dry-run`, or add `BUILD=1` to build locally) |
-| 2 | Agent master kill-switch `agent.json` `enabled` = `off` (fail-closed) | Loop declares + writes targeting then self-aborts: `experiment.torn_down ... reason="kill-switch: agent disabled"` | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` (flips the **ci** flag dir only; production default stays `off`) |
+| 2 | Agent master kill-switch `agent.json` `enabled` = `off` (fail-closed) | Loop declares + writes targeting then self-aborts: `experiment.torn_down ... reason="kill-switch: agent disabled"` | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` (in-memory overlay in the running stack only; the baseline stays `off`) |
 | 3 | The agent compose env did not declare `AGENT_EXPERIMENTS_ENABLED` / `AGENT_EXPERIMENT_SEED_*` | A host `export` never reached the container (needed a custom override) | These vars are now declared (default-off) on the `agent` service in `docker-compose.yml`; the dry-run override turns them on |
-| 5 | **(#1044/#1077)** flagd `experiments_enabled` flag = `off` (fail-closed) **overrides** the `AGENT_EXPERIMENTS_ENABLED=true` env | The loop is constructed but `gated LIVE by agent.json experiments_enabled` — `env_enabled_default=true` is dead config; **zero** `experiment.*` activity | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` flips `experiments_enabled` (and `enabled`, row 2) in the **ci** flag dir only; production default stays `off` |
+| 5 | **(#1044/#1077)** flagd `experiments_enabled` flag = `off` (fail-closed) **overrides** the `AGENT_EXPERIMENTS_ENABLED=true` env | The loop is constructed but `gated LIVE by agent.json experiments_enabled` — `env_enabled_default=true` is dead config; **zero** `experiment.*` activity | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` flips `experiments_enabled` (and `enabled`, row 2) as in-memory overlays; the baseline stays `off` |
 | 6 | **(#1225/#1234)** flagd `decision.backend` flag = `rules` | Decisions come from the rules engine; no model is called. Shadow games stay on rules even with a remote backend (`llm.eligible_game_kinds` defaults to `real`) | `./scripts/agent-backend.sh claude` (needs `ANTHROPIC_API_KEY` in the agent env); `rules` is the correct floor without a key |
 
-And one **silent-ineffective** trap:
-
-| # | Default | Symptom | Fix |
-|---|---------|---------|-----|
-| 4 | In ci-mode, `flagd`+`menu` mount `services/flagd/ci:/etc/flagd` but the base `agent` keeps `services/flagd:/etc/flagd` | The agent's game.json targeting writes land in the BASE file while flagd serves the CI file — writes happen but never reach flagd; experiment targeting is silently ineffective (a #822-class dir mismatch) | `docker-compose.dry-run.yml` `!override`s the agent volume onto the SAME `services/flagd/ci` dir flagd + menu serve |
+Row 4 (the agent writing a different flag dir than flagd served, a #822-class
+mismatch) is gone since the flag service (epic #1407): the agent writes through
+the flag service's HTTP API, the flag service loads the `services/flagd/ci/`
+baseline in this stack, and flagd's only source is the flag service.
 
 ---
 
@@ -68,7 +68,7 @@ real-default change.
    `AGENT_EXPERIMENTS_ENABLED=true` env (which `docker-compose.dry-run.yml` still
    sets, but is now dead config for this purpose — the loop logs
    `gated LIVE by agent.json experiments_enabled`). When `off` (the fail-closed
-   default) there are no shadow spawns, no targeting writes, no promotions.
+   default) there are no shadow spawns, no experiment-arm writes, no promotions.
    *Manual opt-in via `./scripts/agent-dryrun-enable.sh on` — never default-on.*
 
 2. **Agent master kill-switch** — `agent.json` `enabled` flag = `on`.
@@ -76,8 +76,8 @@ real-default change.
    decision loop short-circuits before any work and emits a throttled
    `agent.disabled` span (`services/agent/decision/telemetry.go` `SpanDisabled`);
    the experiment loop aborts running experiments with the teardown reason
-   `kill-switch: agent disabled`. Hot-reloaded — no restart needed for the
-   flag flip itself, but the agent re-reads it each cycle.
+   `kill-switch: agent disabled`. A flag-service overlay reaches flagd over the
+   sync stream at once — no restart needed; the agent re-reads it each cycle.
    *Flipped together with gate 1 by `./scripts/agent-dryrun-enable.sh on` —
    never default-on.*
 
@@ -99,7 +99,7 @@ real-default change.
    `.fitness_improvement_threshold`, …). These gate the **real-default
    promotion** action only. They stay at their defaults in the dry run, so a
    concluded experiment produces a **verdict** (visible in traces) but does
-   **not** rewrite the real game.json default. Promotion also remains subject
+   **not** set a `real` promotion overlay on the flag service. Promotion also remains subject
    to the invariant gate (real-context resolution must be byte-unchanged) and
    the kill-switch.
 
@@ -123,9 +123,10 @@ docker compose \
 - `docker-compose.ci.yml` — mock controllers (`backend=mock`), the `agent` /
   `dashboard` profiles gated behind `--profile`.
 - `docker-compose.dry-run.yml` — `AGENT_EXPERIMENTS_ENABLED=true`, one seeded
-  experiment (`death_grace_period_seconds = 0.75`, objective `balanced`,
-  `N=8`/arm), and the **agent volume `!override`d onto `services/flagd/ci`** so
-  its writes reach flagd.
+  experiment (`windows` = the `frantic` pacing object, objective `balanced`,
+  `N=8`/arm), and the flag service's own admin state file
+  (`admin-dry-run.json`). The flag service loads the `services/flagd/ci/`
+  baseline; no service mounts a writable flag dir.
 - `--profile dashboard` — dashboard + connect-proxy + envoy for the full
   observability surface at `http://localhost/`.
 
@@ -137,9 +138,11 @@ AGENT_EXPERIMENT_SEED_VALUE=4.5 \
 make dry-run
 ```
 
-The seed flag must **exist in `services/flagd/ci/game.json`** and the value's
-JSON kind must match its variants (the Gate's type guard rejects a mistyped
-seed at the targeting write).
+The seed flag must **exist in `services/flagd/ci/game.json`**, be in the
+experiment catalog (a registry row with `experiment+arm` scope,
+[flags.md §13.3](specs/flags.md#13-mutable-flag-registry)), and the value must
+be in its bounds; the flag service rejects anything else with HTTP 422
+(`flag_read_only` / `out_of_bounds`).
 
 ---
 
@@ -154,16 +157,17 @@ seed at the targeting write).
   `experiments_enabled flag off` abort).
 - **Jaeger** (`http://localhost/jaeger/`, service `agent`): experiment
   declare/spawn/conclude/verdict spans.
-- **flagd**: `services/flagd/ci/game.json` gains a reserved experiment variant +
-  a `game_kind != "real"` targeting branch for the seeded flag — confirming the
-  agent and flagd share the file.
+- **Flag service**: `scripts/flags.sh get game <seed flag>` lists the
+  experiment-arm value (scope `experiment_id` + `arm=experimental`); the flag
+  service renders it as a `game_kind != "real"` rung. The baseline file is
+  never written.
 
 ## Tear down
 
 ```bash
+./scripts/agent-dryrun-enable.sh off    # clear the enabled/experiments_enabled overlays (optional: down drops them too)
 docker compose \
   -f docker-compose.yml -f docker-compose.override.yml \
   -f docker-compose.ci.yml -f docker-compose.dry-run.yml \
   --profile agent --profile dashboard down
-./scripts/agent-dryrun-enable.sh off    # restore the fail-closed defaults (enabled/experiments_enabled/mode)
 ```

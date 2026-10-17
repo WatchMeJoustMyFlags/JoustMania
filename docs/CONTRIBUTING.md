@@ -192,7 +192,7 @@ The `Spec Gate` job in `ci.yml` (#1263, required through `CI Complete`) has two 
    config do, since `docs/specs/telemetry.md` documents them): the PR must also change
    `docs/requirements.md`, `docs/use_cases/**`, `docs/use_cases.puml`, `docs/specs/**`,
    `docs/specs-inventory.md` or `docs/entity_model.md`. A change to
-   `services/flagd/*.json` must touch `docs/specs/flags.md`, a change to
+   the baseline flag files `services/flagd/*.json` must touch `docs/specs/flags.md`, a change to
    `proto/*.proto` must touch `docs/specs/services.md`. Exempt: PRs with the
    `no-spec-change` label; Renovate, Dependabot and release-please PRs (the bot
    accounts `renovate[bot]`, `dependabot[bot]`, `github-actions[bot]`, matched by

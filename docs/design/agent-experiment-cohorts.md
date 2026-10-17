@@ -1,4 +1,5 @@
 > **Superseded** by [UC-043](../use_cases/UC-043.md), [entity_model.md](../entity_model.md#experiment) and [flags.md](../specs/flags.md#3-agent) (the design shipped in epic #982) (2026-10-16); kept for history.
+> The flag-writing mechanics below (the experiment Writer's read-modify-write of `game.json`, `agent_experiment__<id>` variants, chained `if`-branches) are themselves superseded by the flag service (epic #1407, [flags.md §13.3](../specs/flags.md#13-mutable-flag-registry)): an experiment arm is `PUT /game/{flag}` with scope `{experiment_id, arm}`, teardown is `DELETE /game/{flag}?experiment_id=<id>`, and the flag service renders the shadow-only rung. No process writes a flag file.
 
 # Design: Agent Experiment / Cohort Attribution Framework
 
@@ -174,7 +175,7 @@ Key properties, all extensions of existing `targeting.go` behavior:
 - **Multi-experiment coexistence.** K experiments on K *different* flags are K independent flag rules — no interaction. K experiments on the *same* flag nest as chained `if`s (one experiment's else-branch is the next experiment's `if`), each keyed on its own `experiment_id`. The reserved variant name becomes `agent_experiment__<experiment_id>` so experiments never overwrite each other (replacing the single `ExperimentVariant`, `targeting.go:34`).
 - **Real-by-default fail-safe preserved.** A real game has no `experiment_id` (API-level default omits it), so *every* experiment's condition is false and it resolves `<existing-else>` → the real default. The Gate's invariant ("real resolution unchanged," `proposal.go:22-27`) holds by the same structural argument as today; the Gate is extended to verify it across *all* experiment branches, not just one.
 
-The Writer's atomic read-modify-write of the flagd file under a mutex (the `actions/writer.go` pattern) is reused unchanged — only the rule shape grows.
+The Writer's atomic read-modify-write of the flagd file under a mutex (the `actions/writer.go` pattern) is reused unchanged — only the rule shape grows. *(Superseded by epic #1407: the agent sends the arm value to the flag service, which generates the rung; no file write.)*
 
 ---
 
@@ -312,7 +313,7 @@ Default dir e.g. `/var/lib/joustmania/agent/experiments` (env `AGENT_EXPERIMENT_
 
 On a `CONCLUDED` experiment with a `PROMOTE` verdict, route to the **existing Promoter unchanged** (`promote.go`, §2.5): build `Evidence` from the cohort verdict — `FitnessBefore = control mean` (or recent-real baseline), `FitnessAfter = experimental mean`, `FitnessDelta`, `SyntheticGames = N` (`promote.go:130-153`) — and call `Promote(...)`. Safe defaults and env-gated real paths apply as-is; nothing in the promotion safety rail changes.
 
-**Teardown** is the inverse of §6: on any terminal status (`DONE`/`DISCARDED`/`ABORTED`), the Writer removes that experiment's `if`-branch from the flag rule (un-nesting its `experiment_id` condition), releasing its variant name and reclaiming its capacity (§7). Removing a shadow-scoped branch only ever affects shadow games, so it is trivially invariant-safe (same argument as `validate.go`'s Reverter note, `:194-199`). Auto-stop also fires on the kill-switch (`agent.json` `enabled`).
+**Teardown** is the inverse of §6: on any terminal status (`DONE`/`DISCARDED`/`ABORTED`), the Writer removes that experiment's `if`-branch from the flag rule (un-nesting its `experiment_id` condition), releasing its variant name and reclaiming its capacity (§7). Removing a shadow-scoped branch only ever affects shadow games, so it is trivially invariant-safe (same argument as `validate.go`'s Reverter note, `:194-199`). Auto-stop also fires on the kill-switch (`agent.json` `enabled`). *(Superseded by epic #1407: teardown is `DELETE /game/{flag}?experiment_id=<id>` on the flag service.)*
 
 ---
 

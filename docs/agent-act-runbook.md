@@ -18,8 +18,13 @@ must both be open for an intervention to reach the game:
 
 | Gate | Where | Stock value | Act value | Restart? |
 |------|-------|-------------|-----------|----------|
-| **1. Sink** `interventions_enabled` | `services/flagd/agent.json` flag set (#1213) | `off` (discards — decision recorded, not written) | `on` (real `actions.Writer` writes) | **No** — flagd flag flip, re-read at use-time |
-| **2. Kill switch** `enabled` | `services/flagd/agent.json` flag domain | `off` | `on` | **No** — flagd hot-reload (<100 ms) |
+| **1. Sink** `interventions_enabled` | `agent` flag set (#1213); baseline `services/flagd/agent.json` | `off` (discards — decision recorded, not written) | `on` (real `actions.Writer` writes) | **No** — flag-service overlay, re-read at use-time |
+| **2. Kill switch** `enabled` | `agent` flag set; baseline `services/flagd/agent.json` | `off` | `on` | **No** — flag-service overlay, pushed to flagd over the sync stream |
+
+Both gates are flipped at runtime through the flag service (`scripts/flags.sh`,
+or the HTTP API at `http://localhost/flags/`). The baseline file is read-only and
+never written (C-033). A flip is an in-memory overlay: a flag-service restart
+drops it and the gate returns to its fail-closed baseline `off`.
 
 Both gates are also the **safe defaults** when their backing config is missing —
 **fail-closed**: flagd unreachable or the flag undefined resolves to `off` for
@@ -44,7 +49,7 @@ With `docker compose up`, the agent:
   spans).
 - **Dispatches nothing**: the sink gate `interventions_enabled` is `off`
   (fail-closed default), so a fully-permitted, fitting decision is recorded and
-  spanned but **not written** to `interventions.json`. And `enabled=off`
+  spanned but **not written** to the flag service. And `enabled=off`
   short-circuits the loop before any rule runs,
   emitting only a throttled `agent.disabled` kill-switch trace.
 
@@ -59,33 +64,32 @@ the reason this runbook exists.
 ### Step 1 — Open the sink gate (flag, no restart)
 
 Flipping `interventions_enabled` to `on` lets the gated sink dispatch through the
-real `actions.Writer`, which applies decisions by rewriting
-`services/flagd/interventions.json` in place (the game coordinator watches that
-file and converges on its contents — there is no gRPC from the agent to the game
-services). As of #1213 this is a **flagd flag** in the `agent` flag set, re-read
+real `actions.Writer`, which applies decisions through the flag service's HTTP
+API: a state, level or grant is a game-scoped value (`PUT /interventions/{flag}`
+with `scope.game_id`, plus `scope.serial` for a player), a one-shot intervention
+(`eliminate_player`, `revive_player`, `audio_cue`, `controller_effect`,
+`end_game`) is an event appended to that game's event list
+(`POST /interventions/{flag}`). The game coordinator evaluates these through
+flagd with its `gameId` — there is no gRPC from the agent to the game services.
+As of #1213 this is a **flagd flag** in the `agent` flag set, re-read
 **at use-time** (per `Apply`, never cached at startup), so flipping it takes
 effect on the next decision with **no agent restart**. It is **fail-closed**:
 `off`, undefined, or flagd unreachable → the decision is recorded and spanned but
 **not written**.
 
-Edit `interventions_enabled` in `services/flagd/agent.json` — change its
-`defaultVariant` from `off` to `on` (or flip the same flag in the live flagd flag
-set):
+Set an `operator` overlay on `interventions_enabled` through the flag service:
 
-```json
-"interventions_enabled": {
-  "state": "ENABLED",
-  "variants": { "on": true, "off": false },
-  "defaultVariant": "on"
-}
+```bash
+scripts/flags.sh set agent interventions_enabled on
+scripts/flags.sh variant agent interventions_enabled   # prints: on
 ```
 
-Save. flagd's file-watch fires within **~100 ms–1 s**; no restart. The next
-`Apply` reads `on` and writes through the real `Writer`. Confirm from the agent
-log:
+flagd gets the change over its sync stream; no restart. The next `Apply` reads
+`on` and writes through the real `Writer`. At start the agent logs the gate and
+the flag-service URL it writes to:
 
 ```
-Agent intervention writes enabled (#730) path=/etc/flagd/interventions.json
+Agent intervention writes gated by LIVE interventions_enabled flag (#1213; default fail-closed off) flag_service=http://flag-service:8070
 ```
 
 > The sink alone changes nothing yet — gate 2 (`enabled`) still short-circuits
@@ -93,28 +97,22 @@ Agent intervention writes enabled (#730) path=/etc/flagd/interventions.json
 
 ### Step 2 — Flip the kill switch on (flag, no restart)
 
-Edit `enabled` in `services/flagd/agent.json` — change its `defaultVariant` from
-`off` to `on`:
-
-```json
-"enabled": {
-  "state": "ENABLED",
-  "variants": { "on": true, "off": false },
-  "defaultVariant": "on"
-}
+```bash
+./scripts/agent-killswitch.sh on      # or: scripts/flags.sh set agent enabled on
 ```
 
-Save. flagd's file-watch fires within **~100 ms–1 s**; no restart. The agent's
-next cycle runs the rules engine instead of emitting `agent.disabled`. This is
-the same mechanism documented in
-[feature-flags.md → Edit Flag Values](feature-flags.md#3-edit-flag-values), and
-mirrors the admin-mode `defaultVariant` rewrite in `lib/flag_config_writer.py`.
+No restart. The agent's next cycle runs the rules engine instead of emitting
+`agent.disabled`. This is the same mechanism documented in
+[feature-flags.md → Edit Flag Values](feature-flags.md#3-edit-flag-values); the
+menu's admin mode writes its settings through the same API.
 
 ### Step 3 — Open the permission surface
 
 Even with both gates open, the **permission layer** still bounds what dispatches.
 The stock `interventions_allowed` variant is `ambient` (audio cue, controller
-effect, volume only). To allow more, flip its `defaultVariant` in `agent.json`:
+effect, volume only). To allow more, set another variant through the flag
+service (`scripts/flags.sh set agent interventions_allowed standard`, or
+`./scripts/talk-stage.sh permissions <variant>` on stage):
 
 | Variant | Allows |
 |---------|--------|
@@ -143,10 +141,10 @@ walks the full ladder + the three shadow-only levers as a stage act.
 
 ## Kill-switch path back (instant, no restart)
 
-Flip `enabled` back to `off` in `services/flagd/agent.json`. The next cycle
-short-circuits before any rule runs; only the throttled `agent.disabled` trace is
-emitted (`agent.enabled=false` visible in Jaeger). This is the **demo panic
-button** — a single flag flip, hot-reloaded in <100 ms, no container restart.
+`./scripts/agent-killswitch.sh off` (clears the `enabled` overlay; the baseline
+is `off`). The next cycle short-circuits before any rule runs; only the throttled
+`agent.disabled` trace is emitted (`agent.enabled=false` visible in Jaeger). This
+is the **demo panic button** — a single flag-service write, no container restart.
 
 (Setting `interventions_allowed` to `none` is a softer brake: the loop still runs
 and traces, but every decision is blocked `not_allowed`.)
@@ -162,16 +160,23 @@ objective was served, why this action, and was it permitted*.
 
 ### A. Flip the objective → `decision.objective_served` changes
 
-Edit `objectives.defaultVariant` in `agent.json` (e.g. `balanced_focused` →
-`accelerate_focused`). On the next cycle the rules engine re-weights candidates;
+`objectives` is not in the flag service's mutable registry, so this is a
+baseline change: set `objectives.defaultVariant` in `services/flagd/agent.json`
+(e.g. `balanced_focused` → `accelerate_focused`) and run `scripts/flags.sh
+restart`. The restart drops every overlay, so open both gates again (Steps 1 and
+2) afterwards. On the next cycle the rules engine re-weights candidates;
 the selected winner's **`decision.objective_served`** attribute on `agent.decision`
 flips toward the now-dominant objective (e.g. `accelerate`). The cycle-level
 `agent.objectives` attribute shows the new weight map.
 
 ### B. Change a `fitness.*` flag → `fitness.evaluated` changes
 
-Edit e.g. `fitness.endurance.min_session_seconds` (`default` 120 → `short` 60) or
-`fitness.accelerate.target_session_seconds` in `agent.json`. Fitness is evaluated
+Set `fitness.accelerate.target_session_seconds` through the flag service
+(`scripts/flags.sh set agent fitness.accelerate.target_session_seconds <variant>`;
+it is in the mutable registry). Other `fitness.*` flags such as
+`fitness.endurance.min_session_seconds` (`default` 120 → `short` 60) are
+baseline-only: edit `services/flagd/agent.json` and run `scripts/flags.sh
+restart`, as in A. Fitness is evaluated
 **every cycle** against the live `GameContext`, so the next decision span's
 **`fitness.evaluated`** attribute shows the new threshold and recomputed progress
 (e.g. `endurance.min_session_seconds=60 endurance.session_progress=…`). A failing
@@ -184,10 +189,11 @@ With both gates open and a permitting `interventions_allowed`, run a live game
 (or push synthetic metrics — see the agent README *Local smoke test*). When the
 engine selects a permitted, fitting decision:
 
-1. `agent.action` span completes (no `decision.blocked`), and the agent rewrites
-   `services/flagd/interventions.json`.
-2. The **game coordinator** reads the changed file and applies the intervention,
-   incrementing the counter
+1. `agent.action` span completes (no `decision.blocked`), and the agent writes
+   the game-scoped value or event to the flag service (`flagservice.write` span).
+2. The **game coordinator** evaluates the changed flag through flagd with its
+   `gameId` and applies the intervention,
+   incrementing the Prometheus counter
    **`game_interventions_total{type, objective, blocked="false"}`**.
 
 In Grafana (Explore, VictoriaMetrics datasource):
@@ -206,7 +212,7 @@ Tighten a gate and watch a block. Two easy demos:
   **not** dispatched (recorded `blocked` on the span), and
   `game_interventions_total{blocked="true"}` increments on the game side.
 - **Rate-limit block**: lower `policy.max_interventions_per_minute` to
-  `conservative` (1). Once the weighted trailing-minute budget is spent, further
+  `conservative` (1) (`scripts/flags.sh set agent policy.max_interventions_per_minute conservative`). Once the weighted trailing-minute budget is spent, further
   decisions block with `decision.block_reason=rate_limit`.
 
 ---
@@ -222,7 +228,7 @@ can verify the trace pipeline without a live game. See the agent README →
   `agent.signal_received → agent.decision` spans still emit — OBSERVE→DECIDE and the
   span schema are fully exercised; only `agent.action` is withheld.
 - **Full path**: flip `interventions_allowed` to the **`probe`** variant
-  (`["noop"]`) in `agent.json`, plus `interventions_enabled=on` and
+  (`"noop"`) through the flag service, plus `interventions_enabled=on` and
   `enabled=on`. `noop` is a harmless no-op in the `Writer` (returns success
   without writing any flag), so the decision flows through every gate, reaches
   the real sink, and completes the `agent.action` span — all without changing the
@@ -292,12 +298,12 @@ Cross-reference: [agent README → Span schema (#724)](../services/agent/README.
 
 Walk the two gates plus the permission layer, in order:
 
-1. **Sink gate** — is `interventions_enabled` `on` in `agent.json` (the live
-   flagd flag, #1213)? It is re-read **per `Apply`**, so a flip takes effect with
+1. **Sink gate** — does `scripts/flags.sh variant agent interventions_enabled`
+   print `on` (#1213)? It is re-read **per `Apply`**, so a flip takes effect with
    no restart; `off`/undefined/flagd-unreachable is **fail-closed** and discards
-   everything (decision recorded, no write — no error). The first enabled write
-   logs `Agent intervention writes enabled (#730)`.
-2. **Kill switch** — is `enabled` `on` in `agent.json`? If `off`, the loop
+   everything (decision recorded, no write — no error). A flag-service restart
+   drops the overlay and returns the gate to `off`.
+2. **Kill switch** — does `scripts/flags.sh variant agent enabled` print `on`? If `off`, the loop
    short-circuits and you'll see `agent.disabled` traces (`agent.enabled=false`),
    not `agent.decision`.
 3. **Allow-list** — is the rule's intervention in the active
@@ -307,8 +313,11 @@ Walk the two gates plus the permission layer, in order:
 5. **Rate limit** — `block_reason=rate_limit` means the weighted per-minute
    budget (`policy.max_interventions_per_minute`) is spent; it replenishes over
    the trailing minute.
-6. **File path** — `INTERVENTIONS_FLAG_PATH` must point at the bind-mounted file
-   flagd watches (`/etc/flagd/interventions.json`). The agent is the sole writer.
+6. **Flag-service write rejected** — the flag service's `flagservice.write` span
+   (Jaeger) or the agent log carries the reason: `409 game_not_live` (the coordinator has not registered
+   the game, or it ended), `422 out_of_bounds` / `flag_read_only`, or
+   `503 no_sync_stream` (flagd is not connected; `scripts/flags.sh state`).
+   `flagservice_writes_total{result="rejected"}` counts them by `reason`.
 
 ### flagd unreachable → safe defaults
 
@@ -329,78 +338,43 @@ budget is too low for the demo. Raise `policy.max_interventions_per_minute` to
 
 ---
 
-## Recovery — interventions file corruption (#924)
+## Recovery — rejected or failed intervention writes
 
-The agent applies decisions by an **in-place** read-modify-write of
-`/etc/flagd/interventions.json` (no temp+rename — rename triggers EBUSY on the
-docker bind mount flagd watches). A crash, an out-of-disk, or a concurrent
-truncation mid-write can leave **invalid JSON**. flagd then rejects the *whole*
-flag set and every intervention **silently falls back to its default** — no
-write error is raised, so `agent_intervention_writes_total{result="error"}` does **not** reveal a
-previously-poisoned file.
-
-### Built-in self-heal (automatic, no operator action)
-
-The agent repairs corruption on its own:
-
-1. **Validate-after-write** — after each write, the agent re-reads and re-parses
-   the file. If it no longer parses, the agent **restores the last-known-good
-   snapshot** (the bytes it read at the top of that write cycle, which parsed)
-   in place, and the `Apply` records `result=error`.
-2. **Startup self-heal** — on agent start (when `interventions_enabled` is `on`),
-   the agent validates the file and, if it is missing or unparseable, writes a
-   **neutral document** (every flag at its neutral `defaultVariant`, empty
-   targeting, no agent-driven variants — embedded in the agent binary, so it is
-   always a complete, valid schema with no game effect).
-
-Both paths increment **`agent_intervention_file_corruption_total{phase=write|startup}`**
-and log `agent.intervention_file_corrupt` (with `phase`, `path`, the parse
-`error`, and the `action` taken).
+Since the flag service (epic #1407) the agent writes no file, so the
+interventions-file corruption of #924 (and its self-heal and
+`agent_intervention_file_corruption_total` counter) no longer exists. The flag
+service validates every write against its registry and answers with a status
+and a reason code; a rejected write changes nothing.
 
 ### Signal
 
-> **Why an agent-side counter, not a flagd metric?** flagd (scraped on
-> `flagd:8014`) surfaces config-source **parse failures via logs only** — it
-> exposes no scrapable sync/parse-failure counter. The agent, by contrast,
-> *detects and heals* the corruption directly, so an agent-side counter is the
-> fast, reliable, test-coverable signal.
+Watch `flagservice_writes_total{flag_set="interventions",result="rejected"}`
+by `reason` (Grafana feature-flags dashboard, "Flag service" row) and the
+`flagservice.write` spans in Jaeger. No Prometheus alert ships for it (alerting
+removed in #1425, FR-083 Rejected).
 
-Watch `increase(agent_intervention_file_corruption_total[5m])` (Grafana, or the
-`agent.intervention_file_corrupt` log line in Loki): any increase matters, since a
-single corruption already defaults every intervention until healed. No
-Prometheus alert ships for it (alerting removed in #1425, FR-083 Rejected).
+### When rejections increase
 
-### When the counter increases
+1. **`game_not_live`** — the game coordinator registers each game
+   (`PUT /games/{id}`) before it runs and ends it at the end; check
+   `scripts/flags.sh state` (live games) and the coordinator log. The agent
+   retries a `game_not_live` write once after 250 ms.
+2. **`no_sync_stream`** — flagd is not connected to the flag service. Check
+   `docker compose logs flagd flag-service`; `scripts/flags.sh restart` restarts
+   both in order.
+3. **`out_of_bounds` / `flag_read_only`** — the agent asked for a value outside
+   the registry ([flags.md §13](specs/flags.md#13-mutable-flag-registry)); a
+   code or registry bug to file, not an operator fix.
 
-1. **Confirm it self-healed.** The agent log shows `agent.intervention_file_corrupt`
-   followed by the restore. Check the file parses:
-   ```bash
-   docker compose exec flagd sh -c 'cat /etc/flagd/interventions.json' | python3 -m json.tool >/dev/null && echo OK
-   ```
-   flagd hot-reloads the repaired file within ~100 ms–1 s; interventions resume.
-2. **If it keeps increasing** the underlying cause persists (agent crash-looping
-   mid-write, disk full, or an external writer racing the agent — the agent must
-   be the *sole* writer). Check `df -h` on the host, `docker compose logs agent`
-   for restart loops, and confirm nothing else writes the bind-mounted file.
-3. **Manual restore (last resort).** Re-seed the file from the canonical schema
-   in the repo and restart the agent (which re-validates on startup):
-   ```bash
-   cp services/flagd/interventions.json /path/to/bind-mount/interventions.json
-   docker compose up -d --no-deps agent
-   ```
-   The neutral document the agent writes is byte-identical to
-   `services/flagd/interventions.json`, so this just makes the heal explicit.
-
-The corruption is recovered automatically; the counter exists so an operator
-**investigates the root cause** (why did a write get poisoned?), not so they have
-to hand-repair the file.
+A game's intervention values and events die with the game (UC-053 BR-003), so
+there is nothing to restore by hand.
 
 ---
 
 ## See also
 
 - [Agent README](../services/agent/README.md) — four-layer model, span schema, action sink
-- [Feature flags guide](feature-flags.md) — flagd, domains, editing flag values
+- [Feature flags guide](feature-flags.md) — flagd, domains, the flag service, changing flag values
 - [Intervention surface research](research/722-intervention-surface.md) — the intervention vocabulary and weights
 </content>
 </invoke>

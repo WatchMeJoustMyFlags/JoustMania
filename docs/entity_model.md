@@ -193,7 +193,7 @@ An event on a game's event stream (`proto/game_coordinator.proto` `GameEvent`; p
 
 ### FLAG_SET
 
-One flagd flag file (`services/flagd/*.json`); see [flags.md](specs/flags.md).
+One flag set: its read-only baseline file (`services/flagd/<set>.json`), served to flagd by the flag service together with its runtime overlays; see [flags.md](specs/flags.md).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -339,7 +339,7 @@ A backend's answer to one question (`decide.go:77-90`, validation `validate.go`)
 
 ### INTERVENTION
 
-A bounded in-game change applied through `interventions.json` (`services/agent/actions/writer.go`, `services/game_coordinator/interventions.py`).
+A bounded in-game change written for one game to the `interventions` flag set through the flag service (`services/agent/actions/writer.go`) and applied by the game coordinator (`services/game_coordinator/interventions.py`).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|

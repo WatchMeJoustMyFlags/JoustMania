@@ -1,12 +1,12 @@
 # Flag service: in-memory runtime flags as a gRPC sync source for flagd
 
-> Architecture note. Status: **planned** (epic #1407). Written 2026-10-16 against `main`; revised the same day
+> Architecture note. Status: **implemented** (epic #1407, delivered in one PR, #1417; see §12.1). Written 2026-10-16 against `main`; revised the same day
 > with the maintainer's decisions on the review of PR #1417 (§1, decisions D3, D4, D10 to D13), and again with
 > the decisions on the re-review (N1 to N6: sync fan-out §5.4, event-list reader §6, persistence on request D10
 > and §10.1, read-only mounts at the checkpoint §12). Implementation starts in the same PR (#1408 to #1410).
 > Spec rows: [UC-053](../use_cases/UC-053.md), FR-120 to FR-129, NFR-050 to NFR-053, C-030 to C-033
-> ([requirements](../requirements.md)); [services.md §7](../specs/services.md#7-flag-service-planned-epic-1407),
-> [flags.md §13](../specs/flags.md#13-mutable-flag-registry), [telemetry.md §10](../specs/telemetry.md#10-flag-service-planned-epic-1407),
+> ([requirements](../requirements.md)); [services.md §7](../specs/services.md#7-flag-service-epic-1407),
+> [flags.md §13](../specs/flags.md#13-mutable-flag-registry), [telemetry.md §10](../specs/telemetry.md#10-flag-service-epic-1407),
 > entities MUTABLE_FLAG_POLICY, GAME_SCOPE, FLAG_OVERLAY in the [entity model](../entity_model.md).
 
 ## 1. Summary
@@ -58,7 +58,7 @@ game-scoped state dies with its game.
 | D6 | The **game coordinator** reports the game lifecycle, not the agent; each coordinator instance reconciles only its own games (§8). | recommendation |
 | D7 | **One-shot interventions stay flags**, as a per-game **event list** object (`{"epoch","seq","events"}`), rendered on `gameId` only with the serial in the payload (§6). | decided by default (maintainer did not object) |
 | D8 | A **mutable-flag registry** declares every runtime-mutable flag and its bounds; every other flag is read-only baseline ([flags.md §13](../specs/flags.md#13-mutable-flag-registry)). | decided by the maintainer |
-| D9 | Every write is an OTel span and a metric ([telemetry.md §10](../specs/telemetry.md#10-flag-service-planned-epic-1407)). | decided by the maintainer |
+| D9 | Every write is an OTel span and a metric ([telemetry.md §10](../specs/telemetry.md#10-flag-service-epic-1407)). | decided by the maintainer |
 | D10 | **Admin settings are persisted on request** to a service-owned state file (`FLAG_SERVICE_STATE_FILE`, default `/var/lib/flag-service/admin.json` on the stack's own `flag-service-state` volume), never to `services/flagd/*.json`. A write persists only when it says so (`"persist": true`) and the registry allows it for that flag; the menu admin asks for it, stage scripts, the harness and tests do not. Persisted values survive restarts (FR-018 stays). Details §10.1. | decided by the maintainer (persistence on request: re-review N4) |
 | D11 | **No roles, no tokens, no authorization.** This is a local party game: a write is validated only against the registry (mutable? in bounds?), the game scope (is the game registered?) and the sync stream (is flagd connected?). The `writer` field is an informational label for the trace. Authorization is out of scope by decision. | decided by the maintainer |
 | D12 | **Full migration before the talk**, then delete the file-write paths, nonce baselines and prune logic. No file-based fallback. A readiness checkpoint at T−14 days is a stabilisation gate (§12). | decided by the maintainer |
@@ -383,7 +383,7 @@ Envoy routes `/flags/` to `flag-service:8070` (prefix stripped), so scripts on t
 `http://localhost/flags/...` and C-015 holds (no new host port). The endpoint is unauthenticated on the
 LAN **by decision** (D11).
 
-Request and response shapes, status codes and the registry kinds: [services.md §7](../specs/services.md#7-flag-service-planned-epic-1407).
+Request and response shapes, status codes and the registry kinds: [services.md §7](../specs/services.md#7-flag-service-epic-1407).
 
 ## 10. Rendering
 
@@ -497,6 +497,27 @@ The list order is the issue order; #1415 and #1420 run in parallel with #1411 to
 flag sets) and must be merged before the checkpoint. #1415 keeps menu and promotion together with the
 experiments because all three write `game.json` (and the menu `user.json`): a set can only cut over when
 every one of its writers moves.
+
+### 12.1 Delivery (2026-10-17)
+
+The maintainer widened the scope while the spec was under review ("do a full change, also remove the old
+files"): the whole epic shipped in **one PR, #1417**, one commit (or two) per sub-issue, in the order of the
+table above, with #1414 run as a verification step before the merge instead of a separate checkpoint at
+T−14 days. Every set is served by the flag service, flagd has no `file:` source and no flag mount, and the
+deletions of #1416 are in the same PR. Deviations from the plan, all reflected in the specs:
+
+- **Experiment catalog.** The registry (flags.md §13.3) lists the gameplay calibration flags an experiment may
+  change, each with scopes `experiment+arm` and `real` and a numeric range (or the new `shape` bound for the
+  object flag `windows`); capacity, lobby, team-structure and presentation flags are not experimentable. A
+  standalone proposal gets its own experiment id (`prop_<hex>`); the unscoped "every shadow game" rule is gone.
+- **Promotion** is a `real` overlay with writer `promotion`; the revert is `DELETE ?game_kind=real` and is refused
+  when no overlay is present. The agent keeps only the post-revert cooldown stamps (no value snapshots).
+- **Alerts.** Prometheus alerting was removed on `main` (#1425) while this PR was open, so the two planned alert
+  rules were not added; the Grafana `feature-flags` dashboard has a "Flag service" row instead.
+- **connect-proxy.** A fractional canary sets the stable counterpart as the default and the canary backend as a
+  fraction overlay, which also fixes #1386 (the rest of the serials no longer resolve an undeclared variant).
+- **`set_not_served`** (409) stays for a set a stack does not list in `FLAG_SERVICE_SETS`; every stack lists all
+  eight. `experiment_unknown` is reserved and not returned.
 
 ## 13. Issues
 

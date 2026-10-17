@@ -10,8 +10,8 @@ JoustMania uses [OpenFeature](https://openfeature.dev/) with [flagd](https://fla
 - **Event-driven updates** - Changes propagate instantly via gRPC streams (no polling)
 - **Type-safe evaluation** - Flags are strongly typed (boolean, string, integer, float, object)
 - **Observable** - Metrics and logging for flag evaluations and changes
-- **Domain-scoped** - One flag file per domain, isolated by `flagSetId` metadata
-- **Developer-friendly** - Edit flag files in `services/flagd/` and see changes in <100ms
+- **Domain-scoped** - One baseline flag file per domain, isolated by `flagSetId` metadata
+- **One write path** - Runtime changes go through the flag service's HTTP API (`scripts/flags.sh`, or `http://localhost/flags/`); the files in `services/flagd/` are the read-only baseline (C-033)
 
 ## Naming Convention
 
@@ -37,10 +37,10 @@ The flag schema follows a strict convention (issue #725):
 | `controller.json` | `controller` | Controller backend selection, Bluetooth routing, fault injection | controller-manager |
 | `observability.json` | `observability` | Metrics export cadence, span detail | all services |
 | `game.json` | `game` | Game-mode settings (admin-adjustable) | game-coordinator, menu |
-| `user.json` | `user` | User preferences (persist across sessions) | menu, audio |
+| `user.json` | `user` | User preferences (host admin choices persist in the flag service's state file) | menu, audio |
 | `agent.json` | `agent` | Autonomous agent control (existence/objective/capability/permission + fitness) | agent, game-coordinator |
-| `interventions.json` | `interventions` | Runtime ACT control plane written by the agent | agent (writer), game-coordinator (applier) |
-| `rollout.json` | `rollout` | Act 2 progressive backend rollout control | controller-manager (reads), agent (writes `current_controller_count`, reads `remediation_allowed`) |
+| `interventions.json` | `interventions` | Runtime ACT control plane: neutral baseline; the agent writes game-scoped values and events through the flag service | agent (writer), game-coordinator (applier) |
+| `rollout.json` | `rollout` | Act 2 progressive backend rollout control | controller-manager (reads), agent (writes `current_controller_count` through the flag service, reads `remediation_allowed`) |
 
 ## Architecture
 
@@ -48,7 +48,8 @@ The flag schema follows a strict convention (issue #725):
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Flag Files (services/flagd/) — one file per domain     │
+│  Baseline flag files (services/flagd/, or ci/) —        │
+│  one file per domain, READ-ONLY, loaded once at start   │
 │  - system.json         (flagSetId: "system")            │
 │  - controller.json     (flagSetId: "controller")        │
 │  - observability.json  (flagSetId: "observability")     │
@@ -57,17 +58,27 @@ The flag schema follows a strict convention (issue #725):
 │  - agent.json          (flagSetId: "agent")             │
 │  - interventions.json  (flagSetId: "interventions")     │
 │  - rollout.json        (flagSetId: "rollout")           │
-│  - Watched by flagd via inotify (Linux) or polling      │
 └──────────────────┬──────────────────────────────────────┘
-                   │
-                   │ File change detected
+                   │ read at start
                    ▼
 ┌─────────────────────────────────────────────────────────┐
-│  flagd service                                          │
+│  flag-service (Go; HTTP API :8070, envoy /flags/)       │
+│  - Writers: agent, menu admin, connect-proxy, scripts   │
+│    PUT/POST/DELETE /{set}/{flag}, checked against the   │
+│    mutable-flag registry (flags.md §13)                 │
+│  - Holds overlays, game-scoped values, experiment arms  │
+│    in memory; admin settings persisted to admin.json    │
+│  - Renders one merged config, per-flag flagSetId        │
+└──────────────────┬──────────────────────────────────────┘
+                   │ flagd.sync.v1 SyncFlags (:50064),
+                   │ pushed on every accepted write
+                   ▼
+┌─────────────────────────────────────────────────────────┐
+│  flagd service (stock)                                  │
 │  - gRPC server implementing OpenFeature Flagd Protocol  │
-│  - Loads all flag files via --uri arguments              │
+│  - ONE source: --uri grpc://flag-service:50064          │
 │  - Uses flagSetId metadata for domain scoping           │
-│  - Pushes flag updates when any file changes            │
+│  - Pushes flag updates to clients on every sync message │
 └──────────────────┬──────────────────────────────────────┘
                    │
                    │ gRPC bidirectional stream
@@ -87,15 +98,17 @@ The flag schema follows a strict convention (issue #725):
 │  Service Consumers                                      │
 │  - RuntimeConfigManager: event-driven cache             │
 │    (reads system + controller + game)                   │
-│  - Menu: reads game + user; writes game.json/user.json  │
-│    via FlagConfigWriter                                 │
+│  - Menu: reads game + user; writes admin settings to    │
+│    the flag service (persist: true)                     │
 │  - Audio: reads user (voice, audio on/off)              │
-│  - Agent: reads agent; writes interventions.json        │
-│  - Game Coordinator: applies interventions.json         │
+│  - Agent: reads agent; writes interventions (game-      │
+│    scoped values + events) to the flag service          │
+│  - Game Coordinator: registers games with the flag      │
+│    service; applies interventions by gameId             │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Latency:** Flag file change → Config update = **<100ms**
+**Latency:** flag-service write accepted → flagd serving it: p95 at most 200 ms, p99 at most 500 ms (NFR-050, measured by `tests/integration/test_flag_propagation.py`). A baseline file change takes effect only after `scripts/flags.sh restart` (flag service, then flagd).
 
 ### Three-Layer Context Merging
 
@@ -117,8 +130,8 @@ conflict.
 1. **Startup:** Each consumer registers a callback for
    `PROVIDER_CONFIGURATION_CHANGED` events on the domains it cares about.
 2. **Normal Operation:** Config is cached and served from memory (zero overhead).
-3. **Flag Change:** When any flag file is edited:
-   - flagd detects the file change
+3. **Flag Change:** When the flag service accepts a write:
+   - the flag service sends the merged configuration to flagd over the sync stream
    - flagd pushes update to all connected clients via gRPC stream
    - the OpenFeature provider for that domain emits
      `PROVIDER_CONFIGURATION_CHANGED`
@@ -128,7 +141,7 @@ conflict.
 
 **Why event-driven?**
 - **No polling overhead** - Config is read from cache, not from flagd on every game loop iteration
-- **Instant updates** - Changes propagate in <100ms instead of waiting for next poll interval
+- **Push updates** - Changes propagate within the NFR-050 bound (p95 200 ms) instead of waiting for the next poll interval
 - **Lower CPU usage** - No periodic flag evaluations
 - **No rate limiting** - Avoids "too_many_pings" errors from excessive gRPC keepalives
 
@@ -153,11 +166,18 @@ hz = client.get_integer_value("game_loop.update_frequency_hz", 60)
 
 - **RuntimeConfigManager** initializes and reads `system`, `controller`, and
   `game`.
-- **Menu** reads `game` and `user`, and writes `game.json` / `user.json` via
-  `FlagConfigWriter` (atomic writes that flagd hot-reloads).
+- **Menu** reads `game` and `user`, and writes the host's admin settings
+  (`sensitivity`, `num_teams`, `force_all_start`, `current_game`,
+  `game_instructions`, `interventions_allowed`) to the flag service with
+  `persist: true` (`lib/flag_service_writer.py`); the flag service keeps them in
+  its state file `/var/lib/flag-service/admin.json`.
 - **Audio** reads `user`.
-- **Agent** reads `agent` and writes `interventions.json`; the **Game
-  Coordinator** applies `interventions.json`.
+- **Agent** reads `agent` and writes the `interventions` set through the flag
+  service; the **Game Coordinator** applies the values and events of its own
+  `gameId`.
+
+No service writes a flag file and no service mounts the flag directory
+writable.
 
 ## Available Flags
 
@@ -424,8 +444,11 @@ back to the default.
 ### Interventions (`services/flagd/interventions.json`, `flagSetId: "interventions"`)
 
 The interventions domain is the **runtime ACT control plane**: the agent
-*writes* these flags and the game coordinator *applies* them. All defaults are
-inert, so an idle or absent agent has no effect. See
+*writes* these flags through the flag service, always scoped to one game
+(`scope.game_id`, plus `scope.serial` for per-player flags), and the game
+coordinator *applies* them, evaluating with its `gameId`. A game's values and
+events die with the game (UC-053 BR-003). All baseline defaults are inert, so an
+idle or absent agent has no effect. See
 [722-intervention-surface.md §8](research/722-intervention-surface.md) for the
 design rationale behind this control plane.
 
@@ -441,22 +464,25 @@ design rationale behind this control plane.
 | `shield_seconds` | object/number | per-serial | Grant per-player shield duration |
 | `volume_override` | object/number | — | Override audio volume |
 
-**Edge-triggered** (apply once per change; carry a nonce to de-duplicate):
+**One-shot events** (a per-game event list `{"epoch","seq","events"}` holding
+the last 16 events; the agent appends with `POST /interventions/{flag}`, the
+coordinator applies every event with a `seq` above the last one it applied):
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `eliminate_player` | object (nonce'd) | Eliminate a target player |
-| `revive_player` | object (nonce'd) | Revive a target player |
-| `audio_cue` | object (nonce'd) | Play a one-shot audio cue |
-| `controller_effect` | object (nonce'd) | Trigger a one-shot controller effect |
-| `end_game` | object (nonce'd) | End the current game |
+| `eliminate_player` | object (event list) | Eliminate a target player (`serial` in the payload) |
+| `revive_player` | object (event list) | Revive a target player (`serial` in the payload) |
+| `audio_cue` | object (event list) | Play a one-shot audio cue |
+| `controller_effect` | object (event list) | Trigger a one-shot controller effect |
+| `end_game` | object (event list) | End the game |
 
 ### Rollout (`services/flagd/rollout.json`, `flagSetId: "rollout"`)
 
 Act 2 progressive backend rollout control. The **controller-manager reads** this
-domain to route controllers; the **agent writes** `current_controller_count` to
-advance/roll-back the rollout (#734/#736) and **reads** `remediation_allowed` to
-gate auto-rollback (resolved directly from this file by `RemediationReader`).
+domain to route controllers; the **agent writes** `current_controller_count`
+through the flag service (`PUT /rollout/current_controller_count`) to
+advance/roll-back the rollout (#734/#736) and **reads** `remediation_allowed`
+through flagd to gate auto-rollback.
 
 | Flag | Type | Values | Description |
 |------|------|--------|-------------|
@@ -470,8 +496,8 @@ gate auto-rollback (resolved directly from this file by `RemediationReader`).
 1. Pick the domain (file) the flag belongs to and add it to that file only —
    the file's `flagSetId` is its namespace. **Calibration vs intervention:**
    a flag the agent changes *mid-game* in response to signals is an
-   intervention and belongs in `interventions.json` (policy-enforced, nonce'd
-   if one-shot); a parameter tuned per venue/session/experiment is calibration
+   intervention and belongs in `interventions.json` (policy-enforced, an
+   event list if one-shot); a parameter tuned per venue/session/experiment is calibration
    and belongs in `game.json` / `agent.json` / `system.json` with plain
    defaults and no policy budget — see
    [722-intervention-surface.md §2b](research/722-intervention-surface.md) for
@@ -488,7 +514,13 @@ gate auto-rollback (resolved directly from this file by `RemediationReader`).
    client = get_flag_client("game")
    value = client.get_integer_value("my_new_flag", default_value)
    ```
-5. No restart required — flagd detects the file change automatically.
+5. If anything must change the flag at runtime, add its row to the mutable-flag
+   registry (`services/flag-service/registry.yaml` and
+   [flags.md §13](specs/flags.md#13-mutable-flag-registry), same PR); without a
+   row the flag is read-only baseline and the flag service rejects writes with
+   `422 flag_read_only`.
+6. Run `scripts/flags.sh restart` (flag service, then flagd) to load the new
+   baseline file.
 
 ## How to Test
 
@@ -517,11 +549,28 @@ INFO - Registered PROVIDER_CONFIGURATION_CHANGED event handler
 
 ### 3. Edit Flag Values
 
-Open the flags file for the domain you want to change:
+**Runtime (mutable flags).** A flag with a row in the mutable-flag registry
+([flags.md §13](specs/flags.md#13-mutable-flag-registry)) changes through the
+flag service, with no restart:
+
+```bash
+scripts/flags.sh set agent decision.backend claude      # stack overlay (in memory)
+scripts/flags.sh get agent decision.backend             # effective state (baseline, overlays) + rendered flagd JSON
+scripts/flags.sh clear agent decision.backend           # back to the baseline
+```
+
+An overlay lasts until it is cleared or the flag service restarts. A value
+outside the registry's bounds is rejected with `422 out_of_bounds`, a flag
+without a registry row with `422 flag_read_only`, and every write while flagd
+has no sync stream with `503 no_sync_stream`.
+
+**Baseline (every other flag).** Edit the baseline file for the domain in a
+reviewed change, then restart the flag service and flagd:
 
 ```bash
 # On Raspberry Pi
 nano services/flagd/system.json
+scripts/flags.sh restart
 ```
 
 Change a flag value (e.g., `game_loop.update_frequency_hz` from `low` to `high`):
@@ -542,11 +591,12 @@ Change a flag value (e.g., `game_loop.update_frequency_hz` from `low` to `high`)
 }
 ```
 
-Save the file (Ctrl+O, Enter, Ctrl+X).
+Save the file (Ctrl+O, Enter, Ctrl+X) and run `scripts/flags.sh restart`.
 
 ### 4. Verify Event Detection
 
-Within **1 second**, you should see in the logs:
+After the write is accepted (or within 5 s of the restart, when flagd serves the
+new baseline), you should see in the logs:
 
 ```
 🚩 Feature flags changed: ['game_loop.update_frequency_hz']
@@ -556,7 +606,7 @@ Within **1 second**, you should see in the logs:
 ### 5. Test During Gameplay
 
 1. Start a game with 2+ controllers
-2. In another terminal, change `game_loop.update_frequency_hz` to `low` (15 Hz)
+2. In another terminal, change `game_loop.update_frequency_hz` to `low` (15 Hz): a baseline edit plus `scripts/flags.sh restart` (the flag is not in the mutable registry)
 3. Observe gameplay becomes less responsive
 4. Change back to `high` (60 Hz)
 5. Observe gameplay becomes more responsive
@@ -626,18 +676,18 @@ game_current_update_frequency_hz < 30
 
 ### No flag change events detected
 
-**Symptoms:** Edit a flag file but no `🚩 Feature flags changed` log appears
+**Symptoms:** A flag change but no `🚩 Feature flags changed` log appears
 
 ```bash
-docker compose ps flagd
-docker compose logs flagd --tail=50
-docker compose exec flagd ls -l /etc/flagd/
+docker compose ps flagd flag-service
+scripts/flags.sh state                  # open sync streams must be 1
+docker compose logs flagd flag-service --tail=50
 ```
 
 **Solutions:**
-- Ensure flagd container is healthy
-- Verify flag files are mounted correctly in docker-compose.yml
-- Check file permissions (must be readable by flagd)
+- Edited a file under `services/flagd/`? Nothing reads it until `scripts/flags.sh restart`
+- Ensure flagd is connected to the flag service (0 sync streams = writes return `503 no_sync_stream`)
+- Check the write's HTTP status and reason (`scripts/flags.sh` prints it)
 
 ### "Could not initialize feature flags" error
 
@@ -682,7 +732,7 @@ docker compose logs game-coordinator | tail -20
 
 **Solutions:**
 - Ensure the flag key matches exactly in code and JSON (including any dotted sub-key)
-- Verify you edited the correct domain file (the `flagSetId` must match the consumer)
+- Verify you wrote the correct flag set (the `flagSetId` must match the consumer)
 - Verify the config value is actually being used in game logic
 
 ## Development

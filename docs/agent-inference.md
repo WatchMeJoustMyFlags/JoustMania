@@ -10,14 +10,15 @@ There are two separate seams:
 
 | Seam | Used for | Selected by | Backends |
 |------|----------|-------------|----------|
-| **Decision backend** | in-game decisions (FFA) | `decision.backend` flag in `agent.json`, live | `rules` (default, floor), `claude`, `openai`, `jev` |
+| **Decision backend** | in-game decisions (FFA) | `decision.backend` flag in the `agent` set, live (flag service) | `rules` (default, floor), `claude`, `openai`, `jev` |
 | **Text backend** | post-game retro, shadow-experiment proposer | `AGENT_INFERENCE_BACKEND` env, at startup | `stub` (default), `claude` |
 
 ## In-game: the decision backend (epic #1225)
 
 `decision.backend` picks who answers the typed decide contract
-(`services/agent/decide`). Flip it with `./scripts/agent-backend.sh`; flagd
-hot-reloads it, no restart. If the selected backend errors, times out, returns
+(`services/agent/decide`). Flip it with `./scripts/agent-backend.sh`, which writes
+an in-memory `stage` overlay through the flag service; flagd serves the new value
+without a restart (a flag-service restart drops the overlay). If the selected backend errors, times out, returns
 an invalid answer, or the game is not eligible, the rules engine decides and the
 `agent.decide` span records `decide.fallback_reason`.
 
@@ -63,7 +64,7 @@ from `llm.max_requests_per_minute` (or `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`).
 
 The proposer runs on every game end, but only while the `enabled` kill switch and
 `experiments_enabled` are both on (read at each game end; `enabled` fails closed
-when flagd is unreachable). It checks again just before writing `game.json`, so
+when flagd is unreachable). It checks again just before writing the experiment value to the flag service, so
 switching the agent off during a model call still blocks the write. With `claude`, a
 proposal that passes the cadence floor (`code_improvement.min_interval_seconds`)
 calls the model only for game kinds in `llm.eligible_game_kinds` and only when a slot
