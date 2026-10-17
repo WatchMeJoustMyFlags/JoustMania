@@ -1,8 +1,7 @@
-"""bluetoothctl output never backs up into the pairing agent (UC-001 BR-005, #1477).
+"""bluetoothctl output never backs up into the pairing agent (UC-001, #1477).
 
 bluetoothctl prints device and property events for as long as it runs. An
-undrained pipe fills after ~64 KB and blocks it, and a blocked bluetoothctl
-answers no ZCM2 PIN request.
+undrained pipe fills after ~64 KB and blocks it, its agent included.
 """
 
 import asyncio
@@ -53,7 +52,7 @@ def no_wait():
 
 
 class TestAgentOutputIsNotPiped:
-    @pytest.mark.uc("UC-001", br=["BR-005"])
+    @pytest.mark.uc("UC-001")
     async def test_bluetoothctl_output_goes_to_devnull(self, no_wait):
         spawn = create_autospec(asyncio.create_subprocess_exec, return_value=_fake_bluetoothctl())
         with patch.object(bluez_agent.asyncio, "create_subprocess_exec", spawn):
@@ -65,7 +64,7 @@ class TestAgentOutputIsNotPiped:
         # stdin stays a pipe: the agent commands are written to it and it must stay open
         assert kwargs["stdin"] == asyncio.subprocess.PIPE
 
-    @pytest.mark.uc("UC-001", br=["BR-005"])
+    @pytest.mark.uc("UC-001")
     async def test_every_registration_avoids_undrained_pipes(self, no_wait):
         """Re-registration after a bluetoothd restart (#1476) spawns the same way, no reader task left behind."""
         spawn = create_autospec(
@@ -82,9 +81,9 @@ class TestAgentOutputIsNotPiped:
             assert call.kwargs["stderr"] == asyncio.subprocess.DEVNULL
         assert asyncio.all_tasks() == tasks_before
 
-    @pytest.mark.uc("UC-001", br=["BR-005"])
+    @pytest.mark.uc("UC-001")
     async def test_chatty_bluetoothctl_never_blocks(self):
-        """A real child writing 2.5 MB runs to completion; with an undrained pipe it would block at ~64 KB."""
+        """A real child writing about 1.3 MB runs to completion; with an undrained pipe it would block at ~64 KB."""
 
         spawned = []
 
@@ -114,7 +113,7 @@ class TestAgentOutputIsNotPiped:
 
 
 class TestAgentRegistrationCheck:
-    @pytest.mark.uc("UC-001", br=["BR-005"])
+    @pytest.mark.uc("UC-001")
     async def test_bluetoothctl_that_exits_at_once_is_a_failed_registration(self, no_wait):
         proc = _fake_bluetoothctl()
         proc.returncode = 1
@@ -122,9 +121,10 @@ class TestAgentRegistrationCheck:
         with patch.object(bluez_agent.asyncio, "create_subprocess_exec", spawn):
             assert await register_pairing_agent() is False
 
+        proc.stdin.close.assert_called_once()
         assert getattr(register_pairing_agent, "_proc", None) is None
 
-    @pytest.mark.uc("UC-001", br=["BR-005"])
+    @pytest.mark.uc("UC-001")
     async def test_running_bluetoothctl_is_kept_as_the_agent(self, no_wait):
         proc = _fake_bluetoothctl()
         spawn = create_autospec(asyncio.create_subprocess_exec, return_value=proc)
