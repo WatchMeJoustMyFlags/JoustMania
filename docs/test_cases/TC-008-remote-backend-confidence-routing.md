@@ -39,7 +39,7 @@
 
 ## Postconditions
 
-- `agent.json` and `interventions.json` are restored byte for byte by the `decide_flags` fixture; the fake's script is reset.
+- The `agent` overlays are deleted by the `decide_flags` fixture; game-scoped interventions died with the game; the fake's script is reset. No flag file changed.
 - Three ended games; the agent and fake containers are removed by the module fixture.
 
 ## Automation

@@ -39,6 +39,7 @@ shift their positions.
 """
 
 import asyncio
+import json
 import os
 import sys
 
@@ -510,3 +511,85 @@ async def test_force_start_respects_selected_game_mode(
             f"force start requested {requested.data.get('game_name')}, "
             f"expected admin-cycled {expected_mode}"
         )
+
+
+# =============================================================================
+# 8. TC-020: the host and the presenter change flags at runtime (UC-053 A1, A2)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-053", flow="A2", br=["BR-004"], tc="TC-020")
+@pytest.mark.uc("UC-053", flow="A1", tc="TC-020")
+@pytest.mark.uc("UC-012", flow="A1", tc="TC-020")
+@pytest.mark.uc("UC-044", flow="main", tc="TC-020")
+async def test_host_and_stage_change_flags_at_runtime(
+    docker_compose, menu_client, mock_client, admin_flags, flag_service
+):
+    """The host's admin setting and the presenter's stage overlay coexist; the
+    stage reset clears only the stage's overlays (TC-020)."""
+    import subprocess
+
+    repo = os.path.join(os.path.dirname(__file__), "..", "..")
+    env = dict(os.environ, FLAG_SERVICE_URL=flag_service.base_url)
+
+    def stage(*args: str) -> str:
+        return subprocess.run(
+            list(args),
+            cwd=repo,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+
+    serials = await _start_menu_with_controllers(docker_compose, menu_client)
+    admin_serial = serials[0]
+    baseline = _default_variant(GAME, "sensitivity")
+    try:
+        # Step 1: the host cycles sensitivity in admin mode (a persisted admin value).
+        await enter_admin_mode(mock_client, admin_serial)
+        await press_admin_button(mock_client, admin_serial, _Button.CIRCLE)
+        host_variant = await _wait_default_variant_changes(
+            GAME, "sensitivity", baseline
+        )
+        assert host_variant != baseline
+        await exit_admin_mode(mock_client, admin_serial)
+        assert (_persisted_admin_value(GAME, "sensitivity") or {}).get(
+            "variant"
+        ) == host_variant
+
+        # Step 2: the presenter flips the decision backend with the stage script.
+        stage("scripts/agent-backend.sh", "jev")
+        view = flag_service.get("agent", "decision.backend")
+        assert view["effective_default"] == "jev"
+        assert (view.get("stack_overlay") or {}).get("writer") == "stage", view
+
+        # Step 3: flagd serves both changes.
+        with flagd_probe_client(docker_compose, "agent") as agent:
+            assert await async_poll_until(
+                lambda: (
+                    agent.get_string_value("decision.backend", "", EvaluationContext())
+                    == "jev"
+                )
+            ), "flagd did not serve decision.backend=jev"
+        with flagd_probe_client(docker_compose, "game") as game:
+            expected = fs.variant_value(GAME, "sensitivity", host_variant)
+            assert await async_poll_until(
+                lambda: (
+                    game.get_integer_value("sensitivity", -1, EvaluationContext())
+                    == expected
+                )
+            ), "flagd did not serve the host's sensitivity"
+
+        # Step 4: the stage reset clears the stage's overlays and re-applies the
+        # stage baseline; the host's setting is untouched.
+        stage("scripts/talk-stage.sh", "reset")
+        with open(os.path.join(repo, "scripts", "talk-baseline.json")) as fh:
+            stage_backend = json.load(fh)["checked"]["decision.backend"]
+        backend = flag_service.get("agent", "decision.backend")
+        assert backend["effective_default"] == stage_backend, backend
+        assert _default_variant(GAME, "sensitivity") == host_variant
+    finally:
+        fs.default().request("DELETE", "/agent?writer=stage")

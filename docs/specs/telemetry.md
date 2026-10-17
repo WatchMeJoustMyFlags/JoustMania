@@ -594,7 +594,7 @@ spans. The names follow §8: service prefix `flagservice_`, counters end `_total
 |---|---|
 | Talk pre-flight (`scripts/talk-preflight.sh`) | `GET /state` (sync streams, epoch) and `GET /agent`, `GET /controller` (overlays equal the stage baseline) instead of reading the flag files |
 | Dashboard Agent tab | `flagservice.write` spans with `flagservice.writer=agent` next to `agent.decision`; `flagservice_writes_total` replaces `agent_intervention_writes_total` once #1416 deletes the file writer |
-| Grafana | `feature-flags` dashboard: writes by flag set and result, propagation, live games, sync streams |
-| Prometheus alerts | `FlagServiceSyncDisconnected`: `flagservice_sync_streams == 0` for 30 s; `FlagServiceUnknownSelector`: `increase(flagservice_sync_rejected_total{reason="unknown_selector"}[5m]) > 0` |
+| Grafana | `feature-flags` dashboard, row "Flag service": writes by flag set and result, propagation p95, live game scopes by kind, flagd sync streams (#1413) |
+| Alerts | none: Prometheus alerting was removed (#1425, FR-083 Rejected); a disconnected flagd shows as `flagservice_sync_streams` = 0 on the dashboard and as 503 `no_sync_stream` to every writer |
 
 **Traceability:** FR-129, NFR-050 to NFR-053 / UC-053 / planned `services/flag-service/` / planned tests in #1409, #1413.

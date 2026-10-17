@@ -17,7 +17,7 @@
 ## Preconditions
 
 - The full stack and the agent are up with **real controllers** `A` … `F` connected on the python backend. Mock controllers cannot run this journey today: with only the mock adapter loaded the controller manager skips rollout targeting, and the `unstable` adapter wraps only the python adapter (see #1390).
-- `rollout_enabled` on in `agent.json`; `remediation_allowed` on, `current_controller_count` = `none`, `strategy` = `off` (the shipped default, so nothing rolls out before step 1) in `rollout.json`; `AGENT_ROLLOUT_DWELL_SECONDS` = `5`, `AGENT_ROLLOUT_COOLDOWN_SECONDS` = `30`.
+- `rollout_enabled` on (an `agent` overlay on the flag service); `remediation_allowed` on, `current_controller_count` = `none`, `strategy` = `off` (the shipped default, so nothing rolls out before step 1) in the `rollout` set, set through the flag service; `AGENT_ROLLOUT_DWELL_SECONDS` = `5`, `AGENT_ROLLOUT_COOLDOWN_SECONDS` = `30`.
 
 ## Flow
 
@@ -39,7 +39,7 @@
 
 ## Postconditions
 
-- `rollout.json` and `agent.json` are restored to the preconditions (strategy and target last); the agent is restarted to clear its in-memory cooldown (UC-051 A2).
+- The `rollout` and `agent` overlays are deleted (strategy and target last), so the baseline returns; the agent is restarted to clear its in-memory cooldown (UC-051 A2). No flag file changed.
 
 ## Automation
 

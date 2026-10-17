@@ -15,7 +15,7 @@
 
 ## Preconditions
 
-- The integration stack is up with `shadow_policy` = `allow` (the CI default in `services/flagd/ci/game.json`); `interventions_allowed` = `full` in `agent.json` (so `eliminate_player` and `end_game` pass the coordinator's allow-list); the flag-file fixture snapshots and restores `agent.json` and `interventions.json`.
+- The integration stack is up with `shadow_policy` = `allow` (the CI default in `services/flagd/ci/game.json`); `interventions_allowed` = `full` as a flag-service overlay (so `eliminate_player` and `end_game` pass the coordinator's allow-list); the `flag_service` fixture deletes it afterwards.
 - Mock controllers `MOCK0001` … `MOCK0004` connected and unreserved; `current_game` is `JoustFFA`.
 
 ## Flow
@@ -38,7 +38,7 @@
 
 ## Postconditions
 
-- `interventions.json`, `agent.json` and `game.json` restored by the fixtures; the reserved shadow controllers are removed by `headless_cleanup`; the second real game started in step 8 is ended by `ensure_game_stopped`.
+- Game-scoped values died with their games (UC-053 BR-003); no flag file changed; the reserved shadow controllers are removed by `headless_cleanup`.
 
 ## Automation
 
