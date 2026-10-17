@@ -115,12 +115,27 @@ def _saved_registration_is_psmove(info_path: Path) -> bool:
     return vendor == SONY_VENDOR_ID and product in PS_MOVE_PRODUCT_IDS
 
 
+# bluetoothd is not running (nobody owns org.bluez): saved files are safe to edit.
+_BLUEZ_ABSENT_ERRORS = frozenset(
+    {"org.freedesktop.DBus.Error.ServiceUnknown", "org.freedesktop.DBus.Error.NameHasNoOwner"}
+)
+
+
 async def _bluez_objects() -> dict | None:
-    """BlueZ's object tree, or None when bluetoothd / the system bus is unreachable."""
+    """BlueZ's object tree, or None when bluetoothd / the system bus is absent.
+
+    Only "nobody owns org.bluez" and a missing bus socket (OSError) mean absent.
+    Any other D-Bus error (AccessDenied, NoReply from a busy bluetoothd, ...)
+    propagates: bluetoothd may be running, so its storage must not be touched.
+    """
     try:
         bus = await get_system_bus()
         return await get_managed_objects(bus)
-    except (DBusError, OSError, ConnectionError):
+    except DBusError as error:
+        if error.error_name in _BLUEZ_ABSENT_ERRORS:
+            return None
+        raise
+    except OSError:
         return None
 
 
@@ -266,7 +281,11 @@ async def async_main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    scan = await scan_psmove_registrations(args.bluetooth_dir)
+    try:
+        scan = await scan_psmove_registrations(args.bluetooth_dir)
+    except DBusError as error:
+        print(f"FAILED to query BlueZ ({error.error_name}: {error}); nothing removed", file=sys.stderr, flush=True)
+        return 1
     if not scan.bluez_reachable:
         print("BlueZ is not reachable: only saved registrations under the storage directory are handled", flush=True)
 

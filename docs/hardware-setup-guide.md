@@ -270,7 +270,7 @@ scripts/hardware/reset_bluetooth_connections.sh
 Only PS Moves (Sony vendor `054c`, product `03d5` / `0c5e`) are removed: live BlueZ devices,
 and saved registrations under `/var/lib/bluetooth` of adapters BlueZ does not currently present
 (for example unplugged ones). If bluetoothd is not running, only the saved registrations are
-cleaned. Keyboards, headsets and other Bluetooth devices stay paired. Each removal is reported;
+cleaned; if BlueZ answers with any other error (busy, access denied), nothing is removed. Keyboards, headsets and other Bluetooth devices stay paired. Each removal is reported;
 the script exits non-zero if any failed.
 
 No reboot is needed. After a real run the script restarts `pairing-daemon`, because the running

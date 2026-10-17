@@ -224,6 +224,41 @@ class TestClearPsMoveRegistrations:
 
         assert scan == registrations.Scan([], bluez_reachable=False)
 
+    async def test_name_has_no_owner_also_falls_back(self, bluetooth_dir):
+        saved_move = write_info(bluetooth_dir, HCI0, ZCM1, 0x054C, 0x03D5)
+        with (
+            patch.object(registrations, "get_system_bus", AsyncMock()),
+            patch.object(
+                registrations,
+                "get_managed_objects",
+                AsyncMock(side_effect=DBusError("org.freedesktop.DBus.Error.NameHasNoOwner")),
+            ),
+        ):
+            scan = await scan_psmove_registrations(bluetooth_dir)
+
+        assert scan.bluez_reachable is False
+        assert [r.saved_dir for r in scan.registrations] == [saved_move]
+
+    @pytest.mark.parametrize(
+        "error_name", ["org.freedesktop.DBus.Error.AccessDenied", "org.freedesktop.DBus.Error.NoReply"]
+    )
+    async def test_other_dbus_errors_fail_without_touching_saved_files(self, bluetooth_dir, capsys, error_name):
+        """bluetoothd may be running (busy or denied): no saved-file fallback, exit 1, nothing deleted."""
+        saved_move = write_info(bluetooth_dir, HCI0, ZCM1, 0x054C, 0x03D5)
+        saved_gone = write_info(bluetooth_dir, GONE_ADAPTER, "00:06:F7:00:00:09", 0x054C, 0x03D5)
+        with (
+            patch.object(registrations, "get_system_bus", AsyncMock()),
+            patch.object(registrations, "get_managed_objects", AsyncMock(side_effect=DBusError(error_name))),
+        ):
+            with pytest.raises(DBusError):
+                await scan_psmove_registrations(bluetooth_dir)
+            code = await registrations.async_main(["--bluetooth-dir", str(bluetooth_dir)])
+
+        assert code == 1
+        assert error_name in capsys.readouterr().err
+        assert saved_move.exists()
+        assert saved_gone.exists()
+
     async def test_partial_failures_are_reported_per_registration(self, fake_bus, bluetooth_dir):
         """One failure does not stop the rest; DoesNotExist counts as already absent, not removed."""
         ok = fake_bus.call.return_value
