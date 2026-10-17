@@ -513,7 +513,7 @@ deletions of #1416 are in the same PR. Deviations from the plan, all reflected i
 - **Promotion** is a `real` overlay with writer `promotion`; the revert is `DELETE ?game_kind=real` and is refused
   when no overlay is present. The agent keeps only the post-revert cooldown stamps (no value snapshots).
 - **Alerts.** Prometheus alerting was removed on `main` (#1425) while this PR was open, so the two planned alert
-  rules were not added; the Grafana `feature-flags` dashboard has a "Flag service" row instead.
+  rules were not added; the Grafana **Flags / OpenFeature** dashboard (uid `feature-flags`) has a "Flag service" row instead.
 - **connect-proxy.** A fractional canary sets the stable counterpart as the default and the canary backend as a
   fraction overlay, which also fixes #1386 (the rest of the serials no longer resolve an undeclared variant).
 - **`set_not_served`** (409) stays for a set a stack does not list in `FLAG_SERVICE_SETS`; every stack lists all

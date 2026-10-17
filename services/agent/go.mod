@@ -7,6 +7,7 @@ require (
 	github.com/diegoholiveira/jsonlogic/v3 v3.9.1
 	github.com/google/uuid v1.6.0
 	github.com/open-feature/go-sdk v1.17.2
+	github.com/open-feature/go-sdk-contrib/hooks/open-telemetry v0.3.7
 	github.com/open-feature/go-sdk-contrib/providers/flagd v0.6.0
 	go.opentelemetry.io/collector/pdata v1.59.0
 	go.opentelemetry.io/otel v1.44.0

@@ -230,13 +230,11 @@ def test_refresh_from_flags_with_metrics(mock_get_client, _mock_add_handler):
 
     with (
         patch("services.game_coordinator.metrics.config_changes_total") as mock_changes,
-        patch("services.game_coordinator.metrics.flag_evaluations_total") as mock_evaluations,
         patch("services.game_coordinator.metrics.current_update_frequency_hz") as mock_gauge,
     ):
         manager = RuntimeConfigManager()
 
         # Verify initial setup called metrics
-        assert mock_evaluations.labels.called
         assert mock_gauge.set.called
 
         # Trigger another refresh with different values
