@@ -191,12 +191,12 @@ class DiscoveryLoop:
         # frame. The poll dict carries no sequence/timestamp, so identity is the
         # cheapest reliable freshness signal.
         self._hw_last_obj_id: dict[str, int] = {}
-        # Connection quality (UC-035 BR-004): rolling 10 s window of fresh-frame
+        # Connection quality (UC-035 BR-005): rolling 10 s window of fresh-frame
         # gaps per serial, and the stats computed at the last health emission.
         self._gap_window = ReportGapWindow()
         self._connection_quality: dict[str, GapStats] = {}
         # Monotonic pick-up time of the previous poll batch: lateness beyond the
-        # poll interval is the loop's own stall, not the link's (UC-035 BR-004).
+        # poll interval is the loop's own stall, not the link's (UC-035 BR-005).
         self._last_pickup_mono: float | None = None
 
         # Gameplay disconnect events: accumulated between stream frames, drained by servicer (#580)
@@ -692,7 +692,7 @@ class DiscoveryLoop:
         return max(0.0, now - picked_up)
 
     def connection_quality(self, serial: str) -> GapStats | None:
-        """Connection quality of ``serial`` at the last health emission (UC-035 BR-004)."""
+        """Connection quality of ``serial`` at the last health emission (UC-035 BR-005)."""
         return self._connection_quality.get(serial)
 
     def _update_connection_quality(self, serials: list[str], now: float) -> None:
@@ -997,7 +997,7 @@ class DiscoveryLoop:
 
 
 def _remove_quality_series(serial: str) -> None:
-    """Drop a controller's connection-quality series (UC-035 BR-004)."""
+    """Drop a controller's connection-quality series (UC-035 BR-005)."""
     metrics.controller_bluetooth_report_gap_p95_seconds.remove(serial)
     metrics.controller_bluetooth_report_gap_max_seconds.remove(serial)
     metrics.controller_connection_quality.remove(serial)

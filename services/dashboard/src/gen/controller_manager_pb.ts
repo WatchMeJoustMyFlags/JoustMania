@@ -27,11 +27,11 @@ export interface GameplayData {
   accel?: Vector3;
   gyro?: Vector3;
   rssi: number;
-  /** Unset until the controller's 10 s gap window has data (UC-035 BR-004). */
+  /** Unset until the controller's 10 s gap window has data (UC-035 BR-005). */
   connectionQuality?: ConnectionQuality;
 }
 
-// Connection quality from fresh-frame gaps over a rolling 10 s window (UC-035 BR-004).
+// Connection quality from fresh-frame gaps over a rolling 10 s window (UC-035 BR-005).
 // Proto3 JSON omits empty / zero fields.
 export interface ConnectionQuality {
   level?: string;

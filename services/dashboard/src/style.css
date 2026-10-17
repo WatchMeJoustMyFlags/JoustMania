@@ -366,7 +366,7 @@ body {
   color: white;
 }
 
-/* Connection quality (UC-035 BR-004): p95 / longest report gap over 10 s;
+/* Connection quality (UC-035 BR-005): p95 / longest report gap over 10 s;
    the tooltip carries both gaps. */
 .quality-badge {
   font-size: 0.7rem;

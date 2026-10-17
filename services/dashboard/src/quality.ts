@@ -1,5 +1,5 @@
 /**
- * Connection-quality badge for the controller tiles (UC-035 BR-004, #1431).
+ * Connection-quality badge for the controller tiles (UC-035 BR-005, #1431).
  *
  * The controller manager classifies each controller from the gaps between fresh
  * frames over a rolling 10 s window: p95 gap <= 22 / <= 30 / > 30 ms and longest

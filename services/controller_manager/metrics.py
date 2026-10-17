@@ -385,7 +385,7 @@ controller_bluetooth_movement_update_hz = Gauge(
     ["serial"],
 )
 
-# Connection quality per controller (UC-035 BR-004, #1431): p95 and longest gap
+# Connection quality per controller (UC-035 BR-005, #1431): p95 and longest gap
 # between fresh frames over a rolling 10 s window (the longest includes the
 # still-open gap), and the class derived from them (0 good, 1 fair, 2 poor).
 # Absent while the window has fewer than two fresh frames.
@@ -401,6 +401,6 @@ controller_bluetooth_report_gap_max_seconds = Gauge(
 )
 controller_connection_quality = Gauge(
     "controller_connection_quality",
-    "Connection quality class per controller (0 good, 1 fair, 2 poor; UC-035 BR-004)",
+    "Connection quality class per controller (0 good, 1 fair, 2 poor; UC-035 BR-005)",
     ["serial"],
 )

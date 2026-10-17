@@ -133,7 +133,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             name_manager=self.name_manager,
         )
         self._discovery_started = False
-        # serial -> (GapStats, ConnectionQuality) last sent on dashboard frames (UC-035 BR-004)
+        # serial -> (GapStats, ConnectionQuality) last sent on dashboard frames (UC-035 BR-005)
         self._quality_pb_cache: dict[str, tuple[object, controller_manager_pb2.ConnectionQuality]] = {}
 
         logger.info("ControllerManager initialized")
@@ -464,7 +464,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         )
 
     def _connection_quality_msg(self, serial: str) -> controller_manager_pb2.ConnectionQuality | None:
-        """Connection quality for the dashboard's unfiltered stream (UC-035 BR-004).
+        """Connection quality for the dashboard's unfiltered stream (UC-035 BR-005).
 
         Game (filtered) streams do not carry it: the game loop has no use for it.
         """

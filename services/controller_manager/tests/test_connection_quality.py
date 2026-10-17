@@ -1,4 +1,4 @@
-"""Connection quality per controller (UC-035 BR-004, FR-122, #1431).
+"""Connection quality per controller (UC-035 BR-005, FR-122, #1431).
 
 p95 gap <= 22 / <= 30 / > 30 ms and longest gap in a rolling 10 s window
 <= 30 / <= 50 / > 50 ms rate good / fair / poor; the class is the worse of the two.
@@ -44,7 +44,7 @@ def _feed(window: ReportGapWindow, serial: str, start: float, gaps_ms: list[floa
 
 
 class TestClassificationBoundaries:
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     @pytest.mark.parametrize(
         ("p95_ms", "expected"),
         [(10.0, GOOD), (22.0, GOOD), (22.01, FAIR), (30.0, FAIR), (30.01, POOR), (120.0, POOR)],
@@ -53,7 +53,7 @@ class TestClassificationBoundaries:
         # Longest gap kept good so only the p95 rating decides.
         assert classify(p95_ms, min(p95_ms, 30.0)) == expected
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     @pytest.mark.parametrize(
         ("max_ms", "expected"),
         [(10.0, GOOD), (30.0, GOOD), (30.01, FAIR), (50.0, FAIR), (50.01, POOR), (500.0, POOR)],
@@ -61,7 +61,7 @@ class TestClassificationBoundaries:
     def test_longest_gap_thresholds(self, max_ms, expected):
         assert classify(10.0, max_ms) == expected
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     @pytest.mark.parametrize(
         ("p95_ms", "max_ms", "expected"),
         [(25.0, 20.0, FAIR), (20.0, 45.0, FAIR), (25.0, 60.0, POOR), (35.0, 40.0, POOR)],
@@ -69,11 +69,11 @@ class TestClassificationBoundaries:
     def test_class_is_the_worse_of_the_two(self, p95_ms, max_ms, expected):
         assert classify(p95_ms, max_ms) == expected
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_levels_grow_with_badness(self):
         assert QUALITY_LEVEL[GOOD] < QUALITY_LEVEL[FAIR] < QUALITY_LEVEL[POOR]
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_p95_is_nearest_rank(self):
         values = [float(v) for v in range(1, 101)]
         assert percentile_nearest_rank(values, 0.95) == 95.0
@@ -83,21 +83,21 @@ class TestClassificationBoundaries:
 
 
 class TestRollingWindow:
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_fewer_than_two_fresh_frames_is_unknown(self):
         window = ReportGapWindow()
         assert window.snapshot(SERIAL, 100.0) is None
         window.record(SERIAL, 100.0)
         assert window.snapshot(SERIAL, 100.0) is None
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_steady_ten_ms_frames_are_good(self):
         window = ReportGapWindow()
         last = _feed(window, SERIAL, 100.0, [10.0] * 200)
         stats = window.snapshot(SERIAL, last)
         assert stats == GapStats(p95_ms=pytest.approx(10.0), max_ms=pytest.approx(10.0), quality=GOOD, samples=200)
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_one_long_gap_makes_the_controller_poor_until_it_leaves_the_window(self):
         window = ReportGapWindow()
         last = _feed(window, SERIAL, 100.0, [10.0] * 50 + [80.0] + [10.0] * 50)
@@ -112,7 +112,7 @@ class TestRollingWindow:
         assert stats.max_ms == pytest.approx(10.0)
         assert stats.quality == GOOD
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_p95_of_alternating_gaps(self):
         # 10 / 20 ms alternation (an 80 Hz controller seen through a 100 Hz poll) is good;
         # one 25 ms gap in every 10 lifts p95 to fair.
@@ -126,7 +126,7 @@ class TestRollingWindow:
         assert stats.p95_ms == pytest.approx(25.0)
         assert stats.quality == FAIR
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_open_gap_counts_as_longest_gap(self):
         window = ReportGapWindow()
         last = _feed(window, SERIAL, 100.0, [10.0] * 100)
@@ -134,7 +134,7 @@ class TestRollingWindow:
         assert stats.max_ms == pytest.approx(200.0)
         assert stats.quality == POOR
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_silent_for_the_whole_window_stays_poor(self):
         window = ReportGapWindow()
         last = _feed(window, SERIAL, 100.0, [10.0] * 10)
@@ -143,14 +143,14 @@ class TestRollingWindow:
         assert stats.max_ms == pytest.approx(11000.0)
         assert stats.samples == 0
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_one_frame_long_ago_is_poor_one_frame_recently_unknown(self):
         window = ReportGapWindow()
         window.record(SERIAL, 100.0)
         assert window.snapshot(SERIAL, 105.0) is None
         assert window.snapshot(SERIAL, 110.0).quality == POOR
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_loop_stall_is_not_charged_to_the_link(self):
         # Poll loop stalls 45 ms between two pick-ups: the 55 ms elapsed is 10 ms of link gap.
         window = ReportGapWindow()
@@ -161,7 +161,7 @@ class TestRollingWindow:
         assert stats.max_ms == pytest.approx(10.0)
         assert stats.quality == GOOD
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_stalls_are_subtracted_from_every_gap_they_span(self):
         window = ReportGapWindow()
         window.record(SERIAL, 100.0)
@@ -177,7 +177,7 @@ class TestRollingWindow:
         window.record(SERIAL, 100.050)
         assert window.snapshot(SERIAL, 100.050).p95_ms == pytest.approx(20.0)
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_forget_drops_the_controller(self):
         window = ReportGapWindow()
         last = _feed(window, SERIAL, 100.0, [10.0] * 10)
@@ -217,7 +217,7 @@ class TestDiscoveryLoopExport:
         backend.get_controller_state = AsyncMock(side_effect=lambda _serial: {"accel": (0, 0, 1)})
         return _make_loop(backend)
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     @pytest.mark.asyncio
     async def test_health_emission_exports_gap_stats_and_class(self, loop):
         # Polls every 10 ms; the link delivers nothing new for 60 ms once (stale replays).
@@ -242,7 +242,7 @@ class TestDiscoveryLoopExport:
         )
         metrics.controller_connection_quality.labels.return_value.set.assert_called_with(QUALITY_LEVEL[POOR])
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     @pytest.mark.asyncio
     async def test_poll_loop_stall_does_not_rate_the_link_worse(self, loop):
         # Fresh frame on every poll, but the loop itself stalls 80 ms once.
@@ -257,7 +257,7 @@ class TestDiscoveryLoopExport:
         assert stats.max_ms == pytest.approx(10.0)
         assert stats.quality == GOOD
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     @pytest.mark.asyncio
     async def test_span_event_carries_the_quality(self, loop):
         for i in range(5):
@@ -275,7 +275,7 @@ class TestDiscoveryLoopExport:
         assert attrs["bluetooth.report_gap_p95_ms"] == pytest.approx(10.0)
         assert attrs["bluetooth.report_gap_max_ms"] == pytest.approx(10.0)
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     @pytest.mark.asyncio
     async def test_single_frame_exports_no_quality(self, loop):
         await _poll_at(loop, 100.0)
@@ -286,7 +286,7 @@ class TestDiscoveryLoopExport:
         metrics.controller_connection_quality.labels.assert_not_called()
         metrics.controller_connection_quality.remove.assert_called_with(SERIAL)
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     @pytest.mark.asyncio
     async def test_untracked_controller_drops_its_quality(self, loop):
         for i in range(5):
@@ -340,7 +340,7 @@ class TestGameplayFrameCarriesQuality:
             servicer.tracked_controllers[SERIAL] = {}
             yield servicer, mock_loop
 
-    @pytest.mark.uc("UC-035", steps=[2], br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[2], br=["BR-005"])
     def test_dashboard_stream_carries_class_and_gaps(self, servicer):
         servicer, mock_loop = servicer
         mock_loop.connection_quality = MagicMock(
@@ -355,7 +355,7 @@ class TestGameplayFrameCarriesQuality:
         assert quality.report_gap_p95_ms == pytest.approx(24.0)
         assert quality.report_gap_max_ms == pytest.approx(41.0)
 
-    @pytest.mark.uc("UC-035", steps=[2], br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[2], br=["BR-005"])
     def test_message_is_built_once_per_stats_update(self, servicer):
         servicer, mock_loop = servicer
         first = GapStats(p95_ms=10.0, max_ms=12.0, quality=GOOD, samples=900)
@@ -368,7 +368,7 @@ class TestGameplayFrameCarriesQuality:
         assert msg_b is not msg_a
         assert msg_b.level == "poor"
 
-    @pytest.mark.uc("UC-035", steps=[2], br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[2], br=["BR-005"])
     def test_unknown_quality_leaves_the_field_unset(self, servicer):
         servicer, mock_loop = servicer
         mock_loop.connection_quality = MagicMock(return_value=None)
@@ -377,7 +377,7 @@ class TestGameplayFrameCarriesQuality:
 
         assert not update.controllers[0].HasField("connection_quality")
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_game_stream_does_not_carry_it(self, servicer):
         servicer, mock_loop = servicer
         mock_loop.connection_quality = MagicMock(

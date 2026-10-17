@@ -82,7 +82,7 @@ export class ControllerCard {
     // Agent shield badge (UC-040 A16)
     this.updateShield(shield, nowMs);
 
-    // Connection-quality badge (UC-035 BR-004)
+    // Connection-quality badge (UC-035 BR-005)
     this.updateQuality(data.connectionQuality);
 
     // Update battery level

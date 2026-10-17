@@ -1,4 +1,4 @@
-"""Per-controller connection quality from fresh-frame gaps (UC-035 BR-004, #1431).
+"""Per-controller connection quality from fresh-frame gaps (UC-035 BR-005, #1431).
 
 The discovery loop records the gap between consecutive fresh frames of each
 controller. This module keeps those gaps for a rolling window (10 s) and derives

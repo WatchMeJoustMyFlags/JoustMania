@@ -89,7 +89,7 @@ class TestRenameController:
             mock_loop.stop = MagicMock()
             mock_loop.wait_stopped = AsyncMock()
             mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
-            mock_loop.connection_quality.return_value = None  # UC-035 BR-004: no window yet
+            mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
             mock_discovery_loop.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -229,7 +229,7 @@ class TestGetConnectedControllers:
             mock_loop.stop = MagicMock()
             mock_loop.wait_stopped = AsyncMock()
             mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
-            mock_loop.connection_quality.return_value = None  # UC-035 BR-004: no window yet
+            mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
             mock_discovery_loop.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -331,7 +331,7 @@ class TestServicerInitialization:
             mock_loop.stop = MagicMock()
             mock_loop.wait_stopped = AsyncMock()
             mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
-            mock_loop.connection_quality.return_value = None  # UC-035 BR-004: no window yet
+            mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
             mock_discovery_loop.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -377,7 +377,7 @@ class TestServicerShutdown:
             mock_loop.stop = MagicMock()
             mock_loop.wait_stopped = AsyncMock()
             mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
-            mock_loop.connection_quality.return_value = None  # UC-035 BR-004: no window yet
+            mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
             mock_discovery_loop.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -436,7 +436,7 @@ class TestExtractedHelpers:
             mock_loop.stop = MagicMock()
             mock_loop.wait_stopped = AsyncMock()
             mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
-            mock_loop.connection_quality.return_value = None  # UC-035 BR-004: no window yet
+            mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
             mock_discovery_loop.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -840,7 +840,7 @@ def _make_servicer():
         mock_loop.stop = MagicMock()
         mock_loop.wait_stopped = AsyncMock()
         mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
-        mock_loop.connection_quality.return_value = None  # UC-035 BR-004: no window yet
+        mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
         mock_discovery_loop_cls.return_value = mock_loop
 
         from services.controller_manager.servicer import ControllerManagerServicer
