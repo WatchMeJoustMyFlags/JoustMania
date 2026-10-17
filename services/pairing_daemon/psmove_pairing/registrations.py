@@ -22,6 +22,7 @@ failed.
 import argparse
 import asyncio
 import configparser
+import logging
 import re
 import shutil
 import sys
@@ -32,6 +33,8 @@ from pathlib import Path
 from dbus_fast import Message, Variant
 
 from lib.bluez_dbus import ORG_BLUEZ, ORG_BLUEZ_PATH, DBusError, assert_reply, get_managed_objects, get_system_bus
+
+logger = logging.getLogger("psmove-pairing")
 
 SONY_VENDOR_ID = 0x054C
 # ZCM1 (0x03D5) and ZCM2/ZCM2E (0x0C5E). 0x042F is the PS Move Navigation
@@ -252,6 +255,126 @@ async def clear_psmove_registrations(
             on_result(result)
         results.append(result)
     return results
+
+
+# --- One controller on every adapter: unpair (UC-005) and re-pair cleanup (UC-001 BR-004) ---
+
+
+def normalize_address(address: str) -> str | None:
+    """Upper-case ``address`` with ':' separators, or None if it is not a Bluetooth address."""
+    candidate = address.strip().upper().replace("-", ":")
+    return candidate if _MAC_RE.fullmatch(candidate) else None
+
+
+def _has_identity(properties: dict) -> bool:
+    """Whether BlueZ knows what kind of device this is (Modalias or device class)."""
+    return bool(_plain(properties.get("Modalias"))) or bool(_plain(properties.get("Class")))
+
+
+def _saved_has_device_id(info_path: Path) -> bool:
+    config = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        config.read(info_path)
+    except (configparser.Error, OSError):
+        return True  # unreadable: treat as identified, so it is not removed blindly
+    return config.has_section("DeviceID")
+
+
+def _saved_of_address(
+    bluetooth_dir: Path, address: str, present_adapters: set[str], accept: Callable[[Path], bool]
+) -> list[PsMoveRegistration]:
+    """Saved directories of one address under adapters BlueZ does not present."""
+    if not bluetooth_dir.is_dir():
+        return []
+    saved: list[PsMoveRegistration] = []
+    for info_path in sorted(bluetooth_dir.glob(f"*/{address}/info")):
+        controller_dir = info_path.parent
+        adapter_address = controller_dir.parent.name.upper()
+        if _MAC_RE.fullmatch(adapter_address) and adapter_address not in present_adapters and accept(info_path):
+            saved.append(PsMoveRegistration(adapter_address, address, saved_dir=controller_dir))
+    return saved
+
+
+async def find_controller_registrations(
+    address: str,
+    *,
+    keep_adapter: str | None = None,
+    require_psmove: bool = True,
+    bluetooth_dir: Path | None = None,
+) -> list[PsMoveRegistration]:
+    """Registrations of one controller address on every adapter but ``keep_adapter``.
+
+    ``require_psmove`` (the operator unpair, UC-005 BR-001): only when at least one
+    registration of the address is a PS Move are any of them taken; then copies of
+    the same address that carry no device identity (never connected: no Modalias,
+    no class, no saved ``[DeviceID]``) are taken too, while a copy identified as
+    another device never is. Without ``require_psmove`` (the re-pair cleanup,
+    UC-001 BR-004) the address alone decides: it was read from a PS Move on USB.
+
+    Raises:
+        ValueError: ``address`` is not a Bluetooth address.
+        DBusError: BlueZ answered with an error other than "not running".
+    """
+    normalized = normalize_address(address)
+    if normalized is None:
+        raise ValueError(f"not a Bluetooth address: {address!r}")
+    keep = normalize_address(keep_adapter) if keep_adapter else None
+    bluetooth_dir = bluetooth_dir if bluetooth_dir is not None else DEFAULT_BLUETOOTH_DIR
+
+    objects = await _bluez_objects()
+    adapters: dict[str, tuple[str, str]] = {}
+    live: list[tuple[PsMoveRegistration, dict]] = []
+    if objects is not None:
+        for path, interfaces in objects.items():
+            props = interfaces.get("org.bluez.Adapter1")
+            if props is not None and path.startswith(ORG_BLUEZ_PATH + "/"):
+                adapters[path] = (path.rsplit("/", 1)[-1], str(_plain(props.get("Address", ""))).upper())
+        for path, interfaces in objects.items():
+            props = interfaces.get("org.bluez.Device1")
+            adapter = adapters.get(path.rsplit("/", 1)[0])
+            if props is None or adapter is None or str(_plain(props.get("Address", ""))).upper() != normalized:
+                continue
+            live.append((PsMoveRegistration(adapter[1], normalized, hci=adapter[0], device_path=path), props))
+    present = {address for _, address in adapters.values()}
+
+    if require_psmove:
+        live_move = any(is_psmove_device(props) for _, props in live)
+        saved_move = _saved_of_address(bluetooth_dir, normalized, present, _saved_registration_is_psmove)
+        if not (live_move or saved_move):
+            return []
+        found = [r for r, props in live if is_psmove_device(props) or not _has_identity(props)]
+        found += saved_move + _saved_of_address(
+            bluetooth_dir, normalized, present, lambda info: not _saved_has_device_id(info)
+        )
+    else:
+        found = [r for r, _ in live] + _saved_of_address(bluetooth_dir, normalized, present, lambda _info: True)
+    return [r for r in found if r.adapter_address != keep]
+
+
+def _log_result(result: RemovalResult) -> None:
+    where = f"{result.registration.address} on adapter {result.registration.adapter_address}"
+    if result.outcome == "failed":
+        logger.warning(f"FAILED to remove registration of {where}: {result.error}")
+    else:
+        logger.info(f"Registration of {where}: {result.outcome}")
+
+
+async def remove_controller_registrations(
+    address: str,
+    *,
+    keep_adapter: str | None = None,
+    require_psmove: bool = True,
+    bluetooth_dir: Path | None = None,
+) -> list[RemovalResult]:
+    """Remove one controller's registrations on every adapter (UC-005, UC-001 BR-004).
+
+    Returns one :class:`RemovalResult` per registration found (empty: none found).
+    Raises like :func:`find_controller_registrations`.
+    """
+    found = await find_controller_registrations(
+        address, keep_adapter=keep_adapter, require_psmove=require_psmove, bluetooth_dir=bluetooth_dir
+    )
+    return await clear_psmove_registrations(found, on_result=_log_result)
 
 
 def _where(registration: PsMoveRegistration) -> str:

@@ -16,7 +16,11 @@ LED Feedback:
 
 Environment:
   DEBUG         - set to 1 for verbose logging
-  HEALTH_PORT   - port for health check endpoint (default: 8002)
+  METRICS_PORT  - port for the health check and control API (default: 8002)
+  CONTROL_BIND  - comma-separated addresses that port binds to (default: 127.0.0.1).
+                  Full stack: 127.0.0.1 plus the docker0 gateway (172.17.0.1), so
+                  the connect-proxy reaches it via host.docker.internal but the
+                  LAN does not. Lite stack: 0.0.0.0 (container network only).
   OTEL_EXPORTER_OTLP_ENDPOINT - OTLP collector endpoint (default: http://localhost:4317)
   FLAGD_HOST    - flagd host for feature flags (default: flagd)
   FLAGD_PORT    - flagd sync port (default: 8015)
@@ -27,12 +31,15 @@ Feature Flags (system domain):
 
 Endpoints:
   GET /healthz  - Health check (200 if healthy, 503 if unhealthy)
+  POST /controllers/{address}/unpair - Unpair one controller on every adapter
+      (UC-005; operator-only, no authentication, reached via the connect-proxy)
 """
 
 import asyncio
 import json
 import logging
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
 from lib.otel_logging import init_logging
@@ -40,6 +47,7 @@ from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector_thread
 from psmove_pairing import PairingDaemon, init_telemetry, metrics
 from psmove_pairing.config import DEBUG, METRICS_PORT, init_performance_flags
+from psmove_pairing.control_api import handle_post
 
 # Global daemon reference for health checks
 _daemon: PairingDaemon | None = None
@@ -63,6 +71,24 @@ class HealthHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+
+    def do_POST(self):
+        """Handle POST requests (operator control API, UC-005)."""
+        if _daemon is None:
+            self._send_json(503, {"error": "daemon not started"})
+            return
+        result = handle_post(self.path, _daemon.usb_pairing, _daemon.loop)
+        if result is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self._send_json(*result)
+
+    def _send_json(self, status: int, body: dict) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
 
     def _handle_healthz(self):
         """Handle health check request."""
@@ -89,11 +115,30 @@ class HealthHandler(BaseHTTPRequestHandler):
         """Suppress default request logging."""
 
 
-def start_health_server(port: int) -> None:
-    """Start HTTP server with health endpoint."""
-    server = HTTPServer(("", port), HealthHandler)
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+def bind_addresses(value: str | None) -> list[str]:
+    """Addresses from CONTROL_BIND (comma-separated); default loopback only."""
+    addresses = [a.strip() for a in (value or "").split(",") if a.strip()]
+    return addresses or ["127.0.0.1"]
+
+
+def start_health_server(port: int, addresses: list[str]) -> list[ThreadingHTTPServer]:
+    """Serve /healthz and the control API on each address (UC-005 BR-003).
+
+    The port is not bound on every interface: on the host network that would
+    make the unpair route reachable from the LAN. An address that cannot be
+    bound (e.g. docker0 missing) is logged and skipped.
+    """
+    servers = []
+    for address in addresses:
+        try:
+            server = ThreadingHTTPServer((address, port), HealthHandler)
+        except OSError as e:
+            logger.error(f"Cannot bind HTTP server to {address}:{port}: {e}")
+            continue
+        Thread(target=server.serve_forever, daemon=True).start()
+        logger.info(f"HTTP server (healthz, control API) listening on {address}:{port}")
+        servers.append(server)
+    return servers
 
 
 def main() -> None:
@@ -116,8 +161,7 @@ def main() -> None:
     )
 
     # Start health check HTTP server
-    logger.info(f"Starting health server on port {METRICS_PORT}")
-    start_health_server(METRICS_PORT)
+    start_health_server(METRICS_PORT, bind_addresses(os.getenv("CONTROL_BIND")))
 
     # Initialize OpenTelemetry tracing
     tracer = init_telemetry()

@@ -176,3 +176,52 @@ hcitool rssi <MAC_ADDRESS>   # Get RSSI for connected device
 ```
 
 See `docs/hardware-setup-guide.md` for detailed troubleshooting.
+
+## Unpair a controller (UC-005)
+
+`POST /controllers/{address}/unpair` on the daemon's HTTP port (8002) removes
+the address's registrations on every adapter (BlueZ `RemoveDevice`, plus
+`/var/lib/bluetooth/<adapter>/<address>` directories of adapters BlueZ does not
+present) and forgets that the controller was paired this session. Only an
+address with a PS Move registration is touched; identity-less copies of that
+address on other adapters go with it.
+
+| Status | Meaning |
+|---|---|
+| 200 | every registration found is `removed` or `already_absent` (idempotent); body `{"address", "removed", "already_absent", "failed", "adapters", "results", "on_usb"}` |
+| 400 | not a Bluetooth address (e.g. a mock serial) |
+| 404 | no registration found |
+| 409 | a USB pairing or another unpair is running; retry |
+| 503 | a removal failed (same body plus `error`), a BlueZ / D-Bus error, or any unexpected error |
+
+A controller unpaired while plugged in over USB (`on_usb: true`) is **not**
+paired again until it is unplugged and plugged back in: a pairing restarts the
+Bluetooth service, which disconnects every controller. The daemon notices the
+unplug on its next USB poll (default every 10 s), or by a new HID device path,
+so leave it unplugged for about 10 s.
+
+The dashboard calls it through envoy and the connect-proxy
+(`POST /pairing/unpair` with `{"address": "..."}`):
+
+    curl -X POST http://<pi>/pairing/unpair -d '{"address":"00:06:F7:AA:BB:CC"}'
+
+**Trust model.** There is no authentication: whoever reaches the stack is the
+operator. Keep the Pi on a trusted network (the talk uses a phone hotspot).
+Exposure is narrowed by:
+
+- `CONTROL_BIND` (comma-separated addresses, default `127.0.0.1`): the daemon's
+  HTTP port binds only there. The full stack sets `127.0.0.1,172.17.0.1`
+  (loopback + the docker0 gateway, which `host.docker.internal` resolves to for
+  the connect-proxy; override with `PAIRING_CONTROL_BIND` if your Docker bridge
+  uses another subnet), so the LAN cannot reach port 8002. The lite stack runs
+  the daemon on the Compose network and binds `0.0.0.0` there (port not
+  published).
+- The connect-proxy rejects browser requests from another origin (403), so a
+  web page open on the operator's laptop cannot unpair controllers.
+- A host firewall (e.g. ufw) must allow the Docker bridge to reach host port
+  8002, or the connect-proxy answers 502.
+
+After a re-pair to another adapter (UC-001 A4) the daemon also removes the
+controller's registrations on the other adapters (UC-001 A5, BR-004). Both use
+`remove_controller_registrations` in `psmove_pairing/registrations.py`, on top
+of the registration reset's `clear_psmove_registrations`.

@@ -2,9 +2,11 @@
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
+from dbus_fast import Message, MessageType
+from dbus_fast.aio import MessageBus
 
 from psmove_pairing.adapter_manager import AdapterInfo
 from psmove_pairing.pairing_backend import HidapiBackend, PairingResult, RustServiceBackend
@@ -491,9 +493,16 @@ class TestPairingFlow:
         def set_tree(value):
             tree["value"] = value
 
+        bus = create_autospec(MessageBus, instance=True)
+        bus.call.return_value = Message(message_type=MessageType.METHOD_RETURN, reply_serial=1)
+        self.bus = bus
+
         with (
             patch("psmove_pairing.adapter_manager_modern.get_system_bus", AsyncMock()),
             patch("psmove_pairing.adapter_manager_modern.get_managed_objects", side_effect=managed_objects),
+            patch("psmove_pairing.registrations.get_system_bus", AsyncMock(return_value=bus)),
+            patch("psmove_pairing.registrations.get_managed_objects", side_effect=managed_objects),
+            patch("psmove_pairing.registrations.DEFAULT_BLUETOOTH_DIR", Path("/nonexistent-bluetooth-state")),
             patch("psmove_pairing.usb_pairing._resolve_routing", return_value="python"),
             patch("psmove_pairing.usb_pairing._create_backend", return_value=backend),
             patch("psmove_pairing.usb_pairing.restart_systemd_unit", AsyncMock()) as restart,
@@ -513,6 +522,46 @@ class TestPairingFlow:
         restart.assert_awaited_once_with("bluetooth.service")
         assert ["bluetoothctl", "trust", self.SERIAL] in runner.calls
         assert self.SERIAL in usb_pairing._verified_serials
+        metrics["pairing_success_total"].inc.assert_called_once()
+        metrics["pairing_failed_total"].inc.assert_not_called()
+
+    @pytest.mark.uc("UC-001", flow="A5", br=["BR-001", "BR-004"])
+    async def test_repair_to_other_adapter_removes_old_registration(self, usb_pairing, env, metrics):
+        """A4 moves a known controller to the least-loaded adapter; A5 removes its old registration there."""
+        backend, _runner, set_tree, restart = env
+        known = [{"Address": self.SERIAL}, *devices(2)]
+        set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, known), "hci1": (self.ADAPTER_FREE, [])}))
+        removals_before_restart = []
+        restart.side_effect = lambda *_: removals_before_restart.append(
+            sum(c.args[0].member == "RemoveDevice" for c in self.bus.call.await_args_list)
+        )
+
+        await usb_pairing.poll()
+
+        assert removals_before_restart == [1], "A5 removes the old registration before the BlueZ restart"
+
+        backend.pair_controller.assert_awaited_once_with(FAKE_PATH_1, self.SERIAL, self.ADAPTER_FREE)
+        removals = [c.args[0] for c in self.bus.call.await_args_list if c.args[0].member == "RemoveDevice"]
+        assert [(m.path, m.body) for m in removals] == [("/org/bluez/hci0", ["/org/bluez/hci0/dev_0"])]
+        restart.assert_awaited_once_with("bluetooth.service")
+        metrics["pairing_success_total"].inc.assert_called_once()
+
+    @pytest.mark.uc("UC-001", flow="A5", br=["BR-004"])
+    async def test_failed_stale_removal_does_not_fail_pairing(self, usb_pairing, env, metrics):
+        """BR-004: a BlueZ error while removing the old registration is logged; the pairing still succeeds."""
+        _backend, runner, set_tree, _restart = env
+        set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, [{"Address": self.SERIAL}]), "hci1": (self.ADAPTER_FREE, [])}))
+        self.bus.call.return_value = Message(
+            message_type=MessageType.ERROR,
+            error_name="org.bluez.Error.Failed",
+            reply_serial=1,
+            body=["boom"],
+            signature="s",
+        )
+
+        await usb_pairing.poll()
+
+        assert ["bluetoothctl", "trust", self.SERIAL] in runner.calls
         metrics["pairing_success_total"].inc.assert_called_once()
         metrics["pairing_failed_total"].inc.assert_not_called()
 

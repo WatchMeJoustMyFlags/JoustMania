@@ -1,6 +1,6 @@
 """Tests for pairing backend implementations."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -240,3 +240,27 @@ class TestRustServiceBackend:
         assert result.already_paired is True
         # Verify the stub was called (path gets decoded in the real implementation)
         mock_stub.PairController.assert_called_once()
+
+
+class TestRustServiceBackendDeadlines:
+    """A hung rust-hid must not stall the poll loop or hold the pairing lock (UC-005 A6)."""
+
+    @pytest.mark.uc("UC-005", flow="A6")
+    async def test_every_rpc_carries_a_deadline(self):
+        from proto import psmove_hid_pb2_grpc
+
+        from psmove_pairing.pairing_backend import RUST_HID_RPC_TIMEOUT_SECONDS
+
+        stub = create_autospec(psmove_hid_pb2_grpc.PairingServiceStub, instance=True)
+        stub.GetUSBControllers = AsyncMock(return_value=MagicMock(controllers=[]))
+        stub.PairController = AsyncMock(return_value=MagicMock(success=True, already_paired=False, previous_host=""))
+        backend = RustServiceBackend.__new__(RustServiceBackend)
+        backend._channel = MagicMock()
+        backend._stub = stub
+
+        await backend.get_usb_controllers()
+        await backend.pair_controller(b"/dev/hidraw0", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
+
+        assert stub.GetUSBControllers.await_args.kwargs["timeout"] == RUST_HID_RPC_TIMEOUT_SECONDS
+        assert stub.PairController.await_args.kwargs["timeout"] == RUST_HID_RPC_TIMEOUT_SECONDS
+        assert RUST_HID_RPC_TIMEOUT_SECONDS <= 15

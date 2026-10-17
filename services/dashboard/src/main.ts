@@ -5,6 +5,7 @@
  */
 import { controllerClient, gameClient, menuClient } from "./client.js";
 import { ControllerGrid } from "./components/ControllerGrid.js";
+import { UNPAIR_NOTICE_EVENT } from "./unpair.js";
 import { GameStatus } from "./components/GameStatus.js";
 import { Controls } from "./components/Controls.js";
 import { ExperimentsView } from "./components/ExperimentsView.js";
@@ -497,6 +498,11 @@ function handleGameEvent(event: { eventType: string; data: { [key: string]: stri
   gameStatus.updateState(state.gameState);
   gameStatus.updatePlayerCount(state.totalPlayers, state.alivePlayers);
 }
+
+// Unpair results from a controller card (UC-005); the card itself may vanish
+document.addEventListener(UNPAIR_NOTICE_EVENT, (event) => {
+  addEvent(String((event as CustomEvent<string>).detail));
+});
 
 // Add event to the log
 function addEvent(text: string) {

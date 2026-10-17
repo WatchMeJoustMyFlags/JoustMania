@@ -14,6 +14,7 @@ rectangle "JoustMania" {
         usecase "UC-002\nConnect a Controller and Join the Lobby" as UC002
         usecase "UC-003\nPlay with Mock Controllers" as UC003
         usecase "UC-004\nIdentify a Controller" as UC004
+        usecase "UC-005\nUnpair a Controller" as UC005
     }
     package "Lobby, menu & admin" {
         usecase "UC-010\nReady Up and Start a Game" as UC010
@@ -77,6 +78,7 @@ host --> UC014
 
 operator --> UC003
 operator --> UC004
+operator --> UC005
 operator --> UC027
 operator --> UC035
 operator --> UC044

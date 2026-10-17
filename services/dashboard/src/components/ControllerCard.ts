@@ -9,6 +9,7 @@ import { shieldBadge } from "../shield.js";
 import type { ShieldState } from "../shield.js";
 import { controllerClient } from "../client.js";
 import { identifyController } from "../identify.js";
+import { UNPAIR_NOTICE_EVENT, canUnpair, requestUnpair } from "../unpair.js";
 
 /**
  * CSS for the LED circle. `color` is the colour last written to the LED, so a
@@ -38,6 +39,8 @@ export class ControllerCard {
   private readonly identifyButton: HTMLButtonElement;
   private readonly identifyElement: HTMLElement;
   private identifyTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly unpairButton: HTMLButtonElement;
+  private readonly unpairResult: HTMLElement;
 
   constructor(serial: string) {
     this.serial = serial;
@@ -52,6 +55,11 @@ export class ControllerCard {
     this.identifyButton = this.element.querySelector(".identify-btn")!;
     this.identifyElement = this.element.querySelector(".identify-status")!;
     this.identifyButton.addEventListener("click", () => void this.identify());
+    this.unpairButton = this.element.querySelector(".unpair-btn")!;
+    this.unpairResult = this.element.querySelector(".unpair-result")!;
+    // UC-005: only real controllers (serial = Bluetooth address) can be unpaired
+    this.unpairButton.hidden = !canUnpair(this.serial);
+    this.unpairButton.addEventListener("click", () => void this.unpair());
   }
 
   /** UC-004: flash + rumble this controller; show the answer on the card. */
@@ -66,6 +74,25 @@ export class ControllerCard {
     this.identifyTimer = setTimeout(() => {
       this.identifyElement.hidden = true;
     }, status.showForMs);
+  }
+
+  private async unpair() {
+    this.unpairButton.disabled = true;
+    try {
+      const outcome = await requestUnpair(this.serial, {
+        confirm: (message) => globalThis.confirm(message),
+        fetch: (input, init) => globalThis.fetch(input, init),
+        baseUrl: import.meta.env.DEV ? "" : globalThis.location.origin,
+      });
+      if (outcome.kind === "cancelled") return;
+      // The card disappears when the controller disconnects: also log to the event feed
+      document.dispatchEvent(new CustomEvent(UNPAIR_NOTICE_EVENT, { detail: outcome.message }));
+      this.unpairResult.hidden = false;
+      this.unpairResult.textContent = outcome.message;
+      this.unpairResult.classList.toggle("failed", outcome.kind === "failed");
+    } finally {
+      this.unpairButton.disabled = false;
+    }
   }
 
   private createElement(): HTMLElement {
@@ -85,6 +112,8 @@ export class ControllerCard {
       <div class="quality-badge" hidden></div>
       <button type="button" class="identify-btn" title="Flash and rumble this controller">Identify</button>
       <div class="identify-status" hidden></div>
+      <button type="button" class="unpair-btn" title="Remove this controller from every Bluetooth adapter">Unpair</button>
+      <div class="unpair-result" hidden></div>
     `;
     return card;
   }
