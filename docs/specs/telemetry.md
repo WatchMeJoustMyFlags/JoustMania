@@ -252,14 +252,14 @@ BR-003; `services/game_coordinator/game_session.py` `_publish_duration_while_run
 
 | Consumer | Uses | Source |
 |---|---|---|
-| Grafana (20 dashboards, datasource VictoriaMetrics) | agent-operations, interventions, game-quality, game-analytics, player-insights, controller-overview, backend-comparison, bluetooth-adapter, feature-flags, fleet-overview, host-metrics, presentation-chaos, ... Every referenced app metric is recorded and every label matcher on a Python metric names a label it carries (checked by `tests/contract/test_telemetry_contract.py`). The service-health-overview "gRPC client errors" panels read `grpc_client_errors_total` (failed outbound calls and stream setups from the Python services, by callee `service`, `method`, `code`; #1353); mid-stream and non-Python client errors are not counted yet (#1426). No dashboard queries Loki or Jaeger. | `services/grafana/dashboards/` |
+| Grafana (16 dashboards, datasource VictoriaMetrics) | agent-operations, interventions, game-quality, game-analytics, player-insights, controller-overview, bluetooth-adapter, feature-flags, fleet-overview, host-metrics, ... (backend-comparison, performance-experiment, cache-performance and presentation-chaos were deleted in #1427). Every referenced app metric is recorded and every label matcher on a Python metric names a label it carries (checked by `tests/contract/test_telemetry_contract.py`). The service-health-overview "gRPC client errors" panels read `grpc_client_errors_total` (failed outbound calls and stream setups from the Python services, by callee `service`, `method`, `code`; #1353); mid-stream and non-Python client errors are not counted yet (#1426). No dashboard queries Loki or Jaeger. | `services/grafana/dashboards/` |
 | Dashboard SPA | Jaeger `service=agent operation=agent.decide` (tags `decide.*` incl. the `decide.answers` shape, `gen_ai.request.model`, `gen_ai.response.model`, `game.id`, `game.kind`, `decision.*`, `player.serial` / `player.name` on `agent.decision` for the Decisions row target (#1295); a child is a chat span when its name starts with `chat ` or `gen_ai.operation.name=chat`); Loki agent log lines (§7); VictoriaMetrics `sum(agent_intervention_writes_total) by (result)` | `services/dashboard/src/agent.ts`, `experiments.ts` |
 | Agent | §4.4 | |
 | Integration tests | span names `agent.decide`, `agent.signal_received`, `agent.decision`, `chat {model}`, `agent.disabled`; `decide.*` tags; event `gen_ai.evaluation.result` | `tests/integration/test_decide_backend_e2e.py` |
 | Demo validation harness | span chain `agent.signal_received` → `agent.decision` → `agent.action` per game; Prometheus queries | `tools/demo/validation_harness.py` |
 | Talk pre-flight | Jaeger `service=agent operation=agent.decide`, tags `decide.backend`, `decide.outcome`, `decide.fallback_reason`; flag **variant names** of the stage baseline (`ambient`, `default`, `haiku`, `real_only`, ...) | `scripts/talk-preflight.sh` |
 
-83 of the 151 Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo
+94 of the 151 Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo
 harness or a script (all `menu_*`, `psmove_*`, `python_hid_*`, `audio_*` and others); they are kept for ad-hoc
 analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers.
 
@@ -349,38 +349,38 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `controller_bluetooth_event_gap_seconds` | histogram | (none) | controller-manager | yes | (none) |
 | `controller_bluetooth_movement_update_hz` | gauge | `serial` | controller-manager | yes | (none) |
 | `controller_button_events_total` | counter | `serial`, `button`, `action` | controller-manager | yes | grafana |
-| `controller_chaos_faults_injected_total` | counter | `fault`, `serial` | controller-manager | yes | grafana |
+| `controller_chaos_faults_injected_total` | counter | `fault`, `serial` | controller-manager | yes | (none) |
 | `controller_color_b` | gauge | `serial` | controller-manager | yes | (none) |
 | `controller_color_g` | gauge | `serial` | controller-manager | yes | (none) |
 | `controller_color_hex` | gauge | `serial` | controller-manager | yes | grafana |
 | `controller_color_r` | gauge | `serial` | controller-manager | yes | (none) |
 | `controller_connected` | gauge | `serial` | controller-manager | yes | agent, grafana |
 | `controller_disconnect_total` | counter | `serial` | controller-manager | yes | grafana |
-| `controller_discovery_check_duration_seconds` | histogram | (none) | controller-manager | yes | grafana |
+| `controller_discovery_check_duration_seconds` | histogram | (none) | controller-manager | yes | (none) |
 | `controller_discovery_checks_total` | counter | (none) | controller-manager | yes | (none) |
 | `controller_discovery_full_enumerate_total` | counter | (none) | controller-manager | yes | (none) |
 | `controller_discovery_verify_only_total` | counter | (none) | controller-manager | yes | (none) |
 | `controller_info` | gauge | `serial`, `name` | controller-manager | yes | agent, grafana |
-| `controller_input_lag_seconds` | histogram | `serial` | controller-manager | yes (#1376; game streams only) | grafana |
+| `controller_input_lag_seconds` | histogram | `serial` | controller-manager | yes (#1376; game streams only) | (none) |
 | `controller_led_batch_updates_total` | counter | (none) | controller-manager | yes | (none) |
 | `controller_led_controllers_updated_per_batch` | histogram | (none) | controller-manager | yes | (none) |
 | `controller_object_pool_utilization` | gauge | `pool_type` | controller-manager | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `controller_poll_batch_duration_seconds` | histogram | (none) | controller-manager | yes | grafana |
+| `controller_poll_batch_duration_seconds` | histogram | (none) | controller-manager | yes | (none) |
 | `controller_poll_batch_size` | histogram | (none) | controller-manager | yes | (none) |
 | `controller_poll_drops_total` | counter | `serial` | controller-manager | yes | grafana |
 | `controller_poll_errors_total` | counter | `serial` | controller-manager | yes | grafana |
 | `controller_polling_mode` | gauge | (none) | controller-manager | yes | grafana |
 | `controller_polling_target_hz` | gauge | (none) | controller-manager | yes | grafana |
 | `controller_reconnect_total` | counter | `serial` | controller-manager | yes | grafana |
-| `controller_routing_decisions_total` | counter | `serial`, `adapter`, `method` | controller-manager | yes | grafana |
-| `controller_state_cache_hits_total` | counter | (none) | controller-manager | yes | grafana |
-| `controller_state_cache_misses_total` | counter | (none) | controller-manager | yes | grafana |
-| `controller_state_update_hz` | gauge | `serial` | controller-manager | yes | grafana |
+| `controller_routing_decisions_total` | counter | `serial`, `adapter`, `method` | controller-manager | yes | (none) |
+| `controller_state_cache_hits_total` | counter | (none) | controller-manager | yes | (none) |
+| `controller_state_cache_misses_total` | counter | (none) | controller-manager | yes | (none) |
+| `controller_state_update_hz` | gauge | `serial` | controller-manager | yes | (none) |
 | `controller_stream_commands_total` | counter | `command_type` | controller-manager | yes | (none) |
 | `controller_stream_current_frequency_hz` | gauge | (none) | controller-manager | yes | (none) |
-| `controller_stream_frame_overruns_total` | counter | (none) | controller-manager | yes | grafana |
+| `controller_stream_frame_overruns_total` | counter | (none) | controller-manager | yes | (none) |
 | `controller_stream_frequency_changes_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_stream_updates_total` | counter | `stream_type` | controller-manager | yes | grafana |
+| `controller_stream_updates_total` | counter | `stream_type` | controller-manager | yes | (none) |
 | `controller_streamed_per_frame` | histogram | (none) | controller-manager | yes | (none) |
 | `controller_streams_active` | gauge | (none) | controller-manager | yes | grafana |
 | `menu_button_event_errors_total` | counter | `event_type` | menu | yes | (none) |

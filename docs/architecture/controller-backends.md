@@ -165,7 +165,7 @@ rust-hid is the default Bluetooth backend everywhere (UC-002 BR-003). The Python
   # then set controller.json "backend" defaultVariant to python / mock_python / python_rust, and restart controller-manager
   ```
 
-- `python_rust` and `mock_python_rust` stay as opt-in variants: they are the only way to run both HID services side by side, which the remaining rollout loop (UC-050 to UC-052) and the backend-comparison dashboard need until both are removed after the talk. They are no longer a default anywhere.
+- `python_rust` and `mock_python_rust` stay as opt-in variants: they are the only way to run both HID services side by side, which the remaining rollout loop (UC-050 to UC-052) needs until both are removed after the talk. They are no longer a default anywhere. The backend-comparison dashboard was deleted in #1427.
 - `bluetooth_backend=unstable` routes through the `UnstableAdapter`, which wraps the python adapter, so it also needs a `python` backend variant.
 
 ## Backend Selection

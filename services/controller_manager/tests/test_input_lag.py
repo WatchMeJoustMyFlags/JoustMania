@@ -1,5 +1,5 @@
 """
-Tests for controller_input_lag_seconds (UC-035 step 6: backend-comparison latency panels).
+Tests for controller_input_lag_seconds (UC-035 step 6: input lag, queried in Grafana Explore).
 
 What is measured: the age of the controller sample each gameplay frame carries,
 i.e. the time from the controller-manager poll loop picking up a fresh sample

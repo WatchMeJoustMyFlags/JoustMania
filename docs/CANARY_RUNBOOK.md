@@ -489,7 +489,6 @@ process_resident_memory_bytes{job=~".*controller-manager.*"}
 | `controller-overview` | Connected controllers, battery, LED colors |
 | `controller-maintenance` | Poll drops, poll errors, backend info |
 | `service-health-overview` | CPU, memory, gRPC latency for controller-manager |
-| `performance-experiment` | Backend comparison metrics |
 | `bluetooth-adapter` | BT adapter affinity per controller |
 
 ### Alerting
