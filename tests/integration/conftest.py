@@ -155,7 +155,9 @@ def warmup_game_path(docker_compose):
             collector = GameEventCollector(game_client)
             async with collector:
                 await start_game_via_menu(
-                    docker_compose, game_mode="JoustFFA", timeout=45.0,
+                    docker_compose,
+                    game_mode="JoustFFA",
+                    timeout=45.0,
                     event_collector=collector,
                 )
             # Leave no game running for the first real test.
@@ -184,6 +186,26 @@ def warmup_game_path(docker_compose):
         )
 
     yield
+
+
+@pytest.fixture
+def flag_service(docker_compose):
+    """Flag-service client (epic #1407): tests write flags only through it.
+
+    Every stack-wide overlay the test set is DELETEd at teardown (re-review N4);
+    game-scoped values die with their game (UC-053 BR-003).
+    """
+    from tests.integration.flag_service import FlagService
+
+    from tests.integration import flag_service as flag_service_module
+
+    client = FlagService.from_compose(docker_compose)
+    flag_service_module.bind(client)
+    try:
+        yield client
+    finally:
+        flag_service_module.bind(None)
+        client.cleanup()
 
 
 @pytest.fixture

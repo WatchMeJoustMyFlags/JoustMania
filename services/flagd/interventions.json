@@ -132,35 +132,55 @@
     "eliminate_player": {
       "state": "ENABLED",
       "variants": {
-        "none": ""
+        "none": {
+          "epoch": "",
+          "seq": 0,
+          "events": []
+        }
       },
       "defaultVariant": "none"
     },
     "revive_player": {
       "state": "ENABLED",
       "variants": {
-        "none": ""
+        "none": {
+          "epoch": "",
+          "seq": 0,
+          "events": []
+        }
       },
       "defaultVariant": "none"
     },
     "audio_cue": {
       "state": "ENABLED",
       "variants": {
-        "none": ""
+        "none": {
+          "epoch": "",
+          "seq": 0,
+          "events": []
+        }
       },
       "defaultVariant": "none"
     },
     "controller_effect": {
       "state": "ENABLED",
       "variants": {
-        "none": ""
+        "none": {
+          "epoch": "",
+          "seq": 0,
+          "events": []
+        }
       },
       "defaultVariant": "none"
     },
     "end_game": {
       "state": "ENABLED",
       "variants": {
-        "none": ""
+        "none": {
+          "epoch": "",
+          "seq": 0,
+          "events": []
+        }
       },
       "defaultVariant": "none"
     }

@@ -69,6 +69,7 @@ services:
       # instance id differs from the suite coordinator's, so each one's reconcile
       # drops only its own games (FR-125, review C3).
       - FLAG_SERVICE_URL=http://flag-service:8070
+      - INTERVENTION_EVENT_LIST_READER=on
       # Concurrency caps (max_concurrent_games / max_shadow_games) are now governed
       # by the `game` flagd flags this coordinator resolves over the network (#1215),
       # not env vars. The cohort soak only runs ~2 paired arms, comfortably under the

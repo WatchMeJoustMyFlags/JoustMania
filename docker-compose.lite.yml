@@ -62,7 +62,7 @@ services:
       - "50064"
       - "8070"
     environment:
-      - FLAG_SERVICE_SETS=system,observability
+      - FLAG_SERVICE_SETS=system,observability,interventions,rollout
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
       - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
     volumes:
@@ -100,10 +100,6 @@ services:
       - "file:/etc/flagd/user.json"
       - "--uri"
       - "file:/etc/flagd/agent.json"
-      - "--uri"
-      - "file:/etc/flagd/interventions.json"
-      - "--uri"
-      - "file:/etc/flagd/rollout.json"
     volumes:
       - ./services/flagd/system.json:/etc/flagd/system.json
       - ./services/flagd/controller.json:/etc/flagd/controller.json
@@ -246,6 +242,7 @@ services:
     environment:
       - OTEL_SDK_DISABLED=true
       - FLAG_SERVICE_URL=http://flag-service:8070
+      - INTERVENTION_EVENT_LIST_READER=on
     depends_on:
       flagd:
         condition: service_started

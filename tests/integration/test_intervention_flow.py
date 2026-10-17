@@ -1,20 +1,18 @@
 """
-End-to-end intervention-flow integration tests (#730).
+End-to-end intervention-flow integration tests (#730, UC-053).
 
 Proves the full agent intervention chain works against the real services:
 
-    agent writes flag  ->  flagd file-watch reload  ->  game coordinator
+    write to the flag service  ->  flagd gRPC sync push  ->  game coordinator
     InterventionManager evaluates + enforces  ->  effect applied to the live
     game  ->  effect observable in the OTel/EventBus signals.
 
 The agent ActionSink (services/agent/actions, Go) is NOT run in the integration
-compose (it lives in the ``agent`` profile and writes the same file these tests
-write). Instead these tests reproduce the EXACT mutation the Go writer produces
-on the bind-mounted ``services/flagd/interventions.json`` file (state "active"
-variant + defaultVariant flip, per-serial targeting if-ladder, fresh nonce per
-edge dispatch). flagd reloads on the in-place write and the game coordinator —
-which evaluates the ``interventions`` and ``agent`` domains via live flagd RPC —
-converges on the new contents.
+compose (it lives in the ``agent`` profile). These tests send the SAME
+flag-service writes the Go writer sends: a game-scoped value
+(``PUT /interventions/<flag>`` with ``scope.game_id`` [+ ``serial``]) or a
+one-shot event (``POST``, the serial in the payload). The flag service renders
+them as targeting on the game id, so every write reaches its own game only.
 
 Observable signals used (no Prometheus pull needed — game-coordinator metrics
 go OTLP->collector->Prometheus, a slow/flaky push path for assertions):
@@ -30,8 +28,9 @@ flagd's server-side evaluation of the written per-serial targeting if-ladder is
 checked against a single real flagd in the contract tier
 (tests/contract/test_flagd_resolution.py, #1422), not here.
 
-interventions.json / agent.json are bind-mounted host files; the
-``flag_files`` fixture snapshots and restores them so mutations never leak.
+Interventions are game-scoped and die with their game (UC-053 BR-003). agent.json
+is still a bind-mounted file until the agent set cuts over (#1412); the
+``flag_files`` fixture snapshots and restores it.
 """
 
 import asyncio
@@ -39,7 +38,6 @@ import json
 import os
 import sys
 import time
-import uuid
 
 import pytest
 
@@ -58,15 +56,12 @@ from tests.integration.helpers import (  # noqa: E402
     start_game_via_menu,
     wait_flag_file_restored,
 )
+from tests.integration.flag_service import append_event, set_player_value  # noqa: E402
 
-# Active host flag-file paths resolved through the single source of truth
-# (helpers.active_flag_file -> lib.flagd_paths, issue #959): $FLAGD_FLAG_DIR/<domain>.json,
-# the exact file flagd serves. Writing here on the host is what the Go ActionSink
-# does inside the container.
-INTERVENTIONS_PATH = active_flag_file("interventions")
+# The agent set is still a flagd file source until #1412: its host file path.
 AGENT_PATH = active_flag_file("agent")
 
-# Absence window: how long the flagd reload + coordinator re-evaluate chain is
+# Absence window: how long the flag push + coordinator re-evaluate chain is
 # given to (not) act before asserting that NOTHING happened. Positive waits are
 # condition polls (#894, see helpers.poll_until); this constant remains ONLY for
 # negative assertions — "the blocked/reverted/re-read write produced no effect"
@@ -77,12 +72,9 @@ RELOAD_SETTLE_SECONDS = 2.0
 # can take a couple of reload cycles under load; poll up to this long.
 APPLY_TIMEOUT_SECONDS = 12.0
 
-# Variant name the Go writer overwrites for state + edge flags.
-ACTIVE_VARIANT = "active"
-
-
 # =============================================================================
-# Flag-file mutation helpers (mirror services/agent/actions/writer.go)
+# agent.json mutation helpers (a flagd file source until the agent set cuts
+# over to the flag service, #1412)
 # =============================================================================
 
 
@@ -92,30 +84,10 @@ def _load(path: str) -> dict:
 
 
 def _dump_in_place(path: str, doc: dict) -> None:
-    """In-place truncate+write (matches the Go writer / admin-mode writer).
-
-    No temp+rename: rename over a bind mount that flagd watches triggers EBUSY.
-    """
+    """In-place truncate+write (rename over a watched bind mount triggers EBUSY)."""
     text = json.dumps(doc, indent=2) + "\n"
     with open(path, "w") as fh:
         fh.write(text)
-
-
-def write_edge(flag_key: str, payload: str = "") -> str:
-    """Edge-triggered write: ``active`` variant holds ``<nonce>:<payload>``.
-
-    Mirrors Writer.setEdge. Returns the fresh nonce so the caller can later
-    re-assert exactly-once (same nonce = no re-apply). ``payload=""`` writes a
-    nonce-only value (the end_game shape).
-    """
-    nonce = uuid.uuid4().hex
-    value = nonce if payload == "" else f"{nonce}:{payload}"
-    doc = _load(INTERVENTIONS_PATH)
-    flag = doc["flags"][flag_key]
-    flag["variants"][ACTIVE_VARIANT] = value
-    flag["defaultVariant"] = ACTIVE_VARIANT
-    _dump_in_place(INTERVENTIONS_PATH, doc)
-    return nonce
 
 
 def set_interventions_allowed(variant: str) -> None:
@@ -141,7 +113,10 @@ def set_policy_budget(per_minute: int) -> None:
     to its weighted sliding-window limiter.
     """
     doc = _load(AGENT_PATH)
-    for flag_key in ("policy.max_interventions_per_minute", "policy.coordinator_backstop_per_minute"):
+    for flag_key in (
+        "policy.max_interventions_per_minute",
+        "policy.coordinator_backstop_per_minute",
+    ):
         flag = doc["flags"][flag_key]
         flag["variants"]["active"] = int(per_minute)
         flag["defaultVariant"] = "active"
@@ -170,8 +145,9 @@ SUITE_RATE_LIMIT_BUDGET = 50
 
 
 @pytest.fixture
-def flag_files(docker_compose):
-    """Snapshot interventions.json + agent.json; restore byte-for-byte on exit.
+def flag_files(docker_compose, flag_service):
+    """Bind the flag-service client (interventions are written through it and
+    die with their game) and snapshot agent.json; restore it byte-for-byte on exit.
 
     Also raises ``policy.max_interventions_per_minute`` to a generous suite-wide
     budget for the duration of the test (see ``SUITE_RATE_LIMIT_BUDGET``) and
@@ -181,8 +157,6 @@ def flag_files(docker_compose):
     the same in-place write so flagd reloads the committed baseline and no
     mutation (budget included) leaks into the repo or later tests.
     """
-    with open(INTERVENTIONS_PATH) as fh:
-        interventions_backup = fh.read()
     with open(AGENT_PATH) as fh:
         agent_backup = fh.read()
 
@@ -194,32 +168,28 @@ def flag_files(docker_compose):
 
     with flagd_probe_client(docker_compose, "agent") as client:
         assert poll_until(
-            lambda: client.get_integer_value(
-                "policy.max_interventions_per_minute", -1, EvaluationContext()
-            )
-            == SUITE_RATE_LIMIT_BUDGET,
+            lambda: (
+                client.get_integer_value(
+                    "policy.max_interventions_per_minute", -1, EvaluationContext()
+                )
+                == SUITE_RATE_LIMIT_BUDGET
+            ),
             rewrite=lambda: set_policy_budget(SUITE_RATE_LIMIT_BUDGET),
         ), "flagd did not serve the pinned suite rate-limit budget"
 
     yield
 
     def _restore():
-        with open(INTERVENTIONS_PATH, "w") as fh:
-            fh.write(interventions_backup)
         with open(AGENT_PATH, "w") as fh:
             fh.write(agent_backup)
 
-    with open(INTERVENTIONS_PATH) as fh:
-        interventions_mutated = fh.read()
     with open(AGENT_PATH) as fh:
         agent_mutated = fh.read()
     _restore()
-    # Wait until flagd serves the restored baselines (every flag this test
-    # observably mutated) before the next test mutates them (#894).
+    # Wait until flagd serves the restored baseline before the next test (#894).
     wait_flag_file_restored(
-        docker_compose, "interventions", interventions_backup, interventions_mutated, _restore
+        docker_compose, "agent", agent_backup, agent_mutated, _restore
     )
-    wait_flag_file_restored(docker_compose, "agent", agent_backup, agent_mutated, _restore)
 
 
 @pytest.fixture
@@ -278,13 +248,105 @@ async def _player(game_client, serial: str):
     return None
 
 
+async def _wait_for_sensitivity_factor(
+    game_client,
+    serial: str,
+    expected: float,
+    *,
+    tol: float = 0.01,
+    timeout: float = APPLY_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        p = await _player(game_client, serial)
+        if p is not None:
+            last = p.sensitivity_factor
+            if abs(p.sensitivity_factor - expected) <= tol:
+                return
+        await asyncio.sleep(0.3)
+    raise AssertionError(
+        f"{serial} sensitivity_factor did not reach {expected} (last={last}) within {timeout}s"
+    )
+
+
+# =============================================================================
+# Per-player targeting resolution against LIVE flagd
+# =============================================================================
+
+
+@pytest.mark.uc("UC-053", flow="main", br=["BR-003"])
+@pytest.mark.asyncio
+async def test_per_player_targeting_resolves_against_live_flagd(
+    flag_files, flag_service, docker_compose
+):
+    """Per-player values written through the flag service resolve on LIVE flagd
+    RPC for their (game, serial) only: other serials and other games get the
+    neutral default. Catches targeting the service renders but flagd rejects.
+    """
+    from openfeature.evaluation_context import EvaluationContext
+
+    game_a, game_b = "game_itpertarget0a", "game_itpertarget0b"
+    serial_a, serial_b, unknown = "SER_A", "SER_B", "SER_UNKNOWN"
+    for game_id in (game_a, game_b):
+        status, body = flag_service.request(
+            "PUT",
+            f"/games/{game_id}",
+            {
+                "coordinator_instance": "integration/targeting",
+                "game_kind": "shadow",
+                "serials": [serial_a, serial_b],
+            },
+        )
+        assert status == 200, body
+    try:
+        set_player_value("player_sensitivity_factor", game_a, serial_a, 1.5)
+        set_player_value("player_sensitivity_factor", game_a, serial_b, 0.7)
+
+        # resolver="rpc" deliberately: flagd's server-side evaluation of the
+        # rendered targeting (in-process would evaluate it client-side).
+        with flagd_probe_client(
+            docker_compose, "interventions", resolver="rpc"
+        ) as client:
+
+            def _eval(game_id: str, serial: str) -> float:
+                return client.get_float_value(
+                    "player_sensitivity_factor",
+                    1.0,
+                    EvaluationContext(
+                        targeting_key=serial, attributes={"gameId": game_id}
+                    ),
+                )
+
+            assert poll_until(
+                lambda: (
+                    abs(_eval(game_a, serial_a) - 1.5) <= 0.01
+                    and abs(_eval(game_a, serial_b) - 0.7) <= 0.01
+                ),
+                APPLY_TIMEOUT_SECONDS,
+            ), (
+                f"game_a: serial_a={_eval(game_a, serial_a)} (want 1.5), serial_b={_eval(game_a, serial_b)} (want 0.7)"
+            )
+            assert abs(_eval(game_a, unknown) - 1.0) <= 0.01, (
+                "an unknown serial must resolve the default"
+            )
+            assert abs(_eval(game_b, serial_a) - 1.0) <= 0.01, (
+                "another game must resolve the default"
+            )
+    finally:
+        for game_id in (game_a, game_b):
+            flag_service.request("DELETE", f"/games/{game_id}")
+
+
 # =============================================================================
 # Scenario 4: permission-block negative
 # =============================================================================
 
 
 @pytest.mark.asyncio
-async def test_permission_layer_blocks_disallowed_intervention(flag_files, docker_compose, game_client):
+async def test_permission_layer_blocks_disallowed_intervention(
+    flag_files, docker_compose, game_client
+):
     """Permission-block negative: with interventions_allowed=ambient (the
     committed default), eliminate_player is NOT in the allowed set, so the
     intervention is blocked (block_reason=not_allowed) and the player stays
@@ -304,7 +366,8 @@ async def test_permission_layer_blocks_disallowed_intervention(flag_files, docke
             )
             assert (await _player(game_client, victim)).alive
 
-            write_edge("eliminate_player", victim)
+            game_id = await collector.wait_for_game_id()
+            append_event("eliminate_player", game_id, {"serial": victim})
 
             evt = await _wait_for_intervention_event(
                 collector, "eliminate_player", blocked="true"

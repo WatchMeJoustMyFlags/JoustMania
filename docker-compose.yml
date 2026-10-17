@@ -93,7 +93,7 @@ services:
       - "50064"  # flagd.sync.v1 gRPC (flagd only)
       - "8070"   # HTTP/JSON write/read API + /healthz
     environment:
-      - FLAG_SERVICE_SETS=system,observability
+      - FLAG_SERVICE_SETS=system,observability,interventions,rollout
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
       # Admin settings persisted on request (D10, re-review N4). One state file
       # per stack: the ci, dry-run and decide-e2e stacks override the name.
@@ -145,10 +145,6 @@ services:
       - "file:/etc/flagd/user.json"
       - "--uri"
       - "file:/etc/flagd/agent.json"
-      - "--uri"
-      - "file:/etc/flagd/interventions.json"
-      - "--uri"
-      - "file:/etc/flagd/rollout.json"
       - "--metrics-exporter"
       - "otel"
       - "--otel-collector-uri"
@@ -467,6 +463,8 @@ services:
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
       # Game lifecycle reported to the flag service (FR-125, #1410)
       - FLAG_SERVICE_URL=http://flag-service:8070
+      # One-shot interventions are per-game event lists (FR-127, #1411)
+      - INTERVENTION_EVENT_LIST_READER=on
     depends_on:
       flagd:
         condition: service_started
@@ -738,13 +736,11 @@ services:
       # tests use, so writers and the served files never desync. The per-domain
       # *_FLAG_PATH overrides below still win when set (explicit escape hatch).
       - FLAGD_FLAG_DIR=/etc/flagd
-      # Action sink (#730/#1213): when the LIVE `interventions_enabled` flag
-      # (agent.json) is on the agent applies decisions by rewriting the flagd
-      # interventions file in place (bind-mounted below). The gate is a flagd flag now
-      # (migrated from AGENT_INTERVENTIONS_ENABLED, #1213) — read per Apply, fail-closed
-      # off (default variant) so the scaffold stays inert and a flagd outage never
-      # writes. Flip the flag, no restart needed.
-      - INTERVENTIONS_FLAG_PATH=/etc/flagd/interventions.json
+      # Action sink (#730/#1213, #1411): when the LIVE `interventions_enabled` flag
+      # (agent.json) is on, the agent applies each decision as ONE game-scoped write
+      # to the flag service (PUT/POST /interventions/<flag>). The gate is read per
+      # Apply, fail-closed off, so a flagd outage never writes. No restart needed.
+      - FLAG_SERVICE_URL=http://flag-service:8070
       # Demo/verification only: emit a synthetic `noop` decision (full audit
       # trace) every ~5s. Off by default; never for production sessions. With the
       # default interventions_allowed variant probe decisions are blocked
@@ -753,15 +749,13 @@ services:
       - AGENT_PROBE_DECISIONS=${AGENT_PROBE_DECISIONS:-}
       # Progressive rollout expansion (#734/#1213): when the LIVE `rollout_enabled`
       # flag (agent.json) is on the agent advances the Bluetooth backend rollout
-      # controller-by-controller by rewriting the flagd rollout file in place
-      # (current_controller_count). The gate is a flagd flag now (migrated from
-      # AGENT_ROLLOUT_ENABLED, #1213) — read per SetControllerCount, fail-closed off
-      # (default variant) → the loop decides and spans expansions but does not apply
-      # them (dry-run), and a flagd outage stays dry-run. Flip the flag, no restart.
-      - ROLLOUT_FLAG_PATH=/etc/flagd/rollout.json
+      # controller-by-controller with PUT /rollout/current_controller_count on the
+      # flag service (#1411). The gate is read per SetControllerCount, fail-closed
+      # off → the loop decides and spans expansions but does not apply them
+      # (dry-run), and a flagd outage stays dry-run. Flip the flag, no restart.
       # Auto-remediation / rollback (#736): on fitness failure during an active
       # rollout the agent rolls current_controller_count back to "none", gated on
-      # the remediation_allowed flag (rollout flagd domain, read from rollout.json).
+      # the remediation_allowed flag (rollout set, evaluated through flagd).
       # After a rollback, re-expansion is suppressed for the cooldown below.
       - AGENT_ROLLOUT_COOLDOWN_SECONDS=${AGENT_ROLLOUT_COOLDOWN_SECONDS:-30}
       # ---- Proposer / retro text backend (#1234) ----
