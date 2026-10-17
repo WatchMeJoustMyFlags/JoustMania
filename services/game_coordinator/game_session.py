@@ -152,6 +152,10 @@ class GameSession:
         # Per-session loop runs in its own thread with its own GrpcClientManager.
         self.clients = GrpcClientManager()
         self.game_thread: threading.Thread | None = None
+        # The game thread's event loop, set when the thread starts. The clients
+        # above belong to it, so intervention side effects are dispatched onto
+        # it (UC-040 BR-018, #1250). None until the thread runs.
+        self.game_loop: asyncio.AbstractEventLoop | None = None
         self.game_running = False
 
         # Protects game_state, current_game, players for this session.
@@ -362,6 +366,7 @@ class GameSession:
         """
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        self.game_loop = loop
         try:
             loop.run_until_complete(self._run_game_loop_async())
         finally:

@@ -589,7 +589,9 @@ The coordinator re-checks independently before any handler runs
 (`InterventionManager._enforce_and_dispatch` → `_check_chain` in `interventions.py`): allow-list membership → mode capability deny matrix
 (`MODE_CAPABILITY_DENY` in `interventions.py`) → battery guard → global backstop. Its block reasons are
 `not_allowed`, `rate_limited`, `low_battery`, `mode_unsupported`, `no_game`, plus
-`handler_error`. Every outcome emits `game_interventions_total{type,objective,blocked,block_reason}`
+`handler_error`, `game_loop_unavailable` and `game_loop_timeout` (the handler did not run on the game's own
+event loop: not applied), plus `game_loop_late` on a not-blocked outcome (the handler started but had not finished
+after 5 s: outcome unknown; [UC-040 BR-018](../use_cases/UC-040.md#br-018-intervention-side-effects-run-on-the-owning-games-event-loop), #1250). Every outcome emits `game_interventions_total{type,objective,blocked,block_reason}`
 and an `agent_intervention` game event. An applied player-targeted intervention is also recorded as an event on
 that player's `player_lifecycle` span naming the player (`player.serial`, `player.name`; event names in
 [telemetry.md §3.2](telemetry.md#32-game-coordinator), #1295).

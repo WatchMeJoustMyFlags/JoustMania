@@ -540,6 +540,14 @@ interventions_total = Counter(
     ["type", "objective", "blocked", "block_reason"],
 )
 
+# An intervention side effect that could not run on its game's own event loop
+# (closed / stopping loop, or timeout): not applied (UC-040 BR-018, #1250).
+intervention_dispatch_failures_total = Counter(
+    "game_intervention_dispatch_failures_total",
+    "Intervention side effects not applied because the owning game's event loop was unavailable",
+    ["type", "reason"],
+)
+
 # EventBus stream health metrics (Issue #337)
 event_bus_publish_drops_total = Counter(
     "event_bus_publish_drops_total",

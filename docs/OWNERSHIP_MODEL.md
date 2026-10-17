@@ -336,7 +336,8 @@ A conforming implementation must provide, at minimum:
    unreachable or the resolved value matches no variant.
 2. **On-device cue.** When the coordinator applies a **HARD-class** intervention
    (`spec.weight >= WEIGHT_HARD` — `adjust_global_sensitivity`,
-   `eliminate_player`, `revive_player`, `end_game`), it emits a short magenta
+   `eliminate_player`, `revive_player`; not `end_game`, whose game has just
+   ended, UC-040 BR-018), it emits a short magenta
    `GAME_EFFECT_PULSE` on the affected controller(s) (broadcast for non-targeted
    actions) via `InterventionManager._emit_agent_cue`
    ([`services/game_coordinator/interventions.py`](../services/game_coordinator/interventions.py)).
