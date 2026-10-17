@@ -14,6 +14,7 @@ message GetUSBControllersRequest {}
 message USBController {
   string device_path = 1;  // e.g. "/dev/hidraw3"
   string serial = 2;       // e.g. "AA:BB:CC:DD:EE:FF"
+  uint32 product_id = 3;   // 0x03D5 (ZCM1), 0x0C5E (ZCM2); for the BlueZ device record (UC-001 BR-008)
 }
 
 message GetUSBControllersResponse {

@@ -180,14 +180,20 @@ class TestGetBluezRestartMode:
         with patch("psmove_pairing.config._system_client", mock_client):
             assert get_bluez_restart_mode() == "never"
 
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
     def test_shipped_flag_variants_match_the_daemon(self):
-        """Every variant in services/flagd/system.json is a mode the daemon knows; default is never."""
+        """Every shipped variant is a mode the daemon knows; the default is when_idle (#1466).
+
+        Only when_idle lets a never-seen controller connect without ever restarting
+        bluetoothd during a real game; the code's fallback stays never (fail closed).
+        """
         import json
         from pathlib import Path
 
         from psmove_pairing.config import BLUEZ_RESTART_MODES
 
-        flagd = Path(__file__).resolve().parents[3] / "services" / "flagd" / "system.json"
-        flag = json.loads(flagd.read_text())["flags"]["pairing.bluez_restart_mode"]
-        assert set(flag["variants"].values()) == set(BLUEZ_RESTART_MODES)
-        assert flag["variants"][flag["defaultVariant"]] == "never"
+        flagd_dir = Path(__file__).resolve().parents[3] / "services" / "flagd"
+        for flag_file in (flagd_dir / "system.json", flagd_dir / "ci" / "system.json"):
+            flag = json.loads(flag_file.read_text())["flags"]["pairing.bluez_restart_mode"]
+            assert set(flag["variants"].values()) == set(BLUEZ_RESTART_MODES), flag_file
+            assert flag["variants"][flag["defaultVariant"]] == "when_idle", flag_file
