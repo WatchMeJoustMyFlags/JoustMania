@@ -51,6 +51,9 @@ logger = logging.getLogger(__name__)
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
 
+# Minimum seconds between error lines of one failing periodic step (#1447).
+_STEP_ERROR_LOG_INTERVAL = 10.0
+
 
 def visible_serials(tracked_controllers: dict[str, dict]) -> list[str]:
     """Return serials that button-stream consumers (the menu) may learn about.
@@ -343,19 +346,33 @@ class DiscoveryLoop:
         """Run ``step`` every ``interval`` seconds until the loop stops.
 
         A step that overruns its interval is followed immediately by the next
-        one (no catch-up burst). Errors are logged and the schedule continues;
-        cancellation propagates so the owner can await the task.
+        one (no catch-up burst). Errors are logged and the schedule continues:
+        the first failure with its traceback, then at most one line per
+        ``_STEP_ERROR_LOG_INTERVAL`` with the count of failures in between, so
+        a 20 Hz step that keeps failing does not flood the log. Cancellation
+        propagates so the owner can await the task.
         """
         if first_delay > 0:
             await asyncio.sleep(first_delay)
         next_run = time.monotonic()
+        last_error_log: float | None = None
+        suppressed = 0
         while self.running:
             try:
                 await step()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error(f"Discovery loop {name} step error: {e}", exc_info=True)
+                now = time.monotonic()
+                if last_error_log is None:
+                    logger.error(f"Discovery loop {name} step error: {e}", exc_info=True)
+                    last_error_log = now
+                elif now - last_error_log >= _STEP_ERROR_LOG_INTERVAL:
+                    logger.error(f"Discovery loop {name} step error: {e} ({suppressed} more since last log)")
+                    last_error_log = now
+                    suppressed = 0
+                else:
+                    suppressed += 1
             next_run += interval
             delay = next_run - time.monotonic()
             if delay <= 0:

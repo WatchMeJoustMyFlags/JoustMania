@@ -227,3 +227,47 @@ async def test_controller_spawned_during_a_poll_is_polled():
     backend.poll_times.clear()
     await loop._update_controller_states()
     assert backend.poll_times, "newly tracked controller is never polled"
+
+
+@pytest.mark.nfr("NFR-002")
+class TestSideTaskResilience:
+    @pytest.mark.asyncio
+    async def test_step_that_raises_once_is_logged_and_keeps_its_schedule(self, caplog):
+        loop = _make_loop(SlowBackend())
+        calls: list[float] = []
+
+        async def flaky_step():
+            calls.append(time.monotonic())
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+
+        caplog.set_level("ERROR", logger="services.controller_manager.discovery_loop")
+        task = asyncio.create_task(loop._run_periodic("flaky", 0.02, flaky_step))
+        await asyncio.sleep(0.2)
+        loop.running = False
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert len(calls) >= 5, "schedule stopped after the failure"
+        errors = [r for r in caplog.records if "flaky step error" in r.getMessage()]
+        assert len(errors) == 1
+        assert errors[0].exc_info is not None
+
+    @pytest.mark.asyncio
+    async def test_a_step_that_keeps_failing_is_logged_at_most_once_per_interval(self, caplog):
+        loop = _make_loop(SlowBackend())
+        calls = 0
+
+        async def failing_step():
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("still broken")
+
+        caplog.set_level("ERROR", logger="services.controller_manager.discovery_loop")
+        task = asyncio.create_task(loop._run_periodic("led", 0.005, failing_step))
+        await asyncio.sleep(0.2)
+        loop.running = False
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert calls >= 10
+        errors = [r for r in caplog.records if "led step error" in r.getMessage()]
+        assert len(errors) == 1, f"{len(errors)} error lines for {calls} failures"
