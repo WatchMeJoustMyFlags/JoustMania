@@ -16,6 +16,8 @@ const passingHz = 30
 
 // TestInfraRollback_AllowedAtActiveStage: failing fitness + remediation allowed
 // + stage>0 → one SetControllerCount("none"), span "rollback".
+// UC: UC-050 A2
+// UC: UC-051 main
 func TestInfraRollback_AllowedAtActiveStage(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	rollout := &fakeRollout{}

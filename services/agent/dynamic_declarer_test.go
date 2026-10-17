@@ -492,10 +492,10 @@ func TestDeclareDynamic_KillSwitchOffDeclaresNothing(t *testing.T) {
 	}
 }
 
-// UC: UC-070 A9 BR-008
 // TestDynamicDeclarer_DefaultRotationSkipsPlumbingFlags asserts the default
 // rotation over the SHIPPED game.json files never offers a plumbing, lobby/admin
 // or ceremony-timing flag (#1316), while game-tuning flags stay candidates.
+// UC: UC-070 A9 BR-008
 func TestDynamicDeclarer_DefaultRotationSkipsPlumbingFlags(t *testing.T) {
 	plumbing := []string{
 		"shadow_policy", "max_concurrent_games", "max_shadow_games", "tempo_schedule_mode",

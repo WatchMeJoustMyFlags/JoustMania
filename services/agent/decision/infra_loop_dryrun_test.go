@@ -33,7 +33,7 @@ func (r *toggleRollout) SetControllerCount(variant string) error {
 // observed stage 0 was suppressed as "still in flight", and turning
 // rollout_enabled back on never expanded until the agent restarted.
 // UC: UC-045 A4
-// UC: UC-050 A3
+// UC: UC-050 A3 BR-003
 // UC: UC-070 A1
 func TestInfraLoop_DryRunExpandThenEnableResumes(t *testing.T) {
 	clock := time.Unix(1000, 0)

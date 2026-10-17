@@ -457,6 +457,7 @@ func TestInfraLoop_ProgressiveClimbsOnFreshObservation(t *testing.T) {
 
 // TestInfraLoop_StaleObservationSkipped checks the optional freshness guard:
 // an observation older than the configured bound is skipped (no write, no span).
+// UC: UC-050 BR-002
 func TestInfraLoop_StaleObservationSkipped(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	rollout := &fakeRollout{}

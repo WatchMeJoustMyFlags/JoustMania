@@ -41,4 +41,4 @@
 
 - `tests/integration/test_pattern_games.py::test_pattern_game_replays_identically` (tagged `UC-046` main, steps 3 to 6 and 8) implements steps 1 to 6.
 - `scripts/tests/test-pattern-replay-check.sh` tests the operator's replay script (UC-046 steps 9 and 10) with `docker` stubbed.
-- Gaps: step 2's "reserved controllers stay out of the lobby" is not asserted (see [TC-013](TC-013-shadow-game-alongside-real-game.md) step 3 for that check); the replay script is not run against a live stack in CI (#1366).
+- Gaps: step 2's "reserved controllers stay out of the lobby" is not asserted (see [TC-013](TC-013-shadow-game-alongside-real-game.md) step 3 for that check); the replay script is not run against a live stack in CI (its script test `scripts/tests/test-pattern-replay-check.sh` runs in the CI Script Tests job since #1389).

@@ -16,25 +16,11 @@
       "message": "weak word 'fast': make it measurable, definite, or remove it"
     },
     {
-      "fingerprint": "0408e268137aa7eed3404c4bf6064dd891e6e3ea",
-      "code": "WEAK_WORD",
-      "path": "requirements.md",
-      "element": "NFR-004",
-      "message": "weak word 'TBD': make it measurable, definite, or remove it"
-    },
-    {
       "fingerprint": "ab608e964548f195e1ee7161b62524b4dad4ff28",
       "code": "WEAK_WORD",
       "path": "requirements.md",
       "element": "NFR-004",
       "message": "weak word 'fast': make it measurable, definite, or remove it"
-    },
-    {
-      "fingerprint": "16575c764d964fa5fb4736a7acb2df257b64ccb0",
-      "code": "WEAK_WORD",
-      "path": "requirements.md",
-      "element": "NFR-014",
-      "message": "weak word 'TBD': make it measurable, definite, or remove it"
     },
     {
       "fingerprint": "eb35d161d2899c9a5eef4a6d4d008f0102f47512",

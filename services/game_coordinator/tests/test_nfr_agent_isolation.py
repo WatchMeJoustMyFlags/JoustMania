@@ -132,6 +132,7 @@ def imports_by_module(scanned) -> dict[str, set[str]]:
 
 
 @pytest.mark.nfr("NFR-013")
+@pytest.mark.uc("UC-040", br=["BR-001"])
 def test_coordinator_imports_no_model_sdk_or_http_client(imports_by_module):
     offenders = {
         module: sorted(n for n in names if n.startswith(FORBIDDEN_IMPORT_PREFIXES))
@@ -142,6 +143,7 @@ def test_coordinator_imports_no_model_sdk_or_http_client(imports_by_module):
 
 
 @pytest.mark.nfr("NFR-013")
+@pytest.mark.uc("UC-040", br=["BR-001"])
 def test_coordinator_grpc_stubs_are_known_dependencies_only(imports_by_module):
     stubs = {n for names in imports_by_module.values() for n in names if n.endswith("_pb2_grpc")}
     assert "proto.controller_manager_pb2_grpc" in stubs, "scan found no gRPC stubs; is the import parsing broken?"
@@ -150,6 +152,7 @@ def test_coordinator_grpc_stubs_are_known_dependencies_only(imports_by_module):
 
 
 @pytest.mark.nfr("NFR-013")
+@pytest.mark.uc("UC-040", br=["BR-001"])
 def test_no_dynamic_imports_hide_dependencies(scanned):
     offenders = {module: lines for module, tree in scanned.items() if (lines := _dynamic_imports(tree))}
     assert not offenders, f"dynamic imports hide dependencies from the NFR-013 scan: {offenders}"
