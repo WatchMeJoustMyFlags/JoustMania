@@ -281,10 +281,22 @@ func (r *Registry) patternGamesLocked(ids []string) []string {
 // skipped (UC-046 BR-015).
 const maxPairReruns = 3
 
+// maxPairPreemptions is the safety valve of BR-015: a pair reruns at most this
+// often after a real-game preemption without using up maxPairReruns. A further
+// preemption counts like any other release, so an experiment that real games
+// preempt again and again still ends (a pair runs at most 1 + 10 + 3 times).
+const maxPairPreemptions = 10
+
+// ReleaseReasonPreempted is the ReleaseGame reason of a pattern game a real game
+// preempted (coordinator reason preempted_by_real_game, UC-046 A8). Its pair
+// reruns without using up maxPairReruns (BR-015).
+const ReleaseReasonPreempted = "game ended without usable fitness sample: preempted_by_real_game"
+
 // Journal notes of BR-015 (KindDecision events without a status change).
 const (
-	notePairRerun        = "pattern_pair_rerun"
-	noteArchetypeSkipped = "pattern_archetype_skipped"
+	notePairRerun          = "pattern_pair_rerun"
+	notePairRerunPreempted = "pattern_pair_rerun_preempted"
+	noteArchetypeSkipped   = "pattern_archetype_skipped"
 )
 
 // rewindFailedSpawn gives back the arm(s) whose spawn failed: a failed pattern
@@ -304,13 +316,28 @@ func (r *Registry) rewindFailedSpawn(id string, arms int) {
 
 // rerunPairLocked makes a pair whose arm ended without a sample run again, both
 // arms, at most maxPairReruns times; then its archetype is skipped (UC-046
-// BR-015). Assumes r.mu is held.
+// BR-015). A release after a real-game preemption (ReleaseReasonPreempted) reruns
+// the pair without using up maxPairReruns, at most maxPairPreemptions times.
+// Assumes r.mu is held.
 func (r *Registry) rerunPairLocked(e *entry, pairIndex int, reason string) {
 	if e == nil || !e.patternActive() || len(e.arms) == 0 || e.pairSkipped[pairIndex] {
 		return
 	}
 	n := len(e.arms)
 	pi := pairIndex
+	if reason == ReleaseReasonPreempted && e.pairPreemptions[pairIndex] < maxPairPreemptions {
+		if e.pairPreemptions == nil {
+			e.pairPreemptions = map[int]int{}
+		}
+		e.pairPreemptions[pairIndex]++
+		if e.armCursor > pairIndex*n {
+			e.armCursor = pairIndex * n
+		}
+		r.appendEvent(e.journal, journal.Event{Kind: journal.KindDecision, PairIndex: &pi, Note: notePairRerunPreempted})
+		r.log.Info("experiment.pattern_pair_rerun_preempted", "experiment_id", e.id, "pair_index", pairIndex,
+			"preemptions", e.pairPreemptions[pairIndex])
+		return
+	}
 	if e.pairReruns == nil {
 		e.pairReruns = map[int]int{}
 	}
@@ -353,14 +380,19 @@ func (r *Registry) concludeExhaustedPatterns(ctx context.Context) {
 }
 
 // countPatternOutcomeLocked counts a finished pattern game per arm (BR-013).
+// Timeouts and agent ends (A14) are counted separately.
 func (e *entry) countPatternOutcomeLocked(arm, outcome string) {
 	if e.patternGames == nil {
 		e.patternGames = map[string]int{}
 		e.patternTimeouts = map[string]int{}
+		e.patternAgentEnded = map[string]int{}
 	}
 	e.patternGames[arm]++
-	if outcome == patterngame.OutcomeTimeout {
+	switch outcome {
+	case patterngame.OutcomeTimeout:
 		e.patternTimeouts[arm]++
+	case patterngame.OutcomeAgentEnded:
+		e.patternAgentEnded[arm]++
 	}
 }
 
@@ -391,7 +423,28 @@ func (e *entry) timeoutSummaryLocked() string {
 			}
 		}
 	}
-	return out
+	return out + e.agentEndedSummaryLocked(arms)
+}
+
+// agentEndedSummaryLocked renders the per-arm count and rate of games the agent's
+// own end_game ended (UC-046 A14, BR-013), reported apart from the timeouts. ""
+// when no game ended that way.
+func (e *entry) agentEndedSummaryLocked(arms []string) string {
+	total := 0
+	parts := make([]string, 0, len(arms))
+	for _, arm := range arms {
+		games, ended := e.patternGames[arm], e.patternAgentEnded[arm]
+		total += ended
+		rate := 0.0
+		if games > 0 {
+			rate = float64(ended) / float64(games)
+		}
+		parts = append(parts, fmt.Sprintf("%s %d/%d (%.0f%%)", arm, ended, games, rate*100))
+	}
+	if total == 0 {
+		return ""
+	}
+	return "; pattern games ended by the agent's end_game (right-censored): " + strings.Join(parts, ", ")
 }
 
 // flagKeyOf returns an experiment's flag key (for teardown outside the lock).
@@ -452,6 +505,12 @@ func (r *Registry) restorePatternLocked(e *entry) bool {
 				e.pairReruns = map[int]int{}
 			}
 			e.pairReruns[p]++
+			delete(done, p)
+		case ev.Kind == journal.KindDecision && ev.Note == notePairRerunPreempted:
+			if e.pairPreemptions == nil {
+				e.pairPreemptions = map[int]int{}
+			}
+			e.pairPreemptions[p]++
 			delete(done, p)
 		case ev.Kind == journal.KindDecision && ev.Note == noteArchetypeSkipped:
 			if e.pairSkipped == nil {

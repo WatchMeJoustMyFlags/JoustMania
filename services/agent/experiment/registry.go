@@ -272,13 +272,17 @@ type entry struct {
 	// (BR-015).
 	pin *patterngame.Pin
 	// pairReruns counts reruns per pair; pairSkipped marks archetypes given up
-	// after maxPairReruns (BR-015).
-	pairReruns  map[int]int
-	pairSkipped map[int]bool
-	// patternGames / patternTimeouts count finished pattern games and timeouts per
-	// arm (BR-013 reporting).
-	patternGames    map[string]int
-	patternTimeouts map[string]int
+	// after maxPairReruns (BR-015). pairPreemptions counts the reruns after a
+	// real-game preemption, which do not use up maxPairReruns (bounded by
+	// maxPairPreemptions).
+	pairReruns      map[int]int
+	pairPreemptions map[int]int
+	pairSkipped     map[int]bool
+	// patternGames / patternTimeouts / patternAgentEnded count finished pattern
+	// games, timeouts and agent ends (A14) per arm (BR-013 reporting).
+	patternGames      map[string]int
+	patternTimeouts   map[string]int
+	patternAgentEnded map[string]int
 }
 
 // inFlight returns the experiment's current count of live (unconcluded) shadow

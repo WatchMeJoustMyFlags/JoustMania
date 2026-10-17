@@ -513,3 +513,177 @@ func TestRegistryPatternSpanEvents(t *testing.T) {
 		}
 	})
 }
+
+// preemptionHarness runs a one-archetype pattern experiment whose games the test
+// releases one by one.
+type preemptionHarness struct {
+	t       *testing.T
+	r       *Registry
+	spawner *patternSpawner
+	id      string
+}
+
+func newPreemptionHarness(t *testing.T, root string) *preemptionHarness {
+	t.Helper()
+	spawner := &patternSpawner{}
+	r := newTestRegistry(t, RegistryConfig{Root: root, MaxShadowGames: 2, EffectiveConcurrency: 1, MaxGamesPerExperiment: -1,
+		Spawner: spawner, Verdict: alwaysInconclusive{}, Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "only")}}})
+	return &preemptionHarness{t: t, r: r, spawner: spawner, id: startExperiment(t, r)}
+}
+
+// releaseNext spawns the next game and releases it with reason. It reports
+// whether a game was spawned (false once the archetype is skipped).
+func (h *preemptionHarness) releaseNext(reason string) bool {
+	h.t.Helper()
+	if n := h.r.AllocateAndSpawn(context.Background()); n != 1 {
+		return false
+	}
+	h.spawner.fakeSpawner.mu.Lock()
+	g := h.spawner.fakeSpawner.calls[len(h.spawner.fakeSpawner.calls)-1].gameID
+	h.spawner.fakeSpawner.mu.Unlock()
+	h.r.ReleaseGame(g, reason)
+	return true
+}
+
+// notes counts the BR-015 journal notes.
+func (h *preemptionHarness) notes() (reruns, preempted, skips int) {
+	for _, e := range eventsOfKind(journalEvents(h.t, h.r, h.id), journal.KindDecision) {
+		switch e.Note {
+		case notePairRerun:
+			reruns++
+		case notePairRerunPreempted:
+			preempted++
+		case noteArchetypeSkipped:
+			skips++
+		}
+	}
+	return reruns, preempted, skips
+}
+
+// UC: UC-046 A8 A9 A12 BR-015
+func TestRegistryPatternPreemptionRerunBudget(t *testing.T) {
+	const killSwitchRelease = "game ended without usable fitness sample: force_ended"
+	const errorRelease = "game ended without usable fitness sample: error"
+
+	t.Run("UC-046/A8 preemptions rerun the pair without using up the 3-rerun budget", func(t *testing.T) {
+		h := newPreemptionHarness(t, "")
+		for i := 0; i < 5; i++ {
+			if !h.releaseNext(ReleaseReasonPreempted) {
+				t.Fatalf("preemption %d: no game spawned", i+1)
+			}
+		}
+		// The full 3-rerun budget is still there: three errors rerun, the fourth skips.
+		for i := 0; i < maxPairReruns+1; i++ {
+			if !h.releaseNext(errorRelease) {
+				t.Fatalf("error release %d: no game spawned, the preemptions used up the budget", i+1)
+			}
+		}
+		if h.releaseNext(errorRelease) {
+			t.Fatal("a game spawned after the archetype should have been skipped")
+		}
+		reruns, preempted, skips := h.notes()
+		if reruns != maxPairReruns || preempted != 5 || skips != 1 {
+			t.Errorf("reruns=%d preempted=%d skips=%d, want %d/5/1", reruns, preempted, skips, maxPairReruns)
+		}
+		if st, _ := h.r.Status(h.id); !st.IsTerminal() {
+			t.Errorf("status = %s, want concluded once the only archetype is skipped", st)
+		}
+	})
+
+	t.Run("UC-046/BR-015 safety valve: after 10 preemptions a further one counts against the budget", func(t *testing.T) {
+		h := newPreemptionHarness(t, "")
+		spawned := 0
+		for h.releaseNext(ReleaseReasonPreempted) {
+			spawned++
+			if spawned > 100 {
+				t.Fatal("a constantly preempted pair never stops rerunning")
+			}
+		}
+		// 1 first run + 10 free preemption reruns + 3 counting reruns.
+		if want := 1 + maxPairPreemptions + maxPairReruns; spawned != want {
+			t.Errorf("games spawned = %d, want %d", spawned, want)
+		}
+		reruns, preempted, skips := h.notes()
+		if reruns != maxPairReruns || preempted != maxPairPreemptions || skips != 1 {
+			t.Errorf("reruns=%d preempted=%d skips=%d, want %d/%d/1", reruns, preempted, skips, maxPairReruns, maxPairPreemptions)
+		}
+	})
+
+	for name, reason := range map[string]string{"A9 errors": errorRelease, "A12 kill-switch releases": killSwitchRelease} {
+		t.Run("UC-046/"+name+" still use up the 3-rerun budget", func(t *testing.T) {
+			h := newPreemptionHarness(t, "")
+			spawned := 0
+			for h.releaseNext(reason) {
+				spawned++
+				if spawned > 100 {
+					t.Fatal("never skipped")
+				}
+			}
+			if want := 1 + maxPairReruns; spawned != want {
+				t.Errorf("games spawned = %d, want %d", spawned, want)
+			}
+			if _, preempted, _ := h.notes(); preempted != 0 {
+				t.Errorf("%d releases were noted as preemptions", preempted)
+			}
+		})
+	}
+
+	t.Run("UC-046/BR-015 a restart restores the preemption count", func(t *testing.T) {
+		root := t.TempDir()
+		h := newPreemptionHarness(t, root)
+		for i := 0; i < maxPairPreemptions; i++ {
+			if !h.releaseNext(ReleaseReasonPreempted) {
+				t.Fatalf("preemption %d: no game spawned", i+1)
+			}
+		}
+		spawner2 := &patternSpawner{}
+		r2 := newTestRegistry(t, RegistryConfig{Root: root, MaxShadowGames: 2, EffectiveConcurrency: 1, MaxGamesPerExperiment: -1,
+			Spawner: spawner2, Verdict: alwaysInconclusive{}, Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "x")}}})
+		if err := r2.Rehydrate([]string{h.id}); err != nil {
+			t.Fatal(err)
+		}
+		h2 := &preemptionHarness{t: t, r: r2, spawner: spawner2, id: h.id}
+		if !h2.releaseNext(ReleaseReasonPreempted) {
+			t.Fatal("the restored pair did not run again")
+		}
+		reruns, preempted, _ := h2.notes()
+		if preempted != maxPairPreemptions || reruns != 1 {
+			t.Errorf("after restart: preempted=%d reruns=%d, want %d/1 (the valve was already used up)", preempted, reruns, maxPairPreemptions)
+		}
+	})
+}
+
+// UC: UC-046 A14 BR-013
+func TestRegistryPatternAgentEndedReporting(t *testing.T) {
+	t.Run("UC-046/A14 agent ends are journaled as censored and reported apart from timeouts", func(t *testing.T) {
+		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2})
+		id := startExperiment(t, r)
+		a := testPin(t, "p").Archetypes[0]
+		end := func(arm, outcome string) {
+			r.RecordPatternEnd(patterngame.Record{Info: patterngame.Info{ExperimentID: id, Arm: arm, Archetype: a},
+				Outcome: outcome, Censored: outcome == patterngame.OutcomeTimeout || outcome == patterngame.OutcomeAgentEnded})
+		}
+		end(ArmExperimental, patterngame.OutcomeAgentEnded)
+		end(ArmExperimental, patterngame.OutcomeAgentEnded)
+		end(ArmControl, patterngame.OutcomeWinner)
+		end(ArmControl, patterngame.OutcomeTimeout)
+		_, _ = r.conclude(context.Background(), id, journal.Verdict{Outcome: OutcomeInconclusive})
+		outcomes := eventsOfKind(journalEvents(t, r, id), journal.KindOutcome)
+		note := outcomes[len(outcomes)-1].Note
+		for _, want := range []string{
+			"pattern timeouts (right-censored at the cap): experimental 0/2 (0%), control 1/2 (50%)",
+			"pattern games ended by the agent's end_game (right-censored): experimental 2/2 (100%), control 0/2 (0%)",
+		} {
+			if !strings.Contains(note, want) {
+				t.Errorf("conclusion %q lacks %q", note, want)
+			}
+		}
+		if strings.Contains(note, "the experimental arm timed out clearly more often") {
+			t.Errorf("agent ends entered the timeout comparison: %q", note)
+		}
+		ended := eventsOfKind(journalEvents(t, r, id), journal.KindPatternGameEnded)
+		if len(ended) != 4 || ended[0].Pattern.Outcome != patterngame.OutcomeAgentEnded || !*ended[0].Pattern.Censored {
+			t.Errorf("agent end not journaled as a censored agent_ended: %+v", ended[0].Pattern)
+		}
+	})
+}

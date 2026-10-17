@@ -492,7 +492,7 @@ alone, and the trace proves whether the inputs matched.
 | controller-manager | span `controller.mock.pattern_release` | `controller.serial`, `pattern.archetype`, `pattern.slot_index`, `pattern.frames_delivered`, `pattern.signal_hash`, `pattern.signal_checkpoints`, `pattern.frame_overruns` | `RemoveController` of a pattern controller |
 | agent | event `experiment.pattern_pinned` on `agent.experiment` | `pattern.selection` (flag value as read), `pattern.archetypes` (pinned names in pair order), `pattern.params_digests` (same order), `pattern.max_game_seconds` | first spawn of an experiment |
 | agent | event `experiment.pattern_game` on `agent.experiment`; the same attributes on `agent.shadow_game.run` for a one-shot game | `game.id`, `experiment.arm`, `experiment.pair_index`, `pattern.archetype`, `pattern.params_digest`, `game.rng_seed` (decimal string), `pattern.stream_rate_hz`, `pattern.slot_serials` (serials in slot order), `pattern.max_game_seconds`, `pattern.flag_digest` (SHA-256 hex of the canonical resolved values of the flags listed in UC-046 BR-011, or `unavailable`) | each spawned arm |
-| agent | event `experiment.pattern_game_ended` on `agent.experiment` (or `agent.shadow_game.run`) | `game.id`, `pattern.archetype`, `pattern.params_digest`, `pattern.outcome` (`winner`, `tie`, `timeout`, `aborted`, `error`), `pattern.censored` (true for `timeout`), `pattern.elimination_order` (slot indices in the order of the coordinator's `player_death` events), `pattern.winner_slot` (−1 = none), `pattern.order_source` (`events` or the `frames` fallback), `pattern.signal_hashes` (slot order), `pattern.replay_exact`, `pattern.non_exact_reasons` (`remote_backend`, `frame_overrun`, `concurrent_game`, `kill_switch`, `unseeded_draws`), `pattern.decisions` (`intervention:slot` in order), `pattern.flag_digest` | game end |
+| agent | event `experiment.pattern_game_ended` on `agent.experiment` (or `agent.shadow_game.run`) | `game.id`, `pattern.archetype`, `pattern.params_digest`, `pattern.outcome` (`winner`, `tie`, `timeout`, `agent_ended` (the agent's own `end_game`, UC-046 A14), `aborted`, `error`), `pattern.censored` (true for `timeout` and `agent_ended`), `pattern.elimination_order` (slot indices in the order of the coordinator's `player_death` events), `pattern.winner_slot` (−1 = none), `pattern.order_source` (`events` or the `frames` fallback), `pattern.signal_hashes` (slot order), `pattern.replay_exact`, `pattern.non_exact_reasons` (`remote_backend`, `frame_overrun`, `concurrent_game`, `kill_switch`, `unseeded_draws`), `pattern.decisions` (`intervention:slot` in order), `pattern.flag_digest` | game end |
 | agent | `agent.decision` in a pattern game | `pattern.target_slot` (slot of the targeted player, when the target is a player), `decision.chaos_draw_index` (number of chaos draws of the game's rules engine so far) | each decision |
 
 **Signal hash:** FNV-1a/64 over the controller's delivered frames in order, each frame encoded as the signed
@@ -508,8 +508,10 @@ parameter objects, parameter digests, safety cap and a note when the cap fell ba
 `params_digest`, `rng_seed` and `flag_digest` on each `game_assigned`, a `pattern_game_ended` event (outcome,
 `censored`, elimination order and its source, winner slot, signal hashes, checkpoints, replay classification, decision
 sequence) per pattern game, and a `pattern_pair_rerun` / `pattern_archetype_skipped` decision note when a pair runs
-again or an archetype is skipped (UC-046 BR-015). The experiment's conclusion (`outcome` event) reports the timeout
-count and rate per arm and whether one arm timed out clearly more often (UC-046 BR-013).
+again or an archetype is skipped (UC-046 BR-015); a rerun after a real game preempted the pair
+(`preempted_by_real_game`) is noted as `pattern_pair_rerun_preempted` instead and does not use up the 3-rerun budget.
+The experiment's conclusion (`outcome` event) reports the timeout count and rate per arm and whether one arm timed out
+clearly more often (UC-046 BR-013), followed by the `agent_ended` count and rate per arm when any game ended that way.
 
 **Liveness check (BR-008):** the runner asks the agent's telemetry multiplexer at the game's start, once per
 second while it runs and at its end whether another partition reports `game_active` with an update in the last

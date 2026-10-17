@@ -1034,3 +1034,65 @@ func TestDefaultGameFitness_TimeoutAtCap(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-046 A8 A12 A14 BR-013 BR-015
+func TestExperimentLoop_OnGameTerminal_PatternOutcomes(t *testing.T) {
+	// start declares and starts one experiment and returns its id and first game.
+	start := func(t *testing.T) (*experimentLoop, string, string) {
+		t.Helper()
+		spawner := &recordingSpawner{}
+		resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+		loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+		ctx := context.Background()
+		id, err := loop.registry.Declare(experiment.Intent{
+			Hypothesis: "h", FlagKey: "death_grace_period_seconds",
+			ExperimentalValue: 0.5, Objective: "balanced", TargetNPerArm: 3,
+		})
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		if err := loop.registry.Start(ctx, id); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n := loop.registry.AllocateAndSpawn(ctx); n == 0 {
+			t.Fatal("expected a spawn")
+		}
+		return loop, id, spawner.drain()[0].gameID
+	}
+	// releaseNote returns the game_released note of gameID, or "" when none.
+	releaseNote := func(loop *experimentLoop, id, gameID string) string {
+		cv, _ := loop.registry.CompactView(id)
+		for _, ev := range cv.RecentTail {
+			if ev.GameID == gameID && ev.Kind == journal.KindGameReleased {
+				return ev.Note
+			}
+		}
+		return ""
+	}
+
+	t.Run("UC-046/A14 a game the agent's end_game ended keeps its sample for the conclude path", func(t *testing.T) {
+		loop, id, gameID := start(t)
+		loop.onGameTerminal(gameID, gamerunner.OutcomeAgentEnded)
+		if !gameStillBound(loop, id, gameID) {
+			t.Fatal("OutcomeAgentEnded released the game; it is a censored sample that counts (BR-013)")
+		}
+	})
+	t.Run("UC-046/A8 a preempted game is released with the preemption reason", func(t *testing.T) {
+		loop, id, gameID := start(t)
+		loop.onGameTerminal(gameID, gamerunner.OutcomePreempted)
+		if gameStillBound(loop, id, gameID) {
+			t.Fatal("a preempted game kept its binding")
+		}
+		if note := releaseNote(loop, id, gameID); note != experiment.ReleaseReasonPreempted {
+			t.Fatalf("release note = %q, want %q (BR-015: the rerun must not use up the budget)", note, experiment.ReleaseReasonPreempted)
+		}
+	})
+	t.Run("UC-046/A12 a kill-switch or foreign force-end is released with a counting reason", func(t *testing.T) {
+		loop, id, gameID := start(t)
+		loop.onGameTerminal(gameID, gamerunner.OutcomeForceEnded)
+		note := releaseNote(loop, id, gameID)
+		if note == "" || note == experiment.ReleaseReasonPreempted {
+			t.Fatalf("release note = %q, want a counting (non-preemption) release", note)
+		}
+	})
+}

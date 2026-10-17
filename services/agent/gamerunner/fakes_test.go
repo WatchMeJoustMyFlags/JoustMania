@@ -161,6 +161,7 @@ type fakeCoord struct {
 
 	mu             sync.Mutex
 	forceEndCalls  []string // game_ids passed to ForceEndGame
+	forceEndReason []string // reasons passed to ForceEndGame
 	listGames      func() (*gcpb.ListGamesResponse, error)
 	forceEndSignal chan *gcpb.GameEvent
 	startConfig    *gcpb.StartGameConfig // captured from the last StreamGameEvents
@@ -203,6 +204,7 @@ func (c *fakeCoord) StreamGameEvents(req *gcpb.StreamEventsRequest, stream grpc.
 func (c *fakeCoord) ForceEndGame(_ context.Context, req *gcpb.ForceEndGameRequest) (*gcpb.ForceEndGameResponse, error) {
 	c.mu.Lock()
 	c.forceEndCalls = append(c.forceEndCalls, req.GetGameId())
+	c.forceEndReason = append(c.forceEndReason, req.GetReason())
 	signal := c.forceEndSignal
 	terminal := c.emitTerminalOnForceEnd
 	extra := c.forceEndEvents
@@ -236,6 +238,12 @@ func (c *fakeCoord) forceEndGameIDs() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.forceEndCalls...)
+}
+
+func (c *fakeCoord) forceEndReasons() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.forceEndReason...)
 }
 
 // capturedStartConfig returns the StartGameConfig from the last StreamGameEvents
