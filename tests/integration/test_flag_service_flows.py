@@ -40,20 +40,53 @@ from tests.integration.helpers import (  # noqa: E402
     get_mock_client,
     setup_mock_controllers,
 )
+from proto import game_coordinator_pb2  # noqa: E402
 from tests.integration.test_intervention_flow import (  # noqa: E402
+    APPLY_TIMEOUT_SECONDS,
     RELOAD_SETTLE_SECONDS,
     intervention_env,  # re-exported: flag-service client + suite-wide budget pin
     set_interventions_allowed,
 )
-from tests.integration.test_parallel_intervention_flow import (  # noqa: E402
+from tests.integration.test_intervention_smoke import (  # noqa: E402
     _await_running,
-    _intervention_events,
-    _player,
     _start_headless_with_retry,
     _wait_for_game_colors,
-    _wait_until_dead,
 )
 from tests.integration.flag_service import variant_value  # noqa: E402
+
+
+def _intervention_events(collector, type_id: str, *, blocked=None) -> list:
+    return [
+        e
+        for e in collector.get_events("agent_intervention")
+        if e.data.get("type") == type_id
+        and (blocked is None or e.data.get("blocked") == blocked)
+    ]
+
+
+async def _player(game_client, game_id: str, serial: str):
+    resp = await game_client.GetGameState(
+        game_coordinator_pb2.GetGameStateRequest(game_id=game_id)
+    )
+    if not resp.success:
+        return None
+    for p in resp.game_info.players:
+        if p.serial == serial:
+            return p
+    return None
+
+
+async def _wait_until_dead(
+    game_client, game_id: str, serial: str, timeout: float = APPLY_TIMEOUT_SECONDS
+) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        p = await _player(game_client, game_id, serial)
+        if p is not None and not p.alive:
+            return True
+        await asyncio.sleep(0.3)
+    return False
+
 
 __all__ = ["intervention_env"]
 

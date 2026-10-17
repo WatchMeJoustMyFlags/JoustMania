@@ -143,6 +143,8 @@ jobs:
             script_tests:
               - 'scripts/*.sh'
               - 'scripts/*.py'
+              - 'scripts/setup/**'
+              - 'setup.sh'
               - 'scripts/talk-baseline.json'
               # the script tests' fake flag service enforces the real registry
               - 'services/flag-service/registry.yaml'

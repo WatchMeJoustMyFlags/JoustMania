@@ -52,7 +52,7 @@ from tests.integration.test_intervention_flow import (  # noqa: E402
     set_policy_budget,
 )
 from tests.integration.test_intervention_smoke import _teardown  # noqa: E402
-from tests.integration.test_parallel_intervention_flow import (  # noqa: E402
+from tests.integration.test_intervention_smoke import (  # noqa: E402
     _await_running,
     _start_headless_with_retry,
     _wait_for_intervention,

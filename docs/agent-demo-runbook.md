@@ -126,7 +126,7 @@ The whole stack is proxied through envoy on port **80**:
       `./scripts/agent-backend.sh claude` an `agent.decide` span in Jaeger has
       `decide.backend=claude` (not a `decide.fallback_reason`).
 - [ ] **Dashboards load**: `http://localhost/` Agent + Experiments tabs render;
-      Grafana **Agent Operations — Fleet** opens.
+      Grafana **Agent Decisions & Interventions** (`/grafana/d/agent-operations`) opens.
 - [ ] **Known-good flag state**: gates set as above; `scripts/flags.sh get agent`
       shows only the overlays you expect (the helper scripts write in-memory
       overlays through the flag service; no baseline file is ever written).
