@@ -44,11 +44,12 @@
 ## Automation
 
 - **Automated**: `tests/integration/test_tc002_ffa_game.py::test_tc002_ffa_game_to_winner_then_restart` drives steps 1 to 9 and checks both validations, with one `uc` marker per use-case flow (`tc="TC-002"`) and a `# Step n` comment per row. It uses the four menu-visible mock controllers it finds or adds (`MOCK0001` … `MOCK0004` on a fresh stack) and asserts, per step:
+  - Step 1: exactly these four unreserved controllers are menu-visible.
   - Step 2: every controller shows a dimmed (≤ 30 %) non-black lobby colour after a menu restart.
   - Step 3: `select_game` succeeds and the menu publishes `selection_changed` and `game_selection_changed` naming `JoustFFA`.
   - Step 5: one `players_initialized` with `player_count` 4 and every serial; the game reaches RUNNING; the four LEDs show four different non-black colours, none of them the lobby colour.
-  - Steps 6 and 7: the first terminal event for the game is `game_ended` with `outcome=winner` and a positive duration; one `player_death` per eliminated player in order with the players left (3, 2, 1); `game_winner` names the last controller and no `game_tie`; one `player_analytics` per player, `winner=True` only for the winner; the winner's LED cycles through at least five colours between `game_winner` and `game_ended` (rainbow).
-  - Step 8: every LED matches orange at 30 % (`Colors.Orange` × 0.3) within rounding.
+  - Steps 6 and 7: the first terminal event for the game is `game_ended` with `outcome=winner` and a positive duration; one `player_death` per eliminated player in order with the players left (3, 2, 1), each followed by the death effect on that controller (rumble 255, red LED, then black; UC-030 step 9); `game_winner` names the last controller and no `game_tie`; one `player_analytics` per player, `winner=True` only for the winner; the winner's LED cycles through at least five colours between `game_winner` and `game_ended` (rainbow).
+  - Step 8: every LED matches orange at 30 % (`Colors.Orange` × 0.3) within rounding; the menu lights only CONNECTED (un-readied) controllers at 30 %, READY is full brightness.
   - Validation 1: after the lobby is restored, the game's terminal events are exactly `["game_ended"]`. Validation 2: each LED stream shows the controller's game colour followed by the lobby colour, and the last colour is not black.
   - Step 9: a new `game_started` with a different game id, RUNNING (the #793 regression: an ended session must not pin the primary slot).
 - Not covered: the elimination uses simulated deaths, so the warning effect (UC-030 step 7) is not observed; the countdown phases and audio (UC-010 step 6, UC-020 step 2 music) are unit-tested only (`services/game_coordinator/tests/test_ffa_uc020.py`, #1396). FFA unit coverage (UC-020 main, A1, A2, A4): `services/game_coordinator/tests/test_ffa.py`, `services/game_coordinator/tests/test_ffa_uc020.py`.

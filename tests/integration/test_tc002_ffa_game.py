@@ -27,6 +27,7 @@ from tests.integration.helpers import (
     async_poll_until,
     force_end_game_by_id,
     get_controller_color,
+    get_mock_controller_serials,
     get_game_client,
     get_menu_client,
     get_mock_client,
@@ -51,6 +52,37 @@ _LOBBY_TOLERANCE = 2
 # Rainbow is a 20 Hz HSV cycle for winner_rainbow_duration_ms (CI: 1000 ms);
 # a static colour or a two-colour flash never reaches this many distinct colours.
 _MIN_RAINBOW_COLORS = 5
+# UC-030 step 9 death effect (feedback_manager._effect_player_death): rumble at
+# full intensity, solid red, then a fade that ends at black.
+_DEATH_RED = Colors.Red.value
+_BLACK = (0, 0, 0)
+_DEATH_RUMBLE = 255
+
+
+def _assert_death_effect(
+    observer: ObservabilityObserver, serial: str, death_ms: int
+) -> None:
+    """The victim's LED goes red and then black, and it rumbles, after its player_death."""
+    since = death_ms - 500  # coordinator and controller-manager share the host clock
+    leds = [
+        (e.led_change.r, e.led_change.g, e.led_change.b)
+        for e in observer.get_led_events(serial)
+        if e.timestamp_ms >= since
+    ]
+    assert _DEATH_RED in leds, (
+        f"Step 6: no red death LED on {serial} after its player_death: {leds}"
+    )
+    assert _BLACK in leds[leds.index(_DEATH_RED) :], (
+        f"Step 6: {serial} death LED never faded to black: {leds}"
+    )
+    rumbles = [
+        e.rumble_change.intensity
+        for e in observer.get_events()
+        if e.serial == serial
+        and e.HasField("rumble_change")
+        and e.timestamp_ms >= since
+    ]
+    assert _DEATH_RUMBLE in rumbles, f"Step 6: no death rumble on {serial}: {rumbles}"
 
 
 def _events_for(
@@ -146,6 +178,10 @@ async def test_tc002_ffa_game_to_winner_then_restart(
         # Step 1: Add mock controllers (four menu-visible, unreserved).
         serials = await setup_mock_controllers(docker_compose, count=4)
         assert len(serials) == 4, f"Step 1: expected 4 mock controllers, got {serials}"
+        visible = await get_mock_controller_serials(docker_compose)
+        assert sorted(visible) == sorted(serials), (
+            f"Step 1: the lobby must hold exactly these 4 unreserved controllers, got {visible}"
+        )
         victims, winner = serials[:3], serials[3]
 
         # Step 2: Verify lobby. Restart the menu so it registers exactly these
@@ -191,10 +227,13 @@ async def test_tc002_ffa_game_to_winner_then_restart(
         assert initialized[0].data["player_count"] == "4", (
             f"Step 5: {dict(initialized[0].data)}"
         )
-        for serial in serials:
-            assert serial in initialized[0].data["serials"], (
-                f"Step 5: {serial} missing from players_initialized {dict(initialized[0].data)}"
-            )
+        # data values are str(): the serial list arrives as "['MOCK0001', 'MOCK0002', ...]".
+        initialized_serials = {
+            item.strip(" '\"[]") for item in initialized[0].data["serials"].split(",")
+        }
+        assert initialized_serials == set(serials), (
+            f"Step 5: players_initialized serials {initialized_serials} != {set(serials)}"
+        )
         running = await wait_until_running(game_client, {game_id}, timeout=15.0)
         assert game_id in running, (
             f"Step 5: {game_id} never RUNNING (running: {running})"
@@ -235,6 +274,8 @@ async def test_tc002_ffa_game_to_winner_then_restart(
         ], (
             f"Step 6: one player_death per eliminated player, got {[dict(d.data) for d in deaths]}"
         )
+        for death in deaths:
+            _assert_death_effect(observer, death.data["serial"], death.timestamp)
 
         winners = _events_for(collector, game_id, "game_winner")
         assert [w.data["serial"] for w in winners] == [winner], (
@@ -260,7 +301,9 @@ async def test_tc002_ffa_game_to_winner_then_restart(
         )
 
         # Step 8: Verify lobby restored: every controller back to the FFA lobby
-        # colour (orange at 30 %), un-readied, within 10 s.
+        # colour (orange at 30 %), un-readied, within 10 s. The menu lights only
+        # CONNECTED controllers at 30 % (READY is full brightness, connected.py /
+        # ready.py), so this colour is the observable for "CONNECTED, un-readied".
         await wait_for_lobby_colors(
             mock_client,
             serials,
