@@ -26,7 +26,7 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 
 | Area | Use cases |
 |---|---|
-| Pairing and controllers | [UC-001](use_cases/UC-001.md) pair over USB, [UC-002](use_cases/UC-002.md) connect and join, [UC-003](use_cases/UC-003.md) mock controllers |
+| Pairing and controllers | [UC-001](use_cases/UC-001.md) pair over USB, [UC-002](use_cases/UC-002.md) connect and join, [UC-003](use_cases/UC-003.md) mock controllers, [UC-004](use_cases/UC-004.md) identify a controller |
 | Lobby and admin | [UC-010](use_cases/UC-010.md) ready up and start, [UC-011](use_cases/UC-011.md) select mode, [UC-012](use_cases/UC-012.md) admin settings, [UC-013](use_cases/UC-013.md) agent kill switch on the controller, [UC-014](use_cases/UC-014.md) force start |
 | Playing | [UC-020](use_cases/UC-020.md) FFA, [UC-021](use_cases/UC-021.md) teams, [UC-022](use_cases/UC-022.md) hidden roles, [UC-023](use_cases/UC-023.md) zombies, [UC-024](use_cases/UC-024.md) swapper, [UC-025](use_cases/UC-025.md) 1v1, [UC-026](use_cases/UC-026.md) non-stop, [UC-027](use_cases/UC-027.md) force end, [UC-030](use_cases/UC-030.md) death detection, [UC-031](use_cases/UC-031.md) audio |
 | Observability | [UC-035](use_cases/UC-035.md) observe the system |
