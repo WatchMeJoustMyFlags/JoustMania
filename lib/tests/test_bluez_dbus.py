@@ -7,11 +7,13 @@ import pytest
 from lib.bluez_dbus import (
     DBusError,
     assert_reply,
+    device_object_path,
     get_adapter_property,
     get_managed_objects,
     get_system_bus,
     restart_systemd_unit,
     set_adapter_property,
+    set_device_property,
 )
 
 
@@ -148,6 +150,47 @@ class TestSetAdapterProperty:
         assert msg.member == "Set"
         assert msg.body[0] == "org.bluez.Adapter1"
         assert msg.body[1] == "Powered"
+
+
+class TestDeviceObjectPath:
+    def test_path_under_the_given_adapter(self):
+        assert device_object_path("hci1", "00:06:f7:aa:bb:cc") == "/org/bluez/hci1/dev_00_06_F7_AA_BB_CC"
+
+
+class TestSetDeviceProperty:
+    @pytest.mark.asyncio
+    async def test_sets_device1_property_on_that_path(self):
+        from dbus_fast import MessageType, Variant
+
+        mock_bus = AsyncMock()
+        reply = MagicMock()
+        reply.message_type = MessageType.METHOD_RETURN
+        reply.body = []
+        mock_bus.call = AsyncMock(return_value=reply)
+
+        await set_device_property(mock_bus, "/org/bluez/hci1/dev_00_06_F7_AA_BB_CC", "Trusted", Variant("b", True))
+
+        msg = mock_bus.call.call_args[0][0]
+        assert msg.path == "/org/bluez/hci1/dev_00_06_F7_AA_BB_CC"
+        assert msg.interface == "org.freedesktop.DBus.Properties"
+        assert msg.member == "Set"
+        assert msg.body[:2] == ["org.bluez.Device1", "Trusted"]
+        assert msg.body[2].value is True
+
+    @pytest.mark.asyncio
+    async def test_raises_on_error(self):
+        from dbus_fast import MessageType, Variant
+
+        mock_bus = AsyncMock()
+        reply = MagicMock()
+        reply.message_type = MessageType.ERROR
+        reply.error_name = "org.freedesktop.DBus.Error.UnknownObject"
+        reply.body = ['Method "Set" with signature "ssv" on interface ... doesn\'t exist']
+        mock_bus.call = AsyncMock(return_value=reply)
+
+        with pytest.raises(DBusError) as exc_info:
+            await set_device_property(mock_bus, "/org/bluez/hci0/dev_X", "Trusted", Variant("b", True))
+        assert exc_info.value.error_name == "org.freedesktop.DBus.Error.UnknownObject"
 
 
 class TestRestartSystemdUnit:

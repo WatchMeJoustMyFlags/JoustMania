@@ -161,7 +161,7 @@ PS Move controllers must be paired to your Raspberry Pi before they can connect 
 
 1. **USB Connection**: Controller is connected via USB cable
 2. **Host MAC Written**: The pairing daemon writes your Bluetooth adapter's MAC address to the controller
-3. **BlueZ Trust**: The controller is registered as a trusted device
+3. **BlueZ Trust**: The controller is marked as trusted on the adapter it was paired to (not on bluetoothctl's default adapter)
 4. **Bluetooth Connection**: After unplugging USB, pressing the PS button connects via Bluetooth
 
 ### Pairing Daemon
@@ -286,8 +286,13 @@ If the daemon isn't working, you can pair manually using `bluetoothctl`:
 # Connect the controller via USB, then check logs for its MAC address
 docker compose logs pairing-daemon | grep "serial"
 
-# Trust the controller in BlueZ
-bluetoothctl trust AA:BB:CC:DD:EE:FF
+# Trust the controller on the adapter it was paired to (the daemon logs
+# "paired to adapter <ADAPTER_MAC>"); a bare `bluetoothctl trust` acts on the
+# default adapter, which is wrong with several adapters
+bluetoothctl
+  select <ADAPTER_MAC>
+  trust AA:BB:CC:DD:EE:FF
+  quit
 
 # Restart Bluetooth
 sudo systemctl restart bluetooth
@@ -533,10 +538,11 @@ automatic daemon cannot fully complete. After the daemon reports
 ```bash
 # 1. Unplug the controller from USB
 
-# 2. Start bluetoothctl with a PIN agent
+# 2. Start bluetoothctl with a PIN agent, on the adapter the daemon paired it to
 bluetoothctl
   agent KeyboardOnly
   default-agent
+  select <ADAPTER_MAC>
 
 # 3. Press the PS button on the controller, then quickly run:
   trust <MAC_ADDRESS>
@@ -548,8 +554,9 @@ bluetoothctl
   quit
 ```
 
-Replace `<MAC_ADDRESS>` with the controller's address shown in the
-pairing daemon logs (e.g. `DC:0C:2D:09:4D:7B`).
+Replace `<MAC_ADDRESS>` with the controller's address and `<ADAPTER_MAC>`
+with the adapter address, both shown in the pairing daemon's
+`PAIRING SUCCESS` log line (e.g. `DC:0C:2D:09:4D:7B`).
 
 You only need to do this once per ZCM2 controller. After the initial
 manual pairing, the controller will reconnect automatically when you

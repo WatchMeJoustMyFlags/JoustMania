@@ -137,6 +137,32 @@ async def get_device_property(bus: MessageBus, device_path: str, prop: str):
     return val.value if isinstance(val, Variant) else val
 
 
+def device_object_path(hci: str, address: str) -> str:
+    """BlueZ object path of *address* on adapter *hci*, e.g. ``/org/bluez/hci1/dev_00_06_F7_AA_BB_CC``."""
+    return f"{ORG_BLUEZ_PATH}/{hci}/dev_{address.upper().replace(':', '_')}"
+
+
+async def set_device_property(bus: MessageBus, device_path: str, prop: str, value: Variant) -> None:
+    """Set a single property on org.bluez.Device1 (e.g. ``Trusted``).
+
+    *device_path* names the device on one adapter, so this never touches a copy
+    of the same address on another adapter. Raises :class:`DBusError`, e.g.
+    ``org.freedesktop.DBus.Error.UnknownObject`` when BlueZ has no such device.
+    """
+    assert_reply(
+        await bus.call(
+            Message(
+                destination=ORG_BLUEZ,
+                path=device_path,
+                interface=DBUS_PROPERTIES_INTERFACE,
+                member="Set",
+                signature="ssv",
+                body=["org.bluez.Device1", prop, value],
+            )
+        )
+    )
+
+
 async def restart_systemd_unit(unit: str, mode: str = "replace") -> None:
     """Restart a systemd unit via the Manager D-Bus interface."""
     bus = await get_system_bus()
