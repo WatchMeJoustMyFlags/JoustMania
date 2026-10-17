@@ -73,7 +73,7 @@ flowchart LR
     subgraph writers [Writers: HTTP/JSON]
         agent[agent<br/>interventions, rollout count,<br/>experiment arms, promotion]
         menu[menu admin<br/>settings, kill switch]
-        cproxy[connect-proxy<br/>canary, chaos]
+        cproxy[connect-proxy<br/>canary]
         stage[stage scripts<br/>curl via envoy /flags/]
         tests[integration fixtures]
     end
@@ -142,7 +142,7 @@ Non-writers (checked): the game coordinator (it keeps the in-memory nonce baseli
 | W3, W4, R2 to R4 | Experiment writer, declarer, vocabulary, gate | `PUT /game/{flag}` with `scope.experiment_id` + `scope.arm` (the service adds `game_kind != "real"`); `DELETE /game/{flag}?experiment_id=` at teardown; the proposer path must carry an experiment id; readers use `GET /game` | #1415 |
 | W5 | Autonomous promotion | `PUT /game/{flag}` with `scope.game_kind=real` and `writer=promotion`: an in-memory overlay; the durable path is the promotion PR (FR-064, C-007). The snapshot store is not needed (a restart reverts), but the **revert error cooldown of #1065 is lost** with `RevertRealDefault` unless #1415 re-implements it around `DELETE` | #1415 |
 | W6, R5 | Menu admin | `PUT /game/sensitivity`, `/game/num_teams`, `/game/force_all_start`, `/user/current_game`, `/user/game_instructions` (persisted, D10) and `PUT /agent/interventions_allowed` (persisted; #1412); `cycle_variant` reads `GET`; `FlagConfigWriter` deleted in #1416 | #1412 (`interventions_allowed`), #1415 (rest) |
-| W7 | connect-proxy | `PUT /controller/bluetooth_backend` and `/controller/chaos_fault_type` with `fraction_percent`; the CI mount gap disappears | #1420 |
+| W7 | connect-proxy | `PUT /controller/bluetooth_backend` with `fraction_percent` (the `chaos_fault_type` writer was removed in #1322); the CI mount gap disappears | #1420 |
 | W8, W11, R6 | Stage scripts, their tests, pre-flight | `curl -X PUT http://localhost/flags/agent/decision.backend -d '{"variant":"jev"}'` through envoy; `talk-stage.sh reset` becomes `DELETE /agent?writer=stage` (clears stage overlays); the script tests stub the HTTP endpoint instead of copying files | #1412 |
 | W9 | Validation harness | `PUT` per scenario, `DELETE` after | #1412 |
 | W10 | Integration fixtures | a `flag_service` fixture over HTTP; overlays cleared with `DELETE` between tests; no snapshots, no `_branches`, no `_reload_marker`, no `wait_flag_file_restored` | with the cutover of the set they write (#1411, #1412, #1415, #1420); shared fixture in #1413 |
