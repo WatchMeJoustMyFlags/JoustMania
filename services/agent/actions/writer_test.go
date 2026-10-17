@@ -197,6 +197,7 @@ func TestWriter_FailsClosed(t *testing.T) {
 }
 
 // UC: UC-053 main
+// UC: UC-050 main
 func TestRolloutWriter(t *testing.T) {
 	t.Run("UC-053/main a stage move is a stack overlay on rollout/current_controller_count", func(t *testing.T) {
 		svc := &fakeService{}
@@ -222,7 +223,7 @@ func TestRolloutWriter(t *testing.T) {
 			t.Fatal("want an error")
 		}
 	})
-	t.Run("ladder", func(t *testing.T) {
+	t.Run("UC-050/main the ladder walks none, one, three, six, all and stops", func(t *testing.T) {
 		if v, val, ok := NextStage(StageThreeValue); !ok || v != StageSixVariant || val != StageSixValue {
 			t.Fatalf("NextStage(3)=%s,%d,%v", v, val, ok)
 		}
@@ -239,16 +240,23 @@ type staticRemediation bool
 
 func (s staticRemediation) RemediationAllowed(context.Context) bool { return bool(s) }
 
+// UC: UC-051 A1 BR-002
 func TestRemediationReader(t *testing.T) {
-	if !NewRemediationReader(staticRemediation(true)).RemediationAllowed() {
-		t.Fatal("true flag must allow")
-	}
-	if NewRemediationReader(staticRemediation(false)).RemediationAllowed() {
-		t.Fatal("false flag must not allow")
-	}
-	if NewRemediationReader(nil).RemediationAllowed() {
-		t.Fatal("no flag source must fail closed")
-	}
+	t.Run("UC-051/BR-002 remediation_allowed on allows", func(t *testing.T) {
+		if !NewRemediationReader(staticRemediation(true)).RemediationAllowed() {
+			t.Fatal("true flag must allow")
+		}
+	})
+	t.Run("UC-051/A1 remediation_allowed off blocks", func(t *testing.T) {
+		if NewRemediationReader(staticRemediation(false)).RemediationAllowed() {
+			t.Fatal("false flag must not allow")
+		}
+	})
+	t.Run("UC-051/BR-002 no flag source fails closed", func(t *testing.T) {
+		if NewRemediationReader(nil).RemediationAllowed() {
+			t.Fatal("no flag source must fail closed")
+		}
+	})
 }
 
 // newTestRolloutWriter returns a RolloutWriter over a recording fake service.

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Self-contained tests for scripts/agent-killswitch.sh (UC-045 main steps 1 and 7).
 #
-# Runs the helper against a temp copy of services/flagd/ci/agent.json
-# (AGENT_FLAG_FILE override), never the real file.
+# Runs the helper against scripts/tests/fake_flag_service.py serving
+# services/flagd/ci/agent.json with the REAL registry (epic #1407): the helper
+# changes `enabled` only through the flag service, never a flag file.
 #
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-agent-killswitch.sh
@@ -15,8 +16,12 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 HELPER="${SCRIPT_DIR}/../agent-killswitch.sh"
 SHIPPED="${REPO_ROOT}/services/flagd/ci/agent.json"
 WORK="$(mktemp -d)"
-trap 'rm -rf "${WORK}"' EXIT
-export AGENT_FLAG_FILE="${WORK}/agent.json"
+# shellcheck source=scripts/tests/lib-fake-flag-service.sh
+source "${SCRIPT_DIR}/lib-fake-flag-service.sh"
+trap 'stop_fake_flag_service; rm -rf "${WORK}"' EXIT
+export FAKE_AGENT_FLAGS="${WORK}/agent.json"
+cp "${SHIPPED}" "${FAKE_AGENT_FLAGS}"
+start_fake_flag_service "${WORK}"
 
 pass=0
 fail=0
@@ -36,59 +41,42 @@ expect() {
   fi
 }
 
-enabled_variant() {
-  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["flags"]["enabled"]["defaultVariant"])' "${AGENT_FLAG_FILE}"
+effective() {
+  curl -sS "${FLAG_SERVICE_URL}/agent/$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["effective_default"])'
 }
 
-# Every flag other than `enabled` is semantically unchanged versus the shipped file.
+# Every flag other than `enabled` still serves its baseline default.
 others_unchanged() {
-  python3 - "${SHIPPED}" "${AGENT_FLAG_FILE}" <<'PY'
+  curl -sS "${FLAG_SERVICE_URL}/agent" | python3 -c '
 import json, sys
-a, b = (json.load(open(p)) for p in sys.argv[1:3])
-fa, fb = a["flags"], b["flags"]
-assert fa.keys() == fb.keys(), "flag keys changed"
-for key in fa:
-    if key != "enabled":
-        assert fa[key] == fb[key], f"{key} changed"
-assert fa["enabled"]["variants"] == fb["enabled"]["variants"], "enabled variants changed"
-assert {k: v for k, v in a.items() if k != "flags"} == {k: v for k, v in b.items() if k != "flags"}, "top-level keys changed"
-PY
+for view in json.load(sys.stdin)["flags"]:
+    if view["flag"] != "enabled":
+        assert view["effective_default"] == view["baseline_default"], view["flag"]
+'
 }
 
-cp "${SHIPPED}" "${AGENT_FLAG_FILE}"
-expect "status (no args) shows the current value" 0 "agent kill-switch = $(enabled_variant)" --
-
-# --- step 1: off --------------------------------------------------------------
-expect "off sets enabled off" 0 "agent kill-switch -> off" -- off
-if [[ "$(enabled_variant)" == "off" ]]; then ok "enabled == off"; else not_ok "enabled == off (got $(enabled_variant))"; fi
-if others_unchanged; then ok "off leaves every other flag unchanged"; else not_ok "off leaves every other flag unchanged"; fi
-expect "status shows off" 0 "agent kill-switch = off" -- status
+baseline="$(effective enabled)"
+expect "status (no args) shows the current value" 0 "agent kill-switch = ${baseline}" --
 
 # --- step 7: on ---------------------------------------------------------------
 expect "on sets enabled on" 0 "agent kill-switch -> on" -- on
-if [[ "$(enabled_variant)" == "on" ]]; then ok "enabled == on"; else not_ok "enabled == on (got $(enabled_variant))"; fi
+if [[ "$(effective enabled)" == "on" ]]; then ok "enabled == on"; else not_ok "enabled == on (got $(effective enabled))"; fi
 if others_unchanged; then ok "on leaves every other flag unchanged"; else not_ok "on leaves every other flag unchanged"; fi
-if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "${AGENT_FLAG_FILE}" && [[ "$(tail -c1 "${AGENT_FLAG_FILE}" | od -An -c | tr -d ' ')" == '\n' ]]; then
-  ok "flag file stays valid JSON with a trailing newline"
-else
-  not_ok "flag file stays valid JSON with a trailing newline"
-fi
+expect "status shows on" 0 "agent kill-switch = on" -- status
+if grep -q "PUT /agent/enabled" "${FAKE_FLAG_LOG}"; then ok "on is a flag-service PUT"; else not_ok "on is a flag-service PUT"; fi
 
-# --- rejections leave the file unchanged --------------------------------------
-cp "${AGENT_FLAG_FILE}" "${WORK}/before.json"
+# --- step 1: off --------------------------------------------------------------
+expect "off returns to the fail-closed baseline" 0 "agent kill-switch -> off (baseline)" -- off
+if [[ "$(effective enabled)" == "off" ]]; then ok "enabled == off"; else not_ok "enabled == off (got $(effective enabled))"; fi
+if others_unchanged; then ok "off leaves every other flag unchanged"; else not_ok "off leaves every other flag unchanged"; fi
+
+# --- the baseline file is never written ---------------------------------------
+if cmp -s "${SHIPPED}" "${FAKE_AGENT_FLAGS}"; then ok "the baseline file is unchanged"; else not_ok "the baseline file is unchanged"; fi
+
+# --- rejections ----------------------------------------------------------------
 expect "unknown action is rejected" 2 "usage:" -- maybe
-if cmp -s "${AGENT_FLAG_FILE}" "${WORK}/before.json"; then ok "rejected action leaves the file unchanged"; else not_ok "rejected action leaves the file unchanged"; fi
-
-python3 - "${AGENT_FLAG_FILE}" <<'PY'
-import json, sys
-path = sys.argv[1]
-data = json.load(open(path))
-data["flags"]["enabled"]["variants"] = {"on": True}
-json.dump(data, open(path, "w"), indent=2)
-PY
-cp "${AGENT_FLAG_FILE}" "${WORK}/before.json"
-expect "a variant missing from the file is refused" 1 "variant 'off' not defined" -- off
-if cmp -s "${AGENT_FLAG_FILE}" "${WORK}/before.json"; then ok "refused flip leaves the file unchanged"; else not_ok "refused flip leaves the file unchanged"; fi
+stop_fake_flag_service
+expect "on fails when the flag service is unreachable" 1 "" -- on
 
 echo "${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
