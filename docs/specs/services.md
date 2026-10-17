@@ -55,7 +55,7 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | audio | Python | 50056 gRPC | 50056 via override | Music with tempo (separate process, soxr), 8 effect channels (miniaudio), ALSA | `services/audio/` |
 | agent | Go | 4317 OTLP gRPC (receiver); 13134 HTTP `/healthz`, `/experiments` | no | Observe via OTLP, decide, write interventions / rollout / experiment arms / promotions through the flag service, run experiments and promotion | `services/agent/` |
 | connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*`, `/chaos/*` write the `controller` set through the flag service | `services/connect-proxy/` |
-| dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005) | `services/dashboard/` |
+| dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005); mode selector from the menu's `ListGameModes` (UC-011 BR-002) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
 | flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
 | flag-service | Go | 50064 gRPC sync (flagd only), 8070 HTTP API | 8070 via override; `/flags/` through envoy | Runtime flag state in memory over the read-only baseline files; the only writer path for runtime flags (§7) | `services/flag-service/` |
@@ -140,7 +140,8 @@ archetypes: the agent resolves and pins the parameters and passes them in `AddCo
 | `StartMenu` | unary | `StartMenuRequest` → `StartMenuResponse` | Start menu | `proto/menu.proto:10` |
 | `StopMenu` | unary | `StopMenuRequest` → `StopMenuResponse` | Stop menu | `proto/menu.proto:13` |
 | `StreamMenuEvents` | server stream | `StreamMenuEventsRequest` → `MenuEvent` | Stream menu events (button presses, selections) | `proto/menu.proto:16` |
-| `ProcessInput` | unary | `ProcessInputRequest` → `ProcessInputResponse` | Process menu input | `proto/menu.proto:19` |
+| `ProcessInput` | unary | `ProcessInputRequest` → `ProcessInputResponse` | Process menu input. `web_command` `start_game` with a `mode` selects that mode first; an unknown or unimplemented mode returns `success=false` with the error and publishes `game_start_rejected` (UC-010 A6, UC-011 BR-002) | `proto/menu.proto:19` |
+| `ListGameModes` | unary | `ListGameModesRequest` → `ListGameModesResponse` | The playable modes (`game_modes`, menu cycle order, UC-011 BR-001) and the mode to preselect (`default_mode`, `JoustFFA`); the dashboard builds its mode selector from it (UC-011 BR-002) | `proto/menu.proto:22` |
 
 ### `joustmania.psmove_hid.PairingService` (proto/psmove_hid.proto)
 
@@ -165,7 +166,7 @@ services (`services/agent/receiver.go`); they are not JoustMania protos.
 
 ### Browser-reachable RPCs (connect-proxy)
 
-All five `ControllerManagerService` RPCs, all four `GameCoordinatorService` RPCs and all four `MenuService`
+All five `ControllerManagerService` RPCs, all four `GameCoordinatorService` RPCs and all five `MenuService`
 RPCs are forwarded under `/joustmania` (`services/connect-proxy/main.go`, the `ControllerManagerProxy`, `GameCoordinatorProxy` and `MenuProxy` methods). Audio, HID, pairing and mock
 RPCs are not.
 
@@ -180,7 +181,7 @@ RPCs are not.
 | `GameInfo` / `PlayerInfo` | mode, state, players (team, colour, alive, `sensitivity_factor`; score always 0), `game_id`, `start_time_ms` | `proto/game_coordinator.proto` |
 | `ControllerState` | serial, battery, buttons, accel, gyro, colour (the LED colour last written to the controller, effect frames included; #1301), rssi (always 0 from CM), name | `proto/controller_manager.proto` |
 | `GameEffectCommand` | `serial` (empty = all), `effect` (`GameEffect`), optional `color`, `duration_ms`, `speed`. `GameEffect`: `NONE`, `PLAYER_WARNING`, `PLAYER_DEATH`, `PLAYER_RESPAWN`, `WINNER_RAINBOW`, `COUNTDOWN`, `ADMIN_ENTER`, `ADMIN_EXIT`, `LOW_BATTERY`, `FORCE_START_CHARGE`, `SHOW_BATTERY`, `RUMBLE`, `PULSE`, `FLASH`, `SHIELD` (14, agent shield as a persistent LED layer: fade, last-second blink, restore; short LED effects overlay it, a new base colour shows after it; death, the winner rainbow and `duration_ms=0` end it), `PARTIAL_SHIELD` (15, the weaker breathing variant) (UC-040 BR-008 to BR-010) and `IDENTIFY` (16, white 2 Hz flash plus a 500 ms rumble, then the base colour or the colour shown before; RPC-only: started by `IdentifyController`, a `GameEffectCommand` with it is rejected; a game stream configuration cancels it on its players, UC-004 BR-001 to BR-004) | `proto/controller_manager.proto:202-245`; `services/controller_manager/feedback_manager.py` |
-| `MenuEvent` | `event_type` (`menu_started`, `menu_stopped`, `selection_changed`, `game_selection_changed`, `game_requested`, `game_start_cancelled`, `game_ended`), `data`, `timestamp` | `proto/menu.proto:46-50`; `services/menu/` |
+| `MenuEvent` | `event_type` (`menu_started`, `menu_stopped`, `selection_changed`, `game_selection_changed`, `game_requested`, `game_start_cancelled`, `game_start_rejected` (web `start_game` named an unknown or unimplemented mode: `game_name`, `source`, `error`), `game_ended`), `data`, `timestamp` | `proto/menu.proto:49-53`; `services/menu/` |
 
 Game event types actually published are listed in [UC-020](../use_cases/UC-020.md) to
 [UC-027](../use_cases/UC-027.md) and in [telemetry.md](telemetry.md#5-game-events); summary:

@@ -26,8 +26,14 @@ export class GameStatus {
   }
 
   updateEvents(events: string[]) {
-    this.eventLogElement.innerHTML = events
-      .map((event) => `<div class="event-item">${event}</div>`)
-      .join("");
+    // textContent, never innerHTML: event text can carry server-provided strings (#1278).
+    this.eventLogElement.replaceChildren(
+      ...events.map((event) => {
+        const item = document.createElement("div");
+        item.className = "event-item";
+        item.textContent = event;
+        return item;
+      })
+    );
   }
 }
