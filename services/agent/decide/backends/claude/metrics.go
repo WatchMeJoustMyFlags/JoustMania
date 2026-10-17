@@ -8,6 +8,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/semconv/v1.41.0/genaiconv"
+
+	"github.com/joustmania/agent/decide/backends/internal/chathttp"
 )
 
 // GenAI client metrics (semconv gen_ai.client.operation.duration and
@@ -25,8 +27,8 @@ func instruments() (genaiconv.ClientOperationDuration, genaiconv.ClientTokenUsag
 		meter := otel.Meter(instrumentationName)
 		// On error the constructors return a no-op instrument; metrics are
 		// best effort and never fail a decision.
-		opDuration, _ = genaiconv.NewClientOperationDuration(meter)
-		tokenUsage, _ = genaiconv.NewClientTokenUsage(meter)
+		opDuration, _ = genaiconv.NewClientOperationDuration(meter, chathttp.OperationDurationBucketsOption())
+		tokenUsage, _ = genaiconv.NewClientTokenUsage(meter, chathttp.TokenUsageBucketsOption())
 	})
 	return opDuration, tokenUsage
 }

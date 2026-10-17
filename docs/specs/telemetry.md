@@ -226,7 +226,8 @@ Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `s
 ## 6. Metrics
 
 Python metrics are created through `lib/otel_metrics.py` (`Counter`, observable `Gauge`, `Histogram`; no unit
-argument). **151 unique Python metric names** (174 definitions: the `process_*` trio is defined per service, and
+argument). A `Histogram`'s `buckets` are passed to the SDK as explicit bucket boundaries, so each histogram exports
+exactly the buckets it declares (UC-035 BR-004, #1434). **151 unique Python metric names** (174 definitions: the `process_*` trio is defined per service, and
 `grpc_requests_total`, `grpc_request_duration_seconds`, `audio_sounds_played_total` and
 `audio_playback_errors_total` are defined in more than one service); the Go agent adds 7 `agent_*` metrics plus the
 two `gen_ai.client.*` histograms, and Go connect-proxy and rust-hid emit only the `process_*` trio. The main ones per

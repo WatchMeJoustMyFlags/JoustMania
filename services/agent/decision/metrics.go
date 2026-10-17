@@ -122,20 +122,32 @@ func defaultInterventionsAppliedCounter() otelmetric.Int64Counter {
 	return newInterventionsAppliedCounter(otel.GetMeterProvider())
 }
 
+// EffectDeltaBuckets are the agent_intervention_effect_delta bucket boundaries,
+// symmetric around zero and sized for the 0..1 progress signals (`*_progress`,
+// `*_ratio`, `skill_gap`), whose delta lies in -1..1. Without explicit boundaries
+// the SDK defaults (0, 5, 10, ...) put every value in one bucket (#1434). Not every
+// recorded signal is a progress signal: emitEffectSample records a delta for every
+// key in Evaluated(), so `*.session_seconds` keys record roughly the follow-up window
+// in seconds (about +20, landing in +Inf) and constant threshold keys always record
+// 0. Filter on the signal label before taking a quantile; #1444 tracks the cleanup.
+var EffectDeltaBuckets = []float64{-1, -0.5, -0.25, -0.1, -0.05, -0.01, 0, 0.01, 0.05, 0.1, 0.25, 0.5, 1}
+
 // newEffectDeltaHistogram builds the agent_intervention_effect_delta histogram from
 // the given meter provider (#918). It records the follow_up-baseline change in a
 // game's fitness/objective signal a follow-up window after an intervention was
 // dispatched, so the game-path effect-measurement loop is queryable downstream (the
 // M5 dashboard #791/#792 plots intervention->effect pairs; the #844 retro reads it as
-// per-intervention evidence). The value is a dimensionless 0..1 fitness-progress delta
-// (unit "1"); labels are the intervention type, the served objective, and the dotted
-// fitness signal key. An instrument-creation error yields a no-op histogram so a Loop
-// always has a usable instrument — mirrors newLLMGatedCounter / actions.newWritesCounter.
+// per-intervention evidence). The value is the change in one fitness signal (unit
+// "1"; see EffectDeltaBuckets for the mixed signal units); labels are the
+// intervention type, the served objective, and the dotted fitness signal key. An
+// instrument-creation error yields a no-op histogram so a Loop always has a usable
+// instrument — mirrors newLLMGatedCounter / actions.newWritesCounter.
 func newEffectDeltaHistogram(mp otelmetric.MeterProvider) otelmetric.Float64Histogram {
 	h, err := mp.Meter(decisionMeterName).Float64Histogram(
 		"agent_intervention_effect_delta",
 		otelmetric.WithDescription("Change in a game's fitness/objective signal measured a follow-up window after an intervention was dispatched, labeled by intervention type, objective, and signal (#918)"),
 		otelmetric.WithUnit("1"),
+		otelmetric.WithExplicitBucketBoundaries(EffectDeltaBuckets...),
 	)
 	if err != nil {
 		h, _ = metricnoop.NewMeterProvider().Meter(decisionMeterName).Float64Histogram("agent_intervention_effect_delta")

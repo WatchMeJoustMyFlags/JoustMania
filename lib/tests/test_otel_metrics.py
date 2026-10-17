@@ -1,10 +1,15 @@
 """Unit tests for the OTEL metrics wrapper library."""
 
+import importlib.util
+import re
 import time
+from pathlib import Path
 from threading import Thread
 from unittest.mock import MagicMock, patch
 
 import pytest
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 # We need to reset the module state before importing to test from a clean slate
 import lib.otel_metrics as otel_metrics
@@ -424,3 +429,129 @@ class TestLabeledMetricBase:
         base = otel_metrics.LabeledMetric("test", "Test", ["label"])
         with pytest.raises(NotImplementedError):
             base._initialize()
+
+
+# --- Exported bucket boundaries (#1434) -------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+_WRAPPER_IMPORT = re.compile(r"^from lib\.otel_metrics import .*\bHistogram\b", re.MULTILINE)
+_HISTOGRAM_CALL = re.compile(r"\bHistogram\(")
+_SKIPPED_DIRS = {"tests", "test", ".venv", "node_modules", "__pycache__"}
+
+
+def _discover_metrics_modules() -> list[str]:
+    """Repo-relative paths of every non-test module under lib/ and services/ that
+    declares a lib.otel_metrics Histogram, so a new one cannot slip through untested."""
+    found = []
+    for top in ("lib", "services"):
+        for path in sorted((_REPO_ROOT / top).rglob("*.py")):
+            rel = path.relative_to(_REPO_ROOT)
+            if _SKIPPED_DIRS.intersection(rel.parts) or rel.as_posix() == "lib/otel_metrics.py":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if _WRAPPER_IMPORT.search(text) and _HISTOGRAM_CALL.search(text):
+                found.append(rel.as_posix())
+    return found
+
+
+_METRICS_MODULES = _discover_metrics_modules()
+
+
+@pytest.fixture
+def in_memory_reader():
+    """Point the wrapper at a private MeterProvider backed by an InMemoryMetricReader."""
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    otel_metrics._meter = provider.get_meter("test")
+    otel_metrics._initialized = True
+    yield reader
+    provider.shutdown()
+
+
+def _exported_bounds(reader: InMemoryMetricReader, name: str) -> list[float]:
+    data = reader.get_metrics_data()
+    for resource_metrics in data.resource_metrics:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                if metric.name == name:
+                    return list(metric.data.data_points[0].explicit_bounds)
+    raise AssertionError(f"histogram {name} was not exported")
+
+
+def _declared_histograms() -> list[tuple[str, otel_metrics.Histogram]]:
+    """(module, Histogram instance) for every Histogram declared in _METRICS_MODULES."""
+    declared = []
+    for rel_path in _METRICS_MODULES:
+        module_name = "_bucket_check_" + rel_path.replace("/", "_").removesuffix(".py")
+        spec = importlib.util.spec_from_file_location(module_name, _REPO_ROOT / rel_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for value in vars(module).values():
+            if isinstance(value, otel_metrics.Histogram):
+                declared.append((rel_path, value))
+    otel_metrics._pending_metrics.clear()
+    return declared
+
+
+_DECLARED_HISTOGRAMS = _declared_histograms()
+
+
+@pytest.mark.uc("UC-035", br=["BR-004"])
+class TestHistogramExportedBuckets:
+    """The SDK must export the buckets a Histogram declares, not its 0, 5, 10, ... defaults."""
+
+    def test_custom_buckets_are_exported(self, in_memory_reader):
+        buckets = [0.001, 0.005, 0.01, 0.05, 0.1]
+        histogram = otel_metrics.Histogram("test_latency_seconds", "Test", buckets=buckets)
+        histogram.observe(0.003)
+
+        assert _exported_bounds(in_memory_reader, "test_latency_seconds") == buckets
+
+    def test_default_buckets_are_exported(self, in_memory_reader):
+        histogram = otel_metrics.Histogram("test_default_seconds", "Test")
+        histogram.observe(0.2)
+
+        assert _exported_bounds(in_memory_reader, "test_default_seconds") == histogram.buckets
+
+    def test_labeled_observation_uses_custom_buckets(self, in_memory_reader):
+        buckets = [1.0, 2.0, 5.0]
+        histogram = otel_metrics.Histogram("test_labeled", "Test", ["method"], buckets=buckets)
+        histogram.labels(method="Get").observe(1.5)
+
+        assert _exported_bounds(in_memory_reader, "test_labeled") == buckets
+
+    def test_histogram_created_before_init_gets_buckets(self, in_memory_reader):
+        """Module-level histograms are initialized lazily; the buckets must survive that path."""
+        otel_metrics._initialized = False
+        buckets = [0.5, 1.0]
+        histogram = otel_metrics.Histogram("test_pending", "Test", buckets=buckets)
+        otel_metrics._initialized = True
+        histogram.observe(0.7)
+
+        assert _exported_bounds(in_memory_reader, "test_pending") == buckets
+
+    def test_discovery_finds_the_metrics_modules(self):
+        # Guards the discovery itself: an empty or shrunken scan would vacuously pass.
+        assert {"lib/grpc_metrics.py", "services/controller_manager/metrics.py"} <= set(_METRICS_MODULES)
+
+    def test_every_discovered_module_exposes_its_histograms(self):
+        """A module that calls Histogram( but exposes no module-level instance (e.g. built
+        inside a function) is not covered by the parametrized export test below."""
+        modules = {module for module, _ in _DECLARED_HISTOGRAMS}
+        assert modules == set(_METRICS_MODULES)
+
+    @pytest.mark.parametrize(
+        ("module", "histogram"),
+        _DECLARED_HISTOGRAMS,
+        ids=[f"{module}:{histogram.name}" for module, histogram in _DECLARED_HISTOGRAMS],
+    )
+    def test_declared_histogram_exports_its_buckets(self, in_memory_reader, module, histogram):
+        # Re-initialize the declared instance against this test's in-memory provider.
+        histogram._instrument_initialized = False
+        histogram._histogram = None
+        labels = dict.fromkeys(histogram.labelnames, "x")
+        target = histogram.labels(**labels) if labels else histogram
+        target.observe(histogram.buckets[0])
+
+        assert _exported_bounds(in_memory_reader, histogram.name) == histogram.buckets
