@@ -123,6 +123,25 @@ func (s *State) Reconcile(instance string, games []Game) ([]GameEnd, *fserr.Erro
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The cap applies as on PUT /games (NFR-051): count the live games after the
+	// reconcile (this instance's unlisted games are dropped, new ids added). A
+	// batch over the cap is rejected whole with 409 too_many_games and changes
+	// nothing; it is not truncated, so a coordinator never ends up with an
+	// arbitrary subset registered.
+	after := len(s.games)
+	for id, g := range s.games {
+		if g.CoordinatorInstance == instance && !keep[id] {
+			after--
+		}
+	}
+	for id := range keep {
+		if s.games[id] == nil {
+			after++
+		}
+	}
+	if after > s.opts.MaxGames {
+		return nil, fserr.Conflict(fserr.TooManyGames, "the reconcile would leave %d game scopes live (the cap is %d, NFR-051)", after, s.opts.MaxGames)
+	}
 	for _, g := range games {
 		s.registerLocked(g)
 	}

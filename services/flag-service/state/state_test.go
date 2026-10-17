@@ -740,6 +740,24 @@ func TestGameScopeBounds(t *testing.T) {
 			t.Fatalf("re-registering a live game must not count against the cap: %v", err)
 		}
 	})
+	t.Run("UC-053/A10 a reconcile over the cap is rejected whole (NFR-051)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{maxGames: 3})
+		f.register("game_x", "other/1")
+		f.register("game_a", "c/1")
+		// c/1 keeps game_a and adds two: 1 + 3 = 4 > 3.
+		_, err := f.state.Reconcile("c/1", []Game{{ID: "game_a"}, {ID: "game_b"}, {ID: "game_c"}})
+		wantReason(t, err, http.StatusConflict, fserr.TooManyGames)
+		if got := len(f.state.Games()); got != 2 {
+			t.Fatalf("a rejected reconcile changed the games: %d live", got)
+		}
+		// Dropping its own game makes room: c/1 replaces game_a by game_b and game_c (3 live).
+		if _, err := f.state.Reconcile("c/1", []Game{{ID: "game_b"}, {ID: "game_c"}}); err != nil {
+			t.Fatalf("a reconcile within the cap: %v", err)
+		}
+		if got := len(f.state.Games()); got != 3 {
+			t.Fatalf("live games = %d, want 3", got)
+		}
+	})
 	t.Run("UC-053/main a re-registration without a serial drops that player's values", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
 		f.register("game_a", "c/1", "MOCK0001", "MOCK0002")
@@ -877,6 +895,34 @@ func TestStateFileCorruptCopiesAreCapped(t *testing.T) {
 		matches, _ := filepath.Glob(path + ".corrupt-*")
 		if len(matches) != 3 {
 			t.Fatalf("%d corrupt copies, want 3: %v", len(matches), matches)
+		}
+	})
+}
+
+// UC: UC-053 A2
+func TestUnreadableStateFileBlocksPersistence(t *testing.T) {
+	t.Run("UC-053/A2 a read error keeps the file and applies admin values in memory only", func(t *testing.T) {
+		// A directory at the state-file path: ReadFile fails with an I/O error, not "not exist".
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := newFixture(t, fixtureOpts{stateFile: path})
+		res := f.put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "slow", Persist: true, Writer: "menu"})
+		if res.Persisted {
+			t.Fatal("reported persisted while persistence is blocked")
+		}
+		if f.state.PersistErrors() != 1 {
+			t.Fatalf("persist errors = %d, want 1", f.state.PersistErrors())
+		}
+		if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+			t.Fatalf("the unreadable path was touched: %v", err)
+		}
+		if m, _ := filepath.Glob(path + ".corrupt-*"); len(m) != 0 {
+			t.Fatalf("an unreadable file was moved aside as corrupt: %v", m)
+		}
+		if got := f.snapshotFlag("sensitivity")["defaultVariant"]; got != "slow" {
+			t.Fatalf("defaultVariant = %v, want the in-memory admin value slow", got)
 		}
 	})
 }

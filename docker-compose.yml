@@ -415,6 +415,7 @@ services:
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
       # Game lifecycle reported to the flag service (FR-135, #1410)
       - FLAG_SERVICE_URL=http://flag-service:8070
+      - FLAG_SERVICE_INSTANCE=game-coordinator  # stable across recreate (the hostname is the container id), UC-053 A10
     depends_on:
       flagd:
         condition: service_started

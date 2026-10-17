@@ -1,7 +1,9 @@
 package experiment
 
 import (
+	"bytes"
 	"context"
+	"strconv"
 	"sync"
 )
 
@@ -54,11 +56,12 @@ func (g *GateTargetingWriter) Apply(ctx context.Context, p Proposal) error {
 	return nil
 }
 
-// Reassert writes p's arm value again when the flag service restarted since it
-// was written (a new boot epoch): the restart dropped it, and the experiment's
-// next shadow games would otherwise resolve the baseline on both arms. The
-// registry calls it before each pair spawn. An unreadable epoch is an error, so
-// the pair is not spawned.
+// Reassert writes p's arm value again when the flag service no longer serves
+// it: after a restart (a new boot epoch) or after the service's idle expiry
+// (FLAG_SERVICE_EXPERIMENT_IDLE) dropped it. Otherwise the experiment's next
+// shadow games would resolve the baseline on both arms. The registry calls it
+// before each pair spawn. An unreadable epoch or flag is an error, so the pair
+// is not spawned.
 func (g *GateTargetingWriter) Reassert(ctx context.Context, p Proposal) error {
 	er, ok := g.writer.Service().(epochReader)
 	if !ok {
@@ -72,7 +75,15 @@ func (g *GateTargetingWriter) Reassert(ctx context.Context, p Proposal) error {
 	written, known := g.epochs[p.ExperimentID]
 	g.mu.Unlock()
 	if known && written == cur {
-		return nil
+		// Same epoch: the value can still have been dropped by the idle expiry.
+		// The rendered flag names every experiment whose rung it carries.
+		view, err := g.writer.Service().GetFlag(ctx, GameFlagSet, p.FlagKey)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(view.Rendered, []byte(strconv.Quote(p.ExperimentID))) {
+			return nil
+		}
 	}
 	return g.Apply(ctx, p)
 }

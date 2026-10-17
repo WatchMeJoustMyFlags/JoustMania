@@ -351,8 +351,8 @@ bounds carry the per-flag knowledge, and new mutable flags need a registry row, 
 - It admits and retires **every** game, real and shadow; it knows the id, kind, serials, experiment and
   arm before the game loop evaluates any flag; the agent learns of a game from OTel after the batch delay.
 - It already has the hooks: `prime_session` and `forget_session` (`services/game_coordinator/servicer.py`).
-- **Instance scoping (review C3).** `PUT /games/{gameId}` carries `coordinator_instance` (hostname plus a
-  boot UUID). `PUT /coordinators/{instance}/games` (the reconcile call, at coordinator start and when its
+- **Instance scoping (review C3).** `PUT /games/{gameId}` carries `coordinator_instance` (`FLAG_SERVICE_INSTANCE`, set per
+  coordinator in compose and stable across a restart or recreate; the boot id is only logged). `PUT /coordinators/{instance}/games` (the reconcile call, at coordinator start and when its
   connection to the service recovers) drops only that instance's other games:
   `docker-compose.agent-coordinator.yml` runs a second coordinator for the agent's cohort soak, and one
   must never drop the other's games.

@@ -3,6 +3,7 @@ package experiment
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -467,5 +468,19 @@ func TestRestartedFlagServiceGetsTheArmValueAgain(t *testing.T) {
 	reg.AllocateAndSpawn(ctx)
 	if _, ok := svc.ArmValues(GameFlagSet, "death_grace_period_seconds")[key]; !ok {
 		t.Fatalf("the arm value was not written again after the restart: %v", svc.Calls)
+	}
+	// The idle expiry (same epoch) drops the value: it is written again too.
+	spawner.mu.Lock()
+	spawned = append([]spawnCall(nil), spawner.calls...)
+	spawner.mu.Unlock()
+	for _, c := range spawned {
+		reg.ReleaseGame(c.gameID, "test")
+	}
+	if err := svc.Delete(ctx, GameFlagSet, "death_grace_period_seconds", url.Values{"experiment_id": {id}, "arm": {ArmExperimental}}); err != nil {
+		t.Fatal(err)
+	}
+	reg.AllocateAndSpawn(ctx)
+	if _, ok := svc.ArmValues(GameFlagSet, "death_grace_period_seconds")[key]; !ok {
+		t.Fatalf("the arm value was not written again after the idle expiry: %v", svc.Calls)
 	}
 }

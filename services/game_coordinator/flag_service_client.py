@@ -107,12 +107,13 @@ BOOT_ID = uuid.uuid4().hex[:8]
 
 
 def coordinator_instance_id() -> str:
-    """A STABLE id per coordinator: ``FLAG_SERVICE_INSTANCE``, else the hostname
-    (the container name in compose). It survives a restart on purpose: the
-    restarted coordinator's reconcile then drops the games its previous process
-    registered (UC-053 A10), instead of leaving them for the 1 h expiry. Two
-    coordinators (the agent-coordinator stack) run in different containers, so
-    their ids differ (review C3)."""
+    """A STABLE id per coordinator: ``FLAG_SERVICE_INSTANCE``, which every compose
+    stack sets (``game-coordinator``; ``agent-game-coordinator`` for the second
+    coordinator, review C3). It survives a restart and a container recreate on
+    purpose: the new process's reconcile then drops the games its predecessor
+    registered (UC-053 A10), instead of leaving them for the 1 h expiry. The
+    hostname fallback is for runs outside compose only: in a container it is the
+    container id, which changes when the container is recreated."""
     return os.environ.get("FLAG_SERVICE_INSTANCE") or socket.gethostname()
 
 

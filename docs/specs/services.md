@@ -354,7 +354,7 @@ K; the flag resolves in that game to `{"epoch": "<boot id>", "seq": n, "events":
 **`WriteResult`**: `{"flag_set", "flag", "variant" (opaque, carries the epoch), "seq" (event writes), "epoch",
 "snapshot_version" (monotonic; flagd has it once the stream sent it), "persisted" (admin flags)}`.
 
-**`PUT /games/{gameId}` body**: `{"coordinator_instance": "<stable id: FLAG_SERVICE_INSTANCE or the hostname; the same after a restart, so the restart's reconcile drops the previous process's games (A10)>", "game_kind": "real" | "shadow",
+**`PUT /games/{gameId}` body**: `{"coordinator_instance": "<stable id: FLAG_SERVICE_INSTANCE, set in every compose stack (game-coordinator; agent-game-coordinator for the second coordinator); the same after a restart or a container recreate, so the new process's reconcile drops the previous process's games (A10). The hostname fallback is only for runs outside compose: a container's hostname is its id and changes on recreate>", "game_kind": "real" | "shadow",
 "serials": ["MOCK0001", ...], "experiment_id": "", "arm": ""}`. An unspecified kind is stored as is and never
 treated as real (FR-041). **`PUT /coordinators/{instance}/games` body**: `{"games": [<same objects>]}`.
 
@@ -364,7 +364,7 @@ treated as real (FR-041). **`PUT /coordinators/{instance}/games` body**: `{"game
 |---|---|
 | 400 | `malformed` (bad JSON, both or neither of `variant` / `value`, scope does not fit the flag, `persist` on a flag or scope that cannot persist, `persist` with `ttl_seconds`) |
 | 404 | `unknown_flag_set`, `unknown_flag` |
-| 409 | `game_not_live` (game not registered or ended), `set_not_served` (the set is not in this stack's `FLAG_SERVICE_SETS`, so flagd would not see the write; every stack lists all eight), `too_many_games` (`PUT /games` beyond `FLAG_SERVICE_MAX_GAMES`, default 64, NFR-051), `experiment_unknown` (reserved for #1415; not raised before it) |
+| 409 | `game_not_live` (game not registered or ended), `set_not_served` (the set is not in this stack's `FLAG_SERVICE_SETS`, so flagd would not see the write; every stack lists all eight), `too_many_games` (`PUT /games/{gameId}`, or a `PUT /coordinators/{instance}/games` reconcile, that would leave more than `FLAG_SERVICE_MAX_GAMES` live game scopes, default 64, NFR-051; a reconcile over the cap is rejected whole and changes nothing, it is never truncated), `experiment_unknown` (reserved for #1415; not raised before it) |
 | 422 | `flag_read_only` (no registry row), `out_of_bounds`, `serial_not_in_game` |
 | 503 | `no_sync_stream` (flagd has no open sync stream, so the write would not reach readers). The game lifecycle calls (`/games`, `/coordinators`) are exempt and never return it |
 
