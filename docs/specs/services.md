@@ -11,7 +11,7 @@ flowchart LR
     browser([Browser]) -->|":80"| envoy
     envoy --> dashboard
     envoy -->|/joustmania, /chaos/| cproxy[connect-proxy]
-    envoy -->|/jaeger/ /grafana/ /prometheus/ /loki/ /victoria-metrics/| obs[(observability)]
+    envoy -->|/jaeger/ /grafana/ /loki/ /victoria-metrics/| obs[(observability)]
     envoy -->|/experiments| agent
     cproxy --> cm[controller-manager]
     cproxy --> gc[game-coordinator]
@@ -55,10 +55,9 @@ coordinator and the menu wait only for flagd, the menu also for `flag-dir-init`)
 | dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
 | flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Serve the flag files | `docker-compose.yml:79-122` |
-| otel-collector | custom contrib build | 4317 / 4318 OTLP, 8889 Prometheus exporter | 4317, 8889 | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Prometheus, Loki, agent | `services/otel-collector/config.yaml` |
+| otel-collector | custom contrib build | 4317 / 4318 OTLP | 4317 | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Loki, agent (the :8889 Prometheus exporter was removed in #1449) | `services/otel-collector/config.yaml` |
 | jaeger | 2.19.0 | 16686 UI, 4317 / 4318 OTLP | no | Trace store (badger, bounded TTL) | `services/jaeger/config.yaml` |
-| victoria-metrics | v1.144.0 | 8428 | no | Metric store (remote write, 7 d) | `docker-compose.yml:514-542` |
-| prometheus | v3.12.0 | 9090 | no | Scrapes the collector every 500 ms; no alert rules (removed in #1425) | `services/prometheus/` |
+| victoria-metrics | v1.144.0 | 8428 | no | The only metric store (remote write, 7 d); serves the Prometheus query API to Grafana, the dashboard, the agent and the tools. The Prometheus container was removed in #1449 | `docker-compose.yml:513-544` |
 | grafana | 13.0.2 | 3000 | no | Dashboards | `services/grafana/` |
 | loki | 3.7.2 | 3100 | no | Logs | `services/loki/config.yaml` |
 | flag-dir-init | busybox | none | no | One-shot: make the flag dir group-writable for the nonroot menu | `docker-compose.yml:65-76` |
@@ -205,8 +204,8 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 | `/experiments`, `/experiments/{id}` | agent :13134 | yes | Experiment dossier (JSON / HTML) | `services/agent/dossier.go` (`handleList`, mux registration) |
 | `/healthz` | agent :13134 | no | Liveness | `services/agent/server.go:startHealthServer` |
 | `/health` | connect-proxy; envoy direct 200 | yes | Liveness | `services/connect-proxy/main.go:129` |
-| `/jaeger/`, `/grafana/`, `/prometheus/`, `/loki/`, `/victoria-metrics/` | observability services | yes | UIs and APIs | `envoy.yaml:45-89` |
-| `/metrics` | controller-manager :8000 | no | prometheus_client pull (pipeline comparison) | `services/controller_manager/server.py` (`start_http_server`) |
+| `/jaeger/`, `/grafana/`, `/loki/`, `/victoria-metrics/` | observability services | yes | UIs and APIs (`/prometheus/` was removed in #1449 and now falls through to the dashboard) | `envoy.yaml:45-89` |
+| `/metrics` | controller-manager :8000 | no | prometheus_client pull, for manual `curl`; nothing scrapes it since the Prometheus container was removed (#1449) | `services/controller_manager/server.py` (`start_http_server`) |
 | `/healthz` | pairing-daemon :8002 | host network | Liveness | `services/pairing_daemon/psmove_pairing/daemon.py` (health status for `/healthz`) |
 | `POST /pairing/unpair` (JSON `{"address": "<bluetooth address>"}`) | connect-proxy | yes (envoy route timeout 40 s) | Unpair a controller (UC-005): forwards to the pairing daemon at `PAIRING_DAEMON_URL` (full stack `http://host.docker.internal:8002` via the `host-gateway` extra host, lite stack `http://pairing-daemon:8002`) and passes its status and JSON answer through; 400 not a Bluetooth address, 403 cross-origin browser request (`Origin` host ≠ `Host`; also on `/chaos/*` setters), 502 daemon unreachable. No authentication (UC-005 BR-003) | `services/connect-proxy/pairing.go` |
 | `POST /controllers/{address}/unpair` | pairing-daemon :8002, bound only to `CONTROL_BIND` (full stack loopback + docker0 gateway, lite `0.0.0.0` in its container) | host network (through `/pairing/unpair`) | Remove the address's registrations on every adapter (UC-005). 200 `{"address", "removed", "already_absent", "failed", "adapters", "results": [{"adapter", "outcome", "error"?}], "on_usb"}` when every registration found is `removed` or `already_absent`; 400 not a Bluetooth address; 404 none found; 409 a USB pairing or another unpair is running; 503 any `failed` result (same body plus `error`), a BlueZ / D-Bus error or any unexpected error | `services/pairing_daemon/psmove_pairing/control_api.py`, `usb_pairing.py`, `registrations.py` |
@@ -243,7 +242,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 ### agent
 
-- Environment: see `docker-compose.yml:697-795`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214). Still env: API keys, `AGENT_INFERENCE_*`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`, `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
+- Environment: see `docker-compose.yml:659-757`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214). Still env: API keys, `AGENT_INFERENCE_*`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`, `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
 - Writes: `interventions.json` (action sink), `rollout.json` (`current_controller_count`), `game.json` (experiment targeting; autonomous real default when enabled). Never `agent.json` (code guard in `experiment/gate.go`; the mount is read-write).
 - Persistent volume `agent-experiments` for the experiment journal and autonomous-revert snapshots.
 - Pattern games (#1258, UC-046): the one-shot runner reads `SHADOW_GAME_ARCHETYPE` and `SHADOW_GAME_SEED`; for a pattern game the runner sends no `SimulateMovement` / `SimulateDeath` and force-ends the game at the pinned safety cap `experiment.max_game_seconds` (outcome `timeout`).

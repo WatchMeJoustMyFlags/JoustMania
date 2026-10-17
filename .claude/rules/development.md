@@ -26,5 +26,5 @@ Exact contracts live in `docs/specs/` (services, flags, telemetry, decide contra
 Python services: `server.py` (entry), `servicer.py` (gRPC impl), `metrics.py`, `tests/`, `pyproject.toml`
 
 ## Observability
-- Envoy on host port 80: `http://localhost/` (dashboard), `/jaeger/`, `/grafana/`, `/prometheus/`
+- Envoy on host port 80: `http://localhost/` (dashboard), `/jaeger/`, `/grafana/`, `/victoria-metrics/` (Prometheus query API; the Prometheus container was removed in #1449)
 - Dashboards: `services/grafana/dashboards/`

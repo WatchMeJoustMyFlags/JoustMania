@@ -125,7 +125,7 @@ All UIs are accessible through the unified dashboard at **http://localhost:8080*
 - **Dashboard:** http://localhost:8080
 - **Jaeger:** http://localhost:8080/jaeger/
 - **Grafana:** http://localhost:8080/grafana/
-- **Prometheus:** http://localhost:8080/prometheus/
+- **VictoriaMetrics:** http://localhost:8080/victoria-metrics/vmui/
 
 ### 6. View Logs
 

@@ -188,7 +188,7 @@ The `Spec Gate` job in `ci.yml` (#1263, required through `CI Complete`) has two 
 2. **Spec touched** (pull requests changing `services/**`, `lib/**` or `proto/**`;
    tests (`tests/`, `testutil/`, `mocks/`, `conftest.py`, `*_test.*`, `test_*.py`,
    `*.test.ts(x)`, `*.spec.ts(x)`), `*.md`, dependency manifests/locks and
-   Dockerfiles do not count; Grafana dashboards, Prometheus config and collector
+   Dockerfiles do not count; Grafana dashboards and collector
    config do, since `docs/specs/telemetry.md` documents them): the PR must also change
    `docs/requirements.md`, `docs/use_cases/**`, `docs/use_cases.puml`, `docs/specs/**`,
    `docs/specs-inventory.md` or `docs/entity_model.md`. A change to

@@ -564,7 +564,7 @@ The game adapts in real-time without restarting.
 
 ### 6. Check Metrics
 
-View metrics in Prometheus at `http://localhost:9090`:
+View metrics in Grafana Explore or the VictoriaMetrics UI at `http://localhost/victoria-metrics/vmui/`:
 
 **Flag evaluations by key:**
 ```promql
@@ -585,7 +585,7 @@ Or view in Grafana's **Feature Flags** dashboard.
 
 ## Metrics
 
-The following metrics are exported to Prometheus:
+The following metrics are exported over OTLP and stored in VictoriaMetrics:
 
 ### `game_flag_evaluations_total{flag_key}`
 
@@ -660,16 +660,16 @@ docker compose logs game-coordinator | grep "Registered PROVIDER_CONFIGURATION_C
 - Verify the consumer registers the event handler on startup
 - Check that `get_config()` returns cached values, not re-evaluating flags
 
-### Metrics not showing up in Prometheus
+### Metrics not showing up in VictoriaMetrics
 
 ```bash
-curl -s localhost:9090/api/v1/label/__name__/values | jq -r '.data[]' | grep game_flag
+curl -s localhost/victoria-metrics/api/v1/label/__name__/values | jq -r '.data[]' | grep game_flag
 docker compose logs otel-collector | grep game-coordinator
 ```
 
 **Solutions:**
 - Wait for the metrics export interval
-- Verify Prometheus is scraping the service (check Targets page)
+- Verify the collector exports to VictoriaMetrics (`docker compose logs otel-collector | grep prometheusremotewrite`)
 - Check OTEL_EXPORTER_OTLP_ENDPOINT is set correctly
 
 ### Flag changes don't affect gameplay

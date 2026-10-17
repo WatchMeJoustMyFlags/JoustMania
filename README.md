@@ -43,7 +43,7 @@ make up-mock
 |-----------|-----|---------|
 | Dashboard | http://localhost:8080 | Main UI, controller visualization |
 | Jaeger | http://localhost:8080/jaeger/ | Distributed tracing |
-| Prometheus | http://localhost:8080/prometheus/ | Metrics |
+| VictoriaMetrics | http://localhost:8080/victoria-metrics/vmui/ | Metrics (Prometheus query API) |
 | Grafana | http://localhost:8080/grafana/ | Dashboards (admin/joustmania) |
 
 ## Game Modes
@@ -131,7 +131,7 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 
 - **Language:** Python 3.11+
 - **Communication:** gRPC with Protocol Buffers
-- **Observability:** OpenTelemetry, Jaeger, Prometheus, Grafana
+- **Observability:** OpenTelemetry, Jaeger, VictoriaMetrics, Loki, Grafana
 - **Infrastructure:** Docker, Docker Compose
 
 ## Credits

@@ -437,7 +437,7 @@ For resource-constrained or mobile deployments, use the lite Docker Compose conf
 docker compose -f docker-compose.lite.yml up
 ```
 
-This excludes Jaeger, Prometheus, Grafana, and OTEL Collector, saving ~768MB RAM.
+This excludes Jaeger, VictoriaMetrics, Loki, Grafana, and OTEL Collector, saving ~768MB RAM.
 It still runs `rust-hid`, the default Bluetooth backend, so the controller manager
 reads real controllers and the pairing daemon pairs them through it (#1318).
 python-hid is not part of the lite stack; it is opt-in on the full stack only

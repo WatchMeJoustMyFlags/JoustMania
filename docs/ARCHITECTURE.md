@@ -257,7 +257,7 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 | `/` | Dashboard | Main web interface |
 | `/jaeger/` | Jaeger:16686 | Distributed tracing UI |
 | `/grafana/` | Grafana:3000 | Metrics dashboards |
-| `/prometheus/` | Prometheus:9090 | Metrics API |
+| `/victoria-metrics/` | VictoriaMetrics:8428 | Metrics store, Prometheus query API |
 
 **Dependencies**: All observability services
 
@@ -408,7 +408,7 @@ All observability tools are accessed through the unified dashboard reverse proxy
 |-----------|---------|----------------|---------------|
 | Dashboard | Unified entry point | `/` | 80 |
 | Jaeger | Distributed tracing | `/jaeger/` | 16686 |
-| Prometheus | Metrics collection | `/prometheus/` | 9090 |
+| VictoriaMetrics | Metrics store (Prometheus query API) | `/victoria-metrics/` | 8428 |
 | Grafana | Visualization | `/grafana/` | 3000 |
 | Loki | Log aggregation | `/loki/` | 3100 |
 
