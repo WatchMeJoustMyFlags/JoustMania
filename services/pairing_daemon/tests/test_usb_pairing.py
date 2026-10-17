@@ -223,7 +223,6 @@ class TestBackendCoherence:
         usb_pairing.adapter_manager.check_if_not_paired = MagicMock(return_value=True)
         adapter = AdapterInfo(hci="hci0", address="11:22:33:44:55:66", name="adapter-hci0", device_count=0)
         usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=adapter)
-        usb_pairing.restart_bluetooth_service = AsyncMock()
         usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
 
         await usb_pairing.poll()
@@ -331,30 +330,6 @@ class TestPoll:
         # No process_controller calls expected
 
 
-class TestRestartBluetoothService:
-    """Tests for restart_bluetooth_service()."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.uc("UC-001", flow="main", steps=[5])
-    async def test_restarts_via_systemd_dbus(self, usb_pairing):
-        """Test that bluetooth service is restarted via D-Bus systemd interface."""
-        with patch("psmove_pairing.usb_pairing.restart_systemd_unit", new_callable=AsyncMock) as mock_restart:
-            with patch("asyncio.sleep", return_value=None):
-                await usb_pairing.restart_bluetooth_service()
-                mock_restart.assert_called_once_with("bluetooth.service")
-
-    @pytest.mark.asyncio
-    async def test_handles_dbus_failure(self, usb_pairing):
-        """Test that D-Bus failure is logged but doesn't raise."""
-        with patch(
-            "psmove_pairing.usb_pairing.restart_systemd_unit",
-            new_callable=AsyncMock,
-            side_effect=Exception("D-Bus error"),
-        ):
-            # Should not raise
-            await usb_pairing.restart_bluetooth_service()
-
-
 class TestBluezTrustController:
     """Tests for bluez_trust_controller()."""
 
@@ -411,14 +386,12 @@ class TestProcessController:
         adapter = AdapterInfo(hci="hci0", address="11:22:33:44:55:66", name="adapter-hci0", device_count=0)
         usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=adapter)
         usb_pairing.pair_controller = AsyncMock(return_value=True)
-        usb_pairing.restart_bluetooth_service = AsyncMock()
         usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
 
         result = await usb_pairing.process_controller(FAKE_PATH_1, "00:06:F7:AA:BB:CC")
 
         assert result is True
         usb_pairing.pair_controller.assert_called_once_with(FAKE_PATH_1, "00:06:F7:AA:BB:CC", "11:22:33:44:55:66")
-        usb_pairing.restart_bluetooth_service.assert_called_once()
         usb_pairing.bluez_trust_controller.assert_called_once()
 
     @pytest.mark.asyncio
@@ -430,7 +403,6 @@ class TestProcessController:
         adapter = AdapterInfo(hci="hci0", address="11:22:33:44:55:66", name="adapter-hci0", device_count=0)
         usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=adapter)
         usb_pairing.pair_controller = AsyncMock(return_value=True)
-        usb_pairing.restart_bluetooth_service = AsyncMock()
         usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
 
         # First call: full pairing
@@ -454,11 +426,31 @@ class TestProcessController:
         assert result is False
 
 
-class TestPairingFlow:
-    """UC-001 end to end through process_controller / poll.
+_SYSTEMD_UNIT_METHODS = {"RestartUnit", "StopUnit", "StartUnit", "ReloadOrRestartUnit", "TryRestartUnit"}
+
+
+class _UnitRestarts:
+    """systemd unit (re)starts sent on the recorded system bus."""
+
+    def __init__(self, bus):
+        self._bus = bus
+
+    def messages(self) -> list:
+        return [
+            c.args[0]
+            for c in self._bus.call.await_args_list
+            if c.args[0].destination == "org.freedesktop.systemd1" or c.args[0].member in _SYSTEMD_UNIT_METHODS
+        ]
+
+    def assert_none(self) -> None:
+        assert not self.messages(), f"pairing restarted a systemd unit: {[m.body for m in self.messages()]}"
+
+
+class _PairingFlowEnv:
+    """UC-001 end to end through process_controller / poll (shared fixtures).
 
     Real AdapterManager (BlueZ D-Bus tree faked), real pair_controller and
-    bluez_trust_controller; only the backend's HID write, the systemd restart,
+    bluez_trust_controller; only the backend's HID write, the system D-Bus,
     bluetoothctl and the metric counters are patched.
     """
 
@@ -481,6 +473,9 @@ class TestPairingFlow:
         """Patch the system edges; yields (backend, runner, set_tree, restart).
 
         set_tree(value) swaps the BlueZ GetManagedObjects reply for later refreshes.
+        Every D-Bus user (BlueZ and systemd via lib.bluez_dbus) shares one recorded
+        bus; ``restart.assert_none()`` checks that no systemd unit was restarted
+        on it (UC-001 BR-005).
         """
         backend = _mock_backend(controllers=[(FAKE_PATH_1, self.SERIAL)])
         runner = MockCommandRunner()
@@ -498,28 +493,32 @@ class TestPairingFlow:
         self.bus = bus
 
         with (
-            patch("psmove_pairing.adapter_manager_modern.get_system_bus", AsyncMock()),
+            patch("psmove_pairing.adapter_manager_modern.get_system_bus", AsyncMock(return_value=bus)),
             patch("psmove_pairing.adapter_manager_modern.get_managed_objects", side_effect=managed_objects),
             patch("psmove_pairing.registrations.get_system_bus", AsyncMock(return_value=bus)),
             patch("psmove_pairing.registrations.get_managed_objects", side_effect=managed_objects),
             patch("psmove_pairing.registrations.DEFAULT_BLUETOOTH_DIR", Path("/nonexistent-bluetooth-state")),
             patch("psmove_pairing.usb_pairing._resolve_routing", return_value="python"),
             patch("psmove_pairing.usb_pairing._create_backend", return_value=backend),
-            patch("psmove_pairing.usb_pairing.restart_systemd_unit", AsyncMock()) as restart,
+            patch("lib.bluez_dbus.get_system_bus", AsyncMock(return_value=bus)),
             patch("psmove_pairing.usb_pairing.run_command", runner),
             patch("asyncio.sleep", AsyncMock()),
         ):
-            yield backend, runner, set_tree, restart
+            yield backend, runner, set_tree, _UnitRestarts(bus)
+
+
+class TestPairingFlow(_PairingFlowEnv):
+    """UC-001 main flow and alternatives A1, A2, A4, A5."""
 
     @pytest.mark.uc("UC-001", flow="main", steps=[2, 3, 4, 5, 6], br=["BR-001"])
     async def test_poll_pairs_new_controller_to_least_loaded_adapter(self, usb_pairing, env, metrics):
-        """A USB controller is paired to the least-loaded adapter, BlueZ restarted, trusted, success counted."""
+        """A USB controller is paired to the least-loaded adapter, trusted, success counted; no BlueZ restart."""
         backend, runner, _set_tree, restart = env
 
         await usb_pairing.poll()
 
         backend.pair_controller.assert_awaited_once_with(FAKE_PATH_1, self.SERIAL, self.ADAPTER_FREE)
-        restart.assert_awaited_once_with("bluetooth.service")
+        restart.assert_none()
         assert ["bluetoothctl", "trust", self.SERIAL] in runner.calls
         assert self.SERIAL in usb_pairing._verified_serials
         metrics["pairing_success_total"].inc.assert_called_once()
@@ -528,22 +527,28 @@ class TestPairingFlow:
     @pytest.mark.uc("UC-001", flow="A5", br=["BR-001", "BR-004"])
     async def test_repair_to_other_adapter_removes_old_registration(self, usb_pairing, env, metrics):
         """A4 moves a known controller to the least-loaded adapter; A5 removes its old registration there."""
-        backend, _runner, set_tree, restart = env
+        backend, runner, set_tree, restart = env
         known = [{"Address": self.SERIAL}, *devices(2)]
         set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, known), "hci1": (self.ADAPTER_FREE, [])}))
-        removals_before_restart = []
-        restart.side_effect = lambda *_: removals_before_restart.append(
-            sum(c.args[0].member == "RemoveDevice" for c in self.bus.call.await_args_list)
-        )
+        removals_before_trust = []
+        trust = ["bluetoothctl", "trust", self.SERIAL]
 
-        await usb_pairing.poll()
+        async def record_trust(cmd, **_kwargs):
+            if cmd == trust:
+                removals_before_trust.append(
+                    sum(c.args[0].member == "RemoveDevice" for c in self.bus.call.await_args_list)
+                )
+            return await MockCommandRunner.__call__(runner, cmd)
 
-        assert removals_before_restart == [1], "A5 removes the old registration before the BlueZ restart"
+        with patch("psmove_pairing.usb_pairing.run_command", record_trust):
+            await usb_pairing.poll()
+
+        assert removals_before_trust == [1], "A5 removes the old registration before the trust step"
 
         backend.pair_controller.assert_awaited_once_with(FAKE_PATH_1, self.SERIAL, self.ADAPTER_FREE)
         removals = [c.args[0] for c in self.bus.call.await_args_list if c.args[0].member == "RemoveDevice"]
         assert [(m.path, m.body) for m in removals] == [("/org/bluez/hci0", ["/org/bluez/hci0/dev_0"])]
-        restart.assert_awaited_once_with("bluetooth.service")
+        restart.assert_none()
         metrics["pairing_success_total"].inc.assert_called_once()
 
     @pytest.mark.uc("UC-001", flow="A5", br=["BR-004"])
@@ -621,13 +626,13 @@ class TestPairingFlow:
         metrics["pairing_success_total"].inc.assert_called_once()
 
     async def test_pair_failure_fails_and_next_poll_retries(self, usb_pairing, env, metrics):
-        """Failure postcondition: the backend write fails -> failed_total, no restart; the next poll retries."""
+        """Failure postcondition: the backend write fails -> failed_total; the next poll retries."""
         backend, _runner, _set_tree, restart = env
         backend.pair_controller.side_effect = [PairingResult(success=False), PairingResult(success=True)]
 
         await usb_pairing.poll()
 
-        restart.assert_not_awaited()
+        restart.assert_none()
         assert self.SERIAL not in usb_pairing._verified_serials
         metrics["pairing_failed_total"].inc.assert_called_once()
 
@@ -636,3 +641,56 @@ class TestPairingFlow:
         assert backend.pair_controller.await_count == 2
         assert self.SERIAL in usb_pairing._verified_serials
         metrics["pairing_success_total"].inc.assert_called_once()
+
+
+_DISRUPTIVE_COMMANDS = {"systemctl", "service", "hciconfig", "btmgmt", "rfkill"}
+
+
+class TestPairingNeverRestartsBluez(_PairingFlowEnv):
+    """UC-001 A6 / BR-005 (#1446): pairing during a game leaves connected controllers connected.
+
+    The D-Bus bus, bluetoothctl and lib's systemd helper are all observed: pairing
+    must not restart bluetoothd, power an adapter off or on, or remove anyone else's
+    registration. The daemon reads no game state, so real and shadow games are alike.
+    """
+
+    def _assert_nothing_disruptive(self, runner, restart, own_removals: int = 0) -> None:
+        restart.assert_none()
+        messages = [c.args[0] for c in self.bus.call.await_args_list]
+        powered = [m for m in messages if m.member == "Set" and "Powered" in (m.body or [])]
+        assert not powered, "no adapter power-cycle"
+        assert sum(m.member == "RemoveDevice" for m in messages) == own_removals
+        assert not [c for c in runner.calls if c and c[0] in _DISRUPTIVE_COMMANDS], runner.calls
+        assert all(c[:2] == ["bluetoothctl", "trust"] for c in runner.calls), runner.calls
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_pairing_while_controllers_are_connected_restarts_nothing(self, usb_pairing, env, metrics):
+        """Three controllers play over Bluetooth on hci0; a fourth is paired over USB without disturbing them."""
+        backend, runner, set_tree, restart = env
+        playing = devices(3, connected=True)
+        set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, playing), "hci1": (self.ADAPTER_FREE, [])}))
+
+        await usb_pairing.poll()
+
+        backend.pair_controller.assert_awaited_once_with(FAKE_PATH_1, self.SERIAL, self.ADAPTER_FREE)
+        metrics["pairing_success_total"].inc.assert_called_once()
+        self._assert_nothing_disruptive(runner, restart)
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-004", "BR-005"])
+    async def test_repair_during_a_game_removes_only_its_own_stale_registration(self, usb_pairing, env, metrics):
+        """Re-pairing a controller mid-game moves it; only its old registration goes, nothing restarts."""
+        backend, runner, set_tree, restart = env
+        playing = [{"Address": self.SERIAL}, *devices(3, connected=True)]
+        set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, playing), "hci1": (self.ADAPTER_FREE, [])}))
+
+        await usb_pairing.poll()
+
+        backend.pair_controller.assert_awaited_once_with(FAKE_PATH_1, self.SERIAL, self.ADAPTER_FREE)
+        self._assert_nothing_disruptive(runner, restart, own_removals=1)
+        removed = [c.args[0].body for c in self.bus.call.await_args_list if c.args[0].member == "RemoveDevice"]
+        assert removed == [["/org/bluez/hci0/dev_0"]]  # dev_0 is self.SERIAL, not a playing controller
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    def test_usb_pairing_has_no_bluetooth_restart_step(self, usb_pairing):
+        """The restart step from the psmoveapi era is gone (it wrote BlueZ files; #610 stopped that)."""
+        assert not hasattr(usb_pairing, "restart_bluetooth_service")

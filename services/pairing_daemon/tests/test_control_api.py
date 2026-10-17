@@ -48,7 +48,6 @@ def stub_pairing_steps(usb_pairing: USBPairing, pair=None) -> None:
     usb_pairing.adapter_manager.refresh_adapters = AsyncMock()
     usb_pairing.adapter_manager.select_least_loaded_adapter = lambda: AdapterInfo("hci0", ADAPTER_0, "a", 0)
     usb_pairing.pair_controller = pair or AsyncMock(return_value=True)
-    usb_pairing.restart_bluetooth_service = AsyncMock()
     usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
     usb_pairing.remove_stale_registrations = AsyncMock(return_value=[])
 
@@ -102,7 +101,7 @@ class TestUnpairResponse:
 
     @pytest.mark.uc("UC-005", flow="A8")
     async def test_controller_on_usb_is_not_repaired_until_unplugged_and_replugged(self, usb_pairing, remove):
-        """A8: no immediate re-pair (its BlueZ restart would disconnect every controller)."""
+        """A8: no immediate re-pair (it would undo the unpair the operator asked for)."""
         stub_pairing_steps(usb_pairing)
         await poll_with_usb(usb_pairing, [CONTROLLER])
         assert usb_pairing.pair_controller.await_count == 1
@@ -113,7 +112,6 @@ class TestUnpairResponse:
 
         assert (status, body["on_usb"]) == (200, True)
         assert usb_pairing.pair_controller.await_count == 1
-        usb_pairing.restart_bluetooth_service.assert_awaited_once()
 
         await poll_with_usb(usb_pairing, [])  # unplugged
         await poll_with_usb(usb_pairing, [CONTROLLER])  # plugged back in
@@ -193,7 +191,7 @@ class TestUnpairResponse:
 
     @pytest.mark.uc("UC-005", flow="A6")
     async def test_pairing_waits_for_a_running_unpair(self, usb_pairing, remove):
-        """process_controller does not select an adapter or restart BlueZ in the middle of an unpair."""
+        """process_controller does not select an adapter or pair in the middle of an unpair."""
         release = asyncio.Event()
         order: list[str] = []
 
@@ -240,7 +238,6 @@ class TestUnpairResponse:
         assert (status, body["on_usb"]) == (200, True)
         assert paired is False
         usb_pairing.pair_controller.assert_not_awaited()
-        usb_pairing.restart_bluetooth_service.assert_not_awaited()
 
     @pytest.mark.uc("UC-005", flow="A8")
     async def test_replug_within_one_poll_is_noticed_by_a_new_device_path(self, usb_pairing, remove):

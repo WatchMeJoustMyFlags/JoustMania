@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
-from .adapter_manager import AdapterManager, restart_systemd_unit
+from .adapter_manager import AdapterManager
 from .config import DEBUG, get_adapter_routing_default, get_poll_interval
 from .metrics import (
     pairing_adapter_device_count,
@@ -144,7 +144,7 @@ class USBPairing:
         self._current_backend: PairingBackend | None = None
         self._current_backend_name: str | None = None
         # Held from adapter selection through trust, and by an unpair (UC-005 A6):
-        # an unpair never interleaves with a pairing or its BlueZ restart window.
+        # an unpair never interleaves with a pairing.
         self._pairing_lock = asyncio.Lock()
         # Address -> HID device path seen on USB in the last poll
         self._usb_paths: dict[str, bytes] = {}
@@ -217,24 +217,6 @@ class USBPairing:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 return False
 
-    async def restart_bluetooth_service(self) -> None:
-        """Restart the host's BlueZ bluetooth service via D-Bus systemd interface.
-
-        BlueZ only reads device files from /var/lib/bluetooth/ at startup,
-        so a full service restart is needed after writing new pairing data.
-        Adapter power-cycling alone is not sufficient.
-        """
-        import asyncio
-
-        logger.info("Restarting bluetooth service via D-Bus...")
-        try:
-            await restart_systemd_unit("bluetooth.service")
-            # Wait for BlueZ to fully restart and re-read device files
-            await asyncio.sleep(3)
-            logger.info("Bluetooth service restarted successfully")
-        except Exception as e:
-            logger.error(f"Failed to restart bluetooth service: {e}")
-
     async def bluez_trust_controller(self, serial: str) -> bool:
         """Trust a controller in BlueZ so it can connect later.
 
@@ -245,8 +227,10 @@ class USBPairing:
 
         We only run ``trust`` here — ``pair`` cannot work because the
         controller is still on USB and not broadcasting over Bluetooth.
+        ``trust`` sets ``Device1.Trusted`` in the running bluetoothd; nothing
+        is restarted (UC-001 BR-005).
 
-        Retries once after a short delay since BlueZ may still be restarting.
+        Retries once after a short delay in case BlueZ is busy.
         """
         import asyncio
 
@@ -332,11 +316,13 @@ class USBPairing:
             span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
             return False
 
-        # Drop its registrations on other adapters before the restart (UC-001 A5, BR-004)
+        # Drop its registrations on other adapters (UC-001 A5, BR-004)
         await self.remove_stale_registrations(serial, adapter.address)
 
-        # Restart BlueZ so it re-reads the new device files
-        await self.restart_bluetooth_service()
+        # No bluetoothd restart and no adapter power-cycle (UC-001 BR-005, #1446):
+        # the backend wrote only the host address into the controller, no BlueZ
+        # storage file, so there is nothing to reload. A restart would power
+        # every adapter off and drop every connected controller mid-game.
 
         # Trust device in BlueZ (for ZCM2, agent handles PIN at connect time)
         await self.bluez_trust_controller(serial)
@@ -403,7 +389,7 @@ class USBPairing:
             raise NotRegisteredError(normalized)
 
         # Pair it again only after it leaves USB and comes back (A8), never right away:
-        # a re-pair restarts bluetoothd, which disconnects every controller.
+        # an immediate re-pair would undo the unpair the operator asked for.
         self._verified_serials = {s for s in self._verified_serials if normalize_address(s) != normalized}
         self._awaiting_replug[normalized] = self._usb_paths.get(normalized)
         on_usb = normalized in self._usb_paths
