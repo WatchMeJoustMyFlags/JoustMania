@@ -311,7 +311,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Share of agent.decide spans by decide.outcome: act (routed to the permission chain), noop (the backend chose no action), held (a valid answer below the act confidence threshold), fallback (the requested backend could not decide; rules did), invalid (inconsistent answers) and discarded (the answer no longer fit the game when it landed). Source: traces_span_metrics_calls_total (spanmetrics connector).",
+      "description": "Share of agent.decide spans by decide.outcome: act (routed to the permission chain), noop (the backend chose no action), held (a valid answer below the act confidence threshold), fallback (the requested backend could not decide; rules did), invalid (inconsistent answers) and discarded (the answer no longer fit the game when it landed). Each series is its share of all agent.decide spans over the last minute (computed in PromQL, so the stack sums to 100%). Source: traces_span_metrics_calls_total (spanmetrics connector).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -338,7 +338,7 @@
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "percent"
+              "mode": "normal"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -384,7 +384,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (decide_outcome) (rate(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[1m]))",
+          "expr": "sum by (decide_outcome) (rate(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[1m])) / scalar(sum(rate(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[1m])))",
           "legendFormat": "{{decide_outcome}}",
           "refId": "A"
         }

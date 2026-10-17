@@ -356,6 +356,11 @@ connectors:
       explicit:
         buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 4s, 8s, 16s, 32s]
     metrics_flush_interval: 15s
+    # Stop exporting a series 10 min after its last span. The agent's
+    # service.instance.id (instance label) changes on every container
+    # recreate; without expiry the dead instance's series would be
+    # re-exported forever.
+    metrics_expiration: 10m
 
 exporters:
   # OTLP exporter to send traces to Jaeger

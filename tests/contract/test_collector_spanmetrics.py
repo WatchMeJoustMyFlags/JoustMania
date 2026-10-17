@@ -46,6 +46,8 @@ def test_spanmetrics_dimensions_are_the_decide_span_attributes(collector):
     assert connector["histogram"]["explicit"]["buckets"]
     # A per-restart collector.instance.id label would start new series on every restart.
     assert "collector.instance.id" in connector["exclude_dimensions"]
+    # The agent's instance label changes on every recreate: dead series must expire.
+    assert connector["metrics_expiration"]
 
 
 def test_spanmetrics_only_sees_agent_decide_spans(collector):
