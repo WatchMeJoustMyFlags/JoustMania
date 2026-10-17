@@ -1,42 +1,34 @@
-// Package actions is the agent's ActionSink: it APPLIES decisions by rewriting
-// the flagd `interventions` flag file (services/flagd/interventions.json). There
-// is no gRPC to the game services — the game coordinator watches the file and
-// converges on its contents (docs/research/722-intervention-surface.md §8).
+// Package actions is the agent's ActionSink: it APPLIES decisions as flag
+// writes to the flag service (epic #1407, UC-053, docs/specs/services.md §7.2).
+// The agent never writes a flag file (C-032, C-033); the flag service renders
+// every write as targeting on the deciding game (and the player's serial), so a
+// decision for one game never changes another (FR-136, FR-069).
 //
-// Two flag shapes are written, matching the game-side reader contract:
+// Three write shapes, matching the flag registry (docs/specs/flags.md §13.1):
 //
-//   - State-shaped interventions (music_tempo_override, global_sensitivity_override,
-//     volume_override) and per-player state (player_sensitivity_factor,
-//     shield_seconds): a single dedicated variant is overwritten with the typed
-//     value and defaultVariant flips to it; reverting flips defaultVariant back to
-//     the neutral variant (none/default). Per-player state additionally writes a
-//     flagd targeting if-ladder keyed on targetingKey=serial.
-//   - Edge-triggered one-shots (eliminate_player, revive_player, audio_cue,
-//     controller_effect, end_game): a single variant holds "<nonce>:<payload>"
-//     and defaultVariant flips to it. A fresh unique nonce per dispatch makes the
-//     reader apply exactly once on nonce change. end_game's payload is the
-//     deciding game's id, so only that game ends (UC-040 BR-011, #1310).
-//   - Per-player GRANTS (shield_seconds, partial_shield_seconds,
-//     soft_penalty_action) are one-shot: each decision writes a fresh variant
-//     "agent_<serial>#<nonce>" that replaces the player's previous one, so the
-//     coordinator sees one change for one player per decision and never
-//     re-grants anyone else (UC-040 BR-012, #1313).
+//   - State interventions (music_tempo_override, global_sensitivity_override,
+//     volume_override, global_difficulty_factor, pacing_profile, tempo_ramp,
+//     auto_rubberband): PUT /interventions/<flag> with scope.game_id.
+//   - Per-player levels and grants (player_sensitivity_factor,
+//     player_handicap_factor; shield_seconds, partial_shield_seconds,
+//     soft_penalty_action): PUT with scope.game_id + scope.serial. The service
+//     gives every write a fresh variant, so a re-grant is a change the
+//     coordinator applies once (UC-040 BR-012).
+//   - One-shot events (eliminate_player, revive_player, audio_cue,
+//     controller_effect, end_game): POST appends an event to the game's event
+//     list, the serial (or sound, effect) in the payload (FR-137, UC-053 BR-006).
 //
-// The write is read-modify-write IN PLACE (no temp+rename — rename triggers
-// EBUSY on docker bind mounts while flagd holds an inotify watch; same semantics
-// as lib/flag_config_writer.py). The agent is the sole writer; a process mutex
-// serializes concurrent dispatches.
+// Every write has a 500 ms deadline and fails closed; a write rejected with 409
+// game_not_live is retried once after 250 ms (UC-053 A6).
 package actions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -44,10 +36,13 @@ import (
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/joustmania/agent/decision"
-	"github.com/joustmania/agent/flagset"
+	"github.com/joustmania/agent/flagservice"
 )
 
-// Flag keys in the interventions domain (services/flagd/interventions.json).
+// FlagSetInterventions is the flag set every intervention flag lives in.
+const FlagSetInterventions = "interventions"
+
+// Flag keys in the interventions set (services/flagd/interventions.json).
 const (
 	flagMusicTempoOverride        = "music_tempo_override"
 	flagGlobalSensitivityOverride = "global_sensitivity_override"
@@ -68,40 +63,24 @@ const (
 	flagEndGame                   = "end_game"
 )
 
-// activeVariant is the single dedicated variant name the agent overwrites for
-// every flag it drives (state values and edge "<nonce>:<payload>" strings).
-const activeVariant = "active"
-
-// Neutral variant names per flag (reverting a state flag flips defaultVariant
-// back to these).
+// Neutral variant names per flag in interventions.json: the baseline value a
+// game resolves when the agent wrote nothing for it.
 const (
 	neutralNone    = "none"
 	neutralDefault = "default"
-	neutralOff     = "off" // #1143 auto_rubberband neutral variant
 )
 
-// DefaultPath is the in-container interventions file path. Override with
-// INTERVENTIONS_FLAG_PATH.
-const DefaultPath = "/etc/flagd/interventions.json"
+// writerLabel is the informational writer label on every agent write (D11).
+const writerLabel = "agent"
 
 // meterName scopes the Writer's OTel instruments.
 const meterName = "github.com/joustmania/agent/actions"
 
 // Result label values for agent_intervention_writes_total. Cardinality is
-// bounded to these two values (no error strings) to keep label cardinality low
-// per .claude/rules/development.md.
+// bounded to these two values (no error strings).
 const (
 	resultOK    = "ok"
 	resultError = "error"
-)
-
-// Phase label values for agent_intervention_file_corruption_total. A poisoned
-// interventions file is detected either after a write (validate-after-write) or
-// at agent startup (self-heal). Cardinality is bounded to these two values per
-// .claude/rules/development.md.
-const (
-	phaseWrite   = "write"
-	phaseStartup = "startup"
 )
 
 // Per-intervention defaults used when a Decision carries no explicit Value. The
@@ -120,504 +99,175 @@ const (
 	defaultShieldSeconds     = 5    // matches "default"
 	defaultGlobalDifficulty  = 1.5  // matches interventions.json "hard" (#766 F6)
 	defaultPacingProfile     = "frantic"
-	// defaultTempoRamp is the safe fallback ramp_tempo curve (#1117): ramp to the
-	// fast tempo over 8s, linear — used when a Decision carries no Value or a
-	// malformed one. Matches interventions.json "ramp_up".
+	// defaultTempoRamp is the safe fallback ramp_tempo curve (#1117).
 	defaultTempoRamp = "1.3:8:linear"
-	// defaultPartialShield is the safe fallback partial_shield directive (#1129):
-	// 5 seconds at the default ~2.0 boost — used when a Decision carries no Value
-	// or a malformed one. "<seconds>:<boost>" with boost at the [1.0,2.0] max.
+	// defaultPartialShield is the safe fallback partial_shield directive (#1129).
 	defaultPartialShield = "5:2.0"
 	// defaultSoftPenalty is the safe fallback soft_penalty directive (#1134): the
-	// gentlest, fully-recoverable "warn" — used when a Decision carries no Value or
-	// a malformed one. Never escalates an unparseable value to a tighten.
+	// gentlest, fully-recoverable "warn". Never escalates an unparseable value.
 	defaultSoftPenalty = "warn"
-	// defaultAutoRubberband is the safe fallback auto_rubberband strength (#1143):
-	// the gentler "gentle" — used when a Decision carries no Value. A malformed
-	// value degrades to "off" via autoRubberbandOr (never escalates to "strong").
+	// defaultAutoRubberband is the safe fallback auto_rubberband strength (#1143).
 	defaultAutoRubberband = "gentle"
 )
 
-// partial_shield bounds (#1129) — mirror BaseGameMode's clamps so the writer
-// never emits a directive the game side would reject.
+// partial_shield / soft_penalty / tempo_ramp bounds mirror the game side's
+// clamps (lifecycle_handlers.py, games/base.py) and the flag registry, so the
+// writer degrades an out-of-range model value to a safe default instead of
+// sending a write the registry would reject.
 const (
 	partialShieldMaxSeconds = 30.0
 	partialShieldBoostMin   = 1.0
 	partialShieldBoostMax   = 2.0
+	softPenaltyMaxSeconds   = 30.0
+	softPenaltyFactorMin    = 0.5
+	softPenaltyFactorMax    = 1.0
+	tempoRampMaxSeconds     = 60.0
 )
-
-// soft_penalty bounds (#1134) — mirror BaseGameMode's clamps so the writer never
-// emits a directive the game side would reject. tighten factor < 1.0 WEAKENS the
-// threshold (mirror of partial_shield's >= 1.0 boost); the [0.5,1.0] band keeps
-// it from ever reaching instant-death.
-const (
-	softPenaltyMaxSeconds = 30.0
-	softPenaltyFactorMin  = 0.5
-	softPenaltyFactorMax  = 1.0
-)
-
-// tempoRampMaxSeconds bounds a single ramp's duration (mirrors base.py
-// RAMP_TEMPO_MAX_SECONDS) so the writer never emits a curve that could suspend
-// the natural schedule for a whole game.
-const tempoRampMaxSeconds = 60.0
 
 // validTempoRampCurves is the closed curve vocabulary (mirrors base.py).
 var validTempoRampCurves = map[string]bool{"linear": true, "ease": true}
 
-// Writer is the production ActionSink. It is safe for concurrent use; the agent
-// is the only writer of the interventions file.
-type Writer struct {
-	path  string
-	log   *slog.Logger
-	nonce *nonceGen
-
-	// writes counts flag-write outcomes (agent_intervention_writes_total),
-	// labeled result=ok|error. Sourced from the global meter provider so it is a
-	// no-op recorder until initMetrics wires the OTLP exporter.
-	writes otelmetric.Int64Counter
-
-	// corruption counts detected-and-healed interventions-file corruptions
-	// (agent_intervention_file_corruption_total), labeled phase=write|startup.
-	// Incremented when a post-write re-parse fails (last-known-good restored) or
-	// when startup validation finds an unparseable file (neutral document
-	// written). Same no-op-until-wired semantics as writes.
-	corruption otelmetric.Int64Counter
-
-	// owners maps a serial to the game its last per-player write was for
-	// (Decision.GameID), so a game's entries can be pruned when it retires
-	// (UC-040 BR-016, #1323). Guarded by mu; lost on restart, when pruning falls
-	// back to liveness.
-	owners map[string]string
-
-	mu sync.Mutex
+// FlagService is the part of the flag-service client the Writer uses.
+type FlagService interface {
+	Put(ctx context.Context, set, flag string, w flagservice.Write) (flagservice.Result, error)
+	Post(ctx context.Context, set, flag string, ev flagservice.Event) (flagservice.Result, error)
 }
 
-// NewWriter builds a Writer for the interventions file at path. path "" uses
-// DefaultPath. log "" uses slog.Default().
-func NewWriter(path string, log *slog.Logger) *Writer {
-	if path == "" {
-		path = DefaultPath
-	}
+// Writer is the production ActionSink. It is safe for concurrent use.
+type Writer struct {
+	svc FlagService
+	log *slog.Logger
+	// writes counts write outcomes (agent_intervention_writes_total{result}).
+	writes otelmetric.Int64Counter
+}
+
+// NewWriter builds a Writer over a flag-service client. log nil uses slog.Default().
+func NewWriter(svc FlagService, log *slog.Logger) *Writer {
 	if log == nil {
 		log = slog.Default()
 	}
-	mp := otel.GetMeterProvider()
-	return &Writer{
-		path:       path,
-		log:        log,
-		nonce:      newNonceGen(),
-		owners:     map[string]string{},
-		writes:     newWritesCounter(mp),
-		corruption: newCorruptionCounter(mp),
-	}
+	return &Writer{svc: svc, log: log, writes: newWritesCounter(otel.GetMeterProvider())}
 }
 
-// newWritesCounter builds the agent_intervention_writes_total counter from the
-// given meter provider. An instrument-creation error yields a no-op counter so
-// the Writer always has a usable instrument.
+// NewWriterFromEnv builds a Writer for the flag service at FLAG_SERVICE_URL.
+func NewWriterFromEnv(log *slog.Logger) *Writer {
+	return NewWriter(flagservice.NewFromEnv(), log)
+}
+
 func newWritesCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
 	c, err := mp.Meter(meterName).Int64Counter(
 		"agent_intervention_writes_total",
-		otelmetric.WithDescription("Total intervention flag-file writes by the agent ActionSink, labeled by outcome"),
+		otelmetric.WithDescription("Intervention writes the agent sent to the flag service, labeled by outcome"),
 	)
 	if err != nil {
-		// Int64Counter only errors on bad config; fall back to a no-op so callers
-		// never have to nil-check.
 		c, _ = metricnoop.NewMeterProvider().Meter(meterName).Int64Counter("agent_intervention_writes_total")
 	}
 	return c
 }
 
-// newCorruptionCounter builds the agent_intervention_file_corruption_total
-// counter from the given meter provider. An instrument-creation error yields a
-// no-op counter so the Writer always has a usable instrument.
-func newCorruptionCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
-	c, err := mp.Meter(meterName).Int64Counter(
-		"agent_intervention_file_corruption_total",
-		otelmetric.WithDescription("Total interventions-file corruptions detected and self-healed by the agent, labeled by phase (write|startup)"),
-	)
-	if err != nil {
-		c, _ = metricnoop.NewMeterProvider().Meter(meterName).Int64Counter("agent_intervention_file_corruption_total")
-	}
-	return c
-}
+// errNoGame refuses an intervention without its deciding game: every
+// intervention is game-scoped (FR-136); an unscoped write would reach every game.
+var errNoGame = errors.New("intervention requires the deciding game's id (FR-136)")
 
-// NewWriterFromEnv builds a Writer for the active interventions flag file via
-// the single source of truth (flagset.ResolvePath, issue #959): the
-// INTERVENTIONS_FLAG_PATH override still wins, otherwise the active interventions
-// flag file is the plain join $FLAGD_FLAG_DIR/interventions.json. In production
-// this is DefaultPath, unchanged.
-func NewWriterFromEnv(log *slog.Logger) *Writer {
-	return NewWriter(flagset.ResolvePath("INTERVENTIONS_FLAG_PATH", "interventions"), log)
-}
-
-// Apply implements decision.ActionSink: it maps the decision's intervention type
-// to a flag mutation and rewrites the interventions file in place.
+// Apply implements decision.ActionSink: it maps the decision's intervention to
+// one flag-service write for the deciding game.
 func (w *Writer) Apply(ctx context.Context, d decision.Decision) error {
-	if err := w.edit(func(doc *orderedDoc) error { return w.mutate(doc, d) }); err != nil {
+	if d.Intervention == decision.InterventionNoop {
+		// Probe-mode synthetic intervention: a dispatched success with no write.
+		return nil
+	}
+	err := w.write(ctx, d)
+	if err != nil {
 		w.recordWrite(ctx, resultError)
 		w.log.Error("agent.action_write_failed",
-			"intervention", d.Intervention,
-			"target_serial", d.TargetSerial,
-			"path", w.path,
-			"error", err)
+			"intervention", d.Intervention, "game_id", d.GameID, "target_serial", d.TargetSerial, "error", err)
 		return err
 	}
 	w.recordWrite(ctx, resultOK)
-	w.log.Debug("agent.action_written",
-		"intervention", d.Intervention,
-		"target_serial", d.TargetSerial,
-		"path", w.path)
+	w.log.Debug("agent.action_written", "intervention", d.Intervention, "game_id", d.GameID, "target_serial", d.TargetSerial)
 	return nil
 }
 
-// recordWrite increments agent_intervention_writes_total for one Apply outcome.
 func (w *Writer) recordWrite(ctx context.Context, result string) {
 	w.writes.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("result", result)))
 }
 
-// recordCorruption increments agent_intervention_file_corruption_total for one
-// detected-and-healed corruption in the given phase (write|startup). The counter
-// is nil only in hand-built test Writers that never reach a corruption path; the
-// nil guard keeps those panic-free.
-func (w *Writer) recordCorruption(ctx context.Context, phase string) {
-	if w.corruption == nil {
-		return
+func (w *Writer) write(ctx context.Context, d decision.Decision) error {
+	if d.GameID == "" {
+		return errNoGame
 	}
-	w.corruption.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("phase", phase)))
-}
-
-// edit runs one read-modify-write cycle under the process mutex: read the file,
-// apply fn to the order-preserving document, write it back in place, then
-// VALIDATE the write by re-parsing the on-disk bytes. If the file no longer
-// parses (a crash or concurrent truncation poisoned it between write and
-// re-read, or our own marshal somehow produced invalid JSON), the last-known-good
-// snapshot — the `raw` bytes we read at the top of this cycle, which parsed
-// successfully — is restored in place, the corruption counter is incremented,
-// and the original parse error is returned. This keeps flagd from ingesting a
-// poisoned file and falling all interventions back to defaults silently (#924).
-func (w *Writer) edit(fn func(*orderedDoc) error) error {
-	return w.editIfChanged(func(doc *orderedDoc) (bool, error) { return true, fn(doc) })
-}
-
-// editIfChanged is edit for a mutation that may be a no-op: fn reports whether it
-// changed the document, and an unchanged document is not written (no mtime bump,
-// so no flagd reload, UC-040 BR-016). A changed one is written in place and
-// validated exactly like edit.
-func (w *Writer) editIfChanged(fn func(*orderedDoc) (bool, error)) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	raw, err := os.ReadFile(w.path)
-	if err != nil {
-		return fmt.Errorf("read interventions file %q: %w", w.path, err)
-	}
-	doc, err := parseDoc(raw)
-	if err != nil {
-		return err
-	}
-	changed, err := fn(doc)
-	if err != nil {
-		return err
-	}
-	if !changed {
-		return nil
-	}
-	out, err := doc.marshal()
-	if err != nil {
-		return err
-	}
-	if err := w.writeInPlace(out); err != nil {
-		return err
-	}
-	return w.validateAfterWrite(raw)
-}
-
-// validateAfterWrite re-reads and re-parses the file just written. On success it
-// returns nil. On failure it restores lastGood (the pre-edit bytes, known to
-// parse), increments agent_intervention_file_corruption_total{phase="write"},
-// logs, and returns the parse error so Apply records result=error. A failure to
-// restore is itself returned (the caller already holds w.mu).
-func (w *Writer) validateAfterWrite(lastGood []byte) error {
-	back, err := os.ReadFile(w.path)
-	if err == nil {
-		_, err = parseDoc(back)
-		if err == nil {
-			return nil // write produced valid JSON
-		}
-	}
-	w.recordCorruption(context.Background(), phaseWrite)
-	w.log.Error("agent.intervention_file_corrupt",
-		"phase", phaseWrite,
-		"path", w.path,
-		"error", err,
-		"action", "restoring last-known-good")
-	if rerr := w.writeInPlace(lastGood); rerr != nil {
-		return fmt.Errorf("interventions file corrupt after write and restore failed: %w (original: %v)", rerr, err)
-	}
-	return fmt.Errorf("interventions file corrupt after write, restored last-known-good: %w", err)
-}
-
-// RevertState flips a session-scoped state flag back to its neutral variant
-// (music_tempo_override/global_sensitivity_override/volume_override). It is the
-// reversion half of the state-shaped contract (§8): the game converges back on
-// "no override". Safe for concurrent use.
-func (w *Writer) RevertState(flagKey string) error {
-	neutral, ok := stateNeutral[flagKey]
-	if !ok {
-		return fmt.Errorf("RevertState: %q is not a session state flag", flagKey)
-	}
-	return w.edit(func(doc *orderedDoc) error {
-		f, err := doc.flag(flagKey)
-		if err != nil {
-			return err
-		}
-		if err := f.set("defaultVariant", neutral); err != nil {
-			return err
-		}
-		return doc.putFlag(flagKey, f)
-	})
-}
-
-// RevertTargeted removes one player from a per-player state flag's targeting
-// if-ladder (levels and grants). Every variant of the player (agent_<serial>
-// or agent_<serial>#<nonce>) and its ladder branch are dropped; once no agent-driven serials remain the
-// targeting block is removed entirely. Unmatched serials fall through to the
-// neutral defaultVariant. Nothing is written when the player has no entry. The
-// game-retire prunes (PruneGame / PruneExcept, UC-040 BR-016) use the same
-// removal for many serials and all five flags in one write. Safe for concurrent use.
-func (w *Writer) RevertTargeted(flagKey, serial string) error {
-	if _, ok := targetedNeutral[flagKey]; !ok {
-		return fmt.Errorf("RevertTargeted: %q is not a per-player state flag", flagKey)
-	}
-	return w.editIfChanged(func(doc *orderedDoc) (bool, error) {
-		return dropSerialFromFlag(doc, flagKey, map[string]bool{serial: true})
-	})
-}
-
-// stateNeutral / targetedNeutral name the neutral variant for each revertible
-// flag.
-var stateNeutral = map[string]string{
-	flagMusicTempoOverride:        neutralNone,
-	flagGlobalSensitivityOverride: neutralNone,
-	flagVolumeOverride:            neutralNone,
-	flagGlobalDifficultyFactor:    neutralDefault, // #766 F6 (neutral = 1.0 "default")
-	flagPacingProfile:             neutralNone,    // #766 F6 (neutral = "none")
-	flagTempoRamp:                 neutralNone,    // #1117 (neutral = "none")
-	flagAutoRubberband:            neutralOff,     // #1143 (neutral = "off")
-}
-
-var targetedNeutral = map[string]string{
-	flagPlayerSensitivityFactor: neutralDefault,
-	flagPlayerHandicapFactor:    neutralDefault,
-	flagShieldSeconds:           neutralNone,
-	flagPartialShieldSeconds:    neutralNone,
-	flagSoftPenaltyAction:       neutralNone,
-}
-
-// mutate applies one decision to the in-memory document.
-func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
+	game := flagservice.Scope{GameID: d.GameID}
+	player := flagservice.Scope{GameID: d.GameID, Serial: d.TargetSerial}
 	switch d.Intervention {
-	// Edge-triggered one-shots.
+	// One-shot events, appended to the game's event list.
 	case decision.InterventionPlayAudioCue:
-		return w.setEdge(doc, flagAudioCue, w.payloadOr(d.Value, defaultAudioCue))
+		return w.post(ctx, d, flagAudioCue, map[string]any{"sound": w.payloadOr(d.Value, defaultAudioCue)})
 	case decision.InterventionSendControllerEffect:
-		effect := w.payloadOr(d.Value, defaultControllerEffect)
-		return w.setEdge(doc, flagControllerEffect, d.TargetSerial+":"+effect)
+		return w.post(ctx, d, flagControllerEffect, map[string]any{
+			"serial": d.TargetSerial, "effect": w.payloadOr(d.Value, defaultControllerEffect),
+		})
 	case decision.InterventionEliminatePlayer:
-		return w.setEdge(doc, flagEliminatePlayer, d.TargetSerial)
+		return w.post(ctx, d, flagEliminatePlayer, map[string]any{"serial": d.TargetSerial})
 	case decision.InterventionRevivePlayer:
-		return w.setEdge(doc, flagRevivePlayer, d.TargetSerial)
+		return w.post(ctx, d, flagRevivePlayer, map[string]any{"serial": d.TargetSerial})
 	case decision.InterventionEndGame:
-		// Addressed to the deciding game (UC-040 BR-011, #1310). An un-addressed
-		// end_game would end the real game whichever loop decided it, and the
-		// fallback partition's "session-<n>" names no game (#1323), so refuse both.
-		if err := validateGameID(d.GameID); err != nil {
-			return err
-		}
-		return w.setEdge(doc, flagEndGame, d.GameID)
+		// The game is the scope (UC-040 BR-011): only the deciding game ends.
+		return w.post(ctx, d, flagEndGame, map[string]any{})
 
-	// Session-scoped state-shaped overrides.
+	// Game-scoped state.
 	case decision.InterventionAdjustMusicTempo:
-		return w.setState(doc, flagMusicTempoOverride, w.numOr(d.Value, defaultMusicTempo))
+		return w.put(ctx, d, flagMusicTempoOverride, game, w.numOr(d.Value, defaultMusicTempo))
 	case decision.InterventionAdjustVolume:
-		return w.setState(doc, flagVolumeOverride, w.numOr(d.Value, defaultVolume))
+		return w.put(ctx, d, flagVolumeOverride, game, w.numOr(d.Value, defaultVolume))
 	case decision.InterventionAdjustGlobalSensitivity:
-		return w.setState(doc, flagGlobalSensitivityOverride, w.numOr(d.Value, defaultGlobalSensitivity))
+		return w.put(ctx, d, flagGlobalSensitivityOverride, game, int(w.numOr(d.Value, defaultGlobalSensitivity)))
 	case decision.InterventionAdjustGlobalDifficulty: // #766 F6
-		return w.setState(doc, flagGlobalDifficultyFactor, w.numOr(d.Value, defaultGlobalDifficulty))
-	case decision.InterventionSetPacingProfile: // #766 F6 (string state-shaped)
-		return w.setStateString(doc, flagPacingProfile, w.payloadOr(d.Value, defaultPacingProfile))
-	case decision.InterventionRampTempo: // #1117 (#1103 MVP action 2), shadow-only
-		return w.setStateString(doc, flagTempoRamp, w.tempoRampOr(d.Value, defaultTempoRamp))
-	case decision.InterventionAutoRubberband: // #1143 (#1103 Phase 3), shadow-only
-		return w.setStateString(doc, flagAutoRubberband, w.autoRubberbandOr(d.Value, defaultAutoRubberband))
+		return w.put(ctx, d, flagGlobalDifficultyFactor, game, w.numOr(d.Value, defaultGlobalDifficulty))
+	case decision.InterventionSetPacingProfile: // #766 F6
+		return w.put(ctx, d, flagPacingProfile, game, w.payloadOr(d.Value, defaultPacingProfile))
+	case decision.InterventionRampTempo: // #1117, shadow-only
+		return w.put(ctx, d, flagTempoRamp, game, w.tempoRampOr(d.Value, defaultTempoRamp))
+	case decision.InterventionAutoRubberband: // #1143, shadow-only
+		return w.put(ctx, d, flagAutoRubberband, game, w.autoRubberbandOr(d.Value, defaultAutoRubberband))
 
-	// Per-player state-shaped overrides (flagd targeting if-ladder).
-	case decision.InterventionAdjustPlayerSensitivity, decision.InterventionSetPlayerHandicap,
-		decision.InterventionGrantShield, decision.InterventionPartialShield, decision.InterventionSoftPenalty:
-		if err := w.mutatePerPlayer(doc, d); err != nil {
-			return err
-		}
-		// Remember the game this serial was written for so its entry is pruned
-		// when that game retires (UC-040 BR-016, #1323).
-		w.recordOwner(d.TargetSerial, d.GameID)
-		return nil
-
-	// Probe-mode synthetic intervention: no game effect, but a dispatched success
-	// so probe mode (AGENT_PROBE_DECISIONS + the `probe` interventions_allowed
-	// variant) exercises the full ACT path, including the agent.action span,
-	// without rewriting any flag.
-	case decision.InterventionNoop:
-		return nil
-
-	default:
-		return fmt.Errorf("unknown intervention %q", d.Intervention)
-	}
-}
-
-// mutatePerPlayer applies one per-player level or grant decision.
-func (w *Writer) mutatePerPlayer(doc *orderedDoc, d decision.Decision) error {
-	switch d.Intervention {
+	// Per-player levels (re-applied as a whole) and grants (fresh variant per write).
 	case decision.InterventionAdjustPlayerSensitivity:
-		return w.setTargeted(doc, flagPlayerSensitivityFactor, neutralDefault, d.TargetSerial, w.numOr(d.Value, defaultPlayerSensitivity))
-	case decision.InterventionSetPlayerHandicap: // #1107 (#1103 MVP action 1), shadow-only
-		return w.setTargeted(doc, flagPlayerHandicapFactor, neutralDefault, d.TargetSerial, w.numOr(d.Value, defaultPlayerHandicap))
-	// Per-player one-shot grants: a fresh variant per decision (UC-040 BR-012).
+		return w.putPlayer(ctx, d, flagPlayerSensitivityFactor, player, w.numOr(d.Value, defaultPlayerSensitivity))
+	case decision.InterventionSetPlayerHandicap: // #1107, shadow-only
+		return w.putPlayer(ctx, d, flagPlayerHandicapFactor, player, w.numOr(d.Value, defaultPlayerHandicap))
 	case decision.InterventionGrantShield:
-		return w.setGrant(doc, flagShieldSeconds, neutralNone, d.TargetSerial, w.numOr(d.Value, defaultShieldSeconds))
-	case decision.InterventionPartialShield: // #1129 (#1103 Phase 2), shadow-only
-		return w.setGrant(doc, flagPartialShieldSeconds, neutralNone, d.TargetSerial, w.partialShieldOr(d.Value, defaultPartialShield))
-	case decision.InterventionSoftPenalty: // #1134 (#1103 Phase 3), shadow-only
-		return w.setGrant(doc, flagSoftPenaltyAction, neutralNone, d.TargetSerial, w.softPenaltyOr(d.Value, defaultSoftPenalty))
-	default:
-		return fmt.Errorf("unknown per-player intervention %q", d.Intervention)
+		return w.putPlayer(ctx, d, flagShieldSeconds, player, w.numOr(d.Value, defaultShieldSeconds))
+	case decision.InterventionPartialShield: // #1129, shadow-only
+		return w.putPlayer(ctx, d, flagPartialShieldSeconds, player, w.partialShieldOr(d.Value, defaultPartialShield))
+	case decision.InterventionSoftPenalty: // #1134, shadow-only
+		return w.putPlayer(ctx, d, flagSoftPenaltyAction, player, w.softPenaltyOr(d.Value, defaultSoftPenalty))
 	}
+	return fmt.Errorf("unknown intervention %q", d.Intervention)
 }
 
-// setEdge writes an edge-triggered flag: overwrite the "active" variant with
-// "<nonce>:<payload>" ("<nonce>" alone when payload is empty) and flip
-// defaultVariant to it. A fresh nonce per call guarantees the reader sees a
-// change and applies exactly once.
-func (w *Writer) setEdge(doc *orderedDoc, flagKey, payload string) error {
-	f, err := doc.flag(flagKey)
-	if err != nil {
-		return err
-	}
-	value := w.nonce.next()
-	if payload != "" {
-		value += ":" + payload
-	}
-	if err := setVariant(f, activeVariant, value); err != nil {
-		return err
-	}
-	if err := f.set("defaultVariant", activeVariant); err != nil {
-		return err
-	}
-	return doc.putFlag(flagKey, f)
+func (w *Writer) put(ctx context.Context, d decision.Decision, flag string, scope flagservice.Scope, value any) error {
+	_, err := w.svc.Put(ctx, FlagSetInterventions, flag, flagservice.Write{
+		Value: value, Scope: scope, Writer: writerLabel, Reason: d.Intervention,
+	})
+	return err
 }
 
-// setState writes a session-scoped state-shaped flag: overwrite the "active"
-// variant with the typed value and flip defaultVariant to it.
-func (w *Writer) setState(doc *orderedDoc, flagKey string, value float64) error {
-	f, err := doc.flag(flagKey)
-	if err != nil {
-		return err
+func (w *Writer) putPlayer(ctx context.Context, d decision.Decision, flag string, scope flagservice.Scope, value any) error {
+	if scope.Serial == "" {
+		return fmt.Errorf("targeted intervention on %q requires a target serial", flag)
 	}
-	if err := setVariant(f, activeVariant, value); err != nil {
-		return err
-	}
-	if err := f.set("defaultVariant", activeVariant); err != nil {
-		return err
-	}
-	return doc.putFlag(flagKey, f)
+	return w.put(ctx, d, flag, scope, value)
 }
 
-// setStateString writes a session-scoped STRING state-shaped flag (#766 F6
-// pacing_profile): overwrite the "active" variant with the string value and flip
-// defaultVariant to it. Mirrors setState but for string-typed flags.
-func (w *Writer) setStateString(doc *orderedDoc, flagKey, value string) error {
-	f, err := doc.flag(flagKey)
-	if err != nil {
-		return err
+func (w *Writer) post(ctx context.Context, d decision.Decision, flag string, payload map[string]any) error {
+	if s, ok := payload["serial"]; ok && s == "" && flag != flagControllerEffect {
+		return fmt.Errorf("one-shot intervention on %q requires a target serial", flag)
 	}
-	if err := setVariant(f, activeVariant, value); err != nil {
-		return err
-	}
-	if err := f.set("defaultVariant", activeVariant); err != nil {
-		return err
-	}
-	return doc.putFlag(flagKey, f)
-}
-
-// setTargeted writes a per-player state-shaped flag via a flagd targeting
-// if-ladder keyed on targetingKey=serial. Each driven serial gets its own
-// value-bearing variant ("agent_<serial>"); the if-ladder maps serial -> that
-// variant, and unmatched serials fall through to defaultVariant (the neutral
-// variant). Existing per-serial variants and ladder branches are preserved, so
-// driving a second player does not disturb the first.
-func (w *Writer) setTargeted(doc *orderedDoc, flagKey, neutral, serial string, value float64) error {
-	if serial == "" {
-		return fmt.Errorf("targeted intervention on %q requires a target serial", flagKey)
-	}
-	f, err := doc.flag(flagKey)
-	if err != nil {
-		return err
-	}
-
-	// Read existing per-serial variant->value mapping so we merge, not clobber.
-	variants := map[string]float64{}
-	if _, err := f.get("variants", &variants); err != nil {
-		return err
-	}
-	variants[serialVariant(serial)] = value
-	if err := f.set("variants", variants); err != nil {
-		return err
-	}
-
-	// Rebuild the deterministic if-ladder from every agent_<serial> variant.
-	ladder := buildTargeting(variants, neutral)
-	if ladder == nil {
-		// No agent-driven serials remain: drop targeting entirely.
-		f.delete("targeting")
-	} else if err := f.set("targeting", ladder); err != nil {
-		return err
-	}
-	if err := f.set("defaultVariant", neutral); err != nil {
-		return err
-	}
-	return doc.putFlag(flagKey, f)
-}
-
-// setGrant writes a per-player one-shot GRANT (UC-040 BR-012, #1313): the
-// player's previous variant is replaced by a fresh "agent_<serial>#<nonce>"
-// carrying value (number or string), and the if-ladder maps the serial to it.
-// The fresh variant makes every decision a distinct change for that one player
-// (even with the same value), and replacing keeps one entry per player, so the
-// list never accumulates per-decision variants. Other players' entries are
-// untouched; the coordinator does not re-grant them because their variant did
-// not change.
-func (w *Writer) setGrant(doc *orderedDoc, flagKey, neutral, serial string, value any) error {
-	if serial == "" {
-		return fmt.Errorf("targeted intervention on %q requires a target serial", flagKey)
-	}
-	f, err := doc.flag(flagKey)
-	if err != nil {
-		return err
-	}
-	variants := map[string]any{}
-	if _, err := f.get("variants", &variants); err != nil {
-		return err
-	}
-	dropSerialVariants(variants, serial)
-	variants[grantVariant(serial, w.nonce.next())] = value
-	if err := f.set("variants", variants); err != nil {
-		return err
-	}
-	if err := setLadder(f, variantNames(variants), neutral); err != nil {
-		return err
-	}
-	return doc.putFlag(flagKey, f)
+	_, err := w.svc.Post(ctx, FlagSetInterventions, flag, flagservice.Event{
+		Scope: flagservice.Scope{GameID: d.GameID}, Payload: payload,
+		Writer: writerLabel, Reason: d.Intervention,
+	})
+	return err
 }
 
 // partialShieldOr validates a partial_shield directive "<seconds>" or
@@ -760,146 +410,4 @@ func (w *Writer) numOr(v string, def float64) float64 {
 		return def
 	}
 	return n
-}
-
-// writeInPlace overwrites the file at the same path WITHOUT temp+rename. Rename
-// over a docker bind mount that flagd is watching fails with EBUSY; an in-place
-// truncate+write is the proven admin-mode pattern (lib/flag_config_writer.py).
-func (w *Writer) writeInPlace(data []byte) error {
-	f, err := os.OpenFile(w.path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o644)
-	if err != nil {
-		return fmt.Errorf("open interventions file for write: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write interventions file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close interventions file: %w", err)
-	}
-	return nil
-}
-
-// setVariant overwrites the named variant with value (number or string).
-func setVariant(f *flagObj, name string, value any) error {
-	variants := map[string]any{}
-	if _, err := f.get("variants", &variants); err != nil {
-		return err
-	}
-	variants[name] = value
-	return f.set("variants", variants)
-}
-
-// serialVariant is the variant name for a per-player targeted value.
-func serialVariant(serial string) string { return "agent_" + serial }
-
-// buildTargeting renders a flagd targeting block: a JsonLogic if-ladder mapping
-// targetingKey==serial -> the serial's variant. Branches are emitted in sorted
-// serial order for deterministic output. Returns nil when no agent_<serial>
-// variants exist (targeting should be removed). The trailing else is neutral,
-// so unmatched serials evaluate to defaultVariant anyway — explicit neutral
-// keeps the ladder self-describing.
-func buildTargeting(variants map[string]float64, neutral string) map[string]any {
-	names := make([]string, 0, len(variants))
-	for name := range variants {
-		names = append(names, name)
-	}
-	return buildTargetingNames(names, neutral)
-}
-
-// buildTargetingNames is the value-type-agnostic core of buildTargeting: it
-// renders the deterministic if-ladder from the set of "agent_<serial>" variant
-// NAMES (value type irrelevant — the ladder maps serial -> variant name). Used by
-// by setTargeted (levels) and setGrant (grants, #1313).
-func buildTargetingNames(variantNames []string, neutral string) map[string]any {
-	// serial -> its variant name: "agent_<serial>" for a level, or the grant's
-	// "agent_<serial>#<nonce>" (one per serial, setGrant replaces).
-	names := append([]string(nil), variantNames...)
-	sort.Strings(names)
-	bySerial := map[string]string{}
-	for _, name := range names {
-		if s, ok := agentSerial(name); ok {
-			bySerial[s] = name
-		}
-	}
-	if len(bySerial) == 0 {
-		return nil
-	}
-	serials := make([]string, 0, len(bySerial))
-	for s := range bySerial {
-		serials = append(serials, s)
-	}
-	sort.Strings(serials)
-
-	// flagd's "if" is [cond1, then1, cond2, then2, ..., else]. Build it nested:
-	// if(eq(key,s0), v0, if(eq(key,s1), v1, ... neutral)).
-	expr := any(neutral)
-	for i := len(serials) - 1; i >= 0; i-- {
-		s := serials[i]
-		expr = map[string]any{
-			"if": []any{
-				map[string]any{"===": []any{map[string]any{"var": "targetingKey"}, s}},
-				bySerial[s],
-				expr,
-			},
-		}
-	}
-	m, ok := expr.(map[string]any)
-	if !ok {
-		// Single neutral string (no serials) — unreachable given the guard above.
-		return nil
-	}
-	return m
-}
-
-// agentSerial extracts the serial from an "agent_<serial>" (level) or
-// "agent_<serial>#<nonce>" (grant) variant name.
-func agentSerial(variant string) (string, bool) {
-	rest, ok := strings.CutPrefix(variant, "agent_")
-	if !ok {
-		return "", false
-	}
-	serial, _, _ := strings.Cut(rest, grantSep)
-	if serial == "" {
-		return "", false
-	}
-	return serial, true
-}
-
-// grantSep separates the serial from the per-decision nonce in a grant variant
-// name. Serials (controller MACs, MOCKnnnn) never contain it.
-const grantSep = "#"
-
-// grantVariant is the variant name of one per-player grant decision (#1313).
-func grantVariant(serial, nonce string) string { return serialVariant(serial) + grantSep + nonce }
-
-// dropSerialVariants removes every variant of serial (level or grant) from
-// variants.
-func dropSerialVariants(variants map[string]any, serial string) {
-	for name := range variants {
-		if s, ok := agentSerial(name); ok && s == serial {
-			delete(variants, name)
-		}
-	}
-}
-
-// variantNames lists the keys of a variants map.
-func variantNames(variants map[string]any) []string {
-	names := make([]string, 0, len(variants))
-	for name := range variants {
-		names = append(names, name)
-	}
-	return names
-}
-
-// setLadder rebuilds the serial if-ladder from the variant names (dropping the
-// targeting block when no agent-driven serials remain) and points
-// defaultVariant at neutral.
-func setLadder(f *flagObj, names []string, neutral string) error {
-	if ladder := buildTargetingNames(names, neutral); ladder == nil {
-		f.delete("targeting")
-	} else if err := f.set("targeting", ladder); err != nil {
-		return err
-	}
-	return f.set("defaultVariant", neutral)
 }

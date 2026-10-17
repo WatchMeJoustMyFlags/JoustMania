@@ -1583,7 +1583,7 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 12,
+        "w": 10,
         "x": 6,
         "y": 59
       },
@@ -1654,8 +1654,8 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 6,
-        "x": 18,
+        "w": 4,
+        "x": 16,
         "y": 59
       },
       "id": 24,
@@ -1685,6 +1685,70 @@
         }
       ],
       "title": "Agent Write Errors (1h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Agent flag writes the flag service refused in the last hour (flagservice_writes_total{result=\"rejected\"} on the interventions, rollout and game sets): out of bounds, game not live, read-only flag. Replaces the flag-file corruption panel (#1417).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 20,
+        "y": 59
+      },
+      "id": 36,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(flagservice_writes_total{result=\"rejected\", flag_set=~\"interventions|rollout|game\"}[1h])) or vector(0)",
+          "legendFormat": "rejected writes",
+          "refId": "A"
+        }
+      ],
+      "title": "Rejected Agent Writes (1h)",
       "type": "stat"
     },
     {

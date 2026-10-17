@@ -13,7 +13,7 @@ import (
 // proposer_gate_test.go covers the #1270 gates on the post-game proposer: the
 // `enabled` kill switch and `experiments_enabled` (ProposerConfig.Permit), and the
 // shared LLM call gate (SetLLMAdmission). "Agent off" must be total: no model call,
-// no budget slot, no game.json write.
+// no budget slot, no experiment write.
 
 // allowPropose is the always-on Permit for tests that exercise the propose path
 // itself rather than the kill switch.
@@ -23,7 +23,7 @@ func denyPropose(reason string) func(context.Context) (bool, string) {
 	return func(context.Context) (bool, string) { return false, reason }
 }
 
-const validReply = `{"flag":"death_grace_period_seconds","value":0.75,"rationale":"longer grace"}`
+const validReply = `{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace"}`
 
 // fakeAdmission is a scripted experiment.LLMAdmission recording its calls.
 type fakeAdmission struct {
@@ -61,7 +61,7 @@ func TestProposeOnce_KillSwitchOrExperimentsOffDoesNothing(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := &fakeProposerBackend{response: validReply}
-			p, path, rec, _ := proposerWithRecorder(t, backend)
+			p, svc, rec, _ := proposerWithRecorder(t, backend)
 			adm := &fakeAdmission{ok: true}
 			p.SetLLMAdmission(adm)
 
@@ -78,8 +78,8 @@ func TestProposeOnce_KillSwitchOrExperimentsOffDoesNothing(t *testing.T) {
 			if adm.calls() != 0 {
 				t.Fatalf("LLM admissions = %d, want 0 (agent off must not charge the budget)", adm.calls())
 			}
-			if _, ok := experimentVariantValue(t, path, "death_grace_period_seconds"); ok {
-				t.Fatal("agent off must not write game.json")
+			if _, ok := experimentVariantValue(t, svc, "death_grace_period_seconds"); ok {
+				t.Fatal("agent off must not write an experiment")
 			}
 			if spanExists(rec, SpanProposeAttempt) || spanExists(rec, SpanProposed) {
 				t.Fatal("agent off must emit no propose / gate span")
@@ -106,7 +106,7 @@ func TestProposeOnce_DisabledCycleDoesNotAdvanceCadence(t *testing.T) {
 }
 
 // The kill switch is re-read right before the write: a flip to off while the model
-// call is in flight still prevents the game.json write, and the reason lands on the
+// call is in flight still prevents the experiment write, and the reason lands on the
 // attempt span.
 // UC: UC-042 A5 BR-002
 // UC: UC-045 BR-002
@@ -114,7 +114,7 @@ func TestProposeOnce_SwitchedOffDuringInferenceDoesNotWrite(t *testing.T) {
 	var on atomic.Bool
 	on.Store(true)
 	backend := &switchingBackend{response: validReply, onInfer: func() { on.Store(false) }}
-	p, path, rec, _ := proposerWithRecorder(t, backend)
+	p, svc, rec, _ := proposerWithRecorder(t, backend)
 
 	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{
 		Engine: "claude",
@@ -132,8 +132,8 @@ func TestProposeOnce_SwitchedOffDuringInferenceDoesNotWrite(t *testing.T) {
 	if res.Proposal == nil || res.Proposal.FlagKey != "death_grace_period_seconds" {
 		t.Fatalf("dropped proposal = %+v, want the decoded proposal returned for telemetry", res.Proposal)
 	}
-	if _, ok := experimentVariantValue(t, path, "death_grace_period_seconds"); ok {
-		t.Fatal("a kill switch flipped during inference must prevent the game.json write")
+	if _, ok := experimentVariantValue(t, svc, "death_grace_period_seconds"); ok {
+		t.Fatal("a kill switch flipped during inference must prevent the experiment write")
 	}
 	if spanExists(rec, SpanProposed) {
 		t.Fatal("Gate.Review must not run after the kill switch flipped")
@@ -159,7 +159,7 @@ func (b *switchingBackend) Infer(context.Context, llm.Prompt) (string, error) {
 // UC: UC-042 A2 BR-002
 func TestProposeOnce_LLMAdmissionRefusedSkipsCall(t *testing.T) {
 	backend := &fakeProposerBackend{response: validReply}
-	p, path, rec, _ := proposerWithRecorder(t, backend)
+	p, svc, rec, _ := proposerWithRecorder(t, backend)
 	adm := &fakeAdmission{ok: false, reason: "llm_budget_exhausted"}
 	p.SetLLMAdmission(adm)
 	cfg := ProposerConfig{Engine: "claude", MinInterval: time.Hour, Permit: allowPropose, GameKind: "real"}
@@ -171,8 +171,8 @@ func TestProposeOnce_LLMAdmissionRefusedSkipsCall(t *testing.T) {
 	if backend.calls != 0 {
 		t.Fatalf("Infer calls = %d, want 0", backend.calls)
 	}
-	if _, ok := experimentVariantValue(t, path, "death_grace_period_seconds"); ok {
-		t.Fatal("a gated cycle must not write game.json")
+	if _, ok := experimentVariantValue(t, svc, "death_grace_period_seconds"); ok {
+		t.Fatal("a gated cycle must not write an experiment")
 	}
 	if spanExists(rec, SpanProposeAttempt) {
 		t.Fatal("a gated cycle emits no attempt span (like a budget-gated retro)")

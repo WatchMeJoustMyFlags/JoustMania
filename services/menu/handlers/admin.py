@@ -30,6 +30,7 @@ from opentelemetry import trace
 from lib.colors import Colors
 from lib.controller_constants import ButtonTrackingKey
 from lib.feature_flags import read_float_flag
+from lib.flag_service_writer import match_variant, variant_value
 from lib.telemetry import SpanAttr
 from lib.types import Sound
 from services.menu.handlers.base import ButtonDebouncer, ControllerState
@@ -940,7 +941,7 @@ class AdminModeHandler:
         """
         Handle sensitivity cycling in admin mode.
 
-        Cycles through sensitivity variants via FlagConfigWriter.
+        Cycles through sensitivity variants via the flag service (FlagServiceWriter).
 
         Args:
             serial: Controller serial number
@@ -965,8 +966,7 @@ class AdminModeHandler:
                 # actually write baseline medium->fast — incoherent. The passive
                 # display path (viewing the option) still uses _effective_variant
                 # to show the truthful effective value, incl. override (#818).
-                old_variant = writer.get_current_variant("sensitivity")
-                new_variant = writer.cycle_variant("sensitivity", forward=True)
+                old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, "sensitivity", True)
 
                 if new_variant is None:
                     logger.warning("Failed to cycle sensitivity variant")
@@ -1052,7 +1052,7 @@ class AdminModeHandler:
         """
         Handle instruction toggle in admin mode.
 
-        Toggles instruction display on/off via FlagConfigWriter.
+        Toggles instruction display on/off via the flag service (FlagServiceWriter).
 
         Args:
             serial: Controller serial number
@@ -1068,8 +1068,9 @@ class AdminModeHandler:
 
             try:
                 writer = self._state_manager.user_prefs_writer
-                old_variant = writer.get_current_variant("game_instructions")
-                new_variant = writer.cycle_variant("game_instructions", forward=True)
+                old_variant, new_variant = await asyncio.to_thread(
+                    self._cycle_baseline, writer, "game_instructions", True
+                )
 
                 if new_variant is None:
                     logger.warning("Failed to cycle game_instructions variant")
@@ -1149,7 +1150,7 @@ class AdminModeHandler:
         """
         Increase the value of the current admin option.
 
-        Cycles through flag variants via FlagConfigWriter.
+        Cycles through flag variants via the flag service (FlagServiceWriter).
 
         Args:
             serial: Controller serial number
@@ -1173,8 +1174,7 @@ class AdminModeHandler:
                 # being changed), captured before the mutation — NOT the effective
                 # value, which may be an agent override (#818). Passive display
                 # uses _effective_variant for the truthful effective value.
-                old_variant = writer.get_current_variant(option_name)
-                new_variant = writer.cycle_variant(option_name, forward=True)
+                old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, option_name, True)
 
                 if new_variant is None:
                     logger.warning(f"Failed to cycle variant for {option_name}")
@@ -1202,7 +1202,7 @@ class AdminModeHandler:
         """
         Decrease the value of the current admin option.
 
-        Cycles through flag variants backward via FlagConfigWriter.
+        Cycles through flag variants backward via the flag service (FlagServiceWriter).
 
         Args:
             serial: Controller serial number
@@ -1226,8 +1226,7 @@ class AdminModeHandler:
                 # being changed), captured before the mutation — NOT the effective
                 # value, which may be an agent override (#818). Passive display
                 # uses _effective_variant for the truthful effective value.
-                old_variant = writer.get_current_variant(option_name)
-                new_variant = writer.cycle_variant(option_name, forward=False)
+                old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, option_name, False)
 
                 if new_variant is None:
                     logger.warning(f"Failed to cycle variant backward for {option_name}")
@@ -1251,6 +1250,11 @@ class AdminModeHandler:
             except Exception as e:
                 logger.error(f"Error decreasing admin value: {e}", exc_info=True)
 
+    @staticmethod
+    def _cycle_baseline(writer, flag_key: str, forward: bool) -> tuple[str | None, str | None]:
+        """(baseline variant before, variant after) one cycle step. Blocking: run via to_thread."""
+        return writer.get_current_variant(flag_key), writer.cycle_variant(flag_key, forward=forward)
+
     def _effective_variant(self, option_name: str) -> str | None:
         """
         Resolve the EFFECTIVE variant for a game.json option through flagd (#818).
@@ -1267,22 +1271,13 @@ class AdminModeHandler:
         Args:
             option_name: game.json flag key
 
+        Blocking (one flag-service read plus a flagd resolve): run via to_thread.
+
         Returns:
             Effective variant name, or the on-disk default on fallback.
         """
-        writer = self._state_manager.game_settings_writer
-        file_variant = writer.get_current_variant(option_name)
-
-        # Sensitivity is the one option the agent actively contends for: its
-        # global_sensitivity_override (interventions.json) overwrites the live
-        # game.sensitivity in place (docs/OWNERSHIP_MODEL.md §4.1). The game.json
-        # flag still reflects the human baseline, so to show the operator the
-        # value the game is ACTUALLY using we consult the override first. A
-        # value < 0 ("none") means no override -> fall through to the baseline.
-        if option_name == "sensitivity":
-            override = self._agent_sensitivity_override()
-            if override is not None:
-                return override
+        view = self._state_manager.game_settings_writer.get_flag_view(option_name)
+        file_variant = view.get("effective_default") if view else None
 
         client = getattr(self._state_manager, "game_settings_client", None)
         if client is None:
@@ -1291,39 +1286,14 @@ class AdminModeHandler:
         try:
             # Use the on-disk default's value as the resolution fallback so a
             # provider miss returns the file value unchanged.
-            default_value = writer.get_variant_value(option_name, file_variant) if file_variant else None
+            default_value = variant_value(view, file_variant)
             resolved = self._resolve_flag_value(client, option_name, default_value)
             if resolved is None:
                 return file_variant
-            matched = writer.match_variant_for_value(option_name, resolved)
-            return matched or file_variant
+            return match_variant(view, resolved) or file_variant
         except Exception as e:
             logger.debug(f"Effective-variant resolution failed for '{option_name}': {e}")
             return file_variant
-
-    def _agent_sensitivity_override(self) -> str | None:
-        """Return the agent's active sensitivity override as a variant name (#818).
-
-        Reads ``global_sensitivity_override`` from the interventions domain. The
-        flag's variant names match the game.json ``sensitivity`` variant names
-        1:1 (ultra_slow..ultra_fast), with ``none`` = -1 meaning "no override".
-        Returns the matching sensitivity variant name when an override is active,
-        else ``None`` (no override / no client / read error -> caller falls back
-        to the human baseline).
-        """
-        client = getattr(self._state_manager, "interventions_client", None)
-        if client is None:
-            return None
-        try:
-            value = client.get_integer_value("global_sensitivity_override", -1)
-            if value is None or value < 0:
-                return None
-            # Map the override integer back to a sensitivity variant name.
-            value_to_variant = {0: "ultra_slow", 1: "slow", 2: "medium", 3: "fast", 4: "ultra_fast"}
-            return value_to_variant.get(value)
-        except Exception as e:
-            logger.debug(f"agent sensitivity override read failed: {e}")
-            return None
 
     @staticmethod
     def _resolve_flag_value(client, flag_key: str, default):
@@ -1382,10 +1352,10 @@ class AdminModeHandler:
             span.set_attribute(SpanAttr.ADMIN_OPTION, AGENT_CONTROL_OPTION)
 
             try:
-                old_level = self._current_agent_level()
+                old_level = await asyncio.to_thread(self._current_agent_level)
                 new_level = self._next_agent_level(old_level, forward=forward)
 
-                if not writer.update_default_variant(AGENT_POLICY_FLAG, new_level):
+                if not await asyncio.to_thread(writer.update_default_variant, AGENT_POLICY_FLAG, new_level):
                     logger.warning(f"Failed to write agent policy '{new_level}'")
                     return
 
@@ -1436,10 +1406,11 @@ class AdminModeHandler:
 
         Prefers the live flagd value (agent-domain client) so the cycle advances
         from what the agent is actually using; falls back to the on-disk
-        defaultVariant.
+        defaultVariant. Blocking (one flag-service read plus a flagd resolve):
+        run via to_thread.
         """
-        writer = self._state_manager.agent_settings_writer
-        file_level = writer.get_current_variant(AGENT_POLICY_FLAG)
+        view = self._state_manager.agent_settings_writer.get_flag_view(AGENT_POLICY_FLAG)
+        file_level = view.get("effective_default") if view else None
 
         client = getattr(self._state_manager, "agent_settings_client", None)
         if client is None:
@@ -1449,10 +1420,9 @@ class AdminModeHandler:
             # so resolve it with the string getter and match the string value back
             # to a variant name. Reading it via get_object_value would TYPE_MISMATCH
             # to the passed default and break the live-level reconciliation.
-            default_value = writer.get_variant_value(AGENT_POLICY_FLAG, file_level) if file_level else ""
+            default_value = variant_value(view, file_level) if file_level else ""
             resolved = self._resolve_flag_value(client, AGENT_POLICY_FLAG, default_value)
-            matched = writer.match_variant_for_value(AGENT_POLICY_FLAG, resolved)
-            return matched or file_level
+            return match_variant(view, resolved) or file_level
         except Exception as e:
             logger.debug(f"Agent level resolution failed: {e}")
             return file_level

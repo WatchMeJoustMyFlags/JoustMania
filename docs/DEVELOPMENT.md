@@ -104,9 +104,10 @@ docker compose up -d
 > Or set `IMAGE_TAG=latest` in your local `.env` (don't commit this change).
 
 > **Controller backend:** the stack reads real PS Move controllers through `rust-hid`, the default
-> Bluetooth backend (`backend=rust` in `services/flagd/controller.json`). `python-hid` is opt-in only:
-> `docker compose --profile python-hid up -d` (or `COMPOSE_PROFILES=python-hid`) plus a `backend` variant
-> naming `python`. See [controller-backends.md](architecture/controller-backends.md#python-hid-is-opt-in-1371).
+> Bluetooth backend (`backend=rust` in the read-only baseline `services/flagd/controller.json`). `python-hid`
+> is opt-in only: `docker compose --profile python-hid up -d` (or `COMPOSE_PROFILES=python-hid`) plus a
+> `backend` variant naming `python`. `backend` is not in the flag service's mutable registry, so that is a
+> reviewed baseline edit followed by `scripts/flags.sh restart` (restarts flag-service, then flagd). See [controller-backends.md](architecture/controller-backends.md#python-hid-is-opt-in-1371).
 > Without hardware, use `make up-mock` (`backend=mock`).
 
 ### 4. Verify Services
@@ -484,6 +485,8 @@ JoustMania/
 │   ├── menu/
 │   ├── audio/
 │   ├── dashboard/          # Web UI + reverse proxy
+│   ├── flag-service/       # Runtime flag state (Go), flagd's only sync source
+│   ├── flagd/              # Read-only baseline flag files
 │   └── grafana/            # Dashboards
 ├── tests/                   # Integration tests
 │   └── integration/

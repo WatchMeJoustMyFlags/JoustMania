@@ -55,12 +55,6 @@ type serverComponents struct {
 	// the static evictInterval (the test path).
 	evictIntervalSrc func() time.Duration
 
-	// pruner, when non-nil, is told after every eviction tick which partitions
-	// were removed, so it can prune retired games' per-player intervention entries
-	// and run the startup prune (UC-040 A25, #1323). Nil in tests that do not
-	// exercise it.
-	pruner evictObserver
-
 	// shadow, when non-nil, is invoked in its own ctx-bounded goroutine after the
 	// servers come up (the #778 shadow-game runner in production). Nil = no shadow
 	// game (tests, and the unset env default).
@@ -79,11 +73,6 @@ type serverComponents struct {
 	// behaves exactly as before. run() joins this goroutine on shutdown so it is
 	// leak-safe (the loop's own AbortAll tears experiments down on ctx cancel).
 	experiments func(context.Context)
-}
-
-// evictObserver is told the partitions each eviction tick removed.
-type evictObserver interface {
-	OnEvictTick(removed []string)
 }
 
 // effectiveEvictInterval returns the live eviction cadence when a source is wired
@@ -225,11 +214,8 @@ func (c *serverComponents) startEvictionLoop(ctx context.Context) <-chan struct{
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				removed := c.mux.EvictStale()
+				c.mux.EvictStale()
 				c.loops.Retain(partitionSet(c.mux.Partitions()))
-				if c.pruner != nil {
-					c.pruner.OnEvictTick(removed)
-				}
 				if c.pipe.infraStore != nil {
 					c.pipe.infraStore.EvictStale()
 				}

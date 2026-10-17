@@ -15,7 +15,7 @@
 ## Preconditions
 
 - The full stack runs with real controllers (the chaos adapter wraps only real adapters), the rust-hid service up, and controllers `A` … `F` connected on the python backend.
-- `bluetooth_backend` default variant `python` and `chaos_fault_type` = `none` in `controller.json`.
+- `bluetooth_backend` serves `python` and `chaos_fault_type` serves `none` (`GET /controller/bluetooth_backend`); the connect-proxy writes the `controller` set through the flag service (#1420).
 
 ## Flow
 
@@ -31,13 +31,13 @@
 
 ## Validation
 
-1. **Back to baseline**: `controller.json` holds `bluetooth_backend` default `python` without targeting, and `chaos_fault_type` = `none`.
+1. **Back to baseline**: the flag service holds no fraction overlay on either flag; `bluetooth_backend` serves `python` (the rollback's stack overlay) and `chaos_fault_type` serves `none`.
 
 ## Postconditions
 
-- `controller.json` is back to its precondition values; no other flag file changes.
+- The `controller` set serves its precondition values; no flag file changes (C-033).
 
 ## Automation
 
-- **Manual** (needs real controllers for the chaos adapter). The `/canary/*` handlers are tested in `services/connect-proxy/canary_test.go` (#1388); the `/chaos/*` handlers are untested (#1364).
+- **Manual** (needs real controllers for the chaos adapter). The connect-proxy handlers are unit-tested against a fake flag service (`services/connect-proxy/canary_test.go`: full and fractional canary, rollback, chaos set and reset, status, refusals and outages), run in its image build.
 - Contract-level coverage (no live stack, no controllers): `tests/contract/test_envoy_routing.py` checks the envoy routes for `/grafana/` and `/chaos/` (steps 3, 5, 6; `/canary/` has no envoy route, so steps 1 and 7 call the connect-proxy from inside the network, UC-052 A2).

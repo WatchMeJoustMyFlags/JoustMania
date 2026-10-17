@@ -30,13 +30,16 @@ flowchart LR
     otel -->|fan-out| agent
     otel --> obs
     flagd[(flagd)] -.flags.-> cm & gc & menu & audio & pd & agent & rhid
+    envoy -->|/flags/| fsvc[flag-service]
+    fsvc -->|sync stream| flagd
+    agent & menu & cproxy & gc -->|HTTP writes| fsvc
 ```
 
 Dependencies (start-up, from `depends_on` and code): audio, python-hid, rust-hid and flagd have no application
 dependencies; the controller manager waits for flagd and for rust-hid and python-hid to be healthy (compose
 `depends_on`) and talks to both HID adapters over gRPC; the game coordinator calls the controller manager and
 audio, and the menu calls the controller manager, the game coordinator and audio (code only: in compose the
-coordinator and the menu wait only for flagd, the menu also for `flag-dir-init`); the agent depends only on flagd
+coordinator and the menu wait only for flagd); flagd waits for the flag service to be healthy and restarts with it; the agent depends only on flagd
 (and calls the game coordinator and the mock control API to run shadow games, the named exception in C-005).
 
 ## 2. Service catalog
@@ -48,23 +51,23 @@ coordinator and the menu wait only for flagd, the menu also for `flag-dir-init`)
 | rust-hid | Rust | 50058 gRPC | 50058 (for the host-networked pairing daemon) | HID access: PairingService + ControllerIOService. The default Bluetooth backend; in the full and the lite stack (UC-002 BR-003) | `services/rust-hid/` |
 | pairing-daemon | Python | 8002 `/healthz`, `POST /controllers/{address}/unpair` (host network, bound to `CONTROL_BIND`) | host network | USB pairing loop, Bluetooth monitor (RSSI metrics), unpair a controller (UC-005) | `services/pairing_daemon/` |
 | game-coordinator | Python | 50053 gRPC (compose also exposes 8000, but nothing listens there: metrics are pushed over OTLP) | 50053 via override | Game sessions (primary + shadow), game modes, death detection, events, interventions consumer | `services/game_coordinator/` |
-| menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode, flag writer for `game` / `user` / `agent.interventions_allowed` | `services/menu/` |
+| menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode; writes admin settings for `game` / `user` / `agent.interventions_allowed` to the flag service as persisted admin values | `services/menu/` |
 | audio | Python | 50056 gRPC | 50056 via override | Music with tempo (separate process, soxr), 8 effect channels (miniaudio), ALSA | `services/audio/` |
-| agent | Go | 4317 OTLP gRPC (receiver); 13134 HTTP `/healthz`, `/experiments` | no | Observe via OTLP, decide, write interventions / rollout / experiment targeting, run experiments and promotion | `services/agent/` |
-| connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*`, `/chaos/*` flag-file endpoints | `services/connect-proxy/` |
+| agent | Go | 4317 OTLP gRPC (receiver); 13134 HTTP `/healthz`, `/experiments` | no | Observe via OTLP, decide, write interventions / rollout / experiment arms / promotions through the flag service, run experiments and promotion | `services/agent/` |
+| connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*`, `/chaos/*` write the `controller` set through the flag service | `services/connect-proxy/` |
 | dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
-| flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Serve the flag files | `docker-compose.yml:79-122` |
+| flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
+| flag-service | Go | 50064 gRPC sync (flagd only), 8070 HTTP API | 8070 via override; `/flags/` through envoy | Runtime flag state in memory over the read-only baseline files; the only writer path for runtime flags (§7) | `services/flag-service/` |
 | otel-collector | custom contrib build | 4317 / 4318 OTLP | 4317 | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Loki, agent (the :8889 Prometheus exporter was removed in #1449) | `services/otel-collector/config.yaml` |
 | jaeger | 2.19.0 | 16686 UI, 4317 / 4318 OTLP | no | Trace store (badger, bounded TTL) | `services/jaeger/config.yaml` |
 | victoria-metrics | v1.144.0 | 8428 | no | The only metric store (remote write, 7 d); serves the Prometheus query API to Grafana, the dashboard and the tools. The Prometheus container was removed in #1449 | `docker-compose.yml:516-544` |
 | grafana | 13.0.2 | 3000 | no | Dashboards | `services/grafana/` |
 | loki | 3.7.2 | 3100 | no | Logs | `services/loki/config.yaml` |
-| flag-dir-init | busybox | none | no | One-shot: make the flag dir group-writable for the nonroot menu | `docker-compose.yml:65-76` |
 | agent-game-coordinator | Python (game-coordinator image) | 50053 gRPC, 8000 (`expose` only) | no | **Test-only** (profile `agent`, #1163): a dedicated game coordinator for the agent's experiment cohort-loop soak, so the suite's per-test `coordinator_idle` quiesce never wipes the agent's shadow games. Service name `agent-game-coordinator-service`; the overlay points the agent at it with `GAME_COORDINATOR_ADDR=agent-game-coordinator:50053`; shares flagd and the controller manager | `docker-compose.agent-coordinator.yml` (layered on `docker-compose.dry-run.yml` by `tests/integration/test_experiment_cohort_loop.py`) |
 
 Compose variants: `docker-compose.yml` (full), `.override.yml` (auto-loaded dev ports), `.lite.yml` (no
-observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318), `.ci.yml` (CI flag dir, profiles), `.ci-rust.yml`, `.dev.yml` (source mounts), `.dry-run.yml`
+observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318), `.ci.yml` (CI baseline dir for the flag service, profiles), `.ci-rust.yml`, `.dev.yml` (source mounts), `.dry-run.yml`
 (demo / experiment seed), `.decide-e2e.yml` (fake OpenAI server), `.agent-coordinator.yml`.
 
 **Traceability:** C-014, C-015, FR-085, NFR-020 / UC-035 / `docker-compose*.yml`, `services/envoy/envoy.yaml` / `tests/integration/conftest.py`.
@@ -227,12 +230,12 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 - Sessions: one primary (menu origin) + shadows; caps `max_concurrent_games` (8), `max_shadow_games` (4), `shadow_policy` (block); real starts preempt shadows (`servicer.py`: `_max_concurrent_games`, `_max_shadow_games`, `_shadow_policy`, `_preempt_shadow_sessions`, `_admit_session_locked`). Game ids `game_<12 hex>`.
 - Registry `_GAME_CLASSES` (`game_factory.py:_GAME_CLASSES`), 10 modes. Death detection in `games/base.py` (UC-030).
-- `InterventionManager` watches `interventions.json`, evaluates each flag per live session with `{targetingKey=serial, gameId}`, enforces allow-list → mode matrix → battery → global backstop, applies via difficulty / lifecycle handlers and emits `agent_intervention` + `game_interventions_total`. The `end_game` intervention ends only the session whose `game_id` it carries, through the same path as `ForceEndGame` with that `game_id` (UC-040 BR-011); per-player grant flags apply once per decision, per player (UC-040 BR-012). Threading: change detection, baselines and the enforcement chain run on the servicer's main loop; every handler side effect (apply, revert, agent cue) is handed to the owning session's `GameLoopDispatcher` (`game_loop_dispatch.py`), which runs it on that game's own thread loop (`GameSession.game_loop`, carried as `SessionView.loop`), where its audio / controller-manager clients and gameplay stream live, one at a time in decision order (each starts only after the previous one finished), awaited with a 5 s timeout. A started effect is never cancelled. An effect not started because the game loop is closed or stopping, or not started within 5 s, is not applied (`game_loop_unavailable` / `game_loop_timeout`); a started effect still running at 5 s has an unknown outcome (`game_loop_late`); both are counted in `game_intervention_dispatch_failures_total`. `end_game` stays on the main loop because force-end joins the game thread, and sends no agent cue (UC-040 BR-018, #1250).
+- `InterventionManager` re-evaluates the `interventions` set on every flagd configuration change, evaluates each flag per live session with `{targetingKey=serial, gameId}` (one-shots as the game's event list, applied once per seq, UC-053 BR-006), enforces allow-list → mode matrix → battery → global backstop, applies via difficulty / lifecycle handlers and emits `agent_intervention` + `game_interventions_total`. The `end_game` intervention ends only the session whose event list it is in, through the same path as `ForceEndGame` with that `game_id` (UC-040 BR-011); per-player grant flags apply once per decision, per player (UC-040 BR-012). Threading: change detection, baselines and the enforcement chain run on the servicer's main loop; every handler side effect (apply, revert, agent cue) is handed to the owning session's `GameLoopDispatcher` (`game_loop_dispatch.py`), which runs it on that game's own thread loop (`GameSession.game_loop`, carried as `SessionView.loop`), where its audio / controller-manager clients and gameplay stream live, one at a time in decision order (each starts only after the previous one finished), awaited with a 5 s timeout. A started effect is never cancelled. An effect not started because the game loop is closed or stopping, or not started within 5 s, is not applied (`game_loop_unavailable` / `game_loop_timeout`); a started effect still running at 5 s has an unknown outcome (`game_loop_late`); both are counted in `game_intervention_dispatch_failures_total`. `end_game` stays on the main loop because force-end joins the game thread, and sends no agent cue (UC-040 BR-018, #1250).
 
 ### menu
 
 - Service state STOPPED / RUNNING / GAME_STARTING; controller states CONNECTED / READY / ADMIN / IDLE (UC-010 to UC-014).
-- Writes flag files in place through `lib/flag_config_writer.py` (needs `flag-dir-init` for nonroot write access).
+- Writes admin settings through the flag service (`lib/flag_service_writer.py`, `"persist": true`, writer `menu`); it mounts no flag file.
 
 ### audio
 
@@ -250,7 +253,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 ### connect-proxy
 
-- No flagd client: `/canary/*` and `/chaos/*` rewrite `controller.json` directly (`FLAGD_CONFIG_PATH`).
+- No flagd client: `/canary/*` and `/chaos/*` change `bluetooth_backend` and `chaos_fault_type` through the flag service (`FLAG_SERVICE_URL`, writer `connect-proxy`, #1420): a full rollout is a stack overlay, `?fraction=N` a fraction overlay (`scope.fraction_percent`, the rest of the serials resolve the default, for a canary the stable counterpart), rollback / reset clear the overlays; `/canary/status` and `/chaos/status` return the flag service's view. A refusal keeps its 4xx, the flag service unreachable is 502. The proxy mounts no flag file.
 
 ### pairing-daemon
 
@@ -259,3 +262,117 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - Unpair one controller (UC-005) and stale-registration cleanup after a re-pair (UC-001 A5, BR-004) use the same module: `remove_controller_registrations(address, keep_adapter=None, require_psmove=True)` returns one `RemovalResult` per registration found (`removed`, `already_absent`, `failed`), removing through `clear_psmove_registrations`; the unpair takes the address's registrations only if one is a PS Move (then identity-less copies too, UC-005 BR-001), the re-pair cleanup matches by address alone (`require_psmove=False`). One `asyncio.Lock` serialises USB pairing (adapter selection through trust) and unpairs (409 when held). A controller unpaired while on USB is not paired again until it leaves USB or reappears under another HID device path, re-checked under the lock (UC-005 A8). rust-hid `GetUSBControllers` / `PairController` calls carry a 15 s gRPC deadline and the pair step a 20 s `asyncio.wait_for`. The HTTP port binds only to `CONTROL_BIND` (default `127.0.0.1`).
 
 **Traceability:** FR-001 to FR-008, FR-040, FR-053, FR-070 to FR-074, FR-123, FR-124, NFR-001 to NFR-003, NFR-018, C-011 / UC-001 to UC-003, UC-005, UC-040, UC-050 to UC-052 / service directories above / `services/*/tests/`, `tests/integration/`.
+
+## 7. Flag service (epic #1407)
+
+> Delivered in PR #1417. Use case [UC-053](../use_cases/UC-053.md); requirements FR-130 to FR-139,
+> NFR-050 to NFR-053, C-030 to C-033; design and decisions in
+> [architecture/flag-service.md](../architecture/flag-service.md).
+
+| Item | Value |
+|---|---|
+| Compose name | `flag-service` (Go, `services/flag-service/`), in every compose file that runs flagd (base, lite, ci, dry-run, decide-e2e, agent-coordinator) |
+| Ports | `50064` gRPC: `flagd.sync.v1.FlagSyncService` (flagd only). `8070` HTTP/JSON: the write and read API and `/healthz`. 50064 is not published; 8070 is published only on `127.0.0.1` by `docker-compose.override.yml` (tests and host scripts on the same machine, C-015); envoy routes `/flags/` to `flag-service:8070` with the prefix stripped |
+| Inputs | the eight baseline files `services/flagd/{system,controller,observability,game,user,agent,interventions,rollout}.json` (or `ci/`), an explicit list, mounted **read-only** and read once at start (FR-130); refuses to start on a duplicate flag key across sets |
+| State | in memory, except admin settings written with `"persist": true`: the state file `FLAG_SERVICE_STATE_FILE` (default `/var/lib/flag-service/admin.json`) on the stack's own `flag-service-state` volume, loaded over the baseline at start and rewritten atomically (temp file + rename) on each persisted change (C-030, FR-018). A corrupt file is moved aside to `admin.json.corrupt-<ts>` and the service starts from the baseline; stale entries are dropped with a warning ([architecture note §10.1](../architecture/flag-service.md#101-admin-persistence-re-review-n4)). Never `services/flagd/*.json` |
+| Config | `FLAG_SERVICE_SETS` (sets included in the sync payload; every stack lists all eight), `FLAG_SERVICE_MAX_GAMES` (live game scopes, default 64), `GOMEMLIMIT` (48MiB in compose), `FLAG_SERVICE_BASELINE_DIR`, `FLAG_SERVICE_BASELINE_FILES` (the explicit file list, default the eight set files), `FLAG_SERVICE_STATE_FILE`, `FLAG_SERVICE_REGISTRY` (default the image's `registry.yaml`), `FLAG_SERVICE_EVENT_LIST_LEN` (K, default 16), `FLAG_SERVICE_MAX_GAME_AGE` (default 1 h), `FLAG_SERVICE_EXPERIMENT_IDLE` (default 2 h: an experiment's arm values are dropped once no registered game has carried its id, and nobody wrote them, for this long), `FLAG_SERVICE_GRPC_PORT` (50064), `FLAG_SERVICE_HTTP_PORT` (8070) |
+| flagd wiring | one gRPC source `--uri grpc://flag-service:50064` and nothing else; `depends_on: flag-service: {condition: service_healthy, restart: true}`; no flagd `readyz` check (flagd #1985) |
+| Memory | limit 64 MiB (NFR-051) |
+| Authorization | none, by decision (local party game, architecture note D11) |
+
+### 7.1 `flagd.sync.v1.FlagSyncService` (server, for flagd)
+
+The upstream schema (`buf.build/open-feature/flagd`, `flagd/sync/v1/sync.proto`), implemented unchanged:
+
+| RPC | Behaviour |
+|---|---|
+| `SyncFlags(SyncFlagsRequest{provider_id, selector}) → stream SyncFlagsResponse{flag_configuration}` | Sends the merged configuration of every served set at once, then again after every accepted write, admin change or game-scope change. Every flag carries `metadata.flagSetId` (flagSetIds partition the flags, architecture note §5.2). An empty selector gets every served set; `flagSetId=<set>` (from the `flagd-selector` header or the body) gets that set only; an unknown selector key is `INVALID_ARGUMENT` (counted as `unknown_selector` in `flagservice_sync_rejected_total`; no alert rules, #1425); `flagSetId=<set>` naming a set that is not served is `INVALID_ARGUMENT` too (counted as `unknown_flag_set`). No `sync_context`. flagd opens **one** stream for all sets. |
+| `FetchAllFlags` | The current merged configuration, filtered like `SyncFlags`. |
+| `GetMetadata` | Deprecated upstream; `UNIMPLEMENTED`. |
+
+Keepalive: the server sends pings (`ServerParameters{Time: 30s, Timeout: 10s}`; flagd v0.16.0's sync client sets
+none) and allows client pings (`EnforcementPolicy{MinTime: 10s, PermitWithoutStream: true}`).
+
+### 7.2 HTTP/JSON API (resource-style)
+
+One endpoint per flag set: the flag set id and the flag name are the path. All bodies are JSON. A write is
+validated only against the mutable-flag registry ([flags.md §13](flags.md#13-mutable-flag-registry)), the game
+scope and the sync stream; there are no roles or tokens. `writer`, `decision_id` and `reason` are informational:
+they go on the write span and are never checked. Writers use a 500 ms deadline and fail closed.
+
+| Method and path | Purpose | Success |
+|---|---|---|
+| `GET /` | flag sets with their flag counts and whether each is served | 200 |
+| `GET /{flagSetId}` | every flag of the set: registry policy (mutable, kind, scope, bounds, persist), baseline and effective default, declared variants with their values, overlays (stack, persisted admin, real, fraction), scoped values | 200 |
+| `GET /{flagSetId}/{flagName}` | one flag's effective state (same fields), plus the rendered flagd JSON | 200 |
+| `PUT /{flagSetId}/{flagName}` | set a value in a scope (state, level, grant, overlay, experiment arm, fraction); `?dry_run=true` validates and renders the write without applying it and adds `rendered_before` / `rendered` (both computed under one lock; no persist) | 200 `WriteResult` |
+| `POST /{flagSetId}/{flagName}` | append one event to a game's event list (registry kind `event` only) | 200 `WriteResult` with `seq` |
+| `DELETE /{flagSetId}/{flagName}` | clear the value in the scope given by query parameters (`game_id`, `serial`, `experiment_id`, `arm`, `game_kind=real`, `fraction=true`); no scope = the in-memory stack overlay; `?persist=true` clears the persisted admin value instead (it returns to the baseline and leaves the state file). The persisted admin value is a layer under the in-memory overlay: clearing a stage or test overlay shows the host's setting again | 204 |
+| `DELETE /{flagSetId}?writer=stage` | clear every in-memory overlay (stack, real, fraction) of that writer label in the set (talk reset); persisted admin values stay (only `DELETE …?persist=true` removes one) | 204 |
+| `PUT /games/{gameId}` | register a game | 200 (`already_registered` on a repeat) |
+| `DELETE /games/{gameId}` | end a game: drop its scope and every value written for it | 204 |
+| `PUT /coordinators/{instance}/games` | reconcile one coordinator instance's live games; drops that instance's other games only | 200 with the dropped ids |
+| `GET /games` | registered game scopes | 200 |
+| `GET /state` | epoch, snapshot version, served sets, open sync streams (one per connected flagd), live games, overlay counts | 200 |
+| `GET /healthz` | baseline loaded and the gRPC listener up | 200 |
+
+`games`, `coordinators`, `state` and `healthz` are reserved and cannot be flag-set ids.
+
+**`PUT /{flagSetId}/{flagName}` body**
+
+```jsonc
+{
+  "variant": "jev",                       // one of: a declared variant name ...
+  "value": 5,                             // ... or a value within the registry bounds
+  "scope": {
+    "game_id": "game_0a1b2c3d4e5f",       // game-scoped write (registered game)
+    "serial": "MOCK0003",                 // player in that game (level, grant)
+    "experiment_id": "exp_42",            // experiment arm write (with arm)
+    "arm": "experimental",
+    "game_kind": "real",                  // promotion: the real default
+    "fraction_percent": 10                // controller canary / chaos: fractional on serial
+  },
+  "ttl_seconds": 600,                     // optional: overlay expires (not with persist)
+  "persist": true,                        // optional: admin setting, kept in the state file (registry must allow it)
+  "writer": "agent",                      // informational
+  "decision_id": "dec_7f3",               // informational
+  "reason": "grant_shield"                // informational
+}
+```
+
+Exactly one of `variant` and `value`. The scope must match the registry row's scope (flags.md §13): a
+`game+serial` flag needs `game_id` and `serial`, a `stack` flag takes no scope (or `game_kind: "real"` for a
+promotion), an `experiment+arm` flag needs both ids. `"persist": true` is allowed only on a stack overlay of a
+flag whose registry row says `persist: yes`, and never with `ttl_seconds`; without it a write stays in memory
+(the stage scripts, the harness and the tests never persist; the menu admin does).
+
+**`POST /{flagSetId}/{flagName}` body** (event flags: `end_game`, `eliminate_player`, `revive_player`,
+`audio_cue`, `controller_effect`): `{"scope": {"game_id": "..."}, "payload": {"serial": "MOCK0003"}, "writer",
+"decision_id", "reason"}`. The service appends `{"seq": n, "payload": ...}` to the game's list and keeps the last
+K; the flag resolves in that game to `{"epoch": "<boot id>", "seq": n, "events": [...]}`.
+
+**`WriteResult`**: `{"flag_set", "flag", "variant" (opaque, carries the epoch), "seq" (event writes), "epoch",
+"snapshot_version" (monotonic; flagd has it once the stream sent it), "persisted" (admin flags)}`.
+
+**`PUT /games/{gameId}` body**: `{"coordinator_instance": "<stable id: FLAG_SERVICE_INSTANCE, set in every compose stack (game-coordinator; agent-game-coordinator for the second coordinator); the same after a restart or a container recreate, so the new process's reconcile drops the previous process's games (A10). The hostname fallback is only for runs outside compose: a container's hostname is its id and changes on recreate>", "game_kind": "real" | "shadow",
+"serials": ["MOCK0001", ...], "experiment_id": "", "arm": ""}`. An unspecified kind is stored as is and never
+treated as real (FR-041). **`PUT /coordinators/{instance}/games` body**: `{"games": [<same objects>]}`.
+
+**Errors**: `{"error": "<reason>", "detail": "..."}`.
+
+| Status | Reason codes |
+|---|---|
+| 400 | `malformed` (bad JSON, both or neither of `variant` / `value`, scope does not fit the flag, `persist` on a flag or scope that cannot persist, `persist` with `ttl_seconds`) |
+| 404 | `unknown_flag_set`, `unknown_flag` |
+| 409 | `game_not_live` (game not registered or ended), `set_not_served` (the set is not in this stack's `FLAG_SERVICE_SETS`, so flagd would not see the write; every stack lists all eight), `too_many_games` (`PUT /games/{gameId}`, or a `PUT /coordinators/{instance}/games` reconcile, that would leave more than `FLAG_SERVICE_MAX_GAMES` live game scopes, default 64, NFR-051; a reconcile over the cap is rejected whole and changes nothing, it is never truncated), `experiment_unknown` (reserved for #1415; not raised before it) |
+| 422 | `flag_read_only` (no registry row), `out_of_bounds`, `serial_not_in_game` |
+| 503 | `no_sync_stream` (flagd has no open sync stream, so the write would not reach readers). The game lifecycle calls (`/games`, `/coordinators`) are exempt and never return it |
+
+**Callers**: the game coordinator (`PUT /games/{id}` awaited for at most 200 ms before the game is RUNNING,
+outside `_sessions_lock`; `DELETE` at retire; the reconcile call at its start, after a failed call, when the service's boot epoch changes (read from `GET /healthz` every 2 s and from every response) and every 15 s; a `DELETE` waits for a still-running `PUT` of the same game);
+the agent (interventions, rollout count, experiment arms, promotion; it retries `game_not_live` once after
+100 ms); the menu (admin settings, kill switch); the connect-proxy (canary, chaos); the stage scripts and the
+validation harness (`curl http://localhost/flags/...`); the integration fixtures.
+
+**Traceability:** FR-130 to FR-139, NFR-050 to NFR-053, C-030 to C-033 / UC-053 / `services/flag-service/`
+/ `services/flag-service/*/*_test.go`, `tests/integration/test_flag_service_*.py`, TC-018 to TC-020.

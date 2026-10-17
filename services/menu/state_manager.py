@@ -1,10 +1,11 @@
 """Controller state manager for the Menu service."""
 
+import asyncio
 import logging
 from collections.abc import Callable, Coroutine
 
 from lib.controller_constants import ButtonTrackingKey
-from lib.flag_config_writer import FlagConfigWriter
+from lib.flag_service_writer import FlagServiceWriter
 from lib.types import Games
 from services.menu import metrics
 from services.menu.handlers.base import ControllerHandler, ControllerState
@@ -26,14 +27,13 @@ class StateManager:
         self,
         led: LedController,
         audio: AudioHelper,
-        game_settings_writer: FlagConfigWriter,
-        user_prefs_writer: FlagConfigWriter,
+        game_settings_writer: FlagServiceWriter,
+        user_prefs_writer: FlagServiceWriter,
         publish_event: Callable[[str, dict], Coroutine],
         *,
-        agent_settings_writer: FlagConfigWriter | None = None,
+        agent_settings_writer: FlagServiceWriter | None = None,
         game_settings_client=None,
         agent_settings_client=None,
-        interventions_client=None,
         select_game_mode: Callable[..., Coroutine] | None = None,
     ):
         """
@@ -42,18 +42,15 @@ class StateManager:
         Args:
             led: LED controller utility
             audio: Audio helper utility
-            game_settings_writer: FlagConfigWriter for game.json
-            user_prefs_writer: FlagConfigWriter for user.json
+            game_settings_writer: flag-service writer for the game set
+            user_prefs_writer: flag-service writer for the user set
             publish_event: Async function to publish events
-            agent_settings_writer: FlagConfigWriter for agent.json (kill-switch, #819)
+            agent_settings_writer: flag-service writer for the agent set (kill-switch, #819)
             game_settings_client: OpenFeature client for the "game" domain, used to
                 resolve effective (agent-override-aware) values for the truthful
                 admin display (#818).
             agent_settings_client: OpenFeature client for the "agent" domain, used
                 to read the effective ``interventions_allowed`` level (#819).
-            interventions_client: read-only OpenFeature client for the
-                "interventions" domain, used to surface active agent overrides
-                (e.g. global_sensitivity_override) in the admin display (#818).
             select_game_mode: async ``(game_name, *, source, serial)`` callback that
                 applies a game-mode selection everywhere the menu reads it (the
                 servicer's ``current_selection``, this manager's mode, the persisted
@@ -67,7 +64,6 @@ class StateManager:
         self.agent_settings_writer = agent_settings_writer
         self.game_settings_client = game_settings_client
         self.agent_settings_client = agent_settings_client
-        self.interventions_client = interventions_client
         self.publish_event = publish_event
         self._select_game_mode = select_game_mode
 
@@ -333,7 +329,7 @@ class StateManager:
             return
 
         self.set_game_mode(game_mode)
-        self.user_prefs_writer.update_default_variant("current_game", game_mode.name)
+        await asyncio.to_thread(self.user_prefs_writer.update_default_variant, "current_game", game_mode.name)
         payload = {"game_name": game_mode.name, "source": source}
         if serial is not None:
             payload["serial"] = serial

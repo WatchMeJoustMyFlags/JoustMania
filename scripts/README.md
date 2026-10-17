@@ -35,6 +35,28 @@ scripts/
 
 ---
 
+## Runtime flags (flag service, epic #1407)
+
+Runtime flags change only through the flag service's HTTP API (envoy route
+`http://localhost/flags/`, `docs/specs/services.md` §7.2); the files in
+`services/flagd/` are the read-only baseline. No script writes a flag file.
+
+| Script | Purpose |
+|------|---------|
+| `flags.sh` | Generic client: `state`, `get`, `variant`, `set`, `set-value`, `clear`, `reset`, `restart` (flag service + flagd together) |
+| `flagservice.py` | The Python client the stage scripts share (standard library only) |
+| `agent-backend.sh` | `decision.*` flags (backend, model, thresholds, capture, effort) |
+| `agent-killswitch.sh` | The agent master switch `enabled` (on = overlay, off = baseline) |
+| `agent-dryrun-enable.sh` | `enabled` + `experiments_enabled` for a `make dry-run` |
+| `talk-stage.sh` | The talk's stage baseline, permissions beat and Bluetooth fallback (`writer=stage` overlays) |
+| `talk-preflight.sh` | Read-only pre-flight; reads the flag service (`GET /state`, `GET /agent`) |
+
+Every write is an in-memory overlay (never persisted; a flag-service restart
+returns to the baseline). The script tests (`scripts/tests/`) run against
+`scripts/tests/fake_flag_service.py`, which enforces the real flag registry.
+
+---
+
 ## Hardware Scripts
 
 Located in `scripts/hardware/` - Raspberry Pi specific.

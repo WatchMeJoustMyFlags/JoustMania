@@ -4,16 +4,16 @@ Flag value -> InterventionManager -> registered handler -> real game (#1422 step
 These tests replace the docker-compose scenarios of
 ``tests/integration/test_parallel_intervention_flow.py`` and
 ``tests/integration/test_f6_flow.py``. Those scenarios proved coordinator
-application logic (change detection, nonce exactly-once, revert paths, the
-allow-list and mode matrix) through the whole stack; the part only a real flagd
-can show (gameId / targetingKey scoping, in-place reloads) lives in the flagd
-contract tier (tests/contract/test_flagd_resolution.py).
+application logic (change detection, event lists applied exactly once, revert
+paths, the allow-list and mode matrix) through the whole stack; the scoping of
+values to one game is rendered by the flag service (Go tests in
+services/flag-service, integration TC-013).
 
 Each test wires the manager the way the servicer does: a ``get_sessions``
-seam returning one ``SessionView`` for a live game id, ``prime_session`` at game
-start (so a value already in a flag counts as consumed, UC-040 BR-006), and the
-handlers the servicer registers (``register_lifecycle_handlers`` /
-``register_difficulty_handlers``). It then drives ``evaluate_all()`` with an
+seam returning one ``SessionView`` for a live game id, and the handlers the
+servicer registers (``register_lifecycle_handlers`` /
+``register_difficulty_handlers``). One-shot flags are read as the game's event
+list ``{"epoch","seq","events"}`` (FR-137, UC-053 BR-006). It then drives ``evaluate_all()`` with an
 in-memory flag client against a real game object and asserts both the
 published ``agent_intervention`` events and the effect on the game.
 """
@@ -31,6 +31,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
 from conftest import MockControllerManagerService, async_noop
+from event_list_helpers import edge_event, edge_events, object_details
 from openfeature.flag_evaluation import FlagEvaluationDetails
 
 from lib.types import GameEvent
@@ -61,8 +62,9 @@ class PerSerialFlagClient:
     """In-memory interventions domain.
 
     A value is either a scalar (served to everyone) or a ``{serial: value}``
-    dict resolved by ``targeting_key`` like flagd's per-serial ladder; serials
-    without an entry get the caller's default (the neutral variant).
+    dict resolved by ``targeting_key`` like a per-player rung; serials without
+    an entry get the caller's default (the neutral variant). One-shot flags hold
+    an event list (``object_details``); absent, they serve the empty baseline.
     """
 
     def __init__(self, values=None):
@@ -86,6 +88,9 @@ class PerSerialFlagClient:
 
     def get_object_value(self, key, default, ctx=None):
         return self._resolve(key, default, ctx)
+
+    def get_object_details(self, key, default, ctx=None):
+        return object_details(key, self.values.get(key))
 
     def get_string_details(self, key, default, ctx=None):
         return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, ctx))
@@ -142,12 +147,10 @@ def make_ffa_game(num_players: int = 4) -> FFAGame:
 
 
 def make_manager(game, interventions=None, allowed: str = ALL_TYPES):
-    """A manager on the servicer's seam: one live session, primed at game start.
+    """A manager on the servicer's seam: one live session.
 
     ``get_sessions`` returns a ``SessionView`` for ``GAME_ID`` (a shadow-kind
-    view, as the servicer builds for a non-primary game) and ``prime_session``
-    records the current flag values as this game's baseline before anything is
-    evaluated, exactly as ``servicer._prime_session`` does when a game starts.
+    view, as the servicer builds for a non-primary game).
     """
     events = []
 
@@ -161,7 +164,6 @@ def make_manager(game, interventions=None, allowed: str = ALL_TYPES):
     mgr._rate_limiter.set_budget(1000.0)
     register_lifecycle_handlers(mgr)
     register_difficulty_handlers(mgr)
-    mgr.prime_session(GAME_ID, list(game.players))
     return mgr, events
 
 
@@ -189,33 +191,32 @@ def shipped_allow_list(variant: str, flag_dir: Path) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Edge flags: eliminate exactly once, a fresh nonce applies again
+# Event flags: eliminate exactly once, the next event applies
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="main", steps=[13], br=["BR-006"])
 @pytest.mark.uc("UC-020", flow="A3")
-async def test_eliminate_nonce_kills_once_and_fresh_nonce_kills_again():
-    """A nonce already in the flag when the game starts is consumed, not applied
-    (BR-006). A nonce written during the game kills once; the same nonce read
-    again does not kill again; a new nonce for another player does
-    (was _scenario_eliminate_exactly_once)."""
+async def test_eliminate_event_kills_once_and_next_event_kills_again():
+    """The empty baseline list applies nothing. An event appended during the
+    game kills once; the same list served again does not kill again; the list
+    [1, 2] kills the second player only (was _scenario_eliminate_exactly_once)."""
     game = make_ffa_game()
-    mgr, events = make_manager(game, {"eliminate_player": "stale:p3"})
+    mgr, events = make_manager(game)
 
-    await evaluate(mgr)  # the pre-game nonce is this game's baseline
+    await evaluate(mgr)  # no events for this game yet
     assert published(events, "eliminate_player") == []
-    assert game.players["p3"].alive is True
+    assert all(p.alive for p in game.players.values())
 
-    mgr._interventions_client.values["eliminate_player"] = "n1:p1"
+    mgr._interventions_client.values["eliminate_player"] = edge_event("eliminate_player", "p1", seq=1)
     await evaluate(mgr)
     assert game.players["p1"].alive is False
     assert len(published(events, "eliminate_player", blocked="false")) == 1
 
-    await evaluate(mgr)  # same nonce served again (a flagd reload)
+    await evaluate(mgr)  # the same list served again (another sync)
     assert len(published(events, "eliminate_player", blocked="false")) == 1
     assert game.players["p2"].alive is True
 
-    mgr._interventions_client.values["eliminate_player"] = "n2:p2"
+    mgr._interventions_client.values["eliminate_player"] = edge_events("eliminate_player", "p1", "p2")
     await evaluate(mgr)
     applied = published(events, "eliminate_player", blocked="false")
     assert [d["target"] for d in applied] == ["p1", "p2"]
@@ -259,9 +260,9 @@ async def test_revive_applies_in_respawn_mode():
     await game._initialize_players_impl(mock_cm.controllers)
     victim = next(iter(game.players))
     game.players[victim].alive = False
-    mgr, events = make_manager(game, {"revive_player": ""})  # no edge value at game start
+    mgr, events = make_manager(game)  # no events at game start
 
-    mgr._interventions_client.values["revive_player"] = f"n1:{victim}"
+    mgr._interventions_client.values["revive_player"] = edge_event("revive_player", victim, seq=1)
     await evaluate(mgr)
 
     revive = published(events, "revive_player")

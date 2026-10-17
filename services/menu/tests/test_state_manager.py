@@ -1,5 +1,6 @@
 """Unit tests for StateManager."""
 
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,13 +26,13 @@ def mock_audio():
 
 @pytest.fixture
 def mock_game_settings_writer():
-    """Create mock FlagConfigWriter for game_settings."""
+    """Create mock FlagServiceWriter for game_settings."""
     return MagicMock()
 
 
 @pytest.fixture
 def mock_user_prefs_writer():
-    """Create mock FlagConfigWriter for user_preferences."""
+    """Create mock FlagServiceWriter for user_preferences."""
     return MagicMock()
 
 
@@ -45,6 +46,26 @@ def mock_publish_event():
 def state_manager(mock_led, mock_audio, mock_game_settings_writer, mock_user_prefs_writer, mock_publish_event):
     """Create StateManager instance."""
     return StateManager(mock_led, mock_audio, mock_game_settings_writer, mock_user_prefs_writer, mock_publish_event)
+
+
+class TestSelectGameModeFallback:
+    """select_game_mode without a servicer callback persists through the flag service."""
+
+    @pytest.mark.asyncio
+    async def test_persists_off_the_event_loop_thread(self, state_manager, mock_user_prefs_writer):
+        from lib.types import Games
+
+        loop_thread = threading.get_ident()
+        write_threads = []
+        mock_user_prefs_writer.update_default_variant.side_effect = lambda *_a: write_threads.append(
+            threading.get_ident()
+        )
+
+        await state_manager.select_game_mode(Games.Tournament, source="controller")
+
+        mock_user_prefs_writer.update_default_variant.assert_called_once_with("current_game", "Tournament")
+        assert write_threads and write_threads[0] != loop_thread
+        assert state_manager.current_game_mode == Games.Tournament
 
 
 class TestStateManagerInit:

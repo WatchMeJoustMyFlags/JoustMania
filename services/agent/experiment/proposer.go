@@ -28,9 +28,9 @@ import (
 // overkill for flag deltas. The Proposer is a THIN wrapper over that seam:
 //
 //	narrative + fitness  --Build prompt-->  Backend.Infer  --decodeProposal-->
-//	    Proposal  --Gate.Review-->  shadow-scoped game.json write (or blocked span)
+//	    Proposal  --Gate.Review-->  experiment-scoped write to the game flag set (or blocked span)
 //
-// SAFETY (the whole point of routing through the Gate, never writing game.json
+// SAFETY (the whole point of routing through the Gate, never writing the game flag set
 // directly): the Gate enforces THE INVARIANT — a write can never change what a
 // game_kind="real" game resolves — and the type guard (#955). So even a malicious
 // or hallucinated model reply can, at worst, write a well-typed shadow-only
@@ -110,7 +110,7 @@ type ProposerConfig struct {
 	// is off. ProposeOnce consults it FIRST — before the cadence floor, the LLM
 	// admission and any Infer call — and AGAIN right before Gate.Review, so an
 	// operator who flips the agent off while a model call is in flight still gets
-	// no game.json write. A nil Permit FAILS CLOSED (SkipReasonNoPermit): a caller
+	// no experiment write. A nil Permit FAILS CLOSED (SkipReasonNoPermit): a caller
 	// that forgets to wire the gate gets no proposals, never ungated ones.
 	Permit func(ctx context.Context) (ok bool, reason string)
 	// GameKind is the kind of the game whose end triggered this cycle ("real",
@@ -153,7 +153,7 @@ type ProposeOutcome string
 
 const (
 	// ProposeProposed — the model returned a valid in-vocab proposal AND the Gate
-	// ACCEPTED it: the shadow-scoped experiment was written to game.json. This is
+	// ACCEPTED it: the shadow-scoped experiment was written to the game flag set. This is
 	// the only outcome that mutates the (shadow) flag surface.
 	ProposeProposed ProposeOutcome = "proposed"
 	// ProposeGated — the cadence floor (MinInterval) suppressed this cycle; no
@@ -174,7 +174,7 @@ const (
 	// does NOT retry blindly.
 	ProposeBlocked ProposeOutcome = "blocked"
 	// ProposeDisabled — the kill switch or experiments_enabled is off (#1270), so
-	// the cycle did nothing: no Infer call, no budget slot, no game.json write.
+	// the cycle did nothing: no Infer call, no budget slot, no experiment write.
 	// Result.Reason carries the SkipReason*. When the gate flips off WHILE a model
 	// call is in flight, the cycle also ends here (after Infer, before Gate.Review),
 	// with the reason on the attempt span.
@@ -209,8 +209,9 @@ type Result struct {
 // share one Proposer, like the shared llmBudget).
 type Proposer struct {
 	backend Backend
-	gate    *Gate
-	// vocab returns the LIVE set of game.json flag keys the model is constrained
+	// sink receives decoded proposals: a RegistrySink in production (see ProposalSink).
+	sink ProposalSink
+	// vocab returns the experiment catalog of the game flag set the model is constrained
 	// to. Injected as a func (not a static set) because the flag surface is read
 	// from the game flag file each cycle — the decoder rejects any flag not in it,
 	// and the prompt lists it so the model picks an existing flag. Returning a
@@ -233,11 +234,11 @@ type Proposer struct {
 }
 
 // NewProposer builds a Proposer over the inference backend, the experiment Gate
-// (the ONLY sanctioned write path — the Proposer never touches game.json
+// (the ONLY sanctioned write path — the Proposer never writes the game flag set
 // directly), and a vocab provider (the live game-flag key set). tracer nil uses
 // the global tracer; log nil uses slog.Default(). The clock defaults to time.Now;
 // tests inject a fake via SetClock.
-func NewProposer(backend Backend, gate *Gate, vocab func() map[string]struct{}, tracer trace.Tracer, log *slog.Logger) *Proposer {
+func NewProposer(backend Backend, sink ProposalSink, vocab func() map[string]struct{}, tracer trace.Tracer, log *slog.Logger) *Proposer {
 	if tracer == nil {
 		tracer = otel.Tracer(instrumentationName)
 	}
@@ -251,7 +252,7 @@ func NewProposer(backend Backend, gate *Gate, vocab func() map[string]struct{}, 
 	}
 	return &Proposer{
 		backend: backend,
-		gate:    gate,
+		sink:    sink,
 		vocab:   vocab,
 		tracer:  tracer,
 		log:     log,
@@ -288,7 +289,7 @@ func permit(ctx context.Context, cfg ProposerConfig) (bool, string) {
 func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerConfig) Result {
 	// Kill switch FIRST (#1270): when the agent `enabled` kill switch or
 	// experiments_enabled is off, the cycle does nothing at all — no cadence
-	// advance, no budget slot, no model call, no game.json write. "Agent off" is
+	// advance, no budget slot, no model call, no experiment write. "Agent off" is
 	// total. No span is emitted (same as the cadence gate), so a switched-off agent
 	// stays quiet in Jaeger.
 	if ok, reason := permit(ctx, cfg); !ok {
@@ -363,7 +364,7 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 
 	// Re-check the kill switch before the WRITE (#1270): the model call can take
 	// seconds, and an operator who switched the agent off meanwhile must not see a
-	// new experiment land in game.json afterwards.
+	// new experiment land afterwards.
 	if ok, reason := permit(ctx, cfg); !ok {
 		span.SetAttributes(
 			attribute.String(AttrOutcome, string(ProposeDisabled)),
@@ -374,10 +375,15 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 		return Result{Outcome: ProposeDisabled, Proposal: &pr, Reason: reason}
 	}
 
-	// Submit through the Gate — the ONLY sanctioned write path. The Gate enforces
-	// the shadow-scoping invariant + type guard and writes game.json on accept. We
-	// never call the Writer directly.
-	if err := p.gate.Review(ctx, proposal); err != nil {
+	// Submit to the sink: the experiment registry declares the proposal as an
+	// experiment (its own id and arms, FR-138) and starts it, which writes the arm
+	// value through the Gate (shadow-scoping invariant + type guard). No sink, no
+	// write. We never call the Writer directly.
+	sink := p.sink
+	if sink == nil {
+		sink = &LateSink{}
+	}
+	if err := sink.Review(ctx, proposal); err != nil {
 		// A Gate rejection (RejectError) is RECORDED, not retried blindly. The Gate
 		// already emitted its blocked span with the typed reason.
 		span.SetAttributes(attribute.String(AttrOutcome, string(ProposeBlocked)))

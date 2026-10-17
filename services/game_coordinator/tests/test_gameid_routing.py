@@ -29,6 +29,7 @@ from services.game_coordinator.interventions import (
     InterventionManager,
     SessionView,
 )
+from services.game_coordinator.tests.event_list_helpers import BASELINE, edge_event, object_details
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
 
@@ -72,8 +73,11 @@ class TargetingFlagClient:
     def get_string_value(self, key, default, ctx=None):
         return str(self._resolve(key, default, ctx))
 
+    def get_object_details(self, key, _default, ctx=None):
+        # One-shot flags are per-game event lists read via details (FR-137).
+        return object_details(key, self._resolve(key, None, ctx))
+
     def get_string_details(self, key, default, ctx=None):
-        # The manager reads edge flags via details to see errors (#1299).
         return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, ctx))
 
     def get_integer_value(self, key, default, ctx=None):
@@ -167,10 +171,6 @@ def make_multisession_manager(*, sessions, rules=None):
     mgr._interventions_client = TargetingFlagClient(rules or {})
     mgr._agent_client = AgentStub()
     mgr._rate_limiter.set_budget(50.0)
-    # Model the servicer: every session is primed at game start (#1299), before
-    # the test writes the intervention it expects to fire.
-    for game_id, game in sessions:
-        mgr.prime_session(game_id, list(game.players))
     return mgr, events_by_game
 
 
@@ -192,11 +192,11 @@ async def test_gameid_targeted_edge_applies_only_to_matching_session():
     mgr, events = make_multisession_manager(
         sessions=[("game_primary", primary_game), ("game_shadow", shadow_game)],
     )
-    # {"if": [{"==": [{"var":"gameId"}, "game_shadow"]}, "7:s1", ""]}
+    # The flag service renders the event list on gameId: only game_shadow has events.
     mgr._interventions_client.set_rule(
         "eliminate_player",
-        "",  # default: no-op for everyone else
-        [(lambda gid, _tk: gid == "game_shadow", "7:s1")],
+        BASELINE,  # default: no events for everyone else
+        [(lambda gid, _tk: gid == "game_shadow", edge_event("eliminate_player", "s1"))],
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -267,21 +267,21 @@ async def test_per_player_and_per_game_compose_in_one_rule():
 @pytest.mark.asyncio
 async def test_change_detection_is_per_session_independent():
     """Two shadows targeted by the same edge flag each fire once; re-evaluating
-    does not re-fire either (per-(game_id,flag) nonce baseline)."""
+    does not re-fire either (per-(game_id,flag) last applied (epoch, seq))."""
     a = FakeGame(players={"a1": FakePlayer("a1")})
     b = FakeGame(players={"b1": FakePlayer("b1")})
     mgr, events = make_multisession_manager(sessions=[("game_a", a), ("game_b", b)])
     mgr._interventions_client.set_rule(
         "eliminate_player",
-        "",
+        BASELINE,
         [
-            (lambda gid, _tk: gid == "game_a", "3:a1"),
-            (lambda gid, _tk: gid == "game_b", "3:b1"),
+            (lambda gid, _tk: gid == "game_a", edge_event("eliminate_player", "a1")),
+            (lambda gid, _tk: gid == "game_b", edge_event("eliminate_player", "b1")),
         ],
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
-        await mgr.evaluate_all()  # same nonce per game -> no re-fire
+        await mgr.evaluate_all()  # same events per game -> no re-fire
 
     assert len(_applied(events["game_a"], "eliminate_player")) == 1
     assert len(_applied(events["game_b"], "eliminate_player")) == 1

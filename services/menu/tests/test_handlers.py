@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import pytest
 
-from lib.flag_config_writer import FlagConfigWriter
+from lib.flag_service_writer import FlagServiceWriter
 from lib.types import Games
 from services.menu.handlers.base import ButtonDebouncer, ControllerState
 from services.menu.handlers.connected import ConnectedHandler
@@ -122,8 +122,8 @@ class TestConnectedHandler:
         return StateManager(
             led=create_autospec(LedController, instance=True, spec_set=True),
             audio=create_autospec(AudioHelper, instance=True, spec_set=True),
-            game_settings_writer=create_autospec(FlagConfigWriter, instance=True, spec_set=True),
-            user_prefs_writer=create_autospec(FlagConfigWriter, instance=True, spec_set=True),
+            game_settings_writer=create_autospec(FlagServiceWriter, instance=True, spec_set=True),
+            user_prefs_writer=create_autospec(FlagServiceWriter, instance=True, spec_set=True),
             publish_event=AsyncMock(),
         )
 
@@ -199,8 +199,8 @@ class TestConnectedHandler:
         manager = StateManager(
             led=create_autospec(LedController, instance=True, spec_set=True),
             audio=create_autospec(AudioHelper, instance=True, spec_set=True),
-            game_settings_writer=create_autospec(FlagConfigWriter, instance=True, spec_set=True),
-            user_prefs_writer=create_autospec(FlagConfigWriter, instance=True, spec_set=True),
+            game_settings_writer=create_autospec(FlagServiceWriter, instance=True, spec_set=True),
+            user_prefs_writer=create_autospec(FlagServiceWriter, instance=True, spec_set=True),
             publish_event=AsyncMock(),
             select_game_mode=select_cb,
         )

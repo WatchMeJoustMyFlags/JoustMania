@@ -1,6 +1,11 @@
 package experiment
 
-import "context"
+import (
+	"bytes"
+	"context"
+	"strconv"
+	"sync"
+)
 
 // targeting_writer.go is the REAL TargetingWriter seam (#977) the registry (#978)
 // injects — the production replacement for the recording fake used in
@@ -9,20 +14,29 @@ import "context"
 // experiment's branch + variant) for teardown.
 //
 // SAFETY: Apply routes through Gate.Review, so an experiment's flag write is held
-// to THE INVARIANT (real resolution unchanged, game.json-only) exactly as a
+// to THE INVARIANT (real resolution unchanged, game set only) exactly as a
 // proposer write is — the registry cannot bypass the gate. Strip goes straight to
-// the Writer (no Gate): removing a shadow branch can only ever restore a
-// strictly-more-real-protective rule, so it needs no invariant check (design §10).
+// the Writer (no Gate): removing an experiment value can only ever restore the
+// pre-experiment resolution, so it needs no invariant check (design §10).
 type GateTargetingWriter struct {
 	gate   *Gate
 	writer *Writer
+
+	mu sync.Mutex
+	// epochs: the flag service's boot epoch when each experiment's arm value
+	// was written. A different epoch means a restart lost the value.
+	epochs map[string]string
+}
+
+// epochReader is the optional flag-service capability Reassert needs.
+type epochReader interface {
+	Epoch(ctx context.Context) (string, error)
 }
 
 // NewGateTargetingWriter builds the seam over a Gate (for gated Apply) and the
-// Writer (for Strip). The Writer MUST be the SAME one the Gate wraps so Apply and
-// Strip operate on one file under one mutex; main.go constructs them as a pair.
+// Writer (for Strip); main.go constructs them as a pair.
 func NewGateTargetingWriter(gate *Gate, writer *Writer) *GateTargetingWriter {
-	return &GateTargetingWriter{gate: gate, writer: writer}
+	return &GateTargetingWriter{gate: gate, writer: writer, epochs: map[string]string{}}
 }
 
 // Apply writes the experiment-scoped shadow targeting for p through the Gate,
@@ -30,12 +44,65 @@ func NewGateTargetingWriter(gate *Gate, writer *Writer) *GateTargetingWriter {
 // proposal returns the typed *RejectError and writes nothing). It satisfies
 // experiment.TargetingWriter.
 func (g *GateTargetingWriter) Apply(ctx context.Context, p Proposal) error {
-	return g.gate.Review(ctx, p)
+	// Read the epoch BEFORE the write: a restart in between leaves the old epoch
+	// recorded, so the next Reassert writes the value again (the safe direction).
+	epoch := g.epoch(ctx)
+	if err := g.gate.Review(ctx, p); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	g.epochs[p.ExperimentID] = epoch
+	g.mu.Unlock()
+	return nil
 }
 
-// Strip removes the experiment's targeting branch + reserved variant for
-// (flagKey, experimentID). A missing branch/flag is a no-op (idempotent
-// teardown). It satisfies experiment.TargetingWriter.
-func (g *GateTargetingWriter) Strip(_ context.Context, flagKey, experimentID string) error {
-	return g.writer.Strip(flagKey, experimentID)
+// Reassert writes p's arm value again when the flag service no longer serves
+// it: after a restart (a new boot epoch) or after the service's idle expiry
+// (FLAG_SERVICE_EXPERIMENT_IDLE) dropped it. Otherwise the experiment's next
+// shadow games would resolve the baseline on both arms. The registry calls it
+// before each pair spawn. An unreadable epoch or flag is an error, so the pair
+// is not spawned.
+func (g *GateTargetingWriter) Reassert(ctx context.Context, p Proposal) error {
+	er, ok := g.writer.Service().(epochReader)
+	if !ok {
+		return nil
+	}
+	cur, err := er.Epoch(ctx)
+	if err != nil {
+		return err
+	}
+	g.mu.Lock()
+	written, known := g.epochs[p.ExperimentID]
+	g.mu.Unlock()
+	if known && written == cur {
+		// Same epoch: the value can still have been dropped by the idle expiry.
+		// The rendered flag names every experiment whose rung it carries.
+		view, err := g.writer.Service().GetFlag(ctx, GameFlagSet, p.FlagKey)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(view.Rendered, []byte(strconv.Quote(p.ExperimentID))) {
+			return nil
+		}
+	}
+	return g.Apply(ctx, p)
+}
+
+func (g *GateTargetingWriter) epoch(ctx context.Context) string {
+	if er, ok := g.writer.Service().(epochReader); ok {
+		if e, err := er.Epoch(ctx); err == nil {
+			return e
+		}
+	}
+	return ""
+}
+
+// Strip removes the experiment's arm value for (flagKey, experimentID). A
+// missing value/flag is a no-op (idempotent teardown). It satisfies
+// experiment.TargetingWriter.
+func (g *GateTargetingWriter) Strip(ctx context.Context, flagKey, experimentID string) error {
+	g.mu.Lock()
+	delete(g.epochs, experimentID)
+	g.mu.Unlock()
+	return g.writer.Strip(ctx, flagKey, experimentID)
 }

@@ -7,24 +7,24 @@ Interventions and force-ends addressed to one game must never reach the other:
 
 - lobby isolation (reserved controllers never reach the menu's roster) and
   per-game event streams and rosters (steps 1-3);
-- gameId-scoped ``eliminate_player`` (exactly once, the same nonce served again
-  does not re-apply) and gameId+serial-scoped ``player_sensitivity_factor``
-  reach only S1; an un-targeted eliminate still reaches the real game (4-5);
-- an ``end_game`` addressed ``<nonce>:S1`` ends S1 only (6-7);
+- an ``eliminate_player`` event in S1's event list (applied exactly once: a
+  later sync that serves the same list does not re-apply it) and a
+  gameId+serial-scoped ``player_sensitivity_factor`` reach only S1; an
+  eliminate in R1's list still reaches the real game (4-5);
+- an ``end_game`` event in S1's list ends S1 only (6-7);
 - with ``shadow_policy=block`` a real start preempts a live shadow game and no
   new shadow game may start while it runs (8).
 
-The agent does not run here: flag writes reproduce its writer's file mutations
-(services/agent/actions/writer.go) in place, and flagd's file watch serves them.
+The agent does not run here: the test writes through the flag service's HTTP
+API exactly like the agent's writer (services/agent/actions/writer.go), and
+flagd serves the result over its sync stream (UC-053).
 ``interventions_allowed`` and the rate limiter are global, so this test runs
 alone (no gather).
 """
 
 import asyncio
-import json
 import os
 import sys
-import uuid
 
 import pytest
 
@@ -37,7 +37,6 @@ from proto import game_coordinator_pb2  # noqa: E402
 from tests.integration.helpers import (  # noqa: E402
     ButtonStreamObserver,
     GameEventCollector,
-    active_flag_file,
     async_poll_until,
     build_start_config,
     flagd_probe_client,
@@ -50,137 +49,31 @@ from tests.integration.helpers import (  # noqa: E402
     setup_mock_controllers,
     start_game_headless,
     start_game_via_menu,
-    wait_flag_file_restored,
     wait_for_lobby_colors,
     wait_until_running,
 )
+from tests.integration.flag_service import (  # noqa: E402
+    append_event,
+    nudge_sync,
+    set_player_value,
+)
 from tests.integration.test_intervention_flow import (  # noqa: E402
     APPLY_TIMEOUT_SECONDS,
-    INTERVENTIONS_PATH,
     RELOAD_SETTLE_SECONDS,
-    flag_files,  # snapshot/restore interventions.json + agent.json, pins the rate-limit budget
+    intervention_env,  # binds the flag-service client, pins the rate-limit budget
     set_interventions_allowed,
 )
 
 # Keep the re-exported fixture referenced so linters don't flag it as unused.
-__all__ = ["flag_files"]
+__all__ = ["intervention_env"]
 
-GAME_PATH = active_flag_file("game")
 SHADOW_TAG = "tc013-shadow"
 _TERMINAL_EVENTS = ("game_ended", "game_force_ended", "game_error")
 # The menu's CONNECTED colour for FFA: orange at 30 % (services/menu/utils/led.py).
 FFA_LOBBY_COLOR = tuple(int(c * 0.3) for c in Colors.Orange.value)
 _LOBBY_TOLERANCE = 2
 _SENSITIVITY_FACTOR = 1.5  # the "handicap" variant value of player_sensitivity_factor
-_SECOND_FACTOR = (
-    0.7  # the "protect" value; the marker that flagd served the re-sent nonce
-)
-
-
-# =============================================================================
-# Flag-file writes (in place: a rename over a watched bind mount breaks the watch)
-# =============================================================================
-
-
-def _load(path: str) -> dict:
-    with open(path) as fh:
-        return json.load(fh)
-
-
-def _dump_in_place(path: str, doc: dict) -> None:
-    with open(path, "w") as fh:
-        fh.write(json.dumps(doc, indent=2) + "\n")
-
-
-def _game_rule(
-    game_id: str, match: str, neutral: str, serial: str | None = None
-) -> dict:
-    cond: dict = {"===": [{"var": "gameId"}, game_id]}
-    if serial:
-        cond = {"and": [cond, {"===": [{"var": "targetingKey"}, serial]}]}
-    return {"if": [cond, match, neutral]}
-
-
-def write_edge_for_game(flag_key: str, game_id: str, value: str) -> None:
-    """Edge value served only to ``game_id`` (#838); every other game reads the neutral ``none``."""
-    doc = _load(INTERVENTIONS_PATH)
-    flag = doc["flags"][flag_key]
-    flag["variants"]["active"] = value
-    flag["targeting"] = _game_rule(game_id, "active", "none")
-    flag["defaultVariant"] = "none"
-    # Toggled so serving the SAME value again still changes the file and reloads flagd.
-    flag["_reload_marker"] = int(flag.get("_reload_marker", 0)) + 1
-    _dump_in_place(INTERVENTIONS_PATH, doc)
-
-
-def write_edge_untargeted(flag_key: str, value: str) -> None:
-    """Edge value served to EVERY live game (no gameId rule)."""
-    doc = _load(INTERVENTIONS_PATH)
-    flag = doc["flags"][flag_key]
-    flag["variants"]["active"] = value
-    flag.pop("targeting", None)
-    flag["defaultVariant"] = "active"
-    _dump_in_place(INTERVENTIONS_PATH, doc)
-
-
-def _set_player_factor(doc: dict, game_id: str, serial: str, value: float) -> None:
-    flag = doc["flags"]["player_sensitivity_factor"]
-    name = "g_" + uuid.uuid5(uuid.NAMESPACE_OID, f"{game_id}\x00{serial}").hex
-    flag["variants"][name] = value
-    flag.setdefault("_branches", {})[name] = {"gameId": game_id, "serial": serial}
-    flag["targeting"] = _game_rule(game_id, name, "default", serial=serial)
-    flag["defaultVariant"] = "default"
-
-
-def write_player_factor_for_game(game_id: str, serial: str, value: float) -> None:
-    """``player_sensitivity_factor`` for one (gameId, serial); neutral ``default`` elsewhere.
-
-    The ``_branches`` registry lets the flag_files fixture wait until flagd
-    serves the restored baseline for exactly this scope.
-    """
-    doc = _load(INTERVENTIONS_PATH)
-    _set_player_factor(doc, game_id, serial, value)
-    _dump_in_place(INTERVENTIONS_PATH, doc)
-
-
-def resend_edge_with_factor(
-    game_id: str, edge_value: str, serial: str, factor: float
-) -> None:
-    """ONE file write: serve the same ``eliminate_player`` value to ``game_id`` again
-    and change ``serial``'s factor. Once the new factor is observed, flagd has
-    served the file that carries the repeated nonce, so the absence window that
-    follows is not vacuous."""
-    doc = _load(INTERVENTIONS_PATH)
-    flag = doc["flags"]["eliminate_player"]
-    flag["variants"]["active"] = edge_value
-    flag["targeting"] = _game_rule(game_id, "active", "none")
-    flag["defaultVariant"] = "none"
-    flag["_reload_marker"] = int(flag.get("_reload_marker", 0)) + 1
-    _set_player_factor(doc, game_id, serial, factor)
-    _dump_in_place(INTERVENTIONS_PATH, doc)
-
-
-def set_shadow_policy(policy: str) -> None:
-    doc = _load(GAME_PATH)
-    doc["flags"]["shadow_policy"]["defaultVariant"] = policy
-    _dump_in_place(GAME_PATH, doc)
-
-
-@pytest.fixture
-def game_flag_file(docker_compose):
-    """Snapshot game.json; restore it byte-for-byte and wait until flagd serves it."""
-    with open(GAME_PATH) as fh:
-        backup = fh.read()
-    yield
-    with open(GAME_PATH) as fh:
-        mutated = fh.read()
-
-    def _restore():
-        with open(GAME_PATH, "w") as fh:
-            fh.write(backup)
-
-    _restore()
-    wait_flag_file_restored(docker_compose, "game", backup, mutated, _restore)
+_SECOND_FACTOR = 0.7  # the "protect" value; the marker that a later sync was served
 
 
 # =============================================================================
@@ -234,7 +127,11 @@ async def _running_ids(game_client) -> set[str]:
 @pytest.mark.uc("UC-027", flow="A3", tc="TC-013")
 @pytest.mark.uc("UC-043", flow="A2", tc="TC-013")
 async def test_tc013_shadow_game_alongside_real_game(
-    flag_files, game_flag_file, docker_compose, ensure_game_stopped, headless_cleanup
+    intervention_env,
+    flag_service,
+    docker_compose,
+    ensure_game_stopped,
+    headless_cleanup,
 ):
     """TC-013: interventions and force-ends addressed to one game never reach the other."""
     set_interventions_allowed(
@@ -302,8 +199,9 @@ async def test_tc013_shadow_game_alongside_real_game(
             "Step 3: S1 event on R1's stream"
         )
 
-        # Step 4: Scoped interventions. eliminate_player scoped to S1 for one
-        # shadow player; player_sensitivity_factor scoped to S1 + another serial.
+        # Step 4: Scoped interventions. eliminate_player appended to S1's event
+        # list for one shadow player; player_sensitivity_factor scoped to S1 +
+        # another serial.
         victim, factor_target, factor_other = (
             shadow_serials[0],
             shadow_serials[1],
@@ -321,9 +219,12 @@ async def test_tc013_shadow_game_alongside_real_game(
             "Step 4: real bystander not alive"
         )
 
-        eliminate_value = f"{uuid.uuid4().hex}:{victim}"
-        write_edge_for_game("eliminate_player", s1, eliminate_value)
-        write_player_factor_for_game(s1, factor_target, _SENSITIVITY_FACTOR)
+        flag_service.wait_game_registered(s1)
+        flag_service.wait_game_registered(r1)
+        append_event("eliminate_player", s1, {"serial": victim})
+        set_player_value(
+            "player_sensitivity_factor", s1, factor_target, _SENSITIVITY_FACTOR
+        )
 
         # Step 5: Verify only the shadow game. S1: one unblocked eliminate, the
         # victim dies with exactly one player_death; only the targeted player's
@@ -361,11 +262,12 @@ async def test_tc013_shadow_game_alongside_real_game(
             <= 0.01
         ), f"Step 5: un-targeted shadow player {factor_other} factor changed"
 
-        # Exactly once: flagd may emit several change events per write, and the
-        # same nonce served again must not re-apply. The same write also moves
-        # the factor to 0.7: once that is observed, flagd is serving the file
-        # with the repeated nonce, so the absence check below is not vacuous.
-        resend_edge_with_factor(s1, eliminate_value, factor_target, _SECOND_FACTOR)
+        # Exactly once: every later sync serves S1's event list again, and an
+        # already-applied event must not re-apply. Moving the factor to 0.7 is a
+        # later sync of the same list: once it is observed, the coordinator has
+        # re-read the list, so the absence check below is not vacuous.
+        set_player_value("player_sensitivity_factor", s1, factor_target, _SECOND_FACTOR)
+        nudge_sync()
 
         async def _second_factor_applied() -> bool:
             p = await _players(game_client, s1)
@@ -373,7 +275,7 @@ async def test_tc013_shadow_game_alongside_real_game(
 
         await _until(
             _second_factor_applied,
-            f"Step 5: flagd never served the re-sent nonce (factor stayed off {_SECOND_FACTOR})",
+            f"Step 5: the later sync never arrived (factor stayed off {_SECOND_FACTOR})",
         )
         await asyncio.sleep(
             RELOAD_SETTLE_SECONDS
@@ -399,12 +301,12 @@ async def test_tc013_shadow_game_alongside_real_game(
             f"Step 5: a real player's factor changed: { {s: p.sensitivity_factor for s, p in real_players.items()} }"
         )
 
-        # Step 5 (un-targeted): the same flag without a gameId rule still reaches
-        # the real game (UC-020 A3 on R1).
-        write_edge_untargeted("eliminate_player", f"{uuid.uuid4().hex}:{bystander}")
+        # Step 5 (real game): the same flag in R1's own event list reaches the
+        # real game (UC-020 A3 on R1).
+        append_event("eliminate_player", r1, {"serial": bystander})
         await _until(
             lambda: _interventions(primary, r1, "eliminate_player", blocked="false"),
-            "Step 5: un-targeted eliminate did not reach R1",
+            "Step 5: R1's eliminate did not reach R1",
         )
 
         async def _bystander_dead() -> bool:
@@ -412,15 +314,15 @@ async def test_tc013_shadow_game_alongside_real_game(
 
         await _until(
             _bystander_dead,
-            "Step 5: un-targeted eliminate did not kill the real bystander",
+            "Step 5: R1's eliminate did not kill the real bystander",
         )
 
-        # Step 6: Addressed end_game. Served to EVERY game (no gameId rule), but
-        # the value names S1, so only S1 force-ends, with reason agent_intervention.
-        write_edge_untargeted("end_game", f"tc013{uuid.uuid4().hex[:8]}:{s1}")
+        # Step 6: end_game in S1's event list. Only S1 reads it, so only S1
+        # force-ends, with reason agent_intervention.
+        append_event("end_game", s1)
         await _until(
             lambda: _events(shadow, s1, "game_force_ended"),
-            "Step 6: S1 was not force-ended by the addressed end_game",
+            "Step 6: S1 was not force-ended by its end_game event",
             timeout=20.0,
         )
         force_ended = _events(shadow, s1, "game_force_ended")
@@ -491,13 +393,15 @@ async def test_tc013_shadow_game_alongside_real_game(
                 f"Validation 2: reserved controller {serial} shows the lobby colour {color}"
             )
 
-        # Step 8: Real game preempts shadow, under shadow_policy=block.
-        set_shadow_policy("block")
+        # Step 8: Real game preempts shadow, under shadow_policy=block (a
+        # stack overlay; the flag_service fixture clears it at teardown).
+        flag_service.put("game", "shadow_policy", variant="block")
         with flagd_probe_client(docker_compose, "game") as probe:
             assert poll_until(
-                lambda: probe.get_string_value("shadow_policy", "", EvaluationContext())
-                == "block",
-                rewrite=lambda: set_shadow_policy("block"),
+                lambda: (
+                    probe.get_string_value("shadow_policy", "", EvaluationContext())
+                    == "block"
+                ),
             ), "Step 8: flagd did not serve shadow_policy=block"
 
         # With no real game live, a shadow game may start even under block.

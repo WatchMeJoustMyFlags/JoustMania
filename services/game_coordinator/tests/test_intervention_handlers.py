@@ -23,6 +23,7 @@ from services.game_coordinator.interventions import (
     _parse_effect_payload,
     _resolve_effect,
 )
+from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
 
 
 # --------------------------------------------------------------------------- #
@@ -38,8 +39,11 @@ class FakeFlagClient:
     def get_string_value(self, key, default, _ctx=None):
         return str(self.values.get(key, default))
 
+    def get_object_details(self, key, _default, _ctx=None):
+        # One-shot flags are per-game event lists read via details (FR-137).
+        return object_details(key, self.values.get(key))
+
     def get_string_details(self, key, default, _ctx=None):
-        # The manager reads edge flags via details to see errors (#1299).
         return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, _ctx))
 
     def get_integer_value(self, key, default, _ctx=None):
@@ -139,30 +143,30 @@ def test_resolve_effect():
 @pytest.mark.asyncio
 async def test_audio_cue_plays_sound_via_game():
     game = FakeGame()
-    mgr, _ = make_manager(interventions={"audio_cue": "1:wolfdown"}, game=game)
+    mgr, _ = make_manager(interventions={"audio_cue": edge_event("audio_cue", "wolfdown")}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     assert game.played_sounds == [("wolfdown", 2)]
 
 
 @pytest.mark.asyncio
-async def test_audio_cue_applies_once_per_nonce():
+async def test_audio_cue_applies_once_per_event():
     game = FakeGame()
-    mgr, _ = make_manager(interventions={"audio_cue": "1:wolfdown"}, game=game)
+    mgr, _ = make_manager(interventions={"audio_cue": edge_event("audio_cue", "wolfdown")}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
-        await mgr.evaluate_all()  # same nonce -> no replay
+        await mgr.evaluate_all()  # same event list -> no replay
     assert len(game.played_sounds) == 1
     with patch("services.game_coordinator.metrics.interventions_total"):
-        mgr._interventions_client.set("audio_cue", "2:wolfdown")
-        await mgr.evaluate_all()  # new nonce -> replay
+        mgr._interventions_client.set("audio_cue", edge_event("audio_cue", "wolfdown", seq=2))
+        await mgr.evaluate_all()  # new event -> plays again
     assert len(game.played_sounds) == 2
 
 
 @pytest.mark.asyncio
 async def test_audio_cue_empty_sound_is_defensive_noop():
     game = FakeGame()
-    mgr, _ = make_manager(interventions={"audio_cue": "1: "}, game=game)
+    mgr, _ = make_manager(interventions={"audio_cue": edge_event("audio_cue", " ")}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     assert game.played_sounds == []
@@ -170,7 +174,7 @@ async def test_audio_cue_empty_sound_is_defensive_noop():
 
 @pytest.mark.asyncio
 async def test_audio_cue_no_game_is_noop():
-    mgr, events = make_manager(interventions={"audio_cue": "1:wolfdown"}, game=None)
+    mgr, events = make_manager(interventions={"audio_cue": edge_event("audio_cue", "wolfdown")}, game=None)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     # Still dispatched (not blocked) — handler defensively returns.
@@ -230,7 +234,9 @@ async def test_volume_override_no_audio_client_is_noop():
 async def test_controller_effect_per_serial_routing():
     players = {"ctrl_a": FakePlayer("ctrl_a"), "ctrl_b": FakePlayer("ctrl_b")}
     game = FakeGame(players=players)
-    mgr, _ = make_manager(interventions={"controller_effect": "1:ctrl_a:pulse"}, game=game)
+    mgr, _ = make_manager(
+        interventions={"controller_effect": edge_event("controller_effect", "ctrl_a:pulse")}, game=game
+    )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     game.gameplay_stream.write.assert_awaited_once()
@@ -247,7 +253,7 @@ async def test_controller_effect_broadcast_to_alive_players():
         "ctrl_c": FakePlayer("ctrl_c", alive=False),  # dead -> excluded
     }
     game = FakeGame(players=players)
-    mgr, _ = make_manager(interventions={"controller_effect": "1::flash"}, game=game)
+    mgr, _ = make_manager(interventions={"controller_effect": edge_event("controller_effect", ":flash")}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     sent = [c.args[0].game_effect.serial for c in game.gameplay_stream.write.await_args_list]
@@ -258,7 +264,9 @@ async def test_controller_effect_broadcast_to_alive_players():
 async def test_controller_effect_unknown_effect_is_noop():
     players = {"ctrl_a": FakePlayer("ctrl_a")}
     game = FakeGame(players=players)
-    mgr, _ = make_manager(interventions={"controller_effect": "1:ctrl_a:disco"}, game=game)
+    mgr, _ = make_manager(
+        interventions={"controller_effect": edge_event("controller_effect", "ctrl_a:disco")}, game=game
+    )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     game.gameplay_stream.write.assert_not_awaited()
@@ -268,7 +276,9 @@ async def test_controller_effect_unknown_effect_is_noop():
 async def test_controller_effect_malformed_payload_is_noop():
     players = {"ctrl_a": FakePlayer("ctrl_a")}
     game = FakeGame(players=players)
-    mgr, _ = make_manager(interventions={"controller_effect": "1:ctrl_a"}, game=game)  # no effect
+    mgr, _ = make_manager(
+        interventions={"controller_effect": edge_event("controller_effect", "ctrl_a")}, game=game
+    )  # no effect
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     game.gameplay_stream.write.assert_not_awaited()
@@ -278,7 +288,9 @@ async def test_controller_effect_malformed_payload_is_noop():
 async def test_controller_effect_no_stream_is_noop():
     players = {"ctrl_a": FakePlayer("ctrl_a")}
     game = FakeGame(players=players, with_stream=False)
-    mgr, _ = make_manager(interventions={"controller_effect": "1:ctrl_a:pulse"}, game=game)
+    mgr, _ = make_manager(
+        interventions={"controller_effect": edge_event("controller_effect", "ctrl_a:pulse")}, game=game
+    )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # no stream -> defensive no-op (no crash)
 
@@ -290,7 +302,7 @@ async def test_controller_effect_no_stream_is_noop():
 async def test_end_game_delegates_to_force_end():
     end = AsyncMock(return_value=(True, ""))
     game = FakeGame()
-    mgr, _ = make_manager(interventions={"end_game": "1"}, game=game, end_game_fn=end)
+    mgr, _ = make_manager(interventions={"end_game": edge_event("end_game")}, game=game, end_game_fn=end)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     # Legacy single-primary path: the sentinel session id is "" (= primary).
@@ -298,13 +310,13 @@ async def test_end_game_delegates_to_force_end():
 
 
 @pytest.mark.asyncio
-async def test_end_game_applies_once_per_nonce():
+async def test_end_game_applies_once_per_event():
     end = AsyncMock(return_value=(True, ""))
     game = FakeGame()
-    mgr, _ = make_manager(interventions={"end_game": "1"}, game=game, end_game_fn=end)
+    mgr, _ = make_manager(interventions={"end_game": edge_event("end_game")}, game=game, end_game_fn=end)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
-        await mgr.evaluate_all()  # same nonce -> not re-ended
+        await mgr.evaluate_all()  # same event list -> not re-ended
     end.assert_awaited_once()
 
 
@@ -312,7 +324,7 @@ async def test_end_game_applies_once_per_nonce():
 async def test_end_game_no_game_is_safe_noop():
     # end_game_fn reports "no game in progress"; handler must not raise.
     end = AsyncMock(return_value=(False, "No game in progress"))
-    mgr, events = make_manager(interventions={"end_game": "1"}, game=None, end_game_fn=end)
+    mgr, events = make_manager(interventions={"end_game": edge_event("end_game")}, game=None, end_game_fn=end)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     end.assert_awaited_once()
@@ -322,7 +334,7 @@ async def test_end_game_no_game_is_safe_noop():
 
 @pytest.mark.asyncio
 async def test_end_game_no_fn_wired_is_noop():
-    mgr, _ = make_manager(interventions={"end_game": "1"}, game=FakeGame(), end_game_fn=None)
+    mgr, _ = make_manager(interventions={"end_game": edge_event("end_game")}, game=FakeGame(), end_game_fn=None)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # no end_game_fn -> defensive no-op (no crash)
 

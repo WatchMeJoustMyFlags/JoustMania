@@ -494,24 +494,30 @@ that cycle's snapshot, so model, base URL and timeout changes apply to the next 
 (`decision/decide_registry.go:14-20`). Unknown names are kept verbatim on the span;
 an empty value means `rules`.
 
-`scripts/agent-backend.sh` flips `defaultVariant`s in `services/flagd/ci/agent.json`
-(override with `AGENT_FLAG_FILE`): `status`, `{rules|claude|openai|jev} [model]`,
-`threshold {low|gate|default|strict}`, `capture {on|off}`, `effort {…}`. flagd reloads the
-file on change; the script states "~1 s" (`scripts/agent-backend.sh`). See NFR-014.
+`scripts/agent-backend.sh` sets stack overlays on the flag service (writer `stage`,
+[UC-053](../use_cases/UC-053.md) A1): `status`, `{rules|claude|openai|jev} [model]`,
+`threshold {low|gate|default|strict}`, `capture {on|off}`, `effort {…}`. The flag service
+pushes the change to flagd at once (NFR-050); the agent reads the flags at use time.
 
 ## 11. From decision to game effect
 
-The action sink writes `services/flagd/interventions.json`
-(`actions/writer.go:mutate`), gated by `interventions_enabled`. The game coordinator
-watches flagd and applies the result (`services/game_coordinator/interventions.py`).
-Full flag shapes: [flags.md § interventions](flags.md#5-interventions).
+The action sink writes to the flag service's `interventions` set, always for the deciding
+game (`actions/writer.go`, gated by `interventions_enabled`; [UC-053](../use_cases/UC-053.md)):
+a state value with `PUT … scope {game_id}`, a per-player value with
+`scope {game_id, serial}`, a one-shot event with `POST` (appended to the game's event list).
+A decision without a coordinator game id (`game_…`), such as the `session-<n>` id of the
+agent's partition for unlabeled signals, is not written and is recorded as a failed write
+(`agent_intervention_writes_total{result=error}`, #1323); a `game_not_live` refusal is retried
+once after 250 ms. The game coordinator applies the result
+(`services/game_coordinator/interventions.py`). Full flag shapes and bounds:
+[flags.md § interventions](flags.md#5-interventions), [§13.1](flags.md#131-interventions-all-writes-are-game-scoped).
 
 | Intervention | Flag | Shape | Writer default |
 |---|---|---|---|
-| `play_audio_cue` | `audio_cue` | edge `<nonce>:<payload>` | `agent_cue` (an audio-registry alias of the lobby ready ping `beep_loud`; UC-040 BR-007) |
-| `send_controller_effect` | `controller_effect` | edge `<nonce>:<serial>:<effect>` | `rumble` |
-| `eliminate_player` / `revive_player` | same name | edge `<nonce>:<serial>` | |
-| `end_game` | `end_game` | edge `<nonce>:<game_id>` (deciding game) | |
+| `play_audio_cue` | `audio_cue` | event, payload `{"sound"}` | `agent_cue` (an audio-registry alias of the lobby ready ping `beep_loud`; UC-040 BR-007) |
+| `send_controller_effect` | `controller_effect` | event, payload `{"serial","effect"}` | `rumble` |
+| `eliminate_player` / `revive_player` | same name | event, payload `{"serial"}` | |
+| `end_game` | `end_game` | event, payload `{}` (the deciding game is the scope) | |
 | `adjust_music_tempo` | `music_tempo_override` | state | 1.15 |
 | `adjust_volume` | `volume_override` | state | 0.7 |
 | `adjust_global_sensitivity` | `global_sensitivity_override` | state | 2 |
@@ -526,64 +532,38 @@ Full flag shapes: [flags.md § interventions](flags.md#5-interventions).
 | `soft_penalty` | `soft_penalty_action` | per serial grant | `warn` |
 | `noop` | (no write) | | |
 
-The agent targets by **serial only**; it never writes `gameId` targeting (the one exception is `end_game`, addressed by payload, below), although
-the coordinator evaluates every intervention flag with `{targetingKey=serial,
-gameId}` and supports gameId-scoped rules (#838,
-`tests/integration/test_tc013_shadow_alongside_real.py`). An un-targeted state flip
-therefore resolves for every live session. Design follow-up: #920. Logged as a
-discrepancy in [specs-inventory.md](../specs-inventory.md#4-discrepancies-found).
+Every value is rendered by the flag service as targeting on the game's `gameId` (and the
+player's serial), so it resolves in no other game, and it is dropped when the game ends
+(FR-136, [UC-053](../use_cases/UC-053.md) BR-003). The coordinator evaluates every
+intervention flag with `{targetingKey=serial, gameId}`.
 
-Edge flags apply once per nonce and only in the game during which the nonce changed.
-The coordinator seeds each game's nonce baseline from the current flag values when
-the game is admitted (`InterventionManager.prime_session`, real and shadow alike), so
-a value left over from an earlier game, or from before a coordinator restart, is
-consumed and never replayed. Edge flags are read with their evaluation details: a
-flagd error read never moves the baseline, and a baseline that could not be read
-at game start adopts the next good value without firing (fail closed) ([UC-040 BR-006](../use_cases/UC-040.md#br-006-an-edge-intervention-fires-only-in-the-game-that-saw-it-change), #1299).
-
-`end_game` is addressed: the writer sets `Decision.GameID` from the deciding loop's
-`GameContext.SessionID` and writes `<nonce>:<game_id>`; it refuses an `end_game` whose id is
-empty or does not start with `game_` (the coordinator's id format), such as the `session-<n>` id of
-the agent's partition for unlabeled signals, and records the refusal as a failed write
-(`result=error`) instead of writing an end that addresses no game (#1323). The coordinator consumes the nonce in every live session but force-ends only the
-session whose `game_id` is the payload (`InterventionManager._evaluate_one` →
-`_handle_end_game` → `end_game_fn(game_id, reason)` = `GameCoordinatorServicer._force_end_session`,
-the same path as `ForceEndGame` with a `game_id`). A session that is not addressed records
-nothing and uses no backstop budget. A value without a game id ends only the real game
-([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for), #1310).
+**Events** (`eliminate_player`, `revive_player`, `audio_cue`, `controller_effect`,
+`end_game`) resolve, for one game, to its event list `{"epoch","seq","events":[last 16]}`. The
+coordinator applies every event with a sequence number above the last one it applied for that
+game and flag, in order, exactly once; the last applied `(epoch, seq)` advances before the
+events are dispatched; a read that returns an evaluation error applies nothing; only a new,
+non-empty epoch (a flag-service restart) restarts the count; more than 16 events between two
+reads is logged and counted (`game_intervention_event_gaps_total`)
+([UC-040 BR-006](../use_cases/UC-040.md#br-006-a-one-shot-intervention-fires-once-only-in-its-game), FR-137).
+`end_game` force-ends only the session whose list holds it (`_handle_end_game` →
+`end_game_fn(game_id, reason)` = `GameCoordinatorServicer._force_end_session`, the same path as
+`ForceEndGame` with a `game_id`) ([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for), #1310).
 
 Per-serial **grant** flags (`shield_seconds`, `partial_shield_seconds`,
-`soft_penalty_action`) are one-shot per decision: the writer gives each grant a fresh
-variant `agent_<serial>#<nonce>` that replaces the player's previous variant. The
-coordinator (`InterventionManager._evaluate_targeted_grant`) reads each player's
-variant and value with evaluation details, seeds the game's per-player baseline at
-`prime_session` (the servicer passes the game's serials), and dispatches one intervention
-per player whose variant or value changed and is not neutral, with `target` = that
-serial. An error read never moves that player's baseline; an unknown baseline, or a player
-with no baseline entry, adopts the next good value without firing (#1323). Two grants to one
-player within one flagd poll (1 s) collapse to the later one. Per-serial **level** flags
-(`player_sensitivity_factor`, `player_handicap_factor`) keep a per-player baseline of the
-alive, battery-eligible players' levels, read with evaluation details and seeded at
-`prime_session` for the new game's players (an error read is recorded as unknown and
-adopts the next good value; it never moves a baseline). On a change the coordinator
-dispatches only the players whose level differs from the last read in this game, so a
-level left over from an earlier game is never applied: players moving to neutral go to the
-flag's revert handler (factor back to 1.0, no permission chain, so a blocked chain cannot
-leave a factor stuck), the others go through the chain as a `{serial: level}` value the
-handler applies
+`soft_penalty_action`) are one-shot per decision: every write gets a fresh variant from the
+flag service. The coordinator (`InterventionManager._evaluate_targeted_grant`) reads each
+player's variant and value with evaluation details and dispatches one intervention per player
+whose variant or value changed during the game and is not neutral, with `target` = that serial.
+An error read never moves that player's last-seen grant. Two grants to one player in one pushed
+configuration collapse to the later one. Per-serial **level** flags
+(`player_sensitivity_factor`, `player_handicap_factor`) keep the last-seen level per alive,
+battery-eligible player; on a change the coordinator dispatches only the players whose level
+differs from the last read in this game: players moving to neutral go to the flag's revert
+handler (factor back to 1.0, no permission chain, so a blocked chain cannot leave a factor
+stuck), the others go through the chain as a `{serial: level}` value the handler applies
 ([UC-040 BR-017](../use_cases/UC-040.md#br-017-per-player-levels-belong-to-one-game), A24, #1317).
-
-Per-player entries are pruned when their game retires ([UC-040 BR-016](../use_cases/UC-040.md#br-016-per-player-entries-live-only-as-long-as-their-game), A25, #1323).
-The `Writer` records the game id of its last per-player write per serial. The agent's
-store `OnGameEnd` hook calls `Writer.PruneGame(game_id, players, protect)`: it drops the
-serials recorded for that game and the unrecorded players of that game, except those in
-another active partition. The eviction loop calls `Writer.PruneExcept(serials, games)`
-once after startup (after one `lifecycle.player_ttl_seconds`) and whenever a partition is
-retired: it drops every serial that is in no partition and whose recorded game is not a
-partition. Both use the same per-serial removal as `RevertTargeted`, remove a serial from
-all five per-player flags in one in-place read-modify-write, and write nothing when nothing
-changes. Session-scoped state flags are not reverted at game end (not game-scoped yet,
-#1269).
+No per-player entry outlives its game, so the agent prunes nothing
+([UC-040 BR-016](../use_cases/UC-040.md#br-016-per-player-entries-live-only-as-long-as-their-game)).
 
 The coordinator re-checks independently before any handler runs
 (`InterventionManager._enforce_and_dispatch` → `_check_chain` in `interventions.py`): allow-list membership → mode capability deny matrix

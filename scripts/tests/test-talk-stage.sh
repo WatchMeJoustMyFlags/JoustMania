@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Self-contained tests for scripts/talk-stage.sh (#1301, #1316, UC-070 BR-003, BR-007, A7, A8, A9).
+# Self-contained tests for scripts/talk-stage.sh (#1301, #1316, UC-070 BR-003, BR-007, A7, A8, A9; UC-053 A1).
 #
-# Runs the helper against temp copies of the shipped CI flag files (agent.json
-# and interventions.json), never the real services/flagd/ci/ files.
+# Runs the helper against scripts/tests/fake_flag_service.py serving the shipped
+# CI agent flag set with the REAL registry (epic #1407), never a running stack.
 #
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-talk-stage.sh
@@ -15,58 +15,58 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 HELPER="${SCRIPT_DIR}/../talk-stage.sh"
 PREFLIGHT_BASELINE="${SCRIPT_DIR}/../talk-baseline.json"
 WORK="$(mktemp -d)"
-trap 'rm -rf "${WORK}"' EXIT
-export AGENT_FLAG_FILE="${WORK}/agent.json"
+# shellcheck source=scripts/tests/lib-fake-flag-service.sh
+source "${SCRIPT_DIR}/lib-fake-flag-service.sh"
+trap 'stop_fake_flag_service; rm -rf "${WORK}"' EXIT
 
 pass=0
 fail=0
 ok() { echo "ok   - $1"; pass=$((pass + 1)); }
 not_ok() { echo "FAIL - $1"; fail=$((fail + 1)); }
 
-fresh() {
-  cp "${REPO_ROOT}/services/flagd/ci/agent.json" "${WORK}/agent.json"
-  cp "${REPO_ROOT}/services/flagd/ci/interventions.json" "${WORK}/interventions.json"
+fresh() { # a flag service at the shipped baseline, no overlays
+  stop_fake_flag_service
+  start_fake_flag_service "${WORK}"
 }
-variant() {
-  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["flags"][sys.argv[2]]["defaultVariant"])' "$1" "$2"
+variant() { # variant <flag>: what the flag service serves now
+  curl -sS "${FLAG_SERVICE_URL}/agent/$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["effective_default"])'
 }
-expect() { # expect <name> <flag> <variant> [file]
+expect() { # expect <name> <flag> <variant>
   local got
-  got="$(variant "${4:-${AGENT_FLAG_FILE}}" "$2")"
+  got="$(variant "$2")"
   if [[ "${got}" == "$3" ]]; then ok "$1"; else not_ok "$1 (${2}=${got}, want $3)"; fi
 }
-setv() { # setv <file> <flag> <variant>
-  python3 - "$@" <<'PY'
-import json, sys
-path, key, variant = sys.argv[1:]
-data = json.load(open(path))
-data["flags"][key]["defaultVariant"] = variant
-json.dump(data, open(path, "w"), indent=2)
-PY
+drift() { # drift <flag> <variant>: another writer moves a flag (a beat, an operator)
+  curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
+    --data "{\"variant\": \"$2\", \"writer\": \"operator\"}" "${FLAG_SERVICE_URL}/agent/$1"
+}
+snapshot() { # every flag's effective variant, one per line
+  curl -sS "${FLAG_SERVICE_URL}/agent" | python3 -c 'import json,sys; [print(f["flag"], f["effective_default"]) for f in json.load(sys.stdin)["flags"]]'
 }
 
-# --- every baseline flag/variant exists in BOTH shipped flag files ----------
+# --- every baseline flag/variant exists in BOTH shipped flag files and is mutable
 for f in services/flagd/ci/agent.json services/flagd/agent.json; do
-  missing="$(python3 - "${REPO_ROOT}/${f}" "${PREFLIGHT_BASELINE}" <<'PY'
-import json, sys
+  missing="$(python3 - "${REPO_ROOT}/${f}" "${PREFLIGHT_BASELINE}" "${REPO_ROOT}/services/flag-service/registry.yaml" <<'PY'
+import json, re, sys
 flags = json.load(open(sys.argv[1]))["flags"]
 base = json.load(open(sys.argv[2]))
+registry = set(re.findall(r"\{set: agent, key: ([\w.-]+),", open(sys.argv[3]).read()))
 bad = [f"{k}={v}" for sec in ("checked", "reset_also", "fallback") for k, v in base[sec].items()
        if v not in flags.get(k, {}).get("variants", {})]
-print(" ".join(bad))
+bad += [f"{k} (not in registry.yaml)" for sec in ("checked", "reset_also", "fallback") for k in base[sec]
+        if k not in registry]
+print(" ".join(sorted(set(bad))))
 PY
 )"
-  if [[ -z "${missing}" ]]; then ok "baseline variants exist in ${f}"; else not_ok "baseline variants exist in ${f}: ${missing}"; fi
+  if [[ -z "${missing}" ]]; then ok "baseline variants exist in ${f} and are mutable"; else not_ok "baseline variants exist in ${f}: ${missing}"; fi
 done
 
 # --- reset restores the stage baseline from any drift (A8) ------------------
 fresh
-setv "${AGENT_FLAG_FILE}" interventions_allowed none
-setv "${AGENT_FLAG_FILE}" enabled off
-setv "${AGENT_FLAG_FILE}" decision.backend claude
-setv "${AGENT_FLAG_FILE}" decision.jev.base_url blackhole
-setv "${WORK}/interventions.json" shield_seconds default
-inode_before="$(stat -c %i "${AGENT_FLAG_FILE}")"
+drift interventions_allowed none
+drift enabled off
+drift decision.backend claude
+drift decision.jev.base_url blackhole
 out="$("${HELPER}" reset)"
 expect "reset: interventions_allowed back to standard" interventions_allowed standard
 expect "reset: kill switch back on" enabled on
@@ -74,42 +74,19 @@ expect "reset: interventions_enabled on" interventions_enabled on
 expect "reset: backend back to rules" decision.backend rules
 expect "reset: blackhole undone" decision.jev.base_url default
 expect "reset: budget stage" llm.max_requests_per_minute stage
-expect "reset: interventions.json neutral" shield_seconds none "${WORK}/interventions.json"
 [[ "${out}" == *"reset  interventions_allowed: none -> standard"* ]] && ok "reset reports what it changed" || not_ok "reset reports what it changed: ${out}"
-[[ "$(stat -c %i "${AGENT_FLAG_FILE}")" == "${inode_before}" ]] && ok "reset writes in place (same inode)" || not_ok "reset writes in place"
+[[ "${out}" == *"interventions: 0 game-scoped value(s) in 0 live game(s)"* ]] && ok "reset reports interventions as per game" || not_ok "reset reports interventions as per game: ${out}"
+if grep -q '^DELETE /agent?writer=stage' "${FAKE_FLAG_LOG}"; then ok "reset clears the stage overlays first"; else not_ok "reset clears the stage overlays first"; fi
+if grep -q '"persist"' "${FAKE_FLAG_LOG}"; then not_ok "the stage never persists (N4)"; else ok "the stage never persists (N4)"; fi
 out="$("${HELPER}" status)"
 [[ "${out}" == "at the stage baseline" ]] && ok "status after reset" || not_ok "status after reset: ${out}"
-before="$(cat "${AGENT_FLAG_FILE}")"
+before="$(snapshot)"
 "${HELPER}" reset >/dev/null
-[[ "$(cat "${AGENT_FLAG_FILE}")" == "${before}" ]] && ok "reset is idempotent" || not_ok "reset is idempotent"
-
-# --- reset keeps the shipped empty targeting placeholders --------------------
-fresh
-"${HELPER}" reset >/dev/null
-if diff -q "${REPO_ROOT}/services/flagd/ci/interventions.json" "${WORK}/interventions.json" >/dev/null; then
-  ok "reset leaves the shipped interventions.json byte-identical (targeting {} kept)"
-else
-  not_ok "reset leaves the shipped interventions.json byte-identical: $(diff "${REPO_ROOT}/services/flagd/ci/interventions.json" "${WORK}/interventions.json" | head -5)"
-fi
-python3 - "${WORK}/interventions.json" <<'PY2'
-import json, sys
-path = sys.argv[1]
-data = json.load(open(path))
-data["flags"]["shield_seconds"]["targeting"] = {"if": [{"==": [{"var": "targetingKey"}, "MOCK0001"]}, "agent_MOCK0001", None]}
-json.dump(data, open(path, "w"), indent=2)
-PY2
-out="$("${HELPER}" reset)"
-[[ "${out}" == *"shield_seconds: targeting removed"* ]] && ok "reset removes agent-written targeting" || not_ok "reset removes agent-written targeting: ${out}"
-python3 - "${WORK}/interventions.json" "${REPO_ROOT}/services/flagd/ci/interventions.json" <<'PY2' && ok "other flags keep their empty targeting placeholder" || not_ok "other flags keep their empty targeting placeholder"
-import json, sys
-now, shipped = (json.load(open(p))["flags"] for p in sys.argv[1:])
-kept = [k for k, f in shipped.items() if f.get("targeting") == {} and k != "shield_seconds"]
-sys.exit(0 if kept and all(now[k].get("targeting") == {} for k in kept) else 1)
-PY2
+[[ "$(snapshot)" == "${before}" ]] && ok "reset is idempotent" || not_ok "reset is idempotent"
 
 # --- the reset baseline passes the pre-flight's flag section ---------------
-# docker and curl stubbed to "unavailable": only the flag-file section runs, and
-# no real container is ever inspected or exec'd.
+# docker and curl stubbed to "unavailable": only the flag section runs (it reads
+# the flag service in Python), and no real container is inspected.
 mkdir -p "${WORK}/bin"
 printf '#!/usr/bin/env bash\nexit 1\n' >"${WORK}/bin/docker"
 printf '#!/usr/bin/env bash\nexit 1\n' >"${WORK}/bin/curl"
@@ -135,7 +112,7 @@ for sig in TERM HUP; do
   "${HELPER}" permissions none 30 >/dev/null 2>&1 &
   pid=$!
   for _ in $(seq 50); do
-    [[ "$(variant "${AGENT_FLAG_FILE}" interventions_allowed)" == "none" ]] && break
+    [[ "$(variant interventions_allowed)" == "none" ]] && break
     sleep 0.1
   done
   expect "permissions (${sig}): held at none during the beat" interventions_allowed none
@@ -153,44 +130,46 @@ expect "unknown variant leaves the baseline" interventions_allowed standard
 # --- fallback on / off / reset (UC-070 A9, BR-007, #1316) --------------------
 fresh
 "${HELPER}" reset >/dev/null
-inode_before="$(stat -c %i "${AGENT_FLAG_FILE}")"
 out="$("${HELPER}" fallback on)"
 expect "fallback on: shadow games eligible for remote backends" llm.eligible_game_kinds real_and_shadow
 expect "fallback on: experiment loop on" experiments_enabled on
 expect "fallback on: the agent declares experiments" experiment_dynamic_enabled on
 expect "fallback on: fast experiment tick" experiment_tick_seconds fast
 expect "fallback on: other baseline flags untouched" interventions_allowed standard
-[[ "$(stat -c %i "${AGENT_FLAG_FILE}")" == "${inode_before}" ]] && ok "fallback on writes in place (same inode)" || not_ok "fallback on writes in place"
 [[ "${out}" == *"set    llm.eligible_game_kinds: real_only -> real_and_shadow"* ]] && ok "fallback on reports what it changed" || not_ok "fallback on reports what it changed: ${out}"
 [[ "${out}" != *"WARN"* ]] && ok "fallback on: shipped selection includes calm_long (no warning)" || not_ok "fallback on: no calm_long warning: ${out}"
 out="$("${HELPER}" status)"
 [[ "${out}" == *"fallback: on"* ]] && ok "status names the fallback" || not_ok "status names the fallback: ${out}"
-before="$(cat "${AGENT_FLAG_FILE}")"
+before="$(snapshot)"
 "${HELPER}" fallback on >/dev/null
-[[ "$(cat "${AGENT_FLAG_FILE}")" == "${before}" ]] && ok "fallback on is idempotent" || not_ok "fallback on is idempotent"
+[[ "$(snapshot)" == "${before}" ]] && ok "fallback on is idempotent" || not_ok "fallback on is idempotent"
 "${HELPER}" fallback off >/dev/null
 expect "fallback off: real games only" llm.eligible_game_kinds real_only
 expect "fallback off: experiment loop off" experiments_enabled off
 expect "fallback off: dynamic declarer off" experiment_dynamic_enabled off
 expect "fallback off: default experiment tick" experiment_tick_seconds default
-[[ "$(stat -c %i "${AGENT_FLAG_FILE}")" == "${inode_before}" ]] && ok "fallback off writes in place (same inode)" || not_ok "fallback off writes in place"
 out="$("${HELPER}" status)"
 [[ "${out}" == "at the stage baseline" ]] && ok "status after fallback off" || not_ok "status after fallback off: ${out}"
 "${HELPER}" fallback on >/dev/null
-setv "${AGENT_FLAG_FILE}" experiment.mock_archetypes quick_cascade
+drift experiment.mock_archetypes quick_cascade
 "${HELPER}" reset >/dev/null
 expect "reset after fallback on: real games only" llm.eligible_game_kinds real_only
 expect "reset after fallback on: experiment loop off" experiments_enabled off
 expect "reset after fallback on: dynamic declarer off" experiment_dynamic_enabled off
 expect "reset after fallback on: default experiment tick" experiment_tick_seconds default
 expect "reset restores the archetype selection with calm_long" experiment.mock_archetypes all
-setv "${AGENT_FLAG_FILE}" experiment.mock_archetypes quick_cascade
+drift experiment.mock_archetypes quick_cascade
 out="$("${HELPER}" fallback on)"
 [[ "${out}" == *"WARN   experiment.mock_archetypes = quick_cascade"*"no calm_long"* ]] && ok "fallback on warns without calm_long" || not_ok "fallback on warns without calm_long: ${out}"
 rc=0; "${HELPER}" fallback maybe >/dev/null 2>&1 || rc=$?
 [[ "${rc}" -eq 2 ]] && ok "fallback needs on|off" || not_ok "fallback needs on|off (rc=${rc})"
 rc=0; "${HELPER}" fallback >/dev/null 2>&1 || rc=$?
 [[ "${rc}" -eq 2 ]] && ok "fallback without state is a usage error" || not_ok "fallback without state is a usage error (rc=${rc})"
+
+# --- the flag service unreachable -------------------------------------------
+stop_fake_flag_service
+rc=0; out="$("${HELPER}" status 2>&1)" || rc=$?
+[[ "${rc}" -ne 0 && "${out}" == *"flag service unreachable"* ]] && ok "unreachable flag service fails clearly" || not_ok "unreachable flag service fails clearly (rc=${rc}: ${out})"
 
 # --- usage -----------------------------------------------------------------
 rc=0; "${HELPER}" >/dev/null 2>&1 || rc=$?

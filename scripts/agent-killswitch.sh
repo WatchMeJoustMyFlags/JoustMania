@@ -1,66 +1,54 @@
 #!/usr/bin/env bash
-# Flip the agent MASTER kill-switch (#999 dry-run helper).
+# Flip the agent MASTER kill-switch (#999 dry-run helper; epic #1407).
 #
-# The agent's `enabled` flag (agent flagd domain) is the master kill-switch and
-# is fail-closed `off` by DEFAULT in BOTH the production flag dir
-# (services/flagd/agent.json) and the ci/dry-run dir (services/flagd/ci/agent.json).
-# With it off the experiment cohort loop declares + writes targeting then aborts:
-#   experiment.torn_down ... reason="kill-switch: agent disabled"
-#
-# This helper toggles the `enabled` defaultVariant in the CI/DRY-RUN flag dir
-# only (the dir `make dry-run` serves). It NEVER touches the production
-# services/flagd/agent.json default — that stays fail-closed by design.
+# The agent's `enabled` flag (agent flag set) is the master kill-switch and is
+# fail-closed `off` in the baseline (services/flagd/agent.json and ci/agent.json).
+# This helper changes it through the flag service (scripts/flags.sh): `on` sets an
+# in-memory stack overlay, `off` clears it, so the fail-closed baseline returns.
+# Nothing is persisted (re-review N4): a flag-service restart is `off` again.
 #
 # Usage:
-#   ./scripts/agent-killswitch.sh on    # enable the agent (dry-run)
-#   ./scripts/agent-killswitch.sh off   # disable it again
+#   ./scripts/agent-killswitch.sh on    # enable the agent
+#   ./scripts/agent-killswitch.sh off   # back to the fail-closed baseline
 #   ./scripts/agent-killswitch.sh status
 #
-# After flipping, flagd hot-reloads the file and the change takes effect LIVE
-# (~1 s): the agent reads the `enabled` kill-switch live each cycle (and since
-# #1044 the experiment loop is always built and self-gates each tick on the live
-# flags), so an off→on flip starts it with NO agent restart. A restart/recreate
-# is only required when you set/change the AGENT_INFERENCE_* env vars (read at
-# process start).
+# The change takes effect LIVE (the flag service pushes it to flagd at once): the
+# agent reads `enabled` each cycle, so no agent restart is needed.
+#
+# If the flag service cannot be reached, `off` cannot clear the overlay: the
+# helper then prints the fallback brake (stop the agent container; the game keeps
+# running without it) and exits non-zero.
+#
+# Env: FLAG_SERVICE_URL (default http://localhost/flags, the envoy route),
+#      AGENT_CONTAINER (default joustmania-agent, named in the fallback).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-FLAG_FILE="${AGENT_FLAG_FILE:-${REPO_ROOT}/services/flagd/ci/agent.json}"
+FLAGS="${FLAGS_SH:-${SCRIPT_DIR}/flags.sh}"
+export FLAGS_WRITER="${FLAGS_WRITER:-operator}"
+AGENT_CONTAINER="${AGENT_CONTAINER:-joustmania-agent}"
 
-action="${1:-status}"
+fallback() {
+  cat >&2 <<EOF_FALLBACK
+agent kill-switch: the flag service did not take the change.
+Fallback brake (the game keeps running without the agent):
+  docker stop ${AGENT_CONTAINER}
+Start it again later with: docker start ${AGENT_CONTAINER}
+EOF_FALLBACK
+  exit 1
+}
 
-case "${action}" in
-  on|off)
-    python3 - "${FLAG_FILE}" "${action}" <<'PY'
-import json
-import sys
-
-path, variant = sys.argv[1], sys.argv[2]
-with open(path) as fh:
-    data = json.load(fh)
-
-flag = data["flags"]["enabled"]
-if variant not in flag["variants"]:
-    sys.exit(f"variant {variant!r} not defined in {path}")
-flag["defaultVariant"] = variant
-
-with open(path, "w") as fh:
-    json.dump(data, fh, indent=2)
-    fh.write("\n")
-print(f"agent kill-switch -> {variant}  ({path})")
-PY
+case "${1:-status}" in
+  on)
+    "${FLAGS}" set agent enabled on >/dev/null
+    echo "agent kill-switch -> on"
+    ;;
+  off)
+    "${FLAGS}" clear agent enabled || fallback
+    echo "agent kill-switch -> $("${FLAGS}" variant agent enabled) (baseline)"
     ;;
   status)
-    python3 - "${FLAG_FILE}" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path) as fh:
-    data = json.load(fh)
-print(f"agent kill-switch = {data['flags']['enabled']['defaultVariant']}  ({path})")
-PY
+    echo "agent kill-switch = $("${FLAGS}" variant agent enabled)"
     ;;
   *)
     echo "usage: $0 {on|off|status}" >&2

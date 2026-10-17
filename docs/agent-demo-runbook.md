@@ -35,8 +35,8 @@ them. Read the linked one when you need the detail:
   (`ANTHROPIC_API_KEY`, `DECISION_OPENAI_API_KEY`) and internet access from the
   demo host. See *Switch to a remote decision backend* below.
 - *(Optional, real PS Move controllers)* a Bluetooth adapter; the demo runs on
-  **mock controllers** by default (the `make dry-run` / `up-mock` flagd `ci/`
-  dir sets controller `backend=mock`), so hardware is not on the critical path.
+  **mock controllers** by default (the `services/flagd/ci/` baseline that the
+  flag service loads for `make dry-run` / `up-mock` sets controller `backend=mock`), so hardware is not on the critical path.
 
 ### Bring up the demo stack (the cohort loop)
 
@@ -49,7 +49,8 @@ make dry-run
 ```
 
 The loop is **inert until you opt in** (both live gates are fail-closed `off` by
-default). Flip them on — the gate flips take effect **live** (~1 s; since #1044
+default). Flip them on — the gate flips take effect **live** (a flag-service
+overlay reaches flagd over the sync stream; NFR-050 targets p95 200 ms; since #1044
 the loop is always built and self-gates each tick on the live flags, so an
 off→on flip starts it with **no agent restart**):
 
@@ -57,8 +58,8 @@ off→on flip starts it with **no agent restart**):
 ./scripts/agent-dryrun-enable.sh on
 ```
 
-`agent-dryrun-enable.sh on` flips, **in the `services/flagd/ci/` flag dir only**
-(never the production defaults), two flags in one step:
+`agent-dryrun-enable.sh on` sets, as in-memory `operator` overlays through the
+flag service (the baseline files are never written), two flags in one step:
 
 - `enabled` → `on` — the master kill-switch.
 - `experiments_enabled` → `on` — the LIVE experiment-loop gate (post-#1044; this
@@ -85,7 +86,7 @@ flip the flag live:
 export ANTHROPIC_API_KEY=sk-ant-...      # or DECISION_OPENAI_API_KEY for openai
 docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent up -d agent
 
-./scripts/agent-backend.sh claude haiku   # live, ~1 s, no restart
+./scripts/agent-backend.sh claude haiku   # live flag-service overlay, no restart
 ./scripts/agent-backend.sh status
 ./scripts/agent-backend.sh rules          # back to the floor
 ```
@@ -117,7 +118,7 @@ The whole stack is proxied through envoy on port **80**:
 - [ ] **Gates on**: `./scripts/agent-dryrun-enable.sh status` shows
       `enabled = on`, `experiments_enabled = on`, and the `decision.backend`
       you intend to show.
-- [ ] **Loop live** since the enable flip (the gate flip takes effect within ~1 s,
+- [ ] **Loop live** since the enable flip (the gate flip is live at once,
       self-gated per-tick since #1044 — no restart needed): the log shows live
       `experiment.*` activity, **not** `kill-switch: agent disabled`.
 - [ ] **Remote backend reachable** (only if showing one): the agent log line
@@ -126,9 +127,9 @@ The whole stack is proxied through envoy on port **80**:
       `decide.backend=claude` (not a `decide.fallback_reason`).
 - [ ] **Dashboards load**: `http://localhost/` Agent + Experiments tabs render;
       Grafana **Agent Decisions & Interventions** (`/grafana/d/agent-operations`) opens.
-- [ ] **Known-good flag state**: gates set as above; production
-      `services/flagd/agent.json` defaults **untouched** (the helper scripts
-      only write the `ci/` dir).
+- [ ] **Known-good flag state**: gates set as above; `scripts/flags.sh get agent`
+      shows only the overlays you expect (the helper scripts write in-memory
+      overlays through the flag service; no baseline file is ever written).
 - [ ] *(Real controllers only)* controllers paired and showing READY (bright
       LED).
 - [ ] **Panic button rehearsed**: you can flip the kill-switch off in one
@@ -166,9 +167,10 @@ path — applies bounded interventions.
   fallback). The span schema is the same either way, so the demo arc is identical
   (the fallback to rules is itself a talking point — see failure modes).
 - **Interventions**: with the ACT path open (see the
-  [ACT runbook](agent-act-runbook.md) — `interventions_enabled=on` (flagd flag,
+  [ACT runbook](agent-act-runbook.md) — `interventions_enabled=on` (agent flag,
   #1213) + `enabled=on` + a permitting `interventions_allowed` variant), a permitted
-  decision rewrites `interventions.json` and the coordinator applies it,
+  decision is written to the flag service as a game-scoped value or event and the
+  coordinator applies it,
   incrementing `agent_interventions_applied_total` (agent side) and
   `game_interventions_total` (coordinator side). The dedicated **Act 2b** below
   drives interventions all the way to *applied*.
@@ -199,34 +201,25 @@ matters for the demo, so it is worth narrating.
 act widens:
 
 ```bash
-# Gate 1 (sink) — flagd flag `interventions_enabled`, re-read at use-time (#1213),
+# Gate 1 (sink) — agent flag `interventions_enabled`, re-read at use-time (#1213),
 #   so flipping it takes effect on the next decision with NO agent restart.
-# Gate 2 (kill-switch enabled=on) is handled by the enable script.
-# Flip interventions_enabled -> on in services/flagd/agent.json (or the live flag):
-#   "interventions_enabled": { "defaultVariant": "on" }
-# flagd hot-reloads within ~100 ms-1 s; the next Apply writes through the real sink.
+scripts/flags.sh set agent interventions_enabled on
+scripts/flags.sh variant agent interventions_enabled    # prints: on
 
-# confirm the real sink is wired (writes enabled):
-docker compose logs agent | grep 'Agent intervention writes enabled' | tail -1
-
-# Gate 2 on (live flip, ~1 s, no restart):
+# Gate 2 (kill-switch enabled=on) is handled by the enable script (live, no restart):
 ./scripts/agent-dryrun-enable.sh on
 ```
 
 Then widen the allow-list to the **superset** so the new shadow-only levers are
-permitted. Set `interventions_allowed` to `shadow_experimental` in the
-`services/flagd/ci/agent.json` flag dir the demo stack serves (**not** the base
-`services/flagd/agent.json` — see the flag-edit gotcha in act 3):
+permitted. Set `interventions_allowed` to `shadow_experimental` through the flag
+service (a `stage` overlay, never persisted):
 
-```json
-"interventions_allowed": {
-  "state": "ENABLED",
-  "variants": { "...": "..." },
-  "defaultVariant": "shadow_experimental"
-}
+```bash
+./scripts/talk-stage.sh permissions shadow_experimental
+# or: scripts/flags.sh set agent interventions_allowed shadow_experimental
 ```
 
-flagd hot-reloads within ~1 s; the **next** `agent.decision` span tags
+The **next** `agent.decision` span tags
 `interventions.allowed=play_audio_cue,…,set_player_handicap,ramp_tempo,partial_shield`
 (the full string, post-#1127) instead of `none`, and a permitted decision now
 carries `decision.blocked=false` and completes its `agent.action` span.
@@ -309,10 +302,11 @@ decision here is *correct behaviour*, not a bug):
   ([`agent-operations.json`](../services/grafana/dashboards/agent-operations.json)),
   row Interventions, shows both live, next to the coordinator-side applies.
 
-### Act 3 — Live flag flips via flagd (the control plane is live)
+### Act 3 — Live flag flips via the flag service (the control plane is live)
 
-Every gate is an OpenFeature flag; flagd hot-reloads file edits in **~100 ms–1 s**
-with no restart. Show the control plane reacting live:
+Every gate is an OpenFeature flag. A write to the flag service reaches flagd over
+its gRPC sync stream (NFR-050: p95 at most 200 ms) with no restart. Show the
+control plane reacting live:
 
 - **The kill-switch panic button** — the headline live flip. Flip `enabled` off
   and the loop short-circuits on its next cycle, emitting only a throttled
@@ -322,7 +316,7 @@ with no restart. Show the control plane reacting live:
   ./scripts/agent-killswitch.sh on     # resume
   ```
 - **Swap the decision backend** (#1232) — flip who makes the `agent.decide` call
-  live, same `ci/` flag dir, no restart. Unknown variants are refused with the
+  live through the flag service, no restart. Unknown variants are refused with the
   valid list:
   ```bash
   ./scripts/agent-backend.sh                  # show backend / model / threshold / capture
@@ -334,8 +328,8 @@ with no restart. Show the control plane reacting live:
   ```
   API keys stay env-only (`ANTHROPIC_API_KEY`, `DECISION_OPENAI_API_KEY`,
   `JEV_API_KEY`); a backend missing its key or model falls back to rules.
-- **Soften instead of stop** — set `interventions_allowed` to `none` in the agent
-  flagd domain: the loop still runs and traces, but every decision is blocked
+- **Soften instead of stop** — set `interventions_allowed` to `none`
+  (`./scripts/talk-stage.sh permissions none`): the loop still runs and traces, but every decision is blocked
   `not_allowed` (visible as `decision.blocked=true`). This is the bottom rung of
   the variant ladder in [Act 2b](#act-2b--interventions-applying-not-just-blocked);
   flipping back to `shadow_experimental` re-opens dispatch live. See the
@@ -348,11 +342,12 @@ with no restart. Show the control plane reacting live:
   `./scripts/agent-backend.sh` flip shows as the stack changing colour within a
   minute (span metrics from the collector, not an agent counter).
 
-> **Flag-edit gotcha (read before the talk):** the demo stack serves the
-> `services/flagd/ci/` flag dir. The `agent-killswitch.sh` / `agent-dryrun-enable.sh`
-> / `agent-backend.sh` helpers already target `ci/` — *use them.* A hand-edit of the **base**
-> `services/flagd/agent.json` will **not** take effect in the demo (flagd is
-> serving `ci/`). See failure modes → *flag changes not taking effect*.
+> **Flag-change gotcha (read before the talk):** runtime flags change only
+> through the flag service. The `agent-killswitch.sh` / `agent-dryrun-enable.sh`
+> / `agent-backend.sh` / `talk-stage.sh` helpers and `scripts/flags.sh` do that —
+> *use them.* A hand-edit of a file under `services/flagd/` changes nothing until
+> `scripts/flags.sh restart`, and that restart drops every overlay (gates back
+> to `off`). See failure modes → *flag changes not taking effect*.
 
 ---
 
@@ -403,8 +398,9 @@ error.
   AGENT_EXPERIMENT_SEED_FLAG=invincibility_seconds \
   AGENT_EXPERIMENT_SEED_VALUE=4.5 make dry-run
   ```
-  (The seed flag must exist in `services/flagd/ci/game.json` and the value's JSON
-  kind must match its variants.)
+  (The seed flag must exist in `services/flagd/ci/game.json`, be in the
+  experiment catalog of the flag service's registry, and the value must be in
+  its bounds; otherwise the write is rejected with HTTP 422.)
 
 ### D. `inconclusive` verdicts on the mock substrate
 
@@ -425,30 +421,33 @@ error.
   shows `kill-switch: agent disabled` / `agent.disabled` spans (`agent.enabled=false`).
 - **Check**: `./scripts/agent-dryrun-enable.sh status` (or `agent-killswitch.sh
   status`) — `enabled` is `off`.
-- **Fix**: flip it on — the gate flip takes effect **live** within ~1 s, no
-  restart needed:
+- **Fix**: flip it on — the gate flip takes effect **live**, no restart
+  needed:
   ```bash
   ./scripts/agent-dryrun-enable.sh on
   ```
   (Both the kill-switch *flag* and the *experiment loop* gate are read live: the
-  ACT path hot-reloads the flag, and since #1044 the loop is always built and
+  ACT path re-reads the flag each cycle, and since #1044 the loop is always built and
   self-gates each tick on the live `experiments_enabled` flag — an off→on flip
   starts it with no agent restart. A restart/recreate is only needed when you
   set/change API keys or the `AGENT_INFERENCE_*` env vars, which are read at
   process start.)
 
-### F. Flag changes not taking effect (flagd `ci/` vs base dir)
+### F. Flag changes not taking effect
 
-- **Symptom**: you edited a flag but the agent's behavior didn't change.
-- **Check**: did you edit `services/flagd/agent.json` (base) by hand? The demo
-  stack serves the **`services/flagd/ci/`** dir, so base-dir edits are ignored.
-- **Fix**: use the helper scripts — they write the `ci/` dir
-  (`agent-killswitch.sh`, `agent-dryrun-enable.sh`), or edit
-  `services/flagd/ci/<domain>.json` directly. This is the same class of dir
-  mismatch the dry-run override fixes for the agent's own writes (#999/#822). For
-  the corruption self-heal case (invalid `interventions.json` → flagd rejects the
-  whole set), see the
-  [ACT runbook → interventions file corruption](agent-act-runbook.md#recovery--interventions-file-corruption-924).
+- **Symptom**: you changed a flag but the agent's behavior didn't change.
+- **Check**: did you edit a file under `services/flagd/` by hand? Those are the
+  read-only baseline; the flag service reads them only at start. Did the write
+  fail? `scripts/flags.sh` prints the HTTP status and reason (`422
+  flag_read_only` for a flag outside the registry, `422 out_of_bounds`,
+  `503 no_sync_stream` when flagd is not connected). Did the flag service
+  restart? A restart drops every in-memory overlay.
+- **Fix**: use the helper scripts or `scripts/flags.sh set <set> <flag>
+  <variant>`; `scripts/flags.sh state` shows whether flagd's sync stream is
+  open. For a baseline-only flag, edit the baseline file and run
+  `scripts/flags.sh restart`, then re-open the gates. For rejected agent writes,
+  see the
+  [ACT runbook → rejected or failed intervention writes](agent-act-runbook.md#recovery--rejected-or-failed-intervention-writes).
 
 ### G. A service is unhealthy / a recovery restart
 
@@ -462,9 +461,11 @@ error.
     -f docker-compose.ci.yml -f docker-compose.dry-run.yml \
     --profile agent --profile dashboard restart <service>
   ```
-  After restarting **flagd**, the agent re-reads flags within ~1 s (no agent
-  restart needed). After restarting the **agent**, re-confirm the gates are still
-  `on` (`agent-dryrun-enable.sh status`).
+  After restarting **flagd**, it reconnects to the flag service and serves the
+  current state (no agent restart needed). Restart the **flag service** only with
+  `scripts/flags.sh restart` (it restarts flagd after it); that drops every
+  overlay, so run `agent-dryrun-enable.sh on` again. After restarting the
+  **agent**, re-confirm the gates are still `on` (`agent-dryrun-enable.sh status`).
 
 ### Worst case — the demo cannot recover live
 
@@ -483,19 +484,19 @@ If the agent / inference path is wedged on stage and a restart doesn't clear it,
 
 ## 4. Teardown
 
-Tear down the dry-run stack and restore the fail-closed flag defaults:
+Tear down the dry-run stack:
 
 ```bash
 docker compose \
   -f docker-compose.yml -f docker-compose.override.yml \
   -f docker-compose.ci.yml -f docker-compose.dry-run.yml \
   --profile agent --profile dashboard down
-
-./scripts/agent-dryrun-enable.sh off    # restore enabled / experiments_enabled -> off / off (ci dir)
-./scripts/agent-backend.sh rules        # decision.backend back to the rules floor (ci dir)
 ```
 
-`agent-dryrun-enable.sh off` only resets the `services/flagd/ci/` dir; the
-production `services/flagd/agent.json` defaults were never touched. Confirm with
+The gate, backend and allow-list changes were in-memory flag-service overlays,
+so `down` drops them; the baseline files were never written. To return to the
+fail-closed defaults without tearing down, run `./scripts/agent-dryrun-enable.sh
+off` and `./scripts/agent-backend.sh rules` (or `scripts/flags.sh reset agent
+stage` and `scripts/flags.sh reset agent operator`) and confirm with
 `./scripts/agent-dryrun-enable.sh status`. Unset any API keys you exported on the
 host.

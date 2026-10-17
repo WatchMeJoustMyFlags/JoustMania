@@ -41,6 +41,11 @@ erDiagram
     EXPERIMENT ||--o{ PATTERN_PAIR_ASSIGNMENT : "pins"
     MOTION_ARCHETYPE ||--o{ PATTERN_PAIR_ASSIGNMENT : "is run by"
     MOTION_ARCHETYPE |o--o{ GAME_SESSION : "drives"
+    FLAG ||--o| MUTABLE_FLAG_POLICY : "may change at runtime under"
+    GAME_SESSION ||--o| GAME_SCOPE : "is registered as (planned)"
+    GAME_SCOPE ||--o{ FLAG_OVERLAY : "holds game-scoped"
+    FLAG ||--o{ FLAG_OVERLAY : "is overridden by"
+    EXPERIMENT ||--o{ FLAG_OVERLAY : "holds arm values as"
 ```
 
 ### CONTROLLER
@@ -188,7 +193,7 @@ An event on a game's event stream (`proto/game_coordinator.proto` `GameEvent`; p
 
 ### FLAG_SET
 
-One flagd flag file (`services/flagd/*.json`); see [flags.md](specs/flags.md).
+One flag set: its read-only baseline file (`services/flagd/<set>.json`), served to flagd by the flag service together with its runtime overlays; see [flags.md](specs/flags.md).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -220,6 +225,69 @@ A named value of a flag.
 | value | JSON value | String | 4000 | Not Null |
 
 **Constraints:** the agent experiment writer may add a variant named `agent_experiment__<experiment_id>` and shadow-scoped targeting, but may not change `default_variant` or an existing variant (`services/agent/experiment/gate.go`).
+
+### MUTABLE_FLAG_POLICY
+
+**Planned** (epic #1407, UC-053, FR-132). One row of the flag service's mutable-flag registry
+([flags.md §13](specs/flags.md#13-mutable-flag-registry)): a flag that may change at runtime, within which
+bounds, and whether a write may persist it. A flag without a policy is read-only baseline. There are no writer roles (local game, architecture note D11).
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| flag_key | The flag | String | 60 | Primary Key, Foreign Key (FLAG.key) |
+| flag_set_id | Its flag set | String | 20 | Not Null, Foreign Key (FLAG_SET.flag_set_id) |
+| kind | How values are written and rendered | String | 8 | Not Null, Values: state, level, grant, event, overlay |
+| scope | Where a write applies | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, real, fraction |
+| persist | Admin setting: a write that asks for it (`"persist": true`) is kept in the service's state file across restarts | Boolean | | Not Null, Default: false |
+| allowed_variants | Declared variants a write may select | String | 400 | Optional |
+| min_value | Inclusive lower bound of a numeric value | Decimal | 10,3 | Optional |
+| max_value | Inclusive upper bound of a numeric value | Decimal | 10,3 | Optional, >= min_value |
+| payload_schema | Format of a composite string value (e.g. `<seconds>:<factor>`), or `free string` | String | 100 | Optional |
+
+### GAME_SCOPE
+
+**Planned** (FR-135). The flag service's in-memory record of one live game, registered by the game coordinator
+at admission and dropped at the game's end, by a reconcile call of its coordinator instance, or after the
+maximum game age.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| game_id | Game id | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id), Format: `game_<12 hex>` |
+| game_kind | Flag vocabulary | String | 6 | Not Null, Values: real, shadow (an unspecified kind is never real) |
+| serials | Serials of the game's players | String | 400 | Not Null |
+| experiment_id | Experiment of a shadow experiment game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
+| arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
+| coordinator_instance | Coordinator instance that registered it; reconcile calls drop only that instance's scopes | String | 80 | Not Null |
+| registered_at | Registration time | DateTime | | Not Null |
+
+**Constraints:** at most 64 KiB of values per scope (NFR-051); a write naming a game without a scope is rejected
+(`game_not_live`).
+
+### FLAG_OVERLAY
+
+**Planned** (FR-134, FR-136 to FR-138). One runtime value the flag service holds on top of the baseline, in memory
+(C-030); a stack overlay written with `"persist": true` (registry `persist`) is also written to the service's
+own state file.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| overlay_id | Generated id; also the opaque variant name it renders (`r<epoch>_<n>`) | String | 24 | Primary Key |
+| epoch | Boot id of the flag service that holds it | String | 8 | Not Null |
+| flag_key | The flag | String | 60 | Not Null, Foreign Key (MUTABLE_FLAG_POLICY.flag_key) |
+| scope | Scope of this value | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, real, fraction |
+| game_id | Game for a game-scoped value | String | 17 | Optional, Foreign Key (GAME_SCOPE.game_id) |
+| serial | Player for a game+serial value | String | 20 | Optional, must be in GAME_SCOPE.serials |
+| experiment_id | Experiment for an arm value | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
+| arm | Arm for an arm value | String | 12 | Optional |
+| fraction_percent | Share of serials for a fraction value | Integer | 3 | Optional, 1 to 100 |
+| value | Resolved value as JSON; for an `event` flag the game's event list `{"epoch","seq","events"}` (last 16) | String | 4000 | Not Null, within the policy's bounds |
+| sequence | Last event sequence of an `event` value | Integer | 10 | Optional, > 0, strictly increasing per game and flag |
+| writer | Informational label of the caller (never checked) | String | 40 | Optional |
+| expires_at | End of an optional time-to-live | DateTime | | Optional |
+| decision_id | Agent decision or intervention id | String | 60 | Optional |
+| written_at | Write time | DateTime | | Not Null |
+
+**Constraints:** dropped with its GAME_SCOPE, by a `DELETE` of its flag and scope, when its time-to-live ends, or by a restart (a `persist` value is restored from the state file).
 
 ### DECISION
 
@@ -271,7 +339,7 @@ A backend's answer to one question (`decide.go:77-90`, validation `validate.go`)
 
 ### INTERVENTION
 
-A bounded in-game change applied through `interventions.json` (`services/agent/actions/writer.go`, `services/game_coordinator/interventions.py`).
+A bounded in-game change written for one game to the `interventions` flag set through the flag service (`services/agent/actions/writer.go`) and applied by the game coordinator (`services/game_coordinator/interventions.py`).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|

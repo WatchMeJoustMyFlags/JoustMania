@@ -4,15 +4,16 @@ Per-player flag lifecycle on the coordinator (#1317, #1323, #1269).
 UC-040 A24 / BR-017: when every player's ``player_sensitivity_factor`` or
 ``player_handicap_factor`` resolves to neutral again, the coordinator resets the
 factors in the game. Before #1317 the all-neutral transition dispatched nothing,
-so the last factor stayed for the rest of the game. A level present when a game
-starts belongs to an earlier game and is never applied in the new one.
+so the last factor stayed for the rest of the game. Levels are game-scoped in
+the flag service, so a new game never sees a level of an earlier game.
 
 UC-040 A25 / BR-016: the agent prunes a retired game's players from the
 per-player flags. A pruned player resolves to the neutral variant, which never
 fires a grant.
 
-UC-040 A19 / BR-012: once a game's grant baseline is primed, a player with no
-baseline entry adopts its grant without firing (#1323).
+UC-040 A19 / BR-012: a player the game has not read yet (e.g. revived) has no
+baseline entry; it counts as neutral, so its grant or level in this game's
+scope applies once. A failed read never fires and never moves a baseline.
 
 Reuses the session harness of ``test_intervention_scoping``.
 """
@@ -26,7 +27,6 @@ test_dir = Path(__file__).parent
 sys.path.insert(0, str(test_dir.parent.parent.parent))
 
 from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
-from services.game_coordinator.interventions import SessionView
 from services.game_coordinator.tests.test_intervention_scoping import (
     GRANT_FLAGS,
     REAL,
@@ -55,8 +55,13 @@ class LevelHarness(Harness):
             player.handicap_factor = 1.0
         return game
 
-    def set_level(self, flag_key, serial, value):
-        self.flags.per_serial[(flag_key, serial)] = (f"agent_{serial}", value)
+    def set_level(self, flag_key, serial, value, *, game_id=None):
+        """Write a level; with ``game_id`` it lives in that game's scope only."""
+        entry = (f"r1_{serial}", value)
+        if game_id is None:
+            self.flags.per_serial[(flag_key, serial)] = entry
+        else:
+            self.flags.scoped_serial[(flag_key, game_id, serial)] = entry
 
     def prune(self, *serials):
         """What the agent's prune does to the flag: drop the players' entries."""
@@ -135,7 +140,7 @@ async def test_never_applied_neutral_levels_dispatch_nothing():
     h = LevelHarness()
     game = h.start_game(REAL, real=True)
     game.players["p1"].sensitivity_factor = 1.3
-    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
+    h.flags.values["volume_override"] = 0.5  # unrelated write
     await h.flag_change()
     assert game.players["p1"].sensitivity_factor == 1.3
 
@@ -147,44 +152,22 @@ async def test_never_applied_neutral_levels_dispatch_nothing():
 @pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
 @pytest.mark.asyncio
 async def test_next_game_does_not_inherit_levels(flag_key):
-    """p1's level from game N is still in the flag when N+1 starts (the agent's
-    prune has not landed yet). N+1 starts neutral, keeps p1 neutral when p2 gets
-    a level, and the late prune changes nothing in N+1."""
+    """p1's level lives in game N's scope, which ends with N. Game N+1 (same
+    serials) starts neutral, and a level decided in N+1 for p1 applies."""
     h = LevelHarness()
     game_n = h.start_game("game_n", real=True)
-    h.set_level(flag_key, "p1", 1.5)
+    h.set_level(flag_key, "p1", 1.5, game_id="game_n")
     await h.flag_change()
     assert factors(game_n, flag_key)["p1"] == 1.5
     h.end("game_n")
 
     game_n1 = h.start_game("game_n1", real=True)
-    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
     await h.flag_change()
     assert factors(game_n1, flag_key) == {"p1": 1.0, "p2": 1.0}
 
-    h.set_level(flag_key, "p2", 1.25)  # a decision in N+1 for another player
+    h.set_level(flag_key, "p1", 0.7, game_id="game_n1")  # a decision in N+1
     await h.flag_change()
-    assert factors(game_n1, flag_key) == {"p1": 1.0, "p2": 1.25}
-
-    h.prune("p1")  # the agent's game-end prune for N lands late
-    await h.flag_change()
-    assert factors(game_n1, flag_key) == {"p1": 1.0, "p2": 1.25}
-
-
-@pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
-@pytest.mark.asyncio
-async def test_new_decision_for_a_leftover_player_applies():
-    """A level decided in N+1 for p1 (whose N entry was left over) applies."""
-    h = LevelHarness()
-    h.start_game("game_n", real=True)
-    h.set_level("player_sensitivity_factor", "p1", 1.5)
-    await h.flag_change()
-    h.end("game_n")
-
-    game = h.start_game("game_n1", real=True)
-    h.set_level("player_sensitivity_factor", "p1", 0.7)
-    await h.flag_change()
-    assert game.players["p1"].sensitivity_factor == 0.7
+    assert factors(game_n1, flag_key) == {"p1": 0.7, "p2": 1.0}
 
 
 @pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
@@ -192,11 +175,10 @@ async def test_new_decision_for_a_leftover_player_applies():
 async def test_concurrent_shadow_does_not_inherit_the_real_games_level():
     h = LevelHarness()
     real = h.start_game(REAL, real=True)
-    h.set_level("player_sensitivity_factor", "p1", 1.5)
+    h.set_level("player_sensitivity_factor", "p1", 1.5, game_id=REAL)
     await h.flag_change()
 
     shadow = h.start_game(SHADOW, real=False)  # shares serial p1 in this fake
-    h.flags.values["audio_cue"] = "2-b:agent_cue"
     await h.flag_change()
 
     assert real.players["p1"].sensitivity_factor == 1.5
@@ -214,13 +196,13 @@ async def test_prune_never_refires_a_grant(flag_key):
     grant arrives. p1 is never granted again, p2 once."""
     h = LevelHarness()
     game = h.start_game(REAL, real=True)
-    _grant(h, flag_key, "p1", "n1")
+    _grant(h, flag_key, "p1", "1")
     await h.flag_change()
 
     h.prune("p1")
     await h.flag_change()
     await h.flag_change()
-    _grant(h, flag_key, "p2", "n2")
+    _grant(h, flag_key, "p2", "2")
     await h.flag_change()
 
     assert game.grants(flag_key) == ["p1", "p2"]
@@ -238,7 +220,7 @@ async def test_prune_of_a_retired_games_players_touches_no_live_game():
     h.start_game(SHADOW, real=False, serials=("MOCK0001", "MOCK0002"))
     h.set_level("player_sensitivity_factor", "r1", 1.5)
     h.set_level("player_sensitivity_factor", "MOCK0001", 0.7)
-    _grant(h, "shield_seconds", "MOCK0002", "n1")
+    _grant(h, "shield_seconds", "MOCK0002", "1")
     await h.flag_change()
     events_before = list(h.events.get(REAL, []))
 
@@ -252,29 +234,29 @@ async def test_prune_of_a_retired_games_players_touches_no_live_game():
 
 
 # --------------------------------------------------------------------------- #
-# A19 / BR-012: a missing serial in a primed baseline is adopted (#1323)
+# A19 / BR-012: a player the game has not read yet counts as neutral
 # --------------------------------------------------------------------------- #
 @pytest.mark.uc("UC-040", flow="A19", br=["BR-012"])
 @pytest.mark.parametrize("flag_key", GRANT_FLAGS)
 @pytest.mark.asyncio
-async def test_revived_player_missing_from_the_fallback_prime_is_not_granted(flag_key):
-    """The fallback prime records alive players only. p2 was dead then; its
-    leftover grant must not fire when it is revived. A fresh grant does."""
+async def test_revived_player_gets_its_grant_once(flag_key):
+    """p2 is dead on the game's first read, so it has no baseline entry. Once
+    revived, its grant in this game's scope applies, once; a new grant again."""
     h = LevelHarness()
-    game = FakeGame(("p1", "p2"))
+    game = h.start_game(REAL, real=True)
     game.players["p2"].alive = False
-    _grant(h, flag_key, "p2", "old")  # left over from an earlier game
-    h.views.append(SessionView(game_id=REAL, game=game, publish=h._publisher(REAL), is_real=True))
-    await h.flag_change()  # never primed: fallback prime (alive players only)
-
-    game.players["p2"].alive = True  # revived
-    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
+    _grant(h, flag_key, "p2", "1", game_id=REAL)
     await h.flag_change()
     assert game.grants(flag_key) == []
 
-    _grant(h, flag_key, "p2", "new")
+    game.players["p2"].alive = True  # revived
+    await h.flag_change()
     await h.flag_change()
     assert game.grants(flag_key) == ["p2"]
+
+    _grant(h, flag_key, "p2", "2", game_id=REAL)
+    await h.flag_change()
+    assert game.grants(flag_key) == ["p2", "p2"]
 
 
 # --------------------------------------------------------------------------- #
@@ -285,8 +267,8 @@ async def test_revived_player_missing_from_the_fallback_prime_is_not_granted(fla
 async def test_two_grants_within_one_poll_apply_the_later_once():
     h = LevelHarness()
     game = h.start_game(REAL, real=True)
-    _grant(h, "shield_seconds", "p1", "n1", 10.0)
-    _grant(h, "shield_seconds", "p1", "n2", 3.0)  # same poll: flagd serves only this
+    _grant(h, "shield_seconds", "p1", "1", 10.0)
+    _grant(h, "shield_seconds", "p1", "2", 3.0)  # same poll: flagd serves only this
     await h.flag_change()
     await h.flag_change()
     assert game.shields == [("p1", 3.0)]
@@ -298,24 +280,23 @@ async def test_two_grants_within_one_poll_apply_the_later_once():
 @pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
 @pytest.mark.asyncio
-async def test_level_read_error_at_game_start_never_applies_the_leftover(flag_key):
-    """flagd errors while the game is primed: the getter would return the
-    neutral default and make p1's leftover level look new on recovery. The
-    error is recorded as unknown, so the leftover is adopted, not applied."""
+async def test_level_read_error_at_game_start_never_fires(flag_key):
+    """flagd errors on the game's first reads: the getter would return the
+    neutral default. The failed read applies nothing and moves no baseline; on
+    recovery the game's level applies, once."""
     h = LevelHarness()
-    h.set_level(flag_key, "p1", 1.5)  # left over from an earlier game
+    h.set_level(flag_key, "p1", 1.5, game_id=REAL)
     h.flags.failing = {flag_key}
     game = h.start_game(REAL, real=True)
     await h.flag_change()
+    assert factors(game, flag_key) == {"p1": 1.0, "p2": 1.0}
+    assert h.mgr._state_bucket(REAL)[flag_key] == {}
 
     h.flags.failing = set()
-    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
     await h.flag_change()
-    assert factors(game, flag_key) == {"p1": 1.0, "p2": 1.0}
-
-    h.set_level(flag_key, "p1", 0.75)  # a decision in this game applies
     await h.flag_change()
-    assert factors(game, flag_key)["p1"] == 0.75
+    assert factors(game, flag_key)["p1"] == 1.5
+    assert len(h.recorded(REAL, SPEC_BY_KEY[flag_key].type_id)) == 1
 
 
 @pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
@@ -370,30 +351,21 @@ async def test_partial_revert_to_neutral_bypasses_a_blocked_chain(blocker):
 @pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])
 @pytest.mark.parametrize("flag_key", LEVEL_FLAGS)
 @pytest.mark.asyncio
-async def test_revived_player_missing_from_the_level_baseline_adopts_without_applying(flag_key):
-    """The fallback prime records alive players only, so the primed level
-    bucket has no entry for the dead p2. When p2 is revived its leftover level
-    is adopted as the baseline, not applied; a later level for p2 applies."""
+async def test_revived_player_gets_its_level(flag_key):
+    """p2 is dead on the game's first read, so the level baseline has no entry
+    for it. Once revived, its level in this game's scope applies, once."""
     h = LevelHarness()
-    game = FakeGame(("p1", "p2"))
-    for player in game.players.values():
-        player.sensitivity_factor = 1.0
-        player.handicap_factor = 1.0
+    game = h.start_game(REAL, real=True)
     game.players["p2"].alive = False
-    h.set_level(flag_key, "p2", 1.5)  # left over from an earlier game
-    h.views.append(SessionView(game_id=REAL, game=game, publish=h._publisher(REAL), is_real=True))
-    await h.flag_change()  # never primed: fallback prime (alive players only)
+    h.set_level(flag_key, "p2", 1.5, game_id=REAL)
+    await h.flag_change()
     assert "p2" not in h.mgr._state_bucket(REAL)[flag_key]
 
     game.players["p2"].alive = True  # revived
-    h.flags.values["audio_cue"] = "2-b:agent_cue"  # unrelated write
     await h.flag_change()
-    assert factors(game, flag_key) == {"p1": 1.0, "p2": 1.0}
-    assert h.recorded(REAL, SPEC_BY_KEY[flag_key].type_id) == []
-
-    h.set_level(flag_key, "p2", 0.75)
     await h.flag_change()
-    assert factors(game, flag_key)["p2"] == 0.75
+    assert factors(game, flag_key) == {"p1": 1.0, "p2": 1.5}
+    assert len(h.recorded(REAL, SPEC_BY_KEY[flag_key].type_id)) == 1
 
 
 @pytest.mark.uc("UC-040", flow="A24", br=["BR-017"])

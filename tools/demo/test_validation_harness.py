@@ -271,19 +271,28 @@ def test_select_unknown_exits():
         vh.select_scenarios(args)
 
 
-def test_set_flag_default_variant_roundtrip(tmp_path, monkeypatch):
-    import json
+def test_set_flag_default_variant_roundtrip(monkeypatch):
+    """The harness writes through the flag service as writer validation-harness
+    and clears only its own overlays afterwards (epic #1407, no flag file)."""
 
-    flag_doc = {"flags": {"interventions_allowed": {"defaultVariant": "ambient"}}}
-    path = tmp_path / "agent.json"
-    path.write_text(json.dumps(flag_doc))
-    monkeypatch.setenv("FLAGD_FLAG_DIR", str(tmp_path))
+    class FakeFlagService:
+        def __init__(self):
+            self.calls = []
+
+        def set_variant(self, flag_set, flag, variant, *, writer, persist=False):
+            self.calls.append(("PUT", flag_set, flag, variant, writer))
+            return {"variant": variant}
+
+        def clear_writer(self, flag_set, writer):
+            self.calls.append(("DELETE", flag_set, writer))
+
+    fake = FakeFlagService()
+    monkeypatch.setattr(vh, "_flag_service", lambda: fake)
 
     snap = vh.snapshot_flags({"agent"})
     vh.set_flag_default_variant("agent", "interventions_allowed", "standard")
-    reloaded = json.loads(path.read_text())
-    assert reloaded["flags"]["interventions_allowed"]["defaultVariant"] == "standard"
-
     vh.restore_flags(snap)
-    restored = json.loads(path.read_text())
-    assert restored["flags"]["interventions_allowed"]["defaultVariant"] == "ambient"
+    assert fake.calls == [
+        ("PUT", "agent", "interventions_allowed", "standard", vh.HARNESS_WRITER),
+        ("DELETE", "agent", vh.HARNESS_WRITER),
+    ]

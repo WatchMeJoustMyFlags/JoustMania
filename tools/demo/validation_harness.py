@@ -180,62 +180,49 @@ class LiveCollector:
 
 
 # ---------------------------------------------------------------------------
-# Flag snapshot / restore — keep a run idempotent (integration-test pattern).
+# Scenario flags through the flag service (epic #1407, W9).
 #
 # A scenario may need a non-default `interventions_allowed` (e.g. `standard` to
-# let a difficulty intervention DISPATCH). We edit the host flag file flagd is
-# mounted on (FLAGD_FLAG_DIR/<domain>.json), snapshot it first, and restore the
-# exact bytes after — so the stack is left as we found it.
+# let a difficulty intervention DISPATCH). The harness sets it as an in-memory
+# stack overlay (writer=validation-harness, never persisted) and clears every
+# overlay it set afterwards (DELETE /{set}?writer=validation-harness), so the
+# stack is left as we found it. No flag file is ever written (C-033).
 # ---------------------------------------------------------------------------
-def _flag_dir() -> str:
-    return os.environ.get(
-        "FLAGD_FLAG_DIR",
-        os.path.join(os.path.dirname(__file__), "../..", "services", "flagd"),
-    )
+HARNESS_WRITER = "validation-harness"
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
+from flagservice import FlagService, FlagServiceError, FlagServiceUnreachable  # noqa: E402
 
 
-def flag_file(domain: str) -> str:
-    return os.path.join(_flag_dir(), f"{domain}.json")
+def _flag_service() -> FlagService:
+    # FLAG_SERVICE_URL, default the envoy route http://localhost/flags.
+    return FlagService.from_env()
 
 
-def snapshot_flags(domains: set[str]) -> dict[str, str]:
-    """Return {path: raw_bytes_text} for each domain file that exists."""
-    snap: dict[str, str] = {}
-    for domain in domains:
-        path = flag_file(domain)
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as fh:
-                snap[path] = fh.read()
-    return snap
+def snapshot_flags(domains: set[str]) -> set[str]:
+    """The flag sets the scenario changes; restore_flags clears the harness's overlays in them."""
+    return set(domains)
 
 
-def restore_flags(snapshot: dict[str, str]) -> None:
-    for path, text in snapshot.items():
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(text)
+def restore_flags(snapshot: set[str]) -> None:
+    for domain in sorted(snapshot):
+        try:
+            _flag_service().clear_writer(domain, HARNESS_WRITER)
+        except (FlagServiceError, FlagServiceUnreachable) as exc:
+            log(f"WARN: could not clear the harness overlays in {domain}: {exc}")
     if snapshot:
-        log(f"restored {len(snapshot)} flag file(s) to their pre-run state")
+        log(f"cleared the harness overlays in {len(snapshot)} flag set(s)")
 
 
 def set_flag_default_variant(domain: str, flag_key: str, variant: str) -> None:
-    """Set a flag's defaultVariant in the host flagd file (hot-reloaded). A no-op
-    if the file or flag is absent — the scenario's expectation will then surface
-    the gap rather than the harness crashing."""
-    path = flag_file(domain)
-    if not os.path.exists(path):
-        log(f"WARN: flag file {path} missing; cannot set {flag_key}={variant}")
+    """Set a flag to ``variant`` through the flag service. A refused or failed
+    write is logged and the scenario's expectation surfaces the gap, rather than
+    the harness crashing."""
+    try:
+        _flag_service().set_variant(domain, flag_key, variant, writer=HARNESS_WRITER)
+    except (FlagServiceError, FlagServiceUnreachable) as exc:
+        log(f"WARN: cannot set {domain}.{flag_key}={variant}: {exc}")
         return
-    with open(path, encoding="utf-8") as fh:
-        doc = json.load(fh)
-    flag = doc.get("flags", {}).get(flag_key)
-    if flag is None:
-        log(f"WARN: flag {flag_key} absent in {domain}.json; cannot set {variant}")
-        return
-    flag["defaultVariant"] = variant
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(doc, fh, indent=2)
-        fh.write("\n")
-    log(f"set {domain}.{flag_key} defaultVariant={variant}")
+    log(f"set {domain}.{flag_key}={variant} (flag service overlay, writer={HARNESS_WRITER})")
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +536,7 @@ def run_scenario(stack: dd.Stack, scenario: Scenario, collector: LiveCollector,
         if not args.no_flag_changes:
             for domain, key, variant in scenario.flags:
                 set_flag_default_variant(domain, key, variant)
-            # give flagd's file-watch a moment to reload before we start driving
+            # the flag service pushes at once; a short settle lets the readers apply it
             time.sleep(args.flag_settle)
 
         serials = dd.add_controllers(stack, scenario.players)
@@ -697,8 +684,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="agent container name for `docker logs`")
     # timings
     p.add_argument("--start-timeout", type=float, default=30.0)
-    p.add_argument("--flag-settle", type=float, default=3.0,
-                   help="seconds to wait after flipping flags (flagd reload)")
+    p.add_argument("--flag-settle", type=float, default=1.0,
+                   help="seconds to wait after flipping flags (the flag service pushes at once)")
     p.add_argument("--collect-settle", type=float, default=5.0,
                    help="seconds to wait after the pattern before collecting")
     p.add_argument("--keep-controllers", action="store_true")

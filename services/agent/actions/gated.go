@@ -12,7 +12,7 @@ import (
 // fake. It is read on EVERY Apply (never cached at construction) so flipping the
 // flag in flagd starts/stops actuation with no restart, and a flagd outage at the
 // moment of an apply FAILS CLOSED (InterventionsEnabled returns the fail-closed
-// default false) so the agent never writes interventions.json when it cannot
+// default false) so the agent never writes an intervention when it cannot
 // confirm the gate is on (#1177/#1217).
 type InterventionGate interface {
 	InterventionsEnabled(ctx context.Context) bool

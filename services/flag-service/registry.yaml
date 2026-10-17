@@ -1,0 +1,120 @@
+# Mutable-flag registry of the flag service (FR-132, UC-053 BR-001).
+#
+# Encodes docs/specs/flags.md §13. A change to one updates the other in the same
+# PR; registry/sync_test.go fails when they drift. A flag without a row here is
+# read-only baseline: it changes only by a reviewed edit of its flag file and a
+# restart of the flag service (C-033).
+#
+# kind:    state | level | grant | event | overlay
+# scope:   stack | game | game+serial | experiment+arm | real | fraction
+# bounds:  (none)         every declared variant
+#          variants: [..] only these declared variants
+#          range: [lo, hi] (+ integer: true) a number within the range, inclusive
+#          pattern: [[segment, ..], ..] a ':'-separated string; segments are
+#                   "enum a|b", "int lo hi", "float lo hi"; one list per alternative
+#          free_string: true any string up to 512 characters
+#          payload: {field: rule} event payload; rules: serial, serial_or_empty,
+#                   sound, "enum a|b"
+#          fraction: [lo, hi] fraction_percent range of a fraction write
+#          shape: true    an object with the keys and value kinds of the default variant
+# persist: true = an admin setting a write MAY persist with "persist": true
+#
+# A declared variant name is always accepted (within a variants subset). Numeric
+# ranges match the readers' clamps (services/game_coordinator/interventions.py,
+# difficulty_handlers.py, lifecycle_handlers.py).
+flags:
+  # --- interventions (flags.md §13.1): every write is game-scoped ---------------
+  - {set: interventions, key: music_tempo_override, kind: state, scope: [game], bounds: {range: [1.0, 1.3]}}
+  - {set: interventions, key: global_sensitivity_override, kind: state, scope: [game], bounds: {range: [0, 4], integer: true}}
+  - {set: interventions, key: global_difficulty_factor, kind: state, scope: [game], bounds: {range: [0.5, 2.0]}}
+  - {set: interventions, key: volume_override, kind: state, scope: [game], bounds: {range: [0.3, 1.0]}}
+  - {set: interventions, key: pacing_profile, kind: state, scope: [game], bounds: {variants: [default, calm, frantic]}}
+  - {set: interventions, key: tempo_ramp, kind: state, scope: [game], bounds: {pattern: [["float 1.0 1.3", "float 0.1 60", "enum linear|ease"]]}}
+  - {set: interventions, key: auto_rubberband, kind: state, scope: [game], bounds: {variants: ["off", gentle, strong]}}
+  - {set: interventions, key: player_sensitivity_factor, kind: level, scope: [game+serial], bounds: {range: [0.5, 2.0]}}
+  - {set: interventions, key: player_handicap_factor, kind: level, scope: [game+serial], bounds: {range: [0.5, 2.0]}}
+  - {set: interventions, key: shield_seconds, kind: grant, scope: [game+serial], bounds: {range: [1, 10]}}
+  - {set: interventions, key: partial_shield_seconds, kind: grant, scope: [game+serial], bounds: {pattern: [["float 0.1 30"], ["float 0.1 30", "float 1.0 2.0"]]}}
+  - {set: interventions, key: soft_penalty_action, kind: grant, scope: [game+serial], bounds: {pattern: [["enum warn|tighten"], ["enum tighten", "float 0.1 30", "float 0.5 1.0"]]}}
+  - {set: interventions, key: eliminate_player, kind: event, scope: [game], bounds: {payload: {serial: serial}}}
+  - {set: interventions, key: revive_player, kind: event, scope: [game], bounds: {payload: {serial: serial}}}
+  - {set: interventions, key: controller_effect, kind: event, scope: [game], bounds: {payload: {serial: serial_or_empty, effect: "enum rumble|pulse|flash|show_battery"}}}
+  - {set: interventions, key: audio_cue, kind: event, scope: [game], bounds: {payload: {sound: sound}}}
+  - {set: interventions, key: end_game, kind: event, scope: [game], bounds: {payload: {}}}
+
+  # --- agent (flags.md §13.2) ---------------------------------------------------
+  - {set: agent, key: interventions_allowed, kind: overlay, scope: [stack], persist: true}
+  - {set: agent, key: enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
+  - {set: agent, key: interventions_enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
+  - {set: agent, key: experiments_enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
+  - {set: agent, key: experiment_dynamic_enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
+  - {set: agent, key: rollout_enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
+  - {set: agent, key: decision.backend, kind: overlay, scope: [stack], bounds: {variants: [rules, claude, openai, jev]}}
+  - {set: agent, key: decision.act_confidence_threshold, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.jev.act_confidence_threshold, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.capture_content, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
+  - {set: agent, key: decision.claude.model, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.openai.reasoning_effort, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.jev.model, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.openai.model, kind: overlay, scope: [stack], bounds: {free_string: true}}
+  # Credential-bearing URL: declared variants only, so no runtime write can send
+  # the API key to an arbitrary host (the API is unauthenticated, D11).
+  - {set: agent, key: decision.openai.base_url, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.min_interval_ms, kind: overlay, scope: [stack], bounds: {range: [100, 60000], integer: true}}
+  - {set: agent, key: decision.openai.timeout_ms, kind: overlay, scope: [stack], bounds: {range: [100, 60000], integer: true}}
+  - {set: agent, key: llm.max_requests_per_minute, kind: overlay, scope: [stack]}
+  - {set: agent, key: llm.eligible_game_kinds, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.claude.timeout_ms, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.jev.timeout_ms, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.jev.base_url, kind: overlay, scope: [stack]}
+  - {set: agent, key: experiment.mock_archetypes, kind: overlay, scope: [stack]}
+  - {set: agent, key: experiment.max_game_seconds, kind: overlay, scope: [stack], bounds: {range: [10, 1800], integer: true}}
+  - {set: agent, key: policy.max_interventions_per_minute, kind: overlay, scope: [stack], bounds: {range: [1, 100], integer: true}}
+  - {set: agent, key: policy.coordinator_backstop_per_minute, kind: overlay, scope: [stack], bounds: {range: [1, 100], integer: true}}
+  - {set: agent, key: fitness.accelerate.target_session_seconds, kind: overlay, scope: [stack]}
+  - {set: agent, key: verdict_min_n, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
+  - {set: agent, key: verdict_min_pairs, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
+  - {set: agent, key: experiment_tick_seconds, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
+  - {set: agent, key: experiment_max_games, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
+
+  # --- game (flags.md §13.3) ----------------------------------------------------
+  # The experiment catalog (#1415): gameplay calibration flags an experiment arm
+  # may change (FR-138) and a promotion may set for real games (W5). Capacity,
+  # lobby, team-structure and presentation flags are not in it.
+  - {set: game, key: sensitivity, kind: overlay, scope: [stack, experiment+arm, real], persist: true}
+  - {set: game, key: nonstop.time_limit_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 600], integer: true}}
+  - {set: game, key: invincibility_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 10]}}
+  - {set: game, key: fight_club.min_rounds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [1, 30], integer: true}}
+  - {set: game, key: werewolf.reveal_time_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [10, 90]}}
+  - {set: game, key: death_grace_period_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 5]}}
+  - {set: game, key: nonstop.respawn_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0.5, 10]}}
+  - {set: game, key: nonstop.spawn_protection_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 6]}}
+  - {set: game, key: fight_club.round_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [5, 60]}}
+  - {set: game, key: tournament.match_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [5, 60]}}
+  - {set: game, key: tournament.time_between_matches_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [1, 15]}}
+  - {set: game, key: werewolf.werewolf_fraction, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0.1, 0.6]}}
+  - {set: game, key: zombie.initial_count, kind: overlay, scope: [experiment+arm, real], bounds: {range: [1, 5], integer: true}}
+  - {set: game, key: zombie.respawn_min_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0.5, 10]}}
+  - {set: game, key: zombie.respawn_max_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [2, 30]}}
+  - {set: game, key: windows, kind: overlay, scope: [experiment+arm, real], bounds: {shape: true}}
+  - {set: game, key: num_teams, kind: overlay, scope: [stack], persist: true}
+  - {set: game, key: force_all_start, kind: overlay, scope: [stack], persist: true, bounds: {variants: ["on", "off"]}}
+  # shadow_policy: an overlay may only tighten admission to "block"; loosening to
+  # "allow" stays a reviewed baseline edit (C-033). Clearing it restores the baseline.
+  - {set: game, key: shadow_policy, kind: overlay, scope: [stack], bounds: {variants: [block]}}
+  - {set: game, key: tempo_schedule_mode, kind: state, scope: [game]}
+
+  # --- user, controller, rollout (flags.md §13.4) ------------------------------
+  - {set: user, key: current_game, kind: overlay, scope: [stack], persist: true}
+  - {set: user, key: game_instructions, kind: overlay, scope: [stack], persist: true, bounds: {variants: ["on", "off"]}}
+  - {set: controller, key: bluetooth_backend, kind: overlay, scope: [stack, fraction], bounds: {fraction: [1, 100]}}
+  - {set: controller, key: chaos_fault_type, kind: overlay, scope: [stack, fraction], bounds: {fraction: [1, 100]}}
+  - {set: rollout, key: current_controller_count, kind: overlay, scope: [stack], bounds: {variants: [none, one, three, six, all]}}
+  - {set: rollout, key: target_backend, kind: overlay, scope: [stack]}
+  - {set: rollout, key: strategy, kind: overlay, scope: [stack]}
+  - {set: rollout, key: remediation_allowed, kind: overlay, scope: [stack]}
+
+  # --- observability (flags.md §13.5) ------------------------------------------
+  # The propagation probe: read by no service, written by the integration tests
+  # to measure write -> flagd -> reader propagation (#1408, NFR-050 in #1413).
+  - {set: observability, key: flagservice.propagation_probe, kind: overlay, scope: [stack], bounds: {free_string: true}}

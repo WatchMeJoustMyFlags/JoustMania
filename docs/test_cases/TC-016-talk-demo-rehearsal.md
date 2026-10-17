@@ -35,7 +35,7 @@
 
 ## Validation
 
-1. **Stage baseline restored**: after step 9 every baseline flag in `agent.json` is at its stage variant and `interventions.json` at its neutral variants.
+1. **Stage baseline restored**: after step 9 every baseline flag of the `agent` set serves its stage variant (stage overlays, writer `stage`) and no game-scoped intervention value is left (they die with their game, UC-053 BR-003).
 2. **No restart**: the agent container's start time is unchanged across the journey.
 
 ## Postconditions

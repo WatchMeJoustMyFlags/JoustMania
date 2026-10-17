@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/flagservice/fake"
 	"github.com/joustmania/agent/llm"
 )
 
@@ -319,36 +320,34 @@ func TestStripDateSuffix(t *testing.T) {
 
 // --- the proposer seam, end to end over the fake API ---
 
-func tempGameFile(t *testing.T) string {
+// gameService serves the experiment fixture from a fake flag service with the
+// real registry's game policies.
+func gameService(t *testing.T) *fake.Service {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join("..", "experiment", "testdata", "game.json"))
+	policies, err := fake.RegistryPolicies(filepath.Join("..", "..", "flag-service", "registry.yaml"), experiment.GameFlagSet)
 	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+		t.Fatalf("read registry: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "game.json")
-	if err := os.WriteFile(path, src, 0o644); err != nil {
-		t.Fatalf("write temp fixture: %v", err)
+	svc := fake.New()
+	if err := svc.LoadSetWithPolicies(experiment.GameFlagSet, filepath.Join("..", "experiment", "testdata", "game.json"), policies); err != nil {
+		t.Fatalf("load fixture: %v", err)
 	}
-	return path
+	return svc
 }
 
-func gameVocab(path string) func() map[string]struct{} {
+func gameVocab(svc *fake.Service) func() map[string]struct{} {
 	return func() map[string]struct{} {
-		raw, err := os.ReadFile(path)
+		set, err := svc.GetSet(context.Background(), experiment.GameFlagSet)
 		if err != nil {
 			return nil
 		}
-		var doc struct {
-			Flags map[string]any `json:"flags"`
+		out := map[string]struct{}{}
+		for _, f := range set.Flags {
+			if f.Policy.AllowsScope("experiment+arm") {
+				out[f.Flag] = struct{}{}
+			}
 		}
-		if err := json.Unmarshal(raw, &doc); err != nil {
-			return nil
-		}
-		set := make(map[string]struct{}, len(doc.Flags))
-		for k := range doc.Flags {
-			set[k] = struct{}{}
-		}
-		return set
+		return out
 	}
 }
 
@@ -356,12 +355,12 @@ func gameVocab(path string) func() map[string]struct{} {
 // through the experiment Proposer and asserts a shadow experiment is proposed.
 func TestClaude_FeedsProposerSeam(t *testing.T) {
 	f := &fakeMessages{body: messageBody(
-		`{"flag":"death_grace_period_seconds","value":0.75,"rationale":"longer grace may extend sessions"}`, "end_turn")}
+		`{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace may extend sessions"}`, "end_turn")}
 	c := newTestClaude(t, f, Config{})
 
-	path := tempGameFile(t)
-	gate := experiment.NewGate(experiment.NewWriter(path, nil), nil, nil)
-	proposer := experiment.NewProposer(c, gate, gameVocab(path), nil, nil)
+	svc := gameService(t)
+	sink := &recordingSink{}
+	proposer := experiment.NewProposer(c, sink, gameVocab(svc), nil, nil)
 
 	res := proposer.ProposeOnce(context.Background(), experiment.Narrative{GameMode: "joust"}, experiment.ProposerConfig{Engine: "claude", Permit: func(context.Context) (bool, string) { return true, "" }})
 	if res.Outcome != experiment.ProposeProposed {
@@ -370,6 +369,17 @@ func TestClaude_FeedsProposerSeam(t *testing.T) {
 	if res.Proposal == nil || res.Proposal.FlagKey != "death_grace_period_seconds" {
 		t.Fatalf("proposal = %+v", res.Proposal)
 	}
+	if len(sink.got) != 1 || sink.got[0].FlagKey != "death_grace_period_seconds" {
+		t.Fatalf("sink received %+v", sink.got)
+	}
+}
+
+// recordingSink stands in for the experiment registry the Proposer submits to.
+type recordingSink struct{ got []experiment.Proposal }
+
+func (r *recordingSink) Review(_ context.Context, p experiment.Proposal) error {
+	r.got = append(r.got, p)
+	return nil
 }
 
 func TestClaude_InvalidEffortDropped(t *testing.T) {

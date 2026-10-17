@@ -313,9 +313,11 @@ Enter admin mode by pressing all 4 face buttons (Cross + Circle + Square + Trian
 > **Controller-cycled surface (issue #815):** Only `sensitivity`, `num_teams`,
 > and `force_all_start` are cycled via Move. The per-mode tunables
 > `random_assignment`, `nonstop.time_limit_seconds`, `invincibility_seconds`,
-> `fight_club.min_rounds`, and `werewolf.reveal_time_seconds` remain `game.json`
-> flags set via dashboard/file/flagd — they are no longer cycled on the
-> controller. See [Ownership Model §3.1](../../docs/OWNERSHIP_MODEL.md#31-controller-cycled-admin-surface-issue-815).
+> `fight_club.min_rounds`, and `werewolf.reveal_time_seconds` remain flags of
+> the `game` set, read from the baseline `services/flagd/game.json` (a reviewed
+> baseline edit plus `scripts/flags.sh restart` changes them; at runtime only the
+> agent's experiment arms and promotion overlays touch them); they are no longer
+> cycled on the controller. See [Ownership Model §3.1](../../docs/OWNERSHIP_MODEL.md#31-controller-cycled-admin-surface-issue-815).
 
 ### Timeout
 
@@ -344,6 +346,7 @@ Admin mode automatically exits after 60 seconds of inactivity.
 | `CONTROLLER_MANAGER_PORT` | `50052` | Controller manager port |
 | `FLAGD_HOST` | `flagd` | flagd service hostname |
 | `FLAGD_PORT` | `8015` | flagd gRPC port |
+| `FLAG_SERVICE_URL` | `http://flag-service:8070` | Flag service HTTP API; admin settings are written here with `persist: true` (`lib/flag_service_writer.py`) |
 | `GAME_COORDINATOR_HOST` | `game-coordinator` | Game coordinator hostname |
 | `GAME_COORDINATOR_PORT` | `50053` | Game coordinator port |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OpenTelemetry endpoint |

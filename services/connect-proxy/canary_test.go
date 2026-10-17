@@ -1,61 +1,126 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"reflect"
+	"strings"
+	"sync"
 	"testing"
 )
 
-// controllerFixture mirrors the shape of services/flagd/controller.json: the
-// bluetooth_backend flag has a third "unstable" variant (agent rollout work),
-// and the file holds other flags that the canary handlers must not touch.
-const controllerFixture = `{
-  "metadata": {"flagSetId": "controller", "version": "1"},
-  "flags": {
-    "backend": {
-      "state": "ENABLED",
-      "variants": {"mock": "mock", "python": "python"},
-      "defaultVariant": "python"
-    },
-    "bluetooth_backend": {
-      "state": "ENABLED",
-      "variants": {"python": "python", "rust": "rust", "unstable": "unstable"},
-      "defaultVariant": "python",
-      "targeting": {}
-    },
-    "chaos_fault_type": {
-      "state": "ENABLED",
-      "variants": {"none": "none", "poll_drop": "poll_drop"},
-      "defaultVariant": "none",
-      "targeting": {}
-    }
-  }
+// fakeFlags is an in-memory flag service for the controller set: declared
+// variants per flag, a stack overlay and a fraction overlay, and a call log.
+type fakeFlags struct {
+	mu       sync.Mutex
+	variants map[string][]string // flag -> declared variant names (value == name)
+	baseline map[string]string
+	stack    map[string]string
+	fraction map[string][2]any // flag -> {variant, percent}
+	calls    []string
+	failGet  error
+	failPut  error
 }
-`
 
-// useFlagFile points the handlers at a temp copy of content and restores the
-// package-level path afterwards. Tests using it must not run in parallel.
-func useFlagFile(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "controller.json")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write fixture: %v", err)
+func newFakeFlags() *fakeFlags {
+	return &fakeFlags{
+		variants: map[string][]string{
+			"bluetooth_backend": {"python", "rust", "unstable"},
+			"chaos_fault_type":  {"none", "poll_drop", "accel_spike", "led_failure", "disconnect"},
+		},
+		baseline: map[string]string{"bluetooth_backend": "rust", "chaos_fault_type": "none"},
+		stack:    map[string]string{},
+		fraction: map[string][2]any{},
 	}
-	previous := flagdConfigPath
-	flagdConfigPath = path
-	t.Cleanup(func() { flagdConfigPath = previous })
-	return path
 }
 
-func newCanaryServer(t *testing.T) *httptest.Server {
+func (f *fakeFlags) PutVariant(_ context.Context, flag, variant string, fraction int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "PUT "+flag+" "+variant+" "+itoa(fraction))
+	if f.failPut != nil {
+		return f.failPut
+	}
+	declared := false
+	for _, v := range f.variants[flag] {
+		declared = declared || v == variant
+	}
+	if !declared {
+		return &flagServiceError{Status: 422, Reason: "out_of_bounds"}
+	}
+	if fraction > 0 {
+		f.fraction[flag] = [2]any{variant, fraction}
+	} else {
+		f.stack[flag] = variant
+	}
+	return nil
+}
+
+func (f *fakeFlags) Clear(_ context.Context, flag string, fraction bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if fraction {
+		f.calls = append(f.calls, "DELETE "+flag+" fraction")
+		delete(f.fraction, flag)
+	} else {
+		f.calls = append(f.calls, "DELETE "+flag+" stack")
+		delete(f.stack, flag)
+	}
+	return nil
+}
+
+func (f *fakeFlags) Get(_ context.Context, flag string) (map[string]any, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failGet != nil {
+		return nil, f.failGet
+	}
+	names, ok := f.variants[flag]
+	if !ok {
+		return nil, &flagServiceError{Status: 404, Reason: "unknown_flag"}
+	}
+	values := map[string]any{}
+	list := make([]any, 0, len(names))
+	for _, n := range names {
+		values[n] = n
+		list = append(list, n)
+	}
+	view := map[string]any{"flag": flag, "variants": list, "variant_values": values, "effective_default": f.effective(flag)}
+	if fr, ok := f.fraction[flag]; ok {
+		view["fraction_overlay"] = map[string]any{"variant": fr[0], "fraction_percent": fr[1]}
+	}
+	return view, nil
+}
+
+func (f *fakeFlags) effective(flag string) string {
+	if v, ok := f.stack[flag]; ok {
+		return v
+	}
+	return f.baseline[flag]
+}
+
+func itoa(n int) string {
+	b, _ := json.Marshal(n)
+	return string(b)
+}
+
+// useFakeFlags installs a fresh fake for the test.
+func useFakeFlags(t *testing.T) *fakeFlags {
+	t.Helper()
+	fake := newFakeFlags()
+	previous := flags
+	flags = fake
+	t.Cleanup(func() { flags = previous })
+	return fake
+}
+
+func newProxyServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	registerCanaryHandlers(mux)
+	registerChaosHandlers(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -79,83 +144,6 @@ func doRequest(t *testing.T, method, url string) (int, map[string]interface{}) {
 		}
 	}
 	return resp.StatusCode, body
-}
-
-// readFlags decodes the flag file generically so the assertions see exactly
-// what flagd would read.
-func readFlags(t *testing.T, path string) map[string]interface{} {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read flag file: %v", err)
-	}
-	var doc map[string]interface{}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatalf("flag file is not valid JSON: %v", err)
-	}
-	return doc
-}
-
-func flagOf(t *testing.T, doc map[string]interface{}, key string) map[string]interface{} {
-	t.Helper()
-	flags, ok := doc["flags"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("flag file has no flags object")
-	}
-	flag, ok := flags[key].(map[string]interface{})
-	if !ok {
-		t.Fatalf("flag %q missing", key)
-	}
-	return flag
-}
-
-// assertUntouched checks that everything except bluetooth_backend is
-// semantically unchanged relative to the fixture.
-func assertUntouched(t *testing.T, path string) {
-	t.Helper()
-	var want map[string]interface{}
-	if err := json.Unmarshal([]byte(controllerFixture), &want); err != nil {
-		t.Fatalf("decode fixture: %v", err)
-	}
-	got := readFlags(t, path)
-	if !reflect.DeepEqual(got["metadata"], want["metadata"]) {
-		t.Errorf("metadata changed: got %v, want %v", got["metadata"], want["metadata"])
-	}
-	for _, key := range []string{"backend", "chaos_fault_type"} {
-		if g, w := flagOf(t, got, key), flagOf(t, want, key); !reflect.DeepEqual(g, w) {
-			t.Errorf("flag %q changed: got %v, want %v", key, g, w)
-		}
-	}
-	if g, w := flagOf(t, got, "bluetooth_backend")["variants"], flagOf(t, want, "bluetooth_backend")["variants"]; !reflect.DeepEqual(g, w) {
-		t.Errorf("bluetooth_backend variants changed: got %v, want %v", g, w)
-	}
-}
-
-// fractionalShares returns the [variant, weight] buckets of a flagd
-// fractional rule keyed on targetingKey, failing the test on any other shape.
-func fractionalShares(t *testing.T, targeting interface{}) map[string]float64 {
-	t.Helper()
-	rule, ok := targeting.(map[string]interface{})
-	if !ok {
-		t.Fatalf("targeting is not an object: %#v", targeting)
-	}
-	args, ok := rule["fractional"].([]interface{})
-	if !ok || len(args) < 2 {
-		t.Fatalf("targeting is not a fractional rule: %#v", targeting)
-	}
-	bucketBy, ok := args[0].(map[string]interface{})
-	if !ok || bucketBy["var"] != "targetingKey" {
-		t.Errorf("fractional rule must bucket by targetingKey (the controller serial), got %#v", args[0])
-	}
-	shares := map[string]float64{}
-	for _, raw := range args[1:] {
-		bucket, ok := raw.([]interface{})
-		if !ok || len(bucket) != 2 {
-			t.Fatalf("bad fractional bucket %#v", raw)
-		}
-		shares[bucket[0].(string)] = bucket[1].(float64)
-	}
-	return shares
 }
 
 // UC: UC-052 main
@@ -196,11 +184,13 @@ func TestParseFraction(t *testing.T) {
 }
 
 // UC: UC-052 main
-func TestCanary_FullRolloutSetsDefaultAndClearsTargeting(t *testing.T) {
+// UC: UC-053 A1
+func TestCanary_FullRolloutIsAStackOverlay(t *testing.T) {
 	for _, backend := range []string{"rust", "python"} {
 		t.Run("UC-052/main canary "+backend+" at default fraction 100", func(t *testing.T) {
-			path := useFlagFile(t, controllerFixture)
-			srv := newCanaryServer(t)
+			fake := useFakeFlags(t)
+			fake.fraction["bluetooth_backend"] = [2]any{"rust", 30}
+			srv := newProxyServer(t)
 
 			status, body := doRequest(t, http.MethodPost, srv.URL+"/canary/"+backend)
 			if status != http.StatusOK {
@@ -209,155 +199,96 @@ func TestCanary_FullRolloutSetsDefaultAndClearsTargeting(t *testing.T) {
 			if body["status"] != "ok" || body["backend"] != backend || body["fraction"] != float64(100) {
 				t.Errorf("unexpected response body %v", body)
 			}
-
-			flag := flagOf(t, readFlags(t, path), "bluetooth_backend")
-			if flag["defaultVariant"] != backend {
-				t.Errorf("defaultVariant = %v, want %q", flag["defaultVariant"], backend)
+			if got := fake.effective("bluetooth_backend"); got != backend {
+				t.Errorf("effective default = %s, want %s", got, backend)
 			}
-			if _, present := flag["targeting"]; present {
-				t.Errorf("targeting must be cleared at fraction 100, got %#v", flag["targeting"])
+			if _, present := fake.fraction["bluetooth_backend"]; present {
+				t.Error("a full rollout must clear the fraction overlay")
 			}
-			assertUntouched(t, path)
 		})
 	}
 }
 
 // UC: UC-052 main
-func TestCanary_FractionalWritesSerialTargeting(t *testing.T) {
+func TestCanary_FractionalIsAFractionOverlayOverTheCounterpart(t *testing.T) {
 	cases := []struct {
-		backend     string
-		fraction    string
-		weight      float64
-		counterpart string
+		backend, counterpart string
+		fraction             int
 	}{
-		{"rust", "25", 25, "python"},
-		{"python", "10", 10, "rust"},
+		{"rust", "python", 25},
+		{"python", "rust", 10},
 	}
 	for _, tc := range cases {
-		t.Run("UC-052/main canary "+tc.backend+" at fraction "+tc.fraction, func(t *testing.T) {
-			path := useFlagFile(t, controllerFixture)
-			srv := newCanaryServer(t)
+		t.Run("UC-052/main canary "+tc.backend+" at fraction "+itoa(tc.fraction), func(t *testing.T) {
+			fake := useFakeFlags(t)
+			srv := newProxyServer(t)
 
-			status, body := doRequest(t, http.MethodPost, srv.URL+"/canary/"+tc.backend+"?fraction="+tc.fraction)
+			status, body := doRequest(t, http.MethodPost, srv.URL+"/canary/"+tc.backend+"?fraction="+itoa(tc.fraction))
 			if status != http.StatusOK {
 				t.Fatalf("status = %d, want 200", status)
 			}
-			if body["fraction"] != tc.weight {
-				t.Errorf("response fraction = %v, want %v", body["fraction"], tc.weight)
+			if body["fraction"] != float64(tc.fraction) {
+				t.Errorf("response fraction = %v", body["fraction"])
 			}
-
-			flag := flagOf(t, readFlags(t, path), "bluetooth_backend")
-			// The non-canary share defaults to the stable counterpart, never
-			// to "unstable" (picked by name, not by map iteration order).
-			if flag["defaultVariant"] != tc.counterpart {
-				t.Errorf("defaultVariant = %v, want counterpart %q", flag["defaultVariant"], tc.counterpart)
+			// The rest of the serials resolve the stable counterpart (#1386), never "unstable".
+			if got := fake.effective("bluetooth_backend"); got != tc.counterpart {
+				t.Errorf("default = %s, want counterpart %s", got, tc.counterpart)
 			}
-			shares := fractionalShares(t, flag["targeting"])
-			if shares[tc.backend] != tc.weight {
-				t.Errorf("canary share for %q = %v, want %v (all shares %v)", tc.backend, shares[tc.backend], tc.weight, shares)
+			if got := fake.fraction["bluetooth_backend"]; got != [2]any{tc.backend, tc.fraction} {
+				t.Errorf("fraction overlay = %v", got)
 			}
-			total := 0.0
-			for _, w := range shares {
-				total += w
-			}
-			if total != 100 {
-				t.Errorf("fractional weights sum to %v, want 100 (%v)", total, shares)
-			}
-			// Note (#1386): the remaining share is currently named "none",
-			// which is not a bluetooth_backend variant, so flagd returns a
-			// General error for those serials instead of the counterpart.
-			// Deliberately not asserted here until #1386 is decided.
-			assertUntouched(t, path)
 		})
 	}
-}
-
-// UC: UC-052 main
-func TestCanary_CounterpartNeverUnstable(t *testing.T) {
-	t.Run("UC-052/main repeated fractional canaries always fall back to the stable counterpart", func(t *testing.T) {
-		path := useFlagFile(t, controllerFixture)
-		// Go randomises map iteration order; repeat so an order-dependent
-		// pick of "any other variant" would surface.
-		for i := 0; i < 30; i++ {
-			if err := setCanaryRouting("rust", 50); err != nil {
-				t.Fatalf("setCanaryRouting: %v", err)
-			}
-			flag := flagOf(t, readFlags(t, path), "bluetooth_backend")
-			if flag["defaultVariant"] != "python" {
-				t.Fatalf("iteration %d: defaultVariant = %v, want python", i, flag["defaultVariant"])
-			}
-		}
-	})
 }
 
 // UC: UC-052 main
 func TestCanary_RollbackReturnsEveryoneToPython(t *testing.T) {
 	t.Run("UC-052/main rollback after a fractional rust canary", func(t *testing.T) {
-		path := useFlagFile(t, controllerFixture)
-		srv := newCanaryServer(t)
-
+		fake := useFakeFlags(t)
+		srv := newProxyServer(t)
 		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust?fraction=30"); status != http.StatusOK {
-			t.Fatalf("canary status = %d, want 200", status)
+			t.Fatalf("canary status = %d", status)
 		}
 		status, body := doRequest(t, http.MethodPost, srv.URL+"/canary/rollback")
-		if status != http.StatusOK {
-			t.Fatalf("rollback status = %d, want 200", status)
+		if status != http.StatusOK || body["backend"] != "python" {
+			t.Fatalf("rollback = %d %v", status, body)
 		}
-		if body["backend"] != "python" {
-			t.Errorf("rollback body backend = %v, want python", body["backend"])
+		if got := fake.effective("bluetooth_backend"); got != "python" {
+			t.Errorf("default = %s, want python", got)
 		}
-
-		flag := flagOf(t, readFlags(t, path), "bluetooth_backend")
-		if flag["defaultVariant"] != "python" {
-			t.Errorf("defaultVariant = %v, want python", flag["defaultVariant"])
+		if _, present := fake.fraction["bluetooth_backend"]; present {
+			t.Error("rollback must clear the fraction overlay")
 		}
-		if _, present := flag["targeting"]; present {
-			t.Errorf("rollback must clear targeting, got %#v", flag["targeting"])
-		}
-		assertUntouched(t, path)
 	})
 }
 
 // UC: UC-052 main
-func TestCanary_StatusReturnsCurrentFlag(t *testing.T) {
-	t.Run("UC-052/main status shows the canary just written", func(t *testing.T) {
-		useFlagFile(t, controllerFixture)
-		srv := newCanaryServer(t)
-
-		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust?fraction=40"); status != http.StatusOK {
-			t.Fatalf("canary status = %d, want 200", status)
-		}
-		status, body := doRequest(t, http.MethodGet, srv.URL+"/canary/status")
-		if status != http.StatusOK {
-			t.Fatalf("status endpoint = %d, want 200", status)
-		}
-		if body["defaultVariant"] != "python" {
-			t.Errorf("status defaultVariant = %v, want python", body["defaultVariant"])
-		}
-		if shares := fractionalShares(t, body["targeting"]); shares["rust"] != 40 {
-			t.Errorf("status rust share = %v, want 40", shares["rust"])
-		}
-	})
-
-	t.Run("UC-052/main status without bluetooth_backend is 404", func(t *testing.T) {
-		useFlagFile(t, `{"flags": {}}`)
-		srv := newCanaryServer(t)
-		if status, _ := doRequest(t, http.MethodGet, srv.URL+"/canary/status"); status != http.StatusNotFound {
-			t.Errorf("status = %d, want 404", status)
-		}
-	})
+func TestCanary_StatusIsTheFlagServiceView(t *testing.T) {
+	fake := useFakeFlags(t)
+	srv := newProxyServer(t)
+	if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust?fraction=40"); status != http.StatusOK {
+		t.Fatalf("canary status = %d", status)
+	}
+	status, body := doRequest(t, http.MethodGet, srv.URL+"/canary/status")
+	if status != http.StatusOK || body["effective_default"] != "python" {
+		t.Fatalf("status = %d %v", status, body)
+	}
+	if fo, _ := body["fraction_overlay"].(map[string]any); fo["variant"] != "rust" {
+		t.Errorf("fraction overlay %v", body["fraction_overlay"])
+	}
+	fake.failGet = &flagServiceError{Detail: "connection refused"}
+	if status, _ := doRequest(t, http.MethodGet, srv.URL+"/canary/status"); status != http.StatusBadGateway {
+		t.Errorf("status with the flag service down = %d, want 502", status)
+	}
 }
 
-// The failure postcondition: whenever a canary call is rejected, the flag
-// file is left byte-identical.
+// A rejected request writes nothing.
 //
 // UC: UC-052 main
-func TestCanary_RejectedRequestLeavesFileUnchanged(t *testing.T) {
+func TestCanary_RejectedRequestWritesNothing(t *testing.T) {
 	cases := []struct {
-		name   string
-		method string
-		path   string
-		want   int
+		name, method, path string
+		want               int
 	}{
 		{"UC-052/main fraction out of range is 400", http.MethodPost, "/canary/rust?fraction=0", http.StatusBadRequest},
 		{"UC-052/main non-numeric fraction is 400", http.MethodPost, "/canary/rust?fraction=x", http.StatusBadRequest},
@@ -367,102 +298,159 @@ func TestCanary_RejectedRequestLeavesFileUnchanged(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			path := useFlagFile(t, controllerFixture)
-			srv := newCanaryServer(t)
-
-			status, _ := doRequest(t, tc.method, srv.URL+tc.path)
-			if status != tc.want {
+			fake := useFakeFlags(t)
+			srv := newProxyServer(t)
+			if status, _ := doRequest(t, tc.method, srv.URL+tc.path); status != tc.want {
 				t.Errorf("status = %d, want %d", status, tc.want)
 			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read flag file: %v", err)
-			}
-			if !bytes.Equal(data, []byte(controllerFixture)) {
-				t.Errorf("flag file changed after a rejected request:\n%s", data)
+			for _, c := range fake.calls {
+				if !strings.HasPrefix(c, "GET") {
+					t.Errorf("write after a rejected request: %v", fake.calls)
+				}
 			}
 		})
 	}
 }
 
 // UC: UC-052 main
-func TestCanary_ServerErrors(t *testing.T) {
-	t.Run("UC-052/main missing bluetooth_backend flag is 500 and file unchanged", func(t *testing.T) {
-		const noBackend = `{"flags": {"backend": {"state": "ENABLED", "variants": {"python": "python"}, "defaultVariant": "python"}}}`
-		path := useFlagFile(t, noBackend)
-		srv := newCanaryServer(t)
-		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust"); status != http.StatusInternalServerError {
-			t.Errorf("status = %d, want 500", status)
-		}
-		if data, _ := os.ReadFile(path); string(data) != noBackend {
-			t.Errorf("flag file changed: %s", data)
+// UC: UC-053 A8
+func TestCanary_FlagServiceErrors(t *testing.T) {
+	t.Run("UC-053/A8 flag service unreachable is 502", func(t *testing.T) {
+		fake := useFakeFlags(t)
+		fake.failGet = &flagServiceError{Detail: "connection refused"}
+		srv := newProxyServer(t)
+		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust"); status != http.StatusBadGateway {
+			t.Errorf("status = %d, want 502", status)
 		}
 	})
-
-	t.Run("UC-052/main backend without a variant is 500", func(t *testing.T) {
-		const content = `{"flags": {"bluetooth_backend": {"state": "ENABLED", "variants": {"python": "python"}, "defaultVariant": "python"}}}`
-		path := useFlagFile(t, content)
-		srv := newCanaryServer(t)
-		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust"); status != http.StatusInternalServerError {
-			t.Errorf("status = %d, want 500", status)
-		}
-		if data, _ := os.ReadFile(path); !bytes.Equal(data, []byte(content)) {
-			t.Errorf("flag file changed: %s", data)
+	t.Run("UC-053/A7 no sync stream is 503", func(t *testing.T) {
+		fake := useFakeFlags(t)
+		fake.failPut = &flagServiceError{Status: 503, Reason: "no_sync_stream"}
+		srv := newProxyServer(t)
+		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust"); status != http.StatusServiceUnavailable {
+			t.Errorf("status = %d, want 503", status)
 		}
 	})
-
 	t.Run("UC-052/main fractional canary without a stable counterpart is 500", func(t *testing.T) {
-		const content = `{"flags": {"bluetooth_backend": {"state": "ENABLED", "variants": {"rust": "rust", "unstable": "unstable"}, "defaultVariant": "rust"}}}`
-		path := useFlagFile(t, content)
-		srv := newCanaryServer(t)
+		fake := useFakeFlags(t)
+		fake.variants["bluetooth_backend"] = []string{"rust", "unstable"}
+		srv := newProxyServer(t)
 		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust?fraction=50"); status != http.StatusInternalServerError {
 			t.Errorf("status = %d, want 500", status)
 		}
-		if data, _ := os.ReadFile(path); !bytes.Equal(data, []byte(content)) {
-			t.Errorf("flag file changed: %s", data)
-		}
-	})
-
-	t.Run("UC-052/main unreadable flag file is 500", func(t *testing.T) {
-		previous := flagdConfigPath
-		flagdConfigPath = filepath.Join(t.TempDir(), "missing.json")
-		t.Cleanup(func() { flagdConfigPath = previous })
-		srv := newCanaryServer(t)
-		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust"); status != http.StatusInternalServerError {
-			t.Errorf("set status = %d, want 500", status)
-		}
-		if status, _ := doRequest(t, http.MethodGet, srv.URL+"/canary/status"); status != http.StatusInternalServerError {
-			t.Errorf("status endpoint = %d, want 500", status)
+		if len(fake.stack)+len(fake.fraction) != 0 {
+			t.Error("nothing may be written")
 		}
 	})
 }
 
-// flagd watches the single bind-mounted controller.json by stat polling;
-// replacing it via temp file + rename would detach the bind mount. The
-// handlers must therefore rewrite the same file in place.
-//
 // UC: UC-052 main
-func TestCanary_WritesFlagFileInPlace(t *testing.T) {
-	t.Run("UC-052/main canary keeps the same file (inode) and valid JSON", func(t *testing.T) {
-		path := useFlagFile(t, controllerFixture)
-		before, err := os.Stat(path)
-		if err != nil {
-			t.Fatalf("stat: %v", err)
+func TestChaos(t *testing.T) {
+	t.Run("UC-052/main a fault for every controller is a stack overlay", func(t *testing.T) {
+		fake := useFakeFlags(t)
+		srv := newProxyServer(t)
+		if status, body := doRequest(t, http.MethodPost, srv.URL+"/chaos/poll-drop"); status != http.StatusOK || body["fault"] != "poll_drop" {
+			t.Fatalf("chaos = %d %v", status, body)
 		}
-		if err := setCanaryRouting("rust", 20); err != nil {
-			t.Fatalf("setCanaryRouting: %v", err)
+		if got := fake.effective("chaos_fault_type"); got != "poll_drop" {
+			t.Errorf("default = %s", got)
 		}
-		after, err := os.Stat(path)
-		if err != nil {
-			t.Fatalf("stat: %v", err)
-		}
-		if !os.SameFile(before, after) {
-			t.Errorf("flag file was replaced, not rewritten in place")
-		}
-		data, _ := os.ReadFile(path)
-		if len(data) == 0 || data[len(data)-1] != '\n' {
-			t.Errorf("flag file must end with a newline")
-		}
-		readFlags(t, path)
 	})
+	t.Run("UC-052/main a fractional fault keeps the default none", func(t *testing.T) {
+		fake := useFakeFlags(t)
+		srv := newProxyServer(t)
+		doRequest(t, http.MethodPost, srv.URL+"/chaos/led-failure")
+		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/chaos/disconnect?fraction=20"); status != http.StatusOK {
+			t.Fatalf("status %d", status)
+		}
+		if got := fake.effective("chaos_fault_type"); got != "none" {
+			t.Errorf("default = %s, want none", got)
+		}
+		if got := fake.fraction["chaos_fault_type"]; got != [2]any{"disconnect", 20} {
+			t.Errorf("fraction overlay %v", got)
+		}
+	})
+	t.Run("UC-052/main reset clears both overlays", func(t *testing.T) {
+		fake := useFakeFlags(t)
+		srv := newProxyServer(t)
+		doRequest(t, http.MethodPost, srv.URL+"/chaos/accel-spike?fraction=50")
+		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/chaos/reset"); status != http.StatusOK {
+			t.Fatalf("reset %d", status)
+		}
+		if len(fake.stack)+len(fake.fraction) != 0 {
+			t.Errorf("overlays left: %v %v", fake.stack, fake.fraction)
+		}
+	})
+	t.Run("UC-052/main status is the flag service view", func(t *testing.T) {
+		useFakeFlags(t)
+		srv := newProxyServer(t)
+		if status, body := doRequest(t, http.MethodGet, srv.URL+"/chaos/status"); status != http.StatusOK || body["effective_default"] != "none" {
+			t.Fatalf("status %d %v", status, body)
+		}
+	})
+}
+
+// The HTTP client sends the requests the flag service API defines
+// (docs/specs/services.md §7.2) and maps its errors.
+//
+// UC: UC-053 A1
+func TestHTTPFlagService(t *testing.T) {
+	var got []string
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Method+" "+r.URL.RequestURI())
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPut && body["variant"] == "nope":
+			w.WriteHeader(422)
+			_, _ = w.Write([]byte(`{"error":"out_of_bounds","detail":"not declared"}`))
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(204)
+		default:
+			_, _ = w.Write([]byte(`{"flag":"bluetooth_backend"}`))
+		}
+	}))
+	defer srv.Close()
+	s := &httpFlagService{base: srv.URL, client: srv.Client()}
+	ctx := context.Background()
+
+	if err := s.PutVariant(ctx, "bluetooth_backend", "rust", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutVariant(ctx, "bluetooth_backend", "rust", 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Clear(ctx, "bluetooth_backend", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, "bluetooth_backend"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"PUT /controller/bluetooth_backend",
+		"PUT /controller/bluetooth_backend",
+		"DELETE /controller/bluetooth_backend?writer=connect-proxy&fraction=true",
+		"GET /controller/bluetooth_backend",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if bodies[0]["writer"] != proxyWriter || bodies[0]["scope"] != nil {
+		t.Errorf("stack write body %v", bodies[0])
+	}
+	if scope, _ := bodies[1]["scope"].(map[string]any); scope["fraction_percent"] != float64(25) {
+		t.Errorf("fraction write body %v", bodies[1])
+	}
+	err := s.PutVariant(ctx, "bluetooth_backend", "nope", 0)
+	if fe, ok := err.(*flagServiceError); !ok || fe.Status != 422 || fe.Reason != "out_of_bounds" || statusFor(err) != 422 {
+		t.Fatalf("refusal = %v", err)
+	}
+	down := &httpFlagService{base: "http://127.0.0.1:1", client: srv.Client()}
+	if err := down.Clear(ctx, "x", false); statusFor(err) != http.StatusBadGateway {
+		t.Fatalf("outage = %v", err)
+	}
 }

@@ -46,7 +46,7 @@ type RolloutActuator interface {
 	// DryRun reports whether SetControllerCount is a no-op (the rehearsal
 	// actuator) rather than an applied write. The loop lifts it onto every
 	// decision span as rollout.dry_run so a Jaeger consumer can tell a rehearsed
-	// "expand"/"rollback" apart from one that actually flipped rollout.json.
+	// "expand"/"rollback" apart from one that actually flipped current_controller_count.
 	// RolloutWriter → false (real); DryRunRolloutWriter → true.
 	DryRun() bool
 }
@@ -57,7 +57,7 @@ type RolloutActuator interface {
 // flip in between could make the loop commit state for a write that never
 // happened (or skip it for one that did). ApplyControllerCount does the gate read
 // and the write together and reports which one happened: applied=true means the
-// flip reached rollout.json, false means it was a dry run.
+// flip reached the flag service, false means it was a dry run.
 type RolloutApplier interface {
 	ApplyControllerCount(variant string) (applied bool, err error)
 }
@@ -456,7 +456,7 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 }
 
 // applyLocked writes variant through the actuator and reports whether this cycle
-// was a dry run (nothing reached rollout.json). An actuator implementing
+// was a dry run (nothing reached the flag service). An actuator implementing
 // RolloutApplier answers from the same gate read as the write; any other actuator
 // is taken at its pre-cycle DryRun() answer. Caller holds mu.
 func (l *InfraLoop) applyLocked(variant string, dryRun bool) (bool, error) {
@@ -535,7 +535,7 @@ func (l *InfraLoop) emitDecisionSpan(
 ) {
 	// Single builder: EVERY emission path lands the full attribute schema (#737).
 	// dry-run is true when the actuator never applies writes (the rehearsal
-	// actuator) or is absent entirely — either way no flip reached rollout.json,
+	// actuator) or is absent entirely — either way no flip reached the flag service,
 	// so the span must say so (M3 audit: rehearsed decisions were indistinguishable
 	// from real ones).
 	attrs := infraDecisionAttributes(infraDecisionAttrs{

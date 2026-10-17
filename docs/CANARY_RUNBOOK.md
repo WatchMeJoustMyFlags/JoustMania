@@ -10,15 +10,20 @@ The `MultiplexerBackend` routes each controller through a `ControllerIOAdapter`.
 On every discovery cycle (~500ms), it evaluates the `bluetooth_backend`
 flag in the `controller` domain, passing the controller's serial as the
 targeting key. The flag returns `"rust"` or `"python"`, and the multiplexer
-opens/closes adapter handles accordingly. Changing the flag config in
-`services/flagd/controller.json` takes effect on the next discovery cycle --
-no service restart needed.
+opens/closes adapter handles accordingly. A change of `bluetooth_backend`
+through the flag service (the canary endpoints below, or `scripts/flags.sh`)
+takes effect on the next discovery cycle -- no service restart needed. The
+baseline value lives in `services/flagd/controller.json`, which the flag
+service loads read-only at start; nothing writes it at runtime (C-033).
 
 ### HTTP Canary Endpoints
 
 The connect-proxy provides HTTP endpoints for controlling canary rollout
-(same pattern as the chaos endpoints). These modify the flagd JSON config
-file directly, triggering a hot-reload with no service restart needed.
+(same pattern as the chaos endpoints). They write `bluetooth_backend` in the
+`controller` set through the flag service (a stack overlay, or a fraction
+overlay for `?fraction=N`), which pushes it to flagd over the gRPC sync stream;
+no service restart needed. The overlays are in memory: a flag-service restart
+drops them and routing returns to the baseline.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -28,7 +33,9 @@ file directly, triggering a hot-reload with no service restart needed.
 | `/canary/status` | GET | Show current routing flag config |
 
 All POST endpoints support `?fraction=N` (1-100, default 100) for gradual
-rollout via flagd fractional targeting.
+rollout via flagd fractional targeting (the flag service renders the
+`fractional` rule). A write fails with HTTP 503 while flagd has no sync stream
+to the flag service (`no_sync_stream`).
 
 **Examples:**
 
@@ -54,7 +61,8 @@ Key source files:
 | `services/controller_manager/multiplexer/rust_adapter.py` | `RustServiceAdapter` (gRPC client to rust-hid) |
 | `services/controller_manager/multiplexer/python_hid_adapter.py` | `PythonHidAdapter` (gRPC client to python-hid) |
 | `services/controller_manager/backend_factory.py` | Adapter instantiation, `backend` flag |
-| `services/flagd/controller.json` | Feature flag configuration (file-watched by flagd) |
+| `services/flagd/controller.json` | Baseline flag configuration (read-only; loaded by the flag service at start) |
+| `services/connect-proxy/canary.go`, `flagservice.go` | Canary endpoints and their flag-service client |
 | `services/controller_manager/metrics.py` | All controller metrics definitions |
 
 ---
@@ -71,18 +79,22 @@ Key source files:
    between the two backends needs both adapters inside `MultiplexerBackend`:
    start python-hid with its compose profile, set the `backend` flag to
    `python_rust`, and restart controller-manager (the flag is read once at
-   startup). The `bluetooth_backend` flag then controls which adapter handles
+   startup). `backend` is not in the flag service's mutable registry, so this
+   is a baseline edit followed by a planned restart of the flag service and
+   flagd. The `bluetooth_backend` flag then controls which adapter handles
    each serial (default `rust`):
    ```bash
    COMPOSE_PROFILES=python-hid docker compose up -d python-hid
    # services/flagd/controller.json: "backend" defaultVariant -> "python_rust"
+   scripts/flags.sh restart              # flag-service, then flagd
    docker compose restart controller-manager
    ```
 
-3. **flagd running** and watching `services/flagd/controller.json`:
+3. **Flag service and flagd running**, flagd connected to the flag service's
+   sync stream:
    ```bash
-   docker compose logs flagd --tail=5
-   # Should show "watching file" or "flag configuration changed"
+   scripts/flags.sh state                # sync stream count must be 1
+   scripts/flags.sh get controller bluetooth_backend
    ```
 
 4. **At least one PS Move controller connected** and showing up in the
@@ -160,8 +172,10 @@ controllers (by serial hash) to the Rust backend.
 
 ### Manual single-controller targeting (alternative)
 
-To target a specific serial (e.g., `aa:bb:cc:dd:ee:ff`), edit
-`services/flagd/controller.json` directly:
+The flag service accepts only stack and fraction scopes for
+`bluetooth_backend` (flags.md §13), so routing one specific serial (e.g.,
+`aa:bb:cc:dd:ee:ff`) is a reviewed edit of the baseline
+`services/flagd/controller.json`, followed by `scripts/flags.sh restart`:
 
 ```json
 "bluetooth_backend": {
@@ -187,8 +201,9 @@ To target a specific serial (e.g., `aa:bb:cc:dd:ee:ff`), edit
 }
 ```
 
-flagd watches the directory via inotify and reloads automatically -- no
-restart needed.
+`scripts/flags.sh restart` restarts the flag service and then flagd, which
+serves the new baseline within 5 s. Any canary overlay set before the restart
+is gone.
 
 ### Verify the switch
 
@@ -325,7 +340,7 @@ curl -X POST http://localhost:8080/canary/rust
 
 ## Step 5: Rollback
 
-If issues arise at any stage, roll back by reverting the flag config.
+If issues arise at any stage, roll back through the canary endpoint.
 
 ### Immediate rollback
 
@@ -386,12 +401,17 @@ session (or longer), make it the permanent default.
 curl -X POST http://localhost:8080/canary/rust
 ```
 
-This sets `defaultVariant` to `"rust"` and clears any fractional targeting.
+This sets an in-memory stack overlay on `"rust"` and clears any fraction
+overlay. The overlay lasts until the flag service restarts; to make `rust`
+the permanent default, change `bluetooth_backend`'s `defaultVariant` in the
+baseline `services/flagd/controller.json` in a reviewed PR and run
+`scripts/flags.sh restart`.
 
 ### Update backend flag (optional)
 
 If you no longer need the python adapter instantiated, change the
-`backend` flag to `"rust"` only:
+`backend` flag in the baseline `services/flagd/controller.json` to `"rust"`
+only (reviewed edit, then `scripts/flags.sh restart`):
 
 ```json
 "backend": {
@@ -440,7 +460,11 @@ docker compose ps
 # Restart controller-manager (needed after backend flag change)
 docker compose restart controller-manager
 
-# View flagd flag reload events
+# Flag service view: sync streams, current bluetooth_backend overlays
+scripts/flags.sh state
+scripts/flags.sh get controller bluetooth_backend
+
+# flagd sync events
 docker compose logs flagd --tail=20
 ```
 
@@ -480,7 +504,8 @@ process_resident_memory_bytes{job=~".*controller-manager.*"}
 | Controller LEDs stop updating after switch | `set_output()` failing on Rust adapter | Check `_led_failures` via health counters in stream; rollback |
 | `controller_state_update_hz` drops to 0 for a serial | `poll()` returning None consistently | Check `controller_poll_drops_total`; may indicate gRPC timeout to rust-hid |
 | All controllers stuck on python despite targeting | `backend` flag doesn't include `rust` | Verify flag value includes `rust` (e.g., `"python,rust"`); restart controller-manager |
-| flagd not picking up config changes | File saved with atomic rename across filesystems | Verify `services/flagd/` directory is mounted, check flagd logs |
+| Canary endpoint returns 503 | flagd has no sync stream to the flag service (`no_sync_stream`) | `scripts/flags.sh state`; check `docker compose logs flagd flag-service`; `scripts/flags.sh restart` |
+| Canary routing gone after a restart | Canary overlays are in memory; a flag-service restart drops them | Re-run the canary endpoint, or make the value the baseline (Step 6) |
 | `NotImplementedError` in controller-manager logs | `RustServiceAdapter` stub not yet replaced (#612) | The Rust adapter is still a stub; wait for #612 to be merged |
 
 ### Grafana dashboards

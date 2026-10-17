@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"sort"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/flagservice"
 )
 
 // dynamic_declarer.go is the HEURISTIC (no-LLM) dynamic experiment declarer
@@ -135,10 +137,10 @@ type dynamicDeclarer struct {
 	// Declare mutates.
 	mu sync.Mutex
 
-	// gameFlagPath is the live game.json the declarer reads candidate flags +
-	// their current defaults/variants from (re-read each call so a hot-reloaded
-	// file is reflected).
-	gameFlagPath string
+	// gameFlags reads the game flag set from the flag service: the experiment
+	// catalog (flags whose registry row allows experiment+arm, flags.md §13.3)
+	// with their current defaults and variants (R2, #1415; read each call).
+	gameFlags gameFlagReader
 	// candidates, when non-empty, restricts/orders the flags the declarer rotates
 	// over. Empty ⇒ all tunable flags discovered in game.json (sorted, stable),
 	// minus denylist.
@@ -174,7 +176,7 @@ type dynamicDeclarer struct {
 // BOOTSTRAP DEFAULT that flag falls back to. The candidate-set + objective +
 // target-N + denylist remain env-configured (the candidate/denylist LISTS stay env
 // per the flagd list-flag trap; see flags.go), read once here at build.
-func newDynamicDeclarerFromEnv(gameFlagPath string, pressure pressureFunc) *dynamicDeclarer {
+func newDynamicDeclarerFromEnv(gameFlags gameFlagReader, pressure pressureFunc) *dynamicDeclarer {
 	objective := strings.TrimSpace(os.Getenv(envDynamicObjective))
 	if !decision.IsExperimentable(objective) {
 		objective = decision.ObjectiveBalanced
@@ -183,7 +185,7 @@ func newDynamicDeclarerFromEnv(gameFlagPath string, pressure pressureFunc) *dyna
 		objective = decision.ObjectiveBalanced
 	}
 	return &dynamicDeclarer{
-		gameFlagPath:     gameFlagPath,
+		gameFlags:        gameFlags,
 		candidates:       parseCandidates(os.Getenv(envDynamicCandidates)),
 		denylist:         denylistFromEnv(),
 		defaultObjective: objective,
@@ -319,31 +321,48 @@ func highestPressureObjective(pressure map[string]float64) (string, bool) {
 	return best, best != ""
 }
 
-// readCandidateFlags reads the live game.json and returns every TUNABLE flag (one
-// with at least two variants — a single-variant flag has no alternate value to
-// experiment toward) as a candidateFlag (its default value + variants). A
-// read/parse error returns an empty map (fail-closed: nothing is declarable until
-// the file is readable again), mirroring gameFlagVocab.
-func (d *dynamicDeclarer) readCandidateFlags() map[string]candidateFlag {
-	raw, err := os.ReadFile(d.gameFlagPath)
+// gameFlagReader reads one flag set from the flag service (flagservice.Client).
+type gameFlagReader interface {
+	GetSet(ctx context.Context, set string) (flagservice.SetView, error)
+}
+
+// experimentScope is the registry scope of an experiment-arm write.
+const experimentScope = "experiment+arm"
+
+// readGameCatalog returns the experiment catalog: every game flag whose registry
+// row allows an experiment-arm write, keyed by flag. A read error returns nil
+// (fail-closed: nothing is declarable or proposable until the flag service
+// answers again).
+func readGameCatalog(r gameFlagReader) map[string]flagservice.FlagView {
+	if r == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), flagservice.RequestTimeout)
+	defer cancel()
+	set, err := r.GetSet(ctx, experiment.GameFlagSet)
 	if err != nil {
 		return nil
 	}
-	var doc struct {
-		Flags map[string]struct {
-			Variants       map[string]json.RawMessage `json:"variants"`
-			DefaultVariant string                     `json:"defaultVariant"`
-		} `json:"flags"`
+	out := make(map[string]flagservice.FlagView, len(set.Flags))
+	for _, f := range set.Flags {
+		if f.Policy.AllowsScope(experimentScope) {
+			out[f.Flag] = f
+		}
 	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil
-	}
-	out := make(map[string]candidateFlag, len(doc.Flags))
-	for key, f := range doc.Flags {
-		if len(f.Variants) < 2 {
+	return out
+}
+
+// readCandidateFlags returns every TUNABLE flag of the experiment catalog (one
+// with at least two variants — a single-variant flag has no alternate value to
+// experiment toward) as a candidateFlag (its baseline default value + variants).
+func (d *dynamicDeclarer) readCandidateFlags() map[string]candidateFlag {
+	catalog := readGameCatalog(d.gameFlags)
+	out := make(map[string]candidateFlag, len(catalog))
+	for key, f := range catalog {
+		if len(f.VariantValues) < 2 {
 			continue // not tunable: no alternate value to perturb toward.
 		}
-		dv, ok := f.Variants[f.DefaultVariant]
+		dv, ok := f.VariantValues[f.BaselineDefault]
 		if !ok {
 			continue // malformed: default points at a missing variant — skip.
 		}
@@ -351,7 +370,7 @@ func (d *dynamicDeclarer) readCandidateFlags() map[string]candidateFlag {
 		if err := json.Unmarshal(dv, &def); err != nil {
 			continue
 		}
-		out[key] = candidateFlag{defaultValue: def, variants: f.Variants}
+		out[key] = candidateFlag{defaultValue: def, variants: f.VariantValues}
 	}
 	return out
 }

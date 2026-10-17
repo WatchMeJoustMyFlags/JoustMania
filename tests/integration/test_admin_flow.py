@@ -7,7 +7,7 @@ game mode / etc.), a trigger-hold (force start), and PS (exit). It has rich unit
 coverage (services/menu/tests/test_admin_handler.py) but no integration coverage
 until now; admin mode "regularly breaks" precisely at the seams these unit tests
 cannot reach — the mock-button -> controller-manager -> menu combo detection,
-the FlagConfigWriter -> flagd file the writes actually land in, and the
+the menu -> flag service -> flagd path the writes actually take, and the
 menu->coordinator force-start handoff. These tests exercise all three against
 the real docker-compose stack.
 
@@ -20,10 +20,10 @@ Mechanics (verified against the live code):
   ``combo_shown`` latch clears for the next entry.
 - ADMIN_ENTER drives the controller LED to white (255,255,255); we poll the
   mock GetColor RPC with a deadline because the enter effect briefly flashes.
-- Settings persist by FlagConfigWriter flipping a flag's ``defaultVariant`` in
-  the CI flag files (services/flagd/ci/{game,user}.json) — the SAME files flagd
-  serves in CI (#959/#962). The ``admin_flags`` fixture snapshots and restores
-  them so no mutation leaks between tests or into the repo.
+- Settings persist as admin values on the flag service (``PUT {"persist":
+  true}``, UC-053 A2); flagd serves them through the gRPC sync stream. The flag
+  files are the read-only baseline. The ``admin_flags`` fixture deletes the
+  persisted values afterwards so no setting leaks between tests.
 - Force start publishes a menu ``game_requested`` event (source
   ``admin_force_start``); the coordinator then emits ``game_started``.
 - The 3s real-play trigger-hold is shortened to 0.6s in CI via the
@@ -58,7 +58,6 @@ from tests.integration.helpers import (  # noqa: E402
     ADMIN_WHITE,
     GameEventCollector,
     MenuEventCollector,
-    active_flag_file,
     async_poll_until,
     enter_admin_mode,
     exit_admin_mode,
@@ -76,10 +75,19 @@ from tests.integration.helpers import (  # noqa: E402
     wait_for_lobby_colors,
 )
 
-GAME_FLAG_PATH = active_flag_file("game")
-USER_FLAG_PATH = active_flag_file("user")
+from tests.integration import flag_service as fs  # noqa: E402
 
-# How long a settings write is given to round-trip to the host flag file.
+GAME = "game"
+# Admin settings the menu persists on the flag service (flags.md §13.3, §13.4).
+ADMIN_FLAGS = [
+    ("game", "sensitivity"),
+    ("game", "num_teams"),
+    ("game", "force_all_start"),
+    ("user", "current_game"),
+    ("user", "game_instructions"),
+]
+
+# How long a settings write is given to reach the flag service.
 PERSIST_TIMEOUT_SECONDS = 5.0
 
 _Button = controller_manager_mock_pb2.ButtonRequest.Button
@@ -91,24 +99,21 @@ _Button = controller_manager_mock_pb2.ButtonRequest.Button
 
 
 @pytest.fixture
-def admin_flags():
-    """Snapshot game.json + user.json; restore byte-for-byte on teardown.
+def admin_flags(flag_service):
+    """Clear the menu's persisted admin settings after the test (UC-053 A2).
 
-    Admin settings changes persist by flipping ``defaultVariant`` in these CI
-    flag files (the files flagd serves). Snapshot/restore keeps each test
-    isolated and prevents any mutation leaking into the repo or later tests.
+    Admin settings changes are persisted admin values on the flag service
+    (``PUT {"persist": true}``, writer ``menu``). Teardown deletes the persisted
+    value and the in-memory overlay of every admin flag, so the next test sees
+    the baseline again; the flag files are never written.
     """
-    with open(GAME_FLAG_PATH) as fh:
-        game_backup = fh.read()
-    with open(USER_FLAG_PATH) as fh:
-        user_backup = fh.read()
-
     yield
-
-    with open(GAME_FLAG_PATH, "w") as fh:
-        fh.write(game_backup)
-    with open(USER_FLAG_PATH, "w") as fh:
-        fh.write(user_backup)
+    for flag_set, flag in ADMIN_FLAGS:
+        for query in ({"persist": True}, {}):
+            try:
+                flag_service.delete(flag_set, flag, **query)
+            except fs.FlagServiceError:
+                pass
 
 
 @pytest.fixture
@@ -170,40 +175,36 @@ async def _start_menu_with_controllers(
     return serials
 
 
-def _default_variant(path: str, flag_key: str) -> str:
-    with open(path) as fh:
-        doc = json.load(fh)
-    return doc["flags"][flag_key]["defaultVariant"]
+def _default_variant(flag_set: str, flag_key: str) -> str:
+    """The variant the flag service serves now (the effective default)."""
+    return fs.default().get(flag_set, flag_key)["effective_default"]
 
 
-def _set_default_variant(path: str, flag_key: str, variant: str) -> None:
-    """Flip a flag's defaultVariant in the served CI flag file (idempotent).
-
-    flagd hot-reloads the file; the ``admin_flags`` fixture restores it. Safe to
-    call repeatedly as a ``poll_until`` rewrite to self-heal a coalesced
-    file-watch event under CI load.
-    """
-    with open(path) as fh:
-        doc = json.load(fh)
-    if doc["flags"][flag_key]["defaultVariant"] == variant:
-        return
-    doc["flags"][flag_key]["defaultVariant"] = variant
-    with open(path, "w") as fh:
-        json.dump(doc, fh, indent=2)
+def _set_default_variant(flag_set: str, flag_key: str, variant: str) -> None:
+    """Set a stack-wide overlay on the flag service (cleared by the fixture)."""
+    fs.default().put(flag_set, flag_key, variant=variant)
 
 
 async def _wait_default_variant_changes(
-    path: str, flag_key: str, baseline: str, timeout: float = PERSIST_TIMEOUT_SECONDS
+    flag_set: str,
+    flag_key: str,
+    baseline: str,
+    timeout: float = PERSIST_TIMEOUT_SECONDS,
 ) -> str:
-    """Poll the flag file until ``flag_key``'s defaultVariant differs from baseline."""
+    """Poll the flag service until ``flag_key``'s effective default differs from baseline."""
     deadline = asyncio.get_event_loop().time() + timeout
     current = baseline
     while asyncio.get_event_loop().time() < deadline:
-        current = _default_variant(path, flag_key)
+        current = _default_variant(flag_set, flag_key)
         if current != baseline:
             return current
         await asyncio.sleep(0.1)
     return current
+
+
+def _persisted_admin_value(flag_set: str, flag_key: str) -> dict | None:
+    """The persisted admin value of a flag (``admin_value`` in the view), if any."""
+    return fs.default().get(flag_set, flag_key).get("admin_value")
 
 
 # =============================================================================
@@ -296,22 +297,21 @@ async def test_partial_combo_does_not_enter_admin(
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-012", flow="A1")
 async def test_sensitivity_change_persists(
-    docker_compose, menu_client, mock_client, admin_flags
+    docker_compose, menu_client, mock_client, admin_flags, flag_service
 ):
     """In admin mode, Circle cycles sensitivity; the change persists by advancing
-    the ``sensitivity`` flag's defaultVariant in the served game.json."""
+    the ``sensitivity`` flag as a persisted admin value on the flag service
+    (UC-053 A2)."""
     serials = await _start_menu_with_controllers(docker_compose, menu_client)
     admin_serial = serials[0]
 
-    baseline = _default_variant(GAME_FLAG_PATH, "sensitivity")
+    baseline = _default_variant(GAME, "sensitivity")
 
     await enter_admin_mode(mock_client, admin_serial)
     # Circle = cycle sensitivity forward.
     await press_admin_button(mock_client, admin_serial, _Button.CIRCLE)
 
-    new_variant = await _wait_default_variant_changes(
-        GAME_FLAG_PATH, "sensitivity", baseline
-    )
+    new_variant = await _wait_default_variant_changes(GAME, "sensitivity", baseline)
     assert new_variant != baseline, (
         f"sensitivity defaultVariant did not change (still {baseline})"
     )
@@ -319,6 +319,11 @@ async def test_sensitivity_change_persists(
     order = ["ultra_slow", "slow", "medium", "fast", "ultra_fast"]
     assert new_variant == order[(order.index(baseline) + 1) % len(order)], (
         f"sensitivity advanced to unexpected variant: {baseline} -> {new_variant}"
+    )
+    # Step 3 (UC-053 A2): the menu's write is persisted, labelled with its writer.
+    admin = _persisted_admin_value(GAME, "sensitivity")
+    assert admin and admin.get("variant") == new_variant, (
+        f"sensitivity change was not persisted as an admin value: {admin}"
     )
 
     await exit_admin_mode(mock_client, admin_serial)
@@ -332,10 +337,10 @@ async def test_sensitivity_change_persists(
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-012", flow="main", steps=[3, 4, 5])
 async def test_option_cycle_and_value_change_persists(
-    docker_compose, menu_client, mock_client, admin_flags
+    docker_compose, menu_client, mock_client, admin_flags, flag_service
 ):
     """Move cycles the selected option (sensitivity -> num_teams), then Select
-    increments the now-selected option's value, persisted to game.json.
+    increments the now-selected option's value, persisted on the flag service.
 
     The option order is ``[sensitivity, num_teams, force_all_start,
     agent_control]`` and starts at index 0 (sensitivity) on entry, so one Move
@@ -344,7 +349,7 @@ async def test_option_cycle_and_value_change_persists(
     serials = await _start_menu_with_controllers(docker_compose, menu_client)
     admin_serial = serials[0]
 
-    baseline = _default_variant(GAME_FLAG_PATH, "num_teams")
+    baseline = _default_variant(GAME, "num_teams")
 
     await enter_admin_mode(mock_client, admin_serial)
     # Move: sensitivity -> num_teams (current_option index 0 -> 1).
@@ -352,9 +357,7 @@ async def test_option_cycle_and_value_change_persists(
     # Select: increment the current option (num_teams) forward.
     await press_admin_button(mock_client, admin_serial, _Button.SELECT)
 
-    new_variant = await _wait_default_variant_changes(
-        GAME_FLAG_PATH, "num_teams", baseline
-    )
+    new_variant = await _wait_default_variant_changes(GAME, "num_teams", baseline)
     assert new_variant != baseline, (
         f"num_teams defaultVariant did not change after Move+Select (still {baseline})"
     )
@@ -374,7 +377,7 @@ async def test_option_cycle_and_value_change_persists(
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-014", flow="main", steps=[1, 2, 3, 5])
 async def test_force_start_requests_game(
-    docker_compose, menu_client, mock_client, admin_flags
+    docker_compose, menu_client, mock_client, admin_flags, flag_service
 ):
     """Holding the trigger in admin mode force-starts the game: the menu publishes
     a ``game_requested`` event (source=admin_force_start) AND actually invokes the
@@ -394,18 +397,16 @@ async def test_force_start_requests_game(
     ``start_game`` is now called. Before the fix neither occurred (the menu sat in
     GAME_STARTING with no coordinator contact at all).
     """
-    # Enable force_all_start and confirm flagd is serving it (rewrite self-heal
-    # covers a coalesced file-watch event under CI load) before force-starting.
-    _set_default_variant(GAME_FLAG_PATH, "force_all_start", "on")
+    # Enable force_all_start (a stack overlay on the flag service) and confirm
+    # flagd is serving it before force-starting.
+    _set_default_variant(GAME, "force_all_start", "on")
     with flagd_probe_client(docker_compose, "game") as probe:
         served = await async_poll_until(
             lambda: (
                 probe.get_boolean_value("force_all_start", False, EvaluationContext())
                 is True
             ),
-            rewrite=lambda: _set_default_variant(
-                GAME_FLAG_PATH, "force_all_start", "on"
-            ),
+            rewrite=lambda: _set_default_variant(GAME, "force_all_start", "on"),
         )
     assert served, "flagd never served force_all_start=on"
 
@@ -510,3 +511,85 @@ async def test_force_start_respects_selected_game_mode(
             f"force start requested {requested.data.get('game_name')}, "
             f"expected admin-cycled {expected_mode}"
         )
+
+
+# =============================================================================
+# 8. TC-020: the host and the presenter change flags at runtime (UC-053 A1, A2)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-053", flow="A2", br=["BR-004"], tc="TC-020")
+@pytest.mark.uc("UC-053", flow="A1", tc="TC-020")
+@pytest.mark.uc("UC-012", flow="A1", tc="TC-020")
+@pytest.mark.uc("UC-044", flow="main", tc="TC-020")
+async def test_host_and_stage_change_flags_at_runtime(
+    docker_compose, menu_client, mock_client, admin_flags, flag_service
+):
+    """The host's admin setting and the presenter's stage overlay coexist; the
+    stage reset clears only the stage's overlays (TC-020)."""
+    import subprocess
+
+    repo = os.path.join(os.path.dirname(__file__), "..", "..")
+    env = dict(os.environ, FLAG_SERVICE_URL=flag_service.base_url)
+
+    def stage(*args: str) -> str:
+        return subprocess.run(
+            list(args),
+            cwd=repo,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+
+    serials = await _start_menu_with_controllers(docker_compose, menu_client)
+    admin_serial = serials[0]
+    baseline = _default_variant(GAME, "sensitivity")
+    try:
+        # Step 1: the host cycles sensitivity in admin mode (a persisted admin value).
+        await enter_admin_mode(mock_client, admin_serial)
+        await press_admin_button(mock_client, admin_serial, _Button.CIRCLE)
+        host_variant = await _wait_default_variant_changes(
+            GAME, "sensitivity", baseline
+        )
+        assert host_variant != baseline
+        await exit_admin_mode(mock_client, admin_serial)
+        assert (_persisted_admin_value(GAME, "sensitivity") or {}).get(
+            "variant"
+        ) == host_variant
+
+        # Step 2: the presenter flips the decision backend with the stage script.
+        stage("scripts/agent-backend.sh", "jev")
+        view = flag_service.get("agent", "decision.backend")
+        assert view["effective_default"] == "jev"
+        assert (view.get("stack_overlay") or {}).get("writer") == "stage", view
+
+        # Step 3: flagd serves both changes.
+        with flagd_probe_client(docker_compose, "agent") as agent:
+            assert await async_poll_until(
+                lambda: (
+                    agent.get_string_value("decision.backend", "", EvaluationContext())
+                    == "jev"
+                )
+            ), "flagd did not serve decision.backend=jev"
+        with flagd_probe_client(docker_compose, "game") as game:
+            expected = fs.variant_value(GAME, "sensitivity", host_variant)
+            assert await async_poll_until(
+                lambda: (
+                    game.get_integer_value("sensitivity", -1, EvaluationContext())
+                    == expected
+                )
+            ), "flagd did not serve the host's sensitivity"
+
+        # Step 4: the stage reset clears the stage's overlays and re-applies the
+        # stage baseline; the host's setting is untouched.
+        stage("scripts/talk-stage.sh", "reset")
+        with open(os.path.join(repo, "scripts", "talk-baseline.json")) as fh:
+            stage_backend = json.load(fh)["checked"]["decision.backend"]
+        backend = flag_service.get("agent", "decision.backend")
+        assert backend["effective_default"] == stage_backend, backend
+        assert _default_variant(GAME, "sensitivity") == host_variant
+    finally:
+        fs.default().request("DELETE", "/agent?writer=stage")

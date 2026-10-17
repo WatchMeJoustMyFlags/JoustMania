@@ -14,15 +14,9 @@
 #
 # Why this file exists (the dry-run findings, #999):
 #
-# 1. Agent <-> flagd flag-dir mismatch. In ci-mode, docker-compose.ci.yml
-#    overrides flagd (and menu) to mount ./services/flagd/ci:/etc/flagd, but the
-#    base agent service keeps ./services/flagd:/etc/flagd. So the agent's
-#    experiment-scoped game.json writes (FLAGD_FLAG_DIR=/etc/flagd ->
-#    /etc/flagd/game.json) landed in the BASE file while flagd served the CI one
-#    — the writes never reached the running flagd. Here we !override the agent
-#    volume onto the SAME services/flagd/ci dir flagd and menu serve, so the file
-#    the agent writes IS the file flagd reads (the #959 single-source-of-truth
-#    invariant, extended to the agent under the ci flag dir).
+# 1. (Resolved by the flag service, epic #1407.) The agent used to write a flag
+#    dir flagd did not serve; it now writes through the flag service, which
+#    loads the CI baseline, so there is nothing to align.
 #
 # 2. Experiment framework opt-in. The base agent env now passes through the
 #    AGENT_EXPERIMENT* vars (default-off); this file turns ON the cohort loop and
@@ -30,25 +24,20 @@
 #    Override values still win, e.g.:
 #      AGENT_EXPERIMENT_SEED_FLAG=move_threshold make dry-run
 #
-# The agent MASTER kill-switch (agent.json `enabled`) still defaults to `off`
-# (fail-closed, unchanged). `make dry-run` prints the one-liner to flip the CI
-# copy on; we do NOT mutate the committed flag here so the default stays safe.
+# The agent MASTER kill-switch (agent set `enabled`) still defaults to `off`
+# (fail-closed, unchanged). `make dry-run` prints the one-liner to switch it on
+# through the flag service (scripts/agent-killswitch.sh on).
 
 services:
+  # Flag service: the dry-run/demo stack keeps its own admin state file, apart
+  # from the CI one it layers on (re-review N4: one state file per stack).
+  flag-service:
+    environment:
+      - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin-dry-run.json
+
   agent:
     profiles:
       - agent
-    # Resolve the dir mismatch: serve/write the SAME flag dir flagd + menu use
-    # under ci-mode. !override REPLACES the base ./services/flagd:/etc/flagd
-    # mount (compose merges array values by default).
-    volumes: !override
-      - ./services/flagd/ci:/etc/flagd
-      # !override REPLACES the base agent volumes list, which would otherwise drop
-      # the durable experiment journal volume (#1023). Re-declare it here so the
-      # dry-run/demo stack also keeps cohort journal state across recreation. The
-      # top-level `agent-experiments:` volume is defined in docker-compose.yml and
-      # carries through the compose merge — no redeclaration needed here.
-      - agent-experiments:/var/lib/joustmania/agent/experiments
     environment:
       # Master opt-in for the #982/#991 experiment cohort loop.
       - AGENT_EXPERIMENTS_ENABLED=${AGENT_EXPERIMENTS_ENABLED:-true}

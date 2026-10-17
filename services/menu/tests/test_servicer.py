@@ -34,7 +34,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from lib.flag_config_writer import FlagConfigWriter
+from lib.flag_service_writer import FlagServiceWriter
 from lib.types import Games
 from proto import menu_pb2
 from services.menu.handlers.base import ControllerState
@@ -74,7 +74,7 @@ class FakeMenuServicer:
         self.audio.stop_lobby_music = AsyncMock()
         self.audio.play_voice = AsyncMock()
 
-        # FlagConfigWriter mocks (replacing SettingsHelper)
+        # FlagServiceWriter mocks (replacing SettingsHelper)
         self.game_settings_writer = MagicMock()
         self.game_settings_writer.update_default_variant = MagicMock(return_value=True)
 
@@ -165,8 +165,8 @@ async def real_servicer():
         patch("services.menu.servicer.init_flag_domain", autospec=True),
         patch("services.menu.servicer.get_flag_client", side_effect=_default_returning_flag_client),
         patch(
-            "services.menu.servicer.FlagConfigWriter",
-            side_effect=lambda _path: create_autospec(FlagConfigWriter, instance=True),
+            "services.menu.servicer.FlagServiceWriter",
+            side_effect=lambda _path: create_autospec(FlagServiceWriter, instance=True),
         ),
         patch("services.menu.servicer.LedController", autospec=True),
         patch("services.menu.servicer.AudioHelper", autospec=True),
@@ -1689,6 +1689,22 @@ class TestHandleWebCommandSelectGame:
         assert servicer.current_selection == Games.Tournament
         servicer.user_prefs_writer.update_default_variant.assert_called_once_with("current_game", "Tournament")
         servicer.audio.play_voice.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_web_select_persists_off_the_event_loop_thread(self, servicer):
+        """The blocking flag-service write runs in a worker thread, not on the loop."""
+        import threading
+
+        loop_thread = threading.get_ident()
+        write_threads = []
+        servicer.user_prefs_writer.update_default_variant.side_effect = lambda *_a: write_threads.append(
+            threading.get_ident()
+        )
+
+        await self._select(servicer, "Tournament")
+
+        assert len(write_threads) == 1
+        assert write_threads[0] != loop_thread
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="A1")

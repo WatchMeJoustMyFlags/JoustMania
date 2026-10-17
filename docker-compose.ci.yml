@@ -23,19 +23,17 @@ services:
       FLAGD_HOST: flagd
       FLAGD_PORT: "8015"
 
-  # flagd - Use the complete CI flag directory (play_audio=off, backend=mock).
-  # Single source of truth (#959): instead of overlaying per-file <domain>.ci.json
-  # onto the base path — which made flagd serve different content at the same
-  # in-container path, invisibly (the #957 trap) — mount the whole
-  # services/flagd/ci directory in place of base services/flagd. flagd's
-  # --uri file:/etc/flagd/<domain>.json list is unchanged; the directory CONTENT
-  # differs. The integration harness sets FLAGD_FLAG_DIR to this same host
-  # directory, so the file a test writes IS the file flagd serves. !override
-  # REPLACES the base [./services/flagd:/etc/flagd] mount (compose MERGES array
-  # values by default; !override replaces the whole list).
-  flagd:
+  # Flag service: load the CI flag directory (play_audio=off, backend=mock) as
+  # the read-only baseline flagd serves through it (#959: one directory), and
+  # keep its admin state in a CI-only state file (re-review N4: one state file
+  # per stack, so a test or demo stack never reads the production admin values).
+  # !override replaces the base mount list.
+  flag-service:
     volumes: !override
-      - ./services/flagd/ci:/etc/flagd
+      - ./services/flagd/ci:/etc/flagd:ro
+      - flag-service-state:/var/lib/flag-service
+    environment:
+      - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin-ci.json
 
   # Controller Manager - Mock mode via flagd (backend=mock in ci/controller.json)
   controller-manager:
@@ -57,6 +55,9 @@ services:
     environment: !override
       OTEL_SERVICE_NAME: game-coordinator-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      # Game lifecycle reported to the flag service (FR-135, #1410)
+      FLAG_SERVICE_URL: http://flag-service:8070
+      FLAG_SERVICE_INSTANCE: game-coordinator  # the !override above drops the base env
       # The total concurrent-games ceiling is pinned for the integration suite
       # (#779) via the `max_concurrent_games` game flag (defaultVariant "four" in
       # services/flagd/ci/game.json), NOT an env var (#1215). Since #1018 (option
@@ -64,30 +65,6 @@ services:
       # is REAL-only and shadows run up to `max_shadow_games` (default 4), bounded
       # by this total ceiling. The CI flag pins 4 to keep multiple live sessions on
       # one stack deterministic for the concurrent/shadow-isolation tests.
-
-  # Menu - writes game.json/user.json via FlagConfigWriter (game selection, admin
-  # settings). Point it at the SAME CI flag directory flagd serves (#959) so a
-  # menu-driven flag write lands in the file flagd reads, not a stale base copy.
-  # !override replaces the base [./services/flagd:/etc/flagd] mount.
-  # Flag-dir permission init (#1031) — point it at the CI flag dir so the nonroot
-  # menu can persist admin writes to the same files flagd serves. !override
-  # replaces the base [./services/flagd:/etc/flagd] mount with the CI dir.
-  flag-dir-init:
-    volumes: !override
-      - ./services/flagd/ci:/etc/flagd
-
-  menu:
-    # The menu persists admin-mode settings (sensitivity, num_teams, game
-    # selection) by writing game.json/user.json in the bind-mounted CI flag dir.
-    # The image runs as nonroot (uid 65532). #1031: flag-dir-init makes the CI flag
-    # dir group-writable, so the menu persists writes as nonroot — the `user: "0"`
-    # hack is gone and the prod-like (nonroot) admin write path is exercised in CI.
-    volumes: !override
-      - ./services/flagd/ci:/etc/flagd
-    # The admin trigger-hold force-start window is shortened for integration tests
-    # (so they don't sleep the full 3s real-play hold, #823) via the
-    # `force_all_start_seconds` game flag (defaultVariant "ci" = 0.6s in
-    # services/flagd/ci/game.json), NOT an env var (#1215).
 
   # Pairing Daemon - Requires hardware, excluded from CI
   pairing-daemon:

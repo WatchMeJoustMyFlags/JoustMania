@@ -188,39 +188,41 @@ func TestExperimentsEnabled_DefaultSafeFreshConfig(t *testing.T) {
 }
 
 // TestOwnership_AgentHasNoWritePathToAgentJSON is the ownership invariant (#1044):
-// agent.json is human-owned; the agent must NEVER write its own experiment-enable
-// flags. The agent's ONLY flagd write path is experiment.Writer/Gate, which are
-// hardcoded to game.json (basename guard) and reject any agent.json target — so
-// there is no path by which the agent could set experiments_enabled on itself.
+// the agent flag set is human-owned; the agent must NEVER write its own
+// experiment-enable flags. The agent's only experiment write path is
+// experiment.Writer/Gate, which are hardcoded to the game flag set — so there is
+// no path by which the agent could set experiments_enabled on itself, even when
+// the flag service would accept a stack write to it.
 func TestOwnership_AgentHasNoWritePathToAgentJSON(t *testing.T) {
-	dir := t.TempDir()
-	// Stage an agent.json so a (rejected) write would be observable as a mutation.
-	agentPath := filepath.Join(dir, "agent.json")
-	const agentBefore = `{"metadata":{"flagSetId":"agent"},"flags":{"experiments_enabled":{"state":"ENABLED","variants":{"on":true,"off":false},"defaultVariant":"off"}}}`
-	if err := os.WriteFile(agentPath, []byte(agentBefore), 0o644); err != nil {
+	svc := gameServiceForDeclarer(t)
+	agentPath := filepath.Join(t.TempDir(), "agent.json")
+	const agentDoc = `{"metadata":{"flagSetId":"agent"},"flags":{"experiments_enabled":{"state":"ENABLED","variants":{"on":true,"off":false},"defaultVariant":"off"}}}`
+	if err := os.WriteFile(agentPath, []byte(agentDoc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.LoadSet("agent", agentPath, map[string][]string{"experiments_enabled": {"stack", "experiment+arm"}}); err != nil {
 		t.Fatal(err)
 	}
 
-	// The Writer the agent uses is pinned to game.json. Point a Gate at agent.json
-	// (the misconfiguration the invariant must catch) and confirm it refuses.
 	log := testLogger()
-	writer := experiment.NewWriter(agentPath, log) // deliberately wrong target
-	gate := experiment.NewGate(writer, nil, log)
-	err := gate.Review(context.Background(), experiment.Proposal{
-		FlagKey:           "experiments_enabled",
-		ExperimentID:      experiment.MintExperimentID(),
-		ExperimentalValue: true,
-		Rationale:         "agent tries to enable itself (must be blocked)",
-	})
-	if err == nil {
-		t.Fatal("OWNERSHIP VIOLATION: the Gate accepted a write targeting agent.json")
+	gate := experiment.NewGate(experiment.NewWriter(svc, log), nil, log)
+	for key, reason := range map[string]experiment.Reason{
+		"experiments_enabled":          experiment.ReasonUnknownFlag,   // looked up in the game set only
+		"../agent/experiments_enabled": experiment.ReasonNonGameTarget, // a smuggled path
+	} {
+		err := gate.Review(context.Background(), experiment.Proposal{
+			FlagKey:           key,
+			ExperimentID:      experiment.MintExperimentID(),
+			ExperimentalValue: true,
+			Rationale:         "agent tries to enable itself (must be blocked)",
+		})
+		if rej, ok := experiment.AsReject(err); !ok || rej.Reason != reason {
+			t.Fatalf("%s: expected %s, got %v", key, reason, err)
+		}
 	}
-	if !strings.Contains(err.Error(), string(experiment.ReasonNonGameTarget)) {
-		t.Fatalf("expected a non_game_target rejection, got: %v", err)
-	}
-	// The file must be byte-unchanged: no agent.json mutation occurred.
-	after, _ := os.ReadFile(agentPath)
-	if string(after) != agentBefore {
-		t.Fatalf("agent.json was mutated despite the gate rejection:\nbefore=%s\nafter =%s", agentBefore, after)
+	for _, call := range svc.Calls {
+		if strings.Contains(call, "agent/") {
+			t.Fatalf("OWNERSHIP VIOLATION: a write reached the agent set: %v", svc.Calls)
+		}
 	}
 }

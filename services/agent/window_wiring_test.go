@@ -52,7 +52,7 @@ func TestPatternEndChain_KeepsRegistryAndForwardsToWindow(t *testing.T) {
 	t.Run("UC-042/BR-006 built loop forwards pattern ends to the window", func(t *testing.T) {
 		t.Setenv("AGENT_EXPERIMENT_DIR", t.TempDir())
 		w := &fakeWindow{}
-		loop := buildExperimentLoop(nil, nil, nil, "/nonexistent/game.json", w, testLogger())
+		loop := buildExperimentLoop(nil, nil, nil, gameServiceForDeclarer(t), w, testLogger())
 		if loop.spawner.onPatternEnd == nil || loop.spawner.onPatternStart == nil {
 			t.Fatal("pattern callbacks not wired")
 		}
@@ -66,7 +66,7 @@ func TestPatternEndChain_KeepsRegistryAndForwardsToWindow(t *testing.T) {
 	t.Run("UC-042/BR-005 built loop evicts a torn-down experiment's linked set", func(t *testing.T) {
 		t.Setenv("AGENT_EXPERIMENT_DIR", t.TempDir())
 		w := &fakeWindow{}
-		loop := buildExperimentLoop(nil, nil, nil, "/nonexistent/game.json", w, testLogger())
+		loop := buildExperimentLoop(nil, nil, nil, gameServiceForDeclarer(t), w, testLogger())
 		id, err := loop.registry.Declare(experiment.Intent{
 			FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 		})

@@ -26,6 +26,7 @@ All configuration is via environment variables:
 | `GAME_COORDINATOR_SERVICE` | `game-coordinator:50053` | Game Coordinator gRPC address |
 | `MENU_SERVICE` | `menu:50054` | Menu gRPC address |
 | `LISTEN_ADDR` | `:8080` | HTTP listen address |
+| `FLAG_SERVICE_URL` | `http://flag-service:8070` | Flag service HTTP API that `/canary/*` and `/chaos/*` write the `controller` set through |
 
 | Property | Value |
 |----------|-------|
@@ -40,13 +41,17 @@ Each backend service has a proxy struct (e.g., `ControllerManagerProxy`) that im
 
 CORS is enabled for all origins to allow browser requests from the dashboard.
 
+The `/canary/*` and `/chaos/*` endpoints change `bluetooth_backend` and `chaos_fault_type` in the `controller` flag set through the flag service (epic #1407): a stack overlay, or a fraction overlay for `?fraction=N`. The proxy mounts no flag file.
+
 ## Files
 
 ```
 services/connect-proxy/
 ├── Dockerfile    # Three-stage: buf proto gen, Go build, alpine runtime
 ├── main.go       # Proxy handlers, gRPC client setup, HTTP server
-├── canary.go     # /canary/* handlers (bluetooth_backend rewrite)
+├── canary.go     # /canary/* handlers (bluetooth_backend overlay)
+├── chaos.go      # /chaos/* handlers (chaos_fault_type overlay)
+├── flagservice.go # flag-service HTTP client
 ├── canary_test.go
 ├── go.mod
 └── go.sum

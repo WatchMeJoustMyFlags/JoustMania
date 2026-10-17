@@ -37,7 +37,7 @@ const (
 	// back the rollout); the infra-domain parallel to AttrDecisionAction.
 	AttrRemediationAction = "remediation.action"
 	// AttrRolloutDryRun is whether the actuator only REHEARSED the decision (true)
-	// rather than applying it to rollout.json (false). True when the LIVE
+	// rather than applying it through the flag service (false). True when the LIVE
 	// rollout_enabled flag is off (#1213; the default + fail-closed state) and for a
 	// nil actuator (the loop never writes); false when the gate is on. Present
 	// on EVERY decision span so a Jaeger consumer can tell a rehearsed
@@ -81,7 +81,7 @@ type infraDecisionAttrs struct {
 	// (and only recorded) when action == RemediationExpand.
 	expandedTo int
 	// dryRun is whether the actuator only rehearsed this decision (no write to
-	// rollout.json) rather than applying it. Recorded on every span.
+	// the rollout set) rather than applying it. Recorded on every span.
 	dryRun bool
 }
 

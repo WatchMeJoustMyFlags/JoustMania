@@ -33,12 +33,12 @@
 
 ## Validation
 
-1. **Nothing reached the game**: `interventions.json` is byte-identical to its state before step 2, and the game's events hold no `agent_intervention`.
+1. **Nothing reached the game**: the flag service holds no value or event in the game's scope (`GET /interventions` shows none for the game id), and the game's events hold no `agent_intervention`.
 2. **Observe without acting** (A1 variant): with `enabled` on and `interventions_enabled` off, decisions are spanned but nothing is written.
 
 ## Postconditions
 
-- `agent.json` (kill switch first) and `interventions.json` are restored byte for byte by the `decide_flags` fixture.
+- The `agent` overlays (kill switch first) are deleted by the `decide_flags` fixture; no flag file changed.
 - One game that the suite fixture ends.
 
 ## Automation

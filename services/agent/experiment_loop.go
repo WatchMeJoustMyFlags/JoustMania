@@ -274,7 +274,7 @@ func buildExperimentLoop(
 	flagsClient *flags.Flags,
 	promoter *promote.Promoter,
 	fitnessStore *experiment.FitnessStore,
-	gameFlagPath string,
+	gameFlags experiment.FlagService,
 	window crossGameWindow,
 	logger *slog.Logger,
 ) *experimentLoop {
@@ -300,7 +300,7 @@ func buildExperimentLoop(
 	// TargetingWriter (#977): a Gate over a Writer pinned to the game flagset. The
 	// Gate validates THE INVARIANT on every Apply; Strip un-nests a branch on
 	// teardown. The Writer is shared by Gate (Apply) and the adapter (Strip).
-	writer := experiment.NewWriter(gameFlagPath, logger)
+	writer := experiment.NewWriter(gameFlags, logger)
 	gate := experiment.NewGate(writer, nil, logger)
 	targeting := experiment.NewGateTargetingWriter(gate, writer)
 
@@ -373,7 +373,7 @@ func buildExperimentLoop(
 		seed:           seedIntentFromEnv(),
 		fitness:        defaultGameFitness,
 		completedGrace: completedGrace(),
-		dynamic:        newDynamicDeclarerFromEnv(gameFlagPath, nil),
+		dynamic:        newDynamicDeclarerFromEnv(gameFlags, nil),
 		// #1184: the retro-seeded thesis proposer is ALWAYS built (like the #995
 		// declarer) so the retro coordinator can Record into it unconditionally; whether
 		// it actually DECLARES is gated by proposerEnabled() (default OFF) in
@@ -770,6 +770,26 @@ func (e *experimentLoop) rehydrate() error {
 	}
 	e.log.Info("experiment: rehydrated experiments from journal", "candidates", len(ids), "live", len(e.registry.Live()))
 	return nil
+}
+
+// proposalSink is where the M7-4 Proposer's proposals go: declared as
+// experiments in this loop's registry, under the same concurrent-experiment
+// budget and declarer mutex as the dynamic declarer (PR #1417 review B2).
+func (e *experimentLoop) proposalSink() *experiment.RegistrySink {
+	sink := &experiment.RegistrySink{
+		Registry:  e.registry,
+		Objective: decision.ObjectiveBalanced,
+		Budget: func(ctx context.Context) int {
+			if b := e.config(ctx).DynamicMaxConcurrent; b > 0 {
+				return b
+			}
+			return e.expDefaults.DynamicMaxConcurrent
+		},
+	}
+	if e.dynamic != nil {
+		sink.Lock = &e.dynamic.mu
+	}
+	return sink
 }
 
 // declareAndStart declares one experiment and writes its shadow targeting,

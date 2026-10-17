@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Self-contained tests for scripts/agent-backend.sh (#1232).
 #
-# Runs the helper against a temp copy of a flag file holding the decision.*
-# flags from the epic #1225 spec (AGENT_FLAG_FILE override), never the real
-# services/flagd/ci/agent.json.
+# Runs the helper against scripts/tests/fake_flag_service.py serving a fixture
+# agent flag set (the decision.* flags of the epic #1225 spec) with the REAL
+# registry deciding what is mutable, never a running stack (epic #1407).
 #
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-agent-backend.sh
@@ -14,11 +14,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="${SCRIPT_DIR}/../agent-backend.sh"
 WORK="$(mktemp -d)"
-trap 'rm -rf "${WORK}"' EXIT
-export AGENT_FLAG_FILE="${WORK}/agent.json"
+# shellcheck source=scripts/tests/lib-fake-flag-service.sh
+source "${SCRIPT_DIR}/lib-fake-flag-service.sh"
+trap 'stop_fake_flag_service; rm -rf "${WORK}"' EXIT
+export FAKE_AGENT_FLAGS="${WORK}/agent.json"
 
+# fixture: (re)start the fake over a fresh fixture flag set (no overlays).
 fixture() {
-  cat >"${AGENT_FLAG_FILE}" <<'JSON'
+  stop_fake_flag_service
+  write_fixture
+  start_fake_flag_service "${WORK}"
+}
+
+write_fixture() {
+  cat >"${FAKE_AGENT_FLAGS}" <<'JSON'
 {
   "$schema": "https://flagd.dev/schema/v0/flags.json",
   "flags": {
@@ -90,15 +99,14 @@ expect() {
   fi
 }
 
-# default_variant <flag-key>
-default_variant() {
-  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["flags"][sys.argv[2]]["defaultVariant"])' \
-    "${AGENT_FLAG_FILE}" "$1"
+# effective <flag-key>: the variant the flag service serves now.
+effective() {
+  curl -sS "${FLAG_SERVICE_URL}/agent/$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["effective_default"])'
 }
 
 check_variant() {
   local key="$1" want="$2" got
-  got="$(default_variant "${key}")"
+  got="$(effective "${key}")"
   if [[ "${got}" == "${want}" ]]; then ok "${key} == ${want}"; else not_ok "${key} == ${want} (got ${got})"; fi
 }
 
@@ -116,7 +124,7 @@ expect "flip to claude sonnet" 0 'agent backend -> claude  model -> sonnet ("cla
 check_variant decision.backend claude
 check_variant decision.claude.model sonnet
 expect "status shows claude model" 0 'model     = sonnet ("claude-sonnet-5-5")' -- status
-expect "flip backend only" 0 "agent backend -> openai  (" -- openai
+expect "flip backend only" 0 "agent backend -> openai" -- openai
 check_variant decision.backend openai
 check_variant decision.claude.model sonnet
 expect "back to rules" 0 "agent backend -> rules" -- rules
@@ -141,10 +149,10 @@ expect "status after effort flip" 0 "capture   = off (false)" -- status
 "${HELPER}" openai >/dev/null
 expect "status shows effort for openai" 0 'effort    = omit ("omit")' -- status
 
-# --- refusals leave the file untouched ------------------------------------
+# --- refusals change nothing ----------------------------------------------
 fixture
-before="$(cat "${AGENT_FLAG_FILE}")"
 expect "unknown model lists valid ones" 1 "valid: haiku, sonnet, opus" -- claude gpt4
+check_variant decision.backend rules
 expect "unknown threshold lists valid ones" 1 "valid: low, default, strict" -- threshold yolo
 expect "unknown capture variant refused" 1 "valid: on, off" -- capture maybe
 expect "unknown effort lists valid ones" 1 "valid: auto, none, minimal, low, omit" -- effort high
@@ -155,49 +163,26 @@ expect "unknown action shows usage" 2 "usage:" -- banana
 expect "threshold needs a value" 2 "usage:" -- threshold
 expect "unknown jev-threshold lists valid ones" 1 "valid: inherit, gate, default, strict" -- jev-threshold low
 expect "jev-threshold needs a value" 2 "usage:" -- jev-threshold
-if [[ "$(cat "${AGENT_FLAG_FILE}")" == "${before}" ]]; then
-  ok "refused flips leave the file untouched"
+overlays="$(curl -sS "${FLAG_SERVICE_URL}/state" | python3 -c 'import json,sys; print(json.load(sys.stdin)["overlays"])')"
+if [[ "${overlays}" == "0" ]]; then
+  ok "refused flips leave every flag at its baseline"
 else
-  not_ok "refused flips leave the file untouched"
+  not_ok "refused flips leave every flag at its baseline"
 fi
 
-# --- in-place write (same inode: single-file bind mounts) + only defaultVariant changes
+# --- writes: writer label, never persisted (epic #1407, N4) ---------------
 fixture
-inode_before="$(stat -c %i "${AGENT_FLAG_FILE}")"
 "${HELPER}" claude opus >/dev/null
-inode_after="$(stat -c %i "${AGENT_FLAG_FILE}")"
-if [[ "${inode_before}" == "${inode_after}" ]]; then
-  ok "write is in place (same inode)"
+puts="$(grep '^PUT ' "${FAKE_FLAG_LOG}")"
+if [[ "$(grep -c . <<<"${puts}")" -eq 2 && "${puts}" == *'"writer": "stage"'* && "${puts}" != *persist* ]]; then
+  ok "a backend+model flip is two PUTs, writer=stage, not persisted"
 else
-  not_ok "write is in place (inode ${inode_before} -> ${inode_after})"
-fi
-cp "${AGENT_FLAG_FILE}" "${WORK}/after.json"
-fixture
-diff_out="$(python3 - "${AGENT_FLAG_FILE}" "${WORK}/after.json" <<'PY'
-import json, sys
-a, b = (json.load(open(p)) for p in sys.argv[1:])
-for key in a["flags"]:
-    fa, fb = a["flags"][key], b["flags"][key]
-    for field in set(fa) | set(fb):
-        if fa.get(field) != fb.get(field):
-            print(f"{key}.{field}")
-PY
-)"
-want=$'decision.backend.defaultVariant\ndecision.claude.model.defaultVariant'
-if [[ "$(sort <<<"${diff_out}")" == "${want}" ]]; then
-  ok "only defaultVariant fields changed"
-else
-  not_ok "only defaultVariant fields changed (diff: ${diff_out})"
+  not_ok "a backend+model flip is two PUTs, writer=stage, not persisted (${puts})"
 fi
 
-# --- missing decision.* flags (pre-#1226 file) ----------------------------
-cat >"${AGENT_FLAG_FILE}" <<'JSON'
-{ "flags": { "enabled": { "state": "ENABLED", "variants": { "on": true, "off": false }, "defaultVariant": "off" } } }
-JSON
-expect "status flags missing keys" 1 "backend   = MISSING (flag not in file)" -- status
-expect "flip with missing backend flag fails clearly" 1 "flag 'decision.backend' not defined" -- claude
-rm -f "${AGENT_FLAG_FILE}"
-expect "missing flag file fails clearly" 1 "flag file not found" -- status
+# --- the flag service unreachable -----------------------------------------
+stop_fake_flag_service
+expect "unreachable flag service fails clearly" 1 "flag service unreachable" -- status
 echo
 echo "${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]

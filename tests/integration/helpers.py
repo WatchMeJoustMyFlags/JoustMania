@@ -10,7 +10,6 @@ These helpers provide:
 
 import asyncio
 import contextlib
-import json
 import os
 import sys
 import time
@@ -37,41 +36,16 @@ from proto import (
 # Replace fixed "write then sleep a constant" settles with condition polls:
 # the old constant becomes the DEADLINE, so the fast path costs ~one poll
 # interval instead of the full constant on every run, and the slow path keeps
-# (or extends) the same upper bound. Generalized from the former
-# test_rollout_plumbing._poll_until (now in tests/contract, #1422), which
-# proved the shape (incl. the rewrite self-heal) against flagd file-watch
-# reloads under CI load.
+# (or extends) the same upper bound. Flag writes go through the flag service
+# (epic #1407), which pushes them to flagd at once over the sync stream.
 # =============================================================================
 
-# Single source of truth for the active host flag-file path (issue #959).
-#
-# The integration suite ALWAYS loads docker-compose.ci.yml (see
-# conftest._COMPOSE_FILES), which mounts the complete CI flag directory
-# (services/flagd/ci) into flagd. conftest sets FLAGD_FLAG_DIR to that same host
-# directory, so this accessor's plain join ``$FLAGD_FLAG_DIR/<domain>.json``
-# resolves to the exact file flagd serves. Tests used to hardcode
-# ``services/flagd/<domain>.json`` and branch on ``os.getenv("CI")`` to find the
-# served file; that desynced from reality and bit #957. One dir env, one plain
-# join — the path a test mutates is exactly what flagd serves.
-from lib import flagd_paths  # noqa: E402  (after sys.path insert above)
-
-
-def active_flag_file(domain: str) -> str:
-    """Return the active host flag-file path for ``domain``: ``$FLAGD_FLAG_DIR/<domain>.json``.
-
-    The suite points ``FLAGD_FLAG_DIR`` at the CI flag directory flagd is mounted
-    on (see conftest), so this is the file flagd actually serves. No
-    ``os.getenv("CI")`` branching, no ``.ci.json`` convention — one dir, one join.
-    """
-    return str(flagd_paths.active_flag_file(domain))
-
-
-# Deadline for a flagd file write to be served via RPC reads. Generous on
+# Deadline for a flag-service write to be served via RPC reads. Generous on
 # purpose — it is a worst-case bound, not a paid wait.
 FLAGD_RESOLVE_TIMEOUT_SECONDS = 30.0
-# Cadence for re-applying an idempotent file write while waiting: each
-# re-write touches the file -> fresh inotify event -> flagd reloads,
-# self-healing a missed or coalesced file-watch event (observed under CI load).
+# Cadence for re-applying an idempotent write while waiting (``rewrite``): a
+# repeated flag-service write is harmless and covers a provider that reconnected
+# between the write and the first poll.
 FLAGD_REWRITE_INTERVAL_SECONDS = 2.0
 
 
@@ -85,7 +59,7 @@ def poll_until(
 ) -> bool:
     """Poll ``predicate()`` until true or ``timeout``; return the final value.
 
-    ``rewrite``, when given, is an IDEMPOTENT re-application of the file write
+    ``rewrite``, when given, is an IDEMPOTENT re-application of the write
     being waited on, re-invoked every ``rewrite_interval`` seconds (see
     FLAGD_REWRITE_INTERVAL_SECONDS for why).
     """
@@ -175,118 +149,6 @@ def flagd_probe_client(docker_compose, flag_set: str, *, resolver: str = "in_pro
         yield api.get_client(domain)
     finally:
         provider.shutdown()
-
-
-def flag_default_value(doc: dict, flag_key: str):
-    """The value a flag resolves to with an empty context: its defaultVariant's
-    value. Used to derive the expected post-restore canary value from a
-    snapshotted flag-file document."""
-    flag = doc["flags"][flag_key]
-    return flag["variants"][flag["defaultVariant"]]
-
-
-def _resolve_flag_typed(client, flag_key: str, expected, context):
-    """Resolve ``flag_key`` with the getter matching ``expected``'s type.
-
-    Numeric flags MUST use the typed getters — get_object_value() is
-    TYPE_MISMATCH for numbers under the flagd RPC resolver and silently
-    returns the default (#903)."""
-    if isinstance(expected, bool):
-        return client.get_boolean_value(flag_key, not expected, context)
-    if isinstance(expected, str):
-        return client.get_string_value(flag_key, "__unset__", context)
-    if isinstance(expected, (int, float)):
-        return client.get_float_value(flag_key, float("nan"), context)
-    return client.get_object_value(flag_key, None, context)
-
-
-def _flag_values_match(got, expected) -> bool:
-    if isinstance(expected, (int, float)) and not isinstance(expected, bool):
-        try:
-            return abs(float(got) - float(expected)) <= 1e-9
-        except (TypeError, ValueError):
-            return False
-    return got == expected
-
-
-def wait_flag_file_restored(
-    docker_compose,
-    flag_set: str,
-    backup_text: str,
-    mutated_text: str,
-    restore,
-    timeout: float = FLAGD_RESOLVE_TIMEOUT_SECONDS,
-) -> None:
-    """Wait until flagd actually SERVES a restored flag file's baseline (#894).
-
-    Replaces the fixed post-restore settle in snapshot/restore fixtures with a
-    condition poll on exactly the flags the test observably mutated, derived by
-    diffing ``mutated_text`` (the file content just before restore) against
-    ``backup_text`` (the snapshot that was written back):
-
-    - a flag whose empty-context value (defaultVariant's value) differs must
-      serve the baseline value again;
-    - a flag that grew ``agent_<serial>`` targeting variants must resolve to
-      the baseline value FOR THOSE SERIALS again (the ladder is gone);
-    - a flag that grew gameId-scoped branches (recorded in the ``_branches``
-      side-registry by the *_for_game writers) must resolve to the baseline
-      value FOR THOSE (gameId, serial) scopes again.
-
-    ``restore`` re-writes the backup and is used as the poll's rewrite
-    self-heal (fresh inotify event for a missed/coalesced file-watch reload).
-    If the test made no observable mutation there is nothing flagd could serve
-    stale, and this returns immediately.
-
-    Deliberately unchecked: gameId-scoped edge writes that do NOT register in
-    ``_branches`` (e.g. ``write_edge_for_game``). Their targeting only matches
-    the writing test's (now-ended) game_id, so a stale serve resolves to the
-    neutral default for every later game — harmless by the #838 design.
-    """
-    from openfeature.evaluation_context import EvaluationContext
-
-    backup_doc = json.loads(backup_text)
-    mutated_doc = json.loads(mutated_text)
-
-    checks = []  # (flag_key, EvaluationContext, expected_baseline_value)
-    for key, mflag in mutated_doc.get("flags", {}).items():
-        bflag = backup_doc.get("flags", {}).get(key)
-        if bflag is None:
-            continue  # flag added by the test; gone after restore, nothing to read
-        baseline = bflag["variants"][bflag["defaultVariant"]]
-        if not _flag_values_match(mflag["variants"].get(mflag["defaultVariant"]), baseline):
-            checks.append((key, EvaluationContext(), baseline))
-        for vname in mflag["variants"]:
-            if vname.startswith("agent_") and vname not in bflag["variants"]:
-                # Grant variants carry a per-decision nonce: agent_<serial>#<nonce> (#1313).
-                ctx = EvaluationContext(targeting_key=vname[len("agent_") :].split("#", 1)[0])
-                checks.append((key, ctx, baseline))
-        for scope in mflag.get("_branches", {}).values():
-            ctx = EvaluationContext(
-                targeting_key=scope.get("serial"),
-                attributes={"gameId": scope.get("gameId")},
-            )
-            checks.append((key, ctx, baseline))
-
-    if not checks:
-        return
-
-    with flagd_probe_client(docker_compose, flag_set) as client:
-
-        def _served() -> bool:
-            for key, ctx, baseline in checks:
-                if not _flag_values_match(_resolve_flag_typed(client, key, baseline, ctx), baseline):
-                    return False
-            return True
-
-        assert poll_until(_served, timeout, rewrite=restore), (
-            f"flagd did not serve the restored {flag_set} baseline for "
-            f"{[k for k, _, _ in checks]}"
-        )
-
-
-# =============================================================================
-# Client factory functions
-# =============================================================================
 
 
 async def get_menu_client(docker_compose):
@@ -602,6 +464,21 @@ class GameEventCollector:
         except asyncio.CancelledError:
             pass
 
+    async def wait_for_started_game_id(self, timeout: float = 15.0) -> str:
+        """The game id of the newest ``game_started`` event, waiting for one.
+
+        For an unfiltered (menu) collector, whose ``game_id`` stays unset by
+        design: game-scoped flag writes (epic #1407) need the id of the game the
+        menu just started.
+        """
+        await self.wait_for_event("game_started", timeout=timeout)
+        for event in reversed(self.events):
+            if event.event_type == "game_started":
+                game_id = event.game_id or event.data.get("game_id", "")
+                if game_id:
+                    return game_id
+        raise AssertionError("game_started carried no game_id")
+
     async def wait_for_game_id(self, timeout: float = 15.0) -> str:
         """Wait until the assigned/observed game_id is known and return it.
 
@@ -857,7 +734,9 @@ async def enter_admin_mode(mock_client, serial: str, timeout: float = 5.0):
     )
 
 
-async def press_admin_button(mock_client, serial: str, button, gap: float = ADMIN_DEBOUNCE_GAP):
+async def press_admin_button(
+    mock_client, serial: str, button, gap: float = ADMIN_DEBOUNCE_GAP
+):
     """Press-and-release a single button while in admin mode, honoring debounce.
 
     Leaves ``gap`` (>= the 300ms admin debounce) before AND after so successive
@@ -876,18 +755,26 @@ async def exit_admin_mode(mock_client, serial: str):
     )
 
 
-async def hold_trigger_for_force_start(mock_client, serial: str, hold_seconds: float = 1.5):
+async def hold_trigger_for_force_start(
+    mock_client, serial: str, hold_seconds: float = 1.5
+):
     """Hold the trigger long enough to force-start the game, then release.
 
     The menu force-start threshold defaults to 3s but CI sets
     ADMIN_FORCE_START_SECONDS=0.6, so a 1.5s hold clears it with margin.
     """
     await _set_button(
-        mock_client, serial, controller_manager_mock_pb2.ButtonRequest.Button.TRIGGER, True
+        mock_client,
+        serial,
+        controller_manager_mock_pb2.ButtonRequest.Button.TRIGGER,
+        True,
     )
     await asyncio.sleep(hold_seconds)
     await _set_button(
-        mock_client, serial, controller_manager_mock_pb2.ButtonRequest.Button.TRIGGER, False
+        mock_client,
+        serial,
+        controller_manager_mock_pb2.ButtonRequest.Button.TRIGGER,
+        False,
     )
 
 
@@ -1017,7 +904,9 @@ _LIVE_GAME_STATES = (
 )
 
 
-async def quiesce_coordinator(game_client, timeout: float = 15.0, context: str = "") -> list:
+async def quiesce_coordinator(
+    game_client, timeout: float = 15.0, context: str = ""
+) -> list:
     """Ensure the coordinator has no live sessions; force-end and report leaks.
 
     Tests must leave the coordinator idle — a live leftover session occupies a
@@ -1048,14 +937,18 @@ async def quiesce_coordinator(game_client, timeout: float = 15.0, context: str =
     live = leaked
     while live:
         for game in live:
-            await force_end_game_by_id(game_client, game.game_id, reason="quiesce_leak_cleanup")
+            await force_end_game_by_id(
+                game_client, game.game_id, reason="quiesce_leak_cleanup"
+            )
         if loop.time() > deadline:
             raise AssertionError(
                 f"Coordinator did not quiesce within {timeout}s: "
                 f"{[(g.game_id, g.state) for g in live]}"
             )
         await asyncio.sleep(0.5)
-        live = [g for g in await list_games(game_client) if g.state in _LIVE_GAME_STATES]
+        live = [
+            g for g in await list_games(game_client) if g.state in _LIVE_GAME_STATES
+        ]
     return leaked
 
 
@@ -1186,9 +1079,7 @@ def build_start_config(
         )
     elif game_name == "Traitor":
         # num_teams=0 lets the coordinator auto-calculate from player count.
-        config.traitor_config.CopyFrom(
-            game_coordinator_pb2.TraitorConfig(num_teams=0)
-        )
+        config.traitor_config.CopyFrom(game_coordinator_pb2.TraitorConfig(num_teams=0))
 
     return config
 
@@ -1900,7 +1791,11 @@ async def kill_players_until_one_remains(
 
 
 async def kill_players_for_team_win(
-    mock_client, serials: list[str], delay: float = 0.5, game_client=None, game_id: str = ""
+    mock_client,
+    serials: list[str],
+    delay: float = 0.5,
+    game_client=None,
+    game_id: str = "",
 ) -> list[str]:
     """Kill enough players to trigger a team game win.
 
@@ -1998,7 +1893,9 @@ async def end_swapper_game(
             # means teams are not assigned yet — wait and re-query instead of
             # returning (which left the 2v2 game running with no terminal event).
             if asyncio.get_event_loop().time() >= deadline:
-                raise TimeoutError(f"Swapper teams never got assigned within {timeout}s")
+                raise TimeoutError(
+                    f"Swapper teams never got assigned within {timeout}s"
+                )
             await asyncio.sleep(delay)
             continue
 
@@ -2027,7 +1924,11 @@ async def end_swapper_game(
 
 
 async def end_werewolf_game(
-    mock_client, serials: list[str], delay: float = 0.3, game_client=None, game_id: str = ""
+    mock_client,
+    serials: list[str],
+    delay: float = 0.3,
+    game_client=None,
+    game_id: str = "",
 ) -> list[str]:
     """End a Werewolf game by killing all but one player.
 
@@ -2251,7 +2152,9 @@ async def end_tournament_game(
                 return killed
             continue
         killed.append(a_death)
-        print(f"Tournament round {round_num}: eliminated {a_death} ({len(alive)} were alive)")
+        print(
+            f"Tournament round {round_num}: eliminated {a_death} ({len(alive)} were alive)"
+        )
 
     return killed
 

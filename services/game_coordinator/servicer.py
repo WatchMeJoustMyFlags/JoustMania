@@ -52,6 +52,7 @@ from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
 from services.game_coordinator import metrics
 from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
 from services.game_coordinator.event_bus import EventBus
+from services.game_coordinator.flag_service_client import FlagServiceLifecycle, GameRecord
 from services.game_coordinator.game_session import GAME_KIND_PRIMARY, GAME_KIND_SHADOW, GameSession
 from services.game_coordinator.interventions import InterventionManager, SessionView
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
@@ -196,6 +197,13 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         # mid-game. Reuses the same per-session seam as the InterventionManager.
         self.tempo_schedule_manager = TempoScheduleManager(get_sessions=self.get_intervention_sessions)
         self.tempo_schedule_manager.start()
+
+        # Flag service game lifecycle (FR-135, #1410): register each game before
+        # it runs (bounded 200 ms, outside _sessions_lock), report its end, and
+        # reconcile this instance's live games at start and after a failure.
+        # Disabled when FLAG_SERVICE_URL is unset.
+        self.flag_service = FlagServiceLifecycle.from_env(self._flag_service_live_games)
+        self.flag_service.start()
 
         logger.info("GameCoordinator initialized")
 
@@ -434,6 +442,8 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             ]:
                 ended_session = self.sessions.pop(ended_id, None)
                 self.intervention_manager.forget_session(ended_id)
+                # Queued, not sent: no network call under the lock.
+                self.flag_service.end(ended_id)
                 if ended_session is not None:
                     # Mirror _retire_session: drop this session's game_id-labeled
                     # gauge series so naturally-ended shadows don't leak series
@@ -610,11 +620,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 if not is_real or attempt == 1:
                     return False, "Game already in progress"
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
-            # Seed this game's edge-intervention baseline from the current flag
-            # values BEFORE it runs: a value already present belongs to an
-            # earlier game and is consumed, so it can never replay into this one
-            # (UC-040 BR-006, #1299). Real and shadow sessions alike.
-            self._prime_intervention_baseline(game_id, session.players)
+            # Register the game with the flag service BEFORE it runs, so agent
+            # writes for it are accepted from its first frame (FR-135). Bounded
+            # to 200 ms and outside _sessions_lock; on a timeout or an error the
+            # game starts anyway and the lifecycle reconciles (C-004).
+            await self.flag_service.register(self._game_record(session))
             # Update lifecycle metrics for this session's kind (#775) + experiment
             # attribution (#975). experiment_id/arm are "" for a non-experiment
             # game; #976's spawn binding sets them on the session.
@@ -692,20 +702,23 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             self._retire_session(session.game_id)
         return success, error
 
-    def _prime_intervention_baseline(self, game_id: str, players=()) -> None:
-        """Prime the InterventionManager's edge and per-player grant baselines
-        for a new game (#1299, #1313). ``players`` are the game's Player protos.
+    @staticmethod
+    def _game_record(session: GameSession) -> GameRecord:
+        """The flag service's view of a session. The telemetry kind ``primary``
+        is the flag vocabulary's ``real`` (FR-041, #1249)."""
+        return GameRecord(
+            game_id=session.game_id,
+            game_kind="real" if session.game_kind == GAME_KIND_PRIMARY else "shadow",
+            serials=tuple(player.serial for player in session.players),
+            experiment_id=session.experiment_id or "",
+            arm=session.arm or "",
+        )
 
-        Never fails a start. If priming raises, the manager's fallback primes the
-        session the first time it is evaluated live, recording current edge
-        values as consumed (``_UNKNOWN`` on a flagd read error), so a stale value
-        is never replayed; at worst one fresh write made before that first
-        evaluation is not applied.
-        """
-        try:
-            self.intervention_manager.prime_session(game_id, [player.serial for player in players])
-        except Exception as e:
-            logger.error(f"Failed to prime intervention baseline for {game_id}: {e}")
+    def _flag_service_live_games(self) -> list[GameRecord]:
+        """Every registered, not yet ended session (the reconcile set, UC-053 A10)."""
+        with self._sessions_lock:
+            sessions = list(self.sessions.values())
+        return [self._game_record(s) for s in sessions if s.game_state != game_coordinator_pb2.GameState.ENDED]
 
     def _retire_session(self, game_id: str) -> None:
         """Remove a finished session from the registry and free the primary slot
@@ -713,6 +726,8 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         with self._sessions_lock:
             session = self.sessions.pop(game_id, None)
             self.intervention_manager.forget_session(game_id)
+            # Queued, not sent: no network call under the lock (FR-135).
+            self.flag_service.end(game_id)
             if session is not None:
                 # Remove this session's game_id-labeled gauge series so the
                 # zeroed-but-persistent series don't accumulate as shadows churn
@@ -958,6 +973,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
     async def shutdown(self):
         """Shutdown the game coordinator: join all session threads."""
         logger.info("Shutting down GameCoordinator...")
+
+        try:
+            await self.flag_service.stop()
+        except Exception as e:
+            logger.debug(f"Flag service lifecycle stop failed: {e}")
 
         # Stop intervention flag subscription (#730)
         try:

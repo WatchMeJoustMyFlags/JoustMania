@@ -61,9 +61,9 @@ func TestGatedActionSink_GateOn_Delegates(t *testing.T) {
 // TestGatedRolloutActuator_GateOff_DryRun: with the gate OFF SetControllerCount is a
 // dry-run (no write — it tolerates a non-existent path) and DryRun() reports true.
 func TestGatedRolloutActuator_GateOff_DryRun(t *testing.T) {
-	// A path that does NOT exist: the real writer would error on a read-modify-write,
-	// so a nil error proves the gate short-circuited to the dry-run path.
-	w := NewRolloutWriter("/nonexistent/dir/rollout.json", nil)
+	// A failing flag service: a nil error proves the gate short-circuited to the
+	// dry-run path.
+	w := NewRolloutWriter(&fakeService{err: errors.New("unreachable")}, nil)
 	act := NewGatedRolloutActuator(context.Background(), staticGate(false), w, nil)
 	if !act.DryRun() {
 		t.Fatal("gate OFF must report DryRun()=true")
@@ -77,13 +77,13 @@ func TestGatedRolloutActuator_GateOff_DryRun(t *testing.T) {
 // and SetControllerCount delegates to the real writer (which errors on a bad path,
 // proving the write was actually attempted rather than rehearsed).
 func TestGatedRolloutActuator_GateOn_Applies(t *testing.T) {
-	w := NewRolloutWriter("/nonexistent/dir/rollout.json", nil)
+	w := NewRolloutWriter(&fakeService{err: errors.New("unreachable")}, nil)
 	act := NewGatedRolloutActuator(context.Background(), staticGate(true), w, nil)
 	if act.DryRun() {
 		t.Fatal("gate ON must report DryRun()=false")
 	}
 	if err := act.SetControllerCount(StageOneVariant); err == nil {
-		t.Fatal("gate-on SetControllerCount must attempt the real write (and error on the bad path)")
+		t.Fatal("gate-on SetControllerCount must attempt the real write (and surface the service error)")
 	}
 }
 
@@ -91,7 +91,7 @@ func TestGatedRolloutActuator_GateOn_Applies(t *testing.T) {
 // wrapped writer regardless of gate state, so the value↔variant mapping stays
 // single-sourced.
 func TestGatedRolloutActuator_LadderDelegates(t *testing.T) {
-	act := NewGatedRolloutActuator(context.Background(), staticGate(false), NewRolloutWriter("", nil), nil)
+	act := NewGatedRolloutActuator(context.Background(), staticGate(false), NewRolloutWriter(&fakeService{}, nil), nil)
 	if v, val, ok := act.NextStage(StageNoneValue); !ok || v != StageOneVariant || val != StageOneValue {
 		t.Fatalf("NextStage(none) = (%q,%d,%v), want (one,1,true)", v, val, ok)
 	}
@@ -117,7 +117,7 @@ func (g *flippingGate) RolloutEnabled(context.Context) bool {
 // the InfraLoop never commits state for a write that was only rehearsed.
 // UC: UC-045 A4
 func TestGatedRolloutActuator_ApplyReportsOutcome(t *testing.T) {
-	w, path := newTestRolloutWriter(t)
+	w, path := newTestRolloutWriter(t) // path: the recording fake flag service
 	before := defaultVariantOf(t, path, flagCurrentControllerCount)
 
 	off := NewGatedRolloutActuator(context.Background(), staticGate(false), w, nil)
@@ -142,7 +142,7 @@ func TestGatedRolloutActuator_ApplyReportsOutcome(t *testing.T) {
 // without an agent restart.
 // UC: UC-045 A4
 func TestGatedRolloutActuator_LoopResumesAfterDryRun(t *testing.T) {
-	w, path := newTestRolloutWriter(t)
+	w, path := newTestRolloutWriter(t) // path: the recording fake flag service
 	gate := &flippingGate{answers: []bool{false}}
 	act := NewGatedRolloutActuator(context.Background(), gate, w, nil)
 

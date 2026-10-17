@@ -4,87 +4,73 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
-	"os"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
 	jsonlogic "github.com/diegoholiveira/jsonlogic/v3"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	"github.com/joustmania/agent/flagservice"
+	"github.com/joustmania/agent/flagservice/fake"
 )
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// newGameFile copies the game.json fixture into a t.TempDir and returns its path
-// — tests never touch the real flag file.
-func newGameFile(t *testing.T) string {
+// registryPath is the flag service's registry: the experiment catalog (the
+// game flags whose row allows experiment+arm, flags.md §13.3) and its bounds.
+var registryPath = filepath.Join("..", "..", "flag-service", "registry.yaml")
+
+// newGameService serves testdata/game.json as the game flag set of a fake flag
+// service with the real registry's game policies.
+func newGameService(t *testing.T) *fake.Service {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join("testdata", "game.json"))
+	policies, err := fake.RegistryPolicies(registryPath, GameFlagSet)
 	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+		t.Fatalf("read registry: %v", err)
 	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "game.json")
-	if err := os.WriteFile(path, src, 0o644); err != nil {
-		t.Fatalf("write temp fixture: %v", err)
+	svc := fake.New()
+	if err := svc.LoadSetWithPolicies(GameFlagSet, filepath.Join("testdata", "game.json"), policies); err != nil {
+		t.Fatalf("load fixture: %v", err)
 	}
-	return path
+	return svc
 }
 
-// gateWithRecorder builds a Gate over a temp game.json with an in-memory span
-// recorder so tests can assert on the emitted spans.
-func gateWithRecorder(t *testing.T) (*Gate, string, *tracetest.SpanRecorder) {
+// gateWithRecorder builds a Gate over a fake flag service with an in-memory
+// span recorder so tests can assert on the emitted spans.
+func gateWithRecorder(t *testing.T) (*Gate, *fake.Service, *tracetest.SpanRecorder) {
 	t.Helper()
-	path := newGameFile(t)
+	svc := newGameService(t)
 	rec := tracetest.NewSpanRecorder()
 	tp := trace.NewTracerProvider(trace.WithSpanProcessor(rec))
-	w := NewWriter(path, discardLogger())
-	g := NewGate(w, tp.Tracer("test"), discardLogger())
-	return g, path, rec
+	g := NewGate(NewWriter(svc, discardLogger()), tp.Tracer("test"), discardLogger())
+	return g, svc, rec
 }
 
-// readFlagRaw returns the raw JSON of a flag from the file at path.
-func readFlagRaw(t *testing.T, path, flagKey string) json.RawMessage {
+// resolve resolves the rendered flag for an eval context with the jsonlogic
+// engine flagd uses (independent of resolveFlag).
+func resolve(t *testing.T, svc *fake.Service, flagKey string, evalCtx map[string]any) (string, any) {
 	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read file: %v", err)
-	}
-	var doc struct {
-		Flags map[string]json.RawMessage `json:"flags"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("file is invalid JSON: %v", err)
-	}
-	fr, ok := doc.Flags[flagKey]
-	if !ok {
-		t.Fatalf("flag %q missing", flagKey)
-	}
-	return fr
-}
-
-// resolveVariant resolves a flag for a game_kind context using the SAME
-// jsonlogic engine flagd uses (an independent re-implementation of resolution in
-// the test, so it does not just trust resolveFlag).
-func resolveVariant(t *testing.T, path, flagKey, gameKind string) (string, any) {
-	t.Helper()
-	flagRaw := readFlagRaw(t, path, flagKey)
 	var flag struct {
 		Variants       map[string]any  `json:"variants"`
 		DefaultVariant string          `json:"defaultVariant"`
 		Targeting      json.RawMessage `json:"targeting"`
 	}
-	if err := json.Unmarshal(flagRaw, &flag); err != nil {
-		t.Fatalf("decode flag: %v", err)
+	if err := json.Unmarshal(svc.Rendered(GameFlagSet, flagKey), &flag); err != nil {
+		t.Fatalf("decode rendered flag: %v", err)
 	}
 	variant := flag.DefaultVariant
 	if len(flag.Targeting) > 0 {
-		data, _ := json.Marshal(map[string]any{GameKindVar: gameKind})
+		data, _ := json.Marshal(evalCtx)
 		var out bytes.Buffer
 		if err := jsonlogic.Apply(bytes.NewReader(flag.Targeting), bytes.NewReader(data), &out); err != nil {
 			t.Fatalf("jsonlogic apply: %v", err)
@@ -100,195 +86,253 @@ func resolveVariant(t *testing.T, path, flagKey, gameKind string) (string, any) 
 	return variant, flag.Variants[variant]
 }
 
-// ---- Happy path: a valid shadow experiment ---------------------------------
+func realCtx() map[string]any { return map[string]any{GameKindVar: GameKindReal} }
+func experimentalCtx(id string) map[string]any {
+	return map[string]any{GameKindVar: "shadow", ExperimentIDVar: id, ArmVar: ArmExperimental}
+}
+func controlCtx(id string) map[string]any {
+	return map[string]any{GameKindVar: "shadow", ExperimentIDVar: id, ArmVar: "control"}
+}
 
-// UC: UC-043 main
-func TestReview_ValidShadowProposal(t *testing.T) {
-	g, path, rec := gateWithRecorder(t)
+// ---- Happy path --------------------------------------------------------------
 
-	// invincibility_seconds is a plain numeric flag (no pre-existing targeting),
-	// default "4s" => 4.0. Experiment: try 6.0 in shadow games.
-	const flagKey = "invincibility_seconds"
-	beforeDV, beforeVal := resolveVariant(t, path, flagKey, "real")
+// UC: UC-042 main
+// UC: UC-043 main BR-001
+func TestReview_ExperimentScopedProposal(t *testing.T) {
+	g, svc, rec := gateWithRecorder(t)
+	const flagKey, expID = "invincibility_seconds", "exp_alpha"
+	beforeVar, beforeVal := resolve(t, svc, flagKey, realCtx())
 
-	err := g.Review(context.Background(), Proposal{
-		FlagKey:           flagKey,
-		ExperimentalValue: 6.0,
-		Rationale:         "longer invincibility may reduce early-game frustration",
-	})
-	if err != nil {
+	if err := g.Review(context.Background(), Proposal{
+		FlagKey: flagKey, ExperimentID: expID, ExperimentalValue: 6.0,
+		Rationale: "longer invincibility may reduce early-game frustration",
+	}); err != nil {
 		t.Fatalf("valid proposal rejected: %v", err)
 	}
 
-	// Real games: SAME variant + value as before (THE INVARIANT).
-	afterDVReal, afterValReal := resolveVariant(t, path, flagKey, "real")
-	if afterDVReal != beforeDV || afterValReal != beforeVal {
-		t.Fatalf("real resolution changed: before %s=%v, after %s=%v",
-			beforeDV, beforeVal, afterDVReal, afterValReal)
+	if v, val := resolve(t, svc, flagKey, realCtx()); v != beforeVar || val != beforeVal {
+		t.Fatalf("real resolution changed: before %s=%v, after %s=%v", beforeVar, beforeVal, v, val)
 	}
-
-	// Shadow games: resolve the experimental variant + value.
-	shadowVar, shadowVal := resolveVariant(t, path, flagKey, "shadow")
-	if shadowVar != ExperimentVariant {
-		t.Fatalf("shadow variant = %q, want %q", shadowVar, ExperimentVariant)
+	if _, val := resolve(t, svc, flagKey, experimentalCtx(expID)); val != 6.0 {
+		t.Fatalf("experimental arm value = %v, want 6.0", val)
 	}
-	if shadowVal != 6.0 {
-		t.Fatalf("shadow value = %v, want 6.0", shadowVal)
+	if v, val := resolve(t, svc, flagKey, controlCtx(expID)); v != beforeVar || val != beforeVal {
+		t.Fatalf("control arm drifted: %s=%v", v, val)
 	}
-
-	// defaultVariant and the existing "4s" variant are byte-unchanged.
-	flag := readFlagRaw(t, path, flagKey)
-	var f struct {
-		Variants       map[string]json.RawMessage `json:"variants"`
-		DefaultVariant string                     `json:"defaultVariant"`
+	// A shadow game of ANOTHER experiment is not affected either.
+	if v, _ := resolve(t, svc, flagKey, experimentalCtx("exp_other")); v != beforeVar {
+		t.Fatalf("other experiment resolves %s", v)
 	}
-	_ = json.Unmarshal(flag, &f)
-	if f.DefaultVariant != "4s" {
-		t.Fatalf("defaultVariant changed to %q", f.DefaultVariant)
+	// Check before write: one dry run, then the one write (PR #1417 review B5).
+	if got := svc.Calls; len(got) != 2 || got[0] != "DRYRUN game/invincibility_seconds experiment+arm" || got[1] != "PUT game/invincibility_seconds experiment+arm" {
+		t.Fatalf("calls = %v, want a dry run then one experiment+arm PUT", got)
 	}
-	if string(f.Variants["4s"]) != "4.0" && string(f.Variants["4s"]) != "4" {
-		t.Fatalf("existing variant 4s mutated: %s", f.Variants["4s"])
-	}
-	if _, ok := f.Variants[ExperimentVariant]; !ok {
-		t.Fatalf("experimental variant not added")
-	}
-
-	// Span: code_improvement.proposed with blocked=false.
 	assertSpan(t, rec, SpanProposed, false, "")
 }
 
-// A flag that ALREADY has targeting (sensitivity targets game_mode=Werewolf)
-// must keep its real-game behaviour while gaining the shadow branch.
+// A flag with baseline targeting (sensitivity: Werewolf → fast) keeps its real
+// behaviour; the experiment rung sits in front of it.
 func TestReview_PreservesExistingTargetingForReal(t *testing.T) {
-	g, path, _ := gateWithRecorder(t)
-
-	const flagKey = "sensitivity"
-	// Real + Werewolf: existing targeting selects "fast" (=3). Must persist.
-	realWerewolf := func() (string, any) {
-		flagRaw := readFlagRaw(t, path, flagKey)
-		var flag struct {
-			Variants       map[string]any  `json:"variants"`
-			DefaultVariant string          `json:"defaultVariant"`
-			Targeting      json.RawMessage `json:"targeting"`
-		}
-		_ = json.Unmarshal(flagRaw, &flag)
-		data, _ := json.Marshal(map[string]any{GameKindVar: "real", "game_mode": "Werewolf"})
-		var out bytes.Buffer
-		if err := jsonlogic.Apply(bytes.NewReader(flag.Targeting), bytes.NewReader(data), &out); err != nil {
-			t.Fatalf("apply: %v", err)
-		}
-		var sel any
-		_ = json.Unmarshal(out.Bytes(), &sel)
-		name, _ := sel.(string)
-		return name, flag.Variants[name]
+	g, svc, _ := gateWithRecorder(t)
+	const flagKey, expID = "sensitivity", "exp_sens"
+	realWerewolf := map[string]any{GameKindVar: GameKindReal, "game_mode": "Werewolf"}
+	if v, _ := resolve(t, svc, flagKey, realWerewolf); v != "fast" {
+		t.Fatalf("precondition: real+Werewolf should select fast, got %q", v)
 	}
-
-	beforeVar, beforeVal := realWerewolf()
-	if beforeVar != "fast" {
-		t.Fatalf("precondition: real+Werewolf should select fast, got %q", beforeVar)
-	}
-
-	err := g.Review(context.Background(), Proposal{
-		FlagKey:           flagKey,
-		ExperimentalValue: 1,
-		Rationale:         "try slow sensitivity in shadow",
-	})
-	if err != nil {
+	if err := g.Review(context.Background(), Proposal{FlagKey: flagKey, ExperimentID: expID, ExperimentalValue: 1}); err != nil {
 		t.Fatalf("rejected: %v", err)
 	}
-
-	afterVar, afterVal := realWerewolf()
-	if afterVar != beforeVar || afterVal != beforeVal {
-		t.Fatalf("existing real targeting broke: before %s=%v, after %s=%v",
-			beforeVar, beforeVal, afterVar, afterVal)
+	if v, _ := resolve(t, svc, flagKey, realWerewolf); v != "fast" {
+		t.Fatalf("existing real targeting broke: %s", v)
 	}
-	// Shadow still gets the experiment.
-	sv, _ := resolveVariant(t, path, flagKey, "shadow")
-	if sv != ExperimentVariant {
-		t.Fatalf("shadow variant = %q, want experimental", sv)
+	if _, val := resolve(t, svc, flagKey, experimentalCtx(expID)); val != 1.0 {
+		t.Fatalf("experimental arm value = %v, want 1", val)
 	}
 }
 
-// ---- Blocked: proposals that would change real resolution ------------------
+// UC: UC-042 main
+func TestReview_TwoExperimentsSameFlagNonBleed(t *testing.T) {
+	g, svc, _ := gateWithRecorder(t)
+	const flagKey = "invincibility_seconds"
+	ctx := context.Background()
+	if err := g.Review(ctx, Proposal{FlagKey: flagKey, ExperimentID: "exp_a", ExperimentalValue: 6.0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Review(ctx, Proposal{FlagKey: flagKey, ExperimentID: "exp_b", ExperimentalValue: 2.0}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		ctx  map[string]any
+		want any
+	}{
+		{experimentalCtx("exp_a"), 6.0},
+		{experimentalCtx("exp_b"), 2.0},
+		{controlCtx("exp_a"), 4.0},
+		{controlCtx("exp_b"), 4.0},
+		{realCtx(), 4.0},
+	} {
+		if _, val := resolve(t, svc, flagKey, c.ctx); val != c.want {
+			t.Fatalf("ctx %v resolves %v, want %v", c.ctx, val, c.want)
+		}
+	}
+}
+
+// Re-experimenting with the same id replaces the value (no second rung).
+func TestReview_ReExperimentReplacesValue(t *testing.T) {
+	g, svc, _ := gateWithRecorder(t)
+	const flagKey, expID = "invincibility_seconds", "exp_re"
+	ctx := context.Background()
+	if err := g.Review(ctx, Proposal{FlagKey: flagKey, ExperimentID: expID, ExperimentalValue: 6.0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Review(ctx, Proposal{FlagKey: flagKey, ExperimentID: expID, ExperimentalValue: 7.0}); err != nil {
+		t.Fatal(err)
+	}
+	if arms := svc.ArmValues(GameFlagSet, flagKey); len(arms) != 1 {
+		t.Fatalf("arms = %v, want one", arms)
+	}
+	if _, val := resolve(t, svc, flagKey, experimentalCtx(expID)); val != 7.0 {
+		t.Fatalf("experimental arm = %v, want 7.0 (latest)", val)
+	}
+	if _, val := resolve(t, svc, flagKey, realCtx()); val != 4.0 {
+		t.Fatalf("real drifted: %v", val)
+	}
+}
+
+// ---- Blocked -------------------------------------------------------------------
 
 // UC: UC-042 A4
 func TestReview_BlocksUnknownFlag(t *testing.T) {
-	g, path, rec := gateWithRecorder(t)
-	before := mustRead(t, path)
-
-	err := g.Review(context.Background(), Proposal{FlagKey: "no_such_flag", ExperimentalValue: 1})
+	g, svc, rec := gateWithRecorder(t)
+	err := g.Review(context.Background(), Proposal{FlagKey: "no_such_flag", ExperimentID: "exp_x", ExperimentalValue: 1})
 	assertBlocked(t, err, ReasonUnknownFlag)
-	assertUnchanged(t, path, before)
+	assertNoWrites(t, svc)
 	assertSpan(t, rec, SpanProposed, true, ReasonUnknownFlag)
 }
 
 // UC: UC-042 A4
-func TestReview_BlocksNonGamePath(t *testing.T) {
-	// A Writer mispointed at agent.json must be denied by the Gate (belt to the
-	// :ro mount), and nothing written.
-	dir := t.TempDir()
-	agentPath := filepath.Join(dir, "agent.json")
-	if err := os.WriteFile(agentPath, []byte(`{"flags":{"enabled":{"variants":{"on":true},"defaultVariant":"on"}}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	before := mustRead(t, agentPath)
-
-	rec := tracetest.NewSpanRecorder()
-	tp := trace.NewTracerProvider(trace.WithSpanProcessor(rec))
-	g := NewGate(NewWriter(agentPath, discardLogger()), tp.Tracer("test"), discardLogger())
-
-	err := g.Review(context.Background(), Proposal{FlagKey: "enabled", ExperimentalValue: false})
-	assertBlocked(t, err, ReasonNonGameTarget)
-	assertUnchanged(t, agentPath, before)
-	assertSpan(t, rec, SpanProposed, true, ReasonNonGameTarget)
-}
-
-// A FlagKey that smuggles a path reference is denied even on a game.json Writer.
-func TestReview_BlocksPathInFlagKey(t *testing.T) {
-	g, path, _ := gateWithRecorder(t)
-	before := mustRead(t, path)
-	for _, key := range []string{"../agent.json", "foo/bar", "agent.json"} {
-		err := g.Review(context.Background(), Proposal{FlagKey: key, ExperimentalValue: 1})
+func TestReview_BlocksPathOrOtherSetInFlagKey(t *testing.T) {
+	g, svc, _ := gateWithRecorder(t)
+	for _, key := range []string{"../agent/enabled", "foo/bar", "agent.json", "x?persist=true", ""} {
+		err := g.Review(context.Background(), Proposal{FlagKey: key, ExperimentID: "exp_x", ExperimentalValue: 1})
 		assertBlocked(t, err, ReasonNonGameTarget)
 	}
-	assertUnchanged(t, path, before)
+	assertNoWrites(t, svc)
 }
 
-// TestReview_BlocksGameJSONSymlink defends the exact attack the #953 adversarial
-// review found: a file NAMED game.json that is a SYMLINK to agent.json. A pure
-// basename check passes it, and an O_TRUNC write follows the symlink straight into
-// the agent's own governance file. The Gate must reject it (symlink-aware
-// isGameFlagPath), and O_NOFOLLOW is the kernel backstop — agent.json untouched.
-func TestReview_BlocksGameJSONSymlink(t *testing.T) {
-	dir := t.TempDir()
-	agentPath := filepath.Join(dir, "agent.json")
-	if err := os.WriteFile(agentPath, []byte(`{"flags":{"enabled":{"variants":{"on":true},"defaultVariant":"on"}}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	before := mustRead(t, agentPath)
-
-	// game.json -> agent.json (basename is game.json, identity is agent.json).
-	linkPath := filepath.Join(dir, "game.json")
-	if err := os.Symlink(agentPath, linkPath); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-
-	rec := tracetest.NewSpanRecorder()
-	tp := trace.NewTracerProvider(trace.WithSpanProcessor(rec))
-	g := NewGate(NewWriter(linkPath, discardLogger()), tp.Tracer("test"), discardLogger())
-
-	err := g.Review(context.Background(), Proposal{FlagKey: "enabled", ExperimentalValue: false})
-	assertBlocked(t, err, ReasonNonGameTarget)
-	assertUnchanged(t, agentPath, before) // the symlink target must be untouched
-	assertSpan(t, rec, SpanProposed, true, ReasonNonGameTarget)
+// FR-138: an experiment value without an experiment id is refused.
+func TestReview_BlocksUnscopedProposal(t *testing.T) {
+	g, svc, rec := gateWithRecorder(t)
+	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0})
+	assertBlocked(t, err, ReasonNotExperimentable)
+	assertNoWrites(t, svc)
+	assertSpan(t, rec, SpanProposed, true, ReasonNotExperimentable)
 }
 
-// TestResolveFlag_UnknownOperatorFailsClosed guards the load-bearing safety
-// contract in resolve.go: a targeting block using a flagd operator the jsonlogic
-// engine doesn't implement (here `fractional`) must ERROR — so the Gate rejects
-// the proposal rather than mis-evaluate the real branch. If a future library swap
-// makes unknown operators resolve to false/null instead of erroring, this test
-// fails, flagging that the gate's belt-and-suspenders eval has silently weakened.
+// A flag outside the experiment catalog (registry) is refused before any write.
+func TestReview_BlocksFlagOutsideCatalog(t *testing.T) {
+	g, svc, _ := gateWithRecorder(t)
+	for _, key := range []string{"num_teams", "random_assignment"} {
+		err := g.Review(context.Background(), Proposal{FlagKey: key, ExperimentID: "exp_x", ExperimentalValue: 4})
+		assertBlocked(t, err, ReasonNotExperimentable)
+	}
+	assertNoWrites(t, svc)
+}
+
+// The registry bounds a catalog value to a declared variant's value.
+func TestReview_BlocksOutOfBoundsValue(t *testing.T) {
+	g, svc, _ := gateWithRecorder(t)
+	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 99.0})
+	assertBlocked(t, err, ReasonOutOfBounds)
+	if arms := svc.ArmValues(GameFlagSet, "invincibility_seconds"); len(arms) != 0 {
+		t.Fatalf("refused value was stored: %v", arms)
+	}
+}
+
+func TestReview_BlocksStringOnNumericFlag(t *testing.T) {
+	g, svc, rec := gateWithRecorder(t)
+	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: "six"})
+	assertBlocked(t, err, ReasonTypeMismatch)
+	assertNoWrites(t, svc)
+	assertSpan(t, rec, SpanProposed, true, ReasonTypeMismatch)
+}
+
+// An int on a float-variant flag and a float on an int-variant flag are one JSON
+// number kind: accepted.
+func TestReview_AcceptsAnyNumberKind(t *testing.T) {
+	g, _, _ := gateWithRecorder(t)
+	if err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_i", ExperimentalValue: 6}); err != nil {
+		t.Fatalf("int on float flag rejected: %v", err)
+	}
+	if err := g.Review(context.Background(), Proposal{FlagKey: "fight_club.min_rounds", ExperimentID: "exp_f", ExperimentalValue: 15.0}); err != nil {
+		t.Fatalf("float on int flag rejected: %v", err)
+	}
+	// A value inside the catalog range that is no declared variant (the dry-run seed).
+	if err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_r", ExperimentalValue: 4.5}); err != nil {
+		t.Fatalf("in-range value rejected: %v", err)
+	}
+}
+
+// A service read or write failure fails closed.
+func TestReview_ServiceErrorsFailClosed(t *testing.T) {
+	g, svc, _ := gateWithRecorder(t)
+	svc.FailPut = &flagservice.Error{Status: 503, Reason: "no_sync_stream"}
+	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0})
+	assertBlocked(t, err, ReasonWriteSimulationError)
+
+	broken := NewGate(NewWriter(failingService{}, discardLogger()), nil, discardLogger())
+	err = broken.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0})
+	assertBlocked(t, err, ReasonReadError)
+}
+
+// The second check runs BEFORE the write: a dry run that renders as something
+// that changes the real resolution is refused and nothing is written (PR #1417
+// review B5).
+func TestReview_DryRunCatchesARealLeakBeforeWriting(t *testing.T) {
+	svc := newGameService(t)
+	leaky := &leakingService{Service: svc}
+	g := NewGate(NewWriter(leaky, discardLogger()), nil, discardLogger())
+	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0})
+	assertBlocked(t, err, ReasonDefaultChanged)
+	assertNoWrites(t, svc)
+	if arms := svc.ArmValues(GameFlagSet, "invincibility_seconds"); len(arms) != 0 {
+		t.Fatalf("a refused proposal left arm values: %v", arms)
+	}
+}
+
+// ---- checkRenderedFlag unit checks -------------------------------------------
+
+// UC: UC-042 A4
+// UC: UC-043 main
+func TestCheckRenderedFlag(t *testing.T) {
+	before := json.RawMessage(`{"variants":{"a":1,"b":2},"defaultVariant":"a"}`)
+	cases := []struct {
+		name  string
+		after string
+		want  Reason
+	}{
+		{"default changed", `{"variants":{"a":1,"b":2,"r1":9},"defaultVariant":"b"}`, ReasonDefaultChanged},
+		{"existing variant mutated", `{"variants":{"a":1,"b":99,"r1":9},"defaultVariant":"a"}`, ReasonExistingVariantChanged},
+		{"unexpected variant", `{"variants":{"a":1,"b":2,"r1":9,"zz":3},"defaultVariant":"a"}`, ReasonTargetingNotShadowScoped},
+		{"real leak", `{"variants":{"a":1,"b":2,"r1":9},"defaultVariant":"a","targeting":{"if":[{"==":[{"var":"game_kind"},"real"]},"r1",null]}}`, ReasonRealResolutionChanged},
+		{"scoped rung", `{"variants":{"a":1,"b":2,"r1":9},"defaultVariant":"a","targeting":{"if":[{"and":[{"!=":[{"var":"game_kind"},"real"]},{"==":[{"var":"experiment_id"},"e"]},{"==":[{"var":"arm"},"experimental"]}]},"r1",null]}}`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rej := checkRenderedFlag(before, json.RawMessage(c.after), "r1")
+			switch {
+			case c.want == "" && rej != nil:
+				t.Fatalf("unexpected reject %v", rej)
+			case c.want != "" && (rej == nil || rej.Reason != c.want):
+				t.Fatalf("got %v, want %s", rej, c.want)
+			}
+		})
+	}
+}
+
+// TestResolveFlag_UnknownOperatorFailsClosed guards resolve.go: a targeting
+// operator the jsonlogic engine does not implement (fractional) must ERROR, so
+// the Gate rejects instead of mis-evaluating the real branch.
 func TestResolveFlag_UnknownOperatorFailsClosed(t *testing.T) {
 	flagRaw := json.RawMessage(`{
 		"variants": {"a": 1, "b": 2},
@@ -296,267 +340,173 @@ func TestResolveFlag_UnknownOperatorFailsClosed(t *testing.T) {
 		"targeting": {"fractional": [{"var": "game_id"}, ["a", 50], ["b", 50]]}
 	}`)
 	if _, err := resolveFlag(flagRaw, map[string]any{"game_kind": "real", "game_id": "g1"}); err == nil {
-		t.Fatal("resolveFlag must ERROR on an unknown flagd operator (fail-closed), got nil — the gate would silently mis-evaluate the real branch")
+		t.Fatal("resolveFlag must ERROR on an unknown flagd operator (fail-closed)")
 	}
 }
 
-// The Gate must reject any directly-constructed write that would change a real
-// resolution. We can't go through Review for these (the Writer can't produce
-// them), so we drive the structural/eval checks via validate-equivalent paths:
-// a proposal whose applied result mutates default/existing is impossible through
-// applyProposal — so we assert the checks themselves catch a hand-built bad
-// after-state.
-
-// UC: UC-042 A4
-func TestCheckVariantsAndDefault_DetectsDefaultChange(t *testing.T) {
-	before := mustFlag(t, `{"variants":{"a":1,"b":2},"defaultVariant":"a"}`)
-	after := mustFlag(t, `{"variants":{"a":1,"b":2,"agent_experiment":9},"defaultVariant":"b"}`)
-	if rej := checkVariantsAndDefault(before, after, ExperimentVariant); rej == nil || rej.Reason != ReasonDefaultChanged {
-		t.Fatalf("expected default_variant_changed, got %v", rej)
-	}
-}
-
-func TestCheckVariantsAndDefault_DetectsExistingVariantMutation(t *testing.T) {
-	before := mustFlag(t, `{"variants":{"a":1,"b":2},"defaultVariant":"a"}`)
-	after := mustFlag(t, `{"variants":{"a":1,"b":99,"agent_experiment":9},"defaultVariant":"a"}`)
-	if rej := checkVariantsAndDefault(before, after, ExperimentVariant); rej == nil || rej.Reason != ReasonExistingVariantChanged {
-		t.Fatalf("expected existing_variant_changed, got %v", rej)
-	}
-}
-
-// UC: UC-042 A4
-func TestCheckTargeting_DetectsNonShadowScope(t *testing.T) {
-	// A targeting that selects the experimental variant for everyone (no shadow
-	// condition) must be rejected.
-	after := mustFlag(t, `{"variants":{"a":1,"agent_experiment":9},"defaultVariant":"a","targeting":"agent_experiment"}`)
-	if rej := checkTargetingShadowScoped(after); rej == nil || rej.Reason != ReasonTargetingNotShadowScoped {
-		t.Fatalf("expected targeting_not_shadow_scoped, got %v", rej)
-	}
-}
-
-func TestCheckTargeting_DetectsRealLeakInElse(t *testing.T) {
-	// Correct shadow condition but the else (real) branch also selects the
-	// experimental variant — a real leak.
-	after := mustFlag(t, `{"variants":{"a":1,"agent_experiment":9},"defaultVariant":"a","targeting":{"if":[{"!=":[{"var":"game_kind"},"real"]},"agent_experiment","agent_experiment"]}}`)
-	if rej := checkTargetingShadowScoped(after); rej == nil || rej.Reason != ReasonTargetingNotShadowScoped {
-		t.Fatalf("expected targeting_not_shadow_scoped (real leak), got %v", rej)
-	}
-}
-
-// UC: UC-042 A4
-// UC: UC-043 main
-func TestCheckRealResolution_DetectsChange(t *testing.T) {
-	// before: real => a(=1). after: a non-shadow targeting flips real to b(=2).
-	before := mustFlag(t, `{"variants":{"a":1,"b":2},"defaultVariant":"a"}`)
-	after := mustFlag(t, `{"variants":{"a":1,"b":2},"defaultVariant":"a","targeting":{"if":[{"==":[{"var":"game_kind"},"real"]},"b","a"]}}`)
-	if rej := checkRealResolutionUnchanged(before, after); rej == nil || rej.Reason != ReasonRealResolutionChanged {
-		t.Fatalf("expected real_resolution_changed, got %v", rej)
-	}
-}
-
-// ---- Type-compatibility guard (#953 N3) ------------------------------------
-
-// A string on a numeric flag must be REJECTED with type_mismatch before any
-// write — a shadow game's reader of invincibility_seconds expects a float and
-// would crash/misbehave on a string. File unchanged, blocked span emitted.
-func TestReview_BlocksStringOnNumericFlag(t *testing.T) {
-	g, path, rec := gateWithRecorder(t)
-	before := mustRead(t, path)
-
-	err := g.Review(context.Background(), Proposal{
-		FlagKey:           "invincibility_seconds",
-		ExperimentalValue: "six",
-		Rationale:         "mistyped value an LLM might emit",
-	})
-	assertBlocked(t, err, ReasonTypeMismatch)
-	assertUnchanged(t, path, before)
-	assertSpan(t, rec, SpanProposed, true, ReasonTypeMismatch)
-}
-
-// A numeric value on a numeric flag is accepted — and crucially an INTEGER on a
-// float-variant flag (6 vs the 4.0 variants) is NOT a false reject: JSON has one
-// number kind.
-func TestReview_AcceptsIntOnFloatFlag(t *testing.T) {
-	g, _, _ := gateWithRecorder(t)
-	if err := g.Review(context.Background(), Proposal{
-		FlagKey:           "invincibility_seconds",
-		ExperimentalValue: 6, // int literal vs the flag's 4.0/6.0 float variants
-	}); err != nil {
-		t.Fatalf("int on float-variant flag rejected: %v", err)
-	}
-}
-
-// A float value on a flag whose variants are integers (num_teams: 2..6) is also
-// accepted — same number kind, no int-vs-float reject in the other direction.
-func TestReview_AcceptsFloatOnIntFlag(t *testing.T) {
-	g, _, _ := gateWithRecorder(t)
-	if err := g.Review(context.Background(), Proposal{
-		FlagKey:           "num_teams",
-		ExperimentalValue: 4.0,
-	}); err != nil {
-		t.Fatalf("float on int-variant flag rejected: %v", err)
-	}
-}
-
-// A bool on a bool flag (random_assignment: true/false) is accepted.
-func TestReview_AcceptsBoolOnBoolFlag(t *testing.T) {
-	g, _, _ := gateWithRecorder(t)
-	if err := g.Review(context.Background(), Proposal{
-		FlagKey:           "random_assignment",
-		ExperimentalValue: false,
-	}); err != nil {
-		t.Fatalf("bool on bool flag rejected: %v", err)
-	}
-}
-
-// A number on a bool flag is rejected with type_mismatch, file unchanged.
-func TestReview_BlocksNumberOnBoolFlag(t *testing.T) {
-	g, path, rec := gateWithRecorder(t)
-	before := mustRead(t, path)
-
-	err := g.Review(context.Background(), Proposal{
-		FlagKey:           "random_assignment",
-		ExperimentalValue: 1,
-	})
-	assertBlocked(t, err, ReasonTypeMismatch)
-	assertUnchanged(t, path, before)
-	assertSpan(t, rec, SpanProposed, true, ReasonTypeMismatch)
-}
-
-// Unit-level: checkTypeCompatible's kind matching, including the int-vs-float
-// nuance and the experimental-variant skip (an existing agent_experiment of a
-// different kind must NOT constrain the new value).
 func TestCheckTypeCompatible_KindMatching(t *testing.T) {
-	numFlag := mustFlag(t, `{"variants":{"a":1.0,"b":2.0},"defaultVariant":"a"}`)
-	if rej := checkTypeCompatible(numFlag, 5); rej != nil {
+	num := map[string]json.RawMessage{"a": json.RawMessage(`1.0`), "b": json.RawMessage(`2`)}
+	if rej := checkTypeCompatible(num, 5); rej != nil {
 		t.Fatalf("int on numeric flag rejected: %v", rej)
 	}
-	if rej := checkTypeCompatible(numFlag, "x"); rej == nil || rej.Reason != ReasonTypeMismatch {
-		t.Fatalf("string on numeric flag: got %v, want type_mismatch", rej)
+	if rej := checkTypeCompatible(num, "x"); rej == nil || rej.Reason != ReasonTypeMismatch {
+		t.Fatalf("string on numeric flag: got %v", rej)
 	}
-
-	boolFlag := mustFlag(t, `{"variants":{"on":true,"off":false},"defaultVariant":"on"}`)
-	if rej := checkTypeCompatible(boolFlag, true); rej != nil {
+	boolean := map[string]json.RawMessage{"on": json.RawMessage(`true`), "off": json.RawMessage(`false`)}
+	if rej := checkTypeCompatible(boolean, true); rej != nil {
 		t.Fatalf("bool on bool flag rejected: %v", rej)
 	}
-	if rej := checkTypeCompatible(boolFlag, 3); rej == nil || rej.Reason != ReasonTypeMismatch {
-		t.Fatalf("number on bool flag: got %v, want type_mismatch", rej)
-	}
-
-	// The reserved experimental variant is skipped as a type witness: a stale
-	// agent_experiment string must not block a numeric re-experiment.
-	staleExp := mustFlag(t, `{"variants":{"a":1.0,"agent_experiment":"oops"},"defaultVariant":"a"}`)
-	if rej := checkTypeCompatible(staleExp, 9.0); rej != nil {
-		t.Fatalf("numeric value blocked by stale experimental variant: %v", rej)
+	if rej := checkTypeCompatible(boolean, 3); rej == nil || rej.Reason != ReasonTypeMismatch {
+		t.Fatalf("number on bool flag: got %v", rej)
 	}
 }
 
-// ---- Idempotent re-experimentation -----------------------------------------
+// ---- Writer -------------------------------------------------------------------
 
-func TestReview_ReExperimentIsIdempotent(t *testing.T) {
-	g, path, _ := gateWithRecorder(t)
-	const flagKey = "invincibility_seconds"
-
-	if err := g.Review(context.Background(), Proposal{FlagKey: flagKey, ExperimentalValue: 6.0}); err != nil {
-		t.Fatalf("first: %v", err)
-	}
-	if err := g.Review(context.Background(), Proposal{FlagKey: flagKey, ExperimentalValue: 7.0}); err != nil {
-		t.Fatalf("second: %v", err)
-	}
-
-	// Real unchanged; shadow now resolves the latest value; targeting did not
-	// nest a second shadow branch.
-	dvReal, valReal := resolveVariant(t, path, flagKey, "real")
-	if dvReal != "4s" || valReal != 4.0 {
-		t.Fatalf("real drifted after re-experiment: %s=%v", dvReal, valReal)
-	}
-	_, shadowVal := resolveVariant(t, path, flagKey, "shadow")
-	if shadowVal != 7.0 {
-		t.Fatalf("shadow value = %v, want 7.0 (latest)", shadowVal)
-	}
-	// Exactly one experimental variant, one shadow branch.
-	flag := readFlagRaw(t, path, flagKey)
-	var f struct {
-		Targeting map[string]json.RawMessage `json:"targeting"`
-	}
-	_ = json.Unmarshal(flag, &f)
-	var arms []json.RawMessage
-	_ = json.Unmarshal(f.Targeting["if"], &arms)
-	if len(arms) != 3 || string(arms[2]) != "null" {
-		t.Fatalf("re-experiment nested the shadow branch: else=%s", arms[2])
+func TestWriter_ApplyRefusesUnscoped(t *testing.T) {
+	w := NewWriter(newGameService(t), discardLogger())
+	if _, err := w.Apply(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0}); !errors.Is(err, ErrUnscoped) {
+		t.Fatalf("err = %v, want ErrUnscoped", err)
 	}
 }
 
-// ---- Atomicity / concurrency ----------------------------------------------
-
-func TestApply_AtomicAndConcurrent(t *testing.T) {
-	path := newGameFile(t)
-	w := NewWriter(path, discardLogger())
-
+func TestWriter_ConcurrentApplies(t *testing.T) {
+	svc := newGameService(t)
+	w := NewWriter(svc, discardLogger())
+	flags := []string{"invincibility_seconds", "fight_club.min_rounds", "nonstop.respawn_seconds"}
+	values := []any{6.0, 15, 1.5}
 	var wg sync.WaitGroup
-	flags := []string{"invincibility_seconds", "num_teams", "nonstop.respawn_seconds"}
 	for i := 0; i < 30; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_ = w.Apply(Proposal{FlagKey: flags[i%len(flags)], ExperimentalValue: float64(i)})
+			_, _ = w.Apply(context.Background(), Proposal{FlagKey: flags[i%3], ExperimentID: "exp_" + string(rune('a'+i)), ExperimentalValue: values[i%3]})
 		}(i)
 	}
 	wg.Wait()
+	total := 0
+	for _, f := range flags {
+		total += len(svc.ArmValues(GameFlagSet, f))
+	}
+	if total != 30 {
+		t.Fatalf("stored %d arm values, want 30", total)
+	}
+}
 
-	// File is valid JSON (no partial write) after the concurrent storm.
-	raw, err := os.ReadFile(path)
-	if err != nil {
+// Strip restores the pre-experiment resolution, leaves other experiments and the
+// baseline targeting alone, and is idempotent; an unknown flag is a no-op.
+func TestWriter_Strip(t *testing.T) {
+	svc := newGameService(t)
+	w := NewWriter(svc, discardLogger())
+	g := NewGate(w, nil, discardLogger())
+	tw := NewGateTargetingWriter(g, w)
+	ctx := context.Background()
+	const flagKey = "sensitivity"
+	if err := tw.Apply(ctx, Proposal{FlagKey: flagKey, ExperimentID: "exp_a", ExperimentalValue: 0}); err != nil {
 		t.Fatal(err)
+	}
+	if err := tw.Apply(ctx, Proposal{FlagKey: flagKey, ExperimentID: "exp_b", ExperimentalValue: 4}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := tw.Strip(ctx, flagKey, "exp_a"); err != nil {
+			t.Fatalf("strip %d: %v", i, err)
+		}
+	}
+	if v, _ := resolve(t, svc, flagKey, experimentalCtx("exp_a")); v != "medium" {
+		t.Fatalf("stripped experiment still resolves %s", v)
+	}
+	if _, val := resolve(t, svc, flagKey, experimentalCtx("exp_b")); val != 4.0 {
+		t.Fatalf("other experiment lost: %v", val)
+	}
+	if v, _ := resolve(t, svc, flagKey, map[string]any{GameKindVar: GameKindReal, "game_mode": "Werewolf"}); v != "fast" {
+		t.Fatalf("baseline targeting lost: %s", v)
+	}
+	if err := w.Strip(ctx, "flag_that_does_not_exist", "exp_z"); err != nil {
+		t.Fatalf("strip of an unknown flag should be a no-op: %v", err)
+	}
+}
+
+// The registry seam's Apply is gated: a mistyped value writes nothing.
+func TestGateTargetingWriter_ApplyIsGated(t *testing.T) {
+	svc := newGameService(t)
+	w := NewWriter(svc, discardLogger())
+	tw := NewGateTargetingWriter(NewGate(w, nil, discardLogger()), w)
+	err := tw.Apply(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_f", ExperimentalValue: "not-a-number"})
+	if rej, ok := AsReject(err); !ok || rej.Reason != ReasonTypeMismatch {
+		t.Fatalf("expected ReasonTypeMismatch, got %v", err)
+	}
+	assertNoWrites(t, svc)
+}
+
+// ---- helpers ------------------------------------------------------------------
+
+// failingService fails every read.
+type failingService struct{}
+
+func (failingService) Put(context.Context, string, string, flagservice.Write) (flagservice.Result, error) {
+	return flagservice.Result{}, errors.New("down")
+}
+func (failingService) Delete(context.Context, string, string, url.Values) error {
+	return errors.New("down")
+}
+func (failingService) GetFlag(context.Context, string, string) (flagservice.FlagView, error) {
+	return flagservice.FlagView{}, errors.New("down")
+}
+func (failingService) GetSet(context.Context, string) (flagservice.SetView, error) {
+	return flagservice.SetView{}, errors.New("down")
+}
+
+// leakingService renders an accepted write with a changed defaultVariant.
+// A write by someone else between the Gate's read and its write is no reason to
+// reject: the dry run renders before and after under one lock (review B5).
+func TestReview_ConcurrentWriteIsNoFalseRejection(t *testing.T) {
+	svc := newGameService(t)
+	racing := &racingService{Service: svc}
+	g := NewGate(NewWriter(racing, discardLogger()), nil, discardLogger())
+	if err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0}); err != nil {
+		t.Fatalf("rejected because of another writer: %v", err)
+	}
+}
+
+// racingService lands another experiment's write right after every GetFlag.
+type racingService struct {
+	*fake.Service
+	n int
+}
+
+func (r *racingService) GetFlag(ctx context.Context, set, flag string) (flagservice.FlagView, error) {
+	v, err := r.Service.GetFlag(ctx, set, flag)
+	r.n++
+	_, _ = r.Service.Put(ctx, set, flag, flagservice.Write{Value: 3.0, Scope: flagservice.Scope{ExperimentID: fmt.Sprintf("exp_other%d", r.n), Arm: ArmExperimental}})
+	return v, err
+}
+
+// leakingService renders every dry run as a write that moves the default (what a
+// broken renderer would serve to real games).
+type leakingService struct {
+	*fake.Service
+}
+
+func (l *leakingService) Put(ctx context.Context, set, flag string, w flagservice.Write) (flagservice.Result, error) {
+	res, err := l.Service.Put(ctx, set, flag, w)
+	if err != nil || !w.DryRun {
+		return res, err
 	}
 	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("concurrent writes corrupted the file: %v", err)
-	}
+	_ = json.Unmarshal(res.Rendered, &doc)
+	doc["defaultVariant"] = "8s"
+	res.Rendered, _ = json.Marshal(doc)
+	return res, nil
 }
 
-// ---- Untouched flags round-trip byte-for-byte ------------------------------
-
-func TestApply_LeavesOtherFlagsByteIdentical(t *testing.T) {
-	path := newGameFile(t)
-	w := NewWriter(path, discardLogger())
-
-	otherBefore := readFlagRaw(t, path, "num_teams")
-	if err := w.Apply(Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0}); err != nil {
-		t.Fatal(err)
-	}
-	otherAfter := readFlagRaw(t, path, "num_teams")
-	if !bytes.Equal(otherBefore, otherAfter) {
-		t.Fatalf("unrelated flag num_teams changed:\nbefore %s\nafter  %s", otherBefore, otherAfter)
-	}
-}
-
-// ---- helpers ---------------------------------------------------------------
-
-func mustRead(t *testing.T, path string) []byte {
+func assertNoWrites(t *testing.T, svc *fake.Service) {
 	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	for _, c := range svc.Calls {
+		if strings.HasPrefix(c, "PUT") {
+			t.Fatalf("unexpected write: %v", svc.Calls)
+		}
 	}
-	return raw
-}
-
-func assertUnchanged(t *testing.T, path string, before []byte) {
-	t.Helper()
-	after := mustRead(t, path)
-	if !bytes.Equal(before, after) {
-		t.Fatalf("file changed despite blocked proposal:\nbefore %s\nafter  %s", before, after)
-	}
-}
-
-func mustFlag(t *testing.T, raw string) *flagObj {
-	t.Helper()
-	keys, vals, err := decodeOrdered([]byte(raw))
-	if err != nil {
-		t.Fatalf("decode flag fixture: %v", err)
-	}
-	return &flagObj{keys: keys, values: vals}
 }
 
 func assertBlocked(t *testing.T, err error, want Reason) {
@@ -566,7 +516,7 @@ func assertBlocked(t *testing.T, err error, want Reason) {
 		t.Fatalf("expected RejectError, got %v", err)
 	}
 	if rej.Reason != want {
-		t.Fatalf("reason = %q, want %q", rej.Reason, want)
+		t.Fatalf("reason = %q, want %q (%s)", rej.Reason, want, rej.Detail)
 	}
 }
 

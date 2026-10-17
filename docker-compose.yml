@@ -39,64 +39,68 @@ x-logging: &default-logging
     labels: "com.docker.compose.service,com.docker.compose.image"
 
 services:
-  # Flag-dir permission init (#1031). The menu persists admin settings — game.json
-  # / user.json and the #819 kill-switch (agent.json interventions_allowed) — by
-  # writing the bind-mounted flag dir via lib/flag_config_writer.py. The menu image
-  # runs nonroot (uid 65532, chainguard); the host flag files are owned by the
-  # checkout/deploy user (mode 644), so a nonroot write fails with PermissionError
-  # and the change is silently lost. This one-shot root sidecar makes the shared
-  # flag dir group-owned by the menu's nonroot gid (65532) and group-writable, so
-  # the nonroot menu can persist writes WITHOUT the menu itself running as root.
-  #
-  # Why this and not a named volume: flagd, the agent and the menu all bind-mount
-  # the SAME host ./services/flagd dir (single source of truth, #959). A named
-  # volume would diverge from the host repo files. Why group, not chown owner:
-  # leaves the host user as file OWNER (still editable on a dev checkout), only the
-  # group is reassigned. flagd and the agent run as root, so this is invisible to
-  # them; it does not touch the agent's mount or relax the agent.json invariant
-  # (that rests on code-level path guards, not filesystem perms — see
-  # docs/OWNERSHIP_MODEL.md §2).
-  #
-  # Only the menu `depends_on` this step — intentionally NOT flagd or the agent.
-  # flagd only READS the flag files, and the agent runs as root and writes in
-  # place (O_TRUNC), so group perms are irrelevant to both. Adding a dependency
-  # there would needlessly serialize their startup behind this chmod for no gain.
-  # No `networks:` — this only chmods a local bind mount and needs no network.
-  flag-dir-init:
-    image: busybox:1.37.0
-    container_name: joustmania-flag-dir-init
-    user: "0"  # must be root to chgrp/chmod the bind-mounted host files
-    command:
-      - "sh"
-      - "-c"
-      - "chgrp -R 65532 /etc/flagd && chmod -R g+w /etc/flagd && find /etc/flagd -type d -exec chmod g+s {} +"
+  # Flag service (epic #1407, UC-053, docs/specs/services.md §7): holds the
+  # runtime flag state in memory and serves it to flagd as ONE flagd.sync.v1
+  # gRPC sync source; every flag carries its metadata.flagSetId, so clients keep
+  # their flagSetId selectors. It loads the flag files (all eight sets) read-only
+  # at start and never writes them (C-030, C-033); flagd has no other source.
+  # Writers: HTTP/JSON on 8070 (envoy /flags/ from the host, C-015). flagd: 50064.
+  flag-service:
+    image: ghcr.io/watchmejoustmyflags/joustmania/flag-service:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/flag-service/Dockerfile
+    container_name: joustmania-flag-service
+    expose:
+      - "50064"  # flagd.sync.v1 gRPC (flagd only)
+      - "8070"   # HTTP/JSON write/read API + /healthz
+    environment:
+      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller
+      - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
+      # Admin settings persisted on request (D10, re-review N4). One state file
+      # per stack: the ci, dry-run and decide-e2e stacks override the name.
+      - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
+      # Go runtime soft limit under the 64 MiB container limit (NFR-051).
+      - GOMEMLIMIT=48MiB
+      - OTEL_SERVICE_NAME=flag-service
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
     volumes:
-      - ./services/flagd:/etc/flagd
-    restart: "no"
+      # Read-only from the start: the service never writes the flag files.
+      - ./services/flagd:/etc/flagd:ro
+      - flag-service-state:/var/lib/flag-service
+    healthcheck:
+      test: ["CMD", "/flag-service", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+    networks:
+      - joustmania
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: '0.25'
     logging: *default-logging
 
-  # flagd for feature flag evaluation
+  # flagd for feature flag evaluation. Every flag set comes over ONE gRPC sync
+  # source (grpc://flag-service:50064); flagd reads no flag file and has no
+  # flag mount (C-033). flagd exits when a gRPC source is
+  # unreachable at its own start, so it starts only once the flag service is
+  # healthy, and restarts with it (restart: true; `scripts/flags.sh restart`).
+  # No readyz health check: in v0.16.0 readyz never turns true with a gRPC
+  # source (flagd #1985), so dependents keep condition: service_started.
   flagd:
     image: ghcr.io/open-feature/flagd:v0.16.0
     container_name: joustmania-flagd
     command:
       - "start"
       - "--uri"
-      - "file:/etc/flagd/system.json"
-      - "--uri"
-      - "file:/etc/flagd/controller.json"
-      - "--uri"
-      - "file:/etc/flagd/observability.json"
-      - "--uri"
-      - "file:/etc/flagd/game.json"
-      - "--uri"
-      - "file:/etc/flagd/user.json"
-      - "--uri"
-      - "file:/etc/flagd/agent.json"
-      - "--uri"
-      - "file:/etc/flagd/interventions.json"
-      - "--uri"
-      - "file:/etc/flagd/rollout.json"
+      - "grpc://flag-service:50064"
       - "--metrics-exporter"
       - "otel"
       - "--otel-collector-uri"
@@ -104,10 +108,10 @@ services:
     environment:
       - OTEL_SERVICE_NAME=flagd
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
-    volumes:
-      # Mount directory (not individual files) so inotify detects edits
-      # (editors do atomic save via temp+rename, which changes the inode)
-      - ./services/flagd:/etc/flagd
+    depends_on:
+      flag-service:
+        condition: service_healthy
+        restart: true
     ports:
       # Sync port exposed on host for pairing-daemon (network_mode: host)
       - "8015:8015"
@@ -409,6 +413,9 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
+      # Game lifecycle reported to the flag service (FR-135, #1410)
+      - FLAG_SERVICE_URL=http://flag-service:8070
+      - FLAG_SERVICE_INSTANCE=game-coordinator  # stable across recreate (the hostname is the container id), UC-053 A10
     depends_on:
       flagd:
         condition: service_started
@@ -445,20 +452,12 @@ services:
       - AUDIO_PORT=50056
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015
-      # Single source of truth for the active flag directory (#959/#966). The
-      # menu resolves which host flag file to write as $FLAGD_FLAG_DIR/<domain>.json
-      # (lib/flagd_paths.py) — the same plain join flagd, the agent writers, and
-      # the integration tests use, so writers and the served files never desync.
-      - FLAGD_FLAG_DIR=/etc/flagd
-    volumes:
-      - ./services/flagd:/etc/flagd
+      # Admin settings, the game selection and the kill switch are persisted
+      # admin values on the flag service (UC-053 A2); the menu mounts no flag file.
+      - FLAG_SERVICE_URL=http://flag-service:8070
     depends_on:
       flagd:
         condition: service_started
-      # Wait for the flag dir to be made group-writable so the nonroot menu can
-      # persist admin settings on first start (#1031).
-      flag-dir-init:
-        condition: service_completed_successfully
     networks:
       - joustmania
     restart: unless-stopped
@@ -626,16 +625,16 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
+      # Canary and chaos endpoints write the controller set through the flag
+      # service (#1420); the proxy mounts no flag file.
+      - FLAG_SERVICE_URL=http://flag-service:8070
       # Pairing daemon control API (UC-005 unpair); the daemon runs on the host network
       - PAIRING_DAEMON_URL=http://host.docker.internal:8002
-      - FLAGD_CONFIG_PATH=/etc/flagd/flags/controller.json
       - OTEL_SERVICE_NAME=connect-proxy
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-    volumes:
-      - ./services/flagd:/etc/flagd/flags
     extra_hosts:
       # Reach the host-networked pairing daemon (:8002) for UC-005 unpair
       - "host.docker.internal:host-gateway"
@@ -674,19 +673,11 @@ services:
       # (gRPC evaluation port 8013), not the in-process sync port 8015.
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8013
-      # Single source of truth for the active flag directory (#959). The agent
-      # resolves which host flag file to write as $FLAGD_FLAG_DIR/<domain>.json
-      # (services/agent/flagset) — the same plain join flagd and the integration
-      # tests use, so writers and the served files never desync. The per-domain
-      # *_FLAG_PATH overrides below still win when set (explicit escape hatch).
-      - FLAGD_FLAG_DIR=/etc/flagd
-      # Action sink (#730/#1213): when the LIVE `interventions_enabled` flag
-      # (agent.json) is on the agent applies decisions by rewriting the flagd
-      # interventions file in place (bind-mounted below). The gate is a flagd flag now
-      # (migrated from AGENT_INTERVENTIONS_ENABLED, #1213) — read per Apply, fail-closed
-      # off (default variant) so the scaffold stays inert and a flagd outage never
-      # writes. Flip the flag, no restart needed.
-      - INTERVENTIONS_FLAG_PATH=/etc/flagd/interventions.json
+      # Action sink (#730/#1213, #1411): when the LIVE `interventions_enabled` flag
+      # (agent.json) is on, the agent applies each decision as ONE game-scoped write
+      # to the flag service (PUT/POST /interventions/<flag>). The gate is read per
+      # Apply, fail-closed off, so a flagd outage never writes. No restart needed.
+      - FLAG_SERVICE_URL=http://flag-service:8070
       # Demo/verification only: emit a synthetic `noop` decision (full audit
       # trace) every ~5s. Off by default; never for production sessions. With the
       # default interventions_allowed variant probe decisions are blocked
@@ -695,15 +686,13 @@ services:
       - AGENT_PROBE_DECISIONS=${AGENT_PROBE_DECISIONS:-}
       # Progressive rollout expansion (#734/#1213): when the LIVE `rollout_enabled`
       # flag (agent.json) is on the agent advances the Bluetooth backend rollout
-      # controller-by-controller by rewriting the flagd rollout file in place
-      # (current_controller_count). The gate is a flagd flag now (migrated from
-      # AGENT_ROLLOUT_ENABLED, #1213) — read per SetControllerCount, fail-closed off
-      # (default variant) → the loop decides and spans expansions but does not apply
-      # them (dry-run), and a flagd outage stays dry-run. Flip the flag, no restart.
-      - ROLLOUT_FLAG_PATH=/etc/flagd/rollout.json
+      # controller-by-controller with PUT /rollout/current_controller_count on the
+      # flag service (#1411). The gate is read per SetControllerCount, fail-closed
+      # off → the loop decides and spans expansions but does not apply them
+      # (dry-run), and a flagd outage stays dry-run. Flip the flag, no restart.
       # Auto-remediation / rollback (#736): on fitness failure during an active
       # rollout the agent rolls current_controller_count back to "none", gated on
-      # the remediation_allowed flag (rollout flagd domain, read from rollout.json).
+      # the remediation_allowed flag (rollout set, evaluated through flagd).
       # After a rollback, re-expansion is suppressed for the cooldown below.
       - AGENT_ROLLOUT_COOLDOWN_SECONDS=${AGENT_ROLLOUT_COOLDOWN_SECONDS:-30}
       # ---- Proposer / retro text backend (#1234) ----
@@ -767,10 +756,8 @@ services:
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
     volumes:
-      # The agent is the sole writer of the interventions flag file; flagd watches
-      # it and the game coordinator converges on its contents (#730). In-place
-      # rewrite (no temp+rename) avoids EBUSY on this bind mount.
-      - ./services/flagd:/etc/flagd
+      # The agent writes flags only through the flag service (FLAG_SERVICE_URL);
+      # it mounts no flag file (epic #1407, C-033).
       # Durable experiment journal (#1023, completes #831). The agent writes the
       # per-experiment intent/events.jsonl/summary.json under AGENT_EXPERIMENT_DIR
       # (default /var/lib/joustmania/agent/experiments; see
@@ -846,6 +833,8 @@ networks:
     name: joustmania-network
 
 volumes:
+  # Flag service admin state (D10): only admin values written with persist.
+  flag-service-state:
   victoria-metrics-data:
   grafana-data:
   loki-data:

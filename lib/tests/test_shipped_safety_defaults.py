@@ -12,21 +12,27 @@ from pathlib import Path
 
 import pytest
 
-from lib.feature_flags import GAME_KIND_REAL, GAME_KIND_SHADOW, GAME_KIND_VAR
+from lib.feature_flags import (
+    ARM_EXPERIMENTAL,
+    ARM_VAR,
+    EXPERIMENT_ID_VAR,
+    GAME_KIND_REAL,
+    GAME_KIND_SHADOW,
+    GAME_KIND_VAR,
+)
 
 # lib/tests/ -> lib/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FLAGD_DIR = REPO_ROOT / "services" / "flagd"
 GO_TARGETING = REPO_ROOT / "services" / "agent" / "experiment" / "targeting.go"
-# The flagd contract test keeps its own copies of the constants (its venv lacks
+# The flag service renders the experiment rung (FR-138) from its own constants.
+FLAG_SERVICE_RENDER = REPO_ROOT / "services" / "flag-service" / "state" / "render.go"
+# The integration test keeps its own copies of the constants (its venv lacks
 # lib.feature_flags' dependencies), so they are pinned here too.
-SHADOW_ISOLATION_CONTRACT = REPO_ROOT / "tests" / "contract" / "test_flagd_resolution.py"
+SHADOW_ISOLATION_ITEST = REPO_ROOT / "tests" / "integration" / "test_experiment_shadow_isolation.py"
 
 # Base and CI variants of each flag file: flagd serves ci/ in CI.
 FLAG_FILE_VARIANTS = ("", "ci/")
-
-# The reserved experiment variant prefix the agent writes into game.json.
-EXPERIMENT_VARIANT = "agent_experiment"
 
 
 def _flags(rel: str) -> dict:
@@ -77,29 +83,39 @@ def _const(src: str, name: str) -> str | None:
 
 @pytest.mark.uc("UC-043", br=["BR-001"])
 def test_game_kind_constants_match_source():
-    """The game_kind split is a cross-language contract: the Go experiment writer
-    (targeting.go) scopes experiments on ``game_kind != "real"`` and the Python
-    eval context (lib/feature_flags) sets ``game_kind``. If the names or values
-    drift, real games stop being protected from shadow experiments.
+    """The game_kind / experiment split is a cross-language contract: the flag
+    service renders an experiment value as ``game_kind != "real" AND
+    experiment_id AND arm == "experimental"`` (render.go, FR-138), the Go agent
+    names the same keys (targeting.go), and the Python eval context
+    (lib/feature_flags) sets them. If a name or value drifts, real games stop
+    being protected from shadow experiments.
     """
     go_src = GO_TARGETING.read_text()
     assert _const(go_src, "GameKindVar") == GAME_KIND_VAR, "Go GameKindVar drifted from lib.feature_flags.GAME_KIND_VAR"
     assert _const(go_src, "GameKindReal") == GAME_KIND_REAL, (
         "Go GameKindReal drifted from lib.feature_flags.GAME_KIND_REAL"
     )
-    assert _const(go_src, "ExperimentVariant") == EXPERIMENT_VARIANT, (
-        "Go ExperimentVariant drifted from the reserved experiment variant"
-    )
+    assert _const(go_src, "ExperimentIDVar") == EXPERIMENT_ID_VAR
+    assert _const(go_src, "ArmVar") == ARM_VAR
+    assert _const(go_src, "ArmExperimental") == ARM_EXPERIMENTAL
+
+    render_src = FLAG_SERVICE_RENDER.read_text()
+    assert _const(render_src, "ctxGameKind") == GAME_KIND_VAR, "flag-service ctxGameKind drifted"
+    assert _const(render_src, "gameKindReal") == GAME_KIND_REAL, "flag-service gameKindReal drifted"
+    assert _const(render_src, "ctxExperimentID") == EXPERIMENT_ID_VAR, "flag-service ctxExperimentID drifted"
+    assert _const(render_src, "ctxArm") == ARM_VAR, "flag-service ctxArm drifted"
 
     assert GAME_KIND_VAR == "game_kind"
     assert GAME_KIND_REAL == "real"
     assert GAME_KIND_SHADOW == "shadow"
 
-    contract_src = SHADOW_ISOLATION_CONTRACT.read_text()
+    itest_src = SHADOW_ISOLATION_ITEST.read_text()
     for name, want in (
         ("GAME_KIND_VAR", GAME_KIND_VAR),
         ("GAME_KIND_REAL", GAME_KIND_REAL),
         ("GAME_KIND_SHADOW", GAME_KIND_SHADOW),
-        ("EXPERIMENT_VARIANT", EXPERIMENT_VARIANT),
+        ("EXPERIMENT_ID_VAR", EXPERIMENT_ID_VAR),
+        ("ARM_VAR", ARM_VAR),
+        ("ARM_EXPERIMENTAL", ARM_EXPERIMENTAL),
     ):
-        assert _const(contract_src, name) == want, f"{SHADOW_ISOLATION_CONTRACT.name} {name} drifted from source"
+        assert _const(itest_src, name) == want, f"{SHADOW_ISOLATION_ITEST.name} {name} drifted from source"

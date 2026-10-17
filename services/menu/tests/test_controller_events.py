@@ -437,7 +437,7 @@ class TestHandlerErrorIsolation:
         Before #1272 the exception escaped to ``_run``, which reconnected; the
         reconnect called ``on_stream_reconnected`` and cleared every controller.
         """
-        from lib.flag_config_writer import FlagConfigWriter
+        from lib.flag_service_writer import FlagServiceWriter
         from services.menu.handlers.base import ControllerState
         from services.menu.state_manager import StateManager
         from services.menu.utils import AudioHelper, LedController
@@ -445,8 +445,8 @@ class TestHandlerErrorIsolation:
         state_manager = StateManager(
             led=create_autospec(LedController, instance=True, spec_set=True),
             audio=create_autospec(AudioHelper, instance=True, spec_set=True),
-            game_settings_writer=create_autospec(FlagConfigWriter, instance=True, spec_set=True),
-            user_prefs_writer=create_autospec(FlagConfigWriter, instance=True, spec_set=True),
+            game_settings_writer=create_autospec(FlagServiceWriter, instance=True, spec_set=True),
+            user_prefs_writer=create_autospec(FlagServiceWriter, instance=True, spec_set=True),
             publish_event=AsyncMock(),
         )
         broken_handler = MagicMock()

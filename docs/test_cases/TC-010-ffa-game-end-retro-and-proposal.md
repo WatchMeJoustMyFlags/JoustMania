@@ -3,7 +3,7 @@
 ## Overview
 
 **ID:** TC-010  
-**Goal:** When a real Free-for-All game ends, the agent runs its game-end chain in order (retro, game summary, proposer) and the proposal becomes a shadow-scoped experiment in `game.json`, while real players keep the shipped values.  
+**Goal:** When a real Free-for-All game ends, the agent runs its game-end chain in order (retro, game summary, proposer) and the proposal becomes an experiment-arm value on the flag service (UC-053 A3), while real players keep the shipped values.  
 **Priority:** High  
 **Status:** Draft  
 **Use cases:** [UC-020](../use_cases/UC-020.md) main; [UC-041](../use_cases/UC-041.md) main; [UC-042](../use_cases/UC-042.md) main, A2; [UC-043](../use_cases/UC-043.md) main
@@ -29,18 +29,18 @@
 | 3    | Retro                   | The agent asks the backend for a session assessment and records an `agent.llm.retro` span for `G1`    | -                                      | [UC-042](../use_cases/UC-042.md)    |
 | 4    | Game summary            | The agent adds the game to its rolling window of the last 20 games                                   | -                                      | [UC-042](../use_cases/UC-042.md)    |
 | 5    | Propose                 | The proposer submits a proposal; the experiment gate accepts it                                      | `sensitivity` → `slow` for shadow games | [UC-042](../use_cases/UC-042.md)   |
-| 6    | Verify the experiment   | `game.json` holds an `agent_experiment__<id>` variant targeted at that experiment's id and arm only  | -                                      | [UC-043](../use_cases/UC-043.md)    |
+| 6    | Verify the experiment   | `GET /game/<flag>` shows a value for the proposal's experiment id (`prop_<hex>`) and arm `experimental` only | -                                      | [UC-043](../use_cases/UC-043.md)    |
 | 7    | Verify real games unchanged | flagd resolves `sensitivity` to the shipped value for a real game context                        | `game_kind` = `real`                   | -                                   |
 
 ## Validation
 
 1. **Chain order**: the span start times for `G1` are ordered retro, then summary, then `code_improvement.proposed`.
 2. **Shadow-scoped only**: no real-game evaluation context resolves the experiment variant.
-3. **Stub variant** (A2): with `AGENT_INFERENCE_BACKEND=stub` the retro span is capture-only and the proposer proposes nothing; `game.json` is unchanged.
+3. **Stub variant** (A2): with `AGENT_INFERENCE_BACKEND=stub` the retro span is capture-only and the proposer proposes nothing; the flag service holds no experiment value.
 
 ## Postconditions
 
-- `game.json` holds the experiment's targeting until the experiment is torn down ([TC-011](TC-011-shadow-experiment-to-verdict.md)); the test fixture restores `game.json` and `agent.json`.
+- The flag service holds the experiment value until the experiment is torn down ([TC-011](TC-011-shadow-experiment-to-verdict.md)); the test fixture deletes its overlays.
 - One ended game.
 
 ## Automation

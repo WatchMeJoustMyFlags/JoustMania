@@ -40,7 +40,7 @@
 
 ## Postconditions
 
-- `interventions.json` holds the written intervention; the test fixture restores it and `agent.json` byte for byte.
+- The intervention lived in the game's scope on the flag service and was dropped when the game ended (UC-053 BR-003); the test fixture deletes its `agent` overlays. No flag file changed.
 - One game that the operator or the suite fixture ends.
 
 ## Automation

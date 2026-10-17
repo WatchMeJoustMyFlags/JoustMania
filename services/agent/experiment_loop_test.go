@@ -4,8 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +15,7 @@ import (
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/flagservice/fake"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamerunner"
 	"github.com/joustmania/agent/promote"
@@ -138,20 +137,11 @@ func (r *recordingGitHub) issueCount() int {
 	return r.issues
 }
 
-// newGameFileForLoop copies the experiment package's game.json fixture into a temp
-// dir so the loop's GateTargetingWriter writes a real (but throwaway) flag file.
-func newGameFileForLoop(t *testing.T) string {
+// newGameFileForLoop serves the experiment package's game.json fixture from a fake
+// flag service, so the loop's GateTargetingWriter writes throwaway experiment values.
+func newGameFileForLoop(t *testing.T) *fake.Service {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join("experiment", "testdata", "game.json"))
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "game.json")
-	if err := os.WriteFile(path, src, 0o644); err != nil {
-		t.Fatalf("write temp fixture: %v", err)
-	}
-	return path
+	return gameServiceForDeclarer(t)
 }
 
 // buildLoopForTest assembles an experimentLoop with the REAL TargetingWriter
@@ -898,7 +888,7 @@ func newRegistryConcurrency1(t *testing.T, spawner experiment.ShadowSpawner, res
 func TestBuildExperimentLoop_DisabledByDefault(t *testing.T) {
 	// Ensure the opt-in env is unset (the default).
 	t.Setenv(envExperimentsEnabled, "")
-	loop := buildExperimentLoop(nil, nil, nil, "/nonexistent/game.json", nil, testLogger())
+	loop := buildExperimentLoop(nil, nil, nil, gameServiceForDeclarer(t), nil, testLogger())
 	if loop == nil {
 		t.Fatalf("buildExperimentLoop must ALWAYS build the loop now (#1044); gating is the live flag, not a nil return")
 	}
@@ -917,7 +907,7 @@ func TestBuildExperimentLoop_DisabledByDefault(t *testing.T) {
 
 	// Explicit "false" is also off.
 	t.Setenv(envExperimentsEnabled, "false")
-	loop2 := buildExperimentLoop(nil, nil, nil, "/nonexistent/game.json", nil, testLogger())
+	loop2 := buildExperimentLoop(nil, nil, nil, gameServiceForDeclarer(t), nil, testLogger())
 	if loop2 == nil || loop2.expDefaults.Enabled {
 		t.Fatalf("AGENT_EXPERIMENTS_ENABLED=false must build a loop with the disabled bootstrap default")
 	}
@@ -1095,4 +1085,26 @@ func TestExperimentLoop_OnGameTerminal_PatternOutcomes(t *testing.T) {
 			t.Fatalf("release note = %q, want a counting (non-preemption) release", note)
 		}
 	})
+}
+
+// UC: UC-042 main
+func TestExperimentLoop_ProposalSinkDeclaresWithinTheBudget(t *testing.T) {
+	// PR #1417 review B2: a Proposer proposal becomes an experiment of this loop's
+	// registry, under the dynamic declarer's concurrent-experiment budget.
+	resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+	loop := buildLoopForTest(t, &recordingSpawner{}, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+	loop.expDefaults.DynamicMaxConcurrent = 1
+	sink := loop.proposalSink()
+
+	ctx := context.Background()
+	if err := sink.Review(ctx, experiment.Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Rationale: "r"}); err != nil {
+		t.Fatalf("first proposal: %v", err)
+	}
+	if live := loop.registry.Live(); len(live) != 1 {
+		t.Fatalf("live = %v, want one experiment", live)
+	}
+	err := sink.Review(ctx, experiment.Proposal{FlagKey: "death_grace_period_seconds", ExperimentalValue: 2.0, Rationale: "r"})
+	if rej, ok := experiment.AsReject(err); !ok || rej.Reason != experiment.ReasonNoCapacity {
+		t.Fatalf("second proposal err = %v, want no_capacity (budget 1)", err)
+	}
 }

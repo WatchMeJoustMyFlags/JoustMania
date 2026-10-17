@@ -46,6 +46,12 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "http.client",
     "websockets",
 )
+# The one HTTP client the coordinator has: the flag service's game lifecycle
+# client (FR-135, #1410). It talks to the flag service only (FLAG_SERVICE_URL),
+# never to the agent or a model, and its only await on the game path is bounded
+# at 200 ms (test_flag_service_client_targets_only_the_flag_service).
+FLAG_SERVICE_CLIENT = "services/game_coordinator/flag_service_client.py"
+ALLOWED_HTTP_IMPORTS = {FLAG_SERVICE_CLIENT: {"urllib.request"}}
 ALLOWED_GRPC_STUBS = {
     "proto.audio_pb2_grpc",
     "proto.controller_manager_pb2_grpc",
@@ -135,7 +141,11 @@ def imports_by_module(scanned) -> dict[str, set[str]]:
 @pytest.mark.uc("UC-040", br=["BR-001"])
 def test_coordinator_imports_no_model_sdk_or_http_client(imports_by_module):
     offenders = {
-        module: sorted(n for n in names if n.startswith(FORBIDDEN_IMPORT_PREFIXES))
+        module: sorted(
+            n
+            for n in names
+            if n.startswith(FORBIDDEN_IMPORT_PREFIXES) and n not in ALLOWED_HTTP_IMPORTS.get(module, set())
+        )
         for module, names in imports_by_module.items()
     }
     offenders = {m: n for m, n in offenders.items() if n}
@@ -156,3 +166,16 @@ def test_coordinator_grpc_stubs_are_known_dependencies_only(imports_by_module):
 def test_no_dynamic_imports_hide_dependencies(scanned):
     offenders = {module: lines for module, tree in scanned.items() if (lines := _dynamic_imports(tree))}
     assert not offenders, f"dynamic imports hide dependencies from the NFR-013 scan: {offenders}"
+
+
+@pytest.mark.nfr("NFR-013")
+def test_flag_service_client_targets_only_the_flag_service():
+    """The allowed HTTP client reads its base URL from FLAG_SERVICE_URL only and
+    names no agent or model endpoint; its registration await is 200 ms."""
+    source = (PROJECT_ROOT / FLAG_SERVICE_CLIENT).read_text()
+    assert 'os.getenv("FLAG_SERVICE_URL"' in source
+    for marker in ("agent:", "13134", "anthropic", "openai", "api.typesafe"):
+        assert marker not in source, marker
+    from services.game_coordinator import flag_service_client
+
+    assert flag_service_client.REGISTER_AWAIT_SECONDS <= 0.2

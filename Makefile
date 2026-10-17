@@ -84,22 +84,21 @@ up-mock:
 # loop out-of-the-box: latest images (not the stale release IMAGE_TAG=0.7.0 from
 # .env), mock controllers + full observability (ci flag dir), the agent & the
 # dashboard profiles, the experiment loop enabled, and one seeded experiment.
-# The agent and flagd share the SAME flag dir (services/flagd/ci) so the agent's
-# game.json targeting writes actually reach the running flagd (the #999 dir-
-# mismatch fix lives in docker-compose.dry-run.yml).
+# The flag service loads the CI baseline (services/flagd/ci) and is flagd's
+# only source, so every agent write reaches the running flagd (epic #1407).
 #
 # Gating chain (all must be satisfied for the loop to ACT):
 #   1. flagd `experiments_enabled` flag = on  -> the LIVE gate post-#1044. It
 #      OVERRIDES the AGENT_EXPERIMENTS_ENABLED env, which is now dead config for
 #      this purpose. Fail-closed `off` by default; MANUAL opt-in via the enable
 #      step below.
-#   2. agent.json `enabled` = on       -> master kill-switch, fail-closed `off`
+#   2. agent `enabled` flag = on       -> master kill-switch, fail-closed `off`
 #      by default. Without it the loop self-aborts:
 #      `experiment.torn_down ... reason="kill-switch: agent disabled"`.
 #      (The enable step below flips BOTH 1 and 2 in one command.)
 #   3. code_improvement.* promotion gates -> remain default (promotion stays off)
-# We do NOT mutate the committed flag files here; the operator runs the enable
-# step, which flips the ci/ flag dir at runtime only.
+# Nothing writes a flag file: the operator runs the enable step, which sets
+# in-memory overlays on the flag service (epic #1407).
 .PHONY: dry-run
 dry-run:
 	IMAGE_TAG=$(or $(IMAGE_TAG),latest) docker compose \
@@ -114,15 +113,15 @@ dry-run:
 	@echo "=========================================="
 	@echo "  Images:        IMAGE_TAG=$(or $(IMAGE_TAG),latest) (current code, not the .env release pin)"
 	@echo "  Controllers:   mock (flagd ci/ dir, backend=mock)"
-	@echo "  Flag dir:      services/flagd/ci  (shared rw by agent + flagd -> writes are effective)"
+	@echo "  Flags:         flag service (baseline services/flagd/ci, read-only); change: ./scripts/flags.sh"
 	@echo ""
 	@echo "  Experiment loop gating:"
 	@echo "    [!] flagd experiments_enabled flag is the LIVE gate (post-#1044) and"
 	@echo "        OVERRIDES AGENT_EXPERIMENTS_ENABLED env. Fail-closed off by default."
 	@echo "    [x] seeded experiment: windows = frantic music pacing (objective=balanced, N=8/arm)"
 	@echo "    [ ] ENABLE experiments  -> ONE step (flips enabled + experiments_enabled on):"
-	@echo "        ./scripts/agent-dryrun-enable.sh on   # ci/agent.json: enabled + experiments_enabled -> on"
-	@echo "        # gate flips take effect LIVE (~1s, self-gated per-tick since #1044) -> NO agent restart"
+	@echo "        ./scripts/agent-dryrun-enable.sh on   # flag service: enabled + experiments_enabled -> on"
+	@echo "        # gate flips take effect LIVE (self-gated per-tick since #1044) -> NO agent restart"
 	@echo "        # in-game decision backend: ./scripts/agent-backend.sh (decision.backend, live)"
 	@echo "        # proposer/retro on Claude: AGENT_INFERENCE_BACKEND=claude + ANTHROPIC_API_KEY,"
 	@echo "        #   then recreate the agent (env read at process start): ... up -d agent"

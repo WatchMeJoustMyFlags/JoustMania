@@ -32,6 +32,7 @@ from services.game_coordinator.interventions import (
     InterventionManager,
 )
 from services.game_coordinator.servicer import GameCoordinatorServicer
+from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
 
@@ -45,8 +46,11 @@ class FakeFlagClient:
     def get_string_value(self, key, default, _ctx=None):
         return str(self.values.get(key, default))
 
+    def get_object_details(self, key, _default, _ctx=None):
+        # One-shot flags are per-game event lists read via details (FR-137).
+        return object_details(key, self.values.get(key))
+
     def get_string_details(self, key, default, _ctx=None):
-        # The manager reads edge flags via details to see errors (#1299).
         return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, _ctx))
 
     def get_integer_value(self, key, default, _ctx=None):
@@ -170,7 +174,7 @@ async def test_wired_provider_blocks_low_battery():
     servicer = _make_servicer_with_game(players)
     game = servicer.current_game
     mgr, events = _wire_manager(servicer._battery_pct_for_serial, threshold=20, game=game)
-    mgr._interventions_client = FakeFlagClient({"eliminate_player": "1:ctrl_a"})
+    mgr._interventions_client = FakeFlagClient({"eliminate_player": edge_event("eliminate_player", "ctrl_a")})
 
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -186,7 +190,7 @@ async def test_wired_provider_passes_above_threshold():
     servicer = _make_servicer_with_game(players)
     game = servicer.current_game
     mgr, events = _wire_manager(servicer._battery_pct_for_serial, threshold=20, game=game)
-    mgr._interventions_client = FakeFlagClient({"eliminate_player": "1:ctrl_a"})
+    mgr._interventions_client = FakeFlagClient({"eliminate_player": edge_event("eliminate_player", "ctrl_a")})
 
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -202,7 +206,7 @@ async def test_wired_provider_missing_data_does_not_block():
     servicer = _make_servicer_with_game(players)
     game = servicer.current_game
     mgr, events = _wire_manager(servicer._battery_pct_for_serial, threshold=20, game=game)
-    mgr._interventions_client = FakeFlagClient({"eliminate_player": "1:ctrl_a"})
+    mgr._interventions_client = FakeFlagClient({"eliminate_player": edge_event("eliminate_player", "ctrl_a")})
 
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()

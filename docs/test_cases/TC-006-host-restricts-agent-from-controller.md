@@ -27,20 +27,20 @@
 | 3    | Restrict twice            | Host presses Start twice; the system steps `interventions_allowed` down and gives colour and voice feedback | `standard` → `ambient` → `none` | [UC-013](../use_cases/UC-013.md)    |
 | 4    | Verify the flag           | flagd serves `none` for `interventions_allowed`; the host's controller pulsed red with the "off" line     | -                                 | -                                   |
 | 5    | Verify no remote call     | The agent's next cycles build and send no request to the fake server and record no `agent.decide` span    | 10 s window                       | [UC-040](../use_cases/UC-040.md)    |
-| 6    | Write an intervention by hand | Operator writes `eliminate_player` for `MOCK0002` into `interventions.json`; the coordinator blocks it | `eliminate_player`, `MOCK0002`    | [UC-045](../use_cases/UC-045.md)    |
+| 6    | Send an intervention by hand | Operator appends `eliminate_player` for `MOCK0002` to the game's event list through the flag service; the coordinator blocks it | `POST /interventions/eliminate_player` | [UC-045](../use_cases/UC-045.md)    |
 | 7    | Verify blocked            | `agent_intervention` with `blocked=true`, reason `not_allowed`; `MOCK0002` stays alive                    | -                                 | [UC-040](../use_cases/UC-040.md)    |
 
 ## Validation
 
 1. **Nothing reached the game**: no unblocked `agent_intervention` event for this game after step 4.
-2. **Ladder persisted**: `agent.json` holds `none` as the `interventions_allowed` default variant.
+2. **Ladder persisted**: the flag service holds `none` as the persisted admin value of `interventions_allowed` (UC-053 A2); `agent.json` is unchanged.
 
 ## Postconditions
 
-- `interventions_allowed` is `none` in the active `agent.json`; the test fixture restores the flag files (safety gates first).
+- `interventions_allowed` is `none` as a persisted admin value; the test fixture deletes it and every stack overlay it set (`flag_service` fixture).
 - One running game that the suite fixture ends; mock controllers stay connected.
 
 ## Automation
 
-- **Partly automated**: `tests/integration/test_intervention_flow.py::test_permission_layer_blocks_disallowed_intervention` covers steps 6 and 7 with `interventions_allowed` set to `ambient` in the flag file (not from the controller).
+- **Partly automated**: `tests/integration/test_intervention_flow.py::test_permission_layer_blocks_disallowed_intervention` covers steps 6 and 7 with `interventions_allowed` set to `ambient` as a flag-service overlay (not from the controller).
 - Gaps: the controller ladder (steps 1 to 4, UC-013; clamped at both ends since #1373) is unit-tested only (`services/menu/tests/test_admin_handler.py`), with no end-to-end test; the "no remote call" check of step 5 (UC-040 A14) is covered by Go unit tests only (`services/agent/decision/decide_no_allowed_test.go`, #1395).

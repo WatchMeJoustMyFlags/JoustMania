@@ -1,13 +1,13 @@
 """End-to-end test of the decide confidence router on a real FFA game (#1230, epic #1225).
 
 Proves, through the REAL stack (menu-started JoustFFA game on mock controllers,
-game-coordinator -> OTel collector -> the agent container -> flagd ->
-interventions.json -> game-coordinator), that the agent's in-game decision
+game-coordinator -> OTel collector -> the agent container -> flag service ->
+flagd -> game-coordinator), that the agent's in-game decision
 backend contract behaves as specified:
 
 1. ``decision.backend=openai`` pointed at a fake OpenAI-compatible server that
-   answers HIGH confidence -> ``decide.outcome=act``: the intervention is
-   written to interventions.json and the coordinator applies it (an unblocked
+   answers HIGH confidence -> ``decide.outcome=act``: the agent writes the
+   intervention for the game through the flag service and the coordinator applies it (an unblocked
    ``agent_intervention`` event on the game stream). The ``agent.decide`` span
    carries the routing judgement (``gen_ai.evaluation.result`` event) and parents
    the backend's ``chat {model}`` CLIENT span (``gen_ai.provider.name``).
@@ -31,7 +31,8 @@ test_experiment_cohort_loop.py pattern) and removes both afterwards, so other
 modules still see the agent absent. Each test scripts the fake's next answers
 through its control API (no restarts) and points the agent at it with the
 ``decision.openai.*`` flags in ci/agent.json; the ``decide_flags`` fixture
-snapshots and restores agent.json + interventions.json byte-for-byte.
+snapshots and restores agent.json byte-for-byte. The agent's interventions are
+game-scoped (they die with the game) and read back via ``GET /interventions/<flag>``.
 
 Spans are read from Jaeger's query API through the fake's ``/_jaeger/`` relay:
 the integration stack publishes no Jaeger host port.
@@ -66,7 +67,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from tests.integration.helpers import (  # noqa: E402
     GameEventCollector,
-    active_flag_file,
     async_poll_until,
     flagd_probe_client,
     get_game_client,
@@ -76,11 +76,9 @@ from tests.integration.helpers import (  # noqa: E402
     poll_until,
     setup_mock_controllers,
     start_game_via_menu,
-    wait_flag_file_restored,
 )
+from tests.integration.flag_service import default as flag_service_default  # noqa: E402
 
-AGENT_PATH = active_flag_file("agent")
-INTERVENTIONS_PATH = active_flag_file("interventions")
 
 AGENT_SERVICE = "agent"
 AGENT_CONTAINER = "joustmania-agent"
@@ -93,6 +91,9 @@ DECIDE_COMPOSE_FILE = "docker-compose.decide-e2e.yml"
 FAKE_URL = "http://localhost:18089"
 # What the agent dials from inside the compose network.
 FAKE_BASE_URL_IN_NETWORK = "http://fake-openai:8080/v1"
+# The ci/agent.json variant with that URL: the base URL carries the API key, so
+# the registry allows only declared variants (no free string).
+FAKE_BASE_URL_VARIANT = "fake"
 FAKE_MODEL = "fake-decider"
 CHAT_SPAN = f"chat {FAKE_MODEL}"
 
@@ -213,7 +214,7 @@ def jaeger_spans(
     }
     try:
         doc = _fake_call("GET", "/_jaeger/api/traces?" + urllib.parse.urlencode(params))
-    except (urllib.error.URLError, OSError, ValueError):
+    except urllib.error.URLError, OSError, ValueError:
         return []
     out = []
     for trace in doc.get("data") or []:
@@ -298,76 +299,61 @@ async def wait_decide_span(
 
 
 # =============================================================================
-# Flag-file helpers (in-place writes: rename over a watched bind mount is EBUSY)
+# Agent-set helpers: in-memory overlays on the flag service, cleared by the
+# ``flag_service`` fixture at teardown (epic #1407, N4)
 # =============================================================================
 
 
-def _load(path: str) -> dict:
-    with open(path) as fh:
-        return json.load(fh)
+def _onoff(value: bool) -> str:
+    return "on" if value else "off"
 
 
-def _dump_in_place(path: str, doc: dict) -> None:
-    with open(path, "w") as fh:
-        fh.write(json.dumps(doc, indent=2) + "\n")
-
-
-def _set(doc: dict, key: str, value) -> None:
-    """Point ``key`` at an injected ``e2e`` variant carrying ``value``."""
-    flag = doc["flags"][key]
-    flag["variants"][E2E_VARIANT] = value
-    flag["defaultVariant"] = E2E_VARIANT
-
-
-def configure_agent(
-    *, backend: str, enabled: bool = True, interventions: bool = True
-) -> None:
-    """One idempotent write of every agent.json flag a case needs (one reload)."""
-    doc = _load(AGENT_PATH)
-    _set(doc, "enabled", enabled)
-    _set(doc, "interventions_enabled", interventions)
-    doc["flags"]["interventions_allowed"]["defaultVariant"] = (
-        INTERVENTIONS_ALLOWED_VARIANT
-    )
-    _set(doc, "decision.backend", backend)
-    _set(doc, "decision.openai.base_url", FAKE_BASE_URL_IN_NETWORK)
-    _set(doc, "decision.openai.model", FAKE_MODEL)
-    _set(doc, "decision.openai.timeout_ms", DECIDE_TIMEOUT_MS)
-    _set(doc, "decision.min_interval_ms", 1500)
-    _dump_in_place(AGENT_PATH, doc)
+def configure_agent(*, backend: str, enabled: bool = True, interventions: bool = True) -> None:
+    """Every agent-set flag a case needs, as flag-service overlays. The fake's
+    URL is the declared `fake` variant of ci/agent.json; the model is a free string."""
+    fs = flag_service_default()
+    fs.put("agent", "enabled", variant=_onoff(enabled))
+    fs.put("agent", "interventions_enabled", variant=_onoff(interventions))
+    fs.put("agent", "interventions_allowed", variant=INTERVENTIONS_ALLOWED_VARIANT)
+    fs.put("agent", "decision.backend", variant=backend)
+    fs.put("agent", "decision.openai.base_url", variant=FAKE_BASE_URL_VARIANT)
+    fs.put("agent", "decision.openai.model", value=FAKE_MODEL)
+    fs.put("agent", "decision.openai.timeout_ms", value=DECIDE_TIMEOUT_MS)
+    fs.put("agent", "decision.min_interval_ms", value=1500)
 
 
 def set_enabled(enabled: bool) -> None:
-    doc = _load(AGENT_PATH)
-    _set(doc, "enabled", enabled)
-    _dump_in_place(AGENT_PATH, doc)
+    flag_service_default().put("agent", "enabled", variant=_onoff(enabled))
 
 
-def wait_agent_flags_served(
-    docker_compose, *, backend: str, enabled: bool, rewrite
-) -> None:
+def wait_agent_flags_served(docker_compose, *, backend: str, enabled: bool, rewrite=None) -> None:
     from openfeature.evaluation_context import EvaluationContext
 
     ctx = EvaluationContext()
     with flagd_probe_client(docker_compose, "agent") as client:
         served = poll_until(
-            lambda: client.get_string_value("decision.backend", "", ctx) == backend
-            and client.get_boolean_value("enabled", not enabled, ctx) is enabled
-            and client.get_string_value("decision.openai.model", "", ctx) == FAKE_MODEL
-            # numeric flag: TYPED getter (the #903 ObjectValue TYPE_MISMATCH trap)
-            and client.get_integer_value("decision.openai.timeout_ms", -1, ctx)
-            == DECIDE_TIMEOUT_MS
-            and client.get_string_value("llm.eligible_game_kinds", "", ctx)
-            == ELIGIBLE_GAME_KINDS,
+            lambda: (
+                client.get_string_value("decision.backend", "", ctx) == backend
+                and client.get_boolean_value("enabled", not enabled, ctx) is enabled
+                and client.get_string_value("decision.openai.model", "", ctx)
+                == FAKE_MODEL
+                # numeric flag: TYPED getter (the #903 ObjectValue TYPE_MISMATCH trap)
+                and client.get_integer_value("decision.openai.timeout_ms", -1, ctx)
+                == DECIDE_TIMEOUT_MS
+                and client.get_string_value("llm.eligible_game_kinds", "", ctx)
+                == ELIGIBLE_GAME_KINDS
+            ),
             rewrite=rewrite,
         )
     assert served, f"flagd did not serve decision.backend={backend} enabled={enabled}"
 
 
-def scripted_flag_state() -> tuple:
-    """(defaultVariant, active value) of the scripted intervention's flag."""
-    flag = _load(INTERVENTIONS_PATH)["flags"][SCRIPTED_FLAG]
-    return flag.get("defaultVariant"), flag["variants"].get("active")
+def scripted_flag_value(game_id: str):
+    """The value the agent wrote for the scripted intervention in ``game_id``
+    through the flag service, or None when it wrote nothing for that game."""
+    view = flag_service_default().get("interventions", SCRIPTED_FLAG)
+    entry = (view.get("games") or {}).get(game_id)
+    return None if entry is None else entry.get("value")
 
 
 # =============================================================================
@@ -443,59 +429,22 @@ def _fake_reachable() -> bool:
     try:
         _fake_call("GET", "/healthz", timeout=2)
         return True
-    except (urllib.error.URLError, OSError):
+    except urllib.error.URLError, OSError:
         return False
 
 
 @pytest.fixture
-def decide_flags(decide_stack):
-    """Snapshot agent.json + interventions.json; restore byte-for-byte on exit.
-
-    agent.json is restored FIRST (kill switch back to the fail-closed default) and
-    served before interventions.json is restored, so the agent cannot rewrite the
-    interventions file after its restore."""
-    with open(AGENT_PATH) as fh:
-        agent_backup = fh.read()
-    with open(INTERVENTIONS_PATH) as fh:
-        interventions_backup = fh.read()
-
+def decide_flags(decide_stack, flag_service):
+    """The agent's flags are flag-service overlays the ``flag_service`` fixture
+    clears at teardown (kill switch back to the fail-closed baseline); the
+    agent's interventions are game-scoped and die with their game (UC-053
+    BR-003). This fixture releases the fake so no agent goroutine lingers."""
     yield
-
-    # Release anything the fake still holds so no agent goroutine lingers.
     try:
         release_fake()
         script_fake("valid", confidence=0.0)
-    except (urllib.error.URLError, OSError):
+    except urllib.error.URLError, OSError:
         pass
-
-    def _restore_agent():
-        with open(AGENT_PATH, "w") as fh:
-            fh.write(agent_backup)
-
-    def _restore_interventions():
-        with open(INTERVENTIONS_PATH, "w") as fh:
-            fh.write(interventions_backup)
-
-    with open(AGENT_PATH) as fh:
-        agent_mutated = fh.read()
-    _restore_agent()
-    try:
-        wait_flag_file_restored(
-            decide_stack, "agent", agent_backup, agent_mutated, _restore_agent
-        )
-    finally:
-        # ALWAYS write interventions.json back, even when the agent.json wait
-        # failed: a leaked intervention would bleed into every later test.
-        with open(INTERVENTIONS_PATH) as fh:
-            interventions_mutated = fh.read()
-        _restore_interventions()
-        wait_flag_file_restored(
-            decide_stack,
-            "interventions",
-            interventions_backup,
-            interventions_mutated,
-            _restore_interventions,
-        )
 
 
 async def _start_ffa(docker_compose, collector: GameEventCollector) -> str:
@@ -542,16 +491,14 @@ async def _wait_first_call(game_id: str) -> list[dict]:
     return calls
 
 
-async def _assert_nothing_applied(
-    collector: GameEventCollector, flag_before: tuple
-) -> None:
+async def _assert_nothing_applied(collector: GameEventCollector, game_id: str) -> None:
     await asyncio.sleep(ABSENCE_WINDOW)
     events = _intervention_events(collector)
     assert not events, (
         f"{SCRIPTED_INTERVENTION} reached the game although nothing should act: {events}"
     )
-    assert scripted_flag_state() == flag_before, (
-        f"interventions.json {SCRIPTED_FLAG} changed: {flag_before} -> {scripted_flag_state()}"
+    assert scripted_flag_value(game_id) is None, (
+        f"the agent wrote {SCRIPTED_FLAG}={scripted_flag_value(game_id)} for {game_id}"
     )
 
 
@@ -634,8 +581,8 @@ async def test_rules_backend_default_unchanged(
 async def test_openai_high_confidence_acts(
     decide_flags, docker_compose, ensure_game_stopped
 ):
-    """High confidence -> decide.outcome=act: the scripted intervention is written
-    to interventions.json and applied by the coordinator; the agent.decide span
+    """High confidence -> decide.outcome=act: the agent writes the scripted
+    intervention for the game through the flag service and the coordinator applies it; the agent.decide span
     carries the passing gen_ai.evaluation.result and parents the chat span and the
     dispatched agent.decision."""
     script_fake(
@@ -675,9 +622,9 @@ async def test_openai_high_confidence_acts(
             ), (
                 f"no applied {SCRIPTED_INTERVENTION} on the game stream; saw {_intervention_events(collector)}"
             )
-            variant, value = scripted_flag_state()
-            assert variant == "active", (
-                f"agent did not write {SCRIPTED_FLAG}: defaultVariant={variant}"
+            value = scripted_flag_value(game_id)
+            assert value is not None, (
+                f"agent did not write {SCRIPTED_FLAG} for {game_id}"
             )
             assert abs(float(value) - EXPECTED_VALUE) < 1e-6, value
             # The handler's grpc.aio SetVolume ran on the game's loop and reached
@@ -766,7 +713,6 @@ async def test_openai_low_confidence_held(
         enabled=True,
         rewrite=lambda: configure_agent(backend="openai"),
     )
-    flag_before = scripted_flag_state()
 
     await setup_mock_controllers(docker_compose, count=4)
     game_client, channel = await get_game_client(docker_compose)
@@ -805,7 +751,7 @@ async def test_openai_low_confidence_held(
                 "a held answer must not reach runDecision"
             )
 
-            await _assert_nothing_applied(collector, flag_before)
+            await _assert_nothing_applied(collector, game_id)
             # Every openai answer of this game is held: no act slipped through.
             # Rules-fallback spans (decide.backend=rules, e.g. llm_budget_exhausted
             # carried over from an earlier case) are not answers from the backend
@@ -887,7 +833,6 @@ async def test_kill_switch_discards_inflight_answer(
         enabled=True,
         rewrite=lambda: configure_agent(backend="openai"),
     )
-    flag_before = scripted_flag_state()
 
     await setup_mock_controllers(docker_compose, count=4)
     game_client, channel = await get_game_client(docker_compose)
@@ -945,7 +890,7 @@ async def test_kill_switch_discards_inflight_answer(
                 tags
             )
 
-            await _assert_nothing_applied(collector, flag_before)
+            await _assert_nothing_applied(collector, game_id)
             outcomes = {
                 _span_tags(s).get("decide.outcome")
                 for s, _ in jaeger_decide_spans(game_id, since)

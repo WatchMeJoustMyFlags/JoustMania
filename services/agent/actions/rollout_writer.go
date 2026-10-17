@@ -1,39 +1,31 @@
 package actions
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
-	"os"
-	"sync"
 
-	"github.com/joustmania/agent/flagset"
+	"github.com/joustmania/agent/flagservice"
 )
 
-// RolloutWriter is the agent's writer for the flagd `rollout` flag file
-// (services/flagd/rollout.json). It is the infrastructure-domain parallel to
-// Writer: the progressive-rollout controller (#734) expands the Bluetooth
-// backend controller-by-controller by flipping current_controller_count's
-// defaultVariant along the stage ladder, and PR F rolls it back the same way.
-//
-// It reuses the same order-preserving read-modify-write-in-place machinery as
-// Writer (document.go / writeInPlace): untouched flags round-trip byte-for-byte,
-// and the write avoids temp+rename so it does not hit EBUSY on the flagd bind
-// mount. It carries its OWN mutex (separate file from interventions.json → a
-// separate lock); the agent is the sole writer of rollout.json.
-type RolloutWriter struct {
-	path string
-	log  *slog.Logger
+// FlagSetRollout is the flag set of the rollout flags.
+const FlagSetRollout = "rollout"
 
-	mu sync.Mutex
+// RolloutWriter is the agent's writer of the rollout stage (#734, W2): the
+// progressive-rollout controller expands the Bluetooth backend
+// controller-by-controller by moving current_controller_count along the stage
+// ladder, and PR F rolls it back the same way. Each move is one stack overlay
+// write to the flag service, PUT /rollout/current_controller_count
+// {"variant": <stage>} (epic #1407, C-032); it is in memory, so a flag-service
+// restart returns the rollout to its baseline stage.
+type RolloutWriter struct {
+	svc FlagService
+	log *slog.Logger
 }
 
 // flagCurrentControllerCount is the rollout flag whose defaultVariant the agent
 // flips to advance/retreat the rollout stage.
 const flagCurrentControllerCount = "current_controller_count"
-
-// DefaultRolloutPath is the in-container rollout flag file path. Override with
-// ROLLOUT_FLAG_PATH.
-const DefaultRolloutPath = "/etc/flagd/rollout.json"
 
 // Rollout stage variant names and their controller-count values. These mirror
 // the current_controller_count variants in services/flagd/rollout.json. flagd
@@ -68,102 +60,39 @@ var rolloutLadder = []struct {
 	{StageAllVariant, StageAllValue},
 }
 
-// NewRolloutWriter builds a RolloutWriter for the rollout flag file at path.
-// path "" uses DefaultRolloutPath. log nil uses slog.Default().
-func NewRolloutWriter(path string, log *slog.Logger) *RolloutWriter {
-	if path == "" {
-		path = DefaultRolloutPath
-	}
+// NewRolloutWriter builds a RolloutWriter over a flag-service client. log nil
+// uses slog.Default().
+func NewRolloutWriter(svc FlagService, log *slog.Logger) *RolloutWriter {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &RolloutWriter{path: path, log: log}
+	return &RolloutWriter{svc: svc, log: log}
 }
 
-// NewRolloutWriterFromEnv builds a RolloutWriter for the active rollout flag
-// file via the single source of truth (flagset.ResolvePath, issue #959): the
-// ROLLOUT_FLAG_PATH override still wins, otherwise the active rollout flag file
-// is the plain join $FLAGD_FLAG_DIR/rollout.json. In production this is
-// DefaultRolloutPath, unchanged.
+// NewRolloutWriterFromEnv builds a RolloutWriter for the flag service at
+// FLAG_SERVICE_URL.
 func NewRolloutWriterFromEnv(log *slog.Logger) *RolloutWriter {
-	return NewRolloutWriter(flagset.ResolvePath("ROLLOUT_FLAG_PATH", "rollout"), log)
+	return NewRolloutWriter(flagservice.NewFromEnv(), log)
 }
 
-// SetControllerCount flips current_controller_count's defaultVariant to the
-// named variant. The variant MUST already exist in the document's variants map
-// (the agent never invents variants — the schema file ships them all); an
-// unknown variant is an error and the file is left untouched. Safe for
-// concurrent use.
+// SetControllerCount moves current_controller_count to the given ladder
+// variant. An unknown variant is refused before any write.
 func (w *RolloutWriter) SetControllerCount(variant string) error {
-	if err := w.edit(func(doc *orderedDoc) error {
-		f, err := doc.flag(flagCurrentControllerCount)
-		if err != nil {
-			return err
+	known := false
+	for _, stage := range rolloutLadder {
+		if stage.variant == variant {
+			known = true
 		}
-		// Validate the variant exists before flipping, so a typo never points
-		// defaultVariant at a missing variant (flagd would then serve no value).
-		variants := map[string]any{}
-		if ok, err := f.get("variants", &variants); err != nil {
-			return err
-		} else if !ok {
-			return fmt.Errorf("flag %q has no variants object", flagCurrentControllerCount)
-		}
-		if _, ok := variants[variant]; !ok {
-			return fmt.Errorf("variant %q not present in flag %q", variant, flagCurrentControllerCount)
-		}
-		if err := f.set("defaultVariant", variant); err != nil {
-			return err
-		}
-		return doc.putFlag(flagCurrentControllerCount, f)
-	}); err != nil {
+	}
+	if !known {
+		return fmt.Errorf("unknown rollout stage variant %q", variant)
+	}
+	if _, err := w.svc.Put(context.Background(), FlagSetRollout, flagCurrentControllerCount,
+		flagservice.Write{Variant: variant, Writer: writerLabel, Reason: "rollout_stage"}); err != nil {
+		w.log.Error("agent.rollout_write_failed", "variant", variant, "error", err)
 		return err
 	}
-	w.log.Debug("agent.rollout_written",
-		"flag", flagCurrentControllerCount,
-		"variant", variant,
-		"path", w.path)
-	return nil
-}
-
-// edit runs one read-modify-write cycle under the writer's mutex: read the file,
-// apply fn to the order-preserving document, and write it back in place. Mirrors
-// Writer.edit but over a separate file and lock.
-func (w *RolloutWriter) edit(fn func(*orderedDoc) error) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	raw, err := os.ReadFile(w.path)
-	if err != nil {
-		return fmt.Errorf("read rollout file %q: %w", w.path, err)
-	}
-	doc, err := parseDoc(raw)
-	if err != nil {
-		return err
-	}
-	if err := fn(doc); err != nil {
-		return err
-	}
-	out, err := doc.marshal()
-	if err != nil {
-		return err
-	}
-	return w.writeInPlace(out)
-}
-
-// writeInPlace overwrites the rollout file at the same path WITHOUT temp+rename
-// (same EBUSY-avoidance reasoning as Writer.writeInPlace).
-func (w *RolloutWriter) writeInPlace(data []byte) error {
-	f, err := os.OpenFile(w.path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o644)
-	if err != nil {
-		return fmt.Errorf("open rollout file for write: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write rollout file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close rollout file: %w", err)
-	}
+	w.log.Info("agent.rollout_written", "flag", flagCurrentControllerCount, "variant", variant)
 	return nil
 }
 
@@ -212,12 +141,12 @@ func (w *RolloutWriter) StageVariantForValue(value int) (string, bool) {
 	return StageVariantForValue(value)
 }
 
-// DryRun reports false: the real writer applies flips to rollout.json. The loop
+// DryRun reports false: the real writer applies flips through the flag service. The loop
 // records this on the rollout.dry_run span attribute.
 func (w *RolloutWriter) DryRun() bool { return false }
 
 // DryRunRolloutWriter satisfies the same actuator seam as RolloutWriter but
-// NEVER writes the rollout file: SetControllerCount logs the would-be flip and
+// NEVER writes the flag: SetControllerCount logs the would-be flip and
 // returns nil. It is the disabled-mode actuator (the LIVE rollout_enabled flag off,
 // #1213; GatedRolloutActuator delegates here when the gate is off) — the loop still
 // decides and spans the expansion (remediation.action="expand"),

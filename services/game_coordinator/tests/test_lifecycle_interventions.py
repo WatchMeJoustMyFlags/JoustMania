@@ -132,7 +132,6 @@ class TargetingFlagClient:
         return str(self._resolve(ctx, default))
 
     def get_string_details(self, _key, default, ctx=None):
-        # The manager reads edge flags via details to see errors (#1299).
         return FlagEvaluationDetails(flag_key=_key, value=self.get_string_value(_key, default, ctx))
 
 
@@ -454,7 +453,7 @@ class TestEliminatePlayerHandler:
 
         game._kill_player = spy_kill
 
-        await handle_eliminate_player(make_ctx("eliminate_player", "n1:p1", game, payload="p1", target="p1"))
+        await handle_eliminate_player(make_ctx("eliminate_player", "p1", game, payload="p1", target="p1"))
 
         assert captured["serial"] == "p1"
         assert captured["accel_mag"] == 0.0
@@ -572,7 +571,7 @@ class TestCoordinatorBlocksInFFA:
 
         session = SessionView(game_id="", game=game, publish=mgr._publish)
         with patch("services.game_coordinator.metrics.interventions_total"):
-            await mgr._enforce_and_dispatch(_spec("revive_player"), "1:p1", "p1", "p1", session)
+            await mgr._enforce_and_dispatch(_spec("revive_player"), "p1", "p1", "p1", session)
 
         assert game.players["p1"].alive is False
         assert game.gameplay_stream.writes == []  # no respawn effect, no magenta cue
@@ -731,7 +730,7 @@ class TestAppliedInterventionEventsNamePlayer:
 
         p2 = game.players["p2"]
         span = p2.span  # _kill_player may close and clear the span
-        await handle_eliminate_player(make_ctx("eliminate_player", "n1:p2", game, payload="p2", target="p2"))
+        await handle_eliminate_player(make_ctx("eliminate_player", "p2", game, payload="p2", target="p2"))
         # Exactly one player_death per death (#1327): the base kill path's, which
         # names the player and carries death.reason.
         deaths = [
