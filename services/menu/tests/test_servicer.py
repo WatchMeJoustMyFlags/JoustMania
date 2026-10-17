@@ -504,6 +504,46 @@ class TestMenuServicerProcessInput:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A6")
+    async def test_web_start_game_accepts_mode_alias(self, real_servicer):
+        """UC-010 A6 (#1278): an alias ("ffa") resolves to its mode and starts it."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        real_servicer.current_selection = Games.JoustTeams
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1", "s2")
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            response = await real_servicer.ProcessInput(
+                self._request("web_command", command="start_game", mode="ffa"), MagicMock()
+            )
+            await _await_lifecycle(real_servicer)
+
+        assert response.success is True
+        assert stream.await_args.args[2].start_config.game_name == Games.JoustFFA.name
+        assert real_servicer.current_selection == Games.JoustFFA
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A6")
+    async def test_web_start_game_mode_survives_select_during_start_delay(self, real_servicer):
+        """UC-010 A6 (#1278): a lobby SELECT during the start delay does not swap the requested mode."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        real_servicer.current_selection = Games.JoustTeams
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1", "s2")
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.ProcessInput(
+                self._request("web_command", command="start_game", mode="JoustFFA"), MagicMock()
+            )
+            # The lifecycle is still in its start delay: a SELECT changes the lobby mode now.
+            assert not real_servicer._game_lifecycle_task.done()
+            await real_servicer.select_game_mode("Tournament", source="controller")
+            await _await_lifecycle(real_servicer)
+
+        assert real_servicer.current_selection == Games.Tournament
+        assert stream.await_args.args[2].start_config.game_name == Games.JoustFFA.name
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A6")
     @pytest.mark.parametrize("mode", ["Commander", "Ninja", "Random", "NotAGame"])
     async def test_web_start_game_rejects_invalid_mode(self, real_servicer, mode):
         """UC-010 A6 (#1278): an unknown or unimplemented mode is rejected and no game starts."""
@@ -636,7 +676,7 @@ class TestMenuServicerReadyUpStart:
             await real_servicer.on_button("s2", "trigger", True)
             await _await_lifecycle(real_servicer)
 
-        lifecycle.assert_called_once_with(real_servicer, "s1", "controller", None)
+        lifecycle.assert_called_once_with(real_servicer, "s1", "controller", None, game_mode=None)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", steps=[4], br=["BR-002"])
