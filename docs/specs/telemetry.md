@@ -260,10 +260,11 @@ BR-003; `services/game_coordinator/game_session.py` `_publish_duration_while_run
 | Integration tests | span names `agent.decide`, `agent.signal_received`, `agent.decision`, `chat {model}`, `agent.disabled`; `decide.*` tags; event `gen_ai.evaluation.result` | `tests/integration/test_decide_backend_e2e.py` |
 | Demo validation harness | span chain `agent.signal_received` → `agent.decision` → `agent.action` per game; instant queries to VictoriaMetrics (`/victoria-metrics/api/v1/query`) | `tools/demo/validation_harness.py` |
 | Talk pre-flight | Jaeger `service=agent operation=agent.decide`, tags `decide.backend`, `decide.outcome`, `decide.fallback_reason`; flag **variant names** of the stage baseline (`ambient`, `default`, `haiku`, `real_only`, ...) | `scripts/talk-preflight.sh` |
+| Calibration scripts | VictoriaMetrics `game_player_accel_magnitude{game_id,serial}` and `game_player_elimination_order` (trajectory features per player) | `scripts/calibration/vm_trajectory_features.py` |
 
 97 of the 159 Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo
 harness or a script (all `menu_*`, `psmove_*`, `python_hid_*`, `audio_*` and others); they are kept for ad-hoc
-analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers, and (#1456) that the counts in this section match the code and the §6.2 catalog (one row per Python metric name), so a metrics PR updates them.
+analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers, and (#1456) the §6.2 catalog against the code: one row per Python metric name, each Consumers cell equal to what the consumer scans find (Grafana and SPA PromQL, the agent's ingest constants, the name as a word in non-test `tools/` and `scripts/` source), the **no** rows in Emitted equal to the metrics nothing records, and the counts in this section derived from those scans, so a metrics PR updates them. The scans prove a name is referenced, not that the query using it is right.
 
 ### 6.2 Python metric catalog
 
@@ -312,10 +313,10 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `game_loop_jitter_ms` | gauge | (none) | game-coordinator | yes | grafana |
 | `game_music_tempo` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |
 | `game_near_death_events_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |
-| `game_player_accel_magnitude` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana |
+| `game_player_accel_magnitude` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, scripts |
 | `game_player_alive` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, tools |
 | `game_player_deaths_total` | counter | `mode`, `game_kind` | game-coordinator | yes (#1376) | (none) |
-| `game_player_elimination_order` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |
+| `game_player_elimination_order` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, scripts |
 | `game_player_kills_total` | counter | `mode`, `serial` | game-coordinator | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
 | `game_player_movement_variance_aggregate` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |
 | `game_player_movement_variance` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |

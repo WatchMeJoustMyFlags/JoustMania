@@ -311,10 +311,10 @@ def test_python_metric_definitions_are_recorded(python_metrics):
 # --------------------------------------------------------------------------- #
 # docs/specs/telemetry.md §6 counts follow the code (#1456).
 # --------------------------------------------------------------------------- #
-def test_telemetry_spec_metric_counts_match_the_code(python_metrics):
-    """The §6 prose numbers are derived, so a metrics PR that forgets them fails here."""
-    text = ti.TELEMETRY_SPEC.read_text()
-    catalog = ti.spec_metric_catalog(text)
+@pytest.fixture(scope="module")
+def spec_catalog(python_metrics):
+    """The §6.2 catalog rows by name; fails unless there is exactly one row per Python metric."""
+    catalog = ti.spec_metric_catalog(ti.TELEMETRY_SPEC.read_text())
     catalog_names = [row.name for row in catalog]
     missing = sorted(set(python_metrics) - set(catalog_names))
     extra = sorted(set(catalog_names) - set(python_metrics))
@@ -323,14 +323,54 @@ def test_telemetry_spec_metric_counts_match_the_code(python_metrics):
         "docs/specs/telemetry.md §6.2 catalog must have exactly one row per Python metric "
         f"name; add rows for {missing}, remove rows for {extra}, dedupe {duplicated}"
     )
+    return {row.name: row for row in catalog}
 
+
+@pytest.fixture(scope="module")
+def metric_consumers(python_metrics):
+    return ti.python_metric_consumers(set(python_metrics))
+
+
+def test_telemetry_spec_catalog_consumers_match_the_code(
+    spec_catalog, metric_consumers
+):
+    """Each §6.2 Consumers cell names exactly the consumers the code scans find (#1456)."""
+    wrong = [
+        f"  {name}: write {', '.join(sorted(metric_consumers[name])) or '(none)'} "
+        f"(doc says {row.consumers})"
+        for name, row in sorted(spec_catalog.items())
+        if ti.spec_consumer_kinds(row.consumers) != metric_consumers[name]
+    ]
+    assert not wrong, (
+        "docs/specs/telemetry.md §6.2 Consumers cells disagree with the code (grafana = "
+        "Grafana dashboards, dashboard = SPA queries, agent = Go agent ingest, tools / "
+        "scripts = the name in tools/ or scripts/ source):\n" + "\n".join(wrong)
+    )
+
+
+def test_telemetry_spec_catalog_emitted_no_matches_the_code(
+    spec_catalog, python_metrics
+):
+    """The §6.2 rows marked **no** in Emitted are exactly the never-recorded metrics (#1456)."""
+    marked = {n for n, row in spec_catalog.items() if row.emitted.startswith("**no**")}
+    dead = {n for n, m in python_metrics.items() if not m.recorded_at}
+    assert marked == dead, (
+        "docs/specs/telemetry.md §6.2 Emitted column is out of date: mark **no** for "
+        f"{sorted(dead - marked)}, and a recording site exists for {sorted(marked - dead)}"
+    )
+
+
+def test_telemetry_spec_metric_counts_match_the_code(
+    python_metrics, spec_catalog, metric_consumers
+):
+    """The §6 prose numbers are derived from the code, so a metrics PR that forgets them fails here."""
     expected = {
         "names": len(python_metrics),
         "definitions": ti.python_metric_definition_count(),
-        "no_consumer": sum(row.consumers == "(none)" for row in catalog),
+        "no_consumer": sum(not kinds for kinds in metric_consumers.values()),
         "never_recorded": sum(not m.recorded_at for m in python_metrics.values()),
     }
-    found = ti.spec_counts(text)
+    found = ti.spec_counts(ti.TELEMETRY_SPEC.read_text())
     wrong = [
         f"  found:      {'(sentence not found)' if got is None else got}\n"
         f"  write:      {ti.SPEC_COUNT_TEMPLATES[key].format(**expected)}"
@@ -340,8 +380,9 @@ def test_telemetry_spec_metric_counts_match_the_code(python_metrics):
     assert not wrong, (
         "docs/specs/telemetry.md §6 metric counts are out of date (names = Python metric "
         "names, definitions = Counter/Gauge/Histogram definitions before merging same-named "
-        "ones, no_consumer = §6.2 rows whose Consumers cell is (none), never_recorded = names "
-        "no service records). Replace these sentences:\n" + "\n".join(wrong)
+        "ones, no_consumer = names no dashboard, SPA query, agent ingest, tools/ or scripts/ "
+        "source names, never_recorded = names no service records). Replace these sentences:\n"
+        + "\n".join(wrong)
     )
 
 
