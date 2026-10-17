@@ -249,7 +249,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Failed outbound gRPC calls from the Python services in the last 5 minutes (grpc_client_errors_total). Counts unary calls and stream setup failures; errors in the middle of a stream are not counted (#1426).",
+      "description": "Failed outbound gRPC calls from the Python services in the last 5 minutes (grpc_client_errors_total): failed unary calls and failed stream setups. Errors in the middle of a stream and non-Python clients are not counted (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -309,7 +309,7 @@
           "refId": "A"
         }
       ],
-      "title": "gRPC client errors (5m, Python outbound unary calls)",
+      "title": "gRPC client errors (Python, 5m)",
       "type": "stat"
     },
     {
@@ -1340,7 +1340,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Failed outbound gRPC calls per second from the Python services, by callee service (the service label is the service being called, not the caller). Errors in the middle of a stream are not counted (#1426).",
+      "description": "Failed outbound gRPC calls per second from the Python services (failed unary calls and failed stream setups), by callee service: the service label is the service being called, not the caller. Errors in the middle of a stream and non-Python clients are not counted (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1423,7 +1423,7 @@
           "refId": "A"
         }
       ],
-      "title": "gRPC client errors (Python outbound unary calls)",
+      "title": "gRPC client error rate (Python, by callee)",
       "type": "timeseries"
     },
     {
@@ -1527,7 +1527,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Failed outbound gRPC calls per second from the Python services, by callee service, method and status code (the service label is the callee).",
+      "description": "Failed outbound gRPC calls per second from the Python services (failed unary calls and failed stream setups), by callee service, method and status code: the service label is the callee. Errors in the middle of a stream and non-Python clients are not counted (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1610,7 +1610,7 @@
           "refId": "A"
         }
       ],
-      "title": "gRPC Client Error Rate",
+      "title": "gRPC client error rate (Python, by callee, method and code)",
       "type": "timeseries"
     }
   ],
