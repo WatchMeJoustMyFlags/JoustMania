@@ -44,7 +44,7 @@ stay traceable; their detailed journeys are backlog (#1361).
 | ID | Journey | Use cases | Priority | Status | Automation |
 |---|---|---|---|---|---|
 | [TC-001](TC-001-ffa-game-night-hardware.md) | FFA game night on real controllers | UC-001, UC-002, UC-010, UC-020, UC-030, UC-031 | Critical | Draft | Manual (hardware); mock twin TC-002 |
-| [TC-002](TC-002-ffa-mock-game-to-winner.md) | FFA game to a winner on mock controllers | UC-003, UC-002, UC-011, UC-010, UC-020, UC-030 | Critical | Draft | Partly (`test_full_game_lifecycle[JoustFFA]`); gaps #1360 |
+| [TC-002](TC-002-ffa-mock-game-to-winner.md) | FFA game to a winner on mock controllers | UC-003, UC-002, UC-011, UC-010, UC-020, UC-030 | Critical | Automated | `test_tc002_ffa_game_to_winner_then_restart`; warning effect unit-tested only |
 | [TC-003](TC-003-ffa-player-disconnects.md) | Player disconnects during an FFA game | UC-003, UC-010, UC-020, UC-030, UC-002 | High | Draft | Planned #1360 |
 | [TC-004](TC-004-operator-stops-ffa-game.md) | Operator stops an FFA game | UC-010, UC-020, UC-027 | High | Draft | Partly (`test_concurrent_games`); #1360 |
 | [TC-005](TC-005-host-tunes-and-force-starts.md) | Host tunes the game in admin mode and force-starts | UC-012, UC-011, UC-014, UC-010 | High | Draft | Partly (`test_admin_flow`, per step); gaps unit-tested only (#1400) |
@@ -62,5 +62,5 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-017](TC-017-non-ffa-modes-round-backlog.md) | One round of every non-FFA mode (backlog) | UC-021 to UC-026, UC-030 | Low | Draft | Partly (`test_parallel_lifecycle`); backlog #1361 |
 
 Status follows the skill: `Automated` = an end-to-end test implements the journey (gaps listed in the
-file), `Draft` = not or only partly automated, or written for review. None of the existing tests carries
-`tc="TC-XXX"` yet; tagging is part of #1356.
+file), `Draft` = not or only partly automated, or written for review. Tests that implement a journey carry
+`tc="TC-XXX"` (TC-002 so far); tagging the rest is part of #1356 and #1422.

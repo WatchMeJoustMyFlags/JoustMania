@@ -3,9 +3,9 @@
 ## Overview
 
 **ID:** TC-002  
-**Goal:** An operator adds four mock controllers, selects Joust Free-for-All, readies everyone up and eliminates three players, and the game ends with one winner and the lobby restored.  
+**Goal:** An operator adds four mock controllers, selects Joust Free-for-All, readies everyone up and eliminates three players, and the game ends with one winner and the lobby restored, ready for the next game.  
 **Priority:** Critical  
-**Status:** Draft  
+**Status:** Automated  
 **Use cases:** [UC-003](../use_cases/UC-003.md) main; [UC-002](../use_cases/UC-002.md) main; [UC-011](../use_cases/UC-011.md) A1; [UC-010](../use_cases/UC-010.md) main; [UC-020](../use_cases/UC-020.md) main; [UC-030](../use_cases/UC-030.md) main
 
 ## Roles
@@ -29,6 +29,7 @@
 | 6    | Eliminate players     | Operator simulates a death on three controllers one after the other                                 | `MOCK0001`, `MOCK0002`, `MOCK0003`, 0.1 s apart | [UC-030](../use_cases/UC-030.md) |
 | 7    | Verify game end       | The last player wins and `game_ended` is published within 15 s                                      | winner `MOCK0004`                          | [UC-020](../use_cases/UC-020.md)    |
 | 8    | Verify lobby restored | Every controller returns to the FFA lobby colour (orange at 30 % brightness) within 10 s            | -                                          | [UC-010](../use_cases/UC-010.md)    |
+| 9    | Start the next game   | Operator readies everyone up again; a new game with a new game id starts and reaches RUNNING        | trigger on `MOCK0001` … `MOCK0004`         | [UC-010](../use_cases/UC-010.md)    |
 
 ## Validation
 
@@ -37,10 +38,18 @@
 
 ## Postconditions
 
-- Four mock controllers `MOCK0001` … `MOCK0004` stay connected and CONNECTED (un-readied); the session fixture removes them at teardown.
-- One ended game session; no flag file is changed.
+- Four mock controllers `MOCK0001` … `MOCK0004` stay connected; the session fixture removes them at teardown.
+- One game ended with a winner; the second game (step 9) is stopped by the test with ForceEndGame by game id. No flag file is changed except `current_game` = `JoustFFA` (step 3 persists the selection).
 
 ## Automation
 
-- **Partly automated**: `tests/integration/test_full_game_lifecycle.py::test_full_game_lifecycle[JoustFFA]` drives steps 1 to 8.
-- Gaps (planned, #1360): step 5 checks only that every LED is non-black, not a unique game colour per player; step 7 and Validation 1 accept any of `game_ended`, `game_force_ended`, `game_error`, so a force-ended or failed game passes; the test does not assert `players_initialized`, one `player_death` per eliminated player with the players-left count, `game_winner` naming `MOCK0004`, the winner rainbow, or `player_analytics`; it uses simulated deaths, so the warning effect (UC-030 step 7) is not observed. FFA unit coverage (UC-020 main, A1, A2, A4): `services/game_coordinator/tests/test_ffa.py`, `services/game_coordinator/tests/test_ffa_uc020.py` (#1396). Add `@pytest.mark.uc(..., tc="TC-002")` markers when the test is retagged (#1356).
+- **Automated**: `tests/integration/test_tc002_ffa_game.py::test_tc002_ffa_game_to_winner_then_restart` drives steps 1 to 9 and checks both validations, with one `uc` marker per use-case flow (`tc="TC-002"`) and a `# Step n` comment per row. It uses the four menu-visible mock controllers it finds or adds (`MOCK0001` … `MOCK0004` on a fresh stack) and asserts, per step:
+  - Step 2: every controller shows a dimmed (≤ 30 %) non-black lobby colour after a menu restart.
+  - Step 3: `select_game` succeeds and the menu publishes `selection_changed` and `game_selection_changed` naming `JoustFFA`.
+  - Step 5: one `players_initialized` with `player_count` 4 and every serial; the game reaches RUNNING; the four LEDs show four different non-black colours, none of them the lobby colour.
+  - Steps 6 and 7: the first terminal event for the game is `game_ended` with `outcome=winner` and a positive duration; one `player_death` per eliminated player in order with the players left (3, 2, 1); `game_winner` names the last controller and no `game_tie`; one `player_analytics` per player, `winner=True` only for the winner; the winner's LED cycles through at least five colours between `game_winner` and `game_ended` (rainbow).
+  - Step 8: every LED matches orange at 30 % (`Colors.Orange` × 0.3) within rounding.
+  - Validation 1: after the lobby is restored, the game's terminal events are exactly `["game_ended"]`. Validation 2: each LED stream shows the controller's game colour followed by the lobby colour, and the last colour is not black.
+  - Step 9: a new `game_started` with a different game id, RUNNING (the #793 regression: an ended session must not pin the primary slot).
+- Not covered: the elimination uses simulated deaths, so the warning effect (UC-030 step 7) is not observed; the countdown phases and audio (UC-010 step 6, UC-020 step 2 music) are unit-tested only (`services/game_coordinator/tests/test_ffa_uc020.py`, #1396). FFA unit coverage (UC-020 main, A1, A2, A4): `services/game_coordinator/tests/test_ffa.py`, `services/game_coordinator/tests/test_ffa_uc020.py`.
+- JoustTeams, which shared the old menu-flow test, runs headless in `tests/integration/test_parallel_lifecycle.py::test_parallel_mode_lifecycle[teams-batch]` (TC-017).

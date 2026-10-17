@@ -2,7 +2,7 @@
 Parallel per-mode lifecycle coverage via headless shadow games (#826).
 
 Follow-up to #779 / part of #774 (M6). The 14 per-mode lifecycle tests used to
-run strictly sequentially through the menu (``test_full_game_lifecycle``). Now
+run strictly sequentially through the menu. Now
 that the coordinator supports concurrent games (#775/#776) and reserved mock
 controllers are invisible to the menu (#777), the per-mode *game logic* coverage
 moves here: each mode runs as a headless shadow game, and modes run in batches
@@ -15,10 +15,11 @@ What this file covers (per mode, headless):
 - The mode's terminal event (``game_ended``/``game_force_ended``) arrives on the
   collector bound to THAT game_id.
 
-What this file deliberately does NOT cover (still in test_full_game_lifecycle):
+What this file deliberately does NOT cover:
 - Menu ready-up, mode selection, and lobby-color *restore* — those are menu
-  behavior on the single shared lobby and cannot parallelize. A thin sequential
-  menu-flow set (JoustFFA + JoustTeams) keeps verifying them.
+  behavior on the single shared lobby and cannot parallelize. The TC-002
+  journey (test_tc002_ffa_game.py) verifies them for JoustFFA; selecting
+  JoustTeams through the menu is covered by test_admin_flow.py.
 
 Why ``asyncio.gather`` and NOT pytest-xdist: the ``docker_compose`` fixture is
 session-scoped, but each xdist worker gets its own session -> one compose stack
@@ -152,10 +153,12 @@ class ModeSpec:
     pre_end_delay: float = 0.0  # wait before the end strategy (e.g. formation phase)
 
 
-# Per-mode specs. JoustFFA + JoustTeams stay in the sequential menu-flow set
-# (test_full_game_lifecycle) to keep menu ready-up / lobby-restore coverage, so
-# they are intentionally absent here.
+# Per-mode specs. JoustFFA runs through the menu in the TC-002 journey
+# (test_tc002_ffa_game.py), so it is intentionally absent here.
 _SPECS = {
+    # Teams: 4 players on alternating teams (build_start_config); killing the
+    # first three wipes team 0. Moved here from the menu-flow lifecycle test.
+    "JoustTeams": ModeSpec("JoustTeams", 4, end_team, 15),
     # RandomTeams runs a 5s team-formation phase (TEAM_FORMATION_DURATION in
     # random_teams.py) before the game proper — kills during it are swallowed,
     # so wait it out before driving the win condition (caught in CI).
@@ -192,6 +195,7 @@ _BATCHES = [
         ["JoustRandomTeams", "Swapper", "NonStop", "Traitor"],
         id="fast-batch",
     ),
+    pytest.param(["JoustTeams"], id="teams-batch"),
 ]
 
 _TERMINAL_EVENTS = ["game_ended", "game_force_ended", "game_error"]

@@ -10,8 +10,9 @@ coordinator (#775/#776) and reserved mock controllers (#777):
 - A headless (shadow) game running ALONGSIDE a menu-driven game without the
   reserved controllers ever leaking into the menu's lobby view. This is the
   direct regression test for the whole #774 feature.
-- Natural-end then immediate restart — the #793 CI bug, where an ENDED session
-  pinned the primary slot and the next start was rejected.
+
+The natural-end-then-restart regression (#793) is the restart tail of the
+TC-002 journey (test_tc002_ffa_game.py).
 
 The menu remains single-lobby, so the menu-flow portions stay sequential; the
 headless games are what run in parallel.
@@ -292,68 +293,3 @@ async def test_shadow_game_isolated_from_menu(
         await mock_channel.close()
         await game_channel.close()
         await controller_channel.close()
-
-
-@pytest.mark.asyncio
-async def test_headless_natural_end_then_restart(docker_compose, headless_cleanup):
-    """A headless game ends naturally, then a new headless game starts cleanly.
-
-    Regression for the #793 CI bug: a session that reached its natural win
-    condition stayed registered as ENDED and pinned the primary slot, so the
-    NEXT start was rejected with "Game already in progress". The coordinator now
-    lazily retires ENDED sessions on the next start; this proves it end to end.
-    """
-    tag = "natural-end"
-    headless_cleanup.add_tag(tag)
-
-    serials = await setup_mock_controllers(
-        docker_compose, count=2, reserved=True, tag=tag
-    )
-
-    mock_client, mock_channel = await get_mock_client(docker_compose)
-    game_client, game_channel = await get_game_client(docker_compose)
-
-    first_collector = None
-    second_collector = None
-    try:
-        # First game: run to natural end (FFA, kill until one remains).
-        game_id_1, first_collector = await start_game_headless(
-            game_client, build_start_config("JoustFFA", serials), timeout=25.0
-        )
-        headless_cleanup.add_game(game_id_1)
-
-        await kill_players_until_one_remains(
-            mock_client, serials, delay=0.2, game_client=game_client, game_id=game_id_1
-        )
-        await first_collector.wait_for_any_event(
-            ["game_ended", "game_force_ended", "game_error"], timeout=20.0
-        )
-        await first_collector.stop()
-        first_collector = None
-
-        # Immediately start a second headless game — must succeed (the #793 bug
-        # rejected this). Reuse the same controllers (they are free now).
-        game_id_2, second_collector = await start_game_headless(
-            game_client, build_start_config("JoustFFA", serials), timeout=25.0
-        )
-        headless_cleanup.add_game(game_id_2)
-
-        assert game_id_2 != game_id_1, "restart must get a fresh game_id"
-
-        # Poll: start_game_headless returns on game_starting, so the session
-        # may still be STARTING (countdown) here — a one-shot assert raced on
-        # CI under parallel load (#897).
-        running = await wait_until_running(game_client, {game_id_2})
-        assert game_id_2 in running, f"restarted game should be RUNNING, got {running}"
-
-        await force_end_game_by_id(game_client, game_id_2)
-        await second_collector.wait_for_any_event(
-            ["game_ended", "game_force_ended", "game_error"], timeout=20.0
-        )
-    finally:
-        if first_collector:
-            await first_collector.stop()
-        if second_collector:
-            await second_collector.stop()
-        await mock_channel.close()
-        await game_channel.close()
