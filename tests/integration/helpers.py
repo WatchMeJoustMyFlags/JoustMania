@@ -37,9 +37,10 @@ from proto import (
 # Replace fixed "write then sleep a constant" settles with condition polls:
 # the old constant becomes the DEADLINE, so the fast path costs ~one poll
 # interval instead of the full constant on every run, and the slow path keeps
-# (or extends) the same upper bound. Generalized from
-# test_rollout_plumbing._poll_until, which proved the shape (incl. the
-# rewrite self-heal) against flagd file-watch reloads under CI load.
+# (or extends) the same upper bound. Generalized from the former
+# test_rollout_plumbing._poll_until (now in tests/contract, #1422), which
+# proved the shape (incl. the rewrite self-heal) against flagd file-watch
+# reloads under CI load.
 # =============================================================================
 
 # Single source of truth for the active host flag-file path (issue #959).

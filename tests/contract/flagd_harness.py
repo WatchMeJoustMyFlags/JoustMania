@@ -39,6 +39,10 @@ REWRITE_INTERVAL_SECONDS = 2.0
 # restored content (flagd reloads a whole file at once).
 RESTORE_PROBE_FLAG = "contract_restore_epoch"
 
+# Label on every contract flagd container, so a run can remove containers a
+# killed earlier run left behind (``--rm`` only fires on a clean stop).
+CONTAINER_LABEL = "joustmania.contract=flagd"
+
 
 def flagd_command() -> list[str]:
     """flagd's ``start`` args from docker-compose.yml, minus the OTel exporter.
@@ -111,9 +115,11 @@ class FlagdContainer:
         return self.flag_dir / f"{flag_set}.json"
 
     def start(self) -> None:
+        remove_stale_containers()
         subprocess.run(
             [
                 "docker", "run", "-d", "--rm", "--name", self.name,
+                "--label", CONTAINER_LABEL,
                 "-v", f"{self.flag_dir}:/etc/flagd:ro",
                 "-p", f"{self.host}::{EVAL_PORT}", "-p", f"{self.host}::{SYNC_PORT}",
                 ic.compose_image("flagd"), *flagd_command(),
@@ -191,6 +197,16 @@ class FlagdContainer:
                 ),
                 rewrite=rewrite,
             )
+
+
+def remove_stale_containers() -> None:
+    """Remove contract flagd containers left by an interrupted earlier run."""
+    ids = subprocess.run(
+        ["docker", "ps", "-aq", "--filter", f"label={CONTAINER_LABEL}"],
+        capture_output=True, text=True, check=False,
+    ).stdout.split()  # fmt: skip
+    if ids:
+        subprocess.run(["docker", "rm", "-f", *ids], capture_output=True, check=False)
 
 
 def copy_ci_flag_dir(dest: Path) -> Path:

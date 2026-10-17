@@ -91,7 +91,10 @@ def flag_files(flagd):
 
     A restored file also gets a fresh RESTORE_PROBE_FLAG nonce, and the fixture
     waits until both resolvers serve it: flagd reloads a file as a whole, so the
-    restored content is then live before the next test runs.
+    restored content is then live before the next test runs. The restored file
+    therefore KEEPS the extra ``contract_restore_epoch`` flag (it is not
+    byte-identical to services/flagd/ci); the typed-getter tests, which compare
+    the served flag sets to the shipped files, run before any mutating test.
     """
     originals = {p: p.read_text() for p in flagd.flag_dir.glob("*.json")}
     yield
@@ -142,10 +145,12 @@ INTERVENTIONS_PY = COORDINATOR_DIR / "interventions.py"
 _GETTER_CALL = re.compile(
     r"^get_(boolean|integer|float|string|object)_(value|details)$"
 )
+# Anything shaped like a lib/feature_flags read helper (read_<x>_flag[...]).
+_READ_HELPER_SHAPE = re.compile(r"^read_\w+_flag\w*$")
 
 # lib/feature_flags read helpers -> the OpenFeature getter each one calls.
 # read_int_flag reads with the FLOAT getter on purpose (whole-number floats
-# still resolve) and coerces afterwards.
+# still resolve) and coerces afterwards. Every helper takes (domain, flag_key, ...).
 _READ_HELPERS = {
     "read_float_flag": "float",
     "read_int_flag": "float",
@@ -154,16 +159,34 @@ _READ_HELPERS = {
     "read_object_flag_variant": "object",
 }
 
-# Coordinator wrappers that take the flag key as a parameter: name -> (flag set, getter).
+# Coordinator wrappers that take the flag key as a parameter:
+# name -> (flag set, getter, key parameter name).
 # games/base.py _read_volume_flag: get_flag_client("user").get_float_value(flag_name).
-_WRAPPERS = {"_read_volume_flag": ("user", "float")}
+_WRAPPERS = {"_read_volume_flag": ("user", "float", "flag_name")}
 
-# Non-literal getter call sites covered another way (file, key expression).
+# Getter call sites with a non-literal key that are covered another way, as
+# (file, enclosing function, key expression). Exact sites only: the same
+# expression anywhere else is reported as uncovered.
 _COVERED_NON_LITERAL = {
-    ("interventions.py", "spec.flag_key"): "INTERVENTION_SPECS (below)",
-    ("interventions.py", "flag_key"): "per-serial reads of INTERVENTION_SPECS keys",
-    ("base.py", "flag_name"): "_WRAPPERS",
+    ("interventions.py", "_read_grant", "spec.flag_key"): "INTERVENTION_SPECS",
+    ("interventions.py", "_read_flag", "spec.flag_key"): "INTERVENTION_SPECS",
+    ("interventions.py", "_read_edge_value", "spec.flag_key"): "INTERVENTION_SPECS",
+    (
+        "interventions.py",
+        "resolve_player_targets",
+        "flag_key",
+    ): "targeted_value_kinds()",
+    ("base.py", "_read_volume_flag", "flag_name"): "_WRAPPERS",
 }
+
+# Per-serial reads: the caller passes value_kind, which must match the spec's.
+# name -> (positional index of value_kind or None, parameter name).
+_TARGETED_READERS = {
+    "resolve_player_targets": (None, "value_kind"),
+    "_grant_values": (3, "value_kind"),
+}
+
+_KIND_TO_GETTER = {"int": "integer", "float": "float", "string": "string"}
 
 
 @dataclass(frozen=True)
@@ -182,19 +205,24 @@ def _literal(node) -> str | None:
     )
 
 
+def _call_name(func: ast.AST) -> str | None:
+    return func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+
+
+def _arg(call: ast.Call, index: int | None, name: str) -> ast.AST | None:
+    """The argument bound to ``name`` (positional ``index`` or keyword)."""
+    if index is not None and len(call.args) > index:
+        return call.args[index]
+    return next((kw.value for kw in call.keywords if kw.arg == name), None)
+
+
 def _client_domains(tree: ast.AST) -> dict[str, str]:
     """``<receiver source> -> flag set`` from ``X = get_flag_client("set")``."""
     domains = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-            func = node.value.func
-            name = (
-                func.attr
-                if isinstance(func, ast.Attribute)
-                else getattr(func, "id", None)
-            )
             if (
-                name == "get_flag_client"
+                _call_name(node.value.func) == "get_flag_client"
                 and node.value.args
                 and _literal(node.value.args[0])
             ):
@@ -239,87 +267,153 @@ def _loop_keys(func: ast.AST, name: str) -> list[str]:
 
 
 def _enclosing_functions(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    """node -> innermost enclosing function (walk order visits outer first)."""
     parents = {}
     for func in ast.walk(tree):
         if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for node in ast.walk(func):
-                parents.setdefault(node, func)
+                if node is not func:
+                    parents[node] = func
     return parents
 
 
-def coordinator_flag_reads() -> tuple[list[FlagRead], list[str]]:
-    """Every flag read in services/game_coordinator, with its getter.
+def _coordinator_sources() -> dict[str, str]:
+    return {
+        str(path.relative_to(ic.REPO_ROOT)): path.read_text()
+        for path in sorted(COORDINATOR_DIR.rglob("*.py"))
+        if "tests" not in path.parts
+    }
 
-    Returns (reads, uncovered) where ``uncovered`` lists getter call sites whose
-    key the scan cannot resolve and nothing else covers.
+
+def scan_flag_reads(sources: dict[str, str]) -> tuple[list[FlagRead], list[str]]:
+    """Every flag read in ``sources`` (path -> code), with its getter.
+
+    Returns (reads, uncovered): ``uncovered`` lists read sites the scan cannot
+    resolve to a literal (flag set, key) and nothing else covers.
     """
     reads: list[FlagRead] = []
     uncovered: list[str] = []
-    for path in sorted(COORDINATOR_DIR.rglob("*.py")):
-        if "tests" in path.parts:
-            continue
-        tree = ast.parse(path.read_text())
+    for rel, source in sources.items():
+        tree = ast.parse(source)
         domains = _client_domains(tree)
         parents = _enclosing_functions(tree)
-        rel = path.relative_to(ic.REPO_ROOT)
+        filename = Path(rel).name
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            name = (
-                func.attr
-                if isinstance(func, ast.Attribute)
-                else getattr(func, "id", None)
-            )
+            name = _call_name(func)
             where = f"{rel}:{node.lineno}"
-            args = node.args
-            if (
-                name in _READ_HELPERS
-                and len(args) >= 2
-                and _literal(args[0])
-                and _literal(args[1])
-            ):
-                reads.append(
-                    FlagRead(
-                        _literal(args[0]), _literal(args[1]), _READ_HELPERS[name], where
+            enclosing = getattr(parents.get(node), "name", "<module>")
+            if name in _READ_HELPERS:
+                domain, key = _arg(node, 0, "domain"), _arg(node, 1, "flag_key")
+                if _literal(domain) and _literal(key):
+                    reads.append(
+                        FlagRead(
+                            _literal(domain), _literal(key), _READ_HELPERS[name], where
+                        )
                     )
-                )
-            elif name in _WRAPPERS and args and _literal(args[0]):
-                flag_set, getter = _WRAPPERS[name]
-                reads.append(FlagRead(flag_set, _literal(args[0]), getter, where))
-            elif (
-                isinstance(func, ast.Attribute)
-                and _GETTER_CALL.match(func.attr)
-                and args
-            ):
+                else:
+                    uncovered.append(f"{where} {name}: non-literal flag set or key")
+            elif name and _READ_HELPER_SHAPE.match(name):
+                uncovered.append(f"{where} {name}: read helper not in _READ_HELPERS")
+            elif name in _WRAPPERS:
+                flag_set, getter, param = _WRAPPERS[name]
+                key = _arg(node, 0, param)
+                if _literal(key):
+                    reads.append(FlagRead(flag_set, _literal(key), getter, where))
+                else:
+                    uncovered.append(f"{where} {name}: non-literal key")
+            elif isinstance(func, ast.Attribute) and _GETTER_CALL.match(func.attr):
                 getter = _GETTER_CALL.match(func.attr).group(1)
                 flag_set = domains.get(ast.unparse(func.value))
-                key_expr = ast.unparse(args[0])
-                if flag_set and _literal(args[0]):
-                    reads.append(FlagRead(flag_set, _literal(args[0]), getter, where))
+                key_node = _arg(node, 0, "flag_key")
+                key_expr = ast.unparse(key_node) if key_node is not None else "<none>"
+                if flag_set and _literal(key_node):
+                    reads.append(FlagRead(flag_set, _literal(key_node), getter, where))
                     continue
                 keys = (
-                    _loop_keys(parents[node], args[0].id)
-                    if flag_set and isinstance(args[0], ast.Name) and node in parents
+                    _loop_keys(parents[node], key_node.id)
+                    if flag_set and isinstance(key_node, ast.Name) and node in parents
                     else []
                 )
                 if keys:
                     reads += [FlagRead(flag_set, key, getter, where) for key in keys]
-                elif (path.name, key_expr) not in _COVERED_NON_LITERAL:
-                    uncovered.append(f"{where} {ast.unparse(func)}({key_expr})")
+                elif (filename, enclosing, key_expr) not in _COVERED_NON_LITERAL:
+                    uncovered.append(
+                        f"{where} {ast.unparse(func)}({key_expr}) in {enclosing}"
+                    )
     return reads, uncovered
 
 
-def intervention_spec_reads() -> list[FlagRead]:
-    """INTERVENTION_SPECS rows -> the getter InterventionManager reads them with.
+def coordinator_flag_reads() -> tuple[list[FlagRead], list[str]]:
+    return scan_flag_reads(_coordinator_sources())
 
-    Edge-triggered flags are read with the string getter (``"<nonce>:<payload>"``);
-    state flags by ``value_kind`` (``_read_flag``; per-serial reads use the same
-    kind). Parsed from the source so the bare contract venv needs no service deps.
+
+def scan_targeted_value_kinds(
+    sources: dict[str, str],
+) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Per-serial reads -> (flag_key, value_kind, where).
+
+    The flag is the one the enclosing handler is registered for
+    (``register_handler("<flag>", handler)`` or ``lambda ctx: handler(ctx, ...)``).
+    A ``_TARGETED_READERS`` function forwarding its own ``value_kind`` parameter
+    is the wrapper itself; its callers are checked instead.
     """
+    trees = {rel: ast.parse(src) for rel, src in sources.items()}
+    handler_flags: dict[str, str] = {}
+    for tree in trees.values():
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and _call_name(node.func) == "register_handler"
+                and len(node.args) >= 2
+            ):
+                flag, handler = _literal(node.args[0]), node.args[1]
+                if isinstance(handler, ast.Lambda) and isinstance(
+                    handler.body, ast.Call
+                ):
+                    handler = handler.body.func
+                if flag and isinstance(handler, (ast.Name, ast.Attribute)):
+                    handler_flags[_call_name(handler)] = flag
+
+    kinds: list[tuple[str, str, str]] = []
+    uncovered: list[str] = []
+    for rel, tree in trees.items():
+        parents = _enclosing_functions(tree)
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and _call_name(node.func) in _TARGETED_READERS
+            ):
+                continue
+            index, param = _TARGETED_READERS[_call_name(node.func)]
+            kind_node = _arg(node, index, param)
+            enclosing = parents.get(node)
+            where = f"{rel}:{node.lineno}"
+            if (
+                isinstance(kind_node, ast.Name)
+                and getattr(enclosing, "name", None) in _TARGETED_READERS
+                and kind_node.id == param
+            ):
+                continue  # the wrapper forwarding its own parameter
+            flag = handler_flags.get(getattr(enclosing, "name", None))
+            kind = (
+                _literal(kind_node) if kind_node is not None else "float"
+            )  # the default
+            if flag is None or kind is None:
+                uncovered.append(
+                    f"{where} {_call_name(node.func)}: no registered handler or non-literal value_kind"
+                )
+            else:
+                kinds.append((flag, kind, where))
+    return kinds, uncovered
+
+
+def intervention_specs() -> dict[str, dict]:
+    """INTERVENTION_SPECS rows (flag_key -> {edge_triggered, value_kind}), from source."""
     tree = ast.parse(INTERVENTIONS_PY.read_text())
-    kind_to_getter = {"int": "integer", "float": "float", "string": "string"}
-    reads = []
+    specs = {}
     for node in ast.walk(tree):
         if not (
             isinstance(node, ast.Call)
@@ -332,20 +426,34 @@ def intervention_spec_reads() -> list[FlagRead]:
             for kw in node.keywords
             if kw.arg in wanted
         }
-        getter = (
-            "string"
-            if kwargs["edge_triggered"]
-            else kind_to_getter[kwargs.get("value_kind", "string")]
+        kwargs.setdefault("value_kind", "string")
+        kwargs["lineno"] = node.lineno
+        specs[kwargs["flag_key"]] = kwargs
+    return specs
+
+
+def intervention_spec_reads() -> list[FlagRead]:
+    """INTERVENTION_SPECS rows -> the getter InterventionManager reads them with.
+
+    Edge-triggered flags are read with the string getter (``"<nonce>:<payload>"``);
+    state flags by ``value_kind`` (``_read_flag``; per-serial reads must use the
+    same kind, checked by test_targeted_reads_use_the_spec_value_kind). Parsed
+    from the source so the bare contract venv needs no service deps.
+    """
+    return [
+        FlagRead(
+            "interventions",
+            key,
+            "string" if spec["edge_triggered"] else _KIND_TO_GETTER[spec["value_kind"]],
+            f"{INTERVENTIONS_PY.name}:{spec['lineno']}",
         )
-        reads.append(
-            FlagRead(
-                "interventions",
-                kwargs["flag_key"],
-                getter,
-                f"{INTERVENTIONS_PY.name}:{node.lineno}",
-            )
-        )
-    return reads
+        for key, spec in intervention_specs().items()
+    ]
+
+
+def all_flag_reads() -> list[FlagRead]:
+    reads, _ = coordinator_flag_reads()
+    return reads + intervention_spec_reads()
 
 
 _SENTINEL_DEFAULTS = {
@@ -380,11 +488,11 @@ def _same_value(got, want) -> bool:
 
 
 def test_coordinator_flag_reads_are_all_resolved_by_the_scan():
-    """Guards the scan below: a new getter call with a key the scan cannot see fails here."""
+    """Guards the scan: a read site whose flag set or key the scan cannot see fails here."""
     reads, uncovered = coordinator_flag_reads()
     assert not uncovered, (
-        "game-coordinator flag reads whose key the typed-getter contract cannot resolve; "
-        f"use a literal key or extend _COVERED_NON_LITERAL / _WRAPPERS: {uncovered}"
+        "game-coordinator flag reads the typed-getter contract cannot resolve; use literal "
+        f"arguments or extend _READ_HELPERS / _WRAPPERS / _COVERED_NON_LITERAL: {uncovered}"
     )
     found = {(r.flag_set, r.key) for r in reads}
     # Spot checks across every scan path (helper, client getter, loop, wrapper).
@@ -399,6 +507,53 @@ def test_coordinator_flag_reads_are_all_resolved_by_the_scan():
         assert expected in found, f"scan lost {expected}; found {sorted(found)}"
 
 
+# Scanner fixtures: each evasion the guard must catch (or read correctly).
+_SCAN_FIXTURES = {
+    "helper_non_literal_key": ('read_float_flag("game", key)\n', None),
+    "helper_keywords": (
+        'read_float_flag(domain="game", flag_key="k", default=1.0)\n',
+        ("game", "k", "float"),
+    ),
+    "helper_non_literal_keyword_domain": (
+        'read_float_flag(domain=d, flag_key="k", default=1.0)\n',
+        None,
+    ),
+    "helper_mixed_args": (
+        'read_string_flag("game", flag_key="k", default="x")\n',
+        ("game", "k", "string"),
+    ),
+    "unknown_helper": ('read_bool_flag("game", "k", False)\n', None),
+    "wrapper_non_literal": ("_read_volume_flag(name, 0.5)\n", None),
+    "wrapper_keyword": (
+        '_read_volume_flag(flag_name="audio_volume.x", default=0.5)\n',
+        ("user", "audio_volume.x", "float"),
+    ),
+    "getter_unknown_receiver": ('def f(c):\n    c.get_float_value("k", 1.0)\n', None),
+    "getter_covered_expr_elsewhere": (
+        "def other(spec, client):\n    client.get_float_value(spec.flag_key, 1.0)\n",
+        None,
+    ),
+    "getter_keyword_key": (
+        'c = get_flag_client("game")\ndef f():\n    c.get_integer_value(flag_key="k", default_value=1)\n',
+        ("game", "k", "integer"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_SCAN_FIXTURES))
+def test_scanner_catches_evasions(case):
+    source, expected = _SCAN_FIXTURES[case]
+    # "interventions.py" so the covered-expression case shares the file of a real allow-list entry.
+    reads, uncovered = scan_flag_reads(
+        {"services/game_coordinator/interventions.py": source}
+    )
+    if expected is None:
+        assert uncovered and not reads, f"{case}: evasion not reported (reads={reads})"
+    else:
+        assert not uncovered, f"{case}: unexpectedly uncovered {uncovered}"
+        assert [(r.flag_set, r.key, r.getter) for r in reads] == [expected]
+
+
 def test_intervention_specs_cover_every_intervention_flag():
     """Every interventions.json flag has an InterventionSpec row and vice versa."""
     shipped = set(
@@ -407,13 +562,74 @@ def test_intervention_specs_cover_every_intervention_flag():
     base = set(
         json.loads((fh.CI_FLAG_DIR.parent / "interventions.json").read_text())["flags"]
     )
-    specs = {r.key for r in intervention_spec_reads()}
+    specs = set(intervention_specs())
     assert shipped == specs, (
         f"ci/interventions.json vs INTERVENTION_SPECS: {sorted(shipped ^ specs)}"
     )
     assert base == specs, (
         f"interventions.json vs INTERVENTION_SPECS: {sorted(base ^ specs)}"
     )
+
+
+def test_targeted_reads_use_the_spec_value_kind():
+    """Per-serial reads (resolve_player_targets / _grant_values) pass the spec's value_kind.
+
+    A handler that reads a per-player flag with another kind than INTERVENTION_SPECS
+    declares uses a different getter than the one checked against flagd above.
+    """
+    kinds, uncovered = scan_targeted_value_kinds(_coordinator_sources())
+    assert not uncovered, f"per-serial reads the scan cannot attribute: {uncovered}"
+    assert kinds, "scan found no per-serial reads"
+    specs = intervention_specs()
+    mismatches = [
+        f"{where}: {flag} read with value_kind={kind!r}, spec says {specs[flag]['value_kind']!r}"
+        for flag, kind, where in kinds
+        if flag not in specs or specs[flag]["value_kind"] != kind
+    ]
+    assert not mismatches, "\n".join(mismatches)
+
+
+def test_targeted_value_kind_scan_catches_a_mismatch():
+    source = (
+        "def handle_x(ctx, manager):\n"
+        '    manager.resolve_player_targets(flag_key=ctx.spec.flag_key, default=0, game=None, value_kind="int")\n'
+        "def register(manager):\n"
+        '    manager.register_handler("shield_seconds", lambda ctx: handle_x(ctx, manager))\n'
+    )
+    kinds, uncovered = scan_targeted_value_kinds({"h.py": source})
+    assert not uncovered
+    assert [(flag, kind) for flag, kind, _ in kinds] == [("shield_seconds", "int")]
+    assert intervention_specs()["shield_seconds"]["value_kind"] != "int"
+
+
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_every_variant_matches_the_coordinator_getter(flag_dir):
+    """Static: EVERY variant value of each read flag has the getter's type.
+
+    The live check resolves with an empty context, so a variant reached only by
+    targeting (windows presets, sensitivity, experiment.mock_archetype) or by an
+    agent defaultVariant flip would escape it.
+    """
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    failures = []
+    for read in sorted(
+        set(all_flag_reads()), key=lambda r: (r.flag_set, r.key, r.getter)
+    ):
+        path = root / f"{read.flag_set}.json"
+        flag = json.loads(path.read_text())["flags"].get(read.key)
+        if flag is None:
+            if flag_dir == "ci":
+                failures.append(
+                    f"{read.flag_set}/{read.key}: not in {flag_dir}/{path.name}"
+                )
+            continue
+        for variant, value in flag["variants"].items():
+            if not _type_ok(read.getter, value):
+                failures.append(
+                    f"{flag_dir}/{read.flag_set}/{read.key} variant {variant!r}={value!r} "
+                    f"is not {read.getter} ({read.where})"
+                )
+    assert not failures, "\n".join(failures)
 
 
 @pytest.mark.uc("UC-040", flow="main", steps=[13])
@@ -426,8 +642,7 @@ def test_every_coordinator_flag_resolves_with_its_typed_getter(flagd, resolver):
     resolves with an error, the wrong type, or (when it has no targeting) a value
     other than its defaultVariant's is a silent fallback in production.
     """
-    reads, _ = coordinator_flag_reads()
-    reads += intervention_spec_reads()
+    reads = all_flag_reads()
     unique: dict[tuple[str, str, str], list[str]] = {}
     for r in reads:
         unique.setdefault((r.flag_set, r.key, r.getter), []).append(r.where)

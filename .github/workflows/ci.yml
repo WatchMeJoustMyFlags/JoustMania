@@ -155,6 +155,9 @@ jobs:
               - 'services/game_coordinator/**'
               - 'tests/contract/**'
               - 'docker-compose.yml'
+              # make test-contract-flagd (deps pins) and this job
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
             proto_pkg:
               - 'proto/**'
               - '**/pyproject.toml'
