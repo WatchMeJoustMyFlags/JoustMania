@@ -237,10 +237,10 @@ Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `s
 
 Python metrics are created through `lib/otel_metrics.py` (`Counter`, observable `Gauge`, `Histogram`; no unit
 argument). A `Histogram`'s `buckets` are passed to the SDK as explicit bucket boundaries, so each histogram exports
-exactly the buckets it declares (UC-035 BR-004, #1434). **159 unique Python metric names** (182 definitions: the `process_*` trio is defined per service, and
+exactly the buckets it declares (UC-035 BR-004, #1434). **161 unique Python metric names** (184 definitions: the `process_*` trio is defined per service, and
 `grpc_requests_total`, `grpc_request_duration_seconds`, `audio_sounds_played_total` and
 `audio_playback_errors_total` are defined in more than one service); the Go agent adds 7 `agent_*` metrics plus the
-two `gen_ai.client.*` histograms, and Go connect-proxy and rust-hid emit only the `process_*` trio. The main ones per
+two `gen_ai.client.*` histograms, the Go flag service adds its `flagservice_*` metrics (§10.2), and Go connect-proxy and rust-hid emit only the `process_*` trio. The main ones per
 service are below; §6.2 lists every Python metric.
 
 | Service | Metrics (type) | Source |
@@ -271,7 +271,7 @@ BR-003; `services/game_coordinator/game_session.py` `_publish_duration_while_run
 | Talk pre-flight | Jaeger `service=agent operation=agent.decide`, tags `decide.backend`, `decide.outcome`, `decide.fallback_reason`; flag **variant names** of the stage baseline (`ambient`, `default`, `haiku`, `real_only`, ...) | `scripts/talk-preflight.sh` |
 | Calibration scripts | VictoriaMetrics `game_player_accel_magnitude{game_id,serial}` and `game_player_elimination_order` (trajectory features per player) | `scripts/calibration/vm_trajectory_features.py` |
 
-90 of the 159 Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo
+99 of the 161 Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo
 harness or a script (all `menu_*`, `psmove_*`, `python_hid_*`, `audio_*` and others); they are kept for ad-hoc
 analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers, and (#1456) the §6.2 catalog against the code: one row per Python metric name, each Consumers cell equal to what the consumer scans find (Grafana and SPA PromQL, the agent's ingest constants, the name as a word in non-test `tools/` and `scripts/` source), the **no** rows in Emitted equal to the metrics nothing records, and the counts in this section derived from those scans, so a metrics PR updates them. The scans prove a name is referenced, not that the query using it is right.
 
