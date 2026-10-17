@@ -494,24 +494,7 @@ process_resident_memory_bytes{job=~".*controller-manager.*"}
 
 ### Alerting
 
-Existing alerts in `services/prometheus/alerts.yml` that are relevant during
-migration:
-
-- **ControllerDisconnected** -- fires if `controller_connected == 0` for 30s
-- **HighInputLatency** -- fires if p95 input latency exceeds 50ms for 2m
-- **HighCPUUsage** -- fires if CPU usage exceeds 80% for 2m
-- **ServiceDown** -- fires if Prometheus cannot scrape a service for 1m
-
-Consider adding a canary-specific alert during migration:
-
-```yaml
-- alert: RustBackendHighPollErrors
-  expr: rate(controller_poll_errors_total[2m]) > 0.5
-    and on(serial) controller_backend_info{backend="rust"} == 1
-  for: 1m
-  labels:
-    severity: warning
-  annotations:
-    summary: "Rust backend poll errors on {{$labels.serial}}"
-    description: "Controller on Rust backend has poll error rate {{$value}}/s."
-```
+No Prometheus alert rules ship (FR-083 Rejected, #1425): watch the dashboards
+above during migration, in particular `controller_connected`, the backend
+comparison latency panels (`controller_input_lag_seconds`), CPU, and
+`rate(controller_poll_errors_total[2m])` per backend.

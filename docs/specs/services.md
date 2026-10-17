@@ -58,7 +58,7 @@ coordinator and the menu wait only for flagd, the menu also for `flag-dir-init`)
 | otel-collector | custom contrib build | 4317 / 4318 OTLP, 8889 Prometheus exporter | 4317, 8889 | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Prometheus, Loki, agent | `services/otel-collector/config.yaml` |
 | jaeger | 2.19.0 | 16686 UI, 4317 / 4318 OTLP | no | Trace store (badger, bounded TTL) | `services/jaeger/config.yaml` |
 | victoria-metrics | v1.144.0 | 8428 | no | Metric store (remote write, 7 d) | `docker-compose.yml:514-542` |
-| prometheus | v3.12.0 | 9090 | no | Alert rules; scrapes the collector every 500 ms | `services/prometheus/` |
+| prometheus | v3.12.0 | 9090 | no | Scrapes the collector every 500 ms; no alert rules (removed in #1425) | `services/prometheus/` |
 | grafana | 13.0.2 | 3000 | no | Dashboards | `services/grafana/` |
 | loki | 3.7.2 | 3100 | no | Logs | `services/loki/config.yaml` |
 | flag-dir-init | busybox | none | no | One-shot: make the flag dir group-writable for the nonroot menu | `docker-compose.yml:65-76` |

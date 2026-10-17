@@ -541,7 +541,8 @@ services:
           cpus: '0.5'
     logging: *default-logging
 
-  # Prometheus for metrics collection (Phase 38) - kept for alerting rules
+  # Prometheus for metrics collection (Phase 38). No alert rules (removed in #1425);
+  # kept for the demo validation harness queries and the /prometheus/ route.
   prometheus:
     image: prom/prometheus:v3.12.0
     container_name: joustmania-prometheus
@@ -558,7 +559,6 @@ services:
       - "9090"
     volumes:
       - ./services/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./services/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     networks:
       - joustmania

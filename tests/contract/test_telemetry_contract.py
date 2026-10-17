@@ -7,10 +7,9 @@ Every telemetry name a consumer depends on must have a live producer:
     produced by the Python/Rust services; for metrics that means a definition
     AND a recording call site (#1334 / #1335 were defined but never recorded);
 (b) every metric (and Python label matcher) in the Grafana dashboards and the
-    Prometheus alerts has a producer;
-(c) ``alerts.yml`` passes ``promtool check rules`` (docker), with a structural
-    Python fallback when docker is not available locally (in CI, where ``CI`` is
-    set, a missing docker is a failure, not a skip).
+    dashboard SPA's VictoriaMetrics queries has a producer. (Prometheus alerting
+    was removed in #1425: nothing received the alerts; operators watch Grafana
+    and the dashboard.)
 
 Strength of the evidence, per producer kind:
 * Python metrics: a definition AND a recording use resolved through the using
@@ -34,9 +33,6 @@ until it is removed, so the PR that fixes a gap also deletes its entry here.
 
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
 
 import pytest
 import telemetry_inventory as ti
@@ -48,19 +44,13 @@ import telemetry_inventory as ti
 # (a) Agent-ingested metric names with no recording producer.
 AGENT_METRIC_KNOWN_GAPS: dict[str, str] = {}  # empty since #1376 / #1379
 
-# (b) Metrics referenced by dashboards/alerts that no code records.
-CONSUMED_METRIC_KNOWN_GAPS = {
-    "games_force_ended_total": "#1275 (GameCrashRate alert, D-T3)",
-    "joustmania_service_update_pending": "#1275 (ServiceUpdatePending alert, D-T3)",
-}
+# (b) Metrics referenced by dashboards that no code records.
+CONSUMED_METRIC_KNOWN_GAPS: dict[
+    str, str
+] = {}  # #1275 entries went with the alerts (#1425)
 
 # (b) (metric, label) matchers on a Python metric that does not carry that label.
-CONSUMED_LABEL_KNOWN_GAPS = {
-    (
-        "grpc_client_request_duration_seconds",
-        "grpc_code",
-    ): "#1353 (service-health-overview error panels)",
-}
+CONSUMED_LABEL_KNOWN_GAPS: dict[tuple[str, str], str] = {}  # empty since #1353
 
 # Python metric definitions that nothing records (no consumer depends on them).
 DEAD_DEFINITION_KNOWN_GAPS = {
@@ -128,9 +118,8 @@ def defined(python_metrics):
 
 @pytest.fixture(scope="module")
 def consumer_queries():
-    """(where, PromQL) for every dashboard query and alert expression."""
+    """(where, PromQL) for every Grafana dashboard query and dashboard SPA query."""
     queries = [(f"{f} / {title}", q) for f, title, q in ti.dashboard_queries()]
-    queries += [(f"alerts.yml / {r['alert']}", r["expr"]) for r in ti.alert_rules()]
     queries += [(f"dashboard SPA {f} / {name}", q) for f, name, q in ti.spa_queries()]
     return queries
 
@@ -151,9 +140,7 @@ def test_inventory_parsers_find_the_known_surface(python_metrics, consumer_queri
     assert len(ti.spa_queries()) >= 2, (
         "dashboard SPA *_QUERY scan found too few queries"
     )
-    assert len(consumer_queries) >= 250, (
-        "dashboard/alert query scan found too few queries"
-    )
+    assert len(consumer_queries) >= 250, "dashboard query scan found too few queries"
 
 
 @pytest.mark.parametrize(
@@ -245,7 +232,7 @@ def test_agent_infra_span_contract_exists_in_producers():
 
 
 # --------------------------------------------------------------------------- #
-# (b) Dashboards and alerts  <-  producers
+# (b) Grafana dashboards and the dashboard SPA  <-  producers
 # --------------------------------------------------------------------------- #
 def _consumed_metrics(queries, defined: set[str]) -> dict[str, set[str]]:
     used: dict[str, set[str]] = {}
@@ -255,12 +242,11 @@ def _consumed_metrics(queries, defined: set[str]) -> dict[str, set[str]]:
     return used
 
 
-@pytest.mark.uc("UC-035", flow="main", steps=[6])
-@pytest.mark.uc("UC-035", flow="A2")
-def test_dashboard_and_alert_metrics_have_a_recording_producer(
+@pytest.mark.uc("UC-035", flow="main", steps=[3, 6])
+def test_dashboard_metrics_have_a_recording_producer(
     consumer_queries, produced, defined
 ):
-    """UC-035 step 6 / A2: every metric a dashboard panel or alert reads is recorded somewhere."""
+    """UC-035 steps 3, 6: every metric a Grafana panel or the dashboard SPA reads is recorded somewhere."""
     used = _consumed_metrics(consumer_queries, defined)
     missing = {
         name: sorted(where)[:3]
@@ -269,13 +255,11 @@ def test_dashboard_and_alert_metrics_have_a_recording_producer(
         and not _is_external(name)
         and name not in CONSUMED_METRIC_KNOWN_GAPS
     }
-    assert not missing, (
-        f"Dashboards/alerts reference metrics nothing records: {missing}"
-    )
+    assert not missing, f"Dashboards reference metrics nothing records: {missing}"
 
 
 @pytest.mark.uc("UC-035", flow="main", steps=[6])
-def test_dashboard_and_alert_label_matchers_exist_on_the_metric(
+def test_dashboard_label_matchers_exist_on_the_metric(
     consumer_queries, python_metrics, defined
 ):
     """UC-035 step 6: a label matcher on a Python metric names a label the metric carries."""
@@ -344,76 +328,6 @@ def test_known_gaps_are_still_gaps(python_metrics, produced, consumer_queries, d
         if n not in python_metrics or python_metrics[n].recorded_at
     ]
     assert not stale, f"Fixed gaps still allow-listed; delete these entries: {stale}"
-
-
-# --------------------------------------------------------------------------- #
-# (c) promtool check rules
-# --------------------------------------------------------------------------- #
-def _prometheus_image() -> str:
-    """The Prometheus image docker-compose.yml runs, so promtool matches the stack."""
-    compose = ti.yaml.safe_load((ti.REPO_ROOT / "docker-compose.yml").read_text())
-    return compose["services"]["prometheus"]["image"]
-
-
-def _docker_available() -> bool:
-    if not shutil.which("docker"):
-        return False
-    return (
-        subprocess.run(["docker", "info"], capture_output=True, check=False).returncode
-        == 0
-    )
-
-
-def run_promtool(*args: str) -> subprocess.CompletedProcess:
-    rules_dir = ti.ALERTS_FILE.parent
-    return subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--entrypoint",
-            "promtool",
-            "-v",
-            f"{rules_dir}:/rules:ro",
-            _prometheus_image(),
-            *args,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=300,
-    )
-
-
-@pytest.mark.uc("UC-035", flow="A2")
-def test_alert_rules_pass_promtool_check():
-    """UC-035 A2: alerts.yml is a valid Prometheus rule file."""
-    if not _docker_available():
-        if os.environ.get("CI"):
-            pytest.fail("docker is required in CI for promtool check rules")
-        pytest.skip(
-            "docker not available; structural fallback runs in test_alert_rules_structure"
-        )
-    result = run_promtool("check", "rules", "/rules/alerts.yml")
-    assert result.returncode == 0, result.stdout + result.stderr
-
-
-@pytest.mark.uc("UC-035", flow="A2")
-def test_alert_rules_structure():
-    """UC-035 A2: docker-free fallback for promtool: every rule is complete and well formed."""
-    names = []
-    for rule in ti.alert_rules():
-        assert set(rule) >= {"alert", "expr", "labels", "annotations"}, rule
-        assert rule["labels"].get("severity") in {"info", "warning", "critical"}, rule[
-            "alert"
-        ]
-        assert rule["expr"].count("(") == rule["expr"].count(")"), rule["alert"]
-        assert rule["expr"].count("{") == rule["expr"].count("}"), rule["alert"]
-        assert ti.promql_metric_names(rule["expr"]), (
-            f"{rule['alert']}: no metric in expr"
-        )
-        names.append(rule["alert"])
-    assert len(names) == len(set(names)), "duplicate alert names"
 
 
 # --------------------------------------------------------------------------- #

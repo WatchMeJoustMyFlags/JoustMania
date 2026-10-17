@@ -79,7 +79,6 @@ curl http://localhost:9090/metrics | grep game_
 - Long-term performance tracking
 - Grafana dashboards for talks
 - Historical trend analysis
-- Alerting on anomalies
 
 ---
 
@@ -276,16 +275,10 @@ histogram_quantile(0.99, game_loop_latency_ms_bucket{mode="FFA"})
 rate(process_cpu_seconds_total[5m]) * 100
 ```
 
-### Alerting (Optional)
+### Alerting
 
-```yaml
-# Example alert: High latency
-- alert: HighGameLoopLatency
-  expr: histogram_quantile(0.95, game_loop_latency_ms_bucket) > 100
-  for: 5m
-  annotations:
-    summary: "Game loop latency p95 > 100ms"
-```
+No alert rules ship: Prometheus alerting was removed in #1425 (FR-083 Rejected) because
+nothing received the alerts. Watch the Grafana dashboards and the dashboard SPA instead.
 
 ---
 

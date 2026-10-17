@@ -25,7 +25,7 @@
 | 2    | Verify routing           | `controller_routing_decisions_total` shows about half of the controllers on rust after the next cycle | -                                          | -                                   |
 | 3    | Watch the comparison     | Operator opens the backend comparison dashboard in Grafana                                          | `/grafana/`                                  | [UC-035](../use_cases/UC-035.md)    |
 | 4    | Inject a fault           | Operator injects a fault for the targeted controllers                                               | `/chaos/poll-drop?fraction=50` (`poll_drop`) | [UC-052](../use_cases/UC-052.md)    |
-| 5    | Verify the fault         | `controller_chaos_faults_injected_total` grows; `/chaos/status` shows the fault; a controller alert that fires is listed in Prometheus | `/prometheus/`                       | [UC-035](../use_cases/UC-035.md)    |
+| 5    | Verify the fault         | `controller_chaos_faults_injected_total` grows; `/chaos/status` shows the fault; the controller panels in Grafana show the faulted controllers' poll drops | `/grafana/`                          | [UC-035](../use_cases/UC-035.md)    |
 | 6    | Reset chaos              | Operator resets chaos; `/chaos/status` shows `none`                                                 | `/chaos/reset`                               | [UC-052](../use_cases/UC-052.md)    |
 | 7    | Roll the canary back     | Operator requests the rollback; every controller returns to python                                  | `/canary/rollback`                           | [UC-052](../use_cases/UC-052.md)    |
 
@@ -40,4 +40,4 @@
 ## Automation
 
 - **Manual** (needs real controllers for the chaos adapter). Planned handler tests for `/canary/*` and `/chaos/*`: #1364.
-- Contract-level coverage (no live stack, no controllers): `tests/contract/test_envoy_routing.py` checks the envoy routes for `/grafana/`, `/prometheus/` and `/chaos/` (steps 3, 5, 6; `/canary/` has no envoy route, so steps 1 and 7 call the connect-proxy from inside the network, UC-052 A2); `tests/contract/test_alert_rules.py` runs promtool over `tests/contract/prometheus/alerts_test.yml` and shows the controller alerts (`ControllerDisconnected`, `PoorFrameConsistency`, `HighInputLatency`, among others) fire on their condition and stay quiet otherwise (UC-035 A2, step 5). Neither test injects a fault or watches a live alert.
+- Contract-level coverage (no live stack, no controllers): `tests/contract/test_envoy_routing.py` checks the envoy routes for `/grafana/`, `/prometheus/` and `/chaos/` (steps 3, 5, 6; `/canary/` has no envoy route, so steps 1 and 7 call the connect-proxy from inside the network, UC-052 A2).
