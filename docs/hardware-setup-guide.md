@@ -434,6 +434,10 @@ This optimization is critical for large player counts - without it, 42 controlle
 | Large | 15-24 | 3-4 | 2× USB hubs | 12W+ |
 | Event | 25-42 | 4-6 | 2× USB hubs or powered hub | 13W+ |
 
+### Starting the stack on the Pi
+
+The Pi always passes `-f docker-compose.yml` to `up` (`docker compose -f docker-compose.yml up -d`, or `scripts/setup/joustmania-start.sh`, which does the same): a bare `docker compose up` also loads the dev `docker-compose.override.yml`, which publishes the gRPC and mock control ports on the venue network (#1319).
+
 ### Lite Deployment (No Observability)
 
 For resource-constrained or mobile deployments, use the lite Docker Compose configuration:
@@ -446,7 +450,7 @@ This excludes Jaeger, VictoriaMetrics, Loki, Grafana, and OTEL Collector, saving
 It still runs `rust-hid`, the default Bluetooth backend, so the controller manager
 reads real controllers and the pairing daemon pairs them through it (#1318).
 python-hid is not part of the lite stack; it is opt-in on the full stack only
-(`docker compose --profile python-hid up -d`, see
+(`docker compose -f docker-compose.yml --profile python-hid up -d`, see
 [controller-backends.md](architecture/controller-backends.md#python-hid-is-opt-in-1371)).
 
 ---
