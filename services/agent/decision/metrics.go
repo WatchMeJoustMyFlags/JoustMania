@@ -125,11 +125,9 @@ func defaultInterventionsAppliedCounter() otelmetric.Int64Counter {
 // EffectDeltaBuckets are the agent_intervention_effect_delta bucket boundaries,
 // symmetric around zero and sized for the 0..1 progress signals (`*_progress`,
 // `*_ratio`, `skill_gap`), whose delta lies in -1..1. Without explicit boundaries
-// the SDK defaults (0, 5, 10, ...) put every value in one bucket (#1434). Not every
-// recorded signal is a progress signal: emitEffectSample records a delta for every
-// key in Evaluated(), so `*.session_seconds` keys record roughly the follow-up window
-// in seconds (about +20, landing in +Inf) and constant threshold keys always record
-// 0. Filter on the signal label before taking a quantile; #1444 tracks the cleanup.
+// the SDK defaults (0, 5, 10, ...) put every value in one bucket (#1434). Only those
+// signals are recorded (effectMetricSignal, #1444): the `*_seconds` and constant
+// threshold keys stay on the agent.intervention.effect spans.
 var EffectDeltaBuckets = []float64{-1, -0.5, -0.25, -0.1, -0.05, -0.01, 0, 0.01, 0.05, 0.1, 0.25, 0.5, 1}
 
 // newEffectDeltaHistogram builds the agent_intervention_effect_delta histogram from

@@ -261,7 +261,7 @@ const (
 // shows the full "dispatched at T0, measured at T0+window, delta=..." story. No effect
 // span parents another (#1325, UC-040 BR-013). The metric
 // agent_intervention_effect_delta (see metrics.go) carries the same delta for
-// dashboards/alerts; the M5 dashboard (#791/#792) and the #844 retro consume both.
+// dashboards, for the progress-type signals only (effectMetricSignal, #1444); the M5 dashboard (#791/#792) and the #844 retro consume both.
 const SpanInterventionEffect = "agent.intervention.effect"
 
 // Custom attribute keys of the intervention-effect span (#918). The fitness signal

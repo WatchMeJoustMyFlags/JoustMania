@@ -125,7 +125,7 @@ The whole stack is proxied through envoy on port **80**:
       `./scripts/agent-backend.sh claude` an `agent.decide` span in Jaeger has
       `decide.backend=claude` (not a `decide.fallback_reason`).
 - [ ] **Dashboards load**: `http://localhost/` Agent + Experiments tabs render;
-      Grafana **Agent Operations — Fleet** opens.
+      Grafana **Agent Decisions & Interventions** (`/grafana/d/agent-operations`) opens.
 - [ ] **Known-good flag state**: gates set as above; production
       `services/flagd/agent.json` defaults **untouched** (the helper scripts
       only write the `ci/` dir).
@@ -305,9 +305,9 @@ decision here is *correct behaviour*, not a bug):
 - VictoriaMetrics (`http://localhost/victoria-metrics/vmui/`, or Grafana Explore): applied dispatches split by action
   via `sum by (action) (rate(agent_interventions_applied_total[5m]))`, and the
   applied-vs-blocked split via `agent_decisions_total{blocked="false"}` /
-  `{blocked="true"}`. The Grafana **Agent Operations — Fleet** dashboard
-  ([`agent-operations.json`](../services/grafana/dashboards/agent-operations.json))
-  shows both live.
+  `{blocked="true"}`. The Grafana **Agent Decisions & Interventions** dashboard
+  ([`agent-operations.json`](../services/grafana/dashboards/agent-operations.json)),
+  row Interventions, shows both live, next to the coordinator-side applies.
 
 ### Act 3 — Live flag flips via flagd (the control plane is live)
 
@@ -342,8 +342,11 @@ with no restart. Show the control plane reacting live:
   [ACT runbook](agent-act-runbook.md#demo-flow--drive-behavior-live-and-watch-the-trace-change)
   for objective / fitness / rate-limit live flips that each change the **next**
   `agent.decision` span.
-- **Fleet view** — the Grafana **Agent Operations — Fleet** dashboard (#791) is
-  the wide "system is alive" shot for the audience.
+- **Fleet view** — the Grafana **Agent Decisions & Interventions** dashboard
+  (uid `agent-operations`, #791, #1427) is the wide "system is alive" shot for the
+  audience: its Decide row plots decisions per minute by `decide.backend`, so a
+  `./scripts/agent-backend.sh` flip shows as the stack changing colour within a
+  minute (span metrics from the collector, not an agent counter).
 
 > **Flag-edit gotcha (read before the talk):** the demo stack serves the
 > `services/flagd/ci/` flag dir. The `agent-killswitch.sh` / `agent-dryrun-enable.sh`

@@ -831,7 +831,9 @@ fitness → rollback); the game path had nothing. #918 closes the **measurement*
    - **Metric** `agent_intervention_effect_delta` (`Float64Histogram`, unit `1`): the
      `follow_up − baseline` change, labeled `intervention.type`,
      `intervention.objective`, `intervention.signal`. No point is recorded for an
-     aborted follow-up.
+     aborted follow-up. Only the 0..1 progress-type signals (`*_progress`, `*_ratio`,
+     `balanced.skill_gap`) reach the metric; the elapsed-time (`*_seconds`) and
+     constant-threshold keys stay on the spans (#1444).
 
    The M5 intervention dashboard (#791/#792) plots the intervention → effect pairs, and
    the #844 retro prompt reads per-intervention effect evidence; both consume this

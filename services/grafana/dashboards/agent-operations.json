@@ -15,12 +15,25 @@
       }
     ]
   },
-  "description": "Fleet view of the self-improvement agent for the #789 demo: how many improvement games are running and what the agent is doing across them. Agent metric series are queried WITHOUT a job filter so they do not depend on the namespaced job VictoriaMetrics stores (job=\"infrastructure/agent\"); only the standard OTel process-health panels carry a job filter, with an optional namespace prefix. See panel descriptions for the game_kind (#775) and #790 forward-compat notes.",
+  "description": "What the agent decides and what reaches the game: decision cycles, decide backend x outcome (spanmetrics from agent.decide spans), remote-backend GenAI metrics, interventions from the agent and the coordinator side, measured effect, shadow games and agent process health. Agent and game metrics carry no job filter; only the process panels match the job, with or without the namespace prefix. Replaces Agent Operations — Fleet and Interventions (#1427).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
-  "links": [],
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "joustmania"
+      ],
+      "targetBlank": true,
+      "title": "Related Dashboards",
+      "type": "dashboards"
+    }
+  ],
   "liveNow": true,
   "panels": [
     {
@@ -31,9 +44,9 @@
         "x": 0,
         "y": 0
       },
-      "id": 100,
+      "id": 1,
       "panels": [],
-      "title": "Fleet Headline",
+      "title": "Overview",
       "type": "row"
     },
     {
@@ -41,19 +54,23 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Improvement games running right now. Uses sum by (game_kind) so real vs shadow games are split as soon as game_active carries the game_kind label (#775); on stacks without the label everything collapses into a single series. Headline number for the demo fleet screen (#789).",
+      "description": "Games whose loop is running, by kind: primary = the real (menu) game, shadow = headless agent games. game_active is 1 while a game runs; each game has its own series (game_id).",
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "gray",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
               }
             ]
           },
@@ -63,36 +80,46 @@
       },
       "gridPos": {
         "h": 7,
-        "w": 8,
+        "w": 6,
         "x": 0,
         "y": 1
       },
-      "id": 1,
+      "id": 2,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "horizontal",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
         "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "textMode": "value_and_name"
+        "textMode": "auto"
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (game_kind) (game_active)",
-          "legendFormat": "{{game_kind}}",
+          "expr": "sum(game_active{game_kind=\"primary\"}) or vector(0)",
+          "legendFormat": "real",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(game_active{game_kind=\"shadow\"}) or vector(0)",
+          "legendFormat": "shadow",
+          "refId": "B"
         }
       ],
-      "title": "Running Games (by kind)",
+      "title": "Running Games",
       "type": "stat"
     },
     {
@@ -100,20 +127,17 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Agent decision cadence: evaluation cycles per minute, split by outcome. decided = the rules engine returned >=1 decision this cycle; idle = the cycle ran but no rule fired. A flat-zero line means the decision loop has stalled. Source: agent_evaluations_total (#1053).",
+      "description": "Agent decision cycles per minute by outcome (a rule fired and produced decisions, or nothing to do). Source: agent_evaluations_total{signal,outcome}.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
             "axisLabel": "cycles/min",
             "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 20,
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -152,16 +176,16 @@
       },
       "gridPos": {
         "h": 7,
-        "w": 16,
-        "x": 8,
+        "w": 18,
+        "x": 6,
         "y": 1
       },
-      "id": 2,
+      "id": 3,
       "options": {
         "legend": {
-          "calcs": ["mean", "lastNotNull"],
-          "displayMode": "table",
-          "placement": "right",
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -169,7 +193,6 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
@@ -181,7 +204,7 @@
           "refId": "A"
         }
       ],
-      "title": "Agent Decision Rate (cycles/min by outcome)",
+      "title": "Evaluation Cycles / min (by outcome)",
       "type": "timeseries"
     },
     {
@@ -192,9 +215,9 @@
         "x": 0,
         "y": 8
       },
-      "id": 101,
+      "id": 4,
       "panels": [],
-      "title": "Decisions & Interventions",
+      "title": "Decide: backend and outcome (span metrics)",
       "type": "row"
     },
     {
@@ -202,20 +225,51 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Why a remote decision backend (decision.backend != rules) or a post-game retro was not called, broken down by gate reason: llm_not_eligible (game kind not in llm.eligible_game_kinds, e.g. shadow games), decide_interval (decision.min_interval_ms cadence), llm_budget_exhausted (llm.max_requests_per_minute spent), no_interventions_allowed (interventions_allowed is none / noop only: no remote decide call, #1298), and the configuration fallbacks unknown_backend (decision.backend names no registered backend), backend_unavailable (no API key / model / base URL, e.g. JEV_API_KEY missing) and async_not_wired (#1350): rules decide instead, counted every cycle. Empty while decision.backend=rules. Source: agent_llm_gated_total (#847, #1234).",
+      "description": "agent.decide spans per minute by the backend that produced the answers (decide.backend: rules, jev, claude, openai; rules after a fallback). Derived in the OTel collector by the spanmetrics connector from the agent.decide spans (traces_span_metrics_calls_total, services/otel-collector/config.yaml): the agent has no counter for this. A decision.backend flag flip shows here within a minute.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
+            "axisLabel": "decisions/min",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
           },
-          "mappings": []
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "noValue": "no agent.decide spans"
         },
         "overrides": []
       },
@@ -225,57 +279,752 @@
         "x": 0,
         "y": 9
       },
-      "id": 3,
+      "id": 5,
       "options": {
         "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "values": ["value", "percent"]
-        },
-        "pieType": "donut",
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
+          "mode": "multi",
+          "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (reason) (increase(agent_llm_gated_total[$__range]))",
-          "legendFormat": "{{reason}}",
+          "expr": "sum by (decide_backend) (rate(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[1m])) * 60",
+          "legendFormat": "{{decide_backend}}",
           "refId": "A"
         }
       ],
-      "title": "LLM Gating Reasons",
-      "type": "piechart"
+      "title": "Decisions / min (by backend)",
+      "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Agent decision outcomes per minute. 'applied' = decisions that dispatched (blocked=false); the remaining series are decisions blocked before dispatch, split by reason (not_allowed = interventions disabled by policy; battery_threshold = target controller below battery floor; rate_limit = per-minute intervention budget exhausted). Source: agent_decisions_total{blocked,block_reason} (#1115).",
+      "description": "Share of agent.decide spans by decide.outcome: act (routed to the permission chain), noop (the backend chose no action), held (a valid answer below the act confidence threshold), fallback (the requested backend could not decide; rules did), invalid (inconsistent answers) and discarded (the answer no longer fit the game when it landed). Each series is its share of all agent.decide spans over the last minute (computed in PromQL, so the stack sums to 100%). Source: traces_span_metrics_calls_total (spanmetrics connector).",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "writes/min",
+            "axisLabel": "",
             "axisPlacement": "auto",
-            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "noValue": "no agent.decide spans"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 9
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (decide_outcome) (rate(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[1m])) / scalar(sum(rate(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[1m])))",
+          "legendFormat": "{{decide_outcome}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Decide Outcome Split",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "p95 duration of the agent.decide span by backend: the backend call for a remote backend, the ranking time for rules. From the spanmetrics duration histogram (explicit buckets 5 ms to 32 s, services/otel-collector/config.yaml).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "noValue": "no agent.decide spans"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 9
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (decide_backend, le) (rate(traces_span_metrics_duration_seconds_bucket{span_name=\"agent.decide\"}[5m])))",
+          "legendFormat": "{{decide_backend}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Decide Latency p95 (by backend)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "agent.decide spans in the selected time range by backend and outcome (increase of traces_span_metrics_calls_total).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 17
+      },
+      "id": 8,
+      "options": {
+        "displayMode": "basic",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "namePlacement": "left",
+        "valueMode": "text",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (decide_backend, decide_outcome) (increase(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[$__range]))",
+          "legendFormat": "{{decide_backend}} / {{decide_outcome}}",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "title": "Backend x Outcome (time range)",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Share of agent.decide spans in the last 5 minutes whose requested backend could not decide, so rules did (decide.outcome=fallback): an unreachable or misconfigured remote backend. 0 while decision.backend=rules.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.1
+              },
+              {
+                "color": "red",
+                "value": 0.5
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 8,
+        "y": 17
+      },
+      "id": 9,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(rate(traces_span_metrics_calls_total{span_name=\"agent.decide\", decide_outcome=\"fallback\"}[5m])) or vector(0)) / clamp_min(sum(rate(traces_span_metrics_calls_total{span_name=\"agent.decide\"}[5m])) or vector(0), 1e-9)",
+          "legendFormat": "fallback",
+          "refId": "A"
+        }
+      ],
+      "title": "Fallback Share (5m)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Why a remote decision backend (decision.backend != rules) or a post-game retro was not called, by gate reason: llm_not_eligible (game kind not in llm.eligible_game_kinds, e.g. shadow games), decide_interval (decision.min_interval_ms cadence), llm_budget_exhausted (llm.max_requests_per_minute spent), no_interventions_allowed (interventions_allowed is none / noop only, #1298), and the configuration fallbacks unknown_backend, backend_unavailable (no API key / model / base URL) and async_not_wired, counted every cycle. 0 (none) while nothing is gated. Source: agent_llm_gated_total.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "gated/min",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (reason) (rate(agent_llm_gated_total[5m])) * 60 or on() label_replace(vector(0), \"reason\", \"none\", \"\", \"\")",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Remote Decide Gated / min (by reason)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "jaeger",
+        "uid": "jaeger"
+      },
+      "description": "The 20 most recent agent.decide traces in Jaeger (service agent). Open one to see the backend call (chat {model} span), decide.* attributes and the resulting agent.decision / agent.action spans.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 11,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "jaeger",
+            "uid": "jaeger"
+          },
+          "queryType": "search",
+          "service": "agent",
+          "operation": "agent.decide",
+          "limit": 20,
+          "refId": "A"
+        }
+      ],
+      "title": "Recent agent.decide Traces (Jaeger)",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "id": 12,
+      "panels": [],
+      "title": "Remote Backends (OTel GenAI semconv)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "p95 of gen_ai.client.operation.duration (OTel GenAI semantic conventions; Prometheus name gen_ai_client_operation_duration_seconds) per requested model, recorded by the claude, openai and jev backends for every chat call, failed calls included. Buckets: the semconv advisory boundaries (10 ms to 82 s).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "noValue": "no remote calls (decision.backend=rules)"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 34
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (gen_ai_request_model, le) (rate(gen_ai_client_operation_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{gen_ai_request_model}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Model Call Latency p95 (by model)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Chat calls per minute per requested model and provider; error_type is set only on failed calls (timeout, HTTP status class, ...). Source: gen_ai_client_operation_duration_seconds_count.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "calls/min",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "noValue": "no remote calls (decision.backend=rules)"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 34
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (gen_ai_provider_name, gen_ai_request_model, error_type) (rate(gen_ai_client_operation_duration_seconds_count[5m])) * 60",
+          "legendFormat": "{{gen_ai_provider_name}} {{gen_ai_request_model}} {{error_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Model Calls / min (by model, error type)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Input and output tokens per minute per requested model, from gen_ai.client.token.usage (Prometheus name gen_ai_client_token_usage, a histogram; the _sum is the token count).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "tokens/min",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "noValue": "no remote calls (decision.backend=rules)"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 34
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (gen_ai_request_model, gen_ai_token_type) (rate(gen_ai_client_token_usage_sum[5m])) * 60",
+          "legendFormat": "{{gen_ai_request_model}} {{gen_ai_token_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Tokens / min (by model, token type)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "id": 16,
+      "panels": [],
+      "title": "Interventions",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Agent decisions per minute: applied (blocked=false, dispatched) and blocked before dispatch by reason (not_allowed, battery_threshold, rate_limit, ...). Source: agent_decisions_total{blocked,block_reason}.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "decisions/min",
+            "axisPlacement": "auto",
             "drawStyle": "bars",
             "fillOpacity": 60,
             "gradientMode": "none",
@@ -332,16 +1081,16 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 16,
-        "x": 8,
-        "y": 9
+        "w": 12,
+        "x": 0,
+        "y": 43
       },
-      "id": 4,
+      "id": 17,
       "options": {
         "legend": {
-          "calcs": ["sum"],
-          "displayMode": "table",
-          "placement": "right",
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -349,14 +1098,13 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_decisions_total{blocked=\"false\"}[5m])) * 60",
+          "expr": "sum(rate(agent_decisions_total{blocked=\"false\"}[5m])) * 60 or vector(0)",
           "legendFormat": "applied",
           "refId": "A"
         },
@@ -365,12 +1113,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (block_reason) (rate(agent_decisions_total{blocked=\"true\"}[5m])) * 60",
-          "legendFormat": "{{block_reason}}",
+          "expr": "sum by (block_reason) (rate(agent_decisions_total{blocked=\"true\"}[5m])) * 60 or on() label_replace(vector(0), \"block_reason\", \"none\", \"\", \"\")",
+          "legendFormat": "blocked: {{block_reason}}",
           "refId": "B"
         }
       ],
-      "title": "Interventions Applied vs Blocked",
+      "title": "Agent Decisions: Applied vs Blocked / min",
       "type": "timeseries"
     },
     {
@@ -378,109 +1126,17 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Median measured effect of applied interventions: the change in a game's fitness/objective signal a follow-up window after the agent dispatched an intervention, split by intervention type. Positive = the intervention moved the game toward its objective. Source: agent_intervention_effect_delta (#918); empty until interventions fire during a run.",
+      "description": "Interventions the agent dispatched per minute, by action. Source: agent_interventions_applied_total.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": true,
-            "axisColorMode": "text",
-            "axisLabel": "delta (p50)",
+            "axisLabel": "interventions/min",
             "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 6,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": true,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 17
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "calcs": ["mean"],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.5, sum by (intervention_type, le) (rate(agent_intervention_effect_delta_bucket[10m])))",
-          "legendFormat": "{{intervention_type}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Intervention Effect Delta (p50 by type)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Fitness/objective evaluations the agent recorded over time, by served objective: the count of effect-delta measurements feeding the agent's learning loop. Derived from agent_intervention_effect_delta_count (#918); rises whenever the agent measures the outcome of an applied intervention.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "evals/min",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 20,
+            "fillOpacity": 30,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -521,14 +1177,14 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 17
+        "y": 43
       },
-      "id": 6,
+      "id": 18,
       "options": {
         "legend": {
-          "calcs": ["sum"],
-          "displayMode": "table",
-          "placement": "right",
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -536,19 +1192,18 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (intervention_objective) (rate(agent_intervention_effect_delta_count[5m])) * 60",
-          "legendFormat": "{{intervention_objective}}",
+          "expr": "sum by (action) (rate(agent_interventions_applied_total[5m])) * 60",
+          "legendFormat": "{{action}}",
           "refId": "A"
         }
       ],
-      "title": "Fitness Evaluations Over Time (by objective)",
+      "title": "Interventions Dispatched / min (by action)",
       "type": "timeseries"
     },
     {
@@ -556,20 +1211,17 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Interventions the agent actually dispatched through the action sink, per minute, split by action. Counts only decisions that passed EVERY gate (kill-switch, allow-list, battery, rate-limit) and reached the real Writer — so a bar here is an intervention that took effect, not merely a permitted decision. Empty until interventions APPLY: needs the interventions_enabled flagd flag ON (#1213) plus a permitting interventions_allowed variant (the demo uses shadow_experimental; see docs/agent-demo-runbook.md Act 2b and the #1127 allow-list fix). Source: agent_interventions_applied_total{action} (#790). Validated live: grant_shield series present.",
+      "description": "Interventions the game coordinator applied per minute, by type. Source: game_interventions_total{blocked=\"false\"}.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
             "axisLabel": "applied/min",
             "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "bars",
-            "fillOpacity": 70,
+            "drawStyle": "line",
+            "fillOpacity": 30,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -577,7 +1229,7 @@
               "viz": false
             },
             "lineInterpolation": "linear",
-            "lineWidth": 1,
+            "lineWidth": 2,
             "pointSize": 5,
             "scaleDistribution": {
               "type": "linear"
@@ -608,16 +1260,16 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 8,
         "x": 0,
-        "y": 25
+        "y": 51
       },
-      "id": 10,
+      "id": 19,
       "options": {
         "legend": {
-          "calcs": ["sum"],
-          "displayMode": "table",
-          "placement": "right",
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -625,40 +1277,358 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (action) (rate(agent_interventions_applied_total[5m])) * 60",
-          "legendFormat": "{{action}}",
+          "expr": "sum by (type) (rate(game_interventions_total{blocked=\"false\"}[5m])) * 60",
+          "legendFormat": "{{type}}",
           "refId": "A"
         }
       ],
-      "title": "Interventions Dispatched (by action)",
+      "title": "Coordinator Applied / min (by type)",
       "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 33
-      },
-      "id": 102,
-      "panels": [],
-      "title": "Agent Health",
-      "type": "row"
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Flag-file corruption events the agent detected while reading/writing the interventions flag file (any non-zero value is a degraded ACT path). Source: agent_intervention_file_corruption_total.",
+      "description": "Applied interventions per minute by the objective they serve. Source: game_interventions_total{blocked=\"false\"}.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "applied/min",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 51
+      },
+      "id": 20,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (objective) (rate(game_interventions_total{blocked=\"false\"}[5m])) * 60",
+          "legendFormat": "{{objective}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Coordinator Applied / min (by objective)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Intervention attempts the coordinator refused, by block_reason. 0 (none) while nothing is blocked. Source: game_interventions_total{blocked=\"true\"}.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "blocked/min",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 51
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (block_reason) (rate(game_interventions_total{blocked=\"true\"}[5m])) * 60 or on() label_replace(vector(0), \"block_reason\", \"none\", \"\", \"\")",
+          "legendFormat": "{{block_reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Coordinator Blocked / min (by reason)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Blocked share of intervention attempts at the coordinator over the last 5 minutes (0 when there were none). Source: game_interventions_total.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.2
+              },
+              {
+                "color": "red",
+                "value": 0.5
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 59
+      },
+      "id": 22,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(rate(game_interventions_total{blocked=\"true\"}[5m])) or vector(0)) / clamp_min(sum(rate(game_interventions_total[5m])) or vector(0), 1e-9)",
+          "legendFormat": "blocked ratio",
+          "refId": "A"
+        }
+      ],
+      "title": "Coordinator Blocked Ratio (5m)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Interventions whose handler raised (game_interventions_total{block_reason=\"handler_error\"}) and side effects that did not complete on their game's loop (game_intervention_dispatch_failures_total{reason}: game_loop_unavailable, game_loop_timeout, game_loop_late). 0 (none) while healthy.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "errors/min",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 6,
+        "y": 59
+      },
+      "id": 23,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (type) (rate(game_interventions_total{block_reason=\"handler_error\"}[5m])) * 60 or on() label_replace(vector(0), \"type\", \"none\", \"\", \"\")",
+          "legendFormat": "handler error: {{type}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (reason) (rate(game_intervention_dispatch_failures_total[5m])) * 60 or on() label_replace(vector(0), \"reason\", \"none\", \"\", \"\")",
+          "legendFormat": "dispatch failure: {{reason}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Handler Errors and Dispatch Failures / min",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Intervention flag writes by the agent that failed in the last hour (agent_intervention_writes_total{result=\"error\"}).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -685,35 +1655,36 @@
       "gridPos": {
         "h": 6,
         "w": 6,
-        "x": 0,
-        "y": 34
+        "x": 18,
+        "y": 59
       },
-      "id": 7,
+      "id": 24,
       "options": {
         "colorMode": "background",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
         "textMode": "auto"
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(agent_intervention_file_corruption_total[1h]))",
-          "legendFormat": "Corruption events (1h)",
+          "expr": "sum(increase(agent_intervention_writes_total{result=\"error\"}[1h])) or vector(0)",
+          "legendFormat": "write errors",
           "refId": "A"
         }
       ],
-      "title": "Flag-File Corruption (1h)",
+      "title": "Agent Write Errors (1h)",
       "type": "stat"
     },
     {
@@ -721,20 +1692,525 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Agent service CPU usage. Standard OTel process metric (rate of process_cpu_seconds_total) job-filtered to the agent. VictoriaMetrics keeps the service.namespace prefix (job=\"infrastructure/agent\"), so the matcher accepts an optional namespace prefix.",
+      "description": "Intervention flag writes by the agent per minute, by result. Source: agent_intervention_writes_total.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "% CPU",
+            "axisLabel": "writes/min",
             "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 15,
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 65
+      },
+      "id": 25,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (result) (rate(agent_intervention_writes_total[5m])) * 60",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Agent Flag Writes / min (by result)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 71
+      },
+      "id": 26,
+      "panels": [],
+      "title": "Intervention Effect",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Median change in a fitness signal a follow-up window (20 s) after an applied intervention, per signal (endurance / accelerate session_progress, balanced skill_gap, skill_gap_progress, spike_survival_*). Positive progress = the game moved toward the objective (for skill_gap, negative is better). Only the 0..1 progress-type signals reach the metric (#1444), so the buckets (-1 to 1) fit every series. Source: agent_intervention_effect_delta.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "noValue": "no measured interventions"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (intervention_signal, le) (rate(agent_intervention_effect_delta_bucket[10m])))",
+          "legendFormat": "{{intervention_signal}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Effect Delta p50 (by signal)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Effect samples recorded per minute by the objective the intervention served (agent_intervention_effect_delta_count); one sample per measured signal.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "samples/min",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 72
+      },
+      "id": 28,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (intervention_objective) (rate(agent_intervention_effect_delta_count[5m])) * 60",
+          "legendFormat": "{{intervention_objective}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Effect Measurements / min (by objective)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      },
+      "id": 29,
+      "panels": [],
+      "title": "Shadow Games",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Headless shadow games started per minute (games_started_total{game_kind=\"shadow\"}).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "games/min",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 81
+      },
+      "id": 30,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(games_started_total{game_kind=\"shadow\"}[5m])) * 60 or vector(0)",
+          "legendFormat": "started",
+          "refId": "A"
+        }
+      ],
+      "title": "Shadow Games Started / min",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Shadow game starts rejected because a real game was running (policy=block). Source: game_shadow_games_blocked_total.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 81
+      },
+      "id": 31,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(game_shadow_games_blocked_total[$__range])) or vector(0)",
+          "legendFormat": "blocked",
+          "refId": "A"
+        }
+      ],
+      "title": "Shadow Games Blocked (time range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Shadow games force-ended because a real game started. Source: game_shadow_games_preempted_total.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 81
+      },
+      "id": 32,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(game_shadow_games_preempted_total[$__range])) or vector(0)",
+          "legendFormat": "preempted",
+          "refId": "A"
+        }
+      ],
+      "title": "Shadow Games Preempted (time range)",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 88
+      },
+      "id": 33,
+      "panels": [],
+      "title": "Agent Process",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Agent process CPU (rate of process_cpu_seconds_total). The job matcher accepts the namespaced job VictoriaMetrics stores (infrastructure/agent) and a bare agent.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -773,16 +2249,16 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 9,
-        "x": 6,
-        "y": 34
+        "w": 12,
+        "x": 0,
+        "y": 89
       },
-      "id": 8,
+      "id": 34,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "right",
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -790,7 +2266,6 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
@@ -810,20 +2285,17 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Agent service resident memory. Standard OTel process metric process_resident_memory_bytes job-filtered to the agent (job=~\"(.+/)?agent\": VictoriaMetrics keeps the infrastructure/ prefix).",
+      "description": "Agent resident memory (process_resident_memory_bytes), job matched as for Agent CPU.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "memory",
+            "axisLabel": "",
             "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 15,
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -862,16 +2334,16 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 9,
-        "x": 15,
-        "y": 34
+        "w": 12,
+        "x": 12,
+        "y": 89
       },
-      "id": 9,
+      "id": 35,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "right",
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -879,7 +2351,6 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
@@ -897,7 +2368,13 @@
   ],
   "refresh": "5s",
   "schemaVersion": 39,
-  "tags": ["joustmania", "agent", "agentic", "demo"],
+  "tags": [
+    "joustmania",
+    "agent",
+    "agentic",
+    "interventions",
+    "demo"
+  ],
   "templating": {
     "list": []
   },
@@ -907,8 +2384,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Agent Operations — Fleet",
+  "title": "Agent Decisions & Interventions",
   "uid": "agent-operations",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }

@@ -308,6 +308,16 @@ processors:
           - key: service.name
             value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector|connect-proxy|rust-hid|python-hid)$"
 
+  # Keep only the agent's agent.decide spans for the span_metrics connector
+  # (#1427). The traces/span_metrics pipeline runs beside the main traces
+  # pipeline, so dropping here never removes a span from Jaeger or the agent.
+  # Restricting the connector to one span name of one service bounds the
+  # series count: backend (4) x outcome (6) x status code (3).
+  filter/agent_decide:
+    error_mode: ignore
+    trace_conditions:
+      - span.name != "agent.decide" or resource.attributes["service.name"] != "agent"
+
   # Resource processor to add common attributes for OTLP-pushed metrics
   resource:
     attributes:
@@ -317,6 +327,40 @@ processors:
       # service.namespace is set per-service in the Python SDK:
       #   "joustmania" for game services (game-coordinator, menu, audio)
       #   "infrastructure" for platform services (controller-manager, pairing-daemon)
+
+connectors:
+  # Decision backend x outcome as metrics, derived from the agent.decide spans
+  # (#1427, maintainer decision 2: no agent-side counter; "traces -> metrics"
+  # is a talk beat). Fed only agent.decide spans by filter/agent_decide.
+  # Exported to VictoriaMetrics (prometheusremotewrite) as
+  #   traces_span_metrics_calls_total
+  #   traces_span_metrics_duration_seconds_bucket / _sum / _count
+  # with labels decide_backend (rules, jev, claude, openai), decide_outcome
+  # (act, noop, held, fallback, invalid, discarded), span_name, service_name
+  # and status_code; job is infrastructure/agent (the span's resource).
+  # Attribute names: services/agent/decision/decide_hook.go (AttrDecideBackend,
+  # AttrDecideOutcome).
+  span_metrics:
+    namespace: traces.span.metrics
+    dimensions:
+      - name: decide.backend
+      - name: decide.outcome
+    # collector.instance.id changes on every collector start (a new series per
+    # restart); span.kind is always INTERNAL for agent.decide.
+    exclude_dimensions: [collector.instance.id, span.kind]
+    histogram:
+      unit: s
+      # The rules path ranks in milliseconds; a remote backend call takes up to
+      # tens of seconds (decide latency budget, gen_ai buckets). Explicit
+      # buckets so p95 is not an interpolation inside one wide default bucket.
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 4s, 8s, 16s, 32s]
+    metrics_flush_interval: 15s
+    # Stop exporting a series 10 min after its last span. The agent's
+    # service.instance.id (instance label) changes on every container
+    # recreate; without expiry the dead instance's series would be
+    # re-exported forever.
+    metrics_expiration: 10m
 
 exporters:
   # OTLP exporter to send traces to Jaeger
@@ -364,6 +408,19 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, batch/traces, resource]
       exporters: [otlp/jaeger, otlp/agent, debug]
+
+    # agent.decide spans -> span_metrics connector (#1427). Same receiver as
+    # the traces pipeline (fan-out), so the filter never affects Jaeger.
+    traces/span_metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/agent_decide]
+      exporters: [span_metrics]
+
+    # Span metrics -> VictoriaMetrics only (the agent does not ingest them).
+    metrics/span_metrics:
+      receivers: [span_metrics]
+      processors: [memory_limiter, batch/fast, resource]
+      exporters: [prometheusremotewrite]
 
     # Metrics pipeline - uses fast batch processor for sub-second updates
     # Fan-out to VictoriaMetrics (storage) and the agent
