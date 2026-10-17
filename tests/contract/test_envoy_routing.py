@@ -21,7 +21,7 @@ DOCUMENTED_ROUTES = {
     "/victoria-metrics/api/v1/query": ("victoria_metrics", "/api/v1/query"),
     "/experiments": ("agent_dossier", "/experiments"),  # UC-035 A1
     "/experiments/exp-1": ("agent_dossier", "/experiments/exp-1"),
-    "/chaos/faults": ("connect_proxy", "/chaos/faults"),  # fault injection API (FR-073)
+    "/pairing/unpair": ("connect_proxy", "/pairing/unpair"),  # operator unpair (UC-005)
     "/joustmania.menu.MenuService/StreamMenuEvents": (
         "connect_proxy",
         "/joustmania.menu.MenuService/StreamMenuEvents",
@@ -120,7 +120,7 @@ def test_catch_all_dashboard_route_is_last():
 
 
 def test_every_cluster_points_at_a_compose_service_port():
-    """Every envoy cluster (UI routes, /chaos/, the tracing exporter) targets a compose
+    """Every envoy cluster (UI routes, /pairing/, the tracing exporter) targets a compose
     service on a port that service actually exposes, listens on or is probed on."""
     clusters = ic.envoy_clusters()
     services = ic.compose_services()

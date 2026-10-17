@@ -47,7 +47,7 @@ async def serve(port=50052):
 
     # system domain: game_loop.update_frequency_hz (streaming frequency override)
     init_flag_domain("system")
-    # controller domain: backend, bluetooth_backend, chaos_fault_type, poll_drop_threshold
+    # controller domain: backend, bluetooth_backend, poll_drop_threshold
     init_flag_domain("controller")
     # rollout domain: strategy, target_backend, current_controller_count
     # (consumed by RolloutRouter during per-cycle adapter routing).

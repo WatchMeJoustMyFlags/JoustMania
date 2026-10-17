@@ -349,13 +349,6 @@ controller_poll_errors_total = Counter(
     ["serial"],
 )
 
-# Chaos fault injection metrics (Issue #548)
-chaos_faults_injected_total = Counter(
-    "controller_chaos_faults_injected_total",
-    "Total chaos faults injected by ChaosAdapter",
-    ["fault", "serial"],
-)
-
 # Bluetooth health metrics (#732 M3). Emitted once per ~1s health window
 # alongside the controller.bluetooth_health span. These feed dashboards; the
 # agent's OBSERVE input is the span, not these metrics.

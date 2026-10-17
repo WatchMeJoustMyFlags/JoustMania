@@ -625,7 +625,7 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
-      # Canary and chaos endpoints write the controller set through the flag
+      # Canary endpoints write the controller set through the flag
       # service (#1420); the proxy mounts no flag file.
       - FLAG_SERVICE_URL=http://flag-service:8070
       # Pairing daemon control API (UC-005 unpair); the daemon runs on the host network
