@@ -326,13 +326,15 @@ services:
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      # localhost because network_mode:host can't use Docker DNS
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-      # flagd for runtime-tunable intervals (localhost because network_mode:host)
-      - FLAGD_HOST=localhost
+      # Loopback because network_mode:host can't use Docker DNS. 127.0.0.1, not
+      # localhost: 4317, 8015 and 50058 are published on 127.0.0.1 only (#1319),
+      # and localhost may resolve to ::1 first.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
+      # flagd for runtime-tunable intervals
+      - FLAGD_HOST=127.0.0.1
       - FLAGD_PORT=8015
-      # Rust HID service (localhost because network_mode:host connects via exposed port)
-      - RUST_HID_HOST=localhost
+      # Rust HID service through its loopback-published port
+      - RUST_HID_HOST=127.0.0.1
       - RUST_HID_PORT=50058
       # Primary game state for pairing.bluez_restart_mode=when_idle (UC-001 BR-005),
       # through envoy's published port 80 (the coordinator has no host port)
