@@ -260,6 +260,7 @@ def servicer():
         from services.controller_manager.servicer import ControllerManagerServicer
 
         mock_discovery_loop.return_value = create_autospec(DiscoveryLoop, instance=True)
+        mock_discovery_loop.return_value.connection_quality.return_value = None  # UC-035 BR-005: no window yet
 
         svc = ControllerManagerServicer()
         svc.feedback_manager._clock = FakeClock(start_time=1000.0)
