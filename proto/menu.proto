@@ -17,6 +17,9 @@ service MenuService {
 
   // Process menu input
   rpc ProcessInput(ProcessInputRequest) returns (ProcessInputResponse);
+
+  // List the playable game modes (what the dashboard mode selector offers)
+  rpc ListGameModes(ListGameModesRequest) returns (ListGameModesResponse);
 }
 
 // Menu state
@@ -57,4 +60,11 @@ message ProcessInputRequest {
 message ProcessInputResponse {
   bool success = 1;
   string error = 2;
+}
+
+message ListGameModesRequest {}
+
+message ListGameModesResponse {
+  repeated string game_modes = 1;  // Games enum names of the implemented modes, in menu cycle order
+  string default_mode = 2;         // Mode a client preselects ("JoustFFA")
 }

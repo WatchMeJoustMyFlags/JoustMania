@@ -55,6 +55,11 @@ class MenuServiceStub:
                 request_serializer=menu__pb2.ProcessInputRequest.SerializeToString,
                 response_deserializer=menu__pb2.ProcessInputResponse.FromString,
                 _registered_method=True)
+        self.ListGameModes = channel.unary_unary(
+                '/joustmania.menu.MenuService/ListGameModes',
+                request_serializer=menu__pb2.ListGameModesRequest.SerializeToString,
+                response_deserializer=menu__pb2.ListGameModesResponse.FromString,
+                _registered_method=True)
 
 
 class MenuServiceServicer:
@@ -89,6 +94,13 @@ class MenuServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListGameModes(self, request, context):
+        """List the playable game modes (what the dashboard mode selector offers)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_MenuServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -111,6 +123,11 @@ def add_MenuServiceServicer_to_server(servicer, server):
                     servicer.ProcessInput,
                     request_deserializer=menu__pb2.ProcessInputRequest.FromString,
                     response_serializer=menu__pb2.ProcessInputResponse.SerializeToString,
+            ),
+            'ListGameModes': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListGameModes,
+                    request_deserializer=menu__pb2.ListGameModesRequest.FromString,
+                    response_serializer=menu__pb2.ListGameModesResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -222,6 +239,33 @@ class MenuService:
             '/joustmania.menu.MenuService/ProcessInput',
             menu__pb2.ProcessInputRequest.SerializeToString,
             menu__pb2.ProcessInputResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListGameModes(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/joustmania.menu.MenuService/ListGameModes',
+            menu__pb2.ListGameModesRequest.SerializeToString,
+            menu__pb2.ListGameModesResponse.FromString,
             options,
             channel_credentials,
             insecure,

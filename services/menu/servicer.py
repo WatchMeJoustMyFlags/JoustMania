@@ -395,7 +395,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             if input_type == "button_press":
                 await self._handle_button_input(data, span)
             elif input_type == "web_command":
-                await self._handle_web_command(data, span)
+                rejection = await self._handle_web_command(data, span)
+                if rejection is not None:
+                    metrics.grpc_requests_total.labels(method="ProcessInput", status="error").inc()
+                    return menu_pb2.ProcessInputResponse(success=False, error=rejection)
             elif input_type == "reset_menu":
                 await self._handle_reset_menu()
 
@@ -410,6 +413,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             return menu_pb2.ProcessInputResponse(success=False, error=str(e))
         finally:
             metrics.grpc_request_duration_seconds.labels(method="ProcessInput").observe(time.time() - start_time)
+
+    async def ListGameModes(self, _request, _context):
+        """List the playable game modes (UC-011 BR-001) for the dashboard selector."""
+        metrics.grpc_requests_total.labels(method="ListGameModes", status="ok").inc()
+        return menu_pb2.ListGameModesResponse(game_modes=list(GAME_MODES), default_mode=DEFAULT_GAME_MODE.name)
 
     async def StreamMenuEvents(self, _request, context):
         """Stream menu events in real-time."""
@@ -456,12 +464,20 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             )
             logger.info(f"Selection changed to: {self.current_selection.name}")
 
-    async def _handle_web_command(self, data: dict, span) -> None:
-        """Handle web_command input type."""
+    async def _handle_web_command(self, data: dict, span) -> str | None:
+        """Handle web_command input type.
+
+        Returns an error message when the command is rejected, else None.
+        """
         command = data.get("command", "")
         span.set_attribute("command", command)
 
         if command == "start_game":
+            requested_mode = data.get("mode", "")
+            if requested_mode:
+                rejection = await self._select_web_start_mode(requested_mode, span)
+                if rejection is not None:
+                    return rejection
             await self._start_game(serial="web", source="web")
 
         elif command == "select_game":
@@ -482,6 +498,25 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 logger.info(f"Game selected via web: {game_mode.name}")
             else:
                 logger.warning(f"Unknown game mode requested via web: {game_name}")
+        return None
+
+    async def _select_web_start_mode(self, requested_mode: str, span) -> str | None:
+        """Select the mode a web start_game names (UC-010 A6, UC-011 BR-002).
+
+        An unknown or unimplemented mode is rejected: a ``game_start_rejected``
+        menu event is published, the selection stays and no game starts.
+        """
+        game_mode = Games.from_name(requested_mode)
+        if game_mode is None or game_mode.name not in GAME_MODES:
+            error = f"Unknown or unimplemented game mode: {requested_mode}"
+            logger.warning(f"Web start_game rejected: {error}")
+            span.set_attribute("error", error)
+            await self.event_publisher.publish(
+                "game_start_rejected", {"game_name": requested_mode, "source": "web", "error": error}
+            )
+            return error
+        await self.select_game_mode(game_mode.name, source="web")
+        return None
 
     async def _handle_reset_menu(self) -> None:
         """Handle reset_menu input type."""
