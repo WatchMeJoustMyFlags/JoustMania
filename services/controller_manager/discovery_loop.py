@@ -2,13 +2,14 @@
 Discovery loop for ControllerManager.
 
 Async task that handles:
-- Controller discovery and tracking
-- Battery monitoring
-- State polling at fixed intervals
-- LED updates
+- State polling at a fixed 100 Hz (the hot path for death detection)
+- Controller discovery and tracking (1 Hz)
+- LED updates (20 Hz)
+- Battery monitoring (30 s) and bluetooth-health emission (~1 Hz)
 
-Uses asyncio.to_thread() for blocking USB I/O operations to avoid
-blocking the main event loop.
+The poll runs alone in its loop; discovery, LED, battery and health work run as
+separate periodic tasks so a slow step cannot delay the poll (#1447, NFR-002).
+Blocking USB I/O runs via asyncio.to_thread() to keep the event loop free.
 
 Note: RSSI monitoring is handled by the host pairing-daemon which has
 direct access to hcitool for reliable signal strength readings.
@@ -19,6 +20,7 @@ import contextlib
 import logging
 import math
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from opentelemetry import context as otel_context
@@ -48,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
+
+# Minimum seconds between error lines of one failing periodic step (#1447).
+_STEP_ERROR_LOG_INTERVAL = 10.0
 
 
 def visible_serials(tracked_controllers: dict[str, dict]) -> list[str]:
@@ -133,14 +138,18 @@ class DiscoveryLoop:
         self.running = True
         self.backend_initialized = False
         self._task: asyncio.Task | None = None
+        # Discovery, LED, battery and health tasks, owned by _task (#1447)
+        self._side_tasks: list[asyncio.Task] = []
         self._initialized_event: asyncio.Event | None = None
 
-        # LED update timing (Phase 72: separated from polling)
-        self._last_led_update = 0.0
+        # LED batch cadence (Phase 72: separated from polling; own task since #1447)
+        self._led_interval = 0.05  # 20 Hz
+
+        # Battery metrics refresh (Phase 39 / 70)
+        self._battery_interval = 30.0
 
         # Discovery check throttle: 1Hz is sufficient for detecting
         # connect/disconnect — no need to run at 100Hz polling rate
-        self._last_discovery_check = 0.0
         self._discovery_interval = 1.0  # seconds
 
         # Fixed interval polling configuration - always 100Hz
@@ -176,9 +185,8 @@ class DiscoveryLoop:
         # The 100Hz path only increments cheap counters; gap/ratio/hz are derived
         # once per window at emission time.
         self._health_interval = 1.0  # seconds between health spans/metrics
-        # Emit gate uses monotonic (immune to wall-clock jumps); window/gap math
-        # uses wall-clock time.time() to match the poll loop's current_time.
-        self._last_health_emit = time.monotonic()
+        # Window/gap math uses wall-clock time.time() to match the poll loop's
+        # current_time; the emission schedule itself is monotonic (_run_periodic).
         self._window_start = time.time()
         # Per-serial counters reset every window.
         self._hw_polls: dict[str, int] = {}  # polls attempted
@@ -198,6 +206,10 @@ class DiscoveryLoop:
         # Monotonic pick-up time of the previous poll batch: lateness beyond the
         # poll interval is the loop's own stall, not the link's (UC-035 BR-005).
         self._last_pickup_mono: float | None = None
+        # Cumulative loop stall (seconds), and its value at each serial's last
+        # fresh frame, so bluetooth.event_gap_ms excludes loop stalls too (#1447).
+        self._loop_stall_total = 0.0
+        self._hw_stall_at_last: dict[str, float] = {}
 
         # Gameplay disconnect events: accumulated between stream frames, drained by servicer (#580)
         self._gameplay_disconnects: list[str] = []
@@ -245,12 +257,9 @@ class DiscoveryLoop:
         """
         Async task for controller discovery and battery monitoring.
 
-        Uses fixed interval scheduling for consistent timing:
-        - Gameplay mode (streams active): 100Hz polling for fast button detection
-        - Idle mode (no streams): 10Hz polling to save resources
-
-        Blocking USB I/O operations are run via asyncio.to_thread() to avoid
-        blocking the main event loop.
+        Initializes the backend, starts the discovery / LED / battery / health
+        side tasks and runs the fixed 100 Hz poll loop; the side tasks are
+        cancelled and awaited when the poll loop ends (#1447).
 
         Phase 56: Event-driven spans - Only creates spans for actual events (controller connected),
         not for routine polling. Metrics track polling operations.
@@ -273,58 +282,43 @@ class DiscoveryLoop:
                 self._initialized_event.set()  # Signal even on failure so waiters don't hang
             return
 
-        # Fixed interval scheduling
-        next_poll_time = time.monotonic()
-
         # Set constant polling metrics once (not every 10ms)
         metrics.polling_mode.set(1)  # Always in "gameplay mode" now
         metrics.polling_target_hz.set(100)
 
+        # Discovery, LED batches, battery and bluetooth-health run as their own
+        # tasks (#1447): a slow USB enumeration or LED write must never delay
+        # the 100 Hz state poll that death detection depends on (NFR-002/004).
+        self._side_tasks = [
+            asyncio.create_task(self._run_periodic("discovery", self._discovery_interval, self._discovery_step)),
+            asyncio.create_task(self._run_periodic("led", self._led_interval, self._led_step)),
+            asyncio.create_task(self._run_periodic("battery", self._battery_interval, self._battery_step)),
+            asyncio.create_task(
+                self._run_periodic(
+                    "bluetooth_health", self._health_interval, self._health_step, first_delay=self._health_interval
+                )
+            ),
+        ]
+        try:
+            await self._poll_loop()
+        finally:
+            for task in self._side_tasks:
+                task.cancel()
+            await asyncio.gather(*self._side_tasks, return_exceptions=True)
+
+    async def _poll_loop(self) -> None:
+        """Fixed-cadence 100 Hz state poll; nothing else is awaited on this path."""
+        next_poll_time = time.monotonic()
         while self.running:
             try:
-                current_time = time.time()
+                # Lateness of this poll against its schedule: event-loop
+                # contention only, now that nothing else runs in this loop.
+                metrics.poll_loop_lateness_seconds.observe(max(0.0, time.monotonic() - next_poll_time))
 
-                # Fixed 100Hz polling - there's always either a menu or game stream active
-                poll_interval = self._poll_interval
-
-                # Check for new controllers at 1Hz (not every poll cycle).
-                # Discovery involves gRPC calls + USB enumeration — running it
-                # at 100Hz wastes CPU and causes lag on the rust-hid service.
-                if current_time - self._last_discovery_check >= self._discovery_interval:
-                    with metrics.discovery_check_duration_seconds.time():
-                        await self._check_for_new_controllers()
-                        metrics.discovery_checks_total.inc()
-                    self._last_discovery_check = current_time
-
-                # Update controller states from backend
                 await self._update_controller_states()
 
-                # Bluetooth health: emit a ~1Hz span + metrics from accumulated
-                # window counters. Decoupled from discovery cadence (#732 M3).
-                now_mono = time.monotonic()
-                if now_mono - self._last_health_emit >= self._health_interval:
-                    self._emit_bluetooth_health(time.time(), now_mono)
-                    self._last_health_emit = now_mono
-
-                # Check battery levels every 30 seconds (Phase 39 - Task 4, Phase 70)
-                # Note: Battery display/warnings moved to menu service (Phase 70)
-                if current_time - self.monitoring.last_battery_check >= 30.0:
-                    with metrics.battery_check_duration_seconds.time():
-                        self.monitoring.check_battery_levels(self.tracked_controllers)
-                        metrics.battery_checks_total.inc()
-                    self.monitoring.last_battery_check = current_time
-
-                # Phase 72: Update LEDs at 20Hz (every 50ms) - separated from polling
-                if current_time - self._last_led_update >= 0.05:
-                    # Run in thread pool since update_all_leds() has blocking USB calls
-                    updated_count = await asyncio.to_thread(self.backend.update_all_leds)
-                    self._last_led_update = current_time
-                    # Track LED batch update efficiency
-                    metrics.led_batch_updates_total.inc()
-                    metrics.led_controllers_updated_per_batch.observe(updated_count)
-
                 # Fixed interval sleep - precise timing using monotonic clock
-                next_poll_time += poll_interval
+                next_poll_time += self._poll_interval
                 sleep_time = next_poll_time - time.monotonic()
 
                 if sleep_time > 0:
@@ -332,6 +326,7 @@ class DiscoveryLoop:
                 else:
                     # Behind schedule - reset to avoid spiral
                     next_poll_time = time.monotonic()
+                    await asyncio.sleep(0)  # still let the side tasks run
 
             except asyncio.CancelledError:  # NOSONAR — intentional: graceful shutdown of discovery loop
                 logger.info("Discovery loop cancelled")
@@ -339,6 +334,77 @@ class DiscoveryLoop:
             except Exception as e:
                 logger.error(f"Discovery loop error: {e}", exc_info=True)
                 await asyncio.sleep(5.0)
+                next_poll_time = time.monotonic()
+
+    async def _run_periodic(
+        self,
+        name: str,
+        interval: float,
+        step: Callable[[], Awaitable[None]],
+        first_delay: float = 0.0,
+    ) -> None:
+        """Run ``step`` every ``interval`` seconds until the loop stops.
+
+        A step that overruns its interval is followed immediately by the next
+        one (no catch-up burst). Errors are logged and the schedule continues:
+        the first failure with its traceback, then at most one line per
+        ``_STEP_ERROR_LOG_INTERVAL`` with the count of failures in between, so
+        a 20 Hz step that keeps failing does not flood the log. Cancellation
+        propagates so the owner can await the task.
+        """
+        if first_delay > 0:
+            await asyncio.sleep(first_delay)
+        next_run = time.monotonic()
+        last_error_log: float | None = None
+        suppressed = 0
+        while self.running:
+            try:
+                await step()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                now = time.monotonic()
+                if last_error_log is None:
+                    logger.error(f"Discovery loop {name} step error: {e}", exc_info=True)
+                    last_error_log = now
+                elif now - last_error_log >= _STEP_ERROR_LOG_INTERVAL:
+                    logger.error(f"Discovery loop {name} step error: {e} ({suppressed} more since last log)")
+                    last_error_log = now
+                    suppressed = 0
+                else:
+                    suppressed += 1
+            next_run += interval
+            delay = next_run - time.monotonic()
+            if delay <= 0:
+                next_run = time.monotonic()
+                delay = 0
+            await asyncio.sleep(delay)
+
+    async def _discovery_step(self) -> None:
+        """Check for new / lost controllers (1 Hz)."""
+        # Discovery involves gRPC calls + USB enumeration in a worker thread.
+        with metrics.discovery_check_duration_seconds.time():
+            await self._check_for_new_controllers()
+            metrics.discovery_checks_total.inc()
+
+    async def _led_step(self) -> None:
+        """Flush LED colour / rumble changes and keep-alives (20 Hz)."""
+        # Run in thread pool since update_all_leds() has blocking USB calls
+        updated_count = await asyncio.to_thread(self.backend.update_all_leds)
+        # Track LED batch update efficiency
+        metrics.led_batch_updates_total.inc()
+        metrics.led_controllers_updated_per_batch.observe(updated_count)
+
+    async def _battery_step(self) -> None:
+        """Refresh battery metrics (every 30 s; display/warnings live in the menu, Phase 70)."""
+        with metrics.battery_check_duration_seconds.time():
+            self.monitoring.check_battery_levels(self.tracked_controllers)
+            metrics.battery_checks_total.inc()
+        self.monitoring.last_battery_check = time.time()
+
+    async def _health_step(self) -> None:
+        """Emit the ~1 Hz bluetooth-health span + metrics (#732 M3)."""
+        self._emit_bluetooth_health(time.time(), time.monotonic())
 
     async def _check_for_new_controllers(self) -> None:
         """
@@ -408,6 +474,7 @@ class DiscoveryLoop:
                 self._hw_max_gap_ms.pop(serial, None)
                 self._hw_last_fresh_ts.pop(serial, None)
                 self._hw_last_obj_id.pop(serial, None)
+                self._hw_stall_at_last.pop(serial, None)
                 self._gap_window.forget(serial)
                 self._connection_quality.pop(serial, None)
                 # Clear per-serial health metric labels so disconnected
@@ -543,7 +610,10 @@ class DiscoveryLoop:
             # lateness beyond one poll interval is the loop's own stall.
             pickup_mono = time.monotonic()
             if self._last_pickup_mono is not None:
-                self._gap_window.note_loop_stall(pickup_mono - self._last_pickup_mono - self._poll_interval)
+                stall = pickup_mono - self._last_pickup_mono - self._poll_interval
+                self._gap_window.note_loop_stall(stall)
+                if stall > 0:
+                    self._loop_stall_total += stall
             self._last_pickup_mono = pickup_mono
 
             # Record metrics
@@ -581,7 +651,7 @@ class DiscoveryLoop:
                 obj_id = id(state)
                 if self._hw_last_obj_id.get(serial) != obj_id:
                     self._hw_last_obj_id[serial] = obj_id
-                    self._record_fresh_frame(serial, current_time)
+                    self._record_fresh_frame(serial, current_time, self._loop_stall_total)
                     self._gap_window.record(serial, pickup_mono)
                 else:
                     # Stale replay: no new frame, but not a hardware drop either.
@@ -640,7 +710,6 @@ class DiscoveryLoop:
             gauges = self._accel_gauges.get(serial)
             if gauges:
                 gauges["magnitude"].set(magnitude)
-                gauges["prom_magnitude"].set(magnitude)
                 gauges["x"].set(ax)
                 gauges["y"].set(ay)
                 gauges["z"].set(az)
@@ -662,21 +731,25 @@ class DiscoveryLoop:
         if activity_detected:
             self._last_activity_time[serial] = current_time
 
-    def _record_fresh_frame(self, serial: str, now: float) -> None:
+    def _record_fresh_frame(self, serial: str, now: float, stall_total: float = 0.0) -> None:
         """Record a genuinely-new frame for the bluetooth-health window.
 
         Tracks the fresh-frame count and the max inter-event gap (ms) between
         consecutive fresh frames. Cheap — runs on the 100Hz path. ``now`` is a
         wall-clock timestamp (seconds); only deltas are used so the clock source
-        just needs to be monotone within a window.
+        just needs to be monotone within a window. ``stall_total`` is the
+        cumulative poll-loop stall: the part of a gap the loop itself ran late
+        is not charged to the link (#1447, as in UC-035 BR-005).
         """
         self._hw_fresh[serial] = self._hw_fresh.get(serial, 0) + 1
         last_ts = self._hw_last_fresh_ts.get(serial)
         if last_ts is not None:
-            gap_ms = (now - last_ts) * 1000.0
+            stalled = stall_total - self._hw_stall_at_last.get(serial, stall_total)
+            gap_ms = max(0.0, (now - last_ts - stalled) * 1000.0)
             if gap_ms > self._hw_max_gap_ms.get(serial, 0.0):
                 self._hw_max_gap_ms[serial] = gap_ms
         self._hw_last_fresh_ts[serial] = now
+        self._hw_stall_at_last[serial] = stall_total
 
     def sample_age_seconds(self, serial: str, now: float) -> float | None:
         """Seconds since the poll loop picked up ``serial``'s current sample.
@@ -779,7 +852,7 @@ class DiscoveryLoop:
     def _emit_bluetooth_health(self, now: float, now_mono: float | None = None) -> None:
         """Emit the ~1Hz controller.bluetooth_health span + health metrics.
 
-        Decoupled from discovery cadence via ``_last_health_emit``. Skips
+        Runs on its own periodic task (#1447), decoupled from discovery. Skips
         emission entirely when no controllers were polled this window — an idle
         lobby with no controllers produces no health heartbeat (the agent's
         OBSERVE step treats absence-of-span as "nothing to perceive").
@@ -953,6 +1026,9 @@ class DiscoveryLoop:
 
             # Store initial state
             self.controller_states[serial] = state
+            # The poll loop runs concurrently with discovery (#1447) and may have
+            # rebuilt the serial cache while this spawn awaited the first state.
+            self._cached_serials = None
 
             # Add attributes to current span (this is called within "spawn_controller_process" span)
             current_span = trace.get_current_span()
@@ -970,7 +1046,6 @@ class DiscoveryLoop:
             # Avoids 5× _validate_labels + _make_key per poll cycle per controller
             self._accel_gauges[serial] = {
                 "magnitude": metrics.controller_accel_magnitude.labels(serial=serial),
-                "prom_magnitude": metrics.prom_controller_accel_magnitude.labels(serial=serial),
                 "x": metrics.controller_accel_x.labels(serial=serial),
                 "y": metrics.controller_accel_y.labels(serial=serial),
                 "z": metrics.controller_accel_z.labels(serial=serial),
