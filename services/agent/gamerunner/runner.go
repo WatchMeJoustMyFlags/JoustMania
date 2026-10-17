@@ -320,6 +320,9 @@ type Runner struct {
 	tracker    *patterngame.Tracker
 	// capUnit scales the pattern safety cap (time.Second; tests shrink it).
 	capUnit time.Duration
+	// endedGrace bounds the wait for a game_force_ended after a game_ended
+	// without an outcome (UC-046 BR-016; DefaultEndedGrace, tests shrink it).
+	endedGrace time.Duration
 }
 
 // SetPatternCallback registers the UC-046 replay-record hook.
@@ -337,12 +340,13 @@ func New(cfg Config, log *slog.Logger) *Runner {
 		log = slog.Default()
 	}
 	return &Runner{
-		cfg:     cfg.withDefaults(),
-		log:     log,
-		tracer:  otel.Tracer(tracerName),
-		dial:    defaultDialer,
-		tracker: patterngame.Default,
-		capUnit: time.Second,
+		cfg:        cfg.withDefaults(),
+		log:        log,
+		tracer:     otel.Tracer(tracerName),
+		dial:       defaultDialer,
+		tracker:    patterngame.Default,
+		capUnit:    time.Second,
+		endedGrace: DefaultEndedGrace,
 	}
 }
 

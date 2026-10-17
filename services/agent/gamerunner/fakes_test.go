@@ -154,6 +154,10 @@ type fakeCoord struct {
 	// emitTerminalOnForceEnd, when set, makes ForceEndGame push a terminal event
 	// onto an extra channel consumed by the live stream.
 	emitTerminalOnForceEnd string
+	// forceEndEvents, when set, are pushed in order by ForceEndGame (after
+	// emitTerminalOnForceEnd): the coordinator's real sequence is JoustFFA's
+	// game_ended{outcome: force_ended, reason}, then game_force_ended.
+	forceEndEvents []*gcpb.GameEvent
 
 	mu             sync.Mutex
 	forceEndCalls  []string // game_ids passed to ForceEndGame
@@ -201,10 +205,20 @@ func (c *fakeCoord) ForceEndGame(_ context.Context, req *gcpb.ForceEndGameReques
 	c.forceEndCalls = append(c.forceEndCalls, req.GetGameId())
 	signal := c.forceEndSignal
 	terminal := c.emitTerminalOnForceEnd
+	extra := c.forceEndEvents
 	c.mu.Unlock()
 	if terminal != "" && signal != nil {
 		select {
 		case signal <- &gcpb.GameEvent{EventType: terminal, Timestamp: time.Now().UnixMilli()}:
+		default:
+		}
+	}
+	for _, ev := range extra {
+		if signal == nil {
+			break
+		}
+		select {
+		case signal <- ev:
 		default:
 		}
 	}
@@ -254,7 +268,7 @@ type testHarness struct {
 func newHarness(t *testing.T, mock *fakeMock, coord *fakeCoord) *testHarness {
 	t.Helper()
 	if coord.forceEndSignal == nil {
-		coord.forceEndSignal = make(chan *gcpb.GameEvent, 1)
+		coord.forceEndSignal = make(chan *gcpb.GameEvent, 8)
 	}
 
 	mockLis := bufconn.Listen(1 << 20)
@@ -300,6 +314,8 @@ func newHarness(t *testing.T, mock *fakeMock, coord *fakeCoord) *testHarness {
 	// Every shadow game is a pattern game; its safety cap is MaxGameSeconds units.
 	// Tests run with 1 unit = 20 ms (a 100 "s" cap = 2 s) and a private tracker.
 	r.capUnit = 20 * time.Millisecond
+	// The UC-046 BR-016 wait after an outcome-less game_ended (3 s in production).
+	r.endedGrace = 200 * time.Millisecond
 	r.tracker = patterngame.NewTracker()
 
 	return &testHarness{
