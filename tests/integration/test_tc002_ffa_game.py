@@ -59,22 +59,16 @@ _BLACK = (0, 0, 0)
 _DEATH_RUMBLE = 255
 
 
-def _assert_death_effect(
+def _death_effect_trace(
     observer: ObservabilityObserver, serial: str, death_ms: int
-) -> None:
-    """The victim's LED goes red and then black, and it rumbles, after its player_death."""
+) -> tuple[list, list]:
+    """LED colours and rumble intensities on ``serial`` since its player_death."""
     since = death_ms - 500  # coordinator and controller-manager share the host clock
     leds = [
         (e.led_change.r, e.led_change.g, e.led_change.b)
         for e in observer.get_led_events(serial)
         if e.timestamp_ms >= since
     ]
-    assert _DEATH_RED in leds, (
-        f"Step 6: no red death LED on {serial} after its player_death: {leds}"
-    )
-    assert _BLACK in leds[leds.index(_DEATH_RED) :], (
-        f"Step 6: {serial} death LED never faded to black: {leds}"
-    )
     rumbles = [
         e.rumble_change.intensity
         for e in observer.get_events()
@@ -82,7 +76,42 @@ def _assert_death_effect(
         and e.HasField("rumble_change")
         and e.timestamp_ms >= since
     ]
-    assert _DEATH_RUMBLE in rumbles, f"Step 6: no death rumble on {serial}: {rumbles}"
+    return leds, rumbles
+
+
+def _death_effect_seen(
+    observer: ObservabilityObserver, serial: str, death_ms: int
+) -> bool:
+    """Red, then black, and the full-intensity rumble, all after the player_death.
+
+    The black write ends the 300 ms red hold + 700 ms fade, so for the last
+    victim it lands about 1.0-1.1 s after the death, i.e. around the time
+    game_ended arrives: callers poll this instead of checking once.
+    Caveat: when update_all_leds() holds _led_lock, the direct write is skipped
+    and the 20 Hz loop sends only the latest colour
+    (services/controller_manager/multiplexer/multiplexer_backend.py:471), so the
+    black can merge with the menu's lobby-colour restore and never appear.
+    """
+    leds, rumbles = _death_effect_trace(observer, serial, death_ms)
+    return (
+        _DEATH_RED in leds
+        and _BLACK in leds[leds.index(_DEATH_RED) :]
+        and _DEATH_RUMBLE in rumbles
+    )
+
+
+async def _assert_death_effect(
+    observer: ObservabilityObserver, serial: str, death_ms: int
+) -> None:
+    """The victim's LED goes red and then black, and it rumbles (UC-030 step 9)."""
+    seen = await async_poll_until(
+        lambda: _death_effect_seen(observer, serial, death_ms), timeout=3.0
+    )
+    leds, rumbles = _death_effect_trace(observer, serial, death_ms)
+    assert seen, (
+        f"Step 6: no death effect (red, then black, rumble {_DEATH_RUMBLE}) on "
+        f"{serial} after its player_death: leds={leds} rumbles={rumbles}"
+    )
 
 
 def _events_for(
@@ -275,7 +304,7 @@ async def test_tc002_ffa_game_to_winner_then_restart(
             f"Step 6: one player_death per eliminated player, got {[dict(d.data) for d in deaths]}"
         )
         for death in deaths:
-            _assert_death_effect(observer, death.data["serial"], death.timestamp)
+            await _assert_death_effect(observer, death.data["serial"], death.timestamp)
 
         winners = _events_for(collector, game_id, "game_winner")
         assert [w.data["serial"] for w in winners] == [winner], (
