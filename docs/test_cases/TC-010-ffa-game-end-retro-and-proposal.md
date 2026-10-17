@@ -45,5 +45,5 @@
 
 ## Automation
 
-- **Partly automated**: `tests/integration/test_experiment_cohort_loop.py::test_inference_absent_backend_is_stub` asserts the agent selects the stub backend for retro and proposer (the precondition of Validation 3); `tests/integration/test_experiment_shadow_isolation.py::test_experiment_reaches_shadow_never_real` proves steps 6 and 7 for a hand-written experiment.
+- **Partly automated**: `tests/integration/test_experiment_cohort_loop.py::test_inference_absent_backend_is_stub` asserts the agent selects the stub backend for retro and proposer (the precondition of Validation 3); `tests/contract/test_flagd_resolution.py::test_experiment_reaches_shadow_never_real` proves steps 6 and 7 for a hand-written experiment on a real flagd.
 - Gaps (planned, #1362 "agent game-end chain"): no test plays a game to its end and asserts the retro, summary and proposer spans in order, the gate rejection (UC-042 A4) or the shadow-game capture-only retro (UC-042 A1); a fake Claude-compatible inference server is needed to automate the model path.

@@ -25,10 +25,10 @@ go OTLP->collector->Prometheus, a slow/flaky push path for assertions):
   or blocked intervention emits exactly one.
 - ``GetGameState`` exposes per-player ``sensitivity_factor`` and ``alive`` —
   the applied state of difficulty/lifecycle interventions.
-- A direct OpenFeature flagd RPC client (flagd port 8013, published by
-  docker-compose.override.yml) evaluates the written per-serial targeting
-  if-ladder, catching schema/targeting-rule rejections the Go unit tests
-  (jsonlogic-direct) cannot.
+
+flagd's server-side evaluation of the written per-serial targeting if-ladder is
+checked against a single real flagd in the contract tier
+(tests/contract/test_flagd_resolution.py, #1422), not here.
 
 interventions.json / agent.json are bind-mounted host files; the
 ``flag_files`` fixture snapshots and restores them so mutations never leak.
@@ -110,35 +110,6 @@ def write_state(flag_key: str, value) -> None:
     flag = doc["flags"][flag_key]
     flag["variants"][ACTIVE_VARIANT] = value
     flag["defaultVariant"] = ACTIVE_VARIANT
-    _dump_in_place(INTERVENTIONS_PATH, doc)
-
-
-def write_targeted(flag_key: str, neutral: str, serial: str, value) -> None:
-    """Per-player state write with a flagd targeting if-ladder.
-
-    Mirrors Writer.setTargeted: a per-serial ``agent_<serial>`` variant plus a
-    nested ``if(=== targetingKey serial, agent_<serial>, ... neutral)`` ladder,
-    defaultVariant flipped to the neutral variant. Merges with any existing
-    agent-driven serials (does not clobber other players).
-    """
-    doc = _load(INTERVENTIONS_PATH)
-    flag = doc["flags"][flag_key]
-    flag["variants"][f"agent_{serial}"] = value
-
-    agent_serials = sorted(
-        name[len("agent_"):] for name in flag["variants"] if name.startswith("agent_")
-    )
-    expr: object = neutral
-    for s in reversed(agent_serials):
-        expr = {
-            "if": [
-                {"===": [{"var": "targetingKey"}, s]},
-                f"agent_{s}",
-                expr,
-            ]
-        }
-    flag["targeting"] = expr
-    flag["defaultVariant"] = neutral
     _dump_in_place(INTERVENTIONS_PATH, doc)
 
 
@@ -349,58 +320,6 @@ async def _wait_for_sensitivity_factor(
     raise AssertionError(
         f"{serial} sensitivity_factor did not reach {expected} (last={last}) within {timeout}s"
     )
-
-
-# =============================================================================
-# Per-player targeting resolution against LIVE flagd (sequential)
-#
-# Kept sequential: it writes the UN-TARGETED (no gameId) player-targeting
-# if-ladder and asserts file-level flagd resolution for distinct serials, so it
-# is order-dependent on global flag state. The per-GAME, batched variant of the
-# player-sensitivity *game effect* lives in test_parallel_intervention_flow.py.
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_per_player_targeting_resolves_against_live_flagd(flag_files, docker_compose):
-    """Per-player targeting against LIVE flagd RPC: the written if-ladder must
-    resolve correctly via OpenFeature for distinct serials + unknown->default.
-    Catches schema/targeting-rule rejections the Go unit tests cannot.
-    """
-    from openfeature.evaluation_context import EvaluationContext
-
-    serial_a, serial_b, unknown = "SER_A", "SER_B", "SER_UNKNOWN"
-
-    def _write_branches():
-        # Write two distinct per-serial branches (merged into one if-ladder).
-        # Idempotent, so it doubles as poll_until's rewrite self-heal.
-        write_targeted("player_sensitivity_factor", "default", serial_a, 1.5)
-        write_targeted("player_sensitivity_factor", "default", serial_b, 0.7)
-
-    _write_branches()
-
-    # resolver="rpc" deliberately: this test's PURPOSE is flagd's server-side
-    # evaluation of the written targeting ladder (in-process would evaluate the
-    # jsonlogic client-side and mask server-side rule rejections).
-    with flagd_probe_client(docker_compose, "interventions", resolver="rpc") as client:
-
-        def _eval(serial: str) -> float:
-            return client.get_float_value(
-                "player_sensitivity_factor", 1.0, EvaluationContext(targeting_key=serial)
-            )
-
-        # No fixed settle: poll until flagd serves the written ladder (provider
-        # connect + file-watch reload may lag the write), then assert.
-        assert poll_until(
-            lambda: abs(_eval(serial_a) - 1.5) <= 0.01 and abs(_eval(serial_b) - 0.7) <= 0.01,
-            APPLY_TIMEOUT_SECONDS,
-            rewrite=_write_branches,
-        ), (
-            f"ladder did not resolve: serial_a={_eval(serial_a)} (want 1.5), "
-            f"serial_b={_eval(serial_b)} (want 0.7)"
-        )
-        # Unknown serial falls through the if-ladder to the neutral default (1.0).
-        assert abs(_eval(unknown) - 1.0) <= 0.01, f"unknown resolved to {_eval(unknown)}"
 
 
 # =============================================================================

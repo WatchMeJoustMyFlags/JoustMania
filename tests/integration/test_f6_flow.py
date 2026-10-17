@@ -6,8 +6,8 @@ if-ladder on ``game.json``'s ``windows`` flag (preset selection by
 ``targetingKey``). The #730 levers are covered by ``test_intervention_flow.py``;
 F6 shipped with unit tests only. This file extends the SAME e2e harness (compose
 lifecycle, in-place flag-file mutation with snapshot/restore via the
-``flag_files`` fixture, StreamGameEvents collector, live flagd RPC resolver) to
-validate the F6 additions against the real services.
+``flag_files`` fixture, StreamGameEvents collector) to validate the F6
+additions against the real services.
 
 Observability routes (F6 effects are NOT exposed on the GetGameState proto):
 
@@ -18,13 +18,10 @@ Observability routes (F6 effects are NOT exposed on the GetGameState proto):
   ``game_interventions_total``) on apply, a permission-block event on deny, and
   the quiet revert path (no new applied event) when reset to the neutral 1.0.
 - ``pacing_profile`` (type ``set_pacing_profile``): swaps ``game.music_windows``
-  (also not a proto field). Observable signal is the unblocked applied event,
-  plus the LIVE flagd RPC resolution of the ``windows`` targeting ladder that the
-  handler relies on (known preset -> preset windows; unknown -> default variant).
-- The ``windows`` preset ladder lives on the ``game`` flag set; we evaluate it
-  through the published flagd RPC port (8013) with ``selector=flagSetId=game``,
-  exactly the path the game-coordinator handler uses, catching schema/targeting
-  rejections the jsonlogic-direct Go unit tests cannot.
+  (also not a proto field). Observable signal is the unblocked applied event.
+  The ``windows`` targeting ladder the handler relies on (known preset -> preset
+  windows; unknown -> default variant) is resolved against a real flagd in the
+  contract tier (tests/contract/test_flagd_resolution.py, #1422).
 
 flag files are bind-mounted host files; the ``flag_files`` fixture (imported from
 ``test_intervention_flow``) snapshots and restores them byte-for-byte.
@@ -117,8 +114,9 @@ async def test_pacing_profile_applies_and_reverts(flag_files, docker_compose, ga
 
     music_windows is not on the GetGameState proto; the observable signal is the
     applied event on apply and the quiet revert path on reset. The preset->windows
-    resolution itself is asserted against live flagd in
-    ``test_windows_preset_ladder_resolves_against_live_flagd``.
+    resolution itself is asserted against a real flagd in the contract tier
+    (tests/contract/test_flagd_resolution.py
+    ``test_windows_preset_ladder_resolves_against_live_flagd``).
     """
     set_interventions_allowed("standard")  # set_pacing_profile is in standard+
     # Two MEDIUM pacing writes fit under the suite-wide budget pinned by the
@@ -177,74 +175,3 @@ async def test_pacing_profile_applies_and_reverts(flag_files, docker_compose, ga
             )
     finally:
         await channel.close()
-
-
-# =============================================================================
-# Scenario 3: windows preset targeting ladder via LIVE flagd RPC resolver
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_windows_preset_ladder_resolves_against_live_flagd(flag_files, docker_compose):
-    """The F6 ``windows`` targeting if-ladder evaluated through the LIVE flagd RPC
-    resolver: a known preset key (``calm`` / ``frantic``) resolves the matching
-    preset window object; an unknown key falls through the ladder to the
-    ``default`` variant. This is the schema/targeting-rejection risk the
-    jsonlogic-direct Go unit tests cannot catch — the game-coordinator's
-    pacing_profile handler resolves the same flag the same way.
-
-    Note: ``windows`` lives on the ``game`` flag set (game.json), so the provider
-    selector is ``flagSetId=game`` (vs the interventions selector used by the
-    #730 per-player targeting test).
-    """
-    from openfeature import api
-    from openfeature.contrib.provider.flagd import FlagdProvider
-    from openfeature.contrib.provider.flagd.config import ResolverType
-    from openfeature.evaluation_context import EvaluationContext
-
-    host = docker_compose.get_service_host("flagd", 8013)
-    port = int(docker_compose.get_service_port("flagd", 8013))
-
-    provider = FlagdProvider(
-        host=host,
-        port=port,
-        resolver_type=ResolverType.RPC,
-        selector="flagSetId=game",
-    )
-    api.set_provider(provider, domain="it_game_windows")
-    client = api.get_client("it_game_windows")
-
-    def _resolve(preset: str) -> dict:
-        return client.get_object_value(
-            "windows", {}, EvaluationContext(targeting_key=preset)
-        )
-
-    # Poll until the provider has connected and served the committed flag set.
-    deadline = time.time() + APPLY_TIMEOUT_SECONDS
-    while time.time() < deadline:
-        if _resolve("calm").get("min_music_fast_time") is not None:
-            break
-        time.sleep(0.3)
-
-    try:
-        calm = _resolve("calm")
-        frantic = _resolve("frantic")
-        default = _resolve("default")
-        unknown = _resolve("SER_NOT_A_PRESET")
-
-        # Known presets resolve to their distinct preset window objects.
-        assert calm.get("min_music_slow_time") == 13, f"calm resolved wrong: {calm}"
-        assert frantic.get("min_music_fast_time") == 6, f"frantic resolved wrong: {frantic}"
-        # The presets are genuinely different objects (ladder branches, not a
-        # single shared variant).
-        assert calm != frantic, "calm and frantic resolved to the same object"
-
-        # Unknown key falls through the if-ladder to the default variant.
-        assert unknown == default, (
-            f"unknown preset did not fall back to default: {unknown} != {default}"
-        )
-        assert unknown.get("min_music_fast_time") == 4, (
-            f"default variant has unexpected values: {unknown}"
-        )
-    finally:
-        provider.shutdown()
