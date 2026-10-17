@@ -9,16 +9,19 @@ allow-list and mode matrix) through the whole stack; the part only a real flagd
 can show (gameId / targetingKey scoping, in-place reloads) lives in the flagd
 contract tier (tests/contract/test_flagd_resolution.py).
 
-Each test drives ``InterventionManager.evaluate_all()`` with an in-memory flag
-client, the handlers the servicer registers (``register_lifecycle_handlers`` /
-``register_difficulty_handlers``) and a real game object, then asserts both the
+Each test wires the manager the way the servicer does: a ``get_sessions``
+seam returning one ``SessionView`` for a live game id, ``prime_session`` at game
+start (so a value already in a flag counts as consumed, UC-040 BR-006), and the
+handlers the servicer registers (``register_lifecycle_handlers`` /
+``register_difficulty_handlers``). It then drives ``evaluate_all()`` with an
+in-memory flag client against a real game object and asserts both the
 published ``agent_intervention`` events and the effect on the game.
 """
 
 import json
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -42,11 +45,13 @@ from services.game_coordinator.interventions import (
     INTERVENTION_SPECS,
     MODE_CAPABILITY_DENY,
     InterventionManager,
+    SessionView,
 )
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
 
 ALL_TYPES = ",".join(sorted(spec.type_id for spec in INTERVENTION_SPECS))
 FLAGD_DIR = project_root / "services" / "flagd"
+GAME_ID = "game_flag2effect"  # a coordinator-style id: evaluated with a gameId context
 
 
 # --------------------------------------------------------------------------- #
@@ -126,8 +131,8 @@ def make_ffa_game(num_players: int = 4) -> FFAGame:
     game = FFAGame(
         controller_manager_client=MockControllerManagerService(num_controllers=num_players),
         event_publisher=async_noop,
-        audio_client=AsyncMock(),
-        game_id="test_flag_to_effect",
+        audio_client=None,
+        game_id=GAME_ID,
     )
     game.gameplay_stream = RecordingGameplayStream()
     for i in range(num_players):
@@ -137,18 +142,26 @@ def make_ffa_game(num_players: int = 4) -> FFAGame:
 
 
 def make_manager(game, interventions=None, allowed: str = ALL_TYPES):
-    """A manager on the legacy single-game path, with the servicer's handlers."""
+    """A manager on the servicer's seam: one live session, primed at game start.
+
+    ``get_sessions`` returns a ``SessionView`` for ``GAME_ID`` (a shadow-kind
+    view, as the servicer builds for a non-primary game) and ``prime_session``
+    records the current flag values as this game's baseline before anything is
+    evaluated, exactly as ``servicer._prime_session`` does when a game starts.
+    """
     events = []
 
     async def publisher(event_type, data):
         events.append((event_type, data))
 
-    mgr = InterventionManager(event_publisher=publisher, get_game=lambda: game)
+    session = SessionView(game_id=GAME_ID, game=game, publish=publisher, is_real=False)
+    mgr = InterventionManager(event_publisher=publisher, get_sessions=lambda: [session])
     mgr._interventions_client = PerSerialFlagClient(interventions)
     mgr._agent_client = AgentStub(allowed)
     mgr._rate_limiter.set_budget(1000.0)
     register_lifecycle_handlers(mgr)
     register_difficulty_handlers(mgr)
+    mgr.prime_session(GAME_ID, list(game.players))
     return mgr, events
 
 
@@ -182,11 +195,18 @@ def shipped_allow_list(variant: str, flag_dir: Path) -> str:
 @pytest.mark.uc("UC-040", flow="main", steps=[13], br=["BR-006"])
 @pytest.mark.uc("UC-020", flow="A3")
 async def test_eliminate_nonce_kills_once_and_fresh_nonce_kills_again():
-    """The same eliminate nonce read again does not kill again; a new nonce for
-    another player does (was _scenario_eliminate_exactly_once)."""
+    """A nonce already in the flag when the game starts is consumed, not applied
+    (BR-006). A nonce written during the game kills once; the same nonce read
+    again does not kill again; a new nonce for another player does
+    (was _scenario_eliminate_exactly_once)."""
     game = make_ffa_game()
-    mgr, events = make_manager(game, {"eliminate_player": "n1:p1"})
+    mgr, events = make_manager(game, {"eliminate_player": "stale:p3"})
 
+    await evaluate(mgr)  # the pre-game nonce is this game's baseline
+    assert published(events, "eliminate_player") == []
+    assert game.players["p3"].alive is True
+
+    mgr._interventions_client.values["eliminate_player"] = "n1:p1"
     await evaluate(mgr)
     assert game.players["p1"].alive is False
     assert len(published(events, "eliminate_player", blocked="false")) == 1
@@ -239,8 +259,9 @@ async def test_revive_applies_in_respawn_mode():
     await game._initialize_players_impl(mock_cm.controllers)
     victim = next(iter(game.players))
     game.players[victim].alive = False
-    mgr, events = make_manager(game, {"revive_player": f"n1:{victim}"})
+    mgr, events = make_manager(game, {"revive_player": ""})  # no edge value at game start
 
+    mgr._interventions_client.values["revive_player"] = f"n1:{victim}"
     await evaluate(mgr)
 
     revive = published(events, "revive_player")
