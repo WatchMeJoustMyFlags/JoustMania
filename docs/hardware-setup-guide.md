@@ -7,7 +7,7 @@ Complete guide for setting up JoustMania on Raspberry Pi 5, covering USB configu
 ## Table of Contents
 
 - [USB Port Selection](#usb-port-selection)
-- [Bluetooth Adapter Recommendations](#bluetooth-adapter-recommendations)
+- [Bluetooth Adapter Recommendations](#bluetooth-adapter-recommendations) (chipset first)
 - [Controller Pairing](#controller-pairing)
 - [Power Configurations](#power-configurations)
 - [Mobile/Portable Setups](#mobileportable-setups)
@@ -56,48 +56,100 @@ If you must use USB 3.0 ports for other devices, keep them physically separated 
 
 ## Bluetooth Adapter Recommendations
 
-### Class 1 vs Class 2 Adapters
+### Chipset beats marketing
 
-| Specification | Class 2 (Typical) | Class 1 (Recommended) |
-|---------------|-------------------|----------------------|
-| Range | ~10 meters | ~100+ meters |
-| Transmit Power | 2.5 mW | 100 mW |
-| Price | $5-10 | $15-25 |
-| Use Case | Desktop, close range | Large rooms, events |
+What decides how well an adapter handles PS Moves is its **chipset**, not the brand, the
+Bluetooth version, "Class 1", "150 m range" or antenna size. Many BT 5.x "long range" dongles
+are Realtek, Barrot or Actions inside, and they behave very differently with PS3 Moves (ZCM1).
+These findings come from upstream JoustMania's adapter measurements (2026); we have not
+re-measured them on our stack.
 
-### Recommended Features
+**Identify the chipset** by its HCI manufacturer, not by the box:
 
-For JoustMania events, look for adapters with:
-
-- **Class 1** or **"100m+ range"** in description
-- **External/dual antennas** for better signal
-- **Adjustable antennas** for optimal positioning
-- **Linux compatibility** (most adapters work)
-- **Bluetooth 4.0+** with backward compatibility to BT 2.1 (PS Move uses Classic BT)
-
-### Example: Quality Mobile Adapter
-
+```bash
+hciconfig -a | grep -E "^hci|Manufacturer"
+#   hci1:   Type: Primary  Bus: USB
+#           Manufacturer: Cambridge Silicon Radio (10)
 ```
-Wowfast Bluetooth 5.4 Adapter
-├── Dual antennas (better coverage)
-├── 150m range (Class 1)
-├── Rotatable 90°/180° (optimize direction)
-├── Foldable (travel-friendly)
-├── Linux compatible
-└── ~$15-20
-```
+
+| HCI manufacturer (id) | Chipset family | PS Move behaviour |
+|---|---|---|
+| Cambridge Silicon Radio (10) | CSR8510 A10 | **Recommended.** Good timing nearby at 1 to 7 links; at distance it varies by model (Cirago and Sena CSR adapters were poor at distance) |
+| Realtek Semiconductor (93) | RTL8761BU (BT 5.x dongles) | PS3 Move timing poor below about 5 active links, good at 5; some samples accept only 5 links |
+| Broadcom (15) | BCM20702 | Mediocre (7 PS3 Moves about 71 updates/s, p95 report gap about 32 ms) |
+| Cypress (305) | BCM4345C0 (Pi 5 internal radio) | Fine for a few PS4 Moves (ZCM2) indoors; poor for PS3 Moves (see below) |
+| Actions, Barrot, AICSemi (AIC8800 combo) | various | **Avoid**: poor timing |
+
+USB id `0a12:0001` alone does not prove a real CSR chip: clones exist (the kernel carries
+workarounds for them). Trust the HCI manufacturer line, then test with real controllers.
+
+### Recommended adapter
+
+**Feasycom FSC-BP119** (CSR8510 A10, BT 4.0, Class 1, external antenna):
+
+- One adapter, 7 PS3 Moves nearby: about 78 updates/s per controller, p95 report gap about 25 ms.
+- Two adapters, 12 PS3 Moves (6 + 6): nearby about 83 to 86 updates/s and p95 about 18 to 20 ms.
+  At distance all 12 stayed connected, but timing was poor (about 48 to 53 updates/s, p95 about
+  45 to 55 ms, gaps up to about 290 ms).
+- Not verified yet: 14 on two adapters (7 + 7), long sessions, outdoor range.
+
+Sena UD100 (also CSR) was similar nearby but poor at distance, and stalled when used alongside a Feasycom.
+
+### Realtek RTL8761BU adapters
+
+Most BT 5.x dongles sold today (TP-Link UB500 Plus, ASUS BT600, ZEXMTE, StarTech BT 5.3, GAROGYI,
+Krisnorey, Hakimonoe, Techkey, ...) are Realtek RTL8761BU. They work, with caveats for PS3 Moves:
+
+- Timing is poor with only a few active links and good from about **5 active links** per adapter.
+  Spreading few controllers thinly over many Realtek adapters is the worst case.
+- Some samples accept **only 5 links**, not 7; a 6th link can take about 20 s to come up.
+
+So "5 per adapter" is Realtek advice, not a general rule: with CSR adapters 6 to 7 per adapter
+had good timing nearby. The pairing daemon spreads controllers over the least-loaded adapter (UC-001 BR-001)
+and does not know the chipset.
+
+### Pi 5 internal Bluetooth
+
+The Pi 5 radio (Cypress BCM4345C0 on UART) is fine indoors for **a few PS4 Moves (ZCM2)**, but not for
+PS3 Moves (ZCM1): 1 PS3 Move reached about 59 updates/s, 7 PS3 Moves only about 6 updates/s with a
+p95 gap of about 300 ms. That is why `scripts/setup/setup_host.sh` disables it (`dtoverlay=disable-bt`)
+for multi-adapter rigs. A tiny PS4-Move-only setup could leave it on.
+
+### Central / Peripheral role
+
+Let BlueZ negotiate the link role. **Do not force the Pi to Peripheral** (for example with
+`hcitool sr <addr> peripheral`): forcing Peripheral can lower link capacity and timing. On one
+Realtek sample, six all-Central links were clearly better than six with one Peripheral link; an
+older CSR setup was limited to about 2 links per adapter when forced to Peripheral (a historical
+observation, not a current measurement).
+
+### Judging link quality
+
+- Use the report gap, not updates/s alone: p95 gap at most 22 ms is good, up to 30 ms is acceptable,
+  above 30 ms is poor; the longest gap over 10 s should stay under 30 to 50 ms.
+- A controller that "stays connected" with 500 ms gaps has failed a range test.
+- Inquiry TX power is not link power or power class; the ACL MTU (`310:10`, `1021:6`) says nothing
+  about capacity or quality; zero HCI error counters do not prove there were no retransmissions.
+
+### Other features worth having
+
+- **External antenna** (and a USB extension cable to move the adapter away from the Pi)
+- **Linux support** (CSR and Realtek both work with the stock `btusb` driver)
+- PS Move uses Bluetooth Classic; any BT 2.1+ adapter can talk to it, the chipset decides how well
 
 ### Controllers Per Adapter
 
-Each Bluetooth adapter supports **up to 7 simultaneous connections** (Bluetooth piconet limit).
+Bluetooth Classic allows **at most 7 active links per adapter** (piconet limit). How many work
+*well* depends on the chipset: CSR 6 to 7 (nearby), Realtek about 5 (some Realtek samples stop at 5).
+The pairing daemon does not enforce a cap (C-011).
 
-| Adapters | Max Controllers |
-|----------|-----------------|
-| 1 | 7 |
-| 2 | 14 |
-| 3 | 21 |
-| 4 | 28 |
-| 6 | 42 |
+| Adapters | CSR (6-7 each) | Realtek (5 each) |
+|----------|----------------|------------------|
+| 1 | 6-7 | 5 |
+| 2 | 12-14 (12 tested; poor timing at distance) | 10 |
+| 3 | 18-21 | 15 |
+| 4 | 24-28 | 20 |
+| 6 | 36-42 | 30 |
 
 ---
 
@@ -204,6 +256,28 @@ sudo systemctl restart bluetooth
 
 This is automatically configured by `setup_host.sh`.
 
+**Reset all PS Move registrations** (controllers paired to the wrong adapter, stale
+registrations from an unplugged adapter):
+
+```bash
+# List what would be removed (changes nothing)
+scripts/hardware/reset_bluetooth_connections.sh --dry-run
+
+# Remove every PS Move registration, then re-pair the controllers over USB
+scripts/hardware/reset_bluetooth_connections.sh
+```
+
+Only PS Moves (Sony vendor `054c`, product `03d5` / `0c5e`) are removed: live BlueZ devices,
+and saved registrations under `/var/lib/bluetooth` of adapters BlueZ does not currently present
+(for example unplugged ones). If bluetoothd is not running, only the saved registrations are
+cleaned; if BlueZ answers with any other error (busy, access denied), nothing is removed. Keyboards, headsets and other Bluetooth devices stay paired. Each removal is reported;
+the script exits non-zero if any failed.
+
+No reboot is needed. After a real run the script restarts `pairing-daemon`, because the running
+daemon remembers controllers it already verified and would not re-pair them over USB until it
+restarts. If you run `tools/clear_devices.py` on the host instead, run
+`docker compose restart pairing-daemon` yourself.
+
 ### Manual Pairing (Alternative)
 
 If the daemon isn't working, you can pair manually using `bluetoothctl`:
@@ -284,7 +358,7 @@ Power Bank (USB-C PD, 20,000mAh)
     USB 2.0 ports
      │       │
      ▼       ▼
-   [BT]     [BT]    ← 2× Class 1 adapters
+   [BT]     [BT]    ← 2× CSR adapters
 
 14 controllers, ~11W, 6+ hours runtime
 ```
@@ -301,7 +375,7 @@ Power Bank (USB-C PD, 20,000mAh+)
      │           │
      ▼           ▼
   USB Hub     USB Hub     ← 2× bus-powered 4-port hubs
-  [BT][BT]    [BT][BT]    ← 4× Class 1 adapters
+  [BT][BT]    [BT][BT]    ← 4× CSR adapters
 
 24 controllers (7+7+7+3), ~12W, 5-6 hours runtime
 ```
@@ -318,12 +392,16 @@ Power Bank (USB-C PD, 26,800mAh)
      │           │
      ▼           ▼
   USB Hub     USB Hub     ← 2× bus-powered 4-port hubs
-[BT][BT][BT] [BT][BT][BT] ← 6× Class 1 adapters
+[BT][BT][BT] [BT][BT][BT] ← 6× CSR adapters
 
 42 controllers (7×6), ~13W, 7 hours runtime
 ```
 
 **Note**: 3 adapters per hub = 450mA of 500mA limit. This is tight but functional.
+
+**Note**: 7 per adapter in these layouts assumes CSR adapters, and 14 on two adapters is not
+verified yet (12 is). With Realtek adapters plan about 5 per adapter and add adapters instead
+(see [Chipset beats marketing](#chipset-beats-marketing)).
 
 ---
 
@@ -415,14 +493,14 @@ If using adapters with adjustable antennas:
 |-------|----------|
 | USB 3.0 interference | Move adapters to USB 2.0 ports |
 | Hub power starvation | Use powered hub or distribute across ports |
-| Too many per adapter | Limit to 5-6 controllers per adapter |
-| Weak signal | Use Class 1 adapters with external antennas |
+| Too many per adapter | Check the chipset (`hciconfig -a`): Realtek about 5 per adapter, CSR 6-7 |
+| Weak signal | Use a CSR adapter with an external antenna (Feasycom FSC-BP119) |
 
 ### Reduced Range / Weak Signal
 
 | Cause | Solution |
 |-------|----------|
-| Class 2 adapter | Upgrade to Class 1 (100m range) |
+| Weak chipset (Actions, Barrot, AIC8800, Pi internal radio for PS3 Moves) | Switch to a CSR adapter; "Class 1" / "150 m" labels do not guarantee range |
 | Adapter near RPi | Use USB extension cable |
 | Obstacles | Position adapters with line-of-sight |
 | Interference | Move away from WiFi routers, USB 3.0 devices |
@@ -434,7 +512,7 @@ If using adapters with adjustable antennas:
 | Pairing daemon not running | `docker compose ps pairing-daemon` |
 | USB device not detected | `lsusb \| grep Sony` - check cable |
 | ClassicBondedOnly=true | Edit `/etc/bluetooth/input.conf`, set to `false` |
-| Adapter limit reached | Max 7 per adapter, add more adapters |
+| Adapter limit reached | Max 7 per adapter (some Realtek: 5), add more adapters |
 | Power issue | Check hub isn't over current limit |
 
 See [Controller Pairing](#controller-pairing) for detailed troubleshooting.
@@ -550,21 +628,21 @@ docker info | grep -i cgroup
 ### Minimum (14 Controllers, Mobile)
 
 - [ ] Raspberry Pi 5 (4GB+)
-- [ ] 2× Class 1 Bluetooth adapters (dual antenna recommended)
+- [ ] 2× CSR Bluetooth adapters (e.g. Feasycom FSC-BP119) (dual antenna recommended)
 - [ ] USB-C PD power bank (20,000mAh+)
 - [ ] 2× 1m USB extension cables (optional but recommended)
 
 ### Medium (24 Controllers, Mobile)
 
 - [ ] Raspberry Pi 5 (4GB+)
-- [ ] 4× Class 1 Bluetooth adapters
+- [ ] 4× CSR Bluetooth adapters (e.g. Feasycom FSC-BP119)
 - [ ] 2× USB 2.0 hubs (4-port, bus-powered OK)
 - [ ] USB-C PD power bank (20,000mAh+)
 
 ### Large (42 Controllers, Mobile)
 
 - [ ] Raspberry Pi 5 (8GB recommended)
-- [ ] 6× Class 1 Bluetooth adapters
+- [ ] 6× CSR Bluetooth adapters (e.g. Feasycom FSC-BP119)
 - [ ] 2× USB 2.0 hubs (4-port, bus-powered)
 - [ ] USB-C PD power bank (26,800mAh+)
 
@@ -581,7 +659,7 @@ docker info | grep -i cgroup
 
 | Goal | Key Decisions |
 |------|---------------|
-| **Best signal** | Class 1 adapters + USB extensions + antenna positioning |
+| **Best signal** | CSR adapters (Feasycom FSC-BP119) + USB extensions + antenna positioning |
 | **Mobile friendly** | USB 2.0 bus-powered hubs + 20,000mAh+ power bank |
 | **No interference** | Bluetooth on USB 2.0 only, avoid USB 3.0 |
 | **Scale to 42** | 6 adapters + parallel polling + lite deployment |

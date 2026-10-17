@@ -13,10 +13,17 @@
 - **Performance**: Can handle 30Hz streaming for 25 controllers at ~20-30% CPU
 
 ### Bluetooth Dongle Requirements
-- **Controllers per dongle**: 5-7 (recommended: 5 for stability)
-- **Total dongles needed**: 5 dongles (25 controllers ÷ 5 per dongle)
-- **Dongle type**: Any Bluetooth 2.0+ compatible dongle
+- **Chipset first**: identify each dongle's chipset with `hciconfig -a | grep Manufacturer`, not by brand, BT version or "Class 1". See the [hardware guide](hardware-setup-guide.md#chipset-beats-marketing).
+- **Recommended dongle**: Feasycom FSC-BP119 (CSR8510 A10). Two of them kept 12 PS3 Moves (6 + 6) connected; timing was good nearby but poor at distance (p95 about 45 to 55 ms, gaps up to about 290 ms). 14 on two is not verified yet.
+- **Controllers per dongle** (at most 7, the Bluetooth piconet limit; not enforced by the pairing daemon):
+  - CSR (manufacturer 10): 6-7 per dongle nearby (distance performance varies by model) → 4-5 dongles for 25 controllers
+  - Realtek RTL8761BU (manufacturer 93): about 5 per dongle → 5 dongles. Realtek needs about 5 *active* links for good PS3 Move timing, and some samples accept only 5. Spreading few controllers over many Realtek dongles is the worst case.
+  - Avoid Actions, Barrot and AIC8800 dongles (poor timing); Broadcom BCM20702 is mediocre.
+- **Pi 5 internal radio**: disabled by `setup_host.sh`; it is poor for PS3 Moves and only suits a few PS4 Moves.
+- **Link role**: let BlueZ negotiate; do not force the Pi to Peripheral (it can lower link capacity and timing).
 - **Power draw per dongle**: ~100mA + overhead for active connections
+
+> **Not measured yet:** no run with 25 controllers has been recorded (NFR-025). The per-chipset figures come from upstream JoustMania's adapter measurements.
 
 ---
 
@@ -202,8 +209,10 @@ python3 /tmp/claude/.../scratchpad/monitor_usb_stability.py
 
 ### Controllers fail to pair
 
-**Cause**: Too many controllers per dongle
-**Fix**: Limit to 5 controllers per dongle (instead of 7)
+**Cause**: Too many controllers per dongle, or a Realtek dongle that accepts only 5 links
+**Fix**: Check the chipset (`hciconfig -a`); limit Realtek dongles to 5, CSR dongles to 6-7.
+To start over, remove only the PS Move registrations with
+`scripts/hardware/reset_bluetooth_connections.sh --dry-run` (then without `--dry-run`) and re-pair over USB.
 
 ### CPU usage too high (>50%)
 
@@ -225,9 +234,9 @@ If you plan to scale beyond 25 controllers:
 
 **Hardware**:
 - 10-port powered USB 3.0 hub
-- 1 dongle per 5 controllers
-- 30 controllers = 6 dongles
-- 50 controllers = 10 dongles (max recommended)
+- 1 dongle per 5 (Realtek) to 6-7 (CSR) controllers
+- 30 controllers = 5-6 dongles
+- 50 controllers = 8-10 dongles (max recommended)
 
 **Software**:
 - Consider implementing **Phase 42: Hybrid Streaming**
@@ -253,9 +262,10 @@ For stable 25-controller setup:
 2. **Powered USB 3.0 Hub** (7-10 port) - $25-40
    - Must have external power adapter (≥36W)
    - USB 3.0 (5 Gbps)
-3. **Bluetooth Dongles** (×5) - $30-50 total
-   - Any Bluetooth 2.0+ compatible
-   - Examples: ASUS USB-BT400, Plugable USB-BT4LE
+3. **Bluetooth Dongles** (×4-5)
+   - CSR chipset recommended: Feasycom FSC-BP119 (CSR8510 A10, external antenna)
+   - Realtek RTL8761BU dongles work at about 5 controllers each; avoid Actions, Barrot, AIC8800
+   - Check the chipset with `hciconfig -a` before buying in bulk (clones exist)
 4. **PS Move Controllers** (×25) - (already have)
 
 **Total additional cost**: $25-40 for powered hub (if using existing dongles)
@@ -284,7 +294,7 @@ Before large-scale deployment:
 1. ✅ **Software**: 30Hz update frequency (implemented)
 2. ⚠️ **Hardware**: Powered USB 3.0 hub (strongly recommended)
 3. ✅ **Monitoring**: Use stability script before events
-4. ✅ **Configuration**: 5 controllers per dongle max
+4. ✅ **Configuration**: controllers per dongle depends on the chipset (Realtek about 5, CSR 6-7)
 
 **Current state**: Optimized at 30Hz, but **unpowered hub is bottleneck**
 

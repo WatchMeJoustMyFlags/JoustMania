@@ -38,7 +38,7 @@
 ### Hardware (Optional)
 
 - **PS Move Controllers** (for hardware testing)
-- **USB Bluetooth Adapter** (class 1 recommended)
+- **USB Bluetooth Adapter** (CSR chipset recommended, e.g. Feasycom FSC-BP119; see [hardware guide](hardware-setup-guide.md#bluetooth-adapter-recommendations))
 - **Raspberry Pi** or **Linux machine** (for full hardware testing)
 
 ### Installation
@@ -342,8 +342,9 @@ grpcurl -plaintext localhost:50056 list
 # Test controller pairing
 python tools/manualpair.py
 
-# Clear paired devices
-python tools/clear_devices.py
+# Remove PS Move registrations only (other Bluetooth devices stay)
+scripts/hardware/reset_bluetooth_connections.sh --dry-run
+scripts/hardware/reset_bluetooth_connections.sh
 ```
 
 ---

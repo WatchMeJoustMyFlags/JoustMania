@@ -107,7 +107,8 @@ else
     config_loc=/boot/config.txt
 fi
 
-# Disable internal Bluetooth (required for OpenTelemetry demo, prevents Wi-Fi/USB interference)
+# Disable internal Bluetooth: the Pi 5 radio (Cypress BCM4345C0) times PS3 Moves poorly;
+# USB adapters are used instead (docs/hardware-setup-guide.md#pi-5-internal-bluetooth)
 echo "  → Disabling internal Bluetooth..."
 sudo grep -qxF 'dtoverlay=disable-bt' "$config_loc" || {
     echo "dtoverlay=disable-bt" | sudo tee -a "$config_loc"

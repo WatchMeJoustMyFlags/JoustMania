@@ -66,7 +66,9 @@ RSSI (Received Signal Strength Indicator) measures Bluetooth signal quality in d
 - **Remove obstacles** between controller and Pi
 - **Ensure line of sight** when possible
 - **Check for interference** (turn off nearby 2.4GHz devices)
-- **Use external Bluetooth adapter** if built-in Pi Bluetooth is weak
+- **Use an external CSR adapter** (e.g. Feasycom FSC-BP119) instead of the Pi's internal radio: the internal radio is poor for PS3 Moves (ZCM1)
+- **Check the adapter chipset** with `hciconfig -a | grep Manufacturer`: Realtek (93) adapters time PS3 Moves poorly with fewer than about 5 active links; Actions, Barrot and AIC8800 adapters are poor in general ([hardware guide](hardware-setup-guide.md#chipset-beats-marketing))
+- **Do not force the Peripheral role** (`hcitool sr ... peripheral`): let BlueZ negotiate; forcing Peripheral can lower link capacity and timing
 - **Reposition Pi** to center of play area
 
 ### Issue: Laggy Controller Input
@@ -185,7 +187,7 @@ sudo rfkill block wifi
 - Away from walls/corners
 
 **Technical Setup:**
-- External Bluetooth 4.0+ adapter (if built-in is weak)
+- External CSR Bluetooth adapter (Feasycom FSC-BP119 recommended; identify the chipset with `hciconfig -a`, not by "Class 1" or range claims). The Pi 5 internal radio only suits a few PS4 Moves (ZCM2); see the [hardware guide](hardware-setup-guide.md#bluetooth-adapter-recommendations)
 - Good 5V 3A power supply for Pi (weak power = weak Bluetooth)
 - Pi connected via Ethernet (not WiFi 2.4GHz)
 - Bluetooth keepalive tuned (already done in Phase 26)
@@ -311,7 +313,7 @@ A: Either USB connection (no wireless signal) or RSSI not available (older BlueZ
 A: Not currently. Warnings are rate-limited to once per minute and are important for user experience.
 
 **Q: My controller is 2 meters away but shows poor RSSI. Why?**
-A: Could be interference, obstacles, or weak Bluetooth radio in controller or Pi. Try external Bluetooth adapter.
+A: Could be interference, obstacles, or a weak Bluetooth radio in the controller or the Pi. Try an external CSR adapter, and check the chipset of the one you have (`hciconfig -a`): RSSI can look fine while a weak chipset still delivers gappy reports.
 
 **Q: Do all controllers have the same range?**
 A: No. Older PS Move controllers may have degraded Bluetooth radios. RSSI helps identify weak units.

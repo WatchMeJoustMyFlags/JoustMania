@@ -41,10 +41,15 @@ Located in `scripts/hardware/` - Raspberry Pi specific.
 
 ### reset_bluetooth_connections.sh
 
-Resets Bluetooth connections and clears paired devices.
+Removes PS Move Bluetooth registrations only (live BlueZ devices and saved-only
+registrations of adapters BlueZ does not present); other Bluetooth devices stay
+paired. Runs `psmove_pairing.registrations` inside the pairing-daemon container,
+then restarts `pairing-daemon` (it would otherwise skip re-pairing controllers it
+already verified). No reboot. Non-zero exit if any removal failed.
 
 ```bash
-scripts/hardware/reset_bluetooth_connections.sh
+scripts/hardware/reset_bluetooth_connections.sh --dry-run   # list, change nothing
+scripts/hardware/reset_bluetooth_connections.sh             # remove, then re-pair over USB
 ```
 
 **Use when:** PS Move controllers won't pair or have connection issues.
