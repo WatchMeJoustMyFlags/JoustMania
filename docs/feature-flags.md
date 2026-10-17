@@ -216,7 +216,6 @@ defaults: periods must be positive, brightness in `[0, 1]`, and
 | `backend` | string | `mock`, `python`, `rust`, comma-separated combos (default `rust`; variants naming `python` are opt-in and need the `python-hid` compose profile, #1371) | Controller backend selection |
 | `poll_drop_threshold` | integer | count | Poll-drop tolerance before action |
 | `bluetooth_backend` | string | `python`, `rust`, `unstable` (default `rust`) | Per-serial Bluetooth adapter routing (renamed from `controller_adapter_routing`; Act 2 agent rollout target); also selects the pairing daemon's backend (UC-001 BR-003) |
-| `chaos_fault_type` | string | `none`, `poll_drop`, `accel_spike`, `led_failure`, `disconnect` | Chaos fault injection for controllers (see [ChaosAdapter](architecture/controller-backends.md#chaosadapter-fault-injection)) |
 
 **Effect timings (calibration, #766 F7).** Warning/death feedback timings
 (`feedback_manager.py` inline magic numbers), consumed by the **controller-manager**

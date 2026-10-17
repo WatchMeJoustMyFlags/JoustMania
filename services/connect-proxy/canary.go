@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 )
 
 // registerCanaryHandlers adds canary rollout control endpoints to the mux.
-// These mirror the chaos endpoint pattern: HTTP POST -> flag-service write ->
-// flagd serves it at once over the gRPC sync stream (epic #1407).
+// HTTP POST -> flag-service write -> flagd serves it at once over the gRPC sync
+// stream (epic #1407).
 func registerCanaryHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/canary/python", canarySetHandler("python"))
 	mux.HandleFunc("/canary/rust", canarySetHandler("rust"))
@@ -18,6 +19,19 @@ func registerCanaryHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/canary/status", canaryStatusHandler)
 
 	slog.Info("Canary handlers registered", "flag_set", controllerFlagSet)
+}
+
+// parseFraction reads the ?fraction= query param (1-100, default 100).
+func parseFraction(r *http.Request) (int, error) {
+	q := r.URL.Query().Get("fraction")
+	if q == "" {
+		return 100, nil
+	}
+	v, err := strconv.Atoi(q)
+	if err != nil || v < 1 || v > 100 {
+		return 0, fmt.Errorf("fraction must be 1-100, got %q", q)
+	}
+	return v, nil
 }
 
 // canarySetHandler returns a handler that routes controllers to a specific backend.
@@ -75,6 +89,21 @@ func canaryRollbackHandler(w http.ResponseWriter, r *http.Request) {
 // canaryStatusHandler returns the flag service's view of bluetooth_backend.
 func canaryStatusHandler(w http.ResponseWriter, r *http.Request) {
 	flagStatus(w, r, "bluetooth_backend")
+}
+
+// flagStatus serves GET /controller/{flag} from the flag service.
+func flagStatus(w http.ResponseWriter, r *http.Request, flag string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	view, err := flags.Get(r.Context(), flag)
+	if err != nil {
+		http.Error(w, err.Error(), statusFor(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(view)
 }
 
 // canaryCounterpart is the stable backend the non-canary share stays on. The

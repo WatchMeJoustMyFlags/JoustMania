@@ -6,7 +6,7 @@ import math
 import random
 import sys
 from pathlib import Path
-from unittest.mock import create_autospec, patch
+from unittest.mock import create_autospec
 
 import grpc
 import pytest
@@ -20,8 +20,8 @@ sys.path.insert(0, str(project_root))
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from proto import controller_manager_mock_pb2
 from services.controller_manager.mock_control_service import MockControllerService
-from services.controller_manager.multiplexer.chaos_adapter import ChaosAdapter
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
+from services.controller_manager.multiplexer.unstable_adapter import UnstableAdapter
 
 
 def _make_service(num_controllers: int = 0) -> tuple[MockControllerService, MockAdapter]:
@@ -699,15 +699,15 @@ class TestUC003HeldMovement:
         assert adapter.controllers[self.SERIAL]["held_accel"] is None
 
     @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
-    def test_simulated_disconnect_keeps_the_hold(self):
-        """UC-003 BR-002: a chaos-simulated disconnect drops frames but the hold survives it."""
+    def test_dropped_frame_keeps_the_hold(self):
+        """UC-003 BR-002: a frame dropped by the Unstable adapter does not lose the hold."""
         service, adapter = _make_service(num_controllers=1)
         self._move(service, self.WARNING_VEC)
-        chaos = ChaosAdapter(adapter)
+        # No throttle window, every 2nd fresh frame dropped: poll 1 served, poll 2 dropped, poll 3 served.
+        unstable = UnstableAdapter(adapter, throttle_seconds=0.0, drop_every=2)
 
-        with patch.object(ChaosAdapter, "_get_fault", autospec=True, return_value="disconnect"):
-            assert chaos.poll(self.SERIAL) is None
-        with patch.object(ChaosAdapter, "_get_fault", autospec=True, return_value="none"):
-            frame = chaos.poll(self.SERIAL)
+        unstable.poll(self.SERIAL)
+        assert unstable.poll(self.SERIAL) is None
+        frame = unstable.poll(self.SERIAL)
 
         assert frame[StateKey.ACCEL] == self._expected(self.WARNING_VEC)

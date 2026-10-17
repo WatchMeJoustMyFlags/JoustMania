@@ -71,7 +71,7 @@ banner pointing at their replacement; nothing was deleted.
 | `services/agent/README.md` | 1260 | Agent reference | stale (several sections) | "Stub decision hooks" intro; removed `mode` flag still listed; `AGENT_EXPERIMENTS_ENABLED` called the gate (it is a fallback, D-A4); promotion env gates undocumented (D-A6); Files tree outdated. The write-surface paragraph ("only flagd write", `:ro` mount) and the kill-switch span name were corrected in the consistency pass. | services §agent, flags, telemetry, decide, UC-040..051; keeps code-level detail |
 | `services/agent/decide/backends/jev/README.md` | 63 (on 2d162b33) | Jev backend: wire format, confidence, errors | current (rewritten by PR #1261 for the real client) | Stale `unavailable` value fixed (D-K2). | decide contract |
 | `services/audio/README.md` | 101 | Audio API | current (minor drift) | `AUDIO_ASSETS_DIR` default; WAV examples (D-AU1). | services §audio |
-| `services/connect-proxy/README.md` | 59 | Connect bridge | stale | Omits `GetConnectedControllers`, `ListGames`, `/chaos/*`, `/canary/*`. | services §connect-proxy |
+| `services/connect-proxy/README.md` | 59 | Connect bridge | stale | Omits `GetConnectedControllers`, `ListGames`, `/canary/*`. | services §connect-proxy |
 | `services/dashboard/README.md` | 65 | SPA | current (file tree stale) | Experiments tab undocumented. | services §dashboard, UC-035 |
 | `services/controller_manager/README.md` | 247 | CM architecture | stale | `PlayControllerEffect` (D-S1); flag `controller_backend` in `performance.json` (real: `backend` in `controller.json`); metrics port 8001 vs 8000. | services §controller-manager |
 | `services/controller_manager/MOCK_ENVIRONMENT.md` | 532 | Mock hardware | stale | `scripts/testing/` absent; serials `MOCK%04d` not `mock_controller_N`; `MOCK_CONTROLLER_COUNT` unused; `StartGame` RPC. | guide (needs rewrite); UC-003 |
@@ -165,7 +165,7 @@ spec PRs. Verified against `main` @ 2d162b33; rows added or updated by the audit
 | ID | Doc claim | Code | Kind |
 |---|---|---|---|
 | D-C1 | 1000 Hz poll → 60 Hz active / 10 Hz idle stream (`.claude/rules/architecture.md`, ARCHITECTURE, `services/controller_manager/README.md:147-157`, and the stale docstrings `services/controller_manager/discovery_loop.py:242,466`) | HID ≈ 1 kHz; CM loop fixed 100 Hz; stream 60 Hz by flag (30 Hz fallback); no idle stream; the EMA lives in the game coordinator. | stale doc; **partly resolved**: `.claude/rules/architecture.md` now states HID ≈ 1 kHz → 100 Hz loop → 60 Hz stream; `services/controller_manager/README.md` (adaptive 60 / 10 Hz polling), `docs/ARCHITECTURE.md` (bannered) and the `discovery_loop.py` docstrings remain |
-| D-C2 | Chaos wrapping only when chaos is configured | `_is_chaos_enabled()` returns true whenever the flag evaluates, ignoring the value, so real adapters are always wrapped (`services/controller_manager/backend_factory.py:95-106`); faults still gated by `chaos_fault_type=none`. | likely bug (issue #1274) |
+| D-C2 | Chaos wrapping only when chaos is configured | `_is_chaos_enabled()` returns true whenever the flag evaluates, ignoring the value, so real adapters are always wrapped (`services/controller_manager/backend_factory.py:95-106`); faults still gated by `chaos_fault_type=none`. | likely bug (issue #1274); **resolved by the #1322 cleanup** (fault injection removed: no wrapper, no `_is_chaos_enabled`, no `chaos_fault_type`) |
 | D-C3 | LED colours, 50 % dim, orange warning, 1 s countdown phases, 2 s rainbow, battery tiers (controller-feedback, led-feedback, menu README) | `lib/colors.py`, `DIM_FACTOR = 0.3` (`services/menu/utils/led.py:33`), white warning flash, 750 ms phases, 3000 ms rainbow, 5 battery tiers (`services/controller_manager/feedback_manager.py`). Low-battery effect has no producer. | stale doc |
 | D-C4 | Pairing daemon is a host systemd service; LED feedback during pairing | Compose container (`docker-compose.yml:283-321`); no LED writes in `psmove_pairing/`. | stale doc |
 | D-C5 | RSSI metric `controller_rssi_dbm`, weak-signal LED | `bluetooth_device_rssi_dbm` from the pairing daemon; CM hardcodes rssi 0 (`state_cache.py` `_build_controller_state_message`); `lib/hci_rssi.py` was dead code. | stale doc; **dead `lib/hci_rssi.py` resolved by the #1322 cleanup** (file and its test deleted; the RSSI doc claim stays stale) |
@@ -248,7 +248,7 @@ spec PRs. Verified against `main` @ 2d162b33; rows added or updated by the audit
 | D-P2 | "~3.2 GB memory budget for a 4 GB Pi" (`docker-compose.yml:31`) | Sum of limits ≈ 4.67 GB (Jaeger alone 1024 MiB). | stale comment / capacity risk |
 | D-B1 | Compose header: controller backend is the `backend` flag | Per-controller routing is `bluetooth_backend` + rollout; `backend` selects which adapters load (startup). | stale comment |
 | D-B2 | CANARY_RUNBOOK RustServiceAdapter stub (#612) | Fully implemented. | stale doc |
-| D-B3 | `/canary/*` reachable from the host | Envoy routes `/chaos/` but not `/canary/` (`services/envoy/envoy.yaml:99-123`). | likely bug or stale doc |
+| D-B3 | `/canary/*` reachable from the host | Envoy does not route `/canary/` (`services/envoy/envoy.yaml`); the `/chaos/` route went with fault injection (#1322). | likely bug or stale doc |
 
 ### 4.11 Broken links found
 
