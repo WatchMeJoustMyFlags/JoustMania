@@ -210,7 +210,7 @@ You can pair multiple controllers in sequence:
 4. Repeat for all controllers
 5. Press PS button on each to connect via Bluetooth
 
-The daemon batches Bluetooth restarts, so you don't need to wait between controllers.
+Pairing does not restart the Bluetooth service, so you don't need to wait between controllers, and you can pair a controller while a game is running without disconnecting the others (UC-001 BR-005).
 
 ### Troubleshooting Pairing
 
