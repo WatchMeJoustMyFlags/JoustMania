@@ -68,6 +68,7 @@ func TestOnEvaluate_KillSwitchShortCircuits(t *testing.T) {
 }
 
 // UC: UC-045 A2 BR-001
+// UC: UC-013 BR-002
 func TestOnEvaluate_PermissionGateFiltersBlocked(t *testing.T) {
 	rules := &recordingRules{out: []Decision{
 		{Intervention: "play_audio_cue", Reason: "allowed"},

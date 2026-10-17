@@ -415,6 +415,7 @@ async def _measure_kill(weight: float, music_speed: float, step_g: float) -> tup
 
 
 @pytest.mark.nfr("NFR-004")
+@pytest.mark.uc("UC-030", br=["BR-004"])
 class TestDeathDetectionLatency:
     """NFR-004: from the first over-threshold sample to the kill, game side.
 

@@ -305,6 +305,7 @@ async def test_state_flag_revert_to_none_not_dispatched():
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
+@pytest.mark.uc("UC-013", br=["BR-002"])
 async def test_allowed_membership_blocks():
     mgr, events = make_manager(
         interventions={"eliminate_player": "1:ctrl_a"},

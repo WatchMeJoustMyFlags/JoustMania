@@ -6,6 +6,8 @@
 #
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-talk-stage.sh
+#
+# UC: UC-070 A7 A8 A9 BR-003 BR-007
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

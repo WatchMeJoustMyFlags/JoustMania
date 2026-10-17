@@ -4,6 +4,8 @@
 # Exercises the record comparison (--compare) and the two-run flow with `docker`
 # stubbed on PATH, so no stack is needed. Runs as part of `make lint`, or directly:
 #   ./scripts/tests/test-pattern-replay-check.sh
+#
+# UC: UC-046 A11
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

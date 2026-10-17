@@ -1861,6 +1861,7 @@ class TestForceStartThresholdFlag:
             assert handler._force_start_threshold() == 3.0
 
 
+@pytest.mark.uc("UC-012", br=["BR-004"])
 class TestSingleAdminSession:
     """UC-012 precondition: only one controller may be in admin mode at a time.
 

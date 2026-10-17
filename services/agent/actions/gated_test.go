@@ -32,6 +32,7 @@ func (r *recordingSink) Apply(context.Context, decision.Decision) error {
 // TestGatedActionSink_GateOff_NoApply: with the gate OFF (the fail-closed default,
 // and what a flagd outage resolves to) the gated sink does NOT call the wrapped
 // writer and returns nil — a decided, fully-gated intervention is never written.
+// UC: UC-045 A1
 func TestGatedActionSink_GateOff_NoApply(t *testing.T) {
 	inner := &recordingSink{}
 	sink := NewGatedActionSink(staticGate(false), inner, nil)

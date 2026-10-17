@@ -125,6 +125,7 @@ func testTrigger() decision.EvalTrigger {
 // (D-A9), but the gated sink never calls the Writer: interventions.json is
 // byte-identical.
 // UC: UC-040 A11
+// UC: UC-045 A1
 func TestDecideLoop_ActuationGateOff(t *testing.T) {
 	t.Run("UC-040/A11 gate off: dispatched, counted, nothing written", func(t *testing.T) {
 		snap := flags.Snapshot{
