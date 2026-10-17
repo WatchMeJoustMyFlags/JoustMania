@@ -42,3 +42,7 @@ class AdapterManager:
     def check_if_not_paired(self, controller_addr: str) -> bool:
         """Check if a controller is not yet paired to any adapter."""
         return self._delegate.check_if_not_paired(controller_addr)
+
+    def is_known_on(self, adapter_address: str, controller_addr: str) -> bool:
+        """Whether BlueZ has a registration of the controller on that adapter (UC-001 A7)."""
+        return self._delegate.is_known_on(adapter_address, controller_addr)

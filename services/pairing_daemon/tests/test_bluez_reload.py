@@ -1,7 +1,9 @@
 """pairing.bluez_restart_mode policy and the primary game-state read (UC-001 BR-005, A6; #1446)."""
 
+import http.server
 import io
 import json
+import threading
 import urllib.request
 from unittest.mock import AsyncMock, patch
 
@@ -101,7 +103,7 @@ class _Response(io.BytesIO):
 
 
 def _serve(body: dict, seen: list):
-    def urlopen(request: urllib.request.Request, timeout: float):
+    def urlopen(request: urllib.request.Request, timeout: float):  # OpenerDirector.open(request, timeout=...)
         seen.append(request)
         return _Response(json.dumps(body).encode())
 
@@ -123,7 +125,7 @@ class TestPrimaryGameBusy:
     )
     async def test_busy_only_while_the_primary_game_is_live(self, game_info, busy):
         seen = []
-        with patch("urllib.request.urlopen", _serve({"success": True, "gameInfo": game_info}, seen)):
+        with patch.object(bluez_reload._OPENER, "open", _serve({"success": True, "gameInfo": game_info}, seen)):
             assert await primary_game_busy() is busy
 
         # Empty GetGameStateRequest = the primary (real) game; shadow games are never asked about
@@ -133,17 +135,89 @@ class TestPrimaryGameBusy:
 
     @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
     async def test_unreachable_coordinator_counts_as_a_running_game(self):
-        with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+        with patch.object(bluez_reload._OPENER, "open", side_effect=OSError("connection refused")):
             assert await primary_game_busy() is True
 
     @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
-    async def test_unsuccessful_answer_counts_as_a_running_game(self):
-        with patch("urllib.request.urlopen", _serve({"success": False, "error": "boom"}, [])):
+    @pytest.mark.parametrize("body", [{"success": False, "error": "boom"}, {"success": False}, {}])
+    async def test_unsuccessful_answer_counts_as_a_running_game(self, body):
+        """{"success": false} (with or without an error, or no flag at all) is not a state: fail closed."""
+        with patch.object(bluez_reload._OPENER, "open", _serve(body, [])):
             assert await primary_game_busy() is True
 
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_unsuccessful_answer_with_an_idle_state_still_counts_as_running(self):
+        body = {"success": False, "error": "boom", "gameInfo": {"state": "IDLE"}}
+        with patch.object(bluez_reload._OPENER, "open", _serve(body, [])):
+            assert await primary_game_busy() is True
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
     async def test_url_comes_from_the_environment(self, monkeypatch):
         monkeypatch.setenv("GAME_STATE_URL", "http://envoy/joustmania.x/GetGameState")
         seen = []
-        with patch("urllib.request.urlopen", _serve({"success": True}, seen)):
+        with patch.object(bluez_reload._OPENER, "open", _serve({"success": True}, seen)):
             await primary_game_busy()
         assert seen[0].full_url == "http://envoy/joustmania.x/GetGameState"
+
+
+class _GameStateHandler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802 - http.server API
+        body = json.dumps({"success": True, "gameInfo": {"state": "ENDED"}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+
+class TestGameStateReadIgnoresProxies:
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_http_proxy_in_the_environment_is_not_used(self, monkeypatch):
+        """A host HTTP_PROXY must not intercept the localhost read (else: always busy, never restarted)."""
+        server = http.server.HTTPServer(("127.0.0.1", 0), _GameStateHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+                monkeypatch.setenv(name, "http://127.0.0.1:9")  # nothing listens on the discard port
+            for name in ("NO_PROXY", "no_proxy"):
+                monkeypatch.delenv(name, raising=False)
+            monkeypatch.setenv("GAME_STATE_URL", f"http://127.0.0.1:{server.server_port}/GetGameState")
+
+            assert await primary_game_busy() is False
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class TestRestartBluetoothd:
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_restart_registers_the_pairing_agent_again(self):
+        """A bluetoothd restart ends the bluetoothctl agent session (#632); it is registered again after it."""
+        calls = []
+        with (
+            patch.object(
+                bluez_reload.bluez_dbus, "restart_systemd_unit", AsyncMock(side_effect=lambda u: calls.append(u))
+            ),
+            patch.object(bluez_reload, "register_pairing_agent", AsyncMock(side_effect=lambda: calls.append("agent"))),
+            patch("asyncio.sleep", AsyncMock()),
+        ):
+            await bluez_reload.restart_bluetoothd()
+
+        assert calls == ["bluetooth.service", "agent"]
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_agent_is_registered_even_when_the_restart_fails(self):
+        agent = AsyncMock()
+        with (
+            patch.object(bluez_reload.bluez_dbus, "restart_systemd_unit", AsyncMock(side_effect=RuntimeError("no"))),
+            patch.object(bluez_reload, "register_pairing_agent", agent),
+            patch("asyncio.sleep", AsyncMock()),
+            pytest.raises(RuntimeError),
+        ):
+            await bluez_reload.restart_bluetoothd()
+
+        agent.assert_awaited_once()

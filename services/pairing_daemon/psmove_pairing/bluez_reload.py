@@ -3,16 +3,21 @@
 A bluetoothd restart powers every adapter off and drops every connected
 controller, so it is governed by the ``pairing.bluez_restart_mode`` flag:
 
-- ``never`` (default): never restart.
+- ``when_idle`` (shipped default, #1466): restart only after a new BlueZ device
+  record was written (UC-001 A7, BR-008), and only while the real (primary)
+  game is not starting, running or ending. The restart is otherwise left
+  pending and retried on each USB poll (under the pairing lock).
+- ``never`` (fallback when flagd is unreachable): never restart.
 - ``always``: restart after every successful pairing (pre-#1446 behaviour).
-- ``when_idle``: restart only after a new BlueZ device record was written, and
-  only while the real (primary) game is not starting, running or ending. The
-  restart is otherwise left pending and retried on each USB poll.
+
+A restart ends the bluetoothctl agent session (#632), so the pairing agent is
+registered again after every restart.
 
 The primary game's state comes from the game coordinator's ``GetGameState``
 (empty ``game_id`` = primary) through envoy's Connect route. The daemon runs on
 the host network, where envoy is the one published entry point, so no gRPC
 port or proto client is needed. An unreadable state counts as busy (fail closed).
+The read ignores HTTP proxy settings: a host ``HTTP_PROXY`` must not intercept it.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from collections.abc import Awaitable, Callable
 
 from lib import bluez_dbus
 
+from .bluez_agent import register_pairing_agent
 from .config import get_bluez_restart_mode
 
 logger = logging.getLogger("psmove-pairing")
@@ -36,12 +42,14 @@ GAME_STATE_TIMEOUT_SECONDS = 2.0
 BUSY_GAME_STATES = frozenset({"STARTING", "RUNNING", "ENDING"})
 # Time for bluetoothd to come back and re-read its storage
 RESTART_SETTLE_SECONDS = 3.0
+# No proxy handler: HTTP_PROXY / ALL_PROXY must not intercept the local envoy route
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _fetch_primary_game_state(url: str) -> str:
     """POST an empty GetGameStateRequest (Connect JSON) and return the primary game's state name."""
     request = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(request, timeout=GAME_STATE_TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed local URL
+    with _OPENER.open(request, timeout=GAME_STATE_TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed local URL
         body = json.loads(response.read() or b"{}")
     if not body.get("success", False):
         raise RuntimeError(f"GetGameState failed: {body.get('error', 'no success flag')}")
@@ -61,9 +69,17 @@ async def primary_game_busy() -> bool:
 
 
 async def restart_bluetoothd() -> None:
-    """Restart bluetooth.service through systemd's D-Bus API and let it settle."""
-    await bluez_dbus.restart_systemd_unit("bluetooth.service")
-    await asyncio.sleep(RESTART_SETTLE_SECONDS)
+    """Restart bluetooth.service through systemd's D-Bus API, let it settle, re-register the agent.
+
+    The restart ends the bluetoothctl agent session (#632); without a new one a
+    ZCM2 has no PIN agent. The agent is registered again even when the restart
+    call failed, since bluetoothd may have restarted anyway.
+    """
+    try:
+        await bluez_dbus.restart_systemd_unit("bluetooth.service")
+        await asyncio.sleep(RESTART_SETTLE_SECONDS)
+    finally:
+        await register_pairing_agent()
 
 
 class BluezReloader:

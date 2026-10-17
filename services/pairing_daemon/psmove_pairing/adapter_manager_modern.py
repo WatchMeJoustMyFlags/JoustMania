@@ -189,3 +189,11 @@ class AdapterManager:
         """
         controller_upper = controller_addr.upper()
         return all(controller_upper not in [d.upper() for d in devices] for devices in self._bt_devices.values())
+
+    def is_known_on(self, adapter_address: str, controller_addr: str) -> bool:
+        """Whether BlueZ has a registration of the controller on that adapter (UC-001 A7).
+
+        Call refresh_adapters() first to ensure data is current.
+        """
+        controller_upper = controller_addr.upper()
+        return controller_upper in (d.upper() for d in self._bt_devices.get(adapter_address, []))

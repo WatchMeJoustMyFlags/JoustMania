@@ -9,7 +9,8 @@ from dbus_fast import Message, MessageType
 from dbus_fast.aio import MessageBus
 
 from psmove_pairing.adapter_manager import AdapterInfo
-from psmove_pairing.pairing_backend import HidapiBackend, PairingResult, RustServiceBackend
+from psmove_pairing.bluez_records import HID_SDP_RECORD
+from psmove_pairing.pairing_backend import HidapiBackend, PairingResult, RustServiceBackend, UsbController
 from psmove_pairing.usb_pairing import (
     DEFAULT_PAIRING_BACKEND,
     VARIANT_TO_PAIRING_BACKEND,
@@ -22,9 +23,11 @@ from .conftest import FAKE_PATH_1, MockCommandRunner, bluez_tree, devices
 
 
 @pytest.fixture
-def usb_pairing(mock_tracer):
-    """Provide USBPairing instance for tests."""
-    return USBPairing(mock_tracer)
+def usb_pairing(mock_tracer, tmp_path):
+    """Provide USBPairing instance for tests; BlueZ storage never points at the host's."""
+    pairing = USBPairing(mock_tracer)
+    pairing.bluetooth_dir = tmp_path / "no-bluez-storage"
+    return pairing
 
 
 def _mock_backend(controllers=None):
@@ -128,12 +131,12 @@ class TestGetUSBControllers:
     @pytest.mark.asyncio
     async def test_controllers_found(self, _mock_routing, mock_create, usb_pairing):
         """Poll with controllers delegates to process_controller."""
-        backend = _mock_backend(controllers=[(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")])
+        backend = _mock_backend(controllers=[UsbController(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", 0x0C5E)])
         mock_create.return_value = backend
         usb_pairing.process_controller = AsyncMock(return_value=True)
 
         await usb_pairing.poll()
-        usb_pairing.process_controller.assert_called_once_with(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")
+        usb_pairing.process_controller.assert_called_once_with(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", 0x0C5E)
 
 
 class TestPairController:
@@ -214,7 +217,7 @@ class TestBackendCoherence:
     @pytest.mark.asyncio
     async def test_same_backend_used_for_enumerate_and_pair(self, _mock_routing, mock_create, usb_pairing):
         """Backend resolved once in poll() is reused by pair_controller()."""
-        backend = _mock_backend(controllers=[(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")])
+        backend = _mock_backend(controllers=[UsbController(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", 0x03D5)])
         backend.pair_controller.return_value = PairingResult(success=True)
         mock_create.return_value = backend
 
@@ -517,7 +520,7 @@ class _PairingFlowEnv:
             yield dict(zip(names, (attempts, success, failed), strict=True))
 
     @pytest.fixture
-    def env(self, usb_pairing):
+    def env(self, usb_pairing, tmp_path):
         """Patch the system edges; yields (backend, runner, set_tree, restart).
 
         set_tree(value) swaps the BlueZ GetManagedObjects reply for later refreshes.
@@ -525,7 +528,12 @@ class _PairingFlowEnv:
         bus; ``restart.assert_none()`` checks that no systemd unit was restarted
         on it (UC-001 BR-005).
         """
-        backend = _mock_backend(controllers=[(FAKE_PATH_1, self.SERIAL)])
+        backend = _mock_backend(controllers=[UsbController(FAKE_PATH_1, self.SERIAL, 0x03D5)])
+        # BlueZ storage: a directory per present adapter, as bluetoothd keeps it (UC-001 BR-008)
+        self.bluetooth_dir = tmp_path / "bluetooth"
+        for adapter in (self.ADAPTER_BUSY, self.ADAPTER_FREE):
+            (self.bluetooth_dir / adapter).mkdir(parents=True)
+        usb_pairing.bluetooth_dir = self.bluetooth_dir
         runner = MockCommandRunner()
         tree = {"value": bluez_tree({"hci0": (self.ADAPTER_BUSY, devices(3)), "hci1": (self.ADAPTER_FREE, [])})}
 
@@ -778,7 +786,10 @@ class TestBluezRestartModeInPairing(_PairingFlowEnv):
 
     @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
     async def test_when_idle_without_a_new_device_record_restarts_nothing(self, usb_pairing, env, metrics):
-        """when_idle: no device record is written today (#1466), so no restart and no game-state read."""
+        """when_idle: a controller BlueZ already knows on the selected adapter needs no record, so no restart."""
+        _backend, _runner, set_tree, _restart = env
+        known_on_free = [{"Address": self.SERIAL}]
+        set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, devices(3)), "hci1": (self.ADAPTER_FREE, known_on_free)}))
         game_busy = AsyncMock(return_value=False)
         usb_pairing.bluez_reloader._game_busy = game_busy
         with patch("psmove_pairing.bluez_reload.get_bluez_restart_mode", return_value="when_idle"):
@@ -805,3 +816,181 @@ class TestBluezRestartModeInPairing(_PairingFlowEnv):
 
         assert self._restart_units() == [["bluetooth.service", "replace"]]
         assert usb_pairing.bluez_reloader.pending is False
+
+
+class TestFirstTimePairing(_PairingFlowEnv):
+    """UC-001 A7 / A8 / BR-008 (#1466): a controller BlueZ does not know gets a record, loaded by a restart."""
+
+    def _restart_units(self) -> list:
+        return [c.args[0].body for c in self.bus.call.await_args_list if c.args[0].member == "RestartUnit"]
+
+    def _info(self, adapter: str | None = None) -> Path:
+        return self.bluetooth_dir / (adapter or self.ADAPTER_FREE) / self.SERIAL / "info"
+
+    @staticmethod
+    def _mode(mode: str):
+        return patch("psmove_pairing.bluez_reload.get_bluez_restart_mode", return_value=mode)
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005", "BR-007", "BR-008"])
+    async def test_never_seen_controller_gets_a_record_and_an_idle_restart(self, usb_pairing, env, metrics):
+        """when_idle, no real game: record written on the selected adapter, bluetoothd restarted, agent
+        registered again, then trusted on the selected adapter."""
+        _backend, runner, _set_tree, _restart = env
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
+        order = []
+        self.bus.call.side_effect = lambda m: order.append(m.member) or _reply()
+
+        with self._mode("when_idle"):
+            await usb_pairing.poll()
+
+        info = self._info().read_text()
+        assert "Trusted=true" in info and f"Product={0x03D5}" in info
+        assert HID_SDP_RECORD in (self.bluetooth_dir / self.ADAPTER_FREE / "cache" / self.SERIAL).read_text()
+        assert not (self.bluetooth_dir / self.ADAPTER_BUSY / self.SERIAL).exists()
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+        assert runner.calls == [["bluetoothctl"]]  # the pairing agent, registered again after the restart
+        assert order.index("RestartUnit") < order.index("Set")  # trust after bluetoothd loaded the record
+        assert self.trusted_paths() == [self.TRUST_PATH]
+        assert usb_pairing.bluez_reloader.pending is False
+        metrics["pairing_success_total"].inc.assert_called_once()
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005", "BR-008"])
+    async def test_record_restart_waits_for_the_real_game_to_end(self, usb_pairing, env, metrics):
+        """when_idle during a real game: record written, no restart, nobody dropped; the first poll after
+        the game ended restarts bluetoothd."""
+        backend, _runner, _set_tree, _restart = env
+        states = iter([True, True, False])
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(side_effect=lambda: next(states))
+
+        with self._mode("when_idle"):
+            await usb_pairing.poll()  # pairing: record written, game running -> deferred
+            assert self._info().is_file()
+            assert self._restart_units() == []
+            assert usb_pairing.bluez_reloader.pending is True
+
+            backend.get_usb_controllers.return_value = []  # player unplugged it
+            await usb_pairing.poll()  # game still running
+            assert self._restart_units() == []
+            await usb_pairing.poll()  # game ended
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+        assert usb_pairing.bluez_reloader.pending is False
+        metrics["pairing_success_total"].inc.assert_called_once()
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005", "BR-008"])
+    async def test_never_writes_the_record_but_restarts_nothing(self, usb_pairing, env, metrics):
+        _backend, runner, _set_tree, restart = env
+        with self._mode("never"):
+            await usb_pairing.poll()
+
+        assert self._info().is_file()
+        restart.assert_none()
+        assert runner.calls == []
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-008"])
+    async def test_known_on_the_selected_adapter_gets_no_record(self, usb_pairing, env, metrics):
+        _backend, _runner, set_tree, restart = env
+        set_tree(
+            bluez_tree(
+                {"hci0": (self.ADAPTER_BUSY, devices(3)), "hci1": (self.ADAPTER_FREE, [{"Address": self.SERIAL}])}
+            )
+        )
+        with self._mode("when_idle"):
+            await usb_pairing.poll()
+
+        assert not self._info().exists()
+        restart.assert_none()
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-004", "BR-008"])
+    async def test_controller_moved_from_another_adapter_gets_a_record_on_the_new_one(self, usb_pairing, env, metrics):
+        """A4/A5: known on hci0 only, moved to hci1 -> hci1 gets the record (BlueZ does not know it there)."""
+        _backend, _runner, set_tree, _restart = env
+        set_tree(
+            bluez_tree(
+                {"hci0": (self.ADAPTER_BUSY, [{"Address": self.SERIAL}, *devices(2)]), "hci1": (self.ADAPTER_FREE, [])}
+            )
+        )
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
+        with self._mode("when_idle"):
+            await usb_pairing.poll()
+
+        assert self._info().is_file()
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-008"])
+    async def test_existing_unloaded_record_still_asks_for_the_restart(self, usb_pairing, env, metrics):
+        """Written under never earlier (or a deferred restart was dropped): kept as is, reload requested."""
+        _backend, _runner, _set_tree, _restart = env
+        self._info().parent.mkdir()
+        self._info().write_text("[General]\nName=Motion Controller\n")
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
+        with self._mode("when_idle"):
+            await usb_pairing.poll()
+
+        assert self._info().read_text() == "[General]\nName=Motion Controller\n"
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+
+    @pytest.mark.uc("UC-001", flow="A8", br=["BR-008"])
+    @pytest.mark.parametrize("product_id", [0, 0x042F])
+    async def test_unknown_product_gets_no_record_and_no_restart(self, usb_pairing, env, metrics, product_id):
+        """A8: e.g. an older rust-hid that reports no product id; the pairing is kept."""
+        backend, _runner, _set_tree, restart = env
+        backend.get_usb_controllers.return_value = [UsbController(FAKE_PATH_1, self.SERIAL, product_id)]
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
+        with self._mode("when_idle"):
+            await usb_pairing.poll()
+
+        assert not self._info().exists()
+        restart.assert_none()
+        metrics["pairing_success_total"].inc.assert_called_once()
+
+    @pytest.mark.uc("UC-001", flow="A8", br=["BR-008"])
+    async def test_adapter_without_bluez_storage_gets_no_record(self, usb_pairing, env, metrics):
+        _backend, _runner, _set_tree, restart = env
+        (self.bluetooth_dir / self.ADAPTER_FREE).rmdir()
+        with self._mode("when_idle"):
+            await usb_pairing.poll()
+
+        assert not (self.bluetooth_dir / self.ADAPTER_FREE).exists()
+        restart.assert_none()
+        metrics["pairing_success_total"].inc.assert_called_once()
+
+
+class TestDeferredRestartUnderPairingLock(_PairingFlowEnv):
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_poll_runs_the_pending_restart_under_the_pairing_lock(self, usb_pairing, env, metrics):
+        """The deferred restart never interleaves with a pairing or an unpair (UC-005 A6)."""
+        backend, _runner, _set_tree, _restart = env
+        backend.get_usb_controllers.return_value = []
+        lock_held = []
+
+        async def run_pending():
+            lock_held.append(usb_pairing._pairing_lock.locked())
+            return "restarted"
+
+        usb_pairing.bluez_reloader.pending = True
+        usb_pairing.bluez_reloader.run_pending = run_pending
+        await usb_pairing.poll()
+
+        assert lock_held == [True]
+        assert not usb_pairing._pairing_lock.locked()
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_unpair_is_refused_while_the_pending_restart_runs(self, usb_pairing, env, metrics):
+        from psmove_pairing.usb_pairing import PairingInProgressError
+
+        backend, _runner, _set_tree, _restart = env
+        backend.get_usb_controllers.return_value = []
+        refused = []
+
+        async def run_pending():
+            try:
+                await usb_pairing.unpair(self.SERIAL)
+            except PairingInProgressError:
+                refused.append(True)
+            return "restarted"
+
+        usb_pairing.bluez_reloader.pending = True
+        usb_pairing.bluez_reloader.run_pending = run_pending
+        await usb_pairing.poll()
+
+        assert refused == [True]
