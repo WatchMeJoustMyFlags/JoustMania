@@ -1,0 +1,321 @@
+"""Connection quality per controller (UC-035 BR-004, FR-122, #1431).
+
+p95 gap <= 22 / <= 30 / > 30 ms and longest gap in a rolling 10 s window
+<= 30 / <= 50 / > 50 ms rate good / fair / poor; the class is the worse of the two.
+"""
+
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+test_dir = Path(__file__).parent
+project_root = test_dir.parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from proto import controller_manager_pb2
+from services.controller_manager.connection_quality import (
+    FAIR,
+    GOOD,
+    POOR,
+    QUALITY_LEVEL,
+    GapStats,
+    ReportGapWindow,
+    classify,
+    percentile_nearest_rank,
+)
+from services.controller_manager.discovery_loop import DiscoveryLoop
+
+SERIAL = "00:06:F7:AA:BB:CC"
+TIME_FN = "services.controller_manager.discovery_loop.time.time"
+METRICS = "services.controller_manager.discovery_loop.metrics"
+
+
+def _feed(window: ReportGapWindow, serial: str, start: float, gaps_ms: list[float]) -> float:
+    """Record a fresh frame at ``start`` and one after each gap; returns the last timestamp."""
+    now = start
+    window.record(serial, now)
+    for gap in gaps_ms:
+        now += gap / 1000.0
+        window.record(serial, now)
+    return now
+
+
+class TestClassificationBoundaries:
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.parametrize(
+        ("p95_ms", "expected"),
+        [(10.0, GOOD), (22.0, GOOD), (22.01, FAIR), (30.0, FAIR), (30.01, POOR), (120.0, POOR)],
+    )
+    def test_p95_gap_thresholds(self, p95_ms, expected):
+        # Longest gap kept good so only the p95 rating decides.
+        assert classify(p95_ms, min(p95_ms, 30.0)) == expected
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.parametrize(
+        ("max_ms", "expected"),
+        [(10.0, GOOD), (30.0, GOOD), (30.01, FAIR), (50.0, FAIR), (50.01, POOR), (500.0, POOR)],
+    )
+    def test_longest_gap_thresholds(self, max_ms, expected):
+        assert classify(10.0, max_ms) == expected
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.parametrize(
+        ("p95_ms", "max_ms", "expected"),
+        [(25.0, 20.0, FAIR), (20.0, 45.0, FAIR), (25.0, 60.0, POOR), (35.0, 40.0, POOR)],
+    )
+    def test_class_is_the_worse_of_the_two(self, p95_ms, max_ms, expected):
+        assert classify(p95_ms, max_ms) == expected
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_levels_grow_with_badness(self):
+        assert QUALITY_LEVEL[GOOD] < QUALITY_LEVEL[FAIR] < QUALITY_LEVEL[POOR]
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_p95_is_nearest_rank(self):
+        values = [float(v) for v in range(1, 101)]
+        assert percentile_nearest_rank(values, 0.95) == 95.0
+        assert percentile_nearest_rank([7.0], 0.95) == 7.0
+        # 20 samples: rank ceil(19) = 19th value.
+        assert percentile_nearest_rank([float(v) for v in range(1, 21)], 0.95) == 19.0
+
+
+class TestRollingWindow:
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_fewer_than_two_fresh_frames_is_unknown(self):
+        window = ReportGapWindow()
+        assert window.snapshot(SERIAL, 100.0) is None
+        window.record(SERIAL, 100.0)
+        assert window.snapshot(SERIAL, 100.0) is None
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_steady_ten_ms_frames_are_good(self):
+        window = ReportGapWindow()
+        last = _feed(window, SERIAL, 100.0, [10.0] * 200)
+        stats = window.snapshot(SERIAL, last)
+        assert stats == GapStats(p95_ms=pytest.approx(10.0), max_ms=pytest.approx(10.0), quality=GOOD, samples=200)
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_one_long_gap_makes_the_controller_poor_until_it_leaves_the_window(self):
+        window = ReportGapWindow()
+        last = _feed(window, SERIAL, 100.0, [10.0] * 50 + [80.0] + [10.0] * 50)
+        stats = window.snapshot(SERIAL, last)
+        assert stats.max_ms == pytest.approx(80.0)
+        assert stats.p95_ms == pytest.approx(10.0)
+        assert stats.quality == POOR
+
+        # 10 s of steady frames later the 80 ms gap has left the window.
+        last = _feed(window, SERIAL, last, [10.0] * 1001)
+        stats = window.snapshot(SERIAL, last)
+        assert stats.max_ms == pytest.approx(10.0)
+        assert stats.quality == GOOD
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_p95_of_alternating_gaps(self):
+        # 10 / 20 ms alternation (an 80 Hz controller seen through a 100 Hz poll) is good;
+        # one 25 ms gap in every 10 lifts p95 to fair.
+        window = ReportGapWindow()
+        last = _feed(window, SERIAL, 100.0, [10.0, 20.0] * 100)
+        assert window.snapshot(SERIAL, last).quality == GOOD
+
+        window = ReportGapWindow()
+        last = _feed(window, SERIAL, 100.0, ([10.0] * 8 + [25.0, 25.0]) * 20)
+        stats = window.snapshot(SERIAL, last)
+        assert stats.p95_ms == pytest.approx(25.0)
+        assert stats.quality == FAIR
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_open_gap_counts_as_longest_gap(self):
+        window = ReportGapWindow()
+        last = _feed(window, SERIAL, 100.0, [10.0] * 100)
+        stats = window.snapshot(SERIAL, last + 0.2)
+        assert stats.max_ms == pytest.approx(200.0)
+        assert stats.quality == POOR
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_all_gaps_expired_is_unknown(self):
+        window = ReportGapWindow()
+        last = _feed(window, SERIAL, 100.0, [10.0] * 10)
+        assert window.snapshot(SERIAL, last + 11.0) is None
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_forget_drops_the_controller(self):
+        window = ReportGapWindow()
+        last = _feed(window, SERIAL, 100.0, [10.0] * 10)
+        window.forget(SERIAL)
+        assert window.snapshot(SERIAL, last) is None
+        assert window.serials() == []
+
+
+def _make_loop(backend) -> DiscoveryLoop:
+    loop = DiscoveryLoop(
+        backend=backend,
+        tracked_controllers={SERIAL: {}},
+        controller_states={},
+        button_detector=MagicMock(),
+        state_cache_manager=MagicMock(),
+        feedback_manager=MagicMock(),
+        monitoring=MagicMock(last_battery_check=0),
+        rescan_timer=MagicMock(),
+        paired_serials=[],
+        base_colors={},
+        event_publisher=MagicMock(),
+    )
+    loop.backend_initialized = True
+    return loop
+
+
+async def _poll_at(loop: DiscoveryLoop, now: float) -> None:
+    with patch(TIME_FN, return_value=now):
+        await loop._update_controller_states()
+
+
+class TestDiscoveryLoopExport:
+    @pytest.fixture
+    def loop(self):
+        backend = MagicMock(spec=["get_controller_state", "get_connected_controllers"])
+        # A new dict per poll: every poll is a fresh frame.
+        backend.get_controller_state = AsyncMock(side_effect=lambda _serial: {"accel": (0, 0, 1)})
+        return _make_loop(backend)
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_health_emission_exports_gap_stats_and_class(self, loop):
+        for i in range(20):
+            await _poll_at(loop, 100.0 + i * 0.010)
+        await _poll_at(loop, 100.0 + 0.19 + 0.060)  # one 60 ms gap
+
+        with patch(METRICS) as metrics:
+            loop._emit_bluetooth_health(100.25)
+
+        stats = loop.connection_quality(SERIAL)
+        assert stats.quality == POOR
+        assert stats.max_ms == pytest.approx(60.0)
+        metrics.controller_bluetooth_report_gap_p95_seconds.labels.assert_called_with(serial=SERIAL)
+        metrics.controller_bluetooth_report_gap_p95_seconds.labels.return_value.set.assert_called_with(
+            pytest.approx(0.010)
+        )
+        metrics.controller_bluetooth_report_gap_max_seconds.labels.return_value.set.assert_called_with(
+            pytest.approx(0.060)
+        )
+        metrics.controller_connection_quality.labels.return_value.set.assert_called_with(QUALITY_LEVEL[POOR])
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_span_event_carries_the_quality(self, loop):
+        for i in range(5):
+            await _poll_at(loop, 100.0 + i * 0.010)
+
+        span = MagicMock()
+        tracer = MagicMock()
+        tracer.start_as_current_span.return_value.__enter__.return_value = span
+        with patch(METRICS), patch("services.controller_manager.discovery_loop.tracer", tracer):
+            loop._emit_bluetooth_health(100.04)
+
+        name, attrs = span.add_event.call_args.args
+        assert name == "bluetooth_controller_sample"
+        assert attrs["bluetooth.connection_quality"] == GOOD
+        assert attrs["bluetooth.report_gap_p95_ms"] == pytest.approx(10.0)
+        assert attrs["bluetooth.report_gap_max_ms"] == pytest.approx(10.0)
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_single_frame_exports_no_quality(self, loop):
+        await _poll_at(loop, 100.0)
+        with patch(METRICS) as metrics:
+            loop._emit_bluetooth_health(100.0)
+
+        assert loop.connection_quality(SERIAL) is None
+        metrics.controller_connection_quality.labels.assert_not_called()
+        metrics.controller_connection_quality.remove.assert_called_with(SERIAL)
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_untracked_controller_drops_its_quality(self, loop):
+        for i in range(5):
+            await _poll_at(loop, 100.0 + i * 0.010)
+        with patch(METRICS):
+            loop._emit_bluetooth_health(100.04)
+        assert loop.connection_quality(SERIAL) is not None
+
+        # Discovery no longer sees the controller: the disconnect path untracks it.
+        loop.backend.get_connected_controllers = MagicMock(return_value=[])
+        loop.rescan_timer.should_force_rescan = MagicMock(return_value=False)
+        with patch(METRICS) as metrics:
+            await loop._check_for_new_controllers()
+
+        assert SERIAL not in loop.tracked_controllers
+        assert loop.connection_quality(SERIAL) is None
+        metrics.controller_connection_quality.remove.assert_called_with(SERIAL)
+        metrics.controller_bluetooth_report_gap_p95_seconds.remove.assert_called_with(SERIAL)
+        metrics.controller_bluetooth_report_gap_max_seconds.remove.assert_called_with(SERIAL)
+        assert loop._gap_window.snapshot(SERIAL, 100.05) is None
+
+
+class TestGameplayFrameCarriesQuality:
+    @pytest.fixture
+    def servicer(self):
+        with (
+            patch("services.controller_manager.servicer.create_backend") as create_backend,
+            patch("services.controller_manager.servicer.DiscoveryLoop") as discovery_cls,
+        ):
+            create_backend.return_value = MagicMock(spec=[])
+            mock_loop = MagicMock()
+            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
+            mock_loop.drain_disconnects = MagicMock(return_value=[])
+            mock_loop.sample_age_seconds = MagicMock(return_value=None)
+            discovery_cls.return_value = mock_loop
+
+            from services.controller_manager.servicer import ControllerManagerServicer
+
+            servicer = ControllerManagerServicer()
+            state = MagicMock()
+            state.serial = SERIAL
+            state.move_num = 0
+            state.battery = 80
+            state.team = 0
+            state.color = controller_manager_pb2.RGB(r=255, g=0, b=0)
+            state.accel = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
+            state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
+            state.rssi = 0
+            state.name = "P1"
+            servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=state)
+            servicer.tracked_controllers[SERIAL] = {}
+            yield servicer, mock_loop
+
+    @pytest.mark.uc("UC-035", steps=[2], br=["BR-004"])
+    def test_dashboard_stream_carries_class_and_gaps(self, servicer):
+        servicer, mock_loop = servicer
+        mock_loop.connection_quality = MagicMock(
+            return_value=GapStats(p95_ms=24.0, max_ms=41.0, quality=FAIR, samples=900)
+        )
+
+        update = servicer._build_gameplay_update(None, "dashboard")
+
+        quality = update.controllers[0].connection_quality
+        assert update.controllers[0].HasField("connection_quality")
+        assert quality.level == "fair"
+        assert quality.report_gap_p95_ms == pytest.approx(24.0)
+        assert quality.report_gap_max_ms == pytest.approx(41.0)
+
+    @pytest.mark.uc("UC-035", steps=[2], br=["BR-004"])
+    def test_unknown_quality_leaves_the_field_unset(self, servicer):
+        servicer, mock_loop = servicer
+        mock_loop.connection_quality = MagicMock(return_value=None)
+
+        update = servicer._build_gameplay_update(None, "dashboard")
+
+        assert not update.controllers[0].HasField("connection_quality")
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_game_stream_does_not_carry_it(self, servicer):
+        servicer, mock_loop = servicer
+        mock_loop.connection_quality = MagicMock(
+            return_value=GapStats(p95_ms=10.0, max_ms=10.0, quality=GOOD, samples=900)
+        )
+
+        update = servicer._build_gameplay_update({SERIAL}, "game")
+
+        assert not update.controllers[0].HasField("connection_quality")
+        mock_loop.connection_quality.assert_not_called()

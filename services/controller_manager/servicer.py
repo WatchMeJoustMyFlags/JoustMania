@@ -441,6 +441,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 rssi=full_state.rssi,
                 name=full_state.name,
                 health=health,
+                connection_quality=self._connection_quality_msg(serial) if current_filter is None else None,
             )
             gameplay_data.append(gd)
 
@@ -458,6 +459,20 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             controllers=gameplay_data,
             timestamp=int(time.time() * 1000),
             disconnects=disconnect_events,
+        )
+
+    def _connection_quality_msg(self, serial: str) -> controller_manager_pb2.ConnectionQuality | None:
+        """Connection quality for the dashboard's unfiltered stream (UC-035 BR-004).
+
+        Game (filtered) streams do not carry it: the game loop has no use for it.
+        """
+        stats = self.discovery_loop.connection_quality(serial)
+        if stats is None:
+            return None
+        return controller_manager_pb2.ConnectionQuality(
+            level=stats.quality,
+            report_gap_p95_ms=stats.p95_ms,
+            report_gap_max_ms=stats.max_ms,
         )
 
     def _record_input_lag(self, serial: str, now: float) -> None:

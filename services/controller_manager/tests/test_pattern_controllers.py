@@ -158,6 +158,7 @@ class TestUC046GameplayStream:
             loop = create_autospec(DiscoveryLoop, instance=True)
             loop.drain_health_counters.return_value = (0, 0, 0)
             loop.drain_disconnects.return_value = []
+            loop.connection_quality.return_value = None  # UC-035 BR-004: no window yet
             loop_cls.return_value = loop
             from services.controller_manager.servicer import ControllerManagerServicer
 

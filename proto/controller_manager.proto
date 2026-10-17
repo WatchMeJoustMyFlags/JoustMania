@@ -143,6 +143,15 @@ message GameplayData {
   int32 rssi = 9;     // Signal strength in dBm (-100 to 0, 0 = USB/unavailable)
   string name = 10;   // Human-readable controller name (Issue #7)
   ControllerHealth health = 11;  // Per-frame health counters (#571)
+  ConnectionQuality connection_quality = 12;  // Unset until the 10 s gap window has data (UC-035 BR-004)
+}
+
+// Connection quality of a controller from the gaps between fresh frames over a
+// rolling 10 s window (UC-035 BR-004, #1431). Refreshed about once per second.
+message ConnectionQuality {
+  string level = 1;               // "good" | "fair" | "poor"
+  float report_gap_p95_ms = 2;    // p95 gap (nearest rank)
+  float report_gap_max_ms = 3;    // longest gap, still-open gap included
 }
 
 // Notification that a controller disconnected during gameplay streaming.

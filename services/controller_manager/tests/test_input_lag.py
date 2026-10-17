@@ -99,6 +99,7 @@ class TestGameplayFrameObservesLag:
             mock_loop = MagicMock()
             mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
             mock_loop.drain_disconnects = MagicMock(return_value=[])
+            mock_loop.connection_quality = MagicMock(return_value=None)
             discovery_cls.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
