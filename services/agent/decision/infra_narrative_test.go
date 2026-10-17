@@ -63,6 +63,7 @@ func requireCoreAttrs(t *testing.T, s sdktrace.ReadOnlySpan, idx int) (action, v
 // none-while-settling, none-during-cooldown) and asserts the five core attributes
 // are present on every resulting span. This is the regression net: a future
 // emission path that forgets to route through infraDecisionAttributes fails here.
+// UC: UC-050 main
 func TestInfraSchemaCompleteness_AllOutcomes(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	rollout := &fakeRollout{}
@@ -148,6 +149,7 @@ func TestInfraSchemaCompleteness_PassingSpanHasEmptyViolations(t *testing.T) {
 // asserts the recorded remediation.action timeline tells exactly that story, with
 // the five attributes present on every span and the violations string non-empty
 // on exactly the failing cycles.
+// UC: UC-051 main
 func TestInfraNarrative_FullIncident(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	rollout := &fakeRollout{}
@@ -213,6 +215,8 @@ func TestInfraNarrative_FullIncident(t *testing.T) {
 // remediation NOT allowed, the same instability produces a recommendation that
 // stalls — the rollout is never actually rolled back, so the story does not
 // progress to recovery (no write ever happens, the stage stays put).
+// UC: UC-045 A4
+// UC: UC-051 A1
 func TestInfraNarrative_RecommendedOnlyStalls(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	rollout := &fakeRollout{}

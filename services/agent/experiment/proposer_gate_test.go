@@ -47,6 +47,7 @@ func (a *fakeAdmission) calls() int {
 }
 
 // UC: UC-042 A5 BR-002
+// UC: UC-045 main BR-002
 func TestProposeOnce_KillSwitchOrExperimentsOffDoesNothing(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -108,6 +109,7 @@ func TestProposeOnce_DisabledCycleDoesNotAdvanceCadence(t *testing.T) {
 // call is in flight still prevents the game.json write, and the reason lands on the
 // attempt span.
 // UC: UC-042 A5 BR-002
+// UC: UC-045 BR-002
 func TestProposeOnce_SwitchedOffDuringInferenceDoesNotWrite(t *testing.T) {
 	var on atomic.Bool
 	on.Store(true)

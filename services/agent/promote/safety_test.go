@@ -18,6 +18,7 @@ import (
 // seams (the maximally-safe construction) falls back to the inert recording no-op
 // clients, so a github-target PR degrades to a RECORDED no-op with a visible reason
 // — never a network call.
+// UC: UC-043 A4
 func TestSafetyDefaultPromoterNeverActsForReal(t *testing.T) {
 	// nil github + nil git => NewPromoter substitutes the inert recording no-ops.
 	// nil realDef => autonomous cannot mutate a real default.

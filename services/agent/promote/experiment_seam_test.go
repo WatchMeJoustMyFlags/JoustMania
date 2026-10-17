@@ -96,6 +96,7 @@ func TestExperimentSeamEvidenceMapping(t *testing.T) {
 // default — main.go passes inert no-op clients), a github-target promotion degrades
 // to a RECORDED no-op. The adapter does NOT bypass the #961 gates: it surfaces the
 // recorded reason as a (non-fatal) error and touches nothing real.
+// UC: UC-043 A4
 func TestExperimentSeamGitHubGatedNoOp(t *testing.T) {
 	// gh/git nil ⇒ NewPromoter installs the inert recording no-ops (the default,
 	// fail-closed floor). realDef nil ⇒ no real-default writer wired.

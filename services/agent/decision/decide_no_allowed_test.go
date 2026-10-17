@@ -53,6 +53,8 @@ func noAllowedHarness(t *testing.T, allowed []string, be *fakeDecideBackend) (re
 const budgetCapForTest = 100 // remoteSnapshot's llm.max_requests_per_minute
 
 // UC: UC-040 A14 BR-005
+// UC: UC-045 A2 BR-001
+// UC: UC-070 A7
 func TestRemote_NoInterventionsAllowed(t *testing.T) {
 	empties := map[string][]string{
 		"none (nil)":        nil,
@@ -203,6 +205,7 @@ func TestHasAllowedInterventions_MatchesFFAOptions(t *testing.T) {
 // re-reads the live allow-list, so the answer is blocked (not_allowed), not applied.
 //
 // UC: UC-040 A10 A14 BR-005
+// UC: UC-045 A2
 func TestRemote_NoInterventionsAllowedAtLanding(t *testing.T) {
 	t.Run("UC-040/A14 flip to none mid-flight blocks the landing answer", func(t *testing.T) {
 		be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))

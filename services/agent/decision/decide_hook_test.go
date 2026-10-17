@@ -535,6 +535,7 @@ func assertRulesFallback(t *testing.T, h remoteHarness, span sdktrace.ReadOnlySp
 
 // NFR: NFR-013
 // UC: UC-040 A2
+// UC: UC-070 main A2 A3
 func TestRemote_TimeoutFallsBackToRules(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, ""))
 	be.block = true
@@ -545,6 +546,7 @@ func TestRemote_TimeoutFallsBackToRules(t *testing.T) {
 
 // NFR: NFR-013
 // UC: UC-040 A2
+// UC: UC-070 main A2
 func TestRemote_ErrorFallsBackToRules(t *testing.T) {
 	be := newFakeDecideBackend(func(decide.Request) (decide.Response, error) {
 		return decide.Response{}, errors.New("boom")
@@ -619,6 +621,7 @@ func TestRemote_BackendInvalidErrorIsInvalidAnswer(t *testing.T) {
 }
 
 // UC: UC-040 A3
+// UC: UC-044 A1
 func TestRemote_UnknownOrUnavailableFallsBackSynchronously(t *testing.T) {
 	unavailable := newFakeDecideBackend(nil)
 	unavailable.available = false
@@ -880,6 +883,7 @@ func assertDiscarded(t *testing.T, h remoteHarness, span sdktrace.ReadOnlySpan, 
 }
 
 // UC: UC-040 A6
+// UC: UC-045 main
 func TestRemote_KillSwitchAtLanding(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
 	h, span := fireAndMutate(t, be, time.Hour, func(h remoteHarness) {
@@ -893,6 +897,7 @@ func TestRemote_KillSwitchAtLanding(t *testing.T) {
 }
 
 // UC: UC-040 A6
+// UC: UC-045 main
 func TestRemote_KillSwitchSuppressesTimeoutFallback(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
 	h, span := fireAndMutate(t, be, 30*time.Millisecond, func(h remoteHarness) {
@@ -905,6 +910,7 @@ func TestRemote_KillSwitchSuppressesTimeoutFallback(t *testing.T) {
 }
 
 // UC: UC-040 A10 BR-005
+// UC: UC-045 A2
 func TestRemote_AllowListAtLanding(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
 	h, span := fireAndMutate(t, be, time.Hour, func(h remoteHarness) {
@@ -923,6 +929,7 @@ func TestRemote_AllowListAtLanding(t *testing.T) {
 }
 
 // UC: UC-040 A5
+// UC: UC-044 A3
 func TestRemote_ThresholdRaisedMidFlight(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, "x"))
 	h, span := fireAndMutate(t, be, time.Hour, func(h remoteHarness) {
@@ -940,6 +947,7 @@ func TestRemote_ThresholdRaisedMidFlight(t *testing.T) {
 }
 
 // UC: UC-040 A7
+// UC: UC-044 A2
 func TestRemote_BackendChangedMidFlight(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
 	h, span := fireAndMutate(t, be, time.Hour, func(h remoteHarness) {

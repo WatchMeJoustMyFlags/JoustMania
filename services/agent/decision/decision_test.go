@@ -51,6 +51,7 @@ func newFlagLoop(snap flags.Snapshot, rules RulesEngine, actions ActionSink) *Lo
 	return l
 }
 
+// UC: UC-045 main BR-001
 func TestOnEvaluate_KillSwitchShortCircuits(t *testing.T) {
 	rules := &recordingRules{out: []Decision{{Intervention: "grant_shield"}}}
 	actions := &recordingActions{}
@@ -66,6 +67,7 @@ func TestOnEvaluate_KillSwitchShortCircuits(t *testing.T) {
 	}
 }
 
+// UC: UC-045 A2 BR-001
 func TestOnEvaluate_PermissionGateFiltersBlocked(t *testing.T) {
 	rules := &recordingRules{out: []Decision{
 		{Intervention: "play_audio_cue", Reason: "allowed"},
@@ -95,6 +97,7 @@ func TestOnEvaluate_PermissionGateFiltersBlocked(t *testing.T) {
 	}
 }
 
+// UC: UC-045 A2 BR-001
 func TestOnEvaluate_EmptyAllowListDispatchesNothing(t *testing.T) {
 	rules := &recordingRules{out: []Decision{{Intervention: "play_audio_cue"}}}
 	actions := &recordingActions{}

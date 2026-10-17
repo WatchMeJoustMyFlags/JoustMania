@@ -177,6 +177,7 @@ class TestWindowComputation:
 
 
 class TestSpanEmission:
+    @pytest.mark.uc("UC-050", flow="main", steps=[2])
     @patch("services.controller_manager.metrics.controller_bluetooth_movement_update_hz")
     @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio")
     @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio_window")
@@ -291,6 +292,7 @@ class TestUpdateControllerStatesWiring:
 class TestUnstableAdapterDegradationEndToEnd:
     """Drive a real UnstableAdapter through the accumulator; all 3 thresholds break."""
 
+    @pytest.mark.uc("UC-051", flow="main", steps=[1])
     def test_unstable_routed_serial_violates_all_thresholds(self):
         from services.controller_manager.multiplexer.unstable_adapter import UnstableAdapter
 

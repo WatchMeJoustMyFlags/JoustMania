@@ -62,6 +62,7 @@ const GameKindShadowForTest = "shadow"
 
 // A single experiment-scoped proposal: the experimental arm resolves V; the
 // control arm AND a real game both resolve the pre-experiment default.
+// UC: UC-043 main BR-001
 func TestReview_SingleExperimentScoped(t *testing.T) {
 	g, path, _ := gateWithRecorder(t)
 	const flagKey = "invincibility_seconds"

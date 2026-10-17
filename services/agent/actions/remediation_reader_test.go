@@ -39,6 +39,7 @@ const rolloutDocBlocked = `{
   }
 }`
 
+// UC: UC-051 BR-002
 func TestRemediationReader_AllowedTrue(t *testing.T) {
 	path := writeRolloutFile(t, rolloutDocAllowed)
 	r := NewRemediationReader(path, nil)
@@ -47,6 +48,7 @@ func TestRemediationReader_AllowedTrue(t *testing.T) {
 	}
 }
 
+// UC: UC-051 A1 BR-002
 func TestRemediationReader_BlockedFalse(t *testing.T) {
 	path := writeRolloutFile(t, rolloutDocBlocked)
 	r := NewRemediationReader(path, nil)
@@ -55,6 +57,7 @@ func TestRemediationReader_BlockedFalse(t *testing.T) {
 	}
 }
 
+// UC: UC-051 BR-002
 func TestRemediationReader_LiveFlip(t *testing.T) {
 	// Reads the file fresh each call: rewriting the file flips the result with no
 	// reader rebuild (mirrors flagd live evaluation).
@@ -71,6 +74,7 @@ func TestRemediationReader_LiveFlip(t *testing.T) {
 	}
 }
 
+// UC: UC-051 BR-002
 func TestRemediationReader_MissingFileFalse(t *testing.T) {
 	r := NewRemediationReader(filepath.Join(t.TempDir(), "nope.json"), nil)
 	if r.RemediationAllowed() {
@@ -78,6 +82,7 @@ func TestRemediationReader_MissingFileFalse(t *testing.T) {
 	}
 }
 
+// UC: UC-051 BR-002
 func TestRemediationReader_MalformedFalse(t *testing.T) {
 	path := writeRolloutFile(t, `{ not json`)
 	r := NewRemediationReader(path, nil)

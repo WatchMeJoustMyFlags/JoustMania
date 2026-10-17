@@ -137,6 +137,7 @@ func slotsLeft(b *llmBudget, now time.Time, limit int) int {
 // no agent.llm.retro span, only agent_llm_gated_total{reason=llm_budget_exhausted}
 // and the agent.llm.retro_gated log.
 // UC: UC-042 A2 BR-001
+// UC: UC-070 A4
 func TestRetroCapture_DrawsFromGlobalBudget(t *testing.T) {
 	be := &countingText{}
 	rc, sr, budget, now := budgetedRetro(t, 1, be)
@@ -553,6 +554,8 @@ func TestRetroCapture_StubDefaultCaptureOnly(t *testing.T) {
 // agent `enabled` kill switch off, a real game end with a backend wired is
 // capture-only: no model call, no budget slot, and the skip reason on the span.
 // UC: UC-042 A5
+// UC: UC-045 main BR-002
+// UC: UC-070 A5
 func TestRetroCapture_KillSwitchOffNoCallNoCharge(t *testing.T) {
 	be := &countingText{}
 	rc, sr, budget, now := budgetedRetro(t, 2, be)

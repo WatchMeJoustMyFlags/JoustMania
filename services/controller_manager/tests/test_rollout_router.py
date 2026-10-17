@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
 project_root = service_dir.parent.parent
@@ -50,41 +52,50 @@ class TestStrategyOff:
 
 
 class TestStrategyImmediate:
+    @pytest.mark.uc("UC-050", flow="A1")
     def test_immediate_targets_every_serial(self):
         assert _run("A", ALL, strategy="immediate", target="unstable") == "unstable"
         assert _run("F", ALL, strategy="immediate", target="unstable") == "unstable"
 
+    @pytest.mark.uc("UC-050", flow="A1")
     def test_immediate_empty_target_returns_none(self):
         assert _run("A", ALL, strategy="immediate", target="") is None
 
 
 class TestStrategyProgressive:
+    @pytest.mark.uc("UC-050", flow="main", steps=[6])
     def test_count_zero_returns_none(self):
         assert _run("A", ALL, strategy="progressive", count=0) is None
 
+    @pytest.mark.uc("UC-050", flow="main", steps=[6])
     def test_count_one_first_serial_only(self):
         # sorted -> A is first
         assert _run("A", ALL, strategy="progressive", count=1) == "unstable"
         assert _run("B", ALL, strategy="progressive", count=1) is None
 
+    @pytest.mark.uc("UC-050", flow="main", steps=[6])
     def test_count_three_boundary(self):
         # sorted[:3] = A, B, C
         assert _run("C", ALL, strategy="progressive", count=3) == "unstable"
         assert _run("D", ALL, strategy="progressive", count=3) is None
 
+    @pytest.mark.uc("UC-050", flow="main", steps=[6])
     def test_count_six_includes_all_present(self):
         for s in SORTED:
             assert _run(s, ALL, strategy="progressive", count=6) == "unstable"
 
+    @pytest.mark.uc("UC-050", flow="main", steps=[6])
     def test_count_all_99_includes_everyone(self):
         for s in SORTED:
             assert _run(s, ALL, strategy="progressive", count=99) == "unstable"
 
+    @pytest.mark.uc("UC-050", flow="main", steps=[6])
     def test_uses_sorted_order_not_input_order(self):
         # Input order has C first, but sorted-first is A.
         assert _run("C", ALL, strategy="progressive", count=1) is None
         assert _run("A", ALL, strategy="progressive", count=1) == "unstable"
 
+    @pytest.mark.uc("UC-050", flow="main", steps=[6])
     def test_serial_not_in_all_serials_returns_none(self):
         assert _run("Z", ALL, strategy="progressive", count=99) is None
 

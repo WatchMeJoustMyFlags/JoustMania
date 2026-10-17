@@ -85,6 +85,7 @@ var allKeys = decideBackendEnv{AnthropicAPIKey: "sk-ant-test", OpenAIAPIKey: "sk
 // TestDecideRegistry_NoKeysFallsBackToRules: the default deployment (no API keys
 // in the env) resolves every remote backend to backend_unavailable, so the loop
 // decides with rules, even with models and base URLs configured.
+// UC: UC-044 A1 BR-001
 func TestDecideRegistry_NoKeysFallsBackToRules(t *testing.T) {
 	reg := newDecideRegistry(decideBackendEnv{}, newDecideHTTPClient())
 	for _, name := range remoteBackends {
@@ -104,6 +105,8 @@ func TestDecideRegistry_NoKeysFallsBackToRules(t *testing.T) {
 // shipped defaults leave openai's model empty. claude and jev have a default
 // model (and jev a default base URL), so their key alone makes them available:
 // scripts/agent-backend.sh jev works with only JEV_API_KEY set (#1229).
+// UC: UC-044 A1
+// UC: UC-070 A6
 func TestDecideRegistry_KeyWithoutConfigFallsBack(t *testing.T) {
 	reg := newDecideRegistry(allKeys, newDecideHTTPClient())
 	for name, wantAvailable := range map[string]bool{
@@ -147,6 +150,7 @@ type modeler interface {
 // TestDecideRegistry_ModelFlagAppliesNextResolve: a model flag flip yields a
 // backend with the new model on the very next Resolve (no restart), for every
 // remote backend, including the cached claude one.
+// UC: UC-044 main
 func TestDecideRegistry_ModelFlagAppliesNextResolve(t *testing.T) {
 	reg := newDecideRegistry(allKeys, newDecideHTTPClient())
 	modelKey := map[string]string{
@@ -226,6 +230,7 @@ func TestDecideRegistry_ClaudeCacheConcurrent(t *testing.T) {
 // TestDecideRegistry_OpenAIWiresKeyAndFlags drives the resolved openai backend
 // against a fake endpoint: the env key is the Bearer token, and the model and
 // reasoning_effort flags reach the wire (a flag flip applies on the next call).
+// UC: UC-070 A6
 func TestDecideRegistry_OpenAIWiresKeyAndFlags(t *testing.T) {
 	type seen struct {
 		auth string
@@ -279,6 +284,7 @@ func TestDecideRegistry_OpenAIWiresKeyAndFlags(t *testing.T) {
 }
 
 // TestDecideBackendEnvFromOS reads (and trims) the three key variables.
+// UC: UC-044 BR-001
 func TestDecideBackendEnvFromOS(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", " a ")
 	t.Setenv("DECISION_OPENAI_API_KEY", "o")

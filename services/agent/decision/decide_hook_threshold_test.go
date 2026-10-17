@@ -65,6 +65,7 @@ func assertThreshold(t *testing.T, span sdktrace.ReadOnlySpan, want float64, sou
 }
 
 // UC: UC-040 main A13
+// UC: UC-070 main
 func TestThreshold_JevActsAtGateByDefault(t *testing.T) {
 	h := newRemoteHarness(t, defaultThresholdSnapshot(flags.DecisionBackendJev, time.Second), jevBackend(nearThresholdConfidence))
 	span := h.run(t)
@@ -79,6 +80,7 @@ func TestThreshold_JevActsAtGateByDefault(t *testing.T) {
 }
 
 // UC: UC-040 A5
+// UC: UC-070 main A2
 func TestThreshold_ClaudeHeldAtGlobalByDefault(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", nearThresholdConfidence, "A", 0.5, "x"))
 	h := newRemoteHarness(t, defaultThresholdSnapshot(flags.DecisionBackendClaude, time.Second), be)
@@ -94,6 +96,7 @@ func TestThreshold_ClaudeHeldAtGlobalByDefault(t *testing.T) {
 }
 
 // UC: UC-040 A5 A13
+// UC: UC-044 A3
 func TestThreshold_JevInheritUsesGlobal(t *testing.T) {
 	snap := defaultThresholdSnapshot(flags.DecisionBackendJev, time.Second)
 	snap.Decision.Jev.HasActConfidenceThreshold = false // the "inherit" variant
@@ -120,6 +123,7 @@ func TestThreshold_JevGlobalFlipDoesNotApplyWithOwnThreshold(t *testing.T) {
 }
 
 // UC: UC-040 A5 A13
+// UC: UC-044 A3
 func TestThreshold_JevRaisedMidFlightAppliesAtLanding(t *testing.T) {
 	be := jevBackend(nearThresholdConfidence)
 	h, span := fireAndMutateSnapshot(t, be, defaultThresholdSnapshot(flags.DecisionBackendJev, time.Hour), time.Hour,

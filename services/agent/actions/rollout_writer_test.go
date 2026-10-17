@@ -31,6 +31,7 @@ func defaultVariantOf(t *testing.T, path, flagKey string) string {
 	return dv
 }
 
+// UC: UC-050 main
 func TestSetControllerCount_FlipsDefaultVariant(t *testing.T) {
 	w, path := newTestRolloutWriter(t)
 
@@ -49,6 +50,8 @@ func TestSetControllerCount_FlipsDefaultVariant(t *testing.T) {
 
 // TestSetControllerCount_UntouchedFlagsByteStable asserts the order-preserving
 // RMW leaves every flag other than current_controller_count byte-for-byte intact.
+// UC: UC-050 BR-001
+// UC: UC-051 BR-001
 func TestSetControllerCount_UntouchedFlagsByteStable(t *testing.T) {
 	w, path := newTestRolloutWriter(t)
 
@@ -101,6 +104,7 @@ func TestSetControllerCount_UnknownVariantErrors(t *testing.T) {
 	}
 }
 
+// UC: UC-050 main
 func TestNextStage_Ladder(t *testing.T) {
 	cases := []struct {
 		current     int
@@ -149,6 +153,7 @@ func TestStageVariantForValue(t *testing.T) {
 }
 
 // TestNextStage_FullLadderWalk walks none→all and confirms it terminates.
+// UC: UC-050 main
 func TestNextStage_FullLadderWalk(t *testing.T) {
 	current := 0
 	wantValues := []int{1, 3, 6, 99}

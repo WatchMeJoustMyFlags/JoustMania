@@ -84,6 +84,7 @@ func loopForConfigTest(t *testing.T, maxShadow int) (*experimentLoop, *recording
 // all with no restart and no in-flight corruption. The final off->on->off->on cycle
 // pins the #1051 one-shot-env-seed semantic: the env seed is declared EXACTLY ONCE
 // (on the first enable) and is NOT re-declared on a later re-enable.
+// UC: UC-043 A1
 func TestExperimentsEnabled_OffOnOff(t *testing.T) {
 	loop, spawner, lc := loopForConfigTest(t, 8)
 	ctx := context.Background()
@@ -150,6 +151,8 @@ func TestExperimentsEnabled_OffOnOff(t *testing.T) {
 // TestExperimentsEnabled_KillSwitchStillWins asserts the master kill-switch
 // (agent.json enabled) still beats experiments_enabled: a disabled agent does
 // nothing even with experiments_enabled=true.
+// UC: UC-043 A1
+// UC: UC-045 main
 func TestExperimentsEnabled_KillSwitchStillWins(t *testing.T) {
 	loop, spawner, lc := loopForConfigTest(t, 8)
 	loop.enabledOverride = func(context.Context) bool { return false } // kill-switch OFF

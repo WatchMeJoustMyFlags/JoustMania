@@ -102,6 +102,7 @@ func resolveVariant(t *testing.T, path, flagKey, gameKind string) (string, any) 
 
 // ---- Happy path: a valid shadow experiment ---------------------------------
 
+// UC: UC-043 main
 func TestReview_ValidShadowProposal(t *testing.T) {
 	g, path, rec := gateWithRecorder(t)
 
@@ -343,6 +344,7 @@ func TestCheckTargeting_DetectsRealLeakInElse(t *testing.T) {
 }
 
 // UC: UC-042 A4
+// UC: UC-043 main
 func TestCheckRealResolution_DetectsChange(t *testing.T) {
 	// before: real => a(=1). after: a non-shadow targeting flips real to b(=2).
 	before := mustFlag(t, `{"variants":{"a":1,"b":2},"defaultVariant":"a"}`)

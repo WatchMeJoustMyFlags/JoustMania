@@ -175,6 +175,7 @@ func stringAttr(s trace.ReadOnlySpan, key string) string {
 }
 
 // --- mode=issue: opens an issue with hypothesis + flag, applies NOTHING else. ---
+// UC: UC-043 main BR-003
 func TestPromoteIssueMode(t *testing.T) {
 	gh := &recordingGitHub{issueURL: "https://github.com/WatchMeJoustMyFlags/JoustMania/issues/42"}
 	git := &recordingGit{}
@@ -216,6 +217,7 @@ func TestPromoteIssueMode(t *testing.T) {
 }
 
 // --- mode=pr, target=github: opens a PR with a STRUCTURED body, merges nothing. ---
+// UC: UC-043 main BR-003
 func TestPromotePRModeGitHub(t *testing.T) {
 	gh := &recordingGitHub{prURL: "https://github.com/WatchMeJoustMyFlags/JoustMania/pull/99"}
 	git := &recordingGit{}
@@ -256,6 +258,7 @@ func TestPromotePRModeGitHub(t *testing.T) {
 }
 
 // --- mode=pr, target=local: commits to the local git seam, opens no PR. ---
+// UC: UC-043 main BR-003
 func TestPromotePRModeLocal(t *testing.T) {
 	gh := &recordingGitHub{}
 	git := &recordingGit{sha: "abc123"}
@@ -285,6 +288,7 @@ func TestPromotePRModeLocal(t *testing.T) {
 // --- mode=autonomous: applies to the REAL default (separate writer), outcome
 // applied when the watch holds (no degradation); a degradation reverts. A Watcher
 // MUST be wired (the safety net) — see TestPromoteAutonomousFailsClosedWithoutWatcher. ---
+// UC: UC-043 main
 func TestPromoteAutonomousApplied(t *testing.T) {
 	realDef := &recordingRealDefault{}
 	// A wired, non-degrading watcher is the safety net that lets the apply stand.
@@ -308,6 +312,7 @@ func TestPromoteAutonomousApplied(t *testing.T) {
 	}
 }
 
+// UC: UC-043 main
 func TestPromoteAutonomousRevertsOnDegradation(t *testing.T) {
 	realDef := &recordingRealDefault{}
 	rev := &recordingReverter{}

@@ -215,6 +215,7 @@ func TestBluetoothFitness_Accessor(t *testing.T) {
 	}
 }
 
+// UC: UC-045 A3
 func TestEvaluate_DefaultsOnError(t *testing.T) {
 	// Every evaluation errors (e.g. flagd unreachable). Defaults must apply and
 	// the agent must come up disabled with no permitted interventions.
@@ -759,6 +760,7 @@ func TestRolloutEnabled(t *testing.T) {
 // TestSafetyGateDefaultsAreFailClosed pins the package-level safe defaults: both
 // safety gates default OFF (the not-acting state), matching the fail-closed env
 // default (AGENT_*_ENABLED `:-false`) they replace.
+// UC: UC-045 A3
 func TestSafetyGateDefaultsAreFailClosed(t *testing.T) {
 	if DefaultInterventionsEnabled {
 		t.Error("DefaultInterventionsEnabled must be false (fail-closed)")
@@ -772,6 +774,7 @@ func TestSafetyGateDefaultsAreFailClosed(t *testing.T) {
 // makes at each game end: `enabled` fails CLOSED on a flagd error, and
 // `experiments_enabled` falls back to the caller's env-derived default (the same
 // fallback the experiment loop uses).
+// UC: UC-045 A3
 func TestProposerGateAccessors(t *testing.T) {
 	down := errors.New("flagd unreachable")
 	t.Run("flags on", func(t *testing.T) {
