@@ -28,7 +28,7 @@ fail() {
 # --- 1. static check -------------------------------------------------------
 # A `docker compose` invocation on a non-comment, non-echo line that is not
 # immediately followed by -f or a files array ("${COMPOSE_FILES[@]}").
-BARE_COMPOSE='^[^#]*docker compose( |$)'
+BARE_COMPOSE='^[^#]*docker compose( |\)|$)'
 NAMED_FILES='docker compose (-f |"\$\{COMPOSE_FILES\[@\]\}")'
 is_bare() {
   local line="$1"
@@ -53,7 +53,8 @@ done
 
 # The check itself must catch the old lines and pass the fixed ones
 for bad in 'exec docker compose up -d' 'if docker compose pull 2>&1; then' \
-  'ExecStop=/usr/bin/docker compose down' '    docker compose down --remove-orphans || true'; do
+  'ExecStop=/usr/bin/docker compose down' '    docker compose down --remove-orphans || true' \
+  'COMPOSE=(docker compose)' 'COMPOSE=(docker compose); "${COMPOSE[@]}" up -d'; do
   is_bare "${bad}" || fail "self-test: bare compose not flagged: ${bad}"
 done
 for good in 'exec docker compose "${COMPOSE_FILES[@]}" up -d' \
@@ -87,7 +88,6 @@ EOF
   PATH="${case_dir}/bin:${PATH}" JOUSTMANIA_STATUS_DIR="${case_dir}/status" COMPOSE_PROFILES= \
     bash "${case_dir}/repo/scripts/setup/joustmania-start.sh" >"${case_dir}/out.log" 2>&1 \
     || fail "$2: joustmania-start.sh exited non-zero: $(tail -3 "${case_dir}/out.log")"
-  echo "${case_dir}/docker.log"
 }
 
 check_compose_calls() { # $1 = docker.log, $2 = case name
@@ -105,13 +105,15 @@ check_compose_calls() { # $1 = docker.log, $2 = case name
 }
 
 # python-hid profile inactive: the stale container is removed
-log="$(run_start "flagd rust-hid controller-manager" no-profile)"
+run_start "flagd rust-hid controller-manager" no-profile
+log="${WORK}/no-profile/docker.log"
 check_compose_calls "${log}" no-profile
 grep -qx 'rm -f joustmania-python-hid' "${log}" \
   || fail "no-profile: stale joustmania-python-hid not removed"
 
 # python-hid profile active: the container is left to compose
-log="$(run_start "flagd rust-hid python-hid controller-manager" python-profile)"
+run_start "flagd rust-hid python-hid controller-manager" python-profile
+log="${WORK}/python-profile/docker.log"
 check_compose_calls "${log}" python-profile
 if grep -qx 'rm -f joustmania-python-hid' "${log}"; then
   fail "python-profile: joustmania-python-hid removed although its profile is active"

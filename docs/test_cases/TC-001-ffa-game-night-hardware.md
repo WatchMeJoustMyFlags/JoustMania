@@ -15,7 +15,7 @@
 
 ## Preconditions
 
-- The full stack runs on the Raspberry Pi with at least one Bluetooth adapter (`docker compose up`, see [hardware-setup-guide.md](../hardware-setup-guide.md)).
+- The full stack runs on the Raspberry Pi with at least one Bluetooth adapter (`docker compose -f docker-compose.yml up -d`, never a bare `docker compose`, which loads the dev override, see [hardware-setup-guide.md](../hardware-setup-guide.md)).
 - Two PS Move controllers that this Pi has not paired in the current session, charged above 40 %.
 - `current_game` in `services/flagd/user.json` is `JoustFFA`; `play_audio` is on; `sensitivity` (`services/flagd/game.json`) is `medium`.
 

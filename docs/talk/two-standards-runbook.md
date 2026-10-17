@@ -418,8 +418,19 @@ The infra loop is not gated by the `enabled` kill switch, only by
       Pi itself: arm64 images, **verify in rehearsal**.
 - [ ] No dev ports on the venue network (#1319): `sudo ss -tlnp | grep -v 127.0.0.1`
       lists port 80 (envoy) and no 50052-50062, 8013, 8015, 4317 or 50058.
+      Also expected: sshd on :22 and the pairing daemon's 8002 on
+      `172.17.0.1` (docker0 gateway, for the connect-proxy; not the venue
+      network). Anything else from docker is a finding.
       If 50062 shows up, the stack was started without `-f docker-compose.yml`
       (the dev override got loaded): bring it up again as in section 1.
+- [ ] Pairing daemon still reaches flagd, the collector and rust-hid (#1319):
+      8015, 4317 and 50058 now listen on `127.0.0.1` only (no `::1`), while
+      the daemon dials `localhost`. Check it falls back from `::1` to
+      `127.0.0.1`: `docker compose -f docker-compose.yml logs pairing-daemon`
+      shows no repeated connection errors to `localhost:8015/4317/50058`, a
+      USB pairing works, and its spans reach Jaeger. If not, set
+      `FLAGD_HOST`, `RUST_HID_HOST` and `OTEL_EXPORTER_OTLP_ENDPOINT` to
+      `127.0.0.1` for the pairing daemon.
 - [ ] No stale `joustmania-python-hid` from an older install (#1402):
       `docker ps -a --filter name=joustmania-python-hid` is empty. The start
       script removes it when the `python-hid` profile is off; by hand:
