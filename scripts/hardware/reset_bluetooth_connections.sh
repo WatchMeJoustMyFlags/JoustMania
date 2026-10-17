@@ -22,17 +22,20 @@ for arg in "$@"; do
 done
 
 CMD=(python -m psmove_pairing.registrations "$@")
+# Name the compose file: a bare `docker compose` also loads the dev override
+# (docker-compose.override.yml), which the Pi never runs (#1319).
+COMPOSE=(docker compose -f docker-compose.yml)
 
 status=0
-if docker compose ps --status running --services 2>/dev/null | grep -qx pairing-daemon; then
-    docker compose exec -T pairing-daemon "${CMD[@]}" || status=$?
+if "${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -qx pairing-daemon; then
+    "${COMPOSE[@]}" exec -T pairing-daemon "${CMD[@]}" || status=$?
     if [[ "$DRY_RUN" -eq 0 ]]; then
         echo "Restarting pairing-daemon so it re-pairs known controllers over USB..."
-        docker compose restart pairing-daemon
+        "${COMPOSE[@]}" restart pairing-daemon
     fi
 else
     echo "pairing-daemon is not running; starting a one-off container" >&2
-    docker compose run --rm --no-deps -T pairing-daemon "${CMD[@]}" || status=$?
+    "${COMPOSE[@]}" run --rm --no-deps -T pairing-daemon "${CMD[@]}" || status=$?
 fi
 
 exit "$status"
