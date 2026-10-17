@@ -132,74 +132,23 @@ The integration tests cover:
 - ✅ Distributed tracing propagation across services
 - ✅ Multiple games in sequence
 
-## Experiment shadow-isolation (agent experiment safety boundary, #932)
+## Checks that need only flagd live in the contract tier (#1422)
 
-`test_experiment_shadow_isolation.py` covers the ONE agent-experiment safety link
-no other automated gate covered before it (the #954 review follow-up): that a
-*written* game-flag experiment reaches a SHADOW game and NEVER a REAL game,
-end-to-end through the REAL flagd — not an inline JSONLogic model.
+Tests whose subject is flagd's own resolution, not the game services, run
+against ONE real flagd (no compose stack) in
+`tests/contract/test_flagd_resolution.py` (`make test-contract-flagd`, CI job
+"Flagd Contract"):
 
-**Scope decision.** Like the intervention/rollout live-flagd tests, the agent
-service (`services/agent`, Go) does NOT run in the integration compose, so we do
-not run the Go experiment Writer here. We REPRODUCE its exact mutation
-(`services/agent/experiment/targeting.go` `buildShadowTargeting`: add the reserved
-`agent_experiment` variant + `{"if":[{"!=":[{"var":"game_kind"},"real"]},
-"agent_experiment", <pre-existing-else-or-null>]}`) into `game.json`, then resolve
-via the flagd RPC resolver (`flagSetId=game`, port 8013) under the EXACT
-`game_kind` eval-context values the #954 wiring sets (`"shadow"` for a shadow
-session, `"real"` for a real game / the fail-safe API-level default). The writer's
-own correctness is the Go unit tests' job (`services/agent/experiment/*_test.go`);
-the #954 context plumbing is covered by Python unit tests — NEITHER exercises the
-actual live-flagd resolution of the written rule under the real context values.
+- typed-getter resolution of every flag the game coordinator reads (the #903
+  TYPE_MISMATCH class), through the RPC and the in-process resolver;
+- the per-player targeting ladder the agent's Writer writes;
+- the `windows` preset ladder (pacing_profile);
+- the rollout ladder the agent's `RolloutWriter` walks (#737);
+- shadow-only experiments: a written experiment reaches a shadow context and
+  never a real one (#932, UC-043 BR-001);
+- NFR-014 flag-file propagation latency.
 
-**What this test DOES assert:** a SHADOW context resolves the EXPERIMENTAL value
-(`invincibility_seconds` 8.0, `sensitivity` 0) while a REAL context resolves the
-BASELINE (4.0 / medium), and a REAL game with pre-existing targeting
-(`game_mode=Werewolf`) keeps that targeted value verbatim (the experiment wraps it
-as the else-branch). It also documents WHERE the fail-safe lives: a context with
-no `game_kind` resolves EXPERIMENTAL at raw flagd (rule is `!= real`), so the
-real-by-default protection is enforced by the application context
-(`lib/feature_flags` defaults the API-level context to `game_kind="real"`), not by
-flagd — which would catch a writer that mistakenly used `== shadow`. The unit test
-`test_game_kind_constants_match_source` (`lib/tests/test_shipped_safety_defaults.py`)
-pins the `game_kind` var/value strings used here to their single source of truth in
-both languages. Kept sequential (mutates the
-global `game` flagset); `game.json` is snapshotted and restored byte-for-byte by
-the `game_flags` fixture so the experiment never leaks.
-
-## Rollout plumbing (agent remediation control plane, #737)
-
-`test_rollout_plumbing.py` covers the CONTROL-PLANE half of the agent's
-progressive-rollout / auto-rollback loop end-to-end, mirroring the
-`test_intervention_flow.py` live-flagd-RPC pattern.
-
-**Scope decision.** Two parts of the loop are deliberately NOT asserted here, and
-why:
-
-- **The agent service does not run in CI.** It sits behind the `agent` compose
-  profile (`docker-compose.ci.yml`), exactly like the intervention `ActionSink`
-  (scenario 6 in `test_intervention_flow.py`). So we cannot assert the agent emits
-  `agent.infrastructure.decision` spans from this harness — that is covered by the
-  Go narrative test (`services/agent/decision/infra_narrative_test.go`), which
-  drives the loop deterministically with a fake clock/actuator/remediation and
-  asserts the full incident span timeline.
-- **The controller-manager runs in mock mode.** Mock controllers route via the
-  mock adapter (`method="default"`), so the multiplexer rollout router — and the
-  `controller_routing_decisions_total{method="rollout"}` metric — is only reached
-  with non-mock adapters (hardware profile), which CI does not run. The unstable
-  adapter wraps python-hid and is likewise unreachable in CI.
-
-**What this test DOES assert** is that the agent's rollout write SHAPE is
-schema-valid and consumable by the same live flagd the controller-manager reads:
-it writes `rollout.json` exactly as the Go `RolloutWriter` does (flip
-`current_controller_count`'s `defaultVariant` along the `none→one→three→six→all`
-ladder; set `strategy=progressive` + a `target_backend`; rollback resets to
-`none`) and resolves each value via the flagd RPC (`flagSetId=rollout`, port
-8013). It also pins the `remediation_allowed` gate schema the agent's
-`RemediationReader` depends on (both boolean variants, default OFF / fail-closed).
-This catches schema/variant drift the Go unit tests (which never touch real flagd)
-cannot. `rollout.json` is snapshotted and restored byte-for-byte by the
-`rollout_file` fixture so mutations never leak.
+Write integration tests here only for what needs the services themselves.
 
 ## How Tests Work
 

@@ -25,7 +25,7 @@ class FlagConfigWriter:
     flagd (v0.16, in docker) has no inotify watch: it stats the file every
     1 s and reloads on an mtime change, so readers see the change 0-1 s later
     (measured median ~0.5 s, max ~1 s: NFR-014,
-    tests/integration/test_flag_propagation.py).
+    tests/contract/test_flagd_resolution.py).
     """
 
     def __init__(self, file_path: str):

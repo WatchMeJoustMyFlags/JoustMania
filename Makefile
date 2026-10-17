@@ -30,7 +30,8 @@ help:
 	@echo "  make test            - Run all tests (unit + integration)"
 	@echo "  make test-integration - Run integration tests only (CI)"
 	@echo "  make test-dev        - Run integration tests with pre-built images (fast)"
-	@echo "  make test-contract   - Telemetry producer/consumer contract (static, ~15s)"
+	@echo "  make test-contract   - Contract tier: telemetry/infra static + flagd contract (~1 min)"
+	@echo "  make test-contract-flagd - flagd contract only (one real flagd, ~1 min)"
 	@echo "  make test TEST=name  - Run specific test by name"
 	@echo ""
 	@echo "Protos:"
@@ -246,11 +247,18 @@ test-pulled: clean-test-venv
 		$(TEST_ENV) uv run --package joustmania-integration-tests \
 		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
 
-# Telemetry producer/consumer contract (#1357): static scan, no stack needed.
-# envoy --mode validate runs via docker when available.
+# Contract tier (#1357, #1422): telemetry producer/consumer static scan, infra
+# config checks, and the flagd contract (one real flagd, no game stack).
+# promtool, envoy and flagd run via docker when available (CI: required).
+CONTRACT_DEPS = --with pytest --with pyyaml --with 'openfeature-sdk>=0.8.4' --with 'openfeature-provider-flagd>=0.5.0'
 .PHONY: test-contract
 test-contract:
-	uv run --no-project --with pytest --with pyyaml pytest tests/contract -v -p no:cacheprovider
+	uv run --no-project $(CONTRACT_DEPS) pytest tests/contract -v -p no:cacheprovider
+
+# Only the flagd contract (tests/contract/test_flagd_resolution.py, ~1 min).
+.PHONY: test-contract-flagd
+test-contract-flagd:
+	uv run --no-project $(CONTRACT_DEPS) pytest tests/contract/test_flagd_resolution.py -v --tb=short -p no:cacheprovider
 
 # Integration tests with pre-built images + volume-mounted source (no rebuild)
 # Requires images: run `docker compose pull` or `make dev` first

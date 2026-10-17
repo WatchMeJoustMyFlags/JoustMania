@@ -43,5 +43,5 @@
 
 ## Automation
 
-- **Manual** (real controllers). Automating it needs a code change first (an `unstable` wrapper over the mock adapter and rollout-routable mock serials, with its spec change), tracked with the e2e test in #1390. Today `tests/integration/test_rollout_plumbing.py` proves only that the rollout flag shape the agent writes resolves through live flagd (`test_rollout_write_shape_resolves_via_live_flagd`, `test_remediation_allowed_flag_is_resolvable_shape`); the rollback, cooldown and dry-run logic is unit-tested in `services/agent/decision/infra_loop_rollback_test.go`.
+- **Manual** (real controllers). Automating it needs a code change first (an `unstable` wrapper over the mock adapter and rollout-routable mock serials, with its spec change), tracked with the e2e test in #1390. Today `tests/contract/test_flagd_resolution.py::test_rollout_write_shape_resolves_via_live_flagd` proves only that the rollout flag shape the agent writes resolves through a real flagd, and `lib/tests/test_shipped_safety_defaults.py::test_remediation_allowed_flag_is_resolvable_shape` pins the `remediation_allowed` gate; the rollback, cooldown and dry-run logic is unit-tested in `services/agent/decision/infra_loop_rollback_test.go`.
 - Known bug affecting the dry-run variant: #1339.
