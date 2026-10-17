@@ -58,6 +58,11 @@ class RustServiceAdapter(ControllerIOAdapter):
         self._latest_data: dict[str, dict] = {}
         self._last_state: dict[str, dict] = {}  # cached last-known state per serial
         self._data_lock = threading.Lock()
+        # Serials closed by the multiplexer (loser / switched / gone). Polls run on
+        # the event loop while discovery closes serials in a worker thread (#1447),
+        # so state writes for a closed serial are dropped until it is reopened
+        # or rediscovered. Guarded by _data_lock.
+        self._closed: set[str] = set()
         self._stream_thread: threading.Thread | None = None
         self._stream_running = False
 
@@ -104,7 +109,8 @@ class RustServiceAdapter(ControllerIOAdapter):
                 state = _sensor_data_to_dict(sensor_data)
                 state[StateKey.SERIAL] = serial
                 with self._data_lock:
-                    self._latest_data[serial] = state
+                    if serial not in self._closed:
+                        self._latest_data[serial] = state
         except grpc.RpcError as e:
             if self._stream_running:
                 logger.warning(f"StreamIO error: {e}")
@@ -136,6 +142,8 @@ class RustServiceAdapter(ControllerIOAdapter):
                 serials.append(serial)
                 if c.adapter_name:
                     self._adapter_names[serial] = c.adapter_name
+            with self._data_lock:
+                self._closed.difference_update(serials)
             return serials
         except grpc.RpcError as e:
             logger.warning(f"Discover RPC failed: {e}")
@@ -147,6 +155,8 @@ class RustServiceAdapter(ControllerIOAdapter):
     def open(self, serial: str) -> bool:
         from proto import psmove_hid_pb2
 
+        with self._data_lock:
+            self._closed.discard(serial)
         self._ensure_stream()
 
         try:
@@ -157,13 +167,17 @@ class RustServiceAdapter(ControllerIOAdapter):
             return False
 
     def poll(self, serial: str) -> dict | None:
+        # All state access under _data_lock: close() runs in the discovery
+        # worker thread while poll() runs on the event loop (#1447).
         with self._data_lock:
+            if serial in self._closed:
+                return None
             new_data = self._latest_data.pop(serial, None)
-        if new_data is not None:
-            self._last_state[serial] = new_data
-            return new_data
-        # No new stream data — return cached state so callers don't count as drop
-        return self._last_state.get(serial)
+            if new_data is not None:
+                self._last_state[serial] = new_data
+                return new_data
+            # No new stream data — return cached state so callers don't count as drop
+            return self._last_state.get(serial)
 
     def set_output(self, serial: str, r: int, g: int, b: int, rumble: int) -> bool:
         from proto import psmove_hid_pb2
@@ -191,7 +205,8 @@ class RustServiceAdapter(ControllerIOAdapter):
 
         with self._data_lock:
             self._latest_data.pop(serial, None)
-        self._last_state.pop(serial, None)
+            self._last_state.pop(serial, None)
+            self._closed.add(serial)
         self._adapter_names.pop(serial, None)
 
         try:
@@ -210,7 +225,8 @@ class RustServiceAdapter(ControllerIOAdapter):
 
         with self._data_lock:
             self._latest_data.clear()
-        self._last_state.clear()
+            self._last_state.clear()
+            self._closed.clear()
         self._adapter_names.clear()
 
         try:

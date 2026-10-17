@@ -12,14 +12,34 @@ import logging
 logger = logging.getLogger("psmove-pairing")
 
 
+async def _stop_previous_agent() -> None:
+    """Terminate the bluetoothctl process of an earlier registration, if it still runs."""
+    proc = getattr(register_pairing_agent, "_proc", None)
+    register_pairing_agent._proc = None
+    if proc is None or proc.returncode is not None:
+        return
+    try:
+        proc.terminate()
+        await asyncio.wait_for(proc.wait(), timeout=2.0)
+    except ProcessLookupError:
+        pass
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+
+
 async def register_pairing_agent() -> bool:
     """Start a bluetoothctl process with a default agent.
 
     The agent auto-accepts pairing and handles PIN "0000" for ZCM2 controllers.
     Runs as a background subprocess for the lifetime of the daemon.
 
+    Called again after every bluetoothd restart (UC-001 BR-005): the restart
+    ends the previous session, whose process is stopped first.
+
     Returns True if agent registration succeeded.
     """
+    await _stop_previous_agent()
     try:
         proc = await asyncio.create_subprocess_exec(
             "bluetoothctl",
