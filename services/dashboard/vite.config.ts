@@ -33,6 +33,11 @@ export default defineConfig({
       },
       // Proxy Jaeger HTTP API queries (agent.decide feed, #1233) through envoy,
       // which routes /jaeger/* to the Jaeger query service. Dev-only, as above.
+      // Operator unpair (UC-005) through envoy -> connect-proxy. Dev-only, as above.
+      '/pairing': {
+        target: 'http://localhost:80',
+        changeOrigin: true,
+      },
       '/jaeger': {
         target: 'http://localhost:80',
         changeOrigin: true,
