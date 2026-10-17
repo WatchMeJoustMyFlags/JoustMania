@@ -419,7 +419,6 @@ dependencies = [
     { name = "opentelemetry-distro" },
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-instrumentation-grpc" },
-    { name = "prometheus-client" },
     { name = "psutil" },
     { name = "uvloop", marker = "sys_platform == 'linux'" },
 ]
@@ -443,7 +442,6 @@ requires-dist = [
     { name = "opentelemetry-distro", specifier = ">=0.49b0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.28.0" },
     { name = "opentelemetry-instrumentation-grpc", specifier = ">=0.49b0" },
-    { name = "prometheus-client", specifier = ">=0.19.0" },
     { name = "psutil", specifier = ">=5.9.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },

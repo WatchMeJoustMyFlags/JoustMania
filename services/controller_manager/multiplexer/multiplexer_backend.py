@@ -134,8 +134,12 @@ class MultiplexerBackend(ControllerBackend):
 
     def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
         seen = self._route_controllers(force_rescan)
-        self._serial_to_adapter = seen
-        self._cleanup_stale_state(seen)
+        # Discovery and the 20 Hz LED batch run in separate worker threads
+        # (#1447): swap routing and drop stale LED state under the LED lock so
+        # a batch never writes through a half-updated routing table.
+        with self._led_lock:
+            self._serial_to_adapter = seen
+            self._cleanup_stale_state(seen)
         self._update_controller_metrics(seen)
         return list(seen.keys())
 
