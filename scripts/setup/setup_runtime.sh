@@ -98,7 +98,8 @@ if [[ -f "$config_loc" ]]; then
     if ! grep -q 'dtoverlay=disable-bt' "$config_loc" 2>/dev/null; then
         echo "  → Disabling internal Bluetooth (USB adapters recommended)..."
         echo "dtoverlay=disable-bt" | sudo tee -a "$config_loc" > /dev/null
-        sudo rm -rf /var/lib/bluetooth/* 2>/dev/null || true
+        # Saved Bluetooth registrations are kept (#1443); PS Moves only:
+        # scripts/hardware/reset_bluetooth_connections.sh
         REBOOT_NEEDED=true
     else
         echo "  → Internal Bluetooth already disabled"

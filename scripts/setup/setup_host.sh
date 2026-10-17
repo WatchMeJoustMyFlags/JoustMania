@@ -108,11 +108,13 @@ else
 fi
 
 # Disable internal Bluetooth: the Pi 5 radio (Cypress BCM4345C0) times PS3 Moves poorly;
-# USB adapters are used instead (docs/hardware-setup-guide.md#pi-5-internal-bluetooth)
+# USB adapters are used instead (docs/hardware-setup-guide.md#pi-5-internal-bluetooth).
+# Saved Bluetooth registrations are kept (#1443): BlueZ only loads the storage of
+# adapters it presents, so the internal adapter's entries are inert once it is off.
+# To drop PS Move registrations only, run scripts/hardware/reset_bluetooth_connections.sh.
 echo "  → Disabling internal Bluetooth..."
 sudo grep -qxF 'dtoverlay=disable-bt' "$config_loc" || {
     echo "dtoverlay=disable-bt" | sudo tee -a "$config_loc"
-    sudo rm -rf /var/lib/bluetooth/*
 } || exit 1
 
 # Disable hciuart on older distributions
