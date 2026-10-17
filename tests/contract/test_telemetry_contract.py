@@ -140,10 +140,10 @@ def test_inventory_parsers_find_the_known_surface(python_metrics, consumer_queri
     assert len(ti.spa_queries()) >= 2, (
         "dashboard SPA *_QUERY scan found too few queries"
     )
-    # Parser sanity floor derived from the files (#1427), so consolidating
-    # dashboards never needs a hand-tuned number: the JSON walk must find at
-    # least as many queries per file as a plain text scan finds non-empty
-    # "expr" fields, and every dashboard file must yield a query.
+    # Parser sanity check derived from the files (#1427), so consolidating
+    # dashboards never needs a hand-tuned number: every dashboard file yields a
+    # query, and the JSON walk's "expr" hits equal a plain text scan's count of
+    # non-empty "expr" fields in each file.
     raw = ti.raw_dashboard_expr_counts()
     assert raw, "no dashboard files found"
     parsed: dict[str, int] = dict.fromkeys(raw, 0)
@@ -151,11 +151,12 @@ def test_inventory_parsers_find_the_known_surface(python_metrics, consumer_queri
         parsed[dashboard] += 1
     empty = sorted(name for name, n in parsed.items() if n == 0)
     assert not empty, f"dashboards that yield no query: {empty}"
-    short = {name: (parsed[name], n) for name, n in raw.items() if parsed[name] < n}
-    assert not short, (
-        f"dashboard query walk found fewer queries than raw 'expr' fields (parsed, raw): {short}"
+    walked = ti.walked_dashboard_expr_counts()
+    mismatch = {name: (walked[name], n) for name, n in raw.items() if walked[name] != n}
+    assert not mismatch, (
+        "dashboard query walk found a different number of 'expr' fields than the raw "
+        f"text scan (walked, raw): {mismatch}; a Loki/Jaeger expr is skipped by the walk"
     )
-    assert sum(parsed.values()) >= sum(raw.values())
 
 
 @pytest.mark.parametrize(

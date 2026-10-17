@@ -1094,7 +1094,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "95th percentile of outbound gRPC call duration, by callee service. Until #1434 lands, lib/otel_metrics histograms are exported with the SDK default boundaries (0, 5, 10, 25, ... s), so every quantile reads about 4.75 s.",
+      "description": "95th percentile of outbound gRPC call duration, by callee service.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1246,7 +1246,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "99th percentile of outbound gRPC call duration, by callee service and method. Until #1434 lands, lib/otel_metrics histograms are exported with the SDK default boundaries (0, 5, 10, 25, ... s), so every quantile reads about 4.75 s.",
+      "description": "99th percentile of outbound gRPC call duration, by callee service and method.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2271,7 +2271,7 @@
       },
       "gridPos": {
         "h": 7,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 73
       },
@@ -2330,7 +2330,7 @@
       "gridPos": {
         "h": 7,
         "w": 4,
-        "x": 12,
+        "x": 8,
         "y": 73
       },
       "id": 33,
@@ -2360,6 +2360,74 @@
         }
       ],
       "title": "Storage size",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Series in the VictoriaMetrics storage index (vm_cache_entries{type=\"storage/tsid\"}). Per-game and per-controller series (game_id, serial labels) accumulate here, and memory grows with it under the 256 MiB container limit.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 200000
+              },
+              {
+                "color": "red",
+                "value": 400000
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 4,
+        "x": 12,
+        "y": 73
+      },
+      "id": 34,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(vm_cache_entries{job=~\"(.+/)?victoria-metrics\",type=\"storage/tsid\"})",
+          "refId": "A",
+          "legendFormat": "Series"
+        }
+      ],
+      "title": "Active time series",
       "type": "stat"
     },
     {
@@ -2401,7 +2469,7 @@
         "x": 16,
         "y": 73
       },
-      "id": 34,
+      "id": 35,
       "options": {
         "colorMode": "background",
         "graphMode": "area",
@@ -2469,7 +2537,7 @@
         "x": 20,
         "y": 73
       },
-      "id": 35,
+      "id": 36,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
