@@ -436,7 +436,7 @@ This optimization is critical for large player counts - without it, 42 controlle
 
 ### Starting the stack on the Pi
 
-The Pi always passes `-f docker-compose.yml` to `up` (`docker compose -f docker-compose.yml up -d`, or `scripts/setup/joustmania-start.sh`, which does the same): a bare `docker compose up` also loads the dev `docker-compose.override.yml`, which publishes the gRPC and mock control ports on the venue network (#1319).
+The Pi always passes `-f docker-compose.yml` to `up`. Use `./scripts/setup/joustmania-compose.sh up -d` (what `scripts/setup/joustmania-start.sh` and the systemd autostart run): it adds `-f docker-compose.yml`, `--env-file .env` and, when present, `--env-file .env.local` (stage tag and API keys, #1488). Never run a bare `docker compose up`: it also loads the dev `docker-compose.override.yml`, which publishes the gRPC and mock control ports on the venue network (#1319).
 
 ### Lite Deployment (No Observability)
 

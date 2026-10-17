@@ -11,13 +11,14 @@ STATUS_FILE="$STATUS_DIR/update-status.json"
 
 cd "$JOUSTMANIA_DIR"
 
-# The Pi runs the base stack only. Every compose call names its files with -f:
-# a bare `docker compose` would also auto-load docker-compose.override.yml, the
-# dev/test file that publishes the mock control port (50062) and the gRPC ports
-# on all interfaces, i.e. to the venue network (#1319).
-COMPOSE_FILES=(-f docker-compose.yml)
+# Every compose call goes through joustmania-compose.sh: docker-compose.yml
+# only, never the dev override that publishes the mock control and gRPC ports
+# to the venue network (#1319), with .env and, when present, the git-ignored
+# .env.local (stage IMAGE_TAG and decision-backend API keys, #1488). It is
+# resolved after the git pull below, so an updated wrapper applies at once.
+COMPOSE_WRAPPER="$SCRIPT_DIR/joustmania-compose.sh"
 compose() {
-    docker compose "${COMPOSE_FILES[@]}" "$@"
+    "$COMPOSE_WRAPPER" "$@"
 }
 
 echo "=== JoustMania Startup ==="
@@ -30,6 +31,7 @@ mkdir -p "$STATUS_DIR"
 TRACKED_FILES=(
     "scripts/setup/joustmania.service"
     "scripts/setup/joustmania-start.sh"
+    "scripts/setup/joustmania-compose.sh"
     "scripts/setup/install_autostart.sh"
 )
 
@@ -76,6 +78,13 @@ EOF
 
 if [[ ${#CHANGED_FILES[@]} -gt 0 ]]; then
     echo "WARNING: Service files have changed. Run 'sudo ./scripts/setup/install_autostart.sh' to apply updates."
+fi
+
+# Say which env files apply, never their contents (they hold API keys)
+if [[ -f .env.local ]]; then
+    echo "Env files: .env + .env.local (.env.local wins)"
+else
+    echo "Env files: .env only (no .env.local: release IMAGE_TAG, no decision-backend keys)"
 fi
 
 # Attempt docker compose pull (non-fatal)
@@ -130,4 +139,4 @@ fi
 
 # Start services (this must succeed)
 echo "Starting JoustMania (Bluetooth backend: rust-hid${COMPOSE_PROFILES:+, profiles: ${COMPOSE_PROFILES}})..."
-exec docker compose "${COMPOSE_FILES[@]}" up -d
+exec "$COMPOSE_WRAPPER" up -d

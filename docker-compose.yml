@@ -733,8 +733,9 @@ services:
       # the vendor directly: there is no gateway. Read once at agent startup;
       # an empty key makes that backend unavailable and the decision falls
       # back to rules. Never put keys in a flag file or the tracked .env: export
-      # them in the shell or use the git-ignored .env.local
-      # (docker compose --env-file .env --env-file .env.local up).
+      # them in the shell or use the git-ignored .env.local (on the Pi
+      # scripts/setup/joustmania-compose.sh, used by the systemd autostart,
+      # passes --env-file .env --env-file .env.local to every call, #1488).
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - DECISION_OPENAI_API_KEY=${DECISION_OPENAI_API_KEY:-}
       - JEV_API_KEY=${JEV_API_KEY:-}

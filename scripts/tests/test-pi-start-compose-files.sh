@@ -10,9 +10,11 @@
 # 1. Static: the Pi scripts (scripts/setup/*, scripts/hardware/*.sh) contain no
 #    `docker compose` call without -f (comments and echoed hints ignored).
 # 2. Behaviour: joustmania-start.sh is run against a stub docker; every compose
-#    call it makes starts with `-f docker-compose.yml`, it ends in `up -d`, and
-#    it removes a stale joustmania-python-hid container only while the
-#    python-hid profile is inactive (#1402 I1).
+#    call it makes starts with `-f docker-compose.yml --env-file .env`, plus
+#    `--env-file .env.local` (last, so it wins) exactly when .env.local exists
+#    (#1488); it ends in `up -d`, never prints the env values, and removes a
+#    stale joustmania-python-hid container only while the python-hid profile
+#    is inactive (#1402 I1). The env files are dummies created by the test.
 # Runs as part of `make lint`, or directly:
 #   ./scripts/tests/test-pi-start-compose-files.sh
 # UC: UC-035 BR-001
@@ -69,52 +71,69 @@ done
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
-run_start() { # $1 = services printed by `compose config --services`
+DUMMY_SECRET="dummy-not-a-key-1488"
+
+run_start() { # $1 = services printed by `compose config --services`, $2 = case, $3 = with-env-local|no-env-local
   local case_dir="${WORK}/$2"
   mkdir -p "${case_dir}/repo/scripts/setup" "${case_dir}/bin"
   cp "${ROOT}/scripts/setup/joustmania-start.sh" "${case_dir}/repo/scripts/setup/"
+  if [[ -f "${ROOT}/scripts/setup/joustmania-compose.sh" ]]; then
+    cp "${ROOT}/scripts/setup/joustmania-compose.sh" "${case_dir}/repo/scripts/setup/"
+  fi
+  printf 'IMAGE_TAG=0.0.0-test\n' >"${case_dir}/repo/.env"
+  if [[ "$3" == with-env-local ]]; then
+    printf 'IMAGE_TAG=stage-test\nJEV_API_KEY=%s\nANTHROPIC_API_KEY=%s\n' "${DUMMY_SECRET}" "${DUMMY_SECRET}" >"${case_dir}/repo/.env.local"
+  fi
   : >"${case_dir}/docker.log"
-  cat >"${case_dir}/bin/docker" <<EOF
+  cat >"${case_dir}/bin/docker" <<STUB
 #!/usr/bin/env bash
 echo "\$*" >>"${case_dir}/docker.log"
 if [[ "\$1" == compose && " \$* " == *" config --services "* ]]; then
   printf '%s\n' ${1}
 fi
 exit 0
-EOF
+STUB
   printf '#!/usr/bin/env bash\nexit 1\n' >"${case_dir}/bin/git"     # offline: pull fails, non-fatal
   printf '#!/usr/bin/env bash\nexit 0\n' >"${case_dir}/bin/amixer"
   chmod +x "${case_dir}/bin/"*
   PATH="${case_dir}/bin:${PATH}" JOUSTMANIA_STATUS_DIR="${case_dir}/status" COMPOSE_PROFILES= \
     bash "${case_dir}/repo/scripts/setup/joustmania-start.sh" >"${case_dir}/out.log" 2>&1 \
-    || fail "$2: joustmania-start.sh exited non-zero: $(tail -3 "${case_dir}/out.log")"
+    || fail "$2: joustmania-start.sh exited non-zero (run the test locally to see its output)"
+  if grep -rq "${DUMMY_SECRET}" "${case_dir}/out.log" "${case_dir}/status" 2>/dev/null; then
+    fail "$2: the start script printed an env value"
+  fi
 }
 
-check_compose_calls() { # $1 = docker.log, $2 = case name
+check_compose_calls() { # $1 = docker.log, $2 = case name, $3 = expected compose prefix
   local calls
   calls="$(grep '^compose' "$1" || true)"
   [[ -n "${calls}" ]] || fail "$2: no compose call recorded"
   while IFS= read -r call; do
     [[ -z "${call}" ]] && continue
-    [[ "${call}" == "compose -f docker-compose.yml "* ]] \
-      || fail "$2: compose call without -f docker-compose.yml: docker ${call}"
+    [[ "${call}" == "$3 "* ]] || fail "$2: compose call does not start with '$3': docker ${call}"
     if [[ "${call}" == *override* ]]; then fail "$2: compose call loads the override: docker ${call}"; fi
   done <<<"${calls}"
-  [[ "$(tail -1 "$1")" == "compose -f docker-compose.yml up -d" ]] \
-    || fail "$2: last docker call is not 'compose -f docker-compose.yml up -d': $(tail -1 "$1")"
+  [[ "$(tail -1 "$1")" == "$3 up -d" ]] \
+    || fail "$2: last docker call is not '$3 up -d': $(tail -1 "$1")"
 }
 
-# python-hid profile inactive: the stale container is removed
-run_start "flagd rust-hid controller-manager" no-profile
+BASE_PREFIX="compose -f docker-compose.yml --env-file .env"
+
+# No .env.local, python-hid profile inactive: only .env; the stale container is removed
+run_start "flagd rust-hid controller-manager" no-profile no-env-local
 log="${WORK}/no-profile/docker.log"
-check_compose_calls "${log}" no-profile
+check_compose_calls "${log}" no-profile "${BASE_PREFIX}"
+if grep -q 'env.local' "${log}"; then fail "no-profile: .env.local passed although it does not exist"; fi
 grep -qx 'rm -f joustmania-python-hid' "${log}" \
   || fail "no-profile: stale joustmania-python-hid not removed"
 
-# python-hid profile active: the container is left to compose
-run_start "flagd rust-hid python-hid controller-manager" python-profile
+# .env.local present, python-hid profile active: .env then .env.local (later
+# wins) on every call; the container is left to compose
+run_start "flagd rust-hid python-hid controller-manager" python-profile with-env-local
 log="${WORK}/python-profile/docker.log"
-check_compose_calls "${log}" python-profile
+check_compose_calls "${log}" python-profile "${BASE_PREFIX} --env-file .env.local"
+grep -q 'Env files: .env + .env.local' "${WORK}/python-profile/out.log" \
+  || fail "python-profile: the start script does not say .env.local was loaded"
 if grep -qx 'rm -f joustmania-python-hid' "${log}"; then
   fail "python-profile: joustmania-python-hid removed although its profile is active"
 fi
@@ -122,4 +141,4 @@ fi
 if [[ "${fails}" -ne 0 ]]; then
   exit 1
 fi
-echo "ok: the Pi start path names its compose files and never loads the dev override"
+echo "ok: the Pi start path names its compose and env files and never loads the dev override"

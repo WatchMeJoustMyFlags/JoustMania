@@ -5,9 +5,10 @@
 #   Environment=COMPOSE_PROFILES=python-hid
 # ExecStart and ExecStop both inherit it (#1402 S2).
 #
-# Compose calls name their files with -f: a bare `docker compose` also loads
-# docker-compose.override.yml, the dev file that publishes the mock control
-# and gRPC ports on all interfaces (#1319).
+# Compose calls go through scripts/setup/joustmania-compose.sh: -f
+# docker-compose.yml (a bare `docker compose` also loads the dev override
+# that publishes the mock control and gRPC ports, #1319) plus .env and the
+# git-ignored .env.local when present (stage IMAGE_TAG + API keys, #1488).
 [Unit]
 Description=JoustMania Docker Compose Application
 Requires=docker.service
@@ -23,7 +24,7 @@ ExecStartPre=+/bin/bash -c '\
   docker container prune -f 2>/dev/null; \
   true'
 ExecStart=/home/pi/JoustMania/scripts/setup/joustmania-start.sh
-ExecStop=/usr/bin/docker compose -f docker-compose.yml down
+ExecStop=/home/pi/JoustMania/scripts/setup/joustmania-compose.sh down
 TimeoutStartSec=600
 User=pi
 Group=pi
