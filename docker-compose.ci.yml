@@ -1,10 +1,16 @@
 # CI Override - No hardware dependencies
 #
 # Use this for CI/testing environments without sound hardware:
-#   docker-compose -f docker-compose.yml -f docker-compose.ci.yml up
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up
 #
 # Or with the override file for port exposures:
-#   docker-compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.ci.yml up
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.ci.yml up
+#
+# Profiles: compose MERGES a service's `profiles` list with the base one, it
+# does not replace it. The hardware services below therefore start only under
+# the profiles listed here plus any profile the base file already gives them
+# (python-hid keeps its base `python-hid` profile). With no profile active,
+# none of them, nor the agent, dashboard, connect-proxy or envoy, starts.
 #
 # Note: We must fully redefine services to clear device/volume lists
 # (docker-compose merges arrays, doesn't replace them)
@@ -41,7 +47,8 @@ services:
     devices: !reset []
     volumes: !reset []
     privileged: false
-    # Override depends_on to remove rust-hid and python-hid (hardware profile, not available in CI)
+    # Override depends_on to drop rust-hid and python-hid: they are profile-gated
+    # below (no HID hardware in CI) and the mock backend needs neither
     depends_on: !override
       flagd:
         condition: service_started
@@ -79,7 +86,9 @@ services:
   # Python HID Service - Requires hardware, excluded from CI
   python-hid:
     profiles:
-      - hardware  # Only starts when 'hardware' profile is active
+      # Merged with the base `python-hid` profile: starts under 'hardware' OR
+      # 'python-hid' (opt-in since #1371), never with no profile active
+      - hardware
 
   # Agent - OTLP fan-out target, not required for integration tests
   agent:
@@ -96,7 +105,7 @@ services:
     profiles:
       - dashboard  # Only starts when 'dashboard' profile is active
 
-  # Envoy - Not required for integration tests (depends on dashboard)
+  # Envoy - Not required for integration tests (its default route is the dashboard)
   envoy:
     profiles:
       - dashboard  # Only starts when 'dashboard' profile is active
