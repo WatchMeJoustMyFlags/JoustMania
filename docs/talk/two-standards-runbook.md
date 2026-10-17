@@ -437,7 +437,7 @@ The infra loop is not gated by the `enabled` kill switch, only by
       Also expected: sshd on :22 and the pairing daemon's 8002 on
       `172.17.0.1` (docker0 gateway, for the connect-proxy; not the venue
       network). Anything else from docker is a finding.
-      If 50062 shows up, the stack was started without `-f docker-compose.yml`
+      If 50062 shows up, the stack was started without `joustmania-compose.sh`
       (the dev override got loaded): bring it up again as in section 1.
 - [ ] Pairing daemon still reaches rust-hid, the collector and flagd over
       `127.0.0.1` (#1319): a USB pairing works, its spans show up in Jaeger,

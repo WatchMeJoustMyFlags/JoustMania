@@ -164,7 +164,7 @@ rust-hid is the default Bluetooth backend everywhere (UC-002 BR-003). The Python
   3. `bluetooth_backend=python`, so serials (and USB pairing, UC-001 BR-003) are routed to it. Its default `rust` keeps every controller on rust-hid even with the python adapter loaded.
 
   ```bash
-  docker compose -f docker-compose.yml --profile python-hid up -d   # or COMPOSE_PROFILES=python-hid
+  ./scripts/setup/joustmania-compose.sh --profile python-hid up -d   # or COMPOSE_PROFILES=python-hid
   # controller.json: "backend" defaultVariant -> python_rust, then scripts/flags.sh restart and restart controller-manager
   scripts/flags.sh set controller bluetooth_backend python          # stack overlay (or the baseline defaultVariant)
   ```

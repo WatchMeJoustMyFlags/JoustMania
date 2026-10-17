@@ -2,8 +2,10 @@
 #
 # Quick Start (pull from GHCR - no build needed), as the Pi runs it
 # (scripts/setup/joustmania-start.sh):
-#   docker compose -f docker-compose.yml pull
-#   docker compose -f docker-compose.yml up -d
+#   ./scripts/setup/joustmania-compose.sh pull
+#   ./scripts/setup/joustmania-compose.sh up -d
+# (= docker compose -f docker-compose.yml --env-file .env [--env-file .env.local];
+# a plain -f docker-compose.yml reads only .env: release tag, no API keys, #1488)
 # A bare `docker compose up -d` also loads docker-compose.override.yml (dev
 # ports on all interfaces); fine on a dev machine, never on the Pi (#1319).
 #
@@ -21,7 +23,7 @@
 # adapters load at startup; the default is "rust" (rust-hid, #1371). python-hid is
 # opt-in only and needs all three of:
 #   1. the "python-hid" compose profile:
-#        docker compose -f docker-compose.yml --profile python-hid up -d
+#        ./scripts/setup/joustmania-compose.sh --profile python-hid up -d
 #      (on the Pi: a systemd drop-in, see scripts/setup/joustmania.service)
 #   2. backend=python_rust (controller.json defaultVariant, then restart
 #      controller-manager), so the python adapter is loaded at all, AND

@@ -32,16 +32,38 @@ fail() {
 # immediately followed by -f or a files array ("${COMPOSE_FILES[@]}").
 BARE_COMPOSE='^[^#]*docker compose( |\)|$)'
 NAMED_FILES='docker compose (-f |"\$\{COMPOSE_FILES\[@\]\}")'
-is_bare() {
+# Any `docker compose` call that reads compose files (comments, echoed hints,
+# `docker compose version` and `command -v docker compose` excluded).
+calls_compose() {
   local line="$1"
   [[ "${line}" =~ ^[[:space:]]*# ]] && return 1
   [[ "${line}" =~ ^[[:space:]]*echo ]] && return 1
-  # `docker compose version` and `command -v docker compose` read no compose file
   line="$(sed -E 's/docker compose version//g; s/command -v docker compose//g' <<<"${line}")"
-  grep -qE "${BARE_COMPOSE}" <<<"${line}" || return 1
-  ! grep -qE "${NAMED_FILES}" <<<"${line}"
+  grep -qE "${BARE_COMPOSE}" <<<"${line}"
+}
+is_bare() {
+  calls_compose "$1" || return 1
+  ! grep -qE "${NAMED_FILES}" <<<"$1"
 }
 
+# The Pi runtime paths must go through scripts/setup/joustmania-compose.sh:
+# a plain `-f docker-compose.yml` would skip .env.local (stage IMAGE_TAG and
+# API keys, #1488). Only the wrapper itself calls docker compose.
+PI_PATHS=(scripts/setup/joustmania-start.sh scripts/setup/joustmania.service scripts/hardware/reset_bluetooth_connections.sh)
+for rel in "${PI_PATHS[@]}"; do
+  script="${ROOT}/${rel}"
+  [[ -f "${script}" ]] || { fail "${rel} missing"; continue; }
+  grep -q 'joustmania-compose.sh' "${script}" || fail "${rel} does not use scripts/setup/joustmania-compose.sh"
+  n=0
+  while IFS= read -r line; do
+    n=$((n + 1))
+    if calls_compose "${line}"; then
+      fail "${rel}:${n} calls docker compose directly instead of joustmania-compose.sh: ${line}"
+    fi
+  done <"${script}"
+done
+
+# Every other Pi-side script at least never loads the dev override
 for script in "${ROOT}"/scripts/setup/*.sh "${ROOT}"/scripts/setup/*.service "${ROOT}"/scripts/hardware/*.sh; do
   [[ -f "${script}" ]] || continue
   n=0
@@ -65,6 +87,17 @@ for good in 'exec docker compose "${COMPOSE_FILES[@]}" up -d' \
   'echo "You can start it with: docker compose up -d"' \
   'if ! command -v docker compose &> /dev/null && ! docker compose version &> /dev/null; then'; do
   if is_bare "${good}"; then fail "self-test: wrongly flagged: ${good}"; fi
+done
+# On the Pi paths even a correct -f call is a direct call (skips .env.local)
+for direct in 'COMPOSE=(docker compose -f docker-compose.yml)' \
+  'ExecStop=/usr/bin/docker compose -f docker-compose.yml down' \
+  'exec docker compose "${COMPOSE_FILES[@]}" up -d'; do
+  calls_compose "${direct}" || fail "self-test: direct compose call on a Pi path not flagged: ${direct}"
+done
+for wrapped in 'COMPOSE=("$REPO_ROOT/scripts/setup/joustmania-compose.sh")' \
+  'ExecStop=/home/pi/JoustMania/scripts/setup/joustmania-compose.sh down' \
+  '# a plain docker compose -f docker-compose.yml skips .env.local'; do
+  if calls_compose "${wrapped}"; then fail "self-test: wrapper call wrongly flagged: ${wrapped}"; fi
 done
 
 # --- 2. behaviour of joustmania-start.sh -----------------------------------
