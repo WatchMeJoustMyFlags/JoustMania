@@ -102,18 +102,22 @@ E2E_VARIANT = "e2e"
 
 # The intervention the fake scripts: session-scoped (target "none"), with a
 # numeric magnitude, observable on the game stream as
-# agent_intervention(type=adjust_global_difficulty), and already proven to apply
-# in mock games (test_parallel_intervention_flow). It needs the ``full``
-# interventions_allowed variant. adjust_volume (in the default ``ambient`` set)
-# would be the natural pick, but its coordinator handler fails in the mock stack
-# (handler_error: the audio gRPC call runs on a different event loop), reported on
-# #1230.
-SCRIPTED_INTERVENTION = "adjust_global_difficulty"
-SCRIPTED_FLAG = "global_difficulty_factor"
-INTERVENTIONS_ALLOWED_VARIANT = "full"
-# magnitude 0.5 over adjust_global_difficulty's [0.5, 2.0] bounds (decide.ResolveMagnitude)
+# agent_intervention(type=adjust_volume), and in the DEFAULT ``ambient``
+# interventions_allowed variant (services/flagd/ci/agent.json), so no wider
+# permission is needed. Its coordinator handler awaits the game's grpc.aio audio
+# client (SetVolume), which lives on the game's own thread loop: before #1250 /
+# PR #1406 it failed here with handler_error ("attached to a different loop").
+# The act case therefore also proves the side effect now reaches audio-service.
+SCRIPTED_INTERVENTION = "adjust_volume"
+SCRIPTED_FLAG = "volume_override"
+INTERVENTIONS_ALLOWED_VARIANT = "ambient"
+# magnitude 0.5 over adjust_volume's [0.3, 1.0] bounds (decide.ResolveMagnitude)
 SCRIPTED_MAGNITUDE = 0.5
-EXPECTED_VALUE = 1.25
+EXPECTED_VALUE = 0.65
+# The audio servicer renames its SetVolume SERVER span to f"SetVolume:{volume:.0%}"
+# (services/audio/servicer.py); 65% is distinct from the game's own 70% ramp.
+AUDIO_SERVICE = "audio-service"
+EXPECTED_SET_VOLUME_SPAN = f"SetVolume:{EXPECTED_VALUE:.0%}"
 HIGH_CONFIDENCE = 0.95
 LOW_CONFIDENCE = 0.3
 # decision.act_confidence_threshold default variant (ci/agent.json).
@@ -221,6 +225,28 @@ def jaeger_spans(
                 continue
             out.append((span, spans))
     return out
+
+
+def audio_set_volume_spans(since_s: float) -> list[dict]:
+    """audio-service SetVolume SERVER spans named EXPECTED_SET_VOLUME_SPAN
+    started after ``since_s`` (epoch s)."""
+    params = {
+        "service": AUDIO_SERVICE,
+        "operation": EXPECTED_SET_VOLUME_SPAN,
+        "start": str(int(since_s * 1_000_000)),
+        "end": str(int((time.time() + 60) * 1_000_000)),
+        "limit": "50",
+    }
+    try:
+        doc = _fake_call("GET", "/_jaeger/api/traces?" + urllib.parse.urlencode(params))
+    except (urllib.error.URLError, OSError, ValueError):
+        return []
+    return [
+        span
+        for trace in doc.get("data") or []
+        for span in trace.get("spans", [])
+        if span["operationName"] == EXPECTED_SET_VOLUME_SPAN
+    ]
 
 
 def jaeger_decide_spans(game_id: str, since_s: float) -> list[tuple[dict, list[dict]]]:
@@ -604,6 +630,7 @@ async def test_rules_backend_default_unchanged(
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="main")
+@pytest.mark.uc("UC-040", flow="A26", br=["BR-018"])
 async def test_openai_high_confidence_acts(
     decide_flags, docker_compose, ensure_game_stopped
 ):
@@ -653,6 +680,23 @@ async def test_openai_high_confidence_acts(
                 f"agent did not write {SCRIPTED_FLAG}: defaultVariant={variant}"
             )
             assert abs(float(value) - EXPECTED_VALUE) < 1e-6, value
+            # The handler's grpc.aio SetVolume ran on the game's loop and reached
+            # audio-service (#1250): blocked=false alone would also hold for the
+            # no-audio-client no-op, so look for the audio SERVER span itself.
+            applied = [
+                e
+                for e in _intervention_events(collector)
+                if e.get("blocked") == "false"
+            ]
+            assert not applied[0].get("block_reason"), applied
+            assert await async_poll_until(
+                lambda: bool(audio_set_volume_spans(since)),
+                SPAN_TIMEOUT,
+                interval=1.0,
+            ), (
+                f"no {AUDIO_SERVICE} '{EXPECTED_SET_VOLUME_SPAN}' span: SetVolume never "
+                "reached audio (cross-loop dispatch regression, #1250?)"
+            )
 
             span, trace_spans = await wait_decide_span(
                 game_id,
