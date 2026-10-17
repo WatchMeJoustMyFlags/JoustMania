@@ -11,8 +11,28 @@ describe("UC-004: identify a controller from its card", () => {
 
     const status = await identifyController("MOCK0001", call);
 
-    expect(call).toHaveBeenCalledWith({ serial: "MOCK0001", durationMs: IDENTIFY_DEFAULT_MS });
+    expect(call).toHaveBeenCalledWith({ serial: "MOCK0001", durationMs: IDENTIFY_DEFAULT_MS }, expect.any(AbortSignal));
     expect(status).toEqual({ text: "Identifying", ok: true, showForMs: IDENTIFY_DEFAULT_MS });
+  });
+
+  it("UC-004 BR-001 shows Identifying for the duration the server used", () => {
+    expect(identifyStatus({ success: true, outcome: "started", durationMs: 10000 })).toMatchObject({
+      ok: true,
+      showForMs: 10000,
+    });
+  });
+
+  it("UC-004 gives up after the timeout so the button is enabled again", async () => {
+    let seen: AbortSignal | undefined;
+    const call = vi.fn((_req: unknown, signal: AbortSignal) => {
+      seen = signal;
+      return new Promise<never>(() => {});
+    });
+
+    const status = await identifyController("MOCK0001", call, 10);
+
+    expect(status).toMatchObject({ text: "Failed", ok: false });
+    expect(seen?.aborted).toBe(true);
   });
 
   it("UC-004/A1 shows Not connected when the controller is gone", async () => {

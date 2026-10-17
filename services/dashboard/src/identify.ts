@@ -13,6 +13,9 @@ import type {
 /** Effect length the card asks for; the controller manager's default (UC-004 BR-001). */
 export const IDENTIFY_DEFAULT_MS = 3000;
 
+/** The card gives up waiting after this, so the button never stays disabled. */
+export const IDENTIFY_TIMEOUT_MS = 5000;
+
 /** How long a refusal stays on the card. */
 export const IDENTIFY_REFUSAL_SHOW_MS = 3000;
 
@@ -35,7 +38,8 @@ export function identifyStatus(
   durationMs: number = IDENTIFY_DEFAULT_MS,
 ): IdentifyStatus {
   if (response.success && response.outcome === "started") {
-    return { text: "Identifying", ok: true, showForMs: durationMs };
+    // The server reports the duration it used (default / clamped, UC-004 BR-001).
+    return { text: "Identifying", ok: true, showForMs: response.durationMs || durationMs };
   }
   const text = (response.outcome && REFUSALS[response.outcome]) || "Failed";
   return { text, ok: false, showForMs: IDENTIFY_REFUSAL_SHOW_MS };
@@ -43,14 +47,29 @@ export function identifyStatus(
 
 export type IdentifyCall = (
   request: IdentifyControllerRequest,
+  signal: AbortSignal,
 ) => Promise<Partial<IdentifyControllerResponse>>;
 
-/** Ask the controller manager to identify `serial`; never throws. */
-export async function identifyController(serial: string, call: IdentifyCall): Promise<IdentifyStatus> {
+/** Ask the controller manager to identify `serial`; never throws, gives up after IDENTIFY_TIMEOUT_MS. */
+export async function identifyController(
+  serial: string,
+  call: IdentifyCall,
+  timeoutMs: number = IDENTIFY_TIMEOUT_MS,
+): Promise<IdentifyStatus> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("identify timed out"));
+    }, timeoutMs);
+  });
   try {
-    const response = await call({ serial, durationMs: IDENTIFY_DEFAULT_MS });
+    const response = await Promise.race([call({ serial, durationMs: IDENTIFY_DEFAULT_MS }, controller.signal), timeout]);
     return identifyStatus(response, IDENTIFY_DEFAULT_MS);
   } catch {
     return { text: "Failed", ok: false, showForMs: IDENTIFY_REFUSAL_SHOW_MS };
+  } finally {
+    clearTimeout(timer);
   }
 }

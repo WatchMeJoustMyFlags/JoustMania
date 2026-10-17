@@ -58,9 +58,7 @@ class _Backend:
 
 
 async def _identify(manager, duration_ms=0):
-    ok = await manager.handle_game_effect(
-        serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_IDENTIFY, duration_ms=duration_ms
-    )
+    ok = await manager.start_identify(SERIAL, duration_ms)
     assert ok
     return manager.active_effects[SERIAL].task
 
@@ -188,6 +186,52 @@ class TestUC004IdentifyEffect:
         assert backend.colors[SERIAL] == LOBBY
         assert [r for r in backend.rumble if r[1] > 0] == [(SERIAL, IDENTIFY_RUMBLE_INTENSITY)] * 2
 
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", flow="A5", br=["BR-002"])
+    async def test_repeat_press_without_base_colour_keeps_the_first_fallback(self, manager, backend, clock):
+        """UC-004 A5 / BR-002: a repeat press restores the colour from before the first identify."""
+        manager.base_colors.pop(SERIAL)
+        await manager._set_led_color(SERIAL, (12, 34, 56))
+        clock.enable_blocking()
+        await _identify(manager)
+        clock.release_all()
+        await asyncio.sleep(0)
+        assert manager.current_colors[SERIAL] == WHITE  # mid-flash
+
+        second = await _identify(manager)
+        clock.disable_blocking()
+        clock.release_all()
+        await second
+        assert backend.colors[SERIAL] == (12, 34, 56)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", br=["BR-004"])
+    async def test_identify_is_not_a_stream_game_effect(self, manager, backend):
+        """UC-004 BR-004: GAME_EFFECT_IDENTIFY is RPC-only; a GameEffectCommand with it is rejected."""
+        ok = await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_IDENTIFY)
+        assert ok is False
+        assert backend.history == []
+        assert backend.rumble == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", flow="A2", br=["BR-003"])
+    async def test_countdown_takes_over_a_running_identify(self, manager, backend):
+        """UC-004 BR-003: a countdown cancels a running effect; the old task leaves the countdown's state alone."""
+        first = await _identify(manager, duration_ms=10_000)
+        manager._clock = FakeClock(start_time=0.0)
+        manager._clock.enable_blocking()  # keep the identify mid-flash
+        await asyncio.sleep(0)
+
+        with patch("services.controller_manager.feedback_manager.asyncio.sleep", AsyncMock()):
+            await manager.handle_game_effect(
+                serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_COUNTDOWN, duration_ms=10
+            )
+            assert first.done()
+            countdown = manager.active_effects[SERIAL]
+            assert countdown.effect_type == controller_manager_pb2.GAME_EFFECT_COUNTDOWN
+            await countdown.task
+        assert WHITE not in backend.history[backend.history.index((255, 0, 0)) :]
+
 
 # ---------------------------------------------------------------------------
 # Servicer RPC
@@ -260,6 +304,7 @@ class TestUC004IdentifyControllerRpc:
 
         assert response.success is True
         assert response.outcome == "started"
+        assert response.duration_ms == IDENTIFY_DEFAULT_MS
         assert WHITE in backend.history
         assert backend.rumble[0] == (SERIAL, IDENTIFY_RUMBLE_INTENSITY)
         assert backend.colors[SERIAL] == LOBBY
@@ -390,3 +435,64 @@ class TestUC004IdentifyControllerRpc:
         assert response.success is False
         assert response.outcome == "invalid"
         assert servicer.backend.history == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", flow="A2", br=["BR-003"])
+    async def test_game_claiming_controller_cancels_running_identify(self, servicer):
+        """UC-004 BR-003: game config mid-identify -> identify and rumble end, no white after it, countdown intact."""
+        fm = servicer.feedback_manager
+        backend = servicer.backend
+        fm._clock.enable_blocking()
+        response = await _rpc(servicer, duration_ms=10_000)
+        assert response.outcome == "started"
+        await asyncio.sleep(0)
+        identify_task = fm.active_effects[SERIAL].task
+        assert backend.colors[SERIAL] == WHITE
+
+        await servicer._process_gameplay_config(_game_config(SERIAL), "game_stream_1", trace.INVALID_SPAN)
+        after_config = len(backend.history)
+        assert identify_task.done()
+        assert backend.rumble[-1] == (SERIAL, 0)  # rumble stopped
+        assert SERIAL not in fm.vibration_tasks
+
+        fm._clock.disable_blocking()
+        fm._clock.release_all()
+        with patch("services.controller_manager.feedback_manager.asyncio.sleep", AsyncMock()):
+            await fm.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_COUNTDOWN)
+            await fm.active_effects[SERIAL].task
+        frames = backend.history[after_config:]
+        assert WHITE not in frames
+        assert frames[:3] == [(255, 0, 0), (255, 255, 0), (0, 255, 0)]  # red, yellow, green
+        assert frames[-1] == (255, 0, 0)  # the game's base colour
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", flow="A2", br=["BR-003"])
+    async def test_closing_the_game_stream_releases_the_roster(self, servicer):
+        """UC-004 BR-003: StreamGameplayData's close path forgets the game's players."""
+        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(
+            side_effect=lambda serial, _info: controller_manager_pb2.ControllerState(serial=serial)
+        )
+        servicer.discovery_loop.drain_health_counters.return_value = (0, 0, 0)
+        config = controller_manager_pb2.GameplayStreamControl(config=_game_config(SERIAL))
+
+        async def requests():
+            yield config
+            await asyncio.Event().wait()
+
+        class _Context:
+            cancelled_flag = False
+
+            def cancelled(self):
+                return self.cancelled_flag
+
+        context = _Context()
+        seen_in_game = False
+        async for _ in servicer.StreamGameplayData(requests(), context):
+            seen_in_game = seen_in_game or servicer._in_game(SERIAL)
+            if seen_in_game:
+                context.cancelled_flag = True
+
+        assert seen_in_game
+        assert servicer._game_stream_serials == {}
+        assert (await _rpc(servicer)).outcome == "started"
+        await _drain(servicer)

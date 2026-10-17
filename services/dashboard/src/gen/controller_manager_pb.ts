@@ -61,4 +61,5 @@ export interface IdentifyControllerResponse {
   // started / not_connected / in_game / reserved / invalid
   outcome: string;
   error: string;
+  durationMs: number; // duration actually used (default / clamped)
 }

@@ -111,11 +111,12 @@ export const controllerClient = {
     );
   },
   // UC-004: flash + rumble one controller so the operator can find it
-  identifyController(request: IdentifyControllerRequest): Promise<IdentifyControllerResponse> {
+  identifyController(request: IdentifyControllerRequest, signal?: AbortSignal): Promise<IdentifyControllerResponse> {
     return unaryCall(
       "joustmania.controller_manager.ControllerManagerService",
       "IdentifyController",
-      request
+      request,
+      signal
     );
   },
 };

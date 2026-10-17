@@ -335,6 +335,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         if config.colors:
             current_filter = set()
+            # A game claims these controllers: end any running identify first so
+            # it cannot paint over the game's colours or countdown (UC-004 BR-003).
+            for color_config in config.colors:
+                if color_config.serial:
+                    await self.feedback_manager.cancel_identify(color_config.serial)
             for color_config in config.colors:
                 serial = color_config.serial
                 if serial:
@@ -722,11 +727,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             refusal = self._identify_refusal(serial)
             if refusal is None:
-                started = await self.feedback_manager.handle_game_effect(
-                    serial=serial,
-                    effect=controller_manager_pb2.GAME_EFFECT_IDENTIFY,
-                    duration_ms=duration_ms,
-                )
+                started = await self.feedback_manager.start_identify(serial, duration_ms)
                 # handle_game_effect only fails if the controller vanished meanwhile.
                 refusal = None if started else ("not_connected", f"Controller {serial} is not connected")
 
@@ -736,7 +737,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             logger.info(f"IdentifyController {serial or '<empty>'}: {outcome}")
 
             return controller_manager_pb2.IdentifyControllerResponse(
-                success=outcome == "started", outcome=outcome, error=error
+                success=outcome == "started", outcome=outcome, error=error, duration_ms=duration_ms
             )
 
     async def GetConnectedControllers(self, _request, _context):

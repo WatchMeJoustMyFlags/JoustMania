@@ -57,7 +57,7 @@ export class ControllerCard {
   /** UC-004: flash + rumble this controller; show the answer on the card. */
   private async identify() {
     this.identifyButton.disabled = true;
-    const status = await identifyController(this.serial, (req) => controllerClient.identifyController(req));
+    const status = await identifyController(this.serial, (req, signal) => controllerClient.identifyController(req, signal));
     clearTimeout(this.identifyTimer);
     this.identifyElement.hidden = false;
     this.identifyElement.textContent = status.text;
