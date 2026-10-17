@@ -1,4 +1,4 @@
-"""Game lifecycle reports to the flag service (FR-125, UC-053, #1410).
+"""Game lifecycle reports to the flag service (FR-135, UC-053, #1410).
 
 The game coordinator tells the flag service which games are live, so the
 service accepts game-scoped flag writes only for registered games and drops a
@@ -37,7 +37,7 @@ from services.game_coordinator import metrics
 
 logger = logging.getLogger(__name__)
 
-# Bounded registration await before the game is RUNNING (FR-125, NFR-052).
+# Bounded registration await before the game is RUNNING (FR-135, NFR-052).
 REGISTER_AWAIT_SECONDS = 0.2
 # Per-request HTTP timeout for the background calls (end, reconcile).
 REQUEST_TIMEOUT_SECONDS = 0.5

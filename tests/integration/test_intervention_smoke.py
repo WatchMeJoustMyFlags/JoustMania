@@ -44,7 +44,7 @@ DETERMINISM / GLOBAL GOTCHAS (carried from #893 / #919):
   suite-wide budget (``SUITE_RATE_LIMIT_BUDGET``) in BOTH rate-limit flags and
   waits a reload cycle before the body runs, so the handful of injections here
   sit far under budget.
-- Every intervention write is game-scoped through the flag service (FR-126): a
+- Every intervention write is game-scoped through the flag service (FR-136): a
   write for game A is a guaranteed no-op for every other live session, so
   scenarios batch concurrently without cross-talk.
 - All waits POLL for the apply event (no fixed-sleep one-shots), so the driver

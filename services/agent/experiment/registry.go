@@ -170,7 +170,7 @@ func MintExperimentID() string {
 }
 
 // MintProposalID returns the experiment id of a standalone Proposer proposal
-// ("prop_<uuid hex[:12]>"), so its value is scoped like any experiment's (FR-128).
+// ("prop_<uuid hex[:12]>"), so its value is scoped like any experiment's (FR-138).
 func MintProposalID() string {
 	return "prop_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 }

@@ -44,7 +44,7 @@ func validateGame(g *Game) *fserr.Error {
 }
 
 // RegisterGame registers (or re-registers) a game scope (PUT /games/{gameId},
-// FR-125). It returns already=true when the game was registered before; the
+// FR-135). It returns already=true when the game was registered before; the
 // stored record is then updated. An unspecified kind is stored as is and is
 // never treated as real (FR-041): only the experiment rung reads the kind, and
 // it compares with "real".
@@ -73,7 +73,7 @@ func (s *State) registerLocked(g Game) {
 }
 
 // EndGame drops a game scope and every value written for it (DELETE
-// /games/{gameId}, FR-125, UC-053 step 7). found is false for an unknown game.
+// /games/{gameId}, FR-135, UC-053 step 7). found is false for an unknown game.
 func (s *State) EndGame(gameID, reason string) (GameEnd, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

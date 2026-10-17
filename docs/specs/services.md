@@ -265,7 +265,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 ## 7. Flag service (epic #1407)
 
-> Delivered in PR #1417. Use case [UC-053](../use_cases/UC-053.md); requirements FR-120 to FR-129,
+> Delivered in PR #1417. Use case [UC-053](../use_cases/UC-053.md); requirements FR-130 to FR-139,
 > NFR-050 to NFR-053, C-030 to C-033; design and decisions in
 > [architecture/flag-service.md](../architecture/flag-service.md).
 
@@ -273,7 +273,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 |---|---|
 | Compose name | `flag-service` (Go, `services/flag-service/`), in every compose file that runs flagd (base, lite, ci, dry-run, decide-e2e, agent-coordinator) |
 | Ports | `50064` gRPC: `flagd.sync.v1.FlagSyncService` (flagd only). `8070` HTTP/JSON: the write and read API and `/healthz`. Neither is published to the host (C-015); envoy routes `/flags/` to `flag-service:8070` with the prefix stripped |
-| Inputs | the eight baseline files `services/flagd/{system,controller,observability,game,user,agent,interventions,rollout}.json` (or `ci/`), an explicit list, mounted **read-only** and read once at start (FR-120); refuses to start on a duplicate flag key across sets |
+| Inputs | the eight baseline files `services/flagd/{system,controller,observability,game,user,agent,interventions,rollout}.json` (or `ci/`), an explicit list, mounted **read-only** and read once at start (FR-130); refuses to start on a duplicate flag key across sets |
 | State | in memory, except admin settings written with `"persist": true`: the state file `FLAG_SERVICE_STATE_FILE` (default `/var/lib/flag-service/admin.json`) on the stack's own `flag-service-state` volume, loaded over the baseline at start and rewritten atomically (temp file + rename) on each persisted change (C-030, FR-018). A corrupt file is moved aside to `admin.json.corrupt-<ts>` and the service starts from the baseline; stale entries are dropped with a warning ([architecture note §10.1](../architecture/flag-service.md#101-admin-persistence-re-review-n4)). Never `services/flagd/*.json` |
 | Config | `FLAG_SERVICE_SETS` (sets included in the sync payload; every stack lists all eight), `FLAG_SERVICE_BASELINE_DIR`, `FLAG_SERVICE_BASELINE_FILES` (the explicit file list, default the eight set files), `FLAG_SERVICE_STATE_FILE`, `FLAG_SERVICE_REGISTRY` (default the image's `registry.yaml`), `FLAG_SERVICE_EVENT_LIST_LEN` (K, default 16), `FLAG_SERVICE_MAX_GAME_AGE` (default 1 h), `FLAG_SERVICE_GRPC_PORT` (50064), `FLAG_SERVICE_HTTP_PORT` (8070) |
 | flagd wiring | one gRPC source `--uri grpc://flag-service:50064` and nothing else; `depends_on: flag-service: {condition: service_healthy, restart: true}`; no flagd `readyz` check (flagd #1985) |
@@ -374,5 +374,5 @@ the agent (interventions, rollout count, experiment arms, promotion; it retries 
 250 ms); the menu (admin settings, kill switch); the connect-proxy (canary, chaos); the stage scripts and the
 validation harness (`curl http://localhost/flags/...`); the integration fixtures.
 
-**Traceability:** FR-120 to FR-129, NFR-050 to NFR-053, C-030 to C-033 / UC-053 / `services/flag-service/`
+**Traceability:** FR-130 to FR-139, NFR-050 to NFR-053, C-030 to C-033 / UC-053 / `services/flag-service/`
 / `services/flag-service/*/*_test.go`, `tests/integration/test_flag_service_*.py`, TC-018 to TC-020.

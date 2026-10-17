@@ -1,6 +1,6 @@
 """
 One-shot interventions fire only in the game whose event list carries them
-(#1299, FR-127).
+(#1299, FR-137).
 
 UC-040 BR-006 / A15, UC-053 A4 / BR-006: one-shot flags are per-game event
 lists served on ``gameId``. A game's list dies with its scope when the game

@@ -352,7 +352,7 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 	}
 
 	// Every experiment value is scoped to one experiment id and its experimental
-	// arm (FR-128, #1415): the legacy unscoped "every shadow game" rule is gone, so
+	// arm (FR-138, #1415): the legacy unscoped "every shadow game" rule is gone, so
 	// a standalone proposal gets its own id here.
 	if proposal.ExperimentID == "" {
 		proposal.ExperimentID = MintProposalID()

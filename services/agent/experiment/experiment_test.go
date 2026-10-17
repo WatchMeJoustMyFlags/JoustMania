@@ -218,7 +218,7 @@ func TestReview_BlocksPathOrOtherSetInFlagKey(t *testing.T) {
 	assertNoWrites(t, svc)
 }
 
-// FR-128: an experiment value without an experiment id is refused.
+// FR-138: an experiment value without an experiment id is refused.
 func TestReview_BlocksUnscopedProposal(t *testing.T) {
 	g, svc, rec := gateWithRecorder(t)
 	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0})

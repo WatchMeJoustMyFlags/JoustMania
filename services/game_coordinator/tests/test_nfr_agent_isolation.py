@@ -47,7 +47,7 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "websockets",
 )
 # The one HTTP client the coordinator has: the flag service's game lifecycle
-# client (FR-125, #1410). It talks to the flag service only (FLAG_SERVICE_URL),
+# client (FR-135, #1410). It talks to the flag service only (FLAG_SERVICE_URL),
 # never to the agent or a model, and its only await on the game path is bounded
 # at 200 ms (test_flag_service_client_targets_only_the_flag_service).
 FLAG_SERVICE_CLIENT = "services/game_coordinator/flag_service_client.py"

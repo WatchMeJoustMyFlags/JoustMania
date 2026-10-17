@@ -1,5 +1,5 @@
 """
-Test helpers for one-shot interventions read as per-game event lists (FR-127,
+Test helpers for one-shot interventions read as per-game event lists (FR-137,
 UC-053 A4 / BR-006).
 
 The flag service renders each one-shot flag (eliminate_player, revive_player,

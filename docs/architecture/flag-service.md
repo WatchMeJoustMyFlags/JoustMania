@@ -4,7 +4,7 @@
 > with the maintainer's decisions on the review of PR #1417 (§1, decisions D3, D4, D10 to D13), and again with
 > the decisions on the re-review (N1 to N6: sync fan-out §5.4, event-list reader §6, persistence on request D10
 > and §10.1, read-only mounts at the checkpoint §12). Implementation starts in the same PR (#1408 to #1410).
-> Spec rows: [UC-053](../use_cases/UC-053.md), FR-120 to FR-129, NFR-050 to NFR-053, C-030 to C-033
+> Spec rows: [UC-053](../use_cases/UC-053.md), FR-130 to FR-139, NFR-050 to NFR-053, C-030 to C-033
 > ([requirements](../requirements.md)); [services.md §7](../specs/services.md#7-flag-service-epic-1407),
 > [flags.md §13](../specs/flags.md#13-mutable-flag-registry), [telemetry.md §10](../specs/telemetry.md#10-flag-service-epic-1407),
 > entities MUTABLE_FLAG_POLICY, GAME_SCOPE, FLAG_OVERLAY in the [entity model](../entity_model.md).
@@ -525,7 +525,7 @@ Superseded (closed when the migration is done):
 
 | Issue | How |
 |---|---|
-| #1269 game scoping (FR-069) | every intervention is rendered on `gameId` (FR-126) |
+| #1269 game scoping (FR-069) | every intervention is rendered on `gameId` (FR-136) |
 | #1323 flag-file growth, unprimed grant serial, collapse within one poll, `end_game` from the fallback partition | scopes dropped at game end; event lists; push instead of a 1 s poll; unregistered games rejected |
 | #920 per-game targeting design | the renderer generates the rungs from live scopes only |
 | #1293 unchecked `AGENT_REAL_DEFAULT_FLAG_PATH` | promotion writes `PUT /game/{flag}`, limited by the registry |

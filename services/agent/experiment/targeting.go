@@ -2,7 +2,7 @@ package experiment
 
 import "encoding/json"
 
-// Shared constants for the experiment-scoping contract (FR-128). The flag
+// Shared constants for the experiment-scoping contract (FR-138). The flag
 // service renders an experiment-arm value as the rung
 // `game_kind != "real" AND experiment_id == <id> AND arm == "experimental"`
 // (docs/specs/flags.md §13); the game services put these keys in the

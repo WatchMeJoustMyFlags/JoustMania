@@ -67,7 +67,7 @@ services:
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
       # Game lifecycle reported to the shared flag service; this coordinator's
       # instance id differs from the suite coordinator's, so each one's reconcile
-      # drops only its own games (FR-125, review C3).
+      # drops only its own games (FR-135, review C3).
       - FLAG_SERVICE_URL=http://flag-service:8070
       # Concurrency caps (max_concurrent_games / max_shadow_games) are now governed
       # by the `game` flagd flags this coordinator resolves over the network (#1215),

@@ -19,9 +19,9 @@ const GameFlagSet = "game"
 const experimentWriter = "agent-experiment"
 
 // ErrUnscoped refuses a proposal without an experiment id: every experiment
-// value is scoped to one experiment and its experimental arm (FR-128); the
+// value is scoped to one experiment and its experimental arm (FR-138); the
 // legacy "every shadow game" rule is gone (#1415).
-var ErrUnscoped = errors.New("experiment proposal needs an experiment id (FR-128)")
+var ErrUnscoped = errors.New("experiment proposal needs an experiment id (FR-138)")
 
 // FlagService is the part of the flag-service client the Writer and the Gate use.
 type FlagService interface {
@@ -35,7 +35,7 @@ type FlagService interface {
 // the experimental value for (experiment id, arm "experimental") with
 // PUT /game/{flag}. The flag service renders it as a targeting rung that only a
 // game with game_kind != "real", that experiment id and that arm resolves
-// (FR-128), so a real game's resolution cannot change by construction. The Gate
+// (FR-138), so a real game's resolution cannot change by construction. The Gate
 // checks that again on the rendered flag (a second check).
 //
 // The Writer never validates the invariant itself — that is the Gate's job.

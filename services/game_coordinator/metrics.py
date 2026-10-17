@@ -134,7 +134,7 @@ shadow_games_preempted_total = Counter(
     "Total shadow games force-ended (preempted) when a real game started",
 )
 
-# Flag service game lifecycle (FR-125, #1410): register / end / reconcile calls
+# Flag service game lifecycle (FR-135, #1410): register / end / reconcile calls
 # by result (ok, error, timeout). An error or timeout triggers a reconcile.
 flag_service_calls_total = Counter(
     "game_flag_service_calls_total",
@@ -142,7 +142,7 @@ flag_service_calls_total = Counter(
     ["call", "result"],
 )
 
-# Event-list reader (FR-127, #1410): an event list read whose oldest event is
+# Event-list reader (FR-137, #1410): an event list read whose oldest event is
 # newer than the last applied seq + 1, i.e. more than K events arrived between
 # two reads (architecture note §6).
 intervention_event_gaps_total = Counter(

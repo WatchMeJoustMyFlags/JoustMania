@@ -1,4 +1,4 @@
-# Mutable-flag registry of the flag service (FR-122, UC-053 BR-001).
+# Mutable-flag registry of the flag service (FR-132, UC-053 BR-001).
 #
 # Encodes docs/specs/flags.md §13. A change to one updates the other in the same
 # PR; registry/sync_test.go fails when they drift. A flag without a row here is
@@ -77,7 +77,7 @@ flags:
 
   # --- game (flags.md §13.3) ----------------------------------------------------
   # The experiment catalog (#1415): gameplay calibration flags an experiment arm
-  # may change (FR-128) and a promotion may set for real games (W5). Capacity,
+  # may change (FR-138) and a promotion may set for real games (W5). Capacity,
   # lobby, team-structure and presentation flags are not in it.
   - {set: game, key: sensitivity, kind: overlay, scope: [stack, experiment+arm, real], persist: true}
   - {set: game, key: nonstop.time_limit_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 600], integer: true}}

@@ -1,4 +1,4 @@
-// Package registry is the mutable-flag registry (FR-122, flags.md §13): the
+// Package registry is the mutable-flag registry (FR-132, flags.md §13): the
 // only flags that may change at runtime, their kind, scopes, bounds and
 // whether a write may persist them. Every other flag is read-only baseline
 // (C-032, C-033). registry.yaml encodes the flags.md §13 tables; a test keeps

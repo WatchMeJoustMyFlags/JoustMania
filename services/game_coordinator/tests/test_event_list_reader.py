@@ -1,5 +1,5 @@
 """
-Per-game event lists for one-shot interventions (FR-127, UC-053 A4 / BR-006, #1410).
+Per-game event lists for one-shot interventions (FR-137, UC-053 A4 / BR-006, #1410).
 
 The flag service renders each one-shot flag, for one game's ``gameId``, as
 ``{"epoch","seq","events":[{"seq","payload"}, ...]}``; the coordinator applies

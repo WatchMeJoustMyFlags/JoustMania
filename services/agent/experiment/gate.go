@@ -56,7 +56,7 @@ const (
 	ReasonTypeMismatch Reason = "type_mismatch"
 	// ReasonNotExperimentable — the flag-service registry does not allow an
 	// experiment-arm write on this flag (it is not in the experiment catalog,
-	// flags.md §13.3), or the proposal carries no experiment id (FR-128).
+	// flags.md §13.3), or the proposal carries no experiment id (FR-138).
 	ReasonNotExperimentable Reason = "not_experimentable"
 	// ReasonOutOfBounds — the registry refused the value (not a declared
 	// variant's value, or outside the flag's range).
@@ -85,7 +85,7 @@ func (e *RejectError) Error() string {
 //
 // With the flag service (#1415) the guarantee is primarily STRUCTURAL at the
 // source: the service renders an experiment value as a rung only a non-real
-// game of that experiment and arm resolves (FR-128), and its registry decides
+// game of that experiment and arm resolves (FR-138), and its registry decides
 // which flags are experimentable and within which bounds (C-032). The Gate is the
 // second check: it reads the rendered flag before and after the write and
 // rejects (and rolls back) a write that changed the default, an existing

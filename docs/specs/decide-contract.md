@@ -534,7 +534,7 @@ once after 250 ms. The game coordinator applies the result
 
 Every value is rendered by the flag service as targeting on the game's `gameId` (and the
 player's serial), so it resolves in no other game, and it is dropped when the game ends
-(FR-126, [UC-053](../use_cases/UC-053.md) BR-003). The coordinator evaluates every
+(FR-136, [UC-053](../use_cases/UC-053.md) BR-003). The coordinator evaluates every
 intervention flag with `{targetingKey=serial, gameId}`.
 
 **Events** (`eliminate_player`, `revive_player`, `audio_cue`, `controller_effect`,
@@ -544,7 +544,7 @@ game and flag, in order, exactly once; the last applied `(epoch, seq)` advances 
 events are dispatched; a read that returns an evaluation error applies nothing; only a new,
 non-empty epoch (a flag-service restart) restarts the count; more than 16 events between two
 reads is logged and counted (`game_intervention_event_gaps_total`)
-([UC-040 BR-006](../use_cases/UC-040.md#br-006-a-one-shot-intervention-fires-once-only-in-its-game), FR-127).
+([UC-040 BR-006](../use_cases/UC-040.md#br-006-a-one-shot-intervention-fires-once-only-in-its-game), FR-137).
 `end_game` force-ends only the session whose list holds it (`_handle_end_game` →
 `end_game_fn(game_id, reason)` = `GameCoordinatorServicer._force_end_session`, the same path as
 `ForceEndGame` with a `game_id`) ([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for), #1310).

@@ -33,7 +33,7 @@ const (
 // Options configures a State.
 type Options struct {
 	// Epoch is the boot id; it is part of every generated variant name and
-	// every event list (FR-127, review Important 2).
+	// every event list (FR-137, review Important 2).
 	Epoch string
 	// Served is the set of flag-set ids included in the sync payload
 	// (FLAG_SERVICE_SETS). Writes to other sets are 409 set_not_served.
@@ -194,7 +194,7 @@ type LoadReport struct {
 }
 
 // New builds the state from the baseline and the registry, and restores the
-// persisted admin settings from opts.StateFile (FR-120, C-030).
+// persisted admin settings from opts.StateFile (FR-130, C-030).
 func New(b *baseline.Baseline, r *registry.Registry, opts Options) (*State, LoadReport, error) {
 	if opts.Epoch == "" {
 		return nil, LoadReport{}, fmt.Errorf("state: empty epoch")

@@ -43,7 +43,7 @@ changed default or a new reader/writer updates this file in the same PR.
 - API level (Python): `service_name`, `service_namespace`, `language`, `environment`, `hostname`, `game_kind=real` (`lib/feature_flags.py:114-131`).
 - Per game (transaction context): `targetingKey=game_mode`, `game_mode`, `controller_count`, `game_kind`, optional `sensitivity`, `experiment_id`, `arm` (`lib/feature_flags.py:488-546`). Calibration reads add `gameId` (`lib/feature_flags.py:242-253`).
 - Interventions are evaluated per live session with `{targetingKey=serial, gameId}` (`services/game_coordinator/interventions.py:1052-1066`).
-- `game_kind` vocabulary for flags is `real` / `shadow`; the protected value is `real`. An experiment-arm value is rendered by the flag service (`services/flag-service/state/render.go`) as the rung `{"and": [{"!=": [{"var": "game_kind"}, "real"]}, {"==": [{"var": "experiment_id"}, "<id>"]}, {"==": [{"var": "arm"}, "experimental"]}]}` in front of the baseline targeting, so the control arm, every other experiment and every real game fall through (FR-128). The agent's gate re-checks the rendered flag after each write (`services/agent/experiment/gate.go`). Every experiment has an id: a standalone proposal gets a `prop_<hex>` id; there is no unscoped form. Telemetry uses `primary` / `shadow`; see [entity_model.md](../entity_model.md#game_session).
+- `game_kind` vocabulary for flags is `real` / `shadow`; the protected value is `real`. An experiment-arm value is rendered by the flag service (`services/flag-service/state/render.go`) as the rung `{"and": [{"!=": [{"var": "game_kind"}, "real"]}, {"==": [{"var": "experiment_id"}, "<id>"]}, {"==": [{"var": "arm"}, "experimental"]}]}` in front of the baseline targeting, so the control arm, every other experiment and every real game fall through (FR-138). The agent's gate re-checks the rendered flag after each write (`services/agent/experiment/gate.go`). Every experiment has an id: a standalone proposal gets a `prop_<hex>` id; there is no unscoped form. Telemetry uses `primary` / `shadow`; see [entity_model.md](../entity_model.md#game_session).
 
 ### 1.3 Reload semantics
 
@@ -215,7 +215,7 @@ Human pre-game intent and game calibration: sensitivity, team counts, per-mode t
 
 File: [`services/flagd/interventions.json`](../../services/flagd/interventions.json). 17 flags.
 
-The agent's tier-1 write surface: bounded, in-game, reversible. Written only by the agent action sink (gated by `interventions_enabled`) through the flag service, and always for one registered game: every value is rendered as targeting on that game's `gameId` (and on the player's serial for a per-player flag), resolves in no other game, and is dropped when the game ends ([UC-053](../use_cases/UC-053.md) BR-003, FR-126). The game coordinator `InterventionManager` re-reads the set on every flagd configuration change. **State** flags resolve the game's value; **event** flags (`eliminate_player`, `revive_player`, `audio_cue`, `controller_effect`, `end_game`) resolve the game's event list `{"epoch","seq","events":[last 16]}` and the coordinator applies every event with a seq above the last one it applied, exactly once (UC-053 BR-006, FR-127); a game starts with an empty list, so nothing of an earlier game is replayed. Per-player **level** flags (`player_sensitivity_factor`, `player_handicap_factor`) apply to the players whose level changed during the game, and a player whose level returns to neutral has its factor reset to 1.0 as a revert ([UC-040 BR-017](../use_cases/UC-040.md#br-017-per-player-levels-belong-to-one-game), #1317). Per-player **grant** flags (`shield_seconds`, `partial_shield_seconds`, `soft_penalty_action`) get a fresh generated variant per write, so a same-value re-grant is a change and fires once ([UC-040 BR-012](../use_cases/UC-040.md#br-012-a-per-player-grant-applies-once-per-decision)). `end_game` is in the deciding game's event list and ends only that game ([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for)). Value formats and the writer mapping: [decide-contract.md §11](decide-contract.md#11-from-decision-to-game-effect); bounds and scopes: §13.1.
+The agent's tier-1 write surface: bounded, in-game, reversible. Written only by the agent action sink (gated by `interventions_enabled`) through the flag service, and always for one registered game: every value is rendered as targeting on that game's `gameId` (and on the player's serial for a per-player flag), resolves in no other game, and is dropped when the game ends ([UC-053](../use_cases/UC-053.md) BR-003, FR-136). The game coordinator `InterventionManager` re-reads the set on every flagd configuration change. **State** flags resolve the game's value; **event** flags (`eliminate_player`, `revive_player`, `audio_cue`, `controller_effect`, `end_game`) resolve the game's event list `{"epoch","seq","events":[last 16]}` and the coordinator applies every event with a seq above the last one it applied, exactly once (UC-053 BR-006, FR-137); a game starts with an empty list, so nothing of an earlier game is replayed. Per-player **level** flags (`player_sensitivity_factor`, `player_handicap_factor`) apply to the players whose level changed during the game, and a player whose level returns to neutral has its factor reset to 1.0 as a revert ([UC-040 BR-017](../use_cases/UC-040.md#br-017-per-player-levels-belong-to-one-game), #1317). Per-player **grant** flags (`shield_seconds`, `partial_shield_seconds`, `soft_penalty_action`) get a fresh generated variant per write, so a same-value re-grant is a change and fires once ([UC-040 BR-012](../use_cases/UC-040.md#br-012-a-per-player-grant-applies-once-per-decision)). `end_game` is in the deciding game's event list and ends only that game ([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for)). Value formats and the writer mapping: [decide-contract.md §11](decide-contract.md#11-from-decision-to-game-effect); bounds and scopes: §13.1.
 
 | Key | Type | Variants | Default | Targeting | Read by (file:line) | Written by | Reload |
 |---|---|---|---|---|---|---|---|
@@ -377,7 +377,7 @@ The demo / dry-run helper scripts (`scripts/agent-backend.sh`, `scripts/agent-ki
 
 ## 13. Mutable-flag registry
 
-> Enforced by the flag service since PR #1417 (epic #1407, [UC-053](../use_cases/UC-053.md), FR-122, FR-123;
+> Enforced by the flag service since PR #1417 (epic #1407, [UC-053](../use_cases/UC-053.md), FR-132, FR-133;
 > design: [architecture/flag-service.md](../architecture/flag-service.md)).
 
 A flag changes at runtime **only** if it has a row here,
@@ -396,7 +396,7 @@ value with a fresh variant per write (the coordinator fires on a variant change)
 **Scopes:** `game` = targeting on `gameId` of a registered game; `game+serial` = `gameId` and `targetingKey`
 (a serial of that game); `stack` = the default for every reader; `experiment+arm` = `game_kind != "real"` and
 `experiment_id` and `arm`; `real` = the real default (promotion); `fraction` = `fractional` on `targetingKey`.
-Game-scoped values are dropped when the game ends (FR-125).
+Game-scoped values are dropped when the game ends (FR-135).
 
 **Persist:** `yes` = an admin setting that **may** be persisted: a write that asks for it (`"persist": true`, the
 menu admin) is written to the service's own state file and restored at start (FR-018, C-030); the same flag
@@ -502,7 +502,7 @@ proposer and the dynamic declarer read the catalog from the flag service (`GET /
 flag), and a value outside the bounds is refused with `out_of_bounds`. A numeric range covers the declared
 variants with headroom; "same shape" accepts an object with exactly the default variant's keys and value kinds.
 
-An `experiment+arm` value never resolves for `game_kind == "real"` (FR-062, FR-128): the service generates the
+An `experiment+arm` value never resolves for `game_kind == "real"` (FR-062, FR-138): the service generates the
 condition, so the invariant gate (`experiment/gate.go`) becomes a second check. A promotion overlay lasts until
 the flag service restarts; the durable change is the promotion PR (FR-064, C-007). A `sensitivity` overlay is a
 `defaultVariant` substitution, so the baseline rule for Werewolf still wins as it does today.
@@ -527,5 +527,5 @@ by a file edit and a restart. Several of their flags are read only at process st
 |---|---|---|---|---|---|---|
 | observability | `flagservice.propagation_probe` | overlay | stack | free string | no | flag-service integration tests (#1408; NFR-050 measurement #1413); read by no service |
 
-**Traceability:** FR-018, FR-122, FR-123, FR-124, FR-126, FR-127, FR-128, C-008, C-030, C-032, C-033 / UC-053 /
+**Traceability:** FR-018, FR-132, FR-133, FR-134, FR-136, FR-137, FR-138, C-008, C-030, C-032, C-033 / UC-053 /
 planned `services/flag-service/registry.yaml` / planned tests in #1409.

@@ -198,7 +198,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         self.tempo_schedule_manager = TempoScheduleManager(get_sessions=self.get_intervention_sessions)
         self.tempo_schedule_manager.start()
 
-        # Flag service game lifecycle (FR-125, #1410): register each game before
+        # Flag service game lifecycle (FR-135, #1410): register each game before
         # it runs (bounded 200 ms, outside _sessions_lock), report its end, and
         # reconcile this instance's live games at start and after a failure.
         # Disabled when FLAG_SERVICE_URL is unset.
@@ -621,7 +621,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     return False, "Game already in progress"
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
             # Register the game with the flag service BEFORE it runs, so agent
-            # writes for it are accepted from its first frame (FR-125). Bounded
+            # writes for it are accepted from its first frame (FR-135). Bounded
             # to 200 ms and outside _sessions_lock; on a timeout or an error the
             # game starts anyway and the lifecycle reconciles (C-004).
             await self.flag_service.register(self._game_record(session))
@@ -726,7 +726,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         with self._sessions_lock:
             session = self.sessions.pop(game_id, None)
             self.intervention_manager.forget_session(game_id)
-            # Queued, not sent: no network call under the lock (FR-125).
+            # Queued, not sent: no network call under the lock (FR-135).
             self.flag_service.end(game_id)
             if session is not None:
                 # Remove this session's game_id-labeled gauge series so the

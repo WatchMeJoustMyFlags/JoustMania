@@ -74,7 +74,7 @@ class TargetingFlagClient:
         return str(self._resolve(key, default, ctx))
 
     def get_object_details(self, key, _default, ctx=None):
-        # One-shot flags are per-game event lists read via details (FR-127).
+        # One-shot flags are per-game event lists read via details (FR-137).
         return object_details(key, self._resolve(key, None, ctx))
 
     def get_string_details(self, key, default, ctx=None):

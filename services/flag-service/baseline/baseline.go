@@ -1,5 +1,5 @@
 // Package baseline loads the read-only flag files (services/flagd/<set>.json)
-// that the flag service serves as its baseline (FR-120, UC-053).
+// that the flag service serves as its baseline (FR-130, UC-053).
 //
 // The files are read once at start from an explicit list (never a glob, so a
 // stray file in the directory is never served) and never written. Each file is one flag set; its flags are later merged into

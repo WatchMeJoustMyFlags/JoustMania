@@ -17,7 +17,7 @@ Design (from docs/research/722-intervention-surface.md §5/§6/§8/§9):
     * Edge-triggered (one-shot) flags (eliminate_player, revive_player,
       audio_cue, controller_effect, end_game) — per-game EVENT LISTS
       ``{"epoch","seq","events":[{"seq","payload"}]}`` served by the flag
-      service on ``gameId`` (FR-127, UC-053 A4 / BR-006). Each event with a seq
+      service on ``gameId`` (FR-137, UC-053 A4 / BR-006). Each event with a seq
       above the game's last applied one is applied exactly once (idempotent
       across flagd reconnects / re-reads). The list belongs to the game's scope,
       which the flag service drops when the game ends, so a new game starts
@@ -155,7 +155,7 @@ class InterventionSpec:
             ``play_audio_cue``).
         weight: Rate-limit cost class (WEIGHT_SOFT / MEDIUM / HARD).
         edge_triggered: True for one-shot flags, read as per-game event lists
-            (FR-127, UC-053 A4 / BR-006); False for state-shaped flags.
+            (FR-137, UC-053 A4 / BR-006); False for state-shaped flags.
         player_targeted: True if the intervention targets a specific player
             (subject to the battery guard); the payload string's first
             ``:``-delimited field is the target serial.
@@ -611,7 +611,7 @@ class InterventionManager:
                 on THAT session. A flag with no ``gameId`` targeting rule (the
                 agent writes none) resolves to the same value for every live
                 session; one-shot flags are per-game event lists, so each
-                session reads only its own events (FR-127, BR-011).
+                session reads only its own events (FR-137, BR-011).
         """
         self._publish = event_publisher
         # Per game, per one-shot flag: the last applied (epoch, seq). Starts at
@@ -1111,7 +1111,7 @@ class InterventionManager:
         await self._enforce_and_dispatch(spec, raw, "", self._state_target_serial(spec), session)
 
     async def _evaluate_event_list(self, spec: InterventionSpec, session: "SessionView") -> None:
-        """Apply every new event of a one-shot flag's per-game event list (FR-127).
+        """Apply every new event of a one-shot flag's per-game event list (FR-137).
 
         The flag resolves, for this game's ``gameId``, to
         ``{"epoch","seq","events":[{"seq","payload"}, ...]}`` (the last K
@@ -1819,7 +1819,7 @@ class InterventionManager:
 # Module-level helpers (pure; easy to unit-test)
 # ---------------------------------------------------------------------- #
 def _event_payload_string(spec: InterventionSpec, payload: dict) -> str:
-    """Map an event payload (FR-127) to the payload string the handlers take:
+    """Map an event payload (FR-137) to the payload string the handlers take:
     the serial (eliminate/revive), the sound id (audio_cue),
     ``"<serial>:<effect>"`` (controller_effect) or ``""`` (end_game; the game
     is the scope)."""

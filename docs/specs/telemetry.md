@@ -337,8 +337,8 @@ recorded by any service; they are listed so a consumer does not trust them.
 | `game_player_warnings_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |
 | `game_players_alive` | gauge | (none) | game-coordinator | yes | grafana |
 | `game_sensitivity` | gauge | (none) | game-coordinator | yes | grafana |
-| `game_flag_service_calls_total` | counter | `call` (`register`, `end`, `reconcile`), `result` (`ok`, `error`, `timeout`) | game-coordinator | yes (when `FLAG_SERVICE_URL` is set; FR-125, #1410) | (none) |
-| `game_intervention_event_gaps_total` | counter | `flag` | game-coordinator | yes (event-list reader on; FR-127, #1410) | (none) |
+| `game_flag_service_calls_total` | counter | `call` (`register`, `end`, `reconcile`), `result` (`ok`, `error`, `timeout`) | game-coordinator | yes (when `FLAG_SERVICE_URL` is set; FR-135, #1410) | (none) |
+| `game_intervention_event_gaps_total` | counter | `flag` | game-coordinator | yes (event-list reader on; FR-137, #1410) | (none) |
 | `game_shadow_games_blocked_total` | counter | (none) | game-coordinator | yes | (none) |
 | `game_shadow_games_preempted_total` | counter | (none) | game-coordinator | yes | (none) |
 | `game_trace_correlation` | gauge | `game_kind`, `game_id`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id` | game-coordinator | yes | agent |
@@ -548,7 +548,7 @@ elimination order, winner and decisions are the evidence that the game played ou
 
 ## 10. Flag service (epic #1407)
 
-> Delivered in PR #1417 for [UC-053](../use_cases/UC-053.md) (FR-129, NFR-050 to NFR-053). Service identity
+> Delivered in PR #1417 for [UC-053](../use_cases/UC-053.md) (FR-139, NFR-050 to NFR-053). Service identity
 > `flag-service` (namespace `infrastructure`), Go OTel SDK, metrics every 1 s like the agent; HTTP server spans
 > from `otelhttp`, so a write sits under the caller's span (W3C propagation). New attribute namespace
 > `flagservice.*`; the flag itself uses the OTel feature-flag semantic convention keys `feature_flag.key`,
@@ -596,4 +596,4 @@ spans. The names follow §8: service prefix `flagservice_`, counters end `_total
 | Grafana | `feature-flags` dashboard, row "Flag service": writes by flag set and result, propagation p95, live game scopes by kind, flagd sync streams (#1413) |
 | Alerts | none: Prometheus alerting was removed (#1425, FR-083 Rejected); a disconnected flagd shows as `flagservice_sync_streams` = 0 on the dashboard and as 503 `no_sync_stream` to every writer |
 
-**Traceability:** FR-129, NFR-050 to NFR-053 / UC-053 / `services/flag-service/telemetry/` / `services/flag-service/api/api_test.go`, `tests/integration/test_flag_propagation.py`, `tests/contract/test_telemetry_contract.py`.
+**Traceability:** FR-139, NFR-050 to NFR-053 / UC-053 / `services/flag-service/telemetry/` / `services/flag-service/api/api_test.go`, `tests/integration/test_flag_propagation.py`, `tests/contract/test_telemetry_contract.py`.

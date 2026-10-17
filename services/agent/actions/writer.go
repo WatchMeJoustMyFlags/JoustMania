@@ -2,7 +2,7 @@
 // writes to the flag service (epic #1407, UC-053, docs/specs/services.md §7.2).
 // The agent never writes a flag file (C-032, C-033); the flag service renders
 // every write as targeting on the deciding game (and the player's serial), so a
-// decision for one game never changes another (FR-126, FR-069).
+// decision for one game never changes another (FR-136, FR-069).
 //
 // Three write shapes, matching the flag registry (docs/specs/flags.md §13.1):
 //
@@ -16,7 +16,7 @@
 //     coordinator applies once (UC-040 BR-012).
 //   - One-shot events (eliminate_player, revive_player, audio_cue,
 //     controller_effect, end_game): POST appends an event to the game's event
-//     list, the serial (or sound, effect) in the payload (FR-127, UC-053 BR-006).
+//     list, the serial (or sound, effect) in the payload (FR-137, UC-053 BR-006).
 //
 // Every write has a 500 ms deadline and fails closed; a write rejected with 409
 // game_not_live is retried once after 250 ms (UC-053 A6).
@@ -166,8 +166,8 @@ func newWritesCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
 }
 
 // errNoGame refuses an intervention without its deciding game: every
-// intervention is game-scoped (FR-126); an unscoped write would reach every game.
-var errNoGame = errors.New("intervention requires the deciding game's id (FR-126)")
+// intervention is game-scoped (FR-136); an unscoped write would reach every game.
+var errNoGame = errors.New("intervention requires the deciding game's id (FR-136)")
 
 // Apply implements decision.ActionSink: it maps the decision's intervention to
 // one flag-service write for the deciding game.

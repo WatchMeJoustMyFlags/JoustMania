@@ -1,5 +1,5 @@
-// Package api is the flag service's HTTP/JSON API (services.md §7.2, FR-124,
-// FR-125, FR-129): one resource-style endpoint per flag set,
+// Package api is the flag service's HTTP/JSON API (services.md §7.2, FR-134,
+// FR-135, FR-139): one resource-style endpoint per flag set,
 // /{flagSetId}/{flagName}, the game lifecycle under /games and /coordinators,
 // and the read endpoints. There are no roles or tokens (architecture note
 // D11): writer, decision_id and reason are informational and go on the span.

@@ -55,7 +55,7 @@ services:
     environment: !override
       OTEL_SERVICE_NAME: game-coordinator-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      # Game lifecycle reported to the flag service (FR-125, #1410)
+      # Game lifecycle reported to the flag service (FR-135, #1410)
       FLAG_SERVICE_URL: http://flag-service:8070
       # The total concurrent-games ceiling is pinned for the integration suite
       # (#779) via the `max_concurrent_games` game flag (defaultVariant "four" in

@@ -1,5 +1,5 @@
 """
-Game lifecycle reports to the flag service (FR-125, UC-053 main / A6 / A10, #1410).
+Game lifecycle reports to the flag service (FR-135, UC-053 main / A6 / A10, #1410).
 
 A real local HTTP server stands in for the flag service, so the requests the
 coordinator sends (paths, bodies, timing) are what the service receives.

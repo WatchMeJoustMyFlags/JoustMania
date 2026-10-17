@@ -53,7 +53,7 @@ class FakeFlagClient:
         return str(self.values.get(key, default))
 
     def get_object_details(self, key, _default, _ctx=None):
-        # One-shot flags are per-game event lists read via details (FR-127).
+        # One-shot flags are per-game event lists read via details (FR-137).
         return object_details(key, self.values.get(key))
 
     def get_string_details(self, key, default, _ctx=None):
@@ -216,7 +216,7 @@ def test_rate_limiter_window_slide():
 
 
 # --------------------------------------------------------------------------- #
-# Exactly-once per event (edge-triggered, per-game event lists, FR-127)
+# Exactly-once per event (edge-triggered, per-game event lists, FR-137)
 # --------------------------------------------------------------------------- #
 @pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.asyncio

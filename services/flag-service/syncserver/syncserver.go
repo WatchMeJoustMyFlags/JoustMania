@@ -1,5 +1,5 @@
 // Package syncserver implements flagd.sync.v1.FlagSyncService for flagd
-// (FR-121, services.md §7.1): one SyncFlags stream carries the merged
+// (FR-131, services.md §7.1): one SyncFlags stream carries the merged
 // configuration of every served set, each flag tagged with its
 // metadata.flagSetId; a flagSetId=<set> selector (flagd-selector header or
 // body) narrows it to one set.

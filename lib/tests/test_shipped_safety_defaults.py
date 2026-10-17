@@ -25,7 +25,7 @@ from lib.feature_flags import (
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FLAGD_DIR = REPO_ROOT / "services" / "flagd"
 GO_TARGETING = REPO_ROOT / "services" / "agent" / "experiment" / "targeting.go"
-# The flag service renders the experiment rung (FR-128) from its own constants.
+# The flag service renders the experiment rung (FR-138) from its own constants.
 FLAG_SERVICE_RENDER = REPO_ROOT / "services" / "flag-service" / "state" / "render.go"
 # The integration test keeps its own copies of the constants (its venv lacks
 # lib.feature_flags' dependencies), so they are pinned here too.
@@ -85,7 +85,7 @@ def _const(src: str, name: str) -> str | None:
 def test_game_kind_constants_match_source():
     """The game_kind / experiment split is a cross-language contract: the flag
     service renders an experiment value as ``game_kind != "real" AND
-    experiment_id AND arm == "experimental"`` (render.go, FR-128), the Go agent
+    experiment_id AND arm == "experimental"`` (render.go, FR-138), the Go agent
     names the same keys (targeting.go), and the Python eval context
     (lib/feature_flags) sets them. If a name or value drifts, real games stop
     being protected from shadow experiments.

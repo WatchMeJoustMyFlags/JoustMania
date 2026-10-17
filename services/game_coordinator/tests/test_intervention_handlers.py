@@ -40,7 +40,7 @@ class FakeFlagClient:
         return str(self.values.get(key, default))
 
     def get_object_details(self, key, _default, _ctx=None):
-        # One-shot flags are per-game event lists read via details (FR-127).
+        # One-shot flags are per-game event lists read via details (FR-137).
         return object_details(key, self.values.get(key))
 
     def get_string_details(self, key, default, _ctx=None):

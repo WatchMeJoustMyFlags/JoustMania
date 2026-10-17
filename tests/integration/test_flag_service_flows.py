@@ -105,7 +105,7 @@ async def test_two_eliminations_through_the_flag_service(
         await _await_running(game_client, game_id)
         await _wait_for_game_colors(mock_client, serials)
 
-        # Step 2: the coordinator registered the game with its serials (FR-125).
+        # Step 2: the coordinator registered the game with its serials (FR-135).
         game = flag_service.wait_game_registered(game_id)
         assert sorted(game["serials"]) == sorted(serials), game
 

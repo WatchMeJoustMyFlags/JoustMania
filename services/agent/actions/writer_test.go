@@ -169,7 +169,7 @@ func TestWriter_EveryInterventionIsOneGameScopedWrite(t *testing.T) {
 // UC: UC-053 BR-003
 // UC: UC-040 A11
 func TestWriter_NoGameNoWrite(t *testing.T) {
-	t.Run("UC-053/BR-003 a decision without its game id is never written (FR-126)", func(t *testing.T) {
+	t.Run("UC-053/BR-003 a decision without its game id is never written (FR-136)", func(t *testing.T) {
 		w, svc := newTestWriter(t)
 		err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume})
 		if !errors.Is(err, errNoGame) || len(svc.all()) != 0 {

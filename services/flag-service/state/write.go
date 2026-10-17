@@ -128,7 +128,7 @@ func (s *State) lookupLocked(set, key string, res *WriteResult) (*flagState, *fs
 }
 
 // liveChecksLocked rejects a write flagd could not see or that names a game
-// that is not live (FR-123).
+// that is not live (FR-133).
 func (s *State) liveChecksLocked(f *flagState, sc Scope, scopeName string, res *WriteResult) *fserr.Error {
 	if !s.served[f.set] {
 		return fserr.Conflict(fserr.SetNotServed, "flag set %q is not served by the flag service yet (still a file source)", f.set)
@@ -267,7 +267,7 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 }
 
 // Append adds one event to a game's event list (POST /{flagSetId}/{flagName},
-// FR-127, UC-053 BR-006). The list keeps the last K events.
+// FR-137, UC-053 BR-006). The list keeps the last K events.
 func (s *State) Append(req AppendRequest) (WriteResult, *fserr.Error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

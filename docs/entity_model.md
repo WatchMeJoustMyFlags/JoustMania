@@ -228,7 +228,7 @@ A named value of a flag.
 
 ### MUTABLE_FLAG_POLICY
 
-**Planned** (epic #1407, UC-053, FR-122). One row of the flag service's mutable-flag registry
+**Planned** (epic #1407, UC-053, FR-132). One row of the flag service's mutable-flag registry
 ([flags.md §13](specs/flags.md#13-mutable-flag-registry)): a flag that may change at runtime, within which
 bounds, and whether a write may persist it. A flag without a policy is read-only baseline. There are no writer roles (local game, architecture note D11).
 
@@ -246,7 +246,7 @@ bounds, and whether a write may persist it. A flag without a policy is read-only
 
 ### GAME_SCOPE
 
-**Planned** (FR-125). The flag service's in-memory record of one live game, registered by the game coordinator
+**Planned** (FR-135). The flag service's in-memory record of one live game, registered by the game coordinator
 at admission and dropped at the game's end, by a reconcile call of its coordinator instance, or after the
 maximum game age.
 
@@ -265,7 +265,7 @@ maximum game age.
 
 ### FLAG_OVERLAY
 
-**Planned** (FR-124, FR-126 to FR-128). One runtime value the flag service holds on top of the baseline, in memory
+**Planned** (FR-134, FR-136 to FR-138). One runtime value the flag service holds on top of the baseline, in memory
 (C-030); a stack overlay written with `"persist": true` (registry `persist`) is also written to the service's
 own state file.
 

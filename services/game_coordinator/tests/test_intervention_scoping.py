@@ -2,7 +2,7 @@
 Interventions act only on the game they were decided for (#1310, #1313).
 
 UC-040 A18 / BR-011: one-shot flags (``end_game``, ``eliminate_player``,
-``revive_player``) are per-game event lists served on ``gameId`` (FR-127,
+``revive_player``) are per-game event lists served on ``gameId`` (FR-137,
 UC-053 A4 / BR-006). Only the game whose list carries the event acts on it,
 and ``end_game`` force-ends exactly that session through the servicer's
 session-scoped force-end path. Before #1310 a shadow session's evaluation

@@ -411,7 +411,7 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      # Game lifecycle reported to the flag service (FR-125, #1410)
+      # Game lifecycle reported to the flag service (FR-135, #1410)
       - FLAG_SERVICE_URL=http://flag-service:8070
     depends_on:
       flagd:

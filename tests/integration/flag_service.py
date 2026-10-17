@@ -161,7 +161,7 @@ class FlagService:
         return self._ok("GET", "/games")["games"]
 
     def wait_game_registered(self, game_id: str, timeout: float = 5.0) -> dict:
-        """Wait until the coordinator registered ``game_id`` (FR-125)."""
+        """Wait until the coordinator registered ``game_id`` (FR-135)."""
         deadline = time.monotonic() + timeout
         while True:
             for game in self.games():
@@ -205,7 +205,7 @@ def variant_value(flag_set: str, flag: str, variant: str):
 
 
 def set_game_value(flag: str, game_id: str, value) -> dict:
-    """A game-scoped intervention value (state flags), FR-126."""
+    """A game-scoped intervention value (state flags), FR-136."""
     return default().put(INTERVENTIONS, flag, value=value, scope={"game_id": game_id})
 
 
@@ -222,7 +222,7 @@ def clear_game_value(flag: str, game_id: str, serial: str = "") -> None:
 
 
 def append_event(flag: str, game_id: str, payload: dict | None = None) -> int:
-    """Append a one-shot event to the game's event list; returns its seq (FR-127)."""
+    """Append a one-shot event to the game's event list; returns its seq (FR-137)."""
     return int(
         default().post(INTERVENTIONS, flag, game_id=game_id, payload=payload)["seq"]
     )

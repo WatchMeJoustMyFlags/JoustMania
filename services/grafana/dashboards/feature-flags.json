@@ -941,7 +941,7 @@
       ],
       "title": "Live game scopes by kind",
       "type": "timeseries",
-      "description": "Games registered with the flag service by the game coordinator (FR-125)."
+      "description": "Games registered with the flag service by the game coordinator (FR-135)."
     },
     {
       "datasource": {
