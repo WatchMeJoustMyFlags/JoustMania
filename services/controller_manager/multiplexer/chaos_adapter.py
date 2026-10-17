@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 from typing import Any
 
 from lib.controller_constants import AxisKey, StateKey
@@ -38,6 +39,11 @@ class ChaosAdapter(ControllerIOAdapter):
         self._inner = inner
         self._fault_map: dict[str, str] = {}  # serial -> fault type
         self._known_serials: set[str] = set()
+        # Closed serials stay out of the fault map until reopened or
+        # rediscovered: poll() runs on the event loop while discovery closes
+        # serials in a worker thread (#1447). _lock guards the map writes.
+        self._closed: set[str] = set()
+        self._lock = threading.Lock()
         self._listener_registered = False
 
     @property
@@ -58,12 +64,17 @@ class ChaosAdapter(ControllerIOAdapter):
         # Track and evaluate new serials
         for s in serials:
             if s not in self._known_serials:
-                self._known_serials.add(s)
-                self._fault_map[s] = self._evaluate_flag(s)
+                fault = self._evaluate_flag(s)
+                with self._lock:
+                    self._closed.discard(s)
+                    self._known_serials.add(s)
+                    self._fault_map[s] = fault
         self._ensure_listener()
         return [s for s in serials if self._fault_map.get(s) != "disconnect"]
 
     def open(self, serial: str) -> bool:
+        with self._lock:
+            self._closed.discard(serial)
         return self._inner.open(serial)
 
     def poll(self, serial: str) -> dict | None:
@@ -98,21 +109,31 @@ class ChaosAdapter(ControllerIOAdapter):
 
     def close(self, serial: str) -> None:
         self._inner.close(serial)
-        self._known_serials.discard(serial)
-        self._fault_map.pop(serial, None)
+        with self._lock:
+            self._closed.add(serial)
+            self._known_serials.discard(serial)
+            self._fault_map.pop(serial, None)
 
     def close_all(self) -> None:
         self._inner.close_all()
-        self._known_serials.clear()
-        self._fault_map.clear()
+        with self._lock:
+            self._closed.clear()
+            self._known_serials.clear()
+            self._fault_map.clear()
 
     def _get_fault(self, serial: str) -> str:
-        """Pure dict lookup — zero overhead at 100Hz."""
+        """Pure dict lookup — zero overhead at 100Hz.
+
+        A miss evaluates the flag and caches the result, unless the serial was
+        closed meanwhile (then nothing is re-inserted, #1447).
+        """
         fault = self._fault_map.get(serial)
         if fault is None:
             fault = self._evaluate_flag(serial)
-            self._fault_map[serial] = fault
-            self._known_serials.add(serial)
+            with self._lock:
+                if serial not in self._closed:
+                    self._fault_map[serial] = fault
+                    self._known_serials.add(serial)
         return fault
 
     def _evaluate_flag(self, serial: str) -> str:
