@@ -1,6 +1,7 @@
 """Unit tests for the OTEL metrics wrapper library."""
 
 import importlib.util
+import re
 import time
 from pathlib import Path
 from threading import Thread
@@ -434,16 +435,27 @@ class TestLabeledMetricBase:
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Every module that declares lib.otel_metrics Histograms.
-_METRICS_MODULES = [
-    "lib/grpc_metrics.py",
-    "services/audio/metrics.py",
-    "services/controller_manager/metrics.py",
-    "services/game_coordinator/metrics.py",
-    "services/menu/metrics.py",
-    "services/python_hid/metrics.py",
-    "services/pairing_daemon/psmove_pairing/metrics.py",
-]
+_WRAPPER_IMPORT = re.compile(r"^from lib\.otel_metrics import .*\bHistogram\b", re.MULTILINE)
+_HISTOGRAM_CALL = re.compile(r"\bHistogram\(")
+_SKIPPED_DIRS = {"tests", "test", ".venv", "node_modules", "__pycache__"}
+
+
+def _discover_metrics_modules() -> list[str]:
+    """Repo-relative paths of every non-test module under lib/ and services/ that
+    declares a lib.otel_metrics Histogram, so a new one cannot slip through untested."""
+    found = []
+    for top in ("lib", "services"):
+        for path in sorted((_REPO_ROOT / top).rglob("*.py")):
+            rel = path.relative_to(_REPO_ROOT)
+            if _SKIPPED_DIRS.intersection(rel.parts) or rel.as_posix() == "lib/otel_metrics.py":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if _WRAPPER_IMPORT.search(text) and _HISTOGRAM_CALL.search(text):
+                found.append(rel.as_posix())
+    return found
+
+
+_METRICS_MODULES = _discover_metrics_modules()
 
 
 @pytest.fixture
@@ -519,7 +531,13 @@ class TestHistogramExportedBuckets:
 
         assert _exported_bounds(in_memory_reader, "test_pending") == buckets
 
-    def test_every_metrics_module_declares_histograms(self):
+    def test_discovery_finds_the_metrics_modules(self):
+        # Guards the discovery itself: an empty or shrunken scan would vacuously pass.
+        assert {"lib/grpc_metrics.py", "services/controller_manager/metrics.py"} <= set(_METRICS_MODULES)
+
+    def test_every_discovered_module_exposes_its_histograms(self):
+        """A module that calls Histogram( but exposes no module-level instance (e.g. built
+        inside a function) is not covered by the parametrized export test below."""
         modules = {module for module, _ in _DECLARED_HISTOGRAMS}
         assert modules == set(_METRICS_MODULES)
 

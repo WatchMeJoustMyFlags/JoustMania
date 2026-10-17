@@ -426,7 +426,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(game_accel_distribution_bucket{le=\"2.0\"}[5m])) by (game_mode) - sum(rate(game_accel_distribution_bucket{le=\"1.5\"}[5m])) by (game_mode)",
+          "expr": "sum(rate(game_accel_distribution_bucket{le=\"2\"}[5m])) by (game_mode) - sum(rate(game_accel_distribution_bucket{le=\"1.5\"}[5m])) by (game_mode)",
           "legendFormat": "Warning (1.5-2.0g)",
           "refId": "C"
         },
@@ -435,7 +435,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(game_accel_distribution_bucket{le=\"+Inf\"}[5m])) by (game_mode) - sum(rate(game_accel_distribution_bucket{le=\"2.0\"}[5m])) by (game_mode)",
+          "expr": "sum(rate(game_accel_distribution_bucket{le=\"+Inf\"}[5m])) by (game_mode) - sum(rate(game_accel_distribution_bucket{le=\"2\"}[5m])) by (game_mode)",
           "legendFormat": "Danger (>2.0g)",
           "refId": "D"
         }
