@@ -3,7 +3,7 @@
 ## Overview
 
 **ID:** TC-015  
-**Goal:** An operator routes half of the controllers to the rust adapter, injects a fault, watches both in controller-overview and Grafana Explore queries, and returns everyone to the default backend.  
+**Goal:** An operator routes half of the controllers to the rust adapter, injects a fault, watches both on the Controllers & Bluetooth dashboard (uid `controller-overview`) and in Grafana Explore queries, and returns everyone to the default backend.  
 **Priority:** Medium  
 **Status:** Draft  
 **Use cases:** [UC-052](../use_cases/UC-052.md) main, A1; [UC-035](../use_cases/UC-035.md) main, A2
@@ -23,7 +23,7 @@
 |------|--------------------------|-----------------------------------------------------------------------------------------------------|----------------------------------------------|-------------------------------------|
 | 1    | Start the canary         | Operator requests a rust canary for half of the controllers from inside the network                 | `/canary/rust?fraction=50`                   | [UC-052](../use_cases/UC-052.md)    |
 | 2    | Verify routing           | `controller_routing_decisions_total` shows about half of the controllers on rust after the next cycle | -                                          | -                                   |
-| 3    | Watch the comparison     | Operator opens controller-overview and queries `controller_backend_info == 1` by `backend` in Grafana Explore | `/grafana/`                        | [UC-035](../use_cases/UC-035.md)    |
+| 3    | Watch the comparison     | Operator opens Controllers & Bluetooth (its "Controllers per Backend" panel counts `controller_backend_info == 1` by `backend`) | `/grafana/d/controller-overview`   | [UC-035](../use_cases/UC-035.md)    |
 | 4    | Inject a fault           | Operator injects a fault for the targeted controllers                                               | `/chaos/poll-drop?fraction=50` (`poll_drop`) | [UC-052](../use_cases/UC-052.md)    |
 | 5    | Verify the fault         | `controller_chaos_faults_injected_total` grows (Grafana Explore query); `/chaos/status` shows the fault; the controller panels in Grafana show the faulted controllers' poll drops | `/grafana/`                          | [UC-035](../use_cases/UC-035.md)    |
 | 6    | Reset chaos              | Operator resets chaos; `/chaos/status` shows `none`                                                 | `/chaos/reset`                               | [UC-052](../use_cases/UC-052.md)    |

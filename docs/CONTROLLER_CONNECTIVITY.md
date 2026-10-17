@@ -226,24 +226,19 @@ sudo rfkill block wifi
 
 ## Monitoring with Grafana
 
-If you have Grafana set up (Phase 38):
+Open the **Controllers & Bluetooth** dashboard at `http://localhost:8080/grafana/d/controller-overview`
+(also embedded in the dashboard's Metrics tab):
 
-**View RSSI Dashboard:**
-1. Open Grafana: http://localhost:3000
-2. Navigate to Controller Metrics dashboard
-3. Check RSSI panels:
-   - Time series graph shows RSSI trends
-   - Gauge shows current quality
-   - Stats show weak signal warnings
+- **Weak Signal** counts controllers below -80 dBm (`bluetooth_device_rssi_dbm < -80`), **Low Battery**
+  counts battery level 0 or 1 (`controller_battery_level < 2`), and **Poor Connection** counts controllers
+  whose report gaps are poor (`controller_connection_quality == 2`).
+- The **Controller Health** table shows each controller's adapter, RSSI, battery, poll rate and connection
+  quality; the **Connection Quality** row shows the p95 and longest report gap per controller.
+- The collapsed **Bluetooth and Adapters (Pi only)** row has the signal per adapter, RSSI history, per-adapter
+  poll rate and errors, adapter identity, HCI errors and link roles. RSSI and adapter data come from the
+  pairing daemon, so they are empty in mock mode.
 
-**Set Up Alerts:**
-```
-# Alert when RSSI drops below -75 dBm
-Alert Name: Weak Controller Signal
-Query: controller_rssi_dbm < -75
-Condition: For 30 seconds
-Action: Send notification
-```
+No alert rules ship (FR-083 Rejected, #1425): watch the dashboard.
 
 ## Advanced Diagnostics
 
