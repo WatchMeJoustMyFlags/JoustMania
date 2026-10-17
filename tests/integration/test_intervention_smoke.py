@@ -40,7 +40,7 @@ DETERMINISM / GLOBAL GOTCHAS (carried from #893 / #919):
   actions — and poll flagd until it actually serves that string before any
   scenario writes a flag.
 - The coordinator's weighted rate limiter is process-GLOBAL and not reset
-  between tests. The re-exported ``flag_files`` fixture pins a generous
+  between tests. The re-exported ``intervention_env`` fixture pins a generous
   suite-wide budget (``SUITE_RATE_LIMIT_BUDGET``) in BOTH rate-limit flags and
   waits a reload cycle before the body runs, so the handful of injections here
   sit far under budget.
@@ -85,9 +85,7 @@ from tests.integration.helpers import (  # noqa: E402
 )
 from tests.integration.test_intervention_flow import (  # noqa: E402
     AGENT_PATH,
-    APPLY_TIMEOUT_SECONDS,
-    INTERVENTIONS_PATH,
-    flag_files,  # re-exported: snapshot/restore + suite-wide rate-limit budget pin
+    intervention_env,  # re-exported: snapshot/restore + suite-wide rate-limit budget pin
     set_interventions_allowed,
 )
 from tests.integration.test_parallel_intervention_flow import (  # noqa: E402
@@ -104,7 +102,7 @@ from tests.integration.flag_service import set_game_value, set_player_value  # n
 PERMISSION_VARIANT = "shadow_experimental"
 
 # Keep re-exported fixture referenced so linters don't flag it unused.
-__all__ = ["flag_files"]
+__all__ = ["intervention_env"]
 
 
 # =============================================================================
@@ -632,7 +630,7 @@ _BATCHES = [
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenarios", _BATCHES)
 async def test_shadow_experimental_interventions_apply(
-    flag_files, docker_compose, headless_cleanup, scenarios
+    intervention_env, docker_compose, headless_cleanup, scenarios
 ):
     """Inject each ``shadow_experimental`` action once via flagd targeting (NOT
     the LLM) and assert the coordinator APPLIED it (``blocked="false"`` event).

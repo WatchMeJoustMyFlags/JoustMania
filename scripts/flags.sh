@@ -9,6 +9,7 @@
 #   scripts/flags.sh restart                      planned restart: flag service, then flagd (NFR-052)
 #   scripts/flags.sh state                        GET /state (epoch, sync streams, live games)
 #   scripts/flags.sh get <set> [<flag>]           GET /<set>[/<flag>]
+#   scripts/flags.sh variant <set> <flag>         print the flag's effective default variant
 #   scripts/flags.sh set <set> <flag> <variant> [--writer W] [--ttl S] [--persist]
 #   scripts/flags.sh set-value <set> <flag> <json> [--writer W] [--ttl S] [--persist]
 #   scripts/flags.sh clear <set> <flag> [--persist] clear the stack overlay (or the persisted admin value)
@@ -32,7 +33,7 @@ FLAGD_CONTAINER="${FLAGD_CONTAINER:-joustmania-flagd}"
 RESTART_TIMEOUT="${RESTART_TIMEOUT:-30}"
 
 usage() {
-  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -120,6 +121,10 @@ main() {
     get)
       (($# >= 1)) || usage
       request GET "/$1${2:+/$2}"
+      ;;
+    variant)
+      (($# == 2)) || usage
+      request GET "/$1/$2" | python3 -c 'import json, sys; print(json.load(sys.stdin)["effective_default"])'
       ;;
     set | set-value)
       (($# >= 3)) || usage

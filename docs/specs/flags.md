@@ -457,6 +457,11 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | `decision.openai.base_url` | overlay | stack | free string | no | integration fixtures (`configure_agent`, fake server URL) |
 | `decision.min_interval_ms`, `decision.openai.timeout_ms` | overlay | stack | int 100 to 60000 | no | integration fixtures (`configure_agent`) |
 | `llm.max_requests_per_minute` | overlay | stack | declared variants (incl. `stage`) | no | `talk-stage.sh` |
+| `llm.eligible_game_kinds` | overlay | stack | declared variants | no | `talk-stage.sh` (stage baseline, fallback beat) |
+| `decision.claude.timeout_ms`, `decision.jev.timeout_ms` | overlay | stack | declared variants | no | `talk-stage.sh` (stage baseline) |
+| `decision.jev.base_url` | overlay | stack | declared variants (`default`, `blackhole`) | no | `talk-stage.sh` (the degrade beat) |
+| `experiment.mock_archetypes` | overlay | stack | declared variants | no | `talk-stage.sh` (stage baseline), `test_experiment_cohort_loop.py` |
+| `experiment.max_game_seconds` | overlay | stack | int 10 to 1800 | no | `test_experiment_cohort_loop.py` (short safety cap) |
 | `policy.max_interventions_per_minute`, `policy.coordinator_backstop_per_minute` | overlay | stack | int 1 to 100 | no | integration fixtures (`set_policy_budget`, pinned to 50) |
 | `fitness.accelerate.target_session_seconds` | overlay | stack | declared variants | no | validation harness |
 | `verdict_min_n`, `verdict_min_pairs`, `experiment_tick_seconds`, `experiment_max_games` | overlay | stack | int 1 to 1000 | no | `test_experiment_cohort_loop.py` |

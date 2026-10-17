@@ -85,3 +85,15 @@ func TestLoad(t *testing.T) {
 		}
 	})
 }
+
+func TestVariantOrderIsTheDeclaredOrder(t *testing.T) {
+	b, err := Load(flagdDir(t, "ci"), DefaultFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := b.Flag("game", "sensitivity").VariantNames()
+	want := []string{"ultra_slow", "slow", "medium", "fast", "ultra_fast"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("sensitivity variants %v, want the file order %v", got, want)
+	}
+}

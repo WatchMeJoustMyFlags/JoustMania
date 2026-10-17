@@ -41,6 +41,9 @@ type Flag struct {
 	DefaultVariant string                     `json:"defaultVariant"`
 	Targeting      json.RawMessage            `json:"targeting,omitempty"`
 	Metadata       map[string]any             `json:"metadata,omitempty"`
+	// order is the declared order of the variants in the baseline file (the
+	// menu cycles admin settings in this order).
+	order []string
 }
 
 // HasTargeting reports whether the flag declares a non-empty targeting rule.
@@ -49,14 +52,44 @@ func (f *Flag) HasTargeting() bool {
 	return len(t) > 0 && !bytes.Equal(t, []byte("null")) && !bytes.Equal(t, []byte("{}"))
 }
 
-// VariantNames returns the declared variant names, sorted.
+// VariantNames returns the declared variant names in the order the baseline
+// file declares them.
 func (f *Flag) VariantNames() []string {
+	if len(f.order) == len(f.Variants) {
+		return append([]string(nil), f.order...)
+	}
 	names := make([]string, 0, len(f.Variants))
 	for name := range f.Variants {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names
+}
+
+// objectKeys returns the keys of a JSON object in document order.
+func objectKeys(raw json.RawMessage) ([]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, fmt.Errorf("not a JSON object")
+	}
+	var keys []string
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, _ := tok.(string)
+		keys = append(keys, key)
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return nil, err
+		}
+	}
+	return keys, nil
 }
 
 // Set is one flag set (one baseline file).
@@ -99,9 +132,9 @@ func (b *Baseline) Flag(setID, key string) *Flag {
 }
 
 type fileDoc struct {
-	Schema   string           `json:"$schema,omitempty"`
-	Metadata map[string]any   `json:"metadata"`
-	Flags    map[string]*Flag `json:"flags"`
+	Schema   string                     `json:"$schema,omitempty"`
+	Metadata map[string]any             `json:"metadata"`
+	Flags    map[string]json.RawMessage `json:"flags"`
 }
 
 // Load reads every file of files (names relative to dir) and merges them.
@@ -157,10 +190,24 @@ func parseSet(fileName string, raw []byte) (*Set, error) {
 	if ReservedSetIDs[id] {
 		return nil, fmt.Errorf("flag set id %q is reserved", id)
 	}
-	for key, f := range doc.Flags {
+	flags := make(map[string]*Flag, len(doc.Flags))
+	for key, rawFlag := range doc.Flags {
+		var f *Flag
+		dec := json.NewDecoder(bytes.NewReader(rawFlag))
+		dec.UseNumber()
+		if err := dec.Decode(&f); err != nil {
+			return nil, fmt.Errorf("flag %q: %w", key, err)
+		}
 		if f == nil {
 			return nil, fmt.Errorf("flag %q is null", key)
 		}
+		var withVariants struct {
+			Variants json.RawMessage `json:"variants"`
+		}
+		if err := json.Unmarshal(rawFlag, &withVariants); err == nil && len(withVariants.Variants) > 0 {
+			f.order, _ = objectKeys(withVariants.Variants)
+		}
+		flags[key] = f
 		if len(f.Variants) == 0 {
 			return nil, fmt.Errorf("flag %q has no variants", key)
 		}
@@ -175,5 +222,5 @@ func parseSet(fileName string, raw []byte) (*Set, error) {
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	return &Set{ID: id, File: fileName, Metadata: meta, Flags: doc.Flags}, nil
+	return &Set{ID: id, File: fileName, Metadata: meta, Flags: flags}, nil
 }

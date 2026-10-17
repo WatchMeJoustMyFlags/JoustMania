@@ -18,6 +18,7 @@ from lib.feature_flags import (
     set_game_transaction_context,
 )
 from lib.flag_config_writer import FlagConfigWriter
+from lib.flag_service_writer import FlagServiceWriter
 from lib.flagd_paths import active_flag_file
 from lib.telemetry import get_tracer
 from lib.types import Games
@@ -101,11 +102,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         self.game_settings_writer = FlagConfigWriter(str(active_flag_file("game")))
         self.user_prefs_writer = FlagConfigWriter(str(active_flag_file("user")))
         # Agent policy writer for the on-device kill-switch (#819). The human
-        # owns agent policy per docs/OWNERSHIP_MODEL.md §2/§6.2 — the agent never
-        # writes agent.json, so granting the menu a writer keeps the write
-        # surfaces disjoint (menu: game/user/agent baselines; agent:
-        # interventions.json only).
-        self.agent_settings_writer = FlagConfigWriter(str(active_flag_file("agent")))
+        # owns agent policy per docs/OWNERSHIP_MODEL.md §2/§6.2. The agent set is
+        # served by the flag service (#1412): the kill switch is a persisted admin
+        # setting (PUT /agent/interventions_allowed {"persist": true}, FR-019, D10).
+        self.agent_settings_writer = FlagServiceWriter("agent")
 
         # OpenFeature clients for reading settings
         self.game_settings_client = get_flag_client("game")

@@ -5,6 +5,7 @@ from collections.abc import Callable, Coroutine
 
 from lib.controller_constants import ButtonTrackingKey
 from lib.flag_config_writer import FlagConfigWriter
+from lib.flag_service_writer import FlagServiceWriter  # noqa: F401 - type hint
 from lib.types import Games
 from services.menu import metrics
 from services.menu.handlers.base import ControllerHandler, ControllerState
@@ -30,7 +31,7 @@ class StateManager:
         user_prefs_writer: FlagConfigWriter,
         publish_event: Callable[[str, dict], Coroutine],
         *,
-        agent_settings_writer: FlagConfigWriter | None = None,
+        agent_settings_writer: "FlagConfigWriter | FlagServiceWriter | None" = None,
         game_settings_client=None,
         agent_settings_client=None,
         interventions_client=None,

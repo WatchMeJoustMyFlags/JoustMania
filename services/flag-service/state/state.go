@@ -82,8 +82,8 @@ type value struct {
 	DecisionID string
 	WrittenAt  time.Time
 	ExpiresAt  time.Time // zero: no TTL
-	Persisted  bool // an admin value (the persisted layer)
-	Fraction   int  // fraction overlays: percent of serials
+	Persisted  bool      // an admin value (the persisted layer)
+	Fraction   int       // fraction overlays: percent of serials
 }
 
 func (v *value) generated() bool { return v.Value != nil }
@@ -101,10 +101,10 @@ type eventList struct {
 
 // flagState is the runtime state of one baseline flag.
 type flagState struct {
-	set      string
-	key      string
-	base     *baseline.Flag
-	policy   *registry.Policy // nil: read-only baseline
+	set    string
+	key    string
+	base   *baseline.Flag
+	policy *registry.Policy // nil: read-only baseline
 	// stack is the in-memory stack overlay (stage scripts, tests, operator);
 	// admin is the persisted admin setting beneath it (D10, §10.1). A stage
 	// overlay therefore never erases the host's setting: clearing it shows the

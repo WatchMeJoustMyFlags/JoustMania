@@ -67,7 +67,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from tests.integration.helpers import (  # noqa: E402
     GameEventCollector,
-    active_flag_file,
     async_poll_until,
     flagd_probe_client,
     get_game_client,
@@ -77,11 +76,9 @@ from tests.integration.helpers import (  # noqa: E402
     poll_until,
     setup_mock_controllers,
     start_game_via_menu,
-    wait_flag_file_restored,
 )
 from tests.integration.flag_service import default as flag_service_default  # noqa: E402
 
-AGENT_PATH = active_flag_file("agent")
 
 AGENT_SERVICE = "agent"
 AGENT_CONTAINER = "joustmania-agent"
@@ -299,54 +296,34 @@ async def wait_decide_span(
 
 
 # =============================================================================
-# Flag-file helpers (in-place writes: rename over a watched bind mount is EBUSY)
+# Agent-set helpers: in-memory overlays on the flag service, cleared by the
+# ``flag_service`` fixture at teardown (epic #1407, N4)
 # =============================================================================
 
 
-def _load(path: str) -> dict:
-    with open(path) as fh:
-        return json.load(fh)
+def _onoff(value: bool) -> str:
+    return "on" if value else "off"
 
 
-def _dump_in_place(path: str, doc: dict) -> None:
-    with open(path, "w") as fh:
-        fh.write(json.dumps(doc, indent=2) + "\n")
-
-
-def _set(doc: dict, key: str, value) -> None:
-    """Point ``key`` at an injected ``e2e`` variant carrying ``value``."""
-    flag = doc["flags"][key]
-    flag["variants"][E2E_VARIANT] = value
-    flag["defaultVariant"] = E2E_VARIANT
-
-
-def configure_agent(
-    *, backend: str, enabled: bool = True, interventions: bool = True
-) -> None:
-    """One idempotent write of every agent.json flag a case needs (one reload)."""
-    doc = _load(AGENT_PATH)
-    _set(doc, "enabled", enabled)
-    _set(doc, "interventions_enabled", interventions)
-    doc["flags"]["interventions_allowed"]["defaultVariant"] = (
-        INTERVENTIONS_ALLOWED_VARIANT
-    )
-    _set(doc, "decision.backend", backend)
-    _set(doc, "decision.openai.base_url", FAKE_BASE_URL_IN_NETWORK)
-    _set(doc, "decision.openai.model", FAKE_MODEL)
-    _set(doc, "decision.openai.timeout_ms", DECIDE_TIMEOUT_MS)
-    _set(doc, "decision.min_interval_ms", 1500)
-    _dump_in_place(AGENT_PATH, doc)
+def configure_agent(*, backend: str, enabled: bool = True, interventions: bool = True) -> None:
+    """Every agent-set flag a case needs, as flag-service overlays. The fake's
+    URL and model are free strings (registry, re-review N5)."""
+    fs = flag_service_default()
+    fs.put("agent", "enabled", variant=_onoff(enabled))
+    fs.put("agent", "interventions_enabled", variant=_onoff(interventions))
+    fs.put("agent", "interventions_allowed", variant=INTERVENTIONS_ALLOWED_VARIANT)
+    fs.put("agent", "decision.backend", variant=backend)
+    fs.put("agent", "decision.openai.base_url", value=FAKE_BASE_URL_IN_NETWORK)
+    fs.put("agent", "decision.openai.model", value=FAKE_MODEL)
+    fs.put("agent", "decision.openai.timeout_ms", value=DECIDE_TIMEOUT_MS)
+    fs.put("agent", "decision.min_interval_ms", value=1500)
 
 
 def set_enabled(enabled: bool) -> None:
-    doc = _load(AGENT_PATH)
-    _set(doc, "enabled", enabled)
-    _dump_in_place(AGENT_PATH, doc)
+    flag_service_default().put("agent", "enabled", variant=_onoff(enabled))
 
 
-def wait_agent_flags_served(
-    docker_compose, *, backend: str, enabled: bool, rewrite
-) -> None:
+def wait_agent_flags_served(docker_compose, *, backend: str, enabled: bool, rewrite=None) -> None:
     from openfeature.evaluation_context import EvaluationContext
 
     ctx = EvaluationContext()
@@ -455,31 +432,16 @@ def _fake_reachable() -> bool:
 
 @pytest.fixture
 def decide_flags(decide_stack, flag_service):
-    """Snapshot agent.json; restore it byte-for-byte on exit (kill switch back to
-    the fail-closed default). The agent's interventions are game-scoped writes to
-    the flag service and die with their game (UC-053 BR-003)."""
-    with open(AGENT_PATH) as fh:
-        agent_backup = fh.read()
-
+    """The agent's flags are flag-service overlays the ``flag_service`` fixture
+    clears at teardown (kill switch back to the fail-closed baseline); the
+    agent's interventions are game-scoped and die with their game (UC-053
+    BR-003). This fixture releases the fake so no agent goroutine lingers."""
     yield
-
-    # Release anything the fake still holds so no agent goroutine lingers.
     try:
         release_fake()
         script_fake("valid", confidence=0.0)
     except urllib.error.URLError, OSError:
         pass
-
-    def _restore_agent():
-        with open(AGENT_PATH, "w") as fh:
-            fh.write(agent_backup)
-
-    with open(AGENT_PATH) as fh:
-        agent_mutated = fh.read()
-    _restore_agent()
-    wait_flag_file_restored(
-        decide_stack, "agent", agent_backup, agent_mutated, _restore_agent
-    )
 
 
 async def _start_ffa(docker_compose, collector: GameEventCollector) -> str:

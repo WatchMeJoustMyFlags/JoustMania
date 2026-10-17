@@ -3,19 +3,22 @@
 # epic #1225). Runbook: docs/talk/two-standards-runbook.md.
 #
 # Prints one PASS / WARN / FAIL / INFO line per check and exits non-zero when
-# any check FAILs. It changes NOTHING: it only reads the flag file, inspects
-# containers, and sends GET/HEAD requests.
+# any check FAILs. It changes NOTHING: it reads the flag service (GET /state,
+# GET /agent; epic #1407), inspects containers, and sends GET/HEAD requests.
 #
 # Checks:
 #   1. the stack containers are running (and healthy where they have a check)
-#   1b. the controller backend: when the `backend` flag in the controller.json
-#      next to the flag file names rust (the default, #1371), the rust-hid
-#      container is running and healthy (UC-002 BR-003)
-#   2. the flag file the helper scripts edit is the one flagd and the agent mount
-#   3. the stage baseline of the decision.* + safety flags (defaultVariant, from
-#      scripts/talk-baseline.json; interventions_allowed=standard, #1301), at
-#      least one perceptible intervention in the resolved allow-list, and the
-#      interventions.json next to it back at its neutral variants; WARN
+#   1b. the controller backend: when the `backend` flag in controller.json (still
+#      a flagd file source until #1420, so read from TALK_FLAG_DIR) names rust
+#      (the default, #1371), the rust-hid container is running and healthy
+#      (UC-002 BR-003)
+#   2. the flag service: flagd holds an open sync stream (else every write is
+#      refused with 503 no_sync_stream), the boot epoch, the agent set served
+#   3. the stage baseline of the decision.* + safety flags (the effective variant
+#      the flag service serves, from scripts/talk-baseline.json;
+#      interventions_allowed=standard, #1301), at least one perceptible
+#      intervention in the resolved allow-list, and how many game-scoped
+#      intervention values are live (they die with their game); WARN
 #      when decision.backend is remote but interventions_allowed resolves to
 #      nothing (none / noop only): the agent then makes no remote call (#1298)
 #   4. the agent container env (presence only; key values are never printed):
@@ -41,8 +44,9 @@
 #   ./scripts/talk-preflight.sh --minutes 30     # wider Jaeger window
 #
 # Environment:
-#   AGENT_FLAG_FILE      flag file the helpers edit (default services/flagd/ci/agent.json;
-#                        on the Pi hardware stack: services/flagd/agent.json)
+#   FLAG_SERVICE_URL     the flag service (default $TALK_BASE_URL/flags, the envoy route)
+#   TALK_FLAG_DIR        flag dir of the sets still on flagd file sources
+#                        (default services/flagd/ci; on the Pi hardware stack: services/flagd)
 #   TALK_BASE_URL        envoy entry point (default http://localhost)
 #   TALK_EXPECT_BACKEND  expected decision.backend variant (default rules: the
 #                        session starts on the floor, beat 2 flips to jev)
@@ -55,9 +59,10 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-FLAG_FILE="${AGENT_FLAG_FILE:-${REPO_ROOT}/services/flagd/ci/agent.json}"
+FLAG_DIR="${TALK_FLAG_DIR:-${REPO_ROOT}/services/flagd/ci}"
 BASE_URL="${TALK_BASE_URL:-http://localhost}"
 BASE_URL="${BASE_URL%/}"
+export FLAG_SERVICE_URL="${FLAG_SERVICE_URL:-${BASE_URL}/flags}"
 EXPECT_BACKEND="${TALK_EXPECT_BACKEND:-rules}"
 BASELINE_FILE="${TALK_BASELINE_FILE:-${SCRIPT_DIR}/talk-baseline.json}"
 WRITER_GO="${REPO_ROOT}/services/agent/actions/writer.go"
@@ -98,7 +103,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # --- 1. containers ---------------------------------------------------------
 section "stack containers"
 CONTAINERS=(
-  joustmania-flagd joustmania-agent joustmania-otel-collector joustmania-jaeger
+  joustmania-flag-service joustmania-flagd joustmania-agent joustmania-otel-collector joustmania-jaeger
   joustmania-game-coordinator joustmania-controller-manager joustmania-menu
   joustmania-audio joustmania-dashboard joustmania-envoy
 )
@@ -126,7 +131,7 @@ fi
 
 # --- 1b. controller backend: rust-hid up when backend=rust (#1371) --------
 section "controller backend (rust-hid when backend=rust)"
-CONTROLLER_FLAG_FILE="$(dirname "${FLAG_FILE}")/controller.json"
+CONTROLLER_FLAG_FILE="${FLAG_DIR}/controller.json"
 backend_value="$(python3 -c '
 import json, sys
 try:
@@ -157,46 +162,62 @@ else
   fi
 fi
 
-# --- 2. flag dir: the file the helpers edit is the file flagd serves -------
-section "flag dir (helpers edit = flagd serves)"
-flag_dir="$(cd "$(dirname "${FLAG_FILE}")" 2>/dev/null && pwd -P)" || flag_dir=""
-if [[ ! -f "${FLAG_FILE}" ]]; then
-  fail "flag file not found: ${FLAG_FILE}"
-else
-  info "helpers edit ${FLAG_FILE}"
-fi
-if [[ "${docker_ok}" -eq 1 && -n "${flag_dir}" ]]; then
-  for name in joustmania-flagd joustmania-agent; do
-    if ! docker inspect -f '{{.Id}}' "${name}" >/dev/null 2>&1; then
-      fail "${name}: container not found, cannot check its flag mount"
-      continue
-    fi
-    src="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/flagd"}}{{.Source}}{{end}}{{end}}' "${name}" 2>/dev/null)" || src=""
-    if [[ -z "${src}" ]]; then
-      fail "${name}: no /etc/flagd mount found"
-    elif [[ "${src}" == "${flag_dir}" ]]; then
-      pass "${name}: mounts ${src}"
-    else
-      fail "${name}: mounts ${src}, but the helpers edit ${flag_dir} (set AGENT_FLAG_FILE to the served dir)"
-    fi
-  done
-fi
-
-# --- 3. stage baseline flags -----------------------------------------------
-section "stage baseline flags ($(basename "${FLAG_FILE}"))"
-if [[ -f "${FLAG_FILE}" ]]; then
-  # The python prints the result lines itself (PASS/WARN/FAIL prefix); count them.
-  flag_out="$(python3 - "${FLAG_FILE}" "${EXPECT_BACKEND}" "${BASELINE_FILE}" <<'PY'
-import json
-import os
+# --- 2. the flag service: flagd connected, epoch, agent set served ---------
+section "flag service (${FLAG_SERVICE_URL})"
+svc_out="$(PYTHONPATH="${SCRIPT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 - <<'PY'
 import sys
 
-path, expect_backend, baseline_path = sys.argv[1], sys.argv[2], sys.argv[3]
+from flagservice import FlagService, FlagServiceError, FlagServiceUnreachable
+
 try:
-    with open(path) as fh:
-        flags = json.load(fh).get("flags", {})
-except (OSError, ValueError) as exc:
-    print(f"FAIL  cannot parse {path}: {exc}")
+    state = FlagService.from_env().state()
+except (FlagServiceUnreachable, FlagServiceError) as exc:
+    print(f"FAIL  {exc}: no flag can change and the stage helpers fail (start the stack; scripts/flags.sh state)")
+    sys.exit(0)
+streams = state.get("sync_streams", 0)
+if streams >= 1:
+    print(f"PASS  flagd holds {streams} sync stream(s) to the flag service (epoch {state.get('epoch')})")
+else:
+    print("FAIL  flagd has no sync stream: every flag write is refused (503 no_sync_stream); "
+          "restart both: ./scripts/flags.sh restart")
+if "agent" in state.get("served_sets", []):
+    print("PASS  the agent flag set is served by the flag service")
+else:
+    print(f"FAIL  the agent flag set is not served (served: {', '.join(state.get('served_sets', []))})")
+PY
+)"
+while IFS= read -r line; do
+  [[ -z "${line}" ]] && continue
+  case "${line}" in
+    PASS*) echo "${line}"; n_pass=$((n_pass + 1)) ;;
+    FAIL*) echo "${line}"; n_fail=$((n_fail + 1)) ;;
+    *) echo "${line}" ;;
+  esac
+done <<<"${svc_out}"
+
+# --- 3. stage baseline flags -----------------------------------------------
+section "stage baseline flags (agent set, as the flag service serves it)"
+if true; then
+  # The python prints the result lines itself (PASS/WARN/FAIL prefix); count them.
+  flag_out="$(PYTHONPATH="${SCRIPT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 - "${EXPECT_BACKEND}" "${BASELINE_FILE}" <<'PY'
+import json
+import sys
+
+from flagservice import FlagService, FlagServiceError, FlagServiceUnreachable
+
+expect_backend, baseline_path = sys.argv[1], sys.argv[2]
+fs = FlagService.from_env()
+try:
+    # The flags in the shape the checks below read: the variant the flag service
+    # serves now (overlays included) as the defaultVariant.
+    flags = {
+        view["flag"]: {"state": "ENABLED", "defaultVariant": view["effective_default"],
+                       "variants": view.get("variant_values", {})}
+        for view in fs.flag_set("agent")["flags"]
+    }
+    service_state = fs.state()
+except (FlagServiceUnreachable, FlagServiceError) as exc:
+    print(f"FAIL  cannot read the agent flags from the flag service: {exc}")
     sys.exit(0)
 
 # flag key -> expected defaultVariant for the start of the talk: the stage
@@ -245,7 +266,7 @@ def shown(flag):
 for key, want in BASELINE.items():
     flag = flags.get(key)
     if flag is None:
-        print(f"FAIL  {key}: not defined in the flag file")
+        print(f"FAIL  {key}: not defined in the agent flag set")
     elif flag.get("state") != "ENABLED":
         print(f"FAIL  {key}: state {flag.get('state')}")
     elif flag.get("defaultVariant") == want:
@@ -293,7 +314,7 @@ if jev_model is not None:
 jev_url = flags.get("decision.jev.base_url", {})
 if "blackhole" not in jev_url.get("variants", {}):
     print("FAIL  decision.jev.base_url has no blackhole variant: the degrade beat (option B) needs the "
-          "shipped https://192.0.2.1/v1 variant (restore the flag file from git)")
+          "shipped https://192.0.2.1/v1 variant (restore services/flagd/agent.json from git, restart the flag service)")
 elif jev_url.get("defaultVariant") == "blackhole":
     print("FAIL  decision.jev.base_url = blackhole: every jev call times out (reset: default)")
 else:
@@ -319,32 +340,10 @@ if budget is not None:
     print(f"INFO  llm.max_requests_per_minute = {shown(budget)} "
           "(global remote-call budget; replaced by AGENT_LLM_MAX_REQUESTS_PER_MINUTE when set)")
 
-# interventions.json (same dir): what the agent applied during a run stays there.
-# Neutral = the shipped default: "none" if the flag has it, else "default", else "off".
-ivpath = os.path.join(os.path.dirname(path), "interventions.json")
-try:
-    with open(ivpath) as fh:
-        ivflags = json.load(fh).get("flags", {})
-except FileNotFoundError:
-    print(f"WARN  {ivpath} not found")
-    ivflags = None
-except ValueError as exc:
-    print(f"FAIL  cannot parse {ivpath}: {exc} (flagd rejects the whole file)")
-    ivflags = None
-if ivflags is not None:
-    dirty = []
-    for key, flag in ivflags.items():
-        variants = flag.get("variants", {})
-        neutral = next((v for v in ("none", "default", "off") if v in variants), None)
-        if neutral is not None and flag.get("defaultVariant") != neutral:
-            dirty.append(f"{key}={flag.get('defaultVariant')}")
-        if flag.get("targeting"):
-            dirty.append(f"{key}(targeting)")
-    if dirty:
-        print(f"WARN  interventions.json not neutral: {', '.join(dirty)} "
-              f"(reset: git checkout {ivpath})")
-    else:
-        print("PASS  interventions.json at neutral variants")
+# Interventions are game-scoped (UC-053 BR-003): what the agent applied lives in
+# its game's scope and is dropped when that game ends, so nothing needs a reset.
+print(f"PASS  interventions are per game: {service_state.get('scope_values', 0)} value(s) in "
+      f"{service_state.get('live_games', 0)} live game(s), dropped when each game ends")
 PY
 )"
   while IFS= read -r line; do
@@ -383,14 +382,14 @@ if [[ "${docker_ok}" -eq 1 ]]; then
     elif [[ "${budget_override}" =~ ^[0-9]+$ && "${budget_override}" -gt 0 ]]; then
       warn "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_override} replaces the flag but is below the stage 30/min; only decision.min_interval_ms can relieve it live"
     else
-      flag_budget="$(python3 -c '
-import json, sys
+      flag_budget="$(PYTHONPATH="${SCRIPT_DIR}" python3 -c '
+from flagservice import FlagService
 try:
-    flag = json.load(open(sys.argv[1]))["flags"]["llm.max_requests_per_minute"]
-    print(flag["defaultVariant"], flag["variants"][flag["defaultVariant"]])
-except (OSError, ValueError, KeyError, TypeError):
+    variant, value = FlagService.from_env().effective("agent")["llm.max_requests_per_minute"]
+    print(variant, value)
+except Exception:
     print("? ?")
-' "${FLAG_FILE}" 2>/dev/null)"
+' 2>/dev/null)"
       read -r budget_variant budget_value <<<"${flag_budget}"
       if [[ "${budget_value}" =~ ^[0-9]+$ && "${budget_value}" -ge 30 ]]; then
         pass "LLM budget: llm.max_requests_per_minute = ${budget_variant} (${budget_value}/min; no env override)"
@@ -507,16 +506,17 @@ print(len(spans), tags.get("decide.backend"), tags.get("decide.outcome"), tags.g
 
   # --- 8. real PS Move controllers ---------------------------------------------
   section "real controllers (controller-manager via ${BASE_URL}/)"
-  # Read the fallback state from the flag file (the same rule as section 3).
-  fallback_on="$(python3 -c '
+  # Read the fallback state from the flag service (the same rule as section 3).
+  fallback_on="$(PYTHONPATH="${SCRIPT_DIR}" python3 -c '
 import json, sys
+from flagservice import FlagService
 try:
-    flags = json.load(open(sys.argv[1]))["flags"]
-    want = json.load(open(sys.argv[2])).get("fallback", {}).get("llm.eligible_game_kinds")
-    print("1" if want and flags["llm.eligible_game_kinds"]["defaultVariant"] == want else "0")
-except (OSError, ValueError, KeyError, TypeError):
+    want = json.load(open(sys.argv[1])).get("fallback", {}).get("llm.eligible_game_kinds")
+    variant = FlagService.from_env().effective("agent")["llm.eligible_game_kinds"][0]
+    print("1" if want and variant == want else "0")
+except Exception:
     print("0")
-' "${FLAG_FILE}" "${BASELINE_FILE}" 2>/dev/null)"
+' "${BASELINE_FILE}" 2>/dev/null)"
   # short_of <message>: FAIL on stage, WARN while the fallback carries the talk.
   short_of() {
     if [[ "${fallback_on}" == "1" ]]; then

@@ -28,13 +28,11 @@ flagd's server-side evaluation of the written per-serial targeting if-ladder is
 checked against a single real flagd in the contract tier
 (tests/contract/test_flagd_resolution.py, #1422), not here.
 
-Interventions are game-scoped and die with their game (UC-053 BR-003). agent.json
-is still a bind-mounted file until the agent set cuts over (#1412); the
-``flag_files`` fixture snapshots and restores it.
+Interventions are game-scoped and die with their game (UC-053 BR-003); agent-set
+overlays (permission level, budgets) are cleared by the ``flag_service`` fixture.
 """
 
 import asyncio
-import json
 import os
 import sys
 import time
@@ -54,11 +52,11 @@ from tests.integration.helpers import (  # noqa: E402
     poll_until,
     setup_mock_controllers,
     start_game_via_menu,
-    wait_flag_file_restored,
 )
 from tests.integration.flag_service import append_event, set_player_value  # noqa: E402
+from tests.integration.flag_service import default as flag_service_default  # noqa: E402
 
-# The agent set is still a flagd file source until #1412: its host file path.
+# The agent set's baseline file (read-only: expected variant values only).
 AGENT_PATH = active_flag_file("agent")
 
 # Absence window: how long the flag push + coordinator re-evaluate chain is
@@ -73,29 +71,15 @@ RELOAD_SETTLE_SECONDS = 2.0
 APPLY_TIMEOUT_SECONDS = 12.0
 
 # =============================================================================
-# agent.json mutation helpers (a flagd file source until the agent set cuts
-# over to the flag service, #1412)
+# Agent-set helpers: in-memory overlays on the flag service (cleared by the
+# ``flag_service`` fixture at teardown; never persisted, re-review N4)
 # =============================================================================
 
 
-def _load(path: str) -> dict:
-    with open(path) as fh:
-        return json.load(fh)
-
-
-def _dump_in_place(path: str, doc: dict) -> None:
-    """In-place truncate+write (rename over a watched bind mount triggers EBUSY)."""
-    text = json.dumps(doc, indent=2) + "\n"
-    with open(path, "w") as fh:
-        fh.write(text)
-
-
 def set_interventions_allowed(variant: str) -> None:
-    """Flip the agent-domain ``interventions_allowed`` flag to a named variant
+    """Set the agent-set ``interventions_allowed`` flag to a named variant
     (``none`` / ``ambient`` / ``standard`` / ``full``)."""
-    doc = _load(AGENT_PATH)
-    doc["flags"]["interventions_allowed"]["defaultVariant"] = variant
-    _dump_in_place(AGENT_PATH, doc)
+    flag_service_default().put("agent", "interventions_allowed", variant=variant)
 
 
 def set_policy_budget(per_minute: int) -> None:
@@ -105,22 +89,11 @@ def set_policy_budget(per_minute: int) -> None:
     defense-in-depth contract): the agent's authoritative per-game budget
     (``policy.max_interventions_per_minute``) and the coordinator's generous
     process-global backstop (``policy.coordinator_backstop_per_minute``). Tests
-    that drive several interventions in a tight window need headroom in BOTH, so
-    we inject a custom ``active`` variant into each and flip its defaultVariant.
-    The shipped variants cap below this (agent ``aggressive`` = 4, coordinator
-    ``generous`` = 120), so the injected variant gives the suite the headroom it
-    needs. Each manager reads its own flag via ``get_integer_value`` and feeds it
-    to its weighted sliding-window limiter.
+    that drive several interventions in a tight window need headroom in BOTH,
+    so both get the value (registry range 1 to 100, flags.md §13.2).
     """
-    doc = _load(AGENT_PATH)
-    for flag_key in (
-        "policy.max_interventions_per_minute",
-        "policy.coordinator_backstop_per_minute",
-    ):
-        flag = doc["flags"][flag_key]
-        flag["variants"]["active"] = int(per_minute)
-        flag["defaultVariant"] = "active"
-    _dump_in_place(AGENT_PATH, doc)
+    for flag_key in ("policy.max_interventions_per_minute", "policy.coordinator_backstop_per_minute"):
+        flag_service_default().put("agent", flag_key, value=int(per_minute))
 
 
 # =============================================================================
@@ -145,51 +118,27 @@ SUITE_RATE_LIMIT_BUDGET = 50
 
 
 @pytest.fixture
-def flag_files(docker_compose, flag_service):
-    """Bind the flag-service client (interventions are written through it and
-    die with their game) and snapshot agent.json; restore it byte-for-byte on exit.
+def intervention_env(docker_compose, flag_service):
+    """Bind the flag-service client and pin the suite-wide rate-limit budget.
 
-    Also raises ``policy.max_interventions_per_minute`` to a generous suite-wide
-    budget for the duration of the test (see ``SUITE_RATE_LIMIT_BUDGET``) and
-    waits a reload cycle so flagd serves it before the test body issues any
-    intervention write — this makes the process-global rate limiter
-    headroom-independent of test ordering / suite size. Restored at teardown via
-    the same in-place write so flagd reloads the committed baseline and no
-    mutation (budget included) leaks into the repo or later tests.
+    Interventions are written through the flag service and die with their game;
+    every agent-set overlay a test sets (the budget, ``interventions_allowed``)
+    is DELETEd by the ``flag_service`` fixture at teardown. The budget is pinned
+    up front and served by flagd before the test body runs, so the
+    process-global rate limiter is headroom-independent of test order (#894:
+    condition poll, not a fixed settle).
     """
-    with open(AGENT_PATH) as fh:
-        agent_backup = fh.read()
-
-    # Pin the generous budget up front and wait until flagd actually SERVES it
-    # before the test body runs, so the very first intervention write already
-    # sees the headroom (#894: condition poll, not a fixed settle).
     set_policy_budget(SUITE_RATE_LIMIT_BUDGET)
     from openfeature.evaluation_context import EvaluationContext
 
     with flagd_probe_client(docker_compose, "agent") as client:
         assert poll_until(
             lambda: (
-                client.get_integer_value(
-                    "policy.max_interventions_per_minute", -1, EvaluationContext()
-                )
+                client.get_integer_value("policy.max_interventions_per_minute", -1, EvaluationContext())
                 == SUITE_RATE_LIMIT_BUDGET
             ),
-            rewrite=lambda: set_policy_budget(SUITE_RATE_LIMIT_BUDGET),
         ), "flagd did not serve the pinned suite rate-limit budget"
-
     yield
-
-    def _restore():
-        with open(AGENT_PATH, "w") as fh:
-            fh.write(agent_backup)
-
-    with open(AGENT_PATH) as fh:
-        agent_mutated = fh.read()
-    _restore()
-    # Wait until flagd serves the restored baseline before the next test (#894).
-    wait_flag_file_restored(
-        docker_compose, "agent", agent_backup, agent_mutated, _restore
-    )
 
 
 @pytest.fixture
@@ -278,7 +227,7 @@ async def _wait_for_sensitivity_factor(
 @pytest.mark.uc("UC-053", flow="main", br=["BR-003"])
 @pytest.mark.asyncio
 async def test_per_player_targeting_resolves_against_live_flagd(
-    flag_files, flag_service, docker_compose
+    intervention_env, flag_service, docker_compose
 ):
     """Per-player values written through the flag service resolve on LIVE flagd
     RPC for their (game, serial) only: other serials and other games get the
@@ -345,7 +294,7 @@ async def test_per_player_targeting_resolves_against_live_flagd(
 
 @pytest.mark.asyncio
 async def test_permission_layer_blocks_disallowed_intervention(
-    flag_files, docker_compose, game_client
+    intervention_env, docker_compose, game_client
 ):
     """Permission-block negative: with interventions_allowed=ambient (the
     committed default), eliminate_player is NOT in the allowed set, so the

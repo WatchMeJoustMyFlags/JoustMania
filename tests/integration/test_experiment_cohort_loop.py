@@ -81,38 +81,21 @@ practical-significance floor) — so we assert the loop REACHES a verdict and TE
 DOWN, not any particular outcome.
 """
 
-import json
 import os
 import subprocess
 
 import pytest
 
+from tests.integration.flag_service import FlagService
 from tests.integration.helpers import (
-    active_flag_file,
     flagd_probe_client,
     poll_until,
 )
-
-
-def _load(path: str) -> dict:
-    with open(path) as fh:
-        return json.load(fh)
-
-
-def _dump_in_place(path: str, doc: dict) -> None:
-    """In-place truncate+write (matches the Go ActionSink / admin-mode writer).
-
-    No temp+rename: rename over a bind mount flagd watches triggers EBUSY. Same
-    invariant as the suite's other flag writers (test_intervention_flow.py)."""
-    text = json.dumps(doc, indent=2) + "\n"
-    with open(path, "w") as fh:
-        fh.write(text)
 
 # Fixed container name from docker-compose.yml (container_name: joustmania-agent).
 AGENT_CONTAINER = "joustmania-agent"
 AGENT_SERVICE = "agent"
 
-AGENT_FLAG_PATH = active_flag_file("agent")
 
 # The dry-run overlay carries the #999 agent flag-dir fix + the agent profile.
 DRY_RUN_COMPOSE_FILE = "docker-compose.dry-run.yml"
@@ -184,24 +167,20 @@ _TUNING = {
 }
 
 
-def _set_agent_flag_on(flag_key: str) -> None:
-    """Flip an agent.json boolean flag's defaultVariant to ``on`` in place.
+# The module's flag-service client (module-scoped fixture below): it remembers
+# every overlay it set and clears them at teardown (epic #1407, N4).
+_FLAGS: FlagService | None = None
 
-    Idempotent: safe to call as a poll ``rewrite`` to self-heal a missed flagd
-    inotify reload (same pattern as the suite's other flag writers)."""
-    doc = _load(AGENT_FLAG_PATH)
-    doc["flags"][flag_key]["variants"]["on"] = True
-    doc["flags"][flag_key]["defaultVariant"] = "on"
-    _dump_in_place(AGENT_FLAG_PATH, doc)
+
+def _set_agent_flag_on(flag_key: str) -> None:
+    """Set an agent-set boolean flag to ``on`` (in-memory overlay)."""
+    _FLAGS.put("agent", flag_key, variant="on")
 
 
 def _set_agent_numeric(flag_key: str, value) -> None:
-    """Point an agent.json numeric flag's defaultVariant at a bespoke ``it``
-    variant carrying ``value``. Idempotent (safe as a poll ``rewrite``)."""
-    doc = _load(AGENT_FLAG_PATH)
-    doc["flags"][flag_key]["variants"]["it"] = value
-    doc["flags"][flag_key]["defaultVariant"] = "it"
-    _dump_in_place(AGENT_FLAG_PATH, doc)
+    """Set an agent-set tuning flag to ``value`` (in-memory overlay; a declared
+    variant's value selects that variant, otherwise the registry range applies)."""
+    _FLAGS.put("agent", flag_key, value=value)
 
 
 def _enable_experiments_live() -> None:
@@ -211,8 +190,7 @@ def _enable_experiments_live() -> None:
     kill-switch ``enabled`` AND ``experiments_enabled`` must both be ``on`` for
     the loop to act, regardless of the AGENT_* env defaults. The numeric verdict/
     tick/budget knobs are ALSO live flags that override the env, so we floor them
-    here too so the loop terminates fast and deterministically. Idempotent: this
-    is reused verbatim as the poll ``rewrite`` so a missed flagd reload self-heals."""
+    here too so the loop terminates fast and deterministically."""
     _set_agent_flag_on("enabled")
     _set_agent_flag_on("experiments_enabled")
     for key, value in _TUNING.items():
@@ -291,13 +269,12 @@ def agent_experiment_stack(docker_compose):
     """Bring up the agent container with the experiment cohort loop ENABLED on
     the inference-absent path, layered onto the running session stack.
 
-    Snapshots and restores ``agent.json`` byte-for-byte, and stops/removes the
-    agent container on teardown so it never leaks into other test modules
-    (which assume the agent is absent)."""
+    Its agent-set overlays (the gates and the bounded tuning) are cleared on
+    teardown, and the agent container is stopped/removed so it never leaks into
+    other test modules (which assume the agent is absent)."""
+    global _FLAGS
     cwd = str(docker_compose.context)
-
-    with open(AGENT_FLAG_PATH) as fh:
-        agent_backup = fh.read()
+    _FLAGS = FlagService.from_compose(docker_compose)
 
     prefix = _compose_prefix(docker_compose)
     env = _agent_env()
@@ -318,7 +295,6 @@ def agent_experiment_stack(docker_compose):
             # target/tick, not the production-scale agent.json defaults.
             and client.get_integer_value("verdict_min_n", 99, EvaluationContext())
             == _TUNING["verdict_min_n"],
-            rewrite=_enable_experiments_live,
         )
     assert served, (
         "flagd did not serve the enabled+experiments_enabled+bounded-tuning flags"
@@ -373,21 +349,16 @@ def agent_experiment_stack(docker_compose):
             text=True,
             timeout=120,
         )
-        # 4. Restore agent.json byte-for-byte and wait until flagd serves the
-        #    baseline (kill-switch back to default off) so no later test inherits
-        #    an enabled agent gate.
-        def _restore() -> None:
-            with open(AGENT_FLAG_PATH, "w") as fh:
-                fh.write(agent_backup)
-
-        _restore()
+        # 4. Clear every overlay set here and wait until flagd serves the baseline
+        #    (kill-switch back to default off) so no later test inherits an
+        #    enabled agent gate.
+        _FLAGS.cleanup()
         with flagd_probe_client(docker_compose, "agent") as client:
             poll_until(
                 lambda: client.get_boolean_value(
                     "experiments_enabled", True, EvaluationContext()
                 )
                 is False,
-                rewrite=_restore,
             )
 
 

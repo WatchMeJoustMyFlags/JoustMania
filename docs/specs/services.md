@@ -300,7 +300,7 @@ they go on the write span and are never checked. Writers use a 500 ms deadline a
 | Method and path | Purpose | Success |
 |---|---|---|
 | `GET /` | flag sets with their flag counts and whether each is served | 200 |
-| `GET /{flagSetId}` | every flag of the set: registry policy (mutable, kind, scope, bounds, persist), effective default, overlays, scoped values | 200 |
+| `GET /{flagSetId}` | every flag of the set: registry policy (mutable, kind, scope, bounds, persist), baseline and effective default, declared variants with their values, overlays (stack, persisted admin, real, fraction), scoped values | 200 |
 | `GET /{flagSetId}/{flagName}` | one flag's effective state (same fields), plus the rendered flagd JSON | 200 |
 | `PUT /{flagSetId}/{flagName}` | set a value in a scope (state, level, grant, overlay, experiment arm, fraction) | 200 `WriteResult` |
 | `POST /{flagSetId}/{flagName}` | append one event to a game's event list (registry kind `event` only) | 200 `WriteResult` with `seq` |

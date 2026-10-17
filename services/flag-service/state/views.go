@@ -34,6 +34,7 @@ type FlagView struct {
 	BaselineDefault  string                          `json:"baseline_default"`
 	EffectiveDefault string                          `json:"effective_default"`
 	Variants         []string                        `json:"variants"`
+	VariantValues    map[string]json.RawMessage      `json:"variant_values"`
 	StackOverlay     *ValueView                      `json:"stack_overlay,omitempty"`
 	AdminValue       *ValueView                      `json:"admin_value,omitempty"`
 	RealOverlay      *ValueView                      `json:"real_overlay,omitempty"`
@@ -83,6 +84,7 @@ func (f *flagState) flagView() FlagView {
 		BaselineDefault:  f.base.DefaultVariant,
 		EffectiveDefault: f.effectiveDefault(),
 		Variants:         f.base.VariantNames(),
+		VariantValues:    f.base.Variants,
 		StackOverlay:     f.view(f.stack),
 		AdminValue:       f.view(f.admin),
 		RealOverlay:      f.view(f.real),

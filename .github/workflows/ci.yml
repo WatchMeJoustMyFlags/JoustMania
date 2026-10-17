@@ -140,9 +140,10 @@ jobs:
             # scripts, their tests, and the inputs they read.
             script_tests:
               - 'scripts/*.sh'
-              - 'scripts/setup/**'
-              - 'setup.sh'
+              - 'scripts/*.py'
               - 'scripts/talk-baseline.json'
+              # the script tests' fake flag service enforces the real registry
+              - 'services/flag-service/registry.yaml'
               - 'scripts/tests/**'
               - 'services/flagd/**'
               - 'services/agent/actions/writer.go'

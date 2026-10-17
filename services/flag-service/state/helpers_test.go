@@ -159,4 +159,6 @@ func intp(n int) *int { return &n }
 
 func ttl(seconds float64) *float64 { return &seconds }
 
-func containsStr(haystack []byte, needle string) bool { return strings.Contains(string(haystack), needle) }
+func containsStr(haystack []byte, needle string) bool {
+	return strings.Contains(string(haystack), needle)
+}

@@ -93,7 +93,7 @@ services:
       - "50064"  # flagd.sync.v1 gRPC (flagd only)
       - "8070"   # HTTP/JSON write/read API + /healthz
     environment:
-      - FLAG_SERVICE_SETS=system,observability,interventions,rollout
+      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
       # Admin settings persisted on request (D10, re-review N4). One state file
       # per stack: the ci, dry-run and decide-e2e stacks override the name.
@@ -143,8 +143,6 @@ services:
       - "file:/etc/flagd/game.json"
       - "--uri"
       - "file:/etc/flagd/user.json"
-      - "--uri"
-      - "file:/etc/flagd/agent.json"
       - "--metrics-exporter"
       - "otel"
       - "--otel-collector-uri"

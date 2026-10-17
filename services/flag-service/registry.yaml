@@ -60,6 +60,12 @@ flags:
   - {set: agent, key: decision.min_interval_ms, kind: overlay, scope: [stack], bounds: {range: [100, 60000], integer: true}}
   - {set: agent, key: decision.openai.timeout_ms, kind: overlay, scope: [stack], bounds: {range: [100, 60000], integer: true}}
   - {set: agent, key: llm.max_requests_per_minute, kind: overlay, scope: [stack]}
+  - {set: agent, key: llm.eligible_game_kinds, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.claude.timeout_ms, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.jev.timeout_ms, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.jev.base_url, kind: overlay, scope: [stack]}
+  - {set: agent, key: experiment.mock_archetypes, kind: overlay, scope: [stack]}
+  - {set: agent, key: experiment.max_game_seconds, kind: overlay, scope: [stack], bounds: {range: [10, 1800], integer: true}}
   - {set: agent, key: policy.max_interventions_per_minute, kind: overlay, scope: [stack], bounds: {range: [1, 100], integer: true}}
   - {set: agent, key: policy.coordinator_backstop_per_minute, kind: overlay, scope: [stack], bounds: {range: [1, 100], integer: true}}
   - {set: agent, key: fitness.accelerate.target_session_seconds, kind: overlay, scope: [stack]}

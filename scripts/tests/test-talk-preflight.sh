@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Self-contained tests for scripts/talk-preflight.sh (#743, #1316 UC-070 BR-006, A9).
 #
-# Runs the preflight against a temp flag file with `docker`, `curl` and
-# `timedatectl` stubbed on PATH, so no stack, network or daemon is needed.
+# Runs the preflight against scripts/tests/fake_flag_service.py serving a fixture
+# agent flag set (epic #1407), with `docker`, `curl` and `timedatectl` stubbed on
+# PATH, so no stack, network or daemon is needed.
 #
 # Runs as part of `make lint` (needs only bash + python3 + GNU date), or directly:
 #   ./scripts/tests/test-talk-preflight.sh
@@ -13,9 +14,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFLIGHT="${SCRIPT_DIR}/../talk-preflight.sh"
 WORK="$(mktemp -d)"
-trap 'rm -rf "${WORK}"' EXIT
+# shellcheck source=scripts/tests/lib-fake-flag-service.sh
+source "${SCRIPT_DIR}/lib-fake-flag-service.sh"
+trap 'stop_fake_flag_service; rm -rf "${WORK}"' EXIT
 mkdir -p "${WORK}/bin" "${WORK}/flags"
-export AGENT_FLAG_FILE="${WORK}/flags/agent.json"
+export FAKE_AGENT_FLAGS="${WORK}/flags/agent.json"
+export TALK_FLAG_DIR="${WORK}/flags"
 export TALK_CLOCK_URLS="https://clock.test"
 REAL_DATE="$(command -v date)"
 export PATH="${WORK}/bin:${PATH}"
@@ -73,26 +77,14 @@ chmod +x "${WORK}/bin/"*
 export STUB_SECRET="${SECRET}"
 export STUB_MOUNT="${WORK}/flags"
 
-iv_fixture() {
-  python3 - "${WORK}/flags/interventions.json" "$@" <<'PY'
-import json, sys
-path, overrides = sys.argv[1], dict(a.split("=", 1) for a in sys.argv[2:])
-def f(variants, default):
-    return {"state": "ENABLED", "variants": {v: v for v in variants}, "defaultVariant": default}
-flags = {
-    "shield_seconds": f(["none", "short", "default", "long"], "none"),
-    "player_handicap_factor": f(["default", "help"], "default"),
-    "auto_rubberband": f(["off", "gentle"], "off"),
-}
-for key, variant in overrides.items():
-    flags[key]["defaultVariant"] = variant
-json.dump({"flags": flags}, open(path, "w"), indent=2)
-PY
+# restart_fake [fake args]: serve the fixture file as the flag service's baseline.
+restart_fake() {
+  stop_fake_flag_service
+  start_fake_flag_service "${WORK}" "$@"
 }
 
 fixture() {
-  iv_fixture
-  python3 - "${AGENT_FLAG_FILE}" "$@" <<'PY'
+  python3 - "${FAKE_AGENT_FLAGS}" "$@" <<'PY'
 import json, sys
 path, overrides = sys.argv[1], dict(a.split("=", 1) for a in sys.argv[2:])
 def f(variants, default):
@@ -134,6 +126,7 @@ for key, variant in overrides.items():
     flags[key]["defaultVariant"] = variant
 json.dump({"flags": flags}, open(path, "w"), indent=2)
 PY
+  restart_fake
 }
 
 pass=0
@@ -153,7 +146,8 @@ check() { if has "$2"; then ok "$1"; else not_ok "$1 (missing: $2)"; fi; }
 fixture
 STUB_BUDGET=30 run_preflight
 if [[ "${RC}" -eq 0 ]]; then ok "baseline stack exits 0"; else not_ok "baseline stack exits 0 (rc=${RC}): ${OUT}"; fi
-check "flagd mount matches" "PASS  joustmania-flagd: mounts ${WORK}/flags"
+check "flagd connected to the flag service" "PASS  flagd holds 1 sync stream(s) to the flag service (epoch fake0001)"
+check "agent set served" "PASS  the agent flag set is served by the flag service"
 check "jev key present" "PASS  jev: JEV_API_KEY present"
 check "claude key present" "PASS  claude: ANTHROPIC_API_KEY present"
 check "empty openai key is only info" "INFO  openai: DECISION_OPENAI_API_KEY absent"
@@ -163,7 +157,7 @@ check "claude timeout baseline" "PASS  decision.claude.timeout_ms = default (500
 check "jev threshold baseline" "PASS  decision.jev.act_confidence_threshold = gate (0.6)"
 check "jev blackhole variant present" "PASS  decision.jev.base_url = default"
 if has "stub"; then not_ok "no stub wording"; else ok "no stub wording"; fi
-check "interventions neutral" "PASS  interventions.json at neutral variants"
+check "interventions are per game" "PASS  interventions are per game: 0 value(s) in 0 live game(s)"
 check "jaeger newest span summarised" "newest: backend=claude outcome=held"
 check "vendor variant listed" "decision.openai.model variants available: vendor"
 check "clock in sync" "PASS  clock skew 0s"
@@ -174,7 +168,6 @@ if has "${SECRET}"; then not_ok "key value never printed"; else ok "key value ne
 
 # --- drift from the stage baseline -----------------------------------------
 fixture enabled=off decision.act_confidence_threshold=strict decision.jev.act_confidence_threshold=inherit policy.max_interventions_per_minute=default
-before="$(cat "${AGENT_FLAG_FILE}")"
 run_preflight
 if [[ "${RC}" -eq 1 ]]; then ok "drift exits 1"; else not_ok "drift exits 1 (rc=${RC})"; fi
 check "kill switch off fails" "FAIL  enabled = off (false), stage baseline is on"
@@ -182,7 +175,7 @@ check "strict threshold fails" "FAIL  decision.act_confidence_threshold = strict
 check "jev threshold inherit fails" "FAIL  decision.jev.act_confidence_threshold = inherit (-1.0), stage baseline is gate"
 check "shipped intervention budget fails (#1326)" "FAIL  policy.max_interventions_per_minute = default (2), stage baseline is aggressive"
 check "unset env falls back to the stage flag" "PASS  LLM budget: llm.max_requests_per_minute = stage (30/min"
-if [[ "$(cat "${AGENT_FLAG_FILE}")" == "${before}" ]]; then ok "flag file untouched"; else not_ok "flag file untouched"; fi
+if grep -qE '^(PUT|POST|DELETE) ' "${FAKE_FLAG_LOG}"; then not_ok "the pre-flight writes nothing"; else ok "the pre-flight writes nothing"; fi
 
 # --- budget, timeout, keys and summary backend ----------------------------
 fixture llm.max_requests_per_minute=default decision.claude.timeout_ms=patient decision.jev.base_url=blackhole
@@ -205,13 +198,14 @@ if has "${SECRET}"; then not_ok "key value never printed (missing-key run)"; els
 
 # --- blackhole variant missing ------------------------------------------------
 fixture
-python3 - "${AGENT_FLAG_FILE}" <<'PY2'
+python3 - "${FAKE_AGENT_FLAGS}" <<'PY2'
 import json, sys
 path = sys.argv[1]
 data = json.load(open(path))
 del data["flags"]["decision.jev.base_url"]["variants"]["blackhole"]
 json.dump(data, open(path, "w"), indent=2)
 PY2
+restart_fake
 STUB_BUDGET=30 run_preflight
 check "missing blackhole variant fails" "FAIL  decision.jev.base_url has no blackhole variant"
 
@@ -233,22 +227,29 @@ fixture interventions_allowed=none
 STUB_BUDGET=30 run_preflight
 if has "allows no intervention"; then not_ok "rules backend + none does not warn"; else ok "rules backend + none does not warn"; fi
 
-# --- wrong flag dir + clock skew --------------------------------------------
+# --- clock skew ----------------------------------------------------------------
 fixture
-STUB_MOUNT=/somewhere/else STUB_SKEW=300 run_preflight
-check "mount mismatch fails" "FAIL  joustmania-flagd: mounts /somewhere/else"
+STUB_SKEW=300 run_preflight
 check "skew warns" "WARN  clock skew 300s"
 
-# --- interventions left over from a run ------------------------------------
+# --- live games hold interventions (they die with their game) --------------
 fixture
-iv_fixture shield_seconds=default auto_rubberband=gentle
+restart_fake --games 1 --scope-values 3
 run_preflight
-check "applied interventions warn" "WARN  interventions.json not neutral: shield_seconds=default, auto_rubberband=gentle"
+check "live game values reported" "PASS  interventions are per game: 3 value(s) in 1 live game(s)"
+
+# --- the flag service down or flagd disconnected --------------------------------
+fixture
+stop_fake_flag_service
+STUB_BUDGET=30 run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "flag service down exits 1"; else not_ok "flag service down exits 1 (rc=${RC})"; fi
+check "flag service down named" "FAIL  flag service unreachable"
+check "agent flags unreadable named" "FAIL  cannot read the agent flags from the flag service"
 
 # --- container missing -----------------------------------------------------
 fixture
-STUB_MISSING=joustmania-agent run_preflight
-check "missing container named" "FAIL  joustmania-agent: container not found, cannot check its flag mount"
+STUB_MISSING=joustmania-flag-service run_preflight
+check "missing flag-service container named" "FAIL  joustmania-flag-service: not found"
 
 # --- controller backend: rust-hid up when backend=rust (#1371, UC-002 BR-003)
 controller_fixture() {
