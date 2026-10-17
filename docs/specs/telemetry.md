@@ -222,7 +222,7 @@ Published on each game's event bus (`StreamGameEvents`) and recorded as span eve
 Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `score_update`,
 `team_eliminated`. Game-ending events for the menu: `game_ended`, `game_force_ended`, `game_error`.
 
-**Traceability:** FR-020 to FR-028 / UC-020 to UC-027 / `services/game_coordinator/` / `tests/integration/test_full_game_lifecycle.py`, `tests/integration/test_parallel_lifecycle.py`.
+**Traceability:** FR-020 to FR-028 / UC-020 to UC-027 / `services/game_coordinator/` / `tests/integration/test_tc002_ffa_game.py`, `tests/integration/test_parallel_lifecycle.py`.
 
 ## 6. Metrics
 
