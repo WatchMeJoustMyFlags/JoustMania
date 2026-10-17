@@ -1,4 +1,4 @@
-"""Bluetooth adapter identity, HCI error counters and link roles (UC-035 BR-004, #1431).
+"""Bluetooth adapter identity, HCI error counters and link roles (UC-035 step 6, FR-122, #1431).
 
 Read-only: parses ``hciconfig -a`` and ``hcitool con`` output and looks up the
 USB device above each HCI interface in sysfs. Chipsets are identified by the HCI

@@ -63,7 +63,7 @@ bluetooth_adapter_connections = Gauge(
     ["hci_adapter"],
 )
 
-# Adapter identity, HCI errors and link roles (UC-035 BR-004, #1431). Read-only
+# Adapter identity, HCI errors and link roles (UC-035 step 6, FR-122, #1431). Read-only
 # observation from hciconfig -a / hcitool con / sysfs; nothing changes a role.
 pairing_bluetooth_adapter_info = Gauge(
     "pairing_bluetooth_adapter_info",

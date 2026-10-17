@@ -195,6 +195,9 @@ class DiscoveryLoop:
         # gaps per serial, and the stats computed at the last health emission.
         self._gap_window = ReportGapWindow()
         self._connection_quality: dict[str, GapStats] = {}
+        # Monotonic pick-up time of the previous poll batch: lateness beyond the
+        # poll interval is the loop's own stall, not the link's (UC-035 BR-004).
+        self._last_pickup_mono: float | None = None
 
         # Gameplay disconnect events: accumulated between stream frames, drained by servicer (#580)
         self._gameplay_disconnects: list[str] = []
@@ -300,7 +303,7 @@ class DiscoveryLoop:
                 # window counters. Decoupled from discovery cadence (#732 M3).
                 now_mono = time.monotonic()
                 if now_mono - self._last_health_emit >= self._health_interval:
-                    self._emit_bluetooth_health(time.time())
+                    self._emit_bluetooth_health(time.time(), now_mono)
                     self._last_health_emit = now_mono
 
                 # Check battery levels every 30 seconds (Phase 39 - Task 4, Phase 70)
@@ -536,6 +539,13 @@ class DiscoveryLoop:
                 except Exception as e:
                     results.append(e)
 
+            # Pick-up time of this batch for the connection-quality window; any
+            # lateness beyond one poll interval is the loop's own stall.
+            pickup_mono = time.monotonic()
+            if self._last_pickup_mono is not None:
+                self._gap_window.note_loop_stall(pickup_mono - self._last_pickup_mono - self._poll_interval)
+            self._last_pickup_mono = pickup_mono
+
             # Record metrics
             poll_duration = time.time() - start_time
             metrics.poll_batch_duration_seconds.observe(poll_duration)
@@ -572,6 +582,7 @@ class DiscoveryLoop:
                 if self._hw_last_obj_id.get(serial) != obj_id:
                     self._hw_last_obj_id[serial] = obj_id
                     self._record_fresh_frame(serial, current_time)
+                    self._gap_window.record(serial, pickup_mono)
                 else:
                     # Stale replay: no new frame, but not a hardware drop either.
                     # Counts against the update rate via _hw_polls without bumping
@@ -660,7 +671,6 @@ class DiscoveryLoop:
         just needs to be monotone within a window.
         """
         self._hw_fresh[serial] = self._hw_fresh.get(serial, 0) + 1
-        self._gap_window.record(serial, now)
         last_ts = self._hw_last_fresh_ts.get(serial)
         if last_ts is not None:
             gap_ms = (now - last_ts) * 1000.0
@@ -766,7 +776,7 @@ class DiscoveryLoop:
         # frame, and stale replays spanning the boundary are still detected.
         self._window_start = now
 
-    def _emit_bluetooth_health(self, now: float) -> None:
+    def _emit_bluetooth_health(self, now: float, now_mono: float | None = None) -> None:
         """Emit the ~1Hz controller.bluetooth_health span + health metrics.
 
         Decoupled from discovery cadence via ``_last_health_emit``. Skips
@@ -804,7 +814,9 @@ class DiscoveryLoop:
             except Exception:
                 logger.debug("Failed to read rollout strategy for health span", exc_info=True)
 
-        self._update_connection_quality(list(signals["per_serial"]), now)
+        self._update_connection_quality(
+            list(signals["per_serial"]), now_mono if now_mono is not None else time.monotonic()
+        )
 
         # --- Span: periodic root span, like controller.discover ---------------
         with tracer.start_as_current_span("controller.bluetooth_health") as span:

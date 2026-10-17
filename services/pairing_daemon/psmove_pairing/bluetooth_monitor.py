@@ -52,7 +52,7 @@ class BluetoothMonitor:
         # Track known devices for disconnect detection
         # Key: (serial, hci_adapter), Value: last_seen_timestamp
         self._known_devices: dict[tuple[str, str], float] = {}
-        # Exported label sets, so a changed identity / role replaces its series (UC-035 BR-004)
+        # Exported label sets, so a changed identity / role replaces its series (UC-035 step 6)
         self._adapter_info_labels: dict[str, dict[str, str]] = {}
         self._link_roles: dict[tuple[str, str], str] = {}
         self._hci_errors = HciErrorTracker()

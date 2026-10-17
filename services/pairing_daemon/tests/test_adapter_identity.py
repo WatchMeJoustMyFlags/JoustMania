@@ -1,4 +1,4 @@
-"""Adapter identity, HCI error counters and link roles (UC-035 BR-004, FR-122, #1431)."""
+"""Adapter identity, HCI error counters and link roles (UC-035 step 6, FR-122, #1431)."""
 
 from pathlib import Path
 from unittest.mock import patch
@@ -61,7 +61,7 @@ def _fake_usb_sysfs(root: Path, hci: str, vendor: str, product: str) -> Path:
 
 
 class TestParseHciconfig:
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     def test_identity_from_hci_manufacturer_and_usb(self, tmp_path):
         sys_class = _fake_usb_sysfs(tmp_path, "hci1", "0A12", "0001")
         adapters = {a.hci: a for a in parse_hciconfig(HCICONFIG_TWO, sys_class, tmp_path / "dt")}
@@ -79,7 +79,7 @@ class TestParseHciconfig:
         }
         assert (csr.rx_errors, csr.tx_errors) == (3, 1)
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     def test_down_uart_adapter_is_onboard_with_unknown_identity(self, tmp_path):
         adapters = {a.hci: a for a in parse_hciconfig(HCICONFIG_TWO, tmp_path / "none", tmp_path / "dt")}
 
@@ -92,16 +92,16 @@ class TestParseHciconfig:
         assert uart.usb_id == UNKNOWN
         assert (uart.rx_errors, uart.tx_errors) == (0, 0)
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     def test_minimal_block_has_no_error_counters(self, tmp_path):
         (adapter,) = parse_hciconfig("hci0:   Type: Primary  Bus: USB\n", tmp_path, tmp_path)
         assert adapter == AdapterIdentity(hci="hci0", bus="USB")
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     def test_usb_id_unknown_without_sysfs(self, tmp_path):
         assert usb_id("hci9", tmp_path) == UNKNOWN
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     def test_pi_devicetree_radio_is_onboard_even_on_usb_numbering(self, tmp_path):
         # Device tree: aliases/bluetooth -> /soc/serial/bluetooth, and the HCI device's parent links to that node.
         dt = tmp_path / "dt"
@@ -123,7 +123,7 @@ class TestParseHciconfig:
 
 
 class TestParseHcitoolCon:
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     def test_local_role_per_link(self):
         assert parse_hcitool_con(HCITOOL_CON_ROLES) == [
             ("00:06:f7:aa:bb:cc", "central"),
@@ -132,13 +132,13 @@ class TestParseHcitoolCon:
             ("00:06:f7:44:55:66", UNKNOWN),
         ]
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     def test_no_links(self):
         assert parse_hcitool_con("Connections:\n") == []
 
 
 class TestHciErrorTracker:
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     def test_first_reading_is_the_baseline_then_increases_count(self):
         tracker = HciErrorTracker()
         assert tracker.delta("hci0", "rx", 5) == 0
@@ -146,7 +146,7 @@ class TestHciErrorTracker:
         assert tracker.delta("hci0", "rx", 8) == 3
         assert tracker.delta("hci0", "tx", 2) == 0
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     def test_adapter_reset_counts_the_new_value(self):
         tracker = HciErrorTracker()
         tracker.delta("hci0", "rx", 10)
@@ -170,7 +170,7 @@ class TestMonitorExports:
         runner.add_prefix_response(["hcitool", "-i", "hci1", "rssi"], (0, "RSSI return value: -50"))
         return runner
 
-    @pytest.mark.uc("UC-035", steps=[6], br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     @pytest.mark.asyncio
     async def test_cycle_exports_identity_errors_and_roles(self, monitor):
         con = "Connections:\n\t< ACL 00:06:F7:AA:BB:CC handle 256 state 1 lm MASTER\n"
@@ -191,7 +191,7 @@ class TestMonitorExports:
         roles.labels.assert_called_once_with(serial="0006F7AABBCC", hci_adapter="hci1", role="central")
         roles.labels.return_value.set.assert_called_once_with(1)
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     @pytest.mark.asyncio
     async def test_hci_error_increase_between_cycles_is_counted(self, monitor):
         later = HCICONFIG_TWO.replace("errors:3", "errors:7")
@@ -209,7 +209,7 @@ class TestMonitorExports:
         assert increments[("hci1", "rx")] == 4
         assert increments[("hci1", "tx")] == 0
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     @pytest.mark.asyncio
     async def test_role_change_and_disconnect_replace_and_remove_the_series(self, monitor):
         central = "Connections:\n\t< ACL 00:06:F7:AA:BB:CC handle 256 state 1 lm MASTER\n"
@@ -224,7 +224,7 @@ class TestMonitorExports:
                 await monitor.monitor()
             roles.remove.assert_called_with("0006F7AABBCC", "hci1", "peripheral")
 
-    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.uc("UC-035", steps=[6])
     @pytest.mark.asyncio
     async def test_unplugged_adapter_drops_its_identity(self, monitor):
         only_hci0 = HCICONFIG_TWO[HCICONFIG_TWO.index("hci0:") :]

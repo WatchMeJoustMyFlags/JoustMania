@@ -896,7 +896,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Connection quality per controller (UC-035 BR-004): worse of p95 report gap (<=22 good, <=30 fair, >30 ms poor) and longest gap in 10 s (<=30 good, <=50 fair, >50 ms poor). Gaps are measured at the controller manager's 100 Hz poll.",
+      "description": "Connection quality per controller (UC-035 BR-004): worse of p95 report gap (<=22 good, <=30 fair, >30 ms poor) and longest gap in 10 s (<=30 good, <=50 fair, >50 ms poor). Gaps are taken at the controller manager's 100 Hz poll pick-up with the poll loop's own lateness subtracted; thresholds not yet validated on Pi hardware.",
       "fieldConfig": {
         "defaults": {
           "color": {

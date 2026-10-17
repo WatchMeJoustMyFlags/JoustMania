@@ -29,6 +29,7 @@ from services.controller_manager.discovery_loop import DiscoveryLoop
 
 SERIAL = "00:06:F7:AA:BB:CC"
 TIME_FN = "services.controller_manager.discovery_loop.time.time"
+MONO_FN = "services.controller_manager.discovery_loop.time.monotonic"
 METRICS = "services.controller_manager.discovery_loop.metrics"
 
 
@@ -134,10 +135,47 @@ class TestRollingWindow:
         assert stats.quality == POOR
 
     @pytest.mark.uc("UC-035", br=["BR-004"])
-    def test_all_gaps_expired_is_unknown(self):
+    def test_silent_for_the_whole_window_stays_poor(self):
         window = ReportGapWindow()
         last = _feed(window, SERIAL, 100.0, [10.0] * 10)
-        assert window.snapshot(SERIAL, last + 11.0) is None
+        stats = window.snapshot(SERIAL, last + 11.0)
+        assert stats.quality == POOR
+        assert stats.max_ms == pytest.approx(11000.0)
+        assert stats.samples == 0
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_one_frame_long_ago_is_poor_one_frame_recently_unknown(self):
+        window = ReportGapWindow()
+        window.record(SERIAL, 100.0)
+        assert window.snapshot(SERIAL, 105.0) is None
+        assert window.snapshot(SERIAL, 110.0).quality == POOR
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_loop_stall_is_not_charged_to_the_link(self):
+        # Poll loop stalls 45 ms between two pick-ups: the 55 ms elapsed is 10 ms of link gap.
+        window = ReportGapWindow()
+        last = _feed(window, SERIAL, 100.0, [10.0] * 50)
+        window.note_loop_stall(0.045)
+        window.record(SERIAL, last + 0.055)
+        stats = window.snapshot(SERIAL, last + 0.055)
+        assert stats.max_ms == pytest.approx(10.0)
+        assert stats.quality == GOOD
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    def test_stalls_are_subtracted_from_every_gap_they_span(self):
+        window = ReportGapWindow()
+        window.record(SERIAL, 100.0)
+        window.record("OTHER", 100.0)
+        window.note_loop_stall(0.020)
+        window.record(SERIAL, 100.040)  # 40 ms elapsed, 20 ms of it the loop's
+        window.note_loop_stall(0.030)
+        window.record("OTHER", 100.090)  # 90 ms elapsed spanning both stalls
+        assert window.snapshot(SERIAL, 100.040).max_ms == pytest.approx(20.0)
+        assert window.snapshot("OTHER", 100.090).max_ms == pytest.approx(40.0)
+        # Negative lateness (loop ahead of schedule) is ignored.
+        window.note_loop_stall(-0.005)
+        window.record(SERIAL, 100.050)
+        assert window.snapshot(SERIAL, 100.050).p95_ms == pytest.approx(20.0)
 
     @pytest.mark.uc("UC-035", br=["BR-004"])
     def test_forget_drops_the_controller(self):
@@ -167,7 +205,7 @@ def _make_loop(backend) -> DiscoveryLoop:
 
 
 async def _poll_at(loop: DiscoveryLoop, now: float) -> None:
-    with patch(TIME_FN, return_value=now):
+    with patch(TIME_FN, return_value=now), patch(MONO_FN, return_value=now):
         await loop._update_controller_states()
 
 
@@ -182,12 +220,15 @@ class TestDiscoveryLoopExport:
     @pytest.mark.uc("UC-035", br=["BR-004"])
     @pytest.mark.asyncio
     async def test_health_emission_exports_gap_stats_and_class(self, loop):
-        for i in range(20):
+        # Polls every 10 ms; the link delivers nothing new for 60 ms once (stale replays).
+        stale = {"accel": (0, 0, 1)}
+        frames = [{"accel": (0, 0, 1)} for _ in range(20)] + [stale] * 6 + [{"accel": (0, 0, 1)}]
+        loop.backend.get_controller_state = AsyncMock(side_effect=frames)
+        for i in range(len(frames)):
             await _poll_at(loop, 100.0 + i * 0.010)
-        await _poll_at(loop, 100.0 + 0.19 + 0.060)  # one 60 ms gap
 
         with patch(METRICS) as metrics:
-            loop._emit_bluetooth_health(100.25)
+            loop._emit_bluetooth_health(100.26, 100.26)
 
         stats = loop.connection_quality(SERIAL)
         assert stats.quality == POOR
@@ -203,6 +244,21 @@ class TestDiscoveryLoopExport:
 
     @pytest.mark.uc("UC-035", br=["BR-004"])
     @pytest.mark.asyncio
+    async def test_poll_loop_stall_does_not_rate_the_link_worse(self, loop):
+        # Fresh frame on every poll, but the loop itself stalls 80 ms once.
+        times = [100.0 + i * 0.010 for i in range(20)]
+        times += [times[-1] + 0.090 + i * 0.010 for i in range(20)]
+        for t in times:
+            await _poll_at(loop, t)
+        with patch(METRICS):
+            loop._emit_bluetooth_health(times[-1], times[-1])
+
+        stats = loop.connection_quality(SERIAL)
+        assert stats.max_ms == pytest.approx(10.0)
+        assert stats.quality == GOOD
+
+    @pytest.mark.uc("UC-035", br=["BR-004"])
+    @pytest.mark.asyncio
     async def test_span_event_carries_the_quality(self, loop):
         for i in range(5):
             await _poll_at(loop, 100.0 + i * 0.010)
@@ -211,7 +267,7 @@ class TestDiscoveryLoopExport:
         tracer = MagicMock()
         tracer.start_as_current_span.return_value.__enter__.return_value = span
         with patch(METRICS), patch("services.controller_manager.discovery_loop.tracer", tracer):
-            loop._emit_bluetooth_health(100.04)
+            loop._emit_bluetooth_health(100.04, 100.04)
 
         name, attrs = span.add_event.call_args.args
         assert name == "bluetooth_controller_sample"
@@ -224,7 +280,7 @@ class TestDiscoveryLoopExport:
     async def test_single_frame_exports_no_quality(self, loop):
         await _poll_at(loop, 100.0)
         with patch(METRICS) as metrics:
-            loop._emit_bluetooth_health(100.0)
+            loop._emit_bluetooth_health(100.0, 100.0)
 
         assert loop.connection_quality(SERIAL) is None
         metrics.controller_connection_quality.labels.assert_not_called()
@@ -236,7 +292,7 @@ class TestDiscoveryLoopExport:
         for i in range(5):
             await _poll_at(loop, 100.0 + i * 0.010)
         with patch(METRICS):
-            loop._emit_bluetooth_health(100.04)
+            loop._emit_bluetooth_health(100.04, 100.04)
         assert loop.connection_quality(SERIAL) is not None
 
         # Discovery no longer sees the controller: the disconnect path untracks it.
@@ -298,6 +354,19 @@ class TestGameplayFrameCarriesQuality:
         assert quality.level == "fair"
         assert quality.report_gap_p95_ms == pytest.approx(24.0)
         assert quality.report_gap_max_ms == pytest.approx(41.0)
+
+    @pytest.mark.uc("UC-035", steps=[2], br=["BR-004"])
+    def test_message_is_built_once_per_stats_update(self, servicer):
+        servicer, mock_loop = servicer
+        first = GapStats(p95_ms=10.0, max_ms=12.0, quality=GOOD, samples=900)
+        mock_loop.connection_quality = MagicMock(return_value=first)
+        msg_a = servicer._connection_quality_msg(SERIAL)
+        assert servicer._connection_quality_msg(SERIAL) is msg_a
+
+        mock_loop.connection_quality.return_value = GapStats(p95_ms=31.0, max_ms=60.0, quality=POOR, samples=900)
+        msg_b = servicer._connection_quality_msg(SERIAL)
+        assert msg_b is not msg_a
+        assert msg_b.level == "poor"
 
     @pytest.mark.uc("UC-035", steps=[2], br=["BR-004"])
     def test_unknown_quality_leaves_the_field_unset(self, servicer):

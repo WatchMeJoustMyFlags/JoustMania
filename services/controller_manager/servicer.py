@@ -133,6 +133,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             name_manager=self.name_manager,
         )
         self._discovery_started = False
+        # serial -> (GapStats, ConnectionQuality) last sent on dashboard frames (UC-035 BR-004)
+        self._quality_pb_cache: dict[str, tuple[object, controller_manager_pb2.ConnectionQuality]] = {}
 
         logger.info("ControllerManager initialized")
 
@@ -469,11 +471,17 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         stats = self.discovery_loop.connection_quality(serial)
         if stats is None:
             return None
-        return controller_manager_pb2.ConnectionQuality(
+        # The stats change at the ~1 Hz health emission; build the message once per change.
+        cached = self._quality_pb_cache.get(serial)
+        if cached is not None and cached[0] is stats:
+            return cached[1]
+        msg = controller_manager_pb2.ConnectionQuality(
             level=stats.quality,
             report_gap_p95_ms=stats.p95_ms,
             report_gap_max_ms=stats.max_ms,
         )
+        self._quality_pb_cache[serial] = (stats, msg)
+        return msg
 
     def _record_input_lag(self, serial: str, now: float) -> None:
         """Observe how old the sample in this gameplay frame is (FR-083).

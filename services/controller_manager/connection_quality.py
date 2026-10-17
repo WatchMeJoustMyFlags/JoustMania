@@ -8,7 +8,14 @@ the last fresh frame) and a quality class.
 Thresholds are the upstream JoustMania gameplay-derived ratings: p95 gap
 <= 22 ms good, <= 30 ms fair, above poor; longest gap <= 30 ms good, <= 50 ms
 fair, above poor. The class is the worse of the two. Gaps are measured at the
-controller manager's poll, so they are quantised to the poll interval.
+controller manager's poll pick-up (monotonic clock), so they are quantised to
+the poll interval. Time the poll loop itself ran late (stalled by discovery, LED
+or health work) is reported through ``note_loop_stall`` and subtracted from
+every gap that spans it, so a loop stall does not rate every link worse.
+
+A controller that has delivered frames before and has been silent for the whole
+window rates poor (its open gap is the longest gap); only a controller that never
+delivered two frames is unknown.
 """
 
 from __future__ import annotations
@@ -70,31 +77,51 @@ class ReportGapWindow:
         self.window_seconds = window_seconds
         self._gaps: dict[str, deque[tuple[float, float]]] = {}
         self._last_fresh: dict[str, float] = {}
+        # Cumulative poll-loop stall (seconds) and its value at each serial's last fresh frame.
+        self._stall_total = 0.0
+        self._stall_at_last: dict[str, float] = {}
+
+    def note_loop_stall(self, seconds: float) -> None:
+        """Record time the poll loop ran late; it is not charged to any link."""
+        if seconds > 0:
+            self._stall_total += seconds
+
+    def _link_gap_ms(self, serial: str, now: float) -> float:
+        """Elapsed time since the last fresh frame minus loop stalls in between (ms, >= 0)."""
+        stalled = self._stall_total - self._stall_at_last[serial]
+        return max(0.0, (now - self._last_fresh[serial] - stalled) * 1000.0)
 
     def record(self, serial: str, now: float) -> None:
-        """Record a fresh frame of ``serial`` at ``now`` (seconds)."""
-        last = self._last_fresh.get(serial)
+        """Record a fresh frame of ``serial`` picked up at ``now`` (monotonic seconds)."""
+        if serial in self._last_fresh:
+            gap_ms = self._link_gap_ms(serial, now)
+            gaps = self._gaps.get(serial)
+            if gaps is None:
+                gaps = self._gaps[serial] = deque(maxlen=_MAX_GAPS)
+            gaps.append((now, gap_ms))
         self._last_fresh[serial] = now
-        if last is None:
-            return
-        gaps = self._gaps.get(serial)
-        if gaps is None:
-            gaps = self._gaps[serial] = deque(maxlen=_MAX_GAPS)
-        gaps.append((now, (now - last) * 1000.0))
+        self._stall_at_last[serial] = self._stall_total
 
     def snapshot(self, serial: str, now: float) -> GapStats | None:
-        """Gap statistics over the window ending at ``now``; None below two fresh frames."""
-        gaps = self._gaps.get(serial)
-        if not gaps:
+        """Gap statistics over the window ending at ``now``.
+
+        None only while the controller never delivered two fresh frames in the
+        window. Silent for the whole window after earlier frames rates poor.
+        """
+        if serial not in self._last_fresh:
             return None
+        open_gap_ms = self._link_gap_ms(serial, now)
+        gaps = self._gaps.get(serial)
         cutoff = now - self.window_seconds
         while gaps and gaps[0][0] < cutoff:
             gaps.popleft()
         if not gaps:
+            # Had frames before (its gaps expired) or one frame long ago: silent all window.
+            if gaps is not None or open_gap_ms >= self.window_seconds * 1000.0:
+                return GapStats(p95_ms=open_gap_ms, max_ms=open_gap_ms, quality=POOR, samples=0)
             return None
         values = sorted(gap for _, gap in gaps)
         p95_ms = percentile_nearest_rank(values, 0.95)
-        open_gap_ms = max(0.0, (now - self._last_fresh[serial]) * 1000.0)
         max_ms = max(values[-1], open_gap_ms)
         return GapStats(p95_ms=p95_ms, max_ms=max_ms, quality=classify(p95_ms, max_ms), samples=len(values))
 
@@ -104,3 +131,4 @@ class ReportGapWindow:
     def forget(self, serial: str) -> None:
         self._gaps.pop(serial, None)
         self._last_fresh.pop(serial, None)
+        self._stall_at_last.pop(serial, None)
