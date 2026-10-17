@@ -629,7 +629,8 @@ def promql_metric_names(expr: str) -> set[str]:
     return names
 
 
-def _walk_json(node, out: list[tuple[str, str]], where: str) -> None:
+def _walk_json(node, out: list[tuple[str, str, str]], where: str) -> None:
+    """Append (title, query, key) for every query string; key is the JSON key that held it."""
     if isinstance(node, dict):
         ds = node.get("datasource")
         ds_type = ds.get("type") if isinstance(ds, dict) else ds
@@ -645,9 +646,9 @@ def _walk_json(node, out: list[tuple[str, str]], where: str) -> None:
         for key in ("expr", "query", "definition"):
             val = node.get(key)
             if isinstance(val, str) and val.strip():
-                out.append((title, val))
+                out.append((title, val, key))
             elif isinstance(val, dict) and isinstance(val.get("query"), str):
-                out.append((title, val["query"]))
+                out.append((title, val["query"], key))
         for v in node.values():
             _walk_json(v, out, title)
     elif isinstance(node, list):
@@ -655,14 +656,46 @@ def _walk_json(node, out: list[tuple[str, str]], where: str) -> None:
             _walk_json(v, out, where)
 
 
+def dashboard_files() -> list[Path]:
+    return sorted(DASHBOARD_DIR.glob("*.json"))
+
+
+def _dashboard_hits() -> list[tuple[str, str, str, str]]:
+    """(dashboard file, panel/variable title, PromQL, JSON key) for every dashboard query."""
+    out = []
+    for path in dashboard_files():
+        found: list[tuple[str, str, str]] = []
+        _walk_json(json.loads(path.read_text()), found, path.stem)
+        out.extend((path.name, title, q, key) for title, q, key in found)
+    return out
+
+
 def dashboard_queries() -> list[tuple[str, str, str]]:
     """(dashboard file, panel/variable title, PromQL) for every dashboard query."""
-    out = []
-    for path in sorted(DASHBOARD_DIR.glob("*.json")):
-        found: list[tuple[str, str]] = []
-        _walk_json(json.loads(path.read_text()), found, path.stem)
-        out.extend((path.name, title, q) for title, q in found)
-    return out
+    return [(f, title, q) for f, title, q, _ in _dashboard_hits()]
+
+
+def walked_dashboard_expr_counts() -> dict[str, int]:
+    """Queries the JSON walk found under an ``expr`` key, per dashboard file."""
+    counts = dict.fromkeys((p.name for p in dashboard_files()), 0)
+    for f, _, _, key in _dashboard_hits():
+        if key == "expr":
+            counts[f] += 1
+    return counts
+
+
+_RAW_EXPR_RE = re.compile(r'"expr"\s*:\s*"(?:[^"\\]|\\.)+"')
+
+
+def raw_dashboard_expr_counts() -> dict[str, int]:
+    """Non-empty ``"expr"`` fields per dashboard file, by a plain text scan.
+
+    Independent of the JSON walk in ``dashboard_queries``, so the contract test can
+    check the walk against it: the walk's ``expr`` hits must equal this count per
+    file (variable ``query`` / ``definition`` strings are extra). A Loki or Jaeger
+    panel's ``expr`` is counted here but skipped by the walk.
+    """
+    return {p.name: len(_RAW_EXPR_RE.findall(p.read_text())) for p in dashboard_files()}
 
 
 _SELECTOR_RE = re.compile(r"(?<![\w.:])([a-zA-Z_:][a-zA-Z0-9_:]*)\s*\{([^{}]*)\}")

@@ -140,9 +140,23 @@ def test_inventory_parsers_find_the_known_surface(python_metrics, consumer_queri
     assert len(ti.spa_queries()) >= 2, (
         "dashboard SPA *_QUERY scan found too few queries"
     )
-    # Parser sanity floor, not a dashboard inventory: 233 queries after #1427
-    # deleted four dashboards. Lower it when dashboards are consolidated.
-    assert len(consumer_queries) >= 200, "dashboard query scan found too few queries"
+    # Parser sanity check derived from the files (#1427), so consolidating
+    # dashboards never needs a hand-tuned number: every dashboard file yields a
+    # query, and the JSON walk's "expr" hits equal a plain text scan's count of
+    # non-empty "expr" fields in each file.
+    raw = ti.raw_dashboard_expr_counts()
+    assert raw, "no dashboard files found"
+    parsed: dict[str, int] = dict.fromkeys(raw, 0)
+    for dashboard, _, _ in ti.dashboard_queries():
+        parsed[dashboard] += 1
+    empty = sorted(name for name, n in parsed.items() if n == 0)
+    assert not empty, f"dashboards that yield no query: {empty}"
+    walked = ti.walked_dashboard_expr_counts()
+    mismatch = {name: (walked[name], n) for name, n in raw.items() if walked[name] != n}
+    assert not mismatch, (
+        "dashboard query walk found a different number of 'expr' fields than the raw "
+        f"text scan (walked, raw): {mismatch}; a Loki/Jaeger expr is skipped by the walk"
+    )
 
 
 @pytest.mark.parametrize(

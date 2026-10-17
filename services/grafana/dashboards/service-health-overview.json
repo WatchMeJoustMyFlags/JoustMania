@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Single-pane-of-glass dashboard for quick system health overview",
+  "description": "Operator view of the platform: which services are reporting, their CPU, memory and threads, Python gRPC client traffic, the host (CPU, memory, disk, network, load) and VictoriaMetrics. Replaces Service Health Overview, Fleet Overview, Host Metrics and VictoriaMetrics (#1427).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -34,14 +34,27 @@
       "type": "dashboards"
     }
   ],
-  "liveNow": true,
+  "liveNow": false,
   "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "panels": [],
+      "title": "Overview",
+      "type": "row"
+    },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Number of healthy application services",
+      "description": "Application services that pushed process metrics in the last few minutes (count of jobs with process_cpu_seconds_total). Expected on the default stack: game-coordinator, menu, audio, controller-manager, rust-hid, connect-proxy, agent (7), plus pairing-daemon on the Pi and python-hid when its profile is enabled. The table to the right shows which ones.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -57,11 +70,11 @@
               },
               {
                 "color": "yellow",
-                "value": 3
+                "value": 5
               },
               {
                 "color": "green",
-                "value": 5
+                "value": 7
               }
             ]
           }
@@ -72,9 +85,9 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 0
+        "y": 1
       },
-      "id": 1,
+      "id": 2,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -89,19 +102,18 @@
         },
         "textMode": "auto"
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(count by(job) (process_cpu_seconds_total{job=~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service|infrastructure/pairing-daemon|observability/otel-collector|observability/prometheus|infrastructure/flagd\"}))",
-          "legendFormat": "Services",
-          "refId": "A"
+          "expr": "count(count by (job) (process_cpu_seconds_total{job=~\"(.+/)?(.*game-coordinator-service|menu-service|audio-service|controller-manager-service|pairing-daemon|rust-hid|python-hid|connect-proxy|agent)\"})) or vector(0)",
+          "refId": "A",
+          "legendFormat": "Services"
         }
       ],
-      "title": "Services Up",
+      "title": "App services reporting",
       "type": "stat"
     },
     {
@@ -109,7 +121,70 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Currently connected controllers",
+      "description": "Pull-scraped targets (flagd, envoy, VictoriaMetrics, Prometheus, the collector itself) whose last scrape failed (up == 0). OTLP-push services have no up series; see 'App services reporting'.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count(up == 0) or vector(0)",
+          "refId": "A",
+          "legendFormat": "Down"
+        }
+      ],
+      "title": "Scrape targets down",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Controllers the controller-manager tracks as connected (sum of controller_connected).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -131,90 +206,10 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 4,
-        "y": 0
-      },
-      "id": 2,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(controller_connected) or vector(0)",
-          "legendFormat": "Controllers",
-          "refId": "A"
-        }
-      ],
-      "title": "Controllers",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Current game status",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "text": "Idle",
-                  "color": "gray",
-                  "index": 0
-                },
-                "1": {
-                  "text": "Active",
-                  "color": "green",
-                  "index": 1
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "gray",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
         "x": 8,
-        "y": 0
+        "y": 1
       },
-      "id": 3,
+      "id": 4,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -229,19 +224,18 @@
         },
         "textMode": "auto"
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_active or vector(0)",
-          "legendFormat": "Game",
-          "refId": "A"
+          "expr": "sum(controller_connected) or vector(0)",
+          "refId": "A",
+          "legendFormat": "Controllers"
         }
       ],
-      "title": "Game Status",
+      "title": "Controllers connected",
       "type": "stat"
     },
     {
@@ -249,7 +243,70 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Failed outbound gRPC calls from the Python services in the last 5 minutes (grpc_client_errors_total): failed unary calls and failed stream setups. Errors in the middle of a stream and non-Python clients are not counted (#1426).",
+      "description": "Games currently running, real and shadow (one game_active series per live game, labels game_kind, game_id).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count(game_active == 1) or vector(0)",
+          "refId": "A",
+          "legendFormat": "Games"
+        }
+      ],
+      "title": "Live games",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Failed outbound gRPC calls and stream setups from the Python services in the last 5 minutes (grpc_client_errors_total, #1353). Mid-stream and non-Python client errors are not counted (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -279,10 +336,10 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 12,
-        "y": 0
+        "x": 16,
+        "y": 1
       },
-      "id": 4,
+      "id": 6,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -297,7 +354,6 @@
         },
         "textMode": "auto"
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
@@ -305,11 +361,11 @@
             "uid": "prometheus"
           },
           "expr": "sum(increase(grpc_client_errors_total[5m])) or vector(0)",
-          "legendFormat": "Errors",
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "Errors"
         }
       ],
-      "title": "gRPC client errors (Python, 5m)",
+      "title": "gRPC client errors (5m)",
       "type": "stat"
     },
     {
@@ -317,110 +373,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Status of all JoustMania application services",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "color-background"
-            },
-            "inspect": false
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "DOWN"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "UP"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 16,
-        "y": 0
-      },
-      "id": 5,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "count by(job) (process_cpu_seconds_total{job=~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service|infrastructure/pairing-daemon|observability/otel-collector|observability/prometheus|infrastructure/flagd\"}) > 0",
-          "format": "table",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "All Services",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "instance": true,
-              "service": true
-            },
-            "renameByName": {
-              "Value": "Status",
-              "job": "Service"
-            }
-          }
-        }
-      ],
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Number of healthy infrastructure components",
+      "description": "Resident memory of every process selected by the Service variable.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -431,478 +384,16 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "green",
                 "value": null
               },
               {
                 "color": "yellow",
-                "value": 2
+                "value": 3221225472
               },
-              {
-                "color": "green",
-                "value": 3
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 0,
-        "y": 4
-      },
-      "id": 15,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "count(up{job=~\"infrastructure/pairing-daemon|controller-manager-pull|host/node\"} == 1)",
-          "legendFormat": "Infrastructure",
-          "refId": "A"
-        }
-      ],
-      "title": "Infra Up",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Status of infrastructure components",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "color-background"
-            },
-            "inspect": false
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "DOWN"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "UP"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
               {
                 "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 9,
-        "x": 3,
-        "y": 4
-      },
-      "id": 16,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "up{job=~\"infrastructure/pairing-daemon|controller-manager-pull|host/node\"}",
-          "format": "table",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Infrastructure",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "collector": true,
-              "instance": true
-            },
-            "renameByName": {
-              "Value": "Status",
-              "job": "Component"
-            }
-          }
-        }
-      ],
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Number of healthy observability components",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 3
-              },
-              {
-                "color": "green",
-                "value": 5
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 12,
-        "y": 4
-      },
-      "id": 11,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "count(up{job=~\"observability/prometheus|observability/victoria-metrics|observability/otel-collector\"} == 1)",
-          "legendFormat": "Observability",
-          "refId": "A"
-        }
-      ],
-      "title": "Observability Up",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Status of observability stack components",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "color-background"
-            },
-            "inspect": false
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "DOWN"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "UP"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 9,
-        "x": 15,
-        "y": 4
-      },
-      "id": 12,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "up{job=~\"observability/prometheus|observability/victoria-metrics|observability/otel-collector\"}",
-          "format": "table",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Observability Stack",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "collector": true,
-              "instance": true
-            },
-            "renameByName": {
-              "Value": "Status",
-              "job": "Component"
-            }
-          }
-        }
-      ],
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "CPU usage by service (last 15 minutes)",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "smooth",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "line+area"
-            }
-          },
-          "mappings": [],
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "transparent",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 0,
-        "y": 8
-      },
-      "id": 6,
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(process_cpu_seconds_total{job=~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service\"}[5m]) * 100",
-          "legendFormat": "{{job}}",
-          "refId": "A"
-        }
-      ],
-      "title": "App CPU Usage",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Memory usage by service",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "smooth",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
+                "value": 6442450944
               }
             ]
           },
@@ -911,41 +402,353 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 12,
-        "y": 8
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
       },
       "id": 7,
       "options": {
-        "legend": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
           "calcs": [
-            "mean",
-            "max"
+            "lastNotNull"
           ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "textMode": "auto"
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_resident_memory_bytes{job=~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service\"}",
-          "legendFormat": "{{job}}",
-          "refId": "A"
+          "expr": "sum(process_resident_memory_bytes{job=~\"$service\"}) or vector(0)",
+          "refId": "A",
+          "legendFormat": "Memory"
         }
       ],
-      "title": "App Memory Usage",
-      "type": "timeseries"
+      "title": "Service memory (total)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Every process that reports process metrics, with live CPU %, resident memory and thread count per job. This is the liveness view for OTLP-push services, which have no up series. Job names carry the namespace prefix on VictoriaMetrics (joustmania/, infrastructure/, observability/).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 50
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Memory"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Threads"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 14,
+        "x": 0,
+        "y": 5
+      },
+      "id": 8,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Service"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (job) (rate(process_cpu_seconds_total{job=~\"$service\"}[5m])) * 100",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (job) (process_resident_memory_bytes{job=~\"$service\"})",
+          "refId": "B",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (job) (process_threads{job=~\"$service\"})",
+          "refId": "C",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "title": "Services (CPU / memory / threads)",
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "job",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time": true
+            },
+            "indexByName": {
+              "job": 0,
+              "Value #A": 1,
+              "Value #B": 2,
+              "Value #C": 3
+            },
+            "renameByName": {
+              "job": "Service",
+              "Value #A": "CPU %",
+              "Value #B": "Memory",
+              "Value #C": "Threads"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Scrape status of the pull-scraped targets (collector prometheus receivers: flagd, envoy, VictoriaMetrics, Prometheus, the collector's own :8888).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "red",
+                        "index": 0,
+                        "text": "DOWN"
+                      },
+                      "1": {
+                        "color": "green",
+                        "index": 1,
+                        "text": "UP"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 10,
+        "x": 14,
+        "y": 5
+      },
+      "id": 9,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Status"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (job) (up)",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "title": "Scrape targets",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "job": 0,
+              "Value": 1
+            },
+            "renameByName": {
+              "job": "Target",
+              "Value": "Status"
+            }
+          }
+        }
+      ],
+      "type": "table"
     },
     {
       "collapsed": false,
@@ -955,9 +758,9 @@
         "x": 0,
         "y": 14
       },
-      "id": 19,
+      "id": 10,
       "panels": [],
-      "title": "Infrastructure Resources",
+      "title": "Resources per service",
       "type": "row"
     },
     {
@@ -965,32 +768,19 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "CPU usage by infrastructure services (last 15 minutes)",
+      "description": "CPU utilisation per process (rate of process_cpu_seconds_total over 5m, percent of one core).",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
             "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
             "lineInterpolation": "smooth",
             "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
             "showPoints": "never",
             "spanNulls": false,
             "stacking": {
@@ -998,11 +788,10 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "line+area"
+              "mode": "off"
             }
           },
           "mappings": [],
-          "max": 100,
           "min": 0,
           "thresholds": {
             "mode": "absolute",
@@ -1010,10 +799,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "transparent",
-                "value": 80
               }
             ]
           },
@@ -1022,12 +807,12 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
+        "h": 8,
         "w": 12,
         "x": 0,
         "y": 15
       },
-      "id": 17,
+      "id": 11,
       "options": {
         "legend": {
           "calcs": [
@@ -1043,19 +828,18 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(process_cpu_seconds_total{job!~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service\"}[5m]) * 100",
-          "legendFormat": "{{job}}",
-          "refId": "A"
+          "expr": "sum by (job) (rate(process_cpu_seconds_total{job=~\"$service\"}[5m])) * 100",
+          "refId": "A",
+          "legendFormat": "{{job}}"
         }
       ],
-      "title": "Infra CPU Usage",
+      "title": "CPU per service",
       "type": "timeseries"
     },
     {
@@ -1063,43 +847,31 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Memory usage by infrastructure services",
+      "description": "Resident memory per process (process_resident_memory_bytes).",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
             "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
             "lineInterpolation": "smooth",
             "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
             "showPoints": "never",
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "normal"
+              "mode": "none"
             },
             "thresholdsStyle": {
               "mode": "off"
             }
           },
           "mappings": [],
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1114,12 +886,12 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
+        "h": 8,
         "w": 12,
         "x": 12,
         "y": 15
       },
-      "id": 18,
+      "id": 12,
       "options": {
         "legend": {
           "calcs": [
@@ -1135,19 +907,18 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_resident_memory_bytes{job!~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service\"}",
-          "legendFormat": "{{job}}",
-          "refId": "A"
+          "expr": "sum by (job) (process_resident_memory_bytes{job=~\"$service\"})",
+          "refId": "A",
+          "legendFormat": "{{job}}"
         }
       ],
-      "title": "Infra Memory Usage",
+      "title": "Memory per service",
       "type": "timeseries"
     },
     {
@@ -1155,218 +926,20 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "gRPC request rate by service",
+      "description": "OS threads per process (process_threads; goroutine-mapped threads for the Go services).",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
             "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "bars",
-            "fillOpacity": 50,
+            "drawStyle": "line",
+            "fillOpacity": 10,
             "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "linear",
+            "lineInterpolation": "smooth",
             "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
             "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 0,
-        "y": 21
-      },
-      "id": 8,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by(service) (rate(grpc_client_request_duration_seconds_count[1m]))",
-          "legendFormat": "{{job}}",
-          "refId": "A"
-        }
-      ],
-      "title": "gRPC Request Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "gRPC request latency p95 by service",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "line+area"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "transparent",
-                "value": 0.1
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 8,
-        "y": 21
-      },
-      "id": 9,
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum by(job, le) (rate(grpc_client_request_duration_seconds_bucket[5m])))",
-          "legendFormat": "{{job}}",
-          "refId": "A"
-        }
-      ],
-      "title": "gRPC Latency (p95)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Failed outbound gRPC calls per second from the Python services (failed unary calls and failed stream setups), by callee service: the service label is the service being called, not the caller. Errors in the middle of a stream and non-Python clients are not counted (#1426).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 30,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1377,119 +950,25 @@
             }
           },
           "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              }
-            ]
-          },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 16,
-        "y": 21
-      },
-      "id": 10,
-      "options": {
-        "legend": {
-          "calcs": [
-            "sum"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "10.2.3",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by(service) (rate(grpc_client_errors_total[1m]))",
-          "legendFormat": "{{service}}",
-          "refId": "A"
-        }
-      ],
-      "title": "gRPC client error rate (Python, by callee)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "P99 latency of outbound gRPC client calls by service and method",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "line+area"
-            }
-          },
-          "mappings": [],
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "transparent",
-                "value": 0.1
               }
             ]
           },
-          "unit": "s"
+          "unit": "short"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 12,
+        "h": 7,
+        "w": 24,
         "x": 0,
-        "y": 27
+        "y": 23
       },
       "id": 13,
       "options": {
@@ -1507,53 +986,52 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by(service, method, le) (rate(grpc_client_request_duration_seconds_bucket[5m])))",
-          "legendFormat": "{{service}}/{{method}}",
-          "refId": "A"
+          "expr": "sum by (job) (process_threads{job=~\"$service\"})",
+          "refId": "A",
+          "legendFormat": "{{job}}"
         }
       ],
-      "title": "gRPC Client Latency P99",
+      "title": "Threads per service",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "id": 14,
+      "panels": [],
+      "title": "gRPC (Python clients)",
+      "type": "row"
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Failed outbound gRPC calls per second from the Python services (failed unary calls and failed stream setups), by callee service, method and status code: the service label is the callee. Errors in the middle of a stream and non-Python clients are not counted (#1426).",
+      "description": "Outbound gRPC calls per second from the Python services, by callee service (count of grpc_client_request_duration_seconds).",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
             "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 30,
+            "fillOpacity": 10,
             "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
             "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
+            "lineWidth": 1,
+            "showPoints": "never",
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1564,11 +1042,12 @@
             }
           },
           "mappings": [],
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "green",
                 "value": null
               }
             ]
@@ -1578,16 +1057,245 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 12,
-        "y": 27
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 31
       },
-      "id": 14,
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service) (rate(grpc_client_request_duration_seconds_count[1m]))",
+          "refId": "A",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "title": "Client request rate by callee",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "95th percentile of outbound gRPC call duration, by callee service.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 31
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (service, le) (rate(grpc_client_request_duration_seconds_bucket[5m])))",
+          "refId": "A",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "title": "Client latency p95 by callee",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Failed outbound gRPC calls and stream setups per second, by callee service (grpc_client_errors_total, #1353).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 31
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service) (rate(grpc_client_errors_total[1m]))",
+          "refId": "A",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "title": "Client error rate by callee",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "99th percentile of outbound gRPC call duration, by callee service and method.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "id": 18,
       "options": {
         "legend": {
           "calcs": [
-            "sum"
+            "mean",
+            "max"
           ],
           "displayMode": "table",
           "placement": "right",
@@ -1598,39 +1306,1318 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "10.2.3",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by(service, method, code) (rate(grpc_client_errors_total[5m]))",
-          "legendFormat": "{{service}}/{{method}} ({{code}})",
-          "refId": "A"
+          "expr": "histogram_quantile(0.99, sum by (service, method, le) (rate(grpc_client_request_duration_seconds_bucket[5m])))",
+          "refId": "A",
+          "legendFormat": "{{service}}/{{method}}"
         }
       ],
-      "title": "gRPC client error rate (Python, by callee, method and code)",
+      "title": "Client latency p99 by method",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Failed outbound gRPC calls per second, by callee service, method and gRPC status code.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 38
+      },
+      "id": 19,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, method, code) (rate(grpc_client_errors_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{service}}/{{method}} ({{code}})"
+        }
+      ],
+      "title": "Client errors by method and code",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "id": 20,
+      "panels": [],
+      "title": "Host",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Share of CPU time not idle, averaged over all cores. Host metrics come from the collector's hostmetrics receiver (job host/node): CPU, memory and load every 1 min, disk, filesystem and network every 5 min.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 46
+      },
+      "id": 21,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 - (avg(rate(system_cpu_time_seconds_total{job=~\"(.+/)?node\",state=\"idle\"}[5m])) * 100)",
+          "refId": "A",
+          "legendFormat": "Host CPU"
+        }
+      ],
+      "title": "Host CPU",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Used memory as a share of used + free + buffered + cached (the slab states overlap with these and are left out). Host metrics come from the collector's hostmetrics receiver (job host/node): CPU, memory and load every 1 min, disk, filesystem and network every 5 min.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 46
+      },
+      "id": 22,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * sum without (state) (system_memory_usage_bytes{job=~\"(.+/)?node\",state=\"used\"}) / sum without (state) (system_memory_usage_bytes{job=~\"(.+/)?node\",state=~\"used|free|buffered|cached\"})",
+          "refId": "A",
+          "legendFormat": "Host memory"
+        }
+      ],
+      "title": "Host memory",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Used space on / as a share of used + free (reserved blocks left out). Host metrics come from the collector's hostmetrics receiver (job host/node): CPU, memory and load every 1 min, disk, filesystem and network every 5 min.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 46
+      },
+      "id": 23,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * sum without (state) (system_filesystem_usage_bytes{job=~\"(.+/)?node\",mountpoint=\"/\",state=\"used\"}) / sum without (state) (system_filesystem_usage_bytes{job=~\"(.+/)?node\",mountpoint=\"/\",state=~\"used|free\"})",
+          "refId": "A",
+          "legendFormat": "Root filesystem"
+        }
+      ],
+      "title": "Root filesystem",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "1-minute load average of the host. Host metrics come from the collector's hostmetrics receiver (job host/node): CPU, memory and load every 1 min, disk, filesystem and network every 5 min.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 3
+              },
+              {
+                "color": "red",
+                "value": 4
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 46
+      },
+      "id": 24,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "system_cpu_load_average_1m{job=~\"(.+/)?node\"}",
+          "refId": "A",
+          "legendFormat": "Load 1m"
+        }
+      ],
+      "title": "Load average (1m)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Host CPU time by state, percent of one core summed over all cores.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      },
+      "id": 25,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (state) (rate(system_cpu_time_seconds_total{job=~\"(.+/)?node\"}[5m])) * 100",
+          "refId": "A",
+          "legendFormat": "{{state}}"
+        }
+      ],
+      "title": "CPU by state",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Host memory by state, stacked (used, buffered, cached, free add up to total).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 60,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 51
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "system_memory_usage_bytes{job=~\"(.+/)?node\",state=\"used\"}",
+          "refId": "A",
+          "legendFormat": "Used"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "system_memory_usage_bytes{job=~\"(.+/)?node\",state=\"buffered\"}",
+          "refId": "B",
+          "legendFormat": "Buffers"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "system_memory_usage_bytes{job=~\"(.+/)?node\",state=\"cached\"}",
+          "refId": "C",
+          "legendFormat": "Cached"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "system_memory_usage_bytes{job=~\"(.+/)?node\",state=\"free\"}",
+          "refId": "D",
+          "legendFormat": "Free"
+        }
+      ],
+      "title": "Memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Host load average over 1, 5 and 15 minutes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 58
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "system_cpu_load_average_1m{job=~\"(.+/)?node\"}",
+          "refId": "A",
+          "legendFormat": "1 min"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "system_cpu_load_average_5m{job=~\"(.+/)?node\"}",
+          "refId": "B",
+          "legendFormat": "5 min"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "system_cpu_load_average_15m{job=~\"(.+/)?node\"}",
+          "refId": "C",
+          "legendFormat": "15 min"
+        }
+      ],
+      "title": "Load average",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Host network throughput per interface (loopback, veth, docker and bridge interfaces excluded by the receiver).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 58
+      },
+      "id": 28,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(system_network_io_bytes_total{job=~\"(.+/)?node\",direction=\"receive\"}[10m])",
+          "refId": "A",
+          "legendFormat": "{{device}} receive"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(system_network_io_bytes_total{job=~\"(.+/)?node\",direction=\"transmit\"}[10m])",
+          "refId": "B",
+          "legendFormat": "{{device}} transmit"
+        }
+      ],
+      "title": "Network I/O",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Host disk throughput per device (loop devices excluded).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 65
+      },
+      "id": 29,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(system_disk_io_bytes_total{job=~\"(.+/)?node\",direction=\"read\",device!~\"loop.*\"}[10m])",
+          "refId": "A",
+          "legendFormat": "{{device}} read"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(system_disk_io_bytes_total{job=~\"(.+/)?node\",direction=\"write\",device!~\"loop.*\"}[10m])",
+          "refId": "B",
+          "legendFormat": "{{device}} write"
+        }
+      ],
+      "title": "Disk I/O",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Used space per mounted filesystem (tmpfs, overlay and /run, /sys, /proc left out).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 65
+      },
+      "id": 30,
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * sum without (state) (system_filesystem_usage_bytes{job=~\"(.+/)?node\",type!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\",state=\"used\"}) / sum without (state) (system_filesystem_usage_bytes{job=~\"(.+/)?node\",type!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\",state=~\"used|free\"})",
+          "refId": "A",
+          "legendFormat": "{{mountpoint}}"
+        }
+      ],
+      "title": "Filesystem usage",
+      "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 72
+      },
+      "id": 31,
+      "panels": [],
+      "title": "VictoriaMetrics",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Rows (samples) VictoriaMetrics stores per second, by ingestion protocol (the collector writes with Prometheus remote write).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "rowsps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 73
+      },
+      "id": 32,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (type) (rate(vm_rows_inserted_total{job=~\"(.+/)?victoria-metrics\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "title": "Ingestion rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "On-disk size of all VictoriaMetrics data (sum of vm_data_size_bytes over all parts). Retention is 7 days.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 4,
+        "x": 8,
+        "y": 73
+      },
+      "id": 33,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(vm_data_size_bytes{job=~\"(.+/)?victoria-metrics\"})",
+          "refId": "A",
+          "legendFormat": "Storage"
+        }
+      ],
+      "title": "Storage size",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Series in the VictoriaMetrics storage index (vm_cache_entries{type=\"storage/tsid\"}). Per-game and per-controller series (game_id, serial labels) accumulate here, and memory grows with it under the 256 MiB container limit.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 200000
+              },
+              {
+                "color": "red",
+                "value": 400000
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 4,
+        "x": 12,
+        "y": 73
+      },
+      "id": 34,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(vm_cache_entries{job=~\"(.+/)?victoria-metrics\",type=\"storage/tsid\"})",
+          "refId": "A",
+          "legendFormat": "Series"
+        }
+      ],
+      "title": "Active time series",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Resident memory of VictoriaMetrics. The container limit is 256 MiB (docker-compose.yml).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 201326592
+              },
+              {
+                "color": "red",
+                "value": 241172480
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 4,
+        "x": 16,
+        "y": 73
+      },
+      "id": 35,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(process_resident_memory_bytes{job=~\"(.+/)?victoria-metrics\"})",
+          "refId": "A",
+          "legendFormat": "RSS"
+        }
+      ],
+      "title": "Memory (RSS)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Free space on the volume that holds the VictoriaMetrics data.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1073741824
+              },
+              {
+                "color": "green",
+                "value": 5368709120
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 4,
+        "x": 20,
+        "y": 73
+      },
+      "id": 36,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "min(vm_free_disk_space_bytes{job=~\"(.+/)?victoria-metrics\"})",
+          "refId": "A",
+          "legendFormat": "Free"
+        }
+      ],
+      "title": "Free disk",
+      "type": "stat"
     }
   ],
-  "refresh": "5s",
+  "refresh": "10s",
   "schemaVersion": 39,
   "tags": [
     "joustmania",
-    "system",
-    "overview"
+    "infrastructure",
+    "services",
+    "host"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(process_cpu_seconds_total, job)",
+        "description": "Processes reporting process_cpu_seconds_total (job label, namespace-prefixed on VictoriaMetrics).",
+        "includeAll": true,
+        "allValue": ".+",
+        "label": "Service",
+        "multi": true,
+        "name": "service",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(process_cpu_seconds_total, job)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
   },
   "time": {
-    "from": "now-15m",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
-  "title": "JoustMania - Service Health Overview",
+  "title": "Infrastructure & Services",
   "uid": "joustmania-service-health",
   "version": 1,
   "weekStart": ""

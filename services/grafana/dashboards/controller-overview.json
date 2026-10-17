@@ -100,7 +100,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Controllers with low battery (level <= 2)",
+      "description": "Controllers with low battery: controller_battery_level < 2 (level 0 or 1 of 5; definition in docs/specs/telemetry.md §6.1)",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -155,7 +155,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(controller_battery_level <= 2) or vector(0)",
+          "expr": "count(controller_battery_level < 2) or vector(0)",
           "legendFormat": "Low Battery",
           "refId": "A"
         }
@@ -168,7 +168,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Controllers with weak signal (RSSI < -70 dBm)",
+      "description": "Controllers with weak signal: bluetooth_device_rssi_dbm < -80 (the red band of every RSSI colour scale; definition in docs/specs/telemetry.md §6.1)",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -223,7 +223,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(bluetooth_device_rssi_dbm < -70) or vector(0)",
+          "expr": "count(bluetooth_device_rssi_dbm < -80) or vector(0)",
           "legendFormat": "Weak Signal",
           "refId": "A"
         }
