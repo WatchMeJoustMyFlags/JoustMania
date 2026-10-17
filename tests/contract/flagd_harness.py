@@ -55,16 +55,29 @@ MAX_CONTAINER_AGE_SECONDS = 30 * 60
 
 
 def flagd_command() -> list[str]:
-    """flagd's ``start`` args from docker-compose.yml, minus the OTel exporter.
+    """flagd ``start`` args with one ``file:`` source per baseline flag set.
 
-    Keeps the ``--uri`` list (one file per flag set) in step with the stack.
+    In the stack flagd's only source is the flag service (``grpc://``, epic #1407),
+    which serves exactly these files when no runtime value is set; here flagd
+    reads them directly so the tier needs no flag service.
     """
-    command = ic.compose_services()["flagd"]["command"]
     args = ["start"]
-    for i, arg in enumerate(command):
-        if arg == "--uri":
-            args += ["--uri", command[i + 1]]
+    for name in BASELINE_FILES:
+        args += ["--uri", f"file:/etc/flagd/{name}"]
     return args
+
+
+# The flag service's baseline list (services/flag-service/baseline/baseline.go DefaultFiles).
+BASELINE_FILES = (
+    "system.json",
+    "controller.json",
+    "observability.json",
+    "game.json",
+    "user.json",
+    "agent.json",
+    "interventions.json",
+    "rollout.json",
+)
 
 
 def write_in_place(path: Path, text: str) -> float:

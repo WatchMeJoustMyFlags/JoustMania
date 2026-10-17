@@ -141,12 +141,13 @@ against ONE real flagd (no compose stack) in
 
 - typed-getter resolution of every flag the game coordinator reads (the #903
   TYPE_MISMATCH class), through the RPC and the in-process resolver;
-- the per-player targeting ladder the agent's Writer writes;
-- the `windows` preset ladder (pacing_profile);
-- the rollout ladder the agent's `RolloutWriter` walks (#737);
-- shadow-only experiments: a written experiment reaches a shadow context and
-  never a real one (#932, UC-043 BR-001);
-- NFR-014 flag-file propagation latency.
+- the `windows` preset ladder of the baseline (pacing_profile).
+
+Runtime writes go through the flag service (epic #1407), so their server-side
+shapes are tested here against the real stack: per-player targeting
+(`test_intervention_flow.py`), the rollout ladder (`test_rollout_plumbing.py`),
+shadow-only experiments (`test_experiment_shadow_isolation.py`, UC-043 BR-001)
+and write propagation (`test_flag_propagation.py`, NFR-050).
 
 Write integration tests here only for what needs the services themselves.
 

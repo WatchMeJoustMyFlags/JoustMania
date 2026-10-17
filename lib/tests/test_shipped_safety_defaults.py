@@ -29,7 +29,7 @@ GO_TARGETING = REPO_ROOT / "services" / "agent" / "experiment" / "targeting.go"
 FLAG_SERVICE_RENDER = REPO_ROOT / "services" / "flag-service" / "state" / "render.go"
 # The integration test keeps its own copies of the constants (its venv lacks
 # lib.feature_flags' dependencies), so they are pinned here too.
-SHADOW_ISOLATION_CONTRACT = REPO_ROOT / "tests" / "contract" / "test_flagd_resolution.py"
+SHADOW_ISOLATION_ITEST = REPO_ROOT / "tests" / "integration" / "test_experiment_shadow_isolation.py"
 
 # Base and CI variants of each flag file: flagd serves ci/ in CI.
 FLAG_FILE_VARIANTS = ("", "ci/")
@@ -109,7 +109,7 @@ def test_game_kind_constants_match_source():
     assert GAME_KIND_REAL == "real"
     assert GAME_KIND_SHADOW == "shadow"
 
-    contract_src = SHADOW_ISOLATION_CONTRACT.read_text()
+    itest_src = SHADOW_ISOLATION_ITEST.read_text()
     for name, want in (
         ("GAME_KIND_VAR", GAME_KIND_VAR),
         ("GAME_KIND_REAL", GAME_KIND_REAL),
@@ -118,4 +118,4 @@ def test_game_kind_constants_match_source():
         ("ARM_VAR", ARM_VAR),
         ("ARM_EXPERIMENTAL", ARM_EXPERIMENTAL),
     ):
-        assert _const(contract_src, name) == want, f"{SHADOW_ISOLATION_CONTRACT.name} {name} drifted from source"
+        assert _const(itest_src, name) == want, f"{SHADOW_ISOLATION_ITEST.name} {name} drifted from source"

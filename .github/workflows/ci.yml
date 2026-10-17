@@ -102,7 +102,7 @@ jobs:
               # (test_flagd_ci_drift.py, test_shipped_safety_defaults.py)
               - 'services/flagd/**'
               - 'services/agent/experiment/targeting.go'
-              - 'tests/contract/test_flagd_resolution.py'
+              - 'tests/integration/test_experiment_shadow_isolation.py'
             rust:
               - 'services/rust-hid/**'
               - 'proto/psmove_hid.proto'
@@ -613,9 +613,9 @@ jobs:
 
   # flagd contract tier (#1422): ONE real flagd (compose image tag) on a temp
   # copy of services/flagd/ci, no game services, no build. Typed-getter
-  # resolution of every coordinator-read flag (the #903 TYPE_MISMATCH class),
-  # the agent writers' targeting/rollout/experiment shapes on server-side
-  # evaluation, and NFR-014 propagation latency. ~1 min.
+  # resolution of every coordinator-read flag (the #903 TYPE_MISMATCH class)
+  # and the baseline's windows ladder, with flagd reading the baseline files
+  # directly (in the stack its only source is the flag service). ~1 min.
   flagd-contract:
     name: Flagd Contract
     runs-on: ubuntu-latest

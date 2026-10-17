@@ -273,6 +273,8 @@ services:
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
       - FLAG_SERVICE_URL=http://flag-service:8070
+      # Pairing daemon control API (UC-005 unpair); bridge network here
+      - PAIRING_DAEMON_URL=http://pairing-daemon:8002
     networks:
       - joustmania
     restart: unless-stopped

@@ -16,7 +16,7 @@
 
 ## Preconditions
 
-- The integration stack is up: the flag service is flagd's only sync source, `INTERVENTION_EVENT_LIST_READER=on`.
+- The integration stack is up: the flag service is flagd's only sync source.
 - `interventions_allowed` = `full` (a stack overlay the `flag_service` fixture deletes afterwards); the rate-limit budget is pinned by the `intervention_env` fixture.
 - Four reserved mock controllers; no other game uses them.
 

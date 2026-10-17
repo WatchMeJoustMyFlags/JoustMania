@@ -593,7 +593,7 @@ spans. The names follow §8: service prefix `flagservice_`, counters end `_total
 |---|---|
 | Talk pre-flight (`scripts/talk-preflight.sh`) | `GET /state` (sync streams, epoch) and `GET /agent`, `GET /controller` (overlays equal the stage baseline) instead of reading the flag files |
 | Agent spans and metrics | each agent write is a `flagservice.write` child span of its `agent.action` (W3C propagation, `flagservice.writer=agent`); the agent keeps counting its own writes in `agent_intervention_writes_total{result}`, and the agent-operations dashboard shows the rejected ones from `flagservice_writes_total{result="rejected"}` |
-| Grafana | `feature-flags` dashboard, row "Flag service": writes by flag set and result, propagation p95, live game scopes by kind, flagd sync streams (#1413) |
+| Grafana | `feature-flags` dashboard (the "Flags / OpenFeature" dashboard of #1427), row "Flag service": writes by flag set, result and reason, write duration p95, propagation p95, live game scopes by kind, flagd sync streams (red at 0), game-scoped values, stack overlays, rejected sync calls (#1413) |
 | Alerts | none: Prometheus alerting was removed (#1425, FR-083 Rejected); a disconnected flagd shows as `flagservice_sync_streams` = 0 on the dashboard and as 503 `no_sync_stream` to every writer |
 
 **Traceability:** FR-139, NFR-050 to NFR-053 / UC-053 / `services/flag-service/telemetry/` / `services/flag-service/api/api_test.go`, `tests/integration/test_flag_propagation.py`, `tests/contract/test_telemetry_contract.py`.
