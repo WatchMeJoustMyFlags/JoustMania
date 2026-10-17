@@ -99,6 +99,9 @@ flags:
   - {set: game, key: windows, kind: overlay, scope: [experiment+arm, real], bounds: {shape: true}}
   - {set: game, key: num_teams, kind: overlay, scope: [stack], persist: true}
   - {set: game, key: force_all_start, kind: overlay, scope: [stack], persist: true, bounds: {variants: ["on", "off"]}}
+  # shadow_policy: an overlay may only tighten admission to "block"; loosening to
+  # "allow" stays a reviewed baseline edit (C-033). Clearing it restores the baseline.
+  - {set: game, key: shadow_policy, kind: overlay, scope: [stack], bounds: {variants: [block]}}
   - {set: game, key: tempo_schedule_mode, kind: state, scope: [game]}
 
   # --- user, controller, rollout (flags.md §13.4) ------------------------------

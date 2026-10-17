@@ -59,7 +59,7 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
 | flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
 | flag-service | Go | 50064 gRPC sync (flagd only), 8070 HTTP API | 8070 via override; `/flags/` through envoy | Runtime flag state in memory over the read-only baseline files; the only writer path for runtime flags (§7) | `services/flag-service/` |
-| otel-collector | custom contrib build | 4317 / 4318 OTLP, 8889 Prometheus exporter | 4317, 8889 | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Prometheus, Loki, agent | `services/otel-collector/config.yaml` |
+| otel-collector | custom contrib build | 4317 / 4318 OTLP | 4317 | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Loki, agent (the :8889 Prometheus exporter was removed in #1449) | `services/otel-collector/config.yaml` |
 | jaeger | 2.19.0 | 16686 UI, 4317 / 4318 OTLP | no | Trace store (badger, bounded TTL) | `services/jaeger/config.yaml` |
 | victoria-metrics | v1.144.0 | 8428 | no | The only metric store (remote write, 7 d); serves the Prometheus query API to Grafana, the dashboard and the tools. The Prometheus container was removed in #1449 | `docker-compose.yml:516-544` |
 | grafana | 13.0.2 | 3000 | no | Dashboards | `services/grafana/` |

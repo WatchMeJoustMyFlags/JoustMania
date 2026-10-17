@@ -40,4 +40,4 @@
 ## Automation
 
 - **Manual** (needs real controllers for the chaos adapter). The connect-proxy handlers are unit-tested against a fake flag service (`services/connect-proxy/canary_test.go`: full and fractional canary, rollback, chaos set and reset, status, refusals and outages), run in its image build.
-- Contract-level coverage (no live stack, no controllers): `tests/contract/test_envoy_routing.py` checks the envoy routes for `/grafana/`, `/prometheus/` and `/chaos/` (steps 3, 5, 6; `/canary/` has no envoy route, so steps 1 and 7 call the connect-proxy from inside the network, UC-052 A2).
+- Contract-level coverage (no live stack, no controllers): `tests/contract/test_envoy_routing.py` checks the envoy routes for `/grafana/` and `/chaos/` (steps 3, 5, 6; `/canary/` has no envoy route, so steps 1 and 7 call the connect-proxy from inside the network, UC-052 A2).

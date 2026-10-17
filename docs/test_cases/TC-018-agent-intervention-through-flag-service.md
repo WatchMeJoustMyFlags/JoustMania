@@ -48,4 +48,4 @@
 
 - `tests/integration/test_flag_service_flows.py::test_two_eliminations_through_the_flag_service` implements steps 1 to 8.
 - Validation 2 is a unit test: `services/game_coordinator/tests/test_event_list_reader.py` (tagged `tc="TC-018"`): a failed read does nothing, a gap larger than K is counted. It cannot be provoked against the live stack.
-- `tests/integration/test_gameid_intervention_isolation.py` (tagged `tc="TC-018"`) adds the cross-game half of BR-003: a value for one game never reaches a concurrent game.
+- `tests/integration/test_tc013_shadow_alongside_real.py` (TC-013) covers the cross-game half of BR-003: an event or a per-player value written for one game never reaches a concurrent game.

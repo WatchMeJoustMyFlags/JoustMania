@@ -193,7 +193,7 @@ engine selects a permitted, fitting decision:
    the game-scoped value or event to the flag service (`flagservice.write` span).
 2. The **game coordinator** evaluates the changed flag through flagd with its
    `gameId` and applies the intervention,
-   incrementing the Prometheus counter
+   incrementing the counter
    **`game_interventions_total{type, objective, blocked="false"}`**.
 
 In Grafana (Explore, VictoriaMetrics datasource):

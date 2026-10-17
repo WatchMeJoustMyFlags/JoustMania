@@ -834,7 +834,6 @@ networks:
 volumes:
   # Flag service admin state (D10): only admin values written with persist.
   flag-service-state:
-  prometheus-data:
   victoria-metrics-data:
   grafana-data:
   loki-data:

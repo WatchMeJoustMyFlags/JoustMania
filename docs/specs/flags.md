@@ -28,7 +28,7 @@ changed default or a new reader/writer updates this file in the same PR.
 | Service | Client / resolver | Endpoint | Source |
 |---|---|---|---|
 | Python services (game-coordinator, menu, controller-manager, audio, pairing-daemon) | OpenFeature Python `FlagdProvider`, **in-process** resolver, one named provider per flag set | `flagd:8015` | `lib/feature_flags.py:169-181`; `docker-compose.yml:313,443,493` |
-| Agent (Go) | go-sdk-contrib flagd provider, **RPC** resolver, domain `agent` | `flagd:8013` | `services/agent/flags/provider.go:44-48`; `docker-compose.yml:700-703` |
+| Agent (Go) | go-sdk-contrib flagd provider, **RPC** resolver, domain `agent` | `flagd:8013` | `services/agent/flags/provider.go:44-48`; `docker-compose.yml:672-673` |
 | Agent (writer) | flag-service HTTP client: game-scoped interventions and event lists, the rollout count, experiment arms, promotions; reads the experiment catalog with `GET /game` | `flag-service:8070` (`FLAG_SERVICE_URL`) | `services/agent/flagservice/client.go`; `services/agent/actions/`; `services/agent/experiment/writer.go`; `services/agent/promote/realdefault.go` |
 | rust-hid | `open_feature_flagd` RPC resolver, default provider | `flagd:8013` | `services/rust-hid/src/feature_flags.rs:23-35` |
 | connect-proxy | **no flagd client**; `/canary/*` and `/chaos/*` write `bluetooth_backend` / `chaos_fault_type` through the flag service | `flag-service:8070` | `services/connect-proxy/flagservice.go`, `canary.go`, `chaos.go` |
@@ -177,7 +177,7 @@ Human pre-game intent and game calibration: sensitivity, team counts, per-mode t
 
 | Key | Type | Variants | Default | Targeting | Read by (file:line) | Written by | Reload |
 |---|---|---|---|---|---|---|---|
-| `shadow_policy` | string | block="block", allow="allow" | `block` = "block" | N | game-coordinator: services/game_coordinator/servicer.py:133 (_shadow_policy) | manual edit only (excluded from agent dynamic declarer: services/agent/dynamic_declarer.go:87) | live (per session admission, services/game_coordinator/servicer.py:124-131 docstring "Live per-call read") |
+| `shadow_policy` | string | block="block", allow="allow" | `block` = "block" | N | game-coordinator: services/game_coordinator/servicer.py:133 (_shadow_policy) | baseline edit for `allow`; a stack overlay may set `block` only (§13.3); excluded from agent dynamic declarer: services/agent/dynamic_declarer.go:87 | live (per session admission, services/game_coordinator/servicer.py:124-131 docstring "Live per-call read") |
 | `max_concurrent_games` | int | four=4, eight=8, twelve=12, sixteen=16 | `eight` = 8 | N | game-coordinator: services/game_coordinator/servicer.py:85 (<- :480 admission) | none at runtime (baseline only, not in the experiment catalog) | live (per admission) |
 | `max_shadow_games` | int | one=1, two=2, four=4, eight=8 | `four` = 4 | N | game-coordinator: services/game_coordinator/servicer.py:114 (<- :475) | none at runtime (baseline only, not in the experiment catalog) | live (per admission) |
 | `tempo_schedule_mode` | string | rule="rule", agent="agent" | `rule` = "rule" | N | game-coordinator: services/game_coordinator/games/base.py:825 (init); services/game_coordinator/tempo_schedule.py:135 (re-read per live session on config change, handler :64) | none at runtime (baseline only, not in the experiment catalog) | live (event-driven per session) |
@@ -477,6 +477,7 @@ authorization this is a convention the agent's code keeps, not a check.
 | `sensitivity` | overlay | stack or experiment+arm or real | declared variants (5 levels) | **yes** | menu admin (FR-017); W3 experiment writer; W5 promotion |
 | `num_teams` | overlay | stack | declared variants | **yes** | menu admin |
 | `force_all_start` | overlay | stack | `on`, `off` | **yes** | menu admin |
+| `shadow_policy` | overlay | stack | `block` | no | `test_tc013_shadow_alongside_real.py` (step 8); an overlay only tightens admission, `allow` stays a baseline edit |
 | `nonstop.time_limit_seconds` | overlay | experiment+arm or real | int 0 to 600 | no | W3 experiment writer; W5 promotion |
 | `invincibility_seconds` | overlay | experiment+arm or real | 0 to 10 | no | W3 experiment writer; W5 promotion |
 | `fight_club.min_rounds` | overlay | experiment+arm or real | int 1 to 30 | no | W3 experiment writer; W5 promotion |
