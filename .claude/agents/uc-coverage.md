@@ -88,7 +88,14 @@ Give the same verdict on the same evidence every time.
 
 Allowed use-case status (suggestion only):
 - `Tested`: every `Main` and every `A<n>` unit has a `Covered` tagged test, every `BR-XXX` is `Covered` or
-  `n/a`, and the caller confirms the suites pass (say you cannot verify that).
+  `n/a`, the use case carries no open `Known gap` line, **every FR on its `**Requirements:**` line can be
+  `Verified`** (Grep `docs/use_cases/` for each FR id on `**Requirements:**` lines, with a word boundary so
+  `NFR-013` does not match `FR-013`: every other use case listing it must be `Tested` or `Done`), and the
+  caller confirms the suites pass (say you cannot verify that). A use case's status is never above the
+  weakest FR on its `Requirements:` line (docs/CONTRIBUTING.md "Status vocabularies"); FRs on a `Planned:`
+  line do not count.
+- `Tested-eligible, held back`: the coverage part of the Tested rule holds but a shared FR blocks it. Report
+  each blocker as `FR-xxx ↔ UC-yyy (<status>)` and suggest `Implemented`.
 - `Implemented`: every unit has implementation evidence, the Tested rule fails.
 - Otherwise the current pre-implementation status (`Approved`, ...).
 Pre/Post gaps are listed as gaps; they do not block `Tested` on their own.
@@ -121,7 +128,7 @@ Tagged tests x/n · Implementation y/n · Spec: docs/use_cases/UC-040.md · Stat
 - UC status / REQ-UC / reverse drift items.
 
 ### Suggested status
-`<value>` (one line why). Not applied: the `**Status:**` line is the user's to change.
+`<value>` (one line why; for a held-back use case list the `FR-xxx ↔ UC-yyy` blockers). Not applied: the `**Status:**` line is the user's to change.
 
 Files read: ...
 ```

@@ -9,8 +9,9 @@ description: >
   `# UC:` header lines in scripts/tests, dashboard describe('UC-XXX ...'),
   and `nfr` markers / `// NFR:` lines for linked NFRs) and to the code, lists
   gaps, derives the status the evidence allows (Tested only if every main
-  scenario and alternative flow has a tagged test) and flags UC/REQ status
-  drift. Use when the user asks to "check coverage of UC-040", "is UC-011
+  scenario and alternative flow has a tagged test, no Known gap is open and
+  every FR on the Requirements line can be Verified, i.e. its other use cases
+  are Tested; blockers are reported) and flags UC/REQ status drift. Use when the user asks to "check coverage of UC-040", "is UC-011
   fully tested", "can UC-040 be Tested", "traceability check", "status
   drift", or "what is missing". Spec coverage, not line coverage. Delegates to
   the read-only uc-coverage agent and writes nothing; to close gaps use

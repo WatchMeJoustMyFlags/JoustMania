@@ -761,6 +761,7 @@ class TestHandleFirstGameEvent:
         return FakeMenuServicer()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1])
     async def test_start_error_returns_should_return_true(self, servicer):
         """game_start_error event should return result with should_return=True."""
         from services.menu.servicer import MenuServicer, _GameEventResult
@@ -1396,6 +1397,7 @@ class TestConsumeGameEvents:
         assert result.game_started is False
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1])
     async def test_first_event_error_returns_early(self, servicer):
         """A game_start_error as first event should return should_return=True."""
         from services.menu.servicer import MenuServicer

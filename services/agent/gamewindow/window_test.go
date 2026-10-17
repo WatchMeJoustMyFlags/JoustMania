@@ -116,7 +116,6 @@ func assertNoSerial(t *testing.T, block string, serials []string) {
 }
 
 // UC: UC-042 BR-004
-// UC: UC-041 BR-002
 func TestWindow_RenderedBlockHasNoSerial(t *testing.T) {
 	t.Run("UC-042/BR-004 real game", func(t *testing.T) {
 		s := NewStore()
@@ -181,7 +180,6 @@ func identityViolations(typ reflect.Type, path string, seen map[reflect.Type]boo
 }
 
 // UC: UC-042 BR-004 BR-006
-// UC: UC-041 BR-002
 func TestWindow_TypesHoldNoPerControllerIdentity(t *testing.T) {
 	t.Run("UC-042/BR-004 window types", func(t *testing.T) {
 		for _, v := range identityViolations(reflect.TypeOf(Window{}), "Window", map[reflect.Type]bool{}) {
