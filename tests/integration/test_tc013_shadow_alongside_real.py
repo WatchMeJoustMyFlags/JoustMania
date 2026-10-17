@@ -143,7 +143,7 @@ def write_player_factor_for_game(game_id: str, serial: str, value: float) -> Non
     _dump_in_place(INTERVENTIONS_PATH, doc)
 
 
-def reserve_edge_with_factor(
+def resend_edge_with_factor(
     game_id: str, edge_value: str, serial: str, factor: float
 ) -> None:
     """ONE file write: serve the same ``eliminate_player`` value to ``game_id`` again
@@ -365,7 +365,7 @@ async def test_tc013_shadow_game_alongside_real_game(
         # same nonce served again must not re-apply. The same write also moves
         # the factor to 0.7: once that is observed, flagd is serving the file
         # with the repeated nonce, so the absence check below is not vacuous.
-        reserve_edge_with_factor(s1, eliminate_value, factor_target, _SECOND_FACTOR)
+        resend_edge_with_factor(s1, eliminate_value, factor_target, _SECOND_FACTOR)
 
         async def _second_factor_applied() -> bool:
             p = await _players(game_client, s1)
