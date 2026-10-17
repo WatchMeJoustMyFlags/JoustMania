@@ -76,6 +76,21 @@ func (w *Writer) Apply(ctx context.Context, p Proposal) (flagservice.Result, err
 	})
 }
 
+// DryRun asks the service to validate and render the proposal's write without
+// applying it; the result carries the flag before and after.
+func (w *Writer) DryRun(ctx context.Context, p Proposal) (flagservice.Result, error) {
+	if p.ExperimentID == "" {
+		return flagservice.Result{}, ErrUnscoped
+	}
+	return w.svc.Put(ctx, GameFlagSet, p.FlagKey, flagservice.Write{
+		Value:  p.ExperimentalValue,
+		Scope:  flagservice.Scope{ExperimentID: p.ExperimentID, Arm: ArmExperimental},
+		Writer: experimentWriter,
+		Reason: "experiment",
+		DryRun: true,
+	})
+}
+
 // Strip removes one experiment's arm value — the teardown inverse of Apply
 // (design §10). A flag or value that is already gone is a no-op, so Strip is
 // idempotent (the registry calls it on every terminal status, possibly more

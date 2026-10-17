@@ -1086,3 +1086,25 @@ func TestExperimentLoop_OnGameTerminal_PatternOutcomes(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-042 main
+func TestExperimentLoop_ProposalSinkDeclaresWithinTheBudget(t *testing.T) {
+	// PR #1417 review B2: a Proposer proposal becomes an experiment of this loop's
+	// registry, under the dynamic declarer's concurrent-experiment budget.
+	resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+	loop := buildLoopForTest(t, &recordingSpawner{}, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+	loop.expDefaults.DynamicMaxConcurrent = 1
+	sink := loop.proposalSink()
+
+	ctx := context.Background()
+	if err := sink.Review(ctx, experiment.Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Rationale: "r"}); err != nil {
+		t.Fatalf("first proposal: %v", err)
+	}
+	if live := loop.registry.Live(); len(live) != 1 {
+		t.Fatalf("live = %v, want one experiment", live)
+	}
+	err := sink.Review(ctx, experiment.Proposal{FlagKey: "death_grace_period_seconds", ExperimentalValue: 2.0, Rationale: "r"})
+	if rej, ok := experiment.AsReject(err); !ok || rej.Reason != experiment.ReasonNoCapacity {
+		t.Fatalf("second proposal err = %v, want no_capacity (budget 1)", err)
+	}
+}

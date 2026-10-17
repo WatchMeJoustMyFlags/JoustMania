@@ -209,7 +209,8 @@ type Result struct {
 // share one Proposer, like the shared llmBudget).
 type Proposer struct {
 	backend Backend
-	gate    *Gate
+	// sink receives decoded proposals: a RegistrySink in production (see ProposalSink).
+	sink ProposalSink
 	// vocab returns the experiment catalog of the game flag set the model is constrained
 	// to. Injected as a func (not a static set) because the flag surface is read
 	// from the game flag file each cycle — the decoder rejects any flag not in it,
@@ -237,7 +238,7 @@ type Proposer struct {
 // directly), and a vocab provider (the live game-flag key set). tracer nil uses
 // the global tracer; log nil uses slog.Default(). The clock defaults to time.Now;
 // tests inject a fake via SetClock.
-func NewProposer(backend Backend, gate *Gate, vocab func() map[string]struct{}, tracer trace.Tracer, log *slog.Logger) *Proposer {
+func NewProposer(backend Backend, sink ProposalSink, vocab func() map[string]struct{}, tracer trace.Tracer, log *slog.Logger) *Proposer {
 	if tracer == nil {
 		tracer = otel.Tracer(instrumentationName)
 	}
@@ -251,7 +252,7 @@ func NewProposer(backend Backend, gate *Gate, vocab func() map[string]struct{}, 
 	}
 	return &Proposer{
 		backend: backend,
-		gate:    gate,
+		sink:    sink,
 		vocab:   vocab,
 		tracer:  tracer,
 		log:     log,
@@ -351,13 +352,6 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 		return Result{Outcome: ProposeUndecodable, Err: err}
 	}
 
-	// Every experiment value is scoped to one experiment id and its experimental
-	// arm (FR-138, #1415): the legacy unscoped "every shadow game" rule is gone, so
-	// a standalone proposal gets its own id here.
-	if proposal.ExperimentID == "" {
-		proposal.ExperimentID = MintProposalID()
-	}
-
 	// Record the model's reasoning on the attempt span BEFORE submitting (the AC's
 	// code_improvement.proposed_diff_summary — here the "diff summary" is the
 	// structured experiment, since the rescope has no source diff). Gate.Review
@@ -381,10 +375,15 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 		return Result{Outcome: ProposeDisabled, Proposal: &pr, Reason: reason}
 	}
 
-	// Submit through the Gate — the ONLY sanctioned write path. The Gate enforces
-	// the shadow-scoping invariant + type guard and writes the experiment value on accept. We
-	// never call the Writer directly.
-	if err := p.gate.Review(ctx, proposal); err != nil {
+	// Submit to the sink: the experiment registry declares the proposal as an
+	// experiment (its own id and arms, FR-138) and starts it, which writes the arm
+	// value through the Gate (shadow-scoping invariant + type guard). No sink, no
+	// write. We never call the Writer directly.
+	sink := p.sink
+	if sink == nil {
+		sink = &LateSink{}
+	}
+	if err := sink.Review(ctx, proposal); err != nil {
 		// A Gate rejection (RejectError) is RECORDED, not retried blindly. The Gate
 		// already emitted its blocked span with the typed reason.
 		span.SetAttributes(attribute.String(AttrOutcome, string(ProposeBlocked)))

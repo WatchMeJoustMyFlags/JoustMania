@@ -61,6 +61,14 @@ const (
 	// ReasonOutOfBounds — the registry refused the value (not a declared
 	// variant's value, or outside the flag's range).
 	ReasonOutOfBounds Reason = "out_of_bounds"
+	// ReasonNoExperimentLoop — a Proposer proposal arrived but no experiment
+	// registry runs (experiments not wired): nothing is written, because a value
+	// no shadow game of a declared experiment reads would be unreachable.
+	ReasonNoExperimentLoop Reason = "no_experiment_loop"
+	// ReasonFlagUnderTest — another live experiment already tests this flag.
+	ReasonFlagUnderTest Reason = "flag_under_test"
+	// ReasonNoCapacity — the live-experiment budget is full.
+	ReasonNoCapacity Reason = "no_capacity"
 )
 
 // RejectError is the typed error a blocked Review returns. It carries the Reason
@@ -87,9 +95,10 @@ func (e *RejectError) Error() string {
 // source: the service renders an experiment value as a rung only a non-real
 // game of that experiment and arm resolves (FR-138), and its registry decides
 // which flags are experimentable and within which bounds (C-032). The Gate is the
-// second check: it reads the rendered flag before and after the write and
-// rejects (and rolls back) a write that changed the default, an existing
-// variant, or what a real context resolves (JSONLogic eval, the engine flagd uses).
+// second check: it asks the service to render the write as a dry run (the flag
+// before and after, nothing applied) and rejects, before anything is written, a
+// write that would change the default, an existing variant, or what a real
+// context resolves (JSONLogic eval, the engine flagd uses).
 type Gate struct {
 	w      *Writer
 	tracer trace.Tracer
@@ -108,11 +117,10 @@ func NewGate(w *Writer, tracer trace.Tracer, log *slog.Logger) *Gate {
 	return &Gate{w: w, tracer: tracer, log: log}
 }
 
-// Review validates p, applies it on accept and checks the rendered result. On
-// accept it emits code_improvement.proposed (blocked=false) and returns nil. On
-// reject it emits the same span with blocked=true + the reason, leaves nothing
-// written (a write that failed the after-check is rolled back) and returns a
-// *RejectError.
+// Review validates p, checks the rendered result of a dry run and applies it
+// on accept. On accept it emits code_improvement.proposed (blocked=false) and
+// returns nil. On reject it emits the same span with blocked=true + the reason,
+// writes nothing and returns a *RejectError.
 func (g *Gate) Review(ctx context.Context, p Proposal) error {
 	ctx, span := g.tracer.Start(ctx, SpanProposed, trace.WithAttributes(
 		attribute.String(AttrFlagKey, p.FlagKey),
@@ -163,32 +171,33 @@ func (g *Gate) review(ctx context.Context, p Proposal) *RejectError {
 		return rej
 	}
 
-	res, err := g.w.Apply(ctx, p)
-	switch {
-	case flagservice.IsReason(err, "out_of_bounds"):
-		return &RejectError{Reason: ReasonOutOfBounds, Detail: err.Error()}
-	case flagservice.IsReason(err, "flag_read_only"), flagservice.IsReason(err, "malformed"):
-		return &RejectError{Reason: ReasonNotExperimentable, Detail: err.Error()}
-	case err != nil:
-		return &RejectError{Reason: ReasonWriteSimulationError, Detail: err.Error()}
-	}
-
-	// The second check, on what flagd now serves for this flag.
-	after, err := svc.GetFlag(ctx, GameFlagSet, p.FlagKey)
-	if err != nil {
-		g.rollback(ctx, p)
-		return &RejectError{Reason: ReasonReadError, Detail: "read after write: " + err.Error()}
-	}
-	if rej := checkRenderedFlag(before.Rendered, after.Rendered, res.Variant); rej != nil {
-		g.rollback(ctx, p)
+	// Check before writing: the service renders the write without applying it
+	// and answers the flag before and after, both under one lock, so a
+	// concurrent write by someone else cannot cause a false rejection.
+	dry, err := g.w.DryRun(ctx, p)
+	if rej := writeRejection(err); rej != nil {
 		return rej
+	}
+	if rej := checkRenderedFlag(dry.RenderedBefore, dry.Rendered, dry.Variant); rej != nil {
+		return rej
+	}
+	if _, err := g.w.Apply(ctx, p); err != nil {
+		return writeRejection(err)
 	}
 	return nil
 }
 
-func (g *Gate) rollback(ctx context.Context, p Proposal) {
-	if err := g.w.Strip(ctx, p.FlagKey, p.ExperimentID); err != nil {
-		g.log.Error("code_improvement: rollback of a rejected experiment write failed", "flag_key", p.FlagKey, "error", err)
+// writeRejection maps a flag-service write error to the Gate's reasons.
+func writeRejection(err error) *RejectError {
+	switch {
+	case err == nil:
+		return nil
+	case flagservice.IsReason(err, "out_of_bounds"):
+		return &RejectError{Reason: ReasonOutOfBounds, Detail: err.Error()}
+	case flagservice.IsReason(err, "flag_read_only"), flagservice.IsReason(err, "malformed"):
+		return &RejectError{Reason: ReasonNotExperimentable, Detail: err.Error()}
+	default:
+		return &RejectError{Reason: ReasonWriteSimulationError, Detail: err.Error()}
 	}
 }
 

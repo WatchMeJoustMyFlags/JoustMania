@@ -359,8 +359,8 @@ func TestClaude_FeedsProposerSeam(t *testing.T) {
 	c := newTestClaude(t, f, Config{})
 
 	svc := gameService(t)
-	gate := experiment.NewGate(experiment.NewWriter(svc, nil), nil, nil)
-	proposer := experiment.NewProposer(c, gate, gameVocab(svc), nil, nil)
+	sink := &recordingSink{}
+	proposer := experiment.NewProposer(c, sink, gameVocab(svc), nil, nil)
 
 	res := proposer.ProposeOnce(context.Background(), experiment.Narrative{GameMode: "joust"}, experiment.ProposerConfig{Engine: "claude", Permit: func(context.Context) (bool, string) { return true, "" }})
 	if res.Outcome != experiment.ProposeProposed {
@@ -369,6 +369,17 @@ func TestClaude_FeedsProposerSeam(t *testing.T) {
 	if res.Proposal == nil || res.Proposal.FlagKey != "death_grace_period_seconds" {
 		t.Fatalf("proposal = %+v", res.Proposal)
 	}
+	if len(sink.got) != 1 || sink.got[0].FlagKey != "death_grace_period_seconds" {
+		t.Fatalf("sink received %+v", sink.got)
+	}
+}
+
+// recordingSink stands in for the experiment registry the Proposer submits to.
+type recordingSink struct{ got []experiment.Proposal }
+
+func (r *recordingSink) Review(_ context.Context, p experiment.Proposal) error {
+	r.got = append(r.got, p)
+	return nil
 }
 
 func TestClaude_InvalidEffortDropped(t *testing.T) {

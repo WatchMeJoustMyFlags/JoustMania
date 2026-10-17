@@ -441,7 +441,7 @@ two, both display-only:
 
 | Reader | Reads | Effect of per-game rendering |
 |---|---|---|
-| menu admin display (`services/menu/handlers/admin.py:1314`, `_state_manager.interventions_client`) | `global_sensitivity_override` without context | shows the baseline (`none`) while a game runs with an override; display only |
+| menu admin display (formerly `services/menu/handlers/admin.py`, `_state_manager.interventions_client`) | `global_sensitivity_override` without context | could only ever show the baseline, so the branch was removed (PR #1417 review B); the admin display shows the admin setting |
 | agent pattern digest (`services/agent/patterngame/digest.go`, OFREP, `interventions: {"*"}`) | every `interventions` key without `gameId` | digests the baseline; a game's interventions are not part of the replay digest, which is the intent (UC-046) |
 
 ## 11. Risks
@@ -509,7 +509,7 @@ deletions of #1416 are in the same PR. Deviations from the plan, all reflected i
 - **Experiment catalog.** The registry (flags.md §13.3) lists the gameplay calibration flags an experiment may
   change, each with scopes `experiment+arm` and `real` and a numeric range (or the new `shape` bound for the
   object flag `windows`); capacity, lobby, team-structure and presentation flags are not experimentable. A
-  standalone proposal gets its own experiment id (`prop_<hex>`); the unscoped "every shadow game" rule is gone.
+  proposer proposal is declared as a registry experiment (`exp_<hex>`, PR #1417 review B2); the unscoped "every shadow game" rule is gone.
 - **Promotion** is a `real` overlay with writer `promotion`; the revert is `DELETE ?game_kind=real` and is refused
   when no overlay is present. The agent keeps only the post-revert cooldown stamps (no value snapshots).
 - **Alerts.** Prometheus alerting was removed on `main` (#1425) while this PR was open, so the two planned alert

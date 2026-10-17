@@ -138,15 +138,20 @@ func TestRevertRestoresThePrePromotionState(t *testing.T) {
 	}
 }
 
-// A revert with no promotion overlay is refused: it never fabricates a prior state.
-func TestRevertWithoutPromotionIsRefused(t *testing.T) {
+// A revert with no promotion overlay (a flag-service restart dropped it) writes
+// nothing and succeeds: real games already resolve the pre-promotion default,
+// and nothing is fabricated (PR #1417 review).
+func TestRevertWithoutPromotionOverlayIsANoOp(t *testing.T) {
 	svc := newPromotionService(t)
 	w := writerForTest(t, svc, t.TempDir())
-	if err := w.RevertRealDefault(context.Background(), promotedFlag); err == nil {
-		t.Fatal("revert without a promotion overlay must be refused")
+	if err := w.RevertRealDefault(context.Background(), promotedFlag); err != nil {
+		t.Fatalf("revert of a lost overlay must succeed: %v", err)
 	}
 	if len(svc.Calls) != 0 {
 		t.Errorf("unexpected writes: %v", svc.Calls)
+	}
+	if _, ok := w.PersistedRevertTimes()[promotedFlag]; !ok {
+		t.Error("the cooldown was not stamped")
 	}
 }
 

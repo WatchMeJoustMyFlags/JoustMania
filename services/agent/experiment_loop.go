@@ -772,6 +772,26 @@ func (e *experimentLoop) rehydrate() error {
 	return nil
 }
 
+// proposalSink is where the M7-4 Proposer's proposals go: declared as
+// experiments in this loop's registry, under the same concurrent-experiment
+// budget and declarer mutex as the dynamic declarer (PR #1417 review B2).
+func (e *experimentLoop) proposalSink() *experiment.RegistrySink {
+	sink := &experiment.RegistrySink{
+		Registry:  e.registry,
+		Objective: decision.ObjectiveBalanced,
+		Budget: func(ctx context.Context) int {
+			if b := e.config(ctx).DynamicMaxConcurrent; b > 0 {
+				return b
+			}
+			return e.expDefaults.DynamicMaxConcurrent
+		},
+	}
+	if e.dynamic != nil {
+		sink.Lock = &e.dynamic.mu
+	}
+	return sink
+}
+
 // declareAndStart declares one experiment and writes its shadow targeting,
 // transitioning it to RUNNING so it can accrue shadow games.
 func (e *experimentLoop) declareAndStart(ctx context.Context, in experiment.Intent) error {

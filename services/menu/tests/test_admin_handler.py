@@ -1,6 +1,7 @@
 """Unit tests for AdminModeHandler game settings."""
 
 import asyncio
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -41,6 +42,28 @@ def mock_metrics():
     return metrics
 
 
+SENSITIVITY_VALUES = {"ultra_slow": 0, "slow": 1, "medium": 2, "fast": 3, "ultra_fast": 4}
+AGENT_LEVEL_VALUES = {
+    "none": "",
+    "ambient": "a",
+    "standard": "a,b",
+    "full": "a,b,c",
+    "probe": "p",
+    "shadow_experimental": "s",
+}
+
+
+def flag_view(values: dict, effective_default: str) -> dict:
+    """A flag-service GET body for one flag."""
+    return {"variants": list(values), "variant_values": dict(values), "effective_default": effective_default}
+
+
+def set_agent_level(manager, level: str) -> None:
+    """Make both the flag service and flagd report ``level`` as the current agent policy."""
+    manager.agent_settings_writer.get_flag_view.return_value = flag_view(AGENT_LEVEL_VALUES, level)
+    manager.agent_settings_client.get_string_value.return_value = AGENT_LEVEL_VALUES[level]
+
+
 @pytest.fixture
 def mock_state_manager():
     """Create mock StateManager with FlagServiceWriter mocks."""
@@ -53,10 +76,8 @@ def mock_state_manager():
     game_writer.get_variant_names = MagicMock(return_value=["ultra_slow", "slow", "medium", "fast", "ultra_fast"])
     manager.game_settings_writer = game_writer
 
-    # Effective-value resolution (#818): default to file value passthrough so
-    # existing tests see today's behavior unless they override the client.
-    game_writer.get_variant_value = MagicMock(return_value=2)
-    game_writer.match_variant_for_value = MagicMock(return_value="medium")
+    # Effective-value resolution (#818): one flag-service read per display.
+    game_writer.get_flag_view = MagicMock(return_value=flag_view(SENSITIVITY_VALUES, "medium"))
 
     # FlagServiceWriter mocks for user_preferences
     user_writer = MagicMock()
@@ -66,10 +87,8 @@ def mock_state_manager():
 
     # FlagServiceWriter + client mocks for agent policy (#819 kill-switch).
     agent_writer = MagicMock()
-    agent_writer.get_current_variant = MagicMock(return_value="ambient")
+    agent_writer.get_flag_view = MagicMock(return_value=flag_view(AGENT_LEVEL_VALUES, "ambient"))
     agent_writer.update_default_variant = MagicMock(return_value=True)
-    agent_writer.get_variant_value = MagicMock(return_value=[])
-    agent_writer.match_variant_for_value = MagicMock(return_value="ambient")
     manager.agent_settings_writer = agent_writer
 
     # OpenFeature client mocks (#818 effective display / #819 level read).
@@ -82,13 +101,8 @@ def mock_state_manager():
     manager.game_settings_client = game_client
 
     agent_client = MagicMock()
-    agent_client.get_object_value = MagicMock(return_value=["play_audio_cue"])
+    agent_client.get_string_value = MagicMock(return_value=AGENT_LEVEL_VALUES["ambient"])
     manager.agent_settings_client = agent_client
-
-    # Interventions client (#818): default -1 (no active agent override).
-    interventions_client = MagicMock()
-    interventions_client.get_integer_value = MagicMock(return_value=-1)
-    manager.interventions_client = interventions_client
 
     manager.led = MagicMock()
     manager.led.send_game_effect = AsyncMock(return_value=True)
@@ -1562,7 +1576,7 @@ class TestAgentControlOption:
         from services.menu.handlers.admin import AGENT_CONTROL_OPTION
 
         handler.current_option = handler.option_names.index(AGENT_CONTROL_OPTION)
-        mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = "ambient"
+        set_agent_level(mock_state_manager, "ambient")
 
         await handler.handle_increase_value("test_serial")
 
@@ -1580,7 +1594,7 @@ class TestAgentControlOption:
         from services.menu.handlers.admin import AGENT_CONTROL_OPTION
 
         handler.current_option = handler.option_names.index(AGENT_CONTROL_OPTION)
-        mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = "standard"
+        set_agent_level(mock_state_manager, "standard")
 
         await handler.handle_decrease_value("test_serial")
 
@@ -1594,7 +1608,7 @@ class TestAgentControlOption:
     async def test_panic_off_clamps_at_none(self, handler, mock_state_manager):
         """Restricting from 'none' stays at 'none' — the kill switch never wraps to 'full' (UC-013)."""
         handler.current_option = handler.option_names.index("agent_control")
-        mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = "none"
+        set_agent_level(mock_state_manager, "none")
 
         await handler.handle_decrease_value("test_serial")
 
@@ -1607,7 +1621,7 @@ class TestAgentControlOption:
     async def test_full_clamps_at_full(self, handler, mock_state_manager):
         """Escalating from 'full' stays at 'full' — no wrap to 'none' (UC-013)."""
         handler.current_option = handler.option_names.index("agent_control")
-        mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = "full"
+        set_agent_level(mock_state_manager, "full")
 
         await handler.handle_increase_value("test_serial")
 
@@ -1622,7 +1636,7 @@ class TestAgentControlOption:
         from proto import controller_manager_pb2
 
         handler.current_option = handler.option_names.index("agent_control")
-        mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = "ambient"
+        set_agent_level(mock_state_manager, "ambient")
 
         await handler.handle_increase_value("test_serial")
 
@@ -1645,6 +1659,59 @@ class TestAgentControlOption:
         mock_state_manager.audio.play_voice.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_reads_agent_state_once(self, handler, mock_state_manager):
+        """The level read is one flag-service GET, not one per variant lookup."""
+        handler.current_option = handler.option_names.index("agent_control")
+        set_agent_level(mock_state_manager, "standard")
+
+        await handler.handle_increase_value("test_serial")
+
+        mock_state_manager.agent_settings_writer.get_flag_view.assert_called_once_with("interventions_allowed")
+        mock_state_manager.agent_settings_writer.update_default_variant.assert_called_once_with(
+            "interventions_allowed", "full"
+        )
+
+    @pytest.mark.asyncio
+    async def test_flag_service_calls_run_off_the_event_loop_thread(self, handler, mock_state_manager):
+        """Blocking flag-service HTTP must not run on the event loop thread."""
+        loop_thread = threading.get_ident()
+        call_threads = []
+
+        def read_view(*_args):
+            call_threads.append(threading.get_ident())
+            return flag_view(AGENT_LEVEL_VALUES, "ambient")
+
+        def write(*_args):
+            call_threads.append(threading.get_ident())
+            return True
+
+        handler.current_option = handler.option_names.index("agent_control")
+        mock_state_manager.agent_settings_writer.get_flag_view.side_effect = read_view
+        mock_state_manager.agent_settings_writer.update_default_variant.side_effect = write
+
+        await handler.handle_increase_value("test_serial")
+
+        assert len(call_threads) == 2
+        assert loop_thread not in call_threads
+
+    @pytest.mark.asyncio
+    async def test_cycle_runs_off_the_event_loop_thread(self, handler, mock_state_manager):
+        """The game-settings cycle (read + write) runs in a worker thread too."""
+        loop_thread = threading.get_ident()
+        call_threads = []
+
+        def cycle(*_args, **_kwargs):
+            call_threads.append(threading.get_ident())
+            return "fast"
+
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.cycle_variant.side_effect = cycle
+
+        await handler.handle_increase_value("test_serial")
+
+        assert call_threads and loop_thread not in call_threads
+
+    @pytest.mark.asyncio
     async def test_no_agent_writer_is_safe(self, handler, mock_state_manager):
         """Missing agent writer logs and no-ops rather than raising."""
         handler.current_option = handler.option_names.index("agent_control")
@@ -1662,8 +1729,7 @@ class TestAgentControlOption:
         from proto import controller_manager_pb2
 
         handler.current_option = handler.option_names.index("agent_control")
-        mock_state_manager.agent_settings_writer.match_variant_for_value.return_value = off_ladder
-        mock_state_manager.agent_settings_writer.get_current_variant.return_value = off_ladder
+        set_agent_level(mock_state_manager, off_ladder)
 
         if button == "increase":
             await handler.handle_increase_value("test_serial")
@@ -1694,65 +1760,48 @@ class TestAgentControlOption:
 class TestEffectiveValueDisplay:
     """Tests for the truthful admin value display resolved through flagd (#818)."""
 
-    def test_effective_variant_reflects_agent_override(self, handler, mock_state_manager):
-        """When the agent overrode sensitivity, the display shows the LIVE value,
-        not the stale on-disk defaultVariant."""
-        # On disk: medium. flagd resolves the effective integer to 4 (ultra_fast).
-        mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
-        mock_state_manager.game_settings_writer.get_variant_value.return_value = 2
+    def test_effective_variant_reflects_live_value(self, handler, mock_state_manager):
+        """The display shows the LIVE flagd value, not the flag service's default."""
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "medium")
         mock_state_manager.game_settings_client.get_integer_value.return_value = 4
-        mock_state_manager.game_settings_writer.match_variant_for_value.return_value = "ultra_fast"
 
-        result = handler._effective_variant("sensitivity")
+        assert handler._effective_variant("sensitivity") == "ultra_fast"
+        mock_state_manager.game_settings_client.get_integer_value.assert_called_once_with("sensitivity", 2)
 
-        assert result == "ultra_fast"
-        # Resolved through the live client, not just the file default.
-        mock_state_manager.game_settings_client.get_integer_value.assert_called()
+    def test_effective_variant_reads_flag_state_once(self, handler, mock_state_manager):
+        """One flag-service GET per display, not one per variant lookup."""
+        handler._effective_variant("sensitivity")
+
+        writer = mock_state_manager.game_settings_writer
+        writer.get_flag_view.assert_called_once_with("sensitivity")
+        writer.get_current_variant.assert_not_called()
 
     def test_effective_variant_falls_back_to_file_without_client(self, handler, mock_state_manager):
-        """No client wired -> degrade to the on-disk defaultVariant."""
+        """No client wired -> degrade to the flag service's default."""
         mock_state_manager.game_settings_client = None
-        mock_state_manager.game_settings_writer.get_current_variant.return_value = "fast"
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "fast")
 
         assert handler._effective_variant("sensitivity") == "fast"
 
     def test_effective_variant_falls_back_on_no_match(self, handler, mock_state_manager):
         """Resolved value matching no known variant -> file default."""
-        mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
-        mock_state_manager.game_settings_writer.get_variant_value.return_value = 2
         mock_state_manager.game_settings_client.get_integer_value.return_value = 99
-        mock_state_manager.game_settings_writer.match_variant_for_value.return_value = None
 
         assert handler._effective_variant("sensitivity") == "medium"
 
     def test_effective_variant_falls_back_on_exception(self, handler, mock_state_manager):
         """Any resolution error -> file default (never blank)."""
-        mock_state_manager.game_settings_writer.get_current_variant.return_value = "slow"
-        mock_state_manager.game_settings_writer.get_variant_value.side_effect = RuntimeError("boom")
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "slow")
+        mock_state_manager.game_settings_client.get_integer_value.side_effect = RuntimeError("boom")
 
         assert handler._effective_variant("sensitivity") == "slow"
 
-    def test_sensitivity_shows_active_agent_override(self, handler, mock_state_manager):
-        """The headline #818 case: baseline medium, agent overrode to ultra_fast.
+    def test_effective_variant_flag_service_down(self, handler, mock_state_manager):
+        """Flag service unreachable (view None) -> None, without raising."""
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = None
+        mock_state_manager.game_settings_client.get_string_value.return_value = ""
 
-        The operator must see ultra_fast (the value the game is actually using),
-        not the stale game.json baseline.
-        """
-        mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
-        # Agent's global_sensitivity_override resolves to 4 (ultra_fast).
-        mock_state_manager.interventions_client.get_integer_value.return_value = 4
-
-        assert handler._effective_variant("sensitivity") == "ultra_fast"
-
-    def test_sensitivity_no_override_uses_baseline(self, handler, mock_state_manager):
-        """override = -1 (none) -> fall through to the human baseline value."""
-        mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
-        mock_state_manager.interventions_client.get_integer_value.return_value = -1
-        mock_state_manager.game_settings_writer.get_variant_value.return_value = 2
-        mock_state_manager.game_settings_client.get_integer_value.return_value = 2
-        mock_state_manager.game_settings_writer.match_variant_for_value.return_value = "medium"
-
-        assert handler._effective_variant("sensitivity") == "medium"
+        assert handler._effective_variant("sensitivity") is None
 
 
 class TestCycleFeedbackIsBaselineTransition:
@@ -1785,8 +1834,8 @@ class TestCycleFeedbackIsBaselineTransition:
         """
         mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
-        # Active agent override -> _effective_variant would resolve ultra_fast.
-        mock_state_manager.interventions_client.get_integer_value.return_value = 4
+        # Live flagd value differs (ultra_fast) -> _effective_variant would show it.
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 4
 
         await handler.handle_sensitivity("test_serial")
 
@@ -1794,7 +1843,7 @@ class TestCycleFeedbackIsBaselineTransition:
         assert attrs["old_variant"] == "medium"
         assert attrs["new_variant"] == "fast"
         # The effective-display path must NOT have been used to source old_variant.
-        mock_state_manager.interventions_client.get_integer_value.assert_not_called()
+        mock_state_manager.game_settings_writer.get_flag_view.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_increase_value_old_variant_is_baseline_not_override(self, handler, mock_state_manager):
@@ -1802,14 +1851,14 @@ class TestCycleFeedbackIsBaselineTransition:
         handler.current_option = handler.option_names.index("sensitivity")
         mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
-        mock_state_manager.interventions_client.get_integer_value.return_value = 4
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 4
 
         await handler.handle_increase_value("test_serial")
 
         _name, attrs = self._cycle_event(handler)
         assert attrs["old_variant"] == "medium"
         assert attrs["new_variant"] == "fast"
-        mock_state_manager.interventions_client.get_integer_value.assert_not_called()
+        mock_state_manager.game_settings_writer.get_flag_view.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_decrease_value_old_variant_is_baseline_not_override(self, handler, mock_state_manager):
@@ -1817,14 +1866,14 @@ class TestCycleFeedbackIsBaselineTransition:
         handler.current_option = handler.option_names.index("sensitivity")
         mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "slow"
-        mock_state_manager.interventions_client.get_integer_value.return_value = 4
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 4
 
         await handler.handle_decrease_value("test_serial")
 
         _name, attrs = self._cycle_event(handler)
         assert attrs["old_variant"] == "medium"
         assert attrs["new_variant"] == "slow"
-        mock_state_manager.interventions_client.get_integer_value.assert_not_called()
+        mock_state_manager.game_settings_writer.get_flag_view.assert_not_called()
 
 
 class TestForceStartThresholdFlag:

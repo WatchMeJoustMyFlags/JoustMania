@@ -1691,6 +1691,22 @@ class TestHandleWebCommandSelectGame:
         servicer.audio.play_voice.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_web_select_persists_off_the_event_loop_thread(self, servicer):
+        """The blocking flag-service write runs in a worker thread, not on the loop."""
+        import threading
+
+        loop_thread = threading.get_ident()
+        write_threads = []
+        servicer.user_prefs_writer.update_default_variant.side_effect = lambda *_a: write_threads.append(
+            threading.get_ident()
+        )
+
+        await self._select(servicer, "Tournament")
+
+        assert len(write_threads) == 1
+        assert write_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="A1")
     async def test_web_select_unknown_game_publishes_nothing(self, servicer):
         await self._select(servicer, "NotAGame")

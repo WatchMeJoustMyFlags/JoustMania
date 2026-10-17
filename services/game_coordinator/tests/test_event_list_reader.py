@@ -241,6 +241,21 @@ async def test_lower_seq_in_the_same_epoch_is_ignored():
 
 @pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
 @pytest.mark.asyncio
+async def test_an_already_applied_event_still_listed_is_not_applied_again():
+    """The list keeps the last K events: after seq 1 applied, the list [1, 2]
+    applies event 2 only (PR #1417 review B3)."""
+    h = Harness()
+    game = h.start_game("game_a")
+    h.flags.put_events("eliminate_player", "game_a", "e1", [ev(1, serial="MOCK0001")])
+    await h.flag_change()
+    assert game.killed == ["MOCK0001"]
+    h.flags.put_events("eliminate_player", "game_a", "e1", [ev(1, serial="MOCK0001"), ev(2, serial="MOCK0002")])
+    await h.flag_change()
+    assert game.killed == ["MOCK0001", "MOCK0002"]
+
+
+@pytest.mark.uc("UC-053", flow="A4", br=["BR-006"])
+@pytest.mark.asyncio
 async def test_a_gap_larger_than_k_is_logged_and_counted():
     h = Harness()
     game = h.start_game("game_a")

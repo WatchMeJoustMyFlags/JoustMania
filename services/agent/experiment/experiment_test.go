@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/url"
@@ -122,8 +123,9 @@ func TestReview_ExperimentScopedProposal(t *testing.T) {
 	if v, _ := resolve(t, svc, flagKey, experimentalCtx("exp_other")); v != beforeVar {
 		t.Fatalf("other experiment resolves %s", v)
 	}
-	if got := svc.Calls; len(got) != 1 || got[0] != "PUT game/invincibility_seconds experiment+arm" {
-		t.Fatalf("writes = %v, want one experiment+arm PUT", got)
+	// Check before write: one dry run, then the one write (PR #1417 review B5).
+	if got := svc.Calls; len(got) != 2 || got[0] != "DRYRUN game/invincibility_seconds experiment+arm" || got[1] != "PUT game/invincibility_seconds experiment+arm" {
+		t.Fatalf("calls = %v, want a dry run then one experiment+arm PUT", got)
 	}
 	assertSpan(t, rec, SpanProposed, false, "")
 }
@@ -283,17 +285,18 @@ func TestReview_ServiceErrorsFailClosed(t *testing.T) {
 	assertBlocked(t, err, ReasonReadError)
 }
 
-// The second check: a service that renders a write as something that changes
-// the real resolution is caught and the write is rolled back.
-func TestReview_AfterCheckRollsBackARealLeak(t *testing.T) {
+// The second check runs BEFORE the write: a dry run that renders as something
+// that changes the real resolution is refused and nothing is written (PR #1417
+// review B5).
+func TestReview_DryRunCatchesARealLeakBeforeWriting(t *testing.T) {
 	svc := newGameService(t)
 	leaky := &leakingService{Service: svc}
 	g := NewGate(NewWriter(leaky, discardLogger()), nil, discardLogger())
 	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0})
 	assertBlocked(t, err, ReasonDefaultChanged)
-	last := svc.Calls[len(svc.Calls)-1]
-	if !strings.HasPrefix(last, "DELETE game/invincibility_seconds") || !strings.Contains(last, "experiment_id=exp_x") {
-		t.Fatalf("no rollback: calls %v", svc.Calls)
+	assertNoWrites(t, svc)
+	if arms := svc.ArmValues(GameFlagSet, "invincibility_seconds"); len(arms) != 0 {
+		t.Fatalf("a refused proposal left arm values: %v", arms)
 	}
 }
 
@@ -455,26 +458,46 @@ func (failingService) GetSet(context.Context, string) (flagservice.SetView, erro
 }
 
 // leakingService renders an accepted write with a changed defaultVariant.
+// A write by someone else between the Gate's read and its write is no reason to
+// reject: the dry run renders before and after under one lock (review B5).
+func TestReview_ConcurrentWriteIsNoFalseRejection(t *testing.T) {
+	svc := newGameService(t)
+	racing := &racingService{Service: svc}
+	g := NewGate(NewWriter(racing, discardLogger()), nil, discardLogger())
+	if err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0}); err != nil {
+		t.Fatalf("rejected because of another writer: %v", err)
+	}
+}
+
+// racingService lands another experiment's write right after every GetFlag.
+type racingService struct {
+	*fake.Service
+	n int
+}
+
+func (r *racingService) GetFlag(ctx context.Context, set, flag string) (flagservice.FlagView, error) {
+	v, err := r.Service.GetFlag(ctx, set, flag)
+	r.n++
+	_, _ = r.Service.Put(ctx, set, flag, flagservice.Write{Value: 3.0, Scope: flagservice.Scope{ExperimentID: fmt.Sprintf("exp_other%d", r.n), Arm: ArmExperimental}})
+	return v, err
+}
+
+// leakingService renders every dry run as a write that moves the default (what a
+// broken renderer would serve to real games).
 type leakingService struct {
 	*fake.Service
-	written bool
 }
 
 func (l *leakingService) Put(ctx context.Context, set, flag string, w flagservice.Write) (flagservice.Result, error) {
-	l.written = true
-	return l.Service.Put(ctx, set, flag, w)
-}
-
-func (l *leakingService) GetFlag(ctx context.Context, set, flag string) (flagservice.FlagView, error) {
-	v, err := l.Service.GetFlag(ctx, set, flag)
-	if err != nil || !l.written {
-		return v, err
+	res, err := l.Service.Put(ctx, set, flag, w)
+	if err != nil || !w.DryRun {
+		return res, err
 	}
 	var doc map[string]any
-	_ = json.Unmarshal(v.Rendered, &doc)
+	_ = json.Unmarshal(res.Rendered, &doc)
 	doc["defaultVariant"] = "8s"
-	v.Rendered, _ = json.Marshal(doc)
-	return v, nil
+	res.Rendered, _ = json.Marshal(doc)
+	return res, nil
 }
 
 func assertNoWrites(t *testing.T, svc *fake.Service) {

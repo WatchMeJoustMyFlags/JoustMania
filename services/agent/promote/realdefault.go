@@ -146,8 +146,9 @@ func (w *serviceRealDefaultWriter) SetRealDefault(ctx context.Context, flagKey s
 
 // RevertRealDefault removes the promotion's real overlay, so real games resolve
 // the pre-promotion default again (#1065), and stamps the revert time for the
-// post-revert cooldown. Refuses when no promotion overlay is present: a revert
-// must never fabricate a prior state.
+// post-revert cooldown. With no promotion overlay present (a flag-service
+// restart dropped it) real games already resolve the pre-promotion default: the
+// revert writes nothing, stamps the cooldown and succeeds (PR #1417 review).
 func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKey string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -157,21 +158,28 @@ func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKe
 		return fmt.Errorf("read %s/%s before revert: %w", gameFlagSet, flagKey, err)
 	}
 	if view.RealOverlay == nil {
-		return fmt.Errorf("revert real default %q: no promotion overlay present", flagKey)
+		w.log.Warn("code_improvement revert: no promotion overlay (flag service restarted?); real games already resolve the baseline",
+			"flag", flagKey)
+		w.stampRevert(flagKey)
+		return nil
 	}
 	if err := w.svc.Delete(ctx, gameFlagSet, flagKey, url.Values{"game_kind": {"real"}, "writer": {promotionWriter}}); err != nil {
 		return fmt.Errorf("revert %s/%s: %w", gameFlagSet, flagKey, err)
 	}
 	w.log.Warn("code_improvement.autonomous REVERTED the real default to the pre-promotion state (#1065)", "flag", flagKey)
-	// Stamp the revert time (#1076) so the cooldown survives a restart. A failure
-	// is logged, NOT returned: the revert itself already succeeded.
+	w.stampRevert(flagKey)
+	return nil
+}
+
+// stampRevert records the revert time (#1076) so the cooldown survives a
+// restart. A failure is logged, NOT returned: the revert itself succeeded.
+func (w *serviceRealDefaultWriter) stampRevert(flagKey string) {
 	if w.snaps != nil {
 		if err := w.snaps.markReverted(flagKey, w.now()); err != nil {
 			w.log.Warn("code_improvement real-default revert succeeded but the durable cooldown stamp failed; the cooldown may not survive a restart (#1076)",
 				"flag", flagKey, "error", err)
 		}
 	}
-	return nil
 }
 
 func (w *serviceRealDefaultWriter) now() time.Time {

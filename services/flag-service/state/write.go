@@ -60,6 +60,10 @@ type WriteRequest struct {
 	Persist    bool
 	Writer     string
 	DecisionID string
+	// DryRun validates and renders the write without applying it: the result
+	// carries the flag rendered before and after, computed under one lock, and
+	// nothing changes (the agent's experiment Gate checks before it writes).
+	DryRun bool
 }
 
 // AppendRequest is a POST /{flagSetId}/{flagName} (an event).
@@ -94,6 +98,10 @@ type WriteResult struct {
 	Epoch           string          `json:"epoch"`
 	SnapshotVersion uint64          `json:"snapshot_version"`
 	Persisted       bool            `json:"persisted"`
+	// Dry runs only: the flagd flag before and after the write.
+	RenderedBefore json.RawMessage `json:"rendered_before,omitempty"`
+	Rendered       json.RawMessage `json:"rendered,omitempty"`
+	DryRun         bool            `json:"dry_run,omitempty"`
 	// Telemetry only.
 	Kind     string `json:"-"`
 	ScopeKey string `json:"-"`
@@ -191,6 +199,8 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 			return res, fserr.BadRequest("%s cannot persist in scope %s (registry persist: %v)", req.Flag, scopeName, p.Persist)
 		case req.TTLSeconds != nil:
 			return res, fserr.BadRequest("persist and ttl_seconds exclude each other")
+		case req.DryRun:
+			return res, fserr.BadRequest("a dry run cannot persist")
 		}
 	}
 	if err := s.liveChecksLocked(f, req.Scope, scopeName, &res); err != nil {
@@ -226,6 +236,10 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 		v.Value = checked.Value
 	}
 	res.Value = checked.Value
+
+	if req.DryRun {
+		return s.dryRunLocked(f, req, scopeName, v, res)
+	}
 
 	switch scopeName {
 	case registry.ScopeStack:
@@ -490,4 +504,134 @@ func (f *flagState) jsonValue(v *value) json.RawMessage {
 		return v.Value
 	}
 	return bytes.TrimSpace(f.base.Variants[v.Variant])
+}
+
+// ExpireExperiments drops the arm values of experiments that no registered game
+// has carried, and nobody wrote, for ExperimentIdle (NFR-051). It returns how
+// many experiments it dropped.
+func (s *State) ExpireExperiments() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.opts.Now()
+	for _, g := range s.games {
+		if g.ExperimentID != "" {
+			s.expSeen[g.ExperimentID] = now
+		}
+	}
+	dropped := map[string]bool{}
+	present := map[string]bool{}
+	for _, f := range s.flags {
+		for id, byArm := range f.experiments {
+			last := s.expSeen[id]
+			for _, v := range byArm {
+				if v.WrittenAt.After(last) {
+					last = v.WrittenAt
+				}
+			}
+			if now.Sub(last) >= s.opts.ExperimentIdle {
+				delete(f.experiments, id)
+				dropped[id] = true
+				continue
+			}
+			present[id] = true
+		}
+	}
+	for id := range s.expSeen {
+		if !present[id] {
+			delete(s.expSeen, id)
+		}
+	}
+	if len(dropped) > 0 {
+		s.changed()
+	}
+	return len(dropped)
+}
+
+// dryRunLocked renders f before and with v in place, then puts the previous
+// value back. Nothing else observes f meanwhile (s.mu is held), the snapshot
+// version does not move and no sync stream is notified.
+func (s *State) dryRunLocked(f *flagState, req WriteRequest, scopeName string, v *value, res WriteResult) (WriteResult, *fserr.Error) {
+	before, err := f.render(s.opts.Epoch)
+	if err != nil {
+		return res, fserr.As(err)
+	}
+	restore := f.place(scopeName, req.Scope, v)
+	after, err := f.render(s.opts.Epoch)
+	restore()
+	if err != nil {
+		return res, fserr.As(err)
+	}
+	res.RenderedBefore, _ = json.Marshal(before)
+	res.Rendered, _ = json.Marshal(after)
+	res.Variant = v.Variant
+	res.SnapshotVersion = s.version
+	res.DryRun = true
+	return res, nil
+}
+
+// place puts v in the slot scopeName and sc address (stack: the in-memory
+// overlay) and returns a func that restores the previous content.
+func (f *flagState) place(scopeName string, sc Scope, v *value) func() {
+	switch scopeName {
+	case registry.ScopeStack:
+		old := f.stack
+		f.stack = v
+		return func() { f.stack = old }
+	case registry.ScopeReal:
+		old := f.real
+		f.real = v
+		return func() { f.real = old }
+	case registry.ScopeFraction:
+		old := f.fraction
+		v.Fraction = *sc.FractionPercent
+		f.fraction = v
+		return func() { f.fraction = old }
+	case registry.ScopeGame:
+		old, had := f.games[sc.GameID]
+		f.games[sc.GameID] = v
+		return func() {
+			if had {
+				f.games[sc.GameID] = old
+			} else {
+				delete(f.games, sc.GameID)
+			}
+		}
+	case registry.ScopeGameSerial:
+		bySerial, hadGame := f.serials[sc.GameID]
+		if !hadGame {
+			bySerial = map[string]*value{}
+			f.serials[sc.GameID] = bySerial
+		}
+		old, had := bySerial[sc.Serial]
+		bySerial[sc.Serial] = v
+		return func() {
+			switch {
+			case !hadGame:
+				delete(f.serials, sc.GameID)
+			case had:
+				bySerial[sc.Serial] = old
+			default:
+				delete(bySerial, sc.Serial)
+			}
+		}
+	case registry.ScopeExperiment:
+		byArm, hadExp := f.experiments[sc.ExperimentID]
+		if !hadExp {
+			byArm = map[string]*value{}
+			f.experiments[sc.ExperimentID] = byArm
+		}
+		old, had := byArm[sc.Arm]
+		byArm[sc.Arm] = v
+		return func() {
+			switch {
+			case !hadExp:
+				delete(f.experiments, sc.ExperimentID)
+			case had:
+				byArm[sc.Arm] = old
+			default:
+				delete(byArm, sc.Arm)
+			}
+		}
+	}
+	return func() {}
 }

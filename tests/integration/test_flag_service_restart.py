@@ -15,10 +15,16 @@ The coordinator's side of A9 (a new non-empty epoch restarts its event count,
 a failed read never resets it, so nothing is replayed) is a unit test
 (services/game_coordinator/tests/test_event_list_reader.py, tag TC-019).
 
-The test restarts two containers of the session stack, so it waits until every
-flag set resolves again before it returns.
+A second test restarts the flag service while a game runs: the coordinator
+notices the new boot epoch and re-registers its live game, so a game-scoped
+write is accepted and applied again without waiting for the game to end
+(UC-053 A9 step 3).
+
+The tests restart two containers of the session stack, so they wait until every
+flag set resolves again before they return.
 """
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -29,7 +35,30 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from tests.integration.helpers import flagd_probe_client, poll_until  # noqa: E402
+from tests.integration.flag_service import set_player_value  # noqa: E402
+from tests.integration.helpers import (  # noqa: E402
+    async_poll_until,
+    build_start_config,
+    flagd_probe_client,
+    get_game_client,
+    get_mock_client,
+    poll_until,
+    setup_mock_controllers,
+)
+from tests.integration.test_intervention_flow import (  # noqa: E402
+    SUITE_RATE_LIMIT_BUDGET,
+    intervention_env,  # binds the flag-service client, pins the rate-limit budget
+    set_interventions_allowed,
+    set_policy_budget,
+)
+from tests.integration.test_intervention_smoke import _teardown  # noqa: E402
+from tests.integration.test_parallel_intervention_flow import (  # noqa: E402
+    _await_running,
+    _start_headless_with_retry,
+    _wait_for_intervention,
+)
+
+__all__ = ["intervention_env"]
 
 FLAG_SERVICE_CONTAINER = "joustmania-flag-service"
 FLAGD_CONTAINER = "joustmania-flagd"
@@ -150,25 +179,111 @@ def test_restart_keeps_admin_settings_and_drops_the_rest(docker_compose, flag_se
     finally:
         flag_service.request("DELETE", "/game/sensitivity?persist=true")
         flag_service.request("DELETE", f"/games/{game_id}")
-        # The rest of the suite needs every set again: wait for a probe write to be served.
-        nonce = uuid.uuid4().hex
-        deadline = time.monotonic() + RECOVERY_SECONDS
-        while time.monotonic() < deadline:
-            if (
-                flag_service.request(
-                    "PUT",
-                    f"/{PROBE_SET}/{PROBE_FLAG}",
-                    {"value": nonce, "writer": "integration-test"},
-                )[0]
-                == 200
-            ):
-                break
-            time.sleep(0.5)
-        with flagd_probe_client(
-            docker_compose, PROBE_SET, resolver="in_process"
-        ) as probe:
+        _wait_until_served(docker_compose, flag_service)
+
+
+def _restart_flag_service_and_flagd() -> None:
+    started = time.monotonic()
+    _docker("restart", FLAG_SERVICE_CONTAINER)
+    while not _healthy() and time.monotonic() - started < RECOVERY_SECONDS:
+        time.sleep(0.2)
+    assert _healthy(), "the flag service did not become healthy"
+    _docker("restart", FLAGD_CONTAINER)
+
+
+def _wait_until_served(docker_compose, flag_service) -> None:
+    """The rest of the suite needs every set again: wait for a probe write to be served."""
+    nonce = uuid.uuid4().hex
+    deadline = time.monotonic() + RECOVERY_SECONDS
+    while time.monotonic() < deadline:
+        if (
+            flag_service.request(
+                "PUT",
+                f"/{PROBE_SET}/{PROBE_FLAG}",
+                {"value": nonce, "writer": "integration-test"},
+            )[0]
+            == 200
+        ):
+            break
+        time.sleep(0.5)
+    with flagd_probe_client(docker_compose, PROBE_SET, resolver="in_process") as probe:
+        assert poll_until(
+            lambda: probe.get_string_value(PROBE_FLAG, "", None) == nonce,
+            RECOVERY_SECONDS,
+        ), "flagd did not recover after the restart test"
+    flag_service.request("DELETE", f"/{PROBE_SET}/{PROBE_FLAG}")
+
+
+# How long the coordinator may take to re-register after the service restarted:
+# it checks the boot epoch every 2 s and reconciles every 15 s regardless.
+REREGISTER_SECONDS = 20.0
+_TAG = "tc019-midgame"
+
+
+@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.asyncio
+async def test_restart_mid_game_reregisters_the_live_game(
+    intervention_env, docker_compose, flag_service, headless_cleanup
+):
+    """A9 step 3: after a restart the live game is registered again, and a
+    game-scoped write (what the agent sends) is accepted and applied."""
+    from openfeature.evaluation_context import EvaluationContext
+
+    mock_client, mock_channel = await get_mock_client(docker_compose)
+    game_client, game_channel = await get_game_client(docker_compose)
+    headless_cleanup.add_tag(_TAG)
+    collector = None
+    game_id = ""
+    try:
+        serials = await setup_mock_controllers(
+            docker_compose, count=4, reserved=True, tag=_TAG
+        )
+        game_id, collector = await _start_headless_with_retry(
+            game_client, build_start_config("JoustFFA", serials)
+        )
+        headless_cleanup.add_game(game_id)
+        await _await_running(game_client, game_id)
+        flag_service.wait_game_registered(game_id)
+
+        # Step 1: restart the flag service (and flagd) mid-game; the game scope is gone.
+        await asyncio.to_thread(_restart_flag_service_and_flagd)
+        await asyncio.to_thread(_wait_until_served, docker_compose, flag_service)
+
+        # Step 2: the coordinator re-registers the game on the new epoch.
+        assert await async_poll_until(
+            lambda: any(g["game_id"] == game_id for g in flag_service.games()),
+            timeout=REREGISTER_SECONDS,
+        ), f"the coordinator did not re-register {game_id} after the restart"
+
+        # Step 3: the restart dropped every overlay; set the agent switches again.
+        set_policy_budget(SUITE_RATE_LIMIT_BUDGET)
+        set_interventions_allowed("full")
+        with flagd_probe_client(docker_compose, "agent") as agent_flags:
             assert poll_until(
-                lambda: probe.get_string_value(PROBE_FLAG, "", None) == nonce,
+                lambda: (
+                    agent_flags.get_string_value(
+                        "interventions_allowed", "", EvaluationContext()
+                    )
+                    == flag_service.get("agent", "interventions_allowed")[
+                        "variant_values"
+                    ]["full"]
+                ),
                 RECOVERY_SECONDS,
-            ), "flagd did not recover after the restart test"
-        flag_service.request("DELETE", f"/{PROBE_SET}/{PROBE_FLAG}")
+            ), "flagd did not serve interventions_allowed=full after the restart"
+
+        # Step 4: a game-scoped write is accepted (no 409) and the game applies it.
+        set_player_value("player_sensitivity_factor", game_id, serials[0], 1.5)
+        await _wait_for_intervention(
+            collector, "adjust_player_sensitivity", blocked="false"
+        )
+    finally:
+        await _teardown(
+            collector,
+            game_client,
+            game_id,
+            docker_compose,
+            _TAG,
+            mock_channel,
+            game_channel,
+        )
+        await asyncio.to_thread(_wait_until_served, docker_compose, flag_service)

@@ -26,6 +26,7 @@ const (
 	OpSet            = "set"
 	OpAppend         = "append"
 	OpClear          = "clear"
+	OpDryRun         = "dry_run"
 	ResultOK         = "ok"
 	ResultRejected   = "rejected"
 	ResultError      = "error"
@@ -39,6 +40,7 @@ type Metrics struct {
 	WriteDuration      metric.Float64Histogram
 	Propagation        metric.Float64Histogram
 	ScopesExpired      metric.Int64Counter
+	ExperimentsExpired metric.Int64Counter
 	SyncRejected       metric.Int64Counter
 	AdminStateCorrupt  metric.Int64Counter
 	registeredGaugeCbs metric.Registration
@@ -64,6 +66,10 @@ func NewMetrics(meter metric.Meter, stats func() state.Stats) (*Metrics, error) 
 	}
 	if m.ScopesExpired, err = meter.Int64Counter("flagservice_game_scopes_expired_total",
 		metric.WithDescription("Game scopes dropped by expiry (UC-053 A11)")); err != nil {
+		return nil, err
+	}
+	if m.ExperimentsExpired, err = meter.Int64Counter("flagservice_experiments_expired_total",
+		metric.WithDescription("Experiments whose arm values were dropped because no game referenced them (NFR-051)")); err != nil {
 		return nil, err
 	}
 	if m.SyncRejected, err = meter.Int64Counter("flagservice_sync_rejected_total",

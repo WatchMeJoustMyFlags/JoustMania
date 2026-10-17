@@ -86,11 +86,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # The agent domain is read for the truthful admin display (#818) and
         # written for the on-device agent kill-switch (#819).
         init_flag_domain("agent")
-        # The interventions domain is read (never written) by the admin display so
-        # an active agent override (e.g. global_sensitivity_override) shows up as
-        # the effective value an operator sees (#818). The menu NEVER writes
-        # interventions.json — that is the agent's exclusive write surface.
-        init_flag_domain("interventions")
 
         # Admin settings and the menu selection are persisted admin values on the
         # flag service (#1415, UC-053 A2): PUT /game|user/{flag} {"persist": true}.
@@ -110,9 +105,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # Client for resolving effective (agent-override-aware) values for the
         # admin display (#818) and the kill-switch level (#819).
         self.agent_settings_client = get_flag_client("agent")
-        # Read-only client for surfacing active agent overrides in the admin
-        # display (#818); the menu never writes this domain.
-        self.interventions_client = get_flag_client("interventions")
 
         # Utility classes
         self.led = LedController(self.controller_channel)
@@ -130,7 +122,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             agent_settings_writer=self.agent_settings_writer,
             game_settings_client=self.game_settings_client,
             agent_settings_client=self.agent_settings_client,
-            interventions_client=self.interventions_client,
             publish_event=self.event_publisher.publish,
             select_game_mode=self.select_game_mode,
         )
@@ -210,7 +201,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         if serial is not None:
             payload["serial"] = serial
         await self.event_publisher.publish("selection_changed", payload)
-        self.user_prefs_writer.update_default_variant("current_game", game_mode.name)
+        await asyncio.to_thread(self.user_prefs_writer.update_default_variant, "current_game", game_mode.name)
         logger.info(f"Game selected via {source}: {game_mode.name}")
 
     async def start_game(self, serial: str, source: str, controllers: list[str] | None = None) -> None:
@@ -460,7 +451,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             self.state_manager.set_game_mode(self.current_selection)
             await self.event_publisher.publish("selection_changed", {"game_name": self.current_selection.name})
             # Persist to flagd
-            self.user_prefs_writer.update_default_variant("current_game", self.current_selection.name)
+            await asyncio.to_thread(
+                self.user_prefs_writer.update_default_variant, "current_game", self.current_selection.name
+            )
             logger.info(f"Selection changed to: {self.current_selection.name}")
 
     async def _handle_web_command(self, data: dict, span) -> None:
@@ -482,7 +475,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 await self.event_publisher.publish("selection_changed", payload)
                 await self.event_publisher.publish("game_selection_changed", dict(payload))
                 # Persist to flagd
-                self.user_prefs_writer.update_default_variant("current_game", game_mode.name)
+                await asyncio.to_thread(self.user_prefs_writer.update_default_variant, "current_game", game_mode.name)
                 voice_file = GAME_MODE_VOICE.get(game_mode.name)
                 if voice_file:
                     await self.audio.play_voice(voice_file)

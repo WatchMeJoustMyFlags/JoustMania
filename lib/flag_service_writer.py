@@ -16,7 +16,8 @@ flag service serves (the effective default: an in-memory stage overlay, else
 the persisted admin value, else the baseline).
 
 Every call has a short deadline (0.5 s) and fails closed: a failed write returns
-False / None and is logged; nothing is retried.
+False / None and is logged; nothing is retried. The API is blocking: async
+callers run it through ``asyncio.to_thread``.
 """
 
 from __future__ import annotations
@@ -37,6 +38,24 @@ WRITER_LABEL = "menu"
 
 # transport(method, url, body) -> (status, parsed JSON body or {}); injectable for tests.
 Transport = Callable[[str, str, dict | None], tuple[int, dict]]
+
+
+def variant_value(view: dict | None, variant_name: str | None):
+    """The value of ``variant_name`` in a flag view, or None."""
+    if not view or variant_name is None:
+        return None
+    return (view.get("variant_values") or {}).get(variant_name)
+
+
+def match_variant(view: dict | None, value) -> str | None:
+    """The first declared variant in a flag view whose value equals ``value``."""
+    if not view:
+        return None
+    values = view.get("variant_values") or {}
+    for name in view.get("variants", []):
+        if values.get(name) == value:
+            return name
+    return None
 
 
 def _urllib_transport(method: str, url: str, body: dict | None) -> tuple[int, dict]:
@@ -91,6 +110,10 @@ class FlagServiceWriter:
             return None
         return body
 
+    def get_flag_view(self, flag_key: str) -> dict | None:
+        """One read of the flag's state: ``variants``, ``variant_values``, ``effective_default``."""
+        return self._view(flag_key)
+
     def update_default_variant(self, flag_key: str, variant_name: str) -> bool:
         """Set the flag to ``variant_name`` (persisted admin setting). True on success."""
         body = {"variant": variant_name, "writer": self.writer}
@@ -127,19 +150,11 @@ class FlagServiceWriter:
         return view.get("effective_default") if view else None
 
     def get_variant_value(self, flag_key: str, variant_name: str):
-        view = self._view(flag_key)
-        return (view.get("variant_values") or {}).get(variant_name) if view else None
+        return variant_value(self._view(flag_key), variant_name)
 
     def match_variant_for_value(self, flag_key: str, value) -> str | None:
         """The first declared variant whose value equals ``value`` (#818 display)."""
-        view = self._view(flag_key)
-        if not view:
-            return None
-        values = view.get("variant_values") or {}
-        for name in view.get("variants", []):
-            if values.get(name) == value:
-                return name
-        return None
+        return match_variant(self._view(flag_key), value)
 
     def cycle_variant(self, flag_key: str, forward: bool = True) -> str | None:
         """Move the flag to the next (or previous) declared variant; the new name, or None."""

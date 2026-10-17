@@ -30,9 +30,18 @@ def event_payload(flag_key: str, payload: str) -> dict:
     return {"serial": payload} if payload else {}
 
 
+# K, the number of events the flag service keeps per list (state.DefaultEventListLen).
+EVENT_LIST_LEN = 16
+
+
 def edge_event(flag_key: str, payload: str = "", seq: int = 1, epoch: str = "e1") -> dict:
-    """An event list whose newest (and only listed) event is ``seq``."""
-    return {"epoch": epoch, "seq": seq, "events": [{"seq": seq, "payload": event_payload(flag_key, payload)}]}
+    """The event list the flag service serves once ``seq`` events were appended:
+    the last K events, ``max(1, seq-K+1)..seq``, all with ``payload``. Earlier
+    events stay listed exactly as in production, so a reader that dropped its
+    ``seq > last_seq`` filter would apply them again and the tests would see it."""
+    first = max(1, seq - EVENT_LIST_LEN + 1)
+    events = [{"seq": n, "payload": event_payload(flag_key, payload)} for n in range(first, seq + 1)]
+    return {"epoch": epoch, "seq": seq, "events": events}
 
 
 def edge_events(flag_key: str, *payloads: str, epoch: str = "e1") -> dict:

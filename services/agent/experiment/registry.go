@@ -169,12 +169,6 @@ func MintExperimentID() string {
 	return "exp_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 }
 
-// MintProposalID returns the experiment id of a standalone Proposer proposal
-// ("prop_<uuid hex[:12]>"), so its value is scoped like any experiment's (FR-138).
-func MintProposalID() string {
-	return "prop_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-}
-
 // MaxShadowGamesFromEnv resolves the fixed shadow-capacity cap from
 // AGENT_MAX_SHADOW_GAMES, falling back to DefaultMaxShadowGames on an unset,
 // empty, or non-positive value (a zero/negative cap would starve every
@@ -821,6 +815,11 @@ func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, sto
 		}
 		spawnCtx = WithPatternSpawn(spawnCtx, *plan.pattern)
 	}
+	if err := r.reassertArmValue(ctx, plan.id); err != nil {
+		r.rollbackPair(plan, 0, nil)
+		r.log.Warn("experiment.arm_value_reassert_failed", "experiment_id", plan.id, "error", err)
+		return 0, true
+	}
 	var live []startedArm
 	for i, arm := range plan.arms {
 		gameID, err := r.spawner.Spawn(spawnCtx, plan.id, arm, plan.seed)
@@ -847,6 +846,36 @@ func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, sto
 		// still spawns so the pair completes if it can.
 	}
 	return len(live), false
+}
+
+// reassertArmValue makes sure the experiment's arm value is still served before
+// a pair spawns: a flag-service restart drops it (the targeting writer compares
+// boot epochs and writes it again). A targeting writer without the capability,
+// or an experiment without a flag, needs nothing.
+func (r *Registry) reassertArmValue(ctx context.Context, id string) error {
+	ra, ok := r.target.(interface {
+		Reassert(ctx context.Context, p Proposal) error
+	})
+	if !ok {
+		return nil
+	}
+	r.mu.Lock()
+	e := r.entries[id]
+	if e == nil {
+		r.mu.Unlock()
+		return nil
+	}
+	intent := e.journal.Intent()
+	r.mu.Unlock()
+	if intent.FlagKey == "" {
+		return nil
+	}
+	return ra.Reassert(ctx, Proposal{
+		FlagKey:           intent.FlagKey,
+		ExperimentID:      id,
+		ExperimentalValue: intent.ExperimentalValue,
+		Rationale:         intent.Hypothesis,
+	})
 }
 
 // rollbackPair undoes a partially-spawned CRN pair on a spawn error (#1003), keeping

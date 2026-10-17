@@ -752,6 +752,98 @@ func TestGameScopeBounds(t *testing.T) {
 	})
 }
 
+// UC: UC-042 main
+func TestDryRunRendersWithoutApplying(t *testing.T) {
+	t.Run("UC-042/main a dry run returns the flag before and after and changes nothing", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		select {
+		case <-f.sub.C: // the initial wake-up
+		default:
+		}
+		version := f.state.Version()
+		before, _, _ := f.state.Snapshot("")
+		res := f.put(WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("4"),
+			Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}, DryRun: true})
+		if !res.DryRun || len(res.RenderedBefore) == 0 || len(res.Rendered) == 0 {
+			t.Fatalf("dry run result incomplete: %+v", res)
+		}
+		if !containsStr(res.Rendered, "exp_1") || containsStr(res.RenderedBefore, "exp_1") {
+			t.Fatalf("rendered after must carry the rung, before must not:\n%s\n%s", res.RenderedBefore, res.Rendered)
+		}
+		after, _, _ := f.state.Snapshot("")
+		if f.state.Version() != version || string(before) != string(after) {
+			t.Fatal("a dry run changed the served configuration")
+		}
+		select {
+		case <-f.sub.C:
+			t.Fatal("a dry run notified the sync stream")
+		default:
+		}
+	})
+	t.Run("UC-042/main a dry run over an existing value restores it", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.put(WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("4"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}})
+		before, _, _ := f.state.Snapshot("")
+		f.put(WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("6"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}, DryRun: true})
+		after, _, _ := f.state.Snapshot("")
+		if string(before) != string(after) {
+			t.Fatal("the dry run did not restore the previous value")
+		}
+	})
+	t.Run("UC-042/main a dry run cannot persist", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		_, err := f.state.Put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "slow", Persist: true, DryRun: true})
+		wantReason(t, err, http.StatusBadRequest, fserr.Malformed)
+	})
+}
+
+// UC: UC-053 main
+func TestExpireExperiments(t *testing.T) {
+	arm := func(id string) WriteRequest {
+		return WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("4"), Scope: Scope{ExperimentID: id, Arm: "experimental"}}
+	}
+	t.Run("UC-053/main an experiment no game references is dropped after the idle time (NFR-051)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.put(arm("exp_orphan"))
+		f.put(arm("exp_live"))
+		if _, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1", Kind: "shadow", ExperimentID: "exp_live", Arm: "experimental"}); err != nil {
+			t.Fatal(err)
+		}
+		f.clock.Advance(DefaultExperimentIdle / 2)
+		if n := f.state.ExpireExperiments(); n != 0 {
+			t.Fatalf("expired %d before the idle time", n)
+		}
+		f.clock.Advance(DefaultExperimentIdle/2 + time.Second)
+		if n := f.state.ExpireExperiments(); n != 1 {
+			t.Fatalf("expired %d, want 1 (the orphan only)", n)
+		}
+		payload, _, _ := f.state.Snapshot("")
+		if containsStr(payload, "exp_orphan") || !containsStr(payload, "exp_live") {
+			t.Fatalf("want exp_live kept and exp_orphan dropped: %s", payload)
+		}
+	})
+	t.Run("UC-053/main an experiment whose games ended expires one idle time after the last one", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.put(arm("exp_done"))
+		if _, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1", Kind: "shadow", ExperimentID: "exp_done", Arm: "experimental"}); err != nil {
+			t.Fatal(err)
+		}
+		f.clock.Advance(DefaultExperimentIdle)
+		f.state.ExpireExperiments() // the live game refreshes it
+		if _, ok := f.state.EndGame("game_a", EndReasonEnded); !ok {
+			t.Fatal("game_a was not live")
+		}
+		f.clock.Advance(DefaultExperimentIdle - time.Second)
+		if n := f.state.ExpireExperiments(); n != 0 {
+			t.Fatalf("expired %d right after its last game", n)
+		}
+		f.clock.Advance(2 * time.Second)
+		if n := f.state.ExpireExperiments(); n != 1 {
+			t.Fatalf("expired %d, want 1", n)
+		}
+	})
+}
+
 // UC: UC-053 A2 BR-004
 func TestClearWriter_KeepsPersistedAdminValues(t *testing.T) {
 	t.Run("UC-053/A2 a writer reset never removes the host's persisted setting", func(t *testing.T) {

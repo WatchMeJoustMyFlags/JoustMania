@@ -29,7 +29,7 @@ import (
 const (
 	DefaultURL         = "http://flag-service:8070"
 	RequestTimeout     = 500 * time.Millisecond
-	GameNotLiveBackoff = 250 * time.Millisecond
+	GameNotLiveBackoff = 100 * time.Millisecond
 )
 
 // Reason codes the agent acts on.
@@ -58,6 +58,9 @@ type Write struct {
 	Writer     string   `json:"writer,omitempty"`
 	DecisionID string   `json:"decision_id,omitempty"`
 	Reason     string   `json:"reason,omitempty"`
+	// DryRun sends PUT ?dry_run=true: the service validates and renders the
+	// write, answers the flag before and after, and applies nothing.
+	DryRun bool `json:"-"`
 }
 
 // Event is a POST body (one event appended to a game's event list).
@@ -78,6 +81,10 @@ type Result struct {
 	Epoch           string `json:"epoch"`
 	SnapshotVersion uint64 `json:"snapshot_version"`
 	Persisted       bool   `json:"persisted"`
+	// Dry runs only: the rendered flagd flag before and after the write.
+	DryRun         bool            `json:"dry_run,omitempty"`
+	RenderedBefore json.RawMessage `json:"rendered_before,omitempty"`
+	Rendered       json.RawMessage `json:"rendered,omitempty"`
 }
 
 // Error is a rejected request (non-2xx) with the service's reason code.
@@ -201,8 +208,12 @@ func (c *Client) retryGameNotLive(ctx context.Context, gameScoped bool, fn func(
 // Put sets a value in a scope (PUT /{set}/{flag}).
 func (c *Client) Put(ctx context.Context, set, flag string, w Write) (Result, error) {
 	var res Result
+	path := flagPath(set, flag)
+	if w.DryRun {
+		path += "?dry_run=true"
+	}
 	err := c.retryGameNotLive(ctx, w.Scope.GameID != "", func() error {
-		return c.do(ctx, http.MethodPut, flagPath(set, flag), w, &res)
+		return c.do(ctx, http.MethodPut, path, w, &res)
 	})
 	return res, err
 }
@@ -275,6 +286,19 @@ type SetView struct {
 	FlagSet string     `json:"flag_set"`
 	Served  bool       `json:"served"`
 	Flags   []FlagView `json:"flags"`
+}
+
+// Epoch reads the service's boot epoch (GET /healthz). A different epoch than
+// the one a write returned means the service restarted and lost every
+// in-memory value, including experiment-arm values.
+func (c *Client) Epoch(ctx context.Context) (string, error) {
+	var h struct {
+		Epoch string `json:"epoch"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/healthz", nil, &h); err != nil {
+		return "", err
+	}
+	return h.Epoch, nil
 }
 
 // GetFlag reads one flag's effective state with its rendered flagd JSON.

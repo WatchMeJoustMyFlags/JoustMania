@@ -54,17 +54,18 @@ func resolveServiceName() string { return getEnv("OTEL_SERVICE_NAME", defaultSer
 
 // config is the service configuration (services.md §7, "Config").
 type config struct {
-	BaselineDir   string
-	BaselineFiles []string
-	Registry      string
-	StateFile     string
-	Served        []string
-	EventListLen  int
-	MaxGameAge    time.Duration
-	MaxGames      int
-	GRPCPort      string
-	HTTPPort      string
-	SweepInterval time.Duration
+	BaselineDir    string
+	BaselineFiles  []string
+	Registry       string
+	StateFile      string
+	Served         []string
+	EventListLen   int
+	MaxGameAge     time.Duration
+	ExperimentIdle time.Duration
+	MaxGames       int
+	GRPCPort       string
+	HTTPPort       string
+	SweepInterval  time.Duration
 }
 
 func splitList(s string) []string {
@@ -79,17 +80,18 @@ func splitList(s string) []string {
 
 func loadConfig() (config, error) {
 	cfg := config{
-		BaselineDir:   getEnv("FLAG_SERVICE_BASELINE_DIR", "/etc/flagd"),
-		BaselineFiles: splitList(getEnv("FLAG_SERVICE_BASELINE_FILES", strings.Join(baseline.DefaultFiles, ","))),
-		Registry:      getEnv("FLAG_SERVICE_REGISTRY", "/etc/flag-service/registry.yaml"),
-		StateFile:     getEnv("FLAG_SERVICE_STATE_FILE", "/var/lib/flag-service/admin.json"),
-		Served:        splitList(os.Getenv("FLAG_SERVICE_SETS")),
-		EventListLen:  state.DefaultEventListLen,
-		MaxGameAge:    state.DefaultMaxGameAge,
-		MaxGames:      state.DefaultMaxGames,
-		GRPCPort:      getEnv("FLAG_SERVICE_GRPC_PORT", "50064"),
-		HTTPPort:      getEnv("FLAG_SERVICE_HTTP_PORT", "8070"),
-		SweepInterval: 5 * time.Second,
+		BaselineDir:    getEnv("FLAG_SERVICE_BASELINE_DIR", "/etc/flagd"),
+		BaselineFiles:  splitList(getEnv("FLAG_SERVICE_BASELINE_FILES", strings.Join(baseline.DefaultFiles, ","))),
+		Registry:       getEnv("FLAG_SERVICE_REGISTRY", "/etc/flag-service/registry.yaml"),
+		StateFile:      getEnv("FLAG_SERVICE_STATE_FILE", "/var/lib/flag-service/admin.json"),
+		Served:         splitList(os.Getenv("FLAG_SERVICE_SETS")),
+		EventListLen:   state.DefaultEventListLen,
+		MaxGameAge:     state.DefaultMaxGameAge,
+		MaxGames:       state.DefaultMaxGames,
+		ExperimentIdle: state.DefaultExperimentIdle,
+		GRPCPort:       getEnv("FLAG_SERVICE_GRPC_PORT", "50064"),
+		HTTPPort:       getEnv("FLAG_SERVICE_HTTP_PORT", "8070"),
+		SweepInterval:  5 * time.Second,
 	}
 	if cfg.StateFile == "off" {
 		cfg.StateFile = ""
@@ -107,6 +109,13 @@ func loadConfig() (config, error) {
 			return cfg, fmt.Errorf("FLAG_SERVICE_MAX_GAMES=%q: want 1..4096", v)
 		}
 		cfg.MaxGames = n
+	}
+	if v := os.Getenv("FLAG_SERVICE_EXPERIMENT_IDLE"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return cfg, fmt.Errorf("FLAG_SERVICE_EXPERIMENT_IDLE=%q: want a positive duration such as 2h", v)
+		}
+		cfg.ExperimentIdle = d
 	}
 	if v := os.Getenv("FLAG_SERVICE_MAX_GAME_AGE"); v != "" {
 		d, err := time.ParseDuration(v)
@@ -267,7 +276,7 @@ func loadState(ctx context.Context, tracer trace.Tracer, cfg config, epoch strin
 		return fail(err)
 	}
 	st, report, err := state.New(base, reg, state.Options{
-		Epoch: epoch, Served: cfg.Served, EventListLen: cfg.EventListLen, MaxGameAge: cfg.MaxGameAge, MaxGames: cfg.MaxGames,
+		Epoch: epoch, Served: cfg.Served, EventListLen: cfg.EventListLen, MaxGameAge: cfg.MaxGameAge, MaxGames: cfg.MaxGames, ExperimentIdle: cfg.ExperimentIdle,
 		StateFile: cfg.StateFile, Logger: logger,
 	})
 	if err != nil {
@@ -312,6 +321,10 @@ func sweep(ctx context.Context, st *state.State, metrics *telemetry.Metrics, tra
 		}
 		if n := st.ExpireOverlays(); n > 0 {
 			logger.Info("flag service: overlays expired (ttl)", "count", n)
+		}
+		if n := st.ExpireExperiments(); n > 0 {
+			logger.Warn("flag service: experiment values expired (no game referenced them)", "count", n)
+			metrics.ExperimentsExpired.Add(ctx, int64(n))
 		}
 	}
 }

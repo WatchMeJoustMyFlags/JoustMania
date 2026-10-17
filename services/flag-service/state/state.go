@@ -24,6 +24,10 @@ import (
 const (
 	DefaultEventListLen = 16
 	DefaultMaxGameAge   = time.Hour
+	// DefaultExperimentIdle drops an experiment's arm values once no registered
+	// game has carried its experiment id, and nothing wrote them, for this long
+	// (NFR-051): values a game can no longer read do not pile up.
+	DefaultExperimentIdle = 2 * time.Hour
 	// DefaultMaxGames caps live game scopes (NFR-051): the coordinators run at
 	// most max_concurrent_games (8) real and shadow games, so 64 leaves room for
 	// several coordinators while bounding what an unauthenticated caller can add.
@@ -48,6 +52,8 @@ type Options struct {
 	MaxGameAge time.Duration
 	// MaxGames caps the number of live game scopes (NFR-051).
 	MaxGames int
+	// ExperimentIdle expires experiment-arm values no registered game references.
+	ExperimentIdle time.Duration
 	// StateFile is the admin state file; "" disables persistence.
 	StateFile string
 	// Now is the clock (tests inject one).
@@ -178,6 +184,8 @@ type State struct {
 	served map[string]bool
 	flags  map[string]*flagState // by flag key (keys are unique across sets)
 	games  map[string]*Game
+	// expSeen: when a registered game last carried each experiment id.
+	expSeen map[string]time.Time
 
 	counter uint64 // generated-variant counter
 	version uint64 // snapshot version
@@ -217,6 +225,9 @@ func New(b *baseline.Baseline, r *registry.Registry, opts Options) (*State, Load
 	if opts.MaxGameAge <= 0 {
 		opts.MaxGameAge = DefaultMaxGameAge
 	}
+	if opts.ExperimentIdle <= 0 {
+		opts.ExperimentIdle = DefaultExperimentIdle
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -224,14 +235,15 @@ func New(b *baseline.Baseline, r *registry.Registry, opts Options) (*State, Load
 		opts.Logger = slog.Default()
 	}
 	s := &State{
-		opts:   opts,
-		base:   b,
-		reg:    r,
-		served: map[string]bool{},
-		flags:  map[string]*flagState{},
-		games:  map[string]*Game{},
-		cache:  map[string][]byte{},
-		subs:   map[*Subscription]struct{}{},
+		opts:    opts,
+		base:    b,
+		reg:     r,
+		served:  map[string]bool{},
+		flags:   map[string]*flagState{},
+		games:   map[string]*Game{},
+		expSeen: map[string]time.Time{},
+		cache:   map[string][]byte{},
+		subs:    map[*Subscription]struct{}{},
 	}
 	for _, set := range opts.Served {
 		if b.Sets[set] == nil {

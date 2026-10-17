@@ -4,7 +4,7 @@ import urllib.error
 
 import pytest
 
-from lib.flag_service_writer import FlagServiceWriter
+from lib.flag_service_writer import FlagServiceWriter, match_variant, variant_value
 
 
 class FakeService:
@@ -76,6 +76,19 @@ def test_reads(svc):
     assert w.get_variant_value("interventions_allowed", "standard") == "a,b"
     assert w.match_variant_for_value("interventions_allowed", "a,b,c") == "full"
     assert w.match_variant_for_value("interventions_allowed", "zzz") is None
+
+
+@pytest.mark.uc("UC-053", flow="A2")
+def test_one_view_answers_every_read(svc):
+    w = FlagServiceWriter("agent", "http://fs:8070", transport=svc)
+    view = w.get_flag_view("interventions_allowed")
+    assert len(svc.requests) == 1
+    assert view["effective_default"] == "ambient"
+    assert variant_value(view, "standard") == "a,b"
+    assert match_variant(view, "a,b,c") == "full"
+    assert variant_value(None, "standard") is None
+    assert match_variant(None, "a") is None
+    assert w.get_flag_view("nope") is None
 
 
 @pytest.mark.uc("UC-053", flow="A5")

@@ -190,7 +190,7 @@ func (a *API) finishWrite(ctx context.Context, span trace.Span, op string, req s
 	}
 	// A no-op clear changed nothing, so it must not take over the trace link
 	// of the snapshot version a real write produced.
-	noop := op == telemetry.OpClear && res.Cleared == 0
+	noop := (op == telemetry.OpClear && res.Cleared == 0) || op == telemetry.OpDryRun
 	if ferr == nil && !noop && a.Links != nil && res.SnapshotVersion > 0 {
 		a.Links.Remember(res.SnapshotVersion, span.SpanContext(), start)
 	}
@@ -206,6 +206,7 @@ func (a *API) put(w http.ResponseWriter, r *http.Request) {
 	if ferr == nil {
 		req.Variant, req.Scope, req.TTLSeconds, req.Persist = body.Variant, body.Scope, body.TTLSeconds, body.Persist
 		req.Writer, req.DecisionID = body.Writer, body.DecisionID
+		req.DryRun = r.URL.Query().Get("dry_run") == "true"
 		if v := bytes.TrimSpace(body.Value); len(v) > 0 && !bytes.Equal(v, []byte("null")) {
 			req.Value = v
 		}
@@ -216,7 +217,11 @@ func (a *API) put(w http.ResponseWriter, r *http.Request) {
 	} else {
 		res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch()}
 	}
-	a.finishWrite(ctx, span, telemetry.OpSet, req, res, ferr, start)
+	op := telemetry.OpSet
+	if req.DryRun {
+		op = telemetry.OpDryRun
+	}
+	a.finishWrite(ctx, span, op, req, res, ferr, start)
 	if ferr != nil {
 		writeError(w, ferr)
 		return

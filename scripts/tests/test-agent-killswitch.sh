@@ -77,6 +77,7 @@ if cmp -s "${SHIPPED}" "${FAKE_AGENT_FLAGS}"; then ok "the baseline file is unch
 expect "unknown action is rejected" 2 "usage:" -- maybe
 stop_fake_flag_service
 expect "on fails when the flag service is unreachable" 1 "" -- on
+expect "off prints the docker stop fallback when the flag service is unreachable" 1 "docker stop joustmania-agent" -- off
 
 echo "${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]

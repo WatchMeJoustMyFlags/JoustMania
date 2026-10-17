@@ -8,10 +8,15 @@ game's values when it ends (UC-053 BR-003):
   game is RUNNING, never under ``_sessions_lock``. On a timeout or an error the
   game still starts (C-004) and the lifecycle falls back to reconciling.
 - ``end`` (``DELETE /games/{id}``) is queued and sent by a background worker,
-  so it can be called from any thread, under any lock.
+  so it can be called from any thread, under any lock. It waits for a
+  still-running registration of the same game first, so a late ``PUT`` never
+  re-registers an ended game.
 - ``reconcile`` (``PUT /coordinators/{instance}/games``) sends this
   coordinator's full set of live games: at start (an empty set after a
-  restart, UC-053 A10) and whenever a call failed, until it succeeds. It only
+  restart, UC-053 A10), whenever a call failed (until it succeeds), whenever
+  the service's boot epoch changes (a restarted flag service lost every game
+  scope, UC-053 A9 step 3; the worker reads the epoch from ``GET /healthz``
+  every 2 s and from every response), and every 15 s regardless. It only
   touches this instance's games; a second coordinator (agent-coordinator stack)
   has its own instance id (review C3). The id is stable across restarts, so a
   restarted coordinator's first reconcile drops its previous process's games.
@@ -42,8 +47,11 @@ logger = logging.getLogger(__name__)
 REGISTER_AWAIT_SECONDS = 0.2
 # Per-request HTTP timeout for the background calls (end, reconcile).
 REQUEST_TIMEOUT_SECONDS = 0.5
-# How often the worker retries reconciling while the service is unreachable.
+# How often the worker retries reconciling while the service is unreachable,
+# and how often it checks the service's boot epoch.
 RECONCILE_RETRY_SECONDS = 2.0
+# Unconditional reconcile period: the backstop for anything the epoch check misses.
+RECONCILE_PERIOD_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
@@ -118,12 +126,19 @@ class FlagServiceLifecycle:
         instance: str | None = None,
         register_await: float = REGISTER_AWAIT_SECONDS,
         retry_interval: float = RECONCILE_RETRY_SECONDS,
+        reconcile_period: float = RECONCILE_PERIOD_SECONDS,
     ):
         self._client = client
         self._live_games = live_games
         self.instance = instance or coordinator_instance_id()
         self._register_await = register_await
         self._retry_interval = retry_interval
+        self._reconcile_period = reconcile_period
+        self._last_reconcile = 0.0
+        # The service's boot epoch as last seen; a different one means it restarted.
+        self._epoch: str | None = None
+        # In-flight registrations per game, awaited before that game's DELETE.
+        self._registering: dict[str, asyncio.Future] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue | None = None
         self._worker: asyncio.Task | None = None
@@ -161,27 +176,48 @@ class FlagServiceLifecycle:
                 await self._worker
             self._worker = None
 
+    def _observe_epoch(self, resp: dict) -> None:
+        epoch = resp.get("epoch") if isinstance(resp, dict) else None
+        if not epoch:
+            return
+        if self._epoch is not None and epoch != self._epoch:
+            logger.warning("Flag service restarted (epoch %s -> %s); re-registering live games", self._epoch, epoch)
+            self._needs_reconcile.set()
+        self._epoch = epoch
+
     async def _call(self, call: str, method: str, path: str, body: dict | None = None) -> bool:
         assert self._client is not None
         try:
-            await asyncio.to_thread(self._client.request, method, path, body)
+            resp = await asyncio.to_thread(self._client.request, method, path, body)
         except FlagServiceError as e:
             logger.warning("Flag service %s failed: %s (will reconcile)", call, e)
             metrics.flag_service_calls_total.labels(call=call, result="error").inc()
             self._needs_reconcile.set()
             return False
         metrics.flag_service_calls_total.labels(call=call, result="ok").inc()
+        self._observe_epoch(resp)
         return True
+
+    async def check_epoch(self) -> None:
+        """Read the service's boot epoch; a change schedules a reconcile (UC-053 A9)."""
+        assert self._client is not None
+        try:
+            resp = await asyncio.to_thread(self._client.request, "GET", "/healthz")
+        except FlagServiceError:
+            # /healthz answers 503 while the service starts; the next tick retries.
+            return
+        self._observe_epoch(resp)
 
     async def register(self, game: GameRecord) -> bool:
         """Register a game, waiting at most 200 ms. Never raises; never blocks longer."""
         if not self.enabled:
             return False
         path = "/games/" + urllib.parse.quote(game.game_id, safe="")
+        task = asyncio.ensure_future(self._call("register", "PUT", path, game.body(self.instance)))
+        self._registering[game.game_id] = task
+        task.add_done_callback(lambda _t, gid=game.game_id: self._registering.pop(gid, None))
         try:
-            return await asyncio.wait_for(
-                self._call("register", "PUT", path, game.body(self.instance)), timeout=self._register_await
-            )
+            return await asyncio.wait_for(asyncio.shield(task), timeout=self._register_await)
         except TimeoutError:
             # The thread may still finish the PUT; the reconcile makes it whole either way.
             logger.warning(
@@ -210,6 +246,7 @@ class FlagServiceLifecycle:
         games = [g.body(self.instance) for g in self._live_games()]
         path = "/coordinators/" + urllib.parse.quote(self.instance, safe="") + "/games"
         self._needs_reconcile.clear()
+        self._last_reconcile = asyncio.get_running_loop().time()
         ok = await self._call("reconcile", "PUT", path, {"games": games})
         if ok:
             logger.info("Flag service reconciled %d live game(s) for %s", len(games), self.instance)
@@ -217,11 +254,21 @@ class FlagServiceLifecycle:
 
     async def _run(self) -> None:
         assert self._queue is not None
+        loop = asyncio.get_running_loop()
         while True:
+            if loop.time() - self._last_reconcile >= self._reconcile_period:
+                self._needs_reconcile.set()
             if self._needs_reconcile.is_set():
                 await self.reconcile()
             try:
                 game_id = await asyncio.wait_for(self._queue.get(), timeout=self._retry_interval)
             except TimeoutError:
+                await self.check_epoch()
                 continue
+            pending = self._registering.get(game_id)
+            if pending is not None:
+                # A registration still in flight would land after the DELETE and
+                # re-register the ended game; let it finish first.
+                with contextlib.suppress(Exception):
+                    await pending
             await self._call("end", "DELETE", "/games/" + urllib.parse.quote(game_id, safe=""))

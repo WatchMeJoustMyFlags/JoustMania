@@ -70,6 +70,29 @@ type Service struct {
 	Calls []string
 	// FailPut makes every PUT fail with this error (nil: accept).
 	FailPut error
+	epoch   int
+}
+
+// Epoch implements GET /healthz's boot epoch.
+func (s *Service) Epoch(context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return fmt.Sprintf("fake%d", s.epoch), nil
+}
+
+// Restart simulates a flag-service restart: a new epoch, and every in-memory
+// value (stack and real overlays, experiment arms) is gone.
+func (s *Service) Restart() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.epoch++
+	for _, flags := range s.sets {
+		for _, f := range flags {
+			f.stack, f.real = nil, nil
+			f.arms = map[armKey]*value{}
+			f.armOrder = nil
+		}
+	}
 }
 
 // New builds an empty fake.
@@ -166,7 +189,11 @@ func (s *Service) Put(_ context.Context, set, key string, w flagservice.Write) (
 	case w.Scope.GameID != "":
 		scope = "game"
 	}
-	s.Calls = append(s.Calls, fmt.Sprintf("PUT %s/%s %s", set, key, scope))
+	method := "PUT"
+	if w.DryRun {
+		method = "DRYRUN"
+	}
+	s.Calls = append(s.Calls, fmt.Sprintf("%s %s/%s %s", method, set, key, scope))
 	if s.FailPut != nil {
 		return flagservice.Result{}, s.FailPut
 	}
@@ -202,6 +229,18 @@ func (s *Service) Put(_ context.Context, set, key string, w flagservice.Write) (
 		s.counter++
 		v = value{variant: fmt.Sprintf("rfake_%d", s.counter), raw: raw}
 	}
+	var before json.RawMessage
+	var restore func()
+	if w.DryRun {
+		before = f.view(key).Rendered
+		oldStack, oldReal := f.stack, f.real
+		oldArms := make(map[armKey]*value, len(f.arms))
+		for k, a := range f.arms {
+			oldArms[k] = a
+		}
+		oldOrder := append([]armKey(nil), f.armOrder...)
+		restore = func() { f.stack, f.real, f.arms, f.armOrder = oldStack, oldReal, oldArms, oldOrder }
+	}
 	switch scope {
 	case "stack":
 		f.stack = &v
@@ -214,7 +253,12 @@ func (s *Service) Put(_ context.Context, set, key string, w flagservice.Write) (
 		}
 		f.arms[k] = &v
 	}
-	return flagservice.Result{FlagSet: set, Flag: key, Variant: v.variant, Epoch: "fake"}, nil
+	res := flagservice.Result{FlagSet: set, Flag: key, Variant: v.variant, Epoch: "fake"}
+	if w.DryRun {
+		res.DryRun, res.RenderedBefore, res.Rendered = true, before, f.view(key).Rendered
+		restore()
+	}
+	return res, nil
 }
 
 // Post is not used by the experiment and promotion paths.

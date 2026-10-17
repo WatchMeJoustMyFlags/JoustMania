@@ -794,14 +794,18 @@ func main() {
 	// The vocab provider reads the experiment catalog from the flag service so the
 	// model is constrained to (and the decoder validates against) the flags the
 	// registry lets an experiment write (flags.md §13.3).
-	experimentGate := experiment.NewGate(experiment.NewWriter(gameFlags, logger), nil, logger)
+	// The proposer's sink is bound to the experiment registry once the experiment
+	// loop exists (below): a proposal becomes a declared experiment that runs in real
+	// shadow games. Without the loop every proposal is refused (no_experiment_loop)
+	// and nothing is written (PR #1417 review B2).
+	proposalSink := &experiment.LateSink{}
 	// Feed the SAME text backend the retro uses (#1234): when
 	// AGENT_INFERENCE_BACKEND=claude, inferDelegate is the Claude client and
 	// proposeBackendFor wraps it as an experiment.Backend; when nil (the stub default)
 	// it stays the inert proposeBackend{} so the propose path proposes nothing.
 	proposer := experiment.NewProposer(
 		proposeBackendFor(inferDelegate),
-		experimentGate,
+		proposalSink,
 		gameFlagVocab(gameFlags),
 		nil,
 		logger,
@@ -918,6 +922,7 @@ func main() {
 			// spans keep their pre-#1188 game-linked own-root behavior — graceful.
 			retro.SetExperimentParent(reg.ExperimentSpanContext)
 			summaries.SetExperimentParent(reg.ExperimentSpanContext)
+			proposalSink.Set(expLoop.proposalSink())
 		}
 		// #1184: close the game→retro→thesis→experiment loop. Forward each decoded
 		// post-game retro suggestion (#1179) into the experiment loop's retro-seeded
