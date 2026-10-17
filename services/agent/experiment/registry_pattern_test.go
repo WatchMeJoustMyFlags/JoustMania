@@ -687,3 +687,82 @@ func TestRegistryPatternAgentEndedReporting(t *testing.T) {
 		}
 	})
 }
+
+// preBindReleaseSpawner releases its first game with reason from inside Spawn,
+// before the registry binds it: the drive goroutine's terminal callback can fire
+// that early (#1014), which takes bindGame's tombstone path.
+type preBindReleaseSpawner struct {
+	mu     sync.Mutex
+	reg    *Registry
+	reason string
+	seq    int
+}
+
+func (s *preBindReleaseSpawner) Spawn(_ context.Context, _, _ string, _ uint64) (string, error) {
+	s.mu.Lock()
+	s.seq++
+	seq, reg := s.seq, s.reg
+	s.mu.Unlock()
+	gameID := fmt.Sprintf("game_%012d", seq)
+	if seq == 1 {
+		reg.ReleaseGame(gameID, s.reason)
+	}
+	return gameID, nil
+}
+
+// UC: UC-046 A8 BR-015
+func TestRegistryPatternPreemptedBeforeBind(t *testing.T) {
+	t.Run("UC-046/A8 a preemption released before the bind reruns the pair off-budget", func(t *testing.T) {
+		spawner := &preBindReleaseSpawner{reason: ReleaseReasonPreempted}
+		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2, EffectiveConcurrency: 1, MaxGamesPerExperiment: -1,
+			Spawner: spawner, Verdict: alwaysInconclusive{}, Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "only")}}})
+		spawner.mu.Lock()
+		spawner.reg = r
+		spawner.mu.Unlock()
+		id := startExperiment(t, r)
+		r.AllocateAndSpawn(context.Background())
+
+		h := &preemptionHarness{t: t, r: r, id: id}
+		reruns, preempted, _ := h.notes()
+		if preempted != 1 || reruns != 0 {
+			t.Fatalf("notes: preempted=%d reruns=%d, want 1/0 (the tombstone must carry the preemption reason)", preempted, reruns)
+		}
+		r.mu.Lock()
+		e := r.entries[id]
+		budget, preemptions := e.pairReruns[0], e.pairPreemptions[0]
+		r.mu.Unlock()
+		if budget != 0 || preemptions != 1 {
+			t.Errorf("pairReruns=%d pairPreemptions=%d, want 0/1", budget, preemptions)
+		}
+	})
+}
+
+// UC: UC-046 A3 A8 A9 A14 BR-013
+func TestRegistryPatternRateDenominator(t *testing.T) {
+	t.Run("UC-046/BR-013 aborted and errored games do not dilute the per-arm rates", func(t *testing.T) {
+		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2})
+		id := startExperiment(t, r)
+		a := testPin(t, "p").Archetypes[0]
+		end := func(arm, outcome string) {
+			r.RecordPatternEnd(patterngame.Record{Info: patterngame.Info{ExperimentID: id, Arm: arm, Archetype: a}, Outcome: outcome})
+		}
+		end(ArmExperimental, patterngame.OutcomeTimeout)
+		end(ArmExperimental, patterngame.OutcomeAgentEnded)
+		end(ArmExperimental, patterngame.OutcomeAborted)
+		end(ArmExperimental, patterngame.OutcomeAborted)
+		end(ArmExperimental, patterngame.OutcomeError)
+		end(ArmControl, patterngame.OutcomeWinner)
+		end(ArmControl, patterngame.OutcomeTie)
+		_, _ = r.conclude(context.Background(), id, journal.Verdict{Outcome: OutcomeInconclusive})
+		outcomes := eventsOfKind(journalEvents(t, r, id), journal.KindOutcome)
+		note := outcomes[len(outcomes)-1].Note
+		for _, want := range []string{
+			"pattern timeouts (right-censored at the cap): experimental 1/2 (50%), control 0/2 (0%)",
+			"agent's end_game (right-censored): experimental 1/2 (50%), control 0/2 (0%)",
+		} {
+			if !strings.Contains(note, want) {
+				t.Errorf("conclusion %q lacks %q", note, want)
+			}
+		}
+	})
+}

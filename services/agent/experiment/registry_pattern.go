@@ -380,8 +380,16 @@ func (r *Registry) concludeExhaustedPatterns(ctx context.Context) {
 }
 
 // countPatternOutcomeLocked counts a finished pattern game per arm (BR-013).
-// Timeouts and agent ends (A14) are counted separately.
+// Only games that ended with a sample (winner, tie, timeout, agent_ended) enter
+// the denominator: an aborted or errored game is released and rerun, so counting
+// it would dilute the rates unevenly across arms. Timeouts and agent ends (A14)
+// are counted separately.
 func (e *entry) countPatternOutcomeLocked(arm, outcome string) {
+	switch outcome {
+	case patterngame.OutcomeWinner, patterngame.OutcomeTie, patterngame.OutcomeTimeout, patterngame.OutcomeAgentEnded:
+	default:
+		return
+	}
 	if e.patternGames == nil {
 		e.patternGames = map[string]int{}
 		e.patternTimeouts = map[string]int{}

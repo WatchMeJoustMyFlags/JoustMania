@@ -511,7 +511,8 @@ sequence) per pattern game, and a `pattern_pair_rerun` / `pattern_archetype_skip
 again or an archetype is skipped (UC-046 BR-015); a rerun after a real game preempted the pair
 (`preempted_by_real_game`) is noted as `pattern_pair_rerun_preempted` instead and does not use up the 3-rerun budget.
 The experiment's conclusion (`outcome` event) reports the timeout count and rate per arm and whether one arm timed out
-clearly more often (UC-046 BR-013), followed by the `agent_ended` count and rate per arm when any game ended that way.
+clearly more often (UC-046 BR-013), followed by the `agent_ended` count and rate per arm when any game ended that way;
+both rates are over the arm's pattern games that ended with a sample (`winner`, `tie`, `timeout`, `agent_ended`).
 
 **Liveness check (BR-008):** the runner asks the agent's telemetry multiplexer at the game's start, once per
 second while it runs and at its end whether another partition reports `game_active` with an update in the last

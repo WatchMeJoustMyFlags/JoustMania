@@ -666,6 +666,8 @@ func classifyTerminal(event *gcpb.GameEvent, forced, aborted bool) (outcome Outc
 // runner's own: the runner did not request one, or the coordinator names another
 // reason (e.g. preempted_by_real_game won the race against the runner's request).
 func foreignForceEnd(reason string, forced bool) bool {
+	// The kill switch's own pattern_kill_switch never reaches here: classifyTerminal
+	// handles every force-end after a kill-switch request first (UC-046 BR-016).
 	return !forced || (reason != "" && reason != agentForceEndReason)
 }
 
