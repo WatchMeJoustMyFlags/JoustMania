@@ -199,7 +199,6 @@ class TestHidapiMode:
         mock_hid.enumerate.side_effect = [
             [{"serial_number": "00:06:F7:AA:BB:CC"}, {"serial_number": "00:06:F7:DD:EE:FF"}],
             [],  # ZCM2 returns nothing
-            [],  # ZCM2E returns nothing
         ]
 
         with (
@@ -223,7 +222,6 @@ class TestHidapiMode:
         mock_hid.enumerate.side_effect = [
             [{"serial_number": "0006F7AABBCC"}, {"serial_number": "0006F7DDEEFF"}],
             [],  # ZCM2
-            [],  # ZCM2E
         ]
 
         with (
@@ -251,7 +249,6 @@ class TestHidapiMode:
         mock_hid.enumerate.side_effect = [
             [{"serial_number": "0006F7AABBCC"}, {"serial_number": "0006F7AABBCC"}],  # Duplicate
             [],  # ZCM2
-            [],  # ZCM2E
         ]
 
         with (
@@ -276,7 +273,6 @@ class TestHidapiMode:
                 {"serial_number": "0006F7DDEEFF"},
             ],
             [],  # ZCM2
-            [],  # ZCM2E
         ]
 
         with (
@@ -312,7 +308,6 @@ class TestHidapiMode:
         mock_hid.enumerate.side_effect = [
             [{"serial_number": "0006F7AABBCC"}],
             [],
-            [],
         ]
 
         with (
@@ -329,6 +324,29 @@ class TestHidapiMode:
             await discovery.get_all_attached_addresses()
 
         assert discovery.get_adapter_for_address("0006F7AABBCC") is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-001", br=["BR-006"])
+    async def test_navigation_controller_is_not_discovered(self, discovery):
+        """0x042F is the PS Move Navigation controller, not a ZCM2: it is never enumerated (#1442)."""
+        discovery._adapters = {"hci0": "AA:00"}
+        by_product = {
+            0x03D5: [{"serial_number": "00:06:F7:AA:BB:CC"}],
+            0x0C5E: [{"serial_number": "00:06:F7:DD:EE:FF"}],
+            0x042F: [{"serial_number": "00:06:F7:11:22:33"}],
+        }
+        mock_hid = MagicMock()
+        mock_hid.enumerate.side_effect = lambda _vendor, product: by_product.get(product, [])
+
+        with (
+            patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt,
+            patch.dict("sys.modules", {"hidraw": mock_hid}),
+        ):
+            mock_bt.get_attached_addresses = AsyncMock(return_value=[])
+            addresses = await discovery.get_all_attached_addresses()
+
+        assert sorted(addresses) == ["0006F7AABBCC", "0006F7DDEEFF"]
+        assert sorted(c.args[1] for c in mock_hid.enumerate.call_args_list) == [0x03D5, 0x0C5E]
 
 
 class TestResolvePairingDir:

@@ -23,7 +23,7 @@ _mock_hid.enumerate = MagicMock(return_value=[])
 _mock_hid.device = MagicMock
 sys.modules.setdefault("hidraw", _mock_hid)
 
-from lib.psmove_hid import PRODUCT_ID_ZCM1, Button  # noqa: E402
+from lib.psmove_hid import PRODUCT_ID_NAVIGATION, PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, Button  # noqa: E402
 from services.python_hid.device_manager import (  # noqa: E402
     ACCEL_SCALE,
     Command,
@@ -302,3 +302,44 @@ class TestDiscoverEdgeCases:
         result = dm._discover(force=True)
         assert result == []
         mock_device.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests: supported controllers (C-012, UC-001 BR-006, #1442)
+# ---------------------------------------------------------------------------
+
+
+class TestSupportedControllers:
+    @patch("services.python_hid.device_manager.hid")
+    @pytest.mark.uc("UC-001", br=["BR-006"])
+    def test_navigation_controller_is_never_opened(self, mock_hid):
+        """0x042F is the PS Move Navigation controller: not enumerated, not opened as a player."""
+        by_product = {
+            PRODUCT_ID_ZCM1: [_make_dev_info(path=b"/dev/hidraw0", serial="aa:bb:cc:dd:ee:01")],
+            PRODUCT_ID_ZCM2: [_make_dev_info(path=b"/dev/hidraw1", serial="aa:bb:cc:dd:ee:02", product_id=0x0C5E)],
+            PRODUCT_ID_NAVIGATION: [
+                _make_dev_info(path=b"/dev/hidraw2", serial="aa:bb:cc:dd:ee:03", product_id=0x042F)
+            ],
+        }
+        mock_hid.enumerate.side_effect = lambda _vendor, product: by_product.get(product, [])
+        mock_hid.device.return_value = MagicMock()
+
+        dm = DeviceManager()
+        dm._discover()
+
+        assert sorted(dm._devices) == ["AABBCCDDEE01", "AABBCCDDEE02"]
+        assert PRODUCT_ID_NAVIGATION not in {c.args[1] for c in mock_hid.enumerate.call_args_list}
+
+    @pytest.mark.parametrize(("product_id", "zcm2"), [(PRODUCT_ID_ZCM1, False), (PRODUCT_ID_ZCM2, True)])
+    @patch("services.python_hid.device_manager.parse_input_report")
+    def test_zcm2_product_id_selects_signed_decoding(self, mock_parse, product_id, zcm2):
+        """0x0C5E (ZCM2, PS4 era) is decoded as signed; 0x03D5 (ZCM1) with the 0x8000 offset."""
+        mock_device = MagicMock()
+        mock_device.read.side_effect = [b"\x00" * 49, b""]
+        mock_parse.return_value = _make_parsed_report()
+
+        dm = DeviceManager()
+        dm._product_ids[FAKE_SERIAL_NORMALIZED] = product_id
+        dm._read_device(FAKE_SERIAL_NORMALIZED, mock_device)
+
+        assert mock_parse.call_args.kwargs["zcm2"] is zcm2

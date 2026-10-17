@@ -3,7 +3,7 @@
 A registration is either a live BlueZ ``org.bluez.Device1`` object or a saved
 directory ``/var/lib/bluetooth/<adapter>/<controller>/`` that BlueZ never
 loaded (for example because that adapter is unplugged). Only PS Moves are
-touched: Sony vendor 054c with product 03d5 (ZCM1) or 0c5e (ZCM2/ZCM2E);
+touched: Sony vendor 054c with product 03d5 (ZCM1) or 0c5e (ZCM2);
 keyboards, headsets and other Bluetooth devices stay registered.
 
 Run inside the pairing-daemon container (it has the system D-Bus and
@@ -33,13 +33,14 @@ from pathlib import Path
 from dbus_fast import Message, Variant
 
 from lib.bluez_dbus import ORG_BLUEZ, ORG_BLUEZ_PATH, DBusError, assert_reply, get_managed_objects, get_system_bus
+from lib.psmove_hid import ALL_PRODUCT_IDS, VENDOR_ID
 
 logger = logging.getLogger("psmove-pairing")
 
-SONY_VENDOR_ID = 0x054C
-# ZCM1 (0x03D5) and ZCM2/ZCM2E (0x0C5E). 0x042F is the PS Move Navigation
-# controller, not a motion controller: deliberately excluded.
-PS_MOVE_PRODUCT_IDS = (0x03D5, 0x0C5E)
+SONY_VENDOR_ID = VENDOR_ID
+# ZCM1 (0x03D5) and ZCM2 (0x0C5E), the same ids the HID backends enumerate.
+# 0x042F is the PS Move Navigation controller: deliberately excluded (UC-001 BR-006).
+PS_MOVE_PRODUCT_IDS = ALL_PRODUCT_IDS
 
 # Fallback when BlueZ has no Modalias yet: all three must match.
 PS_MOVE_NAME = "Motion Controller"

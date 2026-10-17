@@ -13,11 +13,17 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+import pytest
+
 from lib.psmove_hid import (
+    ALL_PRODUCT_IDS,
     FEATURE_REPORT_GET_SIZE,
     FEATURE_REPORT_SET_SIZE,
     INPUT_REPORT_SIZE,
     OUTPUT_REPORT_SIZE,
+    PRODUCT_ID_NAVIGATION,
+    PRODUCT_ID_ZCM1,
+    PRODUCT_ID_ZCM2,
     Battery,
     Button,
     Frame,
@@ -26,6 +32,7 @@ from lib.psmove_hid import (
     battery_to_percent,
     build_output_report,
     build_set_btaddr_report,
+    is_zcm2,
     parse_btaddr_report,
     parse_input_report,
 )
@@ -692,3 +699,28 @@ class TestBuildSetBtaddrReport:
         assert report[0] == 0x05
         assert report[1:7] == b"\xff\xff\xff\xff\xff\xff"
         assert report[7:] == b"\x00" * 16
+
+
+# ---------------------------------------------------------------------------
+# Supported product ids (C-012, UC-001 BR-006, #1442)
+# ---------------------------------------------------------------------------
+
+
+class TestSupportedProductIds:
+    """0x042F is the PS Move Navigation controller; ZCM2 is 0x0C5E."""
+
+    @pytest.mark.uc("UC-001", br=["BR-006"])
+    def test_supported_product_ids_are_zcm1_and_zcm2(self):
+        assert (PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2) == (0x03D5, 0x0C5E)
+        assert ALL_PRODUCT_IDS == (0x03D5, 0x0C5E)
+
+    @pytest.mark.uc("UC-001", br=["BR-006"])
+    def test_navigation_controller_is_not_enumerated(self):
+        assert PRODUCT_ID_NAVIGATION == 0x042F
+        assert PRODUCT_ID_NAVIGATION not in ALL_PRODUCT_IDS
+
+    def test_is_zcm2(self):
+        assert is_zcm2(0x0C5E)
+        assert not is_zcm2(0x03D5)
+        assert not is_zcm2(0x042F)
+        assert not is_zcm2(0)
