@@ -46,12 +46,13 @@ DOCUMENTED_REDIRECTS = {
 }
 
 # UC-035 BR-001: host ports other than envoy :80, for the host-networked pairing daemon.
+# Bound to loopback only, so none is reachable from the venue network (#1319).
 BR001_HOST_PORT_EXCEPTIONS = {
-    "flagd": {"8015:8015"},
-    "rust-hid": {"50058:50058"},
+    "flagd": {"127.0.0.1:8015:8015"},
+    "rust-hid": {"127.0.0.1:50058:50058"},
     # OTLP for the host-networked pairing daemon; not a UI. The collector's
     # Prometheus exporter (8889) went with the Prometheus container (#1449).
-    "otel-collector": {"4317:4317"},
+    "otel-collector": {"127.0.0.1:4317:4317"},
 }
 
 
