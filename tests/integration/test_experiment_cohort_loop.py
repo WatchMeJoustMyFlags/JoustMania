@@ -118,7 +118,9 @@ LOG_MODE_RULES = "decision_backend=rules"  # agent.evaluate (#1234: no mode=)
 LOG_DECLARED = "experiment.declared"  # registry.go:511
 LOG_GAME_CONCLUDED = "experiment.game_concluded"  # registry.go:1027 (carries fitness=)
 LOG_CONCLUDED = "experiment.concluded"  # registry.go (always logged; carries outcome=)
-LOG_TORN_DOWN = "experiment.torn_down"  # registry.go teardown (discard/inconclusive/abort)
+LOG_TORN_DOWN = (
+    "experiment.torn_down"  # registry.go teardown (discard/inconclusive/abort)
+)
 # The PROMOTE verdict routes conclude -> promote (status DONE) -> teardown, but the
 # teardown idempotency guard early-returns on the already-terminal DONE status WITHOUT
 # logging experiment.torn_down (registry.go: end-span-then-guard). So on a promote
@@ -285,15 +287,17 @@ def agent_experiment_stack(docker_compose):
 
     with flagd_probe_client(docker_compose, "agent") as client:
         served = poll_until(
-            lambda: client.get_boolean_value(
-                "experiments_enabled", False, EvaluationContext()
-            )
-            and client.get_boolean_value("enabled", False, EvaluationContext())
-            # Confirm the floored numeric knobs are SERVED too (typed getter, the
-            # #903 numeric-flag path) so the very first tick uses the bounded
-            # target/tick, not the production-scale agent.json defaults.
-            and client.get_integer_value("verdict_min_n", 99, EvaluationContext())
-            == _TUNING["verdict_min_n"],
+            lambda: (
+                client.get_boolean_value(
+                    "experiments_enabled", False, EvaluationContext()
+                )
+                and client.get_boolean_value("enabled", False, EvaluationContext())
+                # Confirm the floored numeric knobs are SERVED too (typed getter, the
+                # #903 numeric-flag path) so the very first tick uses the bounded
+                # target/tick, not the production-scale agent.json defaults.
+                and client.get_integer_value("verdict_min_n", 99, EvaluationContext())
+                == _TUNING["verdict_min_n"]
+            ),
         )
     assert served, (
         "flagd did not serve the enabled+experiments_enabled+bounded-tuning flags"
@@ -310,7 +314,11 @@ def agent_experiment_stack(docker_compose):
     # already built/pulled, so no extra build cost — only the profile-gated agent
     # image may need a build in build mode. --wait blocks until both are healthy so
     # the agent's first shadow spawn lands on a ready coordinator.
-    up_cmd = [*prefix, "--profile", AGENT_SERVICE, "up", "-d", "--wait"]
+    # --no-deps: the dry-run overlay gives the flag service its own state file, so
+    # without it compose would RECREATE the running flag service (and restart
+    # flagd) as a changed dependency, dropping every overlay set in step 1 and
+    # every registered game of the session stack.
+    up_cmd = [*prefix, "--profile", AGENT_SERVICE, "up", "-d", "--wait", "--no-deps"]
     if not use_prebuilt and not use_dev_mounts:
         up_cmd.append("--build")
     up_cmd += [AGENT_COORDINATOR_SERVICE, AGENT_SERVICE]
@@ -354,10 +362,12 @@ def agent_experiment_stack(docker_compose):
         _FLAGS.cleanup()
         with flagd_probe_client(docker_compose, "agent") as client:
             poll_until(
-                lambda: client.get_boolean_value(
-                    "experiments_enabled", True, EvaluationContext()
-                )
-                is False,
+                lambda: (
+                    client.get_boolean_value(
+                        "experiments_enabled", True, EvaluationContext()
+                    )
+                    is False
+                ),
             )
 
 
@@ -379,8 +389,7 @@ def test_inference_absent_backend_is_stub(agent_experiment_stack):
     )
     logs = _agent_logs()
     assert LOG_BACKEND_STUB in logs, (
-        "expected backend=stub (inference-absent path); agent log was:\n"
-        + logs[-2000:]
+        "expected backend=stub (inference-absent path); agent log was:\n" + logs[-2000:]
     )
 
 
@@ -388,8 +397,7 @@ def test_experiment_is_declared(agent_experiment_stack):
     """The env-seeded experiment is DECLARED once the loop is live — the entry
     transition of the cohort loop, reachable without any inference backend."""
     assert _poll_log_contains(LOG_DECLARED, DECLARE_TIMEOUT), (
-        "agent never logged experiment.declared; log tail:\n"
-        + _agent_logs()[-3000:]
+        "agent never logged experiment.declared; log tail:\n" + _agent_logs()[-3000:]
     )
 
 
@@ -488,11 +496,7 @@ def test_cohort_loop_runs_to_verdict_and_terminates(agent_experiment_stack):
     # experiment, which is the regression this gate guards.
     def _terminated() -> bool:
         log = _agent_logs()
-        return (
-            LOG_TORN_DOWN in log
-            or LOG_PROMOTED in log
-            or LOG_PROMOTE_FAILED in log
-        )
+        return LOG_TORN_DOWN in log or LOG_PROMOTED in log or LOG_PROMOTE_FAILED in log
 
     assert poll_until(_terminated, timeout=CONCLUDE_TIMEOUT, interval=1.0), (
         "experiment never reached a terminal teardown (no experiment.torn_down / "
