@@ -18,7 +18,7 @@ from lib import bluez_dbus
 
 from .adapter_manager import AdapterManager
 from .bluez_records import RecordOutcome, write_device_record
-from .bluez_reload import BluezReloader
+from .bluez_reload import BluezReloader, PendingRecord
 from .config import DEBUG, get_adapter_routing_default, get_poll_interval
 from .metrics import (
     pairing_adapter_device_count,
@@ -171,6 +171,8 @@ class USBPairing:
         self.bluez_reloader = BluezReloader()
         # BlueZ storage, for the device record of a controller BlueZ does not know (UC-001 BR-008)
         self.bluetooth_dir: Path = DEFAULT_BLUETOOTH_DIR
+        # Serials whose record waits for a deferred restart: re-paired once unplugged and replugged
+        self._replug_retries: set[str] = set()
 
     def _get_backend(self) -> tuple[PairingBackend, str]:
         """Return the cached backend, or resolve a new one.
@@ -237,7 +239,7 @@ class USBPairing:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 return False
 
-    async def bluez_trust_controller(self, serial: str, hci: str) -> bool:
+    async def bluez_trust_controller(self, serial: str, hci: str) -> str:
         """Trust a controller on adapter ``hci`` so BlueZ accepts it later (UC-001 step 5, BR-007).
 
         Sets ``Device1.Trusted`` on ``/org/bluez/<hci>/dev_<address>``, the copy on
@@ -249,6 +251,9 @@ class USBPairing:
         Retries once after a short delay in case BlueZ is busy, but not when
         BlueZ has no device object for the address on that adapter. A failure
         is non-fatal (A2).
+
+        Returns the ``pairing.trusted`` span value: ``true``, ``false`` (BlueZ
+        error) or ``unknown_object`` (no device object on that adapter yet).
         """
         path = bluez_dbus.device_object_path(hci, serial)
         logger.info(f"Trusting {serial} on {hci} ({path})")
@@ -257,11 +262,11 @@ class USBPairing:
                 bus = await bluez_dbus.get_system_bus()
                 await bluez_dbus.set_device_property(bus, path, "Trusted", Variant("b", True))
                 logger.info(f"Trusted {serial} on {hci}")
-                return True
+                return "true"
             except bluez_dbus.DBusError as e:
                 if e.error_name in _UNKNOWN_DEVICE_ERRORS:
                     logger.warning(f"BlueZ does not know {serial} on {hci} yet; not trusted ({e.error_name})")
-                    return False
+                    return "unknown_object"
                 logger.warning(f"Trust attempt {attempt + 1} for {serial} on {hci} failed: {e.error_name}: {e}")
             except Exception as e:
                 logger.warning(f"Trust attempt {attempt + 1} for {serial} on {hci} failed: {e}")
@@ -270,7 +275,7 @@ class USBPairing:
 
         # Trust failure is non-fatal: the agent can still handle the PIN at connect time
         logger.warning(f"Trusting {serial} on {hci} failed, continuing anyway")
-        return False
+        return "false"
 
     async def write_bluez_record(self, serial: str, adapter_address: str, product_id: int) -> RecordOutcome | None:
         """Write the BlueZ device record when BlueZ does not know the controller on that adapter.
@@ -357,14 +362,20 @@ class USBPairing:
         record = await self.write_bluez_record(serial, adapter.address, product_id)
         span.set_attribute("pairing.bluez_record", record.value if record else "known")
 
-        # bluetoothd reads a record only at start; restart only as pairing.bluez_restart_mode
-        # allows (UC-001 BR-005): a restart powers every adapter off and drops every
-        # connected controller, so when_idle defers it while a real game runs.
-        restart = await self.bluez_reloader.after_pairing(record_written=bool(record and record.needs_reload))
-        span.set_attribute("pairing.bluez_restart", restart)
+        # bluetoothd reads a record only at start; the poll restarts it once after all
+        # its pairings, as pairing.bluez_restart_mode allows (UC-001 BR-005): a restart
+        # powers every adapter off and drops every connected controller, so when_idle
+        # defers it while a real game runs.
+        pending = None
+        if record is not None and record.needs_reload:
+            pending = PendingRecord(
+                normalize_address(adapter.address) or adapter.address, serial, product_id, self.bluetooth_dir
+            )
+        span.set_attribute("pairing.bluez_restart", self.bluez_reloader.request(pending))
 
-        # Trust it on the adapter it was paired to (BR-007; for ZCM2 the agent handles the PIN)
-        await self.bluez_trust_controller(serial, adapter.hci)
+        # Trust it on the adapter it was paired to (BR-007; for ZCM2 the agent handles the PIN).
+        # A new record is trusted already; BlueZ has no device object for it until the restart.
+        span.set_attribute("pairing.trusted", await self.bluez_trust_controller(serial, adapter.hci))
 
         # Mark as verified so we don't re-process every poll cycle
         self._verified_serials.add(serial)
@@ -458,11 +469,6 @@ class USBPairing:
                 self._current_backend_name = backend_name
             span.set_attribute("pairing.backend", backend_name)
 
-            # A restart deferred by a running real game (UC-001 A6, BR-005)
-            if self.bluez_reloader.pending:
-                async with self._pairing_lock:
-                    span.set_attribute("pairing.bluez_restart", await self.bluez_reloader.run_pending())
-
             # Reset gauge before enumeration (prevents stale value if backend raises)
             pairing_usb_controllers.set(0)
 
@@ -478,14 +484,38 @@ class USBPairing:
                 if path is not None and self._usb_paths.get(address) == path
             }
             span.set_attribute("controllers.count", len(controllers))
+            self._forget_unplugged_deferred()
 
             if not controllers:
                 logger.debug("No USB controllers found")
-                return
 
             # Process each controller
             for controller in controllers:
                 await self.process_controller(controller.device_path, controller.serial, controller.product_id)
+
+            # One restart for every pairing of this poll, or one deferred earlier (UC-001 A6, BR-005)
+            await self._run_pending_restart(span)
+
+    async def _run_pending_restart(self, span) -> None:
+        """Run the pending bluetoothd restart under the pairing lock (UC-005 A6)."""
+        if not self.bluez_reloader.pending:
+            return
+        async with self._pairing_lock:
+            waiting = [record.controller for record in self.bluez_reloader.records.values()]
+            outcome = await self.bluez_reloader.run_pending()
+        span.set_attribute("pairing.bluez_restart", outcome)
+        if outcome == "deferred":
+            # Unplugging and plugging it in again pairs it again and rewrites a lost record
+            self._replug_retries.update(waiting)
+        else:
+            self._replug_retries.clear()
+
+    def _forget_unplugged_deferred(self) -> None:
+        """A controller whose record waits for a deferred restart is paired again after a replug."""
+        for serial in list(self._replug_retries):
+            if normalize_address(serial) not in self._usb_paths:
+                self._verified_serials.discard(serial)
+                self._replug_retries.discard(serial)
 
     async def run_loop(self) -> None:
         """USB polling loop.

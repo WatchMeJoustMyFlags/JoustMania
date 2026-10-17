@@ -16,24 +16,45 @@ Existing files are never overwritten: they may hold BlueZ's own pairing data
 (e.g. a ZCM2 link key).
 
 The SDP record and the record layout come from PS Move API
-(https://github.com/thp/psmoveapi, src/platform/psmove_port_linux.cpp):
-Copyright (c) 2016, 2017 Thomas Perl <m@thp.io>, Copyright (c) 2019, 2020
-Alexander Nitsch <nitsch@ht.tu-berlin.de>. All rights reserved. Redistribution
-and use in source and binary forms, with or without modification, are
-permitted provided that the following conditions are met: 1. Redistributions of
-source code must retain the above copyright notice, this list of conditions and
-the following disclaimer. 2. Redistributions in binary form must reproduce the
-above copyright notice, this list of conditions and the following disclaimer in
-the documentation and/or other materials provided with the distribution.
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED (BSD-2-Clause).
+(https://github.com/thp/psmoveapi, src/platform/psmove_port_linux.cpp, whose
+header reads "Copyright (c) 2016, 2017 Thomas Perl <m@thp.io>" and
+"Copyright (c) 2019, 2020 Alexander Nitsch <nitsch@ht.tu-berlin.de>"),
+licensed as follows (verbatim from psmoveapi's COPYING):
+
+Copyright (c) 2011, 2012 Thomas Perl <m@thp.io>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+   1. Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+
+   2. Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
 """
 
 from __future__ import annotations
 
+import configparser
+import contextlib
 import enum
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 from lib.psmove_hid import ALL_PRODUCT_IDS, VENDOR_ID
@@ -101,14 +122,39 @@ def _cache_contents() -> str:
 
 
 def _create_private(path: Path, contents: str) -> bool:
-    """Create ``path`` with mode 0600; False (untouched) when it already exists."""
+    """Create ``path`` (mode 0600) atomically; False (untouched) when it already exists.
+
+    Written to a temporary file in the same directory, fsynced, then hard-linked
+    to its name (``os.link`` fails if the name exists, so an existing file is
+    never replaced). The temporary file is always removed: a failure leaves no
+    partial file behind.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
+        with os.fdopen(fd, "w") as handle:  # mkstemp creates it with mode 0600
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(tmp_name, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_name)
+
+
+def _is_valid_info(path: Path) -> bool:
+    """Whether an existing ``info`` file is something bluetoothd can load (a [General] section)."""
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        if path.stat().st_size == 0:
+            return False
+        parser.read(path)
+    except (OSError, configparser.Error):
         return False
-    with os.fdopen(fd, "w") as handle:
-        handle.write(contents)
-    return True
+    return parser.has_section("General")
 
 
 def write_device_record(
@@ -119,7 +165,9 @@ def write_device_record(
 ) -> RecordOutcome:
     """Write the BlueZ record of a PS Move on ``adapter_address`` (UC-001 A7, BR-008).
 
-    Never raises; failures come back as an A8 outcome and are logged.
+    Never raises; failures come back as an A8 outcome and are logged. An
+    existing ``info`` file is kept; if it is empty or unreadable the outcome is
+    FAILED (no restart is asked for a record bluetoothd cannot load).
     """
     adapter = normalize_address(adapter_address)
     controller = normalize_address(controller_address)
@@ -135,19 +183,36 @@ def write_device_record(
         logger.error(f"No BlueZ record for {controller}: BlueZ keeps no storage for adapter {adapter}")
         return RecordOutcome.NO_ADAPTER_STORAGE
 
+    device_dir = adapter_dir / controller
+    info = device_dir / "info"
+    created_dir = written = False
     try:
-        device_dir = adapter_dir / controller
-        device_dir.mkdir(mode=0o700, exist_ok=True)
-        written = _create_private(device_dir / "info", _info_contents(product_id))
+        if not device_dir.is_dir():
+            device_dir.mkdir(mode=0o700)
+            created_dir = True
+        written = _create_private(info, _info_contents(product_id))
         cache_dir = adapter_dir / "cache"
         cache_dir.mkdir(mode=0o700, exist_ok=True)
         _create_private(cache_dir / controller, _cache_contents())
     except OSError as e:
         logger.error(f"Cannot write the BlueZ record of {controller} on {adapter}: {e}")
+        _remove_if_ours(device_dir if created_dir else None, info if written else None)
         return RecordOutcome.FAILED
 
     if not written:
+        if not _is_valid_info(info):
+            logger.error(f"BlueZ record of {controller} on {adapter} exists but is empty or unreadable: {info}")
+            return RecordOutcome.FAILED
         logger.info(f"BlueZ record of {controller} on {adapter} exists already; kept as is")
         return RecordOutcome.EXISTS
     logger.info(f"Wrote the BlueZ record of {controller} on {adapter} (product {product_id:#06x})")
     return RecordOutcome.WRITTEN
+
+
+def _remove_if_ours(device_dir: Path | None, info: Path | None) -> None:
+    """Undo what this call created (its info file, its device directory): nothing partial stays."""
+    with contextlib.suppress(OSError):
+        if info is not None:
+            info.unlink(missing_ok=True)
+        if device_dir is not None:
+            device_dir.rmdir()

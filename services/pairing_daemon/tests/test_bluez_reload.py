@@ -5,12 +5,14 @@ import io
 import json
 import threading
 import urllib.request
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from psmove_pairing import bluez_reload
-from psmove_pairing.bluez_reload import BluezReloader, primary_game_busy
+from psmove_pairing.bluez_records import RecordOutcome
+from psmove_pairing.bluez_reload import BluezReloader, PendingRecord, primary_game_busy
 
 pytestmark = pytest.mark.asyncio
 
@@ -25,13 +27,27 @@ def _mode(mode: str):
     return patch("psmove_pairing.bluez_reload.get_bluez_restart_mode", return_value=mode)
 
 
+ADAPTER = "AA:BB:CC:DD:EE:01"
+CONTROLLER = "00:06:F7:AA:BB:CC"
+
+
+def _record(bluetooth_dir: Path | None = None, controller: str = CONTROLLER) -> PendingRecord:
+    return PendingRecord(ADAPTER, controller, 0x03D5, bluetooth_dir or Path("/nonexistent-bluez-storage"))
+
+
+async def _after_pairing(reloader: BluezReloader, record_written: bool) -> str:
+    """One pairing (request) followed by the poll's single run_pending."""
+    reloader.request(_record() if record_written else None)
+    return await reloader.run_pending()
+
+
 class TestBluezReloader:
     @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
     @pytest.mark.parametrize("record_written", [False, True])
     async def test_never_restarts_nothing(self, record_written):
         reloader, game_busy, restart = _reloader()
         with _mode("never"):
-            assert await reloader.after_pairing(record_written) == "skipped"
+            assert await _after_pairing(reloader, record_written) == "skipped"
         restart.assert_not_awaited()
         game_busy.assert_not_awaited()
         assert reloader.pending is False
@@ -41,7 +57,7 @@ class TestBluezReloader:
     async def test_always_restarts_even_during_a_game(self, record_written):
         reloader, game_busy, restart = _reloader(busy=True)
         with _mode("always"):
-            assert await reloader.after_pairing(record_written) == "restarted"
+            assert await _after_pairing(reloader, record_written) == "restarted"
         restart.assert_awaited_once()
         game_busy.assert_not_awaited()
 
@@ -49,7 +65,7 @@ class TestBluezReloader:
     async def test_when_idle_needs_a_new_device_record(self):
         reloader, game_busy, restart = _reloader()
         with _mode("when_idle"):
-            assert await reloader.after_pairing(record_written=False) == "skipped"
+            assert await _after_pairing(reloader, False) == "skipped"
         restart.assert_not_awaited()
         game_busy.assert_not_awaited()
 
@@ -57,7 +73,7 @@ class TestBluezReloader:
     async def test_when_idle_restarts_when_no_real_game_runs(self):
         reloader, _game_busy, restart = _reloader(busy=False)
         with _mode("when_idle"):
-            assert await reloader.after_pairing(record_written=True) == "restarted"
+            assert await _after_pairing(reloader, True) == "restarted"
         restart.assert_awaited_once()
         assert reloader.pending is False
 
@@ -65,7 +81,7 @@ class TestBluezReloader:
     async def test_when_idle_defers_during_a_real_game_and_runs_after_it(self):
         reloader, game_busy, restart = _reloader(busy=True)
         with _mode("when_idle"):
-            assert await reloader.after_pairing(record_written=True) == "deferred"
+            assert await _after_pairing(reloader, True) == "deferred"
             assert reloader.pending is True
             assert await reloader.run_pending() == "deferred"
             restart.assert_not_awaited()
@@ -79,7 +95,7 @@ class TestBluezReloader:
     async def test_switching_to_never_drops_a_pending_restart(self):
         reloader, _game_busy, restart = _reloader(busy=True)
         with _mode("when_idle"):
-            await reloader.after_pairing(record_written=True)
+            await _after_pairing(reloader, True)
         with _mode("never"):
             assert await reloader.run_pending() == "skipped"
         assert reloader.pending is False
@@ -90,8 +106,82 @@ class TestBluezReloader:
         reloader, _game_busy, restart = _reloader()
         restart.side_effect = RuntimeError("systemd said no")
         with _mode("always"):
-            assert await reloader.after_pairing(record_written=False) == "failed"
+            assert await _after_pairing(reloader, False) == "failed"
         assert reloader.pending is False
+
+
+class TestOneRestartPerPoll:
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_three_new_controllers_in_one_poll_cost_one_restart(self):
+        reloader, _game_busy, restart = _reloader()
+        with _mode("when_idle"):
+            for i in range(3):
+                assert reloader.request(_record(controller=f"00:06:F7:00:00:0{i}")) == "pending"
+            assert await reloader.run_pending() == "restarted"
+            assert await reloader.run_pending() == "skipped"
+        restart.assert_awaited_once()
+        assert reloader.records == {}
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_request_without_a_record_keeps_an_earlier_pending_restart(self):
+        reloader, _game_busy, _restart = _reloader(busy=True)
+        with _mode("when_idle"):
+            reloader.request(_record())
+            assert await reloader.run_pending() == "deferred"
+            assert reloader.request(None) == "pending"  # a known controller paired meanwhile
+        assert reloader.pending is True
+
+
+class TestPendingRecordsSurviveTheWait:
+    """Review of #1476: bluetoothd may delete an unloaded stored record before the deferred restart."""
+
+    @pytest.fixture
+    def storage(self, tmp_path: Path) -> Path:
+        (tmp_path / ADAPTER).mkdir()
+        return tmp_path
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005", "BR-008"])
+    async def test_record_deleted_during_the_game_is_written_again_before_the_restart(self, storage):
+        from psmove_pairing.bluez_records import write_device_record
+
+        reloader, game_busy, restart = _reloader(busy=True)
+        assert write_device_record(ADAPTER, CONTROLLER, 0x03D5, storage) is RecordOutcome.WRITTEN
+        info = storage / ADAPTER / CONTROLLER / "info"
+        seen_at_restart = []
+        restart.side_effect = lambda: seen_at_restart.append(info.is_file())
+
+        with _mode("when_idle"):
+            reloader.request(_record(storage))
+            assert await reloader.run_pending() == "deferred"
+            info.unlink()  # bluetoothd removed the stored record (device_remove_stored)
+            info.parent.rmdir()
+            game_busy.return_value = False
+            assert await reloader.run_pending() == "restarted"
+
+        assert seen_at_restart == [True]
+        assert "Trusted=true" in info.read_text()
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-008"])
+    async def test_existing_record_is_left_alone_before_the_restart(self, storage):
+        reloader, _game_busy, _restart = _reloader()
+        device = storage / ADAPTER / CONTROLLER
+        device.mkdir()
+        (device / "info").write_text("[General]\nName=Motion Controller\n\n[LinkKey]\nKey=00\n")
+        with _mode("when_idle"):
+            reloader.request(_record(storage))
+            await reloader.run_pending()
+        assert "[LinkKey]" in (device / "info").read_text()
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_never_drops_pending_records(self):
+        reloader, _game_busy, restart = _reloader(busy=True)
+        with _mode("when_idle"):
+            reloader.request(_record())
+            await reloader.run_pending()
+        with _mode("never"):
+            assert await reloader.run_pending() == "skipped"
+        assert reloader.records == {}
+        restart.assert_not_awaited()
 
 
 class _Response(io.BytesIO):

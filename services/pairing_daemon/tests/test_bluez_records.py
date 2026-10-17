@@ -1,8 +1,10 @@
 """BlueZ device record for a controller BlueZ does not know (UC-001 A7, A8, BR-008; #1466)."""
 
 import configparser
+import os
 import stat
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -142,3 +144,57 @@ class TestWriteDeviceRecord:
             pytest.skip("root can write a read-only directory")
         assert outcome is RecordOutcome.FAILED
         assert not outcome.needs_reload
+
+
+class TestNoPartialRecord:
+    """A failed write leaves no partial file (review of #1476): temp + fsync + link."""
+
+    @staticmethod
+    def _all_files(root: Path) -> list[str]:
+        return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+    @pytest.mark.uc("UC-001", flow="A8", br=["BR-008"])
+    def test_failed_fsync_leaves_nothing(self, bluetooth_dir):
+        with patch("psmove_pairing.bluez_records.os.fsync", side_effect=OSError("disk full")):
+            outcome = write_device_record(ADAPTER, CONTROLLER, 0x03D5, bluetooth_dir)
+
+        assert outcome is RecordOutcome.FAILED
+        assert self._all_files(bluetooth_dir) == [ADAPTER]
+
+    @pytest.mark.uc("UC-001", flow="A8", br=["BR-008"])
+    def test_failed_cache_write_removes_the_info_it_wrote(self, bluetooth_dir):
+        real_link = os.link
+
+        def link(src, dst):
+            if "cache" in str(dst):
+                raise OSError("no space left")
+            return real_link(src, dst)
+
+        with patch("psmove_pairing.bluez_records.os.link", side_effect=link):
+            outcome = write_device_record(ADAPTER, CONTROLLER, 0x03D5, bluetooth_dir)
+
+        assert outcome is RecordOutcome.FAILED
+        assert not (bluetooth_dir / ADAPTER / CONTROLLER).exists()
+        assert not [p for p in self._all_files(bluetooth_dir) if p.endswith(".tmp")]
+
+    @pytest.mark.uc("UC-001", flow="A8", br=["BR-008"])
+    def test_existing_device_directory_is_kept_on_failure(self, bluetooth_dir):
+        (bluetooth_dir / ADAPTER / CONTROLLER).mkdir()
+        with patch("psmove_pairing.bluez_records.os.fsync", side_effect=OSError("disk full")):
+            assert write_device_record(ADAPTER, CONTROLLER, 0x03D5, bluetooth_dir) is RecordOutcome.FAILED
+
+        assert (bluetooth_dir / ADAPTER / CONTROLLER).is_dir()
+        assert list((bluetooth_dir / ADAPTER / CONTROLLER).iterdir()) == []
+
+    @pytest.mark.uc("UC-001", flow="A8", br=["BR-008"])
+    @pytest.mark.parametrize("contents", ["", "garbage without sections", "[General\n"])
+    def test_empty_or_invalid_existing_info_fails_without_asking_for_a_restart(self, bluetooth_dir, contents):
+        device_dir = bluetooth_dir / ADAPTER / CONTROLLER
+        device_dir.mkdir()
+        (device_dir / "info").write_text(contents)
+
+        outcome = write_device_record(ADAPTER, CONTROLLER, 0x03D5, bluetooth_dir)
+
+        assert outcome is RecordOutcome.FAILED
+        assert not outcome.needs_reload
+        assert (device_dir / "info").read_text() == contents  # still never overwritten
