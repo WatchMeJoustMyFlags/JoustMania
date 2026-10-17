@@ -268,8 +268,8 @@ analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's
 
 ### 6.2 Python metric catalog
 
-Generated from the `Counter` / `Gauge` / `Histogram` definitions in `services/*/metrics.py`, `lib/grpc_metrics.py`
-and `lib/flag_eval_visibility.py` at 84c3ba15. **Emitted** = some non-test code in the defining service records it
+One row per `Counter` / `Gauge` / `Histogram` definition in `services/*/metrics.py`, `lib/grpc_metrics.py`
+and `lib/flag_eval_visibility.py`; the contract test above checks the rows against the code. **Emitted** = some non-test code in the defining service records it
 (`.inc` / `.set` / `.observe` / `.labels`); **Consumers** = the directories whose dashboards (`grafana`), agent extractor (`agent`), SPA (`dashboard`), demo harness (`tools`) or scripts
 (`scripts`) name it. Types: counter (C), gauge (G, observable), histogram (H). 13 names are defined but never
 recorded by any service; they are listed so a consumer does not trust them.

@@ -140,11 +140,17 @@ jobs:
             # Telemetry contract (#1357) and infra config tests (#1365):
             # producers, agent extractors, dashboards, envoy and the
             # collector config, plus the compose file (image tags, host ports).
+            # The §6 catalog test (#1456) also reads docs/specs/telemetry.md and
+            # scans scripts/ and tools/ for consumers. A docs-only edit to the
+            # spec runs only this ~30 s job; `non_docs` still skips integration.
             telemetry:
               - 'services/**'
               - 'lib/**'
               - 'tests/contract/**'
               - 'docker-compose.yml'
+              - 'docs/specs/telemetry.md'
+              - 'scripts/**'
+              - 'tools/**'
             # flagd contract tier (#1422): a single real flagd on services/flagd/ci,
             # the flag readers/writers it checks (coordinator, agent, lib), the
             # flagd image tag and --uri list (compose).
