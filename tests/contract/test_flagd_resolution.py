@@ -285,6 +285,66 @@ def _coordinator_sources() -> dict[str, str]:
     }
 
 
+def _import_aliases(tree: ast.AST) -> dict[str, str]:
+    """``alias -> real name`` for ``from ... import read_float_flag as rf``."""
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+    return aliases
+
+
+def _is_read_name(name: str | None) -> bool:
+    """A read helper, wrapper or OpenFeature getter name."""
+    return bool(
+        name
+        and (
+            name in _READ_HELPERS
+            or name in _WRAPPERS
+            or _READ_HELPER_SHAPE.match(name)
+            or _GETTER_CALL.match(name)
+        )
+    )
+
+
+def _dynamic_read_reasons(
+    tree: ast.AST, aliases: dict[str, str]
+) -> list[tuple[ast.AST, str]]:
+    """Reads the scan cannot follow: a helper or getter referenced without being
+    called (``functools.partial(read_float_flag, ...)``, ``f = client.get_float_value``)
+    and ``getattr`` with a getter/helper-shaped or computed (f-string) name."""
+    called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    reasons = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and _call_name(node.func) == "getattr"
+            and len(node.args) >= 2
+        ):
+            attr = node.args[1]
+            if isinstance(attr, ast.JoinedStr):
+                prefix = "".join(
+                    v.value for v in attr.values if isinstance(v, ast.Constant)
+                )
+                if prefix.startswith(("get_", "read_")):
+                    reasons.append(
+                        (node, f"getattr with a computed name {ast.unparse(attr)}")
+                    )
+            elif _is_read_name(_literal(attr)):
+                reasons.append((node, f"getattr({_literal(attr)!r})"))
+        elif (
+            isinstance(node, (ast.Name, ast.Attribute))
+            and isinstance(node.ctx, ast.Load)
+            and id(node) not in called
+        ):
+            name = _call_name(node)
+            if _is_read_name(aliases.get(name, name)):
+                reasons.append((node, f"{ast.unparse(node)} referenced but not called"))
+    return reasons
+
+
 def scan_flag_reads(sources: dict[str, str]) -> tuple[list[FlagRead], list[str]]:
     """Every flag read in ``sources`` (path -> code), with its getter.
 
@@ -297,12 +357,16 @@ def scan_flag_reads(sources: dict[str, str]) -> tuple[list[FlagRead], list[str]]
         tree = ast.parse(source)
         domains = _client_domains(tree)
         parents = _enclosing_functions(tree)
+        aliases = _import_aliases(tree)
         filename = Path(rel).name
+        for node, reason in _dynamic_read_reasons(tree, aliases):
+            uncovered.append(f"{rel}:{node.lineno} {reason}")
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
             name = _call_name(func)
+            name = aliases.get(name, name)
             where = f"{rel}:{node.lineno}"
             enclosing = getattr(parents.get(node), "name", "<module>")
             if name in _READ_HELPERS:
@@ -324,9 +388,12 @@ def scan_flag_reads(sources: dict[str, str]) -> tuple[list[FlagRead], list[str]]
                     reads.append(FlagRead(flag_set, _literal(key), getter, where))
                 else:
                     uncovered.append(f"{where} {name}: non-literal key")
-            elif isinstance(func, ast.Attribute) and _GETTER_CALL.match(func.attr):
-                getter = _GETTER_CALL.match(func.attr).group(1)
-                flag_set = domains.get(ast.unparse(func.value))
+            elif name and _GETTER_CALL.match(name):
+                getter = _GETTER_CALL.match(name).group(1)
+                receiver = func.value if isinstance(func, ast.Attribute) else None
+                flag_set = (
+                    domains.get(ast.unparse(receiver)) if receiver is not None else None
+                )
                 key_node = _arg(node, 0, "flag_key")
                 key_expr = ast.unparse(key_node) if key_node is not None else "<none>"
                 if flag_set and _literal(key_node):
@@ -533,6 +600,34 @@ _SCAN_FIXTURES = {
         "def other(spec, client):\n    client.get_float_value(spec.flag_key, 1.0)\n",
         None,
     ),
+    "helper_import_alias": (
+        'from lib.feature_flags import read_float_flag as rf\nrf("game", "k", 1.0)\n',
+        ("game", "k", "float"),
+    ),
+    "helper_import_alias_non_literal": (
+        "from lib.feature_flags import read_float_flag as rf\nrf(domain, key, 1.0)\n",
+        None,
+    ),
+    "helper_partial": (
+        'import functools\nf = functools.partial(read_float_flag, "game")\n',
+        None,
+    ),
+    "helper_alias_partial": (
+        'from functools import partial\nfrom lib.feature_flags import read_string_flag as rs\np = partial(rs, "game")\n',
+        None,
+    ),
+    "getter_bound_reference": (
+        'c = get_flag_client("game")\nf = c.get_float_value\n',
+        None,
+    ),
+    "getattr_computed_getter": (
+        'def f(c, kind):\n    getattr(c, f"get_{kind}_value")("k", 0)\n',
+        None,
+    ),
+    "getattr_literal_getter": (
+        'def f(c):\n    getattr(c, "get_float_value")("k", 0.0)\n',
+        None,
+    ),
     "getter_keyword_key": (
         'c = get_flag_client("game")\ndef f():\n    c.get_integer_value(flag_key="k", default_value=1)\n',
         ("game", "k", "integer"),
@@ -552,6 +647,48 @@ def test_scanner_catches_evasions(case):
     else:
         assert not uncovered, f"{case}: unexpectedly uncovered {uncovered}"
         assert [(r.flag_set, r.key, r.getter) for r in reads] == [expected]
+
+
+def test_contract_deps_match_uv_lock():
+    """The Makefile's CONTRACT_DEPS pins are the uv.lock versions (one source of truth)."""
+    import tomllib
+
+    makefile = (ic.REPO_ROOT / "Makefile").read_text()
+    line = next(
+        line for line in makefile.splitlines() if line.startswith("CONTRACT_DEPS")
+    )
+    pins = dict(re.findall(r"'(openfeature-[\w-]+)==([^']+)'", line))
+    assert set(pins) == {"openfeature-sdk", "openfeature-provider-flagd"}, (
+        f"CONTRACT_DEPS must pin both: {line}"
+    )
+    lock = tomllib.loads((ic.REPO_ROOT / "uv.lock").read_text())
+    locked = {
+        pkg["name"]: pkg["version"] for pkg in lock["package"] if pkg["name"] in pins
+    }
+    assert pins == locked, f"Makefile CONTRACT_DEPS {pins} != uv.lock {locked}"
+
+
+def test_stale_container_rule_spares_live_and_foreign_runs():
+    """remove_stale_containers only removes orphans, never a parallel live run."""
+    now = 1_000_000.0
+    me = {
+        fh.OWNER_HOST_LABEL: "h",
+        fh.OWNER_PID_LABEL: str(os.getpid()),
+        fh.STARTED_LABEL: str(int(now)),
+    }
+    assert not fh.is_stale(me, host="h", now=now), "live owner on this host"
+    other_host = {**me, fh.OWNER_HOST_LABEL: "elsewhere", fh.OWNER_PID_LABEL: "1"}
+    assert not fh.is_stale(other_host, host="h", now=now), (
+        "owner on another host, within age"
+    )
+    dead = {**me, fh.OWNER_PID_LABEL: str(2**22 + 12345)}  # above Linux pid_max default
+    assert fh.is_stale(dead, host="h", now=now), "owner process gone"
+    old = {
+        **other_host,
+        fh.STARTED_LABEL: str(int(now - fh.MAX_CONTAINER_AGE_SECONDS - 1)),
+    }
+    assert fh.is_stale(old, host="h", now=now), "older than the worst-case runtime"
+    assert fh.is_stale({}, host="h", now=now), "unlabelled legacy container"
 
 
 def test_intervention_specs_cover_every_intervention_flag():

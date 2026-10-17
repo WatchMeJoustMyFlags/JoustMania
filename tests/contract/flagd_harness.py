@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
+import socket
 import subprocess
 import time
 import uuid
@@ -39,9 +41,17 @@ REWRITE_INTERVAL_SECONDS = 2.0
 # restored content (flagd reloads a whole file at once).
 RESTORE_PROBE_FLAG = "contract_restore_epoch"
 
-# Label on every contract flagd container, so a run can remove containers a
-# killed earlier run left behind (``--rm`` only fires on a clean stop).
+# Labels on every contract flagd container, so a run can remove containers a
+# killed earlier run left behind (``--rm`` only fires on a clean stop) without
+# touching a parallel run's container (another worktree, same docker daemon).
 CONTAINER_LABEL = "joustmania.contract=flagd"
+OWNER_PID_LABEL = "joustmania.contract.owner_pid"
+OWNER_HOST_LABEL = "joustmania.contract.owner_host"
+STARTED_LABEL = "joustmania.contract.started"
+# Worst-case lifetime of one module run (startup + every test's deadlines, incl.
+# NFR-014's 12 samples). An older container is orphaned whoever owns it; this
+# also covers owners on another host, whose pid cannot be checked here.
+MAX_CONTAINER_AGE_SECONDS = 30 * 60
 
 
 def flagd_command() -> list[str]:
@@ -120,6 +130,9 @@ class FlagdContainer:
             [
                 "docker", "run", "-d", "--rm", "--name", self.name,
                 "--label", CONTAINER_LABEL,
+                "--label", f"{OWNER_PID_LABEL}={os.getpid()}",
+                "--label", f"{OWNER_HOST_LABEL}={socket.gethostname()}",
+                "--label", f"{STARTED_LABEL}={int(time.time())}",
                 "-v", f"{self.flag_dir}:/etc/flagd:ro",
                 "-p", f"{self.host}::{EVAL_PORT}", "-p", f"{self.host}::{SYNC_PORT}",
                 ic.compose_image("flagd"), *flagd_command(),
@@ -199,14 +212,59 @@ class FlagdContainer:
             )
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by another user
+    return True
+
+
+def is_stale(labels: dict[str, str], *, host: str, now: float) -> bool:
+    """True when a contract container's owning run is gone.
+
+    Stale = older than MAX_CONTAINER_AGE_SECONDS, or started on THIS host by a
+    process that no longer exists. A container from a live run (any worktree)
+    or from another host within the age bound is left alone.
+    """
+    try:
+        started = float(labels.get(STARTED_LABEL, ""))
+    except ValueError:
+        started = 0.0  # unlabelled (pre-owner-label) container: treat as old
+    if now - started > MAX_CONTAINER_AGE_SECONDS:
+        return True
+    if labels.get(OWNER_HOST_LABEL) != host:
+        return False
+    try:
+        pid = int(labels.get(OWNER_PID_LABEL, ""))
+    except ValueError:
+        return True
+    return not _pid_alive(pid)
+
+
 def remove_stale_containers() -> None:
-    """Remove contract flagd containers left by an interrupted earlier run."""
+    """Remove contract flagd containers whose owning run is gone (see is_stale)."""
     ids = subprocess.run(
         ["docker", "ps", "-aq", "--filter", f"label={CONTAINER_LABEL}"],
         capture_output=True, text=True, check=False,
     ).stdout.split()  # fmt: skip
-    if ids:
-        subprocess.run(["docker", "rm", "-f", *ids], capture_output=True, check=False)
+    host, now = socket.gethostname(), time.time()
+    stale = []
+    for container_id in ids:
+        out = subprocess.run(
+            ["docker", "inspect", "--format", "{{json .Config.Labels}}", container_id],
+            capture_output=True, text=True, check=False,
+        ).stdout  # fmt: skip
+        try:
+            labels = json.loads(out) or {}
+        except json.JSONDecodeError:
+            continue  # gone meanwhile
+        if is_stale(labels, host=host, now=now):
+            stale.append(container_id)
+    if stale:
+        subprocess.run(["docker", "rm", "-f", *stale], capture_output=True, check=False)
 
 
 def copy_ci_flag_dir(dest: Path) -> Path:
