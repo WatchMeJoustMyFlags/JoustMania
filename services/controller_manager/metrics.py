@@ -128,7 +128,7 @@ active_controllers = Gauge("active_controllers_total", "Number of currently acti
 # loop picking it up to the StreamGameplayData send. Stale replays keep aging, so
 # a stalled backend shows up here. Excludes the Bluetooth/HID hop before the poll
 # (SensorData has no hardware timestamp). Recorded on game (filtered) gameplay
-# streams only, not the dashboard's unfiltered one. Feeds the backend-comparison latency panels.
+# streams only, not the dashboard's unfiltered one. No dashboard panel since #1427; query it in Grafana Explore.
 controller_input_lag_seconds = Histogram(
     "controller_input_lag_seconds",
     "Age of the controller sample when sent on the gameplay stream (CM poll pick-up to gRPC send)",

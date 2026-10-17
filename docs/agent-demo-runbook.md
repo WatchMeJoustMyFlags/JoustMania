@@ -125,7 +125,7 @@ The whole stack is proxied through envoy on port **80**:
       `./scripts/agent-backend.sh claude` an `agent.decide` span in Jaeger has
       `decide.backend=claude` (not a `decide.fallback_reason`).
 - [ ] **Dashboards load**: `http://localhost/` Agent + Experiments tabs render;
-      Grafana **Agent Operations — Fleet** and **Performance Experiment** open.
+      Grafana **Agent Operations — Fleet** opens.
 - [ ] **Known-good flag state**: gates set as above; production
       `services/flagd/agent.json` defaults **untouched** (the helper scripts
       only write the `ci/` dir).
@@ -144,8 +144,7 @@ The agent runs a **cohort loop**: it declares the seeded experiment, spreads
 arms across **shadow** games, scores them, and reaches a **verdict**
 (`significant` / `inconclusive` via a Cohen-d effect size on the objective).
 
-- **Watch it on**: the dashboard **Experiments** tab (`http://localhost/`) and
-  the Grafana **Performance Experiment: Backend Comparison** dashboard; in Jaeger
+- **Watch it on**: the dashboard **Experiments** tab (`http://localhost/`); in Jaeger
   (service `agent`) the `experiment.declared` → `experiment.started` →
   `experiment.game_assigned` → conclude/verdict spans.
 - **Talking point**: the real game default is **never touched** — promotion gates

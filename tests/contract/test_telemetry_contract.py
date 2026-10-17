@@ -140,7 +140,9 @@ def test_inventory_parsers_find_the_known_surface(python_metrics, consumer_queri
     assert len(ti.spa_queries()) >= 2, (
         "dashboard SPA *_QUERY scan found too few queries"
     )
-    assert len(consumer_queries) >= 250, "dashboard query scan found too few queries"
+    # Parser sanity floor, not a dashboard inventory: 233 queries after #1427
+    # deleted four dashboards. Lower it when dashboards are consolidated.
+    assert len(consumer_queries) >= 200, "dashboard query scan found too few queries"
 
 
 @pytest.mark.parametrize(
