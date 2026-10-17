@@ -43,8 +43,8 @@ remote decisions only run for ``llm.eligible_game_kinds`` (``real`` by default:
 headless shadow games are rules-only). Concurrent games would therefore share
 every applied intervention, which would void the "nothing applied" assertions of
 the held / kill-switch / garbage cases; and the kill switch is a GLOBAL flag
-(same reasoning as the interventions_allowed note in
-test_parallel_intervention_flow.py). So each case runs one real menu game. The
+(like ``interventions_allowed``, read without a gameId). So each case runs one
+real menu game. The
 fake's request log is keyed by the game id parsed from the prompt, and every
 span assertion is scoped to that game id, so a straggling call from a previous
 game can never satisfy the current test.

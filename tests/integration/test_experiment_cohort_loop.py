@@ -163,7 +163,7 @@ CONCLUDE_TIMEOUT = 300.0
 # CONCLUDE_TIMEOUT. So the test must DRIVE THESE LIVE FLAGS DOWN (not just the
 # env), exactly as it drives the boolean gates. We write a bespoke ``it`` variant
 # rather than reuse an existing one so the values are explicit and small; flagd
-# tolerates extra variant keys (precedent: rewrite_edge_value / the suite's other
+# tolerates extra variant keys (precedent: the suite's other
 # numeric flag writers). intFlag/durationFlag read these via the TYPED getters
 # (IntValue/FloatValue) off the in-process resolver, so file values are honored.
 _TUNING = {

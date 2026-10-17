@@ -11,13 +11,15 @@ v0.16.0) serving a temporary copy of ``services/flagd/ci`` (see flagd_harness):
   TYPE_MISMATCH, so an intervention or calibration flag silently stops working
   (#903, #1127). The getter is derived from the coordinator source, not copied;
 - server-side targeting: the per-player ladder the agent's Writer writes, the
-  ``windows`` preset ladder, the rollout ladder the RolloutWriter walks, and
+  gameId-scoped ladders that keep concurrent games apart, the ``windows`` preset
+  ladder, the rollout ladder the RolloutWriter walks, and
   the shadow-only experiment rule (a REAL game never sees an experiment);
 - NFR-014: how long an in-place flag-file edit takes to reach live readers.
 
 These tests moved here from tests/integration (they never needed the game
 services): test_intervention_flow.py, test_f6_flow.py, test_rollout_plumbing.py,
-test_experiment_shadow_isolation.py and test_flag_propagation.py.
+test_experiment_shadow_isolation.py, test_flag_propagation.py and
+test_parallel_intervention_flow.py.
 
 Docker is required: a missing docker fails in CI (``CI`` set) and skips locally.
 """
@@ -883,6 +885,105 @@ def test_per_player_targeting_resolves_against_live_flagd(flagd, flag_files):
         assert abs(_eval(unknown) - 1.0) <= 0.01, (
             f"unknown resolved to {_eval(unknown)}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# 2b. gameId-scoped ladders (from test_parallel_intervention_flow.py)
+# --------------------------------------------------------------------------- #
+# The coordinator evaluates every intervention flag per live session with
+# ``{gameId, targetingKey=serial}`` (#838), so a rule on ``gameId`` scopes a
+# write to one game. The integration suite wrote these shapes to run
+# intervention games side by side; the scoping itself is a flagd property and
+# is checked here. The extra ``_branches`` / ``_reload_marker`` keys those
+# writers keep in the flag must not make flagd reject the file.
+GAME_A, GAME_B = "game_aaaaaaaaaaaa", "game_bbbbbbbbbbbb"  # ids contain "_"
+
+
+def _write_gameid_scoped(path: Path, serial: str) -> None:
+    doc = fh.load(path)
+    flags = doc["flags"]
+
+    level = flags["player_sensitivity_factor"]
+    level["variants"]["g_a_serial"] = 1.5
+    level["_branches"] = {"g_a_serial": {"gameId": GAME_A, "serial": serial}}
+    level["targeting"] = {
+        "if": [
+            {
+                "and": [
+                    {"===": [{"var": "gameId"}, GAME_A]},
+                    {"===": [{"var": "targetingKey"}, serial]},
+                ]
+            },
+            "g_a_serial",
+            "default",
+        ]
+    }
+    level["defaultVariant"] = "default"
+
+    state = flags["global_difficulty_factor"]
+    state["variants"]["g_a"] = 1.5
+    state["_branches"] = {"g_a": {"gameId": GAME_A, "serial": None}}
+    state["targeting"] = {
+        "if": [{"===": [{"var": "gameId"}, GAME_A]}, "g_a", "default"]
+    }
+    state["defaultVariant"] = "default"
+
+    edge = flags["eliminate_player"]
+    edge["variants"]["active"] = f"nonce1:{serial}"
+    edge["targeting"] = {"if": [{"===": [{"var": "gameId"}, GAME_A]}, "active", "none"]}
+    edge["defaultVariant"] = "none"
+    edge["_reload_marker"] = 1
+
+    fh.dump_in_place(path, doc)
+
+
+@pytest.mark.parametrize("resolver", ["rpc", "in_process"])
+def test_gameid_scoped_ladders_resolve_only_for_their_game(flagd, flag_files, resolver):
+    """A per-player level, a session state flag and an edge flag scoped to game
+    A resolve their written value for game A only (and the level for the
+    targeted serial only); game B and the un-targeted context get the neutral
+    default. This is what lets two intervention games share one flagd without
+    cross-talk.
+    """
+    path = flagd.file("interventions")
+    target, other = "MOCK0001", "MOCK0002"
+    _write_gameid_scoped(path, target)
+
+    def ctx(game_id: str | None, serial: str | None = None) -> EvaluationContext:
+        attrs = {"gameId": game_id} if game_id else {}
+        return EvaluationContext(targeting_key=serial, attributes=attrs)
+
+    with _ready_client(flagd, "interventions", resolver) as client:
+
+        def level(game_id, serial):
+            return client.get_float_value(
+                "player_sensitivity_factor", 1.0, ctx(game_id, serial)
+            )
+
+        def state(game_id):
+            return client.get_float_value("global_difficulty_factor", 1.0, ctx(game_id))
+
+        def edge(game_id):
+            return client.get_string_value("eliminate_player", "", ctx(game_id))
+
+        assert fh.poll_until(
+            lambda: (
+                level(GAME_A, target) == 1.5
+                and state(GAME_A) == 1.5
+                and edge(GAME_A) == f"nonce1:{target}"
+            ),
+            rewrite=lambda: _write_gameid_scoped(path, target),
+        ), (
+            f"game A did not resolve its scoped writes: level={level(GAME_A, target)} "
+            f"state={state(GAME_A)} edge={edge(GAME_A)!r}"
+        )
+        assert level(GAME_A, other) == 1.0, "level leaked to another serial of game A"
+        assert level(GAME_B, target) == 1.0, "level leaked to the same serial in game B"
+        assert level(None, target) == 1.0, "level leaked to a context without gameId"
+        assert state(GAME_B) == 1.0, "state flag leaked to game B"
+        assert state(None) == 1.0, "state flag leaked to a context without gameId"
+        assert edge(GAME_B) == "", "edge flag leaked to game B"
+        assert edge(None) == "", "edge flag leaked to a context without gameId"
 
 
 # --------------------------------------------------------------------------- #
