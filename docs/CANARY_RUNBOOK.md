@@ -97,7 +97,7 @@ while all controllers are on `python`.
 
 ### Check Grafana dashboards
 
-Open the observability stack at `http://localhost:8080/`:
+Open the observability stack at `http://localhost/`:
 
 - **Controllers & Bluetooth** (`/grafana/d/controller-overview`) -- verify all
   controllers connected, LEDs responsive, and every controller on `python` in
