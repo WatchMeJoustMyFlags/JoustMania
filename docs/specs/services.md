@@ -231,6 +231,9 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 - Service state STOPPED / RUNNING / GAME_STARTING; controller states CONNECTED / READY / ADMIN / IDLE (UC-010 to UC-014).
 - Writes flag files in place through `lib/flag_config_writer.py` (needs `flag-dir-init` for nonroot write access).
+- Voice and lobby-colour lookups use the playable `Games` enum names. `Zombies` selects `MENU_VOX_ZOMBIES` and `Colors.White40`; `NonStop` selects `MENU_VOX_NONSTOP_JOUST` and `Colors.Pink`. Unknown names retain the no-announcement / default-orange fallback.
+
+**Traceability:** FR-011, FR-036; UC-011 main step 3, A2 step 4, A3; `services/menu/utils/audio.py`, `services/menu/utils/led.py`; `services/menu/tests/test_utils.py` (`TestAudioHelper`, `TestLedController`, `TestUC011ModeSelectionRules`).
 
 ### audio
 

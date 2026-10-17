@@ -1,10 +1,13 @@
 """Unit tests for menu utility classes."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
+import grpc.aio
 import pytest
 
+from lib.colors import Colors
+from lib.types import Sound
 from services.menu.utils.audio import GAME_MODE_VOICE, AudioHelper
 from services.menu.utils.led import DEFAULT_COLOR, GAME_MODE_COLORS, LedController
 from services.menu.utils.settings import GAME_MODES, get_next_game_mode, is_valid_game_mode
@@ -262,7 +265,7 @@ class TestGameModesConstant:
 
 
 class TestUC011ModeSelectionRules:
-    """UC-011 BR-001 (playable modes only) and A3 (modes without voice or colour)."""
+    """UC-011 BR-001 (playable modes only) and A3 (Zombies / NonStop feedback)."""
 
     @pytest.mark.uc("UC-011", flow="main", steps=[2], br=["BR-001"])
     def test_ten_playable_modes_never_commander_ninja_random(self):
@@ -279,27 +282,39 @@ class TestUC011ModeSelectionRules:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="A3")
-    @pytest.mark.parametrize("mode", ["Zombies", "NonStop"])
-    async def test_mode_without_voice_or_colour(self, mode):
-        """Zombies and NonStop: no announcement and the default orange (key mismatch, D-M8)."""
-        audio = AudioHelper(MagicMock())
-        audio.play_voice = AsyncMock()
-        led = LedController(MagicMock())
+    @pytest.mark.parametrize(
+        ("mode", "voice", "color"),
+        [
+            ("Zombies", Sound.MENU_VOX_ZOMBIES, Colors.White40.value),
+            ("NonStop", Sound.MENU_VOX_NONSTOP_JOUST, Colors.Pink.value),
+        ],
+    )
+    async def test_zombies_and_nonstop_feedback(self, mode, voice, color):
+        """UC-011 A3: Zombies and NonStop use their existing voice and lobby colour."""
+        channel = create_autospec(grpc.aio.Channel, instance=True, spec_set=True)
+        audio = AudioHelper(channel)
+        led = LedController(channel)
 
-        await audio.play_game_mode_voice(mode)
+        with patch.object(AudioHelper, "play_voice", autospec=True) as play_voice:
+            await audio.play_game_mode_voice(mode)
+            play_voice.assert_awaited_once_with(audio, voice)
 
-        audio.play_voice.assert_not_called()
-        assert led.get_game_color(mode) == DEFAULT_COLOR
+        assert led.get_game_color(mode) == color
+        assert color != DEFAULT_COLOR
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="main", steps=[3])
-    async def test_other_modes_have_voice_and_colour(self):
-        """Every other playable mode has its own announcement and lobby colour."""
-        audio = AudioHelper(MagicMock())
-        audio.play_voice = AsyncMock()
-        led = LedController(MagicMock())
+    async def test_all_playable_modes_have_voice_and_colour(self):
+        """UC-011 main step 3: every playable enum name has voice and colour mappings."""
+        channel = create_autospec(grpc.aio.Channel, instance=True, spec_set=True)
+        audio = AudioHelper(channel)
+        led = LedController(channel)
 
-        for mode in set(GAME_MODES) - {"Zombies", "NonStop"}:
-            await audio.play_game_mode_voice(mode)
-            assert audio.play_voice.await_args.args[0] == GAME_MODE_VOICE[mode]
-            assert led.get_game_color(mode) == GAME_MODE_COLORS[mode]
+        assert set(GAME_MODES) <= GAME_MODE_VOICE.keys()
+        assert set(GAME_MODES) <= GAME_MODE_COLORS.keys()
+        with patch.object(AudioHelper, "play_voice", autospec=True) as play_voice:
+            for mode in GAME_MODES:
+                await audio.play_game_mode_voice(mode)
+                play_voice.assert_awaited_once_with(audio, GAME_MODE_VOICE[mode])
+                assert led.get_game_color(mode) == GAME_MODE_COLORS[mode]
+                play_voice.reset_mock()
