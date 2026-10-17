@@ -448,7 +448,7 @@ Where to watch the agent react
                   decision audit trace: agent.signal_received -> agent.decision -> agent.action
                   span attrs: decision.action, decision.objective_served, decision.reason,
                               decision.blocked / decision.block_reason
-  * Prometheus:   http://localhost:8080/prometheus/
+  * VictoriaMetrics: http://localhost:8080/victoria-metrics/vmui/
                   agent_evaluations_total (#1053), game_interventions_total{type,objective,blocked}
   * Grafana:      http://localhost:8080/grafana/   (agent / experiments dashboards)
 

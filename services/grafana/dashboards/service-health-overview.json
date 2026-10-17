@@ -121,7 +121,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Pull-scraped targets (flagd, envoy, VictoriaMetrics, Prometheus, the collector itself) whose last scrape failed (up == 0). OTLP-push services have no up series; see 'App services reporting'.",
+      "description": "Pull-scraped targets (flagd, envoy, VictoriaMetrics, the collector itself) whose last scrape failed (up == 0). OTLP-push services have no up series; see 'App services reporting'.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -631,7 +631,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Scrape status of the pull-scraped targets (collector prometheus receivers: flagd, envoy, VictoriaMetrics, Prometheus, the collector's own :8888).",
+      "description": "Scrape status of the pull-scraped targets (collector prometheus receivers: flagd, envoy, VictoriaMetrics, the collector's own :8888).",
       "fieldConfig": {
         "defaults": {
           "color": {

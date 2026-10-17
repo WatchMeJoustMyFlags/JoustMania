@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Agent intervention machinery self-observability (#803): attempt rates, blocked reasons, handler errors, and agent-side flag-write failures. Metric series are queried without a job filter so the same panels resolve against Prometheus (job=\"game-coordinator-service\"/\"agent-service\") and VictoriaMetrics (job=\"infrastructure/...\").",
+  "description": "Agent intervention machinery self-observability (#803): attempt rates, blocked reasons, handler errors, and agent-side flag-write failures. Metric series are queried without a job filter so they do not depend on the namespaced job VictoriaMetrics stores (job=\"infrastructure/...\").",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,

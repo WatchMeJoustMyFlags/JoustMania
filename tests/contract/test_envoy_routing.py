@@ -16,7 +16,6 @@ DOCUMENTED_ROUTES = {
     "/": ("dashboard", "/"),
     "/index.html": ("dashboard", "/index.html"),
     "/grafana/d/abc": ("grafana", "/grafana/d/abc"),  # Grafana serve_from_sub_path
-    "/prometheus/alerts": ("prometheus", "/alerts"),  # Prometheus --web.route-prefix=/
     "/jaeger/search": ("jaeger", "/jaeger/search"),  # Jaeger base_path /jaeger
     "/loki/loki/api/v1/query_range": ("loki", "/loki/api/v1/query_range"),
     "/victoria-metrics/api/v1/query": ("victoria_metrics", "/api/v1/query"),
@@ -32,7 +31,6 @@ DOCUMENTED_ROUTES = {
 # Bare UI paths redirect to their trailing-slash form.
 DOCUMENTED_REDIRECTS = {
     "/grafana": "/grafana/",
-    "/prometheus": "/prometheus/",
     "/jaeger": "/jaeger/",
     "/victoria-metrics": "/victoria-metrics/",
 }
@@ -41,10 +39,9 @@ DOCUMENTED_REDIRECTS = {
 BR001_HOST_PORT_EXCEPTIONS = {
     "flagd": {"8015:8015"},
     "rust-hid": {"50058:50058"},
-    # OTLP for the host-networked pairing daemon and the collector's Prometheus
-    # exporter; neither is a UI. Being added to UC-035 BR-001 in the docs
-    # follow-up of the AIUP spec sync (epic #1369).
-    "otel-collector": {"4317:4317", "8889:8889"},
+    # OTLP for the host-networked pairing daemon; not a UI. The collector's
+    # Prometheus exporter (8889) went with the Prometheus container (#1449).
+    "otel-collector": {"4317:4317"},
 }
 
 
@@ -74,12 +71,23 @@ def test_no_ui_service_publishes_a_host_port():
 @pytest.mark.uc("UC-035", flow="main", steps=[1, 3, 5, 6, 7])
 @pytest.mark.parametrize(("path", "expected"), sorted(DOCUMENTED_ROUTES.items()))
 def test_documented_path_routes_to_its_backend(path, expected):
-    """UC-035 steps 1-7: dashboard, Jaeger, Grafana, Prometheus, Loki and VictoriaMetrics paths."""
+    """UC-035 steps 1-7: dashboard, Jaeger, Grafana, Loki and VictoriaMetrics paths."""
     cluster, upstream_path = expected
     assert ic.resolve_route(path) == {
         "cluster": cluster,
         "upstream_path": upstream_path,
     }
+
+
+@pytest.mark.uc("UC-035", flow="main", steps=[1], br=["BR-001"])
+def test_prometheus_container_and_route_are_gone():
+    """#1449: VictoriaMetrics is the only metrics store. No prometheus service, volume
+    or envoy cluster remains, and /prometheus/ falls through to the dashboard SPA."""
+    compose = ic.load_yaml(ic.COMPOSE_FILE)
+    assert "prometheus" not in compose["services"]
+    assert "prometheus-data" not in (compose.get("volumes") or {})
+    assert "prometheus" not in ic.envoy_clusters()
+    assert ic.resolve_route("/prometheus/graph")["cluster"] == "dashboard"
 
 
 @pytest.mark.uc("UC-035", flow="A1")
@@ -116,7 +124,7 @@ def test_every_cluster_points_at_a_compose_service_port():
     service on a port that service actually exposes, listens on or is probed on."""
     clusters = ic.envoy_clusters()
     services = ic.compose_services()
-    assert len(clusters) >= 9
+    assert len(clusters) >= 8  # 9 before the prometheus cluster was removed (#1449)
     for name, (host, port) in clusters.items():
         assert host in services, (
             f"cluster {name} targets unknown compose service {host}"
@@ -135,9 +143,6 @@ def test_ui_sub_path_settings_match_the_routes():
         "base_path: /jaeger"
         in (ic.REPO_ROOT / "services" / "jaeger" / "config.yaml").read_text()
     )
-    prom_cmd = ic.compose_services()["prometheus"]["command"]
-    assert "--web.external-url=/prometheus/" in prom_cmd
-    assert "--web.route-prefix=/" in prom_cmd
 
 
 @pytest.mark.uc("UC-035", flow="main", steps=[1])

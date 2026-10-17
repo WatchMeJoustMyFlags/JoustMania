@@ -77,7 +77,7 @@ up-mock:
 	@echo "  Using flagd ci/ dir (backend=mock)"
 	@echo "  Dashboard:  http://localhost/"
 	@echo "  Jaeger:     http://localhost/jaeger/"
-	@echo "  Prometheus: http://localhost/prometheus/"
+	@echo "  Metrics:    http://localhost/victoria-metrics/vmui/"
 	@echo "  Grafana:    http://localhost/grafana/"
 
 # M8 agent shadow-game dry run (#999). Brings up a RUNNABLE experiment cohort
@@ -132,7 +132,7 @@ dry-run:
 	@echo "  Observability:"
 	@echo "    Dashboard:  http://localhost/"
 	@echo "    Jaeger:     http://localhost/jaeger/    (agent decision-audit spans)"
-	@echo "    Prometheus: http://localhost/prometheus/"
+	@echo "    Metrics:    http://localhost/victoria-metrics/vmui/"
 	@echo "    Grafana:    http://localhost/grafana/"
 	@echo ""
 	@echo "  Runbook: docs/agent-dry-run-runbook.md"

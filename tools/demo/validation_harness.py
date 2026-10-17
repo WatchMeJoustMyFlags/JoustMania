@@ -18,7 +18,7 @@ agent rule. On top of that it adds three things the bare driver does not have:
      behavior (which rule fires, which intervention, allowed-vs-blocked, decision backend).
   2. OBSERVATION COLLECTION from the live stack — after driving each scenario it
      queries ``docker logs joustmania-agent`` for the decision/intervention/backend
-     lines and Prometheus (via envoy ``/prometheus/``) for the relevant counters,
+     lines and VictoriaMetrics (Prometheus query API via envoy ``/victoria-metrics/``) for the relevant counters,
      optionally Jaeger for the decision span chain.
   3. A PASS/ANOMALY REPORT — per-scenario verdict (did the expected behavior
      happen?) plus a summary that FLAGS gaps (expected-but-didn't-fire, a missing
@@ -78,9 +78,10 @@ from tools.demo import demo_driver as dd  # noqa: E402
 #   * agent logs:  `docker logs joustmania-agent` (slog text handler). The agent
 #                  emits `agent.evaluate decision_backend=…`, `agent.decision_blocked
 #                  intervention=… reason=…`, experiment lifecycle lines, etc.
-#   * Prometheus:  the envoy ingress at http://localhost:8080/prometheus/ proxies
-#                  to Prometheus (which scrapes VM). The instant-query API is
-#                  `/prometheus/api/v1/query?query=<promql>`.
+#   * VictoriaMetrics: the envoy ingress at http://localhost:8080/victoria-metrics/
+#                  proxies to VictoriaMetrics, which serves the Prometheus
+#                  instant-query API at `/victoria-metrics/api/v1/query?query=<promql>`
+#                  (the Prometheus container was removed in #1449).
 # Jaeger (span chain) is an OPTIONAL third source via /jaeger/api/traces.
 # ---------------------------------------------------------------------------
 AGENT_CONTAINER = "joustmania-agent"
@@ -448,7 +449,7 @@ def evaluate(scenario: Scenario, obs: Observations) -> ScenarioResult:
     if evals is not None and evals == 0:
         res.verdict = ANOMALY
         res.reasons.append("agent_evaluations_total is 0 — the agent evaluated nothing this window")
-        res.where.append("Prometheus: agent_evaluations_total ; Jaeger service=agent")
+        res.where.append("VictoriaMetrics: agent_evaluations_total ; Jaeger service=agent")
 
     # 3. Edge case: the agent should do (almost) nothing.
     if not exp.expect_decision:
@@ -482,7 +483,7 @@ def evaluate(scenario: Scenario, obs: Observations) -> ScenarioResult:
                     f"blocked counter moved — the rule may not have fired at all"
                 )
                 res.where.append(
-                    f"Prometheus: {_intervention_metric(intervention, False)} ; "
+                    f"VictoriaMetrics: {_intervention_metric(intervention, False)} ; "
                     f"Jaeger service=agent: agent.decision -> agent.action for this game"
                 )
             elif applied is not None and applied == 0 and (blocked or log_blocked):
@@ -506,7 +507,7 @@ def evaluate(scenario: Scenario, obs: Observations) -> ScenarioResult:
                     f"permission chain did not record the block"
                 )
                 res.where.append(
-                    f"Prometheus: {_intervention_metric(intervention, True)} ; "
+                    f"VictoriaMetrics: {_intervention_metric(intervention, True)} ; "
                     f"docker logs {AGENT_CONTAINER} | grep agent.decision_blocked"
                 )
 
@@ -646,7 +647,7 @@ def print_report(results: list[ScenarioResult]) -> int:
                         print(f"  * {where}")
     print("\nDashboards:  http://localhost:8080/grafana/ (agent + experiments tabs)")
     print("Jaeger:      http://localhost:8080/jaeger/  service=agent")
-    print("Prometheus:  http://localhost:8080/prometheus/")
+    print("VictoriaMetrics: http://localhost:8080/victoria-metrics/vmui/")
     return hard_anomalies
 
 
@@ -688,8 +689,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mock-port", type=int, default=50062)
     p.add_argument("--menu-port", type=int, default=50054)
     p.add_argument("--coord-port", type=int, default=50053)
-    p.add_argument("--prom-base", default="http://localhost:8080/prometheus",
-                   help="Prometheus base URL (via envoy ingress)")
+    p.add_argument("--prom-base", default="http://localhost:8080/victoria-metrics",
+                   help="Prometheus-query-API base URL: VictoriaMetrics via envoy ingress")
     p.add_argument("--jaeger-base", default="http://localhost:8080/jaeger",
                    help="Jaeger base URL (via envoy ingress)")
     p.add_argument("--agent-container", default=AGENT_CONTAINER,

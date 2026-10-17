@@ -71,11 +71,9 @@ DEAD_DEFINITION_KNOWN_GAPS = {
 
 # Metrics produced outside this repo's code (not gaps). Matched by exact name or prefix.
 EXTERNAL_METRICS = {
-    "up": "Prometheus / VictoriaMetrics scrape synthetic",
-    "scrape_": "Prometheus scrape synthetic",
-    "prometheus_": "Prometheus self-scrape (services/prometheus/prometheus.yml job 'prometheus')",
-    "go_": "Go runtime of Prometheus / VictoriaMetrics self-metrics",
-    "process_virtual_memory_bytes": "Prometheus self-metrics",
+    "up": "collector prometheus receiver scrape synthetic",
+    "scrape_": "collector prometheus receiver scrape synthetic",
+    "go_": "Go runtime of VictoriaMetrics / flagd self-metrics",
     "vm_": "VictoriaMetrics self-metrics",
     "system_": "OTel collector hostmetrics receiver (services/otel-collector/config.yaml)",
 }
