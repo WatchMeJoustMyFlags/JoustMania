@@ -1078,9 +1078,11 @@ func normalizedGameKind(gc gamecontext.GameContext) string {
 // telemetry path raced ahead this is a safe no-op. After a release it nudges
 // AllocateAndSpawn so the freed slot is refilled promptly.
 func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcome) {
-	// UC-046 BR-013: a pattern game that reached its safety cap (timeout) is a valid
-	// result; its fitness sample counts like a completed game's.
-	if outcome == gamerunner.OutcomeCompleted || outcome == gamerunner.OutcomeTimeout {
+	// UC-046 BR-013, A14: a pattern game that reached its safety cap (timeout) or that
+	// the agent's own end_game ended (agent_ended) is a valid, right-censored result;
+	// its fitness sample counts like a completed game's.
+	if outcome == gamerunner.OutcomeCompleted || outcome == gamerunner.OutcomeTimeout ||
+		outcome == gamerunner.OutcomeAgentEnded {
 		// Natural completion: the telemetry path (onGameEnd → ConcludeGame) concludes
 		// it WITH its fitness sample. We deliberately do NOT release here on the
 		// HAPPY path because that would drop the sample (ReleaseGame is non-counting).
@@ -1105,6 +1107,11 @@ func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcom
 	// stop the timer so it can never double-release a since-reused id).
 	e.stopCompletedGrace(gameID)
 	reason := "game ended without usable fitness sample: " + string(outcome)
+	if outcome == gamerunner.OutcomePreempted {
+		// UC-046 BR-015: carry the coordinator's preempted_by_real_game so the pair's
+		// rerun does not use up its 3-rerun budget.
+		reason = experiment.ReleaseReasonPreempted
+	}
 	if e.registry.ReleaseGame(gameID, reason) {
 		e.log.Warn("experiment: released in-flight slot for non-concluding game (#1014)",
 			"game_id", gameID, "outcome", outcome)

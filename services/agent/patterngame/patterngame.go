@@ -52,8 +52,11 @@ const (
 	OutcomeWinner  = "winner"
 	OutcomeTie     = "tie"
 	OutcomeTimeout = "timeout"
-	OutcomeAborted = "aborted"
-	OutcomeError   = "error"
+	// OutcomeAgentEnded: the agent's own end_game ended the game (UC-046 A14); a
+	// right-censored sample like OutcomeTimeout (BR-013).
+	OutcomeAgentEnded = "agent_ended"
+	OutcomeAborted    = "aborted"
+	OutcomeError      = "error"
 )
 
 // Experiment discard reasons (UC-046 A2, A4, A13).

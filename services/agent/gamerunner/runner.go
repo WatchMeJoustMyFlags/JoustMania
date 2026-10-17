@@ -71,9 +71,21 @@ const (
 	// OutcomeCompleted means the game reached a natural terminal event
 	// (game_ended) within the timeout.
 	OutcomeCompleted Outcome = "completed"
-	// OutcomeForceEnded means the await timed out and the runner force-ended
-	// the game (and observed its terminal event).
+	// OutcomeForceEnded means the game was force-ended without a usable sample:
+	// the runner force-ended it for the kill switch (UC-046 A12), or the
+	// coordinator force-ended it for a reason the runner did not request (a
+	// foreign force-end, UC-046 BR-016) other than a real-game preemption
+	// (OutcomePreempted) or the agent's own end_game (OutcomeAgentEnded). The
+	// experiment releases it, and its pair's rerun counts against BR-015's budget.
 	OutcomeForceEnded Outcome = "force_ended"
+	// OutcomePreempted means a real game preempted the shadow game (coordinator
+	// reason preempted_by_real_game, UC-046 A8): released without a sample like
+	// OutcomeForceEnded, but its pair's rerun does not use up BR-015's budget.
+	OutcomePreempted Outcome = "preempted"
+	// OutcomeAgentEnded means the agent's own end_game intervention force-ended
+	// the game (coordinator reason agent_intervention, UC-046 A14): a VALID,
+	// right-censored result whose fitness sample counts, like OutcomeTimeout.
+	OutcomeAgentEnded Outcome = "agent_ended"
 	// OutcomeError means the game emitted game_error, or the run failed before
 	// reaching a terminal event.
 	OutcomeError Outcome = "error"
@@ -89,7 +101,9 @@ func patternOutcome(o Outcome) string {
 		return patterngame.OutcomeWinner
 	case OutcomeTimeout:
 		return patterngame.OutcomeTimeout
-	case OutcomeForceEnded:
+	case OutcomeAgentEnded:
+		return patterngame.OutcomeAgentEnded
+	case OutcomeForceEnded, OutcomePreempted:
 		return patterngame.OutcomeAborted
 	default:
 		return patterngame.OutcomeError

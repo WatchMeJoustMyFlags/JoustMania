@@ -2,6 +2,7 @@ package gamerunner
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ type terminalRun struct {
 	record   patterngame.Record // the replay record (pattern.outcome)
 	elapsed  time.Duration      // spawn to terminal callback
 	forceEnd []string           // ForceEndGame calls the runner made
+	reasons  []string           // the reasons of those calls
 }
 
 // endedEv builds a game_ended event with the given payload (games/ffa.py).
@@ -77,10 +79,11 @@ func runTerminal(t *testing.T, coord *fakeCoord, maxGameSeconds int, setup func(
 	run.outcome = <-outcomes
 	run.elapsed = time.Since(start)
 	run.forceEnd = coord.forceEndGameIDs()
+	run.reasons = coord.forceEndReasons()
 	return run
 }
 
-// UC: UC-046 A8 A3 A12 BR-013 BR-014 BR-015 BR-016
+// UC: UC-046 main A8 A3 A12 A14 BR-013 BR-014 BR-015 BR-016
 func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 	t.Run("UC-046/A8 preempted: game_ended force_ended then game_force_ended is released without a sample", func(t *testing.T) {
 		coord := &fakeCoord{gameID: "game_pre", events: []*gcpb.GameEvent{
@@ -89,8 +92,8 @@ func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 			forceEndedEv("preempted_by_real_game"),
 		}}
 		run := runTerminal(t, coord, 100, nil, nil)
-		if run.outcome != OutcomeForceEnded {
-			t.Fatalf("terminal outcome = %s, want force_ended (released, no sample, pair reruns)", run.outcome)
+		if run.outcome != OutcomePreempted {
+			t.Fatalf("terminal outcome = %s, want preempted (released, no sample, pair reruns off-budget)", run.outcome)
 		}
 		if run.record.Outcome != patterngame.OutcomeAborted || run.record.WinnerSlot != -1 {
 			t.Errorf("record = %s/winner %d, want aborted/-1", run.record.Outcome, run.record.WinnerSlot)
@@ -107,8 +110,8 @@ func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 			forceEndedEv("preempted_by_real_game"),
 		}}
 		run := runTerminal(t, coord, 100, nil, nil)
-		if run.outcome != OutcomeForceEnded {
-			t.Fatalf("terminal outcome = %s, want force_ended", run.outcome)
+		if run.outcome != OutcomePreempted {
+			t.Fatalf("terminal outcome = %s, want preempted", run.outcome)
 		}
 		if run.record.Outcome != patterngame.OutcomeAborted {
 			t.Errorf("record outcome = %s, want aborted", run.record.Outcome)
@@ -137,8 +140,8 @@ func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 	t.Run("UC-046/A12 agent-requested force-end (kill switch) stays aborted", func(t *testing.T) {
 		coord := &fakeCoord{gameID: "game_kill", events: []*gcpb.GameEvent{ev("game_starting")},
 			forceEndEvents: []*gcpb.GameEvent{
-				endedEv(map[string]string{"game_id": "game_kill", "outcome": "force_ended", "reason": agentForceEndReason}),
-				forceEndedEv(agentForceEndReason),
+				endedEv(map[string]string{"game_id": "game_kill", "outcome": "force_ended", "reason": killSwitchForceEndReason}),
+				forceEndedEv(killSwitchForceEndReason),
 			}}
 		run := runTerminal(t, coord, 100, nil, func(tr *patterngame.Tracker, id string) {
 			tr.Abort(id, patterngame.ReasonKillSwitch)
@@ -148,6 +151,9 @@ func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 		}
 		if len(run.forceEnd) != 1 {
 			t.Errorf("ForceEndGame calls = %v, want exactly one (the kill switch)", run.forceEnd)
+		}
+		if len(run.reasons) != 1 || run.reasons[0] != "pattern_kill_switch" {
+			t.Errorf("ForceEndGame reasons = %v, want [pattern_kill_switch] (not the cap's shadow_game_timeout)", run.reasons)
 		}
 	})
 
@@ -164,6 +170,62 @@ func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 		if run.record.Outcome != patterngame.OutcomeTimeout || !run.record.Censored || run.record.WinnerSlot != -1 {
 			t.Errorf("record = %s censored=%v winner %d, want timeout/true/-1", run.record.Outcome, run.record.Censored, run.record.WinnerSlot)
 		}
+		if len(run.reasons) != 1 || run.reasons[0] != "shadow_game_timeout" {
+			t.Errorf("ForceEndGame reasons = %v, want [shadow_game_timeout]", run.reasons)
+		}
+	})
+
+	t.Run("UC-046/A14 the agent's own end_game is a censored sample, not an abort", func(t *testing.T) {
+		coord := &fakeCoord{gameID: "game_end", events: []*gcpb.GameEvent{
+			ev("game_starting"), death("MOCK0002"),
+			endedEv(map[string]string{"game_id": "game_end", "outcome": "force_ended", "reason": "agent_intervention"}),
+			forceEndedEv("agent_intervention"),
+		}}
+		run := runTerminal(t, coord, 100, nil, nil)
+		if run.outcome != OutcomeAgentEnded {
+			t.Fatalf("terminal outcome = %s, want agent_ended (kept as a sample)", run.outcome)
+		}
+		if run.record.Outcome != patterngame.OutcomeAgentEnded || !run.record.Censored || run.record.WinnerSlot != -1 {
+			t.Errorf("record = %s censored=%v winner %d, want agent_ended/true/-1", run.record.Outcome, run.record.Censored, run.record.WinnerSlot)
+		}
+		if fmt.Sprint(run.record.EliminationOrder) != "[2]" {
+			t.Errorf("elimination order = %v, want [2] (the players who died before the end)", run.record.EliminationOrder)
+		}
+		if len(run.forceEnd) != 0 {
+			t.Errorf("the runner force-ended a game the agent's end_game ended: %v", run.forceEnd)
+		}
+	})
+
+	t.Run("UC-046/A14 an outcome-less game_ended followed by the agent's end_game force-end is a censored sample", func(t *testing.T) {
+		coord := &fakeCoord{gameID: "game_end_old", events: []*gcpb.GameEvent{
+			ev("game_starting"),
+			endedEv(map[string]string{"game_id": "game_end_old"}),
+			forceEndedEv("agent_intervention"),
+		}}
+		run := runTerminal(t, coord, 100, nil, nil)
+		if run.outcome != OutcomeAgentEnded || !run.record.Censored {
+			t.Fatalf("outcome = %s censored=%v, want agent_ended/true", run.outcome, run.record.Censored)
+		}
+	})
+
+	t.Run("UC-046/main game_ended with the base outcome completed is a sample, classified at once", func(t *testing.T) {
+		coord := &fakeCoord{gameID: "game_done", events: []*gcpb.GameEvent{
+			ev("game_starting"), death("MOCK0002"),
+			endedEv(map[string]string{"game_id": "game_done", "outcome": "completed"}),
+		}}
+		run := runTerminal(t, coord, 100, func(r *Runner) { r.endedGrace = time.Minute }, nil)
+		if run.outcome != OutcomeCompleted {
+			t.Fatalf("terminal outcome = %s, want completed", run.outcome)
+		}
+		if run.record.Censored || run.record.Outcome != patterngame.OutcomeWinner {
+			t.Errorf("record = %s censored=%v, want winner/false", run.record.Outcome, run.record.Censored)
+		}
+		if run.elapsed > 5*time.Second {
+			t.Errorf("classified after %s: an outcome-bearing game_ended must not wait", run.elapsed)
+		}
+		if len(run.forceEnd) != 0 {
+			t.Errorf("ForceEndGame calls = %v, want none", run.forceEnd)
+		}
 	})
 
 	t.Run("UC-046/A8 cap force-end that lost the race to a preemption is released without a sample", func(t *testing.T) {
@@ -172,8 +234,8 @@ func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 				endedEv(map[string]string{"game_id": "game_race", "outcome": "force_ended", "reason": "preempted_by_real_game"}),
 			}}
 		run := runTerminal(t, coord, 30, nil, nil)
-		if run.outcome != OutcomeForceEnded {
-			t.Fatalf("terminal outcome = %s, want force_ended (the coordinator names a foreign reason)", run.outcome)
+		if run.outcome != OutcomePreempted {
+			t.Fatalf("terminal outcome = %s, want preempted (the coordinator names a foreign reason)", run.outcome)
 		}
 	})
 
@@ -213,7 +275,7 @@ func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 	})
 }
 
-// UC: UC-046 BR-016
+// UC: UC-046 A8 A12 A14 BR-016
 func TestClassifyTerminal(t *testing.T) {
 	cases := []struct {
 		name            string
@@ -222,13 +284,19 @@ func TestClassifyTerminal(t *testing.T) {
 		want            Outcome
 		wait            bool
 	}{
-		{"preempted game_ended", endedEv(map[string]string{"outcome": "force_ended", "reason": "preempted_by_real_game"}), false, false, OutcomeForceEnded, false},
+		{"preempted game_ended", endedEv(map[string]string{"outcome": "force_ended", "reason": "preempted_by_real_game"}), false, false, OutcomePreempted, false},
 		{"foreign game_ended, any reason", endedEv(map[string]string{"outcome": "force_ended", "reason": "shadow_game_timeout"}), false, false, OutcomeForceEnded, false},
-		{"preempted game_force_ended", forceEndedEv("preempted_by_real_game"), false, false, OutcomeForceEnded, false},
+		{"foreign operator force-end", forceEndedEv("admin_request"), false, false, OutcomeForceEnded, false},
+		{"preempted game_force_ended", forceEndedEv("preempted_by_real_game"), false, false, OutcomePreempted, false},
 		{"own cap force-end", endedEv(map[string]string{"outcome": "force_ended", "reason": agentForceEndReason}), true, false, OutcomeTimeout, false},
-		{"own kill-switch force-end", forceEndedEv(agentForceEndReason), true, true, OutcomeForceEnded, false},
+		{"own kill-switch force-end", forceEndedEv("pattern_kill_switch"), true, true, OutcomeForceEnded, false},
+		{"own kill-switch force-end lost to a preemption", forceEndedEv("preempted_by_real_game"), true, true, OutcomeForceEnded, false},
+		{"own kill-switch force-end lost to the agent's end_game", forceEndedEv("agent_intervention"), true, true, OutcomeForceEnded, false},
 		{"own force-end without reason", ev(eventGameForceEnded), true, false, OutcomeTimeout, false},
-		{"own cap request lost to a preemption", endedEv(map[string]string{"outcome": "force_ended", "reason": "preempted_by_real_game"}), true, false, OutcomeForceEnded, false},
+		{"own cap request lost to a preemption", endedEv(map[string]string{"outcome": "force_ended", "reason": "preempted_by_real_game"}), true, false, OutcomePreempted, false},
+		{"agent end_game game_ended", endedEv(map[string]string{"outcome": "force_ended", "reason": "agent_intervention"}), false, false, OutcomeAgentEnded, false},
+		{"agent end_game game_force_ended", forceEndedEv("agent_intervention"), false, false, OutcomeAgentEnded, false},
+		{"own cap request lost to the agent's end_game", endedEv(map[string]string{"outcome": "force_ended", "reason": "agent_intervention"}), true, false, OutcomeAgentEnded, false},
 		{"winner", endedEv(map[string]string{"outcome": "winner"}), false, false, OutcomeCompleted, false},
 		{"tie", endedEv(map[string]string{"outcome": "tie"}), false, false, OutcomeCompleted, false},
 		{"base completed", endedEv(map[string]string{"outcome": "completed"}), false, false, OutcomeCompleted, false},

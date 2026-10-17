@@ -233,8 +233,8 @@ func TestRunShadowGame_PreemptedIsAborted(t *testing.T) {
 		if _, err := h.runner.StartExperimentGame(context.Background(), context.Background(), spec); err != nil {
 			t.Fatal(err)
 		}
-		if o := <-outcomes; o != OutcomeForceEnded {
-			t.Fatalf("outcome = %s, want force_ended (released without a sample)", o)
+		if o := <-outcomes; o != OutcomePreempted {
+			t.Fatalf("outcome = %s, want preempted (released without a sample)", o)
 		}
 		if calls := coord.forceEndGameIDs(); len(calls) != 0 {
 			t.Errorf("the agent force-ended a preempted game: %v", calls)

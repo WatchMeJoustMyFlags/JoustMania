@@ -539,7 +539,7 @@ func (r *Runner) awaitTerminal(
 			}
 			r.log.Warn("shadow game timed out, force-ending", "game_id", gameID,
 				"timeout", timeout)
-			r.forceEnd(ctx, cl, gameID)
+			r.forceEnd(ctx, cl, gameID, agentForceEndReason)
 			forced = true
 			// Allow a short grace for the force-end terminal event to arrive.
 			deadline.Reset(r.cfg.RPCTimeout)
@@ -551,7 +551,7 @@ func (r *Runner) awaitTerminal(
 			if !forced && !endedPending {
 				aborted = true
 				r.log.Info("pattern game aborted, force-ending", "game_id", gameID)
-				r.forceEnd(ctx, cl, gameID)
+				r.forceEnd(ctx, cl, gameID, killSwitchForceEndReason)
 				forced = true
 				if !deadline.Stop() {
 					select {
@@ -596,13 +596,24 @@ func (r *Runner) awaitTerminal(
 	}
 }
 
-// Coordinator vocabulary of the game_ended payload (games/ffa.py, #1328) and the
-// reason the runner passes to ForceEndGame.
+// Coordinator vocabulary of the game_ended payload (games/ffa.py, #1328), the
+// reasons the runner passes to ForceEndGame, and the force-end reasons of other
+// callers the runner tells apart (UC-046 BR-016).
 const (
 	endedDataOutcome      = "outcome"
 	endedDataReason       = "reason"
 	gameOutcomeForceEnded = "force_ended"
-	agentForceEndReason   = "shadow_game_timeout"
+	// agentForceEndReason is the runner's force-end at the safety cap (BR-013).
+	agentForceEndReason = "shadow_game_timeout"
+	// killSwitchForceEndReason is the runner's force-end for the kill switch (A12),
+	// distinct from the cap so coordinator telemetry does not count it as a timeout.
+	killSwitchForceEndReason = "pattern_kill_switch"
+	// agentEndGameReason is the coordinator's reason for the agent's own end_game
+	// intervention (interventions.py _handle_end_game, UC-046 A14).
+	agentEndGameReason = "agent_intervention"
+	// preemptedReason is the coordinator's reason when a real game preempts the
+	// shadow games (servicer.py, UC-043 A2, UC-046 A8).
+	preemptedReason = "preempted_by_real_game"
 )
 
 // DefaultEndedGrace bounds the wait for a game_force_ended after a game_ended
@@ -621,10 +632,22 @@ func classifyTerminal(event *gcpb.GameEvent, forced, aborted bool) (outcome Outc
 	data := event.GetData()
 	forceEnd := et == eventGameForceEnded ||
 		(et == eventGameEnded && data[endedDataOutcome] == gameOutcomeForceEnded)
+	reason := data[endedDataReason]
 	switch {
-	case forceEnd && foreignForceEnd(data[endedDataReason], forced):
-		// UC-046 A8: a force-end the agent did not request (a real game preempting
-		// shadows, or any other) is an abort: released without a sample.
+	case forceEnd && aborted:
+		// UC-046 A12: once the kill switch force-ended the game, it is aborted
+		// whatever reason the coordinator names.
+		return OutcomeForceEnded, false
+	case forceEnd && reason == agentEndGameReason:
+		// UC-046 A14: the agent's own end_game is a right-censored sample.
+		return OutcomeAgentEnded, false
+	case forceEnd && foreignForceEnd(reason, forced):
+		// UC-046 A8: a force-end the agent did not request is an abort: released
+		// without a sample. A real-game preemption keeps its reason so the rerun
+		// does not use up the pair's budget (BR-015).
+		if reason == preemptedReason {
+			return OutcomePreempted, false
+		}
 		return OutcomeForceEnded, false
 	case forced:
 		return forcedOutcome(aborted), false
@@ -643,6 +666,8 @@ func classifyTerminal(event *gcpb.GameEvent, forced, aborted bool) (outcome Outc
 // runner's own: the runner did not request one, or the coordinator names another
 // reason (e.g. preempted_by_real_game won the race against the runner's request).
 func foreignForceEnd(reason string, forced bool) bool {
+	// The kill switch's own pattern_kill_switch never reaches here: classifyTerminal
+	// handles every force-end after a kill-switch request first (UC-046 BR-016).
 	return !forced || (reason != "" && reason != agentForceEndReason)
 }
 
@@ -656,13 +681,14 @@ func forcedOutcome(aborted bool) Outcome {
 	return OutcomeTimeout
 }
 
-// forceEnd force-ends the game by id, best-effort.
-func (r *Runner) forceEnd(ctx context.Context, cl *clients, gameID string) {
+// forceEnd force-ends the game by id with the given reason, best-effort. The
+// coordinator records the reason as the game's game.end_reason.
+func (r *Runner) forceEnd(ctx context.Context, cl *clients, gameID, reason string) {
 	rpcCtx, cancel := context.WithTimeout(ctx, r.cfg.RPCTimeout)
 	defer cancel()
 	gid := gameID
 	_, err := cl.coord.ForceEndGame(rpcCtx, &gcpb.ForceEndGameRequest{
-		Reason: agentForceEndReason,
+		Reason: reason,
 		GameId: &gid,
 	})
 	if err != nil {

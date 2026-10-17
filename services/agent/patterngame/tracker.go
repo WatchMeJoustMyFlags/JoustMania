@@ -55,8 +55,8 @@ const (
 // Record is the replay record of one finished pattern game (UC-046 step 8).
 type Record struct {
 	Info
-	Outcome          string // OutcomeWinner, OutcomeTie, OutcomeTimeout, OutcomeAborted, OutcomeError
-	Censored         bool   // right-censored at the safety cap (outcome timeout, BR-013)
+	Outcome          string // OutcomeWinner, OutcomeTie, OutcomeTimeout, OutcomeAgentEnded, OutcomeAborted, OutcomeError
+	Censored         bool   // right-censored: at the safety cap (timeout) or by the agent's end_game (agent_ended), BR-013
 	OrderSource      string // OrderFromEvents, or OrderFromFrames as the fallback
 	Slots            []SlotRecord
 	EliminationOrder []int
@@ -309,7 +309,7 @@ func (t *Tracker) Finish(gameID, outcome string, events GameEvents, slots []Slot
 	return Record{
 		Info:             g.info,
 		Outcome:          outcome,
-		Censored:         outcome == OutcomeTimeout,
+		Censored:         outcome == OutcomeTimeout || outcome == OutcomeAgentEnded,
 		OrderSource:      source,
 		Slots:            sorted,
 		EliminationOrder: order,
