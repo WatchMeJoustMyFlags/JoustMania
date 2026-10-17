@@ -24,19 +24,30 @@ receivers:
             - targets: ['prometheus:9090']
         # Self-telemetry: the collector exposes its own metrics on :8888.
         # Rename otelcol_process_* to standard process_* for unified dashboards.
+        # v0.153.0 exposes them unsuffixed (otelcol_process_cpu_seconds,
+        # otelcol_process_memory_rss); the optional suffix keeps the rename
+        # working if a later version adds _total / _bytes (regexes are anchored).
         - job_name: 'otel-collector'
           scrape_interval: 30s
           static_configs:
             - targets: ['localhost:8888']
           metric_relabel_configs:
             - source_labels: [__name__]
-              regex: 'otelcol_process_cpu_seconds'
+              regex: 'otelcol_process_cpu_seconds(_total)?'
               target_label: __name__
               replacement: 'process_cpu_seconds_total'
             - source_labels: [__name__]
-              regex: 'otelcol_process_memory_rss'
+              regex: 'otelcol_process_memory_rss(_bytes)?'
               target_label: __name__
               replacement: 'process_resident_memory_bytes'
+            # The endpoint's target_info carries service_name=otelcol-joustmania
+            # and a per-start instance UUID; the receiver would promote them to
+            # the resource, so every series landed under job
+            # observability/otelcol-joustmania with a new instance each restart.
+            # Dropping it keeps service.name = this job: observability/otel-collector.
+            - source_labels: [__name__]
+              regex: 'target_info'
+              action: drop
 
   # Infrastructure: supporting services for the game platform
   prometheus/infrastructure:

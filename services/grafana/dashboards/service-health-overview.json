@@ -2214,12 +2214,100 @@
       "type": "bargauge"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Host swap by state, stacked (used + free = total swap), summed over swap devices. From the collector hostmetrics paging scraper (system_paging_usage_bytes, job host/node), collected every 5 min. Steadily growing used swap means the host is short of memory.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 60,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 72
+      },
+      "id": 37,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(system_paging_usage_bytes{job=~\"(.+/)?node\",state=\"used\"})",
+          "refId": "A",
+          "legendFormat": "Used"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(system_paging_usage_bytes{job=~\"(.+/)?node\",state=\"free\"})",
+          "refId": "B",
+          "legendFormat": "Free"
+        }
+      ],
+      "title": "Swap",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 72
+        "y": 79
       },
       "id": 31,
       "panels": [],
@@ -2273,7 +2361,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 73
+        "y": 80
       },
       "id": 32,
       "options": {
@@ -2331,7 +2419,7 @@
         "h": 7,
         "w": 4,
         "x": 8,
-        "y": 73
+        "y": 80
       },
       "id": 33,
       "options": {
@@ -2399,7 +2487,7 @@
         "h": 7,
         "w": 4,
         "x": 12,
-        "y": 73
+        "y": 80
       },
       "id": 34,
       "options": {
@@ -2467,7 +2555,7 @@
         "h": 7,
         "w": 4,
         "x": 16,
-        "y": 73
+        "y": 80
       },
       "id": 35,
       "options": {
@@ -2535,7 +2623,7 @@
         "h": 7,
         "w": 4,
         "x": 20,
-        "y": 73
+        "y": 80
       },
       "id": 36,
       "options": {
