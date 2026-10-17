@@ -62,7 +62,7 @@ services:
       - "50064"
       - "8070"
     environment:
-      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent
+      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
       - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
     volumes:
@@ -94,16 +94,10 @@ services:
       - "grpc://flag-service:50064"
       - "--uri"
       - "file:/etc/flagd/controller.json"
-      - "--uri"
-      - "file:/etc/flagd/game.json"
-      - "--uri"
-      - "file:/etc/flagd/user.json"
     volumes:
       - ./services/flagd/system.json:/etc/flagd/system.json
       - ./services/flagd/controller.json:/etc/flagd/controller.json
       - ./services/flagd/observability.json:/etc/flagd/observability.json
-      - ./services/flagd/game.json:/etc/flagd/game.json
-      - ./services/flagd/user.json:/etc/flagd/user.json
       - ./services/flagd/agent.json:/etc/flagd/agent.json
       - ./services/flagd/interventions.json:/etc/flagd/interventions.json
       - ./services/flagd/rollout.json:/etc/flagd/rollout.json

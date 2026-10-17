@@ -56,7 +56,6 @@ plugs into: add a scenario that writes the action's flag and asserts its
 """
 
 import asyncio
-import json
 import os
 import sys
 import threading
@@ -84,7 +83,6 @@ from tests.integration.helpers import (  # noqa: E402
     verify_controllers_have_color,
 )
 from tests.integration.test_intervention_flow import (  # noqa: E402
-    AGENT_PATH,
     intervention_env,  # re-exported: snapshot/restore + suite-wide rate-limit budget pin
     set_interventions_allowed,
 )
@@ -94,7 +92,12 @@ from tests.integration.test_parallel_intervention_flow import (  # noqa: E402
     _wait_for_game_colors,
     _wait_for_intervention,
 )
-from tests.integration.flag_service import set_game_value, set_player_value  # noqa: E402
+from tests.integration.flag_service import (  # noqa: E402
+    default as flag_service_default,
+    set_game_value,
+    set_player_value,
+    variant_value,
+)
 
 # The single permission variant that allow-lists every advanced action under
 # test. Resolved from the live agent.json so the test tracks the committed
@@ -269,10 +272,7 @@ async def _await_running(game_client, game_id: str, timeout: float = 12.0) -> No
 
 
 def _shadow_experimental_string() -> str:
-    with open(AGENT_PATH) as fh:
-        return json.load(fh)["flags"]["interventions_allowed"]["variants"][
-            PERMISSION_VARIANT
-        ]
+    return variant_value("agent", "interventions_allowed", PERMISSION_VARIANT)
 
 
 def _set_permission() -> None:
@@ -280,34 +280,19 @@ def _set_permission() -> None:
 
 
 # =============================================================================
-# game-domain (game.json) gameId-scoped write — ramp_tempo needs the
-# ``game.tempo_schedule_mode`` SOURCE flipped to ``agent`` so the armed curve
-# drives the schedule. That flag lives in the GAME domain, not interventions,
-# and is read with a gameId context (tempo_schedule.py resolve_tempo_schedule_mode),
-# so we scope it to this game exactly like the intervention writers.
+# game-set game-scoped write — ramp_tempo needs ``game.tempo_schedule_mode``
+# switched to ``agent`` so the armed curve drives the schedule. That flag lives
+# in the GAME set and is read with a gameId context
+# (tempo_schedule.py resolve_tempo_schedule_mode); the registry lets a test set
+# it for one game (flags.md §13.3), and the value dies with the game.
 # =============================================================================
-
-from tests.integration.helpers import active_flag_file  # noqa: E402
-
-GAME_PATH = active_flag_file("game")
 
 
 def _set_tempo_schedule_mode_for_game(game_id: str, mode: str) -> None:
-    """gameId-scope ``game.tempo_schedule_mode`` to ``mode`` for one game only.
-
-    Serves ``mode`` when ``gameId == game_id`` and falls back to the committed
-    ``rule`` default for every other session, so concurrent games keep their own
-    schedule source. Idempotent (rebuilds the same single-branch rule each call)
-    so it doubles as a poll self-heal rewrite.
-    """
-    with open(GAME_PATH) as fh:
-        doc = json.load(fh)
-    flag = doc["flags"]["tempo_schedule_mode"]
-    flag.setdefault("variants", {})[mode] = mode
-    flag["targeting"] = {"if": [{"===": [{"var": "gameId"}, game_id]}, mode, "rule"]}
-    flag["defaultVariant"] = "rule"
-    with open(GAME_PATH, "w") as fh:
-        fh.write(json.dumps(doc, indent=2) + "\n")
+    """Scope ``game.tempo_schedule_mode`` to ``mode`` for one game only."""
+    flag_service_default().put(
+        "game", "tempo_schedule_mode", variant=mode, scope={"game_id": game_id}
+    )
 
 
 # =============================================================================
@@ -526,7 +511,6 @@ async def _scenario_ramp_tempo(docker_compose, tag: str) -> None:
                     )
                     == "agent"
                 ),
-                rewrite=lambda: _set_tempo_schedule_mode_for_game(game_id, "agent"),
             ), "flagd did not serve tempo_schedule_mode=agent for this game"
 
         # Arm a ramp toward 1.3x over 8s (linear), session-scoped to this game.

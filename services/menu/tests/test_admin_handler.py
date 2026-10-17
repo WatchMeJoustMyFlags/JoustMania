@@ -43,10 +43,10 @@ def mock_metrics():
 
 @pytest.fixture
 def mock_state_manager():
-    """Create mock StateManager with FlagConfigWriter mocks."""
+    """Create mock StateManager with FlagServiceWriter mocks."""
     manager = MagicMock()
 
-    # FlagConfigWriter mocks for game_settings
+    # FlagServiceWriter mocks for game_settings
     game_writer = MagicMock()
     game_writer.get_current_variant = MagicMock(return_value="medium")
     game_writer.cycle_variant = MagicMock(return_value="fast")
@@ -58,13 +58,13 @@ def mock_state_manager():
     game_writer.get_variant_value = MagicMock(return_value=2)
     game_writer.match_variant_for_value = MagicMock(return_value="medium")
 
-    # FlagConfigWriter mocks for user_preferences
+    # FlagServiceWriter mocks for user_preferences
     user_writer = MagicMock()
     user_writer.get_current_variant = MagicMock(return_value="on")
     user_writer.cycle_variant = MagicMock(return_value="off")
     manager.user_prefs_writer = user_writer
 
-    # FlagConfigWriter + client mocks for agent policy (#819 kill-switch).
+    # FlagServiceWriter + client mocks for agent policy (#819 kill-switch).
     agent_writer = MagicMock()
     agent_writer.get_current_variant = MagicMock(return_value="ambient")
     agent_writer.update_default_variant = MagicMock(return_value=True)
@@ -214,7 +214,7 @@ class TestAdminOptionNavigation:
 
 
 class TestIncreaseValueSensitivity:
-    """Tests for sensitivity increase via FlagConfigWriter."""
+    """Tests for sensitivity increase via FlagServiceWriter."""
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
@@ -228,7 +228,7 @@ class TestIncreaseValueSensitivity:
 
     @pytest.mark.asyncio
     async def test_sensitivity_wraps_via_writer(self, handler, mock_state_manager):
-        """Sensitivity wrapping is handled by FlagConfigWriter.cycle_variant."""
+        """Sensitivity wrapping is handled by FlagServiceWriter.cycle_variant."""
         handler.current_option = 0
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "ultra_slow"
 
@@ -238,7 +238,7 @@ class TestIncreaseValueSensitivity:
 
 
 class TestIncreaseValueNumTeams:
-    """Tests for num_teams increase via FlagConfigWriter."""
+    """Tests for num_teams increase via FlagServiceWriter."""
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
@@ -252,7 +252,7 @@ class TestIncreaseValueNumTeams:
 
 
 class TestIncreaseValueBoolean:
-    """Tests for boolean settings increase (toggle) via FlagConfigWriter."""
+    """Tests for boolean settings increase (toggle) via FlagServiceWriter."""
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
@@ -285,7 +285,7 @@ class TestWriteFailure:
 
 
 class TestDecreaseValueSensitivity:
-    """Tests for sensitivity decrease via FlagConfigWriter."""
+    """Tests for sensitivity decrease via FlagServiceWriter."""
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
@@ -299,7 +299,7 @@ class TestDecreaseValueSensitivity:
 
 
 class TestDecreaseValueNumTeams:
-    """Tests for num_teams decrease via FlagConfigWriter."""
+    """Tests for num_teams decrease via FlagServiceWriter."""
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
@@ -313,7 +313,7 @@ class TestDecreaseValueNumTeams:
 
 
 class TestDecreaseValueForceAllStart:
-    """Tests for force_all_start decrease via FlagConfigWriter."""
+    """Tests for force_all_start decrease via FlagServiceWriter."""
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[4, 5])
@@ -382,11 +382,11 @@ class TestStateManagerIntegration:
     """Tests for state_manager.game_settings_writer integration."""
 
     @pytest.mark.asyncio
-    async def test_uses_flag_config_writer_not_settings_service(self, handler, mock_state_manager):
-        """Handler should use FlagConfigWriter, not Settings gRPC service."""
+    async def test_uses_flag_service_writer_not_settings_service(self, handler, mock_state_manager):
+        """Handler should use FlagServiceWriter, not Settings gRPC service."""
         handler.current_option = 0  # sensitivity
 
-        # This should NOT make any gRPC calls - only calls FlagConfigWriter
+        # This should NOT make any gRPC calls - only calls FlagServiceWriter
         await handler.handle_increase_value("test_serial")
 
         # Verify cycle_variant was called on the writer
@@ -403,12 +403,12 @@ class TestStateManagerIntegration:
 
 
 class TestHandleSensitivityLocalStorage:
-    """Tests for handle_sensitivity using FlagConfigWriter."""
+    """Tests for handle_sensitivity using FlagServiceWriter."""
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="A1")
-    async def test_handle_sensitivity_uses_flag_config_writer(self, handler, mock_state_manager):
-        """handle_sensitivity should use FlagConfigWriter.cycle_variant."""
+    async def test_handle_sensitivity_uses_flag_service_writer(self, handler, mock_state_manager):
+        """handle_sensitivity should use FlagServiceWriter.cycle_variant."""
         mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
 
@@ -418,7 +418,7 @@ class TestHandleSensitivityLocalStorage:
 
     @pytest.mark.asyncio
     async def test_handle_sensitivity_wrapping_handled_by_writer(self, handler, mock_state_manager):
-        """Sensitivity wrapping is delegated to FlagConfigWriter.cycle_variant."""
+        """Sensitivity wrapping is delegated to FlagServiceWriter.cycle_variant."""
         mock_state_manager.game_settings_writer.get_current_variant.return_value = "ultra_fast"
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "ultra_slow"
 

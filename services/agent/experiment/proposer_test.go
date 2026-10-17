@@ -2,25 +2,25 @@ package experiment
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/joustmania/agent/flagservice/fake"
 	"github.com/joustmania/agent/llm"
 )
 
 // proposer_test.go drives the M7-4 (#931) Proposer end to end with in-process
 // fakes only — no network, no flagd, no clock (per the testing-strategy doc:
-// inferBackend-style fake + tracetest recorder + temp game.json). It asserts the
+// inferBackend-style fake + tracetest recorder + fake flag service). It asserts the
 // four contracts from the brief:
 //
 //  1. valid reply  -> a Proposal that PASSES Gate.Review and WRITES the shadow
-//     experiment to the temp game.json (ProposeProposed).
+//     experiment to the fake flag service (ProposeProposed).
 //  2. unparseable/invalid reply -> NO proposal, NO write, recorded
 //     (ProposeUndecodable).
 //  3. out-of-vocab/unknown-flag reply -> no proposal (rejected by the decoder
@@ -45,27 +45,21 @@ func (b *fakeProposerBackend) Infer(context.Context, llm.Prompt) (string, error)
 	return b.response, nil
 }
 
-// gameVocab reads the live flag keys from the temp game.json at path — the same
-// surface the Gate validates against, so the prompt/decoder vocabulary and the
-// Gate's known-flag set agree.
-func gameVocab(t *testing.T, path string) func() map[string]struct{} {
-	t.Helper()
+// gameVocab returns the experiment catalog keys of the fake flag service, the
+// same surface the Gate validates against.
+func gameVocab(svc *fake.Service) func() map[string]struct{} {
 	return func() map[string]struct{} {
-		raw, err := os.ReadFile(path)
+		set, err := svc.GetSet(context.Background(), GameFlagSet)
 		if err != nil {
 			return nil
 		}
-		var doc struct {
-			Flags map[string]json.RawMessage `json:"flags"`
+		out := map[string]struct{}{}
+		for _, f := range set.Flags {
+			if f.Policy.AllowsScope("experiment+arm") {
+				out[f.Flag] = struct{}{}
+			}
 		}
-		if err := json.Unmarshal(raw, &doc); err != nil {
-			return nil
-		}
-		set := make(map[string]struct{}, len(doc.Flags))
-		for k := range doc.Flags {
-			set[k] = struct{}{}
-		}
-		return set
+		return out
 	}
 }
 
@@ -81,19 +75,18 @@ func findSpan(t *testing.T, rec *tracetest.SpanRecorder, name string) trace.Read
 	return nil
 }
 
-// proposerWithRecorder wires a Proposer over a temp game.json + the given fake
-// backend, with an in-memory span recorder and a frozen clock the test advances.
-func proposerWithRecorder(t *testing.T, backend Backend) (*Proposer, string, *tracetest.SpanRecorder, *fakeClock) {
+// proposerWithRecorder wires a Proposer over a fake flag service + the given
+// fake backend, with an in-memory span recorder and a frozen clock.
+func proposerWithRecorder(t *testing.T, backend Backend) (*Proposer, *fake.Service, *tracetest.SpanRecorder, *fakeClock) {
 	t.Helper()
-	path := newGameFile(t)
+	svc := newGameService(t)
 	rec := tracetest.NewSpanRecorder()
 	tp := trace.NewTracerProvider(trace.WithSpanProcessor(rec))
-	w := NewWriter(path, discardLogger())
-	gate := NewGate(w, tp.Tracer("test"), discardLogger())
-	p := NewProposer(backend, gate, gameVocab(t, path), tp.Tracer("test"), discardLogger())
+	gate := NewGate(NewWriter(svc, discardLogger()), tp.Tracer("test"), discardLogger())
+	p := NewProposer(backend, gate, gameVocab(svc), tp.Tracer("test"), discardLogger())
 	clk := &fakeClock{now: time.Unix(1_700_000_000, 0)}
 	p.SetClock(clk.Now)
-	return p, path, rec, clk
+	return p, svc, rec, clk
 }
 
 // fakeClock is a deterministic, advanceable clock for cadence tests.
@@ -102,27 +95,24 @@ type fakeClock struct{ now time.Time }
 func (c *fakeClock) Now() time.Time          { return c.now }
 func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
 
-// experimentVariantValue returns the experimental variant's value for flagKey in
-// the file at path, or ("", false) if no experiment was written.
-func experimentVariantValue(t *testing.T, path, flagKey string) (string, bool) {
+// experimentVariantValue returns the experimental-arm value written for flagKey
+// (the Proposer allocates the experiment id), or ("", false) if none.
+func experimentVariantValue(t *testing.T, svc *fake.Service, flagKey string) (string, bool) {
 	t.Helper()
-	raw := readFlagRaw(t, path, flagKey)
-	var flag struct {
-		Variants map[string]json.RawMessage `json:"variants"`
+	for k, v := range svc.ArmValues(GameFlagSet, flagKey) {
+		if strings.HasPrefix(k, "prop_") && strings.HasSuffix(k, "|"+ArmExperimental) {
+			return string(v), true
+		}
 	}
-	if err := json.Unmarshal(raw, &flag); err != nil {
-		t.Fatalf("decode flag: %v", err)
-	}
-	v, ok := flag.Variants[ExperimentVariant]
-	return string(v), ok
+	return "", false
 }
 
 // UC: UC-042 main
 func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 	backend := &fakeProposerBackend{
-		response: `{"flag":"death_grace_period_seconds","value":0.75,"rationale":"longer grace may extend sessions"}`,
+		response: `{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace may extend sessions"}`,
 	}
-	p, path, rec, _ := proposerWithRecorder(t, backend)
+	p, svc, rec, _ := proposerWithRecorder(t, backend)
 
 	res := p.ProposeOnce(context.Background(), Narrative{GameMode: "joust"}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
@@ -132,13 +122,13 @@ func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 	if res.Proposal == nil || res.Proposal.FlagKey != "death_grace_period_seconds" {
 		t.Fatalf("proposal = %+v, want death_grace_period_seconds", res.Proposal)
 	}
-	// The shadow experiment must be WRITTEN to game.json (the Gate accepted + applied).
-	val, ok := experimentVariantValue(t, path, "death_grace_period_seconds")
+	// The shadow experiment must be WRITTEN as an experiment-arm value (the Gate accepted + applied).
+	val, ok := experimentVariantValue(t, svc, "death_grace_period_seconds")
 	if !ok {
-		t.Fatalf("expected experimental variant written to game.json, found none")
+		t.Fatalf("expected experimental variant written, found none")
 	}
-	if val != "0.75" {
-		t.Fatalf("experimental value = %s, want 0.75", val)
+	if val != "3" {
+		t.Fatalf("experimental value = %s, want 3", val)
 	}
 	// The attempt span records the engine, the diff summary, and the proposed outcome.
 	span := findSpan(t, rec, SpanProposeAttempt)
@@ -154,7 +144,7 @@ func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 
 func TestProposeOnce_UndecodableReplyMakesNoProposal(t *testing.T) {
 	backend := &fakeProposerBackend{response: "I really think you should raise the grace period."}
-	p, path, rec, _ := proposerWithRecorder(t, backend)
+	p, svc, rec, _ := proposerWithRecorder(t, backend)
 
 	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
@@ -165,7 +155,7 @@ func TestProposeOnce_UndecodableReplyMakesNoProposal(t *testing.T) {
 		t.Fatalf("expected nil proposal, got %+v", res.Proposal)
 	}
 	// NO write: no experiment variant on any flag.
-	if _, ok := experimentVariantValue(t, path, "death_grace_period_seconds"); ok {
+	if _, ok := experimentVariantValue(t, svc, "death_grace_period_seconds"); ok {
 		t.Fatalf("undecodable reply must not write an experiment")
 	}
 	// Recorded: attempt span carries the undecodable outcome; the Gate never ran.
@@ -182,7 +172,7 @@ func TestProposeOnce_UnknownFlagRejectedByDecoderNoWrite(t *testing.T) {
 	backend := &fakeProposerBackend{
 		response: `{"flag":"made_up_flag","value":1,"rationale":"hallucinated"}`,
 	}
-	p, path, rec, _ := proposerWithRecorder(t, backend)
+	p, svc, rec, _ := proposerWithRecorder(t, backend)
 
 	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
@@ -192,7 +182,7 @@ func TestProposeOnce_UnknownFlagRejectedByDecoderNoWrite(t *testing.T) {
 	if !errors.Is(res.Err, errUnknownProposalFlag) {
 		t.Fatalf("err = %v, want errUnknownProposalFlag", res.Err)
 	}
-	if _, ok := experimentVariantValue(t, path, "death_grace_period_seconds"); ok {
+	if _, ok := experimentVariantValue(t, svc, "death_grace_period_seconds"); ok {
 		t.Fatalf("unknown-flag reply must not write an experiment")
 	}
 	if spanExists(rec, SpanProposed) {
@@ -209,7 +199,7 @@ func TestProposeOnce_TypeMismatchBlockedByGate(t *testing.T) {
 		// death_grace_period_seconds variants are numbers; a string is a type mismatch.
 		response: `{"flag":"death_grace_period_seconds","value":"way too long","rationale":"oops a string"}`,
 	}
-	p, path, rec, _ := proposerWithRecorder(t, backend)
+	p, svc, rec, _ := proposerWithRecorder(t, backend)
 
 	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
@@ -220,7 +210,7 @@ func TestProposeOnce_TypeMismatchBlockedByGate(t *testing.T) {
 	if !ok || rej.Reason != ReasonTypeMismatch {
 		t.Fatalf("err = %v, want RejectError{TypeMismatch}", res.Err)
 	}
-	if _, ok := experimentVariantValue(t, path, "death_grace_period_seconds"); ok {
+	if _, ok := experimentVariantValue(t, svc, "death_grace_period_seconds"); ok {
 		t.Fatalf("type-mismatched proposal must not write an experiment")
 	}
 	// The Gate emitted its blocked span; the attempt span records the blocked outcome.
@@ -236,7 +226,7 @@ func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
 	// The sentinel-stub case: Backend.Infer errors (no text backend configured,
 	// AGENT_INFERENCE_BACKEND=stub). The Proposer degrades to NO proposal, NO error.
 	backend := &fakeProposerBackend{err: errors.New("inference not implemented")}
-	p, path, rec, _ := proposerWithRecorder(t, backend)
+	p, svc, rec, _ := proposerWithRecorder(t, backend)
 
 	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
@@ -246,7 +236,7 @@ func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
 	if res.Proposal != nil {
 		t.Fatalf("no proposal expected when backend errors")
 	}
-	if _, ok := experimentVariantValue(t, path, "death_grace_period_seconds"); ok {
+	if _, ok := experimentVariantValue(t, svc, "death_grace_period_seconds"); ok {
 		t.Fatalf("a failed backend must not write an experiment")
 	}
 	span := findSpan(t, rec, SpanProposeAttempt)
@@ -256,7 +246,7 @@ func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
 // UC: UC-042 main
 func TestProposeOnce_CadenceGatesSecondCycleWithinInterval(t *testing.T) {
 	backend := &fakeProposerBackend{
-		response: `{"flag":"death_grace_period_seconds","value":0.75,"rationale":"longer grace"}`,
+		response: `{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace"}`,
 	}
 	p, _, _, clk := proposerWithRecorder(t, backend)
 	cfg := ProposerConfig{Permit: allowPropose, Engine: "stub", MinInterval: 60 * time.Second}
@@ -290,7 +280,7 @@ func TestProposeOnce_CadenceGatesSecondCycleWithinInterval(t *testing.T) {
 
 func TestProposeOnce_ZeroIntervalDisablesCadence(t *testing.T) {
 	backend := &fakeProposerBackend{
-		response: `{"flag":"death_grace_period_seconds","value":0.75,"rationale":"longer grace"}`,
+		response: `{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace"}`,
 	}
 	p, _, _, _ := proposerWithRecorder(t, backend)
 	cfg := ProposerConfig{Permit: allowPropose, Engine: "stub"} // MinInterval 0 => no floor

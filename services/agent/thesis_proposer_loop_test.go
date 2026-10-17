@@ -12,16 +12,16 @@ import (
 // thesis_proposer_loop_test.go pins the LOOP-LEVEL wiring of the #1184 retro-seeded
 // thesis proposer: it is default-OFF, subordinate to the dynamic selector, and turns
 // a recorded retro suggestion into a started experiment when opted in — reusing the
-// loopWithRealRegistry / gameFileForDeclarer helpers from dynamic_declarer_test.go.
+// loopWithRealRegistry / gameServiceForDeclarer helpers from dynamic_declarer_test.go.
 
 // proposerLoop builds a loop with a real registry, a wired dynamic selector (the
 // proposer delegates flag selection to it), and a ThesisProposer.
 func proposerLoop(t *testing.T) *experimentLoop {
 	t.Helper()
-	loop, path := loopWithRealRegistry(t, 8)
+	loop, svc := loopWithRealRegistry(t, 8)
 	loop.dynamic = &dynamicDeclarer{
-		gameFlagPath:     path,
-		candidates:       []string{"sensitivity", "num_teams"},
+		gameFlags:        svc,
+		candidates:       []string{"sensitivity", "invincibility_seconds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
 	loop.proposer = experiment.NewThesisProposer(0)

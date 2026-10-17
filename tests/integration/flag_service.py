@@ -199,6 +199,11 @@ def default() -> FlagService:
 INTERVENTIONS = "interventions"
 
 
+def variant_value(flag_set: str, flag: str, variant: str):
+    """The value of a declared variant, read from the flag service (R-readers)."""
+    return default().get(flag_set, flag)["variant_values"][variant]
+
+
 def set_game_value(flag: str, game_id: str, value) -> dict:
     """A game-scoped intervention value (state flags), FR-126."""
     return default().put(INTERVENTIONS, flag, value=value, scope={"game_id": game_id})

@@ -229,14 +229,45 @@ func (c *Client) Delete(ctx context.Context, set, flag string, query url.Values)
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
 }
 
-// FlagView is the part of GET /{set}/{flag} the agent reads.
+// Policy is a flag's registry row as the read endpoints show it.
+type Policy struct {
+	Kind    string   `json:"kind"`
+	Scopes  []string `json:"scope"`
+	Persist bool     `json:"persist"`
+}
+
+// AllowsScope reports whether the registry allows writes in scope.
+func (p *Policy) AllowsScope(scope string) bool {
+	if p == nil {
+		return false
+	}
+	for _, s := range p.Scopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// ValueView is one runtime value (an overlay or a scoped value).
+type ValueView struct {
+	Variant string          `json:"variant"`
+	Value   json.RawMessage `json:"value"`
+	Writer  string          `json:"writer"`
+}
+
+// FlagView is the part of GET /{set}[/{flag}] the agent reads.
 type FlagView struct {
-	Flag             string          `json:"flag"`
-	Mutable          bool            `json:"mutable"`
-	BaselineDefault  string          `json:"baseline_default"`
-	EffectiveDefault string          `json:"effective_default"`
-	Variants         []string        `json:"variants"`
-	Rendered         json.RawMessage `json:"rendered"`
+	Flag             string                     `json:"flag"`
+	Mutable          bool                       `json:"mutable"`
+	Policy           *Policy                    `json:"policy"`
+	BaselineDefault  string                     `json:"baseline_default"`
+	EffectiveDefault string                     `json:"effective_default"`
+	Variants         []string                   `json:"variants"`
+	VariantValues    map[string]json.RawMessage `json:"variant_values"`
+	RealOverlay      *ValueView                 `json:"real_overlay"`
+	// Rendered is the flag as flagd reads it (GET /{set}/{flag} only).
+	Rendered json.RawMessage `json:"rendered"`
 }
 
 // SetView is GET /{set}.

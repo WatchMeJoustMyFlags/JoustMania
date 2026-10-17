@@ -169,6 +169,12 @@ func MintExperimentID() string {
 	return "exp_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 }
 
+// MintProposalID returns the experiment id of a standalone Proposer proposal
+// ("prop_<uuid hex[:12]>"), so its value is scoped like any experiment's (FR-128).
+func MintProposalID() string {
+	return "prop_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+}
+
 // MaxShadowGamesFromEnv resolves the fixed shadow-capacity cap from
 // AGENT_MAX_SHADOW_GAMES, falling back to DefaultMaxShadowGames on an unset,
 // empty, or non-positive value (a zero/negative cap would starve every

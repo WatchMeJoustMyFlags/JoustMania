@@ -475,12 +475,33 @@ authorization this is a convention the agent's code keeps, not a check.
 
 | Key | Kind | Scope | Bounds | Persist | Today's writer |
 |---|---|---|---|---|---|
-| `sensitivity` | overlay | stack | declared variants (5 levels) | **yes** | menu admin (FR-017) |
+| `sensitivity` | overlay | stack or experiment+arm or real | declared variants (5 levels) | **yes** | menu admin (FR-017); W3 experiment writer; W5 promotion |
 | `num_teams` | overlay | stack | declared variants | **yes** | menu admin |
 | `force_all_start` | overlay | stack | `on`, `off` | **yes** | menu admin |
-| every flag the experiment catalog allows (#1092; today the dynamic declarer's candidates) | state | experiment+arm | declared variants, or the catalog range | no | W3 experiment writer |
-| the flag of a promoted experiment | overlay | real | the experiment's tested value | no | W5 promotion |
+| `nonstop.time_limit_seconds` | overlay | experiment+arm or real | int 0 to 600 | no | W3 experiment writer; W5 promotion |
+| `invincibility_seconds` | overlay | experiment+arm or real | 0 to 10 | no | W3 experiment writer; W5 promotion |
+| `fight_club.min_rounds` | overlay | experiment+arm or real | int 1 to 30 | no | W3 experiment writer; W5 promotion |
+| `werewolf.reveal_time_seconds` | overlay | experiment+arm or real | 10 to 90 | no | W3 experiment writer; W5 promotion |
+| `death_grace_period_seconds` | overlay | experiment+arm or real | 0 to 5 | no | W3 experiment writer; W5 promotion |
+| `nonstop.respawn_seconds` | overlay | experiment+arm or real | 0.5 to 10 | no | W3 experiment writer; W5 promotion |
+| `nonstop.spawn_protection_seconds` | overlay | experiment+arm or real | 0 to 6 | no | W3 experiment writer; W5 promotion |
+| `fight_club.round_seconds` | overlay | experiment+arm or real | 5 to 60 | no | W3 experiment writer; W5 promotion |
+| `tournament.match_seconds` | overlay | experiment+arm or real | 5 to 60 | no | W3 experiment writer; W5 promotion |
+| `tournament.time_between_matches_seconds` | overlay | experiment+arm or real | 1 to 15 | no | W3 experiment writer; W5 promotion |
+| `werewolf.werewolf_fraction` | overlay | experiment+arm or real | 0.1 to 0.6 | no | W3 experiment writer; W5 promotion |
+| `zombie.initial_count` | overlay | experiment+arm or real | int 1 to 5 | no | W3 experiment writer; W5 promotion |
+| `zombie.respawn_min_seconds` | overlay | experiment+arm or real | 0.5 to 10 | no | W3 experiment writer; W5 promotion |
+| `zombie.respawn_max_seconds` | overlay | experiment+arm or real | 2 to 30 | no | W3 experiment writer; W5 promotion |
+| `windows` | overlay | experiment+arm or real | same shape as the default variant | no | W3 experiment writer; W5 promotion |
 | `tempo_schedule_mode` | state | game | declared variants | no | `test_intervention_smoke.py` |
+
+The rows with scope `experiment+arm` are the **experiment catalog** (#1092, #1415): the gameplay calibration
+flags an experiment may change. Capacity (`max_concurrent_games`, `max_shadow_games`), lobby and ceremony
+(`force_all_start*`, `countdown_phase_duration_ms`, `winner_rainbow_duration_ms`), team structure (`num_teams`,
+`random_assignment`, `traitor.count_tiers`), scoring and threshold tables and `shadow_policy` are not in it. The
+proposer and the dynamic declarer read the catalog from the flag service (`GET /game`, the `policy` of each
+flag), and a value outside the bounds is refused with `out_of_bounds`. A numeric range covers the declared
+variants with headroom; "same shape" accepts an object with exactly the default variant's keys and value kinds.
 
 An `experiment+arm` value never resolves for `game_kind == "real"` (FR-062, FR-128): the service generates the
 condition, so the invariant gate (`experiment/gate.go`) becomes a second check. A promotion overlay lasts until

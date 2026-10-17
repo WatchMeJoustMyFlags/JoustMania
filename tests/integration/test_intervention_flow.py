@@ -45,7 +45,6 @@ from proto import game_coordinator_pb2  # noqa: E402
 
 from tests.integration.helpers import (  # noqa: E402
     GameEventCollector,
-    active_flag_file,
     flagd_probe_client,
     get_game_client,
     get_mock_controller_serials,
@@ -56,8 +55,6 @@ from tests.integration.helpers import (  # noqa: E402
 from tests.integration.flag_service import append_event, set_player_value  # noqa: E402
 from tests.integration.flag_service import default as flag_service_default  # noqa: E402
 
-# The agent set's baseline file (read-only: expected variant values only).
-AGENT_PATH = active_flag_file("agent")
 
 # Absence window: how long the flag push + coordinator re-evaluate chain is
 # given to (not) act before asserting that NOTHING happened. Positive waits are
@@ -92,7 +89,10 @@ def set_policy_budget(per_minute: int) -> None:
     that drive several interventions in a tight window need headroom in BOTH,
     so both get the value (registry range 1 to 100, flags.md §13.2).
     """
-    for flag_key in ("policy.max_interventions_per_minute", "policy.coordinator_backstop_per_minute"):
+    for flag_key in (
+        "policy.max_interventions_per_minute",
+        "policy.coordinator_backstop_per_minute",
+    ):
         flag_service_default().put("agent", flag_key, value=int(per_minute))
 
 
@@ -134,7 +134,9 @@ def intervention_env(docker_compose, flag_service):
     with flagd_probe_client(docker_compose, "agent") as client:
         assert poll_until(
             lambda: (
-                client.get_integer_value("policy.max_interventions_per_minute", -1, EvaluationContext())
+                client.get_integer_value(
+                    "policy.max_interventions_per_minute", -1, EvaluationContext()
+                )
                 == SUITE_RATE_LIMIT_BUDGET
             ),
         ), "flagd did not serve the pinned suite rate-limit budget"

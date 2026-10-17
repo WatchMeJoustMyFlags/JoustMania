@@ -79,6 +79,10 @@ type Bounds struct {
 	Payload map[string]string `yaml:"payload,omitempty" json:"payload,omitempty"`
 	// Fraction is the allowed fraction_percent range for a fraction write.
 	Fraction []int `yaml:"fraction,omitempty" json:"fraction,omitempty"`
+	// Shape accepts a JSON object with exactly the keys of the flag's baseline
+	// default variant, each value of the same JSON kind (an object-valued
+	// experiment catalog flag such as `windows`).
+	Shape bool `yaml:"shape,omitempty" json:"shape,omitempty"`
 }
 
 // Policy is one registry row (entity MUTABLE_FLAG_POLICY).
@@ -207,6 +211,12 @@ func validatePolicy(p *Policy, b *baseline.Baseline) error {
 			}
 		}
 	}
+	if p.Bounds.Shape {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(flag.Variants[flag.DefaultVariant], &obj); err != nil || obj == nil {
+			return fmt.Errorf("a shape bound needs an object-valued default variant")
+		}
+	}
 	if p.AllowsScope(ScopeFraction) {
 		if f := p.Bounds.Fraction; len(f) != 2 || f[0] < 1 || f[1] > 100 || f[0] > f[1] {
 			return fmt.Errorf("a fraction scope needs bounds.fraction [lo, hi] within 1..100")
@@ -262,6 +272,10 @@ func CheckValue(p *Policy, flag *baseline.Flag, variant string, value json.RawMe
 		if !ok || !matchPattern(p.Bounds.Pattern, s) {
 			return nil, fserr.Unprocessable(fserr.OutOfBounds, "%s does not match the format of %s", value, p.Key)
 		}
+	case p.Bounds.Shape:
+		if !sameShape(flag.Variants[flag.DefaultVariant], value) {
+			return nil, fserr.Unprocessable(fserr.OutOfBounds, "%s takes an object with the keys and value types of its declared variants, got %s", p.Key, value)
+		}
 	case p.Bounds.FreeString:
 		s, ok := asString(value)
 		if !ok || len(s) > MaxFreeString {
@@ -271,6 +285,42 @@ func CheckValue(p *Policy, flag *baseline.Flag, variant string, value json.RawMe
 		return nil, fserr.Unprocessable(fserr.OutOfBounds, "%s accepts only its declared variants; %s is none of them", p.Key, value)
 	}
 	return &Checked{Value: value}, nil
+}
+
+// sameShape reports whether value is a JSON object with exactly the keys of
+// want, each value of the same JSON kind.
+func sameShape(want, value json.RawMessage) bool {
+	var w, v map[string]json.RawMessage
+	if json.Unmarshal(want, &w) != nil || json.Unmarshal(value, &v) != nil || v == nil || len(w) != len(v) {
+		return false
+	}
+	for k, wv := range w {
+		vv, ok := v[k]
+		if !ok || kindOf(wv) != kindOf(vv) {
+			return false
+		}
+	}
+	return true
+}
+
+func kindOf(raw json.RawMessage) string {
+	var x any
+	if json.Unmarshal(raw, &x) != nil {
+		return "invalid"
+	}
+	switch x.(type) {
+	case float64:
+		return "number"
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	}
+	return "null"
 }
 
 func matchVariant(p *Policy, flag *baseline.Flag, value json.RawMessage) string {

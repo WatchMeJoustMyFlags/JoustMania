@@ -28,7 +28,7 @@ import (
 // (ReasonNonGameTarget), we reject an out-of-vocab flag HERE too so a malformed
 // model reply never even reaches Gate.Review — the Gate's blocked span is for
 // genuine invariant violations, not for routine model garbage. The flag
-// vocabulary is passed in (the live set of game.json flag keys), so this file has
+// vocabulary is passed in (the experiment catalog of the game flag set), so this file has
 // no flagd dependency and is exhaustively table-tested, exactly like decode.go.
 
 // proposalResponse is the strict JSON schema the model must return — one object
@@ -72,7 +72,7 @@ var (
 )
 
 // decodeProposal parses a raw model response into a validated Proposal, or returns
-// a typed error. knownFlags is the live set of game.json flag keys (the
+// a typed error. knownFlags is the experiment catalog of the game flag set (the
 // vocabulary the model was constrained to). The result is safe to submit to
 // Gate.Review ONLY when err is nil. Validation, in order (mirrors llm.Decode):
 //

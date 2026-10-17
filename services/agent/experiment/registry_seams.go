@@ -125,7 +125,7 @@ type Promoter interface {
 // the game flagset (#977). The registry calls Apply when an experiment starts
 // RUNNING and Strip on teardown (any terminal status), so the flagd rule tracks
 // the live experiment set. It is an interface so the registry stays free of the
-// game.json write surface; a thin adapter over the Gate/Writer satisfies it.
+// game flag set write surface; a thin adapter over the Gate/Writer satisfies it.
 //
 // PRODUCTION (#977): Apply runs a Proposal{FlagKey, ExperimentalValue,
 // ExperimentID} through the Gate (which Writes it). Strip removes that

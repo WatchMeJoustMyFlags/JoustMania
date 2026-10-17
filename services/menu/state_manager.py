@@ -4,8 +4,7 @@ import logging
 from collections.abc import Callable, Coroutine
 
 from lib.controller_constants import ButtonTrackingKey
-from lib.flag_config_writer import FlagConfigWriter
-from lib.flag_service_writer import FlagServiceWriter  # noqa: F401 - type hint
+from lib.flag_service_writer import FlagServiceWriter
 from lib.types import Games
 from services.menu import metrics
 from services.menu.handlers.base import ControllerHandler, ControllerState
@@ -27,11 +26,11 @@ class StateManager:
         self,
         led: LedController,
         audio: AudioHelper,
-        game_settings_writer: FlagConfigWriter,
-        user_prefs_writer: FlagConfigWriter,
+        game_settings_writer: FlagServiceWriter,
+        user_prefs_writer: FlagServiceWriter,
         publish_event: Callable[[str, dict], Coroutine],
         *,
-        agent_settings_writer: "FlagConfigWriter | FlagServiceWriter | None" = None,
+        agent_settings_writer: FlagServiceWriter | None = None,
         game_settings_client=None,
         agent_settings_client=None,
         interventions_client=None,
@@ -43,10 +42,10 @@ class StateManager:
         Args:
             led: LED controller utility
             audio: Audio helper utility
-            game_settings_writer: FlagConfigWriter for game.json
-            user_prefs_writer: FlagConfigWriter for user.json
+            game_settings_writer: flag-service writer for the game set
+            user_prefs_writer: flag-service writer for the user set
             publish_event: Async function to publish events
-            agent_settings_writer: FlagConfigWriter for agent.json (kill-switch, #819)
+            agent_settings_writer: flag-service writer for the agent set (kill-switch, #819)
             game_settings_client: OpenFeature client for the "game" domain, used to
                 resolve effective (agent-override-aware) values for the truthful
                 admin display (#818).

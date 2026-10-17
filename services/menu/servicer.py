@@ -17,9 +17,7 @@ from lib.feature_flags import (
     init_flag_domain,
     set_game_transaction_context,
 )
-from lib.flag_config_writer import FlagConfigWriter
 from lib.flag_service_writer import FlagServiceWriter
-from lib.flagd_paths import active_flag_file
 from lib.telemetry import get_tracer
 from lib.types import Games
 from proto import menu_pb2, menu_pb2_grpc
@@ -94,13 +92,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # interventions.json — that is the agent's exclusive write surface.
         init_flag_domain("interventions")
 
-        # FlagConfigWriter instances for persisting settings changes. Resolve the
-        # active flag directory through the single source of truth (#959/#966):
-        # $FLAGD_FLAG_DIR/<domain>.json — the same plain join flagd, the agent
-        # writers, and the integration tests use, so a menu-driven flag write
-        # lands in the file flagd actually serves.
-        self.game_settings_writer = FlagConfigWriter(str(active_flag_file("game")))
-        self.user_prefs_writer = FlagConfigWriter(str(active_flag_file("user")))
+        # Admin settings and the menu selection are persisted admin values on the
+        # flag service (#1415, UC-053 A2): PUT /game|user/{flag} {"persist": true}.
+        # The flag files are the read-only baseline (C-033).
+        self.game_settings_writer = FlagServiceWriter("game")
+        self.user_prefs_writer = FlagServiceWriter("user")
         # Agent policy writer for the on-device kill-switch (#819). The human
         # owns agent policy per docs/OWNERSHIP_MODEL.md §2/§6.2. The agent set is
         # served by the flag service (#1412): the kill switch is a persisted admin

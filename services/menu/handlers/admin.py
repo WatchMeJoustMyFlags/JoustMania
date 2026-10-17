@@ -940,7 +940,7 @@ class AdminModeHandler:
         """
         Handle sensitivity cycling in admin mode.
 
-        Cycles through sensitivity variants via FlagConfigWriter.
+        Cycles through sensitivity variants via the flag service (FlagServiceWriter).
 
         Args:
             serial: Controller serial number
@@ -1052,7 +1052,7 @@ class AdminModeHandler:
         """
         Handle instruction toggle in admin mode.
 
-        Toggles instruction display on/off via FlagConfigWriter.
+        Toggles instruction display on/off via the flag service (FlagServiceWriter).
 
         Args:
             serial: Controller serial number
@@ -1149,7 +1149,7 @@ class AdminModeHandler:
         """
         Increase the value of the current admin option.
 
-        Cycles through flag variants via FlagConfigWriter.
+        Cycles through flag variants via the flag service (FlagServiceWriter).
 
         Args:
             serial: Controller serial number
@@ -1202,7 +1202,7 @@ class AdminModeHandler:
         """
         Decrease the value of the current admin option.
 
-        Cycles through flag variants backward via FlagConfigWriter.
+        Cycles through flag variants backward via the flag service (FlagServiceWriter).
 
         Args:
             serial: Controller serial number

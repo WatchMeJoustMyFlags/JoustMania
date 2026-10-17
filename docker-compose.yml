@@ -81,7 +81,7 @@ services:
   # their flagSetId selectors. It loads the flag files read-only at start and
   # never writes them (C-030, C-033). Migration (architecture note §12): only
   # the sets in FLAG_SERVICE_SETS are served by it; the others stay on flagd's
-  # file: sources until their writers move (#1411, #1412, #1415, #1420).
+  # file: sources until their writers move (#1420: controller).
   # Writers: HTTP/JSON on 8070 (envoy /flags/ from the host, C-015). flagd: 50064.
   flag-service:
     image: ghcr.io/watchmejoustmyflags/joustmania/flag-service:${IMAGE_TAG:-latest}
@@ -93,7 +93,7 @@ services:
       - "50064"  # flagd.sync.v1 gRPC (flagd only)
       - "8070"   # HTTP/JSON write/read API + /healthz
     environment:
-      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent
+      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
       # Admin settings persisted on request (D10, re-review N4). One state file
       # per stack: the ci, dry-run and decide-e2e stacks override the name.
@@ -139,10 +139,6 @@ services:
       - "grpc://flag-service:50064"
       - "--uri"
       - "file:/etc/flagd/controller.json"
-      - "--uri"
-      - "file:/etc/flagd/game.json"
-      - "--uri"
-      - "file:/etc/flagd/user.json"
       - "--metrics-exporter"
       - "otel"
       - "--otel-collector-uri"

@@ -109,11 +109,13 @@ jobs:
             agent:
               - 'services/agent/**'
             # Agent tests that read shipped flag files (e.g.
-            # rollout_fixture_test.go, decide_bounds_test.go). Kept separate
+            # rollout_fixture_test.go, decide_bounds_test.go) and the flag
+            # service's registry (the experiment catalog, #1415). Kept separate
             # from `agent` so a flag edit does not rebuild the agent image.
             agent_tests:
               - 'services/agent/**'
               - 'services/flagd/**'
+              - 'services/flag-service/registry.yaml'
             # Flag service (epic #1407): the image ...
             flag_service:
               - 'services/flag-service/**'

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"os"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -11,6 +11,8 @@ import (
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/flagservice"
+	"github.com/joustmania/agent/flagservice/fake"
 )
 
 // dynamic_declarer_test.go is the #995 acceptance suite for the HEURISTIC dynamic
@@ -24,20 +26,25 @@ import (
 //   - rotation: successive declarations cover DIFFERENT flags (deterministic cursor);
 //   - kill-switch off ⇒ the declarer declares nothing.
 
-// gameFileForDeclarer copies the experiment package's game.json fixture to a temp
-// file the declarer reads candidate flags from.
-func gameFileForDeclarer(t *testing.T) string {
+// gameServiceForDeclarer serves the experiment package's game.json fixture from
+// a fake flag service with the real registry's game policies (the experiment
+// catalog the declarer reads candidate flags from).
+func gameServiceForDeclarer(t *testing.T) *fake.Service {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join("experiment", "testdata", "game.json"))
+	return gameServiceFrom(t, filepath.Join("experiment", "testdata", "game.json"))
+}
+
+func gameServiceFrom(t *testing.T, baseline string) *fake.Service {
+	t.Helper()
+	policies, err := fake.RegistryPolicies(filepath.Join("..", "flag-service", "registry.yaml"), experiment.GameFlagSet)
 	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+		t.Fatalf("read registry: %v", err)
 	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "game.json")
-	if err := os.WriteFile(path, src, 0o644); err != nil {
-		t.Fatalf("write temp fixture: %v", err)
+	svc := fake.New()
+	if err := svc.LoadSetWithPolicies(experiment.GameFlagSet, baseline, policies); err != nil {
+		t.Fatalf("load %s: %v", baseline, err)
 	}
-	return path
+	return svc
 }
 
 // TestDynamicDeclarer_PicksGatePassingIntent asserts the declarer's chosen Intent
@@ -45,9 +52,9 @@ func gameFileForDeclarer(t *testing.T) string {
 // the value is type-compatible (it is one of the flag's own variant values), and
 // the objective is experimentable.
 func TestDynamicDeclarer_PicksGatePassingIntent(t *testing.T) {
-	path := gameFileForDeclarer(t)
+	svc := gameServiceForDeclarer(t)
 	d := &dynamicDeclarer{
-		gameFlagPath:     path,
+		gameFlags:        svc,
 		candidates:       []string{"sensitivity"}, // numeric flag, default medium=2
 		defaultObjective: decision.ObjectiveBalanced,
 	}
@@ -77,7 +84,7 @@ func TestDynamicDeclarer_PicksGatePassingIntent(t *testing.T) {
 
 	// The full Intent must pass the REAL Gate when Started: feed the equivalent
 	// Proposal through Gate.Review (which writes shadow targeting) and assert accept.
-	writer := experiment.NewWriter(path, testLogger())
+	writer := experiment.NewWriter(svc, testLogger())
 	gate := experiment.NewGate(writer, nil, testLogger())
 	p := experiment.Proposal{
 		FlagKey:           intent.FlagKey,
@@ -90,16 +97,19 @@ func TestDynamicDeclarer_PicksGatePassingIntent(t *testing.T) {
 	}
 }
 
-// TestDynamicDeclarer_GatePassesObjectAndBoolFlags asserts the chosen value for a
-// non-numeric flag (an object-valued flag with pre-existing targeting, and a bool
-// flag) is ALSO accepted by the Gate — the perturbation picks an existing variant
-// value of the matching JSON kind, so the type guard + invariant hold for every
-// kind, not just numbers.
-func TestDynamicDeclarer_GatePassesObjectAndBoolFlags(t *testing.T) {
-	path := gameFileForDeclarer(t)
-	for _, flagKey := range []string{"windows", "random_assignment"} {
+// TestDynamicDeclarer_GatePassesObjectFlag asserts the chosen value for an
+// object-valued catalog flag with pre-existing targeting is ALSO accepted by the
+// Gate, and that a flag outside the experiment catalog (the bool
+// random_assignment) is never offered.
+func TestDynamicDeclarer_GatePassesObjectFlag(t *testing.T) {
+	svc := gameServiceForDeclarer(t)
+	outside := &dynamicDeclarer{gameFlags: svc, candidates: []string{"random_assignment"}, defaultObjective: decision.ObjectiveBalanced}
+	if intent, ok := outside.Declare(nil); ok {
+		t.Fatalf("declarer offered a flag outside the catalog: %+v", intent)
+	}
+	for _, flagKey := range []string{"windows"} {
 		d := &dynamicDeclarer{
-			gameFlagPath:     path,
+			gameFlags:        svc,
 			candidates:       []string{flagKey},
 			defaultObjective: decision.ObjectiveBalanced,
 		}
@@ -107,7 +117,7 @@ func TestDynamicDeclarer_GatePassesObjectAndBoolFlags(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: no intent", flagKey)
 		}
-		writer := experiment.NewWriter(path, testLogger())
+		writer := experiment.NewWriter(svc, testLogger())
 		gate := experiment.NewGate(writer, nil, testLogger())
 		p := experiment.Proposal{
 			FlagKey:           intent.FlagKey,
@@ -130,7 +140,7 @@ func TestDynamicDeclarer_DisabledByDefault(t *testing.T) {
 	t.Setenv(envDynamicEnabled, "") // explicitly unset/empty
 	// The declarer is built regardless of the opt-in now (gating moved to the LIVE
 	// flag, checked per tick).
-	if d := newDynamicDeclarerFromEnv("/etc/flagd/game.json", nil); d == nil {
+	if d := newDynamicDeclarerFromEnv(nil, nil); d == nil {
 		t.Fatal("declarer must always be constructed (#1044) — gating is per-tick via the live flag")
 	}
 	// A nil declarer is a no-op (test/degraded wiring): no panic, no work.
@@ -138,7 +148,7 @@ func TestDynamicDeclarer_DisabledByDefault(t *testing.T) {
 	loop.declareDynamicIfEnabled(context.Background(), flags.ExperimentConfig{DynamicEnabled: true})
 	// A wired declarer with DynamicEnabled=false (the live flag off) is ALSO a no-op
 	// even though the declarer is present — proving the per-tick flag gate.
-	loop.dynamic = &dynamicDeclarer{gameFlagPath: "/etc/flagd/game.json"}
+	loop.dynamic = &dynamicDeclarer{gameFlags: gameServiceForDeclarer(t)}
 	loop.declareDynamicIfEnabled(context.Background(), flags.ExperimentConfig{DynamicEnabled: false})
 }
 
@@ -149,7 +159,7 @@ func TestDynamicDeclarer_EnabledFromEnv(t *testing.T) {
 	t.Setenv(envDynamicCandidates, "sensitivity, num_teams ,")
 	t.Setenv(envDynamicObjective, "endurance")
 	t.Setenv(envDynamicTargetN, "5")
-	d := newDynamicDeclarerFromEnv("/x/game.json", nil)
+	d := newDynamicDeclarerFromEnv(nil, nil)
 	if d == nil {
 		t.Fatal("declarer nil with opt-in ON")
 	}
@@ -169,7 +179,7 @@ func TestDynamicDeclarer_EnabledFromEnv(t *testing.T) {
 func TestDynamicDeclarer_NonExperimentableObjectiveFallsBack(t *testing.T) {
 	t.Setenv(envDynamicEnabled, "true")
 	t.Setenv(envDynamicObjective, decision.ObjectiveChaos)
-	d := newDynamicDeclarerFromEnv("/x/game.json", nil)
+	d := newDynamicDeclarerFromEnv(nil, nil)
 	if d.defaultObjective != decision.ObjectiveBalanced {
 		t.Fatalf("chaos objective did not fall back to balanced, got %q", d.defaultObjective)
 	}
@@ -178,10 +188,10 @@ func TestDynamicDeclarer_NonExperimentableObjectiveFallsBack(t *testing.T) {
 // TestDynamicDeclarer_Rotation asserts successive Declares cover DIFFERENT flags
 // via the deterministic cursor (no repeat until the candidate ring is exhausted).
 func TestDynamicDeclarer_Rotation(t *testing.T) {
-	path := gameFileForDeclarer(t)
+	svc := gameServiceForDeclarer(t)
 	d := &dynamicDeclarer{
-		gameFlagPath:     path,
-		candidates:       []string{"sensitivity", "num_teams", "fight_club.min_rounds"},
+		gameFlags:        svc,
+		candidates:       []string{"sensitivity", "invincibility_seconds", "fight_club.min_rounds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
 	seen := map[string]int{}
@@ -205,24 +215,24 @@ func TestDynamicDeclarer_Rotation(t *testing.T) {
 // TestDynamicDeclarer_DedupSkipsActiveFlag asserts a flag with an ALREADY-ACTIVE
 // experiment is skipped, so the declarer never stacks a second experiment on it.
 func TestDynamicDeclarer_DedupSkipsActiveFlag(t *testing.T) {
-	path := gameFileForDeclarer(t)
+	svc := gameServiceForDeclarer(t)
 	d := &dynamicDeclarer{
-		gameFlagPath:     path,
-		candidates:       []string{"sensitivity", "num_teams"},
+		gameFlags:        svc,
+		candidates:       []string{"sensitivity", "invincibility_seconds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
-	// sensitivity is already under experiment ⇒ the declarer must pick num_teams.
+	// sensitivity is already under experiment ⇒ the declarer must pick invincibility_seconds.
 	active := activeFlags{"sensitivity": {}}
 	intent, ok := d.Declare(active)
 	if !ok {
 		t.Fatal("declare returned no intent despite a free candidate")
 	}
-	if intent.FlagKey != "num_teams" {
-		t.Fatalf("declarer chose %q, want num_teams (sensitivity is active)", intent.FlagKey)
+	if intent.FlagKey != "invincibility_seconds" {
+		t.Fatalf("declarer chose %q, want invincibility_seconds (sensitivity is active)", intent.FlagKey)
 	}
 
 	// With BOTH candidates active, nothing is declarable.
-	active2 := activeFlags{"sensitivity": {}, "num_teams": {}}
+	active2 := activeFlags{"sensitivity": {}, "invincibility_seconds": {}}
 	if _, ok := d.Declare(active2); ok {
 		t.Fatal("declarer declared on an all-active candidate set; want no-op")
 	}
@@ -231,10 +241,10 @@ func TestDynamicDeclarer_DedupSkipsActiveFlag(t *testing.T) {
 // TestDynamicDeclarer_SkipsSingleVariantFlag asserts a flag with no alternate
 // value (single variant) is never chosen — there is nothing to perturb toward.
 func TestDynamicDeclarer_SkipsSingleVariantFlag(t *testing.T) {
-	path := gameFileForDeclarer(t)
+	svc := gameServiceForDeclarer(t)
 	// nonstop.scoring has exactly one variant in the fixture.
 	d := &dynamicDeclarer{
-		gameFlagPath:     path,
+		gameFlags:        svc,
 		candidates:       []string{"nonstop.scoring"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
@@ -247,9 +257,9 @@ func TestDynamicDeclarer_SkipsSingleVariantFlag(t *testing.T) {
 // experimentable objective is targeted when a pressure signal is available, and
 // that chaos (non-experimentable) is ignored even at max pressure.
 func TestDynamicDeclarer_PressureSelectsObjective(t *testing.T) {
-	path := gameFileForDeclarer(t)
+	svc := gameServiceForDeclarer(t)
 	d := &dynamicDeclarer{
-		gameFlagPath:     path,
+		gameFlags:        svc,
 		candidates:       []string{"sensitivity"},
 		defaultObjective: decision.ObjectiveBalanced,
 		pressure: func() map[string]float64 {
@@ -272,9 +282,9 @@ func TestDynamicDeclarer_PressureSelectsObjective(t *testing.T) {
 // TestDynamicDeclarer_NoPressureUsesDefaultObjective asserts the configured
 // default objective is used when no pressure signal is present.
 func TestDynamicDeclarer_NoPressureUsesDefaultObjective(t *testing.T) {
-	path := gameFileForDeclarer(t)
+	svc := gameServiceForDeclarer(t)
 	d := &dynamicDeclarer{
-		gameFlagPath:     path,
+		gameFlags:        svc,
 		candidates:       []string{"sensitivity"},
 		defaultObjective: decision.ObjectiveEndurance,
 		pressure:         func() map[string]float64 { return nil }, // no signal
@@ -285,15 +295,22 @@ func TestDynamicDeclarer_NoPressureUsesDefaultObjective(t *testing.T) {
 	}
 }
 
-// TestDynamicDeclarer_ReadErrorIsNoOp asserts an unreadable game.json fails closed
+// failingGameFlags is a flag service that does not answer.
+type failingGameFlags struct{}
+
+func (failingGameFlags) GetSet(context.Context, string) (flagservice.SetView, error) {
+	return flagservice.SetView{}, errors.New("flag service unreachable")
+}
+
+// TestDynamicDeclarer_ReadErrorIsNoOp asserts an unreachable flag service fails closed
 // (nothing declarable) rather than panicking or inventing a flag.
 func TestDynamicDeclarer_ReadErrorIsNoOp(t *testing.T) {
 	d := &dynamicDeclarer{
-		gameFlagPath:     filepath.Join(t.TempDir(), "does-not-exist.json"),
+		gameFlags:        failingGameFlags{},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
 	if _, ok := d.Declare(nil); ok {
-		t.Fatal("declarer declared from an unreadable file; want fail-closed no-op")
+		t.Fatal("declarer declared without the flag service; want fail-closed no-op")
 	}
 }
 
@@ -303,11 +320,11 @@ func TestDynamicDeclarer_ReadErrorIsNoOp(t *testing.T) {
 // over a temp game.json, recording spawner) so a test can exercise the actual
 // declare→Start→active-flag bookkeeping the dynamic declarer relies on. maxShadow
 // bounds the registry capacity (and thus clamps the dynamic concurrent backstop).
-func loopWithRealRegistry(t *testing.T, maxShadow int) (*experimentLoop, string) {
+func loopWithRealRegistry(t *testing.T, maxShadow int) (*experimentLoop, *fake.Service) {
 	t.Helper()
 	log := testLogger()
-	gamePath := gameFileForDeclarer(t)
-	writer := experiment.NewWriter(gamePath, log)
+	svc := gameServiceForDeclarer(t)
+	writer := experiment.NewWriter(svc, log)
 	gate := experiment.NewGate(writer, nil, log)
 	targeting := experiment.NewGateTargetingWriter(gate, writer)
 	reg := experiment.NewRegistry(experiment.RegistryConfig{
@@ -342,7 +359,7 @@ func loopWithRealRegistry(t *testing.T, maxShadow int) (*experimentLoop, string)
 			ShadowEffectiveConcurrency: 4,
 		}
 	}
-	return loop, gamePath
+	return loop, svc
 }
 
 // dynCfg is a test helper: a live ExperimentConfig with the loop + dynamic gates ON
@@ -361,10 +378,10 @@ func dynCfg(maxConcurrent int) flags.ExperimentConfig {
 // experiment AND Starts it (writes shadow targeting → RUNNING), and that a second
 // call dedups the now-active flag onto a different one.
 func TestDeclareDynamic_DeclaresAndStarts(t *testing.T) {
-	loop, path := loopWithRealRegistry(t, 8)
+	loop, svc := loopWithRealRegistry(t, 8)
 	loop.dynamic = &dynamicDeclarer{
-		gameFlagPath:     path,
-		candidates:       []string{"sensitivity", "num_teams"},
+		gameFlags:        svc,
+		candidates:       []string{"sensitivity", "invincibility_seconds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
 	cfg := dynCfg(5)
@@ -378,24 +395,24 @@ func TestDeclareDynamic_DeclaresAndStarts(t *testing.T) {
 		t.Fatalf("first declare did not make sensitivity active: %v", active)
 	}
 
-	// Second call: sensitivity is now active ⇒ the declarer must pick num_teams.
+	// Second call: sensitivity is now active ⇒ the declarer must pick invincibility_seconds.
 	loop.declareDynamicIfEnabled(context.Background(), cfg)
 	if got := loop.registry.LiveCount(); got != 2 {
 		t.Fatalf("after 2 dynamic declares LiveCount = %d, want 2", got)
 	}
 	active = loop.registry.ActiveFlags()
-	if _, ok := active["num_teams"]; !ok {
-		t.Fatalf("second declare did not make num_teams active: %v", active)
+	if _, ok := active["invincibility_seconds"]; !ok {
+		t.Fatalf("second declare did not make invincibility_seconds active: %v", active)
 	}
 }
 
 // TestDeclareDynamic_RespectsConcurrentBackstop asserts the declarer stops once the
 // live set reaches the concurrent-experiment budget.
 func TestDeclareDynamic_RespectsConcurrentBackstop(t *testing.T) {
-	loop, path := loopWithRealRegistry(t, 8)
+	loop, svc := loopWithRealRegistry(t, 8)
 	loop.dynamic = &dynamicDeclarer{
-		gameFlagPath:     path,
-		candidates:       []string{"sensitivity", "num_teams", "fight_club.min_rounds"},
+		gameFlags:        svc,
+		candidates:       []string{"sensitivity", "invincibility_seconds", "fight_club.min_rounds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
 	cfg := dynCfg(2) // budget of 2 (well under capacity 8)
@@ -412,10 +429,10 @@ func TestDeclareDynamic_RespectsConcurrentBackstop(t *testing.T) {
 // shadow capacity — a high budget cannot declare more experiments than there are
 // shadow slots for.
 func TestDeclareDynamic_BackstopClampedToCapacity(t *testing.T) {
-	loop, path := loopWithRealRegistry(t, 1) // capacity 1
+	loop, svc := loopWithRealRegistry(t, 1) // capacity 1
 	loop.dynamic = &dynamicDeclarer{
-		gameFlagPath:     path,
-		candidates:       []string{"sensitivity", "num_teams", "fight_club.min_rounds"},
+		gameFlags:        svc,
+		candidates:       []string{"sensitivity", "invincibility_seconds", "fight_club.min_rounds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
 	cfg := dynCfg(99) // huge — but capacity clamps it to 1
@@ -437,10 +454,10 @@ func TestDeclareDynamic_BackstopClampedToCapacity(t *testing.T) {
 // is atomic, so the live experiment set never exceeds the budget. Run under -race to
 // also catch the cursor race. (Reverting the mutex makes this fail: LiveCount > budget.)
 func TestDeclareDynamic_ConcurrentCallersRespectBudget(t *testing.T) {
-	loop, path := loopWithRealRegistry(t, 16) // ample capacity so the BUDGET is the bound
+	loop, svc := loopWithRealRegistry(t, 16) // ample capacity so the BUDGET is the bound
 	loop.dynamic = &dynamicDeclarer{
-		gameFlagPath:     path,
-		candidates:       []string{"sensitivity", "num_teams", "fight_club.min_rounds"},
+		gameFlags:        svc,
+		candidates:       []string{"sensitivity", "invincibility_seconds", "fight_club.min_rounds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
 	const budget = 2
@@ -471,9 +488,9 @@ func TestDeclareDynamic_ConcurrentCallersRespectBudget(t *testing.T) {
 // — so nothing is declared. The declarer is subordinate to the SAME kill-switch as
 // every other declaration (it is only called AFTER the enabled check).
 func TestDeclareDynamic_KillSwitchOffDeclaresNothing(t *testing.T) {
-	loop, path := loopWithRealRegistry(t, 8)
+	loop, svc := loopWithRealRegistry(t, 8)
 	loop.dynamic = &dynamicDeclarer{
-		gameFlagPath:     path,
+		gameFlags:        svc,
 		candidates:       []string{"sensitivity"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
@@ -504,7 +521,7 @@ func TestDynamicDeclarer_DefaultRotationSkipsPlumbingFlags(t *testing.T) {
 	}
 	for _, shipped := range []string{"../flagd/ci/game.json", "../flagd/game.json"} {
 		t.Run("UC-070/BR-008 "+shipped, func(t *testing.T) {
-			d := &dynamicDeclarer{gameFlagPath: shipped, defaultObjective: decision.ObjectiveBalanced}
+			d := &dynamicDeclarer{gameFlags: gameServiceFrom(t, shipped), defaultObjective: decision.ObjectiveBalanced}
 			flagsRead := d.readCandidateFlags()
 			if len(flagsRead) == 0 {
 				t.Fatalf("no candidate flags read from %s", shipped)

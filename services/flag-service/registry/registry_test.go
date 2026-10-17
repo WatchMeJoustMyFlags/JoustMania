@@ -128,6 +128,10 @@ func checkBounds(t *testing.T, row mdRow, p *Policy) {
 		if strings.Contains(text, "fraction 1 to 100") && !reflect.DeepEqual(b.Fraction, []int{1, 100}) {
 			t.Errorf("%s: fraction bounds %v", row.key, b.Fraction)
 		}
+	case strings.HasPrefix(text, "same shape"):
+		if !b.Shape {
+			t.Errorf("%s: flags.md says same shape", row.key)
+		}
 	case text == "free string":
 		if !b.FreeString {
 			t.Errorf("%s: flags.md says free string", row.key)
@@ -247,6 +251,28 @@ func TestCheckValue(t *testing.T) {
 			}
 			if got.Variant != c.want {
 				t.Fatalf("variant %q, want %q", got.Variant, c.want)
+			}
+		})
+	}
+}
+
+// UC: UC-053 A5
+func TestCheckValueShape(t *testing.T) {
+	p := &Policy{Set: "game", Key: "windows", Kind: KindOverlay, Scopes: []string{ScopeExperiment}, Bounds: Bounds{Shape: true}}
+	f := &baseline.Flag{Variants: map[string]json.RawMessage{"default": json.RawMessage(`{"a":4,"b":8}`)}, DefaultVariant: "default"}
+	for value, ok := range map[string]bool{
+		`{"a":6,"b":11}`:       true,
+		`{"b":1,"a":2}`:        true,
+		`{"a":6}`:              false,
+		`{"a":6,"b":11,"c":1}`: false,
+		`{"a":"6","b":11}`:     false,
+		`[4,8]`:                false,
+		`"x"`:                  false,
+	} {
+		t.Run("UC-053/A5 shape "+value, func(t *testing.T) {
+			_, err := CheckValue(p, f, "", json.RawMessage(value))
+			if ok != (err == nil) {
+				t.Fatalf("value %s: accepted=%v, want %v (%v)", value, err == nil, ok, err)
 			}
 		})
 	}

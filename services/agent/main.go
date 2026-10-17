@@ -14,7 +14,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -30,6 +29,7 @@ import (
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/flagservice"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamerunner"
 	"github.com/joustmania/agent/gamesummary"
@@ -177,7 +177,7 @@ func rolloutActuator(rootCtx context.Context, gate actions.RolloutGate, logger *
 // The real clients are built ONLY when AGENT_CODE_IMPROVEMENT_ENABLED=true AND the
 // per-target conditions hold (GitHub: GITHUB_TOKEN + GITHUB_REPOSITORY + the live
 // target=github flag; local: AGENT_LOCAL_REPO_DIR; autonomous real-default:
-// AGENT_AUTONOMOUS_ENABLED + AGENT_REAL_DEFAULT_FLAG_PATH). Absent any condition,
+// AGENT_AUTONOMOUS_ENABLED; the write goes to the flag service). Absent any condition,
 // the corresponding FromEnv constructor returns nil and NewPromoter substitutes the
 // inert no-op / leaves autonomous as a recorded no-op — fail-closed, never a silent
 // real action. The promotion mode/target are read LIVE per promotion (flags), so
@@ -203,9 +203,8 @@ func rolloutActuator(rootCtx context.Context, gate actions.RolloutGate, logger *
 //     same finalized-per-game real fitness the recent-real baseline reads). Until real
 //     games populate the store it returns 0 samples ⇒ INSUFFICIENT ⇒ apply stays
 //     unverified + re-watched, never a false healthy keep.
-//   - RealDefaultReverter: the SAME concrete fileRealDefaultWriter, which snapshots the
-//     pre-promotion {defaultVariant + value} at write time and restores it exactly on
-//     revert (#1065).
+//   - RealDefaultReverter: the SAME concrete writer: a revert removes the promotion's
+//     real overlay in the flag service, which restores the pre-promotion state (#1065).
 //   - Rewatcher: a background poller that re-observes an insufficient-games apply as
 //     more real games complete (#1065 item 4).
 //   - Cooldown: a post-revert cooldown suppresses re-promotion thrash (#1065 item 3).
@@ -247,8 +246,8 @@ func buildPromoter(rootCtx context.Context, store *experiment.FitnessStore, objR
 	if git != nil {
 		gitIface = git
 	}
-	// The real-default writer is ALSO the reverter (it snapshots prior state at write
-	// time, #1065). Keep a concrete handle so the same instance backs both seams.
+	// The real-default writer is ALSO the reverter (#1065): the same instance backs
+	// both seams.
 	var realDefIface promote.RealDefaultWriter
 	var reverterIface promote.RealDefaultReverter
 	if realDef != nil {
@@ -263,8 +262,7 @@ func buildPromoter(rootCtx context.Context, store *experiment.FitnessStore, objR
 	}
 
 	// LIVE WATCH (#1057/#1065): build the Watcher over the real fitness source ONLY
-	// when the real-default writer is present (the autonomous env gate is satisfied AND
-	// a real-default path exists) AND a FitnessStore is available to read real-game
+	// when the real-default writer is present (the autonomous env gate is satisfied) AND a FitnessStore is available to read real-game
 	// fitness from. Otherwise leave the Watcher nil so autonomous FAILS CLOSED (refuses
 	// to apply) — never an unguarded real-default change.
 	var watcherIface promote.Watcher
@@ -537,7 +535,11 @@ func main() {
 	// per Apply against the live agentFlags, so the gate is hot-reloadable and
 	// fail-closed on a flagd outage (the old AGENT_INTERVENTIONS_ENABLED env master,
 	// migrated). The Writer holds no per-game state, so sharing is safe.
-	sharedWriter := actions.NewWriterFromEnv(logger)
+	// The one flag-service client (FLAG_SERVICE_URL, epic #1407): every agent write
+	// (interventions, rollout, experiments, promotion) and every read of the game
+	// flag set goes through it; nothing in the agent opens a flag file.
+	gameFlags := flagservice.NewFromEnv()
+	sharedWriter := actions.NewWriter(gameFlags, logger)
 	sharedSink := actionSink(agentFlags, sharedWriter, logger)
 	// No per-player prune any more (#1323 is closed by construction, #1416): every
 	// intervention is written for one registered game and the flag service drops
@@ -683,8 +685,8 @@ func main() {
 			// the rules engine. Each loop gets its own probe clock.
 			loop.Rules = decision.NewProbeRules(probeInterval, nil)
 		}
-		// Action sink (#730/#1213): the shared GatedActionSink applies decisions by
-		// rewriting the flagd interventions file (INTERVENTIONS_FLAG_PATH) ONLY when the
+		// Action sink (#730/#1213): the shared GatedActionSink applies decisions as
+		// game-scoped writes to the flag service (#1411) ONLY when the
 		// LIVE interventions_enabled flag is on; otherwise it discards them (NoopActions
 		// behavior) — gate read per Apply, fail-closed on a flagd outage. The one sink is
 		// safe to share across loops (no per-game state). The nil guard is defensive: a
@@ -782,16 +784,17 @@ func main() {
 	// M7-4 shadow-experiment proposer (#931). The agent turns its rolling game
 	// narrative (#929 window) + fitness signals into a structured {flag, value}
 	// experiment and submits it through the experiment Gate — shadow-scoped, safe
-	// by construction (#932). The Gate writes the game flagset (GAME_FLAG_PATH /
-	// game.json); the Proposer NEVER writes it directly.
+	// by construction (#932). The Gate writes experiment-arm values to the
+	// game flag set through the flag service; the Proposer NEVER writes directly.
 	//
 	// The Backend is the inference seam (Backend.Infer): the Claude text backend when
 	// AGENT_INFERENCE_BACKEND=claude (#1234), else the proposeBackend stub, so every
 	// propose cycle degrades to NO proposal, NO error. The engine flag
 	// (agent.code_improvement.engine) is read live and recorded on the span.
-	// The vocab provider reads the LIVE game.json flag keys so the model is
-	// constrained to (and the decoder validates against) the actual flag surface.
-	experimentGate := experiment.NewGate(experiment.NewWriterFromEnv(logger), nil, logger)
+	// The vocab provider reads the experiment catalog from the flag service so the
+	// model is constrained to (and the decoder validates against) the flags the
+	// registry lets an experiment write (flags.md §13.3).
+	experimentGate := experiment.NewGate(experiment.NewWriter(gameFlags, logger), nil, logger)
 	// Feed the SAME text backend the retro uses (#1234): when
 	// AGENT_INFERENCE_BACKEND=claude, inferDelegate is the Claude client and
 	// proposeBackendFor wraps it as an experiment.Backend; when nil (the stub default)
@@ -799,7 +802,7 @@ func main() {
 	proposer := experiment.NewProposer(
 		proposeBackendFor(inferDelegate),
 		experimentGate,
-		gameFlagVocab(getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath)),
+		gameFlagVocab(gameFlags),
 		nil,
 		logger,
 	)
@@ -838,7 +841,7 @@ func main() {
 			})
 		}()
 	}
-	slog.Info("Shadow-experiment proposer enabled (#931, M7-4)", "game_flag_path", getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath))
+	slog.Info("Shadow-experiment proposer enabled (#931, M7-4)", "flag_service", gameFlags.BaseURL())
 
 	// M7-8 code-improvement promotion surface (#936): build the Promoter with the
 	// env-gated real clients (or the inert recording no-ops when not gated — the
@@ -893,7 +896,7 @@ func main() {
 	// starts it with no restart. The real-default promotion path stays
 	// behind ALL of #961's gates (the promoter built above + the kill-switch via the
 	// ConfigResolver).
-	expLoop := buildExperimentLoop(agentFlags, promoter, fitnessStore, getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath), sharedContextWindow, logger)
+	expLoop := buildExperimentLoop(agentFlags, promoter, fitnessStore, gameFlags, sharedContextWindow, logger)
 	if expLoop != nil {
 		// Bind the spawner's background game-drive goroutines to the agent's root
 		// context so shutdown cancels in-flight shadow games (no goroutine leak).
@@ -1106,27 +1109,17 @@ func proposeBackendFor(delegate inferFunc) experiment.Backend {
 	return inferBackend{infer: delegate}
 }
 
-// gameFlagVocab returns the live set of game.json flag keys at path — the
-// vocabulary the proposer constrains the model to and the decoder validates
-// against. It re-reads the file on every call so a hot-reloaded game.json (the
-// agent writes experiments into it) is reflected immediately. Any read/parse
-// error returns an empty set, which fail-closes the decoder (nothing is
-// proposable until the file is readable again) — the safe reading, since a model
-// reply naming a flag we cannot confirm exists must never reach the Gate.
-func gameFlagVocab(path string) func() map[string]struct{} {
+// gameFlagVocab returns the experiment catalog's flag keys (R3, #1415): the
+// game flags whose registry row allows an experiment-arm write, read from the
+// flag service on every call. The proposer constrains the model to this set and
+// the decoder validates against it. A read error returns an empty set, which
+// fail-closes the decoder (nothing is proposable until the flag service
+// answers), the safe reading.
+func gameFlagVocab(r gameFlagReader) func() map[string]struct{} {
 	return func() map[string]struct{} {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		var doc struct {
-			Flags map[string]json.RawMessage `json:"flags"`
-		}
-		if err := json.Unmarshal(raw, &doc); err != nil {
-			return nil
-		}
-		set := make(map[string]struct{}, len(doc.Flags))
-		for k := range doc.Flags {
+		catalog := readGameCatalog(r)
+		set := make(map[string]struct{}, len(catalog))
+		for k := range catalog {
 			set[k] = struct{}{}
 		}
 		return set

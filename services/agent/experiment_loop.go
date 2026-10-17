@@ -274,7 +274,7 @@ func buildExperimentLoop(
 	flagsClient *flags.Flags,
 	promoter *promote.Promoter,
 	fitnessStore *experiment.FitnessStore,
-	gameFlagPath string,
+	gameFlags experiment.FlagService,
 	window crossGameWindow,
 	logger *slog.Logger,
 ) *experimentLoop {
@@ -300,7 +300,7 @@ func buildExperimentLoop(
 	// TargetingWriter (#977): a Gate over a Writer pinned to the game flagset. The
 	// Gate validates THE INVARIANT on every Apply; Strip un-nests a branch on
 	// teardown. The Writer is shared by Gate (Apply) and the adapter (Strip).
-	writer := experiment.NewWriter(gameFlagPath, logger)
+	writer := experiment.NewWriter(gameFlags, logger)
 	gate := experiment.NewGate(writer, nil, logger)
 	targeting := experiment.NewGateTargetingWriter(gate, writer)
 
@@ -373,7 +373,7 @@ func buildExperimentLoop(
 		seed:           seedIntentFromEnv(),
 		fitness:        defaultGameFitness,
 		completedGrace: completedGrace(),
-		dynamic:        newDynamicDeclarerFromEnv(gameFlagPath, nil),
+		dynamic:        newDynamicDeclarerFromEnv(gameFlags, nil),
 		// #1184: the retro-seeded thesis proposer is ALWAYS built (like the #995
 		// declarer) so the retro coordinator can Record into it unconditionally; whether
 		// it actually DECLARES is gated by proposerEnabled() (default OFF) in

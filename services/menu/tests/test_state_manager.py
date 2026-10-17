@@ -25,13 +25,13 @@ def mock_audio():
 
 @pytest.fixture
 def mock_game_settings_writer():
-    """Create mock FlagConfigWriter for game_settings."""
+    """Create mock FlagServiceWriter for game_settings."""
     return MagicMock()
 
 
 @pytest.fixture
 def mock_user_prefs_writer():
-    """Create mock FlagConfigWriter for user_preferences."""
+    """Create mock FlagServiceWriter for user_preferences."""
     return MagicMock()
 
 
