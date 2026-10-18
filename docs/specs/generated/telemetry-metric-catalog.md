@@ -91,7 +91,7 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `game_config_changes_total` | counter | `parameter` | game-coordinator | yes | (none) |  |
 | `game_countdown_accuracy_seconds` | histogram | (none) | game-coordinator | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
 | `game_current_mode` | gauge | `mode`, `game_kind`, `game_id` | game-coordinator | yes | agent, grafana | #1379; 1 while the game is live, removed at retire |
-| `game_current_update_frequency_hz` | gauge | (none) | game-coordinator | yes | grafana |  |
+| `game_current_update_frequency_hz` | gauge | (none) | game-coordinator | yes | grafana | process-wide: the configured `game_loop.update_frequency_hz`, the same for every game; the per-game measured rate is `game_actual_update_frequency_hz` |
 | `game_duration_seconds` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana, tools |  |
 | `game_effective_death_threshold` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |  |
 | `game_effective_warning_threshold` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |  |
@@ -103,9 +103,9 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `game_intervention_dispatch_failures_total` | counter | `type`, `reason` | game-coordinator | yes | grafana |  |
 | `game_intervention_event_gaps_total` | counter | `flag` | game-coordinator | yes | (none) | event-list reader on; FR-137, #1410 |
 | `game_interventions_total` | counter | `type`, `objective`, `blocked`, `block_reason` | game-coordinator | yes | grafana, tools |  |
-| `game_loop_frame_consistency_percent` | gauge | (none) | game-coordinator | yes | grafana |  |
+| `game_loop_frame_consistency_percent` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana | #1471; one series per live game, removed when it ends and at retire |
 | `game_loop_frames_dropped_total` | counter | `mode` | game-coordinator | yes | grafana |  |
-| `game_loop_jitter_ms` | gauge | (none) | game-coordinator | yes | grafana |  |
+| `game_loop_jitter_ms` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana | #1471; one series per live game, removed when it ends and at retire |
 | `game_music_tempo` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |  |
 | `game_near_death_events_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |  |
 | `game_player_accel_magnitude` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, scripts |  |

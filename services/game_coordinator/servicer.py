@@ -625,15 +625,25 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # to 200 ms and outside _sessions_lock; on a timeout or an error the
             # game starts anyway and the lifecycle reconciles (C-004).
             await self.flag_service.register(self._game_record(session))
+
             # Update lifecycle metrics for this session's kind (#775) + experiment
             # attribution (#975). experiment_id/arm are "" for a non-experiment
             # game; #976's spawn binding sets them on the session.
-            metrics.active_game.labels(
-                game_kind=game_kind,
-                game_id=game_id,
-                experiment_id=session.experiment_id,
-                arm=session.arm,
-            ).set(1)
+            # Written under the session's metrics lock and skipped once retired:
+            # a retire during the register await above already exported the 0,
+            # and a late 1 would overwrite it (the delayed removal would then
+            # delete a series reading 1, so the agent never sees the end).
+            def write_start_gauges() -> None:
+                labels = {
+                    "game_kind": game_kind,
+                    "game_id": game_id,
+                    "experiment_id": session.experiment_id,
+                    "arm": session.arm,
+                }
+                metrics.active_game.labels(**labels).set(1)
+                metrics.active_players.labels(**labels).set(len(session.players))
+
+            session._set_gauges_unless_retired(write_start_gauges)
             # games_started_total is a CUMULATIVE counter: it deliberately does
             # NOT carry experiment_id/arm (a label on a cumulative counter is one
             # permanent series per experiment, forever). Per-experiment counts
@@ -642,12 +652,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 mode=session.game_name,
                 game_kind=game_kind,
             ).inc()
-            metrics.active_players.labels(
-                game_kind=game_kind,
-                game_id=game_id,
-                experiment_id=session.experiment_id,
-                arm=session.arm,
-            ).set(len(session.players))
 
             # Publish game_start on this session's bus.
             await session.event_bus.publish(
