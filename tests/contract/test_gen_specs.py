@@ -43,15 +43,15 @@ message AReq {}
 """
 
 
-def test_proto_rpc_kinds_and_lines(tmp_repo):
+def test_proto_rpc_kinds(tmp_repo):
     (tmp_repo / "proto/demo.proto").write_text(PROTO)
     [(svc, rel, rpcs)] = g.proto_rpcs()
     assert (svc, rel) == ("demo.v1.Demo", "proto/demo.proto")
     assert rpcs == [
-        ("Unary", "unary", "AReq", "AResp", 6),
-        ("Server", "server stream", "AReq", "AResp", 7),
-        ("Client", "client stream", "AReq", "AResp", 8),
-        ("Bidi", "bidi stream", "AReq", "AResp", 9),
+        ("Unary", "unary", "AReq", "AResp"),
+        ("Server", "server stream", "AReq", "AResp"),
+        ("Client", "client stream", "AReq", "AResp"),
+        ("Bidi", "bidi stream", "AReq", "AResp"),
     ]
 
 
@@ -95,10 +95,7 @@ def test_rpc_table_merges_descriptions_and_escapes_pipes(tmp_repo):
     (tmp_repo / "docs/specs/notes/grpc-rpcs.yaml").write_text(json.dumps(notes))
     text = g.grpc_rpcs()
     assert "**4 RPCs in 1 services.**" in text
-    assert (
-        "| `Unary` | unary | `AReq` → `AResp` | a \\| b | `proto/demo.proto:6` |"
-        in text
-    )
+    assert "| `Unary` | unary | `AReq` → `AResp` | a \\| b |" in text
 
 
 def _metric(module: str, recorded: bool) -> ti.PyMetric:
@@ -189,3 +186,16 @@ def test_committed_generated_files_have_a_generator():
     """Every file under docs/specs/generated/ is produced by gen_specs (no hand-written strays)."""
     on_disk = {p.name for p in (ti.REPO_ROOT / "docs/specs/generated").glob("*.md")}
     assert on_disk == set(g.GENERATORS)
+
+
+def test_label_values_render_in_labels_column():
+    text = g.telemetry_metric_catalog()
+    assert "`outcome` (winner\\|tie\\|completed\\|force_ended\\|error)" in text
+
+
+def test_label_values_for_unknown_label_fail(tmp_repo, monkeypatch):
+    monkeypatch.setattr(
+        g, "_load_label_values", lambda name: {"games_completed_total": {"nope": "a"}}
+    )
+    with pytest.raises(g.SpecSourceError, match="no label 'nope'"):
+        g.telemetry_metric_catalog()

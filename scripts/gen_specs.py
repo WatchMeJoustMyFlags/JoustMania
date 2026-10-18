@@ -61,6 +61,24 @@ def _load_notes(name: str) -> dict[str, str]:
     return {str(k): " ".join(str(v).split()) for k, v in data.items()}
 
 
+def _load_label_values(name: str) -> dict[str, dict[str, str]]:
+    """metric -> {label: bounded value list}, rendered in the Labels column."""
+    path = NOTES / f"{name}.yaml"
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(data, dict) or not all(
+        isinstance(v, dict) for v in data.values()
+    ):
+        raise SpecSourceError(
+            f"{path.relative_to(REPO_ROOT)} must map metric -> {{label: values}}"
+        )
+    return {
+        str(m): {str(k): " ".join(str(v).split()) for k, v in d.items()}
+        for m, d in data.items()
+    }
+
+
 def _check_stale(name: str, notes: dict[str, str], known: set[str]) -> None:
     stale = sorted(set(notes) - known)
     if stale:
@@ -107,6 +125,8 @@ def telemetry_metric_catalog() -> str:
     consumers = ti.python_metric_consumers(set(by_name))
     notes = _load_notes(name)
     _check_stale(name, notes, set(by_name))
+    label_values = _load_label_values(f"{name}-labels")
+    _check_stale(f"{name}-labels", label_values, set(by_name))
 
     never_recorded = sum(not any(d.recorded_at for d in ds) for ds in by_name.values())
     no_consumer = sum(not kinds for kinds in consumers.values())
@@ -132,13 +152,30 @@ def telemetry_metric_catalog() -> str:
         ds = by_name[metric]
         labels = tuple(dict.fromkeys(label for d in ds for label in d.labels))
         definers = sorted({_definer(d.module) for d in ds})
+        for label in label_values.get(metric, {}):
+            if label not in labels:
+                raise SpecSourceError(
+                    f"docs/specs/notes/{name}-labels.yaml: {metric} has no label {label!r}"
+                )
+        label_cell = (
+            ", ".join(
+                f"`{label}`"
+                + (
+                    f" ({label_values[metric][label]})"
+                    if label in label_values.get(metric, {})
+                    else ""
+                )
+                for label in labels
+            )
+            or "(none)"
+        )
         out.append(
             "| "
             + " | ".join(
                 [
                     f"`{metric}`",
                     _KIND[ds[0].kind],
-                    ", ".join(f"`{label}`" for label in labels) or "(none)",
+                    _cell(label_cell),
                     ", ".join(definers),
                     _emitted(ds),
                     ", ".join(sorted(consumers[metric])) or "(none)",
@@ -166,14 +203,14 @@ _RPC_KIND = {
 }
 
 
-def proto_rpcs() -> list[tuple[str, str, list[tuple[str, str, str, str, int]]]]:
-    """[(full service name, proto path, [(rpc, kind, request, response, line)])]."""
+def proto_rpcs() -> list[tuple[str, str, list[tuple[str, str, str, str]]]]:
+    """[(full service name, proto path, [(rpc, kind, request, response)])]."""
     services = []
     for path in sorted((REPO_ROOT / "proto").glob("*.proto")):
         rel = path.relative_to(REPO_ROOT).as_posix()
         package = ""
         current: list | None = None
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        for line in path.read_text().splitlines():
             if m := _PACKAGE_RE.match(line):
                 package = m.group(1)
             elif m := _SERVICE_RE.match(line):
@@ -181,7 +218,7 @@ def proto_rpcs() -> list[tuple[str, str, list[tuple[str, str, str, str, int]]]]:
                 services.append((f"{package}.{m.group(1)}", rel, current))
             elif (m := _RPC_RE.match(line)) and current is not None:
                 kind = _RPC_KIND[(bool(m.group(2)), bool(m.group(4)))]
-                current.append((m.group(1), kind, m.group(3), m.group(5), lineno))
+                current.append((m.group(1), kind, m.group(3), m.group(5)))
             elif line.strip().startswith("}") and not line.startswith(" "):
                 current = None
     return services
@@ -207,14 +244,14 @@ def grpc_rpcs() -> str:
     ]
     for svc, rel, rpcs in services:
         out += [
-            f"## `{svc}` ({rel}, {len(rpcs)} RPCs)\n",
-            "| RPC | Kind | Request → Response | Description | Line |",
-            "|---|---|---|---|---|",
+            f"## `{svc}` (`{rel}`, {len(rpcs)} RPCs)\n",
+            "| RPC | Kind | Request → Response | Description |",
+            "|---|---|---|---|",
         ]
-        for rpc, kind, req, resp, lineno in rpcs:
+        for rpc, kind, req, resp in rpcs:
             out.append(
                 f"| `{rpc}` | {kind} | `{req}` → `{resp}` | "
-                f"{_cell(notes[f'{svc}/{rpc}'])} | `{rel}:{lineno}` |"
+                f"{_cell(notes[f'{svc}/{rpc}'])} |"
             )
         out.append("")
     return "\n".join(out)

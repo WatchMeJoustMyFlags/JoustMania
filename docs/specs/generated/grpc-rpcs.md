@@ -4,74 +4,74 @@
 
 Part of [services.md §3](../services.md#3-grpc-services). **37 RPCs in 7 services.**
 
-## `joustmania.audio.AudioService` (proto/audio.proto, 5 RPCs)
+## `joustmania.audio.AudioService` (`proto/audio.proto`, 5 RPCs)
 
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `PlaySound` | unary | `PlaySoundRequest` → `PlaySoundResponse` | Play an effect (file, volume, priority LOW..CRITICAL) | `proto/audio.proto:9` |
-| `PlayMusic` | unary | `PlayMusicRequest` → `PlayMusicResponse` | Start looping music matching a file pattern at a tempo | `proto/audio.proto:10` |
-| `StopMusic` | unary | `StopMusicRequest` → `StopMusicResponse` | Stop music | `proto/audio.proto:11` |
-| `ChangeTempo` | unary | `ChangeTempoRequest` → `ChangeTempoResponse` | Change music tempo (ratio clamped to (0.5, 2.0]) with a transition | `proto/audio.proto:12` |
-| `SetVolume` | unary | `SetVolumeRequest` → `SetVolumeResponse` | Set master volume | `proto/audio.proto:13` |
+| RPC | Kind | Request → Response | Description |
+|---|---|---|---|
+| `PlaySound` | unary | `PlaySoundRequest` → `PlaySoundResponse` | Play an effect (file, volume, priority LOW..CRITICAL) |
+| `PlayMusic` | unary | `PlayMusicRequest` → `PlayMusicResponse` | Start looping music matching a file pattern at a tempo |
+| `StopMusic` | unary | `StopMusicRequest` → `StopMusicResponse` | Stop music |
+| `ChangeTempo` | unary | `ChangeTempoRequest` → `ChangeTempoResponse` | Change music tempo (ratio clamped to (0.5, 2.0]) with a transition |
+| `SetVolume` | unary | `SetVolumeRequest` → `SetVolumeResponse` | Set master volume |
 
-## `joustmania.controller_manager.ControllerManagerService` (proto/controller_manager.proto, 5 RPCs)
+## `joustmania.controller_manager.ControllerManagerService` (`proto/controller_manager.proto`, 5 RPCs)
 
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `StreamButtonEvents` | bidi stream | `ButtonEventStreamControl` → `ButtonEvent` | Button press / release events to the client; the client sends base LED colours and effects back | `proto/controller_manager.proto:11` |
-| `StreamGameplayData` | bidi stream | `GameplayStreamControl` → `GameplayDataUpdate` | Motion data at the requested rate, with each controller's connection quality on the unfiltered (dashboard) stream (`GameplayData.connection_quality`: class and p95 / longest report gap, UC-035 BR-005; game streams leave it unset); the client changes filters, colours and effects mid-stream | `proto/controller_manager.proto:15` |
-| `RenameController` | unary | `RenameControllerRequest` → `RenameControllerResponse` | Rename a controller (set custom human-readable name) | `proto/controller_manager.proto:18` |
-| `GetConnectedControllers` | unary | `GetConnectedControllersRequest` → `GetConnectedControllersResponse` | Query the controller manager's authoritative live roster on demand (#1153). Unlike the event-piggybacked connected_serials (only refreshed on the next CONNECT/DISCONNECT), this returns the current connected set synchronously so a client (the menu) can reconcile ghosts after a missed disconnect. Also read by `scripts/talk-preflight.sh` through envoy to count real controllers (UC-070 BR-006). | `proto/controller_manager.proto:24` |
-| `IdentifyController` | unary | `IdentifyControllerRequest` → `IdentifyControllerResponse` | Request → response: `IdentifyControllerRequest` (`serial`, `duration_ms`: 0 = 3000 ms, clamped to 500..10000) → `IdentifyControllerResponse` (`success`, `outcome`: `started` / `not_connected` / `in_game` / `reserved` / `invalid`, `error`, `duration_ms`: the duration used). Flash a controller white at 2 Hz and rumble it briefly, then restore its colour, so the operator can find it; refused for controllers that are not connected, reserved, or players of an open game gameplay stream, and cancelled when a game stream claims the controller (UC-004, FR-121) | `proto/controller_manager.proto:29` |
+| RPC | Kind | Request → Response | Description |
+|---|---|---|---|
+| `StreamButtonEvents` | bidi stream | `ButtonEventStreamControl` → `ButtonEvent` | Button press / release events to the client; the client sends base LED colours and effects back |
+| `StreamGameplayData` | bidi stream | `GameplayStreamControl` → `GameplayDataUpdate` | Motion data at the requested rate, with each controller's connection quality on the unfiltered (dashboard) stream (`GameplayData.connection_quality`: class and p95 / longest report gap, UC-035 BR-005; game streams leave it unset); the client changes filters, colours and effects mid-stream |
+| `RenameController` | unary | `RenameControllerRequest` → `RenameControllerResponse` | Rename a controller (set custom human-readable name) |
+| `GetConnectedControllers` | unary | `GetConnectedControllersRequest` → `GetConnectedControllersResponse` | Query the controller manager's authoritative live roster on demand (#1153). Unlike the event-piggybacked connected_serials (only refreshed on the next CONNECT/DISCONNECT), this returns the current connected set synchronously so a client (the menu) can reconcile ghosts after a missed disconnect. Also read by `scripts/talk-preflight.sh` through envoy to count real controllers (UC-070 BR-006). |
+| `IdentifyController` | unary | `IdentifyControllerRequest` → `IdentifyControllerResponse` | Request → response: `IdentifyControllerRequest` (`serial`, `duration_ms`: 0 = 3000 ms, clamped to 500..10000) → `IdentifyControllerResponse` (`success`, `outcome`: `started` / `not_connected` / `in_game` / `reserved` / `invalid`, `error`, `duration_ms`: the duration used). Flash a controller white at 2 Hz and rumble it briefly, then restore its colour, so the operator can find it; refused for controllers that are not connected, reserved, or players of an open game gameplay stream, and cancelled when a game stream claims the controller (UC-004, FR-121) |
 
-## `controller_manager_mock.MockControllerService` (proto/controller_manager_mock.proto, 12 RPCs)
+## `controller_manager_mock.MockControllerService` (`proto/controller_manager_mock.proto`, 12 RPCs)
 
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `SimulateMovement` | unary | `MovementRequest` → `MovementResponse` | Simulate controller movement: holds the acceleration vector on that controller (every poll and gameplay frame reports it) until the next call or `ResetController`; a `SimulateDeath` latch overrides it for its frames; a NaN/infinite component returns `INVALID_ARGUMENT` (UC-003 BR-002, #1279) | `proto/controller_manager_mock.proto:10` |
-| `SimulateDeath` | unary | `DeathRequest` → `DeathResponse` | Simulate death (high acceleration) | `proto/controller_manager_mock.proto:13` |
-| `SimulateButton` | unary | `ButtonRequest` → `ButtonResponse` | Simulate button press | `proto/controller_manager_mock.proto:16` |
-| `SetColor` | unary | `ColorRequest` → `ColorResponse` | Set LED color | `proto/controller_manager_mock.proto:19` |
-| `ResetController` | unary | `ResetRequest` → `ResetResponse` | Reset controller to idle: buttons released, death latch and held movement cleared, acceleration back to resting noise (UC-003 A3) | `proto/controller_manager_mock.proto:22` |
-| `ListMockControllers` | unary | `ListRequest` → `ListResponse` | Get list of mock controllers | `proto/controller_manager_mock.proto:25` |
-| `SetAutoGameEnd` | unary | `AutoGameEndRequest` → `AutoGameEndResponse` | Set auto game end - automatically kill players after duration to ensure game ends | `proto/controller_manager_mock.proto:28` |
-| `GetColor` | unary | `GetColorRequest` → `GetColorResponse` | Get current LED color of a controller | `proto/controller_manager_mock.proto:31` |
-| `StreamObservability` | server stream | `ObservabilityRequest` → `ObservabilityEvent` | Stream observable events from mock controllers (LED changes, button presses, etc.) | `proto/controller_manager_mock.proto:34` |
-| `AddController` | unary | `AddControllerRequest` → `AddControllerResponse` | Add a single mock controller dynamically | `proto/controller_manager_mock.proto:37` |
-| `RemoveController` | unary | `RemoveControllerRequest` → `RemoveControllerResponse` | Remove a mock controller | `proto/controller_manager_mock.proto:40` |
-| `AddControllers` | unary | `AddControllersRequest` → `AddControllersResponse` | Add multiple mock controllers at once | `proto/controller_manager_mock.proto:43` |
+| RPC | Kind | Request → Response | Description |
+|---|---|---|---|
+| `SimulateMovement` | unary | `MovementRequest` → `MovementResponse` | Simulate controller movement: holds the acceleration vector on that controller (every poll and gameplay frame reports it) until the next call or `ResetController`; a `SimulateDeath` latch overrides it for its frames; a NaN/infinite component returns `INVALID_ARGUMENT` (UC-003 BR-002, #1279) |
+| `SimulateDeath` | unary | `DeathRequest` → `DeathResponse` | Simulate death (high acceleration) |
+| `SimulateButton` | unary | `ButtonRequest` → `ButtonResponse` | Simulate button press |
+| `SetColor` | unary | `ColorRequest` → `ColorResponse` | Set LED color |
+| `ResetController` | unary | `ResetRequest` → `ResetResponse` | Reset controller to idle: buttons released, death latch and held movement cleared, acceleration back to resting noise (UC-003 A3) |
+| `ListMockControllers` | unary | `ListRequest` → `ListResponse` | Get list of mock controllers |
+| `SetAutoGameEnd` | unary | `AutoGameEndRequest` → `AutoGameEndResponse` | Set auto game end - automatically kill players after duration to ensure game ends |
+| `GetColor` | unary | `GetColorRequest` → `GetColorResponse` | Get current LED color of a controller |
+| `StreamObservability` | server stream | `ObservabilityRequest` → `ObservabilityEvent` | Stream observable events from mock controllers (LED changes, button presses, etc.) |
+| `AddController` | unary | `AddControllerRequest` → `AddControllerResponse` | Add a single mock controller dynamically |
+| `RemoveController` | unary | `RemoveControllerRequest` → `RemoveControllerResponse` | Remove a mock controller |
+| `AddControllers` | unary | `AddControllersRequest` → `AddControllersResponse` | Add multiple mock controllers at once |
 
-## `joustmania.game_coordinator.GameCoordinatorService` (proto/game_coordinator.proto, 4 RPCs)
+## `joustmania.game_coordinator.GameCoordinatorService` (`proto/game_coordinator.proto`, 4 RPCs)
 
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `ForceEndGame` | unary | `ForceEndGameRequest` → `ForceEndGameResponse` | Force end current game | `proto/game_coordinator.proto:10` |
-| `StreamGameEvents` | server stream | `StreamEventsRequest` → `GameEvent` | Stream game events (deaths, scoring, etc.) If start_config is provided, starts a new game before streaming events. If start_config is empty, subscribes to current/upcoming game events. | `proto/game_coordinator.proto:15` |
-| `GetGameState` | unary | `GetGameStateRequest` → `GetGameStateResponse` | Get current game state (for testing/observability) | `proto/game_coordinator.proto:18` |
-| `ListGames` | unary | `ListGamesRequest` → `ListGamesResponse` | List all live game sessions (primary + shadow). Lets agents and tests enumerate concurrent games and learn their game_ids; the dashboard uses it to pick the shadow game it follows (UC-070 BR-005). | `proto/game_coordinator.proto:22` |
+| RPC | Kind | Request → Response | Description |
+|---|---|---|---|
+| `ForceEndGame` | unary | `ForceEndGameRequest` → `ForceEndGameResponse` | Force end current game |
+| `StreamGameEvents` | server stream | `StreamEventsRequest` → `GameEvent` | Stream game events (deaths, scoring, etc.) If start_config is provided, starts a new game before streaming events. If start_config is empty, subscribes to current/upcoming game events. |
+| `GetGameState` | unary | `GetGameStateRequest` → `GetGameStateResponse` | Get current game state (for testing/observability) |
+| `ListGames` | unary | `ListGamesRequest` → `ListGamesResponse` | List all live game sessions (primary + shadow). Lets agents and tests enumerate concurrent games and learn their game_ids; the dashboard uses it to pick the shadow game it follows (UC-070 BR-005). |
 
-## `joustmania.menu.MenuService` (proto/menu.proto, 4 RPCs)
+## `joustmania.menu.MenuService` (`proto/menu.proto`, 4 RPCs)
 
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `StartMenu` | unary | `StartMenuRequest` → `StartMenuResponse` | Start menu | `proto/menu.proto:10` |
-| `StopMenu` | unary | `StopMenuRequest` → `StopMenuResponse` | Stop menu | `proto/menu.proto:13` |
-| `StreamMenuEvents` | server stream | `StreamMenuEventsRequest` → `MenuEvent` | Stream menu events (button presses, selections) | `proto/menu.proto:16` |
-| `ProcessInput` | unary | `ProcessInputRequest` → `ProcessInputResponse` | Process menu input | `proto/menu.proto:19` |
+| RPC | Kind | Request → Response | Description |
+|---|---|---|---|
+| `StartMenu` | unary | `StartMenuRequest` → `StartMenuResponse` | Start menu |
+| `StopMenu` | unary | `StopMenuRequest` → `StopMenuResponse` | Stop menu |
+| `StreamMenuEvents` | server stream | `StreamMenuEventsRequest` → `MenuEvent` | Stream menu events (button presses, selections) |
+| `ProcessInput` | unary | `ProcessInputRequest` → `ProcessInputResponse` | Process menu input |
 
-## `joustmania.psmove_hid.PairingService` (proto/psmove_hid.proto, 2 RPCs)
+## `joustmania.psmove_hid.PairingService` (`proto/psmove_hid.proto`, 2 RPCs)
 
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `GetUSBControllers` | unary | `GetUSBControllersRequest` → `GetUSBControllersResponse` | List USB-attached controllers: device path, serial and USB product id (`product_id`, `0x03D5` / `0x0C5E`, for the BlueZ device record of UC-001 BR-008) | `proto/psmove_hid.proto:8` |
-| `PairController` | unary | `PairControllerRequest` → `PairControllerResponse` | Write the host adapter address into a controller | `proto/psmove_hid.proto:9` |
+| RPC | Kind | Request → Response | Description |
+|---|---|---|---|
+| `GetUSBControllers` | unary | `GetUSBControllersRequest` → `GetUSBControllersResponse` | List USB-attached controllers: device path, serial and USB product id (`product_id`, `0x03D5` / `0x0C5E`, for the BlueZ device record of UC-001 BR-008) |
+| `PairController` | unary | `PairControllerRequest` → `PairControllerResponse` | Write the host adapter address into a controller |
 
-## `joustmania.psmove_hid.ControllerIOService` (proto/psmove_hid.proto, 5 RPCs)
+## `joustmania.psmove_hid.ControllerIOService` (`proto/psmove_hid.proto`, 5 RPCs)
 
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `Discover` | unary | `DiscoverRequest` → `DiscoverResponse` | Enumerate devices (`force`, `verify_only`, `exclude_serials`); each `DiscoveredController` carries `product_id` `0x03D5` (ZCM1) or `0x0C5E` (ZCM2), never `0x042F` (Navigation, UC-001 BR-006) | `proto/psmove_hid.proto:48` |
-| `Open` | unary | `OpenRequest` → `OpenResponse` | Open a device handle | `proto/psmove_hid.proto:49` |
-| `Close` | unary | `CloseRequest` → `CloseResponse` | Close a device handle | `proto/psmove_hid.proto:50` |
-| `CloseAll` | unary | `CloseAllRequest` → `CloseAllResponse` | Close all handles | `proto/psmove_hid.proto:51` |
-| `StreamIO` | bidi stream | `IOCommand` → `SensorData` | Sensor data out (≈ 1 kHz), LED / rumble commands in | `proto/psmove_hid.proto:54` |
+| RPC | Kind | Request → Response | Description |
+|---|---|---|---|
+| `Discover` | unary | `DiscoverRequest` → `DiscoverResponse` | Enumerate devices (`force`, `verify_only`, `exclude_serials`); each `DiscoveredController` carries `product_id` `0x03D5` (ZCM1) or `0x0C5E` (ZCM2), never `0x042F` (Navigation, UC-001 BR-006) |
+| `Open` | unary | `OpenRequest` → `OpenResponse` | Open a device handle |
+| `Close` | unary | `CloseRequest` → `CloseResponse` | Close a device handle |
+| `CloseAll` | unary | `CloseAllRequest` → `CloseAllResponse` | Close all handles |
+| `StreamIO` | bidi stream | `IOCommand` → `SensorData` | Sensor data out (≈ 1 kHz), LED / rumble commands in |

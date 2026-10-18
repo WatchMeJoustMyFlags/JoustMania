@@ -100,7 +100,7 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `game_filtered_controllers` | gauge | (none) | game-coordinator | yes | (none) |  |
 | `game_flag_configuration_changes_total` | counter | (none) | game-coordinator | yes | grafana |  |
 | `game_flag_evaluations_total` | counter | `flag_key` | game-coordinator | yes | grafana |  |
-| `game_flag_service_calls_total` | counter | `call`, `result` | game-coordinator | yes | (none) | `call` = `register`, `end`, `reconcile`; `result` = `ok`, `error`, `timeout`. Recorded when `FLAG_SERVICE_URL` is set; FR-135, #1410 |
+| `game_flag_service_calls_total` | counter | `call` (register\|end\|reconcile), `result` (ok\|error\|timeout) | game-coordinator | yes | (none) | `call` = `register`, `end`, `reconcile`; `result` = `ok`, `error`, `timeout`. Recorded when `FLAG_SERVICE_URL` is set; FR-135, #1410 |
 | `game_gameplay_stream_reconnects_total` | counter | `game_mode` | game-coordinator | yes | (none) |  |
 | `game_intervention_dispatch_failures_total` | counter | `type`, `reason` | game-coordinator | yes | grafana |  |
 | `game_intervention_event_gaps_total` | counter | `flag` | game-coordinator | yes | (none) | event-list reader on; FR-137, #1410 |
@@ -129,7 +129,7 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `game_shadow_games_preempted_total` | counter | (none) | game-coordinator | yes | grafana |  |
 | `game_trace_correlation` | gauge | `game_kind`, `game_id`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id` | game-coordinator | yes | agent |  |
 | `game_winner_announcement_delay_seconds` | histogram | (none) | game-coordinator | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
-| `games_completed_total` | counter | `mode`, `game_kind`, `outcome` | game-coordinator | yes | grafana | `outcome` = `winner`, `tie`, `completed`, `force_ended`, or `error` when the session published `game_error`; #1427 |
+| `games_completed_total` | counter | `mode`, `game_kind`, `outcome` (winner\|tie\|completed\|force_ended\|error) | game-coordinator | yes | grafana | `outcome` = `winner`, `tie`, `completed`, `force_ended`, or `error` when the session published `game_error`; #1427 |
 | `games_started_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana |  |
 | `grpc_client_errors_total` | counter | `service`, `method`, `code` | lib (`lib/grpc_metrics.py`) | yes | grafana |  |
 | `grpc_client_request_duration_seconds` | histogram | `service`, `method` | lib (`lib/grpc_metrics.py`) | yes | grafana |  |

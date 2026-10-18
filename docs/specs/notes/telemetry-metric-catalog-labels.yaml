@@ -1,0 +1,7 @@
+# Bounded label-value lists, rendered next to the label in the Labels column.
+# metric -> {label: values}. A label that is not on the metric fails generation.
+game_flag_service_calls_total:
+  call: register|end|reconcile
+  result: ok|error|timeout
+games_completed_total:
+  outcome: winner|tie|completed|force_ended|error
