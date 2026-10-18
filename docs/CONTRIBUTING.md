@@ -234,13 +234,13 @@ Conventional Commit types such as `docs/` and `refactor/` work the same way):
 
 ```bash
 # Create worktree for an issue
-git worktree add ../JoustMania-issue-<NUMBER> -b fix/<description> origin/main
+git worktree add .worktrees/issue-<NUMBER> -b fix/<description> origin/main
 
 # Work in the isolated directory
-cd ../JoustMania-issue-<NUMBER>
+cd .worktrees/issue-<NUMBER>
 
 # After PR is merged, clean up
-git worktree remove ../JoustMania-issue-<NUMBER>
+git worktree remove .worktrees/issue-<NUMBER>
 ```
 
 ### Making Changes

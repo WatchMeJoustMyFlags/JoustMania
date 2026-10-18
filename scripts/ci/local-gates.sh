@@ -9,8 +9,9 @@
 # Always runs `make lint` (ruff + scripts/tests) and the spec lint gate.
 # Everything else is selected from the changed files: the union of
 # `git diff --name-only $BASE...HEAD`, uncommitted changes and untracked files.
-# The mapping is deliberately narrower than CI's path filters (CI stays the
-# source of truth); it picks the gates most likely to catch a local mistake.
+# The mapping mirrors the `changes` job's path filters in
+# .github/workflows/ci.yml (each case below names its filter); keep them in step.
+# grafana-json, compose and yaml-dupkeys are local-only extras.
 #
 # Services / gate keys accepted by SERVICE:
 #   lib game_coordinator menu controller_manager audio pairing_daemon python_hid
@@ -88,36 +89,54 @@ select_key() {  # map a SERVICE key to gates
   esac
 }
 
-classify() {  # map one changed path to gates
+classify() {  # map one changed path to gates; each case mirrors a ci.yml filter
   local f="$1"
+  # shared_python: every Python service job.
   case "$f" in
-    lib/*|proto/*|pyproject.toml|uv.lock)
-      # Shared Python: CI fans out to every service (shared_python filter).
-      selected[py:lib]=1
+    pyproject.toml|proto/*|lib/*)
       for s in "${PY_SERVICES[@]}"; do selected[py:$s]=1; done ;;
   esac
+  # controller_manager / game_coordinator / menu / audio / pairing_daemon / python_hid
   case "$f" in
     services/game_coordinator/*|services/menu/*|services/controller_manager/*|services/audio/*|services/pairing_daemon/*|services/python_hid/*)
       local s="${f#services/}"; selected[py:${s%%/*}]=1 ;;
-    services/agent/*) selected[go:agent]=1 ;;
-    services/flag-service/*) selected[go:flag-service]=1 ;;
-    services/connect-proxy/*) selected[connect-proxy]=1 ;;
+  esac
+  # lib (lib-tests)
+  case "$f" in
+    lib/*|proto/*|services/flagd/*|services/agent/experiment/targeting.go|tests/integration/test_experiment_shadow_isolation.py)
+      selected[py:lib]=1 ;;
+  esac
+  # rust (rust-checks)
+  case "$f" in
+    services/rust-hid/*|proto/psmove_hid.proto) selected[rust-hid]=1 ;;
+  esac
+  # agent_tests (agent-tests)
+  case "$f" in
+    services/agent/*|services/flagd/*|services/flag-service/registry.yaml) selected[go:agent]=1 ;;
+  esac
+  # flag_service_tests (flag-service-tests)
+  case "$f" in
+    services/flag-service/*|services/flagd/*|docs/specs/flags.md) selected[go:flag-service]=1 ;;
+  esac
+  # connect_proxy (image build buf-generates from proto/)
+  case "$f" in
+    services/connect-proxy/*|proto/*) selected[connect-proxy]=1 ;;
+  esac
+  # dashboard
+  case "$f" in
     services/dashboard/*) selected[dashboard]=1 ;;
-    services/rust-hid/*) selected[rust-hid]=1 ;;
   esac
+  # telemetry (telemetry-contract)
   case "$f" in
-    proto/*.proto) selected[connect-proxy]=1 ;;
-    services/flagd/*) selected[go:agent]=1; selected[go:flag-service]=1 ;;
-  esac
-  # Telemetry contract (static): producers, consumers, collector, specs.
-  case "$f" in
-    */metrics.py|*telemetry*|*otel*|*tracing*|services/grafana/*|services/otel-collector/*|services/envoy/*|services/dashboard/src/*|tests/contract/*|docs/specs/*|docker-compose.yml)
+    services/*|lib/*|tests/contract/*|docker-compose.yml|docs/specs/telemetry.md|scripts/*|tools/*)
       selected[contract]=1 ;;
   esac
-  # flagd contract: flag files and the flag-service registry only.
+  # flagd_contract (flagd-contract)
   case "$f" in
-    services/flagd/*|services/flag-service/registry.yaml) selected[contract-flagd]=1 ;;
+    services/flagd/*|services/agent/*|lib/*|services/game_coordinator/*|tests/contract/*|docker-compose.yml|Makefile|.github/workflows/ci.yml)
+      selected[contract-flagd]=1 ;;
   esac
+  # Local-only extras.
   case "$f" in
     services/grafana/dashboards/*.json) selected[grafana-json]=1; changed_dash[$f]=1 ;;
   esac

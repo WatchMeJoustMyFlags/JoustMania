@@ -49,7 +49,7 @@ The brief gives you the issue, scope and decisions. Everything else is here: do 
 6. **Gates.** `make pr-gates` (auto-detects from the diff; `SERVICE=menu,agent` to force). Fix every FAIL.
    Integration (`make test-dev`) only when the brief asks or the change is cross-service.
 7. **Commit.** Conventional Commits (`fix(menu): ...`, `feat(agent): ...`), small and focused, ending with
-   `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`. A failing pre-commit hook may
+   the attribution lines from the session's system reminder (never a hard-coded model name). A failing pre-commit hook may
    have reformatted files: re-stage and make a NEW commit.
 8. **PR.**
    ```bash
@@ -86,7 +86,7 @@ diff range. Do not resume the original implementer and do not re-read the whole 
    `git worktree add .worktrees/<slug>-fix origin/<branch>` (a branch checkout, not detached).
 2. Confirm `git rev-parse HEAD` matches the given head; if not, stop and report the mismatch.
 3. Fix exactly the listed findings, each with a test where it is a behaviour bug. Nothing else.
-4. `make pr-gates`, commit (`fix: address review on #<PR>` + Co-Authored-By), push. No force-push unless told.
+4. `make pr-gates`, commit (`fix: address review on #<PR>` + the session's attribution lines), push. No force-push unless told.
 5. Report: one line per finding: `fixed <sha> | not fixed: <reason>`.
 
 ## Report (hand back once, 15 lines or fewer)

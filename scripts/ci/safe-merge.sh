@@ -11,16 +11,21 @@
 #   --note-file F             ... with this body ({MERGE} substituted too)
 #
 # Rules:
-#   - Polls once every SAFE_MERGE_POLL seconds (default 75); API errors and rate
+#   - Polls once every SAFE_MERGE_POLL seconds (default 75, never below 60
+#     unless SAFE_MERGE_TEST=1); API errors and rate
 #     limits back off (doubling, capped at 600 s). Never uses `gh run watch`
 #     (its 3 s polling tripped GitHub's secondary rate limit).
 #   - SonarCloud checks are ignored (informational, not merge-blocking).
 #   - Per workflow, only checks of the NEWEST run on the head count: a cancelled
 #     duplicate run (the opened+labeled double trigger) whose "CI Complete" job
-#     reports FAILURE is superseded and ignored.
+#     reports FAILURE is superseded and ignored. Runs whose checks are all
+#     SKIPPED/NEUTRAL (a label-event run) never supersede a real run.
+#   - Green means: nothing pending, nothing failing, at least one counted check,
+#     and "CI Complete" SUCCESS in the chosen CI run. An empty rollup is waited on.
 #   - Merges only when the PR head starts with HEAD_PREFIX, with
 #     `gh pr merge --squash --match-head-commit <full sha>`.
-#   - Issues are closed / commented ONLY after the PR state reads MERGED.
+#   - Issues are closed / commented ONLY after the PR state reads MERGED and
+#     the merged head still starts with HEAD_PREFIX.
 #   - On red, the failed job logs are scanned for known infrastructure
 #     failures (stale images, registry blobs) and the advice says rerun or
 #     add the ci-full label.
@@ -30,7 +35,8 @@
 #       2 usage, 3 head mismatch, 4 timeout.
 #
 # Env: SAFE_MERGE_POLL (75), SAFE_MERGE_MAX_WAIT (seconds, 7200),
-#      SAFE_MERGE_SETTLE (seconds before re-reading the merged state, 5).
+#      SAFE_MERGE_SETTLE (seconds before re-reading the merged state, 5),
+#      SAFE_MERGE_TEST (1 lifts the 60 s poll floor; tests only).
 set -uo pipefail
 
 usage() { sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
@@ -38,15 +44,17 @@ usage() { sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
 [[ $# -ge 2 ]] || usage
 PR="$1"; WANT="$2"; shift 2
 [[ "$PR" =~ ^[0-9]+$ && "$WANT" =~ ^[0-9a-f]{7,40}$ ]] || usage
+# --close takes 7 or 7,8 (digits and commas only); --note-issue one number.
+bad_number() { echo "$1 takes issue numbers like 7 or 7,8 (--note-issue: one): '$2'" >&2; exit 2; }
 WAIT_ONLY=false RERUN=false CLOSE="" CFILE="" NOTE_ISSUE="" NFILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --wait-ci) WAIT_ONLY=true ;;
     --rerun-failed-once) RERUN=true ;;
-    --close) CLOSE="${2:?}"; shift ;;
-    --comment-file) CFILE="${2:?}"; shift ;;
-    --note-issue) NOTE_ISSUE="${2:?}"; shift ;;
-    --note-file) NFILE="${2:?}"; shift ;;
+    --close) [[ $# -ge 2 && "$2" =~ ^[0-9]+(,[0-9]+)*$ ]] || bad_number --close "${2-}"; CLOSE="$2"; shift ;;
+    --comment-file) [[ $# -ge 2 ]] || usage; CFILE="$2"; shift ;;
+    --note-issue) [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || bad_number --note-issue "${2-}"; NOTE_ISSUE="$2"; shift ;;
+    --note-file) [[ $# -ge 2 ]] || usage; NFILE="$2"; shift ;;
     *) usage ;;
   esac
   shift
@@ -58,6 +66,11 @@ for f in "$CFILE" "$NFILE"; do [[ -z "$f" || -r "$f" ]] || { echo "cannot read $
 POLL="${SAFE_MERGE_POLL:-75}"
 MAX_WAIT="${SAFE_MERGE_MAX_WAIT:-7200}"
 SETTLE="${SAFE_MERGE_SETTLE:-5}"
+for v in "$POLL" "$MAX_WAIT" "$SETTLE"; do
+  [[ "$v" =~ ^[0-9]+$ ]] || { echo "SAFE_MERGE_* values must be whole seconds (got '$v')" >&2; exit 2; }
+done
+# GitHub's secondary rate limit: never poll faster than once a minute for real.
+if [[ "${SAFE_MERGE_TEST:-}" != 1 ]] && (( POLL < 60 )); then POLL=60; fi
 
 log() { echo "[safe-merge #$PR] $*" >&2; }
 done_line() { echo "#$PR $1"; exit "$2"; }
@@ -65,12 +78,24 @@ done_line() { echo "#$PR $1"; exit "$2"; }
 # jq: reduce the rollup to the checks that count, then classify them.
 # Each CheckRun's run id comes from its detailsUrl (/actions/runs/<id>/job/...).
 read -r -d '' JQ_CLASSIFY <<'JQ'
+def skipped_like: .__typename == "CheckRun" and .status == "COMPLETED"
+  and ((.conclusion // "") | IN("SKIPPED","NEUTRAL"));
 [ .statusCheckRollup[]
   | select(((.name // .context // "") | test("sonar"; "i")) | not)
   | . + { run: ((.detailsUrl // "") | (capture("/runs/(?<id>[0-9]+)").id // "0") | tonumber),
           wf: (.workflowName // .context // "status") } ]
-| (group_by(.wf) | map(max_by(.run).run as $newest | map(select(.run == $newest))) | add // []) as $live
+| (group_by(.wf)
+   | map(
+       # A run whose checks are all SKIPPED/NEUTRAL (label-event run) never
+       # supersedes a real run; fall back to it only if nothing else exists.
+       ([ .[] | select(skipped_like | not) | .run ] | unique) as $real
+       | (if ($real | length) > 0 then ($real | max) else (map(.run) | max) end) as $newest
+       | map(select(.run == $newest)))
+   | add // []) as $live
 | {
+    counted: ($live | length),
+    ci_complete: ([ $live[] | select(.__typename == "CheckRun" and .name == "CI Complete")
+                    | if .status == "COMPLETED" then (.conclusion // "") else "PENDING" end ] | first // ""),
     pending: [ $live[] | select(
         (.__typename == "CheckRun" and .status != "COMPLETED") or
         (.__typename == "StatusContext" and (.state == "PENDING" or .state == "EXPECTED"))) | (.name // .context) ],
@@ -82,7 +107,6 @@ read -r -d '' JQ_CLASSIFY <<'JQ'
           ((.conclusion // "") | IN("FAILURE","TIMED_OUT","STARTUP_FAILURE"))) | .run ] | unique
   }
 JQ
-
 # Fetch PR state with backoff on API errors. Sets $VIEW.
 fetch_view() {
   local delay="$POLL" i
@@ -131,6 +155,8 @@ while :; do
   cls="$(jq -c "$JQ_CLASSIFY" <<<"$VIEW")"
   n_pending="$(jq '.pending | length' <<<"$cls")"
   n_failing="$(jq '.failing | length' <<<"$cls")"
+  n_counted="$(jq '.counted' <<<"$cls")"
+  ci_complete="$(jq -r '.ci_complete' <<<"$cls")"
 
   if [[ "$n_pending" == 0 && "$n_failing" != 0 ]]; then
     mapfile -t runs < <(jq -r '.failing_runs[]' <<<"$cls")
@@ -147,11 +173,16 @@ while :; do
     done_line "CI RED (head $short): [$failing]; not infrastructure, needs a fix" 1
   fi
 
-  if [[ "$n_pending" == 0 ]]; then break; fi
-  if (( $(date +%s) - start >= MAX_WAIT )); then
-    done_line "TIMEOUT after ${MAX_WAIT}s (head $short): pending [$(jq -r '.pending | join(", ")' <<<"$cls")]" 4
+  if [[ "$n_pending" == 0 && "$n_counted" != 0 ]]; then
+    [[ "$ci_complete" == SUCCESS ]] && break
+    if [[ -n "$ci_complete" ]]; then
+      done_line "CI NOT GREEN (head $short): CI Complete is $ci_complete" 1
+    fi
   fi
-  log "$n_pending pending, $n_failing failing; next poll in ${POLL}s"
+  if (( $(date +%s) - start >= MAX_WAIT )); then
+    done_line "TIMEOUT after ${MAX_WAIT}s (head $short): pending [$(jq -r '.pending | join(", ")' <<<"$cls")], $n_counted counted, CI Complete '${ci_complete:-absent}'" 4
+  fi
+  log "$n_counted counted, $n_pending pending, $n_failing failing, CI Complete '${ci_complete:-absent}'; next poll in ${POLL}s"
   sleep "$POLL"
 done
 
@@ -162,22 +193,31 @@ fi
 log "merging at $head"
 gh pr merge "$PR" --squash --match-head-commit "$head" >&2 || log "gh pr merge returned non-zero"
 sleep "$SETTLE"
-merged="$(gh pr view "$PR" --json state,mergeCommit --jq '[.state, (.mergeCommit.oid // "")] | join(" ")' 2>/dev/null)"
-mstate="${merged%% *}"; msha="${merged#* }"
-if [[ "$mstate" != MERGED ]]; then
+read -r mstate mhead murl msha < <(gh pr view "$PR" --json state,headRefOid,url,mergeCommit \
+  --jq '[.state, .headRefOid, .url, (.mergeCommit.oid // "")] | join(" ")' 2>/dev/null || true)
+if [[ "${mstate:-}" != MERGED ]]; then
   done_line "MERGE FAILED (state ${mstate:-unknown}, head $short); no issue changes" 1
 fi
+# Merged, possibly by someone else (gh pr merge may have failed): the merged
+# head must still be the one we were asked to merge.
+if [[ "${mhead:-}" != "$WANT"* ]]; then
+  done_line "MERGED at head ${mhead:0:8}, not $WANT (merged elsewhere?); no issue changes" 3
+fi
 mshort="${msha:0:8}"
+merge_ref="${mshort:-${murl:-#$PR}}"
+
+substitute() { local body; body="$(<"$1")"; printf '%s' "${body//\{MERGE\}/"$merge_ref"}"; }
 
 actions=""
 if [[ -n "$CLOSE" ]]; then
-  body="$(sed "s/{MERGE}/$mshort/g" "$CFILE")"
-  for n in ${CLOSE//,/ }; do
+  body="$(substitute "$CFILE")"
+  IFS=, read -r -a close_list <<<"$CLOSE"
+  for n in "${close_list[@]}"; do
     if gh issue close "$n" --comment "$body" >&2; then actions+=" closed #$n;"; else actions+=" close #$n FAILED;"; fi
   done
 fi
 if [[ -n "$NOTE_ISSUE" ]]; then
-  body="$(sed "s/{MERGE}/$mshort/g" "$NFILE")"
+  body="$(substitute "$NFILE")"
   if gh issue comment "$NOTE_ISSUE" --body "$body" >&2; then actions+=" noted #$NOTE_ISSUE;"; else actions+=" note #$NOTE_ISSUE FAILED;"; fi
 fi
-done_line "MERGED as $mshort (head $short)$($reran && echo ', after one rerun');${actions%;}" 0
+done_line "MERGED as $merge_ref (head $short)$($reran && echo ', after one rerun');${actions%;}" 0

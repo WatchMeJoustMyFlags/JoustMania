@@ -68,9 +68,11 @@ uv run pytest
 **Always create a new worktree for changes.** Never commit directly to the main checkout directory.
 
 ```bash
-git worktree add ../JoustMania-issue-<NUMBER> -b fix/description origin/main
-cd ../JoustMania-issue-<NUMBER>
+git worktree add .worktrees/issue-<NUMBER> -b fix/description origin/main
+cd .worktrees/issue-<NUMBER>
 ```
+
+Worktrees live under `.worktrees/` in the main checkout, never in `/tmp/` or a sibling directory.
 
 This keeps the main checkout clean and isolates changes when multiple agents work in parallel.
 

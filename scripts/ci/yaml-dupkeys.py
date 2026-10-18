@@ -12,11 +12,22 @@ class DupKeyLoader(yaml.SafeLoader):
     pass
 
 
+def _hashable(key):
+    """Complex keys (`? [a, b]`, `? {a: 1}`) are unhashable: compare them by repr."""
+    try:
+        hash(key)
+    except TypeError:
+        return repr(key)
+    return key
+
+
 def _construct_mapping(loader, node, deep=False):
     seen = {}
     for key_node, _ in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        if key in seen and key != "<<":
+        if key_node.tag == "tag:yaml.org,2002:merge":
+            continue  # `<<: *anchor` may repeat; flatten_mapping resolves it below
+        key = _hashable(loader.construct_object(key_node, deep=True))
+        if key in seen:
             raise yaml.constructor.ConstructorError(
                 None,
                 None,
@@ -24,7 +35,15 @@ def _construct_mapping(loader, node, deep=False):
                 key_node.start_mark,
             )
         seen[key] = key_node.start_mark.line
-    return loader.construct_mapping(node, deep=deep)
+    # Like SafeConstructor.construct_mapping (merge keys included), but
+    # tolerant of complex keys, which only need to be checked, not used.
+    loader.flatten_mapping(node)
+    return {
+        _hashable(loader.construct_object(k, deep=True)): loader.construct_object(
+            v, deep=deep
+        )
+        for k, v in node.value
+    }
 
 
 DupKeyLoader.add_constructor(
