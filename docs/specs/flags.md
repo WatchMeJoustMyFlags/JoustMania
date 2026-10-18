@@ -31,7 +31,7 @@ changed default or a new reader/writer updates this file in the same PR.
 | Agent (Go) | go-sdk-contrib flagd provider, **RPC** resolver, domain `agent` | `flagd:8013` | `services/agent/flags/provider.go:44-48`; `docker-compose.yml:672-673` |
 | Agent (writer) | flag-service HTTP client: game-scoped interventions and event lists, the rollout count, experiment arms, promotions; reads the experiment catalog with `GET /game` | `flag-service:8070` (`FLAG_SERVICE_URL`) | `services/agent/flagservice/client.go`; `services/agent/actions/`; `services/agent/experiment/writer.go`; `services/agent/promote/realdefault.go` |
 | rust-hid | `open_feature_flagd` RPC resolver, default provider | `flagd:8013` | `services/rust-hid/src/feature_flags.rs:23-35` |
-| connect-proxy | **no flagd client**; `/canary/*` and `/chaos/*` write `bluetooth_backend` / `chaos_fault_type` through the flag service | `flag-service:8070` | `services/connect-proxy/flagservice.go`, `canary.go`, `chaos.go` |
+| connect-proxy | **no flagd client**; `/canary/*` writes `bluetooth_backend` through the flag service | `flag-service:8070` | `services/connect-proxy/flagservice.go`, `canary.go` |
 | Menu (writer) | `FlagServiceWriter`: persisted admin values for `game`, `user` and `agent.interventions_allowed` (writer `menu`) | `flag-service:8070` | `lib/flag_service_writer.py`; `services/menu/servicer.py` |
 | Game coordinator (lifecycle) | registers each game (`PUT /games/{id}`), ends it, reconciles its live games | `flag-service:8070` | `services/game_coordinator/flag_service_client.py` |
 | Stage and operator scripts | `scripts/flags.sh`, `scripts/flagservice.py` (used by `agent-backend.sh`, `talk-stage.sh`, `agent-killswitch.sh`, `agent-dryrun-enable.sh`, `talk-preflight.sh`) | `http://localhost/flags` (envoy) | `scripts/` |
@@ -56,7 +56,7 @@ changed default or a new reader/writer updates this file in the same PR.
 
 Startup-only flags: controller `backend`, `effect.*` (5); observability `metrics_export_interval_ms`,
 `otel_bsp_schedule_delay_millis`; user `menu_auto_start`, `audio_volume.lobby_music`,
-`audio_volume.menu_sound`, `audio_volume.menu_voice`; and the wrap/no-wrap decision for `chaos_fault_type`.
+`audio_volume.menu_sound`, `audio_volume.menu_voice`.
 
 Propagation (write accepted to value served): the flag service pushes the new configuration on the open sync
 stream at once; `tests/integration/test_flag_propagation.py` measures it for NFR-050. A baseline file change takes
@@ -73,7 +73,7 @@ effect only on the next start of the flag service (`scripts/flags.sh restart`).
 | `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays); menu admin writes `interventions_allowed` only (persisted) | per deployment (baseline); overlays until cleared or the flag service restarts |
 | `interventions` | Agent | agent action sink only, game-scoped (values and event lists) | per game: dropped when the game ends (UC-053 BR-003) |
 | `rollout` | Operator + agent | operator: `target_backend`, `strategy`, `remediation_allowed`; agent: `current_controller_count` | per rollout |
-| `controller` | Operator | baseline edits; connect-proxy `/canary/*` and `/chaos/*` through the flag service | per deployment (baseline); canary / chaos overlays until cleared |
+| `controller` | Operator | baseline edits; connect-proxy `/canary/*` through the flag service | per deployment (baseline); canary overlays until cleared |
 | `system`, `observability` | Operator | hand edits | per deployment |
 
 No runtime writer persists into a flag file (C-033). The experiment writer and the autonomous promoter write
@@ -243,21 +243,20 @@ The agent's tier-1 write surface: bounded, in-game, reversible. Written only by 
 
 File: [`services/flagd/controller.json`](../../services/flagd/controller.json).
 
-Controller-manager I/O backend, per-serial backend routing (canary), chaos fault injection and controller feedback-effect timings.
+Controller-manager I/O backend, per-serial backend routing (canary) and controller feedback-effect timings.
 
 | Key | Type | Variants | Default | Targeting | Read by (file:line) | Written by | Reload |
 |---|---|---|---|---|---|---|---|
 | `backend` | string | python="python", mock="mock", mock_python="mock,python", rust="rust", mock_rust="mock,rust", python_rust="python,rust", mock_python_rust="mock,python,rust" | `rust` = "rust" (#1371; `mock` is always added; the flag-unavailable fallback is also `rust`) | N | controller-manager: services/controller_manager/backend_factory.py:48 (_resolve_backend_name <- create_backend :149) | manual edit only (services/flagd/ci/controller.json = mock). Any variant naming `python` is opt-in and needs the `python-hid` compose profile (UC-002 BR-003) | startup (backend created once) |
 | `poll_drop_threshold` | int | off=0, low=5, default=10, high=20 | `default` = 10 | N | game-coordinator: services/game_coordinator/runtime_config.py:232 | manual edit only | event-refreshed (PROVIDER_CONFIGURATION_CHANGED, services/game_coordinator/runtime_config.py:149) |
 | `bluetooth_backend` | string | python="python", rust="rust", unstable="unstable" | `rust` = "rust" (#1371) | N | controller-manager: services/controller_manager/multiplexer/multiplexer_backend.py:264 (per-serial targetingKey, honoured only on TARGETING_MATCH); pairing-daemon: services/pairing_daemon/psmove_pairing/config.py:get_adapter_routing_default (<- services/pairing_daemon/psmove_pairing/usb_pairing.py:_resolve_routing; every variant maps to a pairing backend, UC-001 BR-003: rust -> rust-hid PairingService, python and unstable -> in-process hidapi, anything else -> rust); connect-proxy reads the flag service view (GET /controller/bluetooth_backend, services/connect-proxy/canary.go setCanaryRouting) | connect-proxy canary HTTP API services/connect-proxy/canary.go setCanaryRouting (/canary/{python,rust,rollback}): flag-service stack overlay, or a fraction overlay over the stable counterpart (#1420) | live (per adapter resolution / per pairing call) |
-| `chaos_fault_type` | string | poll_drop="poll_drop", accel_spike="accel_spike", led_failure="led_failure", disconnect="disconnect", none="none" | `none` = "none" | N | controller-manager: services/controller_manager/multiplexer/chaos_adapter.py:125 (per serial, cached in _fault_map, refreshed on config-change :151-154); services/controller_manager/backend_factory.py:103 (_is_chaos_enabled at create_backend); connect-proxy status read through the flag service (services/connect-proxy/chaos.go flagStatus) | connect-proxy chaos HTTP API services/connect-proxy/chaos.go setChaosVariant (/chaos/*): flag-service stack or fraction overlay (#1420) | wrapper decision at startup (services/controller_manager/backend_factory.py:111); per-serial value event-refreshed |
 | `effect.warning_flash_ms` | int | short=100, default=200, long=400 | `default` = 200 | N | controller-manager: services/controller_manager/feedback_manager.py:56 (keys built as f"effect.{key}") evaluated :148-150 via _read_effect_timing :81 | manual edit only | startup (init-frozen: init_effect_timings, services/controller_manager/feedback_manager.py:134-137) |
 | `effect.warning_vibration_ms` | int | short=100, default=200, long=400 | `default` = 200 | N | controller-manager: services/controller_manager/feedback_manager.py:56 (keys built as f"effect.{key}") evaluated :148-150 via _read_effect_timing :81 | manual edit only | startup (init-frozen: init_effect_timings, services/controller_manager/feedback_manager.py:134-137) |
 | `effect.death_rumble_ms` | int | short=100, default=150, long=250 | `default` = 150 | N | controller-manager: services/controller_manager/feedback_manager.py:56 (keys built as f"effect.{key}") evaluated :148-150 via _read_effect_timing :81 | manual edit only | startup (init-frozen: init_effect_timings, services/controller_manager/feedback_manager.py:134-137) |
 | `effect.death_red_hold_ms` | int | short=150, default=300, long=500 | `default` = 300 | N | controller-manager: services/controller_manager/feedback_manager.py:56 (keys built as f"effect.{key}") evaluated :148-150 via _read_effect_timing :81 | manual edit only | startup (init-frozen: init_effect_timings, services/controller_manager/feedback_manager.py:134-137) |
 | `effect.death_fade_ms` | int | short=400, default=700, long=1200 | `default` = 700 | N | controller-manager: services/controller_manager/feedback_manager.py:56 (keys built as f"effect.{key}") evaluated :148-150 via _read_effect_timing :81 | manual edit only | startup (init-frozen: init_effect_timings, services/controller_manager/feedback_manager.py:134-137) |
 
-**Traceability:** FR-006, FR-034, FR-070, FR-073 / UC-002, UC-003, UC-052 / `services/controller_manager/backend_factory.py`, `services/controller_manager/multiplexer/`, `services/controller_manager/feedback_manager.py`, `services/connect-proxy/canary.go`, `services/connect-proxy/chaos.go` / `services/controller_manager/tests/`, `tests/integration/test_rollout_plumbing.py`.
+**Traceability:** FR-006, FR-034, FR-070 / UC-002, UC-003, UC-052 / `services/controller_manager/backend_factory.py`, `services/controller_manager/multiplexer/`, `services/controller_manager/feedback_manager.py`, `services/connect-proxy/canary.go` / `services/controller_manager/tests/`, `tests/integration/test_rollout_plumbing.py`.
 
 ## 7. `rollout`
 
@@ -501,7 +500,6 @@ the flag service restarts; the durable change is the promotion PR (FR-064, C-007
 | user | `current_game` | overlay | stack | declared variants (10 modes) | **yes** | menu selection |
 | user | `game_instructions` | overlay | stack | `on`, `off` | **yes** | menu admin |
 | controller | `bluetooth_backend` | overlay | stack or fraction | declared variants, fraction 1 to 100 | no | connect-proxy `/canary/*` |
-| controller | `chaos_fault_type` | overlay | stack or fraction | declared variants, fraction 1 to 100 | no | connect-proxy `/chaos/*` |
 | rollout | `current_controller_count` | overlay | stack | `none`, `one`, `three`, `six`, `all` | no | W2 rollout writer |
 | rollout | `target_backend`, `strategy`, `remediation_allowed` | overlay | stack | declared variants | no | hand edits today |
 

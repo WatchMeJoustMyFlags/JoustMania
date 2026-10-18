@@ -10,7 +10,7 @@
 flowchart LR
     browser([Browser]) -->|":80"| envoy
     envoy --> dashboard
-    envoy -->|/joustmania, /chaos/| cproxy[connect-proxy]
+    envoy -->|/joustmania, /pairing/| cproxy[connect-proxy]
     envoy -->|/jaeger/ /grafana/ /loki/ /victoria-metrics/| obs[(observability)]
     envoy -->|/experiments| agent
     cproxy --> cm[controller-manager]
@@ -46,7 +46,7 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 
 | Service (compose name) | Language | Port(s) | Host-published | Responsibility | Source |
 |---|---|---|---|---|---|
-| controller-manager | Python | 50052 gRPC; 50062 mock control API (mock adapter only) | 50052, 50062 via `docker-compose.override.yml` | Discover controllers, route each to one HID adapter, stream buttons and motion, apply LEDs / rumble / effects, names, rollout routing, chaos | `services/controller_manager/` |
+| controller-manager | Python | 50052 gRPC; 50062 mock control API (mock adapter only) | 50052, 50062 via `docker-compose.override.yml` | Discover controllers, route each to one HID adapter, stream buttons and motion, apply LEDs / rumble / effects, names, rollout routing | `services/controller_manager/` |
 | python-hid | Python | 50059 gRPC | no | HID access via hidapi: ControllerIOService only. Opt-in: starts only under the `python-hid` compose profile (UC-002 BR-003, #1371) | `services/python_hid/` |
 | rust-hid | Rust | 50058 gRPC | 50058 (for the host-networked pairing daemon) | HID access: PairingService + ControllerIOService. The default Bluetooth backend; in the full and the lite stack (UC-002 BR-003) | `services/rust-hid/` |
 | pairing-daemon | Python | 8002 `/healthz`, `POST /controllers/{address}/unpair` (host network, bound to `CONTROL_BIND`) | host network | USB pairing loop, Bluetooth monitor (RSSI metrics), unpair a controller (UC-005) | `services/pairing_daemon/` |
@@ -54,7 +54,7 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode; writes admin settings for `game` / `user` / `agent.interventions_allowed` to the flag service as persisted admin values | `services/menu/` |
 | audio | Python | 50056 gRPC | 50056 via override | Music with tempo (separate process, soxr), 8 effect channels (miniaudio), ALSA | `services/audio/` |
 | agent | Go | 4317 OTLP gRPC (receiver); 13134 HTTP `/healthz`, `/experiments` | no | Observe via OTLP, decide, write interventions / rollout / experiment arms / promotions through the flag service, run experiments and promotion | `services/agent/` |
-| connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*`, `/chaos/*` write the `controller` set through the flag service | `services/connect-proxy/` |
+| connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*` writes the `controller` set through the flag service | `services/connect-proxy/` |
 | dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005); mode selector from the menu's `ListGameModes` (UC-011 BR-002) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
 | flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
@@ -135,14 +135,13 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 | `/` | dashboard | yes | SPA | `services/envoy/envoy.yaml:121-123` |
 | `/` | connect-proxy, only when `/app/static` exists in its container (not mounted in the stock compose files) | no (envoy sends `/` to the dashboard) | Static dashboard files (`http.FileServer`) | `services/connect-proxy/main.go` (`main`, "Serve static files for dashboard") |
 | `/joustmania/*` | connect-proxy | yes (3600 s timeout) | Connect RPCs | `envoy.yaml:37-39` |
-| `/chaos/{poll-drop,accel-spike,led-failure,disconnect}`, `/chaos/reset`, `/chaos/status` | connect-proxy | yes | Fault injection via `chaos_fault_type` | `services/connect-proxy/chaos.go:37-44` |
 | `/canary/{python,rust}`, `/canary/rollback`, `/canary/status` | connect-proxy | **no** (falls through to the dashboard, D-B3) | Manual backend canary via `bluetooth_backend` | `services/connect-proxy/canary.go:13-16` |
 | `/experiments`, `/experiments/{id}` | agent :13134 | yes | Experiment dossier (JSON / HTML) | `services/agent/dossier.go` (`handleList`, mux registration) |
 | `/healthz` | agent :13134 | no | Liveness | `services/agent/server.go:startHealthServer` |
 | `/health` | connect-proxy; envoy direct 200 | yes | Liveness | `services/connect-proxy/main.go:129` |
 | `/jaeger/`, `/grafana/`, `/loki/`, `/victoria-metrics/` | observability services | yes | UIs and APIs (`/prometheus/` was removed in #1449 and now falls through to the dashboard) | `envoy.yaml:45-89` |
 | `/healthz` | pairing-daemon :8002 | host network | Liveness | `services/pairing_daemon/psmove_pairing/daemon.py` (health status for `/healthz`) |
-| `POST /pairing/unpair` (JSON `{"address": "<bluetooth address>"}`) | connect-proxy | yes (envoy route timeout 40 s) | Unpair a controller (UC-005): forwards to the pairing daemon at `PAIRING_DAEMON_URL` (full stack `http://host.docker.internal:8002` via the `host-gateway` extra host, lite stack `http://pairing-daemon:8002`) and passes its status and JSON answer through; 400 not a Bluetooth address, 403 cross-origin browser request (`Origin` host ≠ `Host`; also on `/chaos/*` setters), 502 daemon unreachable. No authentication (UC-005 BR-003) | `services/connect-proxy/pairing.go` |
+| `POST /pairing/unpair` (JSON `{"address": "<bluetooth address>"}`) | connect-proxy | yes (envoy route timeout 40 s) | Unpair a controller (UC-005): forwards to the pairing daemon at `PAIRING_DAEMON_URL` (full stack `http://host.docker.internal:8002` via the `host-gateway` extra host, lite stack `http://pairing-daemon:8002`) and passes its status and JSON answer through; 400 not a Bluetooth address, 403 cross-origin browser request (`Origin` host ≠ `Host`), 502 daemon unreachable. No authentication (UC-005 BR-003) | `services/connect-proxy/pairing.go` |
 | `POST /controllers/{address}/unpair` | pairing-daemon :8002, bound only to `CONTROL_BIND` (full stack loopback + docker0 gateway, lite `0.0.0.0` in its container) | host network (through `/pairing/unpair`) | Remove the address's registrations on every adapter (UC-005). 200 `{"address", "removed", "already_absent", "failed", "adapters", "results": [{"adapter", "outcome", "error"?}], "on_usb"}` when every registration found is `removed` or `already_absent`; 400 not a Bluetooth address; 404 none found; 409 a USB pairing or another unpair is running; 503 any `failed` result (same body plus `error`), a BlueZ / D-Bus error or any unexpected error | `services/pairing_daemon/psmove_pairing/control_api.py`, `usb_pairing.py`, `registrations.py` |
 
 **Traceability:** FR-059, FR-070, FR-073, FR-084, FR-085, FR-123 / UC-005, UC-035, UC-052 / `services/envoy/envoy.yaml`, `services/connect-proxy/`, `services/agent/dossier.go`.
@@ -155,7 +154,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - Loops: state 100 Hz, discovery 1 Hz (full enumeration at most every 0.5 s, forced every 10 s), LED batch 20 Hz (send on change or 2 s keep-alive), battery metrics every 30 s, `controller.bluetooth_health` span ~1 Hz (`discovery_loop.py`).
 - Gameplay stream rate: client-requested, overridden by `game_loop.update_frequency_hz` (clamp 1..100), fallback 30 Hz.
 - Pattern games (#1258, FR-103): a stream whose explicit filter names pattern controllers runs at the archetype's pinned `stream_rate_hz` and ignores the flag override; a controller's frame index advances once per frame delivered on its owning stream (the first explicit stream that names it), in `_build_gameplay_update` next to the hook that drains the #926 death latch.
-- `UnstableAdapter` (≈ 8.3 Hz, 10 % drops) is registered alongside python for the rollout demo; real adapters are always wrapped in `ChaosAdapter` (D-C2).
+- `UnstableAdapter` (≈ 8.3 Hz, 10 % drops) is registered alongside python for the rollout demo; real adapters are used directly (the ChaosAdapter wrapper, D-C2, was removed in #1322).
 - Mock serials `MOCK%04d`; reserved mock controllers are hidden from the roster.
 
 ### game-coordinator
@@ -185,7 +184,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 ### connect-proxy
 
-- No flagd client: `/canary/*` and `/chaos/*` change `bluetooth_backend` and `chaos_fault_type` through the flag service (`FLAG_SERVICE_URL`, writer `connect-proxy`, #1420): a full rollout is a stack overlay, `?fraction=N` a fraction overlay (`scope.fraction_percent`, the rest of the serials resolve the default, for a canary the stable counterpart), rollback / reset clear the overlays; `/canary/status` and `/chaos/status` return the flag service's view. A refusal keeps its 4xx, the flag service unreachable is 502. The proxy mounts no flag file.
+- No flagd client: `/canary/*` changes `bluetooth_backend` through the flag service (`FLAG_SERVICE_URL`, writer `connect-proxy`, #1420): a full rollout is a stack overlay, `?fraction=N` a fraction overlay (`scope.fraction_percent`, the rest of the serials resolve the default, for a canary the stable counterpart), rollback clears the overlays; `/canary/status` returns the flag service's view. A refusal keeps its 4xx, the flag service unreachable is 502. The proxy mounts no flag file.
 
 ### pairing-daemon
 
@@ -262,7 +261,7 @@ they go on the write span and are never checked. Writers use a 500 ms deadline a
     "experiment_id": "exp_42",            // experiment arm write (with arm)
     "arm": "experimental",
     "game_kind": "real",                  // promotion: the real default
-    "fraction_percent": 10                // controller canary / chaos: fractional on serial
+    "fraction_percent": 10                // controller canary: fractional on serial
   },
   "ttl_seconds": 600,                     // optional: overlay expires (not with persist)
   "persist": true,                        // optional: admin setting, kept in the state file (registry must allow it)
@@ -303,7 +302,7 @@ treated as real (FR-041). **`PUT /coordinators/{instance}/games` body**: `{"game
 **Callers**: the game coordinator (`PUT /games/{id}` awaited for at most 200 ms before the game is RUNNING,
 outside `_sessions_lock`; `DELETE` at retire; the reconcile call at its start, after a failed call, when the service's boot epoch changes (read from `GET /healthz` every 2 s and from every response) and every 15 s; a `DELETE` waits for a still-running `PUT` of the same game);
 the agent (interventions, rollout count, experiment arms, promotion; it retries `game_not_live` once after
-100 ms); the menu (admin settings, kill switch); the connect-proxy (canary, chaos); the stage scripts and the
+100 ms); the menu (admin settings, kill switch); the connect-proxy (canary); the stage scripts and the
 validation harness (`curl http://localhost/flags/...`); the integration fixtures.
 
 **Traceability:** FR-130 to FR-139, NFR-050 to NFR-053, C-030 to C-033 / UC-053 / `services/flag-service/`
