@@ -10,13 +10,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // flagservice.go is the connect-proxy's client of the flag service (epic #1407,
-// UC-053 A1): the canary and chaos endpoints change the `controller` flag set
+// UC-053 A1): the canary endpoints change the `controller` flag set
 // only through its HTTP API (docs/specs/services.md §7.2). The flag files are the
 // read-only baseline (C-033).
 
@@ -26,8 +27,14 @@ const (
 	flagServiceDeadline = 2 * time.Second
 )
 
-// flagService is the part of the flag-service API the canary and chaos
-// handlers use.
+// flags is the flag service the canary endpoints write through (epic #1407).
+// Tests replace it.
+var (
+	flags   flagService = newFlagServiceFromEnv()
+	flagsMu sync.Mutex
+)
+
+// flagService is the part of the flag-service API the canary handlers use.
 type flagService interface {
 	// PutVariant sets a stack-wide overlay (fraction 0) or a fraction overlay
 	// (fraction 1..99: that share of serials resolves variant).

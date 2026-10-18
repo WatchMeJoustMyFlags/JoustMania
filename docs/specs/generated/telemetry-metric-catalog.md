@@ -4,8 +4,8 @@
 
 Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which defines the columns.
 
-- **161 unique Python metric names** (184 definitions; 7 names are defined in more than one module).
-- 93 of the 161 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
+- **160 unique Python metric names** (183 definitions; 7 names are defined in more than one module).
+- 92 of the 160 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
 - 13 names are defined but never recorded by any service.
 
 | Metric | Type | Labels | Defined in | Emitted | Consumers | Notes |
@@ -41,7 +41,6 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `controller_bluetooth_report_gap_max_seconds` | gauge | `serial` | controller-manager | yes | grafana |  |
 | `controller_bluetooth_report_gap_p95_seconds` | gauge | `serial` | controller-manager | yes | grafana |  |
 | `controller_button_events_total` | counter | `serial`, `button`, `action` | controller-manager | yes | grafana |  |
-| `controller_chaos_faults_injected_total` | counter | `fault`, `serial` | controller-manager | yes | (none) |  |
 | `controller_color_b` | gauge | `serial` | controller-manager | yes | (none) |  |
 | `controller_color_g` | gauge | `serial` | controller-manager | yes | (none) |  |
 | `controller_color_hex` | gauge | `serial` | controller-manager | yes | grafana |  |

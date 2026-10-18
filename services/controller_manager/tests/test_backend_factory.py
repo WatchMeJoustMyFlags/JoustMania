@@ -188,8 +188,7 @@ class TestMultiAdapterCreation:
         unstable = backend._adapter_by_type.get("unstable")
         assert unstable is not None
         assert unstable.adapter_type == "unstable"
-        # It shares the same python-typed adapter instance the plain route uses
-        # (which may be chaos-wrapped, but stays type "python").
+        # It shares the same python-typed adapter instance the plain route uses.
         python_route = backend._adapter_by_type["python"]
         assert unstable.inner is python_route
         assert unstable not in backend.adapters

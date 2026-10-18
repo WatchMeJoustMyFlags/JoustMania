@@ -18,8 +18,8 @@ service loads read-only at start; nothing writes it at runtime (C-033).
 
 ### HTTP Canary Endpoints
 
-The connect-proxy provides HTTP endpoints for controlling canary rollout
-(same pattern as the chaos endpoints). They write `bluetooth_backend` in the
+The connect-proxy provides HTTP endpoints for controlling canary rollout.
+They write `bluetooth_backend` in the
 `controller` set through the flag service (a stack overlay, or a fraction
 overlay for `?fraction=N`), which pushes it to flagd over the gRPC sync stream;
 no service restart needed. The overlays are in memory: a flag-service restart

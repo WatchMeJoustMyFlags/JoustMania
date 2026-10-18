@@ -73,7 +73,7 @@ flowchart LR
     subgraph writers [Writers: HTTP/JSON]
         agent[agent<br/>interventions, rollout count,<br/>experiment arms, promotion]
         menu[menu admin<br/>settings, kill switch]
-        cproxy[connect-proxy<br/>canary, chaos]
+        cproxy[connect-proxy<br/>canary]
         stage[stage scripts<br/>curl via envoy /flags/]
         tests[integration fixtures]
     end
@@ -111,7 +111,7 @@ EBUSY on the bind mount). Locks are per process or per writer instance; there is
 | W4 | Dynamic declarer | `services/agent/dynamic_declarer.go` | none | none ("performs NO writes", :189); it feeds W3 | n/a | experiment tick | n/a |
 | W5 | Autonomous promotion | `services/agent/promote/realdefault.go` (`SetRealDefault` :157, `RevertRealDefault` :285) | any file `AGENT_REAL_DEFAULT_FLAG_PATH` names (unchecked, #1293) | the real `defaultVariant` (or a new `promoted` variant); prior state snapshotted in `real_default_snapshots.json`; revert error cooldown from #1065 | in place, `O_NOFOLLOW` | promote verdict, gated by env (off in the stock stack) | no |
 | W6 | Menu admin | `lib/flag_config_writer.py` (`update_default_variant` :35, `cycle_variant` :215), `services/menu/servicer.py:101-108`, `handlers/admin.py` | `user.json`, `game.json`, `agent.json` | `current_game`, `game_instructions`; `sensitivity`, `num_teams`, `force_all_start`; `interventions_allowed` | in place, no lock | host in admin mode, game selection | no |
-| W7 | connect-proxy | `services/connect-proxy/chaos.go` (`setChaosVariant` :181), `canary.go` (`setCanaryRouting` :103) | `controller.json` | `chaos_fault_type`, `bluetooth_backend` (`defaultVariant` or `fractional`) | typed remarshal (drops unknown keys), `os.WriteFile`; in CI it writes the base dir while flagd serves `ci/` | operator HTTP POST | no |
+| W7 | connect-proxy | `canary.go` (`setCanaryRouting` :103) | `controller.json` | `bluetooth_backend` (`defaultVariant` or `fractional`) | typed remarshal (drops unknown keys), `os.WriteFile`; in CI it writes the base dir while flagd serves `ci/` | operator HTTP POST | no |
 | W8 | Stage and operator scripts | `scripts/talk-stage.sh` (`set`, `reset`, `permissions`), `scripts/agent-backend.sh`, `scripts/agent-dryrun-enable.sh`, `scripts/agent-killswitch.sh` | `ci/agent.json` (default), `talk-stage.sh reset` also `interventions.json` | `decision.*`, `enabled`, `experiments_enabled`, `interventions_allowed`, the stage baseline (`scripts/talk-baseline.json`) | Python heredoc, in place | presenter / operator | no |
 | W9 | Demo validation harness | `tools/demo/validation_harness.py` (`set_flag_default_variant` :219, `restore_flags` :211) | `<domain>.json` | `interventions_allowed`, `fitness.accelerate.target_session_seconds` | in place, snapshot and restore | per scenario | no |
 | W10 | Integration fixtures | `tests/integration/test_intervention_flow.py` (`flag_files` :229, `write_*`, `rewrite_edge_value` with `_reload_marker`), `test_parallel_intervention_flow.py` (`_branches` side registry, uuid5 variant names, `_FILE_LOCK`), `test_intervention_smoke.py`, `test_gameid_intervention_isolation.py`, `test_experiment_shadow_isolation.py`, `test_experiment_cohort_loop.py`, `test_decide_backend_e2e.py`, `test_admin_flow.py`, `test_rollout_plumbing.py`, `helpers.py` (`wait_flag_file_restored`) | `services/flagd/ci/*.json` | every intervention, `policy.*` budgets, agent switches, `game.json`, `user.json`, `rollout.json` | in place; snapshot and byte-for-byte restore | per test | `_branches` ladders (tests only) |
@@ -142,7 +142,7 @@ Non-writers (checked): the game coordinator (it keeps the in-memory nonce baseli
 | W3, W4, R2 to R4 | Experiment writer, declarer, vocabulary, gate | `PUT /game/{flag}` with `scope.experiment_id` + `scope.arm` (the service adds `game_kind != "real"`); `DELETE /game/{flag}?experiment_id=` at teardown; the proposer path must carry an experiment id; readers use `GET /game` | #1415 |
 | W5 | Autonomous promotion | `PUT /game/{flag}` with `scope.game_kind=real` and `writer=promotion`: an in-memory overlay; the durable path is the promotion PR (FR-064, C-007). The snapshot store is not needed (a restart reverts), but the **revert error cooldown of #1065 is lost** with `RevertRealDefault` unless #1415 re-implements it around `DELETE` | #1415 |
 | W6, R5 | Menu admin | `PUT /game/sensitivity`, `/game/num_teams`, `/game/force_all_start`, `/user/current_game`, `/user/game_instructions` (persisted, D10) and `PUT /agent/interventions_allowed` (persisted; #1412); `cycle_variant` reads `GET`; `FlagConfigWriter` deleted in #1416 | #1412 (`interventions_allowed`), #1415 (rest) |
-| W7 | connect-proxy | `PUT /controller/bluetooth_backend` and `/controller/chaos_fault_type` with `fraction_percent`; the CI mount gap disappears | #1420 |
+| W7 | connect-proxy | `PUT /controller/bluetooth_backend` with `fraction_percent` (the `chaos_fault_type` writer was removed in #1322); the CI mount gap disappears | #1420 |
 | W8, W11, R6 | Stage scripts, their tests, pre-flight | `curl -X PUT http://localhost/flags/agent/decision.backend -d '{"variant":"jev"}'` through envoy; `talk-stage.sh reset` becomes `DELETE /agent?writer=stage` (clears stage overlays); the script tests stub the HTTP endpoint instead of copying files | #1412 |
 | W9 | Validation harness | `PUT` per scenario, `DELETE` after | #1412 |
 | W10 | Integration fixtures | a `flag_service` fixture over HTTP; overlays cleared with `DELETE` between tests; no snapshots, no `_branches`, no `_reload_marker`, no `wait_flag_file_restored` | with the cutover of the set they write (#1411, #1412, #1415, #1420); shared fixture in #1413 |
@@ -490,7 +490,7 @@ scripts, fixtures), so the suite stays green after every step. Until a set is cu
 | 6 | #1413 | Integration tests for UC-053, shared `flag_service` fixture, NFR measurements, alerts | #1411 |
 | 7 | #1414 | **Readiness checkpoint at T−14 days**: every set on the service; then remove `flag-dir-init` and the writable flag mounts (every mount read-only); the full suite green; a talk rehearsal on the Raspberry Pi 5 with real controllers | #1408 to #1413, #1415, #1420 |
 | 8a | #1415 | `game`, `user`: experiments, declarer, gate, vocabulary, promotion (+ #1065 cooldown), menu admin with persistence, their fixtures | #1410 |
-| 8b | #1420 | `controller`: connect-proxy canary and chaos | #1410 |
+| 8b | #1420 | `controller`: connect-proxy canary (chaos writer removed in #1486 / #1322) | #1410 |
 | 9 | #1416 | Delete the file-write paths, nonce and grant baselines, `_prune_stale_buckets`, the interim pruning of #1418, `_branches` / `_reload_marker`, direct file reads | #1414 passed |
 
 The list order is the issue order; #1415 and #1420 run in parallel with #1411 to #1413 (they touch other

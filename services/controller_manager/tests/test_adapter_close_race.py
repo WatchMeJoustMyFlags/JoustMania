@@ -19,7 +19,6 @@ test_dir = Path(__file__).parent
 project_root = test_dir.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from services.controller_manager.multiplexer.chaos_adapter import ChaosAdapter  # noqa: E402
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter  # noqa: E402
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter  # noqa: E402
 
@@ -87,37 +86,3 @@ class TestHidAdapterCloseVersusPoll:
         assert hid_adapter.discover() == [SERIAL]
         hid_adapter._latest_data[SERIAL] = dict(FRAME)
         assert hid_adapter.poll(SERIAL) is not None
-
-
-@pytest.mark.nfr("NFR-002")
-class TestChaosAdapterCloseVersusPoll:
-    def _chaos(self):
-        inner = MagicMock()
-        inner.poll.return_value = None
-        inner.discover.return_value = [SERIAL]
-        chaos = ChaosAdapter(inner)
-        chaos._evaluate_flag = lambda _serial: "none"
-        chaos._ensure_listener = lambda: None
-        return chaos
-
-    def test_poll_after_close_does_not_reinsert(self):
-        chaos = self._chaos()
-        chaos.poll(SERIAL)
-        assert SERIAL in chaos._fault_map
-
-        chaos.close(SERIAL)
-        chaos.poll(SERIAL)
-
-        assert SERIAL not in chaos._fault_map
-        assert SERIAL not in chaos._known_serials
-
-    def test_rediscovery_tracks_the_serial_again(self):
-        chaos = self._chaos()
-        chaos.poll(SERIAL)
-        chaos.close(SERIAL)
-
-        chaos.discover()
-        chaos.poll(SERIAL)
-
-        assert SERIAL in chaos._fault_map
-        assert SERIAL in chaos._known_serials
