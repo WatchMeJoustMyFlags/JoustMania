@@ -16,6 +16,8 @@ import type {
   GameEvent,
 } from "./gen/game_coordinator_pb.js";
 import type {
+  ListGameModesRequest,
+  ListGameModesResponse,
   ProcessInputRequest,
   ProcessInputResponse,
 } from "./gen/menu_pb.js";
@@ -166,6 +168,13 @@ export const menuClient = {
       "joustmania.menu.MenuService",
       "ProcessInput",
       request
+    );
+  },
+  listGameModes(): Promise<Partial<ListGameModesResponse>> {
+    return unaryCall<ListGameModesRequest, Partial<ListGameModesResponse>>(
+      "joustmania.menu.MenuService",
+      "ListGameModes",
+      {}
     );
   },
 };

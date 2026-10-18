@@ -436,3 +436,14 @@ func (p *MenuProxy) ProcessInput(
 	}
 	return connect.NewResponse(resp), nil
 }
+
+func (p *MenuProxy) ListGameModes(
+	ctx context.Context,
+	req *connect.Request[menupb.ListGameModesRequest],
+) (*connect.Response[menupb.ListGameModesResponse], error) {
+	resp, err := p.client.ListGameModes(ctx, req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(resp), nil
+}
