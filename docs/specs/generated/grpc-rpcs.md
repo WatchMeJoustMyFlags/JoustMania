@@ -2,7 +2,7 @@
 
 # gRPC services (generated)
 
-Part of [services.md §3](../services.md#3-grpc-services). **37 RPCs in 7 services.**
+Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 services.**
 
 ## `joustmania.audio.AudioService` (`proto/audio.proto`, 5 RPCs)
 
@@ -50,14 +50,15 @@ Part of [services.md §3](../services.md#3-grpc-services). **37 RPCs in 7 servic
 | `GetGameState` | unary | `GetGameStateRequest` → `GetGameStateResponse` | Get current game state (for testing/observability) |
 | `ListGames` | unary | `ListGamesRequest` → `ListGamesResponse` | List all live game sessions (primary + shadow). Lets agents and tests enumerate concurrent games and learn their game_ids; the dashboard uses it to pick the shadow game it follows (UC-070 BR-005). |
 
-## `joustmania.menu.MenuService` (`proto/menu.proto`, 4 RPCs)
+## `joustmania.menu.MenuService` (`proto/menu.proto`, 5 RPCs)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
 | `StartMenu` | unary | `StartMenuRequest` → `StartMenuResponse` | Start menu |
 | `StopMenu` | unary | `StopMenuRequest` → `StopMenuResponse` | Stop menu |
 | `StreamMenuEvents` | server stream | `StreamMenuEventsRequest` → `MenuEvent` | Stream menu events (button presses, selections) |
-| `ProcessInput` | unary | `ProcessInputRequest` → `ProcessInputResponse` | Process menu input |
+| `ProcessInput` | unary | `ProcessInputRequest` → `ProcessInputResponse` | Process menu input. `web_command` `start_game` with a `mode` selects that mode first; an unknown or unimplemented mode returns `success=false` with the error and publishes `game_start_rejected` (UC-010 A6, UC-011 BR-002) |
+| `ListGameModes` | unary | `ListGameModesRequest` → `ListGameModesResponse` | The playable modes (`game_modes`, menu cycle order, UC-011 BR-001) and the mode to preselect (`default_mode`, `JoustFFA`); the dashboard builds its mode selector from it (UC-011 BR-002) |
 
 ## `joustmania.psmove_hid.PairingService` (`proto/psmove_hid.proto`, 2 RPCs)
 
