@@ -252,6 +252,27 @@ class TestRetireExportsTheEnd:
         assert _series_for(metrics.active_players, GAME_ID) == []
 
     @pytest.mark.uc("UC-041", flow="main", steps=[7])
+    def test_writes_during_removal_delay_are_dropped(self, live_gauges, delayed_removal):
+        """Between retire's zeroing and the removal, session writes stay no-ops:
+        game_active is not set back to 1 and no other series is re-created."""
+        session = _make_session()
+        session.game_trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+        session.game_trace_span_id = "051581bf3cb55c13"
+        session.clear_metrics()
+        assert _value_for(metrics.active_game, GAME_ID) == 0  # removal still pending
+
+        session._set_duration_gauge()
+        session._set_gauges_unless_retired(session._set_trace_correlation)
+        session.publish_game_mode("FFA")
+
+        assert _value_for(metrics.active_game, GAME_ID) == 0
+        for gauge in (metrics.game_duration_seconds, metrics.current_game_mode, metrics.game_trace_correlation):
+            assert _series_for(gauge, GAME_ID) == [], gauge.name
+        for gauge in SESSION_GAUGES:
+            _wait_until_removed(gauge, GAME_ID)
+            assert _series_for(gauge, GAME_ID) == [], gauge.name
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[7])
     def test_removal_delay_is_three_export_intervals(self):
         with patch.object(game_session, "get_export_interval_ms", autospec=True, return_value=1000):
             assert game_session.retire_removal_delay_s() == 3.0
