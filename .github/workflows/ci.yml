@@ -993,7 +993,9 @@ jobs:
           IS_MAIN: ${{ github.ref_name == env.MAIN_BRANCH }}
         run: |
           IMAGE="${IMAGE_PREFIX}/${IMAGE_NAME}"
-          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}" --tag "${IMAGE}:${GITHUB_REF_NAME}")
+          # Docker tags forbid "/" (and uppercase/other chars): same as metadata-action type=ref
+          REF_TAG="$(printf '%s' "${GITHUB_REF_NAME,,}" | sed 's#[^a-z0-9._-]#-#g')"
+          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}" --tag "${IMAGE}:${REF_TAG}")
           if [[ "$IS_MAIN" == "true" ]]; then TAGS+=(--tag "${IMAGE}:latest"); fi
           SOURCES=()
           for digest in *; do SOURCES+=("${IMAGE}@sha256:${digest}"); done
@@ -1115,7 +1117,9 @@ jobs:
           IS_MAIN: ${{ github.ref_name == env.MAIN_BRANCH }}
         run: |
           IMAGE="${IMAGE_PREFIX}/${IMAGE_NAME}"
-          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}" --tag "${IMAGE}:${GITHUB_REF_NAME}")
+          # Docker tags forbid "/" (and uppercase/other chars): same as metadata-action type=ref
+          REF_TAG="$(printf '%s' "${GITHUB_REF_NAME,,}" | sed 's#[^a-z0-9._-]#-#g')"
+          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}" --tag "${IMAGE}:${REF_TAG}")
           if [[ "$IS_MAIN" == "true" ]]; then TAGS+=(--tag "${IMAGE}:latest"); fi
           SOURCES=()
           for digest in *; do SOURCES+=("${IMAGE}@sha256:${digest}"); done
