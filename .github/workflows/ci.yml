@@ -862,9 +862,14 @@ jobs:
         if: needs.changes.outputs.integration_deps == 'true' || needs.changes.outputs.force_full == 'true'
         run: PYTEST_EXTRA="--reruns 1" make test-integration
 
+  # #1487: arm64 is built on a native arm64 runner (free for public repos), NOT
+  # under QEMU. Emulated Go/Rust compiles (otel-collector, rust-hid) hit the
+  # 30 min timeout on main, so :main was never republished. Each platform job
+  # pushes its image by digest; the *-merge job below assembles the multi-arch
+  # manifest with the same tags as before. PRs stay amd64-only and push nothing.
   docker-build:
-    name: Build ${{ matrix.service }}
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.service }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     needs: [changes, integration-test]
     if: needs.changes.outputs.docker_build_matrix != '[]'
     timeout-minutes: 30
@@ -875,14 +880,16 @@ jobs:
       fail-fast: false
       matrix:
         service: ${{ fromJSON(needs.changes.outputs.docker_build_matrix) }}
+        platform: ${{ fromJSON(github.event_name != 'pull_request' && '["linux/amd64","linux/arm64"]' || '["linux/amd64"]') }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set image prefix
-        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+      - name: Set image prefix and platform pair
+        run: |
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+        env:
+          PLATFORM: ${{ matrix.platform }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -912,29 +919,101 @@ jobs:
         run: echo "value=$(bash scripts/ci/deps-fingerprint.sh '${{ matrix.service }}')" >> "$GITHUB_OUTPUT"
 
       - name: Build and push service
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: services/${{ matrix.service }}/Dockerfile
-          # Only build amd64 on PRs (arm64 via QEMU is very slow, not needed for validation)
-          platforms: ${{ github.event_name != 'pull_request' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/${{ steps.image_name.outputs.name }}:${{ github.sha }}
-            ${{ github.event_name != 'pull_request' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, steps.image_name.outputs.name, github.ref_name) || '' }}
-            ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          # Non-PR: push by digest only; tags are applied by the merge job.
+          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
           build-args: |
             DEPS_FINGERPRINT=${{ steps.fingerprint.outputs.value }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          # amd64 keeps the pre-existing scope name; arm64 gets its own.
+          cache-from: type=gha,scope=${{ matrix.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          overwrite: true
+          name: digests-${{ matrix.service }}-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-build-merge:
+    name: Publish ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: [changes, docker-build]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.docker_build_matrix != '[]' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.docker_build_matrix) }}
+    steps:
+      - name: Set image name
+        run: |
+          SERVICE="${{ matrix.service }}"
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${SERVICE//_/-}-service" >> "$GITHUB_ENV"
+
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.service }}-linux-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IS_MAIN: ${{ github.ref_name == env.MAIN_BRANCH }}
+        run: |
+          IMAGE="${IMAGE_PREFIX}/${IMAGE_NAME}"
+          # Docker tags forbid "/" (and uppercase/other chars): same as metadata-action type=ref
+          REF_TAG="$(printf '%s' "${GITHUB_REF_NAME,,}" | sed 's#[^a-z0-9._-]#-#g')"
+          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}" --tag "${IMAGE}:${REF_TAG}")
+          if [[ "$IS_MAIN" == "true" ]]; then TAGS+=(--tag "${IMAGE}:latest"); fi
+          SOURCES=()
+          for digest in *; do SOURCES+=("${IMAGE}@sha256:${digest}"); done
+          (( ${#SOURCES[@]} == 2 )) || { echo "expected 2 platform digests, got ${#SOURCES[@]}"; exit 1; }
+          docker buildx imagetools create "${TAGS[@]}" "${SOURCES[@]}"
+
+      - name: Inspect manifest
+        run: docker buildx imagetools inspect "${IMAGE_PREFIX}/${IMAGE_NAME}:${GITHUB_SHA}"
 
   # Build non-Python services (Go/Node.js/Rust)
   # Publish (incl. :latest on main) is gated on integration-test ONLY (implicit
   # success() on `needs`), not on CI Complete: an unrelated red job such as Rust
   # Checks does not stop :latest from moving (#1254).
   docker-build-extra:
-    name: Build ${{ matrix.service }}
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.item.service }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     needs: [changes, integration-test]
     if: needs.changes.outputs.docker_extra_matrix != '[]'
     timeout-minutes: 30
@@ -944,15 +1023,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.changes.outputs.docker_extra_matrix) }}
+        item: ${{ fromJSON(needs.changes.outputs.docker_extra_matrix) }}
+        platform: ${{ fromJSON(github.event_name != 'pull_request' && '["linux/amd64","linux/arm64"]' || '["linux/amd64"]') }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set image prefix
-        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+      - name: Set image prefix and platform pair
+        run: |
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+        env:
+          PLATFORM: ${{ matrix.platform }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -965,19 +1046,90 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push service
+        id: build
         uses: docker/build-push-action@v7
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          # Only build amd64 on PRs (arm64 via QEMU is very slow, not needed for validation)
-          platforms: ${{ github.event_name != 'pull_request' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.image_name }}:${{ github.sha }}
-            ${{ github.event_name != 'pull_request' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, matrix.image_name, github.ref_name) || '' }}
-            ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, matrix.image_name) || '' }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          context: ${{ matrix.item.context }}
+          file: ${{ matrix.item.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          # Non-PR: push by digest only; tags are applied by the merge job.
+          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_PREFIX, matrix.item.image_name) || '' }}
+          # amd64 keeps the pre-existing scope name; arm64 gets its own.
+          cache-from: type=gha,scope=${{ matrix.item.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.item.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          overwrite: true
+          name: digests-${{ matrix.item.service }}-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-build-extra-merge:
+    name: Publish ${{ matrix.item.service }}
+    runs-on: ubuntu-latest
+    needs: [changes, docker-build-extra]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.docker_extra_matrix != '[]' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        item: ${{ fromJSON(needs.changes.outputs.docker_extra_matrix) }}
+    steps:
+      - name: Set image name
+        run: |
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${{ matrix.item.image_name }}" >> "$GITHUB_ENV"
+
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.item.service }}-linux-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IS_MAIN: ${{ github.ref_name == env.MAIN_BRANCH }}
+        run: |
+          IMAGE="${IMAGE_PREFIX}/${IMAGE_NAME}"
+          # Docker tags forbid "/" (and uppercase/other chars): same as metadata-action type=ref
+          REF_TAG="$(printf '%s' "${GITHUB_REF_NAME,,}" | sed 's#[^a-z0-9._-]#-#g')"
+          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}" --tag "${IMAGE}:${REF_TAG}")
+          if [[ "$IS_MAIN" == "true" ]]; then TAGS+=(--tag "${IMAGE}:latest"); fi
+          SOURCES=()
+          for digest in *; do SOURCES+=("${IMAGE}@sha256:${digest}"); done
+          (( ${#SOURCES[@]} == 2 )) || { echo "expected 2 platform digests, got ${#SOURCES[@]}"; exit 1; }
+          docker buildx imagetools create "${TAGS[@]}" "${SOURCES[@]}"
+
+      - name: Inspect manifest
+        run: docker buildx imagetools inspect "${IMAGE_PREFIX}/${IMAGE_NAME}:${GITHUB_SHA}"
 
   # Release contract: release.yml tag-images expects IMAGE:<sha> for all 10
   # release images. Images skipped by the path filter get a manifest-only retag
@@ -986,13 +1138,15 @@ jobs:
   retag-skipped:
     name: Retag ${{ matrix.image }}
     runs-on: ubuntu-latest
-    needs: [changes, integration-test, docker-build, docker-build-extra]
+    needs: [changes, integration-test, docker-build, docker-build-extra, docker-build-merge, docker-build-extra-merge]
     if: >-
       !cancelled() && github.event_name == 'push' &&
       needs.changes.outputs.retag_matrix != '[]' &&
       needs.integration-test.result == 'success' &&
       needs.docker-build.result != 'failure' &&
-      needs.docker-build-extra.result != 'failure'
+      needs.docker-build-extra.result != 'failure' &&
+      needs.docker-build-merge.result != 'failure' &&
+      needs.docker-build-extra-merge.result != 'failure'
     timeout-minutes: 10
     permissions:
       packages: write
@@ -1055,6 +1209,8 @@ jobs:
       - integration-test
       - docker-build
       - docker-build-extra
+      - docker-build-merge
+      - docker-build-extra-merge
       - retag-skipped
     # #1086: was `always()`. Creating a PR with a label (`gh pr create --label
     # ci-full`) fires BOTH the `opened` and `labeled` pull_request events, so two
