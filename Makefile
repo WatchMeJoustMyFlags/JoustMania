@@ -39,6 +39,10 @@ help:
 	@echo "  make protos          - Generate Python protobuf files"
 	@echo "  make protos-all      - Generate all protobuf files (Python, Go)"
 	@echo ""
+	@echo "Specs:"
+	@echo "  make specs           - Regenerate docs/specs/generated/ from the code"
+	@echo "  make specs-check     - Fail if docs/specs/generated/ is stale (CI)"
+	@echo ""
 	@echo "Direct docker compose commands:"
 	@echo "  docker compose up -d              # Start services"
 	@echo "  docker compose up -d --build      # Build and start"
@@ -165,6 +169,23 @@ check: lint format-check
 .PHONY: pr-gates
 pr-gates:
 	@SERVICE="$(SERVICE)" BASE="$(or $(BASE),origin/main)" scripts/ci/local-gates.sh
+
+# ============================================================================
+# Generated spec tables (#1280)
+# ============================================================================
+# docs/specs/generated/*.md come from the code (metric catalog, RPC tables, flag
+# counts, ci/ flag diffs) plus the hand-written sidecars in docs/specs/notes/.
+# After a rebase that conflicts in a generated file: take either side, run
+# `make specs`, commit. CI runs `make specs-check` (Telemetry Contract job).
+SPECS_GEN = uv run --no-project --with pyyaml python scripts/gen_specs.py
+
+.PHONY: specs
+specs:
+	@$(SPECS_GEN)
+
+.PHONY: specs-check
+specs-check:
+	@$(SPECS_GEN) --check
 
 # ============================================================================
 # Protobuf Generation

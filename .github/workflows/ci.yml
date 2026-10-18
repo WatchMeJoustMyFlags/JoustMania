@@ -163,17 +163,21 @@ jobs:
             # Telemetry contract (#1357) and infra config tests (#1365):
             # producers, agent extractors, dashboards, envoy and the
             # collector config, plus the compose file (image tags, host ports).
-            # The §6 catalog test (#1456) also reads docs/specs/telemetry.md and
-            # scans scripts/ and tools/ for consumers. A docs-only edit to the
-            # spec runs only this ~30 s job; `non_docs` still skips integration.
+            # The job also runs `make specs-check` (#1280): docs/specs/generated/
+            # comes from the metric scans (services, lib, scripts/ and tools/
+            # consumers), proto/*.proto, services/flagd/** and docs/specs/notes/.
+            # A docs-only edit to the spec runs only this ~30 s job; `non_docs`
+            # still skips integration.
             telemetry:
               - 'services/**'
               - 'lib/**'
+              - 'proto/**'
               - 'tests/contract/**'
               - 'docker-compose.yml'
-              - 'docs/specs/telemetry.md'
+              - 'docs/specs/**'
               - 'scripts/**'
               - 'tools/**'
+              - 'Makefile'
             # flagd contract tier (#1422): a single real flagd on services/flagd/ci,
             # the flag readers/writers it checks (coordinator, agent, lib), the
             # flagd image tag and --uri list (compose).
@@ -614,7 +618,7 @@ jobs:
   # metric and span producers vs the agent extractors, Grafana dashboards and
   # the dashboard SPA. Infra config tests (#1365): envoy routing (+ `envoy --mode
   # validate`), collector best-effort fan-out. Docker images are the compose tags.
-  # Runs in ~30 s, no service build.
+  # Generated spec tables (`make specs-check`, #1280). Runs in ~30 s, no service build.
   telemetry-contract:
     name: Telemetry Contract
     runs-on: ubuntu-latest
@@ -625,6 +629,11 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Generated specs are up to date (make specs-check)
+        # docs/specs/generated/ must equal what scripts/gen_specs.py renders from
+        # the code; on failure: run `make specs` and commit (#1280).
+        run: make specs-check
 
       - name: Run telemetry contract tests
         # test_flagd_resolution.py runs in the Flagd Contract job below.

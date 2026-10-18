@@ -1,0 +1,69 @@
+# Hand-written RPC descriptions for docs/specs/generated/grpc-rpcs.md, merged in by scripts/gen_specs.py
+# (`make specs`). Keyed by `<package>.<Service>/<Rpc>`; every RPC needs one; a key the code no longer has fails the generator.
+joustmania.audio.AudioService/PlaySound: Play an effect (file, volume, priority LOW..CRITICAL)
+joustmania.audio.AudioService/PlayMusic: Start looping music matching a file pattern at a tempo
+joustmania.audio.AudioService/StopMusic: Stop music
+joustmania.audio.AudioService/ChangeTempo: Change music tempo (ratio clamped to (0.5, 2.0]) with a transition
+joustmania.audio.AudioService/SetVolume: Set master volume
+joustmania.controller_manager.ControllerManagerService/StreamButtonEvents: Button press / release events to the
+  client; the client sends base LED colours and effects back
+joustmania.controller_manager.ControllerManagerService/StreamGameplayData: 'Motion data at the requested rate, with
+  each controller''s connection quality on the unfiltered (dashboard) stream (`GameplayData.connection_quality`:
+  class and p95 / longest report gap, UC-035 BR-005; game streams leave it unset); the client changes filters, colours
+  and effects mid-stream'
+joustmania.controller_manager.ControllerManagerService/RenameController: Rename a controller (set custom human-readable
+  name)
+joustmania.controller_manager.ControllerManagerService/GetConnectedControllers: Query the controller manager's authoritative
+  live roster on demand (#1153). Unlike the event-piggybacked connected_serials (only refreshed on the next CONNECT/DISCONNECT),
+  this returns the current connected set synchronously so a client (the menu) can reconcile ghosts after a missed
+  disconnect. Also read by `scripts/talk-preflight.sh` through envoy to count real controllers (UC-070 BR-006).
+joustmania.controller_manager.ControllerManagerService/IdentifyController: 'Request → response: `IdentifyControllerRequest`
+  (`serial`, `duration_ms`: 0 = 3000 ms, clamped to 500..10000) → `IdentifyControllerResponse` (`success`, `outcome`:
+  `started` / `not_connected` / `in_game` / `reserved` / `invalid`, `error`, `duration_ms`: the duration used).
+  Flash a controller white at 2 Hz and rumble it briefly, then restore its colour, so the operator can find it;
+  refused for controllers that are not connected, reserved, or players of an open game gameplay stream, and cancelled
+  when a game stream claims the controller (UC-004, FR-121)'
+controller_manager_mock.MockControllerService/SimulateMovement: 'Simulate controller movement: holds the acceleration
+  vector on that controller (every poll and gameplay frame reports it) until the next call or `ResetController`;
+  a `SimulateDeath` latch overrides it for its frames; a NaN/infinite component returns `INVALID_ARGUMENT` (UC-003
+  BR-002, #1279)'
+controller_manager_mock.MockControllerService/SimulateDeath: Simulate death (high acceleration)
+controller_manager_mock.MockControllerService/SimulateButton: Simulate button press
+controller_manager_mock.MockControllerService/SetColor: Set LED color
+controller_manager_mock.MockControllerService/ResetController: 'Reset controller to idle: buttons released, death
+  latch and held movement cleared, acceleration back to resting noise (UC-003 A3)'
+controller_manager_mock.MockControllerService/ListMockControllers: Get list of mock controllers
+controller_manager_mock.MockControllerService/SetAutoGameEnd: Set auto game end - automatically kill players after
+  duration to ensure game ends
+controller_manager_mock.MockControllerService/GetColor: Get current LED color of a controller
+controller_manager_mock.MockControllerService/StreamObservability: Stream observable events from mock controllers
+  (LED changes, button presses, etc.)
+controller_manager_mock.MockControllerService/AddController: Add a single mock controller dynamically
+controller_manager_mock.MockControllerService/RemoveController: Remove a mock controller
+controller_manager_mock.MockControllerService/AddControllers: Add multiple mock controllers at once
+joustmania.game_coordinator.GameCoordinatorService/ForceEndGame: Force end current game
+joustmania.game_coordinator.GameCoordinatorService/StreamGameEvents: Stream game events (deaths, scoring, etc.)
+  If start_config is provided, starts a new game before streaming events. If start_config is empty, subscribes to
+  current/upcoming game events.
+joustmania.game_coordinator.GameCoordinatorService/GetGameState: Get current game state (for testing/observability)
+joustmania.game_coordinator.GameCoordinatorService/ListGames: List all live game sessions (primary + shadow). Lets
+  agents and tests enumerate concurrent games and learn their game_ids; the dashboard uses it to pick the shadow
+  game it follows (UC-070 BR-005).
+joustmania.menu.MenuService/StartMenu: Start menu
+joustmania.menu.MenuService/StopMenu: Stop menu
+joustmania.menu.MenuService/StreamMenuEvents: Stream menu events (button presses, selections)
+joustmania.menu.MenuService/ProcessInput: 'Process menu input. `web_command` `start_game` with a `mode` selects that
+  mode first; an unknown or unimplemented mode returns `success=false` with the error and publishes
+  `game_start_rejected` (UC-010 A6, UC-011 BR-002)'
+joustmania.menu.MenuService/ListGameModes: The playable modes (`game_modes`, menu cycle order, UC-011 BR-001) and the
+  mode to preselect (`default_mode`, `JoustFFA`); the dashboard builds its mode selector from it (UC-011 BR-002)
+joustmania.psmove_hid.PairingService/GetUSBControllers: 'List USB-attached controllers: device path, serial and
+  USB product id (`product_id`, `0x03D5` / `0x0C5E`, for the BlueZ device record of UC-001 BR-008)'
+joustmania.psmove_hid.PairingService/PairController: Write the host adapter address into a controller
+joustmania.psmove_hid.ControllerIOService/Discover: Enumerate devices (`force`, `verify_only`, `exclude_serials`);
+  each `DiscoveredController` carries `product_id` `0x03D5` (ZCM1) or `0x0C5E` (ZCM2), never `0x042F` (Navigation,
+  UC-001 BR-006)
+joustmania.psmove_hid.ControllerIOService/Open: Open a device handle
+joustmania.psmove_hid.ControllerIOService/Close: Close a device handle
+joustmania.psmove_hid.ControllerIOService/CloseAll: Close all handles
+joustmania.psmove_hid.ControllerIOService/StreamIO: Sensor data out (≈ 1 kHz), LED / rumble commands in
