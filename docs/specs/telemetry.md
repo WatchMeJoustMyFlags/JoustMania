@@ -237,9 +237,9 @@ Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `s
 
 Python metrics are created through `lib/otel_metrics.py` (`Counter`, observable `Gauge`, `Histogram`; no unit
 argument). A `Histogram`'s `buckets` are passed to the SDK as explicit bucket boundaries, so each histogram exports
-exactly the buckets it declares (UC-035 BR-004, #1434). **161 unique Python metric names** (184 definitions: the `process_*` trio is defined per service, and
-`grpc_requests_total`, `grpc_request_duration_seconds`, `audio_sounds_played_total` and
-`audio_playback_errors_total` are defined in more than one service); the Go agent adds 7 `agent_*` metrics plus the
+exactly the buckets it declares (UC-035 BR-004, #1434). The number of unique Python metric names and definitions is
+generated with the §6.2 catalog (the `process_*` trio is defined per service, and a few other names in more than one
+service; the catalog's Defined in column lists them); the Go agent adds 7 `agent_*` metrics plus the
 two `gen_ai.client.*` histograms, every Python service and the agent emit the four OpenFeature hook metrics `feature_flag.evaluation_*` (table below, #1427), the Go flag service adds its `flagservice_*` metrics (§10.2), and Go connect-proxy and rust-hid emit only the `process_*` trio. The main ones per
 service are below; §6.2 lists every Python metric.
 
@@ -273,181 +273,22 @@ BR-003; `services/game_coordinator/game_session.py` `_publish_duration_while_run
 | Talk pre-flight | Jaeger `service=agent operation=agent.decide`, tags `decide.backend`, `decide.outcome`, `decide.fallback_reason`; flag **variant names** of the stage baseline (`ambient`, `default`, `haiku`, `real_only`, ...) | `scripts/talk-preflight.sh` |
 | Calibration scripts | VictoriaMetrics `game_player_accel_magnitude{game_id,serial}` and `game_player_elimination_order` (trajectory features per player) | `scripts/calibration/vm_trajectory_features.py` |
 
-93 of the 161 Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo
-harness or a script (all `menu_*`, `psmove_*`, `python_hid_*`, `audio_*` and others); they are kept for ad-hoc
-analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers, and (#1456) the §6.2 catalog against the code: one row per Python metric name, each Consumers cell equal to what the consumer scans find (Grafana and SPA PromQL, the agent's ingest constants, the name as a word in non-test `tools/` and `scripts/` source), the **no** rows in Emitted equal to the metrics nothing records, and the counts in this section derived from those scans, so a metrics PR updates them. The scans prove a name is referenced, not that the query using it is right.
+Many Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo harness or a
+script (all `menu_*`, `psmove_*`, `python_hid_*`, `audio_*` and others; the count is in the generated catalog); they
+are kept for ad-hoc analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers. The §6.2 catalog and its counts are **generated** from the same scans (#1280): one row per Python metric name, each Consumers cell equal to what the consumer scans find (Grafana and SPA PromQL, the agent's ingest constants, the name as a word in non-test `tools/` and `scripts/` source), and the **no** rows in Emitted equal to the metrics nothing records. A metrics PR runs `make specs`; `make specs-check` fails CI when the generated file is stale. The scans prove a name is referenced, not that the query using it is right.
 
 ### 6.2 Python metric catalog
 
-One row per `Counter` / `Gauge` / `Histogram` definition in `services/*/metrics.py`, `lib/grpc_metrics.py`
-and `lib/flag_eval_visibility.py`; the contract test above checks the rows against the code. **Emitted** = some non-test code in the defining service records it
+One row per Python metric name (`Counter` / `Gauge` / `Histogram` definitions in `services/*/metrics.py`,
+`lib/grpc_metrics.py` and `lib/flag_eval_visibility.py`), generated from the code. **Emitted** = some non-test code in the defining service records it
 (`.inc` / `.set` / `.observe` / `.labels`); **Consumers** = the directories whose dashboards (`grafana`), agent extractor (`agent`), SPA (`dashboard`), demo harness (`tools`) or scripts
-(`scripts`) name it. Types: counter (C), gauge (G, observable), histogram (H). 13 names are defined but never
-recorded by any service; they are listed so a consumer does not trust them.
+(`scripts`) name it. Types: counter (C), gauge (G, observable), histogram (H). Names defined but never recorded by any
+service are listed (Emitted **no**) so a consumer does not trust them.
 
-| Metric | Type | Labels | Defined in | Emitted | Consumers |
-|---|---|---|---|---|---|
-| `flag_eval_errors_total` | counter | `flag_key`, `reason` | lib (all Python) | yes | grafana |
-| `grpc_request_duration_seconds` | histogram | `method` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in game-coordinator, audio, controller-manager | (none) |
-| `grpc_requests_total` | counter | `method`, `status` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in game-coordinator, audio, controller-manager | (none) |
-| `process_cpu_seconds_total` | counter | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |
-| `process_resident_memory_bytes` | gauge | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |
-| `process_threads` | gauge | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |
-| `grpc_client_errors_total` | counter | `service`, `method`, `code` | lib (all Python gRPC clients) | yes | grafana |
-| `grpc_client_request_duration_seconds` | histogram | `service`, `method` | lib (all Python gRPC clients) | yes | grafana |
-| `event_bus_active_subscribers` | gauge | (none) | game-coordinator | yes | (none) |
-| `event_bus_publish_drops_total` | counter | `event_type` | game-coordinator | yes | (none) |
-| `event_bus_publish_errors_total` | counter | `event_type` | game-coordinator | yes | (none) |
-| `game_accel_distribution` | histogram | `game_mode` | game-coordinator | yes | grafana |
-| `game_active_controllers` | gauge | (none) | game-coordinator | yes | (none) |
-| `game_active_players` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana |
-| `game_active` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana |
-| `game_actual_update_frequency_hz` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana |
-| `game_analytics_replay_bytes` | histogram | `game_mode` | game-coordinator | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `game_analytics_samples_total` | counter | `game_mode` | game-coordinator | yes | grafana |
-| `game_config_changes_total` | counter | `parameter` | game-coordinator | yes | (none) |
-| `game_countdown_accuracy_seconds` | histogram | (none) | game-coordinator | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `game_current_mode` | gauge | `mode`, `game_kind`, `game_id` | game-coordinator | yes (#1379; 1 while the game is live, removed at retire) | agent, grafana |
-| `game_current_update_frequency_hz` | gauge | (none) | game-coordinator | yes | grafana |
-| `game_duration_seconds` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana, tools |
-| `game_effective_death_threshold` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |
-| `game_effective_warning_threshold` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |
-| `game_filter_updates_total` | counter | `game_mode` | game-coordinator | yes | (none) |
-| `game_filtered_controllers` | gauge | (none) | game-coordinator | yes | (none) |
-| `game_flag_configuration_changes_total` | counter | (none) | game-coordinator | yes | grafana |
-| `game_gameplay_stream_reconnects_total` | counter | `game_mode` | game-coordinator | yes | (none) |
-| `game_intervention_dispatch_failures_total` | counter | `type`, `reason` | game-coordinator | yes | grafana |
-| `game_interventions_total` | counter | `type`, `objective`, `blocked`, `block_reason` | game-coordinator | yes | grafana, tools |
-| `game_loop_frame_consistency_percent` | gauge | (none) | game-coordinator | yes | grafana |
-| `game_loop_frames_dropped_total` | counter | `mode` | game-coordinator | yes | grafana |
-| `game_loop_jitter_ms` | gauge | (none) | game-coordinator | yes | grafana |
-| `game_music_tempo` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |
-| `game_near_death_events_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |
-| `game_player_accel_magnitude` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, scripts |
-| `game_player_alive` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, tools |
-| `game_player_deaths_total` | counter | `mode`, `game_kind` | game-coordinator | yes (#1376) | grafana |
-| `game_player_elimination_order` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, scripts |
-| `game_player_kills_total` | counter | `mode`, `serial` | game-coordinator | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `game_player_movement_variance_aggregate` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |
-| `game_player_movement_variance` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |
-| `game_player_movement_zone` | gauge | `serial`, `game_id` | game-coordinator | yes | grafana |
-| `game_player_peak_accel` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana |
-| `game_player_playstyle` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana |
-| `game_player_respawns_total` | counter | `serial` | game-coordinator | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `game_player_skill_level` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |
-| `game_player_warnings_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |
-| `game_players_alive` | gauge | (none) | game-coordinator | yes | grafana |
-| `game_sensitivity` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana |
-| `game_flag_service_calls_total` | counter | `call` (`register`, `end`, `reconcile`), `result` (`ok`, `error`, `timeout`) | game-coordinator | yes (when `FLAG_SERVICE_URL` is set; FR-135, #1410) | (none) |
-| `game_intervention_event_gaps_total` | counter | `flag` | game-coordinator | yes (event-list reader on; FR-137, #1410) | (none) |
-| `game_shadow_games_blocked_total` | counter | (none) | game-coordinator | yes | grafana |
-| `game_shadow_games_preempted_total` | counter | (none) | game-coordinator | yes | grafana |
-| `game_trace_correlation` | gauge | `game_kind`, `game_id`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id` | game-coordinator | yes | agent |
-| `game_winner_announcement_delay_seconds` | histogram | (none) | game-coordinator | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `games_completed_total` | counter | `mode`, `game_kind`, `outcome` (`winner`, `tie`, `completed`, `force_ended`, or `error` when the session published `game_error`; #1427) | game-coordinator | yes | grafana |
-| `games_started_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana |
-| `active_controllers_total` | gauge | (none) | controller-manager | yes | (none) |
-| `bluetooth_adapter_count` | gauge | (none) | controller-manager | yes | (none) |
-| `controller_accel_magnitude` | gauge | `serial` | controller-manager | yes | grafana |
-| `controller_accel_x` | gauge | `serial` | controller-manager | yes | (none) |
-| `controller_accel_y` | gauge | `serial` | controller-manager | yes | (none) |
-| `controller_accel_z` | gauge | `serial` | controller-manager | yes | (none) |
-| `controller_adapter_info` | gauge | `serial`, `adapter` | controller-manager | yes | grafana |
-| `controller_adaptive_polling_active` | gauge | (none) | controller-manager | yes | (none) |
-| `controller_adaptive_polling_idle` | gauge | (none) | controller-manager | yes | (none) |
-| `controller_backend_info` | gauge | `serial`, `backend` | controller-manager | yes | grafana |
-| `controller_battery_check_duration_seconds` | histogram | (none) | controller-manager | yes | (none) |
-| `controller_battery_checks_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_battery_level` | gauge | `serial` | controller-manager | yes | agent, grafana |
-| `controller_battery_pct` | gauge | `serial` | controller-manager | yes | agent |
-| `controller_bluetooth_dropped_events_ratio_window` | gauge | (none) | controller-manager | yes | (none) |
-| `controller_bluetooth_dropped_events_ratio` | gauge | `serial` | controller-manager | yes | (none) |
-| `controller_bluetooth_event_gap_seconds` | histogram | (none) | controller-manager | yes | (none) |
-| `controller_bluetooth_movement_update_hz` | gauge | `serial` | controller-manager | yes | (none) |
-| `controller_bluetooth_report_gap_max_seconds` | gauge | `serial` | controller-manager | yes | grafana |
-| `controller_bluetooth_report_gap_p95_seconds` | gauge | `serial` | controller-manager | yes | grafana |
-| `controller_button_events_total` | counter | `serial`, `button`, `action` | controller-manager | yes | grafana |
-| `controller_chaos_faults_injected_total` | counter | `fault`, `serial` | controller-manager | yes | (none) |
-| `controller_color_b` | gauge | `serial` | controller-manager | yes | (none) |
-| `controller_color_g` | gauge | `serial` | controller-manager | yes | (none) |
-| `controller_color_hex` | gauge | `serial` | controller-manager | yes | grafana |
-| `controller_color_r` | gauge | `serial` | controller-manager | yes | (none) |
-| `controller_connected` | gauge | `serial` | controller-manager | yes | agent, grafana |
-| `controller_connection_quality` | gauge | `serial` | controller-manager | yes | grafana |
-| `controller_disconnect_total` | counter | `serial` | controller-manager | yes | grafana |
-| `controller_discovery_check_duration_seconds` | histogram | (none) | controller-manager | yes | (none) |
-| `controller_discovery_checks_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_discovery_full_enumerate_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_discovery_verify_only_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_info` | gauge | `serial`, `name` | controller-manager | yes | agent, grafana |
-| `controller_identify_requests_total` | counter | `outcome` | controller-manager | yes | (none) |
-| `controller_input_lag_seconds` | histogram | `serial` | controller-manager | yes (#1376; game streams only) | grafana |
-| `controller_led_batch_updates_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_led_controllers_updated_per_batch` | histogram | (none) | controller-manager | yes | (none) |
-| `controller_object_pool_utilization` | gauge | `pool_type` | controller-manager | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `controller_poll_batch_duration_seconds` | histogram | (none) | controller-manager | yes | (none) |
-| `controller_poll_batch_size` | histogram | (none) | controller-manager | yes | (none) |
-| `controller_poll_drops_total` | counter | `serial` | controller-manager | yes | grafana |
-| `controller_poll_errors_total` | counter | `serial` | controller-manager | yes | grafana |
-| `controller_poll_loop_lateness_seconds` | histogram | (none) | controller-manager | yes | (none) |
-| `controller_polling_mode` | gauge | (none) | controller-manager | yes | grafana |
-| `controller_polling_target_hz` | gauge | (none) | controller-manager | yes | grafana |
-| `controller_reconnect_total` | counter | `serial` | controller-manager | yes | grafana |
-| `controller_routing_decisions_total` | counter | `serial`, `adapter`, `method` | controller-manager | yes | (none) |
-| `controller_state_cache_hits_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_state_cache_misses_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_state_update_hz` | gauge | `serial` | controller-manager | yes | (none) |
-| `controller_stream_commands_total` | counter | `command_type` | controller-manager | yes | (none) |
-| `controller_stream_current_frequency_hz` | gauge | (none) | controller-manager | yes | (none) |
-| `controller_stream_frame_overruns_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_stream_frequency_changes_total` | counter | (none) | controller-manager | yes | (none) |
-| `controller_stream_updates_total` | counter | `stream_type` | controller-manager | yes | (none) |
-| `controller_streamed_per_frame` | histogram | (none) | controller-manager | yes | (none) |
-| `controller_streams_active` | gauge | (none) | controller-manager | yes | grafana |
-| `menu_button_event_errors_total` | counter | `event_type` | menu | yes | (none) |
-| `menu_button_frames_processed_total` | counter | (none) | menu | yes | (none) |
-| `menu_button_presses_total` | counter | `button`, `action` | menu | yes | (none) |
-| `menu_force_start_reconcile_failed_total` | counter | (none) | menu | yes | (none) |
-| `menu_game_event_stream_reconnects_total` | counter | (none) | menu | yes | (none) |
-| `menu_ghost_controllers_pruned_total` | counter | (none) | menu | yes | (none) |
-| `menu_idle_controllers_count` | gauge | (none) | menu | yes | (none) |
-| `menu_idle_mode_active` | gauge | (none) | menu | yes | (none) |
-| `menu_idle_mode_entries_total` | counter | (none) | menu | yes | (none) |
-| `menu_idle_mode_wake_total` | counter | (none) | menu | yes | (none) |
-| `menu_lobby_updates_total` | counter | (none) | menu | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `menu_player_ready` | gauge | `serial` | menu | yes | (none) |
-| `menu_sentinel_controllers_count` | gauge | (none) | menu | yes | (none) |
-| `menu_stream_connections_active` | gauge | (none) | menu | yes | (none) |
-| `menu_stream_disconnections_total` | counter | (none) | menu | yes | (none) |
-| `menu_stream_events_published_total` | counter | `event_type` | menu | yes | (none) |
-| `menu_stream_publish_drops_total` | counter | `event_type` | menu | yes | (none) |
-| `audio_channel_saturation_total` | counter | (none) | audio | yes | (none) |
-| `audio_channels_active` | gauge | (none) | audio | yes | (none) |
-| `audio_music_playing` | gauge | (none) | audio | yes | (none) |
-| `audio_music_tempo` | gauge | (none) | audio | yes | (none) |
-| `audio_playback_errors_total` | counter | (none) | audio, game-coordinator | emitted by audio; defined but never recorded in game-coordinator (dead duplicate definitions; cleanup tracked in #1322) | (none) |
-| `audio_sounds_played_total` | counter | game-coordinator: `sound_type`; audio: `result` | audio, game-coordinator | emitted by audio; defined but never recorded in game-coordinator (dead duplicate definitions; cleanup tracked in #1322) | (none) |
-| `bluetooth_adapter_connections` | gauge | `hci_adapter` | pairing-daemon | yes | grafana |
-| `bluetooth_device_connected` | gauge | `serial`, `hci_adapter` | pairing-daemon | yes | grafana |
-| `bluetooth_device_last_seen_timestamp` | gauge | `serial`, `hci_adapter` | pairing-daemon | yes | (none) |
-| `bluetooth_device_rssi_dbm` | gauge | `serial`, `hci_adapter` | pairing-daemon | yes | grafana |
-| `pairing_bluetooth_adapter_hci_errors_total` | counter | `hci_adapter`, `direction` | pairing-daemon | yes | grafana |
-| `pairing_bluetooth_adapter_info` | gauge | `hci_adapter`, `address`, `manufacturer`, `manufacturer_id`, `hci_version`, `bus`, `usb_id`, `onboard` | pairing-daemon | yes | grafana |
-| `pairing_bluetooth_link_role_info` | gauge | `serial`, `hci_adapter`, `role` | pairing-daemon | yes | grafana |
-| `psmove_pairing_adapter_device_count_at_selection` | gauge | `adapter` | pairing-daemon | yes | (none) |
-| `psmove_pairing_adapter_selected_total` | counter | `adapter` | pairing-daemon | yes | (none) |
-| `psmove_pairing_attempts_total` | counter | (none) | pairing-daemon | yes | (none) |
-| `psmove_pairing_duration_seconds` | histogram | (none) | pairing-daemon | yes | (none) |
-| `psmove_pairing_failed_total` | counter | (none) | pairing-daemon | yes | (none) |
-| `psmove_pairing_polls_total` | counter | (none) | pairing-daemon | yes | (none) |
-| `psmove_pairing_success_total` | counter | (none) | pairing-daemon | yes | (none) |
-| `psmove_pairing_usb_controllers` | gauge | (none) | pairing-daemon | yes | (none) |
-| `python_hid_active_streams` | gauge | (none) | python-hid | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `python_hid_devices_open` | gauge | (none) | python-hid | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `python_hid_discover_total` | counter | (none) | python-hid | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `python_hid_open_total` | counter | `success` | python-hid | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `python_hid_poll_duration_seconds` | histogram | (none) | python-hid | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
-| `python_hid_sensor_data_total` | counter | (none) | python-hid | **no**: defined, never recorded (dead definition; cleanup tracked in #1322) | (none) |
+The catalog is generated by `make specs` (`scripts/gen_specs.py`) into
+**[generated/telemetry-metric-catalog.md](generated/telemetry-metric-catalog.md)**; do not hand-edit it. A note for
+one metric (an issue reference, label values, a caveat) goes into the **Notes** column through
+[notes/telemetry-metric-catalog.yaml](notes/telemetry-metric-catalog.yaml), keyed by metric name.
 
 **Traceability:** FR-081, FR-084, NFR-022 / UC-035 / metrics files above / `services/*/tests/` (metric patches), `tests/integration/test_decide_backend_e2e.py`.
 

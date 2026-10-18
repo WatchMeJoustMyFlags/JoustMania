@@ -1,0 +1,26 @@
+# Hand-written notes (Notes column) for docs/specs/generated/telemetry-metric-catalog.md, merged in by scripts/gen_specs.py
+# (`make specs`). Keyed by metric name; a key the code no longer has fails the generator.
+audio_playback_errors_total: 'dead duplicate definitions; cleanup tracked in #1322'
+audio_sounds_played_total: 'labels per service: game-coordinator `sound_type`, audio `result`. Dead duplicate definition;
+  cleanup tracked in #1322'
+controller_input_lag_seconds: '#1376; game streams only'
+controller_object_pool_utilization: 'dead definition; cleanup tracked in #1322'
+game_analytics_replay_bytes: 'dead definition; cleanup tracked in #1322'
+game_countdown_accuracy_seconds: 'dead definition; cleanup tracked in #1322'
+game_current_mode: '#1379; 1 while the game is live, removed at retire'
+game_flag_service_calls_total: '`call` = `register`, `end`, `reconcile`; `result` = `ok`, `error`, `timeout`. Recorded
+  when `FLAG_SERVICE_URL` is set; FR-135, #1410'
+game_intervention_event_gaps_total: 'event-list reader on; FR-137, #1410'
+game_player_deaths_total: '#1376'
+game_player_kills_total: 'dead definition; cleanup tracked in #1322'
+game_player_respawns_total: 'dead definition; cleanup tracked in #1322'
+game_winner_announcement_delay_seconds: 'dead definition; cleanup tracked in #1322'
+games_completed_total: '`outcome` = `winner`, `tie`, `completed`, `force_ended`, or `error` when the session published
+  `game_error`; #1427'
+menu_lobby_updates_total: 'dead definition; cleanup tracked in #1322'
+python_hid_active_streams: 'dead definition; cleanup tracked in #1322'
+python_hid_devices_open: 'dead definition; cleanup tracked in #1322'
+python_hid_discover_total: 'dead definition; cleanup tracked in #1322'
+python_hid_open_total: 'dead definition; cleanup tracked in #1322'
+python_hid_poll_duration_seconds: 'dead definition; cleanup tracked in #1322'
+python_hid_sensor_data_total: 'dead definition; cleanup tracked in #1322'

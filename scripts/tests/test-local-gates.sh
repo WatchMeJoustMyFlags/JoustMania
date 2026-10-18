@@ -38,9 +38,9 @@ expect "services/pairing_daemon/daemon.py services/python_hid/x.py" "$ALWAYS py:
 expect "lib/feature_flags.py" "$ALWAYS py:lib $PY_ALL contract contract-flagd"
 # root pyproject.toml is shared_python only (not the lib filter)
 expect "pyproject.toml" "$ALWAYS $PY_ALL"
-expect "proto/menu.proto" "$ALWAYS py:lib $PY_ALL connect-proxy"
+expect "proto/menu.proto" "$ALWAYS py:lib $PY_ALL connect-proxy contract"
 # rust filter includes the HID proto
-expect "proto/psmove_hid.proto" "$ALWAYS py:lib $PY_ALL connect-proxy rust-hid"
+expect "proto/psmove_hid.proto" "$ALWAYS py:lib $PY_ALL connect-proxy rust-hid contract"
 expect "services/agent/decision/rules.go" "$ALWAYS go:agent contract contract-flagd"
 # lib filter pins one agent file and one integration test
 expect "services/agent/experiment/targeting.go" "$ALWAYS py:lib go:agent contract contract-flagd"
@@ -48,11 +48,11 @@ expect "tests/integration/test_experiment_shadow_isolation.py" "$ALWAYS py:lib"
 # agent_tests reads the registry; flagd_contract does not include it
 expect "services/flag-service/registry.yaml" "$ALWAYS go:agent go:flag-service contract yaml-dupkeys"
 expect "services/flag-service/main.go" "$ALWAYS go:flag-service contract"
-expect "docs/specs/flags.md" "$ALWAYS go:flag-service"
+expect "docs/specs/flags.md" "$ALWAYS go:flag-service contract"
 # flagd files: lib, agent_tests, flag_service_tests, telemetry, flagd_contract
 expect "services/flagd/game.json" "$ALWAYS py:lib go:agent go:flag-service contract contract-flagd"
 expect "services/game_coordinator/servicer.py" "$ALWAYS py:game_coordinator contract contract-flagd"
-expect "Makefile" "$ALWAYS contract-flagd"
+expect "Makefile" "$ALWAYS contract contract-flagd"
 expect ".github/workflows/ci.yml" "$ALWAYS contract-flagd yaml-dupkeys"
 expect "tests/contract/test_x.py" "$ALWAYS contract contract-flagd"
 expect "scripts/ci/safe-merge.sh" "$ALWAYS contract"
@@ -62,7 +62,10 @@ expect "services/rust-hid/src/main.rs" "$ALWAYS rust-hid contract"
 expect "services/grafana/dashboards/game.json" "$ALWAYS contract grafana-json"
 expect "services/otel-collector/config.yaml" "$ALWAYS contract yaml-dupkeys"
 expect "docs/specs/telemetry.md" "$ALWAYS contract"
-expect "docs/specs/game.md" "$ALWAYS"
+# every docs/specs file feeds `make specs-check` (generated tables, notes sidecars)
+expect "docs/specs/game.md" "$ALWAYS contract"
+expect "docs/specs/notes/grpc-rpcs.yaml" "$ALWAYS contract yaml-dupkeys"
+expect "docs/README.md" "$ALWAYS"
 expect "docker-compose.yml" "$ALWAYS contract contract-flagd compose yaml-dupkeys"
 expect "docker-compose.lite.yml" "$ALWAYS compose yaml-dupkeys"
 

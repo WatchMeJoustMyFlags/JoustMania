@@ -281,6 +281,7 @@ All pull requests must pass CI checks before merging:
 5. **Docker Builds** - All services must build successfully
 6. **Package Validation** - All workspace packages must install correctly
 7. **Spec Gate** - Spec lint over `docs/` and the spec-touched check (see [CI spec gate](#ci-spec-gate))
+8. **Generated specs** - `docs/specs/generated/` (metric catalog, RPC tables, flag counts, `ci/` flag diffs) must match the code: run `make specs` and commit (checked by `make specs-check` in the Telemetry Contract job). After a rebase that conflicts in a generated file, take either side and run `make specs`
 
 ### Running Checks Locally
 

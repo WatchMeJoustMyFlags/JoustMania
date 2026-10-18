@@ -28,7 +28,7 @@ from __future__ import annotations
 import ast
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -375,8 +375,8 @@ def _uses(
     return out
 
 
-def python_metrics(root: Path = REPO_ROOT) -> dict[str, PyMetric]:
-    """All Python metric definitions keyed by metric name, with recording sites."""
+def recorded_python_metric_definitions(root: Path = REPO_ROOT) -> list[PyMetric]:
+    """Every Python metric definition (same-named ones NOT merged), with its recording sites."""
     defs = _python_metric_definitions(root)
     defining = {d.module for d in defs}
     vars_by_module: dict[str, set[str]] = {}
@@ -442,12 +442,18 @@ def python_metrics(root: Path = REPO_ROOT) -> dict[str, PyMetric]:
         for var, where in helper_sites[key]:
             sites.setdefault((key[0], var), []).append(where)
 
-    out: dict[str, PyMetric] = {}
     for d in defs:
         d.recorded_at = list(sites.get((d.module, d.var), []))
+    return defs
+
+
+def python_metrics(root: Path = REPO_ROOT) -> dict[str, PyMetric]:
+    """All Python metric definitions keyed by metric name, with recording sites."""
+    out: dict[str, PyMetric] = {}
+    for d in recorded_python_metric_definitions(root):
         prev = out.get(d.name)
         if prev is None:
-            out[d.name] = d
+            out[d.name] = replace(d, recorded_at=list(d.recorded_at))
         else:  # same name defined by several services (process_*): merge the evidence
             prev.recorded_at += d.recorded_at
             prev.labels = tuple(dict.fromkeys(prev.labels + d.labels))
@@ -737,45 +743,8 @@ def spa_queries() -> list[tuple[str, str, str]]:
 
 
 # --------------------------------------------------------------------------- #
-# docs/specs/telemetry.md §6 prose counts (#1456)
+# Consumers of the Python metrics: the generated §6.2 catalog (#1456, #1280)
 # --------------------------------------------------------------------------- #
-TELEMETRY_SPEC = REPO_ROOT / "docs" / "specs" / "telemetry.md"
-
-# The §6 sentences whose numbers are checked against the code, as templates:
-# the contract test parses the numbers with the template (any line wrapping)
-# and, on a mismatch, prints the template filled with the correct values.
-SPEC_COUNT_TEMPLATES: dict[str, str] = {
-    "names_and_definitions": "**{names} unique Python metric names** ({definitions} definitions:",
-    "no_consumer": "{no_consumer} of the {names} Python metric names have no consumer",
-    "never_recorded": "{never_recorded} names are defined but never recorded by any service",
-}
-_PLACEHOLDER_RE = re.compile(r"\\\{(\w+)\\\}")
-
-
-def _template_pattern(template: str) -> re.Pattern[str]:
-    """``template`` as a regex: each ``{field}`` captures a number, a space matches any whitespace."""
-    escaped = re.escape(template)
-    escaped = _PLACEHOLDER_RE.sub(lambda m: f"(?P<{m.group(1)}>\\d+)", escaped)
-    return re.compile(escaped.replace(r"\ ", r"\s+"))
-
-
-def python_metric_definition_count(root: Path = REPO_ROOT) -> int:
-    """Metric definitions before merging same-named ones (``process_*`` per service, ...)."""
-    return len(_python_metric_definitions(root))
-
-
-def spec_section(text: str, heading: str) -> str:
-    """The body of the ``### heading`` / ``## heading`` section, up to the next heading."""
-    start = text.find(heading)
-    assert start >= 0, (
-        f"docs/specs/telemetry.md has no heading {heading!r}; the telemetry contract test "
-        "reads it, so rename the heading in tests/contract/telemetry_inventory.py too"
-    )
-    rest = text[start + len(heading) :]
-    end = re.search(r"^#{2,3} ", rest, re.M)
-    return rest[: end.start()] if end else rest
-
-
 # The §6.2 Consumers vocabulary: which consumer scan each cell token stands for.
 CONSUMER_KINDS = ("agent", "dashboard", "grafana", "scripts", "tools")
 
@@ -818,35 +787,3 @@ def python_metric_consumers(names: set[str]) -> dict[str, set[str]]:
         "tools": _literal_metric_uses(REPO_ROOT / "tools", names),
     }
     return {n: {kind for kind, found in scans.items() if n in found} for n in names}
-
-
-@dataclass
-class SpecCatalogRow:
-    name: str
-    emitted: str
-    consumers: str
-
-
-def spec_metric_catalog(text: str) -> list[SpecCatalogRow]:
-    """The §6.2 Python metric catalog rows (Metric | Type | Labels | Defined in | Emitted | Consumers)."""
-    rows = []
-    for line in spec_section(text, "### 6.2 Python metric catalog").splitlines():
-        if not line.startswith("| `"):
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        rows.append(SpecCatalogRow(cells[0].strip("`"), cells[4], cells[-1]))
-    return rows
-
-
-def spec_consumer_kinds(cell: str) -> set[str]:
-    """A §6.2 Consumers cell (``agent, grafana`` or ``(none)``) as a set of kinds."""
-    return set() if cell == "(none)" else {c.strip() for c in cell.split(",")}
-
-
-def spec_counts(text: str) -> dict[str, dict[str, int] | None]:
-    """The numbers in each ``SPEC_COUNT_TEMPLATES`` sentence, by field (None when it is missing)."""
-    out: dict[str, dict[str, int] | None] = {}
-    for key, template in SPEC_COUNT_TEMPLATES.items():
-        m = _template_pattern(template).search(text)
-        out[key] = {k: int(v) for k, v in m.groupdict().items()} if m else None
-    return out

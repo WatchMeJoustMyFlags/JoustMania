@@ -75,6 +75,7 @@ The brief gives you the issue, scope and decisions. Everything else is here: do 
 | Spec lint | `TBD:` is a weak word: write `TBD-A<n>`. REQ_STATUS_DRIFT: an FR can't sit below its UC's status. An Obsolete FR stays linked from its UC (only rejected/deferred count as inactive) |
 | Flags | Read flags at use time, not init; safety gates fail CLOSED; flag change = `docs/specs/flags.md` row |
 | Rollout | `.env` pins a release `IMAGE_TAG`: the Pi keeps running the release until the next one ships. Say so in the PR when behaviour on the Pi matters |
+| Generated specs | `docs/specs/generated/*.md` come from the code (`make specs`); never hand-edit them, put notes in `docs/specs/notes/*.yaml`. After a rebase that conflicts in a generated spec file, take either side and run `make specs`. A new metric, RPC or flag-file change: run `make specs` before `make pr-gates` (`make specs-check` gates CI) |
 | YAML | Compose / collector edits: `make pr-gates` runs `docker compose config -q` and a duplicate-key check |
 
 ## Fixer mode (review findings on an existing PR)
