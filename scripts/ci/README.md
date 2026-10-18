@@ -76,6 +76,32 @@ IMAGE_PREFIX=ghcr.io/watchmejoustmyflags/joustmania IMAGE_TAG=latest \
   bash scripts/ci/check-image-freshness.sh
 ```
 
+### `check-collector-config.sh` (#1487)
+
+Fast-path collector guard. Runs the pulled otel-collector image's
+`validate --config` against the checked-out `services/otel-collector/config.yaml`.
+On a mismatch (exit 1) or a failed pull (exit 2) the integration job builds the
+collector at HEAD under the same ref; `docker-compose.dev.yml` gives the
+collector `pull_policy: missing`, so the suite's `compose pull` keeps that build.
+
+```bash
+bash scripts/ci/check-collector-config.sh ghcr.io/<owner>/<repo>/otel-collector:latest
+```
+
+### `check-retag-source.sh` (#1487)
+
+Retag guard for `retag-skipped`. Finds the last commit touching the image's
+sources (the same globs as its `changes` filter in `ci.yml`) and refuses
+(exit 1) when `:main` was built before it: by the build jobs'
+`org.opencontainers.image.revision` label, or by the image creation time for
+images built before the label. Exit 2 = `:main` missing. Needs full history.
+Test: `scripts/tests/test-check-retag-source.sh`.
+
+```bash
+IMAGE_PREFIX=ghcr.io/<owner>/<repo> bash scripts/ci/check-retag-source.sh otel-collector
+bash scripts/ci/check-retag-source.sh --paths menu-service   # print the source globs
+```
+
 ## Makefile Targets
 
 All CI operations are available as Make targets:

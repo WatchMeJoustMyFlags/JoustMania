@@ -32,7 +32,8 @@ concurrency:
   # PRs group by number (new pushes cancel stale runs); pushes group by SHA so
   # main runs never cancel each other mid-image-push. Label events other than
   # `ci-full` run nothing (see the `changes` job) and get a group of their own
-  # (#1263), so adding e.g. `no-spec-change` never cancels the real run.
+  # (#1263), so adding e.g. `no-spec-change` never cancels the real run. Their
+  # skipped final job is renamed so it never posts a "CI Complete" (#1497).
   group: ci-${{ github.event.pull_request.number || github.sha }}${{ ((github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci-full') && format('-lbl-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -71,6 +72,8 @@ jobs:
       integration_deps: ${{ steps.f.outputs.integration_deps }}
       telemetry: ${{ steps.f.outputs.telemetry }}
       flagd_contract: ${{ steps.f.outputs.flagd_contract }}
+      dashboard_tests: ${{ steps.f.outputs.dashboard_tests }}
+      connect_proxy_tests: ${{ steps.f.outputs.connect_proxy_tests }}
       non_docs: ${{ steps.nondocs.outputs.non_docs }}
       # force_full: ALL image builds + checks (workflow_dispatch / ci-full label)
       # run_all_checks: all test/lint jobs, but builds stay path-filtered (main push)
@@ -183,6 +186,18 @@ jobs:
               - 'docker-compose.yml'
               # make test-contract-flagd (deps pins) and this job
               - 'Makefile'
+              - '.github/workflows/ci.yml'
+            # #1491: dashboard tsc + vitest and connect-proxy vet + test, run
+            # without waiting for integration-test (the image builds that also
+            # compile them are gated on it). The dashboard's src/gen is
+            # hand-written from proto/, so a proto change runs it too.
+            dashboard_tests:
+              - 'services/dashboard/**'
+              - 'proto/**'
+              - '.github/workflows/ci.yml'
+            connect_proxy_tests:
+              - 'services/connect-proxy/**'
+              - 'proto/**'
               - '.github/workflows/ci.yml'
             proto_pkg:
               - 'proto/**'
@@ -765,6 +780,64 @@ jobs:
       - name: Validate protos and packages
         run: make ci-validate-protos ci-validate-packages
 
+  # #1491: dashboard type check + unit tests. Before this, vitest never ran in
+  # CI and tsc only ran inside the dashboard image build, which waits for
+  # integration-test: a red or skipped integration run left TS changes with no
+  # evidence at all. Node 24 matches the image's builder stage.
+  dashboard-tests:
+    name: Dashboard Tests
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.dashboard_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/dashboard
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: services/dashboard/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npx vitest run
+
+  # #1491: connect-proxy `buf generate` + `go vet` + `go test`. They live in the
+  # Dockerfile's builder stage (the generated proto packages exist only there),
+  # so build that stage alone: no runtime image, no push, no integration-test
+  # dependency. A vet or test failure fails the build.
+  connect-proxy-tests:
+    name: Connect Proxy Tests
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.connect_proxy_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: buf generate, go vet, go test (builder stage)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: services/connect-proxy/Dockerfile
+          target: builder
+          platforms: linux/amd64
+          push: false
+          # Read-only: the publish job (docker-build-extra) owns this scope.
+          cache-from: type=gha,scope=connect-proxy
+
   integration-test:
     name: Integration Tests
     runs-on: ubuntu-latest
@@ -808,6 +881,55 @@ jobs:
         env:
           IMAGE_TAG: latest
         run: bash scripts/ci/check-image-freshness.sh
+
+      # #1487: the fast path mounts the checked-out collector config into the
+      # pulled collector image. When that image predates a config change (a
+      # cancelled main run left otel-collector:main on a June build while
+      # #1472 moved the config onto span_metrics), the collector exits 1 and
+      # every test errors in setup. Validate the config with the pulled image;
+      # on a mismatch, build the collector from this checkout under the same
+      # ref. docker-compose.dev.yml gives the collector pull_policy "missing",
+      # so the suite's `compose pull` keeps that build. The build only runs on
+      # a mismatch (~7 min uncached; read-only GHA cache).
+      - name: Resolve collector image ref (fast path)
+        id: collector_image
+        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        env:
+          IMAGE_TAG: latest
+        run: |
+          ref="$(docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.ci.yml \
+            -f docker-compose.dev.yml config --format json | jq -r '.services."otel-collector".image')"
+          echo "Collector image ref: ${ref}"
+          [[ -n "$ref" && "$ref" != "null" ]] || { echo "::error::could not resolve otel-collector image ref"; exit 1; }
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          rc=0
+          bash scripts/ci/check-collector-config.sh "$ref" services/otel-collector/config.yaml || rc=$?
+          case "$rc" in
+            0) echo "build=false" >> "$GITHUB_OUTPUT" ;;
+            1 | 2)
+              echo "::warning::${ref} does not accept services/otel-collector/config.yaml; building the collector at HEAD for this run"
+              echo "build=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+
+      - name: Build otel-collector at HEAD (fast path, config mismatch)
+        if: steps.collector_image.outputs.build == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: images/otel-collector
+          file: images/otel-collector/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.collector_image.outputs.ref }}
+          # Read-only: the publish job (docker-build-extra) owns this scope.
+          cache-from: type=gha,scope=otel-collector
+
+      # A config that the HEAD build rejects too is a broken config, not a stale
+      # image: fail here with the collector's own error instead of 18 setup errors.
+      - name: Validate collector config against the HEAD build
+        if: steps.collector_image.outputs.build == 'true'
+        run: bash scripts/ci/check-collector-config.sh --no-pull "${{ steps.collector_image.outputs.ref }}" services/otel-collector/config.yaml
 
       # #1254: the Go agent has no dev mount, so on the fast path it would run the
       # published :latest, which can lag the code under test: a PR changing only
@@ -855,7 +977,7 @@ jobs:
       # once, never quarantines a test by name.
       - name: Run integration tests (fast - source only)
         if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
-        run: USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1" make test-integration
+        run: COLLECTOR_PULL_POLICY=missing USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1" make test-integration
 
       # Slow path: full build (Dockerfiles or deps changed)
       - name: Run integration tests (full build)
@@ -930,6 +1052,8 @@ jobs:
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
           build-args: |
             DEPS_FINGERPRINT=${{ steps.fingerprint.outputs.value }}
+          # #1487: retag-skipped reads this to refuse a :main older than its sources.
+          labels: org.opencontainers.image.revision=${{ github.sha }}
           # amd64 keeps the pre-existing scope name; arm64 gets its own.
           cache-from: type=gha,scope=${{ matrix.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
@@ -1055,6 +1179,8 @@ jobs:
           push: false
           # Non-PR: push by digest only; tags are applied by the merge job.
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_PREFIX, matrix.item.image_name) || '' }}
+          # #1487: retag-skipped reads this to refuse a :main older than its sources.
+          labels: org.opencontainers.image.revision=${{ github.sha }}
           # amd64 keeps the pre-existing scope name; arm64 gets its own.
           cache-from: type=gha,scope=${{ matrix.item.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
           cache-to: type=gha,mode=max,scope=${{ matrix.item.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
@@ -1149,12 +1275,19 @@ jobs:
       needs.docker-build-extra-merge.result != 'failure'
     timeout-minutes: 10
     permissions:
+      contents: read
       packages: write
     strategy:
       fail-fast: false
       matrix:
         image: ${{ fromJSON(needs.changes.outputs.retag_matrix) }}
     steps:
+      # Full history: the freshness check below finds the last commit that
+      # touched this image's sources and compares it with :main's build commit.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - name: Set image prefix
         run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
@@ -1167,6 +1300,19 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # #1487: refuse to copy a :main forward that was built BEFORE the last
+      # commit touching this image's sources (same globs as the `changes`
+      # filter). A cancelled main run (c14cb15e) left otel-collector:main on a
+      # June build, and the next push retagged that stale image as current.
+      # Fails the job (red main, CI Complete red) with the remedy; exit 2 means
+      # :main is missing, which the warning step below already handles.
+      - name: Check :main includes the image's last source change
+        id: fresh
+        run: |
+          rc=0
+          bash scripts/ci/check-retag-source.sh "${{ matrix.image }}" || rc=$?
+          [[ "$rc" == 0 || "$rc" == 2 ]] || exit "$rc"
 
       - name: Retag :main -> :sha
         id: retag
@@ -1189,11 +1335,25 @@ jobs:
   # that represents the entire CI pipeline's health.
   # Skipped jobs (path filter) keep this green; failures fail it.
   ci-complete:
-    name: CI Complete
+    # #1497: a label-only run (any label but `ci-full`) skips this job (see the
+    # `if` below), but a skipped job STILL posts a check run under its name,
+    # and GitHub counts a skipped required check as passing. On #1461 a
+    # `no-spec-change` label posted `CI Complete: SKIPPED` after the real run,
+    # so a red PR could become mergeable. An `if` cannot stop the check run
+    # (that is the bug) and Actions has no workflow-level `if`, so the name is
+    # what keeps it off the required check: only a run that really evaluates
+    # this job reports as "CI Complete". A label-only run posts its skipped
+    # check under a different name, and the head SHA's latest "CI Complete"
+    # stays the real run's result. Mirroring the real run's conclusion instead
+    # was rejected: it needs API polling, and races a real run that is still
+    # in progress.
+    name: ${{ (github.event.action == 'labeled' && github.event.label.name != 'ci-full') && 'Label event (no CI result)' || 'CI Complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs:
       - changes
+      - dashboard-tests
+      - connect-proxy-tests
       - lib-tests
       - service-checks
       - rust-checks
@@ -1232,8 +1392,10 @@ jobs:
     # which, under the repo's latest-status-wins ruleset (strict checks OFF),
     # would OVERWRITE a prior real `CI Complete: FAILURE` on that same SHA and
     # unblock a red merge with no re-run. Skipping ci-complete on those events
-    # means a label-only change posts NO status, so the SHA's prior real result
-    # stands. (Adding `ci-full` itself runs the full pipeline normally.)
+    # means the job does not succeed, but it still posts a SKIPPED check run,
+    # which is why the job `name` above differs on those events (#1497). The
+    # SHA's prior real result stands. (Adding `ci-full` itself runs the full
+    # pipeline normally, under the real name.)
     if: >-
       ${{ !cancelled() &&
       (github.event.action != 'labeled' || github.event.label.name == 'ci-full') }}
