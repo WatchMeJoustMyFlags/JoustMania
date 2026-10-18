@@ -389,14 +389,16 @@ Variant for the permissions story: with `remediation_allowed=off` the span says
 A dry run (`rollout_enabled` off) keeps no rollout state, so flipping it back
 on resumes without a restart.
 
-Reset after a real run (and restart the agent: the post-rollback cooldown and the
-last written stage live in memory, and the flag reset below does not clear them):
+Reset after a run (no agent restart: once the agent sees the rollout inactive, or
+sees a `current_controller_count` it did not write, it drops its last written stage;
+#1384). The post-rollback cooldown is kept, so after a reset that follows a
+rollback the next run's first expansion can wait up to the cooldown (about 30 s,
+`AGENT_ROLLOUT_COOLDOWN_SECONDS`):
 
 ```bash
 setflag rollout strategy off; setflag rollout target_backend python
 setflag rollout current_controller_count none; setflag rollout remediation_allowed off
 setflag agent rollout_enabled off
-docker compose --env-file .env --env-file .env.local restart agent
 ```
 
 The infra loop is not gated by the `enabled` kill switch, only by
@@ -503,8 +505,7 @@ agent's interventions need no reset: they belong to their game and the flag
 service drops them when the game ends (UC-053 BR-003). It is idempotent and does not care what a beat
 left behind, so it is also the recovery after an interrupted beat. It leaves
 `decision.jev.model` alone (`latest` or `pinned` is the presenter's choice).
-After beat I also run the rollout reset from section 4 (incl. the agent
-restart).
+After beat I also run the rollout reset from section 4.
 
 **Why `standard` and not the shipped `ambient`:** on the mock stack nothing in
 `ambient` is visible (a controller effect defaults to rumble, volume 0.7 is

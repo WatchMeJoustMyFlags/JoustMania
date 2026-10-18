@@ -49,6 +49,7 @@ type armKey struct{ exp, arm string }
 type value struct {
 	variant string
 	raw     json.RawMessage
+	writer  string
 }
 
 type flagState struct {
@@ -213,7 +214,7 @@ func (s *Service) Put(_ context.Context, set, key string, w flagservice.Write) (
 		if !ok {
 			return flagservice.Result{}, &flagservice.Error{Status: 422, Reason: "out_of_bounds"}
 		}
-		v = value{variant: w.Variant, raw: raw}
+		v = value{variant: w.Variant, raw: raw, writer: w.Writer}
 	} else {
 		raw, _ := json.Marshal(w.Value)
 		match := ""
@@ -227,7 +228,7 @@ func (s *Service) Put(_ context.Context, set, key string, w flagservice.Write) (
 			return flagservice.Result{}, &flagservice.Error{Status: 422, Reason: "out_of_bounds"}
 		}
 		s.counter++
-		v = value{variant: fmt.Sprintf("rfake_%d", s.counter), raw: raw}
+		v = value{variant: fmt.Sprintf("rfake_%d", s.counter), raw: raw, writer: w.Writer}
 	}
 	var before json.RawMessage
 	var restore func()
@@ -382,8 +383,11 @@ func (f *flagState) view(key string) flagservice.FlagView {
 	if len(scopes) > 0 {
 		v.Policy = &flagservice.Policy{Kind: "overlay", Scopes: scopes}
 	}
+	if f.stack != nil {
+		v.StackOverlay = &flagservice.ValueView{Variant: f.stack.variant, Value: f.stack.raw, Writer: f.stack.writer}
+	}
 	if f.real != nil {
-		v.RealOverlay = &flagservice.ValueView{Variant: f.real.variant, Value: f.real.raw}
+		v.RealOverlay = &flagservice.ValueView{Variant: f.real.variant, Value: f.real.raw, Writer: f.real.writer}
 	}
 	return v
 }
