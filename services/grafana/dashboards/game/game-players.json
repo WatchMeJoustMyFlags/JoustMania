@@ -1343,7 +1343,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Share of frames within 1.5x the target frame time since the loop started, per live game of the selected kind (game_loop_frame_consistency_percent, one series per game_id; instant query, so ended games drop out).",
+      "description": "Share of frames within 1.5x the target frame time since the loop started, per live game of the selected kind (game_loop_frame_consistency_percent, one series per game_id; instant query joined to game_active == 1, because the 5-minute lookback would otherwise keep an ended game's series for up to 5 minutes).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1400,7 +1400,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (game_id) (game_loop_frame_consistency_percent{game_kind=~\"$game_kind\"})",
+          "expr": "max by (game_id) (game_loop_frame_consistency_percent{game_kind=~\"$game_kind\"}) and on(game_id) max by(game_id)(game_active{game_kind=~\"$game_kind\"}) == 1",
           "refId": "A",
           "legendFormat": "{{game_id}}",
           "instant": true,
@@ -1415,7 +1415,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Latest frame-time standard deviation (ms) per live game of the selected kind (instant query, so ended games drop out).",
+      "description": "Latest frame-time standard deviation (ms) per live game of the selected kind (instant query joined to game_active == 1, because the 5-minute lookback would otherwise keep an ended game's series for up to 5 minutes).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1470,7 +1470,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (game_id) (game_loop_jitter_ms{game_kind=~\"$game_kind\"})",
+          "expr": "max by (game_id) (game_loop_jitter_ms{game_kind=~\"$game_kind\"}) and on(game_id) max by(game_id)(game_active{game_kind=~\"$game_kind\"}) == 1",
           "refId": "A",
           "legendFormat": "{{game_id}}",
           "instant": true,

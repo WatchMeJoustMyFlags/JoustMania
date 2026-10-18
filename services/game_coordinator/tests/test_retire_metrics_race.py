@@ -366,3 +366,54 @@ class TestLoopHealthGaugesPerGame:
 
         for gauge in LOOP_HEALTH_GAUGES:
             assert {dict(k)["game_id"] for k in gauge._values} == {"game_real"}, gauge.name
+
+
+class TestRetireGuards:
+    @pytest.mark.uc("UC-041", flow="main", steps=[7])
+    def test_second_retire_is_a_no_op(self, live_gauges, delayed_removal):
+        """A second retire writes no second zero and starts no second removal timer."""
+        session = _make_session()
+        with patch.object(game_session.threading, "Timer", autospec=True) as timer_cls:
+            session.clear_metrics()
+            assert timer_cls.call_count == 1
+            # A write between the two retires would show if the second re-zeroed.
+            metrics.active_game.labels(
+                game_kind=GAME_KIND_SHADOW, game_id=GAME_ID, experiment_id="exp_1", arm="control"
+            ).set(5)
+            session.clear_metrics()
+            assert timer_cls.call_count == 1
+        assert _value_for(metrics.active_game, GAME_ID) == 5
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[7])
+    @pytest.mark.asyncio
+    async def test_retire_during_register_keeps_the_zero(self, live_gauges, delayed_removal):
+        """StartGame's game_active=1 / active_players writes follow an awaited
+        flag-service register; a retire in that window must keep its 0."""
+        from services.game_coordinator.servicer import GameCoordinatorServicer
+
+        servicer = GameCoordinatorServicer()
+
+        class RetiringRegister:
+            async def register(self, record):
+                servicer._retire_session(record.game_id)
+                return True
+
+            def end(self, game_id):
+                pass
+
+            async def stop(self):
+                pass
+
+        servicer.flag_service = RetiringRegister()
+        config = game_coordinator_pb2.StartGameConfig(
+            game_name="FFA",
+            players=[game_coordinator_pb2.Player(serial=s) for s in ("MOCK0001", "MOCK0002")],
+            origin=game_coordinator_pb2.GAME_ORIGIN_MENU,
+        )
+        span = create_autospec(trace.Span, instance=True)
+        with patch.object(GameSession, "start_thread", lambda _self: None):
+            ok, game_id = await servicer._start_game_from_config(config, span)
+
+        assert ok, game_id
+        assert _value_for(metrics.active_game, game_id) == 0
+        assert _value_for(metrics.active_players, game_id) == 0
