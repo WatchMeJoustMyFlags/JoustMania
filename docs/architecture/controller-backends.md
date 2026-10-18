@@ -158,12 +158,18 @@ This creates a `MultiplexerBackend` with both a `MockAdapter` and a `RustService
 rust-hid is the default Bluetooth backend everywhere (UC-002 BR-003). The Python backend is slower and gets no new work; it stays selectable only until it is removed after the talk, together with the infra rollout loop (`UnstableAdapter`, the rollout router, `rollout.json`, agent remediation).
 
 - The `python-hid` compose service carries the `python-hid` profile, so it starts only when you opt in. The controller manager no longer waits for it (`depends_on` with `required: false`).
-- To run a variant that names `python`, start the stack with the profile **and** select the variant:
+- To read real controllers through python-hid you need all three (#1402 S1):
+  1. the `python-hid` compose profile,
+  2. `backend=python_rust` (or another variant naming `python`), so the python adapter is loaded, **and**
+  3. `bluetooth_backend=python`, so serials (and USB pairing, UC-001 BR-003) are routed to it. Its default `rust` keeps every controller on rust-hid even with the python adapter loaded.
 
   ```bash
-  COMPOSE_PROFILES=python-hid docker compose up -d     # or: docker compose --profile python-hid up -d
-  # then set controller.json "backend" defaultVariant to python / mock_python / python_rust, and restart controller-manager
+  ./scripts/setup/joustmania-compose.sh --profile python-hid up -d   # or COMPOSE_PROFILES=python-hid
+  # controller.json: "backend" defaultVariant -> python_rust, then scripts/flags.sh restart and restart controller-manager
+  scripts/flags.sh set controller bluetooth_backend python          # stack overlay (or the baseline defaultVariant)
   ```
+
+  On the Pi, set the profile in a systemd drop-in (`sudo systemctl edit joustmania`, `[Service]` `Environment=COMPOSE_PROFILES=python-hid`), not in `.env`: `.env` is tracked, and editing it breaks the start script's `git pull --ff-only` (#1402 S2). When the profile is off, `scripts/setup/joustmania-start.sh` removes a stale `joustmania-python-hid` container left from an older install (#1402 I1).
 
 - `python_rust` and `mock_python_rust` stay as opt-in variants: they are the only way to run both HID services side by side, which the remaining rollout loop (UC-050 to UC-052) needs until both are removed after the talk. They are no longer a default anywhere. The backend-comparison dashboard was deleted in #1427.
 - `bluetooth_backend=unstable` routes through the `UnstableAdapter`, which wraps the python adapter, so it also needs a `python` backend variant.
@@ -198,7 +204,7 @@ Both stacks start `rust-hid` (privileged, host PID namespace, `/dev:/dev:rslave`
 | rust-hid | always | always (#1318) |
 | python-hid | `--profile python-hid` | not shipped |
 | controller-manager → rust-hid | `RUST_HID_HOST=rust-hid` | `RUST_HID_HOST=rust-hid` |
-| pairing-daemon → rust-hid | host network, `localhost:50058` (published port) | bridge network, `rust-hid:50058` |
+| pairing-daemon → rust-hid | host network, `127.0.0.1:50058` (published on loopback only, #1319) | bridge network, `rust-hid:50058` |
 
 ### Pairing daemon backend (UC-001 BR-003, #1320)
 

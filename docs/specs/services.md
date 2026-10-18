@@ -48,7 +48,7 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 |---|---|---|---|---|---|
 | controller-manager | Python | 50052 gRPC; 50062 mock control API (mock adapter only) | 50052, 50062 via `docker-compose.override.yml` | Discover controllers, route each to one HID adapter, stream buttons and motion, apply LEDs / rumble / effects, names, rollout routing, chaos | `services/controller_manager/` |
 | python-hid | Python | 50059 gRPC | no | HID access via hidapi: ControllerIOService only. Opt-in: starts only under the `python-hid` compose profile (UC-002 BR-003, #1371) | `services/python_hid/` |
-| rust-hid | Rust | 50058 gRPC | 50058 (for the host-networked pairing daemon) | HID access: PairingService + ControllerIOService. The default Bluetooth backend; in the full and the lite stack (UC-002 BR-003) | `services/rust-hid/` |
+| rust-hid | Rust | 50058 gRPC | `127.0.0.1:50058` (for the host-networked pairing daemon, #1319) | HID access: PairingService + ControllerIOService. The default Bluetooth backend; in the full and the lite stack (UC-002 BR-003) | `services/rust-hid/` |
 | pairing-daemon | Python | 8002 `/healthz`, `POST /controllers/{address}/unpair` (host network, bound to `CONTROL_BIND`) | host network | USB pairing loop, Bluetooth monitor (RSSI metrics), unpair a controller (UC-005) | `services/pairing_daemon/` |
 | game-coordinator | Python | 50053 gRPC (metrics are pushed over OTLP) | 50053 via override | Game sessions (primary + shadow), game modes, death detection, events, interventions consumer | `services/game_coordinator/` |
 | menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode; writes admin settings for `game` / `user` / `agent.interventions_allowed` to the flag service as persisted admin values | `services/menu/` |
@@ -57,16 +57,16 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*`, `/chaos/*` write the `controller` set through the flag service | `services/connect-proxy/` |
 | dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005); mode selector from the menu's `ListGameModes` (UC-011 BR-002) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
-| flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
+| flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | `127.0.0.1:8015` (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
 | flag-service | Go | 50064 gRPC sync (flagd only), 8070 HTTP API | 8070 via override; `/flags/` through envoy | Runtime flag state in memory over the read-only baseline files; the only writer path for runtime flags (§7) | `services/flag-service/` |
-| otel-collector | custom contrib build | 4317 / 4318 OTLP | 4317 | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Loki, agent (the :8889 Prometheus exporter was removed in #1449) | `services/otel-collector/config.yaml` |
+| otel-collector | custom contrib build | 4317 / 4318 OTLP | `127.0.0.1:4317` | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Loki, agent (the :8889 Prometheus exporter was removed in #1449) | `services/otel-collector/config.yaml` |
 | jaeger | 2.19.0 | 16686 UI, 4317 / 4318 OTLP | no | Trace store (badger, bounded TTL) | `services/jaeger/config.yaml` |
 | victoria-metrics | v1.144.0 | 8428 | no | The only metric store (remote write, 7 d); serves the Prometheus query API to Grafana, the dashboard and the tools. The Prometheus container was removed in #1449 | `docker-compose.yml:516-544` |
 | grafana | 13.0.2 | 3000 | no | Dashboards | `services/grafana/` |
 | loki | 3.7.2 | 3100 | no | Logs | `services/loki/config.yaml` |
 | agent-game-coordinator | Python (game-coordinator image) | 50053 gRPC (`expose` only) | no | **Test-only** (profile `agent`, #1163): a dedicated game coordinator for the agent's experiment cohort-loop soak, so the suite's per-test `coordinator_idle` quiesce never wipes the agent's shadow games. Service name `agent-game-coordinator-service`; the overlay points the agent at it with `GAME_COORDINATOR_ADDR=agent-game-coordinator:50053`; shares flagd and the controller manager | `docker-compose.agent-coordinator.yml` (layered on `docker-compose.dry-run.yml` by `tests/integration/test_experiment_cohort_loop.py`) |
 
-Compose variants: `docker-compose.yml` (full), `.override.yml` (auto-loaded dev ports), `.lite.yml` (no
+Compose variants: `docker-compose.yml` (full), `.override.yml` (dev ports, auto-loaded by a bare `docker compose`; the Pi start path passes `-f docker-compose.yml` so it never loads it, #1319), `.lite.yml` (no
 observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318), `.ci.yml` (CI baseline dir for the flag service, profiles), `.ci-rust.yml`, `.dev.yml` (source mounts), `.dry-run.yml`
 (demo / experiment seed), `.decide-e2e.yml` (fake OpenAI server), `.agent-coordinator.yml`.
 
