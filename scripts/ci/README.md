@@ -12,6 +12,17 @@ operations too complex to express cleanly in Make syntax.
 
 ## Scripts
 
+### `local-gates.sh` (`make pr-gates`)
+
+Local PR gates selected from the changed files; see the script header and
+docs/CONTRIBUTING.md "PR gates and merging". Test: `scripts/tests/test-local-gates.sh`.
+`yaml-dupkeys.py` is its YAML duplicate-key check.
+
+### `safe-merge.sh`
+
+Gentle CI wait + exact-head squash merge + post-merge issue close/comment, or
+`--wait-ci` to report only. Usage in the script header. Test: `scripts/tests/test-safe-merge.sh`.
+
 ### `validate-protos.sh`
 
 Validate protobuf file generation and bytecode compilation.

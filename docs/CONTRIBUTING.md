@@ -320,6 +320,33 @@ make ci-lint-dockerfiles
 make ci-validate-protos
 ```
 
+### PR gates and merging (`make pr-gates`, `safe-merge.sh`)
+
+`make pr-gates` (`scripts/ci/local-gates.sh`) runs the local gates for what the branch changed (files vs
+`origin/main`, plus uncommitted and untracked files). It always runs `make lint` and the spec lint gate, then
+selects from the diff: per-service pytest (lib or proto changes fan out to every Python service, as in CI),
+`go vet` + `go test -race` for the agent and flag service, the connect-proxy Docker builder stage (the only
+place its generated code exists), dashboard `tsc --noEmit` + vitest (Node 24 from `~/.nvm`), the telemetry
+contract, the flagd contract (flag files or the flag-service registry), Grafana dashboard JSON, compose
+`config -q` on the main file combinations and a YAML duplicate-key check.
+
+```bash
+make pr-gates                           # auto-detect
+make pr-gates SERVICE=menu,agent        # explicit gate keys (see the script header)
+scripts/ci/local-gates.sh --plan        # list the selected gates, run nothing
+```
+
+It prints one `PASS`/`FAIL`/`SKIP` line per gate with its duration, then the output of failing gates only,
+and exits non-zero on any failure. CI stays the source of truth; the mapping is narrower than CI's filters.
+
+`scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX>` waits for CI (polling every 75 s with backoff, never
+`gh run watch`), ignores SonarCloud and checks of cancelled runs superseded by a newer run on the same head,
+and squash-merges only at the expected head (`--match-head-commit`). `--close N,N --comment-file F` and
+`--note-issue N --note-file F` act only once the PR reads `MERGED` (`{MERGE}` becomes the short merge SHA).
+`--wait-ci` waits and reports without merging; on red it names known infrastructure failures (stale
+collector image, fast-path stale prebuilt images, `blob not found`) with "add `ci-full`" or "rerun" advice.
+`--rerun-failed-once` reruns failed jobs once before giving up. Both scripts have tests in `scripts/tests/`.
+
 **In Dev Container:**
 
 - Open Command Palette (Ctrl+Shift+P)
