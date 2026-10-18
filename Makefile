@@ -25,6 +25,7 @@ help:
 	@echo "  make lint            - Run linting (ruff)"
 	@echo "  make format          - Format code (ruff)"
 	@echo "  make check           - Run all checks (lint + format)"
+	@echo "  make pr-gates        - Local PR gates for what changed (SERVICE=menu,agent to pick)"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test            - Run all tests (unit + integration)"
@@ -157,6 +158,13 @@ format-check:
 .PHONY: check
 check: lint format-check
 	@echo "✓ All checks passed"
+
+# Local PR gates (scripts/ci/local-gates.sh): lint + spec lint always, then the
+# unit/contract/build gates selected from the files changed vs origin/main.
+# SERVICE=menu,agent picks gates explicitly; BASE=<ref> changes the diff base.
+.PHONY: pr-gates
+pr-gates:
+	@SERVICE="$(SERVICE)" BASE="$(or $(BASE),origin/main)" scripts/ci/local-gates.sh
 
 # ============================================================================
 # Protobuf Generation

@@ -144,6 +144,8 @@ jobs:
               - 'scripts/*.sh'
               - 'scripts/*.py'
               - 'scripts/setup/**'
+              # safe-merge.sh / local-gates.sh (scripts/tests covers them)
+              - 'scripts/ci/**'
               - 'setup.sh'
               - 'scripts/talk-baseline.json'
               # the script tests' fake flag service enforces the real registry
