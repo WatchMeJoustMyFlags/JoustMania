@@ -311,7 +311,7 @@ class TestSwapperMotionProcessing:
         assert game.players[serial].alive is True
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-030", flow="A2")
+    @pytest.mark.uc("UC-024", flow="main", steps=[2])
     async def test_lethal_motion_swaps_team(self, game):
         """Lethal motion should trigger team swap (Swapper's death handler)."""
         game, mock_cm = game
@@ -442,7 +442,7 @@ class TestZombieMotionProcessing:
         assert player.alive is False
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-030", flow="A3")
+    @pytest.mark.uc("UC-023", flow="main", steps=[4], br=["BR-002"])
     async def test_zombie_survives_human_lethal_accel(self, game):
         """Zombie should survive acceleration that kills a human (threshold differentiation)."""
         game, mock_cm = game
@@ -527,7 +527,7 @@ class TestWerewolfMotionProcessing:
         assert game.players[serial].alive is False
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-030", flow="A3")
+    @pytest.mark.uc("UC-022", flow="A1", steps=[3])
     async def test_werewolf_survives_human_lethal_accel(self, game):
         """Werewolf should survive acceleration that kills a human (threshold differentiation)."""
         game, mock_cm = game

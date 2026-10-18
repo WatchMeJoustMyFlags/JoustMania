@@ -111,9 +111,9 @@ async def test_dead_player_killed_again_records_nothing():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-030", flow="A2")
+@pytest.mark.uc("UC-030", flow="main", steps=[9])
 async def test_agent_elimination_carries_reason():
-    """UC-030 A2 / UC-040 eliminate_player: the one event carries death.reason=agent_intervention."""
+    """UC-030 step 9 / UC-040 eliminate_player: the one event carries death.reason=agent_intervention."""
     game, spans = await _game_with_spans(Games.JoustFFA)
     serial = next(iter(game.players))
     await game._kill_player(serial, accel_mag=0.0, reason="agent_intervention")
@@ -122,9 +122,9 @@ async def test_agent_elimination_carries_reason():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-030", flow="A2")
+@pytest.mark.uc("UC-030", flow="main", steps=[9])
 async def test_teams_extras_on_the_single_event():
-    """UC-030 A2: Teams adds team / team_eliminated to the base event."""
+    """UC-030 step 9: Teams adds team / team_eliminated to the base event."""
     game, spans = await _game_with_spans(Games.JoustTeams, num_players=4)
     by_team: dict[int, list[str]] = {}
     for serial, player in game.players.items():
@@ -143,9 +143,9 @@ async def test_teams_extras_on_the_single_event():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-030", flow="A2")
+@pytest.mark.uc("UC-030", flow="main", steps=[9])
 async def test_traitor_extras_on_the_single_event():
-    """UC-030 A2: Traitor adds is_traitor / visible_team / secret_team to the base event."""
+    """UC-030 step 9: Traitor adds is_traitor / visible_team / secret_team to the base event."""
     game, spans = await _game_with_spans(Games.Traitor, num_players=4)
     serial = next(iter(game.players))
     player = game.players[serial]
@@ -158,9 +158,9 @@ async def test_traitor_extras_on_the_single_event():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-030", flow="A2")
+@pytest.mark.uc("UC-030", flow="main", steps=[9])
 async def test_werewolf_extras_on_the_single_event():
-    """UC-030 A2: Werewolf adds is_werewolf / was_revealed to the base event."""
+    """UC-030 step 9: Werewolf adds is_werewolf / was_revealed to the base event."""
     game, spans = await _game_with_spans(Games.Werewolf, num_players=4)
     serial = next(iter(game.players))
     await game._kill_player(serial, accel_mag=3.0)
@@ -170,9 +170,9 @@ async def test_werewolf_extras_on_the_single_event():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-030", flow="A2")
+@pytest.mark.uc("UC-030", flow="main", steps=[9])
 async def test_nonstop_extras_count_this_death_and_span_stays_open():
-    """UC-030 A2: NonStop's event counts this death; the span stays open for the respawn."""
+    """UC-030 step 9: NonStop's event counts this death; the span stays open for the respawn."""
     game, spans = await _game_with_spans(Games.NonStop, num_players=2)
     serial = next(iter(game.players))
     await game._kill_player(serial, accel_mag=3.0)
