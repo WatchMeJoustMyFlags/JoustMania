@@ -221,9 +221,6 @@ class RuntimeConfigManager:
                     self.config.update_frequency_hz = new_hz
                     metrics.config_changes_total.labels(parameter="update_frequency_hz").inc()
 
-                # Track flag evaluation
-                metrics.flag_evaluations_total.labels(flag_key="game_loop.update_frequency_hz").inc()
-
                 # === Controller domain flags ===
 
                 # Poll drop threshold (per-frame drops below this are normal noise)
@@ -236,8 +233,6 @@ class RuntimeConfigManager:
                         logger.info(f"Config updated: poll_drop_threshold {old_threshold} -> {new_threshold}")
                         self.config.poll_drop_threshold = new_threshold
                         metrics.config_changes_total.labels(parameter="poll_drop_threshold").inc()
-
-                    metrics.flag_evaluations_total.labels(flag_key="poll_drop_threshold").inc()
 
                 # Update current config gauges
                 metrics.current_update_frequency_hz.set(self.config.update_frequency_hz)
@@ -255,8 +250,6 @@ class RuntimeConfigManager:
                         self.config.countdown_phase_duration_ms = new_phase
                         metrics.config_changes_total.labels(parameter="countdown_phase_duration_ms").inc()
 
-                    metrics.flag_evaluations_total.labels(flag_key="countdown_phase_duration_ms").inc()
-
                     # Winner rainbow duration
                     old_rainbow = self.config.winner_rainbow_duration_ms
                     new_rainbow = self.game_client.get_integer_value(
@@ -266,8 +259,6 @@ class RuntimeConfigManager:
                         logger.info(f"Config updated: winner_rainbow_duration_ms {old_rainbow} -> {new_rainbow} ms")
                         self.config.winner_rainbow_duration_ms = new_rainbow
                         metrics.config_changes_total.labels(parameter="winner_rainbow_duration_ms").inc()
-
-                    metrics.flag_evaluations_total.labels(flag_key="winner_rainbow_duration_ms").inc()
 
                 # === Agent domain flags (#766 F4: perception.*) ===
                 #
@@ -305,7 +296,6 @@ class RuntimeConfigManager:
         for flag_key, attr in zone_specs:
             current = getattr(analytics, attr)
             value = self.agent_client.get_float_value(flag_key, current, EvaluationContext())
-            metrics.flag_evaluations_total.labels(flag_key=flag_key).inc()
             new_zones[attr] = value if self._valid_positive(value) else current
 
         # Only apply zone boundaries if they form a strictly increasing ladder;
@@ -331,7 +321,6 @@ class RuntimeConfigManager:
         for flag_key, attr in playstyle_specs:
             current = getattr(analytics, attr)
             value = self.agent_client.get_float_value(flag_key, current, EvaluationContext())
-            metrics.flag_evaluations_total.labels(flag_key=flag_key).inc()
             if not self._valid_percentage(value):
                 value = current
             if value != current:

@@ -1,12 +1,50 @@
 apiVersion: 1
 
+# One provider per Grafana folder (#1427). Each folder is a subdirectory of
+# services/grafana/dashboards (mounted at /var/lib/grafana/dashboards). Links
+# and the dashboard SPA's embed address dashboards by uid, so moving a
+# dashboard between folders never breaks a link.
 providers:
-  - name: 'JoustMania Dashboards'
+  - name: 'JoustMania Game'
     orgId: 1
-    folder: ''
+    folder: 'Game'
+    folderUid: 'joustmania-game'
     type: file
     disableDeletion: false
     updateIntervalSeconds: 10
     allowUiUpdates: true
     options:
-      path: /var/lib/grafana/dashboards
+      path: /var/lib/grafana/dashboards/game
+
+  - name: 'JoustMania Agent'
+    orgId: 1
+    folder: 'Agent'
+    folderUid: 'joustmania-agent'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/agent
+
+  - name: 'JoustMania Platform'
+    orgId: 1
+    folder: 'Platform'
+    folderUid: 'joustmania-platform'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/platform
+
+  - name: 'JoustMania Talk'
+    orgId: 1
+    folder: 'Talk'
+    folderUid: 'joustmania-talk'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/talk

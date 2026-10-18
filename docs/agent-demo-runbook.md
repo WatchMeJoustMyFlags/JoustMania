@@ -299,7 +299,7 @@ decision here is *correct behaviour*, not a bug):
   via `sum by (action) (rate(agent_interventions_applied_total[5m]))`, and the
   applied-vs-blocked split via `agent_decisions_total{blocked="false"}` /
   `{blocked="true"}`. The Grafana **Agent Decisions & Interventions** dashboard
-  ([`agent-operations.json`](../services/grafana/dashboards/agent-operations.json)),
+  ([`agent-operations.json`](../services/grafana/dashboards/agent/agent-operations.json)),
   row Interventions, shows both live, next to the coordinator-side applies.
 
 ### Act 3 — Live flag flips via the flag service (the control plane is live)

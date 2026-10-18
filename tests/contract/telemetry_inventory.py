@@ -19,7 +19,7 @@ Consumers
     * Go agent ingest (docs/specs/telemetry.md §4.4): the metric-name and label
       constants of ``gamecontext/extract_metrics.go``, the span attribute/event
       constants of ``gamecontext/extract_spans.go`` and ``infracontext/extract_spans.go``.
-    * Grafana dashboards (``services/grafana/dashboards/*.json``) and the dashboard
+    * Grafana dashboards (``services/grafana/dashboards/<folder>/*.json``) and the dashboard
       SPA's VictoriaMetrics queries: metric names in PromQL.
 """
 
@@ -662,7 +662,7 @@ def _walk_json(node, out: list[tuple[str, str, str]], where: str) -> None:
 
 
 def dashboard_files() -> list[Path]:
-    return sorted(DASHBOARD_DIR.glob("*.json"))
+    return sorted(DASHBOARD_DIR.rglob("*.json"))
 
 
 def _dashboard_hits() -> list[tuple[str, str, str, str]]:

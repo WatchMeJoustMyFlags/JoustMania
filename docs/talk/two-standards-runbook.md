@@ -195,6 +195,8 @@ Replace `localhost` with the Pi's address from the presenter laptop.
 | Jaeger, held decisions only | `...&tags=%7B%22decide.outcome%22%3A%22held%22%7D` |
 | Jaeger, post-game summary (beat 8) | `http://localhost/jaeger/search?service=agent&operation=agent.llm.retro&lookback=30m&limit=5` |
 | Jaeger, infra decisions (section 4) | `http://localhost/jaeger/search?service=agent&operation=agent.infrastructure.decision&lookback=15m` |
+| Grafana, **stage view** | `http://localhost/grafana/d/talk?kiosk` (**Talk: Two Standards**, folder Talk, #1427): the one Grafana screen for this talk and Grafana's home page, eight large panels, refresh 10 s, no variables. Big numbers: live games (real / shadow), agent decisions per minute (the collector's span metrics over `agent.decide`: OTel in), OpenFeature flag evaluations per second (the standard OpenFeature OTel hook metrics `feature_flag_evaluation_*`) and flag-service writes per minute (every flip below is one: OpenFeature out). Below them: decisions per minute by `decide.backend` · `decide.outcome`, interventions applied per minute by type, evaluations per second by flag, and recent `agent.decide` traces from Jaeger. Use it next to the dashboard's Agent tab, which stays the decision-by-decision view |
+| Grafana, flags | `http://localhost/grafana/d/feature-flags` (**Flags / OpenFeature**, folder Platform): evaluations by flag, variant and reason, evaluation errors and fallbacks, the flag service (writes, live games registered, flagd sync streams, snapshot size) and flagd health |
 | Grafana, agent metrics | `http://localhost/grafana/d/agent-operations` (**Agent Decisions & Interventions**, the [agent demo runbook](../agent-demo-runbook.md)'s "fleet view"; replaced Agent Operations — Fleet and Interventions in #1427). Row Decide: decisions per minute by `decide.backend` and the outcome split (act / noop / held / fallback), derived by the OTel collector's span-metrics connector from the `agent.decide` spans, so a backend flip shows within a minute; row Remote Backends: `gen_ai.client.operation.duration` p95 and tokens by model |
 | Grafana, game and players | `http://localhost/grafana/d/game-players` (**Game & Players**: live games, games by outcome, game-loop health, and a per-player drill-down row with the 100 Hz acceleration against the warning and death lines; replaced Game Quality, Game Analytics and Player Insights in #1427) |
 | Grafana, service and host health | `http://localhost/grafana/d/joustmania-service-health` (**Infrastructure & Services**; absorbed the separate Fleet Overview dashboard in #1427) |
@@ -466,7 +468,7 @@ The infra loop is not gated by the `enabled` kill switch, only by
       `default`, jev thr. `gate`, `capture on`.
 - [ ] Browser tabs open, in order: dashboard Agent tab, Jaeger agent.decide
       search (pre-filled), Jaeger held search, Jaeger retro search, Grafana
-      (optional), terminal.
+      stage view `http://localhost/grafana/d/talk?kiosk` (optional), terminal.
 - [ ] Terminal: an ssh session on the Pi, big font, `cd` to the repo,
       `setflag` pasted,
       history cleared of anything with a key.

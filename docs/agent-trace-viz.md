@@ -199,7 +199,7 @@ blocked `not_allowed`; it now returns the live dispatches. Contrast with
 applied vs blocked side by side.
 
 **The matching metrics** (Grafana **Agent Decisions & Interventions**,
-[`agent-operations.json`](../services/grafana/dashboards/agent-operations.json),
+[`agent-operations.json`](../services/grafana/dashboards/agent/agent-operations.json),
 or `http://localhost/victoria-metrics/vmui/`):
 
 - `sum(rate(agent_decisions_total{blocked="false"}[5m]))` — applied decisions/sec
