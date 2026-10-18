@@ -130,23 +130,25 @@ revision="${SOURCE_REVISION-}"
 created="${SOURCE_CREATED-}"
 if [[ -z "${SOURCE_REVISION+x}" || -z "${SOURCE_CREATED+x}" ]]; then
   : "${IMAGE_PREFIX:?IMAGE_PREFIX must be set (e.g. ghcr.io/owner/repo)}"
-  # Pull one platform: the published tags are multi-platform indexes, whose
-  # labels imagetools cannot read as a single config.
-  if ! docker pull --quiet --platform linux/amd64 "$ref" >/dev/null 2>&1; then
+  # Read the amd64 image config straight from the registry (no layers pulled).
+  # An index yields a {platform: config} map, a single image the config itself.
+  if ! config_json="$(docker buildx imagetools inspect "$ref" --format '{{json .Image}}' 2>/dev/null)" ||
+    [[ -z "$config_json" || "$config_json" == "null" ]]; then
     echo "::warning::check-retag-source: ${ref} not found"
     exit 2
   fi
+  config_json="$(jq -c 'if has("linux/amd64") then .["linux/amd64"] else . end' <<<"$config_json")"
   [[ -n "${SOURCE_REVISION+x}" ]] ||
-    revision="$(docker image inspect "$ref" --format "{{ index .Config.Labels \"${REVISION_LABEL}\" }}" 2>/dev/null || true)"
+    revision="$(jq -r --arg l "$REVISION_LABEL" '.config.Labels[$l] // ""' <<<"$config_json")"
   [[ -n "${SOURCE_CREATED+x}" ]] ||
-    created="$(docker image inspect "$ref" --format '{{ .Created }}')"
+    created="$(jq -r '.created // ""' <<<"$config_json")"
 fi
 [[ "$revision" == "<no value>" ]] && revision=""
 
 stale() {
   echo "::error::${ref} is STALE: built ${1}, but ${last_sha:0:8} (the last commit touching ${image}'s sources) is newer." \
     "Retagging it would ship an image without that change." \
-    "Fix: run CI with workflow_dispatch on main (full build), then re-run this job."
+    "Fix: run CI with workflow_dispatch on main (full build), or wait for the in-flight main run to finish, then re-run this job."
   exit 1
 }
 

@@ -23,14 +23,14 @@ services:
     pull_policy: build
 
   # OTel collector (no source mount, but the CHECKED-OUT config is mounted):
-  # `missing` makes `compose pull` keep a collector image that is already
-  # present. The CI fast path relies on that: when the published image rejects
+  # defaults to `always` so local runs refresh a stale collector. CI's fast path
+  # sets COLLECTOR_PULL_POLICY=missing so `compose pull` keeps a collector image
+  # that is already present: when the published image rejects
   # the checkout's config, it builds the collector locally under the same ref
   # (#1487, scripts/ci/check-collector-config.sh), and a plain pull would
-  # replace that build with the stale image again. Run `docker compose pull
-  # otel-collector` by hand to refresh a local copy.
+  # replace that build with the stale image again.
   otel-collector:
-    pull_policy: missing
+    pull_policy: ${COLLECTOR_PULL_POLICY:-always}
 
   controller-manager:
     volumes:

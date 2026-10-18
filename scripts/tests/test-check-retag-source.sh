@@ -94,4 +94,23 @@ expect_rc 1 "no label, no creation time" env SOURCE_REVISION= SOURCE_CREATED= ba
 # unknown image -> refuse
 expect_rc 1 "unknown image" bash -c "cd '$repo' && '$CHECK' not-an-image"
 
+# registry path: labels come from `buildx imagetools inspect` (no pull), amd64 entry of an index
+mkdir "${WORK}/bin"
+cat >"${WORK}/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >>"${DOCKER_LOG}"
+[[ "$1 $2 $3" == "buildx imagetools inspect" ]] || exit 99
+printf '%s' "${STUB_CONFIG}"
+STUB
+chmod +x "${WORK}/bin/docker"
+export DOCKER_LOG="${WORK}/docker.log" PATH="${WORK}/bin:${PATH}"
+: >"$DOCKER_LOG"
+export STUB_CONFIG="{\"linux/amd64\":{\"created\":\"2023-11-17T00:00:00Z\",\"config\":{\"Labels\":{\"org.opencontainers.image.revision\":\"${old_build}\"}}}}"
+expect_rc 1 "registry labels: stale revision" bash -c "cd '$repo' && IMAGE_PREFIX=x/y CI_WORKFLOW=.github/workflows/ci.yml '$CHECK' otel-collector"
+grep -q "STALE" "${WORK}/out" || fail "registry stale message missing"
+grep -q "in-flight main run" "${WORK}/out" || fail "in-flight hint missing"
+export STUB_CONFIG="{\"created\":\"2023-11-17T00:00:00Z\",\"config\":{}}"
+expect_rc 0 "registry no label: creation time fallback" bash -c "cd '$repo' && IMAGE_PREFIX=x/y CI_WORKFLOW=.github/workflows/ci.yml '$CHECK' otel-collector"
+if grep -q '^pull' "$DOCKER_LOG"; then fail "retag check pulled the image"; fi
+
 echo "test-check-retag-source: ${pass} checks passed"

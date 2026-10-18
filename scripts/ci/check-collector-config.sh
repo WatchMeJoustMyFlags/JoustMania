@@ -13,16 +13,24 @@
 # config, so a mismatch is caught before `compose up`, whatever its cause.
 #
 # Usage:
-#   scripts/ci/check-collector-config.sh <image-ref> [config]
+#   scripts/ci/check-collector-config.sh [--no-pull] <image-ref> [config]
 #     config defaults to services/otel-collector/config.yaml
+#     --no-pull: validate the image already present locally and never pull. Use
+#     it after building HEAD under <image-ref>, otherwise the pull replaces that
+#     build with the (stale) registry image.
 #
 # Exit codes: 0 = the image accepts the config; 1 = it rejects it (stale image
 # or a broken config; the validate output says which component); 2 = the image
-# could not be pulled.
+# could not be pulled (or, with --no-pull, is not present locally).
 
 set -euo pipefail
 
-ref="${1:?usage: $0 <image-ref> [config]}"
+no_pull=0
+if [[ "${1-}" == "--no-pull" ]]; then
+  no_pull=1
+  shift
+fi
+ref="${1:?usage: $0 [--no-pull] <image-ref> [config]}"
 config="${2:-services/otel-collector/config.yaml}"
 [[ -f "$config" ]] || {
   echo "::error::check-collector-config: ${config} not found" >&2
@@ -30,7 +38,12 @@ config="${2:-services/otel-collector/config.yaml}"
 }
 config="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
 
-if ! docker pull --quiet "$ref" >/dev/null 2>&1 &&
+if [[ "$no_pull" -eq 1 ]]; then
+  if ! docker image inspect "$ref" >/dev/null 2>&1; then
+    echo "::warning::check-collector-config: ${ref} is not present locally (--no-pull)"
+    exit 2
+  fi
+elif ! docker pull --quiet "$ref" >/dev/null 2>&1 &&
   ! docker image inspect "$ref" >/dev/null 2>&1; then
   echo "::warning::check-collector-config: could not pull ${ref}"
   exit 2

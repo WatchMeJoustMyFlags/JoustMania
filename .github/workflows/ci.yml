@@ -929,7 +929,7 @@ jobs:
       # image: fail here with the collector's own error instead of 18 setup errors.
       - name: Validate collector config against the HEAD build
         if: steps.collector_image.outputs.build == 'true'
-        run: bash scripts/ci/check-collector-config.sh "${{ steps.collector_image.outputs.ref }}" services/otel-collector/config.yaml
+        run: bash scripts/ci/check-collector-config.sh --no-pull "${{ steps.collector_image.outputs.ref }}" services/otel-collector/config.yaml
 
       # #1254: the Go agent has no dev mount, so on the fast path it would run the
       # published :latest, which can lag the code under test: a PR changing only
@@ -977,7 +977,7 @@ jobs:
       # once, never quarantines a test by name.
       - name: Run integration tests (fast - source only)
         if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
-        run: USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1" make test-integration
+        run: COLLECTOR_PULL_POLICY=missing USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1" make test-integration
 
       # Slow path: full build (Dockerfiles or deps changed)
       - name: Run integration tests (full build)
