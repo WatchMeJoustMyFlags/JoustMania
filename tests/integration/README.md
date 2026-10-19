@@ -153,7 +153,11 @@ The shards run in the merge queue (`merge_group`, always: that is the gate befor
 `main`), on `workflow_dispatch`, and on a PR only when it has the `ci-full` label
 or its non-docs diff touches a risky path: `docker-compose*.yml`, any
 `Dockerfile*`, `tests/integration/**` (this suite, `conftest.py`, `helpers.py`),
-`services/otel-collector/**`, `images/otel-collector/**` or `services/envoy/**`.
+`services/otel-collector/**`, `images/otel-collector/**`, `services/envoy/**`,
+`services/flagd/**` or `.github/workflows/ci.yml`. In the queue (and on
+`workflow_dispatch` / `ci-full`) every stack image is built at HEAD; other PRs
+take the fast path (pulled `:latest` plus source mounts) unless Dockerfiles or
+dependencies changed.
 Plain PR pushes skip them, and so does a push to `main` (the queue already ran
 them on that commit). To force a run on a PR, add the `ci-full` label; locally,
 `make test-integration` (or `make test-integration-core` / `-agent`).

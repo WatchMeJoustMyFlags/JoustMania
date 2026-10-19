@@ -306,8 +306,8 @@ gate the merge queue rather than every PR push:
 |---|---|
 | PR push | skipped (lint, unit, contract, service tier and builds still run) |
 | PR with the `ci-full` label | run |
-| PR whose non-docs diff touches `docker-compose*.yml`, any `Dockerfile*`, `tests/integration/**`, `services/otel-collector/**`, `images/otel-collector/**` or `services/envoy/**` | run |
-| `merge_group` (merge queue) | always run; `CI Complete` fails unless both shards succeed |
+| PR whose non-docs diff touches `docker-compose*.yml`, any `Dockerfile*`, `tests/integration/**`, `services/otel-collector/**`, `images/otel-collector/**`, `services/envoy/**`, `services/flagd/**` or `.github/workflows/ci.yml` | run |
+| `merge_group` (merge queue) | always run, with every stack image built at HEAD (no `:latest` fast path); `CI Complete` fails unless both shards succeed |
 | push to `main` | skipped: the queue already tested that commit; images build and publish without waiting for them |
 | `workflow_dispatch` | run |
 
