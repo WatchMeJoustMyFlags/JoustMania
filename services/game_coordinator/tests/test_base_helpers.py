@@ -1349,13 +1349,14 @@ class TestApplyTempoChange:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-031", flow="main", steps=[3])
     async def test_calls_audio_client(self, game):
-        """Should call ChangeTempo on audio client."""
+        """UC-031 step 3: ChangeTempo asks the audio service for a 1.5 s transition to the new tempo."""
         await game._apply_tempo_change(FAST_MUSIC_SPEED)
         game.audio_client.ChangeTempo.assert_called_once()
         call_args = game.audio_client.ChangeTempo.call_args[0][0]
         assert call_args.track_id == "track_123"
         assert call_args.new_tempo == pytest.approx(FAST_MUSIC_SPEED, abs=1e-6)
         assert call_args.transition_duration == pytest.approx(MUSIC_TRANSITION_DURATION, abs=1e-6)
+        assert call_args.transition_duration == pytest.approx(1.5, abs=1e-6)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-031", flow="main", steps=[3])

@@ -100,6 +100,7 @@ class TestCountdown:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", steps=[6])
+    @pytest.mark.nfr("NFR-005")
     async def test_zero_phase_duration_skips_countdown(self):
         """countdown_phase_duration_ms=0 skips effects and sounds but still brackets start/end."""
         events = EventCollector()
