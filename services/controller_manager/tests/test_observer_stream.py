@@ -89,7 +89,6 @@ def rig():
     servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=_state())
     servicer.tracked_controllers[SERIAL] = {}
 
-    loop._gameplay_disconnects.append("GONE")
     loop._poll_drops[SERIAL] = 2
     loop._poll_errors[SERIAL] = 1
     return servicer, ctrl
@@ -99,7 +98,8 @@ def rig():
 def test_observer_frame_leaves_game_signals_for_the_game_stream(rig):
     servicer, ctrl = rig
 
-    servicer._game_stream_serials["game"] = {SERIAL}  # the game stream sent colours
+    servicer._open_game_stream("game", {SERIAL})  # the game stream sent colours
+    servicer.discovery_loop._gameplay_disconnects.append("GONE")
 
     observer = servicer._build_gameplay_update(None, "dashboard")
     game = servicer._build_gameplay_update({SERIAL}, "game")
@@ -119,7 +119,8 @@ def test_observer_frame_leaves_game_signals_for_the_game_stream(rig):
 def test_game_stream_with_no_player_alive_still_drains(rig):
     """An empty alive filter (NonStop respawn window, reconnect with 0 alive) is still the game."""
     servicer, ctrl = rig
-    servicer._game_stream_serials["game"] = {SERIAL}
+    servicer._open_game_stream("game", {SERIAL})
+    servicer.discovery_loop._gameplay_disconnects.append("GONE")
 
     # _process_filter_update maps an empty serial list to None.
     game = servicer._build_gameplay_update(None, "game")
