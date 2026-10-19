@@ -5,8 +5,8 @@ adaptive agent share control of game parameters. It records the ownership model
 ratified with the maintainer (epic [#814](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/814),
 doc issue [#820](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/820)).
 The code fixes #815 (admin surface), #816 (sensitivity), #817 (grace/shield),
-#818 (visibility) and #819 (kill-switch) have all shipped; this document now
-describes the current state, verified against the code. Where the two ever
+#818 (visibility, except the truthful-display helper, which is not wired: D-M6) and #819 (kill-switch) have shipped;
+this document describes the current state, verified against the code. Where the two ever
 disagree, treat it as a bug in one of them and fix both in the same PR.
 
 The normative rules for the invalidation of agent overrides (formerly section 5)
@@ -124,14 +124,14 @@ persist its own governor (§1, §6.2).
 
 The eight admin flags. All are read once by the menu into `StartGameConfig`
 ([`services/menu/servicer.py:_build_game_config`](../services/menu/servicer.py),
-~line 788) and frozen into the game object in its constructor
+`StartGameConfig` build) and frozen into the game object in its constructor
 ([`services/game_coordinator/games/base.py:__init__`](../services/game_coordinator/games/base.py),
-~lines 490–580). "Frozen at start" means a mid-game admin flag change **silently
+constructor). "Frozen at start" means a mid-game admin flag change **silently
 no-ops** for that game — the game already captured its value.
 
 | Parameter | Owner | Write path | Frozen / Live | Arbitration rule |
 |---|---|---|---|---|
-| `sensitivity` | Human (baseline) | `game` set, persisted admin value (menu) | Frozen at init → `game.sensitivity` + `game.configured_sensitivity` | **Contested with agent `global_sensitivity_override`.** See §4.1. |
+| `sensitivity` | Human (baseline) | `game` set, persisted admin value (menu) | Frozen at init → `game.baseline_sensitivity` (effective value: `game.sensitivity`; `configured_sensitivity` is game-start telemetry only, #816) | **Contested with agent `global_sensitivity_override`.** See §4.1. |
 | `num_teams` | Human | `game` set, persisted admin value (menu) | Frozen at init | Agent has no override; human-only. |
 | `random_assignment` | Human | `game` set baseline (`game.json`) | Frozen at init | Agent has no override; human-only. |
 | `nonstop.time_limit_seconds` | Human | `game` set baseline (`game.json`) | Frozen at init | Agent has no override; human-only. |
@@ -271,14 +271,14 @@ section 4.1.
 ## 6. Visibility & Kill-Switch Contract (#818 / #819, shipped)
 
 The model above needs a human feedback loop and an on-device control. Both have
-shipped: #818 gives the human a signal when the agent acts, and #819 gives the
+shipped, with the #818 display caveat in 6.1: #818 gives the human a signal when the agent acts, and #819 gives the
 admin an on-device way to constrain the agent (`interventions_allowed` lives in the
 `agent` set, which admin mode now writes through the `agent_control` option).
 
-### 6.1 Visibility (`#818`, shipped)
+### 6.1 Visibility (`#818`, partly shipped)
 
-The normative contract and the two implemented surfaces (truthful admin display,
-on-device agent cue) live in
+The normative contract, the on-device agent cue (shipped) and the truthful admin display (helper defined but not
+wired, specs-inventory D-M6) live in
 [flags.md section 14.2](specs/flags.md#142-the-visibility-contract).
 
 ### 6.2 Kill-switch / policy control (`#819`)
@@ -293,7 +293,7 @@ terminal (`scripts/flags.sh`) or a baseline edit. A conforming implementation mu
   already enforces (the enforcement chain — allow-list → mode matrix → battery
   guard → rate limit — lives in
   [`interventions.py:_check_chain`](../services/game_coordinator/interventions.py),
-  ~lines 1023-1050; it gates the *agent* only, never the human).
+  it gates the *agent* only, never the human).
 - The control must be **load-bearing at the gate**: flipping the kill-switch off
   means the coordinator's allow-list rejects every agent intervention, so the
   switch degrades safely even if the agent process ignores it.

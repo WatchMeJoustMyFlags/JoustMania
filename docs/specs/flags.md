@@ -513,7 +513,9 @@ planned `services/flag-service/registry.yaml` / planned tests in #1409.
 > **A human baseline change invalidates the active agent override for that parameter.**
 
 The human is the source of truth for intent. When the admin changes a baseline the agent is currently overriding, the
-human's new value wins **immediately** and the agent's active override for *that parameter* is dropped:
+human's new value wins **immediately** and the agent's active override for *that parameter* is dropped (caveat: no
+production code path calls `set_baseline_sensitivity`, so today this invalidation is reachable only through the
+game-object API; a mid-game admin flag edit is not pushed into a running game):
 
 - The agent does not keep an override pinned over a fresh human decision. Otherwise the admin's deliberate change would
   silently no-op while the agent's transient delta persisted.
@@ -546,13 +548,14 @@ Agent actions are already audited as spans (`agent.decision`, intervention event
 (`game_interventions_total`); the contract is the human-facing, on-device surfacing of that activity, not new
 instrumentation.
 
-Implemented surfaces (#818):
+Surfaces (#818):
 
-1. **Truthful admin display.** Admin mode resolves option values through the live flagd `game` client and maps the
-   value back to a variant name (`AdminModeHandler._effective_variant`, `services/menu/handlers/admin.py`), so cycling
-   `sensitivity` shows the value the game is actually using, including an active agent override, not the baseline
-   `defaultVariant`. It falls back to the flag service's effective default variant when flagd is unreachable or the
-   value matches no variant.
+1. **Truthful admin display (defined, not wired).** `AdminModeHandler._effective_variant`
+   (`services/menu/handlers/admin.py`) is meant to resolve option values through the live flagd `game` client and map
+   the value back to a variant name, so cycling `sensitivity` would show the value the game is actually using,
+   including an active agent override, not the baseline `defaultVariant`. The helper exists but has **no production
+   caller** (specs-inventory D-M6; listed for removal in the #1322 cleanup), so admin feedback today shows the on-disk
+   baseline. Do not treat this surface as shipped.
 2. **On-device cue.** When the coordinator applies a **HARD-class** intervention (`spec.weight >= WEIGHT_HARD`, in
    `services/game_coordinator/interventions.py`; `end_game` is excluded because its game has just ended, UC-040
    BR-018) it emits a short magenta `GAME_EFFECT_PULSE` on the affected controller(s), broadcast for non-targeted
