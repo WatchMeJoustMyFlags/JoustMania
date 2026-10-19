@@ -40,7 +40,9 @@ def _events(collector: GameEventCollector, game_id: str, event_type: str) -> lis
     return [e for e in collector.get_events(event_type) if e.game_id == game_id]
 
 
-@pytest.mark.uc("UC-003", flow="main", tc="TC-003")
+@pytest.mark.uc("UC-003", flow="main", steps=[1, 3, 4, 5], tc="TC-003")
+@pytest.mark.uc("UC-003", flow="A4", steps=[1], tc="TC-003")
+@pytest.mark.uc("UC-003", tc="TC-003", cond=["Post-S-1"])
 @pytest.mark.uc("UC-010", flow="main", tc="TC-003")
 @pytest.mark.uc("UC-020", flow="A2", tc="TC-003")
 @pytest.mark.uc("UC-030", flow="A5", tc="TC-003")

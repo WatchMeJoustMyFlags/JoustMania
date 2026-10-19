@@ -25,7 +25,6 @@ const (
 	MockControllerService_SetColor_FullMethodName            = "/controller_manager_mock.MockControllerService/SetColor"
 	MockControllerService_ResetController_FullMethodName     = "/controller_manager_mock.MockControllerService/ResetController"
 	MockControllerService_ListMockControllers_FullMethodName = "/controller_manager_mock.MockControllerService/ListMockControllers"
-	MockControllerService_SetAutoGameEnd_FullMethodName      = "/controller_manager_mock.MockControllerService/SetAutoGameEnd"
 	MockControllerService_GetColor_FullMethodName            = "/controller_manager_mock.MockControllerService/GetColor"
 	MockControllerService_StreamObservability_FullMethodName = "/controller_manager_mock.MockControllerService/StreamObservability"
 	MockControllerService_AddController_FullMethodName       = "/controller_manager_mock.MockControllerService/AddController"
@@ -51,8 +50,6 @@ type MockControllerServiceClient interface {
 	ResetController(ctx context.Context, in *ResetRequest, opts ...grpc.CallOption) (*ResetResponse, error)
 	// Get list of mock controllers
 	ListMockControllers(ctx context.Context, in *ListRequest, opts ...grpc.CallOption) (*ListResponse, error)
-	// Set auto game end - automatically kill players after duration to ensure game ends
-	SetAutoGameEnd(ctx context.Context, in *AutoGameEndRequest, opts ...grpc.CallOption) (*AutoGameEndResponse, error)
 	// Get current LED color of a controller
 	GetColor(ctx context.Context, in *GetColorRequest, opts ...grpc.CallOption) (*GetColorResponse, error)
 	// Stream observable events from mock controllers (LED changes, button presses, etc.)
@@ -127,16 +124,6 @@ func (c *mockControllerServiceClient) ListMockControllers(ctx context.Context, i
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListResponse)
 	err := c.cc.Invoke(ctx, MockControllerService_ListMockControllers_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *mockControllerServiceClient) SetAutoGameEnd(ctx context.Context, in *AutoGameEndRequest, opts ...grpc.CallOption) (*AutoGameEndResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AutoGameEndResponse)
-	err := c.cc.Invoke(ctx, MockControllerService_SetAutoGameEnd_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -220,8 +207,6 @@ type MockControllerServiceServer interface {
 	ResetController(context.Context, *ResetRequest) (*ResetResponse, error)
 	// Get list of mock controllers
 	ListMockControllers(context.Context, *ListRequest) (*ListResponse, error)
-	// Set auto game end - automatically kill players after duration to ensure game ends
-	SetAutoGameEnd(context.Context, *AutoGameEndRequest) (*AutoGameEndResponse, error)
 	// Get current LED color of a controller
 	GetColor(context.Context, *GetColorRequest) (*GetColorResponse, error)
 	// Stream observable events from mock controllers (LED changes, button presses, etc.)
@@ -259,9 +244,6 @@ func (UnimplementedMockControllerServiceServer) ResetController(context.Context,
 }
 func (UnimplementedMockControllerServiceServer) ListMockControllers(context.Context, *ListRequest) (*ListResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListMockControllers not implemented")
-}
-func (UnimplementedMockControllerServiceServer) SetAutoGameEnd(context.Context, *AutoGameEndRequest) (*AutoGameEndResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method SetAutoGameEnd not implemented")
 }
 func (UnimplementedMockControllerServiceServer) GetColor(context.Context, *GetColorRequest) (*GetColorResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetColor not implemented")
@@ -407,24 +389,6 @@ func _MockControllerService_ListMockControllers_Handler(srv interface{}, ctx con
 	return interceptor(ctx, in, info, handler)
 }
 
-func _MockControllerService_SetAutoGameEnd_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AutoGameEndRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(MockControllerServiceServer).SetAutoGameEnd(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: MockControllerService_SetAutoGameEnd_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MockControllerServiceServer).SetAutoGameEnd(ctx, req.(*AutoGameEndRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _MockControllerService_GetColor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetColorRequest)
 	if err := dec(in); err != nil {
@@ -538,10 +502,6 @@ var MockControllerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListMockControllers",
 			Handler:    _MockControllerService_ListMockControllers_Handler,
-		},
-		{
-			MethodName: "SetAutoGameEnd",
-			Handler:    _MockControllerService_SetAutoGameEnd_Handler,
 		},
 		{
 			MethodName: "GetColor",

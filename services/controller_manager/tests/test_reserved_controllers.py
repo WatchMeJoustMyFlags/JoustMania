@@ -14,7 +14,7 @@ button-stream announcements.
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -26,6 +26,7 @@ sys.path.insert(0, str(project_root))
 
 from lib.controller_constants import ControllerInfoKey
 from proto import controller_manager_mock_pb2, controller_manager_pb2
+from services.controller_manager.button_detector import ButtonDetector
 from services.controller_manager.discovery_loop import visible_serials
 from services.controller_manager.mock_control_service import MockControllerService
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
@@ -98,6 +99,7 @@ class TestAddControllerRpcReservation:
 
 
 class TestListMockControllers:
+    @pytest.mark.uc("UC-003", flow="A6")
     def test_reports_reserved_and_tag(self):
         service, _ = _make_service()
         service.AddController(controller_manager_mock_pb2.AddControllerRequest(serial="U1"), None)
@@ -290,15 +292,15 @@ class TestLiveDisconnectSuppression:
     async def test_reserved_disconnect_not_published(self):
         """When a reserved controller disconnects, no disconnect ButtonEvent is
         published; the unreserved one is, with a reserved-free roster."""
-        button_detector = MagicMock()
+        button_detector = create_autospec(ButtonDetector, instance=True)
         tracked = {
             "U1": {ControllerInfoKey.NAME: "P1", ControllerInfoKey.RESERVED: False},
             "U2": {ControllerInfoKey.NAME: "P2", ControllerInfoKey.RESERVED: False},
             "R1": {ControllerInfoKey.NAME: "S1", ControllerInfoKey.RESERVED: True},
         }
         # Backend reports U2 still connected; U1 and R1 dropped.
-        backend = MagicMock()
-        backend.get_connected_controllers = MagicMock(return_value=["U2"])
+        backend = create_autospec(MultiplexerBackend, instance=True)
+        backend.get_connected_controllers.return_value = ["U2"]
         loop = _make_discovery_loop(tracked, backend, button_detector)
 
         await loop._check_for_new_controllers()
@@ -317,19 +319,17 @@ class TestLiveDisconnectSuppression:
     async def test_reserved_connect_not_published(self):
         """When a reserved controller appears, no connect ButtonEvent is
         published; an unreserved newcomer is."""
-        button_detector = MagicMock()
+        button_detector = create_autospec(ButtonDetector, instance=True)
         tracked: dict = {}
-        backend = MagicMock()
-        backend.get_connected_controllers = MagicMock(return_value=["U1", "R1"])
+        backend = create_autospec(MultiplexerBackend, instance=True)
+        backend.get_connected_controllers.return_value = ["U1", "R1"]
         # Adapter type + metadata used by _spawn_controller_process
-        backend.get_adapter_type = MagicMock(return_value="mock")
-        backend.get_controller_metadata = MagicMock(
-            side_effect=lambda s: {
-                "reserved": s == "R1",
-                "tag": "shadow" if s == "R1" else "",
-            }
-        )
-        backend.get_controller_state = AsyncMock(return_value={"battery": 100})
+        backend.get_adapter_type.return_value = "mock"
+        backend.get_controller_metadata.side_effect = lambda s: {
+            "reserved": s == "R1",
+            "tag": "shadow" if s == "R1" else "",
+        }
+        backend.get_controller_state.return_value = {"battery": 100}
 
         loop = _make_discovery_loop(tracked, backend, button_detector)
         loop.feedback_manager.set_controller_color = AsyncMock()

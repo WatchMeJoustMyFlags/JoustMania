@@ -242,17 +242,8 @@ class TestUC046MockRpcs:
         plain = adapter.add_controller()
         assert service.SimulateDeath(controller_manager_mock_pb2.DeathRequest(serial=plain), _Ctx()).success
 
-    @pytest.mark.asyncio
-    @pytest.mark.uc("UC-046", flow="main", steps=[6], br=["BR-004"])
-    async def test_auto_game_end_never_kills_pattern_controllers(self, service, adapter):
-        """UC-046 BR-004: the SetAutoGameEnd scripted kill skips pattern controllers."""
-        pattern_serials = list(_add_pattern(service).serials)
-        plain = [adapter.add_controller() for _ in range(2)]
-        await service._auto_end_game(0.0)
-        assert all(adapter.controllers[s]["death_accel"] is None for s in pattern_serials)
-        assert adapter.controllers[plain[0]]["death_accel"] is not None
-
     @pytest.mark.uc("UC-046", flow="main", steps=[8], br=["BR-005"])
+    @pytest.mark.uc("UC-003", flow="A4", steps=[2])
     def test_remove_controller_returns_replay_record(self, service, adapter, archetype):
         """UC-046 step 8: removing a pattern controller returns frames, signal hash, checkpoints and overruns."""
         serials = list(_add_pattern(service).serials)

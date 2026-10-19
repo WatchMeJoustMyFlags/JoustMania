@@ -183,6 +183,7 @@ def _distinct_colors(
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-003", flow="main", steps=[1, 2, 3, 4, 5, 6], tc="TC-002")
+@pytest.mark.uc("UC-003", tc="TC-002", cond=["Pre-1"])
 @pytest.mark.uc("UC-002", flow="main", steps=[6], tc="TC-002")
 @pytest.mark.uc("UC-011", flow="A1", tc="TC-002")
 @pytest.mark.uc("UC-010", flow="main", steps=[1, 3, 4, 5, 7, 8], tc="TC-002")

@@ -217,8 +217,7 @@ grpcurl -plaintext -d '{
 controller per player of the archetype and drives each with the parametric motion
 function of [UC-046](../../docs/use_cases/UC-046.md): every delivered gameplay frame k
 carries `(0, 0, intensity_i(k / r))`. Pattern controllers are always reserved (hidden
-from the lobby), refuse `SimulateMovement` / `SimulateDeath` (FAILED_PRECONDITION), are
-skipped by `SetAutoGameEnd`, and return their replay record (frames, signal hash,
+from the lobby), refuse `SimulateMovement` / `SimulateDeath` (FAILED_PRECONDITION) and return their replay record (frames, signal hash,
 per-second checkpoints, overruns) from `RemoveController`.
 
 The agent's shadow experiments and its one-shot shadow runner use ONLY pattern
