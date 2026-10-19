@@ -63,8 +63,8 @@ make up-mock
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Dashboard (:8080)                        │
-│         Unified entry point with reverse proxy routing          │
+│                     Envoy (host port :80)                       │
+│   Unified entry point; routes to the dashboard (:8080, internal)│
 └─────────────────────────────────────────────────────────────────┘
                               │
               ┌───────────────┼───────────────┐
@@ -123,7 +123,8 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 | Game Coordinator | 50053 | Game lifecycle management |
 | Menu | 50054 | Menu navigation |
 | Audio | 50056 | Audio playback and mixing |
-| Dashboard | 8080 | Web UI and reverse proxy |
+| Dashboard | 8080 (container-internal) | Web UI; reached via Envoy on host port 80 |
+| Envoy | 80 (host) | Reverse proxy and single entry point |
 | Connect Proxy | - | gRPC-web bridge |
 | flagd | 8015 | Feature flags (OpenFeature) |
 

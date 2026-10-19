@@ -17,7 +17,7 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 
 ```
                            ┌──────────────┐
-                           │  Dashboard   │ :8080
+                           │  Dashboard   │ :8080 (internal; host entry is envoy :80)
                            │  (Dashboard) │
                            └──────┬───────┘
                                   │ HTTP + gRPC
@@ -242,12 +242,12 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 
 ---
 
-### Dashboard Service (Port 8080)
+### Dashboard Service (Port 8080, container-internal)
 
-**Purpose**: Unified web interface and reverse proxy
+**Purpose**: Web interface. Port 8080 is not published to the host; the host entry point is the Envoy reverse proxy on port 80 (`services/envoy/envoy.yaml`).
 
 **Components**:
-- Caddy reverse proxy for unified access
+- Envoy (host port 80) fronts the dashboard and the other services
 - Web dashboard for controller visualization
 - gRPC-web bridge for browser clients
 
@@ -412,7 +412,7 @@ All observability tools are accessed through the envoy reverse proxy at `http://
 | Grafana | Visualization | `/grafana/` | 3000 |
 | Loki | Log aggregation | `/loki/` | 3100 |
 
-**Note:** The dashboard uses Caddy as a reverse proxy to provide a single entry point for all services. See `docs/CADDY_PROXY.md` for configuration details.
+**Note:** Envoy (host port 80) is the reverse proxy and single entry point for all services; routes are defined in `services/envoy/envoy.yaml`. (`docs/CADDY_PROXY.md` is historical.)
 
 ### Tracing
 

@@ -45,6 +45,10 @@ the connect-proxy from inside the compose network, for example through
 `docker compose exec` (the connect-proxy image ships `wget`; `localhost:8080`
 below is the connect-proxy's own listener inside its container):
 
+`wget -q` hides HTTP errors: a 4xx/5xx (for example the 503 `no_sync_stream`
+response) prints nothing and exits 8. Check `echo $?` after each call, or
+replace `-q` with `-S` to print the response headers and status.
+
 ```bash
 # Route all controllers to Rust
 docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rust'
