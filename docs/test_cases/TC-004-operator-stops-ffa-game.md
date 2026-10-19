@@ -14,7 +14,7 @@
 
 ## Preconditions
 
-- The integration stack is up; four mock controllers `MOCK0001` … `MOCK0004` are connected and READY (see [TC-002](TC-002-ffa-mock-game-to-winner.md) steps 1 to 4 without the last trigger press); `current_game` is `JoustFFA`.
+- The service-tier stack (T2, `LOBBY` composition) is up; four mock controllers `MOCK0001` … `MOCK0004` are connected and READY (see [TC-002](TC-002-ffa-mock-game-to-winner.md) steps 1 to 4 without the last trigger press); `current_game` is `JoustFFA`.
 
 ## Flow
 
