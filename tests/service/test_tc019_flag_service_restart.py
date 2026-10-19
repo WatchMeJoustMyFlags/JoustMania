@@ -108,8 +108,7 @@ def _wait_until_served(stack, flag_service) -> None:
         )
 
 
-@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
-@pytest.mark.uc("UC-053", flow="A7", tc="TC-019")
+@pytest.mark.uc("UC-053", flow="A9", cond=["Pre-1"], tc="TC-019")
 @pytest.mark.uc("UC-053", flow="A2", br=["BR-004"], tc="TC-019")
 @pytest.mark.nfr("NFR-052")
 def test_restart_keeps_admin_settings_and_drops_the_rest(fresh_stack, flag_service):

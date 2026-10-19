@@ -203,9 +203,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("metrics: %w", err)
 	}
-	if report.Corrupt {
-		metrics.AdminStateCorrupt.Add(ctx, 1)
-	}
+	recordLoadReport(ctx, metrics, report)
 
 	links := &syncserver.Links{}
 	grpcServer := grpc.NewServer(syncserver.ServerOptions()...)
@@ -302,6 +300,13 @@ func loadState(ctx context.Context, tracer trace.Tracer, cfg config, epoch strin
 	return st, report, nil
 }
 
+// recordLoadReport counts a corrupt state file found at start (UC-053 A12).
+func recordLoadReport(ctx context.Context, metrics *telemetry.Metrics, report state.LoadReport) {
+	if report.Corrupt {
+		metrics.AdminStateCorrupt.Add(ctx, 1)
+	}
+}
+
 // sweep expires game scopes older than the maximum game age (UC-053 A11) and
 // stack overlays whose TTL ran out.
 func sweep(ctx context.Context, st *state.State, metrics *telemetry.Metrics, tracer trace.Tracer, every time.Duration, logger *slog.Logger) {
@@ -313,18 +318,25 @@ func sweep(ctx context.Context, st *state.State, metrics *telemetry.Metrics, tra
 			return
 		case <-ticker.C:
 		}
-		for _, end := range st.ExpireGames() {
-			logger.Warn("flag service: game scope expired (its end was never reported)", "game_id", end.GameID,
-				"coordinator_instance", end.CoordinatorInstance, "dropped_values", end.DroppedValues)
-			metrics.ScopesExpired.Add(ctx, 1)
-			telemetry.GameEndSpan(ctx, tracer, end)
-		}
-		if n := st.ExpireOverlays(); n > 0 {
-			logger.Info("flag service: overlays expired (ttl)", "count", n)
-		}
-		if n := st.ExpireExperiments(); n > 0 {
-			logger.Warn("flag service: experiment values expired (no game referenced them)", "count", n)
-			metrics.ExperimentsExpired.Add(ctx, int64(n))
-		}
+		sweepOnce(ctx, st, metrics, tracer, logger)
+	}
+}
+
+// sweepOnce runs one pass of the sweep: expired game scopes are dropped,
+// logged and counted (UC-053 A11), then TTL overlays and idle experiment
+// values (UC-053 A3) expire.
+func sweepOnce(ctx context.Context, st *state.State, metrics *telemetry.Metrics, tracer trace.Tracer, logger *slog.Logger) {
+	for _, end := range st.ExpireGames() {
+		logger.Warn("flag service: game scope expired (its end was never reported)", "game_id", end.GameID,
+			"coordinator_instance", end.CoordinatorInstance, "dropped_values", end.DroppedValues)
+		metrics.ScopesExpired.Add(ctx, 1)
+		telemetry.GameEndSpan(ctx, tracer, end)
+	}
+	if n := st.ExpireOverlays(); n > 0 {
+		logger.Info("flag service: overlays expired (ttl)", "count", n)
+	}
+	if n := st.ExpireExperiments(); n > 0 {
+		logger.Warn("flag service: experiment values expired (no game referenced them)", "count", n)
+		metrics.ExperimentsExpired.Add(ctx, int64(n))
 	}
 }

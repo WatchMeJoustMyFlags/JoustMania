@@ -120,7 +120,7 @@ async def test_register_then_end(service):
     await lc.stop()
 
 
-@pytest.mark.uc("UC-053", flow="A6")
+@pytest.mark.uc("UC-053", flow="main", steps=[1], cond=["Post-F-2"])
 @pytest.mark.asyncio
 async def test_slow_registration_is_bounded_at_200ms_and_the_game_starts(service):
     service.delay = 1.0
@@ -131,7 +131,7 @@ async def test_slow_registration_is_bounded_at_200ms_and_the_game_starts(service
     assert lc._needs_reconcile.is_set()
 
 
-@pytest.mark.uc("UC-053", flow="A8")
+@pytest.mark.uc("UC-053", flow="A8", cond=["Post-F-2"])
 @pytest.mark.asyncio
 async def test_unreachable_service_never_raises_and_reconciles_on_recovery(service):
     live = [GAME]
@@ -281,7 +281,7 @@ async def test_reconcile_runs_periodically(service):
     await lc.stop()
 
 
-@pytest.mark.uc("UC-053", flow="A6")
+@pytest.mark.uc("UC-053", flow="main", steps=[1, 7])
 @pytest.mark.asyncio
 async def test_end_waits_for_a_late_registration(service):
     """A registration that outlived its 200 ms await must not land after the

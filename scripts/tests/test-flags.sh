@@ -4,6 +4,8 @@
 # Stubs curl and docker on PATH: the stub curl records each request and answers
 # from canned files, so no stack is needed. Runs as part of `make lint`, or:
 #   ./scripts/tests/test-flags.sh
+#
+# UC: UC-053 A1 A5
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

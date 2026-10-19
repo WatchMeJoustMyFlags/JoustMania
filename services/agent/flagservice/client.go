@@ -5,7 +5,7 @@
 // Every call has a 500 ms deadline and fails closed: a write that did not get a
 // 2xx is reported as an error and never retried for the same decision, except a
 // game-scoped write rejected with 409 game_not_live, which is retried once after
-// 250 ms to cover a game registration still in flight (UC-053 A6).
+// 100 ms to cover a game registration still in flight (UC-053 A6).
 package flagservice
 
 import (

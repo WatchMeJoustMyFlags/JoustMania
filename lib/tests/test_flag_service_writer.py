@@ -92,6 +92,7 @@ def test_one_view_answers_every_read(svc):
 
 
 @pytest.mark.uc("UC-053", flow="A5")
+@pytest.mark.uc("UC-053", flow="A8")
 def test_refusals_and_outage_fail_closed(svc, caplog):
     w = FlagServiceWriter("game", "http://fs:8070", transport=svc)
     assert w.update_default_variant("sensitivity", "warp") is False
@@ -99,7 +100,10 @@ def test_refusals_and_outage_fail_closed(svc, caplog):
     assert w.get_current_variant("nope") is None
     assert w.get_variant_names("nope") == []
     svc.down = True
+    sent = len(svc.requests)
     assert w.update_default_variant("sensitivity", "fast") is False
+    # A8: the failed write is sent once and not retried.
+    assert [m for m, _, _ in svc.requests[sent:]] == ["PUT"]
     assert w.cycle_variant("sensitivity") is None
     assert "NOT applied" in caplog.text
 

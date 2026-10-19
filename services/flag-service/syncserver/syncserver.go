@@ -3,6 +3,9 @@
 // configuration of every served set, each flag tagged with its
 // metadata.flagSetId; a flagSetId=<set> selector (flagd-selector header or
 // body) narrows it to one set.
+//
+// UC-053 BR-007: the flag service is a sync source only. It evaluates no flag;
+// every OpenFeature client keeps resolving through stock flagd.
 package syncserver
 
 import (
