@@ -794,6 +794,8 @@ class TestGameSessionForceEnd:
 
         assert ok is False
         assert "no game in progress" in error.lower()
+        assert session.game_state == game_coordinator_pb2.GameState.IDLE
+        session.event_bus.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_force_end_running_game(self):

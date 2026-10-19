@@ -470,6 +470,7 @@ async def test_force_end_session_never_falls_back_to_the_primary():
         ok, error = await servicer._force_end_session("game_unknown00", "agent_intervention")
         assert (ok, error) == (False, "Unknown game_id: game_unknown00")
         assert real_id in servicer.sessions
+        assert servicer.sessions[real_id].game_state != game_coordinator_pb2.GameState.ENDED
     finally:
         servicer.intervention_manager.stop()
 
