@@ -65,7 +65,7 @@ class TestAudioManagerPlaySound:
     @pytest.mark.uc("UC-031", flow="main")  # Post-F-1: a missing file is counted as file_not_found
     @patch("services.audio.metrics.audio_sounds_played_total")
     def test_play_sound_missing_file_increments_metric(self, mock_metric):
-        """Missing file increments file_not_found metric."""
+        """UC-031 Failure Postconditions (Post-F-1): a missing file is counted as file_not_found."""
         from services.audio.servicer import AudioManager
 
         manager = AudioManager(silent=False)
