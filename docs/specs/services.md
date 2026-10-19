@@ -81,9 +81,39 @@ deployed stacks are unchanged.
 | `GRPC_PORT` | menu | 50054 |
 | `MOCK_CONTROL_PORT` | controller-manager (mock adapter only) | 50062 |
 
-Compose variants: `docker-compose.yml` (full), `.override.yml` (dev ports, auto-loaded by a bare `docker compose`; the Pi start path passes `-f docker-compose.yml` so it never loads it, #1319), `.lite.yml` (no
-observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318; the pairing daemon on the host network as in the full stack, #1402), `.ci.yml` (CI baseline dir for the flag service, profiles), `.dev.yml` (source mounts), `.dry-run.yml`
-(demo / experiment seed), `.decide-e2e.yml` (fake OpenAI server), `.agent-coordinator.yml`. (`.ci-rust.yml`, which nothing loaded, was deleted in #1322.)
+### Compose variants and host ports
+
+Every `docker-compose*.yml` at the repository root, what it adds and which command loads it. The compose network is
+`joustmania-network` (compose name `joustmania`); every container has a fixed `container_name` (`joustmania-<service>`), so a
+service cannot be scaled with `--scale`.
+
+| File | Kind | Adds or changes | Loaded by |
+|---|---|---|---|
+| `docker-compose.yml` | Base (full stack) | Every service of section 2; real hardware through rust-hid; the `python-hid` service only under the `python-hid` profile; loopback host ports below | Always (`-f`); the Pi runs it alone through `scripts/setup/joustmania-compose.sh` |
+| `docker-compose.override.yml` | Dev and test ports | Publishes flagd 8013, flag-service `127.0.0.1:8070`, controller-manager 50052 and 50062, game-coordinator 50053, menu 50054, audio 50056. Auto-loaded by a bare `docker compose`; the Pi path names `-f docker-compose.yml` so it never loads it (#1319) | Bare `docker compose`, `make dev`, `make dry-run`, the integration suite |
+| `docker-compose.dev.yml` | Hot reload | Volume-mounts Python service source and `lib/`, `pull_policy: build` for flag-service, `pull_policy` for the collector (`COLLECTOR_PULL_POLICY`, default `always`); rust-hid source mounted read-only for reference (no hot reload) | `make dev`; the integration suite with `USE_DEV_MOUNTS=true` (`make test-dev`) |
+| `docker-compose.ci.yml` | No hardware | Audio without devices (`play_audio=off`), CI flag baseline `services/flagd/ci/` (`backend=mock`). Moves pairing-daemon, rust-hid and python-hid to the `hardware` profile, the agent to `agent`, and connect-proxy, dashboard and envoy to `dashboard`, so none of them starts without that profile. Needs Compose 2.24+ (`!reset`) | `make up-mock` (with the base alone, no override), `make dry-run`, the integration suite |
+| `docker-compose.dry-run.yml` | Demo and experiments | On top of ci: the experiment cohort loop on, one seeded experiment, its own flag-service state file, the agent in the `agent` profile | `make dry-run` (also `IMAGE_TAG=latest`, profiles `agent` and `dashboard`) |
+| `docker-compose.decide-e2e.yml` | Test only | `fake-openai` (profile `agent`, host `127.0.0.1:18089`), a dummy `DECISION_OPENAI_API_KEY` and a lifted request budget on the agent, its own flag-service state file. Not a valid project alone | `tests/integration/test_decide_backend_e2e.py`, layered on base + override + ci with `--profile agent` |
+| `docker-compose.agent-coordinator.yml` | Test only | `agent-game-coordinator` (profile `agent`, `expose` 50053 only) and `GAME_COORDINATOR_ADDR` on the agent, for the cohort-loop soak (#1163) | `tests/integration/test_experiment_cohort_loop.py`, layered on the dry-run stack |
+| `docker-compose.lite.yml` | Standalone Pi stack | Its own project file, not an overlay: no observability (no Jaeger, VictoriaMetrics, Loki, Grafana, collector) and no agent, about 768 MB less memory; still flag-service, flagd, controller-manager, rust-hid, pairing-daemon (host network, as in the full stack), game-coordinator, menu, audio, connect-proxy, dashboard, envoy (UC-002 BR-003, #1318, #1402) | `docker compose -f docker-compose.lite.yml up -d` |
+
+Profiles merge across files: an overlay's `profiles` list is added to the base one, never replaced (python-hid keeps `python-hid` and
+gains `hardware` under the CI overlay). With no profile active, the base file starts everything except python-hid.
+
+**Host ports are loopback-only unless they must be reachable (#1319).** In the production path (`docker-compose.yml` alone, or lite) the only
+port reachable from the venue network is envoy's **80**. Three ports are published on `127.0.0.1` only, because the host-networked
+pairing daemon (raw HCI, no Docker DNS) reaches them there and nobody on the venue network may read the flag config or inject telemetry:
+
+| Host binding | Service | Why loopback |
+|---|---|---|
+| `127.0.0.1:8015` | flagd sync | Flag configuration must not be readable from the venue network |
+| `127.0.0.1:4317` | otel-collector OTLP gRPC | The agent observes games through this telemetry; no spans or metrics may be injected from outside (full stack only) |
+| `127.0.0.1:50058` | rust-hid | Pairing daemon reaches it as `RUST_HID_HOST=127.0.0.1`, so a second binding in an overlay would expose it |
+
+Outside the Pi path, `docker-compose.override.yml` adds the dev and test bindings listed above (the gRPC ports and flagd 8013 on all interfaces,
+flag-service 8070 on loopback), and `docker-compose.decide-e2e.yml` binds `127.0.0.1:18089`. Every other service is reachable only on
+`joustmania-network`, or through envoy's routes. Do not add a host port to the base file without a loopback bind and a reason in this table.
 
 **Traceability:** C-014, C-015, FR-085, NFR-020 / UC-035 / `docker-compose*.yml`, `services/envoy/envoy.yaml`, `services/*/server.py` / `tests/integration/conftest.py`, `tests/service/harness/stack.py`.
 

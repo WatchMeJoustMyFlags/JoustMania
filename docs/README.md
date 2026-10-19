@@ -50,8 +50,7 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 | Document | Use it to |
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Set up, follow the spec-first workflow, pass CI |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | Build, run and debug (partly stale, see the inventory) |
-| [DOCKER_WORKFLOW.md](DOCKER_WORKFLOW.md) | Compose and image workflow (partly stale) |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Build, run, test and debug; compose and image workflow |
 | [hardware-setup-guide.md](hardware-setup-guide.md) (includes the 25-controller setup) | Set up a Pi 5 with many controllers |
 | [UC-010](use_cases/UC-010.md), [UC-012](use_cases/UC-012.md) | Lobby and admin button maps (BR-005 in each) |
 | [CONTROLLER_CONNECTIVITY.md](CONTROLLER_CONNECTIVITY.md) | Troubleshoot Bluetooth (stale) |
