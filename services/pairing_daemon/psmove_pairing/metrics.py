@@ -33,6 +33,10 @@ pairing_usb_controllers = Gauge(
     "psmove_pairing_usb_controllers",
     "Currently connected USB controllers",
 )
+pairing_control_bind_unbound_addresses = Gauge(
+    "pairing_control_bind_unbound_addresses",
+    "CONTROL_BIND addresses requested but not bound (yet); >0 means the connect-proxy may get 502 on unpair",
+)
 pairing_duration_seconds = Histogram(
     "psmove_pairing_duration_seconds",
     "Time to complete pairing",

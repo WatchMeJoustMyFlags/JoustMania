@@ -4,8 +4,8 @@
 
 Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which defines the columns.
 
-- **147 unique Python metric names** (168 definitions; 5 names are defined in more than one module).
-- 79 of the 147 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
+- **148 unique Python metric names** (169 definitions; 5 names are defined in more than one module).
+- 80 of the 148 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
 - 0 names are defined but never recorded by any service.
 
 | Metric | Type | Labels | Defined in | Emitted | Consumers | Notes |
@@ -146,6 +146,7 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `pairing_bluetooth_adapter_hci_errors_total` | counter | `hci_adapter`, `direction` | pairing-daemon | yes | grafana |  |
 | `pairing_bluetooth_adapter_info` | gauge | `hci_adapter`, `address`, `manufacturer`, `manufacturer_id`, `hci_version`, `bus`, `usb_id`, `onboard` | pairing-daemon | yes | grafana |  |
 | `pairing_bluetooth_link_role_info` | gauge | `serial`, `hci_adapter`, `role` | pairing-daemon | yes | grafana |  |
+| `pairing_control_bind_unbound_addresses` | gauge | (none) | pairing-daemon | yes | (none) |  |
 | `process_cpu_seconds_total` | counter | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |  |
 | `process_resident_memory_bytes` | gauge | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |  |
 | `process_threads` | gauge | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |  |

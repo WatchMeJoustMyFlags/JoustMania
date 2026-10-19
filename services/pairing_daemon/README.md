@@ -217,6 +217,10 @@ Exposure is narrowed by:
   uses another subnet), so the LAN cannot reach port 8002. The lite stack runs
   the daemon on the Compose network and binds `0.0.0.0` there (port not
   published).
+  An address that cannot be bound at start (docker0 not up yet) is retried
+  in the background (1 s doubling to 30 s); `GET /healthz` shows
+  `control_bind.requested` and `control_bind.bound`, and the gauge
+  `pairing_control_bind_unbound_addresses` counts the missing ones (#1450).
 - The connect-proxy rejects browser requests from another origin (403), so a
   web page open on the operator's laptop cannot unpair controllers.
 - A host firewall (e.g. ufw) must allow the Docker bridge to reach host port
