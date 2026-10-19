@@ -212,7 +212,7 @@ async def test_subscriber_on_closed_loop_is_dropped_not_fatal():
     with patch("services.game_coordinator.metrics.event_bus_publish_errors_total") as errors_total:
         await bus.publish("event1", {})
 
-    assert await bus.get_subscriber_ids() == ["live"]
+    assert list(bus._subscribers) == ["live"]
     assert live_queue.get_nowait().event_type == "event1"
     errors_total.labels.assert_called_once_with(event_type="event1")
 

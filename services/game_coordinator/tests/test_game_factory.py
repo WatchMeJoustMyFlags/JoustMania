@@ -23,7 +23,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
 from lib.types import Games
-from services.game_coordinator.game_factory import GameFactory
+from services.game_coordinator.game_factory import _GAME_CLASSES, GameFactory
 
 
 async def async_noop(*_args, **_kwargs):
@@ -137,11 +137,9 @@ class TestGameFactoryCreateGame:
 
         assert game.get_game_name() == "Werewolf"
 
-    def test_nonstop_is_valid_mode(self):
-        """NonStop should be a valid mode (skipping creation - see #TBD)."""
-        # Note: NonstopJoustGame doesn't accept initial_players parameter
-        # This tests that the mode is valid without instantiation
-        assert GameFactory.is_valid_mode("NonStop") is True
+    def test_nonstop_is_registered(self):
+        """NonStop resolves to a registered game class (not instantiated here)."""
+        assert Games.from_name("NonStop") in _GAME_CLASSES
 
 
 class TestGameFactoryTeamGames:
@@ -278,104 +276,17 @@ class TestGameFactoryErrors:
             )
 
 
-class TestGameFactoryGetSupportedModes:
-    """Tests for get_supported_modes method."""
-
-    def test_returns_list(self):
-        """get_supported_modes should return a list."""
-        modes = GameFactory.get_supported_modes()
-
-        assert isinstance(modes, list)
-
-    def test_includes_ffa(self):
-        """get_supported_modes should include JoustFFA."""
-        modes = GameFactory.get_supported_modes()
-
-        assert "JoustFFA" in modes
-
-    def test_includes_tournament(self):
-        """get_supported_modes should include Tournament."""
-        modes = GameFactory.get_supported_modes()
-
-        assert "Tournament" in modes
-
-    def test_includes_all_implemented(self):
-        """get_supported_modes should include all implemented modes."""
-        modes = GameFactory.get_supported_modes()
-
-        expected = [
-            "JoustFFA",
-            "JoustTeams",
-            "JoustRandomTeams",
-            "Traitor",
-            "Werewolf",
-            "Zombies",
-            "Swapper",
-            "FightClub",
-            "Tournament",
-            "NonStop",
-        ]
-
-        for mode in expected:
-            assert mode in modes
-
-
-class TestGameFactoryIsValidMode:
-    """Tests for is_valid_mode method."""
-
-    def test_valid_mode_returns_true(self):
-        """is_valid_mode should return True for valid mode."""
-        assert GameFactory.is_valid_mode("FFA") is True
-        assert GameFactory.is_valid_mode("Tournament") is True
-        assert GameFactory.is_valid_mode("Zombies") is True
-
-    def test_invalid_mode_returns_false(self):
-        """is_valid_mode should return False for invalid mode."""
-        assert GameFactory.is_valid_mode("NonexistentMode") is False
-        assert GameFactory.is_valid_mode("") is False
-
-    def test_case_insensitive(self):
-        """is_valid_mode should be case insensitive."""
-        assert GameFactory.is_valid_mode("ffa") is True
-        assert GameFactory.is_valid_mode("FFA") is True
-        assert GameFactory.is_valid_mode("Ffa") is True
-
-
-class TestGameFactoryGetGameMode:
-    """Tests for get_game_mode method."""
-
-    def test_returns_enum_for_valid(self):
-        """get_game_mode should return Games enum for valid name."""
-        result = GameFactory.get_game_mode("FFA")
-
-        assert result == Games.JoustFFA
-
-    def test_returns_none_for_invalid(self):
-        """get_game_mode should return None for invalid name."""
-        result = GameFactory.get_game_mode("NonexistentMode")
-
-        assert result is None
-
-    def test_case_insensitive(self):
-        """get_game_mode should be case insensitive."""
-        result1 = GameFactory.get_game_mode("ffa")
-        result2 = GameFactory.get_game_mode("FFA")
-        result3 = GameFactory.get_game_mode("Ffa")
-
-        assert result1 == result2 == result3 == Games.JoustFFA
-
-
 class TestGameFactoryAliases:
     """Tests for game name aliases via Games enum."""
 
     def test_joust_ffa_alias(self):
         """JoustFFA should be recognized."""
-        assert GameFactory.is_valid_mode("JoustFFA") is True
+        assert Games.from_name("JoustFFA") in _GAME_CLASSES
 
     def test_fight_club_alias(self):
         """FightClub should be recognized."""
-        assert GameFactory.is_valid_mode("FightClub") is True
+        assert Games.from_name("FightClub") in _GAME_CLASSES
 
     def test_non_stop_alias(self):
         """NonStop should be recognized."""
-        assert GameFactory.is_valid_mode("NonStop") is True
+        assert Games.from_name("NonStop") in _GAME_CLASSES

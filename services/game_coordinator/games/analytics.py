@@ -9,14 +9,11 @@ Key features:
 - Movement zone classification (still/active/warning/danger)
 - Near-death event detection (raw > threshold but EMA saved player)
 - Per-game summary statistics
-- Optional 60Hz replay data for testing/replay
 
 Memory footprint:
-- Base: ~500 bytes per player (counters + running stats)
-- Replay mode: +48 bytes per sample x 60Hz x duration (~170KB/3min game)
+- ~500 bytes per player (counters + running stats)
 """
 
-import json
 import logging
 import math
 import time
@@ -56,39 +53,11 @@ class Playstyle(IntEnum):
 
 
 @dataclass
-class ReplaySample:
-    """Single 60Hz sample for replay/testing."""
-
-    timestamp_ms: int  # Milliseconds since game start
-    accel_x: float
-    accel_y: float
-    accel_z: float
-    accel_mag: float
-    gyro_x: float = 0.0
-    gyro_y: float = 0.0
-    gyro_z: float = 0.0
-
-    def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
-        return {
-            "ts": self.timestamp_ms,
-            "ax": round(self.accel_x, 4),
-            "ay": round(self.accel_y, 4),
-            "az": round(self.accel_z, 4),
-            "am": round(self.accel_mag, 4),
-            "gx": round(self.gyro_x, 4),
-            "gy": round(self.gyro_y, 4),
-            "gz": round(self.gyro_z, 4),
-        }
-
-
-@dataclass
 class PlayerAnalytics:
     """
     Analytics tracker for a single player during a game.
 
-    Accumulates statistics on movement patterns, near-death events,
-    and optionally stores full 60Hz replay data.
+    Accumulates statistics on movement patterns and near-death events.
     """
 
     serial: str
@@ -123,9 +92,6 @@ class PlayerAnalytics:
     # variance is a whole-game summary, while this reflects only recent motion.
     _accel_window: deque[float] = field(default_factory=lambda: deque(maxlen=MOVEMENT_VARIANCE_WINDOW))
 
-    # Replay buffer (if enabled)
-    replay_samples: list[ReplaySample] = field(default_factory=list)
-
     # Track last zone for metrics
     _last_zone: MovementZone = MovementZone.STILL
 
@@ -155,9 +121,6 @@ class PlayerAnalytics:
 
     def record_sample(
         self,
-        accel_x: float,
-        accel_y: float,
-        accel_z: float,
         raw_accel_mag: float,
         smoothed_accel: float,
         death_threshold: float,
@@ -171,7 +134,6 @@ class PlayerAnalytics:
         Record a single frame of controller data.
 
         Args:
-            accel_x, accel_y, accel_z: Raw accelerometer values (g-force)
             raw_accel_mag: Raw acceleration magnitude (g-force)
             smoothed_accel: EMA-smoothed acceleration magnitude
             death_threshold: Current death threshold (for near-death detection)
@@ -225,21 +187,6 @@ class PlayerAnalytics:
         # Near-death detection: raw exceeded threshold but EMA saved them
         if raw_accel_mag > death_threshold and smoothed_accel <= death_threshold:
             self.near_death_count += 1
-
-        # Replay buffer (optional)
-        if config.enable_replay:
-            timestamp_ms = int((time.time() - self.game_start_time) * 1000)
-            sample = ReplaySample(
-                timestamp_ms=timestamp_ms,
-                accel_x=accel_x,
-                accel_y=accel_y,
-                accel_z=accel_z,
-                accel_mag=raw_accel_mag,
-                gyro_x=gyro_x if config.track_gyro else 0.0,
-                gyro_y=gyro_y if config.track_gyro else 0.0,
-                gyro_z=gyro_z if config.track_gyro else 0.0,
-            )
-            self.replay_samples.append(sample)
 
         return zone
 
@@ -425,13 +372,3 @@ class PlayerAnalytics:
             "playstyle_value": playstyle.value,
             "skill_level": round(self.get_skill_level(), 3),
         }
-
-    def export_replay_json(self) -> str:
-        """Export replay samples as JSON string."""
-        return json.dumps(
-            {
-                "serial": self.serial,
-                "game_start": self.game_start_time,
-                "samples": [s.to_dict() for s in self.replay_samples],
-            }
-        )
