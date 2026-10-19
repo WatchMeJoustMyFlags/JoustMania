@@ -25,7 +25,7 @@
 | Step | Name                    | Description                                                                                          | Test Data                              | Use Case                            |
 |------|-------------------------|------------------------------------------------------------------------------------------------------|----------------------------------------|-------------------------------------|
 | 1    | Play FFA to a winner    | Operator starts the game and eliminates three players                                                | winner `MOCK0004`                      | [UC-020](../use_cases/UC-020.md)    |
-| 2    | Detect the game end     | The agent sees `game_active` go 1 → 0 for the game id and starts the game-end chain                   | game id `G1` (captured)                | [UC-041](../use_cases/UC-041.md)    |
+| 2    | Detect the game end     | The agent sees `game_active` go 1 → 0 (or the game root span, UC-041 A4) for the game id and starts the game-end chain                   | game id `G1` (captured)                | [UC-041](../use_cases/UC-041.md)    |
 | 3    | Retro                   | The agent asks the backend for a session assessment and records an `agent.llm.retro` span for `G1`    | -                                      | [UC-042](../use_cases/UC-042.md)    |
 | 4    | Game summary            | The agent adds the game to its rolling window of the last 20 games                                   | -                                      | [UC-042](../use_cases/UC-042.md)    |
 | 5    | Propose                 | The proposer submits a proposal; the experiment gate accepts it                                      | `sensitivity` → `slow` for shadow games | [UC-042](../use_cases/UC-042.md)   |

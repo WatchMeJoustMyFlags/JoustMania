@@ -463,6 +463,9 @@ func TestMux_TimelineIsolation(t *testing.T) {
 	// Evicting game-A (after its end + grace) must not touch game-B's narrative.
 	mux.ApplyMetrics(gameActiveFor("game-A", 0)) // end A
 	clk.advance(2 * time.Hour)
+	// B is live, so its game_active keeps arriving (else the stale backstop, #1494,
+	// would end it after 30 s of silence).
+	mux.ApplyMetrics(gameActiveFor("game-B", 1))
 	mux.EvictStale() // A drained + removed; B still active
 	if _, ok := mux.Snapshot("game-A"); ok {
 		t.Fatal("game-A partition should be evicted")

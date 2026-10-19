@@ -1,6 +1,8 @@
 package gamecontext
 
 import (
+	"time"
+
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
@@ -11,6 +13,9 @@ const (
 	spanAttrGameMode = "game.mode"
 	spanAttrGameID   = "game.id"
 	spanAttrGameKind = "game.kind"
+	// spanAttrGameName is set only by the game root span together with game.id and
+	// game.kind (game_session.py), which identifies the root span (#1494).
+	spanAttrGameName = "game.name"
 	// Experiment attribution span attributes (#975). Spans are the PRIMARY
 	// attribution channel — the game span carries experiment.id / experiment.arm
 	// unconditionally (empty when not in an experiment).
@@ -69,7 +74,8 @@ func (s *Store) isOwnResource(res pcommon.Resource) bool {
 // ApplySpans applies trace data to the store. Spans are a LATE signal in this
 // system: player_lifecycle spans only end at game end, and the collector batches
 // traces (~10s), so this path is used for identity enrichment and elimination
-// confirmation only, never as a primary live signal. It returns true if anything
+// confirmation, and as the second game-end signal (the game root span, #1494),
+// never as a primary live signal. It returns true if anything
 // was recognized.
 func (s *Store) ApplySpans(td ptrace.Traces) bool {
 	updated := false
@@ -136,7 +142,33 @@ func (s *Store) applySpan(span ptrace.Span) bool {
 			updated = true
 		}
 	}
+
+	// Game end from the root span (#1494, UC-041 A4): OTLP exports a span only
+	// once it ended, and the game root span ends when its session ends (natural
+	// end, force-end or error), so it reaching the agent means the game is over
+	// even when its game_active 0 datapoint was never exported. Applied after the
+	// identity above so the end snapshot carries the game's id, kind and arm.
+	if isGameRootSpan(attrs, labels) {
+		var end time.Time
+		if ts := span.EndTimestamp(); ts != 0 {
+			end = ts.AsTime()
+		}
+		s.EndGameFromRootSpan(end)
+		updated = true
+	}
 	return updated
+}
+
+// isGameRootSpan reports whether a span is a game's root span: the only span
+// that carries game.name together with game.id and game.kind (the
+// StreamGameEvents server span has game.name + game.id but no game.kind; the
+// player_lifecycle span has game.id + game.kind but no game.name).
+func isGameRootSpan(attrs pcommon.Map, labels gameLabels) bool {
+	if labels.GameID == "" || labels.GameKind == "" {
+		return false
+	}
+	_, ok := attrs.Get(spanAttrGameName)
+	return ok
 }
 
 // ensurePlayer creates a player record for identity enrichment without setting

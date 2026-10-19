@@ -21,6 +21,22 @@ type Store struct {
 	sessionSeq int
 	endedAt    time.Time // when GameActive went true->false; starts the grace window
 
+	// gameEndAt is when the game itself ended (#1494): the arrival of the
+	// game_active 0, the game root span's end timestamp, or the last game_active
+	// datapoint for a stale-ended game. It closes the start->end duration bracket
+	// (effectiveDurationLocked), while endedAt (the time the agent learned of the
+	// end) opens the grace window. Reset with endedAt.
+	gameEndAt time.Time
+	// gameActiveSeenAt is when the last game_active datapoint (any value) arrived
+	// (#1494). EvictStale ends an active game whose game_active series has been
+	// silent for gameActiveStaleAfter, so a dropped 0 cannot pin the partition.
+	gameActiveSeenAt time.Time
+	// rootSpanEnded latches once this partition's game root span arrived (#1494).
+	// The root span carries game.id, so a partition with this latch hosts exactly
+	// one game: a later game_active=1 (out-of-order delivery) never restarts it.
+	// Never reset: the partition is dropped once drained.
+	rootSpanEnded bool
+
 	// durationAdvancedAt is when game_duration_seconds last CHANGED value (#1305).
 	// The coordinator's observable gauge is re-exported every interval even when
 	// the value is frozen, so arrival time alone cannot tell a live gauge from a
@@ -83,8 +99,10 @@ type Store struct {
 	// self-ingestion feedback loop. Set once before serving; not mutex-guarded.
 	ownService string
 
-	// OnGameEnd, when non-nil, is fired EXACTLY ONCE on the GameActive true->false
-	// transition (#844 post-game retrospective), with a pre-reset GameContext
+	// OnGameEnd, when non-nil, is fired EXACTLY ONCE per game when the game ends
+	// (#844 post-game retrospective), whichever end signal arrives first: the
+	// game_active 1 -> 0 datapoint, the game root span (EndGameFromRootSpan) or a
+	// stale game_active series (EvictStale) (#1494). It gets a pre-reset GameContext
 	// snapshot — the EliminationSequence and SessionID are still intact. Set once
 	// before serving; nil disables the hook (behavior-neutral). It is invoked
 	// AFTER the store mutex is released (never under s.mu) so the callback may read
@@ -400,6 +418,14 @@ func (s *Store) SetPlayerConnected(serial string, connected bool) {
 // lost exports without flapping to the fallback.
 const durationStaleAfter = 5 * time.Second
 
+// gameActiveStaleAfter is how long an active game's game_active series may stay
+// silent before EvictStale ends the game (#1494, UC-041 A4). The coordinator
+// re-exports the gauge every metric export interval (about 1 s) while the game is
+// live, and the game root span normally ends a game whose 0 was dropped within one
+// span batch (about 5 s), so 30 s is only the backstop for a game that sent
+// neither (coordinator crash, lost span batch).
+const gameActiveStaleAfter = 30 * time.Second
+
 // SetSessionDuration records elapsed game time.
 func (s *Store) SetSessionDuration(v float64) {
 	s.mu.Lock()
@@ -436,7 +462,11 @@ func (s *Store) effectiveDurationLocked() *float64 {
 		if s.endedAt.IsZero() {
 			return sess.DurationSeconds
 		}
-		bracket := s.endedAt.Sub(sess.StartedAt).Seconds()
+		bracketEnd := s.gameEndAt
+		if bracketEnd.IsZero() {
+			bracketEnd = s.endedAt
+		}
+		bracket := bracketEnd.Sub(sess.StartedAt).Seconds()
 		if bracket <= 0 || (sess.DurationSeconds != nil && *sess.DurationSeconds >= bracket) {
 			return sess.DurationSeconds
 		}
@@ -516,7 +546,8 @@ func (s *Store) SetWarningThreshold(v float64) {
 // SetGameActive records game-active state and manages session lifecycle.
 // A false->true transition starts a new session (bumps the sequence, assigns a
 // synthetic SessionID, clears per-game state). A true->false transition opens
-// the grace window by recording endedAt.
+// the grace window by recording endedAt. A game_active=1 for a partition whose
+// game root span already ended is ignored (#1494).
 func (s *Store) SetGameActive(active bool) {
 	// endSnapshot is captured under the lock on a true->false transition and the
 	// OnGameEnd callback is fired with it AFTER the mutex is released (never under
@@ -524,10 +555,12 @@ func (s *Store) SetGameActive(active bool) {
 	var endSnapshot *GameContext
 
 	s.mu.Lock()
-	prev := false
-	if s.ctx.Session.GameActive != nil {
-		prev = *s.ctx.Session.GameActive
+	s.gameActiveSeenAt = s.now()
+	if active && s.rootSpanEnded {
+		s.mu.Unlock()
+		return
 	}
+	prev := s.gameActiveLocked()
 	s.ctx.Session.GameActive = ptr(active)
 
 	switch {
@@ -542,6 +575,7 @@ func (s *Store) SetGameActive(active bool) {
 		s.elapsedHighWater = 0
 		s.elimOrder = make(map[string]int)
 		s.endedAt = time.Time{}
+		s.gameEndAt = time.Time{}
 		// New session: clear the prior game's narrative and open the new one with a
 		// "start" phase event (#916). Reset here (not only on grace exit) so a
 		// back-to-back restart cannot carry the previous game's trend.
@@ -553,21 +587,75 @@ func (s *Store) SetGameActive(active bool) {
 		s.speedTrack.reset()
 		s.history.append(TimelineEvent{At: s.now(), Kind: EventPhase, Detail: "start"})
 	case prev && !active:
-		s.endedAt = s.now()
-		// Game end is the final phase transition; record it BEFORE the snapshot so
-		// the OnGameEnd retro (#844) sees a narrative ending in "end" (#916).
-		s.history.append(TimelineEvent{At: s.now(), Kind: EventPhase, Detail: "end"})
-		if s.OnGameEnd != nil {
-			snap := s.snapshotLocked() // pre-reset state: SessionID + sequence intact
-			endSnapshot = &snap
-		}
+		endSnapshot = s.endGameLocked(s.now())
 	}
 	s.touchSession()
 	s.mu.Unlock()
 
-	if endSnapshot != nil {
-		s.OnGameEnd(*endSnapshot)
+	s.fireGameEnd(endSnapshot)
+}
+
+// gameActiveLocked reports whether the session's game is active. Caller holds s.mu.
+func (s *Store) gameActiveLocked() bool {
+	return s.ctx.Session.GameActive != nil && *s.ctx.Session.GameActive
+}
+
+// endGameLocked ends the active game (#844, #1494): it is the single game-end
+// transition every end signal (game_active 0, game root span, stale game_active)
+// goes through, so OnGameEnd fires exactly once per game whichever signal arrives
+// first; the later ones find the game inactive. gameEnd is when the game itself
+// ended (closes the duration bracket); the grace window opens now. It returns the
+// pre-reset snapshot for OnGameEnd (nil when no hook is wired). Caller holds s.mu
+// and must have checked that the game is active.
+func (s *Store) endGameLocked(gameEnd time.Time) *GameContext {
+	now := s.now()
+	s.ctx.Session.GameActive = ptr(false)
+	s.endedAt = now
+	s.gameEndAt = gameEnd
+	// Game end is the final phase transition; record it BEFORE the snapshot so
+	// the OnGameEnd retro (#844) sees a narrative ending in "end" (#916).
+	s.history.append(TimelineEvent{At: now, Kind: EventPhase, Detail: "end"})
+	if s.OnGameEnd == nil {
+		return nil
 	}
+	snap := s.snapshotLocked() // pre-reset state: SessionID + sequence intact
+	return &snap
+}
+
+// fireGameEnd invokes OnGameEnd with snap outside the store mutex; nil is a no-op.
+func (s *Store) fireGameEnd(snap *GameContext) {
+	if snap != nil {
+		s.OnGameEnd(*snap)
+	}
+}
+
+// EndGameFromRootSpan is the second game-end signal (#1494): the coordinator
+// exports the game root span when the game's session ends, natural end and
+// force-end alike, so its arrival ends a game whose game_active 0 datapoint was
+// never exported (retire removed the series first). spanEnd is the span's end
+// timestamp (zero when absent); it closes the duration bracket, clamped to
+// [StartedAt, now]. A game that already ended (or was never seen active) is left
+// alone, and the partition is latched so a late game_active=1 cannot restart it.
+func (s *Store) EndGameFromRootSpan(spanEnd time.Time) {
+	var endSnapshot *GameContext
+
+	s.mu.Lock()
+	s.rootSpanEnded = true
+	if s.gameActiveLocked() {
+		now := s.now()
+		gameEnd := spanEnd
+		switch {
+		case gameEnd.IsZero() || gameEnd.After(now):
+			gameEnd = now
+		case gameEnd.Before(s.ctx.Session.StartedAt):
+			gameEnd = s.ctx.Session.StartedAt
+		}
+		endSnapshot = s.endGameLocked(gameEnd)
+		s.touchSession()
+	}
+	s.mu.Unlock()
+
+	s.fireGameEnd(endSnapshot)
 }
 
 // SetGameKind records the game kind ("real"/"shadow") from the game_kind
@@ -865,7 +953,7 @@ func (s *Store) isDrained() bool {
 	if !s.endedAt.IsZero() {
 		return false // grace window still open
 	}
-	if s.ctx.Session.GameActive != nil && *s.ctx.Session.GameActive {
+	if s.gameActiveLocked() {
 		return false // game still active
 	}
 	return true
@@ -876,9 +964,17 @@ func (s *Store) isDrained() bool {
 // elimination), and resets the session once its grace window has elapsed. Players
 // persist across session reset so the lobby can continue between games.
 func (s *Store) EvictStale() {
+	var endSnapshot *GameContext
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now()
+
+	// Backstop game end (#1494): an active game whose game_active series has been
+	// silent past gameActiveStaleAfter ended without a 0 or a root span reaching the
+	// agent. The bracket closes at the last datapoint; the grace window opens now.
+	if s.gameActiveLocked() && !s.gameActiveSeenAt.IsZero() && now.Sub(s.gameActiveSeenAt) > gameActiveStaleAfter {
+		endSnapshot = s.endGameLocked(s.gameActiveSeenAt)
+		s.touchSession()
+	}
 
 	// Read the TTLs LIVE (#927): a config-change to lifecycle.player_ttl_seconds /
 	// lifecycle.session_grace_seconds is honored on this very tick. Read once per
@@ -908,6 +1004,7 @@ func (s *Store) EvictStale() {
 		s.ctx.GameCycleSpanID = ""     // ditto, the game_cycle span_id (#1325)
 		s.elimOrder = make(map[string]int)
 		s.endedAt = time.Time{}
+		s.gameEndAt = time.Time{}
 		s.ctx.UpdatedAt = now
 		// Drop the finished game's narrative along with the rest of its
 		// session-scoped state (#916): the ring buffer is evicted with the session
@@ -918,4 +1015,7 @@ func (s *Store) EvictStale() {
 		s.playerHistory = make(map[string]*playerHistory)
 		s.speedTrack.reset()
 	}
+	s.mu.Unlock()
+
+	s.fireGameEnd(endSnapshot)
 }

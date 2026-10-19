@@ -198,7 +198,7 @@ name from `controller_info{serial,name}`, §4.4; absent when no name was seen fo
 | Signal | Matched on | Source |
 |---|---|---|
 | Metrics | names `game_player_accel_magnitude`, `controller_battery_level`, `controller_battery_pct`, `game_player_playstyle`, `game_player_alive`, `controller_connected`, `game_duration_seconds`, `game_active_players`, `game_active`, `game_current_mode`, `game_player_peak_accel`, `game_trace_correlation`, `game_music_tempo`, `game_effective_death_threshold`, `game_effective_warning_threshold`, `game_player_movement_variance`, `game_player_movement_variance_aggregate`, `game_player_skill_level`, `game_player_elimination_order` (the agent does not ingest `game_player_deaths_total` (removed in #1376): per-game deaths and their order come from `game_player_elimination_order` and the `player_death` span event; `game_current_mode`, `game_music_tempo` and the two threshold gauges carry `game_kind, game_id` (#1379) and land in their game's partition); `controller_info` (labels `serial`, `name`: identity only, kept process-wide as the serial → display-name view for `player.name`, never routed to a game partition and never a trigger, #1295); labels `serial`, `mode`, `game_id`, `game_kind`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id`, `experiment_id`, `arm` | `services/agent/gamecontext/extract_metrics.go:13-91`; `controller_info`: `gamecontext/multiplexer.go` (`PlayerName`) |
-| Spans | any span: `player.serial`, `game.mode`, `game.id`, `game.kind`, `experiment.id`, `experiment.arm`; event `player_death` | `gamecontext/extract_spans.go:10-135` |
+| Spans | any span: `player.serial`, `game.mode`, `game.id`, `game.kind`, `experiment.id`, `experiment.arm`; event `player_death`; the game root span (the only span with `game.name`, `game.id` and `game.kind` together) ends its game (UC-041 A4, #1494) | `gamecontext/extract_spans.go` (`applySpan`, `isGameRootSpan`) |
 | Infra spans | `controller.bluetooth_health` + event `bluetooth_controller_sample` | `infracontext/extract_spans.go:14-78` |
 
 Renaming any of these breaks the agent silently: update this table and the extractor in the same PR.
@@ -210,6 +210,14 @@ from when it saw `game_active` go 0 → 1, never going below the last gauge valu
 decreases. At game end the duration every game-end consumer (experiment conclusion, retro, summary, proposer) sees is
 the larger of the gauge and the agent's own start → end time, because the coordinator's final set can arrive after
 `game_active` 0 (UC-041 A3, BR-003; `services/agent/gamecontext/store.go` `effectiveDurationLocked`).
+
+**Game end.** The agent ends a game on the first of three signals (UC-041 A4, BR-005; #1494): the `game_active`
+1 → 0 datapoint; the game root span arriving (OTLP exports a span once it ended, and the root span ends with the
+game's session; the duration bracket then closes at the span's end time and a later `game_active` 1 for that game id
+is ignored); or the game's `game_active` series staying silent for 30 s (`gameActiveStaleAfter`; the bracket closes
+at the last datapoint). `OnGameEnd` fires once per game whichever comes first, so a dropped 0 no longer keeps the
+game's partition from being evicted (`services/agent/gamecontext/store.go` `endGameLocked`, `EndGameFromRootSpan`,
+`EvictStale`).
 
 **Traceability:** FR-040 to FR-049, FR-056, FR-063, FR-071, FR-072 / UC-040 to UC-045, UC-050, UC-051 / `services/agent/decision/`, `services/agent/experiment/`, `services/agent/gamecontext/` / `services/agent/decision/*_test.go` (trace_link, signal_telemetry, gameplay_phase_parent, game_cycle_parent, effect_parent), `tests/integration/test_decide_backend_e2e.py`, `tests/integration/test_experiment_cohort_loop.py`.
 
@@ -264,8 +272,8 @@ the session retired, its game-thread teardown writes none of its per-game series
 `game_active_players`, `game_duration_seconds`, `game_current_mode`, `game_trace_correlation`), even when retire ran
 before the loop's teardown; `games_completed_total` is still counted. Retire (natural-end sweep and force-end alike)
 sets `game_active` and `game_active_players` to 0 itself and removes the session's series three metric export
-intervals later (`metrics_export_interval_ms`, so about 3 s), without blocking, because the agent detects a game's end
-only from the `game_active` 1 → 0 datapoint. Game-state series (`GAME_STATE_GAUGES`) that the game loop writes after
+intervals later (`metrics_export_interval_ms`, so about 3 s), without blocking, because the `game_active` 1 → 0
+datapoint is the agent's fastest game-end signal (the root span and the 30 s stale backstop are later, §4.4). Game-state series (`GAME_STATE_GAUGES`) that the game loop writes after
 retire, for example after a force-end whose join timed out, are removed by the game's own `run()` cleanup when the
 loop ends.
 
