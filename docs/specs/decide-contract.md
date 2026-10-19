@@ -505,6 +505,13 @@ specified here (#1234). The agent talks to models **directly**: there is no gate
 hosted inference is allowed, local inference is not a goal, rules are the offline floor). The LiteLLM gateway
 (#1049) and the `mode` / `model` / `prompt_variant` flags were removed in #1234.
 
+To enable the model-backed retro and proposer (the compose `agent` service has no profile, so a plain `up` starts it;
+the old `--profile agent` flag selects nothing):
+
+```bash
+AGENT_INFERENCE_BACKEND=claude ANTHROPIC_API_KEY=<key> docker compose up -d agent
+```
+
 | Seam | Used for | Selected by | Backends |
 |---|---|---|---|
 | Decision backend | in-game decisions (FFA) | `decision.backend` flag, live | `rules` (default), `jev`, `claude`, `openai` |
