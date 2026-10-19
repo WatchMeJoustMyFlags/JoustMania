@@ -63,7 +63,7 @@ in-memory services).
 | Code enforcing a rule | `# UC-040 BR-004: <one line>` / `// UC-040 BR-004: ...` above the enforcing code |
 | NFR measurement / check (pytest) | `@pytest.mark.nfr("NFR-014")` (several ids allowed), on the test or class that measures or verifies the NFR; print the measured numbers. Registered next to `uc` |
 | NFR measurement / check (Go) | `// NFR: NFR-012 NFR-013` directly above `func Test...` (next to a `// UC:` line if both apply) |
-| Rust (`cargo test`) | `// UC: UC-002 main step 2` / `// UC: UC-030 step 2` and, for an NFR, `// NFR: NFR-001` directly above `#[test] fn ...` (same tokens as Go; tests live in the `#[cfg(test)] mod tests` of the file, so the tag line is indented) |
+| Rust (`cargo test`) | `// UC: UC-030 main step 2` and, for an NFR, `// NFR: NFR-001` directly above `#[test] fn ...`: the flow token is `main` / `A<n>` as in Go (conditions and `BR-xxx` are unit tokens too), plus an optional `step N`, the analogue of pytest `steps=`. Tests live in the `#[cfg(test)] mod tests` of the file, so the tag line is indented |
 
 ### Condition tag (`cond=`)
 

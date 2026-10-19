@@ -7,6 +7,7 @@ description: >
   that carry its traceability tag (@pytest.mark.uc, Go `// UC:` lines and
   `UC-XXX/` subtests in services/agent and services/connect-proxy, shell
   `# UC:` header lines in scripts/tests, dashboard describe('UC-XXX ...'),
+  Rust `// UC:` / `// NFR:` lines in services/rust-hid,
   and `nfr` markers / `// NFR:` lines for linked NFRs) and to the code, lists
   gaps, derives the status the evidence allows (Tested only if every main
   scenario and alternative flow has a tagged test, no Known gap is open and

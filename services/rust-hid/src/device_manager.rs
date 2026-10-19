@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(data.report.gyro_x, -1234.0);
     }
 
-    // UC: UC-030 step 2
+    // UC: UC-030 main step 2
     // NFR: NFR-001
     #[test]
     fn test_poll_loop_polls_open_device_about_every_millisecond() {
@@ -487,17 +487,23 @@ mod tests {
         let mut intervals: Vec<Duration> = polls.windows(2).map(|w| w[1] - w[0]).collect();
         assert!(intervals.len() >= 50, "only {} poll intervals in 300 ms", intervals.len());
         intervals.sort();
+        let min = intervals[0];
         let median = intervals[intervals.len() / 2];
+        let p90 = intervals[intervals.len() * 9 / 10];
         println!(
-            "rust-hid poll interval: n={} min={:?} median={:?} max={:?}",
+            "rust-hid poll interval: n={} min={:?} median={:?} p90={:?} max={:?}",
             intervals.len(),
-            intervals[0],
+            min,
             median,
+            p90,
             intervals[intervals.len() - 1]
         );
-        // The loop sleeps POLL_INTERVAL (1 ms) per pass: never faster (no busy-wait),
-        // and a median within 2 ms keeps up with the ~1 kHz controller.
-        assert!(median >= POLL_INTERVAL, "median poll interval {median:?} < 1 ms: busy-waiting");
+        // Every pass sleeps POLL_INTERVAL (1 ms), so no interval is shorter (no busy-wait).
+        // A median within 2 ms keeps up with the ~1 kHz controller, and p90 within 5 ms
+        // catches periodic stalls. The max is not bounded: one scheduler hiccup under
+        // CI load is not a defect.
+        assert!(min >= POLL_INTERVAL, "min poll interval {min:?} < 1 ms: busy-waiting");
         assert!(median <= Duration::from_millis(2), "median poll interval {median:?} > 2 ms");
+        assert!(p90 <= Duration::from_millis(5), "p90 poll interval {p90:?} > 5 ms");
     }
 }
