@@ -225,6 +225,7 @@ class TestGrantShieldPrimitive:
 # --------------------------------------------------------------------------- #
 class TestShieldSecondsHandler:
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A3")
     async def test_shields_only_targeted_serials(self):
         game = make_ffa_game(num_players=3)
         mgr, _ = make_manager(game=game)
