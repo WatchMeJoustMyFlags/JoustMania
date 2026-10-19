@@ -62,8 +62,19 @@ class MultiplexerBackend(ControllerBackend):
         # explicit targeting or rollout selects their adapter_type.
         self._routing_only_adapters = routing_only_adapters or []
 
-        # Adapter-based routing
+        # Adapter-based routing. Copy-on-write: the table is never mutated in
+        # place, every change publishes a new dict, so the lock-free readers
+        # (100 Hz state loop, LED batch) and the discovery thread iterating it
+        # always see a consistent snapshot (#1478).
         self._serial_to_adapter: dict[str, ControllerIOAdapter] = {}
+        # Guards writes to _serial_to_adapter and _routing_changes. Held only
+        # for a dict copy, never across I/O, so connect/disconnect on the event
+        # loop never wait on an adapter call.
+        self._routing_lock = threading.Lock()
+        # connect/disconnect changes made since the current discovery pass
+        # started (serial -> adapter, None = disconnected). The pass merges them
+        # into its result instead of overwriting them (#1478).
+        self._routing_changes: dict[str, ControllerIOAdapter | None] = {}
 
         # Centralized state
         self._led_colors: dict[str, tuple[int, int, int]] = {}
@@ -119,7 +130,7 @@ class MultiplexerBackend(ControllerBackend):
                 serials = adapter.discover()
                 for serial in serials:
                     adapter.open(serial)
-                    self._serial_to_adapter[serial] = adapter
+                    self._set_route(serial, adapter)
                 any_success = True
                 logger.info(f"Initialized {adapter.adapter_type} adapter with {len(serials)} controllers")
             except Exception:
@@ -133,7 +144,9 @@ class MultiplexerBackend(ControllerBackend):
             except Exception:
                 logger.exception(f"Failed to shutdown {adapter.adapter_type} adapter")
 
-        self._serial_to_adapter.clear()
+        with self._routing_lock:
+            self._serial_to_adapter = {}
+            self._routing_changes.clear()
         self._led_colors.clear()
         self._rumble.clear()
         self._last_sent_color.clear()
@@ -142,8 +155,29 @@ class MultiplexerBackend(ControllerBackend):
         self._last_backend.clear()
         self._last_adapter.clear()
 
+    def _set_route(self, serial: str, adapter: ControllerIOAdapter | None) -> None:
+        """Assign (or with None, drop) one serial's adapter, copy-on-write.
+
+        Called on the event loop by connect/disconnect while discovery may be
+        building a new table in its worker thread; the change is also recorded
+        so that pass merges it instead of overwriting it (#1478).
+        """
+        with self._routing_lock:
+            table = dict(self._serial_to_adapter)
+            if adapter is None:
+                table.pop(serial, None)
+            else:
+                table[serial] = adapter
+            self._serial_to_adapter = table
+            self._routing_changes[serial] = adapter
+
     def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
-        seen = self._route_controllers(force_rescan)
+        # Passes are serialised by the discovery loop (its only caller). Forget
+        # changes the previous pass already merged; anything recorded from here
+        # on happened while this pass was running and wins over its result.
+        with self._routing_lock:
+            self._routing_changes.clear()
+        discovered = self._route_controllers(force_rescan)
         # Discovery and the 20 Hz LED batch run in separate worker threads
         # (#1447). The routing swap and the stale-state cleanup happen under
         # the LED lock, and update_all_leds re-reads the colour and the adapter
@@ -153,7 +187,18 @@ class MultiplexerBackend(ControllerBackend):
         # a batch that runs between that close and this swap may still write
         # to the closed handle once; set_output then fails and the failure is
         # counted in _led_failures.
-        with self._led_lock:
+        #
+        # A connect / disconnect that landed during the pass is merged on top of
+        # the discovered table, so the swap cannot lose it (#1478). Lock order:
+        # _led_lock, then _routing_lock (_set_route takes only the latter).
+        with self._led_lock, self._routing_lock:
+            seen = dict(discovered)
+            for serial, adapter in self._routing_changes.items():
+                if adapter is None:
+                    seen.pop(serial, None)
+                else:
+                    seen[serial] = adapter
+            self._routing_changes.clear()
             self._serial_to_adapter = seen
             self._cleanup_stale_state(seen)
         self._update_controller_metrics(seen)
@@ -182,9 +227,11 @@ class MultiplexerBackend(ControllerBackend):
         # Each adapter receives exclude_serials — serials claimed by other adapters
         # in the previous cycle. Adapters that manage HID handles (e.g. rust) skip
         # opening excluded devices, avoiding open→close churn that causes LED flashing.
+        # One snapshot of the (copy-on-write) table for the whole pass.
+        previous = self._serial_to_adapter
         candidates: dict[str, list[ControllerIOAdapter]] = {}
         for adapter in self._adapters:
-            claimed_by_others = [s for s, a in self._serial_to_adapter.items() if a is not adapter]
+            claimed_by_others = [s for s, a in previous.items() if a is not adapter]
             for serial in adapter.discover(force=force, verify_only=verify_only, exclude_serials=claimed_by_others):
                 candidates.setdefault(serial, []).append(adapter)
 
@@ -247,7 +294,7 @@ class MultiplexerBackend(ControllerBackend):
             # UC-002 BR-001: a routing change moves the serial to its new adapter in
             # this cycle; it stays in the returned list, so no disconnect/connect.
             # Detect dynamic switch from previous cycle
-            old = self._serial_to_adapter.get(serial)
+            old = previous.get(serial)
             if old and old is not winner and old not in adapters and _adapter_owner(old) is not winner_owner:
                 old.close(serial)
                 logger.info(f"Switched {serial}: {old.adapter_type} -> {winner.adapter_type}")
@@ -567,7 +614,7 @@ class MultiplexerBackend(ControllerBackend):
         if preferred:
             try:
                 if preferred.open(address):
-                    self._serial_to_adapter[address] = preferred
+                    self._set_route(address, preferred)
                     return True
             except Exception:
                 logger.exception(f"connect_controller targeted failed for {preferred.adapter_type}")
@@ -578,7 +625,7 @@ class MultiplexerBackend(ControllerBackend):
                 continue  # Already tried
             try:
                 if adapter.open(address):
-                    self._serial_to_adapter[address] = adapter
+                    self._set_route(address, adapter)
                     return True
             except Exception:
                 logger.exception(f"connect_controller failed for {adapter.adapter_type}")
@@ -589,7 +636,7 @@ class MultiplexerBackend(ControllerBackend):
         if adapter is None:
             return False
         adapter.close(serial)
-        self._serial_to_adapter.pop(serial, None)
+        self._set_route(serial, None)
         self._led_colors.pop(serial, None)
         self._rumble.pop(serial, None)
         self._last_sent_color.pop(serial, None)

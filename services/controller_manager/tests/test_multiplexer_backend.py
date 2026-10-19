@@ -4,8 +4,9 @@ per-controller operations through ControllerIOAdapter instances.
 """
 
 import sys
+import threading
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -15,6 +16,7 @@ service_dir = test_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
+from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
 
 
@@ -575,6 +577,105 @@ class TestMultiplexerConnectDisconnect:
         result = await mux.disconnect_controller("ZZ:ZZ")
 
         assert result is False
+
+
+class TestRoutingTableDiscoveryRace:
+    """#1478: discovery builds and swaps _serial_to_adapter in a worker thread
+    while connect/disconnect change it on the event loop. The swap must merge
+    those changes, never overwrite them. Interleaving is forced with events."""
+
+    _METRICS = "services.controller_manager.multiplexer.multiplexer_backend.metrics"
+
+    @staticmethod
+    def _gated_adapter(discovered: list[str]):
+        """An autospec adapter whose discover() parks until the test releases it."""
+        adapter = create_autospec(ControllerIOAdapter, instance=True)
+        adapter.adapter_type = "mock"
+        adapter.open.return_value = True
+        in_discover = threading.Event()
+        release = threading.Event()
+        gate = {"armed": False}
+
+        def discover(*_args, **_kwargs):
+            if gate["armed"]:
+                in_discover.set()
+                assert release.wait(timeout=5), "test never released discovery"
+            return list(discovered)
+
+        adapter.discover.side_effect = discover
+        return adapter, gate, in_discover, release
+
+    @staticmethod
+    def _run_pass(mux: MultiplexerBackend) -> tuple[threading.Thread, dict]:
+        result: dict = {}
+        worker = threading.Thread(target=lambda: result.update(serials=mux.get_connected_controllers()))
+        worker.start()
+        return worker, result
+
+    @pytest.mark.uc("UC-002")
+    @pytest.mark.asyncio
+    async def test_connect_during_discovery_swap_is_not_lost(self):
+        adapter, gate, in_discover, release = self._gated_adapter(["AA:AA"])
+        mux = MultiplexerBackend(adapters=[adapter])
+        with patch(self._METRICS, autospec=True):
+            gate["armed"] = True
+            worker, result = self._run_pass(mux)
+            assert in_discover.wait(timeout=5)
+
+            # Discovery has already enumerated without BB:BB; connect it now.
+            assert await mux.connect_controller("BB:BB") is True
+
+            release.set()
+            worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert mux._serial_to_adapter.get("BB:BB") is adapter
+        assert sorted(result["serials"]) == ["AA:AA", "BB:BB"]
+
+    @pytest.mark.uc("UC-002")
+    @pytest.mark.asyncio
+    async def test_disconnect_during_discovery_swap_is_not_revived(self):
+        adapter, gate, in_discover, release = self._gated_adapter(["AA:AA", "BB:BB"])
+        mux = MultiplexerBackend(adapters=[adapter])
+        with patch(self._METRICS, autospec=True):
+            mux.get_connected_controllers()
+            mux._led_colors["BB:BB"] = (255, 0, 0)
+
+            gate["armed"] = True
+            worker, result = self._run_pass(mux)
+            assert in_discover.wait(timeout=5)
+
+            # Discovery's result still holds BB:BB; the disconnect must win.
+            assert await mux.disconnect_controller("BB:BB") is True
+
+            release.set()
+            worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert "BB:BB" not in mux._serial_to_adapter
+        assert "BB:BB" not in mux._led_colors
+        assert result["serials"] == ["AA:AA"]
+
+    @pytest.mark.uc("UC-002")
+    @pytest.mark.asyncio
+    async def test_change_merged_by_one_pass_does_not_override_the_next(self):
+        """A disconnect only wins over the pass it raced; later passes are authoritative."""
+        adapter, gate, in_discover, release = self._gated_adapter(["AA:AA"])
+        mux = MultiplexerBackend(adapters=[adapter])
+        with patch(self._METRICS, autospec=True):
+            mux.get_connected_controllers()
+            gate["armed"] = True
+            worker, _ = self._run_pass(mux)
+            assert in_discover.wait(timeout=5)
+            assert await mux.disconnect_controller("AA:AA") is True
+            release.set()
+            worker.join(timeout=5)
+            assert "AA:AA" not in mux._serial_to_adapter
+
+            gate["armed"] = False
+            result = mux.get_connected_controllers()
+
+        assert result == ["AA:AA"]
 
 
 class TestMultiplexerScanControllers:
