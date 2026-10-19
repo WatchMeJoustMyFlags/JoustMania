@@ -191,7 +191,7 @@ class TestMenuServicerControllerCallbacks:
     """ControllerEventCallbacks: connect, disconnect, battery, stream reconnect."""
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-002", flow="main", steps=[6])
+    @pytest.mark.uc("UC-002", flow="main", steps=[6], cond=["Post-S-1"])
     async def test_on_connect_registers_connected_with_dim_led(self, real_servicer):
         """on_connect adds the serial as CONNECTED and lights the dim lobby colour."""
         await _connect(real_servicer, "s1", "s2")
@@ -201,7 +201,7 @@ class TestMenuServicerControllerCallbacks:
         real_servicer.led.set_connected_color.assert_any_await("s1", Games.JoustFFA.name)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-002", flow="A1")
+    @pytest.mark.uc("UC-002", flow="A1", cond=["Post-F-1"])
     async def test_on_disconnect_removes_ready_controller(self, real_servicer):
         """on_disconnect removes the serial from the lobby, including its ready flag."""
         await _connect(real_servicer, "s1", "s2", "s3")

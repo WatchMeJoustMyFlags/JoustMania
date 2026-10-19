@@ -485,6 +485,7 @@ class DiscoveryLoop:
                 metrics.remove_controller_info(serial, name)
                 # Publish disconnect event to button event stream subscribers —
                 # but never announce reserved controllers to the menu (#777).
+                # UC-002 BR-002: a reserved mock controller's disconnect is not published.
                 if not reserved:
                     self.button_detector.publish_connection_event(
                         serial,
@@ -519,6 +520,7 @@ class DiscoveryLoop:
                         info = self.tracked_controllers.get(serial, {})
                         battery = info.get(ControllerInfoKey.BATTERY, 0)
                         name = info.get(ControllerInfoKey.NAME, "")
+                        # UC-002 BR-002: a reserved mock controller's connect is not published.
                         if not info.get(ControllerInfoKey.RESERVED, False):
                             self.button_detector.publish_connection_event(
                                 serial,

@@ -98,6 +98,7 @@ class TestRenameController:
             yield servicer, mock_backend
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A2", steps=[1])
     async def test_rename_controller_success(self, servicer_components):
         """RenameController should succeed with valid serial and name."""
         servicer, _ = servicer_components

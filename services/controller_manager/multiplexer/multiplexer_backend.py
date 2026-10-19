@@ -244,6 +244,8 @@ class MultiplexerBackend(ControllerBackend):
                 method=method,
             ).inc()
 
+            # UC-002 BR-001: a routing change moves the serial to its new adapter in
+            # this cycle; it stays in the returned list, so no disconnect/connect.
             # Detect dynamic switch from previous cycle
             old = self._serial_to_adapter.get(serial)
             if old and old is not winner and old not in adapters and _adapter_owner(old) is not winner_owner:
