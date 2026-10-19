@@ -2,8 +2,10 @@
 Unit tests for MockAdapter — thin I/O adapter for simulated controllers.
 """
 
+import asyncio
 import math
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -367,6 +369,93 @@ class TestMockAdapterObserver:
         queue = adapter.add_observer()
         # Set same output again — should not generate events
         adapter.set_output("mock_controller_0", 100, 100, 100, 0)
+        assert queue.empty()
+
+
+class TestMockAdapterObserverThreadSafety:
+    """#1478: set_output runs in the 20 Hz LED worker thread; asyncio.Queue is not thread-safe."""
+
+    @pytest.mark.uc("UC-003")
+    @pytest.mark.asyncio
+    async def test_publish_from_worker_thread_goes_through_call_soon_threadsafe(self):
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        queue = adapter.add_observer()
+
+        scheduled_from: list[int] = []
+        put_from: list[int] = []
+        original_schedule = loop.call_soon_threadsafe
+        original_put = queue.put_nowait
+
+        def spy_schedule(callback, *args):
+            scheduled_from.append(threading.get_ident())
+            return original_schedule(callback, *args)
+
+        def spy_put(item):
+            put_from.append(threading.get_ident())
+            original_put(item)
+
+        loop.call_soon_threadsafe = spy_schedule
+        queue.put_nowait = spy_put
+        try:
+            worker = threading.Thread(target=adapter.set_output, args=("mock_controller_0", 255, 0, 0, 0))
+            worker.start()
+            worker.join()
+            event = await asyncio.wait_for(queue.get(), timeout=1.0)
+        finally:
+            del loop.call_soon_threadsafe
+
+        assert event["type"] == "led_change"
+        assert scheduled_from, "publish from a worker thread must use loop.call_soon_threadsafe"
+        assert all(ident != loop_thread for ident in scheduled_from)
+        assert put_from == [loop_thread], "the queue may only be touched on its own loop"
+
+    @pytest.mark.uc("UC-003")
+    @pytest.mark.asyncio
+    async def test_publish_on_owning_loop_puts_directly(self):
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        queue = adapter.add_observer()
+
+        adapter.set_output("mock_controller_0", 0, 255, 0, 0)
+        await asyncio.sleep(0)  # the put is scheduled on this loop, not done inline
+
+        assert queue.get_nowait()["g"] == 255
+
+    @pytest.mark.uc("UC-003")
+    @pytest.mark.asyncio
+    async def test_worker_then_loop_publish_keeps_order(self):
+        """Review of #1629: a loop publish must not overtake an earlier worker publish."""
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        queue = adapter.add_observer()
+
+        worker = threading.Thread(target=adapter.set_output, args=("mock_controller_0", 255, 0, 0, 0))
+        worker.start()
+        worker.join()  # red is now scheduled via call_soon_threadsafe
+        adapter.set_output("mock_controller_0", 0, 255, 0, 0)  # green, published on the loop
+
+        first = await asyncio.wait_for(queue.get(), timeout=1.0)
+        second = await asyncio.wait_for(queue.get(), timeout=1.0)
+        assert (first["r"], first["g"]) == (255, 0)
+        assert (second["r"], second["g"]) == (0, 255)
+
+    @pytest.mark.uc("UC-003")
+    def test_publish_to_closed_loop_is_dropped(self):
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+
+        async def subscribe():
+            return adapter.add_observer()
+
+        loop = asyncio.new_event_loop()
+        queue = loop.run_until_complete(subscribe())
+        loop.close()
+
+        adapter.set_output("mock_controller_0", 0, 0, 255, 0)  # must not raise
+
         assert queue.empty()
 
 

@@ -118,6 +118,12 @@ def _create_controller_state(serial: str, reserved: bool = False, tag: str = "")
     }
 
 
+def _put_dropping_when_full(queue: asyncio.Queue, event: dict) -> None:
+    """put_nowait that drops the event when the observer queue is full."""
+    with contextlib.suppress(asyncio.QueueFull):
+        queue.put_nowait(event)
+
+
 class MockAdapter(ControllerIOAdapter):
     """Simulated I/O adapter for testing without hardware.
 
@@ -129,7 +135,10 @@ class MockAdapter(ControllerIOAdapter):
     def __init__(self, num_controllers: int = 0):
         self._num_controllers = num_controllers
         self.controllers: dict[str, dict] = {}
-        self._observers: list[asyncio.Queue] = []
+        # Each observer queue with the loop that owns it (None when created
+        # outside a running loop). set_output runs in the 20 Hz LED worker
+        # thread, and asyncio.Queue is not thread-safe (#1478).
+        self._observers: list[tuple[asyncio.Queue, asyncio.AbstractEventLoop | None]] = []
         # Monotonic serial counter for auto-generated serials. It NEVER decreases,
         # even when controllers are removed, so a freshly added controller can never
         # collide with one whose removal is still in flight (issue #1013): the old
@@ -492,16 +501,21 @@ class MockAdapter(ControllerIOAdapter):
         return False
 
     def add_observer(self) -> asyncio.Queue:
-        """Add an observer queue for state changes."""
+        """Add an observer queue for state changes, bound to the running loop (if any)."""
         queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
-        self._observers.append(queue)
+        try:
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        self._observers = [*self._observers, (queue, loop)]
         logger.debug(f"Added observer, total: {len(self._observers)}")
         return queue
 
     def remove_observer(self, queue: asyncio.Queue) -> None:
         """Remove an observer queue."""
-        if queue in self._observers:
-            self._observers.remove(queue)
+        remaining = [entry for entry in self._observers if entry[0] is not queue]
+        if len(remaining) != len(self._observers):
+            self._observers = remaining
             logger.debug(f"Removed observer, remaining: {len(self._observers)}")
 
     def get_led_color(self, serial: str) -> tuple[int, int, int] | None:
@@ -513,7 +527,28 @@ class MockAdapter(ControllerIOAdapter):
         return (led["r"], led["g"], led["b"])
 
     def _publish_event(self, event: dict) -> None:
-        """Publish event to all observers."""
-        for queue in self._observers:
-            with contextlib.suppress(asyncio.QueueFull):
-                queue.put_nowait(event)
+        """Publish event to all observers.
+
+        Called from the event loop and from the LED worker thread. The put is
+        always scheduled on the queue's own loop: call_soon from that loop,
+        call_soon_threadsafe from any other thread (#1478). Both append to the
+        same ready queue, so events keep their publish order.
+        """
+        try:
+            current: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        # The list is replaced (never mutated) by add/remove_observer, so this
+        # iterates a stable snapshot even when another thread changes it.
+        for queue, loop in self._observers:
+            if loop is None:
+                _put_dropping_when_full(queue, event)
+            elif loop is current:
+                # Also scheduled (not put directly) so an event published here
+                # cannot overtake one a worker thread queued just before it:
+                # observers see events in publish order (#1629 review).
+                loop.call_soon(_put_dropping_when_full, queue, event)
+            else:
+                # The owning loop may already be closed (stream ended mid-batch).
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(_put_dropping_when_full, queue, event)
