@@ -308,6 +308,11 @@ make test
 # Keep containers running after tests (for debugging)
 SKIP_TEARDOWN=1 make test
 
+# CI runs the suite as two shards, each in its own job and compose stack:
+make test-integration-core         # e2e-core: no agent built or started
+make test-integration-agent        # e2e-agent: modules that start the agent
+make test-integration-shard-check  # every test is in exactly one shard
+
 # Clean up after SKIP_TEARDOWN
 docker compose -f docker-compose.test.yml down
 ```
