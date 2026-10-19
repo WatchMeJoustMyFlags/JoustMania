@@ -111,7 +111,7 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 | [Services spec](docs/specs/services.md) | Services, ports, RPCs and service interactions |
 | [Development](docs/DEVELOPMENT.md) | Building, running, debugging |
 | [Contributing](docs/CONTRIBUTING.md) | Code style, PR workflow |
-| [Controller Guide](docs/controller-guide.md) | Button layout, admin mode |
+| [Ready up and admin mode](docs/use_cases/UC-010.md) | Button map (UC-010 BR-005, UC-012 BR-005), admin mode |
 | [LED states](docs/specs/services.md#led-states-controller-feedback) | Lobby, game and admin LED colours and effects |
 | [Observability](docs/observability-quickstart.md) | Tracing, metrics, dashboards |
 
