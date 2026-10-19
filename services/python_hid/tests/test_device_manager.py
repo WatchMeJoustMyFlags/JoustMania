@@ -4,7 +4,12 @@ Unit tests for DeviceManager — command handling and device operations.
 The `hid` module requires native hardware access, so we mock it entirely.
 """
 
+import itertools
+import queue
+import statistics
 import sys
+import threading
+import time
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -349,6 +354,7 @@ class TestPollRate:
     """UC-030 step 2: the HID thread samples the controllers at ~1 kHz."""
 
     @pytest.mark.uc("UC-030", flow="main", steps=[2])
+    @pytest.mark.nfr("NFR-001")
     def test_run_loop_polls_every_millisecond(self):
         dm = DeviceManager()
         dm._running = True
@@ -368,3 +374,59 @@ class TestPollRate:
 
         assert poll_count == 3
         assert [c.args for c in sleep.call_args_list] == [(0.001,)] * 3
+
+
+class _TimedDevice:
+    """A HID device with one report per poll; records when each poll starts reading it."""
+
+    def __init__(self, polls: int):
+        self.poll_times: list[float] = []
+        self.done = threading.Event()
+        self._polls = polls
+        self._pending = False
+
+    def read(self, _size):
+        if self._pending:
+            self._pending = False
+            return b""
+        self.poll_times.append(time.perf_counter())
+        if len(self.poll_times) >= self._polls:
+            self.done.set()
+        self._pending = True
+        return b"\x00" * 49
+
+    def close(self):
+        pass
+
+
+class TestPollIntervalMeasured:
+    """NFR-001: the python-hid thread reads every open controller every 1 ms plus read time."""
+
+    POLLS = 300
+    # NFR-001: 1 ms plus read time. Measured median 1.1-1.2 ms, also with 2x CPU overload
+    # (review of #1619); a 2 ms budget still fails a loop that sleeps 2 ms or more.
+    MEDIAN_BUDGET_S = 0.002
+
+    @pytest.mark.nfr("NFR-001")
+    def test_open_device_is_read_about_every_millisecond(self):
+        dm = DeviceManager()
+        device = _TimedDevice(self.POLLS)
+        dm._devices[FAKE_SERIAL_NORMALIZED] = device
+        dm._product_ids[FAKE_SERIAL_NORMALIZED] = PRODUCT_ID_ZCM1
+        dm._stream_queues["nfr-001"] = queue.Queue(maxsize=1)
+
+        dm.start()
+        try:
+            assert device.done.wait(timeout=10), f"only {len(device.poll_times)} polls in 10 s"
+        finally:
+            dm.stop()
+
+        intervals = sorted(b - a for a, b in itertools.pairwise(device.poll_times))
+        median = statistics.median(intervals)
+        p90 = intervals[int(len(intervals) * 0.9)]
+        print(
+            f"NFR-001 python-hid poll interval over {len(intervals)} polls: "
+            f"min {intervals[0] * 1e3:.3f} ms, median {median * 1e3:.3f} ms, p90 {p90 * 1e3:.3f} ms"
+        )
+        assert intervals[0] >= 0.001, "the loop must sleep 1 ms between polls"
+        assert median <= self.MEDIAN_BUDGET_S

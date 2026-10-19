@@ -1171,3 +1171,65 @@ class TestLedBatchVersusDiscoveryCleanup:
         mux.get_connected_controllers()
 
         assert "BB:BB" not in mux._led_failures
+
+
+class TestRoutingSwitchKeepsTheController:
+    """UC-002 BR-001: a routing change applies on the next cycle without a reconnect."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="main", steps=[3], br=["BR-001"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_adapter_switch_publishes_no_disconnect_or_connect(self, _mock_metrics):
+        """Two discovery cycles over a real multiplexer: the serial moves from a1 to a2 and the
+        discovery loop publishes no disconnect/connect event and keeps tracking it."""
+        from unittest.mock import create_autospec
+
+        from lib.controller_constants import ControllerInfoKey
+        from services.controller_manager.button_detector import ButtonDetector
+        from services.controller_manager.discovery import PeriodicRescanTimer
+        from services.controller_manager.discovery_loop import DiscoveryLoop
+        from services.controller_manager.event_publisher import EventPublisher
+        from services.controller_manager.feedback_manager import FeedbackManager
+        from services.controller_manager.monitoring import ControllerMonitoring
+        from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
+        from services.controller_manager.state_cache import StateCache
+
+        def adapter(adapter_type):
+            spec = create_autospec(ControllerIOAdapter, instance=True)
+            spec.adapter_type = adapter_type
+            # Like rust-hid: a serial another adapter holds is not opened (exclude_serials).
+            spec.discover.side_effect = lambda force=False, verify_only=False, exclude_serials=None: [  # noqa: ARG005
+                serial for serial in ["AA:AA"] if serial not in (exclude_serials or [])
+            ]
+            spec.open.return_value = True
+            return spec
+
+        a1, a2 = adapter("python"), adapter("rust")
+        mux = MultiplexerBackend(adapters=[a1, a2])
+        button_detector = create_autospec(ButtonDetector, instance=True)
+        rescan_timer = create_autospec(PeriodicRescanTimer, instance=True)
+        rescan_timer.should_force_rescan.return_value = False
+        tracked = {"AA:AA": {ControllerInfoKey.NAME: "P1"}}
+        loop = DiscoveryLoop(
+            backend=mux,
+            tracked_controllers=tracked,
+            controller_states={},
+            button_detector=button_detector,
+            state_cache_manager=create_autospec(StateCache, instance=True),
+            feedback_manager=create_autospec(FeedbackManager, instance=True),
+            monitoring=create_autospec(ControllerMonitoring, instance=True),
+            rescan_timer=rescan_timer,
+            paired_serials=[],
+            base_colors={},
+            event_publisher=create_autospec(EventPublisher, instance=True),
+        )
+        loop.backend_initialized = True
+
+        for routed_to in (a1, a2):
+            with patch.object(mux, "_resolve_adapter_for_serial", return_value=(routed_to, "targeted")):
+                await loop._check_for_new_controllers()
+            assert mux._serial_to_adapter["AA:AA"] is routed_to
+
+        button_detector.publish_connection_event.assert_not_called()
+        assert set(tracked) == {"AA:AA"}
+        assert loop.drain_disconnects() == []
