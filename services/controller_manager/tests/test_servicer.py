@@ -699,8 +699,9 @@ class TestExtractedHelpers:
         # Backend exposes the duck-typed hook (only MockAdapter does in prod).
         servicer.backend.consume_death_frame = MagicMock()
 
-        # A game (filtered) stream; observer streams never drain it (UC-035 BR-006).
-        servicer._build_gameplay_update({"AA:BB", "CC:DD"})
+        # A game stream (it sent colours); observer streams never drain it (UC-035 BR-006).
+        servicer._game_stream_serials["game"] = {"AA:BB", "CC:DD"}
+        servicer._build_gameplay_update({"AA:BB", "CC:DD"}, "game")
 
         # Exactly one death-frame tick per included controller, this frame.
         servicer.backend.consume_death_frame.assert_any_call("AA:BB")
@@ -715,8 +716,9 @@ class TestExtractedHelpers:
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
         servicer.backend.consume_death_frame = MagicMock()
+        servicer._game_stream_serials["game"] = {"AA:BB"}
 
-        servicer._build_gameplay_update({"AA:BB"})
+        servicer._build_gameplay_update({"AA:BB"}, "game")
 
         servicer.backend.consume_death_frame.assert_called_once_with("AA:BB")
 

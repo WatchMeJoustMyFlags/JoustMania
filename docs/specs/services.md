@@ -154,8 +154,8 @@ one 5-byte Connect envelope; the response is a sequence of envelopes ending in a
 (`StreamGameplayData`, `StreamButtonEvents`) are not reachable from the browser: envoy talks HTTP/1.1 to
 connect-proxy and connect-go answers a bidi call over HTTP/1.1 with 505. The dashboard's controller grid therefore
 reads the server stream `WatchGameplayData` (#1595): it posts one `GameplayStreamConfig` (`{updateFrequencyHz: 30}`);
-connect-proxy builds its own config from it, keeping only the rate clamped to 1..30 Hz and never the browser's
-colours or filter, so the upstream is always the unfiltered observer stream with connection quality (UC-035 BR-005,
+connect-proxy builds its own config from it, keeping only the rate (missing or 0 and below = 30 Hz, capped at 30 Hz) and never the browser's
+colours, so the upstream is always the unfiltered observer stream with connection quality (UC-035 BR-005,
 BR-006). It opens a `StreamGameplayData` stream to the controller manager with that config as its first control
 message, relays every
 `GameplayDataUpdate`, and cancels the upstream stream when the browser disconnects. An upstream error or end ends the
@@ -212,8 +212,8 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 - Backend set from the `backend` flag at **startup** (default `rust`, also the fallback when the flag is unavailable; `mock` in the CI flag set; variants naming `python` are opt-in and need the `python-hid` profile, UC-002 BR-003); `mock` is always added with zero controllers. Per controller, one adapter wins: per-serial `bluetooth_backend` targeting, then the rollout router, then the flag default (`multiplexer/multiplexer_backend.py:235-291`).
 - Loops: state 100 Hz, discovery 1 Hz (full enumeration at most every 0.5 s, forced every 10 s), LED batch 20 Hz (send on change or 2 s keep-alive), battery metrics every 30 s, `controller.bluetooth_health` span ~1 Hz (`discovery_loop.py`).
-- Gameplay stream rate: client-requested, overridden by `game_loop.update_frequency_hz` (clamp 1..100), fallback 30 Hz. An unfiltered (observer) stream runs at its requested rate capped at the flag rate (UC-035 BR-006).
-- Observer streams never consume game signals (UC-035 BR-006): `_build_gameplay_update` drains disconnects (#580), health counters and the mock death latch (#926) only for filtered (game) streams; an unfiltered stream's frames carry no `disconnects` and no `health`.
+- Gameplay stream rate: client-requested, overridden by `game_loop.update_frequency_hz` (clamp 1..100), fallback 30 Hz. An observer stream (one that never sent colours) runs at its requested rate capped at the flag rate (UC-035 BR-006).
+- Observer streams never consume game signals (UC-035 BR-006): `_build_gameplay_update` drains disconnects (#580), health counters and the mock death latch (#926) only for game streams (those that sent colours, tracked in `_game_stream_serials`), also while their alive filter is empty; an observer stream (one that never sent colours) gets frames with no `disconnects` and no `health`.
 - Pattern games (#1258, FR-103): a stream whose explicit filter names pattern controllers runs at the archetype's pinned `stream_rate_hz` and ignores the flag override; a controller's frame index advances once per frame delivered on its owning stream (the first explicit stream that names it), in `_build_gameplay_update` next to the hook that drains the #926 death latch.
 - `UnstableAdapter` (≈ 8.3 Hz, 10 % drops) is registered alongside python for the rollout demo; real adapters are used directly (the ChaosAdapter wrapper, D-C2, was removed in #1322).
 - Mock serials `MOCK%04d`; reserved mock controllers are hidden from the roster.

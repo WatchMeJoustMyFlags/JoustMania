@@ -280,7 +280,7 @@ func (p *ControllerManagerProxy) StreamGameplayData(
 // StreamGameplayData (#1595): envoy reaches connect-proxy over HTTP/1.1, where
 // connect-go refuses bidi streams (505). It opens StreamGameplayData to the
 // controller manager and relays the updates. The upstream config is built
-// here, never forwarded: only the rate, clamped to 1..30 Hz, so the browser
+// here, never forwarded: only the rate (default 30 Hz, capped at 30 Hz), so the browser
 // always gets the unfiltered observer stream and cannot claim controllers or
 // set their colours (UC-035 BR-006). It runs in the handler goroutine only (no relay
 // goroutines), and the deferred cancel closes the upstream stream on every
@@ -326,10 +326,15 @@ func (p *ControllerManagerProxy) WatchGameplayData(
 // maxWatchGameplayHz caps the browser's requested rate (UC-035 BR-006).
 const maxWatchGameplayHz = 30
 
-// observerGameplayConfig keeps only the browser's rate, clamped to
-// 1..maxWatchGameplayHz, and drops its colours (UC-035 BR-006).
+// observerGameplayConfig keeps only the browser's rate and drops its colours
+// (UC-035 BR-006). A missing, zero or negative rate means the default 30 Hz,
+// as in the controller manager; the rate is capped at maxWatchGameplayHz.
 func observerGameplayConfig(in *controllerpb.GameplayStreamConfig) *controllerpb.GameplayStreamConfig {
-	hz := min(max(in.GetUpdateFrequencyHz(), 1), maxWatchGameplayHz)
+	hz := in.GetUpdateFrequencyHz()
+	if hz <= 0 {
+		hz = maxWatchGameplayHz
+	}
+	hz = min(hz, maxWatchGameplayHz)
 	return &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: hz}
 }
 

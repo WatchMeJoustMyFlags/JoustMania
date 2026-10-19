@@ -218,7 +218,7 @@ func TestProxyWatchGameplayData(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-035/BR-006 browser colours, filter and rate are never forwarded", func(t *testing.T) {
+	t.Run("UC-035/BR-006 only the capped browser rate is forwarded, never colours", func(t *testing.T) {
 		cases := []struct {
 			name   string
 			sent   *controllerpb.GameplayStreamConfig
@@ -231,8 +231,9 @@ func TestProxyWatchGameplayData(t *testing.T) {
 				},
 			}, 30},
 			{"rate above the cap", &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: 1000}, 30},
-			{"negative rate", &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: -5}, 1},
-			{"no rate", &controllerpb.GameplayStreamConfig{}, 1},
+			{"rate below the cap", &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: 10}, 10},
+			{"negative rate", &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: -5}, 30},
+			{"no rate", &controllerpb.GameplayStreamConfig{}, 30},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {

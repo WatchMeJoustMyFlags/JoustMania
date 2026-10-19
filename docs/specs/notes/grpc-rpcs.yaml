@@ -9,7 +9,7 @@ joustmania.controller_manager.ControllerManagerService/StreamButtonEvents: Butto
   client; the client sends base LED colours and effects back
 joustmania.controller_manager.ControllerManagerService/StreamGameplayData: 'Motion data at the requested rate, with
   each controller''s connection quality on the unfiltered (dashboard) stream (`GameplayData.connection_quality`:
-  class and p95 / longest report gap, UC-035 BR-005; game streams leave it unset); an unfiltered (observer) stream runs
+  class and p95 / longest report gap, UC-035 BR-005; game streams leave it unset); an observer stream (one that never sent colours) runs
   at its requested rate capped at `game_loop.update_frequency_hz` and never drains disconnects, health counters or
   the mock death latch (UC-035 BR-006); the client changes filters, colours and effects mid-stream'
 joustmania.controller_manager.ControllerManagerService/RenameController: Rename a controller (set custom human-readable
@@ -27,7 +27,7 @@ joustmania.controller_manager.ControllerManagerService/IdentifyController: 'Requ
 joustmania.controller_manager.ControllerManagerService/WatchGameplayData: 'Browser view of `StreamGameplayData` (#1595):
   one `GameplayStreamConfig` in (the dashboard sends `{updateFrequencyHz: 30}`), the `GameplayDataUpdate`s out.
   Served by connect-proxy only: it opens an unfiltered (observer) `StreamGameplayData` stream to the controller
-  manager with only the rate, clamped to 1..30 Hz (never colours or a filter), relays every update and closes that stream when the browser goes away; an upstream
+  manager with only the rate (missing or 0 and below = 30 Hz, capped at 30 Hz; never colours), relays every update and closes that stream when the browser goes away; an upstream
   error ends the browser stream with it. The controller manager itself answers UNIMPLEMENTED (UC-035 MSS)'
 controller_manager_mock.MockControllerService/SimulateMovement: 'Simulate controller movement: holds the acceleration
   vector on that controller (every poll and gameplay frame reports it) until the next call or `ResetController`;

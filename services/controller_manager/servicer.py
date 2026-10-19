@@ -413,10 +413,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # menu/dashboard traffic never skews the latency panels.
         record_input_lag = current_filter is not None
         # Game signals are read once: disconnects, health counters and the mock
-        # death latch are drained only by game (filtered) streams. An observer
-        # stream (the dashboard's unfiltered one) never consumes them, or it would
-        # steal them from the game (UC-035 BR-006, #1595).
-        game_stream = current_filter is not None
+        # death latch are drained only by game streams (those that sent colours).
+        # An observer stream (one that never sent colours, e.g. the dashboard's)
+        # never consumes them, or it would steal them from the game. A game stream
+        # keeps draining while its alive filter is empty (UC-035 BR-006, #1595).
+        game_stream = self._is_game_stream(subscriber_id)
         # No dict copy needed — _build_gameplay_update is synchronous (no await
         # points), so no dict mutation can happen during iteration.
         for serial, info in self.tracked_controllers.items():
@@ -611,7 +612,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                             current_hz = pattern_hz
                     # Check for flagd frequency override
                     else:
-                        target_hz = _stream_rate_hz(requested_hz, current_filter, _frequency_override)
+                        target_hz = _stream_rate_hz(
+                            requested_hz, self._is_game_stream(subscriber_id), _frequency_override
+                        )
                         if target_hz != current_hz:
                             logger.info(f"[{subscriber_id}] Frequency override: {current_hz} -> {target_hz} Hz")
                             current_hz = target_hz
@@ -709,6 +712,10 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
     def _release_game_stream(self, subscriber_id: str) -> None:
         """Forget a closed game stream's players (UC-004 BR-003)."""
         self._game_stream_serials.pop(subscriber_id, None)
+
+    def _is_game_stream(self, subscriber_id: str) -> bool:
+        """A gameplay stream that sent colours is a game stream; any other is an observer (UC-035 BR-006)."""
+        return subscriber_id in self._game_stream_serials
 
     def _in_game(self, serial: str) -> bool:
         """Whether the controller is a player of an open game gameplay stream."""
@@ -815,17 +822,17 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 _frequency_override: int | None = None
 
 
-def _stream_rate_hz(requested_hz: int, current_filter: set | None, override_hz: int | None) -> int:
+def _stream_rate_hz(requested_hz: int, game_stream: bool, override_hz: int | None) -> int:
     """Frame rate of a gameplay stream that names no pattern controller.
 
-    A game (filtered) stream runs at the ``game_loop.update_frequency_hz`` flag
-    when it resolves. An observer (unfiltered) stream runs at its requested rate,
+    A game stream (one that sent colours) runs at the ``game_loop.update_frequency_hz``
+    flag when it resolves. An observer stream (one that never sent colours) runs at its requested rate,
     capped at the flag rate, so a dashboard tab asking for 30 Hz costs 30 Hz
     (UC-035 BR-006, #1595). Without the flag every stream runs at its request.
     """
     if override_hz is None:
         return requested_hz
-    if current_filter is None:
+    if not game_stream:
         return max(1, min(requested_hz, override_hz))
     return override_hz
 
