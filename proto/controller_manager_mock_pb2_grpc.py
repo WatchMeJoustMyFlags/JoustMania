@@ -65,11 +65,6 @@ class MockControllerServiceStub:
                 request_serializer=controller__manager__mock__pb2.ListRequest.SerializeToString,
                 response_deserializer=controller__manager__mock__pb2.ListResponse.FromString,
                 _registered_method=True)
-        self.SetAutoGameEnd = channel.unary_unary(
-                '/controller_manager_mock.MockControllerService/SetAutoGameEnd',
-                request_serializer=controller__manager__mock__pb2.AutoGameEndRequest.SerializeToString,
-                response_deserializer=controller__manager__mock__pb2.AutoGameEndResponse.FromString,
-                _registered_method=True)
         self.GetColor = channel.unary_unary(
                 '/controller_manager_mock.MockControllerService/GetColor',
                 request_serializer=controller__manager__mock__pb2.GetColorRequest.SerializeToString,
@@ -143,13 +138,6 @@ class MockControllerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def SetAutoGameEnd(self, request, context):
-        """Set auto game end - automatically kill players after duration to ensure game ends
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def GetColor(self, request, context):
         """Get current LED color of a controller
         """
@@ -217,11 +205,6 @@ def add_MockControllerServiceServicer_to_server(servicer, server):
                     servicer.ListMockControllers,
                     request_deserializer=controller__manager__mock__pb2.ListRequest.FromString,
                     response_serializer=controller__manager__mock__pb2.ListResponse.SerializeToString,
-            ),
-            'SetAutoGameEnd': grpc.unary_unary_rpc_method_handler(
-                    servicer.SetAutoGameEnd,
-                    request_deserializer=controller__manager__mock__pb2.AutoGameEndRequest.FromString,
-                    response_serializer=controller__manager__mock__pb2.AutoGameEndResponse.SerializeToString,
             ),
             'GetColor': grpc.unary_unary_rpc_method_handler(
                     servicer.GetColor,
@@ -412,33 +395,6 @@ class MockControllerService:
             '/controller_manager_mock.MockControllerService/ListMockControllers',
             controller__manager__mock__pb2.ListRequest.SerializeToString,
             controller__manager__mock__pb2.ListResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def SetAutoGameEnd(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/controller_manager_mock.MockControllerService/SetAutoGameEnd',
-            controller__manager__mock__pb2.AutoGameEndRequest.SerializeToString,
-            controller__manager__mock__pb2.AutoGameEndResponse.FromString,
             options,
             channel_credentials,
             insecure,

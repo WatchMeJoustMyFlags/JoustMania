@@ -6,7 +6,6 @@ Only active when using MockAdapter.
 """
 
 import asyncio
-import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -115,7 +114,6 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             backend: MockAdapter instance to control
         """
         self.backend = backend
-        self.auto_end_task: asyncio.Task | None = None  # Background task for auto-ending games
         logger.info("MockControllerService initialized")
 
     def SimulateMovement(self, request, context):
@@ -309,73 +307,6 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
         except Exception as e:
             logger.error(f"ListMockControllers error: {e}")
             return controller_manager_mock_pb2.ListResponse(serials=[], count=0)
-
-    async def SetAutoGameEnd(self, request, _context):
-        """
-        Enable/disable auto game end feature.
-
-        When enabled, automatically sets high acceleration on all but one player
-        after the specified duration.
-        """
-        try:
-            # Cancel existing task if any
-            if self.auto_end_task and not self.auto_end_task.done():
-                self.auto_end_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self.auto_end_task
-                self.auto_end_task = None
-
-            if request.enabled:
-                # Start new background task
-                self.auto_end_task = asyncio.create_task(self._auto_end_game(request.duration_seconds))
-                logger.info(f"Mock: Auto game end enabled: will kill players after {request.duration_seconds}s")
-                return controller_manager_mock_pb2.AutoGameEndResponse(success=True, error="")
-
-            logger.info("Mock: Auto game end disabled")
-            return controller_manager_mock_pb2.AutoGameEndResponse(success=True, error="")
-
-        except Exception as e:
-            logger.error(f"SetAutoGameEnd error: {e}")
-            return controller_manager_mock_pb2.AutoGameEndResponse(success=False, error=str(e))
-
-    async def _auto_end_game(self, duration: float):
-        """Background task to auto-end game after duration."""
-        try:
-            logger.info(f"Mock: Waiting {duration}s before auto-ending game...")
-            await asyncio.sleep(duration)
-
-            # Kill all but one player (leave winner). Pattern controllers die
-            # organically only, so the scripted kill never touches them (UC-046 BR-004).
-            serials = [s for s in self.backend.controllers if not self.backend.has_pattern(s)]
-            if len(serials) > 1:
-                # Leave the last player alive (winner)
-                players_to_kill = serials[:-1]
-                logger.info(
-                    f"Mock: Auto-ending game: killing {len(players_to_kill)} players, "
-                    f"leaving {serials[-1]} alive as winner"
-                )
-
-                for serial in players_to_kill:
-                    # Simulate death by directly setting controller state
-                    controller = self.backend.controllers.get(serial)
-                    if controller:
-                        # Set death-level acceleration (same as SimulateDeath):
-                        # ~9.95g delivered-frame latch + generous idle wall-clock
-                        # fallback (#926). Magnitude sized to cross every
-                        # sensitivity in 2 delivered frames (see SimulateDeath).
-                        controller["death_accel"] = {AxisKey.X: 7.0, AxisKey.Y: 5.0, AxisKey.Z: 5.0}
-                        controller["death_frames_remaining"] = DEATH_DELIVERY_FRAMES
-                        controller["death_hold_until"] = time.time() + DEATH_IDLE_FALLBACK_SECONDS
-                        logger.info(f"Mock: Auto-killed player {serial}")
-                    await asyncio.sleep(0.3)  # Stagger deaths for better trace visualization
-
-            logger.info("Mock: Auto game end complete")
-
-        except asyncio.CancelledError:
-            logger.info("Mock: Auto game end cancelled")
-            raise
-        except Exception as e:
-            logger.error(f"Mock: Error in auto game end: {e}", exc_info=True)
 
     def GetColor(self, request, _context):
         """Get current LED color for a controller."""

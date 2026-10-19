@@ -24,9 +24,6 @@ service MockControllerService {
     // Get list of mock controllers
     rpc ListMockControllers(ListRequest) returns (ListResponse);
 
-    // Set auto game end - automatically kill players after duration to ensure game ends
-    rpc SetAutoGameEnd(AutoGameEndRequest) returns (AutoGameEndResponse);
-
     // Get current LED color of a controller
     rpc GetColor(GetColorRequest) returns (GetColorResponse);
 
@@ -122,16 +119,6 @@ message ListResponse {
     int32 count = 2;
     // Detailed per-controller info including reserved/tag.
     repeated MockControllerInfo controllers = 3;
-}
-
-message AutoGameEndRequest {
-    float duration_seconds = 1;  // After this time, automatically kill all but one player
-    bool enabled = 2;            // Enable/disable auto-end feature
-}
-
-message AutoGameEndResponse {
-    bool success = 1;
-    string error = 2;
 }
 
 // GetColor - retrieve current LED color
