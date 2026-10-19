@@ -617,10 +617,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libhidapi-dev libudev-dev pkg-config
 
+      # Version is pinned in services/rust-hid/rust-toolchain.toml (#1255);
+      # Renovate proposes bumps, so new lints land in a reviewed PR.
+      - name: Read pinned Rust version
+        id: rust-version
+        run: |
+          version=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' services/rust-hid/rust-toolchain.toml)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          toolchain: ${{ steps.rust-version.outputs.version }}
+          components: clippy, rustfmt
 
       - name: Cache cargo
         uses: actions/cache@v5

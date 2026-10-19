@@ -1,0 +1,7 @@
+# Pinned Rust toolchain (#1255). CI (Rust Checks), local cargo and Renovate
+# (regex manager in renovate.json) all read this file; the Dockerfile base image
+# `rust:<version>-slim` must carry the same version.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
