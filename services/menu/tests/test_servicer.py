@@ -161,7 +161,6 @@ class TestMenuServicerState:
     """Initial state of a freshly constructed MenuServicer."""
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-010", flow="main")  # Pre-2: default selection is JoustFFA
     async def test_initial_state(self, real_servicer):
         """A new servicer is STOPPED, selects JoustFFA and has an empty lobby."""
         assert real_servicer.state == menu_pb2.MenuState.STOPPED
@@ -426,7 +425,6 @@ class TestMenuServicerProcessInput:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A6")
-    @pytest.mark.uc("UC-011", br=["BR-002"])
     async def test_web_start_game_honours_requested_mode(self, real_servicer):
         """UC-010 A6 (#1278): start_game with a mode selects that mode, then starts it."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
@@ -449,7 +447,6 @@ class TestMenuServicerProcessInput:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A6")
-    @pytest.mark.uc("UC-011", br=["BR-002"])
     async def test_web_start_game_accepts_mode_alias(self, real_servicer):
         """UC-010 A6 (#1278): an alias ("ffa") resolves to its mode and starts it."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
@@ -562,7 +559,6 @@ class TestMenuServicerReadyUpStart:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", steps=[1, 2, 3, 4, 5], br=["BR-001"])
-    @pytest.mark.uc("UC-031", flow="main", steps=[2])
     async def test_all_ready_starts_selected_mode_with_ready_players(self, real_servicer):
         """UC-010 steps 1-5: everyone readies up, the menu starts the selected mode with them."""
         from lib.types import Sound
@@ -676,6 +672,62 @@ class TestMenuServicerReadyUpStart:
         }
         led.set_connected_color.assert_any_await("s1", Games.JoustTeams.name)
         real_servicer.audio.stop_lobby_music.assert_not_awaited()
+        real_servicer.idle_monitor.stop.assert_not_called()
+        assert real_servicer.current_selection == Games.JoustTeams
+
+        # The un-ready cleared the start latch: the players can ready up and the next start goes through.
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as second_stream:
+            await _ready_up(real_servicer, "s1", "s2")
+            await _await_lifecycle(real_servicer)
+
+        assert _started_roster(second_stream) == ["s1", "s2"]
+        assert second_stream.await_args.args[2].start_config.game_name == Games.JoustTeams.name
+        assert real_servicer.state == menu_pb2.MenuState.GAME_STARTING
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2])
+    async def test_coordinator_start_error_returns_to_lobby_unreadied(self, real_servicer):
+        """UC-010 A3: the coordinator answers the start with game_start_error: every player is CONNECTED
+        again with the lobby colour, lobby music and idle monitor run, and the selection is unchanged."""
+        from types import SimpleNamespace
+
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        real_servicer.current_selection = Games.JoustTeams
+        real_servicer.state_manager.set_game_mode(Games.JoustTeams)
+        await _connect(real_servicer, "s1", "s2")
+        led = real_servicer.state_manager.led
+        real_servicer.audio.start_lobby_music.reset_mock()
+        real_servicer.idle_monitor.start.reset_mock()
+
+        class RejectingStub:
+            def __init__(self, _channel):
+                pass
+
+            def StreamGameEvents(self, _request, metadata=None):  # noqa: N802 - gRPC stub name
+                async def events():
+                    yield SimpleNamespace(event_type="game_start_error", data={"error": "game already running"})
+
+                stream = events()
+                stream.cancel = lambda: None
+                return stream
+
+        with patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", RejectingStub):
+            await _ready_up(real_servicer, "s1", "s2")
+            led.reset_mock()
+            await _await_lifecycle(real_servicer)
+
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        assert real_servicer.state_manager.controller_states == {
+            "s1": ControllerState.CONNECTED,
+            "s2": ControllerState.CONNECTED,
+        }
+        assert real_servicer.state_manager.ready_controllers == set()
+        assert sorted(c.args for c in led.set_connected_color.await_args_list) == [
+            ("s1", Games.JoustTeams.name),
+            ("s2", Games.JoustTeams.name),
+        ]
+        real_servicer.audio.start_lobby_music.assert_awaited_once()
+        real_servicer.idle_monitor.start.assert_called_once()
         assert real_servicer.current_selection == Games.JoustTeams
 
 
@@ -1940,6 +1992,12 @@ class TestSelectionPathsShareSelectGameMode:
         assert {real_servicer.state_manager.get_controller_state(s) for s in ("s1", "s2", "s3")} == {
             ControllerState.CONNECTED
         }
+
+        # The new colour shows the next time a controller enters CONNECTED (here: READY -> Move un-ready).
+        await _ready_up(real_servicer, "s1")
+        led.reset_mock()
+        await real_servicer.on_button("s1", "move", True)
+        led.set_connected_color.assert_awaited_once_with("s1", Games.JoustTeams.name)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="main")  # Post-F-1: the previous selection stays

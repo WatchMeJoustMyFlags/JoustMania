@@ -490,3 +490,51 @@ class TestMutedSpanAttribute:
             await servicer.PlaySound(audio_pb2.PlaySoundRequest(file_path="beep_loud"), mock_grpc_context)
 
         assert "audio.muted" not in [c.args[0] for c in span.set_attribute.call_args_list]
+
+
+class TestPlaySoundAllChannelsBusy:
+    """UC-031 A2: with every effect channel busy, only a CRITICAL PlaySound steals a lower-priority one."""
+
+    @pytest.fixture
+    def servicer(self, mock_audio_servicer, tmp_path):
+        from services.audio.servicer import AudioManager
+
+        sound_file = tmp_path / "effect.ogg"
+        sound_file.write_bytes(b"fake")
+        mock_audio_servicer.audio_manager = AudioManager(silent=False)
+        mock_audio_servicer._resolve_sound_path = lambda _name: str(sound_file)
+        for channel in mock_audio_servicer.audio_manager.channels:
+            channel._playing.set()
+            channel.priority = 1  # busy with lower-priority effects
+        return mock_audio_servicer
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A2", steps=[1])
+    async def test_critical_play_sound_steals_a_lower_priority_channel(self, servicer, mock_grpc_context):
+        from services.audio.servicer import SoundChannel
+
+        with patch.object(SoundChannel, "play", autospec=True, return_value=True) as channel_play:
+            response = await servicer.PlaySound(
+                audio_pb2.PlaySoundRequest(file_path="effect", volume=1.0, priority=3), mock_grpc_context
+            )
+
+        assert response.success is True
+        channel_play.assert_called_once()
+        assert channel_play.call_args.kwargs["priority"] == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A2", steps=[1])
+    async def test_non_critical_play_sound_is_dropped_and_counted(self, servicer, mock_grpc_context):
+        from services.audio.servicer import SoundChannel
+
+        with (
+            patch.object(SoundChannel, "play", autospec=True, return_value=True) as channel_play,
+            patch("services.audio.metrics.audio_channel_saturation_total") as saturation,
+        ):
+            response = await servicer.PlaySound(
+                audio_pb2.PlaySoundRequest(file_path="effect", volume=1.0, priority=2), mock_grpc_context
+            )
+
+        assert response.success is False
+        channel_play.assert_not_called()
+        saturation.inc.assert_called_once()

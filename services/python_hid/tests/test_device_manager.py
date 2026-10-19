@@ -343,3 +343,28 @@ class TestSupportedControllers:
         dm._read_device(FAKE_SERIAL_NORMALIZED, mock_device)
 
         assert mock_parse.call_args.kwargs["zcm2"] is zcm2
+
+
+class TestPollRate:
+    """UC-030 step 2: the HID thread samples the controllers at ~1 kHz."""
+
+    @pytest.mark.uc("UC-030", flow="main", steps=[2])
+    def test_run_loop_polls_every_millisecond(self):
+        dm = DeviceManager()
+        dm._running = True
+        poll_count = 0
+
+        def stop_after_three_polls():
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count == 3:
+                dm._running = False
+
+        with (
+            patch.object(dm, "_poll_all_devices", side_effect=stop_after_three_polls),
+            patch("services.python_hid.device_manager.time.sleep") as sleep,
+        ):
+            dm._run()
+
+        assert poll_count == 3
+        assert [c.args for c in sleep.call_args_list] == [(0.001,)] * 3

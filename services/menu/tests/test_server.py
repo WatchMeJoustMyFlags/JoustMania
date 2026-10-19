@@ -66,9 +66,6 @@ class TestMenuAutoStart:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", br=["BR-003"])
-    @pytest.mark.uc("UC-010", flow="A2", steps=[1])
-    @pytest.mark.uc("UC-011", flow="main")  # Post-S-1: the next lobby entry restores current_game
-    @pytest.mark.uc("UC-031", flow="main", steps=[1])
     async def test_auto_start_enters_lobby_like_start_menu(self, real_servicer):
         """menu_auto_start on (the default) takes the StartMenu lobby entry (D-M2, #1505, #1285).
 
@@ -90,7 +87,6 @@ class TestMenuAutoStart:
         assert ("menu_started", {}) in published
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-010", flow="main", br=["BR-003"])
     async def test_auto_start_ignores_unplayable_persisted_selection(self, real_servicer):
         """A persisted current_game that is not playable falls back to JoustFFA on boot."""
         real_servicer.user_prefs_client.get_string_value.side_effect = lambda key, default, *_a, **_k: (
@@ -154,7 +150,6 @@ class TestMenuAutoStart:
         assert "flag provider not ready after 5s" in caplog.text
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-010", flow="main", br=["BR-003"])
     async def test_auto_start_off_leaves_menu_stopped(self):
         """menu_auto_start off: the menu stays STOPPED until StartMenu is called."""
         servicer = _servicer_with_flags(menu_auto_start=False)
