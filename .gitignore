@@ -91,3 +91,4 @@ controller_names.txt
 
 # Git worktrees
 worktrees/
+.worktrees/

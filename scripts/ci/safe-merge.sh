@@ -29,11 +29,14 @@
 #     the merged head still starts with HEAD_PREFIX.
 #   - A CONFLICTING PR fails fast (exit 5): GitHub runs no CI on it, so
 #     waiting would only end in a timeout. It needs a rebase.
-#   - A newest run that was cancelled before its matrix expanded (every
-#     non-green check CANCELLED, job names still show `${{ ... }}`) is
-#     infrastructure (infra=cancelled-run): --rerun-failed-once reruns the
-#     whole run with `gh run rerun <id>`. A cancelled run that a newer run on
-#     the same head superseded is already ignored (rule above).
+#   - A newest run that was cancelled before its matrix expanded is
+#     infrastructure (infra=cancelled-run): nothing in it FAILED and a job
+#     whose name is still an unexpanded `${{ ... }}` template is CANCELLED.
+#     Template-named jobs alone prove nothing: every real run has SKIPPED
+#     ones (e.g. `Publish ${{ matrix.service }}`); a human cancel mid-run or
+#     a job timeout cancels expanded jobs only. --rerun-failed-once reruns
+#     the whole run once with `gh run rerun <id>`. A cancelled run that a
+#     newer run on the same head superseded is already ignored (rule above).
 #   - On red, the failed job logs are scanned for known infrastructure
 #     failures (stale images, registry blobs) and the advice says rerun or
 #     add the ci-full label.
@@ -113,13 +116,14 @@ def skipped_like: .__typename == "CheckRun" and .status == "COMPLETED"
         (.__typename == "StatusContext" and (.state == "FAILURE" or .state == "ERROR"))) | (.name // .context) ],
     failing_runs: [ $live[] | select(.__typename == "CheckRun" and .status == "COMPLETED" and
           ((.conclusion // "") | IN("FAILURE","TIMED_OUT","STARTUP_FAILURE"))) | .run ] | unique,
-    # Cancelled before the matrix expanded: something CANCELLED, nothing else
-    # red, and a job name still holds an unexpanded `${{ ... }}` template.
-    # A job timeout also reads CANCELLED but has expanded names: not matched.
+    # Cancelled before the matrix expanded: nothing red but CANCELLED, and a
+    # CANCELLED job still carries an unexpanded `${{ ... }}` template name.
+    # SKIPPED template jobs exist in every run and do not count; a human
+    # cancel or a job timeout cancels expanded jobs only: not matched.
     cancelled_runs: [ $live | map(select(.__typename == "CheckRun" and .run != 0)) | group_by(.run)[]
-          | select(any(.[]; .status == "COMPLETED" and .conclusion == "CANCELLED")
-                   and all(.[]; ((.conclusion // "") | IN("FAILURE","TIMED_OUT","ACTION_REQUIRED","STARTUP_FAILURE")) | not)
-                   and any(.[]; (.name // "") | contains("${{")))
+          | select(all(.[]; ((.conclusion // "") | IN("FAILURE","TIMED_OUT","ACTION_REQUIRED","STARTUP_FAILURE")) | not)
+                   and any(.[]; .status == "COMPLETED" and .conclusion == "CANCELLED"
+                                and ((.name // "") | contains("${{"))))
           | .[0].run ]
   }
 JQ

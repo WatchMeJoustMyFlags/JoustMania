@@ -274,7 +274,9 @@ ok
 # 16. Newest run cancelled before its matrix expanded (runs 39206900261 /
 #     39213800861): infrastructure; --rerun-failed-once reruns the WHOLE run.
 CI_COMPLETE_EXPR="(github.event.action == 'labeled' && github.event.label.name != 'ci-full') && 'Label event (no CI result)' || 'CI Complete'"
-CANCELLED_RUN="$(check 'Detect changes' COMPLETED CANCELLED 400),$(check 'Integration Tests (e2e-${{ matrix.shard }})' COMPLETED CANCELLED 400),$(check 'Lint Dockerfiles' COMPLETED SKIPPED 400),$(check "${CI_COMPLETE_EXPR}" COMPLETED CANCELLED 400)"
+CANCELLED_RUN="$(check 'Detect changes' COMPLETED CANCELLED 400),$(check 'Build ${{ matrix.service }}' COMPLETED CANCELLED 400),$(check 'Publish ${{ matrix.service }}' COMPLETED CANCELLED 400),$(check 'Retag ${{ matrix.image }}' COMPLETED CANCELLED 400),$(check 'Integration Tests (e2e-${{ matrix.shard }})' COMPLETED CANCELLED 400),$(check 'Lint Dockerfiles' COMPLETED SKIPPED 400),$(check "${CI_COMPLETE_EXPR}" COMPLETED CANCELLED 400)"
+# Template-named jobs that every real run carries as SKIPPED.
+SKIPPED_TEMPLATES="$(check 'Publish ${{ matrix.service }}' COMPLETED SKIPPED 100),$(check 'Retag ${{ matrix.image }}' COMPLETED SKIPPED 100)"
 reset; view "$CANCELLED_RUN"
 run 42 abcdef1 --close 7 --comment-file "${WORK}/comment.md"
 [[ $RC -eq 1 && "$OUT" == *"infra=cancelled-run"*"gh run rerun 400"* ]] || fail "cancelled run: rc=$RC $OUT"
@@ -291,10 +293,24 @@ reset; view "$CANCELLED_RUN" "$(check 'Lint' COMPLETED SUCCESS 500)" "$(check 'C
 run 42 abcdef1 --rerun-failed-once
 [[ $RC -eq 0 && "$OUT" == *"MERGED as"* && "$OUT" != *"rerun"* ]] || fail "superseded cancelled run: rc=$RC $OUT"
 calls | grep -q 'run rerun' && fail "superseded cancelled run must not be rerun: $(calls)"
-# Cancelled with expanded names (a job timeout) or next to a real failure: not infra.
-reset; view "$GREEN" "$(check 'Integration Tests (e2e-core)' COMPLETED CANCELLED 100)"
+# Still cancelled after the one rerun: rc 1 infra=cancelled-run, exactly one rerun.
+reset; view "$CANCELLED_RUN"
+run 42 abcdef1 --rerun-failed-once --close 7 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 1 && "$OUT" == *"infra=cancelled-run"* ]] || fail "still cancelled after rerun: rc=$RC $OUT"
+[[ "$(grep -c 'run rerun' "${STUB_DIR}/calls")" -eq 1 ]] || fail "cancelled run must be rerun exactly once: $(calls)"
+calls | grep -qE 'pr merge|issue' && fail "still cancelled must not merge or touch issues: $(calls)"
+# Job timeout (expanded job CANCELLED, SKIPPED template jobs, CI Complete FAILURE): not infra.
+reset; view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'Integration Tests (e2e-core)' COMPLETED CANCELLED 100)" \
+  "$SKIPPED_TEMPLATES" "$(check 'CI Complete' COMPLETED FAILURE 100)"
 run 42 abcdef1
 [[ $RC -eq 1 && "$OUT" == *"not infrastructure"* ]] || fail "timeout-cancel: rc=$RC $OUT"
+# Human cancel mid-run (matrix expanded, expanded jobs CANCELLED, SKIPPED
+# template jobs, CI Complete SKIPPED): not infra, never rerun.
+reset; view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'Integration Tests (e2e-core)' COMPLETED CANCELLED 100)" \
+  "$(check 'Build menu' COMPLETED CANCELLED 100)" "$SKIPPED_TEMPLATES" "$(check 'CI Complete' COMPLETED SKIPPED 100)"
+run 42 abcdef1 --rerun-failed-once
+[[ $RC -eq 1 && "$OUT" != *"cancelled-run"* ]] || fail "human cancel mid-run: rc=$RC $OUT"
+calls | grep -qE 'run rerun|pr merge' && fail "human cancel must not be rerun or merged: $(calls)"
 reset; view "$CANCELLED_RUN" "$(check 'Lib Unit Tests' COMPLETED FAILURE 400)"
 run 42 abcdef1
 [[ $RC -eq 1 && "$OUT" != *"cancelled-run"* ]] || fail "cancel next to a failure: rc=$RC $OUT"
