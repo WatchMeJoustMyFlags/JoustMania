@@ -182,7 +182,7 @@ remediation.
 
 Once `interventions_allowed` is set to a permitting variant such as
 `shadow_experimental` (the stage baseline sets `standard`) — see
-[act runbook → intervention ladder](agent-act-runbook.md#step-3--open-the-permission-surface)),
+[act runbook → intervention ladder](agent-act-runbook.md#step-3--open-the-permission-surface),
 decisions stop blocking `not_allowed` and **dispatch**. The dispatched ones are
 the `agent.action` spans **without** `decision.blocked=true`. Filter for the
 applied side directly:
