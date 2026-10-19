@@ -29,7 +29,7 @@ GO_TARGETING = REPO_ROOT / "services" / "agent" / "experiment" / "targeting.go"
 FLAG_SERVICE_RENDER = REPO_ROOT / "services" / "flag-service" / "state" / "render.go"
 # The integration test keeps its own copies of the constants (its venv lacks
 # lib.feature_flags' dependencies), so they are pinned here too.
-SHADOW_ISOLATION_ITEST = REPO_ROOT / "tests" / "integration" / "test_experiment_shadow_isolation.py"
+SHADOW_ISOLATION_ITEST = REPO_ROOT / "tests" / "service" / "test_experiment_shadow_isolation.py"
 
 # Base and CI variants of each flag file: flagd serves ci/ in CI.
 FLAG_FILE_VARIANTS = ("", "ci/")

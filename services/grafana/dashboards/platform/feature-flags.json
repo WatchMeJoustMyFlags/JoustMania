@@ -1419,7 +1419,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "histogram_quantile over flagservice_propagation_seconds: write accepted -> merged configuration handed to every open sync stream (NFR-050; the end-to-end flagd target is measured by tests/integration/test_flag_propagation.py).",
+      "description": "histogram_quantile over flagservice_propagation_seconds: write accepted -> merged configuration handed to every open sync stream (NFR-050; the end-to-end flagd target is measured by tests/service/test_flag_propagation.py).",
       "fieldConfig": {
         "defaults": {
           "color": {

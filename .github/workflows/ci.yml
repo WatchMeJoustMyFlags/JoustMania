@@ -100,7 +100,7 @@ jobs:
               # (test_flagd_ci_drift.py, test_shipped_safety_defaults.py)
               - 'services/flagd/**'
               - 'services/agent/experiment/targeting.go'
-              - 'tests/integration/test_experiment_shadow_isolation.py'
+              - 'tests/service/test_experiment_shadow_isolation.py'
             rust:
               - 'services/rust-hid/**'
               - 'proto/psmove_hid.proto'

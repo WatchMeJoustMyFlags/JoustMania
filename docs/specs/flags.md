@@ -59,10 +59,10 @@ Startup-only flags: controller `backend`; observability `metrics_export_interval
 `audio_volume.menu_sound`, `audio_volume.menu_voice`.
 
 Propagation (write accepted to value served): the flag service pushes the new configuration on the open sync
-stream at once; `tests/integration/test_flag_propagation.py` measures it for NFR-050. A baseline file change takes
+stream at once; `tests/service/test_flag_propagation.py` measures it for NFR-050. A baseline file change takes
 effect only on the next start of the flag service (`scripts/flags.sh restart`).
 
-**Traceability:** C-002, C-033, NFR-050 / UC-012, UC-044, UC-053 / `docker-compose.yml`, `lib/feature_flags.py`, `lib/flag_service_writer.py`, `services/agent/flags/` / `lib/tests/`, `services/agent/flags/*_test.go`, `tests/integration/test_flag_propagation.py`.
+**Traceability:** C-002, C-033, NFR-050 / UC-012, UC-044, UC-053 / `docker-compose.yml`, `lib/feature_flags.py`, `lib/flag_service_writer.py`, `services/agent/flags/` / `lib/tests/`, `services/agent/flags/*_test.go`, `tests/service/test_flag_propagation.py`.
 
 ## 2. Ownership by flag set
 
@@ -205,7 +205,7 @@ Human pre-game intent and game calibration: sensitivity, team counts, per-mode t
 | `werewolf.thresholds` | object | default=obj{warning,max} | `default` = object (see variants) | N | game-coordinator: services/game_coordinator/games/werewolf.py:125 | (single-variant: not experimentable) | per-game |
 | `windows` | object | default=obj{min_music_fast_time=4, max_music_fast_time=8, min_music_slow_time=10, max_music_slow_time=23, end_min_music_fast_time=6, end_max_music_fast_time=10, end_min_music_slow_time=8, end_max_music_slow_time=12}; calm=obj{min_music_fast_time=3, max_music_fast_time=6, min_music_slow_time=13, max_music_slow_time=30, end_min_music_fast_time=4, end_max_music_fast_time=7, end_min_music_slow_time=10, end_max_music_slow_time=16}; frantic=obj{min_music_fast_time=6, max_music_fast_time=11, min_music_slow_time=6, max_music_slow_time=14, end_min_music_fast_time=8, end_max_music_fast_time=14, end_min_music_slow_time=5, end_max_music_slow_time=8} (seconds) | `default` = object (see variants) | Y(targetingKey: `calm` → `calm`, `frantic` → `frantic`, else `default`) | game-coordinator: services/game_coordinator/games/base.py:808 (per-game); services/game_coordinator/difficulty_handlers.py:300 (read_object_flag_variant by preset name for pacing_profile intervention) | agent experiment Writer services/agent/experiment/writer.go Apply (experiment-arm value through the flag service; experiment catalog, §13.3); promotion services/agent/promote/realdefault.go (`real` overlay) | per-game (base) + live preset fetch on pacing_profile intervention |
 
-**Traceability:** FR-012, FR-013, FR-017, FR-018, FR-020 to FR-033, FR-062, FR-140 to FR-142 / UC-010, UC-012, UC-020 to UC-027, UC-030, UC-043 / `services/menu/servicer.py`, `services/menu/handlers/admin.py`, `services/game_coordinator/games/`, `services/game_coordinator/servicer.py`, `services/agent/experiment/writer.go` / `tests/integration/test_admin_flow.py`, `tests/integration/test_experiment_shadow_isolation.py`, `tests/integration/test_tc013_shadow_alongside_real.py`.
+**Traceability:** FR-012, FR-013, FR-017, FR-018, FR-020 to FR-033, FR-062, FR-140 to FR-142 / UC-010, UC-012, UC-020 to UC-027, UC-030, UC-043 / `services/menu/servicer.py`, `services/menu/handlers/admin.py`, `services/game_coordinator/games/`, `services/game_coordinator/servicer.py`, `services/agent/experiment/writer.go` / `tests/integration/test_admin_flow.py`, `tests/service/test_experiment_shadow_isolation.py`, `tests/integration/test_tc013_shadow_alongside_real.py`.
 
 ## 5. `interventions`
 
@@ -247,7 +247,7 @@ Controller-manager I/O backend and per-serial backend routing (canary). The warn
 | `poll_drop_threshold` | int | off=0, low=5, default=10, high=20 | `default` = 10 | N | game-coordinator: services/game_coordinator/runtime_config.py:232 | manual edit only | event-refreshed (PROVIDER_CONFIGURATION_CHANGED, services/game_coordinator/runtime_config.py:149) |
 | `bluetooth_backend` | string | python="python", rust="rust", unstable="unstable" | `rust` = "rust" (#1371) | N | controller-manager: services/controller_manager/multiplexer/multiplexer_backend.py:264 (per-serial targetingKey, honoured only on TARGETING_MATCH); pairing-daemon: services/pairing_daemon/psmove_pairing/config.py:get_adapter_routing_default (<- services/pairing_daemon/psmove_pairing/usb_pairing.py:_resolve_routing; every variant maps to a pairing backend, UC-001 BR-003: rust -> rust-hid PairingService, python and unstable -> in-process hidapi, anything else -> rust); connect-proxy reads the flag service view (GET /controller/bluetooth_backend, services/connect-proxy/canary.go setCanaryRouting) | connect-proxy canary HTTP API services/connect-proxy/canary.go setCanaryRouting (/canary/{python,rust,rollback}): flag-service stack overlay, or a fraction overlay over the stable counterpart (#1420) | live (per adapter resolution / per pairing call) |
 
-**Traceability:** FR-006, FR-034, FR-070 / UC-002, UC-003, UC-052 / `services/controller_manager/backend_factory.py`, `services/controller_manager/multiplexer/`, `services/controller_manager/feedback_manager.py`, `services/connect-proxy/canary.go` / `services/controller_manager/tests/`, `tests/integration/test_rollout_plumbing.py`.
+**Traceability:** FR-006, FR-034, FR-070 / UC-002, UC-003, UC-052 / `services/controller_manager/backend_factory.py`, `services/controller_manager/multiplexer/`, `services/controller_manager/feedback_manager.py`, `services/connect-proxy/canary.go` / `services/controller_manager/tests/`, `tests/service/test_rollout_plumbing.py`.
 
 ## 7. `rollout`
 
@@ -262,7 +262,7 @@ Progressive controller-backend rollout (Act 2 of the talk). A human sets `target
 | `current_controller_count` | int | none=0, one=1, three=3, six=6, all=99 | `none` = 0 | N | controller-manager: services/controller_manager/multiplexer/rollout_router.py:63/121 | agent RolloutWriter services/agent/actions/rollout_writer.go:97 SetControllerCount (const :32), gated by rollout_enabled (services/agent/actions/gated.go:113) | live |
 | `remediation_allowed` | bool | on=true, off=false | `off` = false | N | agent: services/agent/actions/remediation_reader.go:61 reads rollout.json FILE directly (defaultVariant only, ignores targeting) <- services/agent/decision/infra_loop.go:425 | manual edit only | live (file re-read per call) |
 
-**Traceability:** FR-071, FR-072, FR-074 / UC-050, UC-051 / `services/controller_manager/multiplexer/rollout_router.py`, `services/agent/actions/rollout_writer.go`, `services/agent/actions/remediation_reader.go`, `services/agent/decision/infra_loop.go` / `services/agent/decision/infra_loop_rollback_test.go`, `services/agent/decision/infra_narrative_test.go`, `tests/integration/test_rollout_plumbing.py`.
+**Traceability:** FR-071, FR-072, FR-074 / UC-050, UC-051 / `services/controller_manager/multiplexer/rollout_router.py`, `services/agent/actions/rollout_writer.go`, `services/agent/actions/remediation_reader.go`, `services/agent/decision/infra_loop.go` / `services/agent/decision/infra_loop_rollback_test.go`, `services/agent/decision/infra_narrative_test.go`, `tests/service/test_rollout_plumbing.py`.
 
 ## 8. `system`
 
@@ -321,7 +321,7 @@ Telemetry export knobs for the Python services and rust-hid. Targeting keys on t
 | `metrics_export_interval_ms` | int | overkill=10, realtime=100, normal=1000 | `normal` = 1000 | Y(service) | all Python services: lib/otel_metrics.py:98 (ctx service=OTEL_SERVICE_NAME) <- init_metrics :146 | manual edit only | startup |
 | `grpc_rpc_spans` | bool | enabled=true, disabled=false | `enabled` = true | N | all Python gRPC services: lib/grpc_tracing.py:95 (<- :203,:262,...); rust-hid: services/rust-hid/src/feature_flags.rs:62 (<- services/rust-hid/src/grpc_tracing.rs:105) | manual edit only | live (per RPC) |
 | `otel_bsp_schedule_delay_millis` | int | fast=500, default=5000 | `default` = 5000 | Y(service) | all Python services: lib/telemetry.py:125 (<- :147) | manual edit only | startup |
-| `flagservice.propagation_probe` | string | none="" | `none` = "" | N | no service; the flag-service integration tests (`tests/integration/test_flag_service_sync.py`) and the NFR-050 measurement (#1413) | the flag service (`PUT /observability/flagservice.propagation_probe`, registry §13.5) | live |
+| `flagservice.propagation_probe` | string | none="" | `none` = "" | N | no service; the flag-service integration tests (`tests/service/test_flag_service_sync.py`) and the NFR-050 measurement (#1413) | the flag service (`PUT /observability/flagservice.propagation_probe`, registry §13.5) | live |
 
 **Traceability:** FR-080 to FR-082, NFR-022 / UC-035 / `lib/otel_metrics.py`, `lib/telemetry.py`, `lib/grpc_tracing.py`, `services/rust-hid/src/feature_flags.rs` / `lib/tests/`.
 

@@ -26,18 +26,19 @@ runners; the printed distribution, every raw sample included, is the
 measurement. NFR-050's "8 live games" load condition is not reproduced here.
 """
 
-import os
 import random
 import statistics
-import sys
 import time
 import uuid
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from tests.integration.helpers import flagd_probe_client
+from tests.service.compositions import FLAG_PLANE
 
-from tests.integration.helpers import flagd_probe_client  # noqa: E402
+pytestmark = pytest.mark.tier("service")
+
+SERVICE_COMPOSITION = FLAG_PLANE
 
 PROBE_SET = "observability"
 PROBE_FLAG = "flagservice.propagation_probe"
@@ -53,9 +54,7 @@ def _percentile(ordered: list[float], pct: float) -> float:
     return ordered[min(len(ordered) - 1, max(0, round(pct * len(ordered)) - 1))]
 
 
-def measure_write_propagation(
-    docker_compose, flag_service, samples: int = SAMPLES
-) -> dict[str, list[float | None]]:
+def measure_write_propagation(stack, flag_service, samples: int = SAMPLES) -> dict[str, list[float | None]]:
     """Return per-reader latencies (seconds) for ``samples`` flag-service writes.
 
     A sample is ``None`` for a reader that did not serve the write within
@@ -63,10 +62,8 @@ def measure_write_propagation(
     """
     latencies: dict[str, list[float | None]] = {"in_process": [], "rpc": []}
     with (
-        flagd_probe_client(
-            docker_compose, PROBE_SET, resolver="in_process"
-        ) as in_process,
-        flagd_probe_client(docker_compose, PROBE_SET, resolver="rpc") as rpc,
+        flagd_probe_client(stack, PROBE_SET, resolver="in_process") as in_process,
+        flagd_probe_client(stack, PROBE_SET, resolver="rpc") as rpc,
     ):
         readers = {"in_process": in_process, "rpc": rpc}
 
@@ -74,12 +71,8 @@ def measure_write_propagation(
         prime = uuid.uuid4().hex
         flag_service.put(PROBE_SET, PROBE_FLAG, value=prime)
         deadline = time.monotonic() + 30.0
-        while any(
-            r.get_string_value(PROBE_FLAG, "", None) != prime for r in readers.values()
-        ):
-            assert time.monotonic() < deadline, (
-                "flagd never served the primed probe value"
-            )
+        while any(r.get_string_value(PROBE_FLAG, "", None) != prime for r in readers.values()):
+            assert time.monotonic() < deadline, "flagd never served the primed probe value"
             time.sleep(0.05)
 
         for _ in range(samples):
@@ -103,9 +96,7 @@ def measure_write_propagation(
 def format_distribution(latencies: dict[str, list[float | None]]) -> str:
     """Summary line plus every raw sample per reader, for the CI log."""
     samples = max((len(v) for v in latencies.values()), default=0)
-    lines = [
-        f"--- NFR-050 write propagation, {samples} flag-service writes to {PROBE_SET}/{PROBE_FLAG} ---"
-    ]
+    lines = [f"--- NFR-050 write propagation, {samples} flag-service writes to {PROBE_SET}/{PROBE_FLAG} ---"]
     for name, values in latencies.items():
         seen = sorted(v for v in values if v is not None)
         raw = " ".join("MISS" if v is None else f"{v * 1000:.0f}" for v in values)
@@ -123,8 +114,9 @@ def format_distribution(latencies: dict[str, list[float | None]]) -> str:
 
 @pytest.mark.nfr("NFR-050")
 @pytest.mark.uc("UC-053", flow="A1")
-def test_flag_service_write_reaches_readers(docker_compose, flag_service, capsys):
-    latencies = measure_write_propagation(docker_compose, flag_service)
+@pytest.mark.usefixtures("fresh_stack")
+def test_flag_service_write_reaches_readers(stack, flag_service, capsys):
+    latencies = measure_write_propagation(stack, flag_service)
     report = format_distribution(latencies)
     # Write past pytest's capture so a passing CI run's log carries the measurement too.
     with capsys.disabled():

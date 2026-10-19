@@ -89,4 +89,4 @@ catalog row and run `make specs`. Do not add a flag nothing reads.
 - No change seen: confirm the flag has a registry row (or that the baseline was restarted), then check the
   Reload column: a startup flag needs a restart of its reader.
 - Tests: `lib/tests/` (Python client), `services/agent/flags/` (agent), `services/flag-service/` (registry and
-  API), `tests/integration/test_flag_propagation.py` (NFR-050).
+  API), `tests/service/test_flag_propagation.py` (NFR-050).

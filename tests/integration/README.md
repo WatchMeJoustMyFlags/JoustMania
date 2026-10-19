@@ -159,10 +159,10 @@ against ONE real flagd (no compose stack) in
 - the `windows` preset ladder of the baseline (pacing_profile).
 
 Runtime writes go through the flag service (epic #1407), so their server-side
-shapes are tested here against the real stack: per-player targeting
-(`test_intervention_flow.py`), the rollout ladder (`test_rollout_plumbing.py`),
-shadow-only experiments (`test_experiment_shadow_isolation.py`, UC-043 BR-001)
-and write propagation (`test_flag_propagation.py`, NFR-050).
+shapes that need only the flag plane (per-player targeting, the rollout ladder,
+shadow-only experiments, write propagation) are tested in the service tier
+(`tests/service/`, #1561); the intervention journeys that apply them to a live
+game stay here (`test_intervention_flow.py`).
 
 Write integration tests here only for what needs the services themselves.
 

@@ -8,13 +8,15 @@ UC-053 flows through the real flag service, flagd and game coordinator (#1413).
 - A2: a persisted admin value through the API (the menu path is test_admin_flow).
 """
 
-import os
-import sys
 import uuid
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from tests.service.compositions import FLAG_PLANE
+
+pytestmark = pytest.mark.tier("service")
+
+SERVICE_COMPOSITION = FLAG_PLANE
 
 
 def _registered(flag_service, game_id: str) -> bool:
@@ -79,6 +81,7 @@ def test_coordinator_reconcile_drops_only_its_own_games(flag_service):
 
 
 @pytest.mark.uc("UC-053", flow="A2", br=["BR-004"])
+@pytest.mark.usefixtures("fresh_stack")
 def test_admin_value_is_persisted_and_cleared(flag_service):
     try:
         # Step 1: a persisted admin write (registry: num_teams persist).
@@ -102,7 +105,4 @@ def test_admin_value_is_persisted_and_cleared(flag_service):
     finally:
         flag_service.request("DELETE", "/game/num_teams?persist=true")
     view = flag_service.get("game", "num_teams")
-    assert (
-        not view.get("admin_value")
-        and view["effective_default"] == view["baseline_default"]
-    )
+    assert not view.get("admin_value") and view["effective_default"] == view["baseline_default"]
