@@ -318,8 +318,10 @@ class TestGetConnectedControllers:
     async def test_roster_shows_the_new_name_after_rename(self, servicer_components, tmp_path):
         """After RenameController, the GetConnectedControllers roster carries the new name.
 
-        Roster half of A2 step 3 only: spans set ``controller.name`` when tracking starts
-        (discovery_loop ``_spawn_controller_process``), so a rename does not reach them.
+        Roster half of A2 step 3 only. On spans the new name appears only in games started
+        after the rename (state_cache copies it into the controller state, the game fills
+        ``player.name`` from that); a running game and the controller manager's spawn-time
+        ``controller.name`` keep the old name. The span half is not asserted here.
         """
         from lib.controller_constants import ControllerInfoKey
         from services.controller_manager.name_manager import NameManager
