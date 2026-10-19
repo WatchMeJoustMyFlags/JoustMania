@@ -23,7 +23,7 @@ What this file deliberately does NOT cover:
 - Menu ready-up, mode selection, and lobby-color *restore* — those are menu
   behavior on the single shared lobby and cannot parallelize. The TC-002
   journey (test_tc002_ffa_game.py) verifies them for JoustFFA; selecting
-  JoustTeams through the menu is covered by test_admin_flow.py.
+  JoustTeams through the menu is covered by test_tc005_admin_journey.py.
 
 Why ``asyncio.gather`` and NOT pytest-xdist: the compose fixture was
 session-scoped, but each xdist worker gets its own session -> one compose stack

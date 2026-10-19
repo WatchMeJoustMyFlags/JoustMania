@@ -33,9 +33,11 @@
 
 ## Postconditions
 
-- The `admin_flags` fixture deletes the persisted admin values; the test clears every remaining `stage` overlay.
+- The persisted admin values live only in the test's flag plane, which is discarded with it; the test clears every remaining `stage` overlay.
 
 ## Automation
 
-- `tests/integration/test_admin_flow.py::test_host_and_stage_change_flags_at_runtime` implements steps 1 to 4.
+**Tier:** T2 service (`tests/service/`, `make test-service`): menu, game coordinator and controller manager (mock controllers) from source at HEAD, flag service and one flagd, fake audio (`LOBBY` composition); the stage scripts run against the test's flag service.
+
+- `tests/service/test_tc020_host_and_stage_flags.py::test_host_and_stage_change_flags_at_runtime` implements steps 1 to 4 (moved from the docker-compose suite in #1562).
 - The script logic itself is covered without a stack by `scripts/tests/test-agent-backend.sh` and `test-talk-stage.sh` (fake flag service with the real registry).

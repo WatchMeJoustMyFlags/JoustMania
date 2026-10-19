@@ -47,7 +47,7 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-002](TC-002-ffa-mock-game-to-winner.md) | FFA game to a winner on mock controllers | UC-003, UC-002, UC-011, UC-010, UC-020, UC-030 | Critical | Automated | `test_tc002_ffa_game_to_winner_then_restart`; warning effect unit-tested only |
 | [TC-003](TC-003-ffa-player-disconnects.md) | Player disconnects during an FFA game | UC-003, UC-010, UC-020, UC-030, UC-002 | High | Automated | `tests/service/test_tc003_ffa_player_disconnects.py`; menu list not read |
 | [TC-004](TC-004-operator-stops-ffa-game.md) | Operator stops an FFA game | UC-010, UC-020, UC-027 | High | Automated | `tests/service/test_tc004_operator_stops_ffa_game.py`; dashboard start path (UC-010 A6) untested |
-| [TC-005](TC-005-host-tunes-and-force-starts.md) | Host tunes the game in admin mode and force-starts | UC-012, UC-011, UC-014, UC-010 | High | Draft | Partly (`test_admin_flow`, per step); gaps unit-tested only (#1400) |
+| [TC-005](TC-005-host-tunes-and-force-starts.md) | Host tunes the game in admin mode and force-starts | UC-012, UC-011, UC-014, UC-010 | High | Automated | T2: `test_tc005_admin_journey::test_host_tunes_and_force_starts`; gaps unit-tested only (#1400) |
 | [TC-006](TC-006-host-restricts-agent-from-controller.md) | Host restricts the agent from the controller | UC-012, UC-013, UC-040, UC-045 | Critical | Draft | Partly (`test_intervention_flow`); ladder and step 5 unit-tested only (#1400, #1395) |
 | [TC-007](TC-007-agent-intervenes-in-ffa-game.md) | Agent intervenes in an FFA game on rules | UC-010, UC-041, UC-040, UC-020, UC-030, UC-031, UC-035 | Critical | Draft | Partly (`test_decide_backend_e2e`, `test_intervention_smoke`); #1404, #1362 |
 | [TC-008](TC-008-remote-backend-confidence-routing.md) | Switch to a remote backend and route by confidence | UC-044, UC-040, UC-020 | Critical | Automated | `test_decide_backend_e2e` (openai fake); Jev/Claude and timeout #1404 (timeout unit-tested, #1395) |
@@ -62,7 +62,7 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-017](TC-017-non-ffa-modes-round-backlog.md) | One round of every non-FFA mode (backlog) | UC-021 to UC-026 | Low | Draft | Partly (`tests/service/test_tc017_parallel_mode_lifecycle.py`); backlog #1361 |
 | [TC-018](TC-018-agent-intervention-through-flag-service.md) | Agent intervention through the flag service | UC-053, UC-040 | Critical | Automated | T2: `test_tc018_flag_service_eliminations::test_two_eliminations_through_the_flag_service`; failed read: unit test |
 | [TC-019](TC-019-flag-service-restart.md) | Flag service restart | UC-053 | High | Automated | `test_tc019_flag_service_restart` (T2 service); epoch reset: unit test |
-| [TC-020](TC-020-host-and-stage-change-flags.md) | Host and stage change flags at runtime | UC-012, UC-053, UC-044 | High | Automated | `test_admin_flow::test_host_and_stage_change_flags_at_runtime` |
+| [TC-020](TC-020-host-and-stage-change-flags.md) | Host and stage change flags at runtime | UC-012, UC-053, UC-044 | High | Automated | T2: `test_tc020_host_and_stage_flags::test_host_and_stage_change_flags_at_runtime` |
 
 Status follows the skill: `Automated` = an end-to-end test implements the journey (gaps listed in the
 file), `Draft` = not or only partly automated, or written for review. A service-tier test (T2,
