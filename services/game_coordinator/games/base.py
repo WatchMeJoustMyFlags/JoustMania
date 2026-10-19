@@ -731,6 +731,9 @@ class BaseGameMode(ABC):
         self.initial_players = initial_players  # Players from StartGame RPC
         self.start_time = None
         self.running = False
+        # Disconnects seen by _warmup_ema(); _game_loop() runs them through the
+        # death path before its first frame (UC-020 A2, #1582).
+        self._warmup_disconnects: list[str] = []
         # Set by force_end(): the reason the game was stopped from outside, or
         # None for a game that ended on its own win condition (#1328).
         self.force_end_reason: str | None = None
@@ -1325,6 +1328,10 @@ class BaseGameMode(ABC):
         that cause instant deaths when the EMA is uninitialized. This method
         reads and discards buffered frames while priming each player's EMA
         with real sensor data — no death checks run.
+
+        Disconnect events are one-shot (controller-manager drains them once),
+        so they are kept in ``_warmup_disconnects`` for ``_game_loop()`` to
+        handle instead of being dropped with the frame (UC-020 A2, #1582).
         """
         warmup_duration = 0.1  # 100ms — enough to drain buffer and get ~6 frames at 60Hz
         warmup_start = time.time()
@@ -1332,6 +1339,7 @@ class BaseGameMode(ABC):
 
         try:
             async for gameplay_update in self.gameplay_stream:
+                self._warmup_disconnects.extend(d.serial for d in gameplay_update.disconnects)
                 for controller_data in gameplay_update.controllers:
                     serial = controller_data.serial
                     if serial in self.players and self.players[serial].alive:
@@ -1371,6 +1379,21 @@ class BaseGameMode(ABC):
         for gameplay_data in gameplay_update.controllers:
             await self._process_controller_state(gameplay_data)
 
+            if await self._check_win_condition():
+                return True
+        return False
+
+    async def _handle_warmup_disconnects(self) -> bool:
+        """Run disconnects buffered by ``_warmup_ema()`` through the death path.
+
+        Same order and win check as ``_process_gameplay_update`` (UC-020 A2, BR-001).
+
+        Returns:
+            True if game is over (win condition met), False otherwise
+        """
+        pending, self._warmup_disconnects = self._warmup_disconnects, []
+        for serial in pending:
+            await self._handle_disconnect(serial)
             if await self._check_win_condition():
                 return True
         return False
@@ -1532,6 +1555,14 @@ class BaseGameMode(ABC):
             # Track current alive set for detecting changes
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
             logger.info(f"Initial alive players: {len(last_alive_serials)}")
+
+            # UC-020 A2: disconnects seen during EMA warmup go through the death path now.
+            if await self._handle_warmup_disconnects():
+                self._latch_game_outcome()
+                logger.info("Win condition met, keeping game active for 1 second to show winner")
+                await asyncio.sleep(1.0)
+                return
+            last_alive_serials = await self._send_alive_filter_update(last_alive_serials)
 
             # Track loop timing for actual Hz calculation (Phase 43)
             loop_start_time = time.time()

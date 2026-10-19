@@ -327,3 +327,92 @@ class TestTwoPlayerDisconnectScenario:
         winner_events = event_collector.get_events_of_type(GameEvent.GAME_WINNER)
         assert len(winner_events) == 1
         assert winner_events[0]["serial"] == "player_b"
+
+
+class ScriptedGameplayStream(MockGameplayStream):
+    """Gameplay stream that yields scripted frames, one every ``frame_interval_s`` (60 Hz by default)."""
+
+    def __init__(self, frames, frame_interval_s: float = 1 / 60):
+        super().__init__()
+        self._frames = list(frames)
+        self._frame_interval_s = frame_interval_s
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        import asyncio
+
+        if not self._frames:
+            raise StopAsyncIteration
+        await asyncio.sleep(self._frame_interval_s)
+        return self._frames.pop(0)
+
+
+class TestDisconnectDuringWarmup:
+    """#1582: a disconnect in the ~100 ms EMA warmup after the countdown still eliminates the player."""
+
+    STILL = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
+
+    def _game(self, serials):
+        event_collector = EventCollector()
+        game = FFAGame(
+            controller_manager_client=MockControllerManagerService(num_controllers=len(serials)),
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_warmup_disconnect",
+        )
+        game.running = True
+        for serial in serials:
+            game.players[serial] = Player(serial=serial, team=0, alive=True, color=(255, 0, 0))
+        return game, event_collector
+
+    def _frames(self, serials, disconnected: str, count: int = 20):
+        """First frame carries the one-shot disconnect (controller-manager drains it once); the rest are still."""
+        frames = []
+        for i in range(count):
+            alive = [s for s in serials if i == 0 or s != disconnected]
+            frames.append(
+                controller_manager_pb2.GameplayDataUpdate(
+                    controllers=[controller_manager_pb2.GameplayData(serial=s, accel=self.STILL) for s in alive],
+                    disconnects=[controller_manager_pb2.DisconnectEvent(serial=disconnected)] if i == 0 else [],
+                    timestamp=int(time.time() * 1000),
+                )
+            )
+        return frames
+
+    async def _run_warmup_then_loop(self, game, frames):
+        game.gameplay_stream = ScriptedGameplayStream(frames)
+        await game._warmup_ema()
+        assert game.gameplay_stream._frames, "warmup must leave frames for the game loop"
+        assert len(game.gameplay_stream._frames) < len(frames) - 1, "the disconnect frame must fall in warmup"
+        await game._game_loop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A2")
+    @pytest.mark.uc("UC-030", flow="A5")
+    async def test_disconnect_during_warmup_eliminates_player(self):
+        """3 players: the controller that disconnects during warmup is dead once the game loop runs."""
+        serials = ["p0", "p1", "p2"]
+        game, events = self._game(serials)
+        from lib.types import GameEvent
+
+        await self._run_warmup_then_loop(game, self._frames(serials, disconnected="p0"))
+
+        assert game.players["p0"].alive is False
+        assert game.players["p1"].alive is True
+        assert game.players["p2"].alive is True
+        assert [e["serial"] for e in events.get_events_of_type(GameEvent.PLAYER_DEATH)] == ["p0"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A2", br=["BR-001"])
+    async def test_disconnect_during_warmup_ends_two_player_game(self):
+        """2 players: a disconnect during warmup ends the game with the other player winning."""
+        serials = ["p0", "p1"]
+        game, events = self._game(serials)
+        from lib.types import GameEvent
+
+        await self._run_warmup_then_loop(game, self._frames(serials, disconnected="p0"))
+
+        assert game.players["p0"].alive is False
+        assert events.get_events_of_type(GameEvent.GAME_WINNER) == [{"serial": "p1"}]
