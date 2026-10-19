@@ -30,11 +30,11 @@ The orchestrator picks the model from this table; when you are the wrong depth f
 
 ## Hard rules
 
-- Use a detached worktree and remove it at the end:
+- Use a detached worktree and remove it at the end. Fetch into a per-PR ref, never `FETCH_HEAD`: parallel reviewers share it, and one review then checks out another PR's head.
   ```bash
-  git fetch origin pull/<PR>/head && git worktree add --detach .worktrees/review-<PR> FETCH_HEAD
+  git fetch origin +pull/<PR>/head:refs/review/<PR> && git worktree add --detach .worktrees/review-<PR> refs/review/<PR>
   # ... review ...
-  git worktree remove --force .worktrees/review-<PR>
+  git worktree remove --force .worktrees/review-<PR> && git update-ref -d refs/review/<PR>
   ```
 - Never modify the author's worktree, never `git reset --hard` or `git stash` in any shared worktree, never touch
   the running stack. Throwaway containers on free ports with `--rm` are fine.
@@ -54,7 +54,7 @@ The orchestrator picks the model from this table; when you are the wrong depth f
 5. **CI.** `gh pr checks <PR>` once (no watching). SonarCloud is non-blocking. Collector `exited (1)` /
    `unknown type: "span_metrics"`, the fast-path stale-prebuilt-images guard and `blob not found` are
    infrastructure: name them as such (advice: `ci-full` label or rerun), not as PR defects.
-6. **Conflicts.** `git merge-tree --write-tree origin/main FETCH_HEAD` for conflicts with main; skim
+6. **Conflicts.** `git merge-tree --write-tree origin/main refs/review/<PR>` for conflicts with main; skim
    `gh pr list --state open --json number,title,files` for PRs touching the same files or spec IDs.
 
 ## Delta mode
