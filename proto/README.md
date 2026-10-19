@@ -327,8 +327,8 @@ print(response.state)
 
 For detailed API documentation, see:
 - **Service READMEs:** Each service has a `services/*/README.md` with usage examples
-- **Architecture docs:** `docs/specs/services.md` for system overview
-- **API reference:** `docs/API.md` for complete gRPC API documentation
+- **Architecture docs:** [docs/specs/services.md](../docs/specs/services.md) for system overview
+- **API reference:** the `.proto` files in this directory and [docs/specs/services.md](../docs/specs/services.md)
 
 ## Troubleshooting
 

@@ -271,7 +271,7 @@ git worktree remove .worktrees/issue-<NUMBER>
 
 4. Run quick checks before committing:
    ```bash
-   make ci-quick
+   make check
    ```
 
 5. Commit changes:
@@ -385,7 +385,7 @@ make format
 **Dockerfile warnings:**
 ```bash
 # Check Dockerfiles
-make lint-dockerfiles
+make ci-lint-dockerfiles
 
 # Fix based on hadolint suggestions
 # Review best practices: https://github.com/hadolint/hadolint
@@ -406,7 +406,7 @@ git commit -m "chore: Regenerate proto files"
 ### Python
 
 We use **ruff** for linting and formatting:
-- Line length: 100 characters
+- Line length: 120 characters
 - Target version: Python 3.14 (`requires-python = ">=3.14,<3.15"` in `pyproject.toml`)
 - Automatic import sorting
 - Comprehensive linting rules
