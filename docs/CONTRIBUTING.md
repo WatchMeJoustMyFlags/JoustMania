@@ -135,6 +135,11 @@ derived from its use cases: it is `Verified` only when every use case that lists
 `Tested`, otherwise at most `Implemented`. NFRs and constraints are exempt from both rules: NFRs are measured separately, constraints are verified by
 review and the technical specs; only FRs derive their status from their use cases.
 
+When a flow or business rule leaves a use case, keep its ID: a flow that moved to another use case is
+titled `(moved)`, one that no longer exists `(retired)`. Its trigger says where it went (or why it
+ended) and that the ID is kept so it is not reused, and its body is one neutral "No steps" line.
+See UC-030 A2 and UC-035 A2.
+
 ### Identifiers in use cases (documented deviation)
 
 The `use-case-spec` skill asks for flows without implementation details. JoustMania's use cases
