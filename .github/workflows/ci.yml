@@ -847,10 +847,23 @@ jobs:
           # Read-only: the publish job (docker-build-extra) owns this scope.
           cache-from: type=gha,scope=connect-proxy
 
+  # #1422 step 15: one job per shard, each with its own compose stack.
+  # e2e-core never builds or starts the agent; e2e-agent holds the modules
+  # that start it. Assignment: E2E_SHARD_BY_MODULE in tests/integration/
+  # conftest.py (an unassigned module fails collection). The job id stays
+  # `integration-test`: `needs.integration-test.result` aggregates the matrix
+  # (success only when every shard succeeds), so docker-build,
+  # docker-build-extra, retag-skipped and ci-complete gate on both shards.
+  # Both shards always run whenever the job runs (main, ci-full, any non-docs PR).
   integration-test:
-    name: Integration Tests
+    name: Integration Tests (e2e-${{ matrix.shard }})
     runs-on: ubuntu-latest
     needs: [changes]
+    strategy:
+      # Let the other shard finish: its result and durations stay visible.
+      fail-fast: false
+      matrix:
+        shard: [core, agent]
     # #1422: skipped on docs-only PRs (see `non_docs`). run_all_checks keeps it
     # mandatory on main pushes, workflow_dispatch and the `ci-full` label, so
     # the publish/retag jobs that need it always have a real result on main.
@@ -877,6 +890,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: astral-sh/setup-uv@v8.2.0
+
+      # Collection only (no docker): every e2e test is in exactly one shard.
+      - name: Check e2e shard assignment
+        if: matrix.shard == 'core'
+        run: make test-integration-shard-check
 
       # #925 fast-path freshness guard: BEFORE mounting current source into the
       # pulled :latest images, confirm each carries a deps-fingerprint label that
@@ -949,12 +967,13 @@ jobs:
       # checkout instead, under the exact ref compose resolves, and load it
       # locally. The suite's session `compose pull` skips the profile-gated
       # agent, and the tests that start it use pull_policy "missing", so they run
-      # this HEAD build. Unconditional on the fast path; it costs ~1-1.5 min
+      # this HEAD build. Runs only in the e2e-agent shard on the fast path; it costs ~1-1.5 min
       # (amd64 only; `go build` has no build-cache mount, so any source change
       # rebuilds). The full-build path already builds the agent at HEAD.
+      # Only the e2e-agent shard runs the agent, so only it builds it.
       - name: Resolve agent image ref (fast path)
         id: agent_image
-        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        if: matrix.shard == 'agent' && needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
         env:
           IMAGE_TAG: latest
         run: |
@@ -967,7 +986,7 @@ jobs:
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
 
       - name: Build agent at HEAD (fast path)
-        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        if: matrix.shard == 'agent' && needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -983,15 +1002,20 @@ jobs:
       # flag-service: built at HEAD by compose, pull_policy build in docker-compose.dev.yml).
       # PYTEST_EXTRA="--reruns 1" (#925): tolerate a single integration flake so
       # one flake no longer skips image publish. Generic — reruns ANY failure
-      # once, never quarantines a test by name.
+      # once, never quarantines a test by name. --durations=15 lists the slowest
+      # tests of the shard (#1422).
       - name: Run integration tests (fast - source only)
         if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
-        run: COLLECTOR_PULL_POLICY=missing USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1" make test-integration
+        env:
+          E2E_SHARD: ${{ matrix.shard }}
+        run: COLLECTOR_PULL_POLICY=missing USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1 --durations=15" make test-integration
 
       # Slow path: full build (Dockerfiles or deps changed)
       - name: Run integration tests (full build)
         if: needs.changes.outputs.integration_deps == 'true' || needs.changes.outputs.force_full == 'true'
-        run: PYTEST_EXTRA="--reruns 1" make test-integration
+        env:
+          E2E_SHARD: ${{ matrix.shard }}
+        run: PYTEST_EXTRA="--reruns 1 --durations=15" make test-integration
 
   # #1487: arm64 is built on a native arm64 runner (free for public repos), NOT
   # under QEMU. Emulated Go/Rust compiles (otel-collector, rust-hid) hit the
