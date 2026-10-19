@@ -38,7 +38,7 @@ func loopWithClock(snap flags.Snapshot, out []Decision, clock *time.Time) (*Loop
 func TestOnEvaluate_PolicyRecorded(t *testing.T) {
 	snap := flags.Snapshot{
 		Enabled: true,
-		Policy:  flags.Policy{MaxInterventionsPerMinute: 2, MovementVarianceWindow: 15},
+		Policy:  flags.Policy{MaxInterventionsPerMinute: 2, BatteryThreshold: 15},
 	}
 	loop := NewLoop(fakeFlags{snap: snap}, nil)
 	loop.Rules = &fixedRules{}
@@ -46,10 +46,9 @@ func TestOnEvaluate_PolicyRecorded(t *testing.T) {
 
 	state := loop.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
 
-	// The variance window is recorded in the LayerState (it reaches the #726
-	// engine through its PolicySource, and #731 reads it from the snapshot).
-	if state.PolicyMovementVarianceWin != 15 {
-		t.Errorf("LayerState.PolicyMovementVarianceWin = %d, want 15", state.PolicyMovementVarianceWin)
+	if state.PolicyMaxPerMinute != 2 || state.PolicyBatteryThreshold != 15 {
+		t.Errorf("LayerState policy = max %d battery %d, want 2 and 15",
+			state.PolicyMaxPerMinute, state.PolicyBatteryThreshold)
 	}
 }
 
@@ -275,7 +274,6 @@ func TestOnEvaluate_FullLayerStateSnapshot(t *testing.T) {
 		InterventionsAllowed: []string{"play_audio_cue"},
 		Policy: flags.Policy{
 			BatteryThreshold:          25,
-			MovementVarianceWindow:    12,
 			MaxInterventionsPerMinute: 3,
 		},
 	}
@@ -292,9 +290,9 @@ func TestOnEvaluate_FullLayerStateSnapshot(t *testing.T) {
 	if !reflect.DeepEqual(state.InterventionsAllowed, []string{"play_audio_cue"}) {
 		t.Errorf("permission layer allow-list: %v", state.InterventionsAllowed)
 	}
-	if state.PolicyBatteryThreshold != 25 || state.PolicyMovementVarianceWin != 12 || state.PolicyMaxPerMinute != 3 {
-		t.Errorf("permission policy: battery=%d window=%d max=%d",
-			state.PolicyBatteryThreshold, state.PolicyMovementVarianceWin, state.PolicyMaxPerMinute)
+	if state.PolicyBatteryThreshold != 25 || state.PolicyMaxPerMinute != 3 {
+		t.Errorf("permission policy: battery=%d max=%d",
+			state.PolicyBatteryThreshold, state.PolicyMaxPerMinute)
 	}
 	if state.Dispatched != 1 || len(state.Outcomes) != 1 || state.Outcomes[0].Weight != 0.5 {
 		t.Errorf("outcomes: dispatched=%d outcomes=%+v", state.Dispatched, state.Outcomes)

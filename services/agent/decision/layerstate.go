@@ -54,10 +54,9 @@ type LayerState struct {
 	Objectives map[string]float64
 
 	// --- Permission layer ---
-	InterventionsAllowed      []string
-	PolicyBatteryThreshold    int
-	PolicyMovementVarianceWin int
-	PolicyMaxPerMinute        int
+	InterventionsAllowed   []string
+	PolicyBatteryThreshold int
+	PolicyMaxPerMinute     int
 
 	// --- Fitness layer (#731 hook) ---
 	// FitnessEvaluated holds the cycle-level fitness-function results that #731
@@ -89,12 +88,11 @@ type LayerState struct {
 // are filled in as decisions are processed.
 func newLayerState(s flags.Snapshot) LayerState {
 	return LayerState{
-		Enabled:                   s.Enabled,
-		Objectives:                s.Objectives,
-		InterventionsAllowed:      s.InterventionsAllowed,
-		PolicyBatteryThreshold:    s.Policy.BatteryThreshold,
-		PolicyMovementVarianceWin: s.Policy.MovementVarianceWindow,
-		PolicyMaxPerMinute:        s.Policy.MaxInterventionsPerMinute,
+		Enabled:                s.Enabled,
+		Objectives:             s.Objectives,
+		InterventionsAllowed:   s.InterventionsAllowed,
+		PolicyBatteryThreshold: s.Policy.BatteryThreshold,
+		PolicyMaxPerMinute:     s.Policy.MaxInterventionsPerMinute,
 	}
 }
 

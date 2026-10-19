@@ -31,7 +31,6 @@ const (
 	keyObjectives                = "objectives"
 	keyInterventionsAllowed      = "interventions_allowed"
 	keyBatteryThreshold          = "policy.battery_threshold"
-	keyMovementVarianceWindow    = "policy.movement_variance_window"
 	keyMaxInterventionsPerMinute = "policy.max_interventions_per_minute"
 
 	// LLM call gate (#847): the flag-controlled gate in FRONT of every remote
@@ -152,9 +151,6 @@ const (
 	// DefaultBatteryThreshold (percent): player-targeted interventions are
 	// blocked when the target controller's battery is below this.
 	DefaultBatteryThreshold = 20
-	// DefaultMovementVarianceWindow (seconds): the rolling window that
-	// variance-triggered logic (#726/#731) must observe before acting.
-	DefaultMovementVarianceWindow = 10
 	// DefaultMaxInterventionsPerMinute is the weighted per-minute budget.
 	DefaultMaxInterventionsPerMinute = 2
 
@@ -304,9 +300,6 @@ type Policy struct {
 	// BatteryThreshold (percent): player-targeted interventions are blocked when
 	// the target controller's battery is below this value.
 	BatteryThreshold int
-	// MovementVarianceWindow (seconds): the rolling window variance-triggered
-	// logic must observe before acting (parameterizes #726/#731 rules).
-	MovementVarianceWindow int
 	// MaxInterventionsPerMinute is the weighted per-minute dispatch budget.
 	MaxInterventionsPerMinute int
 }
@@ -670,7 +663,6 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 		InterventionsAllowed: f.interventionsAllowed(ctx),
 		Policy: Policy{
 			BatteryThreshold:          f.intFlag(ctx, keyBatteryThreshold, DefaultBatteryThreshold),
-			MovementVarianceWindow:    f.intFlag(ctx, keyMovementVarianceWindow, DefaultMovementVarianceWindow),
 			MaxInterventionsPerMinute: f.intFlag(ctx, keyMaxInterventionsPerMinute, DefaultMaxInterventionsPerMinute),
 		},
 		LLMGate: f.llmGate(ctx),

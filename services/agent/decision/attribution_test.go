@@ -44,7 +44,6 @@ func TestDecisionSpan_FullFlagSetLifted(t *testing.T) {
 		},
 		Policy: flags.Policy{
 			BatteryThreshold:          25,
-			MovementVarianceWindow:    12,
 			MaxInterventionsPerMinute: 3,
 		},
 	}
@@ -74,9 +73,8 @@ func TestDecisionSpan_FullFlagSetLifted(t *testing.T) {
 		}
 	}
 	wantInt := map[string]int64{
-		AttrPolicyBatteryThreshold:       25,
-		AttrPolicyMovementVarianceWindow: 12,
-		AttrPolicyMaxPerMinute:           3,
+		AttrPolicyBatteryThreshold: 25,
+		AttrPolicyMaxPerMinute:     3,
 	}
 	for key, expected := range wantInt {
 		if v, ok := attrValue(dec, key); !ok || v.AsInt64() != expected {

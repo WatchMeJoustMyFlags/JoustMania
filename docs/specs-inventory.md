@@ -37,7 +37,7 @@ banner pointing at their replacement; nothing was deleted.
 | `DEVELOPMENT.md` | 836 | Build, run, debug | stale | `localhost:8080`; `docker-compose.test.yml`; `python:3.11-slim` examples; `--scale game-coordinator=3` impossible with fixed container names; network name `joustmania_default` vs `joustmania-network`. | guide (needs rewrite) |
 | `DOCKER_WORKFLOW.md` | 208 | Compose and image workflow | stale | Images `settings-service`, `supervisor-service`, `webui-service` do not exist; `make test-unit` absent. | guide (needs rewrite) |
 | `CADDY_PROXY.md` | 186 | Caddy reverse proxy | stale (obsolete) | No Caddyfile exists; the proxy is envoy (`services/envoy/envoy.yaml`). | **superseded** by services §Envoy |
-| `feature-flags.md` | 734 | flagd architecture, naming, per-domain catalog | stale (core current) | ~30 flags missing from the catalog incl. `interventions_enabled`, `rollout_enabled`, `experiments_enabled`, `code_improvement.*`, `verdict_*`; lifecycle flags documented as restart-only although they hot-reload since #927 (D-F2). | **catalog superseded** by flags.md; architecture prose stays as guide |
+| `feature-flags.md` | 734 | flagd architecture, naming, per-domain catalog | stale (core current) | ~30 flags missing from the catalog incl. `interventions_enabled`, `rollout_enabled`, `experiments_enabled`, `code_improvement.*`, `verdict_*`; lifecycle flags documented as restart-only although they hot-reload since #927 (D-F2). | **catalog superseded** by flags.md; rewritten in #1322 item 9 as a short guide that points at flags.md |
 | `AUDIO.md` | 197 | Audio service | stale (minor) | pygame / scipy / WAV vs miniaudio / soxr / OGG (D-AU1). RPCs and 8-channel limit correct. | services §audio, UC-031 |
 | `25-controller-setup.md` | 291 | 25 controllers on a Pi 5 | stale | `UPDATE_FREQUENCY = 30` vs 60 (`games/base.py:53`, flag default 60). | NFR-025, guide |
 | `hardware-setup-guide.md` | 582 | Pi 5 hardware, adapters, power | current (minor drift) | Daemon poll "30 s" vs flag default 10 s; `:8002/metrics` serves `/healthz` only. | guide; C-010, C-011 |
@@ -214,9 +214,9 @@ spec PRs. Verified against `main` @ 2d162b33; rows added or updated by the audit
 | ID | Finding | Kind |
 |---|---|---|
 | D-F1 | `game_instructions` has no reader: the admin toggle has no effect. | likely bug (issue #1277) |
-| D-F2 | feature-flags.md misses ~30 flags and says agent lifecycle flags need a restart (hot-reloaded since #927). | stale doc |
-| D-F3 | `code_improvement.validation_games`, `fitness_improvement_threshold`, `revert_on_degradation` have no production reader (#964); the FR-067 validator is constructed but `Validate` is never called (PR #1378 open removes the unused chain, #1322). | gap |
-| D-F4 | `policy.movement_variance_window` is read and logged but the rules engine uses a static 10 s (`decision/config.go:125`). | likely bug |
+| D-F2 | feature-flags.md misses ~30 flags and says agent lifecycle flags need a restart (hot-reloaded since #927). | stale doc; **Resolved by #1322 item 9** (feature-flags.md rewritten as a short guide pointing at specs/flags.md) |
+| D-F3 | `code_improvement.validation_games`, `fitness_improvement_threshold`, `revert_on_degradation` have no production reader (#964); the FR-067 validator is constructed but `Validate` is never called (PR #1378 open removes the unused chain, #1322). | gap; **Resolved by #1322 item 9** (the three keys were removed; FR-067 stays planned under #964) |
+| D-F4 | `policy.movement_variance_window` is read and logged but the rules engine uses a static 10 s (`decision/config.go:125`). | likely bug; **Resolved by #1322 item 9** (flag removed; the window stays a fixed 10 s) |
 | D-F5 | Experiment fitness scoring uses static thresholds, not the live `fitness.*` flags (`experiment_loop.go` `recordFinalizedRealFitness`, `defaultGameFitness`: `decision.DefaultStaticConfig().FitnessThresholds`). | likely bug |
 | D-F6 | `services/flagd/controller.ci-rust.json` is loaded by nothing. | dead file; Resolved by #1417 (deleted, #1416) |
 

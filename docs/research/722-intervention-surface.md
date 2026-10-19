@@ -403,7 +403,7 @@ running game (BaseGameMode)
 
 The flag file `services/flagd/interventions.json` (`flagSetId:
 "interventions"`), one of the eight domains shipped with #749 (see
-[feature-flags.md](../feature-flags.md#domains)). Initialized via the existing
+[feature-flags.md](../feature-flags.md#1-how-it-works)). Initialized via the existing
 `init_flag_domain()` ([feature_flags.py:81](../../lib/feature_flags.py)).
 
 Two flag shapes are needed, because flags are **declarative state, not

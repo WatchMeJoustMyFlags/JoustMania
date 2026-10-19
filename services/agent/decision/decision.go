@@ -21,8 +21,6 @@
 //	                                     the target's battery is below threshold
 //	            policy.max_interventions_per_minute  weighted sliding-window rate
 //	                                     limit across all dispatched interventions
-//	            policy.movement_variance_window      recorded; parameterizes the
-//	                                     #726/#731 variance rules
 //
 // Every decision that the rules return is audited as an agent.decision ->
 // agent.action span pair (#724); decisions blocked by any permission gate carry
@@ -554,7 +552,6 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 			"duration", derefFloat(c.Session.DurationSeconds),
 			"decision_backend", requestedBackend(snapshot),
 			"battery_threshold", snapshot.Policy.BatteryThreshold,
-			"variance_window", snapshot.Policy.MovementVarianceWindow,
 			"max_per_minute", snapshot.Policy.MaxInterventionsPerMinute,
 		)
 	}
@@ -1163,7 +1160,6 @@ func layerStateAttributes(state *LayerState) []attribute.KeyValue {
 		// Permission layer.
 		attribute.String(AttrInterventionsAllowed, allowedSummary(state.InterventionsAllowed)),
 		attribute.Int(AttrPolicyBatteryThreshold, state.PolicyBatteryThreshold),
-		attribute.Int(AttrPolicyMovementVarianceWindow, state.PolicyMovementVarianceWin),
 		attribute.Int(AttrPolicyMaxPerMinute, state.PolicyMaxPerMinute),
 	}
 	// Decision backend (#1226): only present when the decide hook ran, so spans of

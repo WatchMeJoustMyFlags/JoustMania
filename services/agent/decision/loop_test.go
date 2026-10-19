@@ -167,9 +167,8 @@ func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 	}
 	// Policy values lift as ints.
 	for key, expected := range map[string]int64{
-		AttrPolicyBatteryThreshold:       0,
-		AttrPolicyMovementVarianceWindow: 0,
-		AttrPolicyMaxPerMinute:           100,
+		AttrPolicyBatteryThreshold: 0,
+		AttrPolicyMaxPerMinute:     100,
 	} {
 		if v, ok := attrValue(dec, key); !ok || v.AsInt64() != expected {
 			t.Errorf("decision attr %s = %d (present=%v), want %d", key, v.AsInt64(), ok, expected)

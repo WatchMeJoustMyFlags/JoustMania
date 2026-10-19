@@ -178,12 +178,11 @@ const (
 	AttrMode = "agent.mode"
 	// AttrObjectives is the objective weights being pursued (#725/#731).
 	AttrObjectives = "agent.objectives"
-	// AttrPolicyBatteryThreshold / AttrPolicyMovementVarianceWindow /
-	// AttrPolicyMaxPerMinute lift the three numeric permission-layer policy flags
-	// onto the decision span so a single trace shows the policy in effect (#729).
-	AttrPolicyBatteryThreshold       = "policy.battery_threshold"
-	AttrPolicyMovementVarianceWindow = "policy.movement_variance_window"
-	AttrPolicyMaxPerMinute           = "policy.max_interventions_per_minute"
+	// AttrPolicyBatteryThreshold / AttrPolicyMaxPerMinute lift the two numeric
+	// permission-layer policy flags onto the decision span so a single trace
+	// shows the policy in effect (#729).
+	AttrPolicyBatteryThreshold = "policy.battery_threshold"
+	AttrPolicyMaxPerMinute     = "policy.max_interventions_per_minute"
 	// AttrInterventionsAllowed summarizes the permission list in effect. The
 	// individual flag evaluation is additionally recorded as a feature_flag.*
 	// span event (semconv) on the decision span.

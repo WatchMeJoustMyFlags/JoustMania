@@ -89,16 +89,14 @@ Delegates all HID I/O to the `rust-hid` gRPC service (port 50058). Uses sync `gr
 The `backend` flag (in the `controller` domain) accepts comma-separated values to run multiple adapters simultaneously:
 
 ```json
-"backend": { "defaultVariant": "mock_rust" }
+"backend": { "defaultVariant": "python_rust" }
 ```
 
-This creates a `MultiplexerBackend` with both a `MockAdapter` and a `RustServiceAdapter`, allowing real and simulated controllers in the same session. A `MockAdapter` (zero controllers) is always added, so `rust` and `mock,rust` load the same adapters. Valid combinations:
+This creates a `MultiplexerBackend` with a `PythonHidAdapter` and a `RustServiceAdapter`. A `MockAdapter` (zero controllers) is always added, so the flag has no `mock_*` variants (removed in #1322). Variants:
 - `mock` — mock only
 - `rust` — rust-hid (+ mock) **(default, #1371)**
-- `mock,rust` — mock + rust-hid
 - `python` — python-hid (+ mock) *(opt-in)*
-- `mock,python` — mock + python-hid *(opt-in)*
-- `python,rust` / `mock,python,rust` — python-hid + rust-hid side by side *(opt-in)*
+- `python_rust` (`python,rust`) — python-hid + rust-hid side by side (+ mock) *(opt-in)*
 
 ### python-hid is opt-in (#1371)
 
@@ -118,7 +116,7 @@ rust-hid is the default Bluetooth backend everywhere (UC-002 BR-003). The Python
 
   On the Pi, set the profile in a systemd drop-in (`sudo systemctl edit joustmania`, `[Service]` `Environment=COMPOSE_PROFILES=python-hid`), not in `.env`: `.env` is tracked, and editing it breaks the start script's `git pull --ff-only` (#1402 S2). When the profile is off, `scripts/setup/joustmania-start.sh` removes a stale `joustmania-python-hid` container left from an older install (#1402 I1).
 
-- `python_rust` and `mock_python_rust` stay as opt-in variants: they are the only way to run both HID services side by side, which the remaining rollout loop (UC-050 to UC-052) needs until both are removed after the talk. They are no longer a default anywhere. The backend-comparison dashboard was deleted in #1427.
+- `python_rust` stays as an opt-in variant: it is the only way to run both HID services side by side, which the remaining rollout loop (UC-050 to UC-052) needs until both are removed after the talk. They are no longer a default anywhere. The backend-comparison dashboard was deleted in #1427.
 - `bluetooth_backend=unstable` routes through the `UnstableAdapter`, which wraps the python adapter, so it also needs a `python` backend variant.
 
 ## Backend Selection

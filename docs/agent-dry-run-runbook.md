@@ -95,8 +95,7 @@ real-default change.
    `llm.max_requests_per_minute` budget (see `docs/agent-inference.md`).
 
 3. **`code_improvement.*` promotion gates** — separate flags in the agent
-   domain (`code_improvement.mode`, `.target`, `.validation_games`,
-   `.fitness_improvement_threshold`, …). These gate the **real-default
+   domain (`code_improvement.mode`, `.target`). These gate the **real-default
    promotion** action only. They stay at their defaults in the dry run, so a
    concluded experiment produces a **verdict** (visible in traces) but does
    **not** set a `real` promotion overlay on the flag service. Promotion also remains subject
