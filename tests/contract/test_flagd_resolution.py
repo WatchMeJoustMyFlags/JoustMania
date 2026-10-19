@@ -818,3 +818,42 @@ def test_windows_preset_ladder_resolves_against_live_flagd(flagd):
         assert unknown.get("min_music_fast_time") == 4, (
             f"default variant has unexpected values: {unknown}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# 4. Snapshot stamp reaches the in-process resolver (UC-053 A9, #1552)
+# --------------------------------------------------------------------------- #
+# The keys the flag service writes (services/flag-service/state/render.go) and
+# the game coordinator reads (interventions.py SNAPSHOT_*_KEY).
+_STAMPED = (
+    ("interventions", "end_game", "object"),
+    ("agent", "interventions_allowed", "string"),
+)
+
+
+@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+def test_snapshot_stamp_reaches_the_in_process_resolver(flagd):
+    """The coordinator's cross-set gate compares the snapshot stamp in the flag
+    metadata of ``interventions/end_game`` and ``agent/interventions_allowed``.
+    It only works if real flagd passes flag metadata, with an integer version,
+    through its sync stream to the in-process resolver."""
+    for flag_set, key, _ in _STAMPED:
+        path = flagd.file(flag_set)
+        doc = fh.load(path)
+        doc["flags"][key].setdefault("metadata", {}).update(
+            {"snapshotEpoch": "contract", "snapshotVersion": 4242}
+        )
+        fh.dump_in_place(path, doc)
+
+    for flag_set, key, kind in _STAMPED:
+        with _ready_client(flagd, flag_set, resolver="in_process") as client:
+            read = getattr(client, f"get_{kind}_details")
+            default = {} if kind == "object" else ""
+
+            def stamp(read=read, key=key, default=default):
+                meta = read(key, default, EvaluationContext()).flag_metadata or {}
+                return meta.get("snapshotEpoch"), meta.get("snapshotVersion")
+
+            assert fh.poll_until(lambda: stamp() == ("contract", 4242)), (
+                f"{flag_set}/{key} stamp through flagd: {stamp()}"
+            )

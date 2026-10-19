@@ -139,6 +139,29 @@ class _ReadFailed:
 
 _UNKNOWN = _ReadFailed()
 
+# Cross-set consistency (UC-053 A9, #1552). The flag service stamps every flag of
+# the ``interventions`` set and ``agent/interventions_allowed`` with the snapshot
+# it rendered them from. The two sets arrive on separate in-process sync streams
+# that reconnect in no fixed order after a flagd restart, so the coordinator
+# defers every intervention while the allow-list it holds is older than the
+# interventions set it holds; the catching-up ``agent`` stream fires a
+# configuration change that re-evaluates them.
+SNAPSHOT_EPOCH_KEY = "snapshotEpoch"
+SNAPSHOT_VERSION_KEY = "snapshotVersion"
+
+
+def _snapshot_of(details: object) -> "tuple[str, int] | None":
+    """``(epoch, version)`` from a read's flag metadata, or None when unstamped."""
+    meta = getattr(details, "flag_metadata", None) or {}
+    epoch = meta.get(SNAPSHOT_EPOCH_KEY)
+    version = meta.get(SNAPSHOT_VERSION_KEY)
+    if not isinstance(epoch, str) or not epoch or version is None:
+        return None
+    try:
+        return epoch, int(version)
+    except (TypeError, ValueError):
+        return None
+
 
 @dataclass(frozen=True)
 class InterventionSpec:
@@ -1085,6 +1108,8 @@ class InterventionManager:
             return
 
         raw = self._read_flag(spec, session)
+        if self._allow_list_lags(spec):
+            return  # deferred: the baseline stays, the agent stream's catch-up re-evaluates
         # State-shaped: only act on value change away from the none-value.
         with self._lock:
             bucket = self._existing_state_bucket(session.game_id)
@@ -1133,6 +1158,8 @@ class InterventionManager:
         epoch, seq, events = value
         if not epoch:
             return
+        if self._allow_list_lags(spec):
+            return  # deferred: (epoch, seq) stays, so nothing is skipped or replayed
         with self._lock:
             bucket = self._last_event.get(session.game_id)
             if bucket is None:
@@ -1235,6 +1262,8 @@ class InterventionManager:
         # grants, #1313).
         default = _spec_default(spec)
         reads = self._read_levels(spec, session.game_id, _active_player_serials(game))
+        if self._allow_list_lags(spec):
+            return  # deferred: no serial's baseline moves
 
         # Per-serial baseline for this game: ``{serial: level}``. A serial with
         # no entry is neutral, so a first non-neutral level applies.
@@ -1336,6 +1365,8 @@ class InterventionManager:
         if game is None:
             return
         reads = {serial: self._read_grant(spec, session.game_id, serial) for serial in _active_player_serials(game)}
+        if self._allow_list_lags(spec):
+            return  # deferred: no serial's baseline moves
         fired: list[tuple[str, object]] = []
         with self._lock:
             bucket = self._existing_state_bucket(session.game_id)
@@ -1742,6 +1773,47 @@ class InterventionManager:
             result[serial] = value
 
         return result
+
+    def _allow_list_lags(self, spec: InterventionSpec) -> bool:
+        """True while the allow-list held is older than the interventions set
+        held (UC-053 A9, #1552): the values just read are then deferred.
+
+        Called after the values are read and before any baseline moves. The
+        probe is read after the values, and the allow-list read by
+        ``_check_chain`` after this check, so when this returns False the
+        allow-list that gates a value is at least as new as that value. Fail
+        closed: a stamped interventions set is deferred against an allow-list
+        with no stamp, another epoch or an older version. An unstamped
+        interventions set (file-sourced flagd) is not gated.
+        """
+        if self._interventions_client is None:
+            return False
+        # The interventions set's snapshot, probed on an object flag present in
+        # every rendering of it (``end_game``).
+        try:
+            held = _snapshot_of(self._interventions_client.get_object_details("end_game", {}, EvaluationContext()))
+        except Exception as e:
+            # A real OpenFeature client never raises here (errors come back as
+            # details); a stand-in without object reads is an unstamped set.
+            logger.debug(f"InterventionManager: snapshot probe failed: {e}")
+            return False
+        if held is None:
+            return False
+        allow = None
+        if self._agent_client is not None:
+            try:
+                allow = _snapshot_of(
+                    self._agent_client.get_string_details("interventions_allowed", "", EvaluationContext())
+                )
+            except Exception as e:
+                logger.debug(f"InterventionManager: interventions_allowed snapshot read failed: {e}")
+        if allow is not None and allow[0] == held[0] and allow[1] >= held[1]:
+            return False
+        logger.debug(
+            f"InterventionManager: {spec.flag_key} deferred: allow-list snapshot {allow} "
+            f"is older than interventions snapshot {held}"
+        )
+        return True
 
     def _allowed_types(self) -> set[str]:
         # interventions_allowed is a STRING flag whose value is a comma-separated
