@@ -529,9 +529,10 @@ class MockAdapter(ControllerIOAdapter):
     def _publish_event(self, event: dict) -> None:
         """Publish event to all observers.
 
-        Called from the event loop and from the LED worker thread. A put from
-        any thread other than the queue's own loop is scheduled on that loop
-        with call_soon_threadsafe (#1478).
+        Called from the event loop and from the LED worker thread. The put is
+        always scheduled on the queue's own loop: call_soon from that loop,
+        call_soon_threadsafe from any other thread (#1478). Both append to the
+        same ready queue, so events keep their publish order.
         """
         try:
             current: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
@@ -540,8 +541,13 @@ class MockAdapter(ControllerIOAdapter):
         # The list is replaced (never mutated) by add/remove_observer, so this
         # iterates a stable snapshot even when another thread changes it.
         for queue, loop in self._observers:
-            if loop is None or loop is current:
+            if loop is None:
                 _put_dropping_when_full(queue, event)
+            elif loop is current:
+                # Also scheduled (not put directly) so an event published here
+                # cannot overtake one a worker thread queued just before it:
+                # observers see events in publish order (#1629 review).
+                loop.call_soon(_put_dropping_when_full, queue, event)
             else:
                 # The owning loop may already be closed (stream ended mid-batch).
                 with contextlib.suppress(RuntimeError):

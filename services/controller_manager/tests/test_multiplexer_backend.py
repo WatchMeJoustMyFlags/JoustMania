@@ -677,6 +677,22 @@ class TestRoutingTableDiscoveryRace:
 
         assert result == ["AA:AA"]
 
+    @pytest.mark.uc("UC-002")
+    @pytest.mark.asyncio
+    async def test_change_between_passes_does_not_override_next_discovery(self):
+        """Changes made before a pass starts are not merged over that pass's result."""
+        adapter, _gate, _in_discover, _release = self._gated_adapter(["AA:AA"])
+        mux = MultiplexerBackend(adapters=[adapter])
+        with patch(self._METRICS, autospec=True):
+            mux.get_connected_controllers()
+            assert await mux.disconnect_controller("AA:AA") is True
+
+            # The adapter still reports AA:AA: discovery is authoritative again.
+            result = mux.get_connected_controllers()
+
+        assert result == ["AA:AA"]
+        assert mux._serial_to_adapter.get("AA:AA") is adapter
+
 
 class TestMultiplexerScanControllers:
     @pytest.mark.asyncio

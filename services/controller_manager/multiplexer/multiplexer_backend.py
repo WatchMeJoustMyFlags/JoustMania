@@ -67,9 +67,11 @@ class MultiplexerBackend(ControllerBackend):
         # (100 Hz state loop, LED batch) and the discovery thread iterating it
         # always see a consistent snapshot (#1478).
         self._serial_to_adapter: dict[str, ControllerIOAdapter] = {}
-        # Guards writes to _serial_to_adapter and _routing_changes. Held only
-        # for a dict copy, never across I/O, so connect/disconnect on the event
-        # loop never wait on an adapter call.
+        # Guards writes to _serial_to_adapter and _routing_changes. Never held
+        # across adapter I/O: _set_route holds it for a dict copy, and the
+        # discovery swap holds it for the merge plus _cleanup_stale_state
+        # (in-memory pops and metric series removal, CPU only), so
+        # connect/disconnect on the event loop block only briefly.
         self._routing_lock = threading.Lock()
         # connect/disconnect changes made since the current discovery pass
         # started (serial -> adapter, None = disconnected). The pass merges them

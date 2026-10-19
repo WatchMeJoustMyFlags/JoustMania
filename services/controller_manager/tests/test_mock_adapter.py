@@ -420,9 +420,27 @@ class TestMockAdapterObserverThreadSafety:
         queue = adapter.add_observer()
 
         adapter.set_output("mock_controller_0", 0, 255, 0, 0)
+        await asyncio.sleep(0)  # the put is scheduled on this loop, not done inline
 
-        # No scheduling hop: the event is there synchronously.
         assert queue.get_nowait()["g"] == 255
+
+    @pytest.mark.uc("UC-003")
+    @pytest.mark.asyncio
+    async def test_worker_then_loop_publish_keeps_order(self):
+        """Review of #1629: a loop publish must not overtake an earlier worker publish."""
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        queue = adapter.add_observer()
+
+        worker = threading.Thread(target=adapter.set_output, args=("mock_controller_0", 255, 0, 0, 0))
+        worker.start()
+        worker.join()  # red is now scheduled via call_soon_threadsafe
+        adapter.set_output("mock_controller_0", 0, 255, 0, 0)  # green, published on the loop
+
+        first = await asyncio.wait_for(queue.get(), timeout=1.0)
+        second = await asyncio.wait_for(queue.get(), timeout=1.0)
+        assert (first["r"], first["g"]) == (255, 0)
+        assert (second["r"], second["g"]) == (0, 255)
 
     @pytest.mark.uc("UC-003")
     def test_publish_to_closed_loop_is_dropped(self):
