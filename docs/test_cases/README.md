@@ -45,8 +45,8 @@ stay traceable; their detailed journeys are backlog (#1361).
 |---|---|---|---|---|---|
 | [TC-001](TC-001-ffa-game-night-hardware.md) | FFA game night on real controllers | UC-001, UC-002, UC-010, UC-020, UC-030, UC-031 | Critical | Draft | Manual (hardware); mock twin TC-002 |
 | [TC-002](TC-002-ffa-mock-game-to-winner.md) | FFA game to a winner on mock controllers | UC-003, UC-002, UC-011, UC-010, UC-020, UC-030 | Critical | Automated | `test_tc002_ffa_game_to_winner_then_restart`; warning effect unit-tested only |
-| [TC-003](TC-003-ffa-player-disconnects.md) | Player disconnects during an FFA game | UC-003, UC-010, UC-020, UC-030, UC-002 | High | Draft | Planned #1360 |
-| [TC-004](TC-004-operator-stops-ffa-game.md) | Operator stops an FFA game | UC-010, UC-020, UC-027 | High | Draft | Partly (`test_tc013_shadow_alongside_real`, `test_tc002_ffa_game` step 9); #1360 |
+| [TC-003](TC-003-ffa-player-disconnects.md) | Player disconnects during an FFA game | UC-003, UC-010, UC-020, UC-030, UC-002 | High | Automated | `tests/service/test_tc003_ffa_player_disconnects.py`; menu list not read |
+| [TC-004](TC-004-operator-stops-ffa-game.md) | Operator stops an FFA game | UC-010, UC-020, UC-027 | High | Automated | `tests/service/test_tc004_operator_stops_ffa_game.py`; dashboard start path (UC-010 A6) untested |
 | [TC-005](TC-005-host-tunes-and-force-starts.md) | Host tunes the game in admin mode and force-starts | UC-012, UC-011, UC-014, UC-010 | High | Draft | Partly (`test_admin_flow`, per step); gaps unit-tested only (#1400) |
 | [TC-006](TC-006-host-restricts-agent-from-controller.md) | Host restricts the agent from the controller | UC-012, UC-013, UC-040, UC-045 | Critical | Draft | Partly (`test_intervention_flow`); ladder and step 5 unit-tested only (#1400, #1395) |
 | [TC-007](TC-007-agent-intervenes-in-ffa-game.md) | Agent intervenes in an FFA game on rules | UC-010, UC-041, UC-040, UC-020, UC-030, UC-031, UC-035 | Critical | Draft | Partly (`test_decide_backend_e2e`, `test_intervention_smoke`); #1404, #1362 |
@@ -68,4 +68,4 @@ Status follows the skill: `Automated` = an end-to-end test implements the journe
 file), `Draft` = not or only partly automated, or written for review. A service-tier test (T2,
 `tests/service/`: real services from source on a fresh flag plane, audio and collector faked) counts as
 end-to-end for this purpose; the TC's Automation section then starts with a `**Tier:**` line (#1422). Tests that implement a journey carry
-`tc="TC-XXX"` (TC-002 and TC-013 so far); tagging the rest is part of #1356 and #1422.
+`tc="TC-XXX"` (TC-002, TC-003, TC-004 and TC-013 so far); tagging the rest is part of #1356 and #1422.
