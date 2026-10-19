@@ -10,6 +10,10 @@ it in place of ``docker_compose`` unchanged.
 Extending (S2+): add a service to ``SERVICES`` (its source dir, compose ports,
 env wiring) and, for an in-process fake, a start/stop pair like FakeAudio's;
 per-composition env overrides go in ``Composition.env``.
+
+Telemetry is off by default (``OTEL_SDK_DISABLED``). ``Composition(...,
+otlp=True)`` starts an ``OtlpSink`` (``stack.otlp_sink``) and points every
+service's OTLP exporter at it instead.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .fake_audio import FakeAudio
+from .fakes.otlp import OtlpSink
 from .flag_plane import FlagPlane
 from .processes import PyService, free_port
 
@@ -32,6 +37,7 @@ SERVICES: dict[str, tuple[str, int, str]] = {
 }
 MOCK_CONTROL_PORT = 50062  # controller-manager's mock control API in compose
 AUDIO_PORT = 50056
+OTLP_GRPC_PORT = 4317  # otel-collector's OTLP/gRPC port in compose
 FLAG_SERVICE_HTTP_PORT = 8070
 # TCP port 1 (tcpmux) is never served here: a dial fails at once.
 UNREACHABLE_PORT = 1
@@ -44,6 +50,8 @@ class Composition:
     services: tuple[str, ...]
     # Extra env per compose service name, applied last (e.g. a test-only knob).
     env: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    # Telemetry on, exported to an in-process OtlpSink (``stack.otlp_sink``).
+    otlp: bool = False
 
     def __post_init__(self):
         unknown = set(self.services) - set(SERVICES)
@@ -63,6 +71,7 @@ class ServiceStack:
         self.workdir = workdir
         self.flag_plane = FlagPlane(workdir)
         self.fake_audio = FakeAudio()
+        self.otlp_sink: OtlpSink | None = OtlpSink() if composition.otlp else None
         self.services: dict[str, PyService] = {}
         self._ports: dict[tuple[str, int], int] = {}
 
@@ -102,6 +111,11 @@ class ServiceStack:
         audio_port = self.fake_audio.start()
         self._ports[("audio", AUDIO_PORT)] = audio_port
 
+        otlp_port = None
+        if self.otlp_sink is not None:
+            otlp_port = self.otlp_sink.start()
+            self._ports[("otel-collector", OTLP_GRPC_PORT)] = otlp_port
+
         ports = {name: free_port() for name in self.composition.services}
         mock_port = free_port()
         for name in self.composition.services:
@@ -109,7 +123,7 @@ class ServiceStack:
         if "controller-manager" in ports:
             self._ports[("controller-manager", MOCK_CONTROL_PORT)] = mock_port
 
-        envs = self.service_envs(ports, mock_port=mock_port, audio_port=audio_port)
+        envs = self.service_envs(ports, mock_port=mock_port, audio_port=audio_port, otlp_port=otlp_port)
         for name in self.composition.services:
             service = PyService(
                 name,
@@ -121,12 +135,15 @@ class ServiceStack:
             self.services[name] = service
             service.start()
 
-    def service_envs(self, ports: Mapping[str, int], *, mock_port: int, audio_port: int) -> dict[str, dict[str, str]]:
+    def service_envs(
+        self, ports: Mapping[str, int], *, mock_port: int, audio_port: int, otlp_port: int | None = None
+    ) -> dict[str, dict[str, str]]:
         """The env of each composition service (on top of ``PyService``'s base env).
 
         Every address a service could dial points into this stack or at an
         unreachable ``127.0.0.1:1``, never at a default that a compose stack or
-        real hardware on the same host answers on.
+        real hardware on the same host answers on. With ``otlp_port`` the OTel
+        SDK is on and exports to that port (the stack's ``OtlpSink``).
         """
         plane = self.flag_plane
 
@@ -152,6 +169,9 @@ class ServiceStack:
             "OTEL_EXPORTER_OTLP_ENDPOINT": f"http://127.0.0.1:{UNREACHABLE_PORT}",
             "OTEL_SERVICE_NAMESPACE": "joustmania",
         }
+        if otlp_port is not None:
+            del common["OTEL_SDK_DISABLED"]
+            common["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://127.0.0.1:{otlp_port}"
         per_service = {
             "controller-manager": {
                 "OTEL_SERVICE_NAMESPACE": "infrastructure",
@@ -187,6 +207,9 @@ class ServiceStack:
         for service in reversed(list(self.services.values())):
             service.stop()
         self.fake_audio.stop()
+        # After the services: their exporters flush to the sink on shutdown.
+        if self.otlp_sink is not None:
+            self.otlp_sink.stop()
         self.flag_plane.stop()
 
     # ------------------------------------------------------------- debugging
