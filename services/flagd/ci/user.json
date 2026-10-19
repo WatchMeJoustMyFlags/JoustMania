@@ -41,7 +41,7 @@
         "on": true,
         "off": false
       },
-      "defaultVariant": "on"
+      "defaultVariant": "off"
     },
     "agent_intervention_cue": {
       "state": "ENABLED",
