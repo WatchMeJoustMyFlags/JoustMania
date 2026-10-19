@@ -1,8 +1,9 @@
 """Scriptable fake OpenAI-compatible decision backend for the decide e2e tests (#1230).
 
-TEST-ONLY. Started by docker-compose.decide-e2e.yml (never by the production
-compose path) and driven by tests/integration/test_decide_backend_e2e.py. Stdlib
-only, so it runs on a stock python image with this file bind-mounted.
+TEST-ONLY. Started per stack by the service tier (tests/service/harness/fakes/openai.py,
+the AGENT composition, #1600) and by docker-compose.decide-e2e.yml (never by the
+production compose path). Stdlib only, so it also runs on a stock python image with
+this file bind-mounted.
 
 It serves ``POST /v1/chat/completions`` the way the agent's ``openai`` decision
 backend (services/agent/decide/backends/openai) expects: a chat-completion
@@ -51,6 +52,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+LISTEN_HOST = os.environ.get("FAKE_OPENAI_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("FAKE_OPENAI_PORT", "8080"))
 EXPECTED_API_KEY = os.environ.get("FAKE_OPENAI_API_KEY", "")
 JAEGER_QUERY_URL = os.environ.get("JAEGER_QUERY_URL", "http://jaeger:16686").rstrip("/")
@@ -320,7 +322,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             self._send_json(200, chat_completion(body.get("model", ""), content))
-        except (BrokenPipeError, ConnectionResetError):
+        except BrokenPipeError, ConnectionResetError:
             # The agent gave up (its timeout); nothing to answer.
             with _lock:
                 entry["client_gone"] = True
@@ -343,9 +345,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler)
+    server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
     server.daemon_threads = True
-    print(f"fake-openai listening on :{LISTEN_PORT}", flush=True)
+    print(f"fake-openai listening on {LISTEN_HOST}:{LISTEN_PORT}", flush=True)
     server.serve_forever()
 
 

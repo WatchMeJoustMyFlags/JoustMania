@@ -13,8 +13,10 @@ import dataclasses
 
 import grpc
 import pytest
+from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2, metrics_service_pb2_grpc
 from opentelemetry.proto.collector.trace.v1 import trace_service_pb2, trace_service_pb2_grpc
 from opentelemetry.proto.common.v1 import common_pb2
+from opentelemetry.proto.metrics.v1 import metrics_pb2
 from opentelemetry.proto.resource.v1 import resource_pb2
 from opentelemetry.proto.trace.v1 import trace_pb2
 
@@ -183,6 +185,40 @@ def test_sink_tees_trace_exports_to_another_receiver():
         assert (dead_tee.forward_ok, dead_tee.forward_errors) == (0, 1)
     finally:
         for sink in (dead_tee, tee, downstream):
+            sink.stop()
+
+
+def _metrics_export_request(name: str) -> metrics_service_pb2.ExportMetricsServiceRequest:
+    resource = resource_pb2.Resource(
+        attributes=[common_pb2.KeyValue(key="service.name", value=common_pb2.AnyValue(string_value="probe"))]
+    )
+    point = metrics_pb2.NumberDataPoint(
+        as_int=3, attributes=[common_pb2.KeyValue(key="reason", value=common_pb2.AnyValue(string_value="probe"))]
+    )
+    metric = metrics_pb2.Metric(name=name, sum=metrics_pb2.Sum(data_points=[point], is_monotonic=True))
+    return metrics_service_pb2.ExportMetricsServiceRequest(
+        resource_metrics=[
+            metrics_pb2.ResourceMetrics(resource=resource, scope_metrics=[metrics_pb2.ScopeMetrics(metrics=[metric])])
+        ]
+    )
+
+
+def test_sink_tees_metrics_exports_to_another_receiver():
+    """The agent ingests metrics as well as traces (the collector's metrics pipeline exports to it)."""
+    downstream = OtlpSink()
+    downstream.start()
+    tee = OtlpSink(forward_to=f"127.0.0.1:{downstream.port}")
+    tee.start()
+    try:
+        with grpc.insecure_channel(f"127.0.0.1:{tee.port}") as channel:
+            metrics_service_pb2_grpc.MetricsServiceStub(channel).Export(
+                _metrics_export_request("probe_total"), timeout=5
+            )
+        assert tee.wait_metric("probe_total", {"reason": "probe"}, service="probe", timeout=5).value == 3
+        assert downstream.wait_metric("probe_total", {"reason": "probe"}, timeout=5).value == 3
+        assert (tee.forward_ok, tee.forward_errors) == (1, 0)
+    finally:
+        for sink in (tee, downstream):
             sink.stop()
 
 

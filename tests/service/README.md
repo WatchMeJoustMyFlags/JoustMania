@@ -19,6 +19,8 @@ CI: the `service-tests` job (path-filtered on PRs, always on main, part of `ci-c
 | controller-manager, game-coordinator, menu | real, from source | `python services/<svc>/server.py` with the service-tests venv; `GRPC_PORT` / `MOCK_CONTROL_PORT` on ephemeral ports; ready on gRPC health SERVING |
 | audio | fake | `FakeAudio`, in-process gRPC server that records every call (`stack.fake_audio.calls_of("PlaySound")`) |
 | otel-collector, Jaeger | none by default; `OtlpSink` fake on opt-in | default: `OTEL_SDK_DISABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:1` in every Python service. `Composition(..., otlp=True)`: SDK on, endpoint = the in-process `OtlpSink` (`stack.otlp_sink`, compose name `otel-collector:4317`). The flag service gets no endpoint either way (no-op) |
+| agent | real, `go build` of `services/agent` (`AGENT` composition only) | subprocess; binary cached by source hash next to the flag service's; OTLP receiver on an ephemeral port (compose `agent:4317`), flagd RPC port, the stack's flag service; `OTEL_BSP_SCHEDULE_DELAY=200`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE=600`, dummy `DECISION_OPENAI_API_KEY` |
+| OpenAI-compatible backend | fake (`AGENT` only) | `tests/integration/fake_openai/server.py` as a subprocess (`stack.fake_openai`: `script()`, `release()`, `requests(game_id)`); the stack rewrites the `fake` variant of `decision.openai.base_url` in its temp baseline copy to it |
 | rust-hid, python-hid, BlueZ | none | controller manager: `RUST_HID_*` / `PYTHON_HID_*` = `127.0.0.1:1`, dead `DBUS_SYSTEM_BUS_ADDRESS` |
 
 Python services run as subprocesses, not in-process: OpenFeature domains, the rate limiter and the OTel
@@ -41,14 +43,20 @@ point = await stack.otlp_sink.wait_metric_async("game_trace_correlation", {"game
 - `wait_span` returns the oldest matching span, `wait_metric` the latest matching point (cumulative).
   The sink lives as long as the module-scoped stack and is not cleared between tests: always filter by
   `game.id` / `game_id`, or an earlier test's record matches at once. Logs are accepted and counted only.
-- `OtlpSink(forward_to="host:port")` tees every trace export to another OTLP/gRPC receiver (the agent's,
-  like the collector's `otlp/agent` exporter); failures count in `forward_errors`.
+- `OtlpSink(forward_to="host:port")` tees every trace and metrics export to another OTLP/gRPC receiver
+  (the agent's, like the collector's `otlp/agent` exporter); failures count in `forward_errors`.
 - Still full stack (T3): the collector's processing (filters, `span_metrics`, transforms), VictoriaMetrics
   names and PromQL, Jaeger queries, Loki.
 
 Proof: `test_otlp_sink.py` (a game's root span and `player_disconnected` reach the sink).
 
-Compositions (`harness/stack.py`): `GAME` = controller-manager + game-coordinator, `LOBBY` = `GAME` + menu.
+Compositions (`harness/stack.py`): `GAME` = controller-manager + game-coordinator, `LOBBY` = `GAME` + menu,
+`AGENT` = `LOBBY` with `otlp=True` plus the agent and the fake OpenAI backend (#1600). In `AGENT` the sink
+tees the services' traces and metrics to the agent (the collector's role) and the agent exports its own
+spans and metrics back to the sink (Jaeger's role): read `agent.decide` & co. with
+`stack.otlp_sink.spans("agent.decide", {"game.id": game_id}, service="agent")`. Shared journey steps
+(agent flags, menu-started FFA game, decide-span helpers): `agent_flow.py`. Agent journeys run on
+`fresh_stack`: `enabled`, `interventions_allowed` and the agent's LLM budget are global.
 
 ## Writing a test
 
@@ -111,6 +119,5 @@ async def test_x(service_stack, flag_service):
   `FakeAudio` or `OtlpSink` (`harness/fakes/`), started in `ServiceStack._start` and published under its
   compose name in `_ports`; point the services at it through `Composition.env` or the common env (as
   `Composition.otlp` does for the OtlpSink).
-- Agent composition: the agent is a Go binary like the flag service; reuse `ManagedProcess` with a
-  `go build` cached by source hash (see `flag_plane.build_flag_service`).
+- Agent composition: done (`AGENT`, `harness/agent.py`, `harness/fakes/openai.py`, #1600).
 - A moved TC keeps its `tc="TC-XXX"` tags and gets a `**Tier:**` line in its Automation section.

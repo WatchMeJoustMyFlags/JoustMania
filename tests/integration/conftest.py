@@ -49,7 +49,6 @@ _COMPOSE_FILES = [
 # (`--profile agent`); writing to the "agent" flag set does not count.
 E2E_SHARDS = ("core", "agent")
 E2E_SHARD_BY_MODULE = {
-    "test_decide_backend_e2e.py": "agent",
     "test_experiment_cohort_loop.py": "agent",
     "test_intervention_flow.py": "core",
     "test_intervention_smoke.py": "core",

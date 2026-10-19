@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 from .processes import REPO_ROOT, ManagedProcess, base_env, free_port
@@ -100,14 +101,14 @@ def build_flag_service() -> Path:
     return binary
 
 
-def prune_binary_cache(cache: Path, keep: int = BINARY_CACHE_KEEP) -> list[Path]:
-    """Delete all but the ``keep`` most recently used flag-service binaries; return the deleted ones.
+def prune_binary_cache(cache: Path, keep: int = BINARY_CACHE_KEEP, prefix: str = "flag-service-") -> list[Path]:
+    """Delete all but the ``keep`` most recently used ``<prefix>*`` binaries; return the deleted ones.
 
     A parallel run may be using a pruned binary: on Linux its running process
     keeps the inode, and a later start rebuilds it.
     """
     binaries = sorted(
-        (p for p in cache.glob("flag-service-*") if p.is_file() and ".tmp-" not in p.name),
+        (p for p in cache.glob(f"{prefix}*") if p.is_file() and ".tmp-" not in p.name),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -153,8 +154,13 @@ def _http_ok(url: str, body: bytes | None = None) -> bool:
 class FlagPlane:
     """One flag service + one flagd, both fresh, on ephemeral ports."""
 
-    def __init__(self, workdir: Path):
+    def __init__(self, workdir: Path, variant_values: Mapping[tuple[str, str, str], object] | None = None):
+        """``variant_values``: ``{(flag_set, flag, variant): value}`` rewritten in the
+        temporary baseline copy before the flag service starts (e.g. the ``fake``
+        variant of ``decision.openai.base_url`` -> the stack's fake). The variant must
+        exist: a test-only value never adds a variant the registry does not know."""
         self.workdir = workdir
+        self.variant_values = dict(variant_values or {})
         self.flag_dir = workdir / "flags"
         self.state_file = workdir / "flag-service-state" / "admin-ci.json"
         self.grpc_port = free_port()
@@ -175,6 +181,7 @@ class FlagPlane:
     # -------------------------------------------------------------- lifecycle
     def start(self) -> None:
         fh.copy_ci_flag_dir(self.flag_dir)
+        self._rewrite_variants()
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         binary = build_flag_service()
         self.flag_service = ManagedProcess(
@@ -196,6 +203,16 @@ class FlagPlane:
         )
         self.flag_service.start()
         self._start_flagd()
+
+    def _rewrite_variants(self) -> None:
+        for (flag_set, flag, variant), value in self.variant_values.items():
+            path = self.flag_dir / f"{flag_set}.json"
+            doc = json.loads(path.read_text())
+            variants = doc["flags"][flag]["variants"]
+            if variant not in variants:
+                raise KeyError(f"{flag_set}/{flag} has no variant {variant!r} (variants: {sorted(variants)})")
+            variants[variant] = value
+            path.write_text(json.dumps(doc, indent=2) + "\n")
 
     def stop(self) -> None:
         self._stop_flagd()

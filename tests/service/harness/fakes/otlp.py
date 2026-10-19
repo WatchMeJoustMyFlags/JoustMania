@@ -12,10 +12,11 @@ Both ``wait_*`` block (poll a condition, never a sleep); an async test calls
 the ``*_async`` twins, which run them on a worker thread. Logs are accepted and
 counted only, so the services' log exporters do not error.
 
-Tee: ``OtlpSink(forward_to="127.0.0.1:<port>")`` forwards every trace export
-request unchanged to another OTLP/gRPC receiver (the agent's, as the
-collector's ``otlp/agent`` exporter does), best effort: a failed forward is
-counted in ``forward_errors`` and never fails the service's export.
+Tee: ``OtlpSink(forward_to="127.0.0.1:<port>")`` forwards every trace and
+metrics export request unchanged to another OTLP/gRPC receiver (the agent's, as
+the collector's ``otlp/agent`` exporter does in its traces and metrics
+pipelines), best effort: a failed forward is counted in ``forward_errors`` and
+never fails the service's export.
 """
 
 from __future__ import annotations
@@ -190,7 +191,7 @@ class _LogsServicer(logs_service_pb2_grpc.LogsServiceServicer):
 # --------------------------------------------------------------------------- #
 class OtlpSink:
     def __init__(self, forward_to: str | None = None):
-        """``forward_to``: ``host:port`` of an OTLP/gRPC receiver to tee trace exports to."""
+        """``forward_to``: ``host:port`` of an OTLP/gRPC receiver to tee trace and metrics exports to."""
         self.forward_to = forward_to
         self._lock = threading.Lock()
         self._spans: list[SpanRecord] = []
@@ -201,6 +202,7 @@ class OtlpSink:
         self._server: grpc.Server | None = None
         self._forward_channel: grpc.Channel | None = None
         self._forward_stub: trace_service_pb2_grpc.TraceServiceStub | None = None
+        self._forward_metrics_stub: metrics_service_pb2_grpc.MetricsServiceStub | None = None
         self.port: int | None = None
 
     # ------------------------------------------------------------- lifecycle
@@ -215,6 +217,7 @@ class OtlpSink:
         if self.forward_to:
             self._forward_channel = grpc.insecure_channel(self.forward_to)
             self._forward_stub = trace_service_pb2_grpc.TraceServiceStub(self._forward_channel)
+            self._forward_metrics_stub = metrics_service_pb2_grpc.MetricsServiceStub(self._forward_channel)
         return self.port
 
     def stop(self) -> None:
@@ -225,6 +228,7 @@ class OtlpSink:
             self._forward_channel.close()
             self._forward_channel = None
             self._forward_stub = None
+            self._forward_metrics_stub = None
 
     @property
     def endpoint(self) -> str:
@@ -239,23 +243,27 @@ class OtlpSink:
         with self._lock:
             self._spans.extend(spans)
         # Read once: stop() may clear the stub and close its channel while a forward is in flight.
-        stub = self._forward_stub
-        if stub is not None:
-            try:
-                stub.Export(request, timeout=FORWARD_TIMEOUT_SECONDS)
-                ok = True
-            except Exception:  # RpcError, or ValueError on a channel stop() closed: best effort
-                ok = False
-            with self._lock:
-                if ok:
-                    self._forward_ok += 1
-                else:
-                    self._forward_errors += 1
+        self._forward(self._forward_stub, request)
 
     def _on_metrics(self, request) -> None:
         metrics = _decode_metrics(request)
         with self._lock:
             self._metrics.extend(metrics)
+        self._forward(self._forward_metrics_stub, request)
+
+    def _forward(self, stub, request) -> None:
+        if stub is None:
+            return
+        try:
+            stub.Export(request, timeout=FORWARD_TIMEOUT_SECONDS)
+            ok = True
+        except Exception:  # RpcError, or ValueError on a channel stop() closed: best effort
+            ok = False
+        with self._lock:
+            if ok:
+                self._forward_ok += 1
+            else:
+                self._forward_errors += 1
 
     def _on_logs(self, request) -> None:
         count = sum(len(s.log_records) for r in request.resource_logs for s in r.scope_logs)
