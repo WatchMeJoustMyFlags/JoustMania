@@ -46,6 +46,7 @@ def _events(collector: GameEventCollector, game_id: str, event_type: str) -> lis
 @pytest.mark.uc("UC-027", flow="main", tc="TC-004")
 @pytest.mark.uc("UC-027", flow="A1", tc="TC-004")
 @pytest.mark.uc("UC-027", flow="A2", tc="TC-004")
+@pytest.mark.uc("UC-027", cond=["Pre-1", "Post-S-1", "Post-S-2"], tc="TC-004")
 async def test_tc004_operator_stops_ffa_game(service_stack, headless_cleanup):
     stack = service_stack
     serials = await setup_mock_controllers(stack, count=4)

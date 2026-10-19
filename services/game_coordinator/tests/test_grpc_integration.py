@@ -137,6 +137,7 @@ class TestForceEndGame:
     """ForceEndGame through real gRPC wire protocol."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="A2")
     async def test_force_end_game_no_game(self, grpc_service):
         """ForceEndGame returns error when no game in progress."""
         _servicer, stub = grpc_service

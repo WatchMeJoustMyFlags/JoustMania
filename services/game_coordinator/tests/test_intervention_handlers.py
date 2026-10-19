@@ -321,13 +321,15 @@ async def test_end_game_applies_once_per_event():
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-027", flow="A3")
 async def test_end_game_no_game_is_safe_noop():
     # end_game_fn reports "no game in progress"; handler must not raise.
     end = AsyncMock(return_value=(False, "No game in progress"))
     mgr, events = make_manager(interventions={"end_game": edge_event("end_game")}, game=None, end_game_fn=end)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
-    end.assert_awaited_once()
+    # addressed to the (legacy primary, empty id) session with the agent reason
+    end.assert_awaited_once_with("", "agent_intervention")
     eg = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "end_game"]
     assert eg and eg[0]["blocked"] == "false"  # dispatched; no-op handled internally
 

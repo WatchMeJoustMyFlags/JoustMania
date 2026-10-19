@@ -460,7 +460,7 @@ async def test_servicer_real_end_game_ends_the_real_game():
 
 @pytest.mark.uc("UC-040", flow="A18", br=["BR-011"])
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-027", flow="A1", br=["BR-001"])
+@pytest.mark.uc("UC-027", flow="A1", br=["BR-001"], cond=["Post-F-1"])
 async def test_force_end_session_never_falls_back_to_the_primary():
     """``_force_end_session`` with an unknown non-empty id is a no-op: it must
     not resolve "the current game"."""
@@ -470,6 +470,7 @@ async def test_force_end_session_never_falls_back_to_the_primary():
         ok, error = await servicer._force_end_session("game_unknown00", "agent_intervention")
         assert (ok, error) == (False, "Unknown game_id: game_unknown00")
         assert real_id in servicer.sessions
+        assert servicer.sessions[real_id].game_state != game_coordinator_pb2.GameState.ENDED
     finally:
         servicer.intervention_manager.stop()
 
