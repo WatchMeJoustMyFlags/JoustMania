@@ -6,10 +6,11 @@ and verifies that the effect restores to the NEW base_color, not the old one.
 """
 
 import asyncio
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from lib.colors import Colors
 from proto import controller_manager_pb2
 from services.controller_manager.feedback_manager import FeedbackManager
 
@@ -396,3 +397,60 @@ class TestEffectCancellation:
         assert serial not in feedback_manager.active_effects, (
             "cancel_effect should remove controller from active_effects"
         )
+
+
+class TestWarningAndDeathEffectTimings:
+    """UC-030 steps 7 and 9, controller side: the warning and death effects use the ``effect.*`` timings.
+
+    Edge values (not the defaults) prove the flags are read; the defaults are asserted in
+    test_effect_timings.py::test_defaults_match_original_constants.
+    """
+
+    EDGE_TIMINGS = {
+        "warning_flash_ms": 210,
+        "warning_vibration_ms": 220,
+        "death_rumble_ms": 160,
+        "death_red_hold_ms": 310,
+        "death_fade_ms": 710,
+    }
+
+    @pytest.fixture
+    def recorded(self, feedback_manager, monkeypatch):
+        """Record the backend-facing calls of the effect handlers (no real LED loop, no real sleep)."""
+        import services.controller_manager.feedback_manager as fm
+
+        monkeypatch.setattr(fm, "_effect_timings", dict(self.EDGE_TIMINGS))
+        calls = {
+            "effect": AsyncMock(),
+            "vibration": AsyncMock(),
+            "led": AsyncMock(),
+            "sleep": AsyncMock(),
+        }
+        monkeypatch.setattr(feedback_manager, "play_effect_with_restore", calls["effect"])
+        monkeypatch.setattr(feedback_manager, "set_vibration", calls["vibration"])
+        monkeypatch.setattr(feedback_manager, "_set_led_color", calls["led"])
+        monkeypatch.setattr(fm.asyncio, "sleep", calls["sleep"])
+        return calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[7])
+    async def test_warning_is_white_flash_and_rumble_for_the_configured_times(self, feedback_manager, recorded):
+        """UC-030 step 7: white flash for effect.warning_flash_ms, rumble for effect.warning_vibration_ms."""
+        await feedback_manager._effect_player_warning("test_ctrl", restore_color=(0, 0, 255))
+
+        recorded["effect"].assert_awaited_once_with("test_ctrl", "flash", Colors.White.value, 210, 5, (0, 0, 255))
+        recorded["vibration"].assert_awaited_once_with("test_ctrl", 100, 220)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[9])
+    async def test_death_is_rumble_red_hold_then_fade_for_the_configured_times(self, feedback_manager, recorded):
+        """UC-030 step 9: rumble effect.death_rumble_ms, red for effect.death_red_hold_ms, fade effect.death_fade_ms."""
+        await feedback_manager._effect_player_death("test_ctrl")
+
+        recorded["vibration"].assert_awaited_once_with("test_ctrl", 255, 160)
+        recorded["led"].assert_awaited_once_with("test_ctrl", Colors.Red.value)
+        recorded["sleep"].assert_awaited_once_with(pytest.approx(0.31))
+        recorded["effect"].assert_awaited_once_with(
+            "test_ctrl", "fade_out", Colors.Red.value, 710, 1, Colors.Black.value
+        )
+        assert feedback_manager.base_colors["test_ctrl"] == Colors.Black.value

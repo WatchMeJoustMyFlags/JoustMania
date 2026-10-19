@@ -66,6 +66,7 @@ def _make_ffa_game():
 # --------------------------------------------------------------------------- #
 # effective_grace_until — the single composition primitive
 # --------------------------------------------------------------------------- #
+@pytest.mark.uc("UC-030", flow="A1")
 class TestEffectiveGraceUntil:
     """The static composition rule: max(grace_until, invincible_until)."""
 
@@ -204,6 +205,7 @@ class TestGrantShieldComposition:
 # --------------------------------------------------------------------------- #
 # Base per-frame gate routes through the unified rule
 # --------------------------------------------------------------------------- #
+@pytest.mark.uc("UC-030", flow="A1")
 class TestBaseGateComposition:
     """The base _process_controller_state grace gate honors admin invincibility."""
 

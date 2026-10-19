@@ -1332,6 +1332,7 @@ class TestApplyTempoChange:
         assert game.music_speed == FAST_MUSIC_SPEED
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="main", steps=[3])
     async def test_toggles_speed_up(self, game):
         """Should toggle speed_up flag."""
         assert game.speed_up is True
@@ -1346,6 +1347,7 @@ class TestApplyTempoChange:
         assert game.change_time > before
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="main", steps=[3])
     async def test_calls_audio_client(self, game):
         """Should call ChangeTempo on audio client."""
         await game._apply_tempo_change(FAST_MUSIC_SPEED)
@@ -1356,6 +1358,7 @@ class TestApplyTempoChange:
         assert call_args.transition_duration == pytest.approx(MUSIC_TRANSITION_DURATION, abs=1e-6)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="main", steps=[3])
     async def test_slow_down_from_fast(self, game):
         """Should handle slowing down from fast tempo."""
         game.music_speed = FAST_MUSIC_SPEED

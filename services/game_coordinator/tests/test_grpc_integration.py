@@ -342,6 +342,7 @@ class TestStreamGameStart:
         assert received[1].event_type == "game_ended"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3")
     async def test_stream_start_game_too_few_players(self, grpc_service):
         """start_config with 1 player → receive game_start_error event."""
         _servicer, stub = grpc_service
@@ -358,6 +359,7 @@ class TestStreamGameStart:
         assert "at least 2 players" in events[0].data["error"].lower()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3")
     async def test_stream_start_game_already_running(self, grpc_service):
         """Second start attempt → game_start_error."""
         servicer, stub = grpc_service

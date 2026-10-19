@@ -186,6 +186,7 @@ class TestUC020FreeForAll:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="main", steps=[1, 2, 5, 6, 7], br=["BR-001"])
+    @pytest.mark.uc("UC-031", flow="main", steps=[2, 4])  # countdown beeps, explosion, congratulations
     async def test_full_game_last_player_standing_wins(self, fast_config):
         """UC-020 main: a full run() ends with the last player standing as the winner."""
         cm = RecordingControllerManager(num_controllers=3, death_schedule={1.0: 0, 1.6: 1}, max_duration=8.0)
@@ -427,6 +428,7 @@ class TestUC020FreeForAll:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="main", steps=[4])
+    @pytest.mark.uc("UC-031", flow="main", steps=[3])
     async def test_music_alternates_windows_and_death_threshold_follows_the_window(self):
         """UC-020 step 4: the FFA game's music loop alternates 1.0x and 1.3x windows; the death threshold follows.
 
