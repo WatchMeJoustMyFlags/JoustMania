@@ -78,6 +78,9 @@ EXTERNAL_METRICS = {
     "system_": "OTel collector hostmetrics receiver (services/otel-collector/config.yaml)",
     "traces_span_metrics_": "OTel collector spanmetrics connector over agent.decide spans "
     "(services/otel-collector/config.yaml; test_collector_spanmetrics.py)",
+    "feature_flag_evaluation_": "standard OpenFeature OTel metrics hook: go-sdk-contrib "
+    "hooks/open-telemetry in the agent (flags/otelhooks.go), the same names from "
+    "lib/openfeature_otel_hooks.py in Python (test_openfeature_hook_metrics_are_the_ones_consumed)",
 }
 
 # Labels added by the pipeline (resource attributes, scrape config, histogram buckets).
@@ -310,82 +313,9 @@ def test_python_metric_definitions_are_recorded(python_metrics):
     )
 
 
-# --------------------------------------------------------------------------- #
-# docs/specs/telemetry.md §6 counts follow the code (#1456).
-# --------------------------------------------------------------------------- #
-@pytest.fixture(scope="module")
-def spec_catalog(python_metrics):
-    """The §6.2 catalog rows by name; fails unless there is exactly one row per Python metric."""
-    catalog = ti.spec_metric_catalog(ti.TELEMETRY_SPEC.read_text())
-    catalog_names = [row.name for row in catalog]
-    missing = sorted(set(python_metrics) - set(catalog_names))
-    extra = sorted(set(catalog_names) - set(python_metrics))
-    duplicated = sorted({n for n in catalog_names if catalog_names.count(n) > 1})
-    assert not (missing or extra or duplicated), (
-        "docs/specs/telemetry.md §6.2 catalog must have exactly one row per Python metric "
-        f"name; add rows for {missing}, remove rows for {extra}, dedupe {duplicated}"
-    )
-    return {row.name: row for row in catalog}
-
-
-@pytest.fixture(scope="module")
-def metric_consumers(python_metrics):
-    return ti.python_metric_consumers(set(python_metrics))
-
-
-def test_telemetry_spec_catalog_consumers_match_the_code(
-    spec_catalog, metric_consumers
-):
-    """Each §6.2 Consumers cell names exactly the consumers the code scans find (#1456)."""
-    wrong = [
-        f"  {name}: write {', '.join(sorted(metric_consumers[name])) or '(none)'} "
-        f"(doc says {row.consumers})"
-        for name, row in sorted(spec_catalog.items())
-        if ti.spec_consumer_kinds(row.consumers) != metric_consumers[name]
-    ]
-    assert not wrong, (
-        "docs/specs/telemetry.md §6.2 Consumers cells disagree with the code (grafana = "
-        "Grafana dashboards, dashboard = SPA queries, agent = Go agent ingest, tools / "
-        "scripts = the name in tools/ or scripts/ source):\n" + "\n".join(wrong)
-    )
-
-
-def test_telemetry_spec_catalog_emitted_no_matches_the_code(
-    spec_catalog, python_metrics
-):
-    """The §6.2 rows marked **no** in Emitted are exactly the never-recorded metrics (#1456)."""
-    marked = {n for n, row in spec_catalog.items() if row.emitted.startswith("**no**")}
-    dead = {n for n, m in python_metrics.items() if not m.recorded_at}
-    assert marked == dead, (
-        "docs/specs/telemetry.md §6.2 Emitted column is out of date: mark **no** for "
-        f"{sorted(dead - marked)}, and a recording site exists for {sorted(marked - dead)}"
-    )
-
-
-def test_telemetry_spec_metric_counts_match_the_code(
-    python_metrics, spec_catalog, metric_consumers
-):
-    """The §6 prose numbers are derived from the code, so a metrics PR that forgets them fails here."""
-    expected = {
-        "names": len(python_metrics),
-        "definitions": ti.python_metric_definition_count(),
-        "no_consumer": sum(not kinds for kinds in metric_consumers.values()),
-        "never_recorded": sum(not m.recorded_at for m in python_metrics.values()),
-    }
-    found = ti.spec_counts(ti.TELEMETRY_SPEC.read_text())
-    wrong = [
-        f"  found:      {'(sentence not found)' if got is None else got}\n"
-        f"  write:      {ti.SPEC_COUNT_TEMPLATES[key].format(**expected)}"
-        for key, got in found.items()
-        if got is None or any(got[field] != expected[field] for field in got)
-    ]
-    assert not wrong, (
-        "docs/specs/telemetry.md §6 metric counts are out of date (names = Python metric "
-        "names, definitions = Counter/Gauge/Histogram definitions before merging same-named "
-        "ones, no_consumer = names no dashboard, SPA query, agent ingest, tools/ or scripts/ "
-        "source names, never_recorded = names no service records). Replace these sentences:\n"
-        + "\n".join(wrong)
-    )
+# docs/specs/telemetry.md §6.2 and its counts are generated from python_metrics and
+# python_metric_consumers by scripts/gen_specs.py (`make specs`); `make specs-check`
+# fails CI when docs/specs/generated/ is stale (#1280).
 
 
 # --------------------------------------------------------------------------- #
@@ -528,3 +458,45 @@ def publish(n):
 """
     pm = ti.python_metrics(_fixture_tree(tmp_path, extra))
     assert pm["svc_active_players"].recorded_at
+
+
+# --------------------------------------------------------------------------- #
+# OpenFeature hook metrics (#1427): the dashboards read the names the hooks emit.
+# --------------------------------------------------------------------------- #
+def _hook_metric_names() -> set[str]:
+    """The four metric-name constants of lib/openfeature_otel_hooks.py, in Prometheus spelling."""
+    import ast
+
+    tree = ast.parse((ti.REPO_ROOT / "lib" / "openfeature_otel_hooks.py").read_text())
+    names = {
+        node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id.startswith("EVALUATION_")
+        and isinstance(node.value, ast.Constant)
+    }
+    return {ti.prometheus_name(n) for n in names}
+
+
+def test_openfeature_hook_metrics_are_the_ones_consumed(consumer_queries, defined):
+    """Every feature_flag_evaluation_* name a dashboard reads is one the hooks emit.
+
+    The Python hook mirrors go-sdk-contrib hooks/open-telemetry, whose names the agent's
+    flags/otelhooks_test.go pins against the real Go hook.
+    """
+    hook = _hook_metric_names()
+    assert hook == {
+        "feature_flag_evaluation_active_count",
+        "feature_flag_evaluation_requests_total",
+        "feature_flag_evaluation_success_total",
+        "feature_flag_evaluation_error_total",
+    }
+    consumed = {
+        name
+        for _, q in consumer_queries
+        for name in ti.promql_metric_names(q)
+        if name.startswith("feature_flag_evaluation_")
+    }
+    assert consumed, "no dashboard reads the OpenFeature evaluation metrics"
+    assert consumed <= hook, sorted(consumed - hook)

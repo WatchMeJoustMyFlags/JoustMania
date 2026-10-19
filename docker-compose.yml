@@ -1,12 +1,15 @@
 # JoustMania Docker Compose Configuration
 #
-# Quick Start (pull from GHCR - no build needed):
-#   docker compose pull  # Pull all images from GHCR
-#   docker compose up -d # Start all services
-#   # Or: make up-pull
+# Quick Start (pull from GHCR - no build needed), as the Pi runs it
+# (scripts/setup/joustmania-start.sh):
+#   ./scripts/setup/joustmania-compose.sh pull
+#   ./scripts/setup/joustmania-compose.sh up -d
+# (= docker compose -f docker-compose.yml --env-file .env [--env-file .env.local];
+# a plain -f docker-compose.yml reads only .env: release tag, no API keys, #1488)
+# A bare `docker compose up -d` also loads docker-compose.override.yml (dev
+# ports on all interfaces); fine on a dev machine, never on the Pi (#1319).
 #
-# Quick Start (local build):
-#   make up              # Build and start all services
+# Local development (source mounts, dev ports): make dev
 #
 # Base config defaults to bluetooth mode (real hardware).
 # For mock mode (testing): make up-mock
@@ -18,9 +21,20 @@
 #
 # Controller backend: the "backend" flag in flagd (controller domain) selects which
 # adapters load at startup; the default is "rust" (rust-hid, #1371). python-hid is
-# opt-in only: start it with the "python-hid" profile AND select a backend variant
-# naming python (python / mock_python / python_rust / mock_python_rust):
-#   docker compose --profile python-hid up -d    # or COMPOSE_PROFILES=python-hid
+# opt-in only and needs all three of:
+#   1. the "python-hid" compose profile:
+#        ./scripts/setup/joustmania-compose.sh --profile python-hid up -d
+#      (on the Pi: a systemd drop-in, see scripts/setup/joustmania.service)
+#   2. backend=python_rust (controller.json defaultVariant, then restart
+#      controller-manager), so the python adapter is loaded at all, AND
+#   3. bluetooth_backend=python, so serials (and pairing) are routed to it;
+#      its default "rust" keeps every controller on rust-hid otherwise.
+#
+# Host ports: only envoy's 80 is reachable from the network. flagd sync (8015),
+# OTLP (4317) and rust-hid (50058) are bound to 127.0.0.1 for the host-networked
+# pairing daemon. docker-compose.override.yml (auto-loaded by a bare
+# `docker compose`) publishes the dev/test gRPC and mock control ports; the Pi
+# start script never loads it (scripts/setup/joustmania-start.sh, #1319).
 #
 # Notes:
 # - All images default to ghcr.io/watchmejoustmyflags/joustmania registry
@@ -113,8 +127,10 @@ services:
         condition: service_healthy
         restart: true
     ports:
-      # Sync port exposed on host for pairing-daemon (network_mode: host)
-      - "8015:8015"
+      # Sync port for the host-networked pairing-daemon, which reaches it as
+      # localhost:8015. Loopback only: the flag config must not be readable
+      # from the venue network (#1319).
+      - "127.0.0.1:8015:8015"
     expose:
       - "8013"  # flagd evaluation port (gRPC)
       - "8014"  # flagd management port (Prometheus metrics)
@@ -193,8 +209,10 @@ services:
       - /etc/hostname:/etc/hostname:ro
       - /etc/machine-id:/etc/machine-id:ro
     ports:
-      # OTLP gRPC - exposed for host-network containers (pairing-daemon)
-      - "4317:4317"
+      # OTLP gRPC for host-network containers (pairing-daemon, localhost:4317).
+      # Loopback only: the agent observes the game through this telemetry, so
+      # nobody on the venue network may inject spans or metrics (#1319).
+      - "127.0.0.1:4317:4317"
     depends_on:
       jaeger:
         condition: service_healthy
@@ -310,13 +328,15 @@ services:
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      # localhost because network_mode:host can't use Docker DNS
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-      # flagd for runtime-tunable intervals (localhost because network_mode:host)
-      - FLAGD_HOST=localhost
+      # Loopback because network_mode:host can't use Docker DNS. 127.0.0.1, not
+      # localhost: 4317, 8015 and 50058 are published on 127.0.0.1 only (#1319),
+      # and localhost may resolve to ::1 first.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
+      # flagd for runtime-tunable intervals
+      - FLAGD_HOST=127.0.0.1
       - FLAGD_PORT=8015
-      # Rust HID service (localhost because network_mode:host connects via exposed port)
-      - RUST_HID_HOST=localhost
+      # Rust HID service through its loopback-published port
+      - RUST_HID_HOST=127.0.0.1
       - RUST_HID_PORT=50058
       # Primary game state for pairing.bluez_restart_mode=when_idle (UC-001 BR-005),
       # through envoy's published port 80 (the coordinator has no host port)
@@ -343,8 +363,9 @@ services:
     networks:
       - joustmania
     ports:
-      # Exposed to host for pairing-daemon (network_mode: host)
-      - "50058:50058"
+      # For the host-networked pairing-daemon (localhost:50058). Loopback only:
+      # the HID gRPC API must not be reachable from the venue network (#1319).
+      - "127.0.0.1:50058:50058"
     environment:
       - OTEL_SERVICE_NAME=rust-hid
       - OTEL_SERVICE_NAMESPACE=infrastructure
@@ -623,7 +644,7 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
-      # Canary and chaos endpoints write the controller set through the flag
+      # Canary endpoints write the controller set through the flag
       # service (#1420); the proxy mounts no flag file.
       - FLAG_SERVICE_URL=http://flag-service:8070
       # Pairing daemon control API (UC-005 unpair); the daemon runs on the host network
@@ -714,8 +735,9 @@ services:
       # the vendor directly: there is no gateway. Read once at agent startup;
       # an empty key makes that backend unavailable and the decision falls
       # back to rules. Never put keys in a flag file or the tracked .env: export
-      # them in the shell or use the git-ignored .env.local
-      # (docker compose --env-file .env --env-file .env.local up).
+      # them in the shell or use the git-ignored .env.local (on the Pi
+      # scripts/setup/joustmania-compose.sh, used by the systemd autostart,
+      # passes --env-file .env --env-file .env.local to every call, #1488).
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - DECISION_OPENAI_API_KEY=${DECISION_OPENAI_API_KEY:-}
       - JEV_API_KEY=${JEV_API_KEY:-}

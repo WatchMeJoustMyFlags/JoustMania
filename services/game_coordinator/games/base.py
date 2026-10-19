@@ -1391,11 +1391,11 @@ class BaseGameMode(ABC):
             metrics.actual_update_frequency_hz.labels(**self._game_state_labels()).set(actual_hz)
 
             consistency_percent = (frames_on_target / loop_iterations) * 100
-            metrics.game_loop_frame_consistency_percent.set(consistency_percent)
+            metrics.game_loop_frame_consistency_percent.labels(**self._game_state_labels()).set(consistency_percent)
 
             if len(recent_frame_times) >= 2:
                 jitter_ms = statistics.stdev(recent_frame_times)
-                metrics.game_loop_jitter_ms.set(jitter_ms)
+                metrics.game_loop_jitter_ms.labels(**self._game_state_labels()).set(jitter_ms)
 
         return frames_on_target
 

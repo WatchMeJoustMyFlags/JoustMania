@@ -6,9 +6,8 @@ perception fitness thresholds (movement update rate, dropped-event ratio, event
 gap). It is selected only via explicit ``bluetooth_backend`` targeting or via the
 ``rollout`` domain — never as a default/fallback winner.
 
-Unlike :class:`ChaosAdapter`, whose ``adapter_type`` is *transparent* (it returns
-the inner adapter's type so routing treats a chaos-wrapped python adapter as
-"python"), ``UnstableAdapter.adapter_type`` returns ``"unstable"`` so the
+``UnstableAdapter.adapter_type`` is not transparent: it returns ``"unstable"``
+rather than the inner adapter's type, so the
 multiplexer can route specific serials to it while other serials continue to use
 the plain inner adapter.
 
@@ -108,7 +107,7 @@ class UnstableAdapter(ControllerIOAdapter):
 
     @property
     def adapter_type(self) -> str:
-        # NOT transparent (unlike ChaosAdapter): routing must see "unstable".
+        # NOT transparent: routing must see "unstable".
         return "unstable"
 
     @property
@@ -184,5 +183,5 @@ class UnstableAdapter(ControllerIOAdapter):
         return result
 
     def __getattr__(self, name: str) -> Any:
-        """Delegate unknown attributes to the inner adapter (mirrors ChaosAdapter)."""
+        """Delegate unknown attributes to the inner adapter."""
         return getattr(self._inner, name)

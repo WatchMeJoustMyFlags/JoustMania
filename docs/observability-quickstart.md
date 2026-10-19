@@ -57,16 +57,20 @@ python3 tools/monitor_multi_hub_performance.py
 **Integration:** Already built into game coordinator
 
 **Key metrics:**
-- `game_configured_update_frequency_hz` - Configured game loop Hz
-- `game_actual_update_frequency_hz` - Measured actual Hz
-- `game_loop_latency_ms` - Game loop iteration time
-- `game_loop_iterations_total` - Total iterations counter
-- `config_changes_total` - Configuration change counter
+- `game_current_update_frequency_hz` - Configured game loop Hz (from the `game_loop.update_frequency_hz` flag)
+- `game_actual_update_frequency_hz{game_kind,game_id}` - Measured Hz, one series per live game
+- `game_loop_jitter_ms` - Game loop jitter (standard deviation of the frame interval, in ms)
+- `game_loop_frame_consistency_percent` - Share of frames on schedule
+- `game_loop_frames_dropped_total{mode}` - Dropped frames counter
+- `game_config_changes_total{parameter}` - Runtime configuration changes picked up from flags
+
+The full list is the metric catalog in [telemetry.md §6](specs/telemetry.md#6-metrics). There is no
+game-loop latency histogram; jitter and frame consistency are the loop-health signals.
 
 **Access:**
 ```bash
 # Prometheus query API served by VictoriaMetrics (via the envoy reverse proxy)
-curl 'http://localhost/victoria-metrics/api/v1/query?query=game_configured_update_frequency_hz' | jq .
+curl 'http://localhost/victoria-metrics/api/v1/query?query=game_current_update_frequency_hz' | jq .
 
 # Or view in Grafana (via dashboard reverse proxy)
 open http://localhost/grafana/
@@ -77,7 +81,7 @@ open http://localhost/victoria-metrics/vmui/
 
 **When to use:**
 - Long-term performance tracking
-- Grafana dashboards for talks
+- Grafana dashboards for talks (folder **Talk**, dashboard `talk`; see [the talk runbook](talk/two-standards-runbook.md))
 - Historical trend analysis
 
 ---
@@ -242,7 +246,7 @@ python3 tools/live_dashboard.py --hz 30
 
 ```bash
 # Instant query against VictoriaMetrics (Prometheus query API)
-curl 'http://localhost/victoria-metrics/api/v1/query?query=game_configured_update_frequency_hz' | jq .
+curl 'http://localhost/victoria-metrics/api/v1/query?query=game_current_update_frequency_hz' | jq .
 
 # Example output:
 # .data.result[0].value[1] == "30"
@@ -252,6 +256,11 @@ curl 'http://localhost/victoria-metrics/api/v1/query?query=game_configured_updat
 
 **Access Grafana:** `http://localhost:8080/grafana/`
 
+Six dashboards ship, in four folders ([telemetry.md §6.1](specs/telemetry.md#61-consumers)):
+**Game** (Game & Players, Controllers & Bluetooth), **Agent** (Agent Decisions & Interventions),
+**Platform** (Infrastructure & Services, Flags / OpenFeature) and **Talk** (Talk: Two Standards).
+The game-loop panels below are on Game & Players (row Game Loop Health).
+
 **Create custom dashboard:**
 1. Open Grafana: `http://localhost:8080/grafana/`
 2. Create new dashboard
@@ -259,15 +268,15 @@ curl 'http://localhost/victoria-metrics/api/v1/query?query=game_configured_updat
 
 **Panel 1: Actual vs Configured Hz**
 ```promql
-game_actual_update_frequency_hz
-game_configured_update_frequency_hz
+game_actual_update_frequency_hz{game_kind="primary"}
+game_current_update_frequency_hz
 ```
 
-**Panel 2: Game Loop Latency (p50, p95, p99)**
+**Panel 2: Game Loop Health (jitter, frame consistency, dropped frames)**
 ```promql
-histogram_quantile(0.50, game_loop_latency_ms_bucket{mode="FFA"})
-histogram_quantile(0.95, game_loop_latency_ms_bucket{mode="FFA"})
-histogram_quantile(0.99, game_loop_latency_ms_bucket{mode="FFA"})
+game_loop_jitter_ms
+game_loop_frame_consistency_percent
+sum by (mode) (increase(game_loop_frames_dropped_total[5m]))
 ```
 
 **Panel 3: CPU Usage**

@@ -119,10 +119,7 @@ func main() {
 	)
 	mux.Handle(menuPath, menuHandler)
 
-	// Chaos fault injection endpoints (for presentation demos)
-	registerChaosHandlers(mux)
-
-	// Canary rollout control endpoints (mirrors chaos pattern)
+	// Canary rollout control endpoints
 	registerCanaryHandlers(mux)
 
 	// Operator unpair forwarded to the pairing daemon (UC-005)
@@ -431,6 +428,17 @@ func (p *MenuProxy) ProcessInput(
 	req *connect.Request[menupb.ProcessInputRequest],
 ) (*connect.Response[menupb.ProcessInputResponse], error) {
 	resp, err := p.client.ProcessInput(ctx, req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (p *MenuProxy) ListGameModes(
+	ctx context.Context,
+	req *connect.Request[menupb.ListGameModesRequest],
+) (*connect.Response[menupb.ListGameModesResponse], error) {
+	resp, err := p.client.ListGameModes(ctx, req.Msg)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

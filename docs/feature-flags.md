@@ -216,7 +216,6 @@ defaults: periods must be positive, brightness in `[0, 1]`, and
 | `backend` | string | `mock`, `python`, `rust`, comma-separated combos (default `rust`; variants naming `python` are opt-in and need the `python-hid` compose profile, #1371) | Controller backend selection |
 | `poll_drop_threshold` | integer | count | Poll-drop tolerance before action |
 | `bluetooth_backend` | string | `python`, `rust`, `unstable` (default `rust`) | Per-serial Bluetooth adapter routing (renamed from `controller_adapter_routing`; Act 2 agent rollout target); also selects the pairing daemon's backend (UC-001 BR-003) |
-| `chaos_fault_type` | string | `none`, `poll_drop`, `accel_spike`, `led_failure`, `disconnect` | Chaos fault injection for controllers (see [ChaosAdapter](architecture/controller-backends.md#chaosadapter-fault-injection)) |
 
 **Effect timings (calibration, #766 F7).** Warning/death feedback timings
 (`feedback_manager.py` inline magic numbers), consumed by the **controller-manager**
@@ -617,9 +616,9 @@ The game adapts in real-time without restarting.
 
 View metrics in Grafana Explore or the VictoriaMetrics UI at `http://localhost/victoria-metrics/vmui/`:
 
-**Flag evaluations by key:**
+**Flag evaluations by key** (standard OpenFeature OTel hook metric, every service):
 ```promql
-rate(game_flag_evaluations_total[1m])
+sum by (feature_flag_key) (rate(feature_flag_evaluation_requests_total[1m]))
 ```
 
 **Configuration change events:**
@@ -632,24 +631,26 @@ game_flag_configuration_changes_total
 game_current_update_frequency_hz
 ```
 
-Or view in Grafana's **Feature Flags** dashboard.
+Or view in Grafana's **Flags / OpenFeature** dashboard (folder Platform, uid `feature-flags`).
 
 ## Metrics
 
 The following metrics are exported over OTLP and stored in VictoriaMetrics:
 
-### `game_flag_evaluations_total{flag_key}`
+### `feature_flag_evaluation_*` (OpenFeature OTel hooks)
 
-**Type:** Counter
-**Labels:** `flag_key` (e.g., "game_loop.update_frequency_hz")
-**Description:** Total number of times each flag has been evaluated
+**Type:** Counters (`_requests_total`, `_success_total`, `_error_total`) and an up-down counter (`_active_count`)
+**Labels:** `feature_flag_key`, `feature_flag_provider_name`; on `_success_total` also `feature_flag_result_variant` and `reason`
+**Description:** Every flag evaluation in every Python service and the agent, recorded by the standard OpenFeature
+OpenTelemetry hooks (#1427; they replaced `game_flag_evaluations_total`). Names and label rules:
+[telemetry.md §6](specs/telemetry.md#6-metrics).
 
 ```promql
 # Evaluation rate per flag
-rate(game_flag_evaluations_total[1m])
+sum by (feature_flag_key) (rate(feature_flag_evaluation_requests_total[1m]))
 
-# Most frequently evaluated flags
-topk(5, sum by (flag_key) (game_flag_evaluations_total))
+# Variants served, by flag
+sum by (feature_flag_key, feature_flag_result_variant) (rate(feature_flag_evaluation_success_total[5m]))
 ```
 
 ### `game_flag_configuration_changes_total`
