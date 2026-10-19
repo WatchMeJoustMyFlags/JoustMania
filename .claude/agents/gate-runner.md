@@ -6,8 +6,9 @@ description: >
   command is scripts/ci/gate-run.sh, which validates the worktree, the log
   directory and the command against an allow-list in code, runs it N times
   (flake and mutation checks), writes the logs outside the worktree and
-  prints the verdict. Always runs in the background, so runs longer than 10
-  minutes (make test-integration takes 10-17 min) finish. It never edits,
+  prints the verdict. Runs the script in the foreground (under ~9 min) and in
+  the background only for integration/e2e (10-17 min), and never hands back
+  while a run is in flight. It never edits,
   fixes, commits or retries anything. Invoked by implementer, fixer and
   reviewer agents with "<worktree> gates [SERVICE=..] [BASE=..]" or
   "<worktree> run x<N> [expect fail] [in <dir>] -- <command>", plus an
@@ -68,13 +69,15 @@ those targets in that case (`REFUSED: .venv-test is not writable`), so sudo is n
 
 ## How to run it
 
-1. Each job is ONE Bash call with `run_in_background: true` (a foreground call is killed after 10
-   minutes). Then wait for the completion notification: do not poll, do not sleep, do not start the next
-   job before it arrives. Jobs run one after another, never in parallel.
-2. Read the script's stdout from the background output. It already holds everything you report: the
+1. Each job is ONE Bash call. Expected runtime under ~9 min (unit, service, `pr-gates`, repeats of those):
+   run it in the FOREGROUND with Bash `timeout: 600000`; the call returns the verdict. Only
+   `make test-integration*` / e2e shards (10-17 min) use `run_in_background: true`; then wait for the
+   completion notification (no polling, no sleep). Never hand back while a run is in flight: an interim
+   "still running" is not a result. Jobs run one after another, never in parallel.
+2. Read the script's stdout (foreground output, or the background output file). It already holds everything you report: the
    head, one `run i/N: exit <rc>` line per repeat, the pr-gates table, `VERDICT: ...`, at most 20 failing
    lines and `Logs: ...`. Use Read on a log only if the caller's brief asks for a specific slice.
-3. A background run that ended without a `VERDICT:` line (killed, timed out): `ERROR: killed`; do not
+3. A run that ended without a `VERDICT:` line (killed, timed out): `ERROR: killed`; do not
    start it again.
 
 Verdicts (from the script, relay them unchanged):
