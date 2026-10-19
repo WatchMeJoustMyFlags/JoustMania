@@ -432,6 +432,51 @@ class TestIdleMonitorLoopTimeout:
         assert set(mock_state_manager.controller_states.values()) == {ControllerState.IDLE}
 
 
+class TestLobbyIdleTimeout:
+    """UC-002 A3: no press for idle.timeout_minutes switches the lobby to IDLE with the LEDs off."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A3", steps=[1])
+    @patch("services.menu.idle_monitor.metrics")
+    async def test_timeout_turns_connected_controllers_idle_and_dark(self, _mock_metrics, real_servicer):
+        """Real StateManager and IdleHandler: the timeout drives every connected controller to IDLE, LED off."""
+        clock = {"now": 1000.0}
+        timeout_minutes = 3
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(seconds):
+            clock["now"] += seconds
+            if clock["now"] > 1000.0 + timeout_minutes * 60 + 5:
+                raise asyncio.CancelledError
+            await real_sleep(0)
+
+        for serial in ("s1", "s2"):
+            await real_servicer.on_connect(serial)
+        led = real_servicer.state_manager.led
+        led.set_color.reset_mock()
+        monitor = IdleMonitor(
+            state_manager=real_servicer.state_manager,
+            get_idle_enabled=lambda: True,
+            get_idle_timeout=lambda: timeout_minutes,
+            get_sentinel_count=lambda: 0,
+            get_rotation_minutes=lambda: 5,
+        )
+        dark_at = []
+        led.set_color.side_effect = lambda serial, color: dark_at.append((serial, color, clock["now"])) or True
+
+        with (
+            patch("services.menu.idle_monitor.time.monotonic", side_effect=lambda: clock["now"]),
+            patch("services.menu.idle_monitor.asyncio.sleep", side_effect=fake_sleep),
+        ):
+            monitor.reset_activity()
+            await monitor._monitor_loop()
+
+        assert monitor.is_idle_active
+        assert real_servicer.state_manager.controller_states == {"s1": ControllerState.IDLE, "s2": ControllerState.IDLE}
+        timeout_at = 1000.0 + timeout_minutes * 60
+        assert sorted(dark_at) == [("s1", (0, 0, 0), timeout_at), ("s2", (0, 0, 0), timeout_at)]
+
+
 class TestIdleMonitorSentinelRotation:
     """Test sentinel rotation."""
 

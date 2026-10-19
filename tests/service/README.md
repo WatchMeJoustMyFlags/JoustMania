@@ -58,6 +58,11 @@ spans and metrics back to the sink (Jaeger's role): read `agent.decide` & co. wi
 (agent flags, menu-started FFA game, decide-span helpers): `agent_flow.py`. Agent journeys run on
 `fresh_stack`: `enabled`, `interventions_allowed` and the agent's LLM budget are global.
 
+Connection faults: `TcpProxy` (`harness/fakes/tcp_proxy.py`) forwards one service's dial to another and
+`drop_connections()` cuts it without a restart. Bind it at import and point the client at it through
+`Composition.env` (e.g. the menu's `CONTROLLER_MANAGER_PORT`), then `start(<target port>)` in a module
+fixture; `test_uc002_button_stream_reconnect.py` (UC-002 A5) is the example.
+
 ## Writing a test
 
 ```python

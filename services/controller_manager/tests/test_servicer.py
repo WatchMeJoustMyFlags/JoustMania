@@ -313,6 +313,27 @@ class TestGetConnectedControllers:
 
         assert set(response.connected_serials) == {"s1"}
 
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A2", steps=[3])
+    async def test_roster_shows_the_new_name_after_rename(self, servicer_components, tmp_path):
+        """After RenameController, the live roster (what the dashboard lists) carries the new name."""
+        from lib.controller_constants import ControllerInfoKey
+        from services.controller_manager.name_manager import NameManager
+
+        servicer, _ = servicer_components
+        servicer.name_manager = NameManager(str(tmp_path / "controller_names.txt"))
+        servicer.tracked_controllers["s1"] = {ControllerInfoKey.BATTERY: 80, ControllerInfoKey.NAME: "Old Name"}
+
+        renamed = await servicer.RenameController(
+            controller_manager_pb2.RenameControllerRequest(serial="s1", name="New Name"), MockGrpcContext()
+        )
+        assert renamed.success, renamed.error
+
+        response = await servicer.GetConnectedControllers(
+            controller_manager_pb2.GetConnectedControllersRequest(), MockGrpcContext()
+        )
+        assert [(c.serial, c.name) for c in response.controllers] == [("s1", "New Name")]
+
 
 class TestServicerInitialization:
     """Tests for servicer initialization."""

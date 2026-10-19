@@ -160,6 +160,25 @@ class TestMenuAutoStart:
         assert servicer.current_selection == Games.Tournament
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", cond=["Pre-3"])
+    async def test_boot_subscribes_to_controllers_and_runs_the_lobby(self):
+        """UC-002 Pre-3: a booted menu listens on the button stream and runs the lobby.
+
+        The button monitor (the controller manager's connect events) starts after the
+        gRPC server and before the lobby entry, so a controller that connects lands in
+        a running lobby.
+        """
+        servicer = _servicer_with_flags()
+        calls = []
+        servicer.start_button_monitor.side_effect = lambda: calls.append("start_button_monitor")
+        servicer.enter_lobby.side_effect = lambda: calls.append("enter_lobby")
+
+        grpc_server = await _boot(servicer)
+
+        grpc_server.start.assert_awaited_once()
+        assert calls == ["start_button_monitor", "enter_lobby"]
+
+    @pytest.mark.asyncio
     async def test_shutdown_stops_monitors_and_server(self):
         """SIGTERM stops the button monitor and lifecycle, shuts the servicer down and stops the server."""
         servicer = _servicer_with_flags()
