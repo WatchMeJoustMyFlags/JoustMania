@@ -2,7 +2,7 @@
 
 This runbook takes a **stock deployment** (agent observes and traces, but
 dispatches nothing) to an agent that **acts on the live game**, and back. It is
-the demo script for the agentic control stack (issues #722–#730).
+the operator script for the agentic control stack (issues #722–#730).
 
 For the design behind each flag and span, see the
 [agent README](../services/agent/README.md) and
@@ -31,7 +31,7 @@ Both gates are also the **safe defaults** when their backing config is missing �
 both `enabled` and `interventions_enabled`, so the agent always comes up
 **inert** (#1213).
 
-The kill switch is a **flag flip** — instant, no restart. That is the demo
+The kill switch is a **flag flip** — instant, no restart. That is the stage
 panic button.
 
 ---
@@ -134,8 +134,8 @@ An intervention not on the active list is **blocked** (`decision.blocked=true`,
 > strings the agent/coordinator/menu all parse. If a fresh stack still shows
 > everything blocked `not_allowed`, confirm the variant values are strings.
 
-The [demo runbook → Act 2b](agent-demo-runbook.md#act-2b--interventions-applying-not-just-blocked)
-walks the full ladder + the three shadow-only levers as a stage act.
+To walk the ladder live, repeat Step 3 with each variant and watch the `agent.action` spans without `decision.blocked=true` (see
+[agent-trace-viz.md](agent-trace-viz.md)).
 
 ---
 
@@ -274,7 +274,7 @@ not at normal play.
 | **Jaeger** | `http://localhost/jaeger/` | Decision audit traces: `agent.signal_received → agent.decision → agent.action`, and `agent.disabled` kill-switch traces. Service: `agent` |
 | **Grafana** | `http://localhost/grafana/` | Dashboards in `services/grafana/dashboards/` |
 | **VictoriaMetrics** | `http://localhost/victoria-metrics/vmui/` | `game_interventions_total`, agent process metrics |
-| **agent logs** | `docker compose logs -f agent` | Sink-enabled warning, flag evaluation, block reasons |
+| **agent logs** | `docker compose logs -f agent` | the `Agent intervention writes gated by LIVE interventions_enabled flag` startup line, flag evaluation, block reasons |
 
 ### Span attributes to watch (see the agent README for the full table)
 
@@ -331,7 +331,7 @@ flags, see the agent README → *Lifecycle flags*.)
 ### Rate-limit budget exhausted
 
 Decisions blocking with `rate_limit` while the game looks quiet usually means the
-budget is too low for the demo. Raise `policy.max_interventions_per_minute` to
+budget is too low for the stage run. Raise `policy.max_interventions_per_minute` to
 `aggressive` (4), or recall that **hard** interventions cost 2, **medium** 1, and
 **soft** 0.5 against the trailing-minute budget (see the agent README →
 *Rules engine* weight table). Blocked decisions do **not** draw down the budget.

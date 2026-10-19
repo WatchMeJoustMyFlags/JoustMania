@@ -14,8 +14,8 @@ observing a decision, switching the model live, tightening permissions, the
 kill switch, rolling back without a redeploy, degrading to rules when the
 network goes away, and the post-game summary.
 The experiments / shadow-games / dark-factory material from
-[NORTHSTAR.md](../NORTHSTAR.md) is **not** in this talk (the experiments act
-lives in the three-act demo, [agent-demo-runbook.md](../agent-demo-runbook.md)).
+[NORTHSTAR.md](../NORTHSTAR.md) is **not** in this talk (the experiments loop
+is described in [agent-dry-run-runbook.md](../agent-dry-run-runbook.md)).
 Shadow games appear only as the insurance when Bluetooth fails at the venue:
 see [Fallback: Bluetooth down](#fallback-bluetooth-down).
 
@@ -205,7 +205,7 @@ Replace `localhost` with the Pi's address from the presenter laptop.
 | Jaeger, infra decisions (section 4) | `http://localhost/jaeger/search?service=agent&operation=agent.infrastructure.decision&lookback=15m` |
 | Grafana, **stage view** | `http://localhost/grafana/d/talk?kiosk` (**Talk: Two Standards**, folder Talk, #1427): the one Grafana screen for this talk and Grafana's home page, eight large panels, refresh 10 s, no variables. Big numbers: live games (real / shadow), agent decisions per minute (the collector's span metrics over `agent.decide`: OTel in), OpenFeature flag evaluations per second (the standard OpenFeature OTel hook metrics `feature_flag_evaluation_*`) and flag-service writes per minute (every flip below is one: OpenFeature out). Below them: decisions per minute by `decide.backend` · `decide.outcome`, interventions applied per minute by type, evaluations per second by flag, and recent `agent.decide` traces from Jaeger. Use it next to the dashboard's Agent tab, which stays the decision-by-decision view |
 | Grafana, flags | `http://localhost/grafana/d/feature-flags` (**Flags / OpenFeature**, folder Platform): evaluations by flag, variant and reason, evaluation errors and fallbacks, the flag service (writes, live games registered, flagd sync streams, snapshot size) and flagd health |
-| Grafana, agent metrics | `http://localhost/grafana/d/agent-operations` (**Agent Decisions & Interventions**, the [agent demo runbook](../agent-demo-runbook.md)'s "fleet view"; replaced Agent Operations — Fleet and Interventions in #1427). Row Decide: decisions per minute by `decide.backend` and the outcome split (act / noop / held / fallback), derived by the OTel collector's span-metrics connector from the `agent.decide` spans, so a backend flip shows within a minute; row Remote Backends: `gen_ai.client.operation.duration` p95 and tokens by model |
+| Grafana, agent metrics | `http://localhost/grafana/d/agent-operations` (**Agent Decisions & Interventions**, the fleet view; replaced Agent Operations — Fleet and Interventions in #1427). Row Decide: decisions per minute by `decide.backend` and the outcome split (act / noop / held / fallback), derived by the OTel collector's span-metrics connector from the `agent.decide` spans, so a backend flip shows within a minute; row Remote Backends: `gen_ai.client.operation.duration` p95 and tokens by model |
 | Grafana, game and players | `http://localhost/grafana/d/game-players` (**Game & Players**: live games, games by outcome, game-loop health, and a per-player drill-down row with the 100 Hz acceleration against the warning and death lines; replaced Game Quality, Game Analytics and Player Insights in #1427) |
 | Grafana, service and host health | `http://localhost/grafana/d/joustmania-service-health` (**Infrastructure & Services**; absorbed the separate Fleet Overview dashboard in #1427) |
 | Grafana, controllers and Bluetooth | `http://localhost/grafana/d/controller-overview` (**Controllers & Bluetooth**; the dashboard's Metrics tab embeds it. Expand the collapsed "Bluetooth and Adapters (Pi only)" row for per-adapter load and signal before deciding on the [Bluetooth fallback](#fallback-bluetooth-down)) |

@@ -5,7 +5,7 @@ dry run: mock controllers, the full local observability stack, the agent
 declaring + spawning shadow games for ONE seeded experiment, all spans flowing
 to Jaeger. It is the operator counterpart to the design in the
 [agent README](../services/agent/README.md) (see *Gating chain* there) and the
-[ACT-path runbook](agent-act-runbook.md) (the live-intervention demo).
+[ACT-path runbook](agent-act-runbook.md) (the live-intervention path).
 
 The fastest path is:
 
@@ -98,7 +98,13 @@ real-default change.
    domain (`code_improvement.mode`, `.target`). These gate the **real-default
    promotion** action only. They stay at their defaults in the dry run, so a
    concluded experiment produces a **verdict** (visible in traces) but does
-   **not** set a `real` promotion overlay on the flag service. Promotion also remains subject
+   **not** set a `real` promotion overlay on the flag service. Promotion is also
+   gated by environment variables that no compose file passes through, so the
+   stock stack only records no-op promotions: `AGENT_CODE_IMPROVEMENT_ENABLED=true`
+   for any promotion, plus `AGENT_AUTONOMOUS_ENABLED=true` for the real-default
+   write (`services/agent/promote/realdefault.go`), or, for issue mode,
+   `target=github` at startup with `GITHUB_TOKEN` and `GITHUB_REPOSITORY`
+   (`promote/github.go`). Promotion also remains subject
    to the invariant gate (real-context resolution must be byte-unchanged) and
    the kill-switch.
 
@@ -160,6 +166,24 @@ be in its bounds; the flag service rejects anything else with HTTP 422
   experiment-arm value (scope `experiment_id` + `arm=experimental`); the flag
   service renders it as a `game_kind != "real"` rung. The baseline file is
   never written.
+
+## Failure modes
+
+- **Experiments go idle after the first one concludes.** Only the one seeded
+  experiment runs. Dynamic generation is the live flag
+  `experiment_dynamic_enabled` (default off): run
+  `scripts/flags.sh set agent experiment_dynamic_enabled on` (no restart), or
+  re-seed with another flag as in "Seed another flag" above. The
+  `AGENT_EXPERIMENT_*` env vars only supply the fallback floor.
+- **Verdicts read `inconclusive`.** Expected on mock controllers: the
+  scripted movement is not a real effect, so arms rarely separate. Do not treat
+  `inconclusive` as a failure; the loop is working when declare, start,
+  game_assigned and conclude all appear.
+- **Editing `services/flagd/` files changes nothing on a running stack.** The
+  flag service reads the baseline once at start. Change flags with
+  `scripts/flags.sh set <set> <flag> <value>`. `scripts/flags.sh restart`
+  re-reads the baseline but drops every overlay (and game scope), including the
+  dry-run enable overlays; re-run `./scripts/agent-dryrun-enable.sh on` afterwards.
 
 ## Tear down
 
