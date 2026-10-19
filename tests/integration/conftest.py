@@ -14,6 +14,7 @@ Environment Variables:
     USE_PREBUILT_IMAGES: Set to "true" to pull images from GHCR instead of building
     USE_DEV_MOUNTS: Set to "true" to overlay source via docker-compose.dev.yml
     IMAGE_TAG: Specify image tag to pull (default: latest)
+    E2E_SHARD: core | agent | all (default all); see E2E_SHARD_BY_MODULE
 """
 
 import asyncio
@@ -37,6 +38,66 @@ _COMPOSE_FILES = [
     "docker-compose.override.yml",
     "docker-compose.ci.yml",
 ]
+
+# CI shards (#1422 step 15). Each shard runs in its own CI job with its own
+# compose stack; E2E_SHARD=core|agent selects one, unset runs every test.
+#   core:  needs no agent service; the job does not build or start the agent.
+#   agent: starts the profile-gated agent service (built at HEAD in CI).
+# Assignment is per module and EXPLICIT: a module missing from this map fails
+# collection, so a new test can never silently drop out of both shards.
+# Rule: a module goes to `agent` only if it starts the agent container
+# (`--profile agent`); writing to the "agent" flag set does not count.
+E2E_SHARDS = ("core", "agent")
+E2E_SHARD_BY_MODULE = {
+    "test_admin_flow.py": "core",
+    "test_decide_backend_e2e.py": "agent",
+    "test_experiment_cohort_loop.py": "agent",
+    "test_experiment_shadow_isolation.py": "core",
+    "test_flag_propagation.py": "core",
+    "test_flag_service_flows.py": "core",
+    "test_flag_service_restart.py": "core",
+    "test_flag_service_sync.py": "core",
+    "test_intervention_flow.py": "core",
+    "test_intervention_smoke.py": "core",
+    "test_parallel_lifecycle.py": "core",
+    "test_pattern_games.py": "core",
+    "test_rollout_plumbing.py": "core",
+    "test_tc002_ffa_game.py": "core",
+    "test_tc013_shadow_alongside_real.py": "core",
+}
+
+
+def _selected_e2e_shard() -> str | None:
+    shard = os.getenv("E2E_SHARD", "").strip().lower()
+    if shard in ("", "all"):
+        return None
+    if shard not in E2E_SHARDS:
+        raise pytest.UsageError(
+            f"E2E_SHARD={shard!r}: expected one of {', '.join(E2E_SHARDS)} or all"
+        )
+    return shard
+
+
+def pytest_collection_modifyitems(config, items):
+    """Fail on unassigned modules, then keep only the selected shard's tests."""
+    unassigned = sorted(
+        {item.path.name for item in items if item.path.name not in E2E_SHARD_BY_MODULE}
+    )
+    if unassigned:
+        raise pytest.UsageError(
+            "tests/integration modules without an e2e shard: "
+            + ", ".join(unassigned)
+            + ". Add each to E2E_SHARD_BY_MODULE in tests/integration/conftest.py "
+            "('agent' if it starts the agent service, else 'core')."
+        )
+    shard = _selected_e2e_shard()
+    if shard is None:
+        return
+    selected = [i for i in items if E2E_SHARD_BY_MODULE[i.path.name] == shard]
+    deselected = [i for i in items if E2E_SHARD_BY_MODULE[i.path.name] != shard]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+    items[:] = selected
 
 
 @pytest.fixture(scope="session")

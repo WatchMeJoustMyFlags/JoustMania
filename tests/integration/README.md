@@ -132,6 +132,21 @@ The integration tests cover:
 - ✅ Distributed tracing propagation across services
 - ✅ Multiple games in sequence
 
+## CI shards: e2e-core and e2e-agent (#1422)
+
+CI runs the suite as two jobs, each with its own compose stack:
+`Integration Tests (e2e-core)` never builds or starts the agent, and
+`Integration Tests (e2e-agent)` runs the modules that start the agent
+container (`--profile agent`). `E2E_SHARD=core|agent` selects a shard (unset
+runs everything, as `make test-integration` does locally); see
+`make test-integration-core` / `make test-integration-agent`.
+
+Every module must be listed in `E2E_SHARD_BY_MODULE` in `conftest.py`: an
+unlisted module fails collection, so a new test cannot fall out of both
+shards. Use `agent` only when the module starts the agent service; writing to
+the `agent` flag set does not count. `make test-integration-shard-check`
+verifies that every collected test is in exactly one shard.
+
 ## Checks that need only flagd live in the contract tier (#1422)
 
 Tests whose subject is flagd's own resolution, not the game services, run

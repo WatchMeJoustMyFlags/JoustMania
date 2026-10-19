@@ -30,6 +30,8 @@ help:
 	@echo "Testing:"
 	@echo "  make test            - Run all tests (unit + integration)"
 	@echo "  make test-integration - Run integration tests only (CI)"
+	@echo "  make test-integration-core  - Integration shard without the agent (CI e2e-core)"
+	@echo "  make test-integration-agent - Integration shard that starts the agent (CI e2e-agent)"
 	@echo "  make test-dev        - Run integration tests with pre-built images (fast)"
 	@echo "  make test-contract   - Contract tier: telemetry/infra static + flagd contract (~1 min)"
 	@echo "  make test-contract-flagd - flagd contract only (one real flagd, ~1 min)"
@@ -267,6 +269,22 @@ test: clean-test-venv
 test-integration: clean-test-venv
 	$(TEST_ENV) uv run --package joustmania-integration-tests \
 		pytest tests/integration/ -v $(PYTEST_EXTRA) $(if $(TEST),-k "$(TEST)")
+
+# CI shards (#1422): each runs its own compose stack. e2e-core never builds or
+# starts the agent; e2e-agent holds the modules that start it. Assignment lives
+# in E2E_SHARD_BY_MODULE (tests/integration/conftest.py). E2E_SHARD also works
+# with test-dev / test-pulled / test-debug.
+.PHONY: test-integration-core test-integration-agent test-integration-shard-check
+test-integration-core:
+	E2E_SHARD=core $(MAKE) test-integration
+
+test-integration-agent:
+	E2E_SHARD=agent $(MAKE) test-integration
+
+# Every collected e2e test lands in exactly one shard (collection only, no docker).
+test-integration-shard-check: clean-test-venv
+	$(TEST_ENV) uv run --package joustmania-integration-tests \
+		python scripts/ci/check_e2e_shards.py
 
 # Run with prebuilt images from GHCR instead of building
 .PHONY: test-pulled
