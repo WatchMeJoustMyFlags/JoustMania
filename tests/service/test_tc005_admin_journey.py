@@ -31,7 +31,7 @@ import asyncio
 import pytest
 from openfeature.evaluation_context import EvaluationContext
 
-from proto import controller_manager_mock_pb2, game_coordinator_pb2, menu_pb2
+from proto import controller_manager_mock_pb2, game_coordinator_pb2
 from tests.integration.flag_service import default as flag_service_default
 from tests.integration.flag_service import variant_value
 from tests.integration.helpers import (
@@ -50,11 +50,9 @@ from tests.integration.helpers import (
     list_games,
     press_admin_button,
     press_admin_combo,
-    select_game_mode,
-    setup_mock_controllers,
-    wait_for_lobby_colors,
 )
 from tests.service.harness import LOBBY
+from tests.service.lobby_flow import start_lobby
 
 pytestmark = pytest.mark.tier("service")
 
@@ -74,7 +72,6 @@ NUM_TEAMS_ORDER = ["two", "three", "four", "five", "six"]
 # How long a settings write is given to reach the flag service.
 PERSIST_TIMEOUT_SECONDS = 5.0
 LED_TIMEOUT_SECONDS = 5.0
-LOBBY_TIMEOUT_SECONDS = 15.0
 EVENT_TIMEOUT_SECONDS = 10.0
 START_TIMEOUT_SECONDS = 15.0
 # Absence assertion: a partial combo must not enter admin. There is no event to
@@ -129,29 +126,6 @@ async def _serve_force_all_start(stack) -> None:
     assert served, "flagd never served force_all_start=on"
 
 
-async def _start_lobby(stack, menu_client, mock_client) -> list[str]:
-    """Precondition: the menu runs with four CONNECTED (not ready) controllers on JoustFFA.
-
-    The menu is restarted and the mode selected BEFORE the controllers are
-    added. StopMenu clears the menu's controller states, and the controller
-    manager publishes connect events on its next discovery tick (up to 1 s
-    later): controllers added first could connect before the restart and be
-    lost, leaving a force-start roster of one.
-    """
-    await menu_client.StopMenu(menu_pb2.StopMenuRequest())
-    start = await menu_client.StartMenu(menu_pb2.StartMenuRequest())
-    assert start.success, f"failed to start menu: {start.error}"
-    assert await select_game_mode(menu_client, START_MODE), f"could not select {START_MODE}"
-
-    serials = await setup_mock_controllers(stack, count=4)
-    # Each controller shows its dim lobby colour once the menu registered it.
-    # White does not count: the mock adapter starts every LED white, the same
-    # colour as admin, so an admin entry polled against it would pass before
-    # the menu sees the combo.
-    await wait_for_lobby_colors(mock_client, serials, timeout=LOBBY_TIMEOUT_SECONDS, exclude=ADMIN_WHITE)
-    return serials
-
-
 async def _wait_led_leaves_admin_white(mock_client, serial: str) -> tuple[int, int, int]:
     """Poll until the LED is lit and not admin white.
 
@@ -199,7 +173,7 @@ async def test_host_tunes_and_force_starts(fresh_stack):
     game_client, game_channel = await get_game_client(stack)
     try:
         await _serve_force_all_start(stack)
-        serials = await _start_lobby(stack, menu_client, mock_client)
+        serials = await start_lobby(stack, count=4, game_mode=START_MODE)
         host = serials[0]
         sensitivity_baseline = _default_variant(GAME, "sensitivity")
         num_teams_baseline = _default_variant(GAME, "num_teams")

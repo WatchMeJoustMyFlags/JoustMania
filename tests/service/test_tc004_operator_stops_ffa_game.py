@@ -22,11 +22,10 @@ from tests.integration.helpers import (
     get_game_client,
     get_mock_client,
     list_games,
-    setup_mock_controllers,
     wait_for_lobby_colors,
 )
 from tests.service.harness import LOBBY
-from tests.service.lobby_flow import open_lobby, ready_up_until_started, started_ids, wait_running
+from tests.service.lobby_flow import ready_up_until_started, start_lobby, started_ids, wait_running
 
 pytestmark = pytest.mark.tier("service")
 
@@ -49,13 +48,12 @@ def _events(collector: GameEventCollector, game_id: str, event_type: str) -> lis
 @pytest.mark.uc("UC-027", cond=["Pre-1", "Post-S-1", "Post-S-2"], tc="TC-004")
 async def test_tc004_operator_stops_ffa_game(service_stack, headless_cleanup):
     stack = service_stack
-    serials = await setup_mock_controllers(stack, count=4)
+    serials = await start_lobby(stack, count=4)
     game_client, game_channel = await get_game_client(stack)
     mock_client, mock_channel = await get_mock_client(stack)
     collector = GameEventCollector(game_client)
     try:
         await collector.start()
-        await open_lobby(stack)
 
         # Steps 1-2: the ready-up starts the game; game_started carries the id.
         game_id = headless_cleanup.add_game(await ready_up_until_started(stack, serials, collector, set()))
