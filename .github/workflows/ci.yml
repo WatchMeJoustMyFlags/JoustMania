@@ -648,7 +648,7 @@ jobs:
 
       - name: Cargo clippy
         working-directory: services/rust-hid
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
   # Go agent service tests (OTLP fan-out target)
   agent-tests:

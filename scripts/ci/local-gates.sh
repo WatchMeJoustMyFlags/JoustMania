@@ -211,7 +211,7 @@ gate_cmd() {  # print the shell command for a gate
         echo "echo 'dashboard needs Node 24: install it with nvm (nvm install 24) or set NODE24_DIR' >&2; exit 1"; return
       fi
       echo "export PATH='$node/bin':\"\$PATH\" && cd services/dashboard && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && npx tsc --noEmit && npx vitest run" ;;
-    rust-hid) echo "cd services/rust-hid && cargo clippy -- -D warnings && cargo test" ;;
+    rust-hid) echo "cd services/rust-hid && cargo clippy --all-targets -- -D warnings && cargo test" ;;
     # Same steps as the Telemetry Contract job: generated specs, then the tests.
     contract) echo "make specs-check && uv run --no-project --with pytest --with pyyaml pytest tests/contract -q --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py" ;;
     contract-flagd) echo "make test-contract-flagd" ;;
