@@ -53,6 +53,11 @@ change is an in-memory overlay (`writer=stage`); no flag file is edited, and a
 restart of the flag service drops the overlays (run `talk-stage.sh reset` again).
 `./scripts/talk-preflight.sh` checks that flagd holds its sync stream to the
 flag service (the "flag service" section).
+Its controller-backend check (1b) reads the `backend` flag the **running** flag
+service serves, so it follows the baseline that stack loaded: on the rehearsal
+stack (`services/flagd/ci/`, `backend=mock`) it prints INFO `rust-hid not
+needed`, which is expected there; only the stage stack (`services/flagd/`,
+`backend=rust`) proves rust-hid is running and healthy (#1402).
 
 | | Stage stack (Pi, real controllers) | Rehearsal / fallback stack (mock controllers) |
 |---|---|---|

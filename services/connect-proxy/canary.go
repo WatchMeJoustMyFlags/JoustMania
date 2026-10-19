@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // registerCanaryHandlers adds canary rollout control endpoints to the mux.
@@ -65,25 +66,47 @@ func canarySetHandler(backend string) http.HandlerFunc {
 	}
 }
 
-// canaryRollbackHandler resets routing to the default backend (python).
+// canaryRollbackHandler clears the canary's stack and fraction overlays, so
+// every serial resolves the baseline default of bluetooth_backend again (rust
+// since #1371). It needs no python adapter (#1402 S3).
 func canaryRollbackHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if err := setCanaryRouting(r.Context(), "python", 100); err != nil {
+	backend, err := clearCanaryRouting(r.Context())
+	if err != nil {
 		slog.Error("canary: failed to rollback", "error", err)
 		http.Error(w, err.Error(), statusFor(err))
 		return
 	}
 
-	slog.Info("canary: rolled back to python")
+	slog.Info("canary: rolled back to the baseline default", "backend", backend)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "ok",
-		"backend": "python",
+		"backend": backend,
 	})
+}
+
+// clearCanaryRouting removes both bluetooth_backend overlays and returns the
+// value the flag resolves to afterwards.
+func clearCanaryRouting(ctx context.Context) (string, error) {
+	flagsMu.Lock()
+	defer flagsMu.Unlock()
+	const flag = "bluetooth_backend"
+	if err := flags.Clear(ctx, flag, true); err != nil {
+		return "", err
+	}
+	if err := flags.Clear(ctx, flag, false); err != nil {
+		return "", err
+	}
+	view, err := flags.Get(ctx, flag)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", flag, err)
+	}
+	return effectiveValue(view), nil
 }
 
 // canaryStatusHandler returns the flag service's view of bluetooth_backend.
@@ -123,6 +146,12 @@ func setCanaryRouting(ctx context.Context, backend string, fraction int) error {
 	defer flagsMu.Unlock()
 	const flag = "bluetooth_backend"
 
+	if backend == "python" || (fraction < 100 && canaryCounterpart[backend] == "python") {
+		if err := requirePythonAdapter(ctx); err != nil {
+			return err
+		}
+	}
+
 	view, err := flags.Get(ctx, flag)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", flag, err)
@@ -145,4 +174,43 @@ func setCanaryRouting(ctx context.Context, backend string, fraction int) error {
 		return err
 	}
 	return flags.PutVariant(ctx, flag, variant, fraction)
+}
+
+// pythonNotLoadedError refuses a canary that routes serials to python while
+// the `backend` flag loads no python adapter: the controller manager would
+// silently keep those serials on rust (#1402 S3, UC-052 A3).
+type pythonNotLoadedError struct{ backend string }
+
+func (e *pythonNotLoadedError) Error() string {
+	return fmt.Sprintf("python adapter not loaded: the controller backend flag is %q; "+
+		"a python canary would silently stay on rust. Opt in first (UC-002 BR-003): "+
+		"backend=python_rust, the python-hid compose profile, and restart controller-manager",
+		e.backend)
+}
+
+// requirePythonAdapter checks that the `backend` flag the flag service serves
+// names python. The controller manager reads that flag only at startup, so
+// this is the configured state, not proof of a running python adapter. An
+// unreadable flag refuses the canary (fail closed).
+func requirePythonAdapter(ctx context.Context) error {
+	view, err := flags.Get(ctx, "backend")
+	if err != nil {
+		return fmt.Errorf("read backend: %w", err)
+	}
+	value := effectiveValue(view)
+	for _, name := range strings.Split(value, ",") {
+		if strings.TrimSpace(name) == "python" {
+			return nil
+		}
+	}
+	return &pythonNotLoadedError{backend: value}
+}
+
+// effectiveValue returns the string value of the view's effective default
+// variant ("" when it has none).
+func effectiveValue(view map[string]any) string {
+	variant, _ := view["effective_default"].(string)
+	values, _ := view["variant_values"].(map[string]any)
+	value, _ := values[variant].(string)
+	return value
 }

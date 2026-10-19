@@ -28,14 +28,20 @@ drops them and routing returns to the baseline.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/canary/rust` | POST | Route controllers to Rust backend |
-| `/canary/python` | POST | Route controllers to Python backend |
-| `/canary/rollback` | POST | Reset all controllers to Python (default) |
+| `/canary/python` | POST | Route controllers to Python backend (409 unless the python adapter is loaded, see below) |
+| `/canary/rollback` | POST | Clear the canary overlays: every controller returns to the baseline default (`rust` since #1371) |
 | `/canary/status` | GET | Show current routing flag config |
 
 All POST endpoints support `?fraction=N` (1-100, default 100) for gradual
 rollout via flagd fractional targeting (the flag service renders the
 `fractional` rule). A write fails with HTTP 503 while flagd has no sync stream
 to the flag service (`no_sync_stream`).
+
+A canary that routes any controller to python (`/canary/python`, or
+`/canary/rust?fraction=N` below 100, which keeps the rest on python) is refused
+with HTTP 409 when the `backend` flag names no python (the default `rust`):
+the controller manager has no python adapter then and would silently keep
+every controller on rust (#1402, UC-052 A3). Opt in first (prerequisite 2).
 
 **Examples:**
 
@@ -59,7 +65,7 @@ docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:80
 # Check current routing config
 docker compose exec -T connect-proxy wget -qO- http://localhost:8080/canary/status
 
-# Immediate rollback to Python
+# Immediate rollback to the baseline default (rust)
 docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rollback'
 ```
 
@@ -358,7 +364,11 @@ If issues arise at any stage, roll back through the canary endpoint.
 docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rollback'
 ```
 
-All controllers switch back to Python within one discovery cycle (~500ms).
+The rollback clears the stack and fraction overlays, so all controllers switch
+back to the baseline default of `bluetooth_backend` (`rust` since #1371) within
+one discovery cycle (~500ms). To return everyone to python instead, call
+`/canary/python` (needs the python adapter loaded). If the python baseline came from a
+`/canary/python` stack overlay, rollback goes to rust, not python.
 **No service restart needed.**
 
 ### Verify rollback
@@ -367,21 +377,22 @@ All controllers switch back to Python within one discovery cycle (~500ms).
 docker compose logs controller-manager --tail=20 | grep "Switched"
 ```
 
-You should see lines like:
+Controllers that were on the canary backend switch back to the baseline
+default (`rust` since #1371), e.g. after a python canary:
 ```
-Switched aa:bb:cc:dd:ee:ff: rust -> python
+Switched aa:bb:cc:dd:ee:ff: python -> rust
 ```
 
 Confirm with metrics:
 
 ```promql
-# All controllers back on python
-controller_backend_info{backend="rust"} == 1
+# No controller left on the canary backend (here: python)
+controller_backend_info{backend="python"} == 1
 # Should return no results
 ```
 
 ```promql
-# All routing decisions back to python
+# All routing decisions back on the baseline default
 sum by (adapter) (rate(controller_routing_decisions_total[1m]))
 ```
 
