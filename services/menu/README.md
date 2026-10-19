@@ -370,7 +370,6 @@ Metrics are pushed over OTLP to the collector (no `/metrics` endpoint); names ar
 |--------|------|--------|-------------|
 | `menu_button_frames_processed_total` | Counter | - | Controller state frames processed |
 | `menu_button_presses_total` | Counter | button, action | Button presses detected |
-| `menu_lobby_updates_total` | Counter | - | LED updates sent |
 
 ### Stream Metrics
 

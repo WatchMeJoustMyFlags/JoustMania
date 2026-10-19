@@ -169,10 +169,6 @@ class DiscoveryLoop:
         # Cached serial list — rebuilt on connect/disconnect, reused at 100Hz
         self._cached_serials: list[str] | None = None
 
-        # Previous active/idle counts — only update gauge on change
-        self._prev_active_count = -1
-        self._prev_idle_count = -1
-
         # Debug logging throttle
         self._last_controller_count_log = 0.0
 
@@ -563,7 +559,7 @@ class DiscoveryLoop:
 
             current_time = time.time()
 
-            # Count active vs idle controllers for metrics (based on recent activity)
+            # Count active vs idle controllers for the periodic log (based on recent activity)
             active_count = 0
             idle_count = 0
             for serial in all_serials:
@@ -573,14 +569,6 @@ class DiscoveryLoop:
                     idle_count += 1
                 else:
                     active_count += 1
-
-            # Update activity metrics only when values change
-            if active_count != self._prev_active_count:
-                metrics.adaptive_polling_active_controllers.set(active_count)
-                self._prev_active_count = active_count
-            if idle_count != self._prev_idle_count:
-                metrics.adaptive_polling_idle_controllers.set(idle_count)
-                self._prev_idle_count = idle_count
 
             # Debug: Log tracked controller count periodically (every 5 seconds)
             if current_time - self._last_controller_count_log >= 5.0:

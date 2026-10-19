@@ -35,11 +35,6 @@ button_presses_total = Counter(
     ["button", "action"],  # button: 'trigger', 'move', 'select', 'start', etc. action: 'press', 'hold'
 )
 
-lobby_updates_total = Counter(
-    "menu_lobby_updates_total",
-    "Total number of lobby feedback updates sent",
-)
-
 # Stream metrics (Phase 59)
 stream_connections_active = Gauge(
     "menu_stream_connections_active",

@@ -158,12 +158,6 @@ state_cache_misses_total = Counter(
     "controller_state_cache_misses_total", "Number of state cache misses (rebuild required)"
 )
 
-object_pool_utilization = Gauge(
-    "controller_object_pool_utilization",
-    "Object pool utilization percentage",
-    ["pool_type"],  # 'controller_state' or 'vector3'
-)
-
 # System metrics
 process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")
 
@@ -249,17 +243,6 @@ poll_batch_size = Histogram(
     "controller_poll_batch_size",
     "Number of controllers polled per batch",
     buckets=[1, 2, 4, 8, 12, 16, 20, 24],
-)
-
-# Adaptive polling metrics (Quick Win optimization)
-adaptive_polling_active_controllers = Gauge(
-    "controller_adaptive_polling_active",
-    "Number of controllers with recent activity",
-)
-
-adaptive_polling_idle_controllers = Gauge(
-    "controller_adaptive_polling_idle",
-    "Number of controllers without recent activity",
 )
 
 # Fixed interval polling metrics

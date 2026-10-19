@@ -138,29 +138,12 @@ class ControllerIOAdapter(ABC):
 
 ## Performance Optimizations
 
-### Adaptive Polling Frequency
+### Polling Frequency
 
-Controllers are polled at different rates based on activity to reduce CPU usage when controllers are idle:
-
-| State | Polling Rate | Interval | Condition |
-|-------|--------------|----------|-----------|
-| **Active** | 60Hz | 16ms | Button pressed OR accelerometer movement in last 5 seconds |
-| **Idle** | 10Hz | 100ms | No activity for >5 seconds |
-
-**How it works:**
-1. Each poll cycle checks for activity: any button pressed, or accelerometer change above threshold (0.05)
-2. Activity resets the idle timer to 0
-3. After 5 seconds of no activity, the controller switches to idle polling rate
-4. Any button press or movement immediately switches back to active polling
-
-**Example savings (8 controllers, 3 actively playing):**
-- Before: 8 controllers × 60Hz = 480 polls/second
-- After: 3 active × 60Hz + 5 idle × 10Hz = 230 polls/second (**52% reduction**)
-
-**Metrics to monitor:**
-- `controller_adaptive_polling_active` - Controllers at 60Hz
-- `controller_adaptive_polling_idle` - Controllers at 10Hz
-- `controller_adaptive_polling_skipped_total` - Poll cycles skipped
+The discovery loop polls every tracked controller at a fixed 100 Hz (`controller_polling_target_hz` = 100,
+`controller_polling_mode` = 1). The former adaptive 60 Hz / 10 Hz polling and its
+`controller_adaptive_polling_*` gauges were removed (#1322); the loop still logs active vs idle
+controller counts every 5 seconds.
 
 ### uvloop Event Loop
 
