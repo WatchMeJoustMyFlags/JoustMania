@@ -5,7 +5,8 @@
   ``FFAGame.run()`` with the countdown, EMA warm-up and game loop stubbed, so only
   the audio calls ``run()`` makes are observed (in order, interleaved with the
   countdown).
-- step 4: the agent's ``play_audio_cue`` reaches the audio service as a
+- step 4: a full FFA game plays an explosion on each death and "congratulations"
+  for the winner; the agent's ``play_audio_cue`` reaches the audio service as a
   ``PlaySound`` of the sound id (``agent_cue``).
 - Post-F-1: audio failures never stop a game: a full FFA ``run()`` against an
   audio service whose every RPC fails still ends with a winner, and a failing
@@ -144,6 +145,64 @@ async def test_agent_audio_cue_plays_the_sound_id_through_play_sound():
     await manager._handle_audio_cue(ctx)
 
     assert log == [("PlaySound", "agent_cue")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="main", steps=[4])
+async def test_explosion_on_each_death_then_congratulations_for_the_winner():
+    """UC-031 step 4: a full FFA game plays an explosion on each death, then "congratulations" for the winner."""
+    log: list = []
+    game = FFAGame(
+        controller_manager_client=MockControllerManagerService(
+            num_controllers=3, death_schedule={1.0: 0, 1.6: 1}, max_duration=8.0
+        ),
+        event_publisher=EventCollector().publish,
+        audio_client=RecordingAudio(log),
+        game_id="test_uc031_event_sounds",
+        initial_players=[game_coordinator_pb2.Player(serial=f"mock_controller_{i}") for i in range(3)],
+    )
+    config = GamePerformanceConfig(countdown_phase_duration_ms=50, winner_rainbow_duration_ms=200)
+
+    with patch.object(get_config_manager(), "get_config", return_value=config):
+        await asyncio.wait_for(game.run(), timeout=15.0)
+
+    sounds = [path for call, path in log if call == "PlaySound"]
+    after_start = sounds[sounds.index(Sound.SFX_START3.value) + 1 :]
+    assert [s for s in after_start if s in (Sound.SFX_EXPLOSION.value, Sound.VOX_CONGRATULATIONS.value)] == [
+        Sound.SFX_EXPLOSION.value,
+        Sound.SFX_EXPLOSION.value,
+        Sound.VOX_CONGRATULATIONS.value,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="main", steps=[3], br=["BR-001"])
+async def test_ffa_run_drives_the_tempo_loop():
+    """UC-031 BR-001: a Free-for-All game's own run() drives the step-3 tempo loop.
+
+    The windows are shortened (0.2 s) so the loop is due several times while the game runs;
+    the audio service sees alternating 1.3x / 1.0x ChangeTempo requests during the game.
+    """
+    log: list = []
+    game = FFAGame(
+        controller_manager_client=MockControllerManagerService(
+            num_controllers=3, death_schedule={1.5: 0, 2.5: 1}, max_duration=8.0
+        ),
+        event_publisher=EventCollector().publish,
+        audio_client=RecordingAudio(log),
+        game_id="test_uc031_ffa_tempo",
+        initial_players=[game_coordinator_pb2.Player(serial=f"mock_controller_{i}") for i in range(3)],
+    )
+    game.music_windows = base_module.MusicWindows(*([0.2] * 8))
+    config = GamePerformanceConfig(countdown_phase_duration_ms=50, winner_rainbow_duration_ms=200)
+
+    with patch.object(get_config_manager(), "get_config", return_value=config):
+        await asyncio.wait_for(game.run(), timeout=15.0)
+
+    tempos = [tempo for call, tempo in log if call == "ChangeTempo"]
+    assert len(tempos) >= 2
+    alternating = [FAST_MUSIC_SPEED if i % 2 == 0 else SLOW_MUSIC_SPEED for i in range(len(tempos))]
+    assert tempos == [round(tempo, 2) for tempo in alternating]
 
 
 @pytest.mark.asyncio

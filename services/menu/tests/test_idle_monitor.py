@@ -246,10 +246,10 @@ class TestIdleMonitorEnterIdle:
 
     @pytest.mark.asyncio
     @patch("services.menu.idle_monitor.metrics")
-    @pytest.mark.uc("UC-010", flow="A2")
+    @pytest.mark.uc("UC-010", flow="A2", steps=[1])
     @pytest.mark.uc("UC-002", flow="A3")
     async def test_enter_idle_selects_sentinels(self, mock_metrics, idle_monitor, mock_state_manager):
-        """Sentinels should be selected on idle entry."""
+        """UC-010 A2 step 1: up to sentinel.count (2) controllers are picked as sentinels, highest battery first."""
         mock_state_manager.controller_states = {
             "s1": ControllerState.CONNECTED,
             "s2": ControllerState.CONNECTED,
@@ -268,7 +268,7 @@ class TestIdleMonitorWakeAll:
 
     @pytest.mark.asyncio
     @patch("services.menu.idle_monitor.metrics")
-    @pytest.mark.uc("UC-010", flow="A2")
+    @pytest.mark.uc("UC-010", flow="A2", steps=[2])
     async def test_wake_all_transitions_idle_to_connected(self, mock_metrics, idle_monitor, mock_state_manager):
         """wake_all should transition all IDLE controllers to CONNECTED."""
         idle_monitor._idle_active = True
@@ -513,3 +513,55 @@ class TestHsvToRgb:
         """Half value red should produce dimmer output."""
         r, g, b = _hsv_to_rgb(0.0, 1.0, 0.5)
         assert r == 127 and g == 0 and b == 0
+
+
+class TestIdleWakeConsumesPress:
+    """UC-010 A2 step 2 through a real StateManager, handlers and IdleMonitor (only I/O edges autospec'd)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A2", steps=[2])
+    @patch("services.menu.idle_monitor.metrics")
+    async def test_trigger_on_idle_controller_wakes_all_and_is_consumed(self, mock_metrics):
+        """A trigger press on an idle controller wakes every idle controller; it does not ready that controller."""
+        from unittest.mock import create_autospec
+
+        from lib.flag_service_writer import FlagServiceWriter
+        from services.menu.handlers.connected import ConnectedHandler
+        from services.menu.handlers.ready import ReadyHandler
+        from services.menu.state_manager import StateManager
+        from services.menu.utils import AudioHelper, LedController
+
+        manager = StateManager(
+            led=create_autospec(LedController, instance=True, spec_set=True),
+            audio=create_autospec(AudioHelper, instance=True, spec_set=True),
+            game_settings_writer=create_autospec(FlagServiceWriter, instance=True, spec_set=True),
+            user_prefs_writer=create_autospec(FlagServiceWriter, instance=True, spec_set=True),
+            publish_event=AsyncMock(),
+        )
+        start_game = AsyncMock()
+        idle_handler = IdleHandler()
+        for handler in (ConnectedHandler(), ReadyHandler(start_game), idle_handler):
+            manager.register_handler(handler)
+        monitor = IdleMonitor(
+            state_manager=manager,
+            get_idle_enabled=lambda: True,
+            get_idle_timeout=lambda: 15,
+            get_sentinel_count=lambda: 0,
+            get_rotation_minutes=lambda: 5,
+        )
+        idle_handler.set_wake_callback(monitor.wake_all)
+        for serial in ("s1", "s2", "s3"):
+            await manager.on_controller_connected(serial)
+        await monitor._enter_idle_mode()
+        assert set(manager.controller_states.values()) == {ControllerState.IDLE}
+
+        await manager.handle_button_event("s1", "trigger", True)
+
+        # Every idle controller is back in the lobby, and the press did not ready s1.
+        assert manager.controller_states == {
+            "s1": ControllerState.CONNECTED,
+            "s2": ControllerState.CONNECTED,
+            "s3": ControllerState.CONNECTED,
+        }
+        assert not monitor.is_idle_active
+        start_game.assert_not_awaited()

@@ -426,6 +426,7 @@ class TestMenuServicerProcessInput:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A6")
+    @pytest.mark.uc("UC-011", br=["BR-002"])
     async def test_web_start_game_honours_requested_mode(self, real_servicer):
         """UC-010 A6 (#1278): start_game with a mode selects that mode, then starts it."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
@@ -448,6 +449,7 @@ class TestMenuServicerProcessInput:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A6")
+    @pytest.mark.uc("UC-011", br=["BR-002"])
     async def test_web_start_game_accepts_mode_alias(self, real_servicer):
         """UC-010 A6 (#1278): an alias ("ffa") resolves to its mode and starts it."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
@@ -467,6 +469,7 @@ class TestMenuServicerProcessInput:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A6")
+    @pytest.mark.uc("UC-011", br=["BR-002"])
     async def test_web_start_game_mode_survives_select_during_start_delay(self, real_servicer):
         """UC-010 A6 (#1278): a lobby SELECT during the start delay does not swap the requested mode."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
@@ -489,6 +492,7 @@ class TestMenuServicerProcessInput:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A6")
     @pytest.mark.parametrize("mode", ["Commander", "Ninja", "Random", "NotAGame"])
+    @pytest.mark.uc("UC-011", br=["BR-002"])
     async def test_web_start_game_rejects_invalid_mode(self, real_servicer, mode):
         """UC-010 A6 (#1278): an unknown or unimplemented mode is rejected and no game starts."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
@@ -558,6 +562,7 @@ class TestMenuServicerReadyUpStart:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", steps=[1, 2, 3, 4, 5], br=["BR-001"])
+    @pytest.mark.uc("UC-031", flow="main", steps=[2])
     async def test_all_ready_starts_selected_mode_with_ready_players(self, real_servicer):
         """UC-010 steps 1-5: everyone readies up, the menu starts the selected mode with them."""
         from lib.types import Sound
@@ -640,6 +645,38 @@ class TestMenuServicerReadyUpStart:
         # Allowed case: without the blocker the same lobby is all ready.
         del real_servicer.state_manager.controller_states["blocker"]
         assert real_servicer.state_manager.all_ready()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2])
+    async def test_short_roster_start_returns_to_lobby_unreadied(self, real_servicer):
+        """UC-010 A3 + failure postcondition: a start with one READY player is cancelled and the
+        lobby is restored: no game, the READY player is CONNECTED again with the lobby colour,
+        lobby music is not touched and the selection is unchanged."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        real_servicer.current_selection = Games.JoustTeams
+        real_servicer.state_manager.set_game_mode(Games.JoustTeams)
+        await _connect(real_servicer, "s1", "s2")
+        await _ready_up(real_servicer, "s1")
+        led = real_servicer.state_manager.led
+        led.reset_mock()
+        real_servicer.event_publisher.publish.reset_mock()
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.ProcessInput(
+                menu_pb2.ProcessInputRequest(input_type="button_press", data={"button": "trigger"}), MagicMock()
+            )
+            await _await_lifecycle(real_servicer)
+
+        stream.assert_not_awaited()
+        assert _published(real_servicer) == [("game_start_cancelled", {})]
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        assert real_servicer.state_manager.controller_states == {
+            "s1": ControllerState.CONNECTED,
+            "s2": ControllerState.CONNECTED,
+        }
+        led.set_connected_color.assert_any_await("s1", Games.JoustTeams.name)
+        real_servicer.audio.stop_lobby_music.assert_not_awaited()
+        assert real_servicer.current_selection == Games.JoustTeams
 
 
 class TestMenuServicerForceStartShortRoster:
@@ -990,6 +1027,7 @@ class TestBuildGameConfig:
         with patch("services.menu.servicer.set_game_transaction_context"):
             return MenuServicer._build_game_config(servicer, game_mode, players)
 
+    @pytest.mark.uc("UC-010", flow="main", steps=[5])
     def test_build_config_ffa(self, servicer, players):
         """JoustFFA should produce ffa_config with correct base fields."""
         config = self._build_config(servicer, Games.JoustFFA, players)
@@ -999,6 +1037,7 @@ class TestBuildGameConfig:
         assert len(config.players) == 2
         assert config.HasField("ffa_config")
 
+    @pytest.mark.uc("UC-010", flow="main", steps=[5])
     def test_build_config_marks_menu_origin(self, servicer, players):
         """The menu is the REAL game (#837): its config carries GAME_ORIGIN_MENU
         so the coordinator reserves the primary slot for it."""
@@ -1226,6 +1265,36 @@ class TestRestartLobby:
         servicer.controller_events.wait_for_connection.assert_called_once()
 
 
+class TestRestartLobbyRestoresLobby:
+    """UC-010 step 8 through the real servicer and StateManager (only I/O edges autospec'd)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[8])
+    async def test_every_player_back_to_connected_with_lobby_colour_and_music(self, real_servicer):
+        """After the game: READY players are un-readied (CONNECTED, lobby LED), lobby music and idle monitor on."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1", "s2")  # s3 stays CONNECTED: no auto start
+        assert real_servicer.state_manager.ready_controllers == {"s1", "s2"}
+        real_servicer.state = menu_pb2.MenuState.GAME_STARTING
+        led = real_servicer.state_manager.led
+        led.reset_mock()
+
+        await real_servicer._restart_lobby()
+
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        assert real_servicer.state_manager.controller_states == {
+            "s1": ControllerState.CONNECTED,
+            "s2": ControllerState.CONNECTED,
+            "s3": ControllerState.CONNECTED,
+        }
+        assert real_servicer.state_manager.ready_controllers == set()
+        lobby_colours = sorted(c.args for c in led.set_connected_color.await_args_list)
+        assert lobby_colours == [("s1", "JoustFFA"), ("s2", "JoustFFA"), ("s3", "JoustFFA")]
+        real_servicer.audio.start_lobby_music.assert_awaited_once()
+        real_servicer.idle_monitor.start.assert_called_once()
+
+
 class TestBuildTraceMetadata:
     """Tests for _build_trace_metadata method."""
 
@@ -1298,6 +1367,7 @@ class TestBuildGameConfigCustomValues:
         with patch("services.menu.servicer.set_game_transaction_context"):
             return MenuServicer._build_game_config(servicer, game_mode, players)
 
+    @pytest.mark.uc("UC-010", flow="main", steps=[5])
     def test_sensitivity_flows_from_flagd(self, servicer, players):
         """Sensitivity value from game_settings_client should appear in config."""
         servicer.game_settings_client.get_integer_value = MagicMock(
@@ -1309,6 +1379,7 @@ class TestBuildGameConfigCustomValues:
         config = self._build_config(servicer, Games.JoustFFA, players)
         assert config.sensitivity == 4
 
+    @pytest.mark.uc("UC-010", flow="main", steps=[5])
     def test_teams_custom_num_teams(self, servicer, players):
         """JoustTeams should use num_teams from flagd, not just the default."""
         servicer.game_settings_client.get_integer_value = MagicMock(
@@ -1326,6 +1397,7 @@ class TestBuildGameConfigCustomValues:
         assert config.teams_config.num_teams == 4
         assert config.teams_config.random_assignment is False
 
+    @pytest.mark.uc("UC-010", flow="main", steps=[5])
     def test_nonstop_custom_time_limit(self, servicer, players):
         """NonStop should use time_limit_seconds from flagd."""
         servicer.game_settings_client.get_integer_value = MagicMock(
@@ -1337,6 +1409,7 @@ class TestBuildGameConfigCustomValues:
         config = self._build_config(servicer, Games.NonStop, players)
         assert config.nonstop_config.time_limit_seconds == 120
 
+    @pytest.mark.uc("UC-010", flow="main", steps=[5])
     def test_fight_club_custom_values(self, servicer, players):
         """FightClub should use custom invincibility and min_rounds from flagd."""
         servicer.game_settings_client.get_integer_value = MagicMock(
@@ -1355,6 +1428,7 @@ class TestBuildGameConfigCustomValues:
         assert config.fight_club_config.invincibility_seconds == pytest.approx(2.5)
         assert config.fight_club_config.min_rounds == 5
 
+    @pytest.mark.uc("UC-010", flow="main", steps=[5])
     def test_werewolf_custom_reveal_time(self, servicer, players):
         """Werewolf should use reveal_time_seconds from flagd."""
         servicer.game_settings_client.get_float_value = MagicMock(
@@ -1365,6 +1439,7 @@ class TestBuildGameConfigCustomValues:
         config = self._build_config(servicer, Games.Werewolf, players)
         assert config.werewolf_config.reveal_time_seconds == pytest.approx(60.0)
 
+    @pytest.mark.uc("UC-010", flow="main", steps=[5])
     def test_config_includes_all_players(self, servicer, players):
         """Config should include all players in the players list."""
         config = self._build_config(servicer, Games.JoustFFA, players)
@@ -1841,6 +1916,30 @@ class TestSelectionPathsShareSelectGameMode:
             {"game_name": "JoustTeams", "source": "admin_mode", "serial": "host"},
         ) in published
         real_servicer.user_prefs_writer.update_default_variant.assert_called_once_with("current_game", "JoustTeams")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", steps=[6])
+    async def test_admin_cross_leaves_other_lobby_leds_alone(self, real_servicer):
+        """UC-011 step 6: Cross changes the mode, but no other lobby controller's LED is touched.
+
+        The only LED output of the selection is the pulse on the host's own controller;
+        the CONNECTED controllers keep their state and colour until they next enter CONNECTED.
+        """
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2", "s3")
+        led = real_servicer.state_manager.led
+        assert led.set_connected_color.await_count == 3  # lobby colours were set on connect
+        led.reset_mock()
+
+        await self._admin_cross(real_servicer)
+
+        assert real_servicer.current_selection == Games.JoustTeams
+        touched = {c.args[0] for c in led.mock_calls if c.args}
+        assert touched == {"host"}
+        led.send_game_effect.assert_awaited_once()
+        assert {real_servicer.state_manager.get_controller_state(s) for s in ("s1", "s2", "s3")} == {
+            ControllerState.CONNECTED
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="main")  # Post-F-1: the previous selection stays

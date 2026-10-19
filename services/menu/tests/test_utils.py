@@ -111,6 +111,30 @@ class TestAudioHelper:
         assert audio.lobby_music_track_id == "lobby-1"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="main", steps=[2])
+    async def test_stop_lobby_music_stops_the_music(self):
+        """UC-031 step 2: at game start the lobby music is stopped (StopMusic, any track) and forgotten."""
+        from proto import audio_pb2
+
+        audio = AudioHelper(MagicMock())
+        audio.lobby_music_track_id = "lobby-1"
+        calls: list = []
+
+        class RecordingStub:
+            def __init__(self, _channel):
+                pass
+
+            async def StopMusic(self, request):  # noqa: N802 - gRPC stub name
+                calls.append(("StopMusic", request.track_id))
+                return audio_pb2.StopMusicResponse(success=True)
+
+        with patch("proto.audio_pb2_grpc.AudioServiceStub", RecordingStub):
+            await audio.stop_lobby_music()
+
+        assert calls == [("StopMusic", "")]
+        assert audio.lobby_music_track_id is None
+
+    @pytest.mark.asyncio
     async def test_play_sound_string(self, audio):
         """play_sound should handle string sound paths."""
         with patch("proto.audio_pb2_grpc.AudioServiceStub") as mock_stub_class:

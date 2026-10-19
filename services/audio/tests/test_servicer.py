@@ -151,11 +151,16 @@ class TestChangeTempo:
     def servicer(self, mock_audio_servicer):
         return mock_audio_servicer
 
+    @pytest.mark.uc("UC-031", flow="main", steps=[3])
     def test_change_tempo_success(self, servicer, mock_grpc_context):
+        """UC-031 step 3: the audio service runs the tempo change over the requested 1.5 s transition."""
         servicer.audio_manager.change_tempo = MagicMock(return_value=True)
         request = audio_pb2.ChangeTempoRequest(track_id="track-123", new_tempo=1.3, transition_duration=1.5)
         response = servicer.ChangeTempo(request, mock_grpc_context)
         assert response.success is True
+        servicer.audio_manager.change_tempo.assert_called_once_with(
+            track_id="track-123", new_tempo=pytest.approx(1.3), transition_duration=pytest.approx(1.5)
+        )
 
     def test_change_tempo_track_mismatch(self, servicer, mock_grpc_context):
         servicer.audio_manager.change_tempo = MagicMock(return_value=False)
@@ -435,3 +440,53 @@ class TestAudioManagerChangeTempo:
         mock_audio_manager.event_loop = None
         result = mock_audio_manager.change_tempo("track-abc", 1.5)
         assert result is False
+
+
+class TestMutedSpanAttribute:
+    """UC-031 A1 step 1: PlaySound and PlayMusic spans carry ``audio.muted`` while play_audio is off."""
+
+    @pytest.fixture
+    def servicer(self, mock_audio_servicer):
+        return mock_audio_servicer
+
+    @staticmethod
+    def _span():
+        from unittest.mock import create_autospec
+
+        from opentelemetry.trace import Span
+
+        return create_autospec(Span, instance=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A1", steps=[1])
+    @pytest.mark.parametrize(
+        ("rpc", "request_message"),
+        [
+            ("PlaySound", audio_pb2.PlaySoundRequest(file_path="beep_loud", volume=1.0, priority=2)),
+            ("PlayMusic", audio_pb2.PlayMusicRequest(file_pattern="Joust/music/*.ogg", loop=True, tempo=1.0)),
+        ],
+    )
+    async def test_muted_request_marks_span(self, servicer, mock_grpc_context, rpc, request_message):
+        span = self._span()
+        servicer.audio_enabled = False
+        with (
+            patch.object(servicer, "_refresh_play_audio", autospec=True),
+            patch("services.audio.servicer.trace.get_current_span", return_value=span),
+        ):
+            response = await getattr(servicer, rpc)(request_message, mock_grpc_context)
+
+        assert response.success is True
+        span.set_attribute.assert_any_call("audio.muted", True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A1", steps=[1])
+    async def test_unmuted_request_has_no_muted_attribute(self, servicer, mock_grpc_context):
+        span = self._span()
+        servicer.audio_manager.play_sound = MagicMock(return_value=True)
+        with (
+            patch.object(servicer, "_refresh_play_audio", autospec=True),
+            patch("services.audio.servicer.trace.get_current_span", return_value=span),
+        ):
+            await servicer.PlaySound(audio_pb2.PlaySoundRequest(file_path="beep_loud"), mock_grpc_context)
+
+        assert "audio.muted" not in [c.args[0] for c in span.set_attribute.call_args_list]
