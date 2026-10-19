@@ -1815,7 +1815,7 @@ class TestAgentControlOption:
         with caplog.at_level(logging.WARNING, logger="services.menu.handlers.admin"):
             await handler.handle_increase_value("test_serial")
 
-        assert any(r.levelname == "WARNING" and "no agent settings writer" in r.getMessage() for r in caplog.records)
+        assert any(r.levelname == "WARNING" and "Agent control unavailable" in r.getMessage() for r in caplog.records)
         mock_state_manager.led.send_game_effect.assert_not_called()
         mock_state_manager.audio.play_voice.assert_not_called()
 
