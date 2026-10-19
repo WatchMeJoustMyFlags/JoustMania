@@ -327,3 +327,131 @@ class TestTwoPlayerDisconnectScenario:
         winner_events = event_collector.get_events_of_type(GameEvent.GAME_WINNER)
         assert len(winner_events) == 1
         assert winner_events[0]["serial"] == "player_b"
+
+
+class ScriptedGameplayStream(MockGameplayStream):
+    """Gameplay stream that yields scripted frames, one every ``frame_interval_s`` (60 Hz by default)."""
+
+    def __init__(self, frames, frame_interval_s: float = 1 / 60):
+        super().__init__()
+        self._frames = list(frames)
+        self._frame_interval_s = frame_interval_s
+        # Frames still unconsumed when each message was written.
+        self.frames_left_at_write: list[int] = []
+
+    async def write(self, message):
+        self.frames_left_at_write.append(len(self._frames))
+        await super().write(message)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        import asyncio
+
+        if not self._frames:
+            raise StopAsyncIteration
+        await asyncio.sleep(self._frame_interval_s)
+        return self._frames.pop(0)
+
+
+class TestDisconnectDuringWarmup:
+    """#1582: a disconnect in the ~100 ms EMA warmup after the countdown still eliminates the player."""
+
+    STILL = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
+
+    def _game(self, serials):
+        event_collector = EventCollector()
+        game = FFAGame(
+            controller_manager_client=MockControllerManagerService(num_controllers=len(serials)),
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_warmup_disconnect",
+        )
+        game.running = True
+        for serial in serials:
+            game.players[serial] = Player(serial=serial, team=0, alive=True, color=(255, 0, 0))
+        return game, event_collector
+
+    def _frames(self, serials, disconnected: str, count: int = 20):
+        """First frame carries the one-shot disconnect (controller-manager drains it once); the rest are still."""
+        frames = []
+        for i in range(count):
+            alive = [s for s in serials if i == 0 or s != disconnected]
+            frames.append(
+                controller_manager_pb2.GameplayDataUpdate(
+                    controllers=[controller_manager_pb2.GameplayData(serial=s, accel=self.STILL) for s in alive],
+                    disconnects=[controller_manager_pb2.DisconnectEvent(serial=disconnected)] if i == 0 else [],
+                    timestamp=int(time.time() * 1000),
+                )
+            )
+        return frames
+
+    async def _run_warmup_then_loop(self, game, frames) -> tuple[int, int]:
+        """Returns the frames left after warmup and after the game loop."""
+        game.gameplay_stream = ScriptedGameplayStream(frames)
+        await game._warmup_ema()
+        left_after_warmup = len(game.gameplay_stream._frames)
+        assert left_after_warmup, "warmup must leave frames for the game loop"
+        assert left_after_warmup < len(frames) - 1, "the disconnect frame must fall in warmup"
+        await game._game_loop()
+        return left_after_warmup, len(game.gameplay_stream._frames)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A2")
+    @pytest.mark.uc("UC-030", flow="A5")
+    async def test_disconnect_during_warmup_eliminates_player(self):
+        """3 players: the controller that disconnects during warmup is dead once the game loop runs."""
+        serials = ["p0", "p1", "p2"]
+        game, events = self._game(serials)
+        from lib.types import GameEvent
+
+        left_after_warmup, _ = await self._run_warmup_then_loop(game, self._frames(serials, disconnected="p0"))
+
+        assert game.players["p0"].alive is False
+        assert game.players["p1"].alive is True
+        assert game.players["p2"].alive is True
+        assert [e["serial"] for e in events.get_events_of_type(GameEvent.PLAYER_DEATH)] == ["p0"]
+        # The alive filter drops p0 before the loop reads its first frame.
+        stream = game.gameplay_stream
+        writes = zip(stream.messages, stream.frames_left_at_write, strict=True)
+        filter_writes = [(msg, left) for msg, left in writes if msg.HasField("filter_update")]
+        assert filter_writes, "an alive-filter FilterUpdate must be sent"
+        first_filter, frames_left = filter_writes[0]
+        assert set(first_filter.filter_update.serials) == {"p1", "p2"}
+        assert frames_left == left_after_warmup
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A2", br=["BR-001"])
+    async def test_disconnect_during_warmup_ends_two_player_game(self):
+        """2 players: a disconnect during warmup ends the game with the other player winning."""
+        serials = ["p0", "p1"]
+        game, events = self._game(serials)
+        from lib.types import GameEvent
+
+        left_after_warmup, left_after_loop = await self._run_warmup_then_loop(
+            game, self._frames(serials, disconnected="p0")
+        )
+
+        assert game.players["p0"].alive is False
+        assert events.get_events_of_type(GameEvent.GAME_WINNER) == [{"serial": "p1"}]
+        # The game ended before the first gameplay frame was read.
+        assert game.start_time is None
+        assert left_after_loop == left_after_warmup
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A2", br=["BR-003"])
+    async def test_force_end_before_loop_ignores_warmup_disconnect(self):
+        """A game force-ended during the countdown or warmup stays force_ended despite a buffered disconnect."""
+        serials = ["p0", "p1"]
+        game, events = self._game(serials)
+        from lib.types import GameEvent
+
+        game.force_end("test")
+        game.gameplay_stream = ScriptedGameplayStream(self._frames(serials, disconnected="p0"))
+        await game._warmup_ema()
+        await game._game_loop()
+
+        assert events.get_events_of_type(GameEvent.PLAYER_DEATH) == []
+        assert events.get_events_of_type(GameEvent.GAME_WINNER) == []
+        assert game.game_outcome() == "force_ended"
