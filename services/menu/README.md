@@ -85,7 +85,7 @@ rpc StreamMenuEvents(StreamMenuEventsRequest) returns (stream MenuEvent);
 
 Controllers receive LED feedback based on their state and the selected game mode.
 
-> **Full Reference:** See [docs/led-feedback.md](../../docs/led-feedback.md) for comprehensive LED state documentation including admin mode visual feedback.
+> **Full Reference:** See [UC-010](../../docs/use_cases/UC-010.md) and [UC-012](../../docs/use_cases/UC-012.md) for the LED states including admin mode.
 
 ### Game Mode Colors
 

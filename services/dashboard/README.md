@@ -60,4 +60,4 @@ services/dashboard/
 ## See Also
 
 - [Connect Proxy](../connect-proxy/) -- gRPC-to-Connect bridge the dashboard talks through
-- [Architecture](../../docs/ARCHITECTURE.md)
+- [Services spec](../../docs/specs/services.md)

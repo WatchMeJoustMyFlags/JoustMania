@@ -114,7 +114,7 @@ pytest tests/
 
 ## See Also
 
-- [Architecture](../../docs/ARCHITECTURE.md) - System architecture
+- [Services spec](../../docs/specs/services.md) - System architecture
 - [Proto Definition](../../proto/game_coordinator.proto) - Full API specification
 - [Distributed Tracing](./DISTRIBUTED_TRACING.md) - Tracing implementation
 - [Development Guide](../../docs/DEVELOPMENT.md) - Development workflow

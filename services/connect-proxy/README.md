@@ -64,4 +64,4 @@ The unit tests (`canary_test.go`) need those bindings, so they run inside the im
 
 - [Dashboard](../dashboard/) -- the web UI that talks through this proxy
 - [Proto Definitions](../../proto/) -- source .proto files
-- [Architecture](../../docs/ARCHITECTURE.md)
+- [Services spec](../../docs/specs/services.md)

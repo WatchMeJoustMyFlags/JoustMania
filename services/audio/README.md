@@ -95,7 +95,7 @@ pytest tests/
 
 ## See Also
 
-- [Architecture](../../docs/ARCHITECTURE.md) - System architecture
+- [Services spec](../../docs/specs/services.md) - System architecture
 - [Proto Definition](../../proto/audio.proto) - Full API specification
-- [LED Feedback](../../docs/led-feedback.md) - Audio + LED coordination
+- [UC-010: Lobby LEDs](../../docs/use_cases/UC-010.md) - LED states
 - [Development Guide](../../docs/DEVELOPMENT.md) - Development workflow

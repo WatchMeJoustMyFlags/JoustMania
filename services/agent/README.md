@@ -1299,4 +1299,4 @@ docker run --rm --network joustmania \
 - [Intervention Surface research](../../docs/research/722-intervention-surface.md)
 - [Ownership Model](../../docs/OWNERSHIP_MODEL.md) -- human/agent settings arbitration & composition rules (#814/#820)
 - [OTel Collector config](../otel-collector/) -- defines the `otlp/agent` exporter
-- [Architecture](../../docs/ARCHITECTURE.md)
+- [Services spec](../../docs/specs/services.md)

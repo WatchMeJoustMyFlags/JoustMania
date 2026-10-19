@@ -327,7 +327,7 @@ print(response.state)
 
 For detailed API documentation, see:
 - **Service READMEs:** Each service has a `services/*/README.md` with usage examples
-- **Architecture docs:** `docs/ARCHITECTURE.md` for system overview
+- **Architecture docs:** `docs/specs/services.md` for system overview
 - **API reference:** `docs/API.md` for complete gRPC API documentation
 
 ## Troubleshooting
@@ -367,7 +367,7 @@ If services can't connect:
 
 - **Phase 14 Implementation:** `planning/IMPLEMENTATION_STATUS.md` (lines 1291-1338)
 - **Docker Compose:** `docker-compose.yml`, `docker-compose.mock.yml`
-- **Service Architecture:** `docs/ARCHITECTURE.md`
+- **Service Architecture:** `docs/specs/services.md`
 - **Development Guide:** `docs/DEVELOPMENT.md`
 
 ---

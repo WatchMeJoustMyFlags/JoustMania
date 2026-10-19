@@ -84,7 +84,7 @@ make up-mock
                                       └───────────────┘
 ```
 
-**For detailed architecture:** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+**For detailed architecture:** See [docs/specs/services.md](docs/specs/services.md)
 
 ## Development
 
@@ -108,11 +108,11 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](docs/ARCHITECTURE.md) | System design and service interactions |
+| [Services spec](docs/specs/services.md) | Services, ports, RPCs and service interactions |
 | [Development](docs/DEVELOPMENT.md) | Building, running, debugging |
 | [Contributing](docs/CONTRIBUTING.md) | Code style, PR workflow |
 | [Controller Guide](docs/controller-guide.md) | Button layout, admin mode |
-| [LED Feedback](docs/controller-feedback.md) | Controller LED color reference |
+| [Lobby LEDs (UC-010)](docs/use_cases/UC-010.md) | Controller LED states in the lobby |
 | [Observability](docs/observability-quickstart.md) | Tracing, metrics, dashboards |
 
 ## Services
