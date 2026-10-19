@@ -88,11 +88,13 @@ E2E_SHARD IMAGE_TAG PYTEST_EXTRA`, `uv run --package <member> [--extra <x>] pyte
 `gates SERVICE=dashboard`. No `cd`, `&&`, pipes, redirects or `$`; Go `vet && test` is two `run` lines.
 Call it as a foreground Agent call (not `run_in_background`): that call is the wait; never run the same
 command yourself in parallel. gate-runner chooses foreground or background itself and hands back only
-when the run has finished. Report PASS only when the reply contains `VERDICT: PASS` (or `VERDICT: MUTATION
-CAUGHT (assertion)` for an `expect fail` run). Report FLAKY, FAIL, REFUSED, `CAUGHT?`, `ERROR: killed` and a
-reply without a `VERDICT:` line as exactly that, never as PASS. On a FAIL, read only the quoted lines, or a
-`sed -n '<a>,<b>p'` slice of the
-log it names. `CAUGHT? (non-test error)` is not a caught mutation: fix the collection or tool error first.
+when the run has finished. For a normal run, report PASS only when the VERDICT line is exactly
+`VERDICT: PASS`. For an `expect fail` run, the good result is a VERDICT line ending in `MUTATION CAUGHT
+(assertion)` (the script prints `VERDICT: FAIL  MUTATION CAUGHT (assertion)`); `MUTATION NOT CAUGHT` and
+`CAUGHT?` are failed mutation checks even when the line starts with `VERDICT: PASS`. Report FLAKY, FAIL,
+REFUSED, `MUTATION NOT CAUGHT`, `CAUGHT?`, `ERROR: killed` and a reply without a `VERDICT:` line as exactly
+that, never as PASS. On a FAIL, read only the quoted lines, or a `sed -n '<a>,<b>p'` slice of the log it
+names. `CAUGHT? (non-test error)` is not a caught mutation: fix the collection or tool error first.
 
 Run directly (no gate-runner) only: ONE test id for a quick red/green check, piped through `| tail -n 15`
 (`uv run --extra test pytest -q --tb=short <file>::<test> 2>&1 | tail -n 15`, `go test -run '^TestX$' ./pkg/`).
