@@ -559,6 +559,7 @@ class TestUC020FreeForAll:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="main")
+    @pytest.mark.uc("UC-020", cond=["Pre-1"])
     async def test_fewer_than_two_players_is_rejected(self, fast_config):
         """UC-020 Pre-1: ``run()`` with one player raises, publishes ``game_error`` and never starts the game."""
         cm = RecordingControllerManager(num_controllers=1, infinite=True)

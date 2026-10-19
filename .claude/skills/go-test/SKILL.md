@@ -45,6 +45,9 @@ func TestDecideHook_KillSwitchMidFlight_Discarded(t *testing.T) {
   flow = `main` or `A<n>` exactly as the heading. Several units: `// UC: UC-040 A2 A3 BR-003`. Several use
   cases: one `// UC:` line per use case. It may sit below an existing doc comment, but must be the last
   comment line before `func`.
+- **Conditions:** a test about a precondition or postcondition uses the condition id as the unit:
+  `// UC: UC-040 Pre-1`, `// UC: UC-040 Post-F-1`, subtest `"UC-040/Pre-1 ..."`. Never tag it `main`.
+  Informational only; it does not affect `Tested`. Not for setup-only preconditions.
 - **Subtest names** start with `UC-XXX/<flow>` then a short behaviour: `"UC-040/A2 timeout falls back to rules"`.
   Go keeps the `/` and turns spaces into `_`, so `go test -run 'TestX/UC-040/A2' ./decision` selects it
   (verified with go1.25). Table tests: put the prefix in the case `name` field.

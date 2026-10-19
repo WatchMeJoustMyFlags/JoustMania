@@ -42,6 +42,8 @@ async def test_kill_switch_mid_flight_discards(decide_flags, ...):
     """UC-040 A6: enabled flipped while the answer is in flight -> discarded, nothing applied."""
 ```
 
+- A test whose purpose is a pre- or postcondition uses `cond=["Pre-1"]` / `["Post-F-1"]` instead of
+  `flow=` (see `/pytest-test`); never `flow="main"` for it.
 - A journey that chains several use cases (a `docs/test_cases/TC-XXX-*.md` from the aiup-core `test-case`
   skill) carries one `uc` marker per use-case flow it exercises, each with `tc="TC-XXX"`, and comments
   `# Step <n>: <name>` per row of the TC Flow table.

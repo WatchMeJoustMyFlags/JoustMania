@@ -117,6 +117,7 @@ class TestGameSessionLoop:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="main")
+    @pytest.mark.uc("UC-020", cond=["Post-F-1"])
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
     async def test_loop_clients_not_connected_publishes_error(self, mock_tracer_mod, mock_factory):
@@ -137,6 +138,7 @@ class TestGameSessionLoop:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="main")
+    @pytest.mark.uc("UC-020", cond=["Post-F-1"])
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
     async def test_loop_unknown_mode_publishes_error(self, mock_tracer_mod, mock_factory):
@@ -175,6 +177,7 @@ class TestGameSessionLoop:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="main")
+    @pytest.mark.uc("UC-020", cond=["Post-F-1"])
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
     async def test_loop_exception_publishes_error(self, mock_tracer_mod, mock_factory):

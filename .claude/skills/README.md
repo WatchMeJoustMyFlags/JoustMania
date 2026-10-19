@@ -55,14 +55,26 @@ in-memory services).
 
 | Where | Tag |
 |---|---|
-| pytest | `@pytest.mark.uc("UC-040", flow="A2", br=["BR-003"], steps=[9], tc="TC-001")` (`flow` = `main` or `A<n>`; other args optional). Registered in the root, `lib`, `services/pairing_daemon`, `tests/integration` and `tests/service` `pyproject.toml` |
+| pytest | `@pytest.mark.uc("UC-040", flow="A2", br=["BR-003"], steps=[9], tc="TC-001")` (`flow` = `main` or `A<n>`; other args optional). A test whose purpose is a pre- or postcondition uses `cond=["Pre-1"]` instead of a flow, see "Condition tag" below. Registered in the root, `lib`, `services/pairing_daemon`, `tests/integration` and `tests/service` `pyproject.toml` |
 | Test tier (pytest) | `pytestmark = pytest.mark.tier("service")` in every `tests/service` module (T2 service tier: services from source on a fresh flag plane, #1422); collection fails without it. The TC's Automation section names the tier in a `**Tier:**` line |
-| Go | `// UC: UC-040 A2 BR-003` directly above `func Test...` and subtests `t.Run("UC-040/A2 ...")` |
-| Dashboard (vitest) | `describe('UC-040: ...')` / `it('A2: ...')` (AIUP JS convention) |
-| Shell test (`scripts/tests/*.sh`) | a `# UC: UC-070 A8 BR-003` line in the header comment (one line per use case) |
+| Go | `// UC: UC-040 A2 BR-003` directly above `func Test...` and subtests `t.Run("UC-040/A2 ...")`; a condition is another unit token: `// UC: UC-040 Pre-1`, `t.Run("UC-040/Post-F-1 ...")` |
+| Dashboard (vitest) | `describe('UC-040: ...')` / `it('A2: ...')` (AIUP JS convention); a condition test: `it('Pre-1: ...')` |
+| Shell test (`scripts/tests/*.sh`) | a `# UC: UC-070 A8 BR-003` line in the header comment (one line per use case; conditions are unit tokens too: `# UC: UC-070 Pre-1`) |
 | Code enforcing a rule | `# UC-040 BR-004: <one line>` / `// UC-040 BR-004: ...` above the enforcing code |
 | NFR measurement / check (pytest) | `@pytest.mark.nfr("NFR-014")` (several ids allowed), on the test or class that measures or verifies the NFR; print the measured numbers. Registered next to `uc` |
 | NFR measurement / check (Go) | `// NFR: NFR-012 NFR-013` directly above `func Test...` (next to a `// UC:` line if both apply) |
+
+### Condition tag (`cond=`)
+
+`cond=` is an optional marker keyword, analogous to `br=`, for a test whose purpose is a precondition or
+postcondition of the use case: `Pre-<n>`, `Post-S-<n>`, `Post-F-<n>`, exactly as numbered in the UC spec
+(`@pytest.mark.uc("UC-020", cond=["Pre-1"])`, `@pytest.mark.uc("UC-020", cond=["Post-F-1"])`).
+
+- Use it only when the test is about the condition. Many preconditions are setup-only and need no test of their
+  own: do not write padding tests.
+- A condition-only marker has no `flow=`. Do not tag such a test `flow="main"`: that counts as main-flow evidence
+  and overstates coverage. A test that drives a flow and also asserts a condition keeps its `flow=` and adds `cond=`.
+- It is informational: `uc-coverage` reports Pre/Post coverage from it, the `Tested` rule below is unchanged.
 
 A use case may be `Tested` only when every main scenario and alternative flow has a tagged test, it carries no open
 `Known gap` line, and every FR on its `Requirements:` line can be `Verified` (every other use case listing that FR is

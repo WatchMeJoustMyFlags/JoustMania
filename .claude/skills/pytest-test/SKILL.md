@@ -44,11 +44,16 @@ async def test_select_in_lobby_advances_to_next_playable_mode(self, menu_service
 | `flow=` | `"main"` or `"A1"`, `"A2"`, ... (exact heading id) | the flow the test drives |
 | `steps=` | optional list of main-scenario step numbers, e.g. `[9, 12]` | steps asserted (use when a UC has several main tests) |
 | `br=` | optional list, e.g. `["BR-001", "BR-004"]` | business rules asserted (allowed AND rejected case) |
+| `cond=` | optional list of `"Pre-<n>"`, `"Post-S-<n>"`, `"Post-F-<n>"` (UC spec numbering) | pre/postconditions the test is about; informational, no effect on `Tested` |
 | `tc=` | optional `"TC-XXX"` | only for test-case journeys (see `/integration-test`) |
 
 - One test may carry several `uc` markers (stack them) when it genuinely covers two use cases.
 - Keep the one-line docstring `UC-011 A2: ...` too (docs/CONTRIBUTING.md convention); the marker is what
   `/coverage-check` counts, the docstring is for humans.
+- A test whose purpose is a pre- or postcondition is tagged `@pytest.mark.uc("UC-020", cond=["Pre-1"])`
+  with no `flow=` (never `flow="main"`: that would count as main-flow evidence). Only when the condition is
+  the point of the test; setup-only preconditions need no test. A flow test that also asserts a condition
+  keeps its `flow=` and adds `cond=`.
 - A business rule test is tagged with the flow it runs in plus `br=[...]`; a pure rule test with no flow
   uses `flow="main"`.
 - The marker is registered (`markers = ["uc(...)"]`) in every pytest config: the root `pyproject.toml`

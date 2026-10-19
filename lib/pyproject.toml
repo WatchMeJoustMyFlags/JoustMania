@@ -63,6 +63,6 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
 markers = [
-    "uc(id, flow=, br=, steps=, tc=): traceability tag to a use-case flow / business rule (see .claude/skills/README.md)",
+    "uc(id, flow=, br=, steps=, tc=, cond=): traceability tag to a use-case flow / business rule (see .claude/skills/README.md)",
     "nfr(*ids): traceability tag to the non-functional requirement(s) (NFR-XXX in docs/requirements.md) the test measures or verifies (see .claude/skills/README.md)",
 ]
