@@ -170,7 +170,7 @@ async def _end_all_games(stack) -> None:
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-012", flow="main", steps=[1, 2], tc="TC-005")
 @pytest.mark.uc("UC-012", flow="main", steps=[3, 4, 5], tc="TC-005")
-@pytest.mark.uc("UC-012", flow="main", steps=[6], tc="TC-005")
+@pytest.mark.uc("UC-012", flow="main", steps=[6], br=["BR-001"], tc="TC-005")
 @pytest.mark.uc("UC-012", flow="main", steps=[7, 8], tc="TC-005")
 @pytest.mark.uc("UC-012", flow="A1", tc="TC-005")
 @pytest.mark.uc("UC-012", cond=["Post-S-1"], tc="TC-005")
