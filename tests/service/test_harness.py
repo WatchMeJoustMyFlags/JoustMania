@@ -15,9 +15,9 @@ import time
 
 import pytest
 
-from tests.service.harness import AGENT, LOBBY, Composition, FlagPlane, ServiceStack
+from tests.service.harness import AGENT, LOBBY, Composition, FlagPlane, ServiceStack, processes
 from tests.service.harness.flag_plane import _docker, fh, prune_binary_cache
-from tests.service.harness.processes import ManagedProcess
+from tests.service.harness.processes import ManagedProcess, free_port
 
 pytestmark = pytest.mark.tier("service")
 
@@ -55,6 +55,37 @@ def test_restart_from_a_worker_thread_survives_the_thread(tmp_path):
             time.sleep(0.05)
     finally:
         proc.stop(grace=2)
+
+
+class _KernelSocket:
+    """A socket whose bind to port 0 returns the next port of a fixed sequence."""
+
+    def __init__(self, ports):
+        self._ports = ports
+
+    def __call__(self, *_args):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def bind(self, _address):
+        self._port = next(self._ports)
+
+    def getsockname(self):
+        return ("127.0.0.1", self._port)
+
+
+def test_free_port_never_hands_out_a_port_twice(monkeypatch):
+    """#1612: the kernel can return a just-closed port again; a stack allocates all
+    its ports before any bind, so two services got the same port in CI."""
+    monkeypatch.setattr(processes, "_issued_ports", set(), raising=False)
+    monkeypatch.setattr(processes.socket, "socket", _KernelSocket(iter([56995, 56995, 56996, 56995, 56997])))
+
+    assert [free_port(), free_port(), free_port()] == [56995, 56996, 56997]
 
 
 def test_service_env_never_reaches_host_hardware_or_a_collector(tmp_path):

@@ -47,17 +47,33 @@ _INHERITED_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ", "GOCACHE", "
 
 _live: set[ManagedProcess] = set()
 
+# Every port free_port() handed out in this process (see free_port).
+_issued_ports: set[int] = set()
+_issued_ports_lock = threading.Lock()
+_FREE_PORT_ATTEMPTS = 100
+
 
 def free_port() -> int:
-    """An ephemeral TCP port that is free right now on 127.0.0.1.
+    """An ephemeral TCP port on 127.0.0.1 that is free now and new to this session.
 
-    The kernel may hand it out again before the service binds it; the window is
-    small, and a bind failure surfaces as a failed start with the log tail (the
-    Python services bind without SO_REUSEPORT, ``lib.grpc_utils.get_server_options``).
+    Asking the kernel for port 0 and closing the socket does not reserve the
+    port: the next ask can return the same number (about 1 in 200 batches of
+    ten asks on Linux, #1612), and a stack allocates all its ports before any
+    service binds one. Two services then get one port and the second fails to
+    bind (CI: flag service ``grpc_port=56995 http_port=56995``). So a port is
+    never handed out twice per pytest process. The kernel may still give a
+    port to another process before the service binds it; that window is small,
+    and a bind failure surfaces as a failed start with the log tail.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+    with _issued_ports_lock:
+        for _ in range(_FREE_PORT_ATTEMPTS):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("127.0.0.1", 0))
+                port = sock.getsockname()[1]
+            if port not in _issued_ports:
+                _issued_ports.add(port)
+                return port
+    raise RuntimeError(f"no unused ephemeral port after {_FREE_PORT_ATTEMPTS} attempts")
 
 
 def base_env() -> dict[str, str]:
