@@ -85,6 +85,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # Players of each open game gameplay stream (a stream configured with
         # player colours), by subscriber id: Identify is lobby-only (UC-004 BR-003).
         self._game_stream_serials: dict[str, set[str]] = {}
+        # Disconnects not yet delivered, per open game stream. A stream only gets
+        # disconnects that happen while it is open (UC-002 BR-004, #1607).
+        self._pending_disconnects: dict[str, list[str]] = {}
 
         # Delta update tracking (Phase 26 - Part 3)
         # Store last sent state per subscriber per controller
@@ -350,7 +353,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                         await self.feedback_manager.set_controller_color(serial, color)
             logger.info(f"[{subscriber_id}] Set base colors for {len(current_filter)} controllers")
             # The game's whole roster, dead players included (UC-004 BR-003).
-            self._game_stream_serials[subscriber_id] = set(current_filter)
+            self._open_game_stream(subscriber_id, current_filter)
 
         logger.info(
             f"[{subscriber_id}] Stream configured: {current_hz}Hz, "
@@ -474,7 +477,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         # Drain disconnect events accumulated since last frame (#580; game streams only)
         disconnect_events = (
-            [controller_manager_pb2.DisconnectEvent(serial=s) for s in self.discovery_loop.drain_disconnects()]
+            [controller_manager_pb2.DisconnectEvent(serial=s) for s in self._take_disconnects(subscriber_id)]
             if game_stream
             else []
         )
@@ -709,9 +712,35 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             logger.error(f"RenameController error: {e}", exc_info=True)
             return controller_manager_pb2.RenameControllerResponse(success=False, error=str(e))
 
+    def _open_game_stream(self, subscriber_id: str, serials: set[str]) -> None:
+        """Register a game stream; it starts with no pending disconnects (UC-002 BR-004).
+
+        Disconnects queued before it opened belong to the streams open at the time
+        (or to none, between games), so they are handed out first.
+        """
+        self._collect_disconnects()
+        self._game_stream_serials[subscriber_id] = set(serials)
+        self._pending_disconnects[subscriber_id] = []
+
+    def _collect_disconnects(self) -> None:
+        """Move queued disconnects to every open game stream; with none open they are dropped."""
+        drained = self.discovery_loop.drain_disconnects()
+        for pending in self._pending_disconnects.values():
+            pending.extend(drained)
+
+    def _take_disconnects(self, subscriber_id: str) -> list[str]:
+        """Disconnects since this game stream's last frame (UC-002 BR-004)."""
+        self._collect_disconnects()
+        pending = self._pending_disconnects.get(subscriber_id)
+        if not pending:
+            return []
+        self._pending_disconnects[subscriber_id] = []
+        return pending
+
     def _release_game_stream(self, subscriber_id: str) -> None:
         """Forget a closed game stream's players (UC-004 BR-003)."""
         self._game_stream_serials.pop(subscriber_id, None)
+        self._pending_disconnects.pop(subscriber_id, None)
 
     def _is_game_stream(self, subscriber_id: str) -> bool:
         """A gameplay stream that sent colours is a game stream; any other is an observer (UC-035 BR-006)."""
