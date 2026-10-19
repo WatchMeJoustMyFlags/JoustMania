@@ -48,9 +48,11 @@ The orchestrator picks the model from this table; when you are the wrong depth f
    must? Async/await propagated? Flags read at use time? Proto RPC has its connect-proxy forwarding method?
    Spec IDs collide with open PRs? `Part of #N`, no closing keywords? Labels (`ci-full`, `no-spec-change`) right?
 3. **Mutation check.** In the review worktree, revert or weaken the core fix (`git show <fix> -- <file> | git apply -R`
-   or a one-line edit), run the new tests: at least one must FAIL. Restore with `git checkout -- .` (detached
+   or a one-line edit), run the new tests: at least one must FAIL (hand the run to the Haiku `gate-runner` agent with
+   `run x1 expect fail -- <command>`; it reports `MUTATION CAUGHT` or `NOT CAUGHT`). Restore with `git checkout -- .` (detached
    review worktree only). No failing test = a blocking finding.
-4. **Gates.** `make pr-gates` in the review worktree (`BASE=origin/main`).
+4. **Gates.** `make pr-gates` in the review worktree (`BASE=origin/main`), run through `gate-runner`
+   (`<review worktree>` + `gates BASE=origin/main`) so only its summary enters your context.
 5. **CI.** `gh pr checks <PR>` once (no watching). SonarCloud is non-blocking. Collector `exited (1)` /
    `unknown type: "span_metrics"`, the fast-path stale-prebuilt-images guard and `blob not found` are
    infrastructure: name them as such (advice: `ci-full` label or rerun), not as PR defects.
