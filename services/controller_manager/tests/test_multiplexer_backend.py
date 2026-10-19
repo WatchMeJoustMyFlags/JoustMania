@@ -194,13 +194,50 @@ class TestControllerInfoSeriesRemoval:
         a1.get_adapter_for_serial.return_value = "hci1"
         mux = MultiplexerBackend(adapters=[a1])
         mux.get_connected_controllers()
-        mux._led_colors["BB:BB"] = (255, 0, 0)
 
         a1.discover.return_value = ["AA:AA"]
         mux.get_connected_controllers()
 
         mock_metrics.controller_adapter_info.remove.assert_called_once_with("BB:BB", "hci1")
         mock_metrics.controller_backend_info.remove.assert_called_once_with("BB:BB", "mock")
+
+    @pytest.mark.uc("UC-035")
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_vanished_controller_without_led_or_adapter_removes_backend_series(self, mock_metrics):
+        """A controller that never got an LED colour nor an HCI adapter still loses its series."""
+        a1 = _make_adapter("mock", serials=["AA:AA", "BB:BB"])
+        a1.get_adapter_for_serial.return_value = None
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+        assert "BB:BB" not in mux._led_colors
+
+        a1.discover.return_value = ["AA:AA"]
+        mux.get_connected_controllers()
+
+        mock_metrics.controller_backend_info.remove.assert_called_once_with("BB:BB", "mock")
+        mock_metrics.controller_adapter_info.remove.assert_not_called()
+        assert "BB:BB" not in mux._last_backend
+
+    @pytest.mark.uc("UC-035")
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_metrics_update_after_disconnect_does_not_resurrect_series(self, mock_metrics):
+        """A discovery pass holding a pre-disconnect snapshot must not re-export the gone serial."""
+        a1 = _make_adapter("mock", serials=["AA:AA"])
+        a1.get_adapter_for_serial.return_value = "hci0"
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+        stale_seen = dict(mux._serial_to_adapter)
+
+        await mux.disconnect_controller("AA:AA")
+        mock_metrics.controller_backend_info.labels.reset_mock()
+        mock_metrics.controller_adapter_info.labels.reset_mock()
+        mux._update_controller_metrics(stale_seen)
+
+        mock_metrics.controller_backend_info.labels.assert_not_called()
+        mock_metrics.controller_adapter_info.labels.assert_not_called()
+        assert "AA:AA" not in mux._last_backend
+        assert "AA:AA" not in mux._last_adapter
 
     @pytest.mark.uc("UC-035")
     @pytest.mark.asyncio

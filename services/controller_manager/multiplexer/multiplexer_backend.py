@@ -95,6 +95,12 @@ class MultiplexerBackend(ControllerBackend):
         # Last HCI adapter exported in controller_adapter_info per serial, so
         # the old series can be removed when the controller moves or goes (#1468).
         self._last_adapter: dict[str, str] = {}
+        # Guards _last_backend / _last_adapter and their info series. The
+        # discovery worker thread exports them while disconnect_controller (event
+        # loop) removes them; without it a worker set(1) landing after the
+        # remove would resurrect an orphaned series (#1468). Never held across
+        # I/O, only on the discovery / disconnect paths, not per poll.
+        self._info_series_lock = threading.Lock()
 
         adapter_names = [a.adapter_type for a in self._adapters]
         logger.info(f"MultiplexerBackend created with adapters: {adapter_names}")
@@ -340,7 +346,10 @@ class MultiplexerBackend(ControllerBackend):
 
     def _cleanup_stale_state(self, seen: dict[str, ControllerIOAdapter]) -> None:
         """Remove centralized state for controllers no longer present."""
-        stale = set(self._led_colors.keys()) - set(seen.keys())
+        # Union of every per-serial table: a controller that never received an
+        # LED colour still has backend / adapter info series to remove (#1468).
+        tracked = set(self._led_colors) | set(self._last_backend) | set(self._last_adapter)
+        stale = tracked - set(seen)
         for serial in stale:
             self._led_colors.pop(serial, None)
             self._rumble.pop(serial, None)
@@ -354,31 +363,46 @@ class MultiplexerBackend(ControllerBackend):
 
     def _update_controller_metrics(self, seen: dict[str, ControllerIOAdapter]) -> None:
         """Update Prometheus metrics for connected controllers."""
-        for serial, adapter in seen.items():
-            backend = adapter.adapter_type
-            # Clear old backend label when backend changes (e.g. rust -> python)
-            prev = self._last_backend.get(serial)
-            if prev and prev != backend:
-                metrics.controller_backend_info.remove(serial, prev)
-            self._last_backend[serial] = backend
-            metrics.controller_backend_info.labels(serial=serial, backend=backend).set(1)
-            hci = adapter.get_adapter_for_serial(serial)
-            prev_hci = self._last_adapter.get(serial)
-            if prev_hci and prev_hci != hci:
-                metrics.controller_adapter_info.remove(serial, prev_hci)
-                self._last_adapter.pop(serial, None)
-            if hci:
-                self._last_adapter[serial] = hci
-                metrics.controller_adapter_info.labels(serial=serial, adapter=hci).set(1)
+        with self._info_series_lock:
+            for serial, adapter in seen.items():
+                # disconnect_controller may have dropped the serial since this
+                # discovery pass built `seen`; re-exporting it would orphan it.
+                if serial not in self._serial_to_adapter:
+                    continue
+                self._export_info_series(serial, adapter)
+
+    def _export_info_series(self, serial: str, adapter: ControllerIOAdapter) -> None:
+        """Export one controller's backend / adapter info series (caller holds _info_series_lock)."""
+        backend = adapter.adapter_type
+        # Clear old backend label when backend changes (e.g. rust -> python)
+        prev = self._last_backend.get(serial)
+        if prev and prev != backend:
+            metrics.controller_backend_info.remove(serial, prev)
+        self._last_backend[serial] = backend
+        metrics.controller_backend_info.labels(serial=serial, backend=backend).set(1)
+        hci = adapter.get_adapter_for_serial(serial)
+        prev_hci = self._last_adapter.get(serial)
+        if prev_hci and prev_hci != hci:
+            metrics.controller_adapter_info.remove(serial, prev_hci)
+            self._last_adapter.pop(serial, None)
+        if hci:
+            self._last_adapter[serial] = hci
+            metrics.controller_adapter_info.labels(serial=serial, adapter=hci).set(1)
 
     def _remove_info_series(self, serial: str) -> None:
-        """Remove the backend / adapter info series of a controller that is gone."""
-        prev_backend = self._last_backend.pop(serial, None)
-        if prev_backend:
-            metrics.controller_backend_info.remove(serial, prev_backend)
-        prev_hci = self._last_adapter.pop(serial, None)
-        if prev_hci:
-            metrics.controller_adapter_info.remove(serial, prev_hci)
+        """Remove the backend / adapter info series of a controller that is gone.
+
+        Callers drop the serial from _serial_to_adapter first, so a concurrent
+        _update_controller_metrics either exported before this removal or skips
+        the serial; it can never re-create the series afterwards.
+        """
+        with self._info_series_lock:
+            prev_backend = self._last_backend.pop(serial, None)
+            if prev_backend:
+                metrics.controller_backend_info.remove(serial, prev_backend)
+            prev_hci = self._last_adapter.pop(serial, None)
+            if prev_hci:
+                metrics.controller_adapter_info.remove(serial, prev_hci)
 
     def update_all_leds(self) -> int:
         """Centralized LED refresh with keep-alive and color-change detection."""
