@@ -6,7 +6,7 @@
 **Goal:** In a three-player Free-for-All game one controller disconnects and another dies, and the game ends with the last player as winner without waiting for motion from the disconnected controller.  
 **Priority:** High  
 **Status:** Automated  
-**Use cases:** [UC-003](../use_cases/UC-003.md) main; [UC-010](../use_cases/UC-010.md) main; [UC-020](../use_cases/UC-020.md) A2; [UC-030](../use_cases/UC-030.md) A5; [UC-002](../use_cases/UC-002.md) A1
+**Use cases:** [UC-003](../use_cases/UC-003.md) main, A4; [UC-010](../use_cases/UC-010.md) main; [UC-020](../use_cases/UC-020.md) A2; [UC-030](../use_cases/UC-030.md) A5; [UC-002](../use_cases/UC-002.md) A1
 
 ## Roles
 
@@ -22,7 +22,7 @@
 |------|--------------------------|------------------------------------------------------------------------------------------------------|------------------------------------|-------------------------------------|
 | 1    | Add mock controllers     | Operator adds three mock controllers                                                                 | `MOCK0001`, `MOCK0002`, `MOCK0003` | [UC-003](../use_cases/UC-003.md)    |
 | 2    | Start FFA                | Operator readies up all three; the game starts                                                       | trigger on all three               | [UC-010](../use_cases/UC-010.md)    |
-| 3    | Disconnect a controller  | Operator removes `MOCK0002` while the game runs                                                      | `MOCK0002`                         | [UC-002](../use_cases/UC-002.md)    |
+| 3    | Disconnect a controller  | Operator removes `MOCK0002` while the game runs                                                      | `MOCK0002`                         | [UC-003](../use_cases/UC-003.md) A4, [UC-002](../use_cases/UC-002.md) A1 |
 | 4    | Verify elimination       | The system eliminates `MOCK0002` through the death path: `player_death` with 2 players left, and `player_disconnected` on the player span | -        | [UC-030](../use_cases/UC-030.md)    |
 | 5    | Verify game goes on      | The game keeps running with `MOCK0001` and `MOCK0003`                                                | -                                  | [UC-020](../use_cases/UC-020.md)    |
 | 6    | Eliminate another player | Operator simulates a death on `MOCK0001`                                                             | `MOCK0001`                         | [UC-030](../use_cases/UC-030.md)    |
@@ -43,6 +43,6 @@
 
 **Tier:** T2 service (`tests/service/`, `make test-service`): controller manager (mock controllers), game coordinator and menu from source at HEAD (`LOBBY`, OTel exported to the harness `OtlpSink`), one flagd and flag service, fake audio. Step 4's `player_disconnected` is read from the sink; step 8's `controller_connected{serial="MOCK0002"}` is the controller manager's gauge as exported to it.
 
-- `tests/service/test_tc003_ffa_player_disconnects.py::test_tc003_ffa_player_disconnects` (tagged `UC-003` main, `UC-010` main, `UC-020` A2, `UC-030` A5, `UC-002` A1, `tc="TC-003"`) implements steps 1 to 8 with three unreserved controllers readied through the menu. Serials are `MOCK<n>` as assigned by the manager, not the literal ids in the table.
+- `tests/service/test_tc003_ffa_player_disconnects.py::test_tc003_ffa_player_disconnects` (tagged `UC-003` main steps 1, 3 to 5, `UC-003` A4 step 1, `UC-003` Post-S-1, `UC-010` main, `UC-020` A2, `UC-030` A5, `UC-002` A1, `tc="TC-003"`) implements steps 1 to 8 with three unreserved controllers readied through the menu. Serials are `MOCK<n>` as assigned by the manager, not the literal ids in the table.
 - Unit coverage: `services/game_coordinator/tests/test_disconnect.py` and `services/game_coordinator/tests/test_ffa_uc020.py` (UC-020 A2, #1396); `tests/service/test_otlp_sink.py` carries the headless variant of the span check.
 - Gaps: the menu's own controller list is not read (the controller manager's roster, which the menu reconciles against, is).
