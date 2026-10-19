@@ -1121,10 +1121,14 @@ class TestHandleGameMode:
 
         await handler.handle_game_mode("test_serial")
 
+        from services.menu.utils.led import GAME_MODE_COLORS
+
         mock_state_manager.led.send_game_effect.assert_called_once()
         call_args = mock_state_manager.led.send_game_effect.call_args
         assert call_args[0][1] == controller_manager_pb2.GAME_EFFECT_PULSE
-        mock_state_manager.audio.play_game_mode_voice.assert_called_once()
+        # The pulse uses the new mode's lobby colour, the voice announces the new mode.
+        assert call_args.kwargs["color"] == GAME_MODE_COLORS["JoustTeams"]
+        mock_state_manager.audio.play_game_mode_voice.assert_called_once_with("JoustTeams")
 
     @pytest.mark.asyncio
     async def test_empty_options_returns_early(self, handler, mock_state_manager):

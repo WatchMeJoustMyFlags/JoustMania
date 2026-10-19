@@ -142,6 +142,17 @@ class TestConnectedHandler:
         mock_state_manager.led.set_connected_color.assert_called_once_with("serial1", "JoustFFA")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", steps=[6])
+    async def test_on_enter_uses_the_selected_mode_colour(self, handler, mock_state_manager):
+        """A controller entering CONNECTED after a selection gets the new mode's lobby colour."""
+        handler.set_state_manager(mock_state_manager)
+        mock_state_manager.set_game_mode(Games.Werewolf)
+
+        await handler.on_enter("serial1")
+
+        mock_state_manager.led.set_connected_color.assert_called_once_with("serial1", "Werewolf")
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", steps=[2])
     async def test_handle_button_trigger(self, handler, mock_state_manager):
         """Trigger press should transition to READY."""
@@ -279,6 +290,24 @@ class TestReadyHandler:
         await handler.on_enter("serial1")
 
         start_game_callback.assert_called_once_with("serial1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[5])
+    async def test_all_ready_waits_0_3_s_before_starting(self, handler, mock_state_manager, start_game_callback):
+        """Step 5: the last player sees the bright LED for 0.3 s before the start callback runs."""
+        from unittest.mock import patch
+
+        order = []
+        mock_state_manager.all_ready.return_value = True
+        mock_state_manager.led.set_ready_color.side_effect = lambda *_a: order.append("bright_led")
+        start_game_callback.side_effect = lambda *_a: order.append("start")
+        handler.set_state_manager(mock_state_manager)
+
+        with patch("services.menu.handlers.ready.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            sleep.side_effect = lambda seconds: order.append(f"sleep {seconds}")
+            await handler.on_enter("serial1")
+
+        assert order == ["bright_led", "sleep 0.3", "start"]
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A1")

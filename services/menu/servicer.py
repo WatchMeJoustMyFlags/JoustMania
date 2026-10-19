@@ -183,18 +183,22 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """Get list of available game options (AdminModeCallbacks)."""
         return list(self.game_options)
 
-    async def select_game_mode(self, game_name: str, *, source: str = "admin", serial: str | None = None) -> None:
+    async def select_game_mode(self, game_name: str, *, source: str = "admin", serial: str | None = None) -> bool:
         """Select a game mode by name (AdminModeCallbacks, StateManager callback).
 
-        Shared by admin Cross cycling and lobby SELECT (#1272) so every path lands
-        in the SAME state the coordinator start path reads (#1030): it updates the
-        servicer's ``current_selection``, the state_manager's game mode (the
-        value the admin handler displays), and persists the choice to flagd.
+        The single selection path (#1272, #1285): admin Cross, lobby SELECT,
+        ``ProcessInput`` select and the web ``select_game`` / ``start_game``
+        commands all land in the SAME state the coordinator start path reads
+        (#1030): the servicer's ``current_selection``, the state_manager's game
+        mode (the value the admin handler displays), a ``selection_changed``
+        event and the ``current_game`` default persisted to flagd.
+
+        Returns False (and changes nothing) for an unknown or unplayable mode.
         """
         game_mode = Games.from_name(game_name)
         if game_mode is None or game_name not in GAME_MODES:
             logger.warning(f"Unknown game mode selected via {source}: {game_name}")
-            return
+            return False
         self.current_selection = game_mode
         self.state_manager.set_game_mode(game_mode)
         payload = {"game_name": game_mode.name, "source": source}
@@ -203,6 +207,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         await self.event_publisher.publish("selection_changed", payload)
         await asyncio.to_thread(self.user_prefs_writer.update_default_variant, "current_game", game_mode.name)
         logger.info(f"Game selected via {source}: {game_mode.name}")
+        return True
 
     async def start_game(self, serial: str, source: str, controllers: list[str] | None = None) -> None:
         """Start a coordinator game (AdminModeCallbacks).
@@ -316,19 +321,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 metrics.grpc_requests_total.labels(method="StartMenu", status="already_running").inc()
                 return menu_pb2.StartMenuResponse(success=False, error="Menu already running")
 
-            self.state = menu_pb2.MenuState.RUNNING
-            self._clear_ready_state()
-
-            # Load settings from flagd (user domain)
-            self.voice_actor = self.user_prefs_client.get_string_value("menu_voice", DEFAULT_VOICE_ACTOR)
-            current_game_name = self.user_prefs_client.get_string_value("current_game", DEFAULT_GAME_MODE.name)
-            game = Games.from_name(current_game_name)
-            self.current_selection = game if game and game.name in GAME_MODES else DEFAULT_GAME_MODE
-            self.state_manager.set_game_mode(self.current_selection)
-
-            await self.audio.start_lobby_music()
-            self.idle_monitor.start()
-            await self.event_publisher.publish("menu_started", {})
+            await self.enter_lobby()
 
             logger.info("Menu started")
             span.set_attribute("menu.state", "RUNNING")
@@ -344,6 +337,27 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             return menu_pb2.StartMenuResponse(success=False, error=str(e))
         finally:
             metrics.grpc_request_duration_seconds.labels(method="StartMenu").observe(time.time() - start_time)
+
+    async def enter_lobby(self) -> None:
+        """Enter the lobby: the one lobby-entry path for StartMenu and the boot auto-start (D-M2, #1505).
+
+        Sets RUNNING, un-readies everyone, restores the persisted ``current_game``
+        (an unplayable value falls back to JoustFFA), starts lobby music and the
+        idle monitor, and publishes ``menu_started``.
+        """
+        self.state = menu_pb2.MenuState.RUNNING
+        self._clear_ready_state()
+
+        # Load settings from flagd (user domain)
+        self.voice_actor = self.user_prefs_client.get_string_value("menu_voice", DEFAULT_VOICE_ACTOR)
+        current_game_name = self.user_prefs_client.get_string_value("current_game", DEFAULT_GAME_MODE.name)
+        game = Games.from_name(current_game_name)
+        self.current_selection = game if game and game.name in GAME_MODES else DEFAULT_GAME_MODE
+        self.state_manager.set_game_mode(self.current_selection)
+
+        await self.audio.start_lobby_music()
+        self.idle_monitor.start()
+        await self.event_publisher.publish("menu_started", {})
 
     async def StopMenu(self, _request, _context):
         """Stop the menu."""
@@ -455,14 +469,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             await self._start_game(serial="process_input", source="button_input")
 
         elif button == "select":
-            self.current_selection = get_next_game_mode(self.current_selection)
-            self.state_manager.set_game_mode(self.current_selection)
-            await self.event_publisher.publish("selection_changed", {"game_name": self.current_selection.name})
-            # Persist to flagd
-            await asyncio.to_thread(
-                self.user_prefs_writer.update_default_variant, "current_game", self.current_selection.name
-            )
-            logger.info(f"Selection changed to: {self.current_selection.name}")
+            next_mode = get_next_game_mode(self.current_selection)
+            await self.select_game_mode(next_mode.name, source="button_input")
 
     async def _handle_web_command(self, data: dict, span) -> str | None:
         """Handle web_command input type.
@@ -484,22 +492,15 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         elif command == "select_game":
             game_name = data.get("game_name", "")
-            game_mode = Games.from_name(game_name)
-            if game_mode is not None and game_name in GAME_MODES:
-                self.current_selection = game_mode
-                self.state_manager.set_game_mode(game_mode)
-                payload = {"game_name": game_mode.name, "source": "web"}
+            if await self.select_game_mode(game_name, source="web"):
                 # UC-011 A1 continues at step 5: both selection events, like admin Cross.
-                await self.event_publisher.publish("selection_changed", payload)
-                await self.event_publisher.publish("game_selection_changed", dict(payload))
-                # Persist to flagd
-                await asyncio.to_thread(self.user_prefs_writer.update_default_variant, "current_game", game_mode.name)
-                voice_file = GAME_MODE_VOICE.get(game_mode.name)
+                selected_name = Games.from_name(game_name).name
+                await self.event_publisher.publish(
+                    "game_selection_changed", {"game_name": selected_name, "source": "web"}
+                )
+                voice_file = GAME_MODE_VOICE.get(game_name)
                 if voice_file:
                     await self.audio.play_voice(voice_file)
-                logger.info(f"Game selected via web: {game_mode.name}")
-            else:
-                logger.warning(f"Unknown game mode requested via web: {game_name}")
         return None
 
     async def _reject_web_start_mode(self, requested_mode: str, span) -> str:
