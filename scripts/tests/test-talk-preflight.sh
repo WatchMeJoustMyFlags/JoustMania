@@ -9,6 +9,7 @@
 #   ./scripts/tests/test-talk-preflight.sh
 #
 # UC: UC-070 A9 BR-003 BR-004 BR-006 BR-007
+# UC: UC-002 BR-003
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

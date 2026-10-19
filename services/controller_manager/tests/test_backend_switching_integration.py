@@ -230,7 +230,7 @@ _CONTROLLER_FLAGS = Path(__file__).resolve().parents[3] / "services" / "flagd" /
 class TestRustIsTheDefaultBackend:
     """rust-hid is the default Bluetooth backend; python is opt-in (UC-002 BR-003, #1371)."""
 
-    @pytest.mark.uc("UC-002", flow="main", steps=[2], br=["BR-003"])
+    @pytest.mark.uc("UC-002", flow="main", steps=[2], br=["BR-003"], cond=["Pre-2"])
     @pytest.mark.parametrize(
         "flag_client",
         [

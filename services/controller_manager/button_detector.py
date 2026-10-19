@@ -185,6 +185,7 @@ class ButtonDetector:
                 f"Button event {serial}: T={trigger} M={move} X={cross} O={circle} []={square} /\\={triangle} PS={ps}"
             )
 
+        # UC-002 BR-002: a reserved mock controller's buttons never reach the menu.
         # Publish events to all subscribers — but never announce reserved
         # controllers to button-stream consumers (the menu). #784 suppressed
         # reserved controllers from connect/disconnect events and the

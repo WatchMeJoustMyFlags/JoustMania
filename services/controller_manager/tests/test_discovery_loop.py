@@ -7,6 +7,8 @@ Tests activity tracking and adaptive polling logic.
 import time
 from unittest.mock import MagicMock
 
+import pytest
+
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 
 
@@ -508,3 +510,57 @@ class TestAccelerometerMovementCalculation:
 
         # |0.0 - 0.1| = 0.1 > 0.05, should trigger activity
         assert serial in loop._last_activity_time
+
+
+class TestNewControllerIsTracked:
+    """UC-002 Post-S-1 (controller-manager half): a discovered controller is tracked and announced."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="main", steps=[3, 5], cond=["Post-S-1"])
+    async def test_discovered_controller_joins_the_roster_and_is_announced(self):
+        from unittest.mock import create_autospec
+
+        from lib.controller_constants import ControllerInfoKey, StateKey
+        from services.controller_manager.button_detector import ButtonDetector
+        from services.controller_manager.discovery import PeriodicRescanTimer
+        from services.controller_manager.discovery_loop import DiscoveryLoop, visible_serials
+        from services.controller_manager.event_publisher import EventPublisher
+        from services.controller_manager.feedback_manager import FeedbackManager
+        from services.controller_manager.monitoring import ControllerMonitoring
+        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
+        from services.controller_manager.state_cache import StateCache
+
+        backend = create_autospec(MultiplexerBackend, instance=True)
+        backend.get_connected_controllers.return_value = ["AA:01"]
+        backend.get_controller_state.return_value = {StateKey.BATTERY: 4}
+        backend.get_adapter_type.return_value = "rust"
+        backend.get_controller_metadata.return_value = {}
+        button_detector = create_autospec(ButtonDetector, instance=True)
+        rescan_timer = create_autospec(PeriodicRescanTimer, instance=True)
+        rescan_timer.should_force_rescan.return_value = False
+        tracked: dict = {}
+        loop = DiscoveryLoop(
+            backend=backend,
+            tracked_controllers=tracked,
+            controller_states={},
+            button_detector=button_detector,
+            state_cache_manager=create_autospec(StateCache, instance=True),
+            feedback_manager=create_autospec(FeedbackManager, instance=True),
+            monitoring=create_autospec(ControllerMonitoring, instance=True),
+            rescan_timer=rescan_timer,
+            paired_serials=[],
+            base_colors={},
+            event_publisher=create_autospec(EventPublisher, instance=True),
+        )
+        loop.backend_initialized = True
+
+        await loop._check_for_new_controllers()
+
+        # The roster GetConnectedControllers serves is visible_serials(tracked_controllers).
+        assert visible_serials(tracked) == ["AA:01"]
+        assert tracked["AA:01"][ControllerInfoKey.ADAPTER] == "rust"
+        button_detector.publish_connection_event.assert_called_once()
+        call = button_detector.publish_connection_event.call_args
+        assert call.args[0] == "AA:01"
+        assert call.kwargs["is_connect"] is True
+        assert call.kwargs["connected_serials"] == ["AA:01"]
