@@ -92,6 +92,9 @@ class MultiplexerBackend(ControllerBackend):
 
         # Track last-known backend per serial for metric cleanup on switch
         self._last_backend: dict[str, str] = {}
+        # Last HCI adapter exported in controller_adapter_info per serial, so
+        # the old series can be removed when the controller moves or goes (#1468).
+        self._last_adapter: dict[str, str] = {}
 
         adapter_names = [a.adapter_type for a in self._adapters]
         logger.info(f"MultiplexerBackend created with adapters: {adapter_names}")
@@ -131,6 +134,7 @@ class MultiplexerBackend(ControllerBackend):
         self._last_led_update.clear()
         self._effect_active.clear()
         self._last_backend.clear()
+        self._last_adapter.clear()
 
     def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
         seen = self._route_controllers(force_rescan)
@@ -344,11 +348,9 @@ class MultiplexerBackend(ControllerBackend):
             self._last_led_update.pop(serial, None)
             self._led_failures.pop(serial, None)
             self._effect_active.discard(serial)
-            # Clear backend info metric so disconnected controllers don't
+            # Remove the info series so disconnected controllers don't
             # appear in dashboard counts
-            prev = self._last_backend.pop(serial, None)
-            if prev:
-                metrics.controller_backend_info.labels(serial=serial, backend=prev).set(0)
+            self._remove_info_series(serial)
 
     def _update_controller_metrics(self, seen: dict[str, ControllerIOAdapter]) -> None:
         """Update Prometheus metrics for connected controllers."""
@@ -357,12 +359,26 @@ class MultiplexerBackend(ControllerBackend):
             # Clear old backend label when backend changes (e.g. rust -> python)
             prev = self._last_backend.get(serial)
             if prev and prev != backend:
-                metrics.controller_backend_info.labels(serial=serial, backend=prev).set(0)
+                metrics.controller_backend_info.remove(serial, prev)
             self._last_backend[serial] = backend
             metrics.controller_backend_info.labels(serial=serial, backend=backend).set(1)
             hci = adapter.get_adapter_for_serial(serial)
+            prev_hci = self._last_adapter.get(serial)
+            if prev_hci and prev_hci != hci:
+                metrics.controller_adapter_info.remove(serial, prev_hci)
+                self._last_adapter.pop(serial, None)
             if hci:
+                self._last_adapter[serial] = hci
                 metrics.controller_adapter_info.labels(serial=serial, adapter=hci).set(1)
+
+    def _remove_info_series(self, serial: str) -> None:
+        """Remove the backend / adapter info series of a controller that is gone."""
+        prev_backend = self._last_backend.pop(serial, None)
+        if prev_backend:
+            metrics.controller_backend_info.remove(serial, prev_backend)
+        prev_hci = self._last_adapter.pop(serial, None)
+        if prev_hci:
+            metrics.controller_adapter_info.remove(serial, prev_hci)
 
     def update_all_leds(self) -> int:
         """Centralized LED refresh with keep-alive and color-change detection."""
@@ -552,7 +568,5 @@ class MultiplexerBackend(ControllerBackend):
         self._last_sent_color.pop(serial, None)
         self._last_led_update.pop(serial, None)
         self._effect_active.discard(serial)
-        prev = self._last_backend.pop(serial, None)
-        if prev:
-            metrics.controller_backend_info.labels(serial=serial, backend=prev).set(0)
+        self._remove_info_series(serial)
         return True

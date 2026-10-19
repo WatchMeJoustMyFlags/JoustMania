@@ -157,6 +157,66 @@ class TestMultiplexerGetConnectedControllers:
         mock_metrics.controller_backend_info.labels.assert_called_with(serial="AA:AA", backend="mock")
 
 
+class TestControllerInfoSeriesRemoval:
+    """controller_adapter_info / controller_backend_info series go away with the link (#1468)."""
+
+    @pytest.mark.uc("UC-035")
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_adapter_change_removes_previous_adapter_series(self, mock_metrics):
+        a1 = _make_adapter("mock", serials=["AA:AA"])
+        a1.get_adapter_for_serial.return_value = "hci1"
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+        mock_metrics.controller_adapter_info.remove.assert_not_called()
+
+        a1.get_adapter_for_serial.return_value = "hci0"
+        mux.get_connected_controllers()
+
+        mock_metrics.controller_adapter_info.remove.assert_called_once_with("AA:AA", "hci1")
+        mock_metrics.controller_adapter_info.labels.assert_called_with(serial="AA:AA", adapter="hci0")
+
+    @pytest.mark.uc("UC-035")
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_backend_change_removes_previous_backend_series(self, mock_metrics):
+        a1 = _make_adapter("rust", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+
+        a1.adapter_type = "python"
+        mux.get_connected_controllers()
+
+        mock_metrics.controller_backend_info.remove.assert_called_once_with("AA:AA", "rust")
+
+    @pytest.mark.uc("UC-035")
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_vanished_controller_removes_adapter_and_backend_series(self, mock_metrics):
+        a1 = _make_adapter("mock", serials=["AA:AA", "BB:BB"])
+        a1.get_adapter_for_serial.return_value = "hci1"
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+        mux._led_colors["BB:BB"] = (255, 0, 0)
+
+        a1.discover.return_value = ["AA:AA"]
+        mux.get_connected_controllers()
+
+        mock_metrics.controller_adapter_info.remove.assert_called_once_with("BB:BB", "hci1")
+        mock_metrics.controller_backend_info.remove.assert_called_once_with("BB:BB", "mock")
+
+    @pytest.mark.uc("UC-035")
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_disconnect_removes_adapter_and_backend_series(self, mock_metrics):
+        a1 = _make_adapter("mock", serials=["AA:AA"])
+        a1.get_adapter_for_serial.return_value = "hci0"
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+
+        await mux.disconnect_controller("AA:AA")
+
+        mock_metrics.controller_adapter_info.remove.assert_called_once_with("AA:AA", "hci0")
+        mock_metrics.controller_backend_info.remove.assert_called_once_with("AA:AA", "mock")
+
+
 class TestMultiplexerRouting:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def _setup_two_adapters(self, mock_metrics):
