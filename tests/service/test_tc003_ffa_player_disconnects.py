@@ -19,6 +19,7 @@ from tests.integration.helpers import (
     get_controller_client,
     get_game_client,
     get_mock_client,
+    get_player_states,
     kill_player_verified,
     setup_mock_controllers,
 )
@@ -90,6 +91,9 @@ async def test_tc003_ffa_player_disconnects(service_stack, headless_cleanup):
         # Step 5: the game keeps running with the other two.
         assert not _events(collector, game_id, "game_ended")
         await wait_running(game_client, game_id)
+        players = await get_player_states(game_client, game_id=game_id)
+        assert players is not None
+        assert {serial for serial, player in players.items() if player.alive} == {killed, winner}
 
         # Steps 6-7: another death leaves the last player the winner.
         await kill_player_verified(mock_client, game_client, killed, lambda p: not p.alive, game_id=game_id)

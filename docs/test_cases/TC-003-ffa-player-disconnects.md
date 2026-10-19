@@ -14,7 +14,7 @@
 
 ## Preconditions
 
-- The integration stack is up (session fixture `docker_compose`), `current_game` is `JoustFFA`, no game running.
+- The service stack is up (T2, `service_stack`), `current_game` is `JoustFFA`, no game running.
 
 ## Flow
 
@@ -32,7 +32,7 @@
 ## Validation
 
 1. **Disconnect is a death**: the game's event stream has exactly two `player_death` events (`MOCK0002`, `MOCK0001`) and one `game_winner` (`MOCK0003`).
-2. **No ghost in the lobby**: `MOCK0002` is absent from the menu's controller list after the game.
+2. **No ghost in the lobby**: `MOCK0002` is absent from the controller manager's roster (which the menu reconciles against) after the game.
 
 ## Postconditions
 

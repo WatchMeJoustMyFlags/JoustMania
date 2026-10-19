@@ -1,7 +1,7 @@
 """Menu-driven game start for service-tier journeys (LOBBY composition).
 
-Local to S6 (TC-003, TC-004): the integration suite's TC-002 carries the same
-steps inline. Dedupe with the shared lobby helpers once #1575 has merged.
+Used by the service-tier journeys TC-003 and TC-004 (#1597): the integration
+suite's TC-002 carries the same steps inline. Dedupe with the shared lobby helpers once #1575 has merged.
 """
 
 from proto import menu_pb2
