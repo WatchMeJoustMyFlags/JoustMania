@@ -46,6 +46,7 @@ from tests.integration.helpers import (  # noqa: E402
     setup_mock_controllers,
 )
 from tests.integration.test_intervention_flow import (  # noqa: E402
+    APPLY_TIMEOUT_SECONDS,
     SUITE_RATE_LIMIT_BUDGET,
     intervention_env,  # binds the flag-service client, pins the rate-limit budget
     set_interventions_allowed,
@@ -55,7 +56,6 @@ from tests.integration.test_intervention_smoke import _teardown  # noqa: E402
 from tests.integration.test_intervention_smoke import (  # noqa: E402
     _await_running,
     _start_headless_with_retry,
-    _wait_for_intervention,
 )
 
 __all__ = ["intervention_env"]
@@ -214,6 +214,59 @@ def _wait_until_served(docker_compose, flag_service) -> None:
     flag_service.request("DELETE", f"/{PROBE_SET}/{PROBE_FLAG}")
 
 
+LEVEL_FLAG, LEVEL_TYPE = "player_sensitivity_factor", "adjust_player_sensitivity"
+# Alternating levels, so every retry is a change the coordinator evaluates again.
+RETRY_LEVELS = (1.5, 1.25)
+
+
+async def _write_level_until_applied(collector, game_id: str, serial: str):
+    """Write a player level until the coordinator applies one (#1508).
+
+    The fresh flagd probe in step 3 proves flagd serves ``interventions_allowed=full``,
+    not that the coordinator does. After the flagd restart the coordinator's
+    per-domain sync streams reconnect one by one after gRPC backoff (seconds), in
+    no fixed order. When the ``interventions`` stream delivers this write before
+    the ``agent`` stream delivers the allow-list, the coordinator checks it against
+    the allow-list it last saw (the baseline) and blocks it as ``not_allowed``:
+    fail closed, never retried. Only the coordinator's own ``agent_intervention``
+    event shows which allow-list it used, so wait on that: a ``not_allowed`` block
+    means "not caught up yet" and the next write is a fresh change it evaluates
+    again; any other block reason fails at once.
+    """
+    deadline = time.monotonic() + RECOVERY_SECONDS
+    attempt = 0
+    while True:
+        seen = len(collector.get_events("agent_intervention"))
+        # Accepted, never 409: the game is registered again (A9 step 3).
+        set_player_value(
+            LEVEL_FLAG, game_id, serial, RETRY_LEVELS[attempt % len(RETRY_LEVELS)]
+        )
+        attempt += 1
+        event = await _next_intervention(collector, LEVEL_TYPE, after=seen)
+        if event.data.get("blocked") == "false":
+            print(f"\nTC-019 mid-game: applied after {attempt} write(s)")
+            return event
+        assert event.data.get("block_reason") == "not_allowed", dict(event.data)
+        assert time.monotonic() < deadline, (
+            f"the coordinator never served interventions_allowed=full after the restart "
+            f"({attempt} writes, all blocked not_allowed)"
+        )
+
+
+async def _next_intervention(collector, type_id: str, *, after: int):
+    """The first ``agent_intervention`` of ``type_id`` past the first ``after`` events."""
+    deadline = time.monotonic() + APPLY_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        for event in collector.get_events("agent_intervention")[after:]:
+            if event.data.get("type") == type_id:
+                return event
+        await asyncio.sleep(0.2)
+    raise AssertionError(
+        f"no new agent_intervention(type={type_id}) within {APPLY_TIMEOUT_SECONDS}s; saw: "
+        f"{[dict(e.data) for e in collector.get_events('agent_intervention')]}"
+    )
+
+
 # How long the coordinator may take to re-register after the service restarted:
 # it checks the boot epoch every 2 s and reconciles every 15 s regardless.
 REREGISTER_SECONDS = 20.0
@@ -272,10 +325,7 @@ async def test_restart_mid_game_reregisters_the_live_game(
             ), "flagd did not serve interventions_allowed=full after the restart"
 
         # Step 4: a game-scoped write is accepted (no 409) and the game applies it.
-        set_player_value("player_sensitivity_factor", game_id, serials[0], 1.5)
-        await _wait_for_intervention(
-            collector, "adjust_player_sensitivity", blocked="false"
-        )
+        await _write_level_until_applied(collector, game_id, serials[0])
     finally:
         await _teardown(
             collector,
