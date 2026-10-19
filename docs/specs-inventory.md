@@ -6,10 +6,10 @@
 
 **Status legend.** *current*: matches the code (minor drift at most). *stale*: contains claims the code on
 `main` contradicts (evidence given). *historical*: research, designs or plans for work that has shipped or
-been retired; kept for the reasoning, not as a description of the system. Docs deleted or folded into the specs by epic #1546 and #1541 (ARCHITECTURE,
-CADDY_PROXY, DOCKER_WORKFLOW, controller-feedback, led-feedback, controller-guide,
-25-controller-setup, agent-demo-runbook, architecture/controller-backends) are no
-longer listed; section 4 rows that cite them keep the original references as history.
+been retired; kept for the reasoning, not as a description of the system. Docs deleted or
+folded into the specs by epic #1546 and #1541 (ARCHITECTURE, CADDY_PROXY, DOCKER_WORKFLOW,
+controller-feedback, led-feedback, controller-guide, 25-controller-setup, agent-demo-runbook,
+architecture/controller-backends) are no longer listed; section 4 rows that cite them keep the original references as history.
 
 **Target** names the spec-tree location: [vision](vision.md), [requirements](requirements.md) (REQ),
 [entity model](entity_model.md) (ENT), [use cases](use_cases.puml) (UC-xxx),
