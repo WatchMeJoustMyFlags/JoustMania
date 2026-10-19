@@ -1557,7 +1557,8 @@ class BaseGameMode(ABC):
             logger.info(f"Initial alive players: {len(last_alive_serials)}")
 
             # UC-020 A2: disconnects seen during EMA warmup go through the death path now.
-            if await self._handle_warmup_disconnects():
+            # A game force-ended during the countdown or warmup stays force_ended (BR-003).
+            if self.running and await self._handle_warmup_disconnects():
                 self._latch_game_outcome()
                 logger.info("Win condition met, keeping game active for 1 second to show winner")
                 await asyncio.sleep(1.0)
