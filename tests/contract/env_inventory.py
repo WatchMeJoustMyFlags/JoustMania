@@ -1,9 +1,14 @@
 """Static inventory of the env vars the services read, and of what compose sets (#1526).
 
-Python reads are found with the AST (``os.getenv``, ``os.environ.get``,
-``os.environ[...]``); Go reads with regexes over ``os.Getenv`` / ``os.LookupEnv``
+Python reads are found with the AST: ``os.getenv``, ``os.environ.get /
+setdefault / pop``, ``os.environ[...]`` and ``"X" in os.environ``, including
+the ``from os import environ, getenv`` and ``import os as _o`` spellings. A
+non-literal key (``os.getenv(name)``) cannot be attributed to a var and is
+skipped; its literal call sites through a wrapper are not tracked, so read
+env vars directly with a literal key. Go reads with regexes over ``os.Getenv`` / ``os.LookupEnv``
 and the per-package env helpers (``getEnv(key, def)``, ``secondsEnv``, ...), which
 are discovered from their bodies so a new helper is picked up without a list.
+Go comments are stripped before matching.
 
 A read "has a code default" when the code supplies a non-empty fallback: a
 second argument, ``getenv(...) or X``, or a Go helper's fallback parameter. An
@@ -13,6 +18,14 @@ which is exactly the silent gap this check exists to catch.
 Compose is merged the way ``docker compose -f a -f b`` merges ``environment``:
 key by key, except ``!override`` (replace) and ``!reset`` (clear). The final
 stage of a service's Dockerfile also counts, since compose runs that image.
+
+Compose loader semantics (what "set" means): only the ``environment:`` key is
+read. ``env_file:`` and ``extends:`` are NOT followed (no compose file uses
+them; add support before introducing one). A bare ``KEY`` (host passthrough)
+and ``KEY: ${VAR}`` / ``${VAR}`` interpolation without a default count as set
+even when the host provides nothing, so a passthrough can still leave the
+container without a value (the AGENT_EXPERIMENT_PROPOSER_ENABLED class of
+gap is therefore only caught when the passthrough is missing entirely).
 """
 
 from __future__ import annotations
@@ -31,6 +44,12 @@ LIB = REPO_ROOT / "lib"
 
 COMPOSE_BASE = REPO_ROOT / "docker-compose.yml"
 COMPOSE_CI = REPO_ROOT / "docker-compose.ci.yml"
+COMPOSE_LITE = (
+    REPO_ROOT / "docker-compose.lite.yml"
+)  # standalone Pi stack, not an overlay
+COMPOSE_AGENT_COORDINATOR = REPO_ROOT / "docker-compose.agent-coordinator.yml"
+COMPOSE_DRY_RUN = REPO_ROOT / "docker-compose.dry-run.yml"
+COMPOSE_DECIDE_E2E = REPO_ROOT / "docker-compose.decide-e2e.yml"
 
 # compose service -> (language, code roots). Python services also load lib/.
 CODE_ROOTS: dict[str, tuple[str, tuple[Path, ...]]] = {
@@ -42,6 +61,7 @@ CODE_ROOTS: dict[str, tuple[str, tuple[Path, ...]]] = {
     "audio": ("python", (SERVICES / "audio", LIB)),
     "agent": ("go", (SERVICES / "agent",)),
     "flag-service": ("go", (SERVICES / "flag-service",)),
+    "connect-proxy": ("go", (SERVICES / "connect-proxy",)),
 }
 
 _TEST_DIRS = {"tests", "test", "testdata", "__pycache__", "gen", "generated"}
@@ -80,17 +100,51 @@ def _python_files(root: Path) -> list[Path]:
     return out
 
 
-def _is_os_environ(node: ast.AST) -> bool:
+@dataclass(frozen=True)
+class _OsNames:
+    """Names a module binds to ``os``, ``os.environ`` and ``os.getenv``."""
+
+    os_modules: frozenset[str]
+    environ: frozenset[str]
+    getenv: frozenset[str]
+
+
+def _os_names(tree: ast.AST) -> _OsNames:
+    os_modules, environ, getenv = {"os"}, set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            os_modules.update(a.asname or a.name for a in node.names if a.name == "os")
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            for a in node.names:
+                if a.name == "environ":
+                    environ.add(a.asname or a.name)
+                elif a.name == "getenv":
+                    getenv.add(a.asname or a.name)
+    return _OsNames(frozenset(os_modules), frozenset(environ), frozenset(getenv))
+
+
+def _is_environ(node: ast.AST, names: _OsNames) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in names.environ
     return (
         isinstance(node, ast.Attribute)
         and node.attr == "environ"
         and isinstance(node.value, ast.Name)
-        and node.value.id == "os"
+        and node.value.id in names.os_modules
     )
 
 
-def _env_call_key(node: ast.AST) -> tuple[str, list[ast.expr]] | None:
-    """``os.getenv(K, ...)`` / ``os.environ.get(K, ...)`` -> (K, args)."""
+def _literal_key(node: ast.expr) -> str | None:
+    """The string literal, or None for a non-literal key (skipped, see module doc)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _env_call_key(
+    node: ast.AST, names: _OsNames
+) -> tuple[str | None, list[ast.expr]] | None:
+    """``getenv(K, ...)`` / ``environ.get|setdefault|pop(K, ...)`` -> (K or None, rest)."""
     if not isinstance(node, ast.Call) or not node.args:
         return None
     func = node.func
@@ -98,21 +152,16 @@ def _env_call_key(node: ast.AST) -> tuple[str, list[ast.expr]] | None:
         isinstance(func, ast.Attribute)
         and func.attr == "getenv"
         and isinstance(func.value, ast.Name)
-        and func.value.id == "os"
-    )
-    is_environ_get = (
+        and func.value.id in names.os_modules
+    ) or (isinstance(func, ast.Name) and func.id in names.getenv)
+    is_environ_method = (
         isinstance(func, ast.Attribute)
-        and func.attr == "get"
-        and _is_os_environ(func.value)
+        and func.attr in ("get", "setdefault", "pop")
+        and _is_environ(func.value, names)
     )
-    if not (is_getenv or is_environ_get):
+    if not (is_getenv or is_environ_method):
         return None
-    key = node.args[0]
-    if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
-        raise ValueError(
-            f"non-literal env key at line {node.lineno}: {ast.unparse(key)}"
-        )
-    return key.value, node.args[1:]
+    return _literal_key(node.args[0]), node.args[1:]
 
 
 def _non_empty_default(args: list[ast.expr]) -> bool:
@@ -126,6 +175,7 @@ def _non_empty_default(args: list[ast.expr]) -> bool:
 
 def python_reads(path: Path) -> list[EnvRead]:
     tree = ast.parse(path.read_text(), filename=str(path))
+    names = _os_names(tree)
     reads: list[EnvRead] = []
     or_defaulted: set[int] = (
         set()
@@ -134,25 +184,35 @@ def python_reads(path: Path) -> list[EnvRead]:
         if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
             or_defaulted.update(id(value) for value in node.values[:-1])
     for node in ast.walk(tree):
-        found = _env_call_key(node)
+        found = _env_call_key(node, names)
         if found:
             var, rest = found
-            reads.append(
-                EnvRead(
-                    var,
-                    path,
-                    node.lineno,
-                    _non_empty_default(rest) or id(node) in or_defaulted,
+            if var is not None:
+                reads.append(
+                    EnvRead(
+                        var,
+                        path,
+                        node.lineno,
+                        _non_empty_default(rest) or id(node) in or_defaulted,
+                    )
                 )
-            )
         elif (
             isinstance(node, ast.Subscript)
-            and _is_os_environ(node.value)
+            and _is_environ(node.value, names)
             and isinstance(node.ctx, ast.Load)
         ):
-            key = node.slice
-            if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                reads.append(EnvRead(key.value, path, node.lineno, False))
+            var = _literal_key(node.slice)
+            if var is not None:
+                reads.append(EnvRead(var, path, node.lineno, False))
+        elif (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], (ast.In, ast.NotIn))
+            and _is_environ(node.comparators[0], names)
+        ):
+            var = _literal_key(node.left)
+            if var is not None:
+                reads.append(EnvRead(var, path, node.lineno, False))
     return reads
 
 
@@ -161,6 +221,18 @@ def python_reads(path: Path) -> list[EnvRead]:
 # --------------------------------------------------------------------------- #
 _GO_FUNC = re.compile(r"^func (\w+)\(([^)]*)\)", re.M)
 _GO_CONST = re.compile(r"\b(\w+)\s*(?:string\s*)?=\s*\"([A-Z][A-Z0-9_]*)\"")
+
+
+_GO_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+
+
+def _go_source(path: Path) -> str:
+    """File text with comments blanked (newlines kept so line numbers hold).
+
+    Naive about ``//`` inside string literals (e.g. URLs); that only blanks the
+    rest of such a line, and no env read shares a line with one.
+    """
+    return _GO_COMMENT.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), path.read_text())
 
 
 def _go_files(root: Path) -> list[Path]:
@@ -182,7 +254,7 @@ def _go_helpers(files: list[Path]) -> dict[str, bool]:
     first string parameter is passed straight to os.Getenv / os.LookupEnv."""
     helpers: dict[str, bool] = {}
     for path in files:
-        text = path.read_text()
+        text = _go_source(path)
         matches = list(_GO_FUNC.finditer(text))
         for i, m in enumerate(matches):
             end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
@@ -206,7 +278,7 @@ def go_reads(root: Path) -> list[EnvRead]:
     local: dict[Path, dict[str, str]] = {}
     for path in files:
         local.setdefault(path.parent, {}).update(
-            dict(_GO_CONST.findall(path.read_text()))
+            dict(_GO_CONST.findall(_go_source(path)))
         )
     shared: dict[str, set[str]] = {}
     for consts in local.values():
@@ -225,7 +297,7 @@ def go_reads(root: Path) -> list[EnvRead]:
     helper_params = {
         n
         for p in files
-        for m in _GO_FUNC.finditer(p.read_text())
+        for m in _GO_FUNC.finditer(_go_source(p))
         for n in _go_param_names(m.group(2))[:1]
     }
     names = ["os\\.Getenv", "os\\.LookupEnv", *(rf"\b{re.escape(h)}" for h in helpers)]
@@ -236,7 +308,7 @@ def go_reads(root: Path) -> list[EnvRead]:
     )
     reads: list[EnvRead] = []
     for path in files:
-        text = path.read_text()
+        text = _go_source(path)
         for m in call.finditer(text):
             fn, key, tail, empty_fallback = m.groups()
             line = text.count("\n", 0, m.start()) + 1
@@ -335,10 +407,11 @@ def _env_dict(env) -> dict[str, str | None]:
 
 
 def compose_environment(
-    service: str, overlays: tuple[Path, ...] = ()
+    service: str, overlays: tuple[Path, ...] = (), base_file: Path = COMPOSE_BASE
 ) -> dict[str, str | None] | None:
-    """The merged ``environment`` of ``service``; None when the service is absent."""
-    base = _load_compose(COMPOSE_BASE)
+    """The merged ``environment`` of ``service`` in ``base_file`` plus ``overlays``;
+    None when the base file has no such service."""
+    base = _load_compose(base_file)
     if service not in base:
         return None
     env = _env_dict(base[service].get("environment"))

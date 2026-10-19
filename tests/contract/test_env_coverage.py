@@ -5,19 +5,40 @@ wiring (``environment:`` lists, the CI overlay's ``!override`` blocks, the
 image's ``ENV`` lines) is only exercised by the full stack. This static check
 keeps that wiring honest on every PR: a var a service reads with no code
 default (``env_inventory`` explains what counts as one) must be set for that
-service in ``docker-compose.yml`` alone AND in ``docker-compose.yml`` +
-``docker-compose.ci.yml``, unless ALLOWLIST says why the gap is intended.
+service in every stack in STACKS, unless ALLOWLIST says why the gap is intended.
+
+Stacks: ``docker-compose.yml`` alone, with the CI overlay, with each agent
+overlay (agent-coordinator, dry-run, decide-e2e; they override ``agent`` and
+``flag-service`` environment), and the standalone Pi stack
+``docker-compose.lite.yml`` (its own file, not an overlay; it has no agent).
+Not covered: ``docker-compose.dev/override/ci-rust.yml`` (local-development and
+Rust-CI tweaks, not deployed or env-contract stacks) and services that exist
+only in an overlay (``agent-game-coordinator``). See env_inventory's docstring
+for what compose features count as "set".
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import env_inventory as inv
 import pytest
 
-STACKS: dict[str, tuple] = {
-    "base": (),
-    "ci": (inv.COMPOSE_CI,),
+# stack name -> (base compose file, overlays merged on top, in order)
+STACKS: dict[str, tuple[Path, tuple[Path, ...]]] = {
+    "base": (inv.COMPOSE_BASE, ()),
+    "ci": (inv.COMPOSE_BASE, (inv.COMPOSE_CI,)),
+    "agent-coordinator": (inv.COMPOSE_BASE, (inv.COMPOSE_AGENT_COORDINATOR,)),
+    "dry-run": (inv.COMPOSE_BASE, (inv.COMPOSE_DRY_RUN,)),
+    "decide-e2e": (inv.COMPOSE_BASE, (inv.COMPOSE_DECIDE_E2E,)),
+    "lite": (inv.COMPOSE_LITE, ()),
 }
+
+
+def _stack_env(service: str, stack: str) -> dict[str, str | None] | None:
+    base_file, overlays = STACKS[stack]
+    return inv.compose_environment(service, overlays, base_file)
+
 
 _OPT_IN_OFF = (
     "opt-in switch: only the literal 'true' turns it on, so unset = off (fail closed)"
@@ -30,6 +51,15 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "extra resource attributes (host.name); empty adds none. The CI overlay's "
         "environment !override drops it for audio, controller-manager and game-coordinator"
     ),
+    # ---- lite stack has no OTel collector (docker-compose.lite.yml header) ----
+    (
+        "flag-service",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+    ): "unset = no exporter (otel.go returns a no-op); the Pi lite stack ships no collector",
+    (
+        "connect-proxy",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+    ): "unset = slog.Default and no exporter (otel.go); the Pi lite stack ships no collector",
     # ---- flag-service: tuning knobs (docs/specs/services.md §7) ----
     ("flag-service", "FLAG_SERVICE_EVENT_LIST_LEN"): _TUNING,
     ("flag-service", "FLAG_SERVICE_MAX_GAMES"): _TUNING,
@@ -90,10 +120,10 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "agent",
         "GITHUB_REPOSITORY",
     ): "read only when AGENT_CODE_IMPROVEMENT_ENABLED=true (GitHub promotion target)",
-    # ---- agent: known gap, reported on #1526 ----
+    # ---- agent: known gap, tracked in #1544 ----
     ("agent", "AGENT_EXPERIMENT_PROPOSER_ENABLED"): (
         _OPT_IN_OFF
-        + ". KNOWN GAP (#1526): UC-042's trigger has no compose passthrough, "
+        + ". KNOWN GAP (tracked in #1544; found by #1526): UC-042's trigger has no compose passthrough, "
         "so a host export or .env value never reaches the container (cf. #1078, #1041)"
     ),
 }
@@ -117,15 +147,17 @@ def unset_required(
 
 def _cases():
     for service in inv.CODE_ROOTS:
-        for stack in STACKS:
-            yield pytest.param(service, stack, id=f"{service}-{stack}")
+        for stack, (base_file, _) in STACKS.items():
+            # a stack is checked for the services its base file defines (lite has no agent)
+            if service in inv._load_compose(base_file):
+                yield pytest.param(service, stack, id=f"{service}-{stack}")
 
 
 @pytest.mark.parametrize(("service", "stack"), _cases())
 def test_required_env_vars_are_set_in_compose(service, stack):
-    env = inv.compose_environment(service, STACKS[stack])
+    env = _stack_env(service, stack)
     assert env is not None, (
-        f"{service} is no longer a docker-compose.yml service: update CODE_ROOTS"
+        f"{service} is no longer a service of the {stack} stack: update CODE_ROOTS"
     )
     gaps = {
         var: reads
@@ -150,9 +182,10 @@ def test_allowlist_entries_are_live():
         assert reason.strip(), f"ALLOWLIST[{service!r}, {var!r}] has no reason"
         services = list(inv.CODE_ROOTS) if service == "*" else [service]
         live = any(
-            var in unset_required(svc, inv.compose_environment(svc, overlays) or {})
+            var in unset_required(svc, env)
             for svc in services
-            for overlays in STACKS.values()
+            for stack in STACKS
+            if (env := _stack_env(svc, stack)) is not None
         )
         if not live:
             stale.append((service, var))
@@ -161,12 +194,14 @@ def test_allowlist_entries_are_live():
     )
 
 
-def test_every_python_service_is_inventoried():
-    """A new Python service under services/ must be mapped to its compose service."""
+def test_every_service_is_inventoried():
+    """A new Python (server.py) or Go (main.go) service under services/ must be mapped."""
     mapped = {root for _, roots in inv.CODE_ROOTS.values() for root in roots}
-    python_services = {p.parent for p in inv.SERVICES.glob("*/server.py")}
-    assert python_services <= mapped, (
-        f"unmapped Python services: {sorted(p.name for p in python_services - mapped)}"
+    services = {p.parent for p in inv.SERVICES.glob("*/server.py")} | {
+        p.parent for p in inv.SERVICES.glob("*/main.go")
+    }
+    assert services <= mapped, (
+        f"unmapped services: {sorted(p.name for p in services - mapped)}"
     )
 
 
@@ -204,8 +239,76 @@ def test_ci_override_replaces_environment():
 
 def test_check_fails_when_a_required_var_is_dropped():
     """The coordinator's FLAG_SERVICE_URL (FR-135) is caught when compose stops setting it."""
-    env = inv.compose_environment("game-coordinator", STACKS["ci"])
+    env = _stack_env("game-coordinator", "ci")
     assert "FLAG_SERVICE_URL" not in unset_required("game-coordinator", env)
     env.pop("FLAG_SERVICE_URL")
     assert "FLAG_SERVICE_URL" in unset_required("game-coordinator", env)
     assert not _allowed("game-coordinator", "FLAG_SERVICE_URL")
+
+
+# ---- scanner guards: planted reads of every spelling must be found ---------- #
+@pytest.mark.parametrize(
+    ("source", "var", "has_default"),
+    [
+        ("import os\nos.getenv('X')", "X", False),
+        ("import os\nos.getenv('X', 'd')", "X", True),
+        ("import os\nos.environ.get('X')", "X", False),
+        ("import os\nos.environ['X']", "X", False),
+        ("import os\nos.environ.setdefault('X', 'd')", "X", True),
+        ("import os\nos.environ.pop('X', None)", "X", False),
+        ("import os\nos.environ.pop('X', 'd')", "X", True),
+        ("import os\n'X' in os.environ", "X", False),
+        ("import os\n'X' not in os.environ", "X", False),
+        ("from os import environ\nenviron.get('X', 'd')", "X", True),
+        ("from os import environ\nenviron['X']", "X", False),
+        ("from os import environ as e\n'X' in e", "X", False),
+        ("from os import getenv\ngetenv('X')", "X", False),
+        ("from os import getenv as g\ng('X', 'd')", "X", True),
+        ("import os as _o\n_o.getenv('X')", "X", False),
+        ("import os as _o\n_o.environ['X']", "X", False),
+        ("import os as _o\n_o.environ.get('X', 'd')", "X", True),
+        ("import os\nos.getenv('X') or 'd'", "X", True),
+    ],
+)
+def test_python_scanner_finds_planted_read(tmp_path, source, var, has_default):
+    path = tmp_path / "planted.py"
+    path.write_text(source + "\n")
+    reads = inv.python_reads(path)
+    assert [(r.var, r.has_default) for r in reads] == [(var, has_default)]
+
+
+def test_python_scanner_skips_non_literal_keys(tmp_path):
+    path = tmp_path / "planted.py"
+    path.write_text(
+        "import os\n"
+        "def env_int(key, default):\n"
+        "    return int(os.getenv(key, default))\n"
+        "os.environ[some_name]\n"
+        "os.getenv(f'A_{1}')\n"
+        "os.getenv('LITERAL')\n"
+    )
+    assert [r.var for r in inv.python_reads(path)] == ["LITERAL"]
+
+
+def test_python_scanner_ignores_writes_and_other_objects(tmp_path):
+    path = tmp_path / "planted.py"
+    path.write_text(
+        "import os\n"
+        "os.environ['W'] = 'v'\n"
+        "del os.environ['D']\n"
+        "cfg = {}\n"
+        "cfg.get('NOT_ENV')\n"
+        "'NOT_ENV' in cfg\n"
+    )
+    assert inv.python_reads(path) == []
+
+
+def test_go_scanner_ignores_comments(tmp_path):
+    (tmp_path / "main.go").write_text(
+        "package main\n"
+        '// os.Getenv("LINE_COMMENT")\n'
+        '/* os.Getenv("BLOCK_COMMENT")\n   os.Getenv("BLOCK_TWO") */\n'
+        'func f() { _ = os.Getenv("REAL") } // os.Getenv("TRAILING")\n'
+    )
+    reads = inv.go_reads(tmp_path)
+    assert [(r.var, r.line) for r in reads] == [("REAL", 5)]
