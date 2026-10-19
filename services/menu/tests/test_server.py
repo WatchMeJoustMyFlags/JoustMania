@@ -124,6 +124,37 @@ class TestMenuAutoStart:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", br=["BR-003"])
+    async def test_start_menu_during_provider_wait_is_not_re_entered(self, real_servicer):
+        """StartMenu while the boot waits for the provider: the auto-start must not enter the lobby again."""
+        real_servicer.user_prefs_client.get_string_value.side_effect = lambda key, default, *_a, **_k: (
+            "Tournament" if key == "current_game" else default
+        )
+
+        async def provider_wait(_domain, *_a, **_k):
+            await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), None)
+            await real_servicer.select_game_mode("Tournament", source="web")
+            real_servicer.current_selection = Games.Tournament
+            real_servicer.user_prefs_client.get_string_value.side_effect = lambda _key, default, *_a, **_k: default
+            return True
+
+        await _boot(real_servicer, provider_wait=provider_wait)
+
+        real_servicer.audio.start_lobby_music.assert_awaited_once()
+        published = [c.args[0] for c in real_servicer.event_publisher.publish.await_args_list]
+        assert published.count("menu_started") == 1
+        assert real_servicer.current_selection == Games.Tournament
+
+    @pytest.mark.asyncio
+    async def test_provider_timeout_logs_warning(self, real_servicer, caplog):
+        async def not_ready(_domain, *_a, **_k):
+            return False
+
+        await _boot(real_servicer, provider_wait=not_ready)
+
+        assert "flag provider not ready after 5s" in caplog.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", br=["BR-003"])
     async def test_auto_start_off_leaves_menu_stopped(self):
         """menu_auto_start off: the menu stays STOPPED until StartMenu is called."""
         servicer = _servicer_with_flags(menu_auto_start=False)

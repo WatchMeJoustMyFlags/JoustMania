@@ -494,7 +494,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             game_name = data.get("game_name", "")
             if await self.select_game_mode(game_name, source="web"):
                 # UC-011 A1 continues at step 5: both selection events, like admin Cross.
-                await self.event_publisher.publish("game_selection_changed", {"game_name": game_name, "source": "web"})
+                selected_name = Games.from_name(game_name).name
+                await self.event_publisher.publish(
+                    "game_selection_changed", {"game_name": selected_name, "source": "web"}
+                )
                 voice_file = GAME_MODE_VOICE.get(game_name)
                 if voice_file:
                     await self.audio.play_voice(voice_file)

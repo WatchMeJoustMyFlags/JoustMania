@@ -32,7 +32,7 @@ from lib.feature_flags import wait_for_provider_ready
 from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector
-from proto import menu_pb2_grpc
+from proto import menu_pb2, menu_pb2_grpc
 from services.menu import metrics
 from services.menu.servicer import MenuServicer
 
@@ -93,9 +93,12 @@ async def serve(port=50054):
     # lobby entry as StartMenu: current_game, lobby music, idle monitor (D-M2, #1505).
     # Read from flagd user domain (initialized by MenuServicer.__init__). Wait for its
     # first sync (bounded) so the flags below are not code defaults on a cold boot.
-    await wait_for_provider_ready("user")
+    if not await wait_for_provider_ready("user"):
+        logger.warning("flag provider not ready after 5s; using code defaults")
     auto_start = menu_servicer.user_prefs_client.get_boolean_value("menu_auto_start", True)
-    if auto_start:
+    # A StartMenu RPC during the wait above already entered the lobby: entering again would
+    # restart the music, republish menu_started and overwrite the user's selection.
+    if auto_start and menu_servicer.state != menu_pb2.MenuState.RUNNING:
         await menu_servicer.enter_lobby()
         logger.info("Menu auto-started (menu_auto_start flag=true)")
 
