@@ -15,7 +15,7 @@
 ## Preconditions
 
 - The integration stack is up (session fixture `docker_compose`); no other game runs (`shadow_policy` lets the pattern game start).
-- An archetype `it_fast_cascade` with its parameters (three players, stream 30 Hz; slot 2 crosses the death threshold first, then slot 1, and slot 0 wins) as defined in `tests/integration/test_pattern_games.py`.
+- An archetype `it_fast_cascade` with its parameters (three players, stream 30 Hz; slot 2 crosses the death threshold first, then slot 1, and slot 0 wins) as defined in `tests/service/test_tc012_pattern_game_replay.py`.
 
 ## Flow
 
@@ -39,6 +39,8 @@
 
 ## Automation
 
-- `tests/integration/test_pattern_games.py::test_pattern_game_replays_identically` (tagged `UC-046` main, steps 3 to 6 and 8) implements steps 1 to 6.
+**Tier:** T2 service (`tests/service/`, `make test-service`): controller manager (mock controllers) and game coordinator from source at HEAD, one flagd and flag service, fake audio. Step 2's lobby isolation is asserted on the controller manager's roster (`GetConnectedControllers`).
+
+- `tests/service/test_tc012_pattern_game_replay.py::test_pattern_game_replays_identically` (tagged `UC-046` main, steps 3 to 6 and 8, `tc="TC-012"`) implements steps 1 to 6.
 - `scripts/tests/test-pattern-replay-check.sh` tests the operator's replay script (UC-046 steps 9 and 10) with `docker` stubbed.
-- Gaps: step 2's "reserved controllers stay out of the lobby" is not asserted (see [TC-013](TC-013-shadow-game-alongside-real-game.md) step 3 for that check); the replay script is not run against a live stack in CI (its script test `scripts/tests/test-pattern-replay-check.sh` runs in the CI Script Tests job since #1389).
+- Gaps: the replay script is not run against a live stack in CI (its script test `scripts/tests/test-pattern-replay-check.sh` runs in the CI Script Tests job since #1389).

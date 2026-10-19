@@ -53,4 +53,4 @@
   - Validation 1: after the lobby is restored, the game's terminal events are exactly `["game_ended"]`. Validation 2: each LED stream shows the controller's game colour followed by the lobby colour, and the last colour is not black.
   - Step 9: a new `game_started` with a different game id, RUNNING (the #793 regression: an ended session must not pin the primary slot).
 - Not covered: the elimination uses simulated deaths, so the warning effect (UC-030 step 7) is not observed; the countdown phases and audio (UC-010 step 6, UC-020 step 2 music) are unit-tested only (`services/game_coordinator/tests/test_ffa_uc020.py`, #1396). FFA unit coverage (UC-020 main, A1, A2, A4): `services/game_coordinator/tests/test_ffa.py`, `services/game_coordinator/tests/test_ffa_uc020.py`.
-- JoustTeams, which shared the old menu-flow test, runs headless in `tests/integration/test_parallel_lifecycle.py::test_parallel_mode_lifecycle[teams-batch]` (TC-017).
+- JoustTeams, which shared the old menu-flow test, runs headless in `tests/service/test_tc017_parallel_mode_lifecycle.py::test_parallel_mode_lifecycle[teams-batch]` (TC-017).

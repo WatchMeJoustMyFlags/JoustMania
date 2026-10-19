@@ -1,4 +1,8 @@
-"""
+"""TC-017 on the service tier (T2): parallel per-mode lifecycle via headless shadow games.
+
+Moved from tests/integration/test_parallel_lifecycle.py (#1563). The batches
+run on one stack of real services from source (GAME composition, audio faked).
+
 Parallel per-mode lifecycle coverage via headless shadow games (#826).
 
 Follow-up to #779 / part of #774 (M6). The 14 per-mode lifecycle tests used to
@@ -6,7 +10,7 @@ run strictly sequentially through the menu. Now
 that the coordinator supports concurrent games (#775/#776) and reserved mock
 controllers are invisible to the menu (#777), the per-mode *game logic* coverage
 moves here: each mode runs as a headless shadow game, and modes run in batches
-of up to 4 concurrently via ``asyncio.gather`` on the one shared compose stack.
+of up to 4 concurrently via ``asyncio.gather`` on the one shared stack.
 
 What this file covers (per mode, headless):
 - Controllers receive game colors (non-zero LED via GetColor per serial).
@@ -21,7 +25,7 @@ What this file deliberately does NOT cover:
   journey (test_tc002_ffa_game.py) verifies them for JoustFFA; selecting
   JoustTeams through the menu is covered by test_admin_flow.py.
 
-Why ``asyncio.gather`` and NOT pytest-xdist: the ``docker_compose`` fixture is
+Why ``asyncio.gather`` and NOT pytest-xdist: the compose fixture was
 session-scoped, but each xdist worker gets its own session -> one compose stack
 per worker. In-process async batches share the single stack and multiplex over
 the already-concurrent data plane (§2.3 of the shadow-games research).
@@ -55,11 +59,17 @@ from tests.integration.helpers import (
     get_mock_client,
     kill_players_for_team_win,
     kill_players_until_one_remains,
+    quiesce_coordinator,
     setup_mock_controllers,
     start_game_headless,
     verify_controllers_have_color,
     wait_until_running,
 )
+from tests.service.harness import GAME
+
+pytestmark = pytest.mark.tier("service")
+
+SERVICE_COMPOSITION = GAME
 
 # =============================================================================
 # End strategies (game_id-aware)
@@ -73,37 +83,27 @@ EndStrategy = Callable[[Any, list[str], Any, str], Any]
 
 async def end_ffa(mock_client, serials, game_client, game_id) -> None:
     """FFA / Random-teams via per-elimination: kill until one remains."""
-    await kill_players_until_one_remains(
-        mock_client, serials, delay=0.1, game_client=game_client, game_id=game_id
-    )
+    await kill_players_until_one_remains(mock_client, serials, delay=0.1, game_client=game_client, game_id=game_id)
 
 
 async def end_team(mock_client, serials, game_client, game_id) -> None:
     """Team game: eliminate one whole team."""
-    await kill_players_for_team_win(
-        mock_client, serials, delay=0.1, game_client=game_client, game_id=game_id
-    )
+    await kill_players_for_team_win(mock_client, serials, delay=0.1, game_client=game_client, game_id=game_id)
 
 
 async def end_swapper(mock_client, serials, game_client, game_id) -> None:
     """Swapper: converge all players onto one team."""
-    await end_swapper_game(
-        mock_client, serials, game_client, delay=0.3, game_id=game_id
-    )
+    await end_swapper_game(mock_client, serials, game_client, delay=0.3, game_id=game_id)
 
 
 async def end_zombies(mock_client, serials, game_client, game_id) -> None:
     """Zombies: convert all humans."""
-    await end_zombies_game(
-        mock_client, serials, delay=0.3, game_client=game_client, game_id=game_id
-    )
+    await end_zombies_game(mock_client, serials, delay=0.3, game_client=game_client, game_id=game_id)
 
 
 async def end_werewolf(mock_client, serials, game_client, game_id) -> None:
     """Werewolf: kill all but one (roles random; guarantees a team wipe)."""
-    await end_werewolf_game(
-        mock_client, serials, delay=0.3, game_client=game_client, game_id=game_id
-    )
+    await end_werewolf_game(mock_client, serials, delay=0.3, game_client=game_client, game_id=game_id)
 
 
 async def end_tournament(mock_client, serials, game_client, game_id) -> None:
@@ -113,12 +113,10 @@ async def end_tournament(mock_client, serials, game_client, game_id) -> None:
     against GetGameState, until the terminal event. CI uses 6s match / 1s pause
     flags (ci/game.json) and invincibility=2.0s (start config).
     """
-    await end_tournament_game(
-        mock_client, game_client, serials, game_id=game_id, timeout=45.0
-    )
+    await end_tournament_game(mock_client, game_client, serials, game_id=game_id, timeout=45.0)
 
 
-async def end_fight_club(mock_client, serials, game_client, game_id) -> None:
+async def end_fight_club(mock_client, serials, game_client, game_id) -> None:  # noqa: ARG001
     """FightClub: run minimum rounds to a winner. CI: invincibility=2.0s, min_rounds=5."""
     # Pure SimulateDeath-driven (queued players ignored): game_id-agnostic.
     await end_fight_club_game(
@@ -131,7 +129,7 @@ async def end_fight_club(mock_client, serials, game_client, game_id) -> None:
     )
 
 
-async def end_force(mock_client, serials, game_client, game_id) -> None:
+async def end_force(mock_client, serials, game_client, game_id) -> None:  # noqa: ARG001
     """Modes with no natural end in tests (NonStop, Traitor): force-end by id."""
     await asyncio.sleep(2.0)  # let the game run briefly
     await force_end_game_by_id(game_client, game_id, reason="parallel_lifecycle_end")
@@ -201,9 +199,7 @@ _BATCHES = [
 _TERMINAL_EVENTS = ["game_ended", "game_force_ended", "game_error"]
 
 
-async def _start_headless_with_retry(
-    game_client, start_config, attempts: int = 4, backoff: float = 2.0
-):
+async def _start_headless_with_retry(game_client, start_config, attempts: int = 4, backoff: float = 2.0):
     """Start headless, retrying brief "Game already in progress" windows.
 
     Within a batch, a sibling's force-ended game may still be in its ENDING
@@ -223,7 +219,7 @@ async def _start_headless_with_retry(
     raise last_exc
 
 
-async def _wait_for_game_colors(mock_client, serials: list[str], timeout: float = 10.0) -> None:
+async def _wait_for_game_colors(mock_client, serials: list[str], timeout: float = 10.0) -> None:  # noqa: ASYNC109
     """Poll until every controller shows a non-zero LED.
 
     Under 4-way parallel load the feedback stream can lag (and modes with a
@@ -242,7 +238,7 @@ async def _wait_for_game_colors(mock_client, serials: list[str], timeout: float 
             await asyncio.sleep(0.5)
 
 
-async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
+async def _run_mode_headless(stack, spec: ModeSpec, tag: str) -> None:
     """Run one mode end-to-end as a headless shadow game.
 
     Reserves its own controller set (distinct tag), starts headless, verifies
@@ -253,21 +249,17 @@ async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
     """
     from tests.integration.helpers import remove_reserved_controllers
 
-    mock_client, mock_channel = await get_mock_client(docker_compose)
-    game_client, game_channel = await get_game_client(docker_compose)
+    mock_client, mock_channel = await get_mock_client(stack)
+    game_client, game_channel = await get_game_client(stack)
     collector = None
     game_id = ""
     try:
-        serials = await setup_mock_controllers(
-            docker_compose, count=spec.players, reserved=True, tag=tag
-        )
+        serials = await setup_mock_controllers(stack, count=spec.players, reserved=True, tag=tag)
 
         # Start headless: bypasses the lobby; returns the coordinator-assigned
         # game_id plus a collector already filtered to that session. Retries
         # transient cap rejections (sibling games in their ENDING window).
-        game_id, collector = await _start_headless_with_retry(
-            game_client, build_start_config(spec.mode, serials)
-        )
+        game_id, collector = await _start_headless_with_retry(game_client, build_start_config(spec.mode, serials))
 
         # The session must actually be RUNNING before the end strategy may
         # query it: start_game_headless returns on the first start event (can
@@ -279,9 +271,7 @@ async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
         # zero SimulateDeath calls ever fired, and the batch timed out on a
         # healthy 2v2 RUNNING game (#894).
         running = await wait_until_running(game_client, {game_id}, timeout=20.0)
-        assert game_id in running, (
-            f"{spec.mode} game {game_id} never reached RUNNING (running: {sorted(running)})"
-        )
+        assert game_id in running, f"{spec.mode} game {game_id} never reached RUNNING (running: {sorted(running)})"
 
         # Controllers must get game colors (non-zero LED, per serial via
         # GetColor); polled, since parallel load can delay the feedback stream.
@@ -308,9 +298,7 @@ async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
         # ``game_error`` stays in the awaited set so a crash fails FAST, but it
         # is never a success: NonStop's startup crash (GameplayStreamConfig
         # ``serials`` regression) hid behind game_error counting as terminal.
-        assert terminal.event_type != "game_error", (
-            f"game errored instead of ending: {dict(terminal.data)}"
-        )
+        assert terminal.event_type != "game_error", f"game errored instead of ending: {dict(terminal.data)}"
     except Exception as exc:  # noqa: BLE001 - re-raise tagged with the mode name
         raise AssertionError(f"[{spec.mode}] headless lifecycle failed: {exc}") from exc
     finally:
@@ -318,14 +306,23 @@ async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
             await collector.stop()
         if game_id:
             await force_end_game_by_id(game_client, game_id, reason="parallel_cleanup")
-        await remove_reserved_controllers(docker_compose, tag)
+        await remove_reserved_controllers(stack, tag)
         await mock_channel.close()
         await game_channel.close()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("modes", _BATCHES)
-async def test_parallel_mode_lifecycle(docker_compose, headless_cleanup, modes):
+# Steps limited to what is asserted: start, RUNNING, game colours, no game_error.
+# Win/end conditions and mode-specific deaths are unit-only (TC-017 step 7); one
+# parametrised run carries all six tags, so a failure in one mode fails every tag.
+@pytest.mark.uc("UC-021", flow="main", steps=[1, 2], tc="TC-017")
+@pytest.mark.uc("UC-022", flow="main", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-023", flow="main", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-024", flow="main", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-025", flow="main", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-026", flow="main", steps=[1], tc="TC-017")
+async def test_parallel_mode_lifecycle(service_stack, headless_cleanup, modes):
     """Run a duration-grouped batch of game modes concurrently, headless.
 
     Each mode in the batch:
@@ -341,8 +338,14 @@ async def test_parallel_mode_lifecycle(docker_compose, headless_cleanup, modes):
     """
     specs = [_SPECS[m] for m in modes]
 
-    # Coordinator idleness (no leftover live sessions eating cap slots) is
-    # enforced by the autouse ``coordinator_idle`` fixture in conftest.
+    # The module's stack is shared by the three batches: no leftover live
+    # session may eat a cap slot (the integration suite's autouse
+    # ``coordinator_idle`` has no service-tier twin).
+    game_client, game_channel = await get_game_client(service_stack)
+    try:
+        await quiesce_coordinator(game_client, context="parallel batch start")
+    finally:
+        await game_channel.close()
 
     # Register tags up front so the fixture sweeps reserved controllers even if a
     # coroutine dies before its own finally-block cleanup runs.
@@ -353,10 +356,7 @@ async def test_parallel_mode_lifecycle(docker_compose, headless_cleanup, modes):
         tags.append(tag)
 
     results = await asyncio.gather(
-        *(
-            _run_mode_headless(docker_compose, spec, tag)
-            for spec, tag in zip(specs, tags)
-        ),
+        *(_run_mode_headless(service_stack, spec, tag) for spec, tag in zip(specs, tags, strict=True)),
         return_exceptions=True,
     )
 
