@@ -501,3 +501,64 @@ by a file edit and a restart. Several of their flags are read only at process st
 
 **Traceability:** FR-018, FR-132, FR-133, FR-134, FR-136, FR-137, FR-138, C-008, C-030, C-032, C-033 / UC-053 /
 planned `services/flag-service/registry.yaml` / planned tests in #1409.
+
+## 14. Ownership composition: invalidation and visibility
+
+> Normative rules moved from [OWNERSHIP_MODEL.md](../OWNERSHIP_MODEL.md) sections 5 and 6.1 (epic #1546, D2). That
+> document keeps the ownership principle (section 1), the parameter table (section 3) and the composition of the two
+> contested runtime parameters (section 4: sensitivity, grace/shield); it points here for the two rules below.
+
+### 14.1 The invalidation rule
+
+> **A human baseline change invalidates the active agent override for that parameter.**
+
+The human is the source of truth for intent. When the admin changes a baseline the agent is currently overriding, the
+human's new value wins **immediately** and the agent's active override for *that parameter* is dropped:
+
+- The agent does not keep an override pinned over a fresh human decision. Otherwise the admin's deliberate change would
+  silently no-op while the agent's transient delta persisted.
+- Invalidation is **per parameter**, not global: changing `sensitivity` cancels an active `global_sensitivity_override`
+  but leaves an active `shield_seconds` untouched.
+- After invalidation the agent may **re-propose** against the new baseline on its next decision. The human change resets
+  the baseline the agent composes against; it is not a veto of the agent.
+
+Implementation for `sensitivity` (verified against the code): the game keeps a human `baseline_sensitivity` and an agent
+`sensitivity_override` layer; `game.sensitivity` is the effective value. `BaseGameMode.set_baseline_sensitivity` (the
+target of assigning `game.sensitivity`) sets the baseline and clears the override; clearing the override from the agent
+path (`handle_global_sensitivity_override`, value -1) returns to the **current** baseline, never to the game-start
+snapshot (`configured_sensitivity`, telemetry only). The same shape applies to any future contested parameter.
+Grace/shield needs no invalidation: it composes with `max(grace_until, invincible_until)` (OWNERSHIP_MODEL section 4.2).
+
+**Traceability:** C-008 / UC-012, UC-040 / `services/game_coordinator/games/base.py`,
+`services/game_coordinator/difficulty_handlers.py`.
+
+### 14.2 The visibility contract
+
+The human admin must be able to tell agent activity apart from a malfunction. A conforming implementation provides at
+least:
+
+- a **distinguishable signal** when the agent applies an in-game delta (an LED pattern, audio cue or dashboard
+  indicator that is clearly agent action, not a game event and not "admin mode is broken");
+- a signal that identifies **what** changed at the granularity of the parameter table (OWNERSHIP_MODEL section 3), so the
+  admin can reconcile observed behaviour with the baseline.
+
+Agent actions are already audited as spans (`agent.decision`, intervention events) and metrics
+(`game_interventions_total`); the contract is the human-facing, on-device surfacing of that activity, not new
+instrumentation.
+
+Implemented surfaces (#818):
+
+1. **Truthful admin display.** Admin mode resolves option values through the live flagd `game` client and maps the
+   value back to a variant name (`AdminModeHandler._effective_variant`, `services/menu/handlers/admin.py`), so cycling
+   `sensitivity` shows the value the game is actually using, including an active agent override, not the baseline
+   `defaultVariant`. It falls back to the flag service's effective default variant when flagd is unreachable or the
+   value matches no variant.
+2. **On-device cue.** When the coordinator applies a **HARD-class** intervention (`spec.weight >= WEIGHT_HARD`, in
+   `services/game_coordinator/interventions.py`; `end_game` is excluded because its game has just ended, UC-040
+   BR-018) it emits a short magenta `GAME_EFFECT_PULSE` on the affected controller(s), broadcast for non-targeted
+   actions (`InterventionManager._emit_agent_cue`). It is gated by the `agent_intervention_cue` toggle in the `user`
+   set (§9; default on, off in `ci/`), so it can be muted for demos, and is best-effort: a failure never breaks the
+   intervention path. MEDIUM and SOFT interventions are silent so gameplay is not disrupted.
+
+**Traceability:** C-008 / UC-012, UC-040 / `services/menu/handlers/admin.py`,
+`services/game_coordinator/interventions.py`.
