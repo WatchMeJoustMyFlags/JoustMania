@@ -759,6 +759,8 @@ services:
       - AGENT_EXPERIMENT_SEED_OBJECTIVE=${AGENT_EXPERIMENT_SEED_OBJECTIVE:-}
       - AGENT_EXPERIMENT_SEED_TARGET_N=${AGENT_EXPERIMENT_SEED_TARGET_N:-}
       - AGENT_EXPERIMENT_SEED_HYPOTHESIS=${AGENT_EXPERIMENT_SEED_HYPOTHESIS:-}
+      # UC-042 / FR-058: retro-seeded thesis proposer opt-in (off by default).
+      - AGENT_EXPERIMENT_PROPOSER_ENABLED=${AGENT_EXPERIMENT_PROPOSER_ENABLED:-}
       # Heuristic dynamic declarer (#995): the agent autonomously picks which
       # game.json flag to experiment on. Default-OFF; subordinate to
       # AGENT_EXPERIMENTS_ENABLED + the agent.json kill-switch. Passthrough so the
