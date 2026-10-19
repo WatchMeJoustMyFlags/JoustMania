@@ -738,6 +738,8 @@ func TestGameScopeBounds(t *testing.T) {
 		f.register("game_b", "c/1")
 		_, err := f.state.RegisterGame(Game{ID: "game_c", CoordinatorInstance: "c/1"})
 		wantReason(t, err, http.StatusConflict, fserr.TooManyGames)
+		_, err = f.state.Put(WriteRequest{Set: "interventions", Flag: "volume_override", Value: raw("0.5"), Scope: Scope{GameID: "game_c"}})
+		wantReason(t, err, http.StatusConflict, fserr.GameNotLive)
 		if _, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1"}); err != nil {
 			t.Fatalf("re-registering a live game must not count against the cap: %v", err)
 		}
@@ -758,6 +760,9 @@ func TestGameScopeBounds(t *testing.T) {
 		}
 		if got := len(f.state.Games()); got != 3 {
 			t.Fatalf("live games = %d, want 3", got)
+		}
+		if f.state.Game("game_x") == nil || f.state.Game("game_a") != nil {
+			t.Fatal("the reconcile must keep the other instance's game_x and drop its own game_a")
 		}
 	})
 	t.Run("UC-053/main a re-registration without a serial drops that player's values", func(t *testing.T) {

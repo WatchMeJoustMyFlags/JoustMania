@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -22,6 +24,41 @@ import (
 	"github.com/joustmania/flag-service/telemetry"
 )
 
+func loadFixtures(t *testing.T) (*baseline.Baseline, *registry.Registry) {
+	t.Helper()
+	_, file, _, _ := runtime.Caller(0)
+	root := filepath.Dir(file)
+	base, err := baseline.Load(filepath.Join(root, "..", "flagd", "ci"), baseline.DefaultFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := registry.LoadFile(filepath.Join(root, "registry.yaml"), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base, reg
+}
+
+func counterTotal(t *testing.T, reader *sdkmetric.ManualReader, name string) int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	var n int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+				n += dp.Value
+			}
+		}
+	}
+	return n
+}
+
 type sweepEnv struct {
 	st     *state.State
 	now    time.Time
@@ -34,16 +71,8 @@ type sweepEnv struct {
 
 func newSweepEnv(t *testing.T) *sweepEnv {
 	t.Helper()
-	_, file, _, _ := runtime.Caller(0)
-	root := filepath.Dir(file)
-	base, err := baseline.Load(filepath.Join(root, "..", "flagd", "ci"), baseline.DefaultFiles)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg, err := registry.LoadFile(filepath.Join(root, "registry.yaml"), base)
-	if err != nil {
-		t.Fatal(err)
-	}
+	base, reg := loadFixtures(t)
+	var err error
 	e := &sweepEnv{now: time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC), logs: &bytes.Buffer{}}
 	e.logger = slog.New(slog.NewJSONHandler(e.logs, nil))
 	e.st, _, err = state.New(base, reg, state.Options{
@@ -69,22 +98,7 @@ func (e *sweepEnv) sweep() {
 
 func (e *sweepEnv) expiredTotal(t *testing.T) int64 {
 	t.Helper()
-	var rm metricdata.ResourceMetrics
-	if err := e.reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatal(err)
-	}
-	var n int64
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != "flagservice_game_scopes_expired_total" {
-				continue
-			}
-			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
-				n += dp.Value
-			}
-		}
-	}
-	return n
+	return counterTotal(t, e.reader, "flagservice_game_scopes_expired_total")
 }
 
 // expiryWarnings returns the game ids of the WARN "game scope expired" records.
@@ -145,4 +159,40 @@ func TestSweep_ExpiresGamesWhoseEndWasNeverReported(t *testing.T) {
 			t.Fatalf("a young game was expired: warnings=%v total=%d", e.expiryWarnings(t), e.expiredTotal(t))
 		}
 	})
+}
+
+// UC: UC-053 A12
+func TestRecordLoadReport_CountsACorruptStateFile(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    int64
+	}{
+		{"UC-053/A12 a corrupt state file increments flagservice_admin_state_corrupt_total", "{not json", 1},
+		{"UC-053/A12 a valid state file counts nothing", `{"version":1,"values":[]}`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, reg := loadFixtures(t)
+			path := filepath.Join(t.TempDir(), "admin.json")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			st, report, err := state.New(base, reg, state.Options{
+				Epoch: "e1", Served: base.Order, StateFile: path,
+				Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader := sdkmetric.NewManualReader()
+			m, err := telemetry.NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("t"), st.Stats)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recordLoadReport(context.Background(), m, report)
+			if n := counterTotal(t, reader, "flagservice_admin_state_corrupt_total"); n != tc.want {
+				t.Fatalf("flagservice_admin_state_corrupt_total = %d, want %d", n, tc.want)
+			}
+		})
+	}
 }

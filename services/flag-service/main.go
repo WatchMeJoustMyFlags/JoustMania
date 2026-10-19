@@ -203,9 +203,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("metrics: %w", err)
 	}
-	if report.Corrupt {
-		metrics.AdminStateCorrupt.Add(ctx, 1)
-	}
+	recordLoadReport(ctx, metrics, report)
 
 	links := &syncserver.Links{}
 	grpcServer := grpc.NewServer(syncserver.ServerOptions()...)
@@ -300,6 +298,13 @@ func loadState(ctx context.Context, tracer trace.Tracer, cfg config, epoch strin
 		attribute.String("flagservice.result", telemetry.ResultOK),
 	)
 	return st, report, nil
+}
+
+// recordLoadReport counts a corrupt state file found at start (UC-053 A12).
+func recordLoadReport(ctx context.Context, metrics *telemetry.Metrics, report state.LoadReport) {
+	if report.Corrupt {
+		metrics.AdminStateCorrupt.Add(ctx, 1)
+	}
 }
 
 // sweep expires game scopes older than the maximum game age (UC-053 A11) and

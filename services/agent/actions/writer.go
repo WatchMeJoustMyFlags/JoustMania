@@ -19,7 +19,7 @@
 //     list, the serial (or sound, effect) in the payload (FR-137, UC-053 BR-006).
 //
 // Every write has a 500 ms deadline and fails closed; a write rejected with 409
-// game_not_live is retried once after 250 ms (UC-053 A6).
+// game_not_live is retried once after 100 ms (UC-053 A6).
 package actions
 
 import (

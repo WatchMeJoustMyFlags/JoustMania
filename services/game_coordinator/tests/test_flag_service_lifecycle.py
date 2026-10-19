@@ -120,7 +120,7 @@ async def test_register_then_end(service):
     await lc.stop()
 
 
-@pytest.mark.uc("UC-053", flow="main", steps=[1])
+@pytest.mark.uc("UC-053", flow="main", steps=[1], cond=["Post-F-2"])
 @pytest.mark.asyncio
 async def test_slow_registration_is_bounded_at_200ms_and_the_game_starts(service):
     service.delay = 1.0
