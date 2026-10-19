@@ -967,7 +967,7 @@ jobs:
       # checkout instead, under the exact ref compose resolves, and load it
       # locally. The suite's session `compose pull` skips the profile-gated
       # agent, and the tests that start it use pull_policy "missing", so they run
-      # this HEAD build. Unconditional on the fast path; it costs ~1-1.5 min
+      # this HEAD build. Runs only in the e2e-agent shard on the fast path; it costs ~1-1.5 min
       # (amd64 only; `go build` has no build-cache mount, so any source change
       # rebuilds). The full-build path already builds the agent at HEAD.
       # Only the e2e-agent shard runs the agent, so only it builds it.
