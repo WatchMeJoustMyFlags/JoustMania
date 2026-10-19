@@ -24,22 +24,18 @@ The ladder writes the GLOBAL ``interventions_allowed``, so the test runs on
 import pytest
 from openfeature.evaluation_context import EvaluationContext
 
-from proto import controller_manager_mock_pb2, menu_pb2
+from proto import controller_manager_mock_pb2
 from tests.integration.flag_service import default as flag_service_default
 from tests.integration.flag_service import variant_value
 from tests.integration.helpers import (
-    ADMIN_WHITE,
     async_poll_until,
     enter_admin_mode,
     flagd_probe_client,
-    get_menu_client,
     get_mock_client,
     press_admin_button,
-    select_game_mode,
-    setup_mock_controllers,
-    wait_for_lobby_colors,
 )
 from tests.service.harness import LOBBY
+from tests.service.lobby_flow import start_lobby
 
 pytestmark = pytest.mark.tier("service")
 
@@ -50,7 +46,6 @@ FLAG = "interventions_allowed"
 START_MODE = "JoustFFA"
 PERSIST_TIMEOUT_SECONDS = 5.0
 VOICE_TIMEOUT_SECONDS = 5.0
-LOBBY_TIMEOUT_SECONDS = 15.0
 
 # The voice the menu asks the audio service for per level
 # (services/menu/handlers/admin.py level_voices, lib/types.py Sound.MENU_VOX_ADMINOP_*).
@@ -66,23 +61,6 @@ def _effective_variant() -> str:
 def _persisted_admin_variant() -> str | None:
     admin = flag_service_default().get(AGENT, FLAG).get("admin_value")
     return admin.get("variant") if admin else None
-
-
-async def _start_lobby(stack, menu_client, mock_client) -> list[str]:
-    """The menu runs with four CONNECTED controllers on JoustFFA.
-
-    The menu is restarted and the mode selected BEFORE the controllers are added
-    (StopMenu clears the controller states; controllers added first can connect
-    before the restart and be lost, #1575).
-    """
-    await menu_client.StopMenu(menu_pb2.StopMenuRequest())
-    start = await menu_client.StartMenu(menu_pb2.StartMenuRequest())
-    assert start.success, f"failed to start menu: {start.error}"
-    assert await select_game_mode(menu_client, START_MODE), f"could not select {START_MODE}"
-    serials = await setup_mock_controllers(stack, count=4)
-    # White does not count: the mock adapter starts every LED white, the same as admin.
-    await wait_for_lobby_colors(mock_client, serials, timeout=LOBBY_TIMEOUT_SECONDS, exclude=ADMIN_WHITE)
-    return serials
 
 
 async def _press_and_expect(stack, mock_client, host: str, button, expected: str) -> None:
@@ -120,10 +98,9 @@ async def test_host_walks_the_agent_ladder_from_the_controller(fresh_stack):
     """The host enters admin mode, selects agent_control and walks the ladder
     up and down; the presses past both ends clamp (TC-006 steps 1 to 4)."""
     stack = fresh_stack
-    menu_client, menu_channel = await get_menu_client(stack)
     mock_client, mock_channel = await get_mock_client(stack)
     try:
-        serials = await _start_lobby(stack, menu_client, mock_client)
+        serials = await start_lobby(stack, count=4, game_mode=START_MODE)
         host = serials[0]
 
         # UC-013 A1: a value off the ladder (probe) jumps to none on Start.
@@ -155,5 +132,4 @@ async def test_host_walks_the_agent_ladder_from_the_controller(fresh_stack):
         assert await _flagd_serves(stack, "none"), "flagd did not serve interventions_allowed=none"
         assert _persisted_admin_variant() == "none"
     finally:
-        for channel in (menu_channel, mock_channel):
-            await channel.close()
+        await mock_channel.close()
