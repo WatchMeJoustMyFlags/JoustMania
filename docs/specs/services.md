@@ -69,7 +69,10 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 **Listen-port overrides (#1524).** The Python gRPC services read their listen port from the environment, so the
 service tier (`tests/service/`, T2) can run several of them from source on ephemeral ports. Compose sets none of
 these, so every stack keeps the ports in the table above. An unset or empty variable means the default; a value
-that is not a TCP port (1-65535) fails the start (`lib/grpc_utils.py` `port_from_env`).
+that is not a TCP port (1-65535) fails the start, naming the variable (`lib/grpc_utils.py` `port_from_env`).
+The Python gRPC servers bind without `SO_REUSEPORT` (`get_server_options`, `grpc.so_reuseport=0`): a second
+server on a taken port fails its start instead of sharing the port. Compose runs one server per port, so
+deployed stacks are unchanged.
 
 | Variable | Service | Default |
 |---|---|---|

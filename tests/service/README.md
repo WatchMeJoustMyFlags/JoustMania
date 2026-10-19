@@ -18,10 +18,16 @@ CI: the `service-tests` job (path-filtered on PRs, always on main, part of `ci-c
 | flagd | real, compose image tag | container; `--uri grpc://host.docker.internal:<flag-service port>` (its only source, as in the stack); RPC 8013 and sync 8015 on fixed ephemeral host ports |
 | controller-manager, game-coordinator, menu | real, from source | `python services/<svc>/server.py` with the service-tests venv; `GRPC_PORT` / `MOCK_CONTROL_PORT` on ephemeral ports; ready on gRPC health SERVING |
 | audio | fake | `FakeAudio`, in-process gRPC server that records every call (`stack.fake_audio.calls_of("PlaySound")`) |
-| otel-collector, Jaeger | none | `OTEL_SDK_DISABLED=true` in every Python service |
+| otel-collector, Jaeger | none | `OTEL_SDK_DISABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:1` in every Python service; the flag service gets no endpoint (no-op) |
+| rust-hid, python-hid, BlueZ | none | controller manager: `RUST_HID_*` / `PYTHON_HID_*` = `127.0.0.1:1`, dead `DBUS_SYSTEM_BUS_ADDRESS` |
 
 Python services run as subprocesses, not in-process: OpenFeature domains, the rate limiter and the OTel
 providers are module-global.
+
+**Fidelity limit: no telemetry.** With `OTEL_SDK_DISABLED` every span is non-recording (its context is
+invalid, so the `is_valid` branches never run, e.g. the span ids behind trace correlation) and the OTel
+metrics and logs are no-ops. A TC that asserts traces, metrics or span-id correlation stays in the full stack
+(T3) until the tier has an OTLP sink fake.
 
 Compositions (`harness/stack.py`): `GAME` = controller-manager + game-coordinator, `LOBBY` = `GAME` + menu.
 
@@ -51,7 +57,9 @@ async def test_x(service_stack, flag_service):
 - `flag_service` binds the integration FlagService client to the test's stack and deletes stack-wide
   overlays at teardown; `headless_cleanup` force-ends registered games and removes reserved controllers.
 - Restarts: `stack.flag_plane.restart_flag_service()`, `stack.flag_plane.restart_flagd()`,
-  `stack.services["game-coordinator"].restart()`; each waits for readiness, same ports.
+  `stack.services["game-coordinator"].restart()`; each waits for readiness, same ports. They block (up to
+  45 s), so an async test may call them through `asyncio.to_thread`: every spawn runs on one long-lived
+  spawner thread, because `PR_SET_PDEATHSIG` fires when the *forking thread* exits, not the process.
 - Wait on observable conditions (`poll_until`, `async_poll_until`, health), never a sleep. A fixed window
   is allowed only as an absence assertion, with a comment saying so.
 - A failed test gets every process's log tail attached to its report. Logs live under the stack's
@@ -59,12 +67,22 @@ async def test_x(service_stack, flag_service):
 
 ## Teardown guarantees
 
-- Every subprocess runs in its own process group with `PR_SET_PDEATHSIG`: it dies with pytest, even on
-  `kill -9`. A normal exit also runs an `atexit` sweep.
+- Linux: every subprocess runs in its own process group with `PR_SET_PDEATHSIG` (forked from the spawner
+  thread, which lives as long as pytest): it dies with pytest, even on `kill -9`.
+- macOS (and musl): there is no `PR_SET_PDEATHSIG`. A normal exit, Ctrl-C and SIGTERM stop every process
+  (fixture teardown and the `atexit` sweep); a `kill -9` of pytest leaks the service processes, which you
+  then stop by hand (`pkill -f 'services/.*/server.py'`, `pkill -f flag-service-`).
+- SIGTERM (CI cancel, `timeout`) is turned into `KeyboardInterrupt` (`conftest.py`), so fixtures and the
+  `atexit` sweeps run on every OS. The `atexit` sweep also removes this run's flagd containers.
 - flagd containers carry the `joustmania.service` ownership labels (`tests/contract/flagd_harness.py`
   `Ownership`). A start removes containers whose owner pid is gone (same host) or that are older than
   30 min; a live parallel run's container (other worktree) is left alone.
-- The controller manager gets a dead `DBUS_SYSTEM_BUS_ADDRESS`, so it never touches the host's BlueZ.
+- The controller manager gets a dead `DBUS_SYSTEM_BUS_ADDRESS`, so it never touches the host's BlueZ, and
+  unreachable rust-hid / python-hid addresses, so it never drives real controllers even when a compose
+  stack on the same host publishes rust-hid on `127.0.0.1:50058` (`ServiceStack.service_envs`,
+  `test_harness.py`).
+- Port clashes fail loudly: the Python services bind without `SO_REUSEPORT` (`lib.grpc_utils.get_server_options`),
+  and flagd's host ports are picked right before `docker run`.
 
 ## Extending (S2+)
 

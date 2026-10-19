@@ -33,6 +33,8 @@ SERVICES: dict[str, tuple[str, int, str]] = {
 MOCK_CONTROL_PORT = 50062  # controller-manager's mock control API in compose
 AUDIO_PORT = 50056
 FLAG_SERVICE_HTTP_PORT = 8070
+# TCP port 1 (tcpmux) is never served here: a dial fails at once.
+UNREACHABLE_PORT = 1
 
 
 @dataclass(frozen=True)
@@ -107,11 +109,32 @@ class ServiceStack:
         if "controller-manager" in ports:
             self._ports[("controller-manager", MOCK_CONTROL_PORT)] = mock_port
 
+        envs = self.service_envs(ports, mock_port=mock_port, audio_port=audio_port)
+        for name in self.composition.services:
+            service = PyService(
+                name,
+                SERVICES[name][0],
+                grpc_port=ports[name],
+                env=envs[name],
+                log_path=self.workdir / "logs" / f"{name}.log",
+            )
+            self.services[name] = service
+            service.start()
+
+    def service_envs(self, ports: Mapping[str, int], *, mock_port: int, audio_port: int) -> dict[str, dict[str, str]]:
+        """The env of each composition service (on top of ``PyService``'s base env).
+
+        Every address a service could dial points into this stack or at an
+        unreachable ``127.0.0.1:1``, never at a default that a compose stack or
+        real hardware on the same host answers on.
+        """
+        plane = self.flag_plane
+
         def addr(service: str) -> dict[str, str]:
             prefix = service.upper().replace("-", "_")
             # A service not in the composition keeps an address nothing answers
             # on: its callers fail fast instead of reaching a compose stack.
-            port = ports.get(service, 1)
+            port = ports.get(service, UNREACHABLE_PORT)
             return {f"{prefix}_HOST": "127.0.0.1", f"{prefix}_PORT": str(port)}
 
         common = {
@@ -122,8 +145,11 @@ class ServiceStack:
             "AUDIO_PORT": str(audio_port),
             **addr("controller-manager"),
             **addr("game-coordinator"),
-            # No collector in this tier: OTel SDK off (no exporter retries or noise).
+            # No collector in this tier: OTel SDK off (no exporter retries or noise),
+            # and an unreachable endpoint in case a code path ignores the switch
+            # (lib.telemetry defaults to localhost:4317, a compose collector's port).
             "OTEL_SDK_DISABLED": "true",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": f"http://127.0.0.1:{UNREACHABLE_PORT}",
             "OTEL_SERVICE_NAMESPACE": "joustmania",
         }
         per_service = {
@@ -134,26 +160,27 @@ class ServiceStack:
                 # Keep the host's BlueZ untouched: startup would rfkill-unblock
                 # and enable every adapter it finds over D-Bus.
                 "DBUS_SYSTEM_BUS_ADDRESS": "unix:path=/nonexistent/joustmania-service-tier",
+                # Never real controllers: the rust backend (the default when the
+                # controller.backend flag is unreadable) and the python backend
+                # would dial localhost:50058/50059, where a compose stack on this
+                # host publishes rust-hid.
+                "RUST_HID_HOST": "127.0.0.1",
+                "RUST_HID_PORT": str(UNREACHABLE_PORT),
+                "PYTHON_HID_HOST": "127.0.0.1",
+                "PYTHON_HID_PORT": str(UNREACHABLE_PORT),
             },
             "game-coordinator": {"FLAG_SERVICE_INSTANCE": "game-coordinator"},
             "menu": {},
         }
-        for name in self.composition.services:
-            source_dir, _, otel_name = SERVICES[name]
-            service = PyService(
-                name,
-                source_dir,
-                grpc_port=ports[name],
-                env={
-                    **common,
-                    "OTEL_SERVICE_NAME": otel_name,
-                    **per_service[name],
-                    **self.composition.env.get(name, {}),
-                },
-                log_path=self.workdir / "logs" / f"{name}.log",
-            )
-            self.services[name] = service
-            service.start()
+        return {
+            name: {
+                **common,
+                "OTEL_SERVICE_NAME": SERVICES[name][2],
+                **per_service[name],
+                **self.composition.env.get(name, {}),
+            }
+            for name in self.composition.services
+        }
 
     def stop(self) -> None:
         """Stop everything, in reverse start order; never raises."""

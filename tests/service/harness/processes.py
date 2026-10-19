@@ -3,7 +3,10 @@
 Every process the harness starts:
 - runs in its own process group, so a stop reaches its children too;
 - gets ``PR_SET_PDEATHSIG`` (Linux), so it dies with the pytest process even when
-  pytest is killed and no fixture teardown runs;
+  pytest is killed and no fixture teardown runs. The kernel sends that signal
+  when the *thread* that forked the child exits, so every spawn goes through
+  one long-lived daemon spawner thread (``_spawn``): a start or restart from a
+  worker thread (``asyncio.to_thread``) does not tie the child to that worker;
 - is registered for an ``atexit`` sweep, the last line of defence on a normal exit;
 - writes its output to a log file, whose tail a failed start or a failed test
   prints (``log_tail``).
@@ -18,12 +21,15 @@ import atexit
 import contextlib
 import ctypes
 import os
+import queue
 import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future
 from pathlib import Path
 
 import grpc
@@ -46,7 +52,8 @@ def free_port() -> int:
     """An ephemeral TCP port that is free right now on 127.0.0.1.
 
     The kernel may hand it out again before the service binds it; the window is
-    small, and a bind failure surfaces as a failed start with the log tail.
+    small, and a bind failure surfaces as a failed start with the log tail (the
+    Python services bind without SO_REUSEPORT, ``lib.grpc_utils.get_server_options``).
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -76,6 +83,40 @@ def _die_with_parent() -> None:  # pragma: no cover - runs in the child
     os.setsid()
     if _PRCTL is not None:
         _PRCTL(_PR_SET_PDEATHSIG, signal.SIGTERM)
+
+
+class _Spawner:
+    """One daemon thread that runs every ``Popen`` of the harness.
+
+    ``PR_SET_PDEATHSIG`` fires when the forking thread exits. This thread lives
+    as long as the pytest process, so a child dies with pytest, never with the
+    (short-lived) thread that asked for the start.
+    """
+
+    def __init__(self):
+        self._jobs: queue.SimpleQueue[tuple[Callable[[], subprocess.Popen], Future]] = queue.SimpleQueue()
+        self._start_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def spawn(self, make: Callable[[], subprocess.Popen]) -> subprocess.Popen:
+        with self._start_lock:
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name="service-tier-spawner", daemon=True)
+                self._thread.start()
+        future: Future = Future()
+        self._jobs.put((make, future))
+        return future.result()
+
+    def _run(self) -> None:
+        while True:
+            make, future = self._jobs.get()
+            try:
+                future.set_result(make())
+            except BaseException as exc:  # re-raised in the caller's thread
+                future.set_exception(exc)
+
+
+_spawn = _Spawner().spawn
 
 
 class ServiceStartError(RuntimeError):
@@ -111,14 +152,16 @@ class ManagedProcess:
         with open(self.log_path, "ab") as log:
             log.write(f"\n==== start {self.name}: {' '.join(self.argv)}\n".encode())
             log.flush()
-            self.proc = subprocess.Popen(
-                self.argv,
-                cwd=self.cwd,
-                env=self.env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                preexec_fn=_die_with_parent,  # setsid + pdeathsig only
+            self.proc = _spawn(
+                lambda: subprocess.Popen(
+                    self.argv,
+                    cwd=self.cwd,
+                    env=self.env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    preexec_fn=_die_with_parent,  # setsid + pdeathsig only
+                )
             )
         _live.add(self)
         deadline = time.monotonic() + timeout

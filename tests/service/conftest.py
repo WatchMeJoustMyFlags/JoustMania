@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -37,6 +38,32 @@ from tests.service.harness.processes import REPO_ROOT as _HARNESS_ROOT  # noqa: 
 assert _HARNESS_ROOT == REPO_ROOT
 
 TIER = "service"
+
+
+# --------------------------------------------------------------------------- #
+# SIGTERM (CI cancel, `timeout`): tear down like Ctrl-C
+# --------------------------------------------------------------------------- #
+def _sigterm_to_keyboard_interrupt(signum, frame):  # noqa: ARG001
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
+_previous_sigterm = None
+
+
+def pytest_configure(config):  # noqa: ARG001
+    """By default SIGTERM ends pytest at once: no fixture teardown, no ``atexit``.
+
+    As a ``KeyboardInterrupt`` it unwinds the fixtures and runs the ``atexit``
+    sweeps, so the services stop and the flagd container is removed on every OS
+    (on Linux ``PR_SET_PDEATHSIG`` already reaps the subprocesses).
+    """
+    global _previous_sigterm
+    _previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
+
+
+def pytest_unconfigure(config):  # noqa: ARG001
+    if _previous_sigterm is not None:
+        signal.signal(signal.SIGTERM, _previous_sigterm)
 
 
 # --------------------------------------------------------------------------- #

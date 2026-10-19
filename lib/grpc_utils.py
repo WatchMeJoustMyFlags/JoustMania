@@ -110,6 +110,10 @@ def get_optimized_channel_options(enable_compression: bool = True) -> list[tuple
         # Message size limits
         ("grpc.max_receive_message_length", 10 * 1024 * 1024),  # 10MB receive
         ("grpc.max_send_message_length", 10 * 1024 * 1024),  # 10MB send
+        # grpcio sets SO_REUSEPORT by default on Linux, so a second server on a
+        # taken port binds silently and the kernel load-balances between them.
+        # Off: a port clash fails the start (one server per port everywhere).
+        ("grpc.so_reuseport", 0),
     ]
 
     # Only add compression for non-local connections
@@ -135,7 +139,10 @@ def port_from_env(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
-    port = int(raw)  # a malformed value fails loudly at start, never silently
+    try:
+        port = int(raw)  # a malformed value fails loudly at start, never silently
+    except ValueError:
+        raise ValueError(f"{name}={raw!r}: not a TCP port") from None
     if not 0 < port < 65536:
         raise ValueError(f"{name}={raw!r}: not a TCP port")
     return port
@@ -163,6 +170,10 @@ def get_server_options() -> list[tuple[str, any]]:
         # Message size limits
         ("grpc.max_receive_message_length", 10 * 1024 * 1024),  # 10MB receive
         ("grpc.max_send_message_length", 10 * 1024 * 1024),  # 10MB send
+        # grpcio sets SO_REUSEPORT by default on Linux, so a second server on a
+        # taken port binds silently and the kernel load-balances between them.
+        # Off: a port clash fails the start (one server per port everywhere).
+        ("grpc.so_reuseport", 0),
     ]
 
 

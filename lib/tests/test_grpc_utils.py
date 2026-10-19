@@ -126,5 +126,27 @@ class TestPortFromEnv:
 
         for bad in ("abc", "0", "70000"):
             monkeypatch.setenv("GRPC_PORT", bad)
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match=r"^GRPC_PORT='.*': not a TCP port$"):
                 port_from_env("GRPC_PORT", 50053)
+
+
+class TestServerOptions:
+    """A port clash fails the bind instead of sharing the port (#1548)."""
+
+    def test_second_server_on_a_taken_port_fails_to_bind(self):
+        from concurrent import futures
+
+        import grpc
+        import pytest
+
+        from lib.grpc_utils import get_server_options
+
+        first = grpc.server(futures.ThreadPoolExecutor(max_workers=1), options=get_server_options())
+        port = first.add_insecure_port("127.0.0.1:0")
+        first.start()
+        try:
+            second = grpc.server(futures.ThreadPoolExecutor(max_workers=1), options=get_server_options())
+            with pytest.raises(RuntimeError):
+                second.add_insecure_port(f"127.0.0.1:{port}")
+        finally:
+            first.stop(grace=None)
