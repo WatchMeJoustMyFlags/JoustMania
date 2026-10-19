@@ -55,8 +55,6 @@ E2E_SHARD_BY_MODULE = {
     "test_flag_service_restart.py": "core",
     "test_intervention_flow.py": "core",
     "test_intervention_smoke.py": "core",
-    "test_parallel_lifecycle.py": "core",
-    "test_pattern_games.py": "core",
     "test_tc002_ffa_game.py": "core",
     "test_tc013_shadow_alongside_real.py": "core",
 }

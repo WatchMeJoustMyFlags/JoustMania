@@ -54,12 +54,12 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-009](TC-009-kill-switch-during-ffa-game.md) | Kill switch during an FFA game | UC-045, UC-040, UC-044 | Critical | Automated | `test_kill_switch_discards_inflight_answer`; resume unit-tested only (#1395) |
 | [TC-010](TC-010-ffa-game-end-retro-and-proposal.md) | FFA game end: retro, summary, proposal | UC-020, UC-041, UC-042, UC-043 | High | Draft | Partly; #1362 |
 | [TC-011](TC-011-shadow-experiment-to-verdict.md) | Shadow experiment runs to a verdict | UC-043, UC-046, UC-003, UC-041, UC-040 | High | Draft | Partly (`test_experiment_cohort_loop`); #1404 |
-| [TC-012](TC-012-pattern-game-replay.md) | Replay a pattern-driven game exactly | UC-046, UC-003, UC-030 | Medium | Automated | `test_pattern_game_replays_identically`; script test in CI (#1389) |
+| [TC-012](TC-012-pattern-game-replay.md) | Replay a pattern-driven game exactly | UC-046, UC-003, UC-030 | Medium | Automated | `tests/service/test_tc012_pattern_game_replay.py`; script test in CI (#1389) |
 | [TC-013](TC-013-shadow-game-alongside-real-game.md) | Shadow game alongside a real FFA game | UC-010, UC-003, UC-020, UC-040, UC-027, UC-043 | High | Automated | `test_tc013_shadow_game_alongside_real_game`; agent side unit-tested |
 | [TC-014](TC-014-progressive-rollout-and-rollback.md) | Progressive rollout with automatic rollback | UC-050, UC-051, UC-045, UC-041 | High | Draft | Manual (real controllers); mock support + e2e #1390 |
 | [TC-015](TC-015-canary-by-hand.md) | Canary a backend by hand | UC-052, UC-035 | Medium | Draft | Manual; contract tests for routes; `/canary/*` handler tests (#1388) |
 | [TC-016](TC-016-talk-demo-rehearsal.md) | Talk demo rehearsal | UC-070, UC-044, UC-045, UC-040, UC-042, UC-035 | Medium | Draft | Manual; script tests in CI (#1389) |
-| [TC-017](TC-017-non-ffa-modes-round-backlog.md) | One round of every non-FFA mode (backlog) | UC-021 to UC-026 | Low | Draft | Partly (`test_parallel_lifecycle`); backlog #1361 |
+| [TC-017](TC-017-non-ffa-modes-round-backlog.md) | One round of every non-FFA mode (backlog) | UC-021 to UC-026 | Low | Draft | Partly (`tests/service/test_tc017_parallel_mode_lifecycle.py`); backlog #1361 |
 | [TC-018](TC-018-agent-intervention-through-flag-service.md) | Agent intervention through the flag service | UC-053, UC-040 | Critical | Automated | T2: `test_tc018_flag_service_eliminations::test_two_eliminations_through_the_flag_service`; failed read: unit test |
 | [TC-019](TC-019-flag-service-restart.md) | Flag service restart | UC-053 | High | Automated | `test_flag_service_restart`; epoch reset: unit test |
 | [TC-020](TC-020-host-and-stage-change-flags.md) | Host and stage change flags at runtime | UC-012, UC-053, UC-044 | High | Automated | `test_admin_flow::test_host_and_stage_change_flags_at_runtime` |
