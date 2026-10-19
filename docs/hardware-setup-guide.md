@@ -12,6 +12,7 @@ Complete guide for setting up JoustMania on Raspberry Pi 5, covering USB configu
 - [Power Configurations](#power-configurations)
 - [Mobile/Portable Setups](#mobileportable-setups)
 - [Scaling Guide](#scaling-guide)
+- [25 Controllers on One Pi](#25-controllers-on-one-pi) (NFR-025)
 - [Physical Placement](#physical-placement)
 - [Troubleshooting](#troubleshooting)
 
@@ -176,37 +177,38 @@ docker compose logs -f pairing-daemon
 # Restart daemon
 docker compose restart pairing-daemon
 
-# Check metrics
-curl http://localhost:8002/metrics
+# Health check (port 8002 serves /healthz and the unpair API only; metrics go out over OTLP)
+curl http://localhost:8002/healthz
 ```
+
+Pairing and Bluetooth metrics (`psmove_pairing_*`, `bluetooth_device_rssi_dbm`) are pushed to the
+OTel collector; query them in Grafana (`/grafana/`) or see
+[telemetry.md section 6](specs/telemetry.md#6-metrics).
 
 ### Pairing a Controller
 
 1. **Plug in** the PS Move controller via USB cable
-2. **Wait** for the LED feedback:
-   - Yellow = Pairing in progress
-   - White flash (3x) = Success
-   - Red flash (3x) = Error
+2. **Wait** for the log line `PAIRING SUCCESS: Controller <serial> paired to adapter <MAC> - unplug USB and press PS button`
+   (`docker compose logs -f pairing-daemon`); `PAIRING FAILED` means it did not work and the next poll retries
 3. **Unplug** the USB cable
 4. **Press PS button** to connect via Bluetooth
 
-The daemon polls every 30 seconds, so there may be a short delay before pairing starts.
+The daemon polls USB every `pairing.poll_interval` seconds (flag in the `system` domain; default 10, variants
+`fast` 5 / `normal` 10 / `slow` 30), so there may be a short delay before pairing starts.
 
-### LED Feedback Reference
+### No LED Feedback While Pairing
 
-| LED Color | Meaning |
-|-----------|---------|
-| Yellow (solid) | Pairing in progress |
-| White (flash 3x) | Pairing successful - unplug now |
-| Red (flash 3x) | Pairing failed - check logs |
+The pairing daemon does not touch the controller's LED (UC-001 BR-002): the controller shows no
+yellow, white or red pairing state. Read the daemon log line above, or watch
+`psmove_pairing_failed_total` in Grafana.
 
 ### Pairing Multiple Controllers
 
 You can pair multiple controllers in sequence:
 
-1. Plug in first controller, wait for white flash
+1. Plug in first controller, wait for `PAIRING SUCCESS` in the log
 2. Unplug first controller
-3. Plug in second controller, wait for white flash
+3. Plug in second controller, wait for `PAIRING SUCCESS`
 4. Repeat for all controllers
 5. Press PS button on each to connect via Bluetooth
 
@@ -423,7 +425,7 @@ JoustMania uses parallel controller polling via `asyncio.gather()`, which reads 
 | 24 | 72ms | 5-10ms | 85% faster |
 | 42 | 126ms | 5-15ms | 90% faster |
 
-This optimization is critical for large player counts - without it, 42 controllers couldn't maintain 30Hz updates.
+This optimization is critical for large player counts - without it, 42 controllers could not keep up with the game loop. The figures are design estimates, not recorded measurements.
 
 ### Recommended Configurations by Scale
 
@@ -450,8 +452,72 @@ This excludes Jaeger, VictoriaMetrics, Loki, Grafana, and OTEL Collector, saving
 It still runs `rust-hid`, the default Bluetooth backend, so the controller manager
 reads real controllers and the pairing daemon pairs them through it (#1318).
 python-hid is not part of the lite stack; it is opt-in on the full stack only
-(`./scripts/setup/joustmania-compose.sh --profile python-hid up -d`, see
-[controller-backends.md](architecture/controller-backends.md#python-hid-is-opt-in-1371)).
+(see [Opting in to python-hid](#opting-in-to-python-hid)).
+
+### Opting in to python-hid
+
+rust-hid is the default Bluetooth backend (UC-002 BR-003). Reading real controllers through the slower
+python-hid backend takes all three of (#1402):
+
+1. the `python-hid` compose profile: `./scripts/setup/joustmania-compose.sh --profile python-hid up -d`;
+2. a `backend` flag variant naming `python` (`python_rust`) in `services/flagd/controller.json`, then
+   `scripts/flags.sh restart` and a controller-manager restart (`backend` is read at startup);
+3. `scripts/flags.sh set controller bluetooth_backend python`, so serials and USB pairing go to python-hid.
+
+On the Pi, set the profile in a systemd drop-in (`sudo systemctl edit joustmania`, `[Service]`
+`Environment=COMPOSE_PROFILES=python-hid`), not in `.env`: `.env` is tracked, and editing it breaks the start
+script's `git pull --ff-only`. With the profile off, `scripts/setup/joustmania-start.sh` removes a stale
+`joustmania-python-hid` container. Adapter and routing details:
+[services.md, controller-manager "Backend layering"](specs/services.md#backend-layering).
+
+---
+
+## 25 Controllers on One Pi
+
+Target for NFR-025: a Raspberry Pi 5 with 25 PS Move controllers on 4 to 5 Bluetooth adapters.
+**Not measured yet:** no run with 25 controllers has been recorded; the chipset figures above come from
+upstream JoustMania's adapter measurements. Controllers per adapter by chipset: see
+[Controllers Per Adapter](#controllers-per-adapter) (CSR 6 to 7, Realtek about 5, never more than 7), so
+25 controllers need 4 to 5 CSR adapters or 5 Realtek adapters.
+
+### USB power
+
+An unpowered USB 2.0 hub has 500 mA in total and each adapter draws about 100 mA, so four adapters on one hub sit
+at the limit, and heavy USB traffic can push them into brownouts. Symptoms: random disconnections during a
+game, report gaps over 100 ms, hub resets, controllers failing to pair.
+
+| Option | Layout | Verdict |
+|---|---|---|
+| A. Powered hub | One 7-port powered hub (36 W or more), 5 adapters with 5 controllers each | Dedicated power per port, room to grow past 35 controllers. Upgrade to this if the monitoring below shows problems |
+| B. Distributed unpowered hubs | Two 4-port unpowered hubs with 2 adapters each, a fifth adapter directly on the Pi | Free if you own the hubs, but still near the power limit on each hub; expect occasional disconnects under load |
+| C. One unpowered 4-port hub | Four adapters on one hub | Not recommended: at the power limit and capped at 20 controllers; only for short tests |
+
+Start with B using hubs you already have and measure before buying a powered hub. Reminder from
+[USB Port Selection](#usb-port-selection): put adapters on USB 2.0 ports where you can.
+
+### Game loop frequency
+
+The game loop streams motion at the `game_loop.update_frequency_hz` flag of the `system` domain: `low` 15,
+`medium` 30, `high` 60 (default). The coordinator constant `UPDATE_FREQUENCY = 60` in
+`services/game_coordinator/games/base.py` is the same fallback. The older guide's 30 Hz figure was wrong;
+the code runs 60 Hz unless you lower the flag. On a marginal USB setup (option C, or a hub that browns out)
+switching to `medium` reduces USB traffic and CPU; no measured numbers exist for either setting yet.
+
+### Testing checklist
+
+- [ ] 5 controllers on 1 adapter: basic functionality
+- [ ] 10 controllers on 2 adapters: multi-adapter routing
+- [ ] 25 controllers on 5 adapters: full load
+- [ ] Watch the Controller Health and Connection Quality panels for at least 5 minutes
+  ([CONTROLLER_CONNECTIVITY.md](CONTROLLER_CONNECTIVITY.md#monitoring-with-grafana))
+- [ ] Play a full FFA game with all players and check for disconnects during intense motion
+- [ ] Check CPU on the Pi (`docker stats`) and record the run to close NFR-025
+
+### Beyond 25
+
+Plan one adapter per 5 (Realtek) to 6 or 7 (CSR) controllers and a powered hub: 30 controllers need 5 to 6
+adapters, 50 need 8 to 10. Running several games at once multiplies the update load and requires the
+powered hub.
 
 ---
 
