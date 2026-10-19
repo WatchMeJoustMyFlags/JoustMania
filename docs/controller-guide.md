@@ -111,7 +111,7 @@ Controllers can be paired via:
 
 Controllers provide visual feedback through LED colors for game state, team assignments, and warnings.
 
-See [UC-010](use_cases/UC-010.md) and [UC-012](use_cases/UC-012.md) for the LED states.
+See [LED states](specs/services.md#led-states-controller-feedback) for the colours and effects, and [UC-010](use_cases/UC-010.md) and [UC-012](use_cases/UC-012.md) for the lobby flows.
 
 ## Related Documentation
 

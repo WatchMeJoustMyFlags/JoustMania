@@ -112,7 +112,7 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 | [Development](docs/DEVELOPMENT.md) | Building, running, debugging |
 | [Contributing](docs/CONTRIBUTING.md) | Code style, PR workflow |
 | [Controller Guide](docs/controller-guide.md) | Button layout, admin mode |
-| [Lobby LEDs (UC-010)](docs/use_cases/UC-010.md) | Controller LED states in the lobby |
+| [LED states](docs/specs/services.md#led-states-controller-feedback) | Lobby, game and admin LED colours and effects |
 | [Observability](docs/observability-quickstart.md) | Tracing, metrics, dashboards |
 
 ## Services
@@ -140,6 +140,7 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 - **[Adam Engert](https://github.com/adangert)** - Original JoustMania creator
 - **[Original JoustMania](https://github.com/adangert/JoustMania)** - The game this fork is based on
 - **[Steam Release](https://store.steampowered.com/app/1093850/JoustMania/)** - Original game on Steam
+- **[psmoveapi](https://github.com/thp/psmoveapi)** by Thomas Perl - the PS Move support was originally built on it; its protocol documentation and reference implementation guided the direct HID implementation
 
 ## License
 

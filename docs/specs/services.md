@@ -172,6 +172,66 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - `UnstableAdapter` (≈ 8.3 Hz, 10 % drops) is registered alongside python for the rollout demo; real adapters are used directly (the ChaosAdapter wrapper, D-C2, was removed in #1322).
 - Mock serials `MOCK%04d`; reserved mock controllers are hidden from the roster.
 
+### LED states (controller feedback)
+
+Verified against `lib/colors.py`, `services/menu/utils/led.py`, `services/menu/handlers/` and `services/controller_manager/feedback_manager.py`. RGB values are `(r, g, b)`; "base colour" is the colour an effect restores to when it ends.
+
+**Lobby colour (menu, `GAME_MODE_COLORS`).** A controller in CONNECTED shows the current mode colour dimmed (`DIM_FACTOR` 0.3, each channel `int(c * 0.3)`); in READY it shows the full colour. Unknown mode: orange. Only Free-for-All is a fixed product mode; the other entries exist in code.
+
+| Mode | Colour |
+|---|---|
+| JoustFFA, SpeedBomb | Orange (255,128,0) |
+| JoustTeams | LightBlue (0,100,255) |
+| JoustRandomTeams | Turquoise (0,255,255) |
+| Swapper | Magenta (255,0,192) |
+| Werewolf | Green (0,255,0) |
+| Traitor, Tournament | Purple (96,0,255) |
+| Zombie | White40 (100,100,100) |
+| Commander | Red (255,0,0) |
+| FightClub | Yellow (255,255,0) |
+| NonstopJoust | Pink (255,105,180) |
+
+DISCONNECTED controllers show nothing. There is no dedicated "connection flash": a newly connected controller takes the dim lobby colour, and a reconnecting controller gets its last base colour back (`discovery_loop.py`).
+
+**Palettes (`lib/colors.py`).**
+
+| Palette | Colours |
+|---|---|
+| Team colours (first 8 of `Colors`; red is reserved for death) | Pink (255,105,180), Magenta (255,0,192), Orange (255,128,0), Yellow (255,255,0), Green (0,255,0), Turquoise (0,255,255), Blue (0,0,255), Purple (96,0,255) |
+| Team selection (`teams_base.py`) | Fixed order, no randomness: team `n` takes `TEAM_COLORS[n]`, so `num_teams` teams use the first `num_teams` team colours (Pink, Magenta, Orange, Yellow, Green, Turquoise, Blue, Purple). `generate_team_colors` in `lib/colors.py` (random partners, tri/quad logic) is unused legacy; only a test calls it |
+| FFA player colours (`generate_colors`) | N evenly spaced hues in 0.1 to 0.9 (full saturation and value), so red is never assigned; assigned at game setup and shown when gameplay starts, after the countdown |
+| Other | White, Black, Red; White40 (100,100,100), White20 (50,50,50), Red20 (50,0,0), ZombieGray (80,80,120) |
+
+**Effects (`FeedbackManager`, `GameEffect`).** Timings marked flag come from the controller flag domain `effect.<key>` (init-frozen); the value shown is the default.
+
+| Effect | LED | Rumble | Then |
+|---|---|---|---|
+| `COUNTDOWN` | FFA-style games (`feedback_manager.py`): Red, then Yellow, then Green, 750 ms each (or `duration_ms` per phase). Team games (`teams_base.py`): the player's team colour, then a White flash, then Green, each phase with a loud beep | none | base colour |
+| `PLAYER_WARNING` | White flash, `warning_flash_ms` 200 ms | 100 intensity, `warning_vibration_ms` 200 ms | base colour |
+| `PLAYER_DEATH` | Red held `death_red_hold_ms` 300 ms, then fade to black over `death_fade_ms` 700 ms; also ends the agent shield | 255 intensity, `death_rumble_ms` 150 ms | base colour becomes Black |
+| `PLAYER_RESPAWN` | White (spawn protection) | none | base colour becomes White |
+| `WINNER_RAINBOW` | Rainbow for the `game` flag winner duration (default 3000 ms); ends the agent shield | none | base colour |
+| `ADMIN_ENTER` | White flash 600 ms, then solid White | none | base colour White |
+| `ADMIN_EXIT` | none (instant) | none | base colour |
+| `LOW_BATTERY` | Red / Red20 twice, 150 ms each | none | base colour |
+| `FORCE_START_CHARGE` | White fading out over 2 s | none | none |
+| `SHOW_BATTERY` | Battery tier colour for 1 s | none | base colour |
+| `IDENTIFY` | White 2 Hz flash, 3 s default (500 ms to 10 s) | 150 intensity, 500 ms | base colour (UC-004) |
+| `PULSE` | Caller colour (default White), default 600 ms at speed 3 | none | base colour |
+| `FLASH` | Caller colour (default White), default 400 ms at speed 5 | none | base colour |
+| `RUMBLE` | none | intensity `min(255, speed * 50)` (speed default 5), default 2000 ms (secret signalling) | none |
+| `SHIELD`, `PARTIAL_SHIELD` (agent) | A persistent layer over the base colour; short effects overlay it. Full: brightness falls 100% to 30%, last second blinks at 4 Hz. Partial: breathes 10% to 50% at 0.5 Hz, last second blinks at 4 Hz | none | base colour |
+
+Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 80% Turquoise, >= 60% Blue, >= 40% Yellow, otherwise Red.
+
+**Admin option feedback (menu, `handlers/admin.py`).** The admin mode base colour is White. Cycling the option (Cross) shows the option's colour for 1 s, then White: sensitivity Blue, `num_teams` Turquoise, `force_all_start` Orange, `agent_control` Purple. Changing sensitivity pulses the new level's colour (`PULSE`, 800 ms at speed 5), then restores the base colour: 0 Ultra Slow Blue, 1 Slow Turquoise, 2 Medium Green, 3 Fast Orange, 4 Ultra Fast Red (five levels).
+
+**Per-mode in-game colours (`games/`).** Werewolf: everyone Yellow until the reveal, then werewolves LightBlue (0,100,255). Zombie: humans White, zombies ZombieGray (80,80,120). FightClub: defender Red, challenger Green, waiting players White20 (50,50,50).
+
+**Update path.** Colours are written to the backend by the LED batch loop (20 Hz, on change or every 2 s keep-alive); every colour written is mirrored in `ControllerState.color`. A new base colour while an effect runs is stored and applied when the effect ends (cancellable effects are cancelled).
+
+**Troubleshooting.** A controller stuck dim is CONNECTED, not READY: the trigger has not been pressed. A controller that stays White after admin mode keeps White as its base colour until the menu sends a lobby colour.
+
 ### game-coordinator
 
 - Sessions: one primary (menu origin) + shadows; caps `max_concurrent_games` (8), `max_shadow_games` (4), `shadow_policy` (block); real starts preempt shadows (`servicer.py`: `_max_concurrent_games`, `_max_shadow_games`, `_shadow_policy`, `_preempt_shadow_sessions`, `_admit_session_locked`). Game ids `game_<12 hex>`.
@@ -208,6 +268,27 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - Unpair one controller (UC-005) and stale-registration cleanup after a re-pair (UC-001 A5, BR-004) use the same module: `remove_controller_registrations(address, keep_adapter=None, require_psmove=True)` returns one `RemovalResult` per registration found (`removed`, `already_absent`, `failed`), removing through `clear_psmove_registrations`; the unpair takes the address's registrations only if one is a PS Move (then identity-less copies too, UC-005 BR-001), the re-pair cleanup matches by address alone (`require_psmove=False`). One `asyncio.Lock` serialises USB pairing (adapter selection through trust) and unpairs (409 when held). A controller unpaired while on USB is not paired again until it leaves USB or reappears under another HID device path, re-checked under the lock (UC-005 A8). rust-hid `GetUSBControllers` / `PairController` calls carry a 15 s gRPC deadline and the pair step a 20 s `asyncio.wait_for`. The HTTP port binds only to `CONTROL_BIND` (default `127.0.0.1`).
 
 **Traceability:** FR-001 to FR-008, FR-040, FR-053, FR-070 to FR-074, FR-123, FR-124, NFR-001 to NFR-003, NFR-018, C-011 / UC-001 to UC-003, UC-005, UC-040, UC-050 to UC-052 / service directories above / `services/*/tests/`, `tests/integration/`.
+
+### Mode to config message, privileges, libraries and proto files
+
+`oneof game_config` in `StartGameConfig` (`proto/game_coordinator.proto`):
+
+| Mode | Config message | Fields (default) |
+|---|---|---|
+| JoustFFA, Zombie, Swapper | `FFAConfig`, `ZombieConfig`, `SwapperConfig` | none (base settings; Zombie duration from player count; Swapper always 2 teams) |
+| JoustTeams | `TeamsConfig` | `num_teams` (2-6, 2), `random_assignment` (true) |
+| JoustRandomTeams | `RandomTeamsConfig` | `num_teams` (2-6, 2) |
+| NonstopJoust | `NonstopConfig` | `time_limit_seconds` (0 = unlimited) |
+| Tournament | `TournamentConfig` | `invincibility_seconds` (4.0) |
+| FightClub | `FightClubConfig` | `invincibility_seconds` (4.0), `min_rounds` (10) |
+| Werewolf | `WerewolfConfig` | `reveal_time_seconds` (35.0) |
+| Traitor | `TraitorConfig` | `num_teams` (0 = auto from player count) |
+
+Container privileges (`docker-compose.yml`): `controller-manager`, `python-hid`, `rust-hid` and `pairing-daemon` run `privileged` (pairing-daemon also on the host network); `audio` is not privileged but gets sound devices; all other services run as standard containers.
+
+Shared libraries in `lib/`: `types.py` (enums such as `Games`), `colors.py`, `controller_constants.py`, `psmove_hid.py` and `bluez_dbus.py` (controller I/O and BlueZ), `grpc_tracing.py`, `grpc_metrics.py`, `grpc_utils.py`, `telemetry.py`, `otel_metrics.py`, `otel_logging.py`, `otel_resource.py`, `openfeature_otel_hooks.py`, `system_metrics.py`, `feature_flags.py`, `flag_eval_visibility.py`, `flag_service_writer.py`, `clock.py`.
+
+Proto files: `controller_manager.proto` is `ControllerManagerService`; `controller_manager_mock.proto` is `MockControllerService`; `game_coordinator.proto` is `GameCoordinatorService`; `menu.proto` is `MenuService`; `audio.proto` is `AudioService`; `psmove_hid.proto` is `PairingService` and `ControllerIOService`. Regenerate with `make protos`.
 
 ## 7. Flag service (epic #1407)
 

@@ -76,6 +76,7 @@ Kept for the reasoning; they do not describe the current system.
 
 | Document | Topic |
 |---|---|
+| [design/agent-experiment-cohorts.md](design/agent-experiment-cohorts.md) | Experiment cohorts design |
 | [research/722-intervention-surface.md](research/722-intervention-surface.md) | Intervention vocabulary |
 | [research/739-prompt-capture.md](research/739-prompt-capture.md) | In-game prompt capture spike (retired) |
 | [research/774-shadow-games.md](research/774-shadow-games.md) | Shadow games |
