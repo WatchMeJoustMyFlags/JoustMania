@@ -105,8 +105,8 @@ docker compose up -d
 
 > **Controller backend:** the stack reads real PS Move controllers through `rust-hid`, the default
 > Bluetooth backend (`backend=rust` in the read-only baseline `services/flagd/controller.json`). `python-hid`
-> is opt-in only: `docker compose --profile python-hid up -d` (or `COMPOSE_PROFILES=python-hid`) plus a
-> `backend` variant naming `python`. `backend` is not in the flag service's mutable registry, so that is a
+> is opt-in only: `docker compose --profile python-hid up -d` (or `COMPOSE_PROFILES=python-hid`) plus
+> `backend=python_rust` **and** `bluetooth_backend=python` (without the second, every controller stays on rust-hid). `backend` is not in the flag service's mutable registry, so that is a
 > reviewed baseline edit followed by `scripts/flags.sh restart` (restarts flag-service, then flagd). See [controller-backends.md](architecture/controller-backends.md#python-hid-is-opt-in-1371).
 > Without hardware, use `make up-mock` (`backend=mock`).
 
@@ -307,6 +307,11 @@ make test
 
 # Keep containers running after tests (for debugging)
 SKIP_TEARDOWN=1 make test
+
+# CI runs the suite as two shards, each in its own job and compose stack:
+make test-integration-core         # e2e-core: no agent built or started
+make test-integration-agent        # e2e-agent: modules that start the agent
+make test-integration-shard-check  # every test is in exactly one shard
 
 # Clean up after SKIP_TEARDOWN
 docker compose -f docker-compose.test.yml down

@@ -193,6 +193,7 @@ class TestGlobalDifficultyFactor:
 # --------------------------------------------------------------------------- #
 class TestPacingProfile:
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A3")
     async def test_swap_is_atomic_and_correct(self):
         game = make_game()
         init = game.music_windows
@@ -205,6 +206,7 @@ class TestPacingProfile:
         assert game.init_music_windows == init
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A3")
     async def test_revert_restores_init_windows(self):
         game = make_game()
         init = game.init_music_windows

@@ -58,6 +58,13 @@ func SetupFlagd(ctx context.Context, cfg ProviderConfig, log *slog.Logger) (*Fla
 	}
 
 	client := openfeature.GetApiInstance().GetNamedClient(Domain)
+	// Standard OpenFeature OTel hooks (#1427): evaluation metrics and span events. On the
+	// client, not the API, so a second SetupFlagd (tests) does not stack global hooks.
+	hooks, err := NewOTelHooks()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	client.AddHooks(hooks...)
 	f := New(client, log)
 
 	// Hot-reload the four calibration flags via the OpenFeature config-change

@@ -28,6 +28,8 @@ line; when code and spec disagree they stop and propose a spec change.
 | `go-test` | `services/agent/**/*_test.go` | Unit tests |
 | `integration-test` | `tests/integration` | End-to-end (our `playwright-test`) |
 | `coverage-check` | nothing (delegates to the read-only `uc-coverage` agent in `.claude/agents/`) | Coverage audit |
+| `implement-issue` | one issue end to end: worktree, spec, code, tests, PR (then stops) | Orchestration |
+| `review-pr` | nothing (review worktree removed at the end) | Review |
 
 Dashboard (vitest) tests have no writing skill yet, deliberately: write them by hand with the
 `describe('UC-040: ...')` convention; `coverage-check` already reads it.

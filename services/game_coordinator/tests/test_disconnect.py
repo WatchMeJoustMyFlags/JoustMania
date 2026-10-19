@@ -86,8 +86,9 @@ class TestHandleDisconnect:
         assert player.alive is False
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A5", steps=[1])
     async def test_disconnect_increments_dead_count(self, game_with_players):
-        """Disconnect should increment the dead_count like a normal death."""
+        """UC-030 A5 step 1: a disconnect counts as a death (dead_count +1), the same path as step 9."""
         game, _ = game_with_players
         initial = game.dead_count
 
@@ -114,8 +115,9 @@ class TestHandleDisconnect:
         assert death_effects[0].game_effect.serial == "serial_a"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A5")
     async def test_disconnect_noop_for_dead_player(self, game_with_players):
-        """Disconnecting an already-dead player should be a no-op."""
+        """UC-030 A5 applies to an alive player only (precondition): a dead player's disconnect changes nothing."""
         game, _ = game_with_players
         player = game.players["serial_a"]
         player.alive = False

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joustmania/agent/flags"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -135,6 +136,7 @@ func initMetrics(ctx context.Context) func(context.Context) error {
 	provider := metric.NewMeterProvider(
 		metric.WithReader(reader),
 		metric.WithResource(res),
+		metric.WithView(flags.MetricViews()...),
 	)
 
 	// Publish as the global meter provider so instrumented packages (e.g.

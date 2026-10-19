@@ -10,7 +10,7 @@
 flowchart LR
     browser([Browser]) -->|":80"| envoy
     envoy --> dashboard
-    envoy -->|/joustmania, /chaos/| cproxy[connect-proxy]
+    envoy -->|/joustmania, /pairing/| cproxy[connect-proxy]
     envoy -->|/jaeger/ /grafana/ /loki/ /victoria-metrics/| obs[(observability)]
     envoy -->|/experiments| agent
     cproxy --> cm[controller-manager]
@@ -46,71 +46,40 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 
 | Service (compose name) | Language | Port(s) | Host-published | Responsibility | Source |
 |---|---|---|---|---|---|
-| controller-manager | Python | 50052 gRPC; 50062 mock control API (mock adapter only) | 50052, 50062 via `docker-compose.override.yml` | Discover controllers, route each to one HID adapter, stream buttons and motion, apply LEDs / rumble / effects, names, rollout routing, chaos | `services/controller_manager/` |
+| controller-manager | Python | 50052 gRPC; 50062 mock control API (mock adapter only) | 50052, 50062 via `docker-compose.override.yml` | Discover controllers, route each to one HID adapter, stream buttons and motion, apply LEDs / rumble / effects, names, rollout routing | `services/controller_manager/` |
 | python-hid | Python | 50059 gRPC | no | HID access via hidapi: ControllerIOService only. Opt-in: starts only under the `python-hid` compose profile (UC-002 BR-003, #1371) | `services/python_hid/` |
-| rust-hid | Rust | 50058 gRPC | 50058 (for the host-networked pairing daemon) | HID access: PairingService + ControllerIOService. The default Bluetooth backend; in the full and the lite stack (UC-002 BR-003) | `services/rust-hid/` |
+| rust-hid | Rust | 50058 gRPC | `127.0.0.1:50058` (for the host-networked pairing daemon, #1319) | HID access: PairingService + ControllerIOService. The default Bluetooth backend; in the full and the lite stack (UC-002 BR-003) | `services/rust-hid/` |
 | pairing-daemon | Python | 8002 `/healthz`, `POST /controllers/{address}/unpair` (host network, bound to `CONTROL_BIND`) | host network | USB pairing loop, Bluetooth monitor (RSSI metrics), unpair a controller (UC-005) | `services/pairing_daemon/` |
 | game-coordinator | Python | 50053 gRPC (metrics are pushed over OTLP) | 50053 via override | Game sessions (primary + shadow), game modes, death detection, events, interventions consumer | `services/game_coordinator/` |
 | menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode; writes admin settings for `game` / `user` / `agent.interventions_allowed` to the flag service as persisted admin values | `services/menu/` |
 | audio | Python | 50056 gRPC | 50056 via override | Music with tempo (separate process, soxr), 8 effect channels (miniaudio), ALSA | `services/audio/` |
 | agent | Go | 4317 OTLP gRPC (receiver); 13134 HTTP `/healthz`, `/experiments` | no | Observe via OTLP, decide, write interventions / rollout / experiment arms / promotions through the flag service, run experiments and promotion | `services/agent/` |
-| connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*`, `/chaos/*` write the `controller` set through the flag service | `services/connect-proxy/` |
-| dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005) | `services/dashboard/` |
+| connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*` writes the `controller` set through the flag service | `services/connect-proxy/` |
+| dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005); mode selector from the menu's `ListGameModes` (UC-011 BR-002) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
-| flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
+| flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | `127.0.0.1:8015` (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
 | flag-service | Go | 50064 gRPC sync (flagd only), 8070 HTTP API | 8070 via override; `/flags/` through envoy | Runtime flag state in memory over the read-only baseline files; the only writer path for runtime flags (§7) | `services/flag-service/` |
-| otel-collector | custom contrib build | 4317 / 4318 OTLP | 4317 | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Loki, agent (the :8889 Prometheus exporter was removed in #1449) | `services/otel-collector/config.yaml` |
+| otel-collector | custom contrib build | 4317 / 4318 OTLP | `127.0.0.1:4317` | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Loki, agent (the :8889 Prometheus exporter was removed in #1449) | `services/otel-collector/config.yaml` |
 | jaeger | 2.19.0 | 16686 UI, 4317 / 4318 OTLP | no | Trace store (badger, bounded TTL) | `services/jaeger/config.yaml` |
 | victoria-metrics | v1.144.0 | 8428 | no | The only metric store (remote write, 7 d); serves the Prometheus query API to Grafana, the dashboard and the tools. The Prometheus container was removed in #1449 | `docker-compose.yml:516-544` |
 | grafana | 13.0.2 | 3000 | no | Dashboards | `services/grafana/` |
 | loki | 3.7.2 | 3100 | no | Logs | `services/loki/config.yaml` |
 | agent-game-coordinator | Python (game-coordinator image) | 50053 gRPC (`expose` only) | no | **Test-only** (profile `agent`, #1163): a dedicated game coordinator for the agent's experiment cohort-loop soak, so the suite's per-test `coordinator_idle` quiesce never wipes the agent's shadow games. Service name `agent-game-coordinator-service`; the overlay points the agent at it with `GAME_COORDINATOR_ADDR=agent-game-coordinator:50053`; shares flagd and the controller manager | `docker-compose.agent-coordinator.yml` (layered on `docker-compose.dry-run.yml` by `tests/integration/test_experiment_cohort_loop.py`) |
 
-Compose variants: `docker-compose.yml` (full), `.override.yml` (auto-loaded dev ports), `.lite.yml` (no
+Compose variants: `docker-compose.yml` (full), `.override.yml` (dev ports, auto-loaded by a bare `docker compose`; the Pi start path passes `-f docker-compose.yml` so it never loads it, #1319), `.lite.yml` (no
 observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318), `.ci.yml` (CI baseline dir for the flag service, profiles), `.ci-rust.yml`, `.dev.yml` (source mounts), `.dry-run.yml`
 (demo / experiment seed), `.decide-e2e.yml` (fake OpenAI server), `.agent-coordinator.yml`.
 
 **Traceability:** C-014, C-015, FR-085, NFR-020 / UC-035 / `docker-compose*.yml`, `services/envoy/envoy.yaml` / `tests/integration/conftest.py`.
 
-## 3. gRPC services (36 RPCs)
+## 3. gRPC services
 
+The RPC tables (service, kind, request and response, the `proto/*.proto` line, and the RPC count) are generated by
+`make specs` (`scripts/gen_specs.py`) into **[generated/grpc-rpcs.md](generated/grpc-rpcs.md)**; do not hand-edit
+them. A new or changed RPC needs its description in [notes/grpc-rpcs.yaml](notes/grpc-rpcs.yaml), keyed by
+`<package>.<Service>/<Rpc>` (the generator fails without one).
 
-### `joustmania.audio.AudioService` (proto/audio.proto)
-
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `PlaySound` | unary | `PlaySoundRequest` → `PlaySoundResponse` | Play an effect (file, volume, priority LOW..CRITICAL) | `proto/audio.proto:9` |
-| `PlayMusic` | unary | `PlayMusicRequest` → `PlayMusicResponse` | Start looping music matching a file pattern at a tempo | `proto/audio.proto:10` |
-| `StopMusic` | unary | `StopMusicRequest` → `StopMusicResponse` | Stop music | `proto/audio.proto:11` |
-| `ChangeTempo` | unary | `ChangeTempoRequest` → `ChangeTempoResponse` | Change music tempo (ratio clamped to (0.5, 2.0]) with a transition | `proto/audio.proto:12` |
-| `SetVolume` | unary | `SetVolumeRequest` → `SetVolumeResponse` | Set master volume | `proto/audio.proto:13` |
-
-### `joustmania.controller_manager.ControllerManagerService` (proto/controller_manager.proto)
-
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `StreamButtonEvents` | bidi stream | `ButtonEventStreamControl` → `ButtonEvent` | Button press / release events to the client; the client sends base LED colours and effects back | `proto/controller_manager.proto:11` |
-| `StreamGameplayData` | bidi stream | `GameplayStreamControl` → `GameplayDataUpdate` | Motion data at the requested rate, with each controller's connection quality on the unfiltered (dashboard) stream (`GameplayData.connection_quality`: class and p95 / longest report gap, UC-035 BR-005; game streams leave it unset); the client changes filters, colours and effects mid-stream | `proto/controller_manager.proto:15` |
-| `RenameController` | unary | `RenameControllerRequest` → `RenameControllerResponse` | Rename a controller (set custom human-readable name) | `proto/controller_manager.proto:18` |
-| `GetConnectedControllers` | unary | `GetConnectedControllersRequest` → `GetConnectedControllersResponse` | Query the controller manager's authoritative live roster on demand (#1153). Unlike the event-piggybacked connected_serials (only refreshed on the next CONNECT/DISCONNECT), this returns the current connected set synchronously so a client (the menu) can reconcile ghosts after a missed disconnect. Also read by `scripts/talk-preflight.sh` through envoy to count real controllers (UC-070 BR-006). | `proto/controller_manager.proto:24` |
-| `IdentifyController` | unary | `IdentifyControllerRequest` (`serial`, `duration_ms`: 0 = 3000 ms, clamped to 500..10000) → `IdentifyControllerResponse` (`success`, `outcome`: `started` / `not_connected` / `in_game` / `reserved` / `invalid`, `error`, `duration_ms`: the duration used) | Flash a controller white at 2 Hz and rumble it briefly, then restore its colour, so the operator can find it; refused for controllers that are not connected, reserved, or players of an open game gameplay stream, and cancelled when a game stream claims the controller (UC-004, FR-121) | `proto/controller_manager.proto:29` |
-
-### `controller_manager_mock.MockControllerService` (proto/controller_manager_mock.proto)
-
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `SimulateMovement` | unary | `MovementRequest` → `MovementResponse` | Simulate controller movement: holds the acceleration vector on that controller (every poll and gameplay frame reports it) until the next call or `ResetController`; a `SimulateDeath` latch overrides it for its frames; a NaN/infinite component returns `INVALID_ARGUMENT` (UC-003 BR-002, #1279) | `proto/controller_manager_mock.proto:10` |
-| `SimulateDeath` | unary | `DeathRequest` → `DeathResponse` | Simulate death (high acceleration) | `proto/controller_manager_mock.proto:13` |
-| `SimulateButton` | unary | `ButtonRequest` → `ButtonResponse` | Simulate button press | `proto/controller_manager_mock.proto:16` |
-| `SetColor` | unary | `ColorRequest` → `ColorResponse` | Set LED color | `proto/controller_manager_mock.proto:19` |
-| `ResetController` | unary | `ResetRequest` → `ResetResponse` | Reset controller to idle: buttons released, death latch and held movement cleared, acceleration back to resting noise (UC-003 A3) | `proto/controller_manager_mock.proto:22` |
-| `ListMockControllers` | unary | `ListRequest` → `ListResponse` | Get list of mock controllers | `proto/controller_manager_mock.proto:25` |
-| `SetAutoGameEnd` | unary | `AutoGameEndRequest` → `AutoGameEndResponse` | Set auto game end - automatically kill players after duration to ensure game ends | `proto/controller_manager_mock.proto:28` |
-| `GetColor` | unary | `GetColorRequest` → `GetColorResponse` | Get current LED color of a controller | `proto/controller_manager_mock.proto:31` |
-| `StreamObservability` | server stream | `ObservabilityRequest` → `ObservabilityEvent` | Stream observable events from mock controllers (LED changes, button presses, etc.) | `proto/controller_manager_mock.proto:34` |
-| `AddController` | unary | `AddControllerRequest` → `AddControllerResponse` | Add a single mock controller dynamically | `proto/controller_manager_mock.proto:37` |
-| `RemoveController` | unary | `RemoveControllerRequest` → `RemoveControllerResponse` | Remove a mock controller | `proto/controller_manager_mock.proto:40` |
-| `AddControllers` | unary | `AddControllersRequest` → `AddControllersResponse` | Add multiple mock controllers at once | `proto/controller_manager_mock.proto:43` |
+### `controller_manager_mock.MockControllerService`: pattern-game changes
 
 Pattern games (#1258, [UC-046](../use_cases/UC-046.md), PR #1308). The proto change needs
 `make protos` and `make protos-agent` (committed Go stubs in `services/agent/gen`); the mock proto's `go_package`
@@ -124,48 +93,12 @@ archetypes: the agent resolves and pins the parameters and passes them in `AddCo
 | `AddControllersResponse` | new fields 4 to 6 | `archetype`, `stream_rate_hz`, `players` | Echo of the installed archetype; `success=false` with the failed rules when the parameters are invalid | Implemented (#1258) |
 | `RemoveControllerResponse` | new fields 3 to 8 | `pattern_slot`, `frames_delivered` (uint64), `signal_hash` (fixed64), `frame_overruns` (uint32), `signal_checkpoints` (repeated string), `archetype` | For a pattern controller: the replay record of UC-046 step 8 (definitions in [telemetry.md §9](telemetry.md#9-pattern-games-1258)); `archetype` is empty for other controllers | Implemented (#1258, FR-108, FR-109) |
 
-### `joustmania.game_coordinator.GameCoordinatorService` (proto/game_coordinator.proto)
-
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `ForceEndGame` | unary | `ForceEndGameRequest` → `ForceEndGameResponse` | Force end current game | `proto/game_coordinator.proto:10` |
-| `StreamGameEvents` | server stream | `StreamEventsRequest` → `GameEvent` | Stream game events (deaths, scoring, etc.) If start_config is provided, starts a new game before streaming events. If start_config is empty, subscribes to current/upcoming game events. | `proto/game_coordinator.proto:15` |
-| `GetGameState` | unary | `GetGameStateRequest` → `GetGameStateResponse` | Get current game state (for testing/observability) | `proto/game_coordinator.proto:18` |
-| `ListGames` | unary | `ListGamesRequest` → `ListGamesResponse` | List all live game sessions (primary + shadow). Lets agents and tests enumerate concurrent games and learn their game_ids; the dashboard uses it to pick the shadow game it follows (UC-070 BR-005). | `proto/game_coordinator.proto:22` |
-
-### `joustmania.menu.MenuService` (proto/menu.proto)
-
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `StartMenu` | unary | `StartMenuRequest` → `StartMenuResponse` | Start menu | `proto/menu.proto:10` |
-| `StopMenu` | unary | `StopMenuRequest` → `StopMenuResponse` | Stop menu | `proto/menu.proto:13` |
-| `StreamMenuEvents` | server stream | `StreamMenuEventsRequest` → `MenuEvent` | Stream menu events (button presses, selections) | `proto/menu.proto:16` |
-| `ProcessInput` | unary | `ProcessInputRequest` → `ProcessInputResponse` | Process menu input | `proto/menu.proto:19` |
-
-### `joustmania.psmove_hid.PairingService` (proto/psmove_hid.proto)
-
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `GetUSBControllers` | unary | `GetUSBControllersRequest` → `GetUSBControllersResponse` | List USB-attached controllers: device path, serial and USB product id (`product_id`, `0x03D5` / `0x0C5E`, for the BlueZ device record of UC-001 BR-008) | `proto/psmove_hid.proto:8` |
-| `PairController` | unary | `PairControllerRequest` → `PairControllerResponse` | Write the host adapter address into a controller | `proto/psmove_hid.proto:9` |
-
-### `joustmania.psmove_hid.ControllerIOService` (proto/psmove_hid.proto)
-
-| RPC | Kind | Request → Response | Description | Line |
-|---|---|---|---|---|
-| `Discover` | unary | `DiscoverRequest` → `DiscoverResponse` | Enumerate devices (`force`, `verify_only`, `exclude_serials`); each `DiscoveredController` carries `product_id` `0x03D5` (ZCM1) or `0x0C5E` (ZCM2), never `0x042F` (Navigation, UC-001 BR-006) | `proto/psmove_hid.proto:47` |
-| `Open` | unary | `OpenRequest` → `OpenResponse` | Open a device handle | `proto/psmove_hid.proto:48` |
-| `Close` | unary | `CloseRequest` → `CloseResponse` | Close a device handle | `proto/psmove_hid.proto:49` |
-| `CloseAll` | unary | `CloseAllRequest` → `CloseAllResponse` | Close all handles | `proto/psmove_hid.proto:50` |
-| `StreamIO` | bidi stream | `IOCommand` → `SensorData` | Sensor data out (≈ 1 kHz), LED / rumble commands in | `proto/psmove_hid.proto:53` |
-
-
 The agent's OTLP receiver implements the standard `opentelemetry.proto.collector.{trace,metrics}.v1` Export
 services (`services/agent/receiver.go`); they are not JoustMania protos.
 
 ### Browser-reachable RPCs (connect-proxy)
 
-All five `ControllerManagerService` RPCs, all four `GameCoordinatorService` RPCs and all four `MenuService`
+All five `ControllerManagerService` RPCs, all four `GameCoordinatorService` RPCs and all five `MenuService`
 RPCs are forwarded under `/joustmania` (`services/connect-proxy/main.go`, the `ControllerManagerProxy`, `GameCoordinatorProxy` and `MenuProxy` methods). Audio, HID, pairing and mock
 RPCs are not.
 
@@ -180,7 +113,7 @@ RPCs are not.
 | `GameInfo` / `PlayerInfo` | mode, state, players (team, colour, alive, `sensitivity_factor`; score always 0), `game_id`, `start_time_ms` | `proto/game_coordinator.proto` |
 | `ControllerState` | serial, battery, buttons, accel, gyro, colour (the LED colour last written to the controller, effect frames included; #1301), rssi (always 0 from CM), name | `proto/controller_manager.proto` |
 | `GameEffectCommand` | `serial` (empty = all), `effect` (`GameEffect`), optional `color`, `duration_ms`, `speed`. `GameEffect`: `NONE`, `PLAYER_WARNING`, `PLAYER_DEATH`, `PLAYER_RESPAWN`, `WINNER_RAINBOW`, `COUNTDOWN`, `ADMIN_ENTER`, `ADMIN_EXIT`, `LOW_BATTERY`, `FORCE_START_CHARGE`, `SHOW_BATTERY`, `RUMBLE`, `PULSE`, `FLASH`, `SHIELD` (14, agent shield as a persistent LED layer: fade, last-second blink, restore; short LED effects overlay it, a new base colour shows after it; death, the winner rainbow and `duration_ms=0` end it), `PARTIAL_SHIELD` (15, the weaker breathing variant) (UC-040 BR-008 to BR-010) and `IDENTIFY` (16, white 2 Hz flash plus a 500 ms rumble, then the base colour or the colour shown before; RPC-only: started by `IdentifyController`, a `GameEffectCommand` with it is rejected; a game stream configuration cancels it on its players, UC-004 BR-001 to BR-004) | `proto/controller_manager.proto:202-245`; `services/controller_manager/feedback_manager.py` |
-| `MenuEvent` | `event_type` (`menu_started`, `menu_stopped`, `selection_changed`, `game_selection_changed`, `game_requested`, `game_start_cancelled`, `game_ended`), `data`, `timestamp` | `proto/menu.proto:46-50`; `services/menu/` |
+| `MenuEvent` | `event_type` (`menu_started`, `menu_stopped`, `selection_changed`, `game_selection_changed`, `game_requested`, `game_start_cancelled`, `game_start_rejected` (web `start_game` named an unknown or unimplemented mode: `game_name`, `source`, `error`), `game_ended`), `data`, `timestamp` | `proto/menu.proto:49-53`; `services/menu/` |
 
 Game event types actually published are listed in [UC-020](../use_cases/UC-020.md) to
 [UC-027](../use_cases/UC-027.md) and in [telemetry.md](telemetry.md#5-game-events); summary:
@@ -202,14 +135,13 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 | `/` | dashboard | yes | SPA | `services/envoy/envoy.yaml:121-123` |
 | `/` | connect-proxy, only when `/app/static` exists in its container (not mounted in the stock compose files) | no (envoy sends `/` to the dashboard) | Static dashboard files (`http.FileServer`) | `services/connect-proxy/main.go` (`main`, "Serve static files for dashboard") |
 | `/joustmania/*` | connect-proxy | yes (3600 s timeout) | Connect RPCs | `envoy.yaml:37-39` |
-| `/chaos/{poll-drop,accel-spike,led-failure,disconnect}`, `/chaos/reset`, `/chaos/status` | connect-proxy | yes | Fault injection via `chaos_fault_type` | `services/connect-proxy/chaos.go:37-44` |
 | `/canary/{python,rust}`, `/canary/rollback`, `/canary/status` | connect-proxy | **no** (falls through to the dashboard, D-B3) | Manual backend canary via `bluetooth_backend` | `services/connect-proxy/canary.go:13-16` |
 | `/experiments`, `/experiments/{id}` | agent :13134 | yes | Experiment dossier (JSON / HTML) | `services/agent/dossier.go` (`handleList`, mux registration) |
 | `/healthz` | agent :13134 | no | Liveness | `services/agent/server.go:startHealthServer` |
 | `/health` | connect-proxy; envoy direct 200 | yes | Liveness | `services/connect-proxy/main.go:129` |
 | `/jaeger/`, `/grafana/`, `/loki/`, `/victoria-metrics/` | observability services | yes | UIs and APIs (`/prometheus/` was removed in #1449 and now falls through to the dashboard) | `envoy.yaml:45-89` |
 | `/healthz` | pairing-daemon :8002 | host network | Liveness | `services/pairing_daemon/psmove_pairing/daemon.py` (health status for `/healthz`) |
-| `POST /pairing/unpair` (JSON `{"address": "<bluetooth address>"}`) | connect-proxy | yes (envoy route timeout 40 s) | Unpair a controller (UC-005): forwards to the pairing daemon at `PAIRING_DAEMON_URL` (full stack `http://host.docker.internal:8002` via the `host-gateway` extra host, lite stack `http://pairing-daemon:8002`) and passes its status and JSON answer through; 400 not a Bluetooth address, 403 cross-origin browser request (`Origin` host ≠ `Host`; also on `/chaos/*` setters), 502 daemon unreachable. No authentication (UC-005 BR-003) | `services/connect-proxy/pairing.go` |
+| `POST /pairing/unpair` (JSON `{"address": "<bluetooth address>"}`) | connect-proxy | yes (envoy route timeout 40 s) | Unpair a controller (UC-005): forwards to the pairing daemon at `PAIRING_DAEMON_URL` (full stack `http://host.docker.internal:8002` via the `host-gateway` extra host, lite stack `http://pairing-daemon:8002`) and passes its status and JSON answer through; 400 not a Bluetooth address, 403 cross-origin browser request (`Origin` host ≠ `Host`), 502 daemon unreachable. No authentication (UC-005 BR-003) | `services/connect-proxy/pairing.go` |
 | `POST /controllers/{address}/unpair` | pairing-daemon :8002, bound only to `CONTROL_BIND` (full stack loopback + docker0 gateway, lite `0.0.0.0` in its container) | host network (through `/pairing/unpair`) | Remove the address's registrations on every adapter (UC-005). 200 `{"address", "removed", "already_absent", "failed", "adapters", "results": [{"adapter", "outcome", "error"?}], "on_usb"}` when every registration found is `removed` or `already_absent`; 400 not a Bluetooth address; 404 none found; 409 a USB pairing or another unpair is running; 503 any `failed` result (same body plus `error`), a BlueZ / D-Bus error or any unexpected error | `services/pairing_daemon/psmove_pairing/control_api.py`, `usb_pairing.py`, `registrations.py` |
 
 **Traceability:** FR-059, FR-070, FR-073, FR-084, FR-085, FR-123 / UC-005, UC-035, UC-052 / `services/envoy/envoy.yaml`, `services/connect-proxy/`, `services/agent/dossier.go`.
@@ -222,7 +154,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - Loops: state 100 Hz, discovery 1 Hz (full enumeration at most every 0.5 s, forced every 10 s), LED batch 20 Hz (send on change or 2 s keep-alive), battery metrics every 30 s, `controller.bluetooth_health` span ~1 Hz (`discovery_loop.py`).
 - Gameplay stream rate: client-requested, overridden by `game_loop.update_frequency_hz` (clamp 1..100), fallback 30 Hz.
 - Pattern games (#1258, FR-103): a stream whose explicit filter names pattern controllers runs at the archetype's pinned `stream_rate_hz` and ignores the flag override; a controller's frame index advances once per frame delivered on its owning stream (the first explicit stream that names it), in `_build_gameplay_update` next to the hook that drains the #926 death latch.
-- `UnstableAdapter` (≈ 8.3 Hz, 10 % drops) is registered alongside python for the rollout demo; real adapters are always wrapped in `ChaosAdapter` (D-C2).
+- `UnstableAdapter` (≈ 8.3 Hz, 10 % drops) is registered alongside python for the rollout demo; real adapters are used directly (the ChaosAdapter wrapper, D-C2, was removed in #1322).
 - Mock serials `MOCK%04d`; reserved mock controllers are hidden from the roster.
 
 ### game-coordinator
@@ -252,7 +184,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 ### connect-proxy
 
-- No flagd client: `/canary/*` and `/chaos/*` change `bluetooth_backend` and `chaos_fault_type` through the flag service (`FLAG_SERVICE_URL`, writer `connect-proxy`, #1420): a full rollout is a stack overlay, `?fraction=N` a fraction overlay (`scope.fraction_percent`, the rest of the serials resolve the default, for a canary the stable counterpart), rollback / reset clear the overlays; `/canary/status` and `/chaos/status` return the flag service's view. A refusal keeps its 4xx, the flag service unreachable is 502. The proxy mounts no flag file.
+- No flagd client: `/canary/*` changes `bluetooth_backend` through the flag service (`FLAG_SERVICE_URL`, writer `connect-proxy`, #1420): a full rollout is a stack overlay, `?fraction=N` a fraction overlay (`scope.fraction_percent`, the rest of the serials resolve the default, for a canary the stable counterpart), rollback clears the overlays; `/canary/status` returns the flag service's view. A refusal keeps its 4xx, the flag service unreachable is 502. The proxy mounts no flag file.
 
 ### pairing-daemon
 
@@ -329,7 +261,7 @@ they go on the write span and are never checked. Writers use a 500 ms deadline a
     "experiment_id": "exp_42",            // experiment arm write (with arm)
     "arm": "experimental",
     "game_kind": "real",                  // promotion: the real default
-    "fraction_percent": 10                // controller canary / chaos: fractional on serial
+    "fraction_percent": 10                // controller canary: fractional on serial
   },
   "ttl_seconds": 600,                     // optional: overlay expires (not with persist)
   "persist": true,                        // optional: admin setting, kept in the state file (registry must allow it)
@@ -370,7 +302,7 @@ treated as real (FR-041). **`PUT /coordinators/{instance}/games` body**: `{"game
 **Callers**: the game coordinator (`PUT /games/{id}` awaited for at most 200 ms before the game is RUNNING,
 outside `_sessions_lock`; `DELETE` at retire; the reconcile call at its start, after a failed call, when the service's boot epoch changes (read from `GET /healthz` every 2 s and from every response) and every 15 s; a `DELETE` waits for a still-running `PUT` of the same game);
 the agent (interventions, rollout count, experiment arms, promotion; it retries `game_not_live` once after
-100 ms); the menu (admin settings, kill switch); the connect-proxy (canary, chaos); the stage scripts and the
+100 ms); the menu (admin settings, kill switch); the connect-proxy (canary); the stage scripts and the
 validation harness (`curl http://localhost/flags/...`); the integration fixtures.
 
 **Traceability:** FR-130 to FR-139, NFR-050 to NFR-053, C-030 to C-033 / UC-053 / `services/flag-service/`

@@ -116,10 +116,13 @@ class TestGameSessionLoop:
         session.clients.connect.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main")
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
     async def test_loop_clients_not_connected_publishes_error(self, mock_tracer_mod, mock_factory):
+        """UC-020 Post-F-1: no gRPC clients publishes game_error and ends the session."""
         session = _make_session()
+        session.game_running = True
         session.clients.is_connected = False
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
 
@@ -129,12 +132,17 @@ class TestGameSessionLoop:
         assert len(error_calls) >= 1
         assert "not initialized" in error_calls[0][0][1]["error"]
         mock_factory.create_game.assert_not_called()
+        assert session.game_running is False
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main")
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
     async def test_loop_unknown_mode_publishes_error(self, mock_tracer_mod, mock_factory):
+        """UC-020 Post-F-1: a failed mode creation publishes game_error and ends the session."""
         session = _make_session()
+        session.game_running = True
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         mock_factory.create_game.side_effect = ValueError("Unknown game mode: 'BadGame'")
 
@@ -143,6 +151,8 @@ class TestGameSessionLoop:
         error_calls = [c for c in session.event_bus.publish.call_args_list if c[0][0] == "game_error"]
         assert len(error_calls) >= 1
         assert "Unknown game mode" in error_calls[0][0][1]["error"]
+        assert session.game_running is False
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.GameFactory")
@@ -164,10 +174,13 @@ class TestGameSessionLoop:
         assert session.current_game is None
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main")
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
     async def test_loop_exception_publishes_error(self, mock_tracer_mod, mock_factory):
+        """UC-020 Post-F-1: a game loop that raises publishes game_error and ends the session."""
         session = _make_session()
+        session.game_running = True
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         mock_game = MagicMock()
         mock_game.run = AsyncMock(side_effect=RuntimeError("stream disconnected"))
@@ -178,6 +191,9 @@ class TestGameSessionLoop:
         error_calls = [c for c in session.event_bus.publish.call_args_list if c[0][0] == "game_error"]
         assert len(error_calls) >= 1
         assert "stream disconnected" in error_calls[0][0][1]["error"]
+        assert session.game_running is False
+        assert session.current_game is None
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.GameFactory")

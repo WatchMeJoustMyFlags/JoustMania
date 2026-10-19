@@ -277,6 +277,7 @@ async def test_revive_applies_in_respawn_mode():
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="main", steps=[13])
+@pytest.mark.uc("UC-020", flow="A3")
 async def test_global_difficulty_applies_then_reverts_without_event():
     """1.0 -> 1.5 applies (one unblocked event, factor 1.5); back to 1.0 runs the
     revert handler (factor 1.0) without a new event (was _scenario_global_difficulty)."""
@@ -298,6 +299,7 @@ async def test_global_difficulty_applies_then_reverts_without_event():
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="main", steps=[13])
+@pytest.mark.uc("UC-020", flow="A3")
 async def test_pacing_profile_calm_frantic_then_quiet_revert():
     """calm and frantic each apply (two unblocked events, windows swapped);
     ``none`` restores the init windows without a new event

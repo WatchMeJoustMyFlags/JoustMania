@@ -50,7 +50,7 @@ rectangle "JoustMania" {
     package "Infrastructure" {
         usecase "UC-050\nRoll Out a Controller Backend Progressively" as UC050
         usecase "UC-051\nRoll Back Automatically on Degradation" as UC051
-        usecase "UC-052\nCanary a Backend and Inject Chaos by Hand" as UC052
+        usecase "UC-052\nCanary a Backend by Hand" as UC052
         usecase "UC-053\nChange a Runtime Flag through the Flag Service\n(planned)" as UC053
     }
     package "Talk" {

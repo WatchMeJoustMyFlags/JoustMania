@@ -69,3 +69,51 @@ async def test_spike_that_is_the_latest_poll_is_streamed(servicer):
     update = servicer._build_gameplay_update(None)
 
     assert _accel(update) == pytest.approx((4.0, 4.0, 4.0))
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-030", flow="main", steps=[2])
+async def test_poll_loop_runs_every_10_ms_and_keeps_only_the_latest_state(servicer):
+    """UC-030 step 2: the real poll loop (``DiscoveryLoop._poll_loop``) polls on a fixed 100 Hz
+    schedule and stores each poll's state, so the next gameplay frame carries the latest one.
+
+    The clock is simulated: the loop's ``time.monotonic`` and ``asyncio.sleep`` are replaced so
+    each poll costs no time and every sleep advances the clock by the requested amount.
+    """
+    import time
+    from types import SimpleNamespace
+
+    from services.controller_manager import discovery_loop as discovery_loop_module
+
+    loop = servicer.discovery_loop
+    polls = [_poll(0.0, 0.0, 1.0), _poll(4.0, 4.0, 4.0), _poll(0.2, 0.0, 1.0)]
+    servicer.backend.get_controller_state.side_effect = polls
+    clock = {"now": 100.0}
+    poll_times: list[float] = []
+    sleeps: list[float] = []
+    real_update = loop._update_controller_states
+
+    async def timed_update():
+        poll_times.append(clock["now"])
+        await real_update()
+        if len(poll_times) == len(polls):
+            loop.running = False
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    loop.running = True
+    with (
+        patch.object(loop, "_update_controller_states", side_effect=timed_update),
+        patch.object(discovery_loop_module, "time", SimpleNamespace(monotonic=lambda: clock["now"], time=time.time)),
+        patch.object(discovery_loop_module.asyncio, "sleep", side_effect=fake_sleep),
+        patch.object(discovery_loop_module, "metrics"),
+    ):
+        await loop._poll_loop()
+
+    assert loop._poll_interval == pytest.approx(0.010)
+    assert [round(b - a, 6) for a, b in zip(poll_times, poll_times[1:], strict=False)] == [0.01, 0.01]
+    assert sleeps == pytest.approx([0.010] * len(polls))
+    # Only the latest poll is kept: the 4 g spike in the middle never reaches the frame.
+    assert _accel(servicer._build_gameplay_update(None)) == pytest.approx((0.2, 0.0, 1.0))

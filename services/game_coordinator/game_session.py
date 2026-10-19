@@ -27,6 +27,7 @@ import asyncio
 import logging
 import threading
 import time
+from collections.abc import Callable
 from contextlib import suppress
 
 from opentelemetry import trace
@@ -41,6 +42,7 @@ from lib.feature_flags import (
 from lib.feature_flags import (
     set_game_session_kind_context,
 )
+from lib.otel_metrics import get_export_interval_ms
 from lib.telemetry import get_tracer
 from lib.types import get_game_display_name
 from proto import game_coordinator_pb2
@@ -88,6 +90,24 @@ def completed_game_outcome(game) -> str:
 
 # How often game_duration_seconds is refreshed while a game is RUNNING (#1305).
 DURATION_GAUGE_INTERVAL_S = 1.0
+
+# Retire keeps a game's zeroed series for this many metric export intervals
+# before it removes them (#1311): the agent detects a game's end only from a
+# game_active 1 -> 0 datapoint, so the 0 must be exported (at least twice)
+# before the series goes.
+RETIRE_REMOVAL_EXPORT_INTERVALS = 3
+
+
+def retire_removal_delay_s() -> float:
+    """Seconds between retire's zeroing and the removal of the series (#1311).
+
+    0 when metrics are not exported (not initialized, or disabled for tests):
+    there is no datapoint to wait for.
+    """
+    interval_ms = get_export_interval_ms()
+    if not interval_ms:
+        return 0.0
+    return RETIRE_REMOVAL_EXPORT_INTERVALS * interval_ms / 1000.0
 
 
 class GameSession:
@@ -190,6 +210,13 @@ class GameSession:
         # Protects game_state, current_game, players for this session.
         self._state_lock = threading.Lock()
 
+        # Retire guard for this session's per-game series (#1311). clear_metrics
+        # sets _metrics_retired under _metrics_lock, and every per-game gauge
+        # write from the session checks it under the same lock, so a game-thread
+        # teardown that runs after retire cannot re-create a removed series.
+        self._metrics_lock = threading.Lock()
+        self._metrics_retired = False
+
     @property
     def is_primary(self) -> bool:
         return self.game_kind == GAME_KIND_PRIMARY
@@ -208,7 +235,40 @@ class GameSession:
         for some/all of these; the prometheus client raises KeyError/ValueError
         on ``.remove()`` of a missing label set, so each is suppressed. Mirrors
         the per-player cleanup in ``metrics.clear_player_analytics``.
+
+        Final (#1311): retire can run before the game thread's teardown (the
+        natural-end sweep sees ENDED before the loop's ``finally:``, or
+        ``force_end`` gives up joining). The session is marked retired under
+        ``_metrics_lock`` first, so no later session write re-creates a series.
+
+        The game's end stays visible (#1311): the agent detects a game's end
+        only from a ``game_active`` 1 -> 0 datapoint. Retire therefore sets
+        ``game_active`` / ``game_active_players`` to 0 itself (the teardown may
+        not have yet, and will not after retire) and removes the series only
+        ``retire_removal_delay_s()`` later, on a timer thread, so the 0 is
+        exported first. Retire never blocks on that delay.
         """
+        with self._metrics_lock:
+            if self._metrics_retired:
+                return  # removal already done or scheduled
+            self._metrics_retired = True
+            self._zero_lifecycle_gauges()
+        delay_s = retire_removal_delay_s()
+        if delay_s <= 0:
+            self._remove_metrics_locked()
+            return
+        timer = threading.Timer(delay_s, self._remove_metrics_locked)
+        timer.daemon = True
+        timer.name = f"retire-metrics-{self.game_id}"
+        timer.start()
+
+    def _remove_metrics_locked(self) -> None:
+        """Remove every per-game series of this retired session (#1018, #1311)."""
+        with self._metrics_lock:
+            self._remove_metrics()
+
+    def _remove_metrics(self) -> None:
+        """Remove every per-game series of this session. Caller holds ``_metrics_lock``."""
         labels = (self.game_kind, self.game_id, self.experiment_id, self.arm)
         for gauge in (
             metrics.active_game,
@@ -246,6 +306,12 @@ class GameSession:
             self.game_cycle_span_id,
         )
 
+    def _set_gauges_unless_retired(self, write: Callable[[], None]) -> None:
+        """Run ``write`` (per-game gauge writes) unless this session is retired (#1311)."""
+        with self._metrics_lock:
+            if not self._metrics_retired:
+                write()
+
     def _set_trace_correlation(self) -> None:
         """Set the game_trace_correlation series for the current label tuple to 1."""
         metrics.game_trace_correlation.labels(
@@ -268,12 +334,13 @@ class GameSession:
         """
         if not self.game_trace_id or not span_id:
             return
-        if getattr(self, attr) == span_id:
-            return
-        with suppress(KeyError, ValueError):
-            metrics.game_trace_correlation.remove(*self._correlation_labels())
-        setattr(self, attr, span_id)
-        self._set_trace_correlation()
+        with self._metrics_lock:
+            if self._metrics_retired or getattr(self, attr) == span_id:
+                return
+            with suppress(KeyError, ValueError):
+                metrics.game_trace_correlation.remove(*self._correlation_labels())
+            setattr(self, attr, span_id)
+            self._set_trace_correlation()
 
     def publish_game_cycle_span_id(self, game_cycle_span_id: str) -> None:
         """Re-emit the correlation gauge carrying the game_cycle span_id (#1325).
@@ -293,12 +360,15 @@ class GameSession:
         game (mode, game_kind, game_id); removed when the game loop ends and again
         at retire.
         """
-        self.game_mode = mode
-        metrics.current_game_mode.labels(
-            mode=mode,
-            game_kind=self.game_kind,
-            game_id=self.game_id,
-        ).set(1)
+        with self._metrics_lock:
+            if self._metrics_retired:
+                return
+            self.game_mode = mode
+            metrics.current_game_mode.labels(
+                mode=mode,
+                game_kind=self.game_kind,
+                game_id=self.game_id,
+            ).set(1)
 
     def _remove_game_mode(self) -> None:
         """Remove this game's game_current_mode series (idempotent)."""
@@ -337,12 +407,14 @@ class GameSession:
         """
         if not self.game_start_time:
             return
-        metrics.game_duration_seconds.labels(
-            game_kind=self.game_kind,
-            game_id=self.game_id,
-            experiment_id=self.experiment_id,
-            arm=self.arm,
-        ).set(time.time() - self.game_start_time)
+        self._set_gauges_unless_retired(
+            lambda: metrics.game_duration_seconds.labels(
+                game_kind=self.game_kind,
+                game_id=self.game_id,
+                experiment_id=self.experiment_id,
+                arm=self.arm,
+            ).set(time.time() - self.game_start_time)
+        )
 
     async def _publish_duration_while_running(self) -> None:
         """Refresh game_duration_seconds every DURATION_GAUGE_INTERVAL_S while RUNNING (#1305).
@@ -526,7 +598,7 @@ class GameSession:
                 # two-tier fallback uses the game root span until gameplay_phase
                 # publishes its id, at which point the gauge is re-emitted with the
                 # populated label (publish_gameplay_phase_span_id).
-                self._set_trace_correlation()
+                self._set_gauges_unless_retired(self._set_trace_correlation)
 
             # The built game (None until GameFactory created it) and the outcome the
             # session decides itself (error, or force_ended before the game was
@@ -641,23 +713,15 @@ class GameSession:
 
                 # The game is over: its mode series goes now, not at retire, so
                 # it never reads 1 between games (retire removes it again).
-                self._remove_game_mode()
+                with self._metrics_lock:
+                    self._remove_game_mode()
 
                 # Update lifecycle metrics for THIS session's kind (#775) +
                 # experiment attribution (#975). experiment_id/arm are "" for a
-                # non-experiment game.
-                metrics.active_game.labels(
-                    game_kind=self.game_kind,
-                    game_id=self.game_id,
-                    experiment_id=self.experiment_id,
-                    arm=self.arm,
-                ).set(0)
-                metrics.active_players.labels(
-                    game_kind=self.game_kind,
-                    game_id=self.game_id,
-                    experiment_id=self.experiment_id,
-                    arm=self.arm,
-                ).set(0)
+                # non-experiment game. Skipped when retire already removed the
+                # series (#1311): the zero would re-create a series nothing
+                # removes again.
+                self._set_gauges_unless_retired(self._zero_lifecycle_gauges)
                 if self.is_primary:
                     # players_alive is a single global gauge (not yet per-kind);
                     # only the primary session resets it.
@@ -682,6 +746,17 @@ class GameSession:
                 # Cleanup channels
                 await self.clients.close()
                 logger.info(f"Closed gRPC channels for game {self.game_id}")
+
+    def _zero_lifecycle_gauges(self) -> None:
+        """Set this game's game_active and game_active_players series to 0."""
+        labels = {
+            "game_kind": self.game_kind,
+            "game_id": self.game_id,
+            "experiment_id": self.experiment_id,
+            "arm": self.arm,
+        }
+        metrics.active_game.labels(**labels).set(0)
+        metrics.active_players.labels(**labels).set(0)
 
     async def force_end(self, reason: str) -> tuple[bool, str]:
         """Force end this session's game.

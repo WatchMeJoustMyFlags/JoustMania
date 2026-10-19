@@ -28,9 +28,8 @@ func newFakeFlags() *fakeFlags {
 	return &fakeFlags{
 		variants: map[string][]string{
 			"bluetooth_backend": {"python", "rust", "unstable"},
-			"chaos_fault_type":  {"none", "poll_drop", "accel_spike", "led_failure", "disconnect"},
 		},
-		baseline: map[string]string{"bluetooth_backend": "rust", "chaos_fault_type": "none"},
+		baseline: map[string]string{"bluetooth_backend": "rust"},
 		stack:    map[string]string{},
 		fraction: map[string][2]any{},
 	}
@@ -120,7 +119,6 @@ func newProxyServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	registerCanaryHandlers(mux)
-	registerChaosHandlers(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -340,52 +338,6 @@ func TestCanary_FlagServiceErrors(t *testing.T) {
 		}
 		if len(fake.stack)+len(fake.fraction) != 0 {
 			t.Error("nothing may be written")
-		}
-	})
-}
-
-// UC: UC-052 main
-func TestChaos(t *testing.T) {
-	t.Run("UC-052/main a fault for every controller is a stack overlay", func(t *testing.T) {
-		fake := useFakeFlags(t)
-		srv := newProxyServer(t)
-		if status, body := doRequest(t, http.MethodPost, srv.URL+"/chaos/poll-drop"); status != http.StatusOK || body["fault"] != "poll_drop" {
-			t.Fatalf("chaos = %d %v", status, body)
-		}
-		if got := fake.effective("chaos_fault_type"); got != "poll_drop" {
-			t.Errorf("default = %s", got)
-		}
-	})
-	t.Run("UC-052/main a fractional fault keeps the default none", func(t *testing.T) {
-		fake := useFakeFlags(t)
-		srv := newProxyServer(t)
-		doRequest(t, http.MethodPost, srv.URL+"/chaos/led-failure")
-		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/chaos/disconnect?fraction=20"); status != http.StatusOK {
-			t.Fatalf("status %d", status)
-		}
-		if got := fake.effective("chaos_fault_type"); got != "none" {
-			t.Errorf("default = %s, want none", got)
-		}
-		if got := fake.fraction["chaos_fault_type"]; got != [2]any{"disconnect", 20} {
-			t.Errorf("fraction overlay %v", got)
-		}
-	})
-	t.Run("UC-052/main reset clears both overlays", func(t *testing.T) {
-		fake := useFakeFlags(t)
-		srv := newProxyServer(t)
-		doRequest(t, http.MethodPost, srv.URL+"/chaos/accel-spike?fraction=50")
-		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/chaos/reset"); status != http.StatusOK {
-			t.Fatalf("reset %d", status)
-		}
-		if len(fake.stack)+len(fake.fraction) != 0 {
-			t.Errorf("overlays left: %v %v", fake.stack, fake.fraction)
-		}
-	})
-	t.Run("UC-052/main status is the flag service view", func(t *testing.T) {
-		useFakeFlags(t)
-		srv := newProxyServer(t)
-		if status, body := doRequest(t, http.MethodGet, srv.URL+"/chaos/status"); status != http.StatusOK || body["effective_default"] != "none" {
-			t.Fatalf("status %d %v", status, body)
 		}
 	})
 }

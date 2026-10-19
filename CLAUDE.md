@@ -18,6 +18,11 @@ Specs are the source of truth; code and tests follow from them. Start at [docs/R
 - **Construction loop** (project skills in [.claude/skills/](.claude/skills/README.md)): work one use case at a time with `/spec-review UC-xxx` (`spec-review` and `test-case` come from the `aiup-core` plugin; CI runs the same lint as the Spec Gate, see CONTRIBUTING) → `/implement UC-xxx` → `/pytest-test` | `/go-test UC-xxx` → `/integration-test UC-xxx` → `/coverage-check UC-xxx`. New tests carry the traceability tag (`@pytest.mark.uc("UC-040", flow="A2", br=[...])`, Go `// UC: UC-040 A2` + `UC-040/A2 …` subtests); a UC is `Tested` only when every main scenario and alternative flow has a tagged test.
 - Every other PR fills the **Spec changes** section of the PR template. The "tests trace to spec IDs" checklist item applies to new tests only. Workflow details: [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#spec-driven-development-aiup).
 
+## Agent workflows
+
+- Implementing an issue (agent or human): [.claude/skills/implement-issue](.claude/skills/implement-issue/SKILL.md): worktree, spec first, failing test, `make pr-gates`, push, stop, 15-line report.
+- Reviewing a PR: [.claude/skills/review-pr](.claude/skills/review-pr/SKILL.md): depth by PR type, mutation check, delta mode; merge with `scripts/ci/safe-merge.sh`.
+
 ## Session Management
 
 When resuming from a previous session, ask the user to confirm the current task before reading files or starting work. Do not assume context from prior sessions without verification.
@@ -63,9 +68,11 @@ uv run pytest
 **Always create a new worktree for changes.** Never commit directly to the main checkout directory.
 
 ```bash
-git worktree add ../JoustMania-issue-<NUMBER> -b fix/description origin/main
-cd ../JoustMania-issue-<NUMBER>
+git worktree add .worktrees/issue-<NUMBER> -b fix/description origin/main
+cd .worktrees/issue-<NUMBER>
 ```
+
+Worktrees live under `.worktrees/` in the main checkout, never in `/tmp/` or a sibling directory.
 
 This keeps the main checkout clean and isolates changes when multiple agents work in parallel.
 

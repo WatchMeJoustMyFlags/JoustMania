@@ -32,7 +32,8 @@ concurrency:
   # PRs group by number (new pushes cancel stale runs); pushes group by SHA so
   # main runs never cancel each other mid-image-push. Label events other than
   # `ci-full` run nothing (see the `changes` job) and get a group of their own
-  # (#1263), so adding e.g. `no-spec-change` never cancels the real run.
+  # (#1263), so adding e.g. `no-spec-change` never cancels the real run. Their
+  # skipped final job is renamed so it never posts a "CI Complete" (#1497).
   group: ci-${{ github.event.pull_request.number || github.sha }}${{ ((github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci-full') && format('-lbl-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -71,6 +72,8 @@ jobs:
       integration_deps: ${{ steps.f.outputs.integration_deps }}
       telemetry: ${{ steps.f.outputs.telemetry }}
       flagd_contract: ${{ steps.f.outputs.flagd_contract }}
+      dashboard_tests: ${{ steps.f.outputs.dashboard_tests }}
+      connect_proxy_tests: ${{ steps.f.outputs.connect_proxy_tests }}
       non_docs: ${{ steps.nondocs.outputs.non_docs }}
       # force_full: ALL image builds + checks (workflow_dispatch / ci-full label)
       # run_all_checks: all test/lint jobs, but builds stay path-filtered (main push)
@@ -144,6 +147,8 @@ jobs:
               - 'scripts/*.sh'
               - 'scripts/*.py'
               - 'scripts/setup/**'
+              # safe-merge.sh / local-gates.sh (scripts/tests covers them)
+              - 'scripts/ci/**'
               - 'setup.sh'
               - 'scripts/talk-baseline.json'
               # the script tests' fake flag service enforces the real registry
@@ -158,17 +163,21 @@ jobs:
             # Telemetry contract (#1357) and infra config tests (#1365):
             # producers, agent extractors, dashboards, envoy and the
             # collector config, plus the compose file (image tags, host ports).
-            # The §6 catalog test (#1456) also reads docs/specs/telemetry.md and
-            # scans scripts/ and tools/ for consumers. A docs-only edit to the
-            # spec runs only this ~30 s job; `non_docs` still skips integration.
+            # The job also runs `make specs-check` (#1280): docs/specs/generated/
+            # comes from the metric scans (services, lib, scripts/ and tools/
+            # consumers), proto/*.proto, services/flagd/** and docs/specs/notes/.
+            # A docs-only edit to the spec runs only this ~30 s job; `non_docs`
+            # still skips integration.
             telemetry:
               - 'services/**'
               - 'lib/**'
+              - 'proto/**'
               - 'tests/contract/**'
               - 'docker-compose.yml'
-              - 'docs/specs/telemetry.md'
+              - 'docs/specs/**'
               - 'scripts/**'
               - 'tools/**'
+              - 'Makefile'
             # flagd contract tier (#1422): a single real flagd on services/flagd/ci,
             # the flag readers/writers it checks (coordinator, agent, lib), the
             # flagd image tag and --uri list (compose).
@@ -181,6 +190,18 @@ jobs:
               - 'docker-compose.yml'
               # make test-contract-flagd (deps pins) and this job
               - 'Makefile'
+              - '.github/workflows/ci.yml'
+            # #1491: dashboard tsc + vitest and connect-proxy vet + test, run
+            # without waiting for integration-test (the image builds that also
+            # compile them are gated on it). The dashboard's src/gen is
+            # hand-written from proto/, so a proto change runs it too.
+            dashboard_tests:
+              - 'services/dashboard/**'
+              - 'proto/**'
+              - '.github/workflows/ci.yml'
+            connect_proxy_tests:
+              - 'services/connect-proxy/**'
+              - 'proto/**'
               - '.github/workflows/ci.yml'
             proto_pkg:
               - 'proto/**'
@@ -597,7 +618,7 @@ jobs:
   # metric and span producers vs the agent extractors, Grafana dashboards and
   # the dashboard SPA. Infra config tests (#1365): envoy routing (+ `envoy --mode
   # validate`), collector best-effort fan-out. Docker images are the compose tags.
-  # Runs in ~30 s, no service build.
+  # Generated spec tables (`make specs-check`, #1280). Runs in ~30 s, no service build.
   telemetry-contract:
     name: Telemetry Contract
     runs-on: ubuntu-latest
@@ -608,6 +629,11 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Generated specs are up to date (make specs-check)
+        # docs/specs/generated/ must equal what scripts/gen_specs.py renders from
+        # the code; on failure: run `make specs` and commit (#1280).
+        run: make specs-check
 
       - name: Run telemetry contract tests
         # test_flagd_resolution.py runs in the Flagd Contract job below.
@@ -763,10 +789,81 @@ jobs:
       - name: Validate protos and packages
         run: make ci-validate-protos ci-validate-packages
 
-  integration-test:
-    name: Integration Tests
+  # #1491: dashboard type check + unit tests. Before this, vitest never ran in
+  # CI and tsc only ran inside the dashboard image build, which waits for
+  # integration-test: a red or skipped integration run left TS changes with no
+  # evidence at all. Node 24 matches the image's builder stage.
+  dashboard-tests:
+    name: Dashboard Tests
     runs-on: ubuntu-latest
     needs: [changes]
+    if: needs.changes.outputs.dashboard_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/dashboard
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: services/dashboard/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npx vitest run
+
+  # #1491: connect-proxy `buf generate` + `go vet` + `go test`. They live in the
+  # Dockerfile's builder stage (the generated proto packages exist only there),
+  # so build that stage alone: no runtime image, no push, no integration-test
+  # dependency. A vet or test failure fails the build.
+  connect-proxy-tests:
+    name: Connect Proxy Tests
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.connect_proxy_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: buf generate, go vet, go test (builder stage)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: services/connect-proxy/Dockerfile
+          target: builder
+          platforms: linux/amd64
+          push: false
+          # Read-only: the publish job (docker-build-extra) owns this scope.
+          cache-from: type=gha,scope=connect-proxy
+
+  # #1422 step 15: one job per shard, each with its own compose stack.
+  # e2e-core never builds or starts the agent; e2e-agent holds the modules
+  # that start it. Assignment: E2E_SHARD_BY_MODULE in tests/integration/
+  # conftest.py (an unassigned module fails collection). The job id stays
+  # `integration-test`: `needs.integration-test.result` aggregates the matrix
+  # (success only when every shard succeeds), so docker-build,
+  # docker-build-extra, retag-skipped and ci-complete gate on both shards.
+  # Both shards always run whenever the job runs (main, ci-full, any non-docs PR).
+  integration-test:
+    name: Integration Tests (e2e-${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    needs: [changes]
+    strategy:
+      # Let the other shard finish: its result and durations stay visible.
+      fail-fast: false
+      matrix:
+        shard: [core, agent]
     # #1422: skipped on docs-only PRs (see `non_docs`). run_all_checks keeps it
     # mandatory on main pushes, workflow_dispatch and the `ci-full` label, so
     # the publish/retag jobs that need it always have a real result on main.
@@ -794,6 +891,11 @@ jobs:
 
       - uses: astral-sh/setup-uv@v8.2.0
 
+      # Collection only (no docker): every e2e test is in exactly one shard.
+      - name: Check e2e shard assignment
+        if: matrix.shard == 'core'
+        run: make test-integration-shard-check
+
       # #925 fast-path freshness guard: BEFORE mounting current source into the
       # pulled :latest images, confirm each carries a deps-fingerprint label that
       # matches this checkout. A stale :latest (e.g. a deps-changing commit whose
@@ -807,6 +909,55 @@ jobs:
           IMAGE_TAG: latest
         run: bash scripts/ci/check-image-freshness.sh
 
+      # #1487: the fast path mounts the checked-out collector config into the
+      # pulled collector image. When that image predates a config change (a
+      # cancelled main run left otel-collector:main on a June build while
+      # #1472 moved the config onto span_metrics), the collector exits 1 and
+      # every test errors in setup. Validate the config with the pulled image;
+      # on a mismatch, build the collector from this checkout under the same
+      # ref. docker-compose.dev.yml gives the collector pull_policy "missing",
+      # so the suite's `compose pull` keeps that build. The build only runs on
+      # a mismatch (~7 min uncached; read-only GHA cache).
+      - name: Resolve collector image ref (fast path)
+        id: collector_image
+        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        env:
+          IMAGE_TAG: latest
+        run: |
+          ref="$(docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.ci.yml \
+            -f docker-compose.dev.yml config --format json | jq -r '.services."otel-collector".image')"
+          echo "Collector image ref: ${ref}"
+          [[ -n "$ref" && "$ref" != "null" ]] || { echo "::error::could not resolve otel-collector image ref"; exit 1; }
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          rc=0
+          bash scripts/ci/check-collector-config.sh "$ref" services/otel-collector/config.yaml || rc=$?
+          case "$rc" in
+            0) echo "build=false" >> "$GITHUB_OUTPUT" ;;
+            1 | 2)
+              echo "::warning::${ref} does not accept services/otel-collector/config.yaml; building the collector at HEAD for this run"
+              echo "build=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+
+      - name: Build otel-collector at HEAD (fast path, config mismatch)
+        if: steps.collector_image.outputs.build == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: images/otel-collector
+          file: images/otel-collector/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.collector_image.outputs.ref }}
+          # Read-only: the publish job (docker-build-extra) owns this scope.
+          cache-from: type=gha,scope=otel-collector
+
+      # A config that the HEAD build rejects too is a broken config, not a stale
+      # image: fail here with the collector's own error instead of 18 setup errors.
+      - name: Validate collector config against the HEAD build
+        if: steps.collector_image.outputs.build == 'true'
+        run: bash scripts/ci/check-collector-config.sh --no-pull "${{ steps.collector_image.outputs.ref }}" services/otel-collector/config.yaml
+
       # #1254: the Go agent has no dev mount, so on the fast path it would run the
       # published :latest, which can lag the code under test: a PR changing only
       # services/agent/**/*.go never matches integration_deps, and :latest is only
@@ -816,12 +967,13 @@ jobs:
       # checkout instead, under the exact ref compose resolves, and load it
       # locally. The suite's session `compose pull` skips the profile-gated
       # agent, and the tests that start it use pull_policy "missing", so they run
-      # this HEAD build. Unconditional on the fast path; it costs ~1-1.5 min
+      # this HEAD build. Runs only in the e2e-agent shard on the fast path; it costs ~1-1.5 min
       # (amd64 only; `go build` has no build-cache mount, so any source change
       # rebuilds). The full-build path already builds the agent at HEAD.
+      # Only the e2e-agent shard runs the agent, so only it builds it.
       - name: Resolve agent image ref (fast path)
         id: agent_image
-        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        if: matrix.shard == 'agent' && needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
         env:
           IMAGE_TAG: latest
         run: |
@@ -834,7 +986,7 @@ jobs:
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
 
       - name: Build agent at HEAD (fast path)
-        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        if: matrix.shard == 'agent' && needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -850,19 +1002,29 @@ jobs:
       # flag-service: built at HEAD by compose, pull_policy build in docker-compose.dev.yml).
       # PYTEST_EXTRA="--reruns 1" (#925): tolerate a single integration flake so
       # one flake no longer skips image publish. Generic — reruns ANY failure
-      # once, never quarantines a test by name.
+      # once, never quarantines a test by name. --durations=15 lists the slowest
+      # tests of the shard (#1422).
       - name: Run integration tests (fast - source only)
         if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
-        run: USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1" make test-integration
+        env:
+          E2E_SHARD: ${{ matrix.shard }}
+        run: COLLECTOR_PULL_POLICY=missing USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1 --durations=15" make test-integration
 
       # Slow path: full build (Dockerfiles or deps changed)
       - name: Run integration tests (full build)
         if: needs.changes.outputs.integration_deps == 'true' || needs.changes.outputs.force_full == 'true'
-        run: PYTEST_EXTRA="--reruns 1" make test-integration
+        env:
+          E2E_SHARD: ${{ matrix.shard }}
+        run: PYTEST_EXTRA="--reruns 1 --durations=15" make test-integration
 
+  # #1487: arm64 is built on a native arm64 runner (free for public repos), NOT
+  # under QEMU. Emulated Go/Rust compiles (otel-collector, rust-hid) hit the
+  # 30 min timeout on main, so :main was never republished. Each platform job
+  # pushes its image by digest; the *-merge job below assembles the multi-arch
+  # manifest with the same tags as before. PRs stay amd64-only and push nothing.
   docker-build:
-    name: Build ${{ matrix.service }}
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.service }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     needs: [changes, integration-test]
     if: needs.changes.outputs.docker_build_matrix != '[]'
     timeout-minutes: 30
@@ -873,14 +1035,16 @@ jobs:
       fail-fast: false
       matrix:
         service: ${{ fromJSON(needs.changes.outputs.docker_build_matrix) }}
+        platform: ${{ fromJSON(github.event_name != 'pull_request' && '["linux/amd64","linux/arm64"]' || '["linux/amd64"]') }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set image prefix
-        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+      - name: Set image prefix and platform pair
+        run: |
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+        env:
+          PLATFORM: ${{ matrix.platform }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -910,29 +1074,103 @@ jobs:
         run: echo "value=$(bash scripts/ci/deps-fingerprint.sh '${{ matrix.service }}')" >> "$GITHUB_OUTPUT"
 
       - name: Build and push service
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: services/${{ matrix.service }}/Dockerfile
-          # Only build amd64 on PRs (arm64 via QEMU is very slow, not needed for validation)
-          platforms: ${{ github.event_name != 'pull_request' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/${{ steps.image_name.outputs.name }}:${{ github.sha }}
-            ${{ github.event_name != 'pull_request' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, steps.image_name.outputs.name, github.ref_name) || '' }}
-            ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          # Non-PR: push by digest only; tags are applied by the merge job.
+          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
           build-args: |
             DEPS_FINGERPRINT=${{ steps.fingerprint.outputs.value }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          # #1487: retag-skipped reads this to refuse a :main older than its sources.
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          # amd64 keeps the pre-existing scope name; arm64 gets its own.
+          cache-from: type=gha,scope=${{ matrix.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          overwrite: true
+          name: digests-${{ matrix.service }}-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-build-merge:
+    name: Publish ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: [changes, docker-build]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.docker_build_matrix != '[]' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.docker_build_matrix) }}
+    steps:
+      - name: Set image name
+        run: |
+          SERVICE="${{ matrix.service }}"
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${SERVICE//_/-}-service" >> "$GITHUB_ENV"
+
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.service }}-linux-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IS_MAIN: ${{ github.ref_name == env.MAIN_BRANCH }}
+        run: |
+          IMAGE="${IMAGE_PREFIX}/${IMAGE_NAME}"
+          # Docker tags forbid "/" (and uppercase/other chars): same as metadata-action type=ref
+          REF_TAG="$(printf '%s' "${GITHUB_REF_NAME,,}" | sed 's#[^a-z0-9._-]#-#g')"
+          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}" --tag "${IMAGE}:${REF_TAG}")
+          if [[ "$IS_MAIN" == "true" ]]; then TAGS+=(--tag "${IMAGE}:latest"); fi
+          SOURCES=()
+          for digest in *; do SOURCES+=("${IMAGE}@sha256:${digest}"); done
+          (( ${#SOURCES[@]} == 2 )) || { echo "expected 2 platform digests, got ${#SOURCES[@]}"; exit 1; }
+          docker buildx imagetools create "${TAGS[@]}" "${SOURCES[@]}"
+
+      - name: Inspect manifest
+        run: docker buildx imagetools inspect "${IMAGE_PREFIX}/${IMAGE_NAME}:${GITHUB_SHA}"
 
   # Build non-Python services (Go/Node.js/Rust)
   # Publish (incl. :latest on main) is gated on integration-test ONLY (implicit
   # success() on `needs`), not on CI Complete: an unrelated red job such as Rust
   # Checks does not stop :latest from moving (#1254).
   docker-build-extra:
-    name: Build ${{ matrix.service }}
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.item.service }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     needs: [changes, integration-test]
     if: needs.changes.outputs.docker_extra_matrix != '[]'
     timeout-minutes: 30
@@ -942,15 +1180,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.changes.outputs.docker_extra_matrix) }}
+        item: ${{ fromJSON(needs.changes.outputs.docker_extra_matrix) }}
+        platform: ${{ fromJSON(github.event_name != 'pull_request' && '["linux/amd64","linux/arm64"]' || '["linux/amd64"]') }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set image prefix
-        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+      - name: Set image prefix and platform pair
+        run: |
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+        env:
+          PLATFORM: ${{ matrix.platform }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -963,19 +1203,92 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push service
+        id: build
         uses: docker/build-push-action@v7
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          # Only build amd64 on PRs (arm64 via QEMU is very slow, not needed for validation)
-          platforms: ${{ github.event_name != 'pull_request' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.image_name }}:${{ github.sha }}
-            ${{ github.event_name != 'pull_request' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, matrix.image_name, github.ref_name) || '' }}
-            ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, matrix.image_name) || '' }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          context: ${{ matrix.item.context }}
+          file: ${{ matrix.item.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          # Non-PR: push by digest only; tags are applied by the merge job.
+          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_PREFIX, matrix.item.image_name) || '' }}
+          # #1487: retag-skipped reads this to refuse a :main older than its sources.
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          # amd64 keeps the pre-existing scope name; arm64 gets its own.
+          cache-from: type=gha,scope=${{ matrix.item.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.item.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          overwrite: true
+          name: digests-${{ matrix.item.service }}-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-build-extra-merge:
+    name: Publish ${{ matrix.item.service }}
+    runs-on: ubuntu-latest
+    needs: [changes, docker-build-extra]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.docker_extra_matrix != '[]' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        item: ${{ fromJSON(needs.changes.outputs.docker_extra_matrix) }}
+    steps:
+      - name: Set image name
+        run: |
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${{ matrix.item.image_name }}" >> "$GITHUB_ENV"
+
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.item.service }}-linux-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IS_MAIN: ${{ github.ref_name == env.MAIN_BRANCH }}
+        run: |
+          IMAGE="${IMAGE_PREFIX}/${IMAGE_NAME}"
+          # Docker tags forbid "/" (and uppercase/other chars): same as metadata-action type=ref
+          REF_TAG="$(printf '%s' "${GITHUB_REF_NAME,,}" | sed 's#[^a-z0-9._-]#-#g')"
+          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}" --tag "${IMAGE}:${REF_TAG}")
+          if [[ "$IS_MAIN" == "true" ]]; then TAGS+=(--tag "${IMAGE}:latest"); fi
+          SOURCES=()
+          for digest in *; do SOURCES+=("${IMAGE}@sha256:${digest}"); done
+          (( ${#SOURCES[@]} == 2 )) || { echo "expected 2 platform digests, got ${#SOURCES[@]}"; exit 1; }
+          docker buildx imagetools create "${TAGS[@]}" "${SOURCES[@]}"
+
+      - name: Inspect manifest
+        run: docker buildx imagetools inspect "${IMAGE_PREFIX}/${IMAGE_NAME}:${GITHUB_SHA}"
 
   # Release contract: release.yml tag-images expects IMAGE:<sha> for all 10
   # release images. Images skipped by the path filter get a manifest-only retag
@@ -984,21 +1297,30 @@ jobs:
   retag-skipped:
     name: Retag ${{ matrix.image }}
     runs-on: ubuntu-latest
-    needs: [changes, integration-test, docker-build, docker-build-extra]
+    needs: [changes, integration-test, docker-build, docker-build-extra, docker-build-merge, docker-build-extra-merge]
     if: >-
       !cancelled() && github.event_name == 'push' &&
       needs.changes.outputs.retag_matrix != '[]' &&
       needs.integration-test.result == 'success' &&
       needs.docker-build.result != 'failure' &&
-      needs.docker-build-extra.result != 'failure'
+      needs.docker-build-extra.result != 'failure' &&
+      needs.docker-build-merge.result != 'failure' &&
+      needs.docker-build-extra-merge.result != 'failure'
     timeout-minutes: 10
     permissions:
+      contents: read
       packages: write
     strategy:
       fail-fast: false
       matrix:
         image: ${{ fromJSON(needs.changes.outputs.retag_matrix) }}
     steps:
+      # Full history: the freshness check below finds the last commit that
+      # touched this image's sources and compares it with :main's build commit.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - name: Set image prefix
         run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
@@ -1011,6 +1333,19 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # #1487: refuse to copy a :main forward that was built BEFORE the last
+      # commit touching this image's sources (same globs as the `changes`
+      # filter). A cancelled main run (c14cb15e) left otel-collector:main on a
+      # June build, and the next push retagged that stale image as current.
+      # Fails the job (red main, CI Complete red) with the remedy; exit 2 means
+      # :main is missing, which the warning step below already handles.
+      - name: Check :main includes the image's last source change
+        id: fresh
+        run: |
+          rc=0
+          bash scripts/ci/check-retag-source.sh "${{ matrix.image }}" || rc=$?
+          [[ "$rc" == 0 || "$rc" == 2 ]] || exit "$rc"
 
       - name: Retag :main -> :sha
         id: retag
@@ -1033,11 +1368,25 @@ jobs:
   # that represents the entire CI pipeline's health.
   # Skipped jobs (path filter) keep this green; failures fail it.
   ci-complete:
-    name: CI Complete
+    # #1497: a label-only run (any label but `ci-full`) skips this job (see the
+    # `if` below), but a skipped job STILL posts a check run under its name,
+    # and GitHub counts a skipped required check as passing. On #1461 a
+    # `no-spec-change` label posted `CI Complete: SKIPPED` after the real run,
+    # so a red PR could become mergeable. An `if` cannot stop the check run
+    # (that is the bug) and Actions has no workflow-level `if`, so the name is
+    # what keeps it off the required check: only a run that really evaluates
+    # this job reports as "CI Complete". A label-only run posts its skipped
+    # check under a different name, and the head SHA's latest "CI Complete"
+    # stays the real run's result. Mirroring the real run's conclusion instead
+    # was rejected: it needs API polling, and races a real run that is still
+    # in progress.
+    name: ${{ (github.event.action == 'labeled' && github.event.label.name != 'ci-full') && 'Label event (no CI result)' || 'CI Complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs:
       - changes
+      - dashboard-tests
+      - connect-proxy-tests
       - lib-tests
       - service-checks
       - rust-checks
@@ -1053,6 +1402,8 @@ jobs:
       - integration-test
       - docker-build
       - docker-build-extra
+      - docker-build-merge
+      - docker-build-extra-merge
       - retag-skipped
     # #1086: was `always()`. Creating a PR with a label (`gh pr create --label
     # ci-full`) fires BOTH the `opened` and `labeled` pull_request events, so two
@@ -1074,8 +1425,10 @@ jobs:
     # which, under the repo's latest-status-wins ruleset (strict checks OFF),
     # would OVERWRITE a prior real `CI Complete: FAILURE` on that same SHA and
     # unblock a red merge with no re-run. Skipping ci-complete on those events
-    # means a label-only change posts NO status, so the SHA's prior real result
-    # stands. (Adding `ci-full` itself runs the full pipeline normally.)
+    # means the job does not succeed, but it still posts a SKIPPED check run,
+    # which is why the job `name` above differs on those events (#1497). The
+    # SHA's prior real result stands. (Adding `ci-full` itself runs the full
+    # pipeline normally, under the real name.)
     if: >-
       ${{ !cancelled() &&
       (github.event.action != 'labeled' || github.event.label.name == 'ci-full') }}

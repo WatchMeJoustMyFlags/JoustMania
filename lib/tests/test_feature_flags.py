@@ -133,8 +133,14 @@ def test_init_flag_domain(mock_api, mock_provider):
     _args, kwargs = mock_api.set_provider.call_args
     assert kwargs["domain"] == "test_domain"
 
-    # Verify TracingHook was registered
+    # The standard OpenFeature OTel hooks were registered: span events and metrics (#1427)
     mock_api.add_hooks.assert_called_once()
+    (hooks,), _ = mock_api.add_hooks.call_args
+    from openfeature.contrib.hook.opentelemetry import TracingHook
+
+    from lib.openfeature_otel_hooks import MetricsHook
+
+    assert {type(h) for h in hooks} == {TracingHook, MetricsHook}
 
     # Cleanup
     ff_module._initialized_domains.discard("test_domain")

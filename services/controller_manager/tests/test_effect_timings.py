@@ -6,6 +6,8 @@ timings. Fallback: malformed flag values revert to the hardcoded defaults.
 
 from unittest.mock import MagicMock
 
+import pytest
+
 import services.controller_manager.feedback_manager as fm
 from services.controller_manager.feedback_manager import (
     DEFAULT_EFFECT_TIMINGS,
@@ -15,8 +17,9 @@ from services.controller_manager.feedback_manager import (
 )
 
 
+@pytest.mark.uc("UC-030", flow="main", steps=[7, 9])
 def test_defaults_match_original_constants():
-    """The promoted defaults must equal the original inline magic numbers."""
+    """UC-030 steps 7 and 9: default warning 200/200 ms, death rumble 150, red 300, fade 700 ms."""
     assert DEFAULT_EFFECT_TIMINGS == {
         "warning_flash_ms": 200,
         "warning_vibration_ms": 200,

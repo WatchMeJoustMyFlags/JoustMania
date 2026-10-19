@@ -112,65 +112,44 @@ class TestThresholdCalculation:
             game_id="test_threshold",
         )
 
+    @staticmethod
+    def _effective(game, sensitivity, music_speed):
+        """Run the real threshold computation for a neutral player at a tempo."""
+        player = Player(serial="p", team=0, alive=True, color=(255, 0, 0))
+        game.sensitivity = sensitivity
+        game.music_speed = music_speed
+        return game._compute_effective_thresholds(player)
+
     @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_slow_music_uses_slow_thresholds(self, game):
-        """At SLOW_MUSIC_SPEED, thresholds should match SLOW_* arrays."""
+        """At SLOW_MUSIC_SPEED the effective thresholds are the SLOW_* tables."""
         from lib.types import Sensitivity
 
-        game.music_speed = SLOW_MUSIC_SPEED
-
         for sens in Sensitivity:
-            sens_idx = sens.value
-            speed_range = FAST_MUSIC_SPEED - SLOW_MUSIC_SPEED
-            speed_percent = (game.music_speed - SLOW_MUSIC_SPEED) / speed_range
-            speed_percent = max(0.0, min(1.0, speed_percent))
-
-            expected_warn = game._lerp(SLOW_WARNING[sens_idx], FAST_WARNING[sens_idx], speed_percent)
-            expected_death = game._lerp(SLOW_MAX[sens_idx], FAST_MAX[sens_idx], speed_percent)
-
-            assert expected_warn == SLOW_WARNING[sens_idx], f"Sensitivity {sens.name}"
-            assert expected_death == SLOW_MAX[sens_idx], f"Sensitivity {sens.name}"
+            warn, death = self._effective(game, sens, SLOW_MUSIC_SPEED)
+            assert warn == pytest.approx(SLOW_WARNING[sens.value]), f"Sensitivity {sens.name}"
+            assert death == pytest.approx(SLOW_MAX[sens.value]), f"Sensitivity {sens.name}"
 
     @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_fast_music_uses_fast_thresholds(self, game):
-        """At FAST_MUSIC_SPEED, thresholds should match FAST_* arrays."""
+        """At FAST_MUSIC_SPEED the effective thresholds are the FAST_* tables."""
         from lib.types import Sensitivity
 
-        game.music_speed = FAST_MUSIC_SPEED
-
         for sens in Sensitivity:
-            sens_idx = sens.value
-            speed_range = FAST_MUSIC_SPEED - SLOW_MUSIC_SPEED
-            speed_percent = (game.music_speed - SLOW_MUSIC_SPEED) / speed_range
-            speed_percent = max(0.0, min(1.0, speed_percent))
-
-            expected_warn = game._lerp(SLOW_WARNING[sens_idx], FAST_WARNING[sens_idx], speed_percent)
-            expected_death = game._lerp(SLOW_MAX[sens_idx], FAST_MAX[sens_idx], speed_percent)
-
-            assert expected_warn == FAST_WARNING[sens_idx], f"Sensitivity {sens.name}"
-            assert expected_death == FAST_MAX[sens_idx], f"Sensitivity {sens.name}"
+            warn, death = self._effective(game, sens, FAST_MUSIC_SPEED)
+            assert warn == pytest.approx(FAST_WARNING[sens.value]), f"Sensitivity {sens.name}"
+            assert death == pytest.approx(FAST_MAX[sens.value]), f"Sensitivity {sens.name}"
 
     @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_mid_tempo_interpolates_thresholds(self, game):
-        """At midpoint tempo, thresholds should be midpoint of slow/fast."""
+        """At midpoint tempo the effective thresholds are the midpoint of the slow and fast tables."""
         from lib.types import Sensitivity
 
-        # Set music to midpoint between slow and fast
-        game.music_speed = (SLOW_MUSIC_SPEED + FAST_MUSIC_SPEED) / 2
-
+        midpoint_speed = (SLOW_MUSIC_SPEED + FAST_MUSIC_SPEED) / 2
         for sens in Sensitivity:
-            sens_idx = sens.value
-            speed_range = FAST_MUSIC_SPEED - SLOW_MUSIC_SPEED
-            speed_percent = (game.music_speed - SLOW_MUSIC_SPEED) / speed_range
-
-            expected_warn = (SLOW_WARNING[sens_idx] + FAST_WARNING[sens_idx]) / 2
-            expected_death = (SLOW_MAX[sens_idx] + FAST_MAX[sens_idx]) / 2
-
-            actual_warn = game._lerp(SLOW_WARNING[sens_idx], FAST_WARNING[sens_idx], speed_percent)
-            actual_death = game._lerp(SLOW_MAX[sens_idx], FAST_MAX[sens_idx], speed_percent)
-
-            assert abs(actual_warn - expected_warn) < 0.001, f"Sensitivity {sens.name}"
-            assert abs(actual_death - expected_death) < 0.001, f"Sensitivity {sens.name}"
+            warn, death = self._effective(game, sens, midpoint_speed)
+            assert warn == pytest.approx((SLOW_WARNING[sens.value] + FAST_WARNING[sens.value]) / 2), sens.name
+            assert death == pytest.approx((SLOW_MAX[sens.value] + FAST_MAX[sens.value]) / 2), sens.name
 
     def test_speed_percent_clamped_below_zero(self, game):
         """Speed percent should clamp to 0 if music slower than SLOW_MUSIC_SPEED."""

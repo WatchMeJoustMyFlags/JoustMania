@@ -55,7 +55,7 @@ def _inner(poll_returns=None):
 class TestAdapterType:
     def test_adapter_type_is_unstable_not_transparent(self):
         adapter = UnstableAdapter(_inner())
-        # Unlike ChaosAdapter, this is NOT transparent — routing must see it.
+        # Not transparent: routing must see "unstable", not the inner type.
         assert adapter.adapter_type == "unstable"
 
     def test_exposes_inner(self):

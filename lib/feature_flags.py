@@ -28,6 +28,7 @@ from openfeature.flag_evaluation import FlagEvaluationDetails, Reason
 from openfeature.transaction_context import ContextVarsTransactionContextPropagator
 
 from lib.flag_eval_visibility import record_flag_fallback
+from lib.openfeature_otel_hooks import MetricsHook
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +163,12 @@ def init_flag_domain(domain: str) -> None:
 
     global _hooks_registered
     if not _hooks_registered:
-        api.add_hooks([TracingHook()])
+        # Standard OpenFeature OTel hooks (#1427): the span event per evaluation and the
+        # feature_flag.evaluation_* metrics (through the global MeterProvider that
+        # lib.otel_metrics.init_metrics sets).
+        api.add_hooks([TracingHook(), MetricsHook()])
         _hooks_registered = True
-        logger.info("Registered OpenFeature TracingHook for OTEL integration")
+        logger.info("Registered OpenFeature TracingHook and MetricsHook for OTEL integration")
 
     flagd_host = os.environ.get("FLAGD_HOST", "flagd")
     flagd_port = int(os.environ.get("FLAGD_PORT", "8015"))

@@ -3,6 +3,8 @@
  *
  * Game mode selection and start/stop controls.
  */
+import type { ModeChoices } from "../modes.js";
+
 interface ControlsOptions {
   onStartGame: () => void | Promise<void>;
   onStopGame: () => void | Promise<void>;
@@ -37,6 +39,14 @@ export class Controls {
     this.stopBtn.addEventListener("click", () => {
       Promise.resolve(this.options.onStopGame()).catch(console.error);
     });
+  }
+
+  /** Replace the mode options (built from ListGameModes, UC-011 BR-002). */
+  setModeChoices(choices: ModeChoices) {
+    this.modeSelect.replaceChildren(
+      ...choices.options.map(({ value, label }) => new Option(label, value, false, value === choices.selected))
+    );
+    this.modeSelect.value = choices.selected;
   }
 
   getSelectedMode(): string {

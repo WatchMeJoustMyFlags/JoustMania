@@ -1055,6 +1055,33 @@ class TestShadowGameGovernance:
         assert len(servicer.sessions) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3")
+    async def test_real_start_rejected_when_capacity_stays_full(self, servicer, cap_two, policy_allow):
+        """UC-010 A3 "capacity reached": when the cap is still full after both preemption
+        passes (a late shadow wins the admission race twice), the real start is rejected
+        with the "Game already in progress" error and no primary is registered."""
+        gid1, _ = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+        gid2, _ = await _start_running(servicer, _shadow_config(serials=("s3", "s4")))
+        preempt_calls = 0
+
+        async def preemption_that_frees_nothing():
+            nonlocal preempt_calls
+            preempt_calls += 1
+            return 0
+
+        with (
+            _NO_THREAD,
+            patch.object(servicer, "_preempt_shadow_sessions", side_effect=preemption_that_frees_nothing),
+        ):
+            ok, error = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+
+        assert ok is False
+        assert error == "Game already in progress"
+        assert preempt_calls == 2  # first pass + the admission-race retry
+        assert set(servicer.sessions) == {gid1, gid2}
+        assert servicer._primary_game_id is None
+
+    @pytest.mark.asyncio
     @pytest.mark.nfr("NFR-018")
     async def test_shadow_start_does_not_preempt_other_shadow(self, servicer, cap_two, policy_allow):
         """A shadow start must NOT preempt another shadow (only real games do)."""

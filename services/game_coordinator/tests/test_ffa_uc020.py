@@ -12,9 +12,14 @@ Units covered here:
 - A4: a force-end stops the game with no winner and publishes ``game_force_ended``
 - BR-001: the win check runs after every controller sample of a frame
 - BR-002: ``death_grace_period_seconds`` has no effect in FFA
+- step 4: the music alternates 1.0x / 1.3x windows and the death threshold follows the window (#1498)
+- step 6: the winner rainbow lasts ``winner_rainbow_duration_ms`` (#1498)
+- step 7: with ``analytics.enabled`` off, no ``player_analytics`` but still ``game_ended`` (#1498)
+- Pre-1: ``run()`` with fewer than two players publishes ``game_error`` and never starts (#1498)
 """
 
 import asyncio
+import threading
 import time
 from unittest.mock import create_autospec, patch
 
@@ -24,11 +29,12 @@ from lib.types import GameEvent, Sound
 from proto import audio_pb2, controller_manager_pb2, game_coordinator_pb2
 from services.game_coordinator.event_bus import EventBus
 from services.game_coordinator.game_session import GAME_KIND_PRIMARY, GameSession
-from services.game_coordinator.games.base import GameState, Player
+from services.game_coordinator.games import base as base_module
+from services.game_coordinator.games.base import FAST_MUSIC_SPEED, SLOW_MUSIC_SPEED, GameState, Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.interventions import INTERVENTION_SPECS, InterventionContext
 from services.game_coordinator.lifecycle_handlers import ELIMINATE_REASON, handle_eliminate_player
-from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
+from services.game_coordinator.runtime_config import AnalyticsConfig, GamePerformanceConfig, get_config_manager
 from services.game_coordinator.tests.conftest import (
     EventCollector,
     MockBidirectionalStream,
@@ -125,6 +131,19 @@ def fast_config():
         yield config
 
 
+class FakeClock:
+    """Stands in for the ``time`` module inside games/base.py: ``time()`` is driven by the test."""
+
+    def __init__(self, start: float):
+        self.now = start
+
+    def time(self) -> float:
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 def _initial_players(count: int) -> list:
     return [game_coordinator_pb2.Player(serial=f"mock_controller_{i}") for i in range(count)]
 
@@ -168,6 +187,7 @@ class TestUC020FreeForAll:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="main", steps=[1, 2, 5, 6, 7], br=["BR-001"])
+    @pytest.mark.uc("UC-031", flow="main", steps=[2, 4])  # countdown beeps, explosion, congratulations
     async def test_full_game_last_player_standing_wins(self, fast_config):
         """UC-020 main: a full run() ends with the last player standing as the winner."""
         cm = RecordingControllerManager(num_controllers=3, death_schedule={1.0: 0, 1.6: 1}, max_duration=8.0)
@@ -300,7 +320,8 @@ class TestUC020FreeForAll:
     async def test_agent_elimination_uses_the_games_own_kill_path(self):
         """UC-020 A3 (game side only): eliminate_player uses the game's own kill path, reason agent_intervention.
 
-        The `agent_intervention` publication is asserted by test_interventions.py (manager side).
+        The applied ``agent_intervention`` publication (``blocked=false``) on a real FFA game is asserted by
+        test_intervention_flag_to_effect.py::test_eliminate_event_kills_once_and_next_event_kills_again.
         """
         game, events = _ffa_with_players(3)
         ctx = InterventionContext(
@@ -323,7 +344,11 @@ class TestUC020FreeForAll:
     @pytest.mark.uc("UC-020", flow="A4")
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
     async def test_force_end_stops_ffa_without_a_winner(self, fast_config):
-        """UC-020 A4 / UC-027 step 3: a force-end mid-game stops FFA with no winner and publishes game_force_ended."""
+        """UC-020 A4 / UC-027 step 3: a force-end mid-game stops FFA with no winner.
+
+        A4 step 3: ``player_analytics`` for each player and ``game_ended`` (``force_ended``, reason, duration),
+        then the session's ``game_force_ended``.
+        """
         cm = RecordingControllerManager(num_controllers=3, infinite=True)
         events = EventCollector()
         audio = RecordingAudio()
@@ -342,19 +367,32 @@ class TestUC020FreeForAll:
             event_bus=create_autospec(EventBus, instance=True),
             game_kind=GAME_KIND_PRIMARY,
         )
+        # Record the session's bus publications in the same timeline as the game's, to check ordering.
+        session.event_bus.publish.side_effect = events.publish
         session.current_game = game
         session.game_running = True
         session.game_state = game_coordinator_pb2.GameState.RUNNING
+        # As in production (GameSession._run_game_loop_threaded), the game runs on its own thread and loop,
+        # so force_end() joins it before publishing game_force_ended.
+        game_thread = threading.Thread(target=lambda: asyncio.run(game.run()), daemon=True)
+        session.game_thread = game_thread
+        game_thread.start()
 
-        run_task = asyncio.create_task(game.run())
-        deadline = time.time() + 10.0
-        # start_time is a plain attribute the game loop sets on its first frame; nothing to await on.
-        while game.start_time is None and time.time() < deadline:  # noqa: ASYNC110
-            await asyncio.sleep(0.02)
-        assert game.start_time is not None, "game loop never started"
+        try:
+            deadline = time.time() + 10.0
+            # start_time is a plain attribute the game loop sets on its first frame; nothing to await on.
+            while game.start_time is None and time.time() < deadline:  # noqa: ASYNC110
+                await asyncio.sleep(0.02)
+            assert game.start_time is not None, "game loop never started"
 
-        ok, error = await session.force_end("operator_stop")
-        await asyncio.wait_for(run_task, timeout=10.0)
+            ok, error = await session.force_end("operator_stop")
+            game_thread.join(timeout=10.0)
+            assert not game_thread.is_alive(), "game thread did not stop"
+        finally:
+            # Never leave the game thread spinning on the infinite mock stream if an assert fired early.
+            if game_thread.is_alive():
+                game.force_end("teardown")
+                game_thread.join(timeout=10.0)
 
         assert (ok, error) == (True, "")
         session.event_bus.publish.assert_awaited_once_with(
@@ -368,6 +406,15 @@ class TestUC020FreeForAll:
         assert cm.stream.effects(controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW) == []
         assert Sound.VOX_CONGRATULATIONS.value not in audio.sounds()
         assert game.running is False
+        # A4 step 3: per-player analytics (none a winner), game_ended force_ended, then the session's event.
+        analytics = events.get_events_of_type(GameEvent.PLAYER_ANALYTICS)
+        assert sorted(a["serial"] for a in analytics) == sorted(game.players)
+        assert not any(a["winner"] for a in analytics)
+        (ended,) = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert (ended["outcome"], ended["reason"]) == ("force_ended", "operator_stop")
+        assert ended["duration"] > 0
+        types = _event_types(events)
+        assert types.index(GameEvent.GAME_ENDED) < types.index(GameEvent.GAME_FORCE_ENDED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="main", steps=[5, 6], br=["BR-001"])
@@ -405,3 +452,133 @@ class TestUC020FreeForAll:
         assert game.players["p0"].alive is False
         assert game.players["p0"].grace_until == 0.0
         assert all(game.players[s].grace_until == 0.0 for s in ("p1", "p2"))
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", steps=[4])
+    @pytest.mark.uc("UC-031", flow="main", steps=[3])
+    async def test_music_alternates_windows_and_death_threshold_follows_the_window(self):
+        """UC-020 step 4: the FFA game's music loop alternates 1.0x and 1.3x windows; the death threshold follows.
+
+        Drives the game's own tempo owner (``_check_music_speed``, called every 100 ms by the music loop)
+        on a fake clock for two simulated minutes.
+        """
+        audio = RecordingAudio()
+        game, _events = _ffa_with_players(3, audio=audio)
+        sens = game.sensitivity.value
+        slow_death, fast_death = game.slow_max[sens], game.fast_max[sens]
+        assert slow_death < fast_death  # the faster window is more forgiving
+        windows = game.music_windows
+        clock = FakeClock(time.time())
+
+        with patch.object(base_module, "time", clock):
+            await game._start_game_music()
+            assert game.music_speed == SLOW_MUSIC_SPEED
+            changes: list[tuple[float, float]] = [(clock.now, SLOW_MUSIC_SPEED)]  # (when, new tempo)
+            for _tick in range(1200):
+                clock.now += 0.1
+                await game._check_music_speed()
+                tempo_calls = [req for name, req in audio.calls if name == "ChangeTempo"]
+                if len(tempo_calls) > len(changes) - 1:
+                    changes.append((clock.now, tempo_calls[-1].new_tempo))
+                # The death threshold always matches the window the music is in.
+                expected = fast_death if game.music_speed == FAST_MUSIC_SPEED else slow_death
+                assert game._compute_effective_thresholds(game.players["p0"])[1] == pytest.approx(expected)
+
+        tempos = [tempo for _when, tempo in changes]
+        assert len(tempos) >= 5
+        # ChangeTempoRequest.new_tempo is a proto float, hence approx.
+        assert tempos == pytest.approx(
+            [SLOW_MUSIC_SPEED if i % 2 == 0 else FAST_MUSIC_SPEED for i in range(len(tempos))], abs=1e-6
+        )
+        # Each window lasts as long as the (no-one-dead-yet) slow / fast windows allow, give or take one tick.
+        for (start, tempo), (end, _next) in zip(changes, changes[1:], strict=False):
+            is_slow = tempo == pytest.approx(SLOW_MUSIC_SPEED)
+            low, high = (windows.slow_min, windows.slow_max) if is_slow else (windows.fast_min, windows.fast_max)
+            assert low - 0.11 <= end - start <= high + 0.11
+
+        # A move between the two death thresholds is survived in the 1.3x window and kills in the 1.0x window.
+        between = (slow_death + fast_death) / 2
+        sample = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=between)
+        game.players["p0"].smoothed_accel = between
+        game.music_speed = FAST_MUSIC_SPEED
+        await game._process_gameplay_update(_frame(("p0", sample)))
+        assert game.players["p0"].alive is True
+        game.music_speed = SLOW_MUSIC_SPEED
+        await game._process_gameplay_update(_frame(("p0", sample)))
+        assert game.players["p0"].alive is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", steps=[6])
+    async def test_winner_rainbow_lasts_winner_rainbow_duration_ms(self):
+        """UC-020 step 6: the rainbow hold is ``winner_rainbow_duration_ms`` long (default 3 s)."""
+        assert GamePerformanceConfig().winner_rainbow_duration_ms == 3000
+        game, _events = _ffa_with_players(2)
+        fake_asyncio = create_autospec(asyncio)
+        config = GamePerformanceConfig(winner_rainbow_duration_ms=1500)
+
+        with (
+            patch.object(get_config_manager(), "get_config", return_value=config),
+            patch.object(base_module, "asyncio", fake_asyncio),
+        ):
+            completed = await game._wait_for_rainbow_effect()
+
+        assert completed is True
+        waited = sum(call.args[0] for call in fake_asyncio.sleep.await_args_list)
+        assert waited == pytest.approx(1.5)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", steps=[7])
+    async def test_analytics_off_publishes_no_player_analytics_but_game_ended(self):
+        """UC-020 step 7: with ``analytics.enabled`` off there is no ``player_analytics``; ``game_ended`` still is."""
+        config = GamePerformanceConfig(
+            countdown_phase_duration_ms=50,
+            winner_rainbow_duration_ms=200,
+            analytics=AnalyticsConfig(enabled=False),
+        )
+        cm = RecordingControllerManager(num_controllers=2, death_schedule={1.0: 0}, max_duration=8.0)
+        events = EventCollector()
+        game = FFAGame(
+            controller_manager_client=cm,
+            event_publisher=events.publish,
+            audio_client=RecordingAudio(),
+            game_id="test_uc020_no_analytics",
+            initial_players=_initial_players(2),
+        )
+
+        with patch.object(get_config_manager(), "get_config", return_value=config):
+            await asyncio.wait_for(game.run(), timeout=15.0)
+
+        assert all(p.analytics is None for p in game.players.values())
+        assert events.get_events_of_type(GameEvent.GAME_WINNER) == [{"serial": "mock_controller_1"}]
+        assert events.get_events_of_type(GameEvent.PLAYER_ANALYTICS) == []
+        ended = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert len(ended) == 1
+        assert ended[0]["game_id"] == "test_uc020_no_analytics"
+        assert ended[0]["duration"] > 0
+        assert _event_types(events)[-1] == GameEvent.GAME_ENDED
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main")
+    async def test_fewer_than_two_players_is_rejected(self, fast_config):
+        """UC-020 Pre-1: ``run()`` with one player raises, publishes ``game_error`` and never starts the game."""
+        cm = RecordingControllerManager(num_controllers=1, infinite=True)
+        events = EventCollector()
+        game = FFAGame(
+            controller_manager_client=cm,
+            event_publisher=events.publish,
+            audio_client=RecordingAudio(),
+            game_id="test_uc020_one_player",
+            initial_players=_initial_players(1),
+        )
+
+        with pytest.raises(ValueError, match="Need at least 2 players, got 1"):
+            await asyncio.wait_for(game.run(), timeout=15.0)
+
+        assert events.get_events_of_type(GameEvent.GAME_ERROR) == [
+            {"game_id": "test_uc020_one_player", "error": "Need at least 2 players, got 1"}
+        ]
+        types = _event_types(events)
+        assert GameEvent.GAME_STARTED not in types
+        assert GameEvent.GAME_ENDED not in types
+        assert game.state == GameState.ENDED
+        assert game.running is False

@@ -6,7 +6,7 @@
 **Goal:** Players play one game of each mode other than Free-for-All (teams, hidden roles, zombies, swapper, 1v1 formats, non-stop) and every game reaches its mode's terminal event and returns to the lobby.  
 **Priority:** Low  
 **Status:** Draft  
-**Use cases:** [UC-021](../use_cases/UC-021.md) main; [UC-022](../use_cases/UC-022.md) main; [UC-023](../use_cases/UC-023.md) main; [UC-024](../use_cases/UC-024.md) main; [UC-025](../use_cases/UC-025.md) main; [UC-026](../use_cases/UC-026.md) main; [UC-030](../use_cases/UC-030.md) A2, A3
+**Use cases:** [UC-021](../use_cases/UC-021.md) main; [UC-022](../use_cases/UC-022.md) main; [UC-023](../use_cases/UC-023.md) main; [UC-024](../use_cases/UC-024.md) main; [UC-025](../use_cases/UC-025.md) main; [UC-026](../use_cases/UC-026.md) main
 
 Backlog: the current focus is Free-for-All. This single journey keeps the non-FFA use cases traceable to a test case; their detailed journeys and the fixes they depend on are backlog (#1361 and the mode-labelled bugs listed under Automation).
 
@@ -28,7 +28,7 @@ Backlog: the current focus is Free-for-All. This single journey keeps the non-FF
 | 4    | Swapper              | Operator kills players until one team holds everyone                                                | `Swapper`                                 | [UC-024](../use_cases/UC-024.md)    |
 | 5    | 1v1 formats          | Operator plays Tournament to a champion and Fight Club to its end                                   | `Tournament`, `FightClub`                 | [UC-025](../use_cases/UC-025.md)    |
 | 6    | Non-Stop             | Operator plays Non-Stop until the time limit ends it                                                | `NonStop`                                 | [UC-026](../use_cases/UC-026.md)    |
-| 7    | Verify mode-specific deaths | In Zombies a death converts a human, in Swapper it switches team, in Non-Stop the player respawns, in Tournament it ends the match; Werewolf and Zombie roles use their fixed thresholds | - | [UC-030](../use_cases/UC-030.md) |
+| 7    | Verify mode-specific deaths | In Zombies a death converts a human, in Swapper it switches team, in Non-Stop the player respawns, in Tournament it ends the match; Werewolf and Zombie roles use their fixed thresholds | - | [UC-022](../use_cases/UC-022.md), [UC-023](../use_cases/UC-023.md), [UC-024](../use_cases/UC-024.md), [UC-025](../use_cases/UC-025.md), [UC-026](../use_cases/UC-026.md) |
 | 8    | Verify terminal events | Every game published exactly one terminal event (`game_ended` or `game_force_ended`) and no `game_error` | -                                  | -                                   |
 
 ## Validation
@@ -42,5 +42,5 @@ Backlog: the current focus is Free-for-All. This single journey keeps the non-FF
 
 ## Automation
 
-- **Partly automated**: `tests/integration/test_parallel_lifecycle.py::test_parallel_mode_lifecycle[slow-batch]`, `[fast-batch]` and `[teams-batch]` (JoustTeams) run every non-FFA mode headless (steps 1 to 6); selecting a mode through the menu (step 1) is covered by `tests/integration/test_admin_flow.py::test_force_start_respects_selected_game_mode` (JoustTeams). Traitor and NonStop end by force in those batches, not by their own win condition; step 7 (UC-030 A2, A3) is asserted only per mode in the unit tests (`services/game_coordinator/tests/test_zombie.py`, `test_werewolf.py`, `test_swapper.py`, `test_nonstop.py`, `test_tournament.py`).
+- **Partly automated**: `tests/integration/test_parallel_lifecycle.py::test_parallel_mode_lifecycle[slow-batch]`, `[fast-batch]` and `[teams-batch]` (JoustTeams) run every non-FFA mode headless (steps 1 to 6); selecting a mode through the menu (step 1) is covered by `tests/integration/test_admin_flow.py::test_force_start_respects_selected_game_mode` (JoustTeams). Traitor and NonStop end by force in those batches, not by their own win condition; step 7 (mode-specific deaths and role thresholds, UC-022 to UC-026; moved from UC-030 A2, A3 by #1500) is asserted only per mode in the unit tests (`services/game_coordinator/tests/test_zombie.py`, `test_werewolf.py`, `test_swapper.py`, `test_nonstop.py`, `test_tournament.py`).
 - Backlog (#1361): mode-specific win paths and the known mode bugs #1337 (Tournament champion), #1338 (NonStop time limit), #1342, #1343, #1344, #1345, #1346, #1347, #1354.

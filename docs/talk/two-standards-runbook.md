@@ -56,8 +56,8 @@ flag service (the "flag service" section).
 
 | | Stage stack (Pi, real controllers) | Rehearsal / fallback stack (mock controllers) |
 |---|---|---|
-| Bring-up | `docker compose --env-file .env --env-file .env.local up -d` | `COMPOSE_ENV_FILES=.env,.env.local make dry-run` |
-| Compose files | `docker-compose.yml` + the auto-loaded `docker-compose.override.yml` | `docker-compose.yml` + `override` + `ci` + `dry-run`, profiles `agent` + `dashboard` |
+| Bring-up | `./scripts/setup/joustmania-compose.sh up -d` (= `docker compose -f docker-compose.yml --env-file .env --env-file .env.local up -d`; also what systemd autostart runs, #1488) | `COMPOSE_ENV_FILES=.env,.env.local make dry-run` |
+| Compose files | `docker-compose.yml` only, named with `-f` so the dev `docker-compose.override.yml` is **not** loaded (it publishes the gRPC and mock control ports on the venue network, #1319) | `docker-compose.yml` + `override` + `ci` + `dry-run`, profiles `agent` + `dashboard` |
 | Baseline the flag service loads (read-only) | `services/flagd/` | `services/flagd/ci/` |
 | Gameplay | real players | `tools/demo/demo_driver.py` (scripted mock movement) |
 | Infra rollback beat | possible (needs the python HID adapter) | not possible (see section 4) |
@@ -78,7 +78,10 @@ Notes:
 
 `.env` is tracked in git and pins `IMAGE_TAG=0.7.0`, which predates the
 decision backends. Put everything below in the git-ignored `.env.local`
-(later `--env-file` wins). Use `latest` while rehearsing, then **pin the exact
+(later `--env-file` wins). `scripts/setup/joustmania-compose.sh` passes both
+env files (`.env.local` only when it exists) to every compose call, and the
+systemd autostart uses it too, so a reboot comes back with the same tag and
+keys as the manual bring-up (#1488). Use `latest` while rehearsing, then **pin the exact
 tag you rehearsed with** (a release or `sha-...` tag) for the talk, so a new
 push to `main` cannot change the stage images:
 
@@ -94,7 +97,7 @@ AGENT_INFERENCE_BACKEND=claude         # post-game summary (retro) on Claude; de
 
 The agent reads all of these **once at startup**. Changing one means
 recreating the agent:
-`docker compose --env-file .env --env-file .env.local up -d agent` (add the
+`./scripts/setup/joustmania-compose.sh up -d agent` (use the
 dry-run `-f` files and profiles on the rehearsal stack). With
 `AGENT_INFERENCE_BACKEND=claude` but no `ANTHROPIC_API_KEY` the agent logs
 `AGENT_INFERENCE_BACKEND=claude but ANTHROPIC_API_KEY is empty` and the summary
@@ -195,6 +198,8 @@ Replace `localhost` with the Pi's address from the presenter laptop.
 | Jaeger, held decisions only | `...&tags=%7B%22decide.outcome%22%3A%22held%22%7D` |
 | Jaeger, post-game summary (beat 8) | `http://localhost/jaeger/search?service=agent&operation=agent.llm.retro&lookback=30m&limit=5` |
 | Jaeger, infra decisions (section 4) | `http://localhost/jaeger/search?service=agent&operation=agent.infrastructure.decision&lookback=15m` |
+| Grafana, **stage view** | `http://localhost/grafana/d/talk?kiosk` (**Talk: Two Standards**, folder Talk, #1427): the one Grafana screen for this talk and Grafana's home page, eight large panels, refresh 10 s, no variables. Big numbers: live games (real / shadow), agent decisions per minute (the collector's span metrics over `agent.decide`: OTel in), OpenFeature flag evaluations per second (the standard OpenFeature OTel hook metrics `feature_flag_evaluation_*`) and flag-service writes per minute (every flip below is one: OpenFeature out). Below them: decisions per minute by `decide.backend` · `decide.outcome`, interventions applied per minute by type, evaluations per second by flag, and recent `agent.decide` traces from Jaeger. Use it next to the dashboard's Agent tab, which stays the decision-by-decision view |
+| Grafana, flags | `http://localhost/grafana/d/feature-flags` (**Flags / OpenFeature**, folder Platform): evaluations by flag, variant and reason, evaluation errors and fallbacks, the flag service (writes, live games registered, flagd sync streams, snapshot size) and flagd health |
 | Grafana, agent metrics | `http://localhost/grafana/d/agent-operations` (**Agent Decisions & Interventions**, the [agent demo runbook](../agent-demo-runbook.md)'s "fleet view"; replaced Agent Operations — Fleet and Interventions in #1427). Row Decide: decisions per minute by `decide.backend` and the outcome split (act / noop / held / fallback), derived by the OTel collector's span-metrics connector from the `agent.decide` spans, so a backend flip shows within a minute; row Remote Backends: `gen_ai.client.operation.duration` p95 and tokens by model |
 | Grafana, game and players | `http://localhost/grafana/d/game-players` (**Game & Players**: live games, games by outcome, game-loop health, and a per-player drill-down row with the 100 Hz acceleration against the warning and death lines; replaced Game Quality, Game Analytics and Player Insights in #1427) |
 | Grafana, service and host health | `http://localhost/grafana/d/joustmania-service-health` (**Infrastructure & Services**; absorbed the separate Fleet Overview dashboard in #1427) |
@@ -356,7 +361,12 @@ degradation. Since #1371 the baseline `controller.json` default backend is
 `rust`, which loads no python adapter; `backend` is not runtime-mutable, so this
 beat needs a baseline with a python variant (`python_rust`, a reviewed edit of
 `services/flagd/controller.json` plus `scripts/flags.sh restart`, then
-`talk-stage.sh reset`) and the `python-hid` compose profile.
+`talk-stage.sh reset`) and the `python-hid` compose profile (add
+`--profile python-hid` to the section 1 bring-up, or use the systemd drop-in
+described in `scripts/setup/joustmania.service`; never put `COMPOSE_PROFILES`
+in the tracked `.env`). The rollout routes its serials itself; outside this
+beat, real controllers reach python-hid only with `bluetooth_backend=python`
+as well (#1402).
 
 What happens: the agent watches the `controller.bluetooth_health` span (~1 Hz)
 and checks it against the `fitness.bluetooth.*` thresholds (gap 50 ms, drops 2%,
@@ -389,14 +399,16 @@ Variant for the permissions story: with `remediation_allowed=off` the span says
 A dry run (`rollout_enabled` off) keeps no rollout state, so flipping it back
 on resumes without a restart.
 
-Reset after a real run (and restart the agent: the post-rollback cooldown and the
-last written stage live in memory, and the flag reset below does not clear them):
+Reset after a run (no agent restart: once the agent sees the rollout inactive, or
+sees a `current_controller_count` it did not write, it drops its last written stage;
+#1384). The post-rollback cooldown is kept, so after a reset that follows a
+rollback the next run's first expansion can wait up to the cooldown (about 30 s,
+`AGENT_ROLLOUT_COOLDOWN_SECONDS`):
 
 ```bash
 setflag rollout strategy off; setflag rollout target_backend python
 setflag rollout current_controller_count none; setflag rollout remediation_allowed off
 setflag agent rollout_enabled off
-docker compose --env-file .env --env-file .env.local restart agent
 ```
 
 The infra loop is not gated by the `enabled` kill switch, only by
@@ -409,8 +421,35 @@ The infra loop is not gated by the `enabled` kill switch, only by
 ### T-24h
 
 - [ ] Pi updated, images pulled with the tag from `.env.local`
-      (`docker compose --env-file .env --env-file .env.local pull`). Run on the
+      (`./scripts/setup/joustmania-compose.sh pull`). Run on the
       Pi itself: arm64 images, **verify in rehearsal**.
+- [ ] The running agent has its backend keys (values never printed; also
+      section 4 of `./scripts/talk-preflight.sh`):
+      ```bash
+      for k in JEV_API_KEY ANTHROPIC_API_KEY DECISION_OPENAI_API_KEY; do
+        docker exec joustmania-agent sh -c "test -n \"\$$k\"" && echo "$k set" || echo "$k MISSING"
+      done
+      ```
+      `JEV_API_KEY` and `ANTHROPIC_API_KEY` must be set; `DECISION_OPENAI_API_KEY`
+      only if beat 6b stays in.
+- [ ] Reboot test (#1488): `sudo systemctl restart joustmania`, wait for it,
+      then `docker inspect -f '{{.Config.Image}}' joustmania-agent` ends in the
+      `IMAGE_TAG` from `.env.local` (not `0.7.0`), the journal shows
+      `Env files: .env + .env.local`, and the key check above still says `set`.
+- [ ] No dev ports on the venue network (#1319): `sudo ss -tlnp | grep -v 127.0.0.1`
+      lists port 80 (envoy) and no 50052-50062, 8013, 8015, 4317 or 50058.
+      Also expected: sshd on :22 and the pairing daemon's 8002 on
+      `172.17.0.1` (docker0 gateway, for the connect-proxy; not the venue
+      network). Anything else from docker is a finding.
+      If 50062 shows up, the stack was started without `joustmania-compose.sh`
+      (the dev override got loaded): bring it up again as in section 1.
+- [ ] Pairing daemon still reaches rust-hid, the collector and flagd over
+      `127.0.0.1` (#1319): a USB pairing works, its spans show up in Jaeger,
+      and a runtime pairing flag change applies.
+- [ ] No stale `joustmania-python-hid` from an older install (#1402):
+      `docker ps -a --filter name=joustmania-python-hid` is empty. The start
+      script removes it when the `python-hid` profile is off; by hand:
+      `docker rm -f joustmania-python-hid`.
 - [ ] `.env.local` holds `JEV_API_KEY`, `ANTHROPIC_API_KEY`,
       `AGENT_INFERENCE_BACKEND=claude`, `IMAGE_TAG` (pinned to the rehearsed
       tag); `DECISION_OPENAI_API_KEY` only if beat 6b stays in. Nothing in
@@ -464,7 +503,7 @@ The infra loop is not gated by the `enabled` kill switch, only by
       `default`, jev thr. `gate`, `capture on`.
 - [ ] Browser tabs open, in order: dashboard Agent tab, Jaeger agent.decide
       search (pre-filled), Jaeger held search, Jaeger retro search, Grafana
-      (optional), terminal.
+      stage view `http://localhost/grafana/d/talk?kiosk` (optional), terminal.
 - [ ] Terminal: an ssh session on the Pi, big font, `cd` to the repo,
       `setflag` pasted,
       history cleared of anything with a key.
@@ -503,8 +542,7 @@ agent's interventions need no reset: they belong to their game and the flag
 service drops them when the game ends (UC-053 BR-003). It is idempotent and does not care what a beat
 left behind, so it is also the recovery after an interrupted beat. It leaves
 `decision.jev.model` alone (`latest` or `pinned` is the presenter's choice).
-After beat I also run the rollout reset from section 4 (incl. the agent
-restart).
+After beat I also run the rollout reset from section 4.
 
 **Why `standard` and not the shipped `ambient`:** on the mock stack nothing in
 `ambient` is visible (a controller effect defaults to rumble, volume 0.7 is

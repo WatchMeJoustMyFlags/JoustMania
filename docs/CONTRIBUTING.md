@@ -135,6 +135,11 @@ derived from its use cases: it is `Verified` only when every use case that lists
 `Tested`, otherwise at most `Implemented`. NFRs and constraints are exempt from both rules: NFRs are measured separately, constraints are verified by
 review and the technical specs; only FRs derive their status from their use cases.
 
+When a flow or business rule leaves a use case, keep its ID: a flow that moved to another use case is
+titled `(moved)`, one that no longer exists `(retired)`. Its trigger says where it went (or why it
+ended) and that the ID is kept so it is not reused, and its body is one neutral "No steps" line.
+See UC-030 A2 and UC-035 A2.
+
 ### Identifiers in use cases (documented deviation)
 
 The `use-case-spec` skill asks for flows without implementation details. JoustMania's use cases
@@ -234,13 +239,13 @@ Conventional Commit types such as `docs/` and `refactor/` work the same way):
 
 ```bash
 # Create worktree for an issue
-git worktree add ../JoustMania-issue-<NUMBER> -b fix/<description> origin/main
+git worktree add .worktrees/issue-<NUMBER> -b fix/<description> origin/main
 
 # Work in the isolated directory
-cd ../JoustMania-issue-<NUMBER>
+cd .worktrees/issue-<NUMBER>
 
 # After PR is merged, clean up
-git worktree remove ../JoustMania-issue-<NUMBER>
+git worktree remove .worktrees/issue-<NUMBER>
 ```
 
 ### Making Changes
@@ -281,6 +286,7 @@ All pull requests must pass CI checks before merging:
 5. **Docker Builds** - All services must build successfully
 6. **Package Validation** - All workspace packages must install correctly
 7. **Spec Gate** - Spec lint over `docs/` and the spec-touched check (see [CI spec gate](#ci-spec-gate))
+8. **Generated specs** - `docs/specs/generated/` (metric catalog, RPC tables, flag counts, `ci/` flag diffs) must match the code: run `make specs` and commit (checked by `make specs-check` in the Telemetry Contract job). After a rebase that conflicts in a generated file, take either side and run `make specs`
 
 ### Running Checks Locally
 
@@ -319,6 +325,33 @@ make ci-lint-dockerfiles
 # Validate protos
 make ci-validate-protos
 ```
+
+### PR gates and merging (`make pr-gates`, `safe-merge.sh`)
+
+`make pr-gates` (`scripts/ci/local-gates.sh`) runs the local gates for what the branch changed (files vs
+`origin/main`, plus uncommitted and untracked files). It always runs `make lint` and the spec lint gate, then
+selects from the diff: per-service pytest (lib or proto changes fan out to every Python service, as in CI),
+`go vet` + `go test -race` for the agent and flag service, the connect-proxy Docker builder stage (the only
+place its generated code exists), dashboard `tsc --noEmit` + vitest (Node 24 from `~/.nvm`), the telemetry
+contract, the flagd contract (flag files or the flag-service registry), Grafana dashboard JSON, compose
+`config -q` on the main file combinations and a YAML duplicate-key check.
+
+```bash
+make pr-gates                           # auto-detect
+make pr-gates SERVICE=menu,agent        # explicit gate keys (see the script header)
+scripts/ci/local-gates.sh --plan        # list the selected gates, run nothing
+```
+
+It prints one `PASS`/`FAIL`/`SKIP` line per gate with its duration, then the output of failing gates only,
+and exits non-zero on any failure. CI stays the source of truth; the mapping is narrower than CI's filters.
+
+`scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX>` waits for CI (polling every 75 s with backoff, never
+`gh run watch`), ignores SonarCloud and checks of cancelled runs superseded by a newer run on the same head,
+and squash-merges only at the expected head (`--match-head-commit`). `--close N,N --comment-file F` and
+`--note-issue N --note-file F` act only once the PR reads `MERGED` (`{MERGE}` becomes the short merge SHA).
+`--wait-ci` waits and reports without merging; on red it names known infrastructure failures (stale
+collector image, fast-path stale prebuilt images, `blob not found`) with "add `ci-full`" or "rerun" advice.
+`--rerun-failed-once` reruns failed jobs once before giving up. Both scripts have tests in `scripts/tests/`.
 
 **In Dev Container:**
 

@@ -216,8 +216,9 @@ def test_base_init_stores_instance_tables_from_defaults():
     assert game.fast_max == FAST_MAX
 
 
+@pytest.mark.uc("UC-030", br=["BR-001"])
 def test_base_init_reads_flag_once():
-    """The threshold flag is read exactly once at init (init-frozen).
+    """UC-030 BR-001: the `thresholds` flag is read once, at game start (init-frozen).
 
     Base init reads several game-domain object flags (thresholds, F3 windows,
     ...); assert specifically that ``thresholds`` is read exactly once.

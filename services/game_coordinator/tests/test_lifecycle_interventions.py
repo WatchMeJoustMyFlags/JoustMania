@@ -225,6 +225,7 @@ class TestGrantShieldPrimitive:
 # --------------------------------------------------------------------------- #
 class TestShieldSecondsHandler:
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A3")
     async def test_shields_only_targeted_serials(self):
         game = make_ffa_game(num_players=3)
         mgr, _ = make_manager(game=game)
@@ -555,6 +556,7 @@ class _AllowingAgentStub(_AgentStub):
 class TestCoordinatorBlocksInFFA:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
+    @pytest.mark.uc("UC-020", flow="A3")
     async def test_revive_player_in_real_ffa_is_mode_unsupported(self):
         """UC-040 A22: revive_player passes the allow-list (the `full` variant offers
         it), but the capability matrix denies it in a real FFA game: the dead player

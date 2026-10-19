@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 # Global meter instance
 _meter: metrics.Meter | None = None
 _initialized = False
+# Export interval of the running PeriodicExportingMetricReader; None until init_metrics.
+_export_interval_ms: int | None = None
 _pending_metrics: list[LabeledMetric] = []
 # Reentrant: init_metrics() holds this lock while it lazily reads the export
 # interval from flagd, and that import chain (lib.feature_flags ->
@@ -132,7 +134,7 @@ def init_metrics(
         OTEL_SERVICE_NAMESPACE: Service namespace (default: "joustmania")
         OTEL_EXPORTER_OTLP_ENDPOINT: OTLP collector endpoint (default: http://otel-collector:4317)
     """
-    global _meter, _initialized
+    global _meter, _initialized, _export_interval_ms
 
     with _init_lock:
         if _initialized:
@@ -160,6 +162,7 @@ def init_metrics(
         metrics.set_meter_provider(provider)
 
         _meter = metrics.get_meter(service_name, "1.0.0")
+        _export_interval_ms = export_interval_ms
         _initialized = True
 
         # Initialize any metrics that were created before init_metrics() was called
@@ -178,6 +181,12 @@ def get_meter() -> metrics.Meter:
     if _meter is None:
         raise RuntimeError("Metrics not initialized. Call init_metrics() first.")
     return _meter
+
+
+def get_export_interval_ms() -> int | None:
+    """The metric export interval in ms, or None when metrics are not exported
+    (not initialized yet, or disabled for tests)."""
+    return _export_interval_ms if _initialized else None
 
 
 def _is_initialized() -> bool:

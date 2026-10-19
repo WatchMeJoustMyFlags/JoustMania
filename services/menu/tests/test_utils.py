@@ -111,6 +111,30 @@ class TestAudioHelper:
         assert audio.lobby_music_track_id == "lobby-1"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="main", steps=[2])
+    async def test_stop_lobby_music_stops_the_music(self):
+        """UC-031 step 2: at game start the lobby music is stopped (StopMusic, any track) and forgotten."""
+        from proto import audio_pb2
+
+        audio = AudioHelper(MagicMock())
+        audio.lobby_music_track_id = "lobby-1"
+        calls: list = []
+
+        class RecordingStub:
+            def __init__(self, _channel):
+                pass
+
+            async def StopMusic(self, request):  # noqa: N802 - gRPC stub name
+                calls.append(("StopMusic", request.track_id))
+                return audio_pb2.StopMusicResponse(success=True)
+
+        with patch("proto.audio_pb2_grpc.AudioServiceStub", RecordingStub):
+            await audio.stop_lobby_music()
+
+        assert calls == [("StopMusic", "")]
+        assert audio.lobby_music_track_id is None
+
+    @pytest.mark.asyncio
     async def test_play_sound_string(self, audio):
         """play_sound should handle string sound paths."""
         with patch("proto.audio_pb2_grpc.AudioServiceStub") as mock_stub_class:
@@ -262,7 +286,7 @@ class TestGameModesConstant:
 
 
 class TestUC011ModeSelectionRules:
-    """UC-011 BR-001 (playable modes only) and A3 (modes without voice or colour)."""
+    """UC-011 BR-001 (playable modes only); lobby voice and colour gap of Zombies (UC-023) and NonStop (UC-026)."""
 
     @pytest.mark.uc("UC-011", flow="main", steps=[2], br=["BR-001"])
     def test_ten_playable_modes_never_commander_ninja_random(self):
@@ -278,8 +302,13 @@ class TestUC011ModeSelectionRules:
             assert get_next_game_mode(Games[name], forward=False).name in GAME_MODES
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-011", flow="A3")
-    @pytest.mark.parametrize("mode", ["Zombies", "NonStop"])
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            pytest.param("Zombies", marks=pytest.mark.uc("UC-023", flow="main")),
+            pytest.param("NonStop", marks=pytest.mark.uc("UC-026", flow="main")),
+        ],
+    )
     async def test_mode_without_voice_or_colour(self, mode):
         """Zombies and NonStop: no announcement and the default orange (key mismatch, D-M8)."""
         audio = AudioHelper(MagicMock())

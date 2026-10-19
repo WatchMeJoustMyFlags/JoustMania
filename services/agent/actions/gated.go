@@ -143,6 +143,15 @@ func (a *GatedRolloutActuator) StageVariantForValue(value int) (string, bool) {
 	return a.writer.StageVariantForValue(value)
 }
 
+// ServedStage delegates to the wrapped writer regardless of the gate: reading the
+// served stage writes nothing, and the loop needs it to notice an operator reset
+// or a flag-service restart even while rollout_enabled is off (#1384).
+func (a *GatedRolloutActuator) ServedStage(ctx context.Context) (decision.ServedRolloutStage, error) {
+	return a.writer.ServedStage(ctx)
+}
+
+var _ decision.RolloutStageReader = (*GatedRolloutActuator)(nil)
+
 // DryRun reports the LIVE gate state: true (rehearsal) when rollout_enabled is off
 // or flagd is unreachable, false (applied) when it is on. The loop lifts this onto
 // every rollout decision span as rollout.dry_run, so a Jaeger consumer sees the

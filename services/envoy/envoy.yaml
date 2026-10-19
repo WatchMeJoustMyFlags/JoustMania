@@ -99,13 +99,6 @@ static_resources:
                             cluster: flag_service
                             prefix_rewrite: "/"
 
-                        # Chaos fault injection API
-                        # PRESERVE prefix - connect-proxy handles /chaos/* paths
-                        - match:
-                            prefix: "/chaos/"
-                          route:
-                            cluster: connect_proxy
-
                         # Operator unpair (UC-005), forwarded to the pairing daemon
                         # PRESERVE prefix - connect-proxy handles /pairing/* paths
                         - match:

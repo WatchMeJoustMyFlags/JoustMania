@@ -1,13 +1,19 @@
+import json
 import logging
+from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
 from services.game_coordinator.runtime_config import GamePerformanceConfig, RuntimeConfigManager
 
+SYSTEM_FLAGS = Path(__file__).resolve().parents[3] / "services" / "flagd" / "system.json"
 
+
+@pytest.mark.nfr("NFR-003")
+@pytest.mark.uc("UC-030", flow="main", steps=[2])
 def test_runtime_config_defaults():
-    """Test that RuntimeConfigManager initializes with defaults when no flags are available."""
+    """UC-030 step 2 / NFR-003: without flags the game streams at 60 Hz (countdown and rainbow defaults too)."""
     manager = RuntimeConfigManager()
     config = manager.get_config()
 
@@ -15,6 +21,15 @@ def test_runtime_config_defaults():
     assert config.update_frequency_hz == 60
     assert config.countdown_phase_duration_ms == 750
     assert config.winner_rainbow_duration_ms == 3000
+
+
+@pytest.mark.nfr("NFR-003")
+@pytest.mark.uc("UC-030", flow="main", steps=[2])
+def test_system_flag_default_rate_is_60_hz():
+    """UC-030 step 2 / NFR-003: the shipped flag defaults to 60 Hz (variants 15/30/60), matching the code default."""
+    flag = json.loads(SYSTEM_FLAGS.read_text())["flags"]["game_loop.update_frequency_hz"]
+    assert flag["variants"] == {"low": 15, "medium": 30, "high": 60}
+    assert flag["variants"][flag["defaultVariant"]] == 60 == GamePerformanceConfig().update_frequency_hz
 
 
 def test_runtime_config_no_countdown_duration_seconds():
@@ -230,13 +245,11 @@ def test_refresh_from_flags_with_metrics(mock_get_client, _mock_add_handler):
 
     with (
         patch("services.game_coordinator.metrics.config_changes_total") as mock_changes,
-        patch("services.game_coordinator.metrics.flag_evaluations_total") as mock_evaluations,
         patch("services.game_coordinator.metrics.current_update_frequency_hz") as mock_gauge,
     ):
         manager = RuntimeConfigManager()
 
         # Verify initial setup called metrics
-        assert mock_evaluations.labels.called
         assert mock_gauge.set.called
 
         # Trigger another refresh with different values
