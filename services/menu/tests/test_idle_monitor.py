@@ -385,6 +385,52 @@ class TestIdleMonitorDisabled:
         assert not disabled_idle_monitor.is_idle_active
 
 
+class TestIdleMonitorLoopTimeout:
+    """UC-010 A2: the monitor loop enters idle once idle.timeout_minutes pass without a press."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A2", steps=[1])
+    @patch("services.menu.idle_monitor.metrics")
+    async def test_loop_enters_idle_at_timeout_not_before(self, mock_metrics, mock_state_manager):
+        clock = {"now": 1000.0}
+        timeout_minutes = 2
+        real_sleep = asyncio.sleep
+        idle_entered_at = []
+
+        async def fake_sleep(seconds):
+            clock["now"] += seconds
+            if clock["now"] > 1000.0 + timeout_minutes * 60 + 5:
+                raise asyncio.CancelledError
+            await real_sleep(0)
+
+        mock_state_manager.controller_states = {"s1": ControllerState.CONNECTED, "s2": ControllerState.CONNECTED}
+
+        async def transition(serial, state):
+            idle_entered_at.append(clock["now"])
+            mock_state_manager.controller_states[serial] = state
+
+        mock_state_manager.transition_to.side_effect = transition
+        monitor = IdleMonitor(
+            state_manager=mock_state_manager,
+            get_idle_enabled=lambda: True,
+            get_idle_timeout=lambda: timeout_minutes,
+            get_sentinel_count=lambda: 0,
+            get_rotation_minutes=lambda: 5,
+        )
+
+        with (
+            patch("services.menu.idle_monitor.time.monotonic", side_effect=lambda: clock["now"]),
+            patch("services.menu.idle_monitor.asyncio.sleep", side_effect=fake_sleep),
+        ):
+            monitor.reset_activity()
+            await monitor._monitor_loop()
+
+        assert monitor.is_idle_active
+        assert idle_entered_at, "the loop never entered idle"
+        assert min(idle_entered_at) == 1000.0 + timeout_minutes * 60
+        assert set(mock_state_manager.controller_states.values()) == {ControllerState.IDLE}
+
+
 class TestIdleMonitorSentinelRotation:
     """Test sentinel rotation."""
 

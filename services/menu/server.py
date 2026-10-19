@@ -28,11 +28,11 @@ logging.basicConfig(
 import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
+from lib.feature_flags import wait_for_provider_ready
 from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector
-from lib.types import Games
-from proto import menu_pb2, menu_pb2_grpc
+from proto import menu_pb2_grpc
 from services.menu import metrics
 from services.menu.servicer import MenuServicer
 
@@ -89,12 +89,14 @@ async def serve(port=50054):
     # Start game event monitoring (stops button monitor during games)
     await menu_servicer.start_game_event_monitor()
 
-    # Auto-start menu (so controllers light up immediately)
-    # Read from flagd user domain (initialized by MenuServicer.__init__)
+    # Auto-start menu (so controllers light up immediately) through the same
+    # lobby entry as StartMenu: current_game, lobby music, idle monitor (D-M2, #1505).
+    # Read from flagd user domain (initialized by MenuServicer.__init__). Wait for its
+    # first sync (bounded) so the flags below are not code defaults on a cold boot.
+    await wait_for_provider_ready("user")
     auto_start = menu_servicer.user_prefs_client.get_boolean_value("menu_auto_start", True)
     if auto_start:
-        menu_servicer.state = menu_pb2.MenuState.RUNNING
-        menu_servicer.current_selection = Games.JoustFFA
+        await menu_servicer.enter_lobby()
         logger.info("Menu auto-started (menu_auto_start flag=true)")
 
     # Use asyncio.Event for signal-driven shutdown so both SIGTERM (Docker stop)

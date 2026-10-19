@@ -29,7 +29,11 @@ def _servicer_with_flags(**flags):
     return servicer
 
 
-async def _boot(servicer):
+async def _provider_ready(_domain, *_a, **_k):
+    return True
+
+
+async def _boot(servicer, provider_wait=None):
     """Run server.serve() until the boot sequence is done, then SIGTERM it; returns the gRPC server mock."""
     loop = asyncio.get_running_loop()
     handlers = {}
@@ -44,6 +48,7 @@ async def _boot(servicer):
         patch.object(server, "MenuServicer", autospec=True, return_value=servicer),
         patch.object(server.menu_pb2_grpc, "add_MenuServiceServicer_to_server", autospec=True),
         patch.object(loop, "add_signal_handler", side_effect=lambda sig, cb: handlers.__setitem__(sig, cb)),
+        patch.object(server, "wait_for_provider_ready", side_effect=provider_wait or _provider_ready),
     ):
         task = asyncio.create_task(server.serve(port=0))
         for _ in range(200):
@@ -61,20 +66,61 @@ class TestMenuAutoStart:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", br=["BR-003"])
-    async def test_auto_start_runs_lobby_without_music_or_idle_monitor(self):
-        """menu_auto_start on (the default): RUNNING with JoustFFA, no StartMenu side effects."""
-        servicer = _servicer_with_flags()  # flag unset -> default True
+    @pytest.mark.uc("UC-010", flow="A2", steps=[1])
+    @pytest.mark.uc("UC-011", flow="main")  # Post-S-1: the next lobby entry restores current_game
+    @pytest.mark.uc("UC-031", flow="main", steps=[1])
+    async def test_auto_start_enters_lobby_like_start_menu(self, real_servicer):
+        """menu_auto_start on (the default) takes the StartMenu lobby entry (D-M2, #1505, #1285).
 
-        await _boot(servicer)
+        The persisted current_game is restored, lobby music and the idle monitor
+        start and menu_started is published, exactly as after StartMenu.
+        """
+        real_servicer.user_prefs_client.get_string_value.side_effect = lambda key, default, *_a, **_k: (
+            "Tournament" if key == "current_game" else default
+        )
 
-        assert servicer.state == menu_pb2.MenuState.RUNNING
-        # The persisted current_game is ignored on this path (D-M2).
-        assert servicer.current_selection == Games.JoustFFA
-        servicer.StartMenu.assert_not_called()
-        servicer.start_button_monitor.assert_awaited_once()
-        # No lobby music and no idle monitor until the first game ends.
-        assert not servicer.audio.mock_calls
-        assert not servicer.idle_monitor.mock_calls
+        await _boot(real_servicer)
+
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        assert real_servicer.current_selection == Games.Tournament
+        assert real_servicer.state_manager.current_game_mode == Games.Tournament
+        real_servicer.audio.start_lobby_music.assert_awaited_once()
+        real_servicer.idle_monitor.start.assert_called_once()
+        published = [c.args for c in real_servicer.event_publisher.publish.await_args_list]
+        assert ("menu_started", {}) in published
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", br=["BR-003"])
+    async def test_auto_start_ignores_unplayable_persisted_selection(self, real_servicer):
+        """A persisted current_game that is not playable falls back to JoustFFA on boot."""
+        real_servicer.user_prefs_client.get_string_value.side_effect = lambda key, default, *_a, **_k: (
+            "Random" if key == "current_game" else default
+        )
+        real_servicer.current_selection = Games.Tournament
+
+        await _boot(real_servicer)
+
+        assert real_servicer.current_selection == Games.JoustFFA
+        assert real_servicer.state_manager.current_game_mode == Games.JoustFFA
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", br=["BR-003"])
+    async def test_auto_start_reads_user_flags_after_the_provider_synced(self, real_servicer):
+        """The boot waits for the user flag provider before it reads menu_auto_start and current_game."""
+        order = []
+
+        async def provider_wait(domain, *_a, **_k):
+            order.append(f"wait {domain}")
+            return True
+
+        real_servicer.user_prefs_client.get_boolean_value.side_effect = lambda key, default, *_a, **_k: (
+            order.append(f"read {key}") or default
+        )
+
+        await _boot(real_servicer, provider_wait=provider_wait)
+
+        assert order[:2] == ["wait user", "read menu_auto_start"]
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", br=["BR-003"])
