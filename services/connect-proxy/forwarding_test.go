@@ -1,0 +1,822 @@
+package main
+
+// Forwarding tests for the Connect -> gRPC proxies (#1525): the dashboard's
+// Connect calls go through a real Connect handler (httptest) to in-process
+// fake gRPC backends (bufconn). Each test proves the request reaches the right
+// backend with its payload, the backend's answer comes back intact, and a
+// backend gRPC error surfaces as a Connect error.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
+
+	controllerpb "github.com/joustmania/connect-proxy/gen/controller_manager"
+	"github.com/joustmania/connect-proxy/gen/controller_manager/controller_managerconnect"
+	gamepb "github.com/joustmania/connect-proxy/gen/game_coordinator"
+	"github.com/joustmania/connect-proxy/gen/game_coordinator/game_coordinatorconnect"
+	menupb "github.com/joustmania/connect-proxy/gen/menu"
+	"github.com/joustmania/connect-proxy/gen/menu/menuconnect"
+)
+
+// callLog records which backend RPC was hit and with which request.
+type callLog struct {
+	mu    sync.Mutex
+	calls []string
+	reqs  []proto.Message
+}
+
+func (l *callLog) record(method string, req proto.Message) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, method)
+	l.reqs = append(l.reqs, proto.Clone(req))
+}
+
+func (l *callLog) only(t *testing.T, method string) proto.Message {
+	t.Helper()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.calls) != 1 || l.calls[0] != method {
+		t.Fatalf("backend calls = %v, want exactly [%s]", l.calls, method)
+	}
+	return l.reqs[0]
+}
+
+func (l *callLog) none(t *testing.T) {
+	t.Helper()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.calls) != 0 {
+		t.Fatalf("backend calls = %v, want none (wrong backend reached)", l.calls)
+	}
+}
+
+// --- fake backends ---------------------------------------------------------
+
+type fakeMenu struct {
+	menupb.UnimplementedMenuServiceServer
+	log    callLog
+	err    error // returned by every unary RPC when set
+	events []*menupb.MenuEvent
+	endErr error // returned after the stream events when set
+}
+
+func (f *fakeMenu) StartMenu(_ context.Context, r *menupb.StartMenuRequest) (*menupb.StartMenuResponse, error) {
+	f.log.record("StartMenu", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &menupb.StartMenuResponse{Success: true}, nil
+}
+
+func (f *fakeMenu) StopMenu(_ context.Context, r *menupb.StopMenuRequest) (*menupb.StopMenuResponse, error) {
+	f.log.record("StopMenu", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &menupb.StopMenuResponse{Success: true}, nil
+}
+
+func (f *fakeMenu) ProcessInput(_ context.Context, r *menupb.ProcessInputRequest) (*menupb.ProcessInputResponse, error) {
+	f.log.record("ProcessInput", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	if r.GetData()["mode"] == "NoSuchMode" {
+		return &menupb.ProcessInputResponse{Success: false, Error: "Unknown game mode: NoSuchMode"}, nil
+	}
+	return &menupb.ProcessInputResponse{Success: true}, nil
+}
+
+func (f *fakeMenu) ListGameModes(_ context.Context, r *menupb.ListGameModesRequest) (*menupb.ListGameModesResponse, error) {
+	f.log.record("ListGameModes", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &menupb.ListGameModesResponse{GameModes: []string{"JoustFFA", "JoustTeams"}, DefaultMode: "JoustFFA"}, nil
+}
+
+func (f *fakeMenu) StreamMenuEvents(r *menupb.StreamMenuEventsRequest, s grpc.ServerStreamingServer[menupb.MenuEvent]) error {
+	f.log.record("StreamMenuEvents", r)
+	for _, ev := range f.events {
+		if err := s.Send(ev); err != nil {
+			return err
+		}
+	}
+	return f.endErr
+}
+
+type fakeGame struct {
+	gamepb.UnimplementedGameCoordinatorServiceServer
+	log    callLog
+	err    error
+	events []*gamepb.GameEvent
+	endErr error
+}
+
+func (f *fakeGame) ForceEndGame(_ context.Context, r *gamepb.ForceEndGameRequest) (*gamepb.ForceEndGameResponse, error) {
+	f.log.record("ForceEndGame", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	if r.GameId != nil && r.GetGameId() != "game_live" {
+		return &gamepb.ForceEndGameResponse{Success: false, Error: "Unknown game_id: " + r.GetGameId()}, nil
+	}
+	return &gamepb.ForceEndGameResponse{Success: true}, nil
+}
+
+func (f *fakeGame) GetGameState(_ context.Context, r *gamepb.GetGameStateRequest) (*gamepb.GetGameStateResponse, error) {
+	f.log.record("GetGameState", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &gamepb.GetGameStateResponse{Success: true, GameInfo: &gamepb.GameInfo{GameId: r.GetGameId(), GameMode: "JoustFFA"}}, nil
+}
+
+func (f *fakeGame) ListGames(_ context.Context, r *gamepb.ListGamesRequest) (*gamepb.ListGamesResponse, error) {
+	f.log.record("ListGames", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &gamepb.ListGamesResponse{Success: true, Games: []*gamepb.GameInfo{{GameId: "game_live"}, {GameId: "game_shadow"}}}, nil
+}
+
+func (f *fakeGame) StreamGameEvents(r *gamepb.StreamEventsRequest, s grpc.ServerStreamingServer[gamepb.GameEvent]) error {
+	f.log.record("StreamGameEvents", r)
+	for _, ev := range f.events {
+		if err := s.Send(ev); err != nil {
+			return err
+		}
+	}
+	return f.endErr
+}
+
+type fakeController struct {
+	controllerpb.UnimplementedControllerManagerServiceServer
+	log     callLog
+	err     error
+	updates []*controllerpb.GameplayDataUpdate
+}
+
+// StreamGameplayData records the first control message, sends the canned
+// updates and then ends the stream from the backend side.
+func (f *fakeController) StreamGameplayData(s grpc.BidiStreamingServer[controllerpb.GameplayStreamControl, controllerpb.GameplayDataUpdate]) error {
+	first, err := s.Recv()
+	if err != nil {
+		return err
+	}
+	f.log.record("StreamGameplayData", first)
+	for _, u := range f.updates {
+		if err := s.Send(u); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *fakeController) RenameController(_ context.Context, r *controllerpb.RenameControllerRequest) (*controllerpb.RenameControllerResponse, error) {
+	f.log.record("RenameController", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &controllerpb.RenameControllerResponse{Success: true}, nil
+}
+
+func (f *fakeController) IdentifyController(_ context.Context, r *controllerpb.IdentifyControllerRequest) (*controllerpb.IdentifyControllerResponse, error) {
+	f.log.record("IdentifyController", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	if r.GetSerial() == "gone" {
+		return &controllerpb.IdentifyControllerResponse{Success: false, Outcome: "not_connected", Error: "Controller not connected"}, nil
+	}
+	return &controllerpb.IdentifyControllerResponse{Success: true, Outcome: "started", DurationMs: r.GetDurationMs()}, nil
+}
+
+func (f *fakeController) GetConnectedControllers(_ context.Context, r *controllerpb.GetConnectedControllersRequest) (*controllerpb.GetConnectedControllersResponse, error) {
+	f.log.record("GetConnectedControllers", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &controllerpb.GetConnectedControllersResponse{
+		ConnectedSerials: []string{"aa:bb"},
+		Controllers:      []*controllerpb.ConnectedController{{Serial: "aa:bb", Name: "Red", Battery: 4}},
+	}, nil
+}
+
+// --- harness ---------------------------------------------------------------
+
+// proxyRig wires the three proxies exactly as main() does, in front of
+// in-process fake backends, and exposes generated Connect clients.
+type proxyRig struct {
+	menu       *fakeMenu
+	game       *fakeGame
+	controller *fakeController
+
+	menuClient       menuconnect.MenuServiceClient
+	gameClient       game_coordinatorconnect.GameCoordinatorServiceClient
+	controllerClient controller_managerconnect.ControllerManagerServiceClient
+
+	url        string
+	httpClient *http.Client
+}
+
+// dialFake starts a gRPC server on a bufconn listener and returns a client
+// connection to it. Everything is torn down at test cleanup.
+func dialFake(t *testing.T, register func(*grpc.Server)) *grpc.ClientConn {
+	t.Helper()
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	register(srv)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial fake backend: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+func newProxyRig(t *testing.T) *proxyRig {
+	t.Helper()
+	rig := &proxyRig{menu: &fakeMenu{}, game: &fakeGame{}, controller: &fakeController{}}
+
+	menuConn := dialFake(t, func(s *grpc.Server) { menupb.RegisterMenuServiceServer(s, rig.menu) })
+	gameConn := dialFake(t, func(s *grpc.Server) { gamepb.RegisterGameCoordinatorServiceServer(s, rig.game) })
+	ctrlConn := dialFake(t, func(s *grpc.Server) { controllerpb.RegisterControllerManagerServiceServer(s, rig.controller) })
+
+	mux := http.NewServeMux()
+	mux.Handle(controller_managerconnect.NewControllerManagerServiceHandler(
+		&ControllerManagerProxy{client: controllerpb.NewControllerManagerServiceClient(ctrlConn)}))
+	mux.Handle(game_coordinatorconnect.NewGameCoordinatorServiceHandler(
+		&GameCoordinatorProxy{client: gamepb.NewGameCoordinatorServiceClient(gameConn)}))
+	mux.Handle(menuconnect.NewMenuServiceHandler(
+		&MenuProxy{client: menupb.NewMenuServiceClient(menuConn)}))
+
+	// HTTP/2 over TLS so the bidirectional gameplay stream works too; the
+	// unary and server-streaming calls behave as over the browser's HTTP/1.1.
+	ts := httptest.NewUnstartedServer(mux)
+	ts.EnableHTTP2 = true
+	ts.StartTLS()
+	t.Cleanup(ts.Close)
+
+	rig.url = ts.URL
+	rig.httpClient = ts.Client()
+	httpClient := ts.Client()
+	rig.menuClient = menuconnect.NewMenuServiceClient(httpClient, ts.URL)
+	rig.gameClient = game_coordinatorconnect.NewGameCoordinatorServiceClient(httpClient, ts.URL)
+	rig.controllerClient = controller_managerconnect.NewControllerManagerServiceClient(httpClient, ts.URL)
+	return rig
+}
+
+// otherBackendsUntouched fails if a backend other than want saw a call.
+func (r *proxyRig) otherBackendsUntouched(t *testing.T, want string) {
+	t.Helper()
+	if want != "menu" {
+		r.menu.log.none(t)
+	}
+	if want != "game" {
+		r.game.log.none(t)
+	}
+	if want != "controller" {
+		r.controller.log.none(t)
+	}
+}
+
+func testCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// assertBackendError checks that a backend gRPC status surfaces as a Connect
+// error. Every forwarder currently wraps it as CodeInternal (the original
+// gRPC code is only kept in the message text); this pins that behaviour.
+func assertBackendError(t *testing.T, err error, backendDesc string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected a Connect error, got nil")
+	}
+	var cerr *connect.Error
+	if !errors.As(err, &cerr) {
+		t.Fatalf("error %T is not a *connect.Error: %v", err, err)
+	}
+	if cerr.Code() != connect.CodeInternal {
+		t.Errorf("Connect code = %v, want %v", cerr.Code(), connect.CodeInternal)
+	}
+	if !strings.Contains(cerr.Message(), backendDesc) {
+		t.Errorf("Connect message %q does not carry the backend error %q", cerr.Message(), backendDesc)
+	}
+}
+
+func eq(t *testing.T, got, want proto.Message) {
+	t.Helper()
+	if !proto.Equal(got, want) {
+		t.Errorf("backend request = %v, want %v", got, want)
+	}
+}
+
+// --- menu ------------------------------------------------------------------
+
+// UC: UC-010 A6
+// UC: UC-011 BR-002
+func TestProxyProcessInputStartGame(t *testing.T) {
+	t.Run("UC-010/A6 start_game reaches the menu with its mode", func(t *testing.T) {
+		rig := newProxyRig(t)
+		req := &menupb.ProcessInputRequest{
+			InputType: "web_command",
+			Data:      map[string]string{"command": "start_game", "mode": "JoustFFA"},
+		}
+		resp, err := rig.menuClient.ProcessInput(testCtx(t), connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		if !resp.Msg.GetSuccess() {
+			t.Errorf("success = false, want true")
+		}
+		eq(t, rig.menu.log.only(t, "ProcessInput"), req)
+		rig.otherBackendsUntouched(t, "menu")
+	})
+
+	t.Run("UC-011/BR-002 rejected mode returns success=false with the menu's error", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, err := rig.menuClient.ProcessInput(testCtx(t), connect.NewRequest(&menupb.ProcessInputRequest{
+			InputType: "web_command",
+			Data:      map[string]string{"command": "start_game", "mode": "NoSuchMode"},
+		}))
+		if err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		if resp.Msg.GetSuccess() || resp.Msg.GetError() != "Unknown game mode: NoSuchMode" {
+			t.Errorf("response = %v, want success=false with the menu's error", resp.Msg)
+		}
+	})
+
+	t.Run("UC-010/A6 menu gRPC error surfaces as a Connect error", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.menu.err = status.Error(codes.Unavailable, "menu restarting")
+		_, err := rig.menuClient.ProcessInput(testCtx(t), connect.NewRequest(&menupb.ProcessInputRequest{InputType: "web_command"}))
+		assertBackendError(t, err, "menu restarting")
+	})
+}
+
+// UC: UC-011 BR-002
+func TestProxyListGameModes(t *testing.T) {
+	t.Run("UC-011/BR-002 mode list and default come back from the menu", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, err := rig.menuClient.ListGameModes(testCtx(t), connect.NewRequest(&menupb.ListGameModesRequest{}))
+		if err != nil {
+			t.Fatalf("ListGameModes: %v", err)
+		}
+		eq(t, resp.Msg, &menupb.ListGameModesResponse{GameModes: []string{"JoustFFA", "JoustTeams"}, DefaultMode: "JoustFFA"})
+		rig.menu.log.only(t, "ListGameModes")
+		rig.otherBackendsUntouched(t, "menu")
+	})
+
+	t.Run("UC-011/BR-002 menu error surfaces so the dashboard falls back to FFA", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.menu.err = status.Error(codes.Unavailable, "menu down")
+		_, err := rig.menuClient.ListGameModes(testCtx(t), connect.NewRequest(&menupb.ListGameModesRequest{}))
+		assertBackendError(t, err, "menu down")
+	})
+}
+
+// UC: UC-010 BR-003
+func TestProxyStartStopMenu(t *testing.T) {
+	t.Run("UC-010/BR-003 StartMenu and StopMenu reach the menu", func(t *testing.T) {
+		rig := newProxyRig(t)
+		if _, err := rig.menuClient.StartMenu(testCtx(t), connect.NewRequest(&menupb.StartMenuRequest{})); err != nil {
+			t.Fatalf("StartMenu: %v", err)
+		}
+		rig.menu.log.only(t, "StartMenu")
+		rig.menu.log = callLog{}
+		resp, err := rig.menuClient.StopMenu(testCtx(t), connect.NewRequest(&menupb.StopMenuRequest{}))
+		if err != nil {
+			t.Fatalf("StopMenu: %v", err)
+		}
+		if !resp.Msg.GetSuccess() {
+			t.Error("StopMenu success = false, want true")
+		}
+		rig.menu.log.only(t, "StopMenu")
+		rig.otherBackendsUntouched(t, "menu")
+	})
+
+	t.Run("UC-010/BR-003 menu errors surface as Connect errors", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.menu.err = status.Error(codes.FailedPrecondition, "menu busy")
+		_, err := rig.menuClient.StartMenu(testCtx(t), connect.NewRequest(&menupb.StartMenuRequest{}))
+		assertBackendError(t, err, "menu busy")
+		_, err = rig.menuClient.StopMenu(testCtx(t), connect.NewRequest(&menupb.StopMenuRequest{}))
+		assertBackendError(t, err, "menu busy")
+	})
+}
+
+// UC: UC-011 BR-002
+func TestProxyStreamMenuEvents(t *testing.T) {
+	t.Run("UC-011/BR-002 menu events are relayed in order", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.menu.events = []*menupb.MenuEvent{
+			{EventType: "selection_changed", Data: map[string]string{"mode": "JoustTeams"}, Timestamp: 1},
+			{EventType: "game_start_rejected", Data: map[string]string{"mode": "NoSuchMode"}, Timestamp: 2},
+		}
+		stream, err := rig.menuClient.StreamMenuEvents(testCtx(t), connect.NewRequest(&menupb.StreamMenuEventsRequest{}))
+		if err != nil {
+			t.Fatalf("StreamMenuEvents: %v", err)
+		}
+		defer stream.Close()
+		var got []*menupb.MenuEvent
+		for stream.Receive() {
+			got = append(got, stream.Msg())
+		}
+		if err := stream.Err(); err != nil {
+			t.Fatalf("stream ended with %v, want a clean end", err)
+		}
+		if len(got) != len(rig.menu.events) {
+			t.Fatalf("got %d events, want %d", len(got), len(rig.menu.events))
+		}
+		for i := range got {
+			eq(t, got[i], rig.menu.events[i])
+		}
+		rig.otherBackendsUntouched(t, "menu")
+	})
+
+	t.Run("UC-011/BR-002 backend stream error after events surfaces", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.menu.events = []*menupb.MenuEvent{{EventType: "menu_started"}}
+		rig.menu.endErr = status.Error(codes.Internal, "menu stream broke")
+		stream, err := rig.menuClient.StreamMenuEvents(testCtx(t), connect.NewRequest(&menupb.StreamMenuEventsRequest{}))
+		if err != nil {
+			t.Fatalf("StreamMenuEvents: %v", err)
+		}
+		defer stream.Close()
+		n := 0
+		for stream.Receive() {
+			n++
+		}
+		if n != 1 {
+			t.Errorf("got %d events before the error, want 1", n)
+		}
+		assertBackendError(t, stream.Err(), "menu stream broke")
+	})
+}
+
+// --- game coordinator ------------------------------------------------------
+
+// UC: UC-027 MSS A1 A2
+func TestProxyForceEndGame(t *testing.T) {
+	t.Run("UC-027/MSS dashboard Stop reaches the coordinator with its reason", func(t *testing.T) {
+		rig := newProxyRig(t)
+		req := &gamepb.ForceEndGameRequest{Reason: "Dashboard stop button"}
+		resp, err := rig.gameClient.ForceEndGame(testCtx(t), connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("ForceEndGame: %v", err)
+		}
+		if !resp.Msg.GetSuccess() {
+			t.Error("success = false, want true")
+		}
+		got := rig.game.log.only(t, "ForceEndGame").(*gamepb.ForceEndGameRequest)
+		eq(t, got, req)
+		if got.GameId != nil {
+			t.Errorf("game_id = %q, want unset (primary game)", got.GetGameId())
+		}
+		rig.otherBackendsUntouched(t, "game")
+	})
+
+	t.Run("UC-027/MSS a given game id is forwarded", func(t *testing.T) {
+		rig := newProxyRig(t)
+		req := &gamepb.ForceEndGameRequest{Reason: "operator", GameId: proto.String("game_live")}
+		if _, err := rig.gameClient.ForceEndGame(testCtx(t), connect.NewRequest(req)); err != nil {
+			t.Fatalf("ForceEndGame: %v", err)
+		}
+		eq(t, rig.game.log.only(t, "ForceEndGame"), req)
+	})
+
+	t.Run("UC-027/A1 unknown game id returns the coordinator's success=false", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, err := rig.gameClient.ForceEndGame(testCtx(t), connect.NewRequest(
+			&gamepb.ForceEndGameRequest{Reason: "operator", GameId: proto.String("game_nope")}))
+		if err != nil {
+			t.Fatalf("ForceEndGame: %v", err)
+		}
+		if resp.Msg.GetSuccess() || resp.Msg.GetError() != "Unknown game_id: game_nope" {
+			t.Errorf("response = %v, want success=false with the coordinator's error", resp.Msg)
+		}
+	})
+
+	t.Run("UC-027/A2 coordinator gRPC error surfaces as a Connect error", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.game.err = status.Error(codes.Unavailable, "coordinator down")
+		_, err := rig.gameClient.ForceEndGame(testCtx(t), connect.NewRequest(&gamepb.ForceEndGameRequest{Reason: "x"}))
+		assertBackendError(t, err, "coordinator down")
+	})
+}
+
+// UC: UC-035 MSS
+func TestProxyGameStateAndList(t *testing.T) {
+	t.Run("UC-035/MSS GetGameState forwards the game id", func(t *testing.T) {
+		rig := newProxyRig(t)
+		req := &gamepb.GetGameStateRequest{GameId: proto.String("game_live")}
+		resp, err := rig.gameClient.GetGameState(testCtx(t), connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("GetGameState: %v", err)
+		}
+		if resp.Msg.GetGameInfo().GetGameId() != "game_live" || resp.Msg.GetGameInfo().GetGameMode() != "JoustFFA" {
+			t.Errorf("game_info = %v, want game_live / JoustFFA", resp.Msg.GetGameInfo())
+		}
+		eq(t, rig.game.log.only(t, "GetGameState"), req)
+		rig.otherBackendsUntouched(t, "game")
+	})
+
+	t.Run("UC-035/MSS ListGames returns every game", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, err := rig.gameClient.ListGames(testCtx(t), connect.NewRequest(&gamepb.ListGamesRequest{}))
+		if err != nil {
+			t.Fatalf("ListGames: %v", err)
+		}
+		if n := len(resp.Msg.GetGames()); n != 2 {
+			t.Errorf("got %d games, want 2", n)
+		}
+		rig.game.log.only(t, "ListGames")
+		rig.otherBackendsUntouched(t, "game")
+	})
+
+	t.Run("UC-035/MSS coordinator errors surface as Connect errors", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.game.err = status.Error(codes.NotFound, "no such game")
+		_, err := rig.gameClient.GetGameState(testCtx(t), connect.NewRequest(&gamepb.GetGameStateRequest{}))
+		assertBackendError(t, err, "no such game")
+		_, err = rig.gameClient.ListGames(testCtx(t), connect.NewRequest(&gamepb.ListGamesRequest{}))
+		assertBackendError(t, err, "no such game")
+	})
+}
+
+// UC: UC-035 MSS
+// UC: UC-027 MSS
+func TestProxyStreamGameEvents(t *testing.T) {
+	t.Run("UC-035/MSS events are relayed in order with the game id filter forwarded", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.game.events = []*gamepb.GameEvent{
+			{EventType: "game_start", GameId: "game_live", Timestamp: 1},
+			{EventType: "game_force_ended", GameId: "game_live", Data: map[string]string{"reason": "Dashboard stop button"}, Timestamp: 2},
+		}
+		req := &gamepb.StreamEventsRequest{GameId: proto.String("game_live")}
+		stream, err := rig.gameClient.StreamGameEvents(testCtx(t), connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("StreamGameEvents: %v", err)
+		}
+		defer stream.Close()
+		var got []*gamepb.GameEvent
+		for stream.Receive() {
+			got = append(got, stream.Msg())
+		}
+		if err := stream.Err(); err != nil {
+			t.Fatalf("stream ended with %v, want a clean end", err)
+		}
+		if len(got) != len(rig.game.events) {
+			t.Fatalf("got %d events, want %d", len(got), len(rig.game.events))
+		}
+		for i := range got {
+			eq(t, got[i], rig.game.events[i])
+		}
+		eq(t, rig.game.log.only(t, "StreamGameEvents"), req)
+		rig.otherBackendsUntouched(t, "game")
+	})
+
+	t.Run("UC-035/MSS backend stream error surfaces", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.game.endErr = status.Error(codes.Unavailable, "coordinator gone")
+		stream, err := rig.gameClient.StreamGameEvents(testCtx(t), connect.NewRequest(&gamepb.StreamEventsRequest{}))
+		if err != nil {
+			t.Fatalf("StreamGameEvents: %v", err)
+		}
+		defer stream.Close()
+		for stream.Receive() {
+		}
+		assertBackendError(t, stream.Err(), "coordinator gone")
+	})
+}
+
+// --- controller manager ----------------------------------------------------
+
+// UC: UC-002 A2
+func TestProxyRenameController(t *testing.T) {
+	t.Run("UC-002/A2 rename reaches the controller manager with serial and name", func(t *testing.T) {
+		rig := newProxyRig(t)
+		req := &controllerpb.RenameControllerRequest{Serial: "aa:bb", Name: "Red Baron"}
+		resp, err := rig.controllerClient.RenameController(testCtx(t), connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("RenameController: %v", err)
+		}
+		if !resp.Msg.GetSuccess() {
+			t.Error("success = false, want true")
+		}
+		eq(t, rig.controller.log.only(t, "RenameController"), req)
+		rig.otherBackendsUntouched(t, "controller")
+	})
+
+	t.Run("UC-002/A2 controller manager error surfaces", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.controller.err = status.Error(codes.InvalidArgument, "name too long")
+		_, err := rig.controllerClient.RenameController(testCtx(t), connect.NewRequest(&controllerpb.RenameControllerRequest{Serial: "aa:bb"}))
+		assertBackendError(t, err, "name too long")
+	})
+}
+
+// UC: UC-004 MSS A1
+func TestProxyIdentifyController(t *testing.T) {
+	t.Run("UC-004/MSS identify forwards serial and duration", func(t *testing.T) {
+		rig := newProxyRig(t)
+		req := &controllerpb.IdentifyControllerRequest{Serial: "aa:bb", DurationMs: 3000}
+		resp, err := rig.controllerClient.IdentifyController(testCtx(t), connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("IdentifyController: %v", err)
+		}
+		eq(t, resp.Msg, &controllerpb.IdentifyControllerResponse{Success: true, Outcome: "started", DurationMs: 3000})
+		eq(t, rig.controller.log.only(t, "IdentifyController"), req)
+		rig.otherBackendsUntouched(t, "controller")
+	})
+
+	t.Run("UC-004/A1 not-connected outcome comes back intact", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, err := rig.controllerClient.IdentifyController(testCtx(t), connect.NewRequest(&controllerpb.IdentifyControllerRequest{Serial: "gone"}))
+		if err != nil {
+			t.Fatalf("IdentifyController: %v", err)
+		}
+		if resp.Msg.GetSuccess() || resp.Msg.GetOutcome() != "not_connected" {
+			t.Errorf("response = %v, want success=false outcome=not_connected", resp.Msg)
+		}
+	})
+
+	t.Run("UC-004/MSS controller manager error surfaces", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.controller.err = status.Error(codes.Unavailable, "cm down")
+		_, err := rig.controllerClient.IdentifyController(testCtx(t), connect.NewRequest(&controllerpb.IdentifyControllerRequest{Serial: "aa:bb"}))
+		assertBackendError(t, err, "cm down")
+	})
+}
+
+// UC: UC-035 MSS
+func TestProxyGetConnectedControllers(t *testing.T) {
+	t.Run("UC-035/MSS connected controllers come back from the controller manager", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, err := rig.controllerClient.GetConnectedControllers(testCtx(t), connect.NewRequest(&controllerpb.GetConnectedControllersRequest{}))
+		if err != nil {
+			t.Fatalf("GetConnectedControllers: %v", err)
+		}
+		eq(t, resp.Msg, &controllerpb.GetConnectedControllersResponse{
+			ConnectedSerials: []string{"aa:bb"},
+			Controllers:      []*controllerpb.ConnectedController{{Serial: "aa:bb", Name: "Red", Battery: 4}},
+		})
+		rig.controller.log.only(t, "GetConnectedControllers")
+		rig.otherBackendsUntouched(t, "controller")
+	})
+
+	t.Run("UC-035/MSS controller manager error surfaces", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.controller.err = status.Error(codes.Unavailable, "cm down")
+		_, err := rig.controllerClient.GetConnectedControllers(testCtx(t), connect.NewRequest(&controllerpb.GetConnectedControllersRequest{}))
+		assertBackendError(t, err, "cm down")
+	})
+}
+
+// UC: UC-035 MSS
+func TestProxyBackendUnreachable(t *testing.T) {
+	t.Run("UC-035/MSS a backend that is not listening surfaces as a Connect error", func(t *testing.T) {
+		// A connection to a closed bufconn listener fails at call time, as
+		// a stopped menu container would.
+		lis := bufconn.Listen(1 << 10)
+		_ = lis.Close()
+		conn, err := grpc.NewClient("passthrough:///bufnet",
+			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		mux := http.NewServeMux()
+		mux.Handle(menuconnect.NewMenuServiceHandler(&MenuProxy{client: menupb.NewMenuServiceClient(conn)}))
+		ts := httptest.NewServer(mux)
+		t.Cleanup(ts.Close)
+
+		client := menuconnect.NewMenuServiceClient(ts.Client(), ts.URL)
+		_, err = client.ProcessInput(testCtx(t), connect.NewRequest(&menupb.ProcessInputRequest{InputType: "web_command"}))
+		var cerr *connect.Error
+		if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
+			t.Fatalf("err = %v, want a CodeInternal Connect error", err)
+		}
+	})
+}
+
+// UC: UC-035 MSS
+func TestProxyStreamGameplayData(t *testing.T) {
+	// The backend ends the stream here, not the client: when the client
+	// half-closes first, the proxy's bidi forwarder returns while its
+	// backend->client goroutine may still be sending, which the race
+	// detector flags inside main.go (reported on #1525, not fixed here).
+	t.Run("UC-035/MSS gameplay config reaches the controller manager and updates are relayed", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.controller.updates = []*controllerpb.GameplayDataUpdate{{Timestamp: 1}, {Timestamp: 2}}
+		stream := rig.controllerClient.StreamGameplayData(testCtx(t))
+		cfg := &controllerpb.GameplayStreamControl{Control: &controllerpb.GameplayStreamControl_Config{
+			Config: &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: 30},
+		}}
+		if err := stream.Send(cfg); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		for i := range rig.controller.updates {
+			msg, err := stream.Receive()
+			if err != nil {
+				t.Fatalf("Receive %d: %v", i, err)
+			}
+			eq(t, msg, rig.controller.updates[i])
+		}
+		if _, err := stream.Receive(); !errors.Is(err, io.EOF) {
+			t.Errorf("after the backend ended: err = %v, want io.EOF", err)
+		}
+		eq(t, rig.controller.log.only(t, "StreamGameplayData"), cfg)
+		rig.otherBackendsUntouched(t, "controller")
+		_ = stream.CloseRequest()
+		_ = stream.CloseResponse()
+	})
+}
+
+// postJSON sends a request the way services/dashboard/src/client.ts does:
+// a plain fetch POST with Content-Type application/json.
+func postJSON(t *testing.T, rig *proxyRig, path string, body any, accept string) (*http.Response, []byte) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(testCtx(t), http.MethodPost, rig.url+path, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	resp, err := rig.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return resp, out
+}
+
+// UC: UC-010 A6
+// UC: UC-027 MSS
+func TestProxyDashboardWireFormat(t *testing.T) {
+	t.Run("UC-010/A6 dashboard Start Game JSON reaches the menu", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, body := postJSON(t, rig, "/joustmania.menu.MenuService/ProcessInput",
+			map[string]any{"inputType": "web_command", "data": map[string]string{"command": "start_game", "mode": "JoustFFA"}}, "")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d (%s), want 200", resp.StatusCode, body)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(body, &got); err != nil || got["success"] != true {
+			t.Errorf("body = %s, want {\"success\":true}", body)
+		}
+		eq(t, rig.menu.log.only(t, "ProcessInput"), &menupb.ProcessInputRequest{
+			InputType: "web_command",
+			Data:      map[string]string{"command": "start_game", "mode": "JoustFFA"},
+		})
+	})
+
+	t.Run("UC-027/MSS dashboard Stop JSON reaches the coordinator", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, body := postJSON(t, rig, "/joustmania.game_coordinator.GameCoordinatorService/ForceEndGame",
+			map[string]any{"reason": "Dashboard stop button"}, "")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d (%s), want 200", resp.StatusCode, body)
+		}
+		eq(t, rig.game.log.only(t, "ForceEndGame"), &gamepb.ForceEndGameRequest{Reason: "Dashboard stop button"})
+	})
+}
