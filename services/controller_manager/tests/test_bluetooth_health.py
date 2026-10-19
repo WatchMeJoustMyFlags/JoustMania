@@ -229,7 +229,8 @@ class TestSpanEmission:
         backend = MagicMock()
         backend.get_adapter_type.return_value = "python"
         backend.rollout_summary.side_effect = RolloutReadError("flagd down")
-        backend.rollout_strategy.return_value = ""
+        # The strategy read falls back to its "off" default on the same error.
+        backend.rollout_strategy.return_value = "off"
         loop = _make_loop(backend)
         loop._window_start = 0.0
         _feed(loop, "AA", [{"n": i} for i in range(5)], dt=0.01)
@@ -242,6 +243,42 @@ class TestSpanEmission:
         assert a["bluetooth.rollout_read_error"] is True
         assert "bluetooth.target_backend" not in a
         assert "bluetooth.rollout_count" not in a
+        assert "bluetooth.rollout_strategy" not in a
+
+    @pytest.mark.uc("UC-050", flow="A5")
+    @patch("services.controller_manager.metrics.controller_bluetooth_movement_update_hz")
+    @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio")
+    @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio_window")
+    @patch("services.controller_manager.metrics.controller_bluetooth_event_gap_seconds")
+    @patch("services.controller_manager.metrics.controller_state_update_hz")
+    def test_rollout_read_error_logs_once_on_enter_and_leave(self, *_metrics):
+        """#1489: a persistent read error warns once, recovery logs info once."""
+        from services.controller_manager.multiplexer.rollout_router import RolloutReadError
+
+        backend = MagicMock()
+        backend.get_adapter_type.return_value = "python"
+        backend.rollout_strategy.return_value = "off"
+        loop = _make_loop(backend)
+
+        def emit(now):
+            loop._window_start = now - 1.0
+            _feed(loop, "AA", [{"n": i} for i in range(5)], dt=0.01)
+            with patch("services.controller_manager.discovery_loop.tracer", FakeTracer()):
+                loop._emit_bluetooth_health(now=now)
+
+        with patch("services.controller_manager.discovery_loop.logger") as log:
+            backend.rollout_summary.side_effect = RolloutReadError("flagd down")
+            for t in (1.0, 2.0, 3.0):
+                emit(t)
+            assert log.warning.call_count == 1
+            assert log.info.call_count == 0
+
+            backend.rollout_summary.side_effect = None
+            backend.rollout_summary.return_value = ("", 0)
+            for t in (4.0, 5.0):
+                emit(t)
+            assert log.warning.call_count == 1
+            assert log.info.call_count == 1
 
     @pytest.mark.uc("UC-050", flow="A5")
     @patch("services.controller_manager.metrics.controller_bluetooth_movement_update_hz")

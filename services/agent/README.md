@@ -173,7 +173,7 @@ A ~1Hz root span; **absent when no controllers are connected**.
 | `bluetooth.active_controllers` | int | active controller count |
 | `bluetooth.target_backend` | string | rollout target adapter_type (`""` when off) |
 | `bluetooth.rollout_count` | int | current rollout controller count (`0` when off) |
-| `bluetooth.rollout_read_error` | bool | `true` when the rollout flags could not be read; `target_backend` and `rollout_count` are then absent (#1489) |
+| `bluetooth.rollout_read_error` | bool | `true` when the rollout flags could not be read; `target_backend`, `rollout_count` and `rollout_strategy` are then absent (#1489) |
 
 One `bluetooth_controller_sample` **span event per active serial** carries the
 per-controller view: `controller.serial`, `bluetooth.movement_update_hz`,

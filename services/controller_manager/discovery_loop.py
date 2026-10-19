@@ -188,6 +188,9 @@ class DiscoveryLoop:
         # Window/gap math uses wall-clock time.time() to match the poll loop's
         # current_time; the emission schedule itself is monotonic (_run_periodic).
         self._window_start = time.time()
+        # True while the rollout flags cannot be read (#1489): edge-triggers one
+        # warning on entering and one info on leaving, not one log per window.
+        self._rollout_read_failing = False
         # Per-serial counters reset every window.
         self._hw_polls: dict[str, int] = {}  # polls attempted
         self._hw_fresh: dict[str, int] = {}  # polls returning a genuinely-new frame
@@ -849,6 +852,16 @@ class DiscoveryLoop:
         # frame, and stale replays spanning the boundary are still detected.
         self._window_start = now
 
+    def _log_rollout_read_transition(self, failing: bool) -> None:
+        """Log entering / leaving the "rollout flags unreadable" state once each (#1489)."""
+        if failing == self._rollout_read_failing:
+            return
+        self._rollout_read_failing = failing
+        if failing:
+            logger.warning("Rollout flags unreadable: health span reports rollout_read_error until they recover")
+        else:
+            logger.info("Rollout flags readable again: health span reports the rollout state")
+
     def _emit_bluetooth_health(self, now: float, now_mono: float | None = None) -> None:
         """Emit the ~1Hz controller.bluetooth_health span + health metrics.
 
@@ -879,6 +892,7 @@ class DiscoveryLoop:
             except Exception:
                 rollout_read_error = True
                 logger.debug("Failed to read rollout summary for health span", exc_info=True)
+        self._log_rollout_read_transition(rollout_read_error)
 
         # Active rollout strategy ("off"/"immediate"/"progressive"). The agent
         # reads this to skip its count ladder under "immediate" routing. Empty
@@ -907,7 +921,9 @@ class DiscoveryLoop:
             else:
                 span.set_attribute("bluetooth.target_backend", target_backend)
                 span.set_attribute("bluetooth.rollout_count", int(rollout_count))
-            span.set_attribute("bluetooth.rollout_strategy", rollout_strategy)
+                # The strategy read degrades to "off" on the same flagd error, so
+                # it is only reported next to a successful rollout read (#1489).
+                span.set_attribute("bluetooth.rollout_strategy", rollout_strategy)
 
             # One event per active serial with per-serial signals.
             for serial, s in signals["per_serial"].items():
