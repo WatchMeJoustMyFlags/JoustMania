@@ -1,0 +1,66 @@
+[project]
+name = "joustmania-service-tests"
+version = "1.0.0"
+description = "Service tier (T2, #1422/#1524): real services from source at HEAD over their real gRPC and flag boundaries"
+# The services under test pin 3.14 (their pyproject), and the harness runs them
+# with this package's interpreter.
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    # The services the harness runs from source (python services/<svc>/server.py)
+    "joustmania-proto",
+    "joustmania-lib",
+    "joustmania-game-coordinator",
+    "joustmania-controller-manager",
+    "joustmania-menu",
+
+    "grpcio>=1.70.0",
+    "grpcio-health-checking>=1.70.0",
+    "openfeature-sdk>=0.8.4",
+    "openfeature-provider-flagd>=0.5.0",
+    # tests/contract/infra_config.py (the compose flagd image tag)
+    "pyyaml>=6.0",
+
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.uv.sources]
+joustmania-proto = { workspace = true }
+joustmania-lib = { workspace = true }
+joustmania-game-coordinator = { workspace = true }
+joustmania-controller-manager = { workspace = true }
+joustmania-menu = { workspace = true }
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# A test runner, not a distributable package
+packages = []
+py-modules = []
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "tier(name): test tier (see .claude/skills/README.md); every tests/service test carries tier(\"service\")",
+    "uc(id, flow=, br=, steps=, tc=): traceability tag to a use-case flow / business rule (see .claude/skills/README.md)",
+    "nfr(*ids): traceability tag to the non-functional requirement(s) (NFR-XXX in docs/requirements.md) the test measures or verifies (see .claude/skills/README.md)",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "ASYNC", "B", "C4", "RET", "SIM", "ARG"]
+ignore = ["ANN"]
+
+[tool.ruff.lint.per-file-ignores]
+"*.py" = ["E402"]  # sys.path set-up before the repo imports
+"harness/fake_audio.py" = ["N802", "ARG002"]  # gRPC servicer: PascalCase methods, unused context
+
+[tool.ruff.lint.isort]
+known-first-party = ["lib", "proto", "services", "tests"]

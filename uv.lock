@@ -14,6 +14,7 @@ members = [
     "joustmania-pairing-daemon",
     "joustmania-proto",
     "joustmania-python-hid",
+    "joustmania-service-tests",
 ]
 
 [[package]]
@@ -695,6 +696,41 @@ requires-dist = [
     { name = "uvloop", marker = "sys_platform == 'linux'", specifier = ">=0.19.0" },
 ]
 provides-extras = ["test"]
+
+[[package]]
+name = "joustmania-service-tests"
+version = "1.0.0"
+source = { editable = "tests/service" }
+dependencies = [
+    { name = "grpcio" },
+    { name = "grpcio-health-checking" },
+    { name = "joustmania-controller-manager" },
+    { name = "joustmania-game-coordinator" },
+    { name = "joustmania-lib" },
+    { name = "joustmania-menu" },
+    { name = "joustmania-proto" },
+    { name = "openfeature-provider-flagd" },
+    { name = "openfeature-sdk" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "grpcio", specifier = ">=1.70.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.70.0" },
+    { name = "joustmania-controller-manager", editable = "services/controller_manager" },
+    { name = "joustmania-game-coordinator", editable = "services/game_coordinator" },
+    { name = "joustmania-lib", editable = "lib" },
+    { name = "joustmania-menu", editable = "services/menu" },
+    { name = "joustmania-proto", editable = "proto" },
+    { name = "openfeature-provider-flagd", specifier = ">=0.5.0" },
+    { name = "openfeature-sdk", specifier = ">=0.8.4" },
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
 
 [[package]]
 name = "miniaudio"

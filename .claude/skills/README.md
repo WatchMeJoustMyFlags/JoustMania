@@ -46,7 +46,8 @@ in-memory services).
 
 | Where | Tag |
 |---|---|
-| pytest | `@pytest.mark.uc("UC-040", flow="A2", br=["BR-003"], steps=[9], tc="TC-001")` (`flow` = `main` or `A<n>`; other args optional). Registered in the root, `lib`, `services/pairing_daemon` and `tests/integration` `pyproject.toml` |
+| pytest | `@pytest.mark.uc("UC-040", flow="A2", br=["BR-003"], steps=[9], tc="TC-001")` (`flow` = `main` or `A<n>`; other args optional). Registered in the root, `lib`, `services/pairing_daemon`, `tests/integration` and `tests/service` `pyproject.toml` |
+| Test tier (pytest) | `pytestmark = pytest.mark.tier("service")` in every `tests/service` module (T2 service tier: services from source on a fresh flag plane, #1422); collection fails without it. The TC's Automation section names the tier in a `**Tier:**` line |
 | Go | `// UC: UC-040 A2 BR-003` directly above `func Test...` and subtests `t.Run("UC-040/A2 ...")` |
 | Dashboard (vitest) | `describe('UC-040: ...')` / `it('A2: ...')` (AIUP JS convention) |
 | Shell test (`scripts/tests/*.sh`) | a `# UC: UC-070 A8 BR-003` line in the header comment (one line per use case) |

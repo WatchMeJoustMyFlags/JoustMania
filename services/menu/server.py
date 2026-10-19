@@ -127,4 +127,6 @@ async def serve(port=50054):
 
 
 if __name__ == "__main__":
-    asyncio.run(serve())
+    from lib.grpc_utils import port_from_env
+
+    asyncio.run(serve(port=port_from_env("GRPC_PORT", 50054)))

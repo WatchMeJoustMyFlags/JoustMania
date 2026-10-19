@@ -100,3 +100,53 @@ class TestCreateChannel:
         option_names = [name for name, _ in kwargs["options"]]
         # Local address should not have compression options
         assert "grpc.default_compression_algorithm" not in option_names
+
+
+class TestPortFromEnv:
+    """GRPC_PORT / MOCK_CONTROL_PORT for the service-tier harness (#1524)."""
+
+    def test_unset_or_empty_keeps_the_compose_default(self, monkeypatch):
+        from lib.grpc_utils import port_from_env
+
+        monkeypatch.delenv("GRPC_PORT", raising=False)
+        assert port_from_env("GRPC_PORT", 50053) == 50053
+        monkeypatch.setenv("GRPC_PORT", "  ")
+        assert port_from_env("GRPC_PORT", 50053) == 50053
+
+    def test_set_value_wins(self, monkeypatch):
+        from lib.grpc_utils import port_from_env
+
+        monkeypatch.setenv("MOCK_CONTROL_PORT", "41234")
+        assert port_from_env("MOCK_CONTROL_PORT", 50062) == 41234
+
+    def test_malformed_or_out_of_range_fails_loudly(self, monkeypatch):
+        import pytest
+
+        from lib.grpc_utils import port_from_env
+
+        for bad in ("abc", "0", "70000"):
+            monkeypatch.setenv("GRPC_PORT", bad)
+            with pytest.raises(ValueError, match=r"^GRPC_PORT='.*': not a TCP port$"):
+                port_from_env("GRPC_PORT", 50053)
+
+
+class TestServerOptions:
+    """A port clash fails the bind instead of sharing the port (#1548)."""
+
+    def test_second_server_on_a_taken_port_fails_to_bind(self):
+        from concurrent import futures
+
+        import grpc
+        import pytest
+
+        from lib.grpc_utils import get_server_options
+
+        first = grpc.server(futures.ThreadPoolExecutor(max_workers=1), options=get_server_options())
+        port = first.add_insecure_port("127.0.0.1:0")
+        first.start()
+        try:
+            second = grpc.server(futures.ThreadPoolExecutor(max_workers=1), options=get_server_options())
+            with pytest.raises(RuntimeError):
+                second.add_insecure_port(f"127.0.0.1:{port}")
+        finally:
+            first.stop(grace=None)

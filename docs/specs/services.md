@@ -66,11 +66,26 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | loki | 3.7.2 | 3100 | no | Logs | `services/loki/config.yaml` |
 | agent-game-coordinator | Python (game-coordinator image) | 50053 gRPC (`expose` only) | no | **Test-only** (profile `agent`, #1163): a dedicated game coordinator for the agent's experiment cohort-loop soak, so the suite's per-test `coordinator_idle` quiesce never wipes the agent's shadow games. Service name `agent-game-coordinator-service`; the overlay points the agent at it with `GAME_COORDINATOR_ADDR=agent-game-coordinator:50053`; shares flagd and the controller manager | `docker-compose.agent-coordinator.yml` (layered on `docker-compose.dry-run.yml` by `tests/integration/test_experiment_cohort_loop.py`) |
 
+**Listen-port overrides (#1524).** The Python gRPC services read their listen port from the environment, so the
+service tier (`tests/service/`, T2) can run several of them from source on ephemeral ports. Compose sets none of
+these, so every stack keeps the ports in the table above. An unset or empty variable means the default; a value
+that is not a TCP port (1-65535) fails the start, naming the variable (`lib/grpc_utils.py` `port_from_env`).
+The Python gRPC servers bind without `SO_REUSEPORT` (`get_server_options`, `grpc.so_reuseport=0`): a second
+server on a taken port fails its start instead of sharing the port. Compose runs one server per port, so
+deployed stacks are unchanged.
+
+| Variable | Service | Default |
+|---|---|---|
+| `GRPC_PORT` | controller-manager | 50052 |
+| `GRPC_PORT` | game-coordinator | 50053 |
+| `GRPC_PORT` | menu | 50054 |
+| `MOCK_CONTROL_PORT` | controller-manager (mock adapter only) | 50062 |
+
 Compose variants: `docker-compose.yml` (full), `.override.yml` (dev ports, auto-loaded by a bare `docker compose`; the Pi start path passes `-f docker-compose.yml` so it never loads it, #1319), `.lite.yml` (no
 observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318; the pairing daemon on the host network as in the full stack, #1402), `.ci.yml` (CI baseline dir for the flag service, profiles), `.ci-rust.yml`, `.dev.yml` (source mounts), `.dry-run.yml`
 (demo / experiment seed), `.decide-e2e.yml` (fake OpenAI server), `.agent-coordinator.yml`.
 
-**Traceability:** C-014, C-015, FR-085, NFR-020 / UC-035 / `docker-compose*.yml`, `services/envoy/envoy.yaml` / `tests/integration/conftest.py`.
+**Traceability:** C-014, C-015, FR-085, NFR-020 / UC-035 / `docker-compose*.yml`, `services/envoy/envoy.yaml`, `services/*/server.py` / `tests/integration/conftest.py`, `tests/service/harness/stack.py`.
 
 ## 3. gRPC services
 

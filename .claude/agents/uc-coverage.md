@@ -60,7 +60,7 @@ Ripgrep skips git-ignored paths (`.venv`, `node_modules`); still restrict paths 
 | What | Grep call |
 |---|---|
 | pytest marker (may span lines) | pattern `mark\.uc\(\s*["']UC-040["']`, `multiline: true`, `type: py`, paths `services`, `lib`, `tests` ; then Read the matched decorator to get `flow=`, `br=`, `steps=`, `tc=` |
-| pytest marker for a test case | pattern `mark\.uc\([^)]*tc\s*=\s*["']TC-001["']`, `multiline: true`, `type: py`, path `tests/integration` |
+| pytest marker for a test case | pattern `mark\.uc\([^)]*tc\s*=\s*["']TC-001["']`, `multiline: true`, `type: py`, paths `tests`, `services`, `lib` (T3 `tests/integration`, T2 `tests/service`, unit tests tagged `tc=`) |
 | Go comment tag | pattern `^// UC: UC-040\b`, glob `*_test.go`, path `services` (agent and connect-proxy) |
 | Go subtests | pattern `"UC-040/`, glob `*_test.go`, path `services` (agent and connect-proxy) |
 | Shell test tag (header line) | pattern `^# UC: .*\bUC-040\b`, path `scripts/tests` ; the units follow the id on the same line (`# UC: UC-070 A8 BR-003`) |

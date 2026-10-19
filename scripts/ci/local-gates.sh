@@ -16,7 +16,7 @@
 # Services / gate keys accepted by SERVICE:
 #   lib game_coordinator menu controller_manager audio pairing_daemon python_hid
 #   agent flag-service connect-proxy dashboard rust-hid
-#   contract contract-flagd grafana compose
+#   contract contract-flagd service grafana compose
 #   (hyphens and underscores are interchangeable)
 #
 # Env:
@@ -52,7 +52,7 @@ PY_SERVICES=(game_coordinator menu controller_manager audio pairing_daemon pytho
 ALL_GATES=(lint spec-lint spec-touched
   py:lib py:game_coordinator py:menu py:controller_manager py:audio py:pairing_daemon py:python_hid
   go:agent go:flag-service connect-proxy dashboard rust-hid
-  contract contract-flagd grafana-json compose yaml-dupkeys)
+  contract contract-flagd service grafana-json compose yaml-dupkeys)
 
 plan_only=false
 explicit=()
@@ -83,6 +83,7 @@ select_key() {  # map a SERVICE key to gates
     rust_hid|rust) selected[rust-hid]=1 ;;
     contract) selected[contract]=1 ;;
     contract_flagd|flagd) selected[contract-flagd]=1 ;;
+    service|service_tests) selected[service]=1 ;;
     grafana) selected[grafana-json]=1 ;;
     compose) selected[compose]=1 ;;
     *) echo "local-gates: unknown SERVICE key '$1'" >&2; exit 2 ;;
@@ -135,6 +136,14 @@ classify() {  # map one changed path to gates; each case mirrors a ci.yml filter
   case "$f" in
     services/flagd/*|services/agent/*|lib/*|services/game_coordinator/*|tests/contract/*|docker-compose.yml|Makefile|.github/workflows/ci.yml)
       selected[contract-flagd]=1 ;;
+  esac
+  # service_tests (service-tests, T2)
+  case "$f" in
+    lib/*|proto/*|pyproject.toml|uv.lock|services/flagd/*|services/flag-service/*|services/game_coordinator/*|\
+    services/controller_manager/*|services/menu/*|tests/service/*|tests/contract/flagd_harness.py|\
+    tests/contract/infra_config.py|tests/integration/helpers.py|tests/integration/flag_service.py|\
+    docker-compose.yml|Makefile|.github/workflows/ci.yml)
+      selected[service]=1 ;;
   esac
   # Local-only extras.
   case "$f" in
@@ -206,6 +215,7 @@ gate_cmd() {  # print the shell command for a gate
     # Same steps as the Telemetry Contract job: generated specs, then the tests.
     contract) echo "make specs-check && uv run --no-project --with pytest --with pyyaml pytest tests/contract -q --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py" ;;
     contract-flagd) echo "make test-contract-flagd" ;;
+    service) echo "make test-service" ;;
     grafana-json)
       local list=("${!changed_dash[@]}")
       [[ ${#list[@]} -eq 0 ]] && list=(services/grafana/dashboards/*.json)

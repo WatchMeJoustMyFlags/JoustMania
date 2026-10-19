@@ -408,3 +408,13 @@ When adding integration tests:
 3. Clean up resources (gRPC channels, etc.)
 4. Document expected behavior
 5. Add to this README if needed
+
+## Journeys that need only a few services live in the service tier (#1422, #1524)
+
+`tests/service/` (`make test-service`, CI job "Service Tests") runs the game
+coordinator, controller manager and menu from source at HEAD on a fresh flag
+plane (go-built flag service + one flagd), with audio faked: no images, no
+compose. Its stack answers `get_service_host` / `get_service_port` like the
+compose fixture, so `helpers.py` and `flag_service.py` serve both suites; keep
+them free of compose-only assumptions. TC-018 lives there. See
+`tests/service/README.md`.

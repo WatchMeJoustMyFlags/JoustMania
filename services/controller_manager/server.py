@@ -137,7 +137,7 @@ async def serve(port=50052):
 
     logger.info(f"ControllerManager server listening on port {port}")
 
-    # If using mock backend, start MockControllerService on port 50062
+    # If using mock backend, start MockControllerService on MOCK_CONTROL_PORT (50062)
     mock_server = None
     mock_backend = _find_mock_backend(controller_servicer.backend)
     if mock_backend is not None:
@@ -148,7 +148,9 @@ async def serve(port=50052):
         mock_servicer = MockControllerService(mock_backend)
         controller_manager_mock_pb2_grpc.add_MockControllerServiceServicer_to_server(mock_servicer, mock_server)
 
-        mock_port = 50062
+        from lib.grpc_utils import port_from_env
+
+        mock_port = port_from_env("MOCK_CONTROL_PORT", 50062)
         mock_server.add_insecure_port(f"[::]:{mock_port}")
         await mock_server.start()
         logger.info(f"MockControllerService listening on port {mock_port}")
@@ -183,4 +185,6 @@ if __name__ == "__main__":
         # uvloop not available (e.g., macOS/Windows development)
         pass
 
-    asyncio.run(serve())
+    from lib.grpc_utils import port_from_env
+
+    asyncio.run(serve(port=port_from_env("GRPC_PORT", 50052)))

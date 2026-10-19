@@ -33,6 +33,7 @@ help:
 	@echo "  make test-integration-core  - Integration shard without the agent (CI e2e-core)"
 	@echo "  make test-integration-agent - Integration shard that starts the agent (CI e2e-agent)"
 	@echo "  make test-dev        - Run integration tests with pre-built images (fast)"
+	@echo "  make test-service    - Service tier (T2): services from source + flag plane, no images"
 	@echo "  make test-contract   - Contract tier: telemetry/infra static + flagd contract (~1 min)"
 	@echo "  make test-contract-flagd - flagd contract only (one real flagd, ~1 min)"
 	@echo "  make test TEST=name  - Run specific test by name"
@@ -292,6 +293,16 @@ test-pulled: clean-test-venv
 	USE_PREBUILT_IMAGES=true IMAGE_TAG=$(or $(IMAGE_TAG),latest) \
 		$(TEST_ENV) uv run --package joustmania-integration-tests \
 		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
+
+# Service tier (T2, #1422 S1 / #1524): real services from source at HEAD
+# (game coordinator, controller manager, menu as subprocesses), a fresh flag
+# plane per stack (go-built flag service + one flagd container) and a fake
+# audio service. Needs uv, go and docker; no image build. See tests/service/README.md.
+SERVICE_TEST_ENV := UV_PROJECT_ENVIRONMENT=.venv-service
+.PHONY: test-service
+test-service:
+	$(SERVICE_TEST_ENV) uv run --package joustmania-service-tests \
+		pytest tests/service -v --tb=short -p no:cacheprovider $(PYTEST_EXTRA) $(if $(TEST),-k "$(TEST)")
 
 # Contract tier (#1357, #1422): telemetry producer/consumer static scan, infra
 # config checks, and the flagd contract (one real flagd, no game stack).
