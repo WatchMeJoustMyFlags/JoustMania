@@ -713,18 +713,25 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             return controller_manager_pb2.RenameControllerResponse(success=False, error=str(e))
 
     def _open_game_stream(self, subscriber_id: str, serials: set[str]) -> None:
-        """Register a game stream; it starts with no pending disconnects (UC-002 BR-004).
+        """Register a game stream with only its own disconnects pending (UC-002 BR-004).
 
         Disconnects queued before it opened belong to the streams open at the time
-        (or to none, between games), so they are handed out first.
+        (or to none), so they are handed out first. The new stream starts with the
+        roster controllers that are not connected now: a player who dropped before
+        the stream opened (instructions clip, stream reconnect) is still reported,
+        while one that dropped and reconnected before the game is not (#1607).
+        A re-sent config keeps the stream's pending list.
         """
         self._collect_disconnects()
         self._game_stream_serials[subscriber_id] = set(serials)
-        self._pending_disconnects[subscriber_id] = []
+        missing = sorted(s for s in serials if s not in self.tracked_controllers)
+        self._pending_disconnects.setdefault(subscriber_id, missing)
 
     def _collect_disconnects(self) -> None:
         """Move queued disconnects to every open game stream; with none open they are dropped."""
         drained = self.discovery_loop.drain_disconnects()
+        if not drained:
+            return
         for pending in self._pending_disconnects.values():
             pending.extend(drained)
 

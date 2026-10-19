@@ -105,6 +105,47 @@ def test_a_closed_game_stream_drops_its_pending_disconnects(rig):  # noqa: F811
     servicer.discovery_loop._gameplay_disconnects.append(SERIAL)
 
     servicer._release_game_stream("game")
+    assert "game" not in servicer._pending_disconnects
     servicer._open_game_stream("next", {SERIAL})
 
     assert _disconnects(servicer._build_gameplay_update({SERIAL}, "next")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-002", flow="A1", br=["BR-004"])
+async def test_a_roster_controller_gone_when_the_stream_opens_is_delivered(rig):  # noqa: F811
+    """A player who dropped before the stream opened (instructions clip, stream reconnect) is still reported."""
+    servicer, _ = rig
+    servicer.discovery_loop._gameplay_disconnects.append(SERIAL)
+    del servicer.tracked_controllers[SERIAL]  # dropped and not back
+
+    await _configure(servicer, "game")
+    first = servicer._build_gameplay_update({SERIAL}, "game")
+    later = servicer._build_gameplay_update({SERIAL}, "game")
+
+    assert _disconnects(first) == [SERIAL]
+    assert _disconnects(later) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-002", flow="A1", br=["BR-004"])
+async def test_a_roster_controller_that_reconnected_before_the_stream_is_not_delivered(rig):  # noqa: F811
+    """Dropped, reconnected and joined: tracked again at open, so no disconnect (#1607)."""
+    servicer, _ = rig
+    servicer.discovery_loop._gameplay_disconnects.append(SERIAL)
+    assert SERIAL in servicer.tracked_controllers  # back before the game
+
+    await _configure(servicer, "game")
+
+    assert _disconnects(servicer._build_gameplay_update({SERIAL}, "game")) == []
+
+
+@pytest.mark.uc("UC-002", flow="A1", br=["BR-004"])
+def test_a_resent_config_keeps_the_pending_disconnects(rig):  # noqa: F811
+    servicer, _ = rig
+    servicer._open_game_stream("game", {SERIAL})
+    servicer.discovery_loop._gameplay_disconnects.append(SERIAL)
+
+    servicer._open_game_stream("game", {SERIAL})
+
+    assert _disconnects(servicer._build_gameplay_update({SERIAL}, "game")) == [SERIAL]
