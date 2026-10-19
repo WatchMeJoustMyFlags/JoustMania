@@ -5,7 +5,7 @@
  */
 
 import type {
-  GameplayStreamRequest,
+  GameplayStreamConfig,
   GameplayDataUpdate,
   IdentifyControllerRequest,
   IdentifyControllerResponse,
@@ -63,11 +63,14 @@ function serverStream<Req, Res>(
 
 // Controller Manager Client
 export const controllerClient = {
-  streamGameplayData(request: GameplayStreamRequest) {
-    return serverStream<GameplayStreamRequest, GameplayDataUpdate>(
+  // Server stream relayed by connect-proxy from the bidi StreamGameplayData
+  // (#1595); the bidi call itself gets 505 over envoy's HTTP/1.1 hop.
+  watchGameplayData(request: GameplayStreamConfig, signal?: AbortSignal) {
+    return serverStream<GameplayStreamConfig, GameplayDataUpdate>(
       "joustmania.controller_manager.ControllerManagerService",
-      "StreamGameplayData",
-      request
+      "WatchGameplayData",
+      request,
+      signal
     );
   },
   // UC-004: flash + rumble one controller so the operator can find it

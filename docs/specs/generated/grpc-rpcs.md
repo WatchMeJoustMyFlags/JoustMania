@@ -2,7 +2,7 @@
 
 # gRPC services (generated)
 
-Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 services.**
+Part of [services.md §3](../services.md#3-grpc-services). **39 RPCs in 7 services.**
 
 ## `joustmania.audio.AudioService` (`proto/audio.proto`, 5 RPCs)
 
@@ -14,7 +14,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 servic
 | `ChangeTempo` | unary | `ChangeTempoRequest` → `ChangeTempoResponse` | Change music tempo (ratio clamped to (0.5, 2.0]) with a transition |
 | `SetVolume` | unary | `SetVolumeRequest` → `SetVolumeResponse` | Set master volume |
 
-## `joustmania.controller_manager.ControllerManagerService` (`proto/controller_manager.proto`, 5 RPCs)
+## `joustmania.controller_manager.ControllerManagerService` (`proto/controller_manager.proto`, 6 RPCs)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
@@ -23,6 +23,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 servic
 | `RenameController` | unary | `RenameControllerRequest` → `RenameControllerResponse` | Rename a controller (set custom human-readable name) |
 | `GetConnectedControllers` | unary | `GetConnectedControllersRequest` → `GetConnectedControllersResponse` | Query the controller manager's authoritative live roster on demand (#1153). Unlike the event-piggybacked connected_serials (only refreshed on the next CONNECT/DISCONNECT), this returns the current connected set synchronously so a client (the menu) can reconcile ghosts after a missed disconnect. Also read by `scripts/talk-preflight.sh` through envoy to count real controllers (UC-070 BR-006). |
 | `IdentifyController` | unary | `IdentifyControllerRequest` → `IdentifyControllerResponse` | Request → response: `IdentifyControllerRequest` (`serial`, `duration_ms`: 0 = 3000 ms, clamped to 500..10000) → `IdentifyControllerResponse` (`success`, `outcome`: `started` / `not_connected` / `in_game` / `reserved` / `invalid`, `error`, `duration_ms`: the duration used). Flash a controller white at 2 Hz and rumble it briefly, then restore its colour, so the operator can find it; refused for controllers that are not connected, reserved, or players of an open game gameplay stream, and cancelled when a game stream claims the controller (UC-004, FR-121) |
+| `WatchGameplayData` | server stream | `GameplayStreamConfig` → `GameplayDataUpdate` | Browser view of `StreamGameplayData` (#1595): one `GameplayStreamConfig` in (the dashboard sends `{updateFrequencyHz: 30}`, no colours = unfiltered), the `GameplayDataUpdate`s out. Served by connect-proxy only: it opens a `StreamGameplayData` stream to the controller manager with the config, relays every update and closes that stream when the browser goes away; an upstream error ends the browser stream with it. The controller manager itself answers UNIMPLEMENTED (UC-035 MSS) |
 
 ## `controller_manager_mock.MockControllerService` (`proto/controller_manager_mock.proto`, 12 RPCs)
 

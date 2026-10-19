@@ -276,6 +276,51 @@ func (p *ControllerManagerProxy) StreamGameplayData(
 	return <-errCh
 }
 
+// WatchGameplayData is the browser's server-streaming view of the bidi
+// StreamGameplayData (#1595): envoy reaches connect-proxy over HTTP/1.1, where
+// connect-go refuses bidi streams (505). It opens StreamGameplayData to the
+// controller manager with the browser's config as the first control message
+// and relays the updates. It runs in the handler goroutine only (no relay
+// goroutines), and the deferred cancel closes the upstream stream on every
+// return: browser gone (ctx cancelled), upstream error or end, or a failed send.
+// The send side is never half-closed, so the controller manager keeps streaming.
+func (p *ControllerManagerProxy) WatchGameplayData(
+	ctx context.Context,
+	req *connect.Request[controllerpb.GameplayStreamConfig],
+	stream *connect.ServerStream[controllerpb.GameplayDataUpdate],
+) error {
+	upstreamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	grpcStream, err := p.client.StreamGameplayData(upstreamCtx)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	config := &controllerpb.GameplayStreamControl{
+		Control: &controllerpb.GameplayStreamControl_Config{Config: req.Msg},
+	}
+	if err := grpcStream.Send(config); err != nil && err != io.EOF {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	// On io.EOF from Send the real status comes from Recv below.
+
+	for {
+		msg, err := grpcStream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return connect.NewError(connect.CodeCanceled, ctx.Err())
+			}
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		if err := stream.Send(msg); err != nil {
+			return err
+		}
+	}
+}
+
 func (p *ControllerManagerProxy) RenameController(
 	ctx context.Context,
 	req *connect.Request[controllerpb.RenameControllerRequest],

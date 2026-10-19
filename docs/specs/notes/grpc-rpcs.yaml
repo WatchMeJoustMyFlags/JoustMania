@@ -23,6 +23,11 @@ joustmania.controller_manager.ControllerManagerService/IdentifyController: 'Requ
   Flash a controller white at 2 Hz and rumble it briefly, then restore its colour, so the operator can find it;
   refused for controllers that are not connected, reserved, or players of an open game gameplay stream, and cancelled
   when a game stream claims the controller (UC-004, FR-121)'
+joustmania.controller_manager.ControllerManagerService/WatchGameplayData: 'Browser view of `StreamGameplayData` (#1595):
+  one `GameplayStreamConfig` in (the dashboard sends `{updateFrequencyHz: 30}`, no colours = unfiltered), the
+  `GameplayDataUpdate`s out. Served by connect-proxy only: it opens a `StreamGameplayData` stream to the controller
+  manager with the config, relays every update and closes that stream when the browser goes away; an upstream
+  error ends the browser stream with it. The controller manager itself answers UNIMPLEMENTED (UC-035 MSS)'
 controller_manager_mock.MockControllerService/SimulateMovement: 'Simulate controller movement: holds the acceleration
   vector on that controller (every poll and gameplay frame reports it) until the next call or `ResetController`;
   a `SimulateDeath` latch overrides it for its frames; a NaN/infinite component returns `INVALID_ARGUMENT` (UC-003
