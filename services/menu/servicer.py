@@ -444,6 +444,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         event_queue = await self.event_publisher.subscribe(subscriber_id)
 
         try:
+            # Headers now = "subscriber registered" (#1613); inside the try so a client that leaves
+            # during the send still runs the unsubscribe below.
+            await context.send_initial_metadata(())
             while not context.cancelled():
                 try:
                     event = await asyncio.wait_for(event_queue.get(), timeout=1.0)

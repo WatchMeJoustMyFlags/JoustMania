@@ -94,6 +94,27 @@ async def _wait_for_subscribers(servicer, count=1, max_wait=2.0):
         await asyncio.sleep(0.01)
 
 
+def _slow_down_subscribe(publisher, delay=0.2):
+    """Make ``publisher.subscribe`` slow, so headers sent before it completes are caught."""
+    real_subscribe = publisher.subscribe
+
+    async def slow_subscribe(*args, **kwargs):
+        await asyncio.sleep(delay)
+        return await real_subscribe(*args, **kwargs)
+
+    publisher.subscribe = slow_subscribe
+
+
+class _HeaderSendFails:
+    """Servicer context of a client that disconnects while the headers are sent."""
+
+    def cancelled(self):
+        return False
+
+    async def send_initial_metadata(self, _metadata):
+        raise asyncio.CancelledError
+
+
 # ---------------------------------------------------------------------------
 # Unary RPCs
 # ---------------------------------------------------------------------------
@@ -211,6 +232,42 @@ class TestStreamMenuEvents:
         assert received[0].event_type == "selection_changed"
         assert received[0].data["game_name"] == "FFA"
         assert received[1].event_type == "menu_started"
+
+    @pytest.mark.asyncio
+    async def test_headers_mark_the_subscription(self, grpc_service):
+        """Headers arrive once the subscriber is registered, before any event (#1613).
+
+        A client that awaits ``initial_metadata()`` and then acts must see the
+        event of that action: no polling of the server's subscriber list.
+        """
+        servicer, stub = grpc_service
+        _slow_down_subscribe(servicer.event_publisher)
+
+        stream = stub.StreamMenuEvents(menu_pb2.StreamMenuEventsRequest())
+        await asyncio.wait_for(stream.initial_metadata(), timeout=2.0)
+        # subscribe() is slow: headers sent before it completes fail here.
+        assert len(servicer.event_publisher._subscribers) == 1
+
+        await servicer.event_publisher.publish("selection_changed", {"game_name": "FFA"})
+        event = await asyncio.wait_for(stream.read(), timeout=2.0)
+        stream.cancel()
+
+        assert event.event_type == "selection_changed"
+
+    @pytest.mark.asyncio
+    async def test_client_leaving_during_header_send_unsubscribes(self, grpc_service):
+        """A client gone while the headers are sent leaves no subscriber and no open-stream gauge (#1613)."""
+        servicer, _stub = grpc_service
+
+        with (
+            patch("services.menu.servicer.metrics.stream_connections_active") as gauge,
+            pytest.raises(asyncio.CancelledError),
+        ):
+            async for _ in servicer.StreamMenuEvents(menu_pb2.StreamMenuEventsRequest(), _HeaderSendFails()):
+                pass
+
+        assert len(servicer.event_publisher._subscribers) == 0
+        assert gauge.inc.call_count == gauge.dec.call_count == 1
 
     @pytest.mark.asyncio
     async def test_stream_client_disconnect_cleanup(self, grpc_service):

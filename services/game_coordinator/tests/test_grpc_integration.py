@@ -67,6 +67,30 @@ async def _wait_for_subscribers(servicer, count=1, max_wait=2.0):
         await asyncio.sleep(0.01)
 
 
+def _slow_down_subscribe(publisher, delay=0.2):
+    """Make ``publisher.subscribe`` slow, so headers sent before it completes are caught."""
+    real_subscribe = publisher.subscribe
+
+    async def slow_subscribe(*args, **kwargs):
+        await asyncio.sleep(delay)
+        return await real_subscribe(*args, **kwargs)
+
+    publisher.subscribe = slow_subscribe
+
+
+class _HeaderSendFails:
+    """Servicer context of a client that disconnects while the headers are sent."""
+
+    def cancelled(self):
+        return False
+
+    def invocation_metadata(self):
+        return []
+
+    async def send_initial_metadata(self, _metadata):
+        raise asyncio.CancelledError
+
+
 def _make_start_config(game_name="FFA", num_players=3, sensitivity=2, origin=None):
     """Build a StartGameConfig with the given parameters.
 
@@ -208,6 +232,38 @@ class TestStreamSubscription:
         assert len(received) == 2
         assert received[0].event_type == "test_event_1"
         assert received[1].event_type == "test_event_2"
+
+    @pytest.mark.asyncio
+    async def test_headers_mark_the_subscription(self, grpc_service):
+        """Headers arrive once the subscriber is registered, before any event (#1613).
+
+        A client that awaits ``initial_metadata()`` and then acts must see the
+        event of that action: no polling of the server's subscriber list.
+        """
+        servicer, stub = grpc_service
+        _slow_down_subscribe(servicer.event_bus)
+
+        stream = stub.StreamGameEvents(game_coordinator_pb2.StreamEventsRequest())
+        await asyncio.wait_for(stream.initial_metadata(), timeout=2.0)
+        # subscribe() is slow: headers sent before it completes fail here.
+        assert servicer.event_bus.subscriber_count == 1
+
+        await servicer.event_bus.publish("test_event_1", {"key": "value1"})
+        event = await asyncio.wait_for(stream.read(), timeout=2.0)
+        stream.cancel()
+
+        assert event.event_type == "test_event_1"
+
+    @pytest.mark.asyncio
+    async def test_client_leaving_during_header_send_unsubscribes(self, grpc_service):
+        """A client gone while the headers are sent leaves no subscriber behind (#1613)."""
+        servicer, _stub = grpc_service
+
+        with pytest.raises(asyncio.CancelledError):
+            async for _ in servicer.StreamGameEvents(game_coordinator_pb2.StreamEventsRequest(), _HeaderSendFails()):
+                pass
+
+        assert servicer.event_bus.subscriber_count == 0
 
     @pytest.mark.asyncio
     async def test_stream_multiple_subscribers(self, grpc_service):
