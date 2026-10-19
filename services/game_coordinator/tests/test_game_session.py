@@ -785,6 +785,7 @@ class TestGameDurationGaugeTickerFailure:
 
 class TestGameSessionForceEnd:
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="A2")
     async def test_force_end_no_game(self):
         session = _make_session()
         session.game_state = game_coordinator_pb2.GameState.IDLE

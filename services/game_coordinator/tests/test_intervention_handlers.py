@@ -321,6 +321,7 @@ async def test_end_game_applies_once_per_event():
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-027", flow="A3")
 async def test_end_game_no_game_is_safe_noop():
     # end_game_fn reports "no game in progress"; handler must not raise.
     end = AsyncMock(return_value=(False, "No game in progress"))

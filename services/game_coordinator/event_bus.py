@@ -55,6 +55,7 @@ from services.game_coordinator import metrics
 logger = logging.getLogger(__name__)
 
 
+# UC-027 BR-002: one bus is used from several event loops, so the next game after a force end streams normally.
 class EventBus:
     """
     Thread-safe event bus for game coordinator events.

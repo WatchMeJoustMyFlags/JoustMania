@@ -689,6 +689,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
         Returns ``(success, error)``.
         """
+        # UC-027 BR-001: a given id never falls back to the primary; only "" targets the primary game.
         session = self._resolve_session(game_id)
         if session is None:
             return False, (f"Unknown game_id: {game_id}" if game_id else "No game in progress")

@@ -509,7 +509,7 @@ func TestProxyStreamMenuEvents(t *testing.T) {
 
 // --- game coordinator ------------------------------------------------------
 
-// UC: UC-027 MSS A1 A2
+// UC: UC-027 MSS A1
 func TestProxyForceEndGame(t *testing.T) {
 	t.Run("UC-027/MSS dashboard Stop reaches the coordinator with its reason", func(t *testing.T) {
 		rig := newProxyRig(t)
@@ -550,7 +550,7 @@ func TestProxyForceEndGame(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-027/A2 coordinator gRPC error surfaces as a Connect error", func(t *testing.T) {
+	t.Run("ForceEndGame: coordinator gRPC error surfaces as a Connect error", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.game.err = status.Error(codes.Unavailable, "coordinator down")
 		_, err := rig.gameClient.ForceEndGame(testCtx(t), connect.NewRequest(&gamepb.ForceEndGameRequest{Reason: "x"}))

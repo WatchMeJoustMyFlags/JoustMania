@@ -1544,6 +1544,7 @@ class TestConsumeGameEvents:
         servicer._restart_lobby.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[5])
     async def test_game_force_ended_event_returns_should_return_true(self, servicer):
         """A game_force_ended event should also trigger restart."""
         from services.menu.servicer import MenuServicer

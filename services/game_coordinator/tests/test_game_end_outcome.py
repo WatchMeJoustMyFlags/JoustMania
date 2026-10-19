@@ -140,6 +140,7 @@ class TestTieOutcome:
 class TestForceEndedOutcome:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="A4", br=["BR-003"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
     async def test_force_end_with_survivors_is_not_victories(self):
         """UC-020 A4 / BR-003: the dry-run case: 6 players, 2 dead, force-ended -> no victory."""
         game, events = _ffa_game(6, dead=2)
