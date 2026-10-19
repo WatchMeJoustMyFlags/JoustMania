@@ -365,7 +365,9 @@ collector image, fast-path stale prebuilt images, `blob not found`) with "add `c
 up; a failure that survives the rerun is not infrastructure. A CONFLICTING PR fails fast with exit 5
 (GitHub runs no CI on it: rebase). A newest run cancelled before its matrix expanded (a CANCELLED job's
 name still shows `${{ ... }}`, nothing failed) is reported as `infra=cancelled-run`, and `--rerun-failed-once` reruns the
-whole run. Agents hand this step to the `pr-merger` agent (`.claude/agents/pr-merger.md`). Both scripts have
+whole run. When `main` requires a merge queue (#1555), `gh pr merge` enqueues instead of merging: the
+script reports `QUEUED` (exit 6) without touching issues, and with `--wait-queue` it waits for the queue's
+`merge_group` run and ends in the normal `MERGED` path or `EJECTED` (exit 7). Agents hand this step to the `pr-merger` agent (`.claude/agents/pr-merger.md`). Both scripts have
 tests in `scripts/tests/`.
 
 **In Dev Container:**

@@ -15,6 +15,13 @@ name: CI
 #     the latest real run through ci-full-label.yml; the `changes` job reads
 #     the labels live, so that re-run is a full one.
 #
+# Merge queue (#1555): `merge_group` runs test the queued commit (main plus the
+# PRs ahead of it) like a main push: every check job runs (run_all_checks),
+# including both e2e shards and service-tests, while image builds stay
+# path-filtered against merge_group.base_sha and build amd64 only without
+# pushing (as on a PR). SonarCloud and retag-skipped do not run in the queue.
+# "CI Complete" reports on the merge-group head, which is the required check.
+#
 # Release contract: release.yml tag-images retags IMAGE:<sha> -> IMAGE:<version>
 # for all 10 release images, so every main push must produce a :<sha> tag for
 # every image. Images skipped by the path filter get a seconds-long manifest
@@ -26,6 +33,8 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 env:
@@ -37,7 +46,9 @@ concurrency:
   # PRs group by number (new pushes cancel stale runs); pushes group by SHA so
   # main runs never cancel each other mid-image-push. Label events start no
   # run of this workflow (#1527), so they can never cancel the real run.
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  # Merge-queue runs group per merge-group ref (gh-readonly-queue/main/pr-N-<sha>)
+  # and never cancel: the queue itself drops runs of invalidated groups.
+  group: ci-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -85,9 +96,14 @@ jobs:
       # every Python service image COPYs (see services/*/Dockerfile). If a
       # Dockerfile starts copying a new shared directory, add it HERE.
       # Pinned to a full commit SHA (SonarCloud security hotspot remediation)
+      # Merge queue (#1555): diff the queued commit against the main it was
+      # built on. Empty on other events (paths-filter then picks the PR files
+      # or, on a push, the commits since `before`).
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: f
         with:
+          base: ${{ github.event.merge_group.base_sha }}
+          ref: ${{ github.event.merge_group.head_sha }}
           filters: |
             shared_python: &shared_python
               - 'pyproject.toml'
@@ -274,6 +290,8 @@ jobs:
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: nondocs
         with:
+          base: ${{ github.event.merge_group.base_sha }}
+          ref: ${{ github.event.merge_group.head_sha }}
           predicate-quantifier: 'every'
           filters: |
             non_docs:
@@ -304,7 +322,8 @@ jobs:
             fi
           fi
           full="${{ github.event_name == 'workflow_dispatch' }}"
-          checks="${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' }}"
+          # merge_group gates main exactly like a push to main (#1555)
+          checks="${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event_name == 'merge_group' }}"
           if [ "$ci_full" = true ]; then full=true; checks=true; fi
           echo "ci-full label: $ci_full -> force_full=$full run_all_checks=$checks"
           echo "full=$full" >> "$GITHUB_OUTPUT"
@@ -787,9 +806,12 @@ jobs:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
     needs: [changes, service-checks, lib-tests]
-    # Skip on forks that don't have SONAR_TOKEN configured
+    # Skip on forks that don't have SONAR_TOKEN configured, and in the merge
+    # queue (#1555): informational only, and each queue ref would become a
+    # SonarCloud branch.
     if: >-
       !cancelled() && !contains(needs.*.result, 'failure') &&
+      github.event_name != 'merge_group' &&
       (github.repository == 'WatchMeJoustMyFlags/JoustMania' || vars.ENABLE_SONARCLOUD == 'true')
     timeout-minutes: 15
     # Informational only: a Sonar failure (quality gate, or an expired
@@ -1082,7 +1104,8 @@ jobs:
   # under QEMU. Emulated Go/Rust compiles (otel-collector, rust-hid) hit the
   # 30 min timeout on main, so :main was never republished. Each platform job
   # pushes its image by digest; the *-merge job below assembles the multi-arch
-  # manifest with the same tags as before. PRs stay amd64-only and push nothing.
+  # manifest with the same tags as before. PRs and merge-queue runs (#1555)
+  # stay amd64-only and push nothing: only push and workflow_dispatch publish.
   docker-build:
     name: Build ${{ matrix.service }} (${{ matrix.platform }})
     runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
@@ -1096,7 +1119,7 @@ jobs:
       fail-fast: false
       matrix:
         service: ${{ fromJSON(needs.changes.outputs.docker_build_matrix) }}
-        platform: ${{ fromJSON(github.event_name != 'pull_request' && '["linux/amd64","linux/arm64"]' || '["linux/amd64"]') }}
+        platform: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && '["linux/amd64","linux/arm64"]' || '["linux/amd64"]') }}
     steps:
       - uses: actions/checkout@v6
 
@@ -1143,7 +1166,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: false
           # Non-PR: push by digest only; tags are applied by the merge job.
-          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
+          outputs: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
           build-args: |
             DEPS_FINGERPRINT=${{ steps.fingerprint.outputs.value }}
           # #1487: retag-skipped reads this to refuse a :main older than its sources.
@@ -1153,7 +1176,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
 
       - name: Export digest
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
@@ -1161,7 +1184,7 @@ jobs:
           touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
 
       - name: Upload digest
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           overwrite: true
@@ -1180,7 +1203,7 @@ jobs:
     # is fine for retag-skipped (gates on != 'failure') and ci-complete (only
     # failure/cancelled fail it; it still sees docker-build's own result).
     if: >-
-      !cancelled() && github.event_name != 'pull_request' &&
+      !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       needs.changes.outputs.docker_build_matrix != '[]' &&
       needs.docker-build.result == 'success'
     timeout-minutes: 10
@@ -1250,7 +1273,7 @@ jobs:
       fail-fast: false
       matrix:
         item: ${{ fromJSON(needs.changes.outputs.docker_extra_matrix) }}
-        platform: ${{ fromJSON(github.event_name != 'pull_request' && '["linux/amd64","linux/arm64"]' || '["linux/amd64"]') }}
+        platform: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && '["linux/amd64","linux/arm64"]' || '["linux/amd64"]') }}
     steps:
       - uses: actions/checkout@v6
 
@@ -1280,7 +1303,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: false
           # Non-PR: push by digest only; tags are applied by the merge job.
-          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_PREFIX, matrix.item.image_name) || '' }}
+          outputs: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.IMAGE_PREFIX, matrix.item.image_name) || '' }}
           # #1487: retag-skipped reads this to refuse a :main older than its sources.
           labels: org.opencontainers.image.revision=${{ github.sha }}
           # amd64 keeps the pre-existing scope name; arm64 gets its own.
@@ -1288,7 +1311,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.item.service }}${{ matrix.platform == 'linux/arm64' && '-arm64' || '' }}
 
       - name: Export digest
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
@@ -1296,7 +1319,7 @@ jobs:
           touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
 
       - name: Upload digest
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           overwrite: true
@@ -1311,7 +1334,7 @@ jobs:
     needs: [changes, docker-build-extra]
     # #1509: same gate as docker-build-merge.
     if: >-
-      !cancelled() && github.event_name != 'pull_request' &&
+      !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       needs.changes.outputs.docker_extra_matrix != '[]' &&
       needs.docker-build-extra.result == 'success'
     timeout-minutes: 10
@@ -1485,6 +1508,8 @@ jobs:
     # single timed-out job in an otherwise-live run) are still caught below.
     # (Since #1527 ci.yml no longer triggers on `labeled`, so the opened+labeled
     # double fire no longer happens; the guard stays for push-superseded runs.)
+    # Merge queue (#1555): runs on merge_group too; its result on the
+    # merge-group head is what the queue waits for.
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed

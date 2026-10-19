@@ -10,6 +10,9 @@
 #   --comment-file F          ... with this comment ({MERGE} -> short merge SHA)
 #   --note-issue N            comment on one more issue after the merge ...
 #   --note-file F             ... with this body ({MERGE} substituted too)
+#   --wait-queue              merge queue only: after enqueueing, wait until the
+#                             queue merges the PR (then close/note issues as
+#                             usual) or ejects it, instead of returning QUEUED
 #
 # Rules:
 #   - Polls once every SAFE_MERGE_POLL seconds (default 75, never below 60
@@ -37,15 +40,25 @@
 #     a job timeout cancels expanded jobs only. --rerun-failed-once reruns
 #     the whole run once with `gh run rerun <id>`. A cancelled run that a
 #     newer run on the same head superseded is already ignored (rule above).
+#   - Merge queue (#1555): when main requires a merge queue, `gh pr merge`
+#     enqueues the PR instead of merging it. The PR then reads OPEN with
+#     isInMergeQueue=true and the result is QUEUED (exit 6); issues are NOT
+#     closed. With --wait-queue the script polls (every SAFE_MERGE_POLL s, up
+#     to SAFE_MERGE_QUEUE_WAIT s) until the PR reads MERGED (normal MERGED
+#     path, issues closed) or leaves the queue unmerged: EJECTED (exit 7,
+#     confirmed by a second read). Still queued when the wait runs out: QUEUED.
 #   - On red, the failed job logs are scanned for known infrastructure
 #     failures (stale images, registry blobs) and the advice says rerun or
 #     add the ci-full label.
 #
 # Prints ONE result line on stdout (progress goes to stderr).
 # Exit: 0 merged (or green with --wait-ci), 1 red CI / merge failed,
-#       2 usage, 3 head mismatch, 4 timeout, 5 CONFLICTING (needs rebase).
+#       2 usage, 3 head mismatch, 4 timeout, 5 CONFLICTING (needs rebase),
+#       6 QUEUED (in the merge queue, not merged yet; no issue changes),
+#       7 EJECTED (left the merge queue unmerged; no issue changes).
 #
 # Env: SAFE_MERGE_POLL (75), SAFE_MERGE_MAX_WAIT (seconds, 7200),
+#      SAFE_MERGE_QUEUE_WAIT (seconds to wait in the queue with --wait-queue, 3600),
 #      SAFE_MERGE_SETTLE (seconds before re-reading the merged state, 5),
 #      SAFE_MERGE_TEST (1 lifts the 60 s poll floor; tests only).
 set -uo pipefail
@@ -57,11 +70,12 @@ PR="$1"; WANT="$2"; shift 2
 [[ "$PR" =~ ^[0-9]+$ && "$WANT" =~ ^[0-9a-f]{7,40}$ ]] || usage
 # --close takes 7 or 7,8 (digits and commas only); --note-issue one number.
 bad_number() { echo "$1 takes issue numbers like 7 or 7,8 (--note-issue: one): '$2'" >&2; exit 2; }
-WAIT_ONLY=false RERUN=false CLOSE="" CFILE="" NOTE_ISSUE="" NFILE=""
+WAIT_ONLY=false RERUN=false WAIT_QUEUE=false CLOSE="" CFILE="" NOTE_ISSUE="" NFILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --wait-ci) WAIT_ONLY=true ;;
     --rerun-failed-once) RERUN=true ;;
+    --wait-queue) WAIT_QUEUE=true ;;
     --close) [[ $# -ge 2 && "$2" =~ ^[0-9]+(,[0-9]+)*$ ]] || bad_number --close "${2-}"; CLOSE="$2"; shift ;;
     --comment-file) [[ $# -ge 2 ]] || usage; CFILE="$2"; shift ;;
     --note-issue) [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || bad_number --note-issue "${2-}"; NOTE_ISSUE="$2"; shift ;;
@@ -77,7 +91,8 @@ for f in "$CFILE" "$NFILE"; do [[ -z "$f" || -r "$f" ]] || { echo "cannot read $
 POLL="${SAFE_MERGE_POLL:-75}"
 MAX_WAIT="${SAFE_MERGE_MAX_WAIT:-7200}"
 SETTLE="${SAFE_MERGE_SETTLE:-5}"
-for v in "$POLL" "$MAX_WAIT" "$SETTLE"; do
+QUEUE_WAIT="${SAFE_MERGE_QUEUE_WAIT:-3600}"
+for v in "$POLL" "$MAX_WAIT" "$SETTLE" "$QUEUE_WAIT"; do
   [[ "$v" =~ ^[0-9]+$ ]] || { echo "SAFE_MERGE_* values must be whole seconds (got '$v')" >&2; exit 2; }
 done
 # GitHub's secondary rate limit: never poll faster than once a minute for real.
@@ -159,6 +174,58 @@ diagnose() {
   done
 }
 
+# Merge queue state (gh pr view has no isInMergeQueue field: GraphQL).
+# Sets qstate qhead qin qentry qsha qurl; returns 1 when the read fails.
+read -r -d '' GQL_QUEUE <<'GQL'
+query($owner: String!, $repo: String!, $pr: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      state headRefOid isInMergeQueue url
+      mergeQueueEntry { state }
+      mergeCommit { oid }
+    }
+  }
+}
+GQL
+queue_read() {
+  local line
+  line="$(gh api graphql -F owner='{owner}' -F repo='{repo}' -F pr="$PR" -f query="$GQL_QUEUE" \
+    --jq '.data.repository.pullRequest | [.state, .headRefOid, (.isInMergeQueue | tostring),
+          (.mergeQueueEntry.state // "-"), (.mergeCommit.oid // "-"), .url] | join(" ")' 2>/dev/null)" || return 1
+  read -r qstate qhead qin qentry qsha qurl <<<"$line"
+  [[ -n "${qstate:-}" ]] || return 1
+  [[ "$qentry" == - ]] && qentry=""
+  [[ "$qsha" == - ]] && qsha=""
+  return 0
+}
+
+# --wait-queue: poll until MERGED (returns), ejected (exit 7) or out of time
+# (exit 6). Leaving the queue unmerged is confirmed by a second read after
+# SETTLE: the queue may drop the entry a moment before the PR reads MERGED.
+wait_queue() {
+  local qstart; qstart=$(date +%s)
+  while :; do
+    log "in the merge queue (entry ${qentry:-unknown}); next poll in ${POLL}s"
+    sleep "$POLL"
+    if ! queue_read; then
+      log "merge queue read failed; retrying"
+    elif [[ "$qstate" == MERGED ]]; then
+      return 0
+    elif [[ "$qstate" != OPEN ]]; then
+      done_line "EJECTED: PR is $qstate, not merged (head $short); no issue changes" 7
+    elif [[ "$qin" != true ]]; then
+      sleep "$SETTLE"
+      if queue_read && [[ "$qstate" == MERGED ]]; then return 0; fi
+      if [[ "${qin:-}" != true ]]; then
+        done_line "EJECTED from the merge queue (head $short); not merged, no issue changes; check the merge_group run" 7
+      fi
+    fi
+    if (( $(date +%s) - qstart >= QUEUE_WAIT )); then
+      done_line "QUEUED after ${QUEUE_WAIT}s wait (head $short, entry ${qentry:-unknown}); not merged yet, no issue changes" 6
+    fi
+  done
+}
+
 start=$(date +%s)
 reran=false
 while :; do
@@ -224,7 +291,17 @@ sleep "$SETTLE"
 read -r mstate mhead murl msha < <(gh pr view "$PR" --json state,headRefOid,url,mergeCommit \
   --jq '[.state, .headRefOid, .url, (.mergeCommit.oid // "")] | join(" ")' 2>/dev/null || true)
 if [[ "${mstate:-}" != MERGED ]]; then
-  done_line "MERGE FAILED (state ${mstate:-unknown}, head $short); no issue changes" 1
+  queue_read || done_line "MERGE FAILED (state ${mstate:-unknown}, head $short); no issue changes" 1
+  if [[ "$qstate" == MERGED ]]; then
+    mstate="$qstate" mhead="$qhead" murl="$qurl" msha="$qsha"
+  elif [[ "$qin" != true ]]; then
+    done_line "MERGE FAILED (state ${mstate:-unknown}, head $short); no issue changes" 1
+  elif ! $WAIT_QUEUE; then
+    done_line "QUEUED in the merge queue (head $short, entry ${qentry:-unknown}); not merged yet, no issue changes (--wait-queue waits for the result)" 6
+  else
+    wait_queue
+    mstate="$qstate" mhead="$qhead" murl="$qurl" msha="$qsha"
+  fi
 fi
 # Merged, possibly by someone else (gh pr merge may have failed): the merged
 # head must still be the one we were asked to merge.
