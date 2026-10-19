@@ -16,12 +16,10 @@
 #     limits back off (doubling, capped at 600 s). Never uses `gh run watch`
 #     (its 3 s polling tripped GitHub's secondary rate limit).
 #   - SonarCloud checks are ignored (informational, not merge-blocking).
-#   - Per workflow, only checks of the NEWEST run on the head count, as GitHub
-#     does for required checks (#1527): a cancelled older duplicate run whose
-#     "CI Complete" job reports FAILURE is superseded and ignored. A newest run
-#     whose checks are all SKIPPED/NEUTRAL and that has no "CI Complete" (a
-#     label-event run from before #1527) blocks the PR on GitHub too: it is
-#     reported as NOT GREEN with "push a commit" advice, never merged.
+#   - Per workflow, only checks of the NEWEST run on the head count: a cancelled
+#     duplicate run (the opened+labeled double trigger) whose "CI Complete" job
+#     reports FAILURE is superseded and ignored. Runs whose checks are all
+#     SKIPPED/NEUTRAL (a label-event run) never supersede a real run.
 #   - Green means: nothing pending, nothing failing, at least one counted check,
 #     and "CI Complete" SUCCESS in the chosen CI run. An empty rollup is waited on.
 #   - Merges only when the PR head starts with HEAD_PREFIX, with
@@ -87,14 +85,14 @@ def skipped_like: .__typename == "CheckRun" and .status == "COMPLETED"
   | . + { run: ((.detailsUrl // "") | (capture("/runs/(?<id>[0-9]+)").id // "0") | tonumber),
           wf: (.workflowName // .context // "status") } ]
 | (group_by(.wf)
-   | map((map(.run) | max) as $newest | map(select(.run == $newest))))
-   as $groups
-| ($groups | add // []) as $live
+   | map(
+       # A run whose checks are all SKIPPED/NEUTRAL (label-event run) never
+       # supersedes a real run; fall back to it only if nothing else exists.
+       ([ .[] | select(skipped_like | not) | .run ] | unique) as $real
+       | (if ($real | length) > 0 then ($real | max) else (map(.run) | max) end) as $newest
+       | map(select(.run == $newest)))
+   | add // []) as $live
 | {
-    # GitHub takes required checks from the newest run per workflow only, so a
-    # newest run that skipped everything and has no "CI Complete" blocks (#1527).
-    label_runs: [ $groups[] | select(length > 0 and .[0].wf == "CI" and all(.[]; skipped_like)
-                    and all(.[]; .name != "CI Complete")) | .[0].run ],
     counted: ($live | length),
     ci_complete: ([ $live[] | select(.__typename == "CheckRun" and .name == "CI Complete")
                     | if .status == "COMPLETED" then (.conclusion // "") else "PENDING" end ] | first // ""),
@@ -175,10 +173,6 @@ while :; do
     done_line "CI RED (head $short): [$failing]; not infrastructure, needs a fix" 1
   fi
 
-  label_run="$(jq -r '.label_runs | first // ""' <<<"$cls")"
-  if [[ "$n_pending" == 0 && -n "$label_run" && -z "$ci_complete" ]]; then
-    done_line "CI NOT GREEN (head $short): newest run $label_run has no CI Complete (label-event run; GitHub counts only the newest run per workflow); advice: push a commit (an empty one is fine) to re-run CI" 1
-  fi
   if [[ "$n_pending" == 0 && "$n_counted" != 0 ]]; then
     [[ "$ci_complete" == SUCCESS ]] && break
     if [[ -n "$ci_complete" ]]; then

@@ -194,27 +194,20 @@ run 42 abcdef1
 calls | grep -q 'pr merge' && fail "CI Complete SKIPPED must not merge: $(calls)"
 ok
 
-# 10. #1527: GitHub counts only the newest run per workflow. A newer label-event
-#     run (every job SKIPPED, no "CI Complete") blocks the PR even when the
-#     real run is green, so it is NOT GREEN with push advice, never merged.
+# 10. Label-event run (newest, every job SKIPPED) never hides the real run.
 reset
 view "$(check 'Integration Tests' COMPLETED FAILURE 200)" "$(check 'CI Complete' COMPLETED FAILURE 200)" \
   "$(check 'Lint' COMPLETED SUCCESS 200)" \
-  "$(check 'Integration Tests' COMPLETED SKIPPED 300)" "$(check 'Label event (no CI result)' COMPLETED SKIPPED 300)" \
+  "$(check 'Integration Tests' COMPLETED SKIPPED 300)" "$(check 'CI Complete' COMPLETED SKIPPED 300)" \
   "$(check 'Lint' COMPLETED NEUTRAL 300)"
 run 42 abcdef1 --close 7 --comment-file "${WORK}/comment.md"
-[[ $RC -eq 1 && "$OUT" == *"NOT GREEN"*"newest run 300 has no CI Complete"*"push a commit"* ]] || fail "label run over red: rc=$RC $OUT"
-calls | grep -qE 'pr merge|issue' && fail "label run over red must not merge: $(calls)"
+[[ $RC -eq 1 && "$OUT" == *"CI RED"*"Integration Tests"* ]] || fail "skipped label run: rc=$RC $OUT"
+calls | grep -qE 'pr merge|issue' && fail "skipped label run must not merge: $(calls)"
+# ... and when the real run is green, it still merges.
 reset
-view "$GREEN" "$(check 'Lint' COMPLETED SKIPPED 300)" "$(check 'Label event (no CI result)' COMPLETED SKIPPED 300)"
+view "$GREEN" "$(check 'Lint' COMPLETED SKIPPED 300)" "$(check 'CI Complete' COMPLETED SKIPPED 300)"
 run 42 abcdef1
-[[ $RC -eq 1 && "$OUT" == *"NOT GREEN"*"newest run 300"* ]] || fail "label run over green: rc=$RC $OUT"
-calls | grep -q 'pr merge' && fail "label run over green must not merge (GitHub blocks it): $(calls)"
-# A skipped-only run of ANOTHER workflow (Spec label re-run) does not block.
-reset
-view "$GREEN" "$(check 'Re-run Spec Gate' COMPLETED SKIPPED 300 'Spec label re-run')"
-run 42 abcdef1
-[[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "skipped other workflow: rc=$RC $OUT"
+[[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "green under skipped label run: rc=$RC $OUT"
 ok
 
 # 11. Already MERGED: report and stop; never merge again or touch issues.

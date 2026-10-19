@@ -22,10 +22,6 @@ docs/CONTRIBUTING.md "PR gates and merging". Test: `scripts/tests/test-local-gat
 
 Gentle CI wait + exact-head squash merge + post-merge issue close/comment, or
 `--wait-ci` to report only. Usage in the script header. Test: `scripts/tests/test-safe-merge.sh`.
-Like GitHub's required-check evaluation, it counts only the newest run of each
-workflow on the head. A newest `CI` run that skipped everything and has no
-`CI Complete` (a label-event run from before #1527) is reported as NOT GREEN
-with "push a commit" advice, because GitHub keeps such a PR BLOCKED.
 
 ### `validate-protos.sh`
 
