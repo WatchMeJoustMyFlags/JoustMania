@@ -67,5 +67,24 @@ func skipStaleGameEnd(fn func(gamecontext.GameContext)) func(gamecontext.GameCon
 	}
 }
 
+// buildGameEndChain composes the per-partition game-end chain (#928, #1100,
+// #1494): the stale counter, then the experiment conclusion hook (first, so it
+// records fitness before the retro reads it back), then the retro, the game
+// summary and the proposer. A stale end (UC-041 A4) is counted and reaches the
+// experiment hook, which releases its slot itself, but never the retro, the
+// summary or the proposer. nil consumers are skipped.
+func buildGameEndChain(
+	staleEnds otelmetric.Int64Counter,
+	experimentOnGameEnd, retroOnGameEnd, summaryOnGameEnd, proposeOnGameEnd func(gamecontext.GameContext),
+) func(gamecontext.GameContext) {
+	return chainGameEnd(
+		countStaleGameEnd(staleEnds),
+		experimentOnGameEnd,
+		skipStaleGameEnd(retroOnGameEnd),
+		skipStaleGameEnd(summaryOnGameEnd),
+		skipStaleGameEnd(proposeOnGameEnd),
+	)
+}
+
 // globalMeterProvider is the process meter provider (otel.go installs it at startup).
 func globalMeterProvider() otelmetric.MeterProvider { return otel.GetMeterProvider() }

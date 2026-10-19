@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	otelmetric "go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -163,6 +165,47 @@ func TestGameEndChain_StaleEndSkippedAndCounted(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-041 A4
+func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
+	newChain := func() (func(gamecontext.GameContext), map[string][]string) {
+		seen := map[string][]string{}
+		record := func(name string) func(gamecontext.GameContext) {
+			return func(c gamecontext.GameContext) { seen[name] = append(seen[name], c.EndReason) }
+		}
+		counter := newGameEndStaleCounter(metricnoopProvider())
+		return buildGameEndChain(counter,
+			record("experiment"), record("retro"), record("summary"), record("proposer")), seen
+	}
+
+	t.Run("UC-041/A4 stale end reaches the experiment hook only", func(t *testing.T) {
+		chain, seen := newChain()
+		chain(gamecontext.GameContext{SessionID: "game_stale", EndReason: gamecontext.EndReasonStale})
+		if len(seen["experiment"]) != 1 {
+			t.Errorf("experiment hook saw %d stale ends, want 1 (it releases the slot itself)", len(seen["experiment"]))
+		}
+		for _, name := range []string{"retro", "summary", "proposer"} {
+			if len(seen[name]) != 0 {
+				t.Errorf("%s saw a stale end, want none", name)
+			}
+		}
+	})
+
+	for _, reason := range []string{gamecontext.EndReasonZero, gamecontext.EndReasonRootSpan} {
+		t.Run("UC-041/A4 "+reason+" end reaches every consumer", func(t *testing.T) {
+			chain, seen := newChain()
+			chain(gamecontext.GameContext{SessionID: "game_" + reason, EndReason: reason})
+			for _, name := range []string{"experiment", "retro", "summary", "proposer"} {
+				if len(seen[name]) != 1 {
+					t.Errorf("%s saw %d %s ends, want 1", name, len(seen[name]), reason)
+				}
+			}
+		})
+	}
+}
+
+// metricnoopProvider is a meter provider that records nothing.
+func metricnoopProvider() otelmetric.MeterProvider { return metricnoop.NewMeterProvider() }
 
 // staleCounterValue collects agent_game_end_stale_total for one game_kind.
 func staleCounterValue(t *testing.T, reader *sdkmetric.ManualReader, kind string) int64 {

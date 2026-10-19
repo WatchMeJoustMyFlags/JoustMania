@@ -985,13 +985,8 @@ func main() {
 		// A stale end (UC-041 A4, #1494: the game's game_active series went silent,
 		// so its telemetry broke) is counted, kept out of experiments by
 		// expLoop.onGameEnd itself, and skipped by retro, summary and proposer.
-		s.OnGameEnd = chainGameEnd(
-			countStaleGameEnd(staleEnds),
-			experimentOnGameEnd,
-			skipStaleGameEnd(retro.OnGameEnd),
-			skipStaleGameEnd(summaries.OnGameEnd),
-			skipStaleGameEnd(proposeOnGameEnd),
-		)
+		s.OnGameEnd = buildGameEndChain(staleEnds,
+			experimentOnGameEnd, retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd)
 		return s
 	})
 	mux.SetOwnService(ownService)
