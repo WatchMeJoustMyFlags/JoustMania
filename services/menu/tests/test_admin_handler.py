@@ -150,6 +150,7 @@ def inactive_handler(mock_tracer, mock_callbacks, mock_metrics, mock_state_manag
 class TestAdminOptionNavigation:
     """Tests for admin option navigation."""
 
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-002"])
     def test_option_names_defined(self, handler):
         """Controller-cycled surface: the 3 human essentials (issue #815) plus
         the agent kill-switch (issue #819).
@@ -966,6 +967,32 @@ class TestHandleButtonEventDispatch:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="A4")
+    async def test_activity_does_not_extend_the_timeout(self, inactive_handler, mock_state_manager):
+        """A press during the session neither restarts the timer nor moves the entry time; the timer
+        started at entry exits admin mode."""
+        clock = [1000.0]
+        fake_time = create_autospec(time, instance=False)
+        fake_time.time.side_effect = lambda: clock[0]
+        mock_state_manager.transition_to = AsyncMock()
+        inactive_handler.handle_game_mode = AsyncMock()
+        inactive_handler._timeout_seconds = 0.05
+
+        with patch("services.menu.handlers.admin.time", fake_time):
+            await inactive_handler.enter("A")
+            timer = inactive_handler._timeout_task
+            clock[0] += 0.02  # partway through the session
+            await inactive_handler.handle_button_event("A", ButtonTrackingKey.CROSS)
+
+            inactive_handler.handle_game_mode.assert_awaited_once_with("A")
+            assert inactive_handler.entry_time == 1000.0
+            assert inactive_handler._timeout_task is timer
+            await timer
+
+        mock_state_manager.transition_to.assert_awaited_once_with("A", ControllerState.CONNECTED)
+        assert inactive_handler.active is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A4")
     @pytest.mark.nfr("NFR-006")
     async def test_press_check_uses_the_timer_limit(self, handler):
         """The per-press check and the timer task share _timeout_seconds (one NFR-006 source)."""
@@ -1060,36 +1087,6 @@ class TestVariantToValue:
 
     def test_num_teams_six(self):
         assert AdminModeHandler._variant_to_value("num_teams", "six") == 6
-
-    def test_random_assignment_on(self):
-        assert AdminModeHandler._variant_to_value("random_assignment", "on") is True
-
-    def test_random_assignment_off(self):
-        assert AdminModeHandler._variant_to_value("random_assignment", "off") is False
-
-    def test_nonstop_time_limit_unlimited(self):
-        assert AdminModeHandler._variant_to_value("nonstop.time_limit_seconds", "unlimited") == 0
-
-    def test_nonstop_time_limit_five_min(self):
-        assert AdminModeHandler._variant_to_value("nonstop.time_limit_seconds", "five_min") == 300
-
-    def test_invincibility_2s(self):
-        assert AdminModeHandler._variant_to_value("invincibility_seconds", "2s") == 2.0
-
-    def test_invincibility_8s(self):
-        assert AdminModeHandler._variant_to_value("invincibility_seconds", "8s") == 8.0
-
-    def test_fight_club_min_rounds_five(self):
-        assert AdminModeHandler._variant_to_value("fight_club.min_rounds", "five") == 5
-
-    def test_fight_club_min_rounds_twenty(self):
-        assert AdminModeHandler._variant_to_value("fight_club.min_rounds", "twenty") == 20
-
-    def test_werewolf_reveal_time_20s(self):
-        assert AdminModeHandler._variant_to_value("werewolf.reveal_time_seconds", "20s") == 20.0
-
-    def test_werewolf_reveal_time_60s(self):
-        assert AdminModeHandler._variant_to_value("werewolf.reveal_time_seconds", "60s") == 60.0
 
     def test_force_all_start_on(self):
         assert AdminModeHandler._variant_to_value("force_all_start", "on") is True
@@ -1470,20 +1467,6 @@ class TestShowValueFeedbackDetails:
         assert call_kwargs["color"] == (255, 0, 0)
 
     @pytest.mark.asyncio
-    async def test_nonstop_unlimited_dim_purple(self, handler, mock_state_manager):
-        """nonstop_time_limit=0 (unlimited) should produce dim purple (50, 0, 50)."""
-        await handler._show_value_feedback("test_serial", "nonstop.time_limit_seconds", 0)
-        call_kwargs = mock_state_manager.led.send_game_effect.call_args[1]
-        assert call_kwargs["color"] == (50, 0, 50)
-
-    @pytest.mark.asyncio
-    async def test_nonstop_300_bright_purple(self, handler, mock_state_manager):
-        """nonstop_time_limit=300 should produce bright purple (255, 0, 255)."""
-        await handler._show_value_feedback("test_serial", "nonstop.time_limit_seconds", 300)
-        call_kwargs = mock_state_manager.led.send_game_effect.call_args[1]
-        assert call_kwargs["color"] == (255, 0, 255)
-
-    @pytest.mark.asyncio
     async def test_unknown_option_shows_white(self, handler, mock_state_manager):
         """Unknown option should default to white."""
         await handler._show_value_feedback("test_serial", "unknown_option", 0)
@@ -1537,12 +1520,6 @@ class TestPlayValueVoice:
         """force_all_start=False should play FALSE voice."""
         await handler._play_value_voice("force_all_start", False)
         mock_state_manager.audio.play_voice.assert_called_once_with(Sound.MENU_VOX_ADMINOP_FALSE)
-
-    @pytest.mark.asyncio
-    async def test_unknown_option_no_voice(self, handler, mock_state_manager):
-        """Options without a voice mapping play nothing."""
-        await handler._play_value_voice("random_assignment", True)
-        mock_state_manager.audio.play_voice.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[5])
@@ -2083,7 +2060,6 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_second_controller_can_enter_after_first_exits(self, stack):
         """Once the active admin leaves, another controller may enter admin mode."""
         servicer, state_manager, admin_handler = stack
@@ -2166,7 +2142,6 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_stop_menu_releases_lock(self, stack):
         """StopMenu releases the admin session."""
         from proto import menu_pb2
@@ -2235,7 +2210,6 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_stale_session_does_not_block_new_admin(self, stack):
         """Self-healing lock: a session whose owner is no longer ADMIN is released on the next combo."""
         servicer, state_manager, admin_handler = stack

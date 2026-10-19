@@ -275,6 +275,7 @@ class TestMenuServicerOnButton:
     @pytest.mark.uc("UC-012", flow="main", steps=[1])
     async def test_partial_combo_stays_connected(self, real_servicer):
         """UC-012 step 1: three face buttons are not the combo; the controller stays CONNECTED."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING  # Pre-1, so only the partial combo keeps it out
         await _connect(real_servicer, "host")
         for button in ("cross", "circle", "square"):
             await real_servicer.on_button("host", button, True)
