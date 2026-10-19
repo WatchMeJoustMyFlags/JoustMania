@@ -76,7 +76,7 @@ func gameplayConfigControl(cfg *controllerpb.GameplayStreamConfig) *controllerpb
 	return &controllerpb.GameplayStreamControl{Control: &controllerpb.GameplayStreamControl_Config{Config: cfg}}
 }
 
-// UC: UC-035 MSS
+// UC: UC-035 MSS, BR-006
 func TestProxyWatchGameplayData(t *testing.T) {
 	cfg := &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: 30}
 
@@ -214,6 +214,69 @@ func TestProxyWatchGameplayData(t *testing.T) {
 			cancel()
 			waitClosed(t, upstreamDone, "upstream StreamGameplayData still open")
 			waitClosed(t, returned, "WatchGameplayData handler still running")
+			_ = stream.Close()
+		}
+	})
+
+	t.Run("UC-035/BR-006 browser colours, filter and rate are never forwarded", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			sent   *controllerpb.GameplayStreamConfig
+			wantHz int32
+		}{
+			{"colours dropped", &controllerpb.GameplayStreamConfig{
+				UpdateFrequencyHz: 30,
+				Colors: []*controllerpb.ControllerColorConfig{
+					{Serial: "AA:01", Color: &controllerpb.RGB{R: 255}},
+				},
+			}, 30},
+			{"rate above the cap", &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: 1000}, 30},
+			{"negative rate", &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: -5}, 1},
+			{"no rate", &controllerpb.GameplayStreamConfig{}, 1},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				rig := newProxyRigWith(t, &fakeController{
+					updates: []*controllerpb.GameplayDataUpdate{{Timestamp: 1}},
+				}, nil)
+				stream, err := rig.controllerClient.WatchGameplayData(testCtx(t), connect.NewRequest(tc.sent))
+				if err != nil {
+					t.Fatalf("WatchGameplayData: %v", err)
+				}
+				defer stream.Close()
+				for stream.Receive() {
+				}
+				eq(t, rig.controller.log.only(t, "StreamGameplayData"),
+					gameplayConfigControl(&controllerpb.GameplayStreamConfig{UpdateFrequencyHz: tc.wantHz}))
+			})
+		}
+	})
+
+	t.Run("UC-035/MSS browser disconnect over HTTP/1.1 closes the upstream stream", func(t *testing.T) {
+		// Production path: envoy talks HTTP/1.1 to connect-proxy.
+		for i := 0; i < 10; i++ {
+			upstreamDone := make(chan struct{})
+			returned := make(chan struct{})
+			rig := newProxyRigWith(t, &fakeController{
+				updates:      []*controllerpb.GameplayDataUpdate{{Timestamp: int64(i)}},
+				holdOpen:     true,
+				gameplayDone: upstreamDone,
+			}, spyOn(returned))
+			ctx, cancel := context.WithCancel(testCtx(t))
+			client := controller_managerconnect.NewControllerManagerServiceClient(
+				http1Client(t, rig), rig.url, connect.WithProtoJSON())
+			stream, err := client.WatchGameplayData(ctx, connect.NewRequest(cfg))
+			if err != nil {
+				cancel()
+				t.Fatalf("cycle %d: WatchGameplayData: %v", i, err)
+			}
+			if !stream.Receive() {
+				cancel()
+				t.Fatalf("cycle %d: Receive: %v", i, stream.Err())
+			}
+			cancel()
+			waitClosed(t, upstreamDone, "upstream StreamGameplayData still open after an HTTP/1.1 browser left")
+			waitClosed(t, returned, "WatchGameplayData handler still running after an HTTP/1.1 browser left")
 			_ = stream.Close()
 		}
 	})

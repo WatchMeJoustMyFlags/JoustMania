@@ -412,6 +412,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # controller filter) record it, not the dashboard's unfiltered stream, so
         # menu/dashboard traffic never skews the latency panels.
         record_input_lag = current_filter is not None
+        # Game signals are read once: disconnects, health counters and the mock
+        # death latch are drained only by game (filtered) streams. An observer
+        # stream (the dashboard's unfiltered one) never consumes them, or it would
+        # steal them from the game (UC-035 BR-006, #1595).
+        game_stream = current_filter is not None
         # No dict copy needed — _build_gameplay_update is synchronous (no await
         # points), so no dict mutation can happen during iteration.
         for serial, info in self.tracked_controllers.items():
@@ -433,12 +438,12 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             # mock deaths are held until they have been STREAMED to the game
             # enough times to cross the EMA threshold, rather than for a fixed
             # wall-clock window a starved send loop could skip entirely (#926).
-            if consume_death is not None:
+            if consume_death is not None and game_stream:
                 consume_death(serial)
 
-            # Drain health counters accumulated since last frame
-            drops, errors, led_fails = self.discovery_loop.drain_health_counters(serial)
+            # Drain health counters accumulated since last frame (game streams only)
             health = None
+            drops, errors, led_fails = self.discovery_loop.drain_health_counters(serial) if game_stream else (0, 0, 0)
             if drops or errors or led_fails:
                 health = controller_manager_pb2.ControllerHealth(
                     poll_drops=drops,
@@ -466,10 +471,12 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             if record_input_lag and serial not in pattern_serials:
                 self._record_input_lag(serial, now)
 
-        # Drain disconnect events accumulated since last frame (#580)
-        disconnect_events = [
-            controller_manager_pb2.DisconnectEvent(serial=s) for s in self.discovery_loop.drain_disconnects()
-        ]
+        # Drain disconnect events accumulated since last frame (#580; game streams only)
+        disconnect_events = (
+            [controller_manager_pb2.DisconnectEvent(serial=s) for s in self.discovery_loop.drain_disconnects()]
+            if game_stream
+            else []
+        )
 
         return controller_manager_pb2.GameplayDataUpdate(
             controllers=gameplay_data,
@@ -556,18 +563,20 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         # Stream state (updated by client messages)
         current_hz = 30  # Default Hz
+        requested_hz = current_hz  # the client's configured rate
         current_filter = None  # None = all controllers
 
         # Background task to read client updates
         async def read_client_updates():
-            nonlocal current_hz, current_filter
+            nonlocal current_hz, requested_hz, current_filter
 
             try:
                 async for control_msg in request_iterator:
                     if control_msg.HasField("config"):
-                        current_hz, current_filter = await self._process_gameplay_config(
+                        requested_hz, current_filter = await self._process_gameplay_config(
                             control_msg.config, subscriber_id, span
                         )
+                        current_hz = requested_hz
                     elif control_msg.HasField("filter_update"):
                         current_filter = self._process_filter_update(
                             control_msg.filter_update, subscriber_id, span, current_filter
@@ -601,9 +610,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                             )
                             current_hz = pattern_hz
                     # Check for flagd frequency override
-                    elif _frequency_override is not None and _frequency_override != current_hz:
-                        logger.info(f"[{subscriber_id}] Frequency override: {current_hz} -> {_frequency_override} Hz")
-                        current_hz = _frequency_override
+                    else:
+                        target_hz = _stream_rate_hz(requested_hz, current_filter, _frequency_override)
+                        if target_hz != current_hz:
+                            logger.info(f"[{subscriber_id}] Frequency override: {current_hz} -> {target_hz} Hz")
+                            current_hz = target_hz
 
                     # Calculate interval from current Hz
                     interval = 1.0 / current_hz
@@ -802,6 +813,23 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 # ---------------------------------------------------------------------------
 
 _frequency_override: int | None = None
+
+
+def _stream_rate_hz(requested_hz: int, current_filter: set | None, override_hz: int | None) -> int:
+    """Frame rate of a gameplay stream that names no pattern controller.
+
+    A game (filtered) stream runs at the ``game_loop.update_frequency_hz`` flag
+    when it resolves. An observer (unfiltered) stream runs at its requested rate,
+    capped at the flag rate, so a dashboard tab asking for 30 Hz costs 30 Hz
+    (UC-035 BR-006, #1595). Without the flag every stream runs at its request.
+    """
+    if override_hz is None:
+        return requested_hz
+    if current_filter is None:
+        return max(1, min(requested_hz, override_hz))
+    return override_hz
+
+
 _frequency_listener_initialized = False
 
 

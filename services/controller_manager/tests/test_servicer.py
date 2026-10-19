@@ -699,7 +699,8 @@ class TestExtractedHelpers:
         # Backend exposes the duck-typed hook (only MockAdapter does in prod).
         servicer.backend.consume_death_frame = MagicMock()
 
-        servicer._build_gameplay_update(None)
+        # A game (filtered) stream; observer streams never drain it (UC-035 BR-006).
+        servicer._build_gameplay_update({"AA:BB", "CC:DD"})
 
         # Exactly one death-frame tick per included controller, this frame.
         servicer.backend.consume_death_frame.assert_any_call("AA:BB")

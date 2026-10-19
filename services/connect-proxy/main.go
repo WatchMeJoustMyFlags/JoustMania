@@ -279,8 +279,10 @@ func (p *ControllerManagerProxy) StreamGameplayData(
 // WatchGameplayData is the browser's server-streaming view of the bidi
 // StreamGameplayData (#1595): envoy reaches connect-proxy over HTTP/1.1, where
 // connect-go refuses bidi streams (505). It opens StreamGameplayData to the
-// controller manager with the browser's config as the first control message
-// and relays the updates. It runs in the handler goroutine only (no relay
+// controller manager and relays the updates. The upstream config is built
+// here, never forwarded: only the rate, clamped to 1..30 Hz, so the browser
+// always gets the unfiltered observer stream and cannot claim controllers or
+// set their colours (UC-035 BR-006). It runs in the handler goroutine only (no relay
 // goroutines), and the deferred cancel closes the upstream stream on every
 // return: browser gone (ctx cancelled), upstream error or end, or a failed send.
 // The send side is never half-closed, so the controller manager keeps streaming.
@@ -297,7 +299,7 @@ func (p *ControllerManagerProxy) WatchGameplayData(
 		return connect.NewError(connect.CodeInternal, err)
 	}
 	config := &controllerpb.GameplayStreamControl{
-		Control: &controllerpb.GameplayStreamControl_Config{Config: req.Msg},
+		Control: &controllerpb.GameplayStreamControl_Config{Config: observerGameplayConfig(req.Msg)},
 	}
 	if err := grpcStream.Send(config); err != nil && err != io.EOF {
 		return connect.NewError(connect.CodeInternal, err)
@@ -319,6 +321,16 @@ func (p *ControllerManagerProxy) WatchGameplayData(
 			return err
 		}
 	}
+}
+
+// maxWatchGameplayHz caps the browser's requested rate (UC-035 BR-006).
+const maxWatchGameplayHz = 30
+
+// observerGameplayConfig keeps only the browser's rate, clamped to
+// 1..maxWatchGameplayHz, and drops its colours (UC-035 BR-006).
+func observerGameplayConfig(in *controllerpb.GameplayStreamConfig) *controllerpb.GameplayStreamConfig {
+	hz := min(max(in.GetUpdateFrequencyHz(), 1), maxWatchGameplayHz)
+	return &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: hz}
 }
 
 func (p *ControllerManagerProxy) RenameController(

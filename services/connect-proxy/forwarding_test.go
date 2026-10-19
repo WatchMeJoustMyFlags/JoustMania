@@ -915,6 +915,17 @@ type dashboardStreamFrame struct {
 // does for server streams (#1542): Content-Type application/connect+json, the
 // JSON request in one 5-byte envelope, over HTTP/1.1 as the browser reaches
 // connect-proxy through envoy. It returns the response and its frames.
+// http1Client talks HTTP/1.1 to the proxy, as envoy does in production.
+func http1Client(t *testing.T, rig *proxyRig) *http.Client {
+	t.Helper()
+	tr := rig.httpClient.Transport.(*http.Transport).Clone()
+	tr.ForceAttemptHTTP2 = false
+	tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	t.Cleanup(tr.CloseIdleConnections)
+	return &http.Client{Transport: tr}
+}
+
 func postConnectStream(t *testing.T, rig *proxyRig, path string, body any) (*http.Response, []dashboardStreamFrame) {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -932,12 +943,7 @@ func postConnectStream(t *testing.T, rig *proxyRig, path string, body any) (*htt
 	req.Header.Set("Content-Type", "application/connect+json")
 	req.Header.Set("Connect-Protocol-Version", "1")
 
-	tr := rig.httpClient.Transport.(*http.Transport).Clone()
-	tr.ForceAttemptHTTP2 = false
-	tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-	tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
-	t.Cleanup(tr.CloseIdleConnections)
-	resp, err := (&http.Client{Transport: tr}).Do(req)
+	resp, err := http1Client(t, rig).Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
