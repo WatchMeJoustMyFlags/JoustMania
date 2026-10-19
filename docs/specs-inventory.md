@@ -55,11 +55,11 @@ banner pointing at their replacement; nothing was deleted.
 | `agent-trace-viz.md` | 307 | Agent trace on stage | stale (minor); **fixed in #1546 (D1)** | `agent.span_received` retired (#1053); `agent.signal_received` is a remote child of `game_cycle` (#1325), not a root (D-T2). | telemetry §agent; guide |
 | `design/agent-experiment-cohorts.md` | 389 | Cohort framework design (#982) | historical | Says "no implementation" but shipped (`services/agent/experiment/`). | ENT (Experiment, Arm), UC-043; kept as a historical record (banner added in #1541) |
 | `research/722-intervention-surface.md` | 576 | Intervention vocabulary research | historical | Allow-list format and limiter location changed (#1127, #919). | ENT (Intervention), flags; history |
-| `research/739-prompt-capture.md` | 146 | In-game LLM prompt spike | historical | Already bannered; path retired by PR #1252 (issue #1234). | history |
+| `archive/739-prompt-capture.md` | 146 | In-game LLM prompt spike | historical | Already bannered; path retired by PR #1252 (issue #1234). | history |
 | `research/774-shadow-games.md` | 267 | Shadow game analysis | historical | `game_kind` vocabulary changed (#1249); broken link to `controller.ci.json`. | ENT (GameSession), UC-043; history |
 | `research/844-post-game-retro.md` | 168 | Retro capture | historical | Already bannered. | UC-042; history |
 | `research/m7-4-testing-strategy.md` | 412 | Test strategy for propose / validate / promote | historical | Already bannered; pre-#1234. | history |
-| `research/spike-survival-calibration-1125.md` | 153 | Offline fitness calibration | historical | Self-declared offline evidence (#1125 open). | history |
+| `archive/spike-survival-calibration-1125.md` | 153 | Offline fitness calibration | historical | Self-declared offline evidence (#1125 open). | history |
 
 ## 3. Service, tool and test docs
 
