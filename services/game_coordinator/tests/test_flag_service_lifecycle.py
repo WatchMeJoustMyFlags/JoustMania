@@ -142,7 +142,8 @@ async def test_unreachable_service_never_raises_and_reconciles_on_recovery(servi
     await wait_for(lambda: len(service.paths("PUT")) >= 3)  # keeps retrying the reconcile
     service.fail = False
     await wait_for(lambda: not lc._needs_reconcile.is_set())
-    _, path, body = service.requests[-1]
+    # A /healthz probe can land after the reconcile, so select by path, not position.
+    _, path, body = [r for r in service.requests if r[1].startswith("/coordinators/")][-1]
     assert path == "/coordinators/h%2F1/games" and [g["game_id"] for g in body["games"]] == [GAME.game_id]
     await lc.stop()
 
