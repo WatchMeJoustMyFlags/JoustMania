@@ -321,6 +321,21 @@ class AudioManager:
             metrics.audio_sounds_played_total.labels(result="error").inc()
             return False
 
+    def sound_duration(self, file_path: str) -> float:
+        """Return the length of a sound in seconds, or 0.0 when nothing is heard.
+
+        Silent mode, a missing file or an unreadable header all return 0.0, so a
+        caller waiting on the clip (UC-020 A5) never waits for silence.
+        """
+        if self.silent:
+            return 0.0
+        full_path = self._resolve_path(file_path)
+        try:
+            return float(miniaudio.get_file_info(full_path).duration)
+        except Exception as e:
+            logger.debug(f"No duration for {file_path}: {e}")
+            return 0.0
+
     def play_music(
         self,
         file_pattern: str,
@@ -737,8 +752,12 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         success = self.audio_manager.play_sound(
             file_path=resolved_path, volume=request.volume or 1.0, priority=request.priority
         )
+        duration = self.audio_manager.sound_duration(resolved_path) if success else 0.0
+        span.set_attribute("audio.duration_seconds", duration)
 
-        return audio_pb2.PlaySoundResponse(success=success, error="" if success else "Failed to play sound")
+        return audio_pb2.PlaySoundResponse(
+            success=success, error="" if success else "Failed to play sound", duration_seconds=duration
+        )
 
     async def PlayMusic(self, request, _context):
         """Play background music."""

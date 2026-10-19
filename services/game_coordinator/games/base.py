@@ -238,6 +238,11 @@ END_MAX_MUSIC_SLOW_TIME = 12
 # revert target for the volume_override intervention (interventions.py).
 GAME_VOLUME = 0.7
 COUNTDOWN_MUSIC_VOLUME = 0.15  # Soft background music during countdown
+# Upper bound on the wait for a spoken instruction clip (UC-020 A5), so a bad
+# duration from the audio service can never stall a game start.
+MAX_INSTRUCTIONS_WAIT_SECONDS = 60.0
+# How often the instruction wait checks for a force-end.
+INSTRUCTIONS_POLL_SECONDS = 0.1
 
 
 def _read_volume_flag(flag_name: str, default: float) -> float:
@@ -1031,6 +1036,78 @@ class BaseGameMode(ABC):
         Nonstop Joust: Player respawns, add death event but keep span open
         """
         pass
+
+    def get_instruction_clip(self) -> Sound | None:
+        """Spoken instruction clip played before the countdown (UC-020 A5).
+
+        None means the mode has no clip mapping yet: nothing plays, no wait.
+        """
+        return None
+
+    def _instructions_enabled(self) -> bool:
+        """Read ``user.game_instructions`` at use time; any failure means off."""
+        try:
+            from openfeature.evaluation_context import EvaluationContext
+
+            from lib.feature_flags import get_flag_client, init_flag_domain
+
+            init_flag_domain("user")
+            client = get_flag_client("user")
+            value = client.get_boolean_value("game_instructions", False, EvaluationContext())
+            return value is True
+        except Exception as e:
+            logger.warning(f"Failed to read game_instructions, treating as off: {e}")
+            return False
+
+    async def _play_instructions(self, span: trace.Span) -> None:
+        """Play the mode's instruction clip and wait for it to finish (UC-020 A5).
+
+        Records ``game.instructions`` on ``span``: ``played``, ``off``,
+        ``shadow`` (a shadow game has no audience), ``no_clip`` (the mode has
+        no clip), ``no_audio`` (no audio client) or ``failed`` (PlaySound raised).
+        Only ``played`` waits.
+        """
+        if self.game_kind == GAME_KIND_SHADOW:
+            span.set_attribute("game.instructions", "shadow")
+            return
+        if not self._instructions_enabled():
+            span.set_attribute("game.instructions", "off")
+            return
+        clip = self.get_instruction_clip()
+        if clip is None:
+            span.set_attribute("game.instructions", "no_clip")
+            return
+        if not self.audio_client:
+            span.set_attribute("game.instructions", "no_audio")
+            return
+
+        try:
+            from proto import audio_pb2
+
+            response = await self.audio_client.PlaySound(
+                audio_pb2.PlaySoundRequest(file_path=clip.value, volume=1.0, priority=audio_pb2.HIGH)
+            )
+            duration = max(0.0, min(float(response.duration_seconds), MAX_INSTRUCTIONS_WAIT_SECONDS))
+        except Exception as e:
+            logger.warning(f"Failed to play instructions {clip.value}: {e}")
+            span.set_attribute("game.instructions", "failed")
+            return
+
+        span.set_attribute("game.instructions", "played")
+        span.add_event(
+            "game.instructions_played",
+            {"instructions.clip": clip.value, "instructions.duration_seconds": duration},
+        )
+        logger.info(f"Playing instructions {clip.value}, waiting {duration:.1f}s before the countdown")
+
+        # Wait for the clip to finish; a force-end stops the wait at once.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + duration
+        for _ in range(math.ceil(duration / INSTRUCTIONS_POLL_SECONDS)):
+            remaining = deadline - loop.time()
+            if not self.running or remaining <= 0:
+                break
+            await asyncio.sleep(min(INSTRUCTIONS_POLL_SECONDS, remaining))
 
     @abstractmethod
     def _get_additional_phases(self) -> list:
@@ -2836,6 +2913,115 @@ class BaseGameMode(ABC):
     # Template Method - Orchestrates entire game lifecycle with spans
     # ========================================================================
 
+    async def _run_gameplay_phase(self):
+        """Start the game and run gameplay_phase: countdown, game loop, outcome latch."""
+        # Game starts
+        self.state = GameState.RUNNING
+        current_span = trace.get_current_span()
+        current_span.add_event(
+            "game.state_changed",
+            {
+                "game.state": "RUNNING",
+                "player.count": len(self.players),
+                "game.id": self.game_id,
+            },
+        )
+        # Note: self.start_time is set in _game_loop when first data is received
+        await self.event_publisher(
+            GameEvent.GAME_STARTED,
+            {"game_id": self.game_id, "player_count": len(self.players)},
+        )
+
+        # Phase 2: Gameplay (player spans created before countdown)
+        with tracer.start_as_current_span("gameplay_phase") as gameplay_span:
+            # Store span reference and context for background tasks
+            self.gameplay_span = gameplay_span
+            self.gameplay_span_context = otel_context.get_current()
+
+            # Publish the gameplay_phase span_id to the trace-correlation gauge
+            # (#1195) so the agent re-parents its in-game decision chain under
+            # THIS span instead of the game root (#1187). gameplay_phase is the
+            # stable active-play window; a span_ctx with a zero/invalid span_id
+            # (unsampled) yields an empty hex id, which the session treats as a
+            # no-op so the agent keeps falling back to the game root span.
+            gameplay_span_ctx = gameplay_span.get_span_context()
+            if gameplay_span_ctx.span_id != 0:
+                self.on_gameplay_phase_open(trace.format_span_id(gameplay_span_ctx.span_id))
+
+            # Create "players" parent span (collapsible group in Jaeger)
+            self._players_span = tracer.start_span(
+                "players",
+                context=self.gameplay_span_context,
+                attributes={"player_count": len(self.players)},
+            )
+            players_ctx = trace.set_span_in_context(self._players_span)
+
+            # Create "game_cycle" span for instrumentation (sounds, music tempo)
+            self._game_cycle_span = tracer.start_span(
+                "game_cycle",
+                context=self.gameplay_span_context,
+                attributes={"game.id": self.game_id},
+            )
+            self.game_cycle_context = trace.set_span_in_context(self._game_cycle_span)
+            # Publish the game_cycle span_id (#1325, UC-041 BR-004): the agent
+            # parents its in-game spans under game_cycle (UC-040 BR-013). An
+            # unsampled span has a zero id; publishing nothing keeps the agent on
+            # its gameplay_phase / game-root fallback.
+            game_cycle_span_ctx = self._game_cycle_span.get_span_context()
+            if game_cycle_span_ctx.span_id != 0:
+                self.on_game_cycle_open(trace.format_span_id(game_cycle_span_ctx.span_id))
+
+            # Create player lifecycle spans under "players" parent
+            self._create_player_spans(players_ctx)
+
+            # Open per-player countdown child spans
+            for player in self.players.values():
+                if player.span:
+                    ctx = trace.set_span_in_context(player.span)
+                    player._countdown_span = tracer.start_span(
+                        "countdown_phase",
+                        context=ctx,
+                        attributes={"player.serial": player.serial},
+                    )
+
+            # Run countdown (sounds go under game_cycle via _play_sound)
+            await self._countdown()
+
+            # Close per-player countdown spans
+            for player in self.players.values():
+                if player._countdown_span:
+                    player._countdown_span.end()
+                    player._countdown_span = None
+
+            # Ramp music volume up to game level after countdown
+            if self.audio_client:
+                try:
+                    from proto import audio_pb2
+
+                    await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=self.game_volume))
+                except Exception as e:
+                    logger.warning(f"Failed to set game volume: {e}")
+
+            # Drain buffered stream data and prime EMA filters
+            await self._warmup_ema()
+
+            # Start music loop as background task (uses game_cycle_context)
+            self.music_loop_task = asyncio.create_task(self._music_loop())
+
+            try:
+                await self._game_loop()
+            finally:
+                self._latch_game_outcome()
+                # Stop music loop
+                if self.music_loop_task:
+                    self.music_loop_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await self.music_loop_task
+
+                # Close all player spans, then grouping spans
+                self._close_all_player_spans()
+                self._close_grouping_spans()
+
     async def run(self):
         """
         Main entry point to run the game (Template Method).
@@ -2908,119 +3094,26 @@ class BaseGameMode(ABC):
                     with tracer.start_as_current_span(phase.name):
                         await phase.execute()
 
-                # Start gameplay stream before countdown (needed for countdown effects)
-                await self._start_gameplay_stream()
+                # Spoken instructions, when the host switched them on (UC-020 A5):
+                # the clip finishes before the music and the countdown start.
+                await self._play_instructions(init_span)
 
-                # Start game music BEFORE countdown at low volume.
-                # OGG decode happens during countdown, so music is ready instantly after.
-                await self._start_game_music(volume=self.countdown_music_volume)
+                # A force-end during the instructions skips the start: no stream,
+                # music, game_started or countdown; teardown records force_ended.
+                force_ended_before_start = not self.running
+                if not force_ended_before_start:
+                    # Start gameplay stream before countdown (needed for countdown effects)
+                    await self._start_gameplay_stream()
 
-            # Game starts
-            self.state = GameState.RUNNING
-            current_span = trace.get_current_span()
-            current_span.add_event(
-                "game.state_changed",
-                {
-                    "game.state": "RUNNING",
-                    "player.count": len(self.players),
-                    "game.id": self.game_id,
-                },
-            )
-            # Note: self.start_time is set in _game_loop when first data is received
-            await self.event_publisher(
-                GameEvent.GAME_STARTED,
-                {"game_id": self.game_id, "player_count": len(self.players)},
-            )
+                    # Start game music BEFORE countdown at low volume.
+                    # OGG decode happens during countdown, so music is ready instantly after.
+                    await self._start_game_music(volume=self.countdown_music_volume)
 
-            # Phase 2: Gameplay (player spans created before countdown)
-            with tracer.start_as_current_span("gameplay_phase") as gameplay_span:
-                # Store span reference and context for background tasks
-                self.gameplay_span = gameplay_span
-                self.gameplay_span_context = otel_context.get_current()
-
-                # Publish the gameplay_phase span_id to the trace-correlation gauge
-                # (#1195) so the agent re-parents its in-game decision chain under
-                # THIS span instead of the game root (#1187). gameplay_phase is the
-                # stable active-play window; a span_ctx with a zero/invalid span_id
-                # (unsampled) yields an empty hex id, which the session treats as a
-                # no-op so the agent keeps falling back to the game root span.
-                gameplay_span_ctx = gameplay_span.get_span_context()
-                if gameplay_span_ctx.span_id != 0:
-                    self.on_gameplay_phase_open(trace.format_span_id(gameplay_span_ctx.span_id))
-
-                # Create "players" parent span (collapsible group in Jaeger)
-                self._players_span = tracer.start_span(
-                    "players",
-                    context=self.gameplay_span_context,
-                    attributes={"player_count": len(self.players)},
-                )
-                players_ctx = trace.set_span_in_context(self._players_span)
-
-                # Create "game_cycle" span for instrumentation (sounds, music tempo)
-                self._game_cycle_span = tracer.start_span(
-                    "game_cycle",
-                    context=self.gameplay_span_context,
-                    attributes={"game.id": self.game_id},
-                )
-                self.game_cycle_context = trace.set_span_in_context(self._game_cycle_span)
-                # Publish the game_cycle span_id (#1325, UC-041 BR-004): the agent
-                # parents its in-game spans under game_cycle (UC-040 BR-013). An
-                # unsampled span has a zero id; publishing nothing keeps the agent on
-                # its gameplay_phase / game-root fallback.
-                game_cycle_span_ctx = self._game_cycle_span.get_span_context()
-                if game_cycle_span_ctx.span_id != 0:
-                    self.on_game_cycle_open(trace.format_span_id(game_cycle_span_ctx.span_id))
-
-                # Create player lifecycle spans under "players" parent
-                self._create_player_spans(players_ctx)
-
-                # Open per-player countdown child spans
-                for player in self.players.values():
-                    if player.span:
-                        ctx = trace.set_span_in_context(player.span)
-                        player._countdown_span = tracer.start_span(
-                            "countdown_phase",
-                            context=ctx,
-                            attributes={"player.serial": player.serial},
-                        )
-
-                # Run countdown (sounds go under game_cycle via _play_sound)
-                await self._countdown()
-
-                # Close per-player countdown spans
-                for player in self.players.values():
-                    if player._countdown_span:
-                        player._countdown_span.end()
-                        player._countdown_span = None
-
-                # Ramp music volume up to game level after countdown
-                if self.audio_client:
-                    try:
-                        from proto import audio_pb2
-
-                        await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=self.game_volume))
-                    except Exception as e:
-                        logger.warning(f"Failed to set game volume: {e}")
-
-                # Drain buffered stream data and prime EMA filters
-                await self._warmup_ema()
-
-                # Start music loop as background task (uses game_cycle_context)
-                self.music_loop_task = asyncio.create_task(self._music_loop())
-
-                try:
-                    await self._game_loop()
-                finally:
-                    self._latch_game_outcome()
-                    # Stop music loop
-                    if self.music_loop_task:
-                        self.music_loop_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await self.music_loop_task
-
-                    # Close all player spans, then grouping spans
-                    self._close_all_player_spans()
-                    self._close_grouping_spans()
+            if force_ended_before_start:
+                logger.info(f"{self.get_game_name()} force-ended before the start: {self.game_id}")
+                self._latch_game_outcome()
+            else:
+                await self._run_gameplay_phase()
 
             # Phase 3: Teardown
             with tracer.start_as_current_span("teardown_phase") as teardown_span:

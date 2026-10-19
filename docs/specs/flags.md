@@ -299,7 +299,7 @@ Venue preferences owned by the host: voice, audio on/off, volumes, the persisted
 | `menu_voice` | string | aaron="aaron", ivy="ivy" | `ivy` = "ivy" | N | menu: services/menu/servicer.py:336 (StartMenu); audio: services/audio/servicer.py:501 (startup) / :539 (change handler) | manual edit only | menu: per StartMenu; audio: event-refreshed |
 | `play_audio` | bool | on=true, off=false | `on` = true | N | audio: services/audio/servicer.py:483 (startup) / :536 (change handler) / `_read_play_audio_flag` (use time, `PlaySound` / `PlayMusic`, #1387) | manual edit only (ci = off) | event-refreshed and re-read at each `PlaySound` / `PlayMusic`; turning it on opens the audio hardware at runtime (UC-031 A1) |
 | `current_game` | string | JoustFFA="JoustFFA", JoustTeams="JoustTeams", JoustRandomTeams="JoustRandomTeams", Traitor="Traitor", Werewolf="Werewolf", Zombies="Zombies", Tournament="Tournament", FightClub="FightClub", Swapper="Swapper", NonStop="NonStop" | `JoustFFA` = "JoustFFA" | N | menu: services/menu/servicer.py:337 (StartMenu) | menu services/menu/servicer.py:217/467/489 update_default_variant (user_prefs_writer, :102) | per StartMenu |
-| `game_instructions` | bool | on=true, off=false | `on` = true | N | NONE (only the writer reads it: services/menu/handlers/admin.py:1071 get_current_variant) | menu admin services/menu/handlers/admin.py:1072 cycle_variant | n/a - NO READER FOUND |
+| `game_instructions` | bool | on=true, off=false | `off` = false (baseline; the host switches it on, #1550) | N | game-coordinator: services/game_coordinator/games/base.py `_instructions_enabled` (fails closed to off); menu admin reads the current variant to toggle it (services/menu/handlers/admin.py:1071) | menu admin services/menu/handlers/admin.py:1072 cycle_variant | use time (each game start, UC-020 A5) |
 | `agent_intervention_cue` | bool | on=true, off=false | `on` = true | N | game-coordinator: services/game_coordinator/interventions.py:1413 (_cue_enabled) | manual edit only (ci = off) | live (per intervention cue) |
 | `menu_auto_start` | bool | on=true, off=false | `on` = true | N | menu: services/menu/server.py:97 | manual edit only | startup |
 | `audio_volume.game` | float | quiet=0.5, default=0.7, loud=0.9 | `default` = 0.7 | N | game-coordinator: services/game_coordinator/games/base.py:887 (_read_volume_flag :257) | manual edit only | per-game (init-frozen) |
@@ -329,7 +329,6 @@ Telemetry export knobs for the Python services and rust-hid. Targeting keys on t
 
 | Flag set | Key | Finding |
 |---|---|---|
-| user | `game_instructions` | Only the menu admin toggle reads and writes it (`services/menu/handlers/admin.py:1071-1072`). No game or audio code evaluates it: toggling has no effect. |
 | agent | `code_improvement.engine` | Recorded on the proposer span only; the proposer / retro backend is selected by `AGENT_INFERENCE_BACKEND` (`services/agent/main.go:450-465`). |
 | agent | `fitness.*` (4 objective thresholds) | Live in the decision loop, but experiment fitness scoring uses static defaults (`services/agent/experiment_loop.go:1014,1196`). |
 
