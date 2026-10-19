@@ -55,6 +55,15 @@ class TimedAudio(RecordingAudio):
         return next(t for n, f, t in self.times if n == name and (not file_path or f == file_path))
 
 
+class FailingInstructionsAudio(TimedAudio):
+    """Timed audio stub whose PlaySound raises for the instruction clip (audio unreachable)."""
+
+    async def PlaySound(self, request):  # noqa: N802 - gRPC stub name
+        if request.file_path == INSTRUCTIONS:
+            raise ConnectionError("audio unreachable")
+        return await super().PlaySound(request)
+
+
 def _flag_client(value=None, error: Exception | None = None):
     """Autospec'd OpenFeature client whose boolean read returns ``value`` or raises ``error``."""
     client = create_autospec(OpenFeatureClient, instance=True)
@@ -196,6 +205,70 @@ class TestUC020InstructionsOn:
         event_attrs = span.add_event.call_args.args[1]
         assert event_attrs["instructions.duration_seconds"] == 60.0
 
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2, 3])
+    async def test_play_sound_failure_records_failed_and_does_not_wait(self):
+        """A5 step 3: PlaySound raising (audio unreachable) records failed, no played event, no wait."""
+        audio = FailingInstructionsAudio()
+        game, _ = _ffa(audio)
+        game.running = True
+        span = create_autospec(trace.Span, instance=True)
+        flag_patch, init_patch = _patch_flag(_flag_client(True))
+
+        started = time.monotonic()
+        with flag_patch, init_patch:
+            await game._play_instructions(span)
+
+        assert time.monotonic() - started < 0.1
+        span.set_attribute.assert_called_once_with("game.instructions", "failed")
+        span.add_event.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2, 4])
+    async def test_play_sound_failure_still_starts_the_game(self, fast_config):  # noqa: F811
+        """A5 step 4: a failed clip does not hold the game: it starts and ends normally."""
+        cm = RecordingControllerManager(num_controllers=3, death_schedule={1.0: 0, 1.6: 1}, max_duration=8.0)
+        audio = FailingInstructionsAudio()
+        game, events = _ffa(audio, cm=cm)
+        flag_patch, init_patch = _patch_flag(_flag_client(True))
+
+        with flag_patch, init_patch:
+            await asyncio.wait_for(game.run(), timeout=15.0)
+
+        assert GameEvent.GAME_STARTED in _event_types(events)
+        assert events.get_events_of_type(GameEvent.GAME_WINNER) == [{"serial": "mock_controller_2"}]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2], br=["BR-003"])
+    async def test_force_end_during_wait_skips_the_start(self, fast_config):  # noqa: F811
+        """A5 step 2: force-ended during the clip, the game never starts and ends once as force_ended."""
+        cm = RecordingControllerManager(num_controllers=3, infinite=True, max_duration=30.0)
+        audio = TimedAudio(clip_seconds=30.0)
+        game, events = _ffa(audio, cm=cm)
+        flag_patch, init_patch = _patch_flag(_flag_client(True))
+
+        with flag_patch, init_patch:
+            task = asyncio.create_task(game.run())
+            for _ in range(100):  # until the clip has been requested
+                if INSTRUCTIONS in audio.sounds():
+                    break
+                await asyncio.sleep(0.02)
+            game.force_end("admin_stop")
+            await asyncio.wait_for(task, timeout=3.0)
+
+        types = _event_types(events)
+        assert GameEvent.GAME_STARTED not in types
+        assert GameEvent.COUNTDOWN_START not in types
+        assert cm.stream is None  # no gameplay stream
+        assert not [name for name, _ in audio.calls if name == "PlayMusic"]
+        assert audio.sounds() == [INSTRUCTIONS]  # no countdown beeps
+        ended = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert len(ended) == 1
+        assert ended[0]["outcome"] == "force_ended"
+        assert ended[0]["reason"] == "admin_stop"
+        assert game.game_outcome() == "force_ended"
+        assert GameEvent.GAME_WINNER not in types
+
 
 class TestUC020InstructionsOff:
     """UC-020 A5 step 1: off, unreadable, shadow or no clip: nothing plays, no wait."""
@@ -281,3 +354,18 @@ class TestUC020InstructionsOff:
         assert game.get_instruction_clip() is None
         assert audio.calls == []
         span.set_attribute.assert_called_once_with("game.instructions", "no_clip")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[3])
+    async def test_no_audio_client_records_no_audio(self):
+        """A5 step 3: without an audio client nothing plays: game.instructions=no_audio, no wait."""
+        game, _ = _ffa(None)
+        game.running = True
+        span = create_autospec(trace.Span, instance=True)
+        flag_patch, init_patch = _patch_flag(_flag_client(True))
+
+        with flag_patch, init_patch:
+            await game._play_instructions(span)
+
+        span.set_attribute.assert_called_once_with("game.instructions", "no_audio")
+        span.add_event.assert_not_called()
