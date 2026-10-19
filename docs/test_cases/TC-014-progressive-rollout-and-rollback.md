@@ -6,6 +6,7 @@
 **Goal:** An operator rolls the controller backend out progressively to the `unstable` adapter, the agent expands the first stage, detects the degradation, rolls every controller back and holds off re-expansion for the cooldown; with remediation disabled it only recommends.  
 **Priority:** High  
 **Status:** Draft  
+Parked with UC-050 / UC-051 / UC-052 (2026-10-19): not scheduled for automation until they are un-parked.  
 **Use cases:** [UC-050](../use_cases/UC-050.md) main, A2; [UC-051](../use_cases/UC-051.md) main, A1; [UC-045](../use_cases/UC-045.md) A4; [UC-041](../use_cases/UC-041.md) A1
 
 ## Roles

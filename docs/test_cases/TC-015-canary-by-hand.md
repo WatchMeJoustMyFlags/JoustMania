@@ -6,6 +6,7 @@
 **Goal:** An operator routes half of the controllers to the python adapter (opt-in) on top of the rust baseline, watches the split on the Controllers & Bluetooth dashboard (uid `controller-overview`) and in Grafana Explore queries, and rolls back to the rust baseline.  
 **Priority:** Medium  
 **Status:** Draft  
+Parked with UC-050 / UC-051 / UC-052 (2026-10-19): not scheduled for automation until they are un-parked.  
 **Use cases:** [UC-052](../use_cases/UC-052.md) main; [UC-035](../use_cases/UC-035.md) main
 
 ## Roles
