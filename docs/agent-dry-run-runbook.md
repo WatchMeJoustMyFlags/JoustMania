@@ -19,7 +19,7 @@ make dry-run
 as in-memory `operator` overlays through the flag service (`scripts/flags.sh`) — the master `enabled` kill-switch **and** the
 `experiments_enabled` flag (the LIVE experiment gate post-#1044). The in-game
 decision backend is a separate flag (`decision.backend`, default `rules`); flip
-it with `./scripts/agent-backend.sh` (see [agent-inference.md](agent-inference.md)).
+it with `./scripts/agent-backend.sh` (see [decide-contract.md 10.1](specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer)).
 
 Restore the fail-closed defaults afterwards with
 `./scripts/agent-dryrun-enable.sh off` (clears both overlays). A flag-service
@@ -92,7 +92,7 @@ real-default change.
    run produces **no** proposals. To let shadow game ends trigger it, set
    `llm.eligible_game_kinds` to `real_and_shadow`, which also enables remote
    decide calls and retros for shadow games. Proposals also share the
-   `llm.max_requests_per_minute` budget (see `docs/agent-inference.md`).
+   `llm.max_requests_per_minute` budget (see `docs/specs/decide-contract.md` 10.1).
 
 3. **`code_improvement.*` promotion gates** — separate flags in the agent
    domain (`code_improvement.mode`, `.target`). These gate the **real-default

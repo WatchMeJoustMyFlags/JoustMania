@@ -182,6 +182,52 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - Pattern games (#1258, UC-046): the one-shot runner reads `SHADOW_GAME_ARCHETYPE` and `SHADOW_GAME_SEED`; for a pattern game the runner sends no `SimulateMovement` / `SimulateDeath` and force-ends the game at the pinned safety cap `experiment.max_game_seconds` (outcome `timeout`).
 - Decision backends: jev (main in-game backend, TypeSafe System One), claude (in-game backup by manual flip; also retro / proposer), openai-compatible, rules (automatic floor) (C-018). Contract: [decide-contract.md](decide-contract.md).
 
+**Environment variables** (code is the source: `services/agent/*.go`, `experiment/`, `promote/`, `gamerunner/`; "Compose" = passed through by `docker-compose.yml`, otherwise only settable by adding it to the service). Live gates are flags, not env: see [flags.md](flags.md).
+
+| Variable | Default | Compose | Purpose |
+|---|---|---|---|
+| `AGENT_LISTEN_ADDR` | `:4317` | yes | OTLP gRPC receiver listen address |
+| `AGENT_HEALTH_ADDR` | `:13134` | yes | HTTP health listen address |
+| `FLAGD_HOST` / `FLAGD_PORT` | `flagd` / `8013` | yes | flagd gRPC evaluation endpoint (RPC resolver) |
+| `FLAGD_OFREP_URL` | `http://$FLAGD_HOST:8016` | no | flagd OFREP endpoint for the pattern-game flag digest |
+| `FLAG_SERVICE_URL` | `http://flag-service:8070` | yes | flag service every agent writer calls (interventions, rollout, experiment arms, promotion) |
+| `LOG_LEVEL` | `info` | yes | log verbosity |
+| `OTEL_SERVICE_NAME` / `OTEL_SERVICE_NAMESPACE` | `agent` / `infrastructure` | yes | self-telemetry identity; the name also drives the self-ingestion skip |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_RESOURCE_ATTRIBUTES`, `SERVICE_VERSION`, `DEPLOYMENT_ENVIRONMENT` | unset / unset / `0.0.0-dev` / `development` | first, second, third | self-telemetry export (no-op without an endpoint) and resource attributes |
+| `AGENT_INFERENCE_BACKEND` | `stub` | yes | text backend for the retro and proposer: `claude` or the stub; not used for in-game decisions ([decide-contract.md](decide-contract.md) 10.1) |
+| `ANTHROPIC_API_KEY` | empty | yes | Claude key: text backend and the `claude` decision backend; without it that backend is unavailable |
+| `DECISION_OPENAI_API_KEY`, `JEV_API_KEY` | empty | yes | keys of the `openai` and `jev` decision backends, read once at startup |
+| `AGENT_INFERENCE_MODEL` | `claude-opus-5-5` | yes (empty = default) | model id of the `claude` text backend |
+| `AGENT_INFERENCE_EFFORT` | `medium` | yes (empty = default) | `output_config.effort` of the text backend (not sent to Haiku 4.5) |
+| `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | yes (empty = default) | per-call deadline of the text backend, also the retro deadline |
+| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | unset | yes | positive value replaces the `llm.max_requests_per_minute` flag |
+| `AGENT_PROBE_DECISIONS` | unset | yes | `true` emits a synthetic `noop` decision about every 5 s (demo and verification only) |
+| `AGENT_EFFECT_WINDOW_SECONDS` | `20` | no | intervention-effect follow-up window (float seconds, positive) |
+| `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | no | dwell between rollout expansions |
+| `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | yes | re-expansion cooldown after a rollback |
+| `AGENT_SHADOW_GAME` | unset | no | `true` runs one one-shot shadow game at startup; `SHADOW_GAME_MODE` (`JoustFFA`), `SHADOW_GAME_SENSITIVITY` (`2`, 0 to 4), `SHADOW_GAME_ARCHETYPE`, `SHADOW_GAME_SEED` tune it |
+| `GAME_COORDINATOR_ADDR`, `MOCK_CONTROLLER_ADDR` | `game-coordinator:50053`, `controller-manager:50062` | no | shadow-game runner endpoints |
+| `AGENT_EXPERIMENTS_ENABLED` | `false` | yes | opt-in for the experiment cohort loop |
+| `AGENT_EXPERIMENT_PROPOSER_ENABLED` | `false` | no | retro-seeded thesis proposer opt-in |
+| `AGENT_EXPERIMENT_TICK_SECONDS` | `30` | yes | registry allocate-and-spawn cadence |
+| `AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS` | `60` | no | grace before a completed shadow game with no end datapoint releases its slot (0 or less disables) |
+| `AGENT_EXPERIMENT_SEED_FLAG`, `_VALUE`, `_OBJECTIVE`, `_TARGET_N`, `_HYPOTHESIS` | unset (objective `balanced`) | yes | declare one env-seeded experiment at startup |
+| `AGENT_EXPERIMENT_DYNAMIC_ENABLED` | `false` | yes | heuristic dynamic declarer opt-in |
+| `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` | `3` | yes (empty = default) | cap on live dynamically declared experiments |
+| `AGENT_EXPERIMENT_DYNAMIC_CANDIDATES`, `_DENYLIST`, `_OBJECTIVE`, `_TARGET_N` | unset (built-in denylist, objective `balanced`, target 0) | first, second, fourth | candidate flag list, excluded flags, default objective, games per arm of dynamic experiments |
+| `AGENT_MAX_SHADOW_GAMES` | `20` | no | registry shadow-capacity cap |
+| `AGENT_SHADOW_EFFECTIVE_CONCURRENCY` | `4` | no | in-flight shadow spawns, clamped to the cap above |
+| `AGENT_EXPERIMENT_MAX_GAMES` | `50` | no | per-experiment games budget (0 or less disables) |
+| `AGENT_VERDICT_MIN_N` / `AGENT_VERDICT_MIN_PAIRS` | `8` / `5` | no | bootstrap defaults of the `verdict_min_n` / `verdict_min_pairs` flags |
+| `AGENT_FITNESS_STORE_CAPACITY` | `512` | no | finalized-fitness ring size |
+| `AGENT_EXPERIMENT_DIR` | `/var/lib/joustmania/agent/experiments` | no (volume `agent-experiments` mounted there) | experiment journal and autonomous-revert snapshot root |
+| `AGENT_CODE_IMPROVEMENT_ENABLED` | `false` | no | opt-in for real promotion clients (local git, GitHub) |
+| `AGENT_CODE_IMPROVEMENT_TARGET` | `local` | no | env target: `local` or `github` (the live flag must agree at dispatch) |
+| `AGENT_LOCAL_REPO_DIR` | unset | no | repo directory for the local target; unset = no-op |
+| `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_BASE_BRANCH`, `GITHUB_API_URL` | unset, unset, `main`, `https://api.github.com` | no | GitHub target (`owner/repo`); misconfiguration falls back to an inert no-op |
+| `AGENT_AUTONOMOUS_ENABLED` | `false` | no | opt-in for the autonomous real-default path (needs `AGENT_CODE_IMPROVEMENT_ENABLED`) |
+| `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS`, `_REWATCH_INTERVAL_SECONDS`, `_REWATCH_TIMEOUT_SECONDS` | `600`, `60`, `3600` | no | autonomous revert cooldown and live re-watch cadence and timeout |
+
 ### connect-proxy
 
 - No flagd client: `/canary/*` changes `bluetooth_backend` through the flag service (`FLAG_SERVICE_URL`, writer `connect-proxy`, #1420): a full rollout is a stack overlay, `?fraction=N` a fraction overlay (`scope.fraction_percent`, the rest of the serials resolve the default, for a canary the stable counterpart), rollback clears both overlays (every serial resolves the baseline default, `rust` since #1371); `/canary/status` returns the flag service's view. A canary that routes serials to python (`/canary/python`, or a fractional `/canary/rust`, whose rest is python) first reads the `backend` flag and is refused with 409 when it names no python, since the controller manager then has no python adapter and would silently keep those serials on rust (UC-052 A3, #1402). A refusal keeps its 4xx, the flag service unreachable is 502. The proxy mounts no flag file.

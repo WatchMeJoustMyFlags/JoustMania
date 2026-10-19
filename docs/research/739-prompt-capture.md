@@ -2,7 +2,7 @@
 
 > **Historical.** This note predates #1234, which removed the LiteLLM gateway,
 > the Ollama/Jetson inference tiers and the in-game `mode` / `model` /
-> `prompt_variant` path. Current state: [agent-inference.md](../agent-inference.md).
+> `prompt_variant` path. Current state: [decide-contract.md 10.1](../specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer).
 
 The agent does not call an LLM yet. This spike makes the agent build — and record
 on telemetry — the exact prompt it *would* send to a backend on every `llm`-mode

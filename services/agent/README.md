@@ -470,7 +470,7 @@ model**, applied in order:
    - `decision.backend` (string, default `rules`): `rules` runs the deterministic
      rules engine; `claude` / `openai` / `jev` hand the decision to that remote
      backend, with the rules engine as the fallback. See **Decision backends**
-     below and [docs/agent-inference.md](../../docs/agent-inference.md). The
+     below and [decide-contract.md 10.1](../../docs/specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer). The
      legacy `mode` / `model` / `prompt_variant` flags were removed in #1234.
 4. **Permission** (constrains which actions dispatch, and how fast) — applied to
    each candidate decision in this order, blocking with an attributed reason:
@@ -897,7 +897,7 @@ All configuration is via environment variables:
 | `LOG_LEVEL` | `info` | Log verbosity |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | set in compose | Self-telemetry export (decision audit traces → collector → Jaeger); no-op when unset |
 | `OTEL_SERVICE_NAME` | `agent` | Service identity; also drives the self-ingestion skip |
-| `AGENT_INFERENCE_BACKEND` | `stub` | Text backend for the post-game retro and the shadow-experiment proposer (#1234): `claude` calls the Anthropic API directly (needs `ANTHROPIC_API_KEY`, else stays on the stub); anything else is the stub. Not used for in-game decisions (`decision.backend`). Retros and the proposer call the model only for game kinds in `llm.eligible_game_kinds`, and both draw from the shared `llm.max_requests_per_minute` budget. The proposer runs only while `enabled` and `experiments_enabled` are both on (#1270). The `code_improvement.engine` flag is recorded on the propose span only and selects nothing. See [docs/agent-inference.md](../../docs/agent-inference.md) |
+| `AGENT_INFERENCE_BACKEND` | `stub` | Text backend for the post-game retro and the shadow-experiment proposer (#1234): `claude` calls the Anthropic API directly (needs `ANTHROPIC_API_KEY`, else stays on the stub); anything else is the stub. Not used for in-game decisions (`decision.backend`). Retros and the proposer call the model only for game kinds in `llm.eligible_game_kinds`, and both draw from the shared `llm.max_requests_per_minute` budget. The proposer runs only while `enabled` and `experiments_enabled` are both on (#1270). The `code_improvement.engine` flag is recorded on the propose span only and selects nothing. See [decide-contract.md 10.1](../../docs/specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer) |
 | `AGENT_INFERENCE_MODEL` | `claude-opus-5-5` | Model of the `claude` text backend |
 | `AGENT_INFERENCE_EFFORT` | `medium` | `output_config.effort` of the `claude` text backend (not sent to Claude Haiku 4.5) |
 | `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | Per-call deadline of the text backend, also the retro's deadline |
