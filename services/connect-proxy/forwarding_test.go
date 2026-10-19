@@ -174,6 +174,23 @@ type fakeController struct {
 	log     callLog
 	err     error
 	updates []*controllerpb.GameplayDataUpdate
+	buttons []*controllerpb.ButtonEvent
+}
+
+// StreamButtonEvents records the first control message, sends the canned
+// button events and then ends the stream from the backend side.
+func (f *fakeController) StreamButtonEvents(s grpc.BidiStreamingServer[controllerpb.ButtonEventStreamControl, controllerpb.ButtonEvent]) error {
+	first, err := s.Recv()
+	if err != nil {
+		return err
+	}
+	f.log.record("StreamButtonEvents", first)
+	for _, e := range f.buttons {
+		if err := s.Send(e); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // StreamGameplayData records the first control message, sends the canned
@@ -315,7 +332,10 @@ func testCtx(t *testing.T) context.Context {
 
 // assertBackendError checks that a backend gRPC status surfaces as a Connect
 // error. Every forwarder currently wraps it as CodeInternal (the original
-// gRPC code is only kept in the message text); this pins that behaviour.
+// gRPC code is only kept in the message text). CURRENT BEHAVIOUR, not a
+// contract: the gRPC code should map to the matching Connect code (e.g.
+// Unavailable, NotFound). No issue exists yet for this follow-up; a fix
+// will flip the CodeInternal assertions here and in TestProxyBackendUnreachable.
 func assertBackendError(t *testing.T, err error, backendDesc string) {
 	t.Helper()
 	if err == nil {
@@ -535,9 +555,9 @@ func TestProxyForceEndGame(t *testing.T) {
 	})
 }
 
-// UC: UC-035 MSS
+// Generic forwarding behaviour, no use-case step of its own.
 func TestProxyGameStateAndList(t *testing.T) {
-	t.Run("UC-035/MSS GetGameState forwards the game id", func(t *testing.T) {
+	t.Run("GetGameState forwards the game id", func(t *testing.T) {
 		rig := newProxyRig(t)
 		req := &gamepb.GetGameStateRequest{GameId: proto.String("game_live")}
 		resp, err := rig.gameClient.GetGameState(testCtx(t), connect.NewRequest(req))
@@ -551,7 +571,7 @@ func TestProxyGameStateAndList(t *testing.T) {
 		rig.otherBackendsUntouched(t, "game")
 	})
 
-	t.Run("UC-035/MSS ListGames returns every game", func(t *testing.T) {
+	t.Run("ListGames returns every game", func(t *testing.T) {
 		rig := newProxyRig(t)
 		resp, err := rig.gameClient.ListGames(testCtx(t), connect.NewRequest(&gamepb.ListGamesRequest{}))
 		if err != nil {
@@ -564,7 +584,7 @@ func TestProxyGameStateAndList(t *testing.T) {
 		rig.otherBackendsUntouched(t, "game")
 	})
 
-	t.Run("UC-035/MSS coordinator errors surface as Connect errors", func(t *testing.T) {
+	t.Run("coordinator errors surface as Connect errors", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.game.err = status.Error(codes.NotFound, "no such game")
 		_, err := rig.gameClient.GetGameState(testCtx(t), connect.NewRequest(&gamepb.GetGameStateRequest{}))
@@ -703,9 +723,9 @@ func TestProxyGetConnectedControllers(t *testing.T) {
 	})
 }
 
-// UC: UC-035 MSS
+// Generic forwarding behaviour, no use-case step of its own.
 func TestProxyBackendUnreachable(t *testing.T) {
-	t.Run("UC-035/MSS a backend that is not listening surfaces as a Connect error", func(t *testing.T) {
+	t.Run("a backend that is not listening surfaces as a Connect error", func(t *testing.T) {
 		// A connection to a closed bufconn listener fails at call time, as
 		// a stopped menu container would.
 		lis := bufconn.Listen(1 << 10)
@@ -732,12 +752,43 @@ func TestProxyBackendUnreachable(t *testing.T) {
 	})
 }
 
+// The menu's lobby stream; not a dashboard path, so no use-case step of its own.
+func TestProxyStreamButtonEvents(t *testing.T) {
+	// Same backend-ends pattern as TestProxyStreamGameplayData (#1543).
+	t.Run("button stream config reaches the controller manager and events are relayed", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.controller.buttons = []*controllerpb.ButtonEvent{{Serial: "AA:01", Timestamp: 1}, {Serial: "AA:02", Timestamp: 2}}
+		stream := rig.controllerClient.StreamButtonEvents(testCtx(t))
+		cfg := &controllerpb.ButtonEventStreamControl{Control: &controllerpb.ButtonEventStreamControl_Config{
+			Config: &controllerpb.ButtonEventStreamConfig{},
+		}}
+		if err := stream.Send(cfg); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		for i := range rig.controller.buttons {
+			msg, err := stream.Receive()
+			if err != nil {
+				t.Fatalf("Receive %d: %v", i, err)
+			}
+			eq(t, msg, rig.controller.buttons[i])
+		}
+		if _, err := stream.Receive(); !errors.Is(err, io.EOF) {
+			t.Errorf("after the backend ended: err = %v, want io.EOF", err)
+		}
+		eq(t, rig.controller.log.only(t, "StreamButtonEvents"), cfg)
+		rig.otherBackendsUntouched(t, "controller")
+		_ = stream.CloseRequest()
+		_ = stream.CloseResponse()
+	})
+}
+
 // UC: UC-035 MSS
 func TestProxyStreamGameplayData(t *testing.T) {
 	// The backend ends the stream here, not the client: when the client
 	// half-closes first, the proxy's bidi forwarder returns while its
 	// backend->client goroutine may still be sending, which the race
-	// detector flags inside main.go (reported on #1525, not fixed here).
+	// detector flags inside main.go (tracked in #1543, not fixed here). The client-half-close
+	// path is therefore not exercised by these tests.
 	t.Run("UC-035/MSS gameplay config reaches the controller manager and updates are relayed", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.controller.updates = []*controllerpb.GameplayDataUpdate{{Timestamp: 1}, {Timestamp: 2}}
@@ -819,4 +870,26 @@ func TestProxyDashboardWireFormat(t *testing.T) {
 		}
 		eq(t, rig.game.log.only(t, "ForceEndGame"), &gamepb.ForceEndGameRequest{Reason: "Dashboard stop button"})
 	})
+}
+
+// CURRENT BUGGY BEHAVIOUR (#1542): the dashboard's plain fetch POST with
+// Content-Type application/json is rejected by the streaming procedures with
+// 415 Unsupported Media Type (Connect streaming needs application/connect+json).
+// The fix for #1542 must flip these assertions to a success status.
+//
+// UC: UC-035 MSS
+func TestProxyDashboardStreamingJSON(t *testing.T) {
+	for _, path := range []string{
+		"/joustmania.game_coordinator.GameCoordinatorService/StreamGameEvents",
+		"/joustmania.controller_manager.ControllerManagerService/StreamGameplayData",
+	} {
+		t.Run("UC-035/MSS application/json POST to "+path+" is 415 (#1542)", func(t *testing.T) {
+			rig := newProxyRig(t)
+			resp, body := postJSON(t, rig, path, map[string]any{}, "")
+			if resp.StatusCode != http.StatusUnsupportedMediaType {
+				t.Errorf("status = %d (%s), want 415 (current behaviour, #1542)", resp.StatusCode, body)
+			}
+			rig.otherBackendsUntouched(t, "")
+		})
+	}
 }
