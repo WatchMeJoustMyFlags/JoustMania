@@ -13,8 +13,9 @@ assert it does not wrap (the #1340 regression, clamped since #1373).
 
 Stated gap (TC-006 step 5, S7 of #1422): the agent being blocked by the
 permission needs the agent composition. Steps 6 and 7 stay covered by
-tests/integration/test_intervention_flow.py. The LED pulse (800 ms) is not
-asserted: it is too short to read reliably through GetColor without a sleep.
+tests/integration/test_intervention_flow.py. No LED colour feedback is
+asserted (UC-013 step 4 colours, incl. the 800 ms red pulse, too short to read through
+GetColor without a sleep); only the voice is checked.
 
 The ladder writes the GLOBAL ``interventions_allowed``, so the test runs on
 ``fresh_stack``: a stack of its own, nothing leaks to another test.
@@ -89,7 +90,7 @@ async def _press_and_expect(stack, mock_client, host: str, button, expected: str
     stack.fake_audio.clear()
     await press_admin_button(mock_client, host, button)
     assert await async_poll_until(lambda: _persisted_admin_variant() == expected, timeout=PERSIST_TIMEOUT_SECONDS), (
-        f"after {button}: persisted {FLAG} is {_persisted_admin_variant()!r}, expected {expected!r}"
+        f"after {_Button.Name(button)}: persisted {FLAG} is {_persisted_admin_variant()!r}, expected {expected!r}"
     )
     assert _effective_variant() == expected
     voice = LEVEL_VOICE[expected]
@@ -110,7 +111,8 @@ async def _flagd_serves(stack, variant: str) -> bool:
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-012", flow="main", steps=[1, 2], tc="TC-006")
-@pytest.mark.uc("UC-013", flow="main", tc="TC-006")
+@pytest.mark.uc("UC-012", flow="A6", tc="TC-006")
+@pytest.mark.uc("UC-013", flow="main", steps=[1, 2, 3], tc="TC-006")
 @pytest.mark.uc("UC-013", flow="A1", tc="TC-006")
 @pytest.mark.uc("UC-053", flow="A2", tc="TC-006")
 @pytest.mark.usefixtures("flag_service")  # binds the flag-service client to this stack
