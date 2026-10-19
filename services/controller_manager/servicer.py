@@ -88,6 +88,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # Disconnects not yet delivered, per open game stream. A stream only gets
         # disconnects that happen while it is open (UC-002 BR-004, #1607).
         self._pending_disconnects: dict[str, list[str]] = {}
+        # Serials reported as disconnected; pruned once they are tracked again.
+        self._dropped_serials: set[str] = set()
 
         # Delta update tracking (Phase 26 - Part 3)
         # Store last sent state per subscriber per controller
@@ -717,21 +719,24 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         Disconnects queued before it opened belong to the streams open at the time
         (or to none), so they are handed out first. The new stream starts with the
-        roster controllers that are not connected now: a player who dropped before
-        the stream opened (instructions clip, stream reconnect) is still reported,
-        while one that dropped and reconnected before the game is not (#1607).
+        roster controllers that dropped and are not connected again: a player who
+        dropped before the stream opened (instructions clip, stream reconnect) is
+        still reported, one that dropped and reconnected before the game is not
+        (#1607), and one not discovered yet (a freshly added mock) is not either.
         A re-sent config keeps the stream's pending list.
         """
         self._collect_disconnects()
+        self._dropped_serials -= self.tracked_controllers.keys()
         self._game_stream_serials[subscriber_id] = set(serials)
-        missing = sorted(s for s in serials if s not in self.tracked_controllers)
-        self._pending_disconnects.setdefault(subscriber_id, missing)
+        gone = sorted(s for s in serials if s in self._dropped_serials)
+        self._pending_disconnects.setdefault(subscriber_id, gone)
 
     def _collect_disconnects(self) -> None:
         """Move queued disconnects to every open game stream; with none open they are dropped."""
         drained = self.discovery_loop.drain_disconnects()
         if not drained:
             return
+        self._dropped_serials.update(drained)
         for pending in self._pending_disconnects.values():
             pending.extend(drained)
 

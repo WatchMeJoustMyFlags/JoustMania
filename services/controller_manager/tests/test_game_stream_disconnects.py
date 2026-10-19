@@ -149,3 +149,14 @@ def test_a_resent_config_keeps_the_pending_disconnects(rig):  # noqa: F811
     servicer._open_game_stream("game", {SERIAL})
 
     assert _disconnects(servicer._build_gameplay_update({SERIAL}, "game")) == [SERIAL]
+
+
+@pytest.mark.uc("UC-002", flow="A1", br=["BR-004"])
+def test_a_roster_controller_not_discovered_yet_is_not_delivered(rig):  # noqa: F811
+    """A freshly added controller the discovery loop has not tracked yet is not a disconnect."""
+    servicer, _ = rig
+    del servicer.tracked_controllers[SERIAL]  # never seen, never dropped
+
+    servicer._open_game_stream("game", {SERIAL})
+
+    assert _disconnects(servicer._build_gameplay_update({SERIAL}, "game")) == []
