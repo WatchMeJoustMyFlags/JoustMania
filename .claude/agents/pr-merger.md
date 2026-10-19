@@ -44,7 +44,8 @@ missing or malformed, report `ESCALATE: bad brief` and stop.
    ```bash
    scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX> --rerun-failed-once --wait-queue [--close ... --comment-file ...] [--note-issue ... --note-file ...]
    ```
-   It polls gently for up to two hours, but a foreground Bash command is killed after 10 minutes. Start it
+   It polls gently for up to about 3 hours (up to 2 h for CI, then up to 1 h in the merge queue with
+   `--wait-queue`), but a foreground Bash command is killed after 10 minutes. Start it
    with the Bash tool's `run_in_background: true`, wait for the completion notification (do not poll, do
    not sleep), then read its output: the LAST stdout line is the result; keep the exit code. If it was
    killed or timed out without a result line, escalate (`safe-merge: killed`) and NEVER start it again.

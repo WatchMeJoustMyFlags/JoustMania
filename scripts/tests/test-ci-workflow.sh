@@ -50,15 +50,15 @@ for publish, build in (
     ("docker-build-extra-merge", "docker-build-extra"),
 ):
     cond = job_if(publish)
+    matrix = "docker_build_matrix" if build == "docker-build" else "docker_extra_matrix"
     check(build in jobs[publish]["needs"], f"{publish}: must need {build}")
+    # Exact: !cancelled(), publishing events only (never PRs or the merge
+    # queue), and the build's result == 'success' (#1509). No `|| always()`.
     check(
-        re.search(rf"needs\.{re.escape(build)}\.result == 'success'", cond) is not None,
-        f"{publish}: if must require needs.{build}.result == 'success' (#1509), got: {cond}",
-    )
-    check("!cancelled()" in cond, f"{publish}: if must keep !cancelled()")
-    check(
-        PUBLISH_EVENTS in cond,
-        f"{publish}: only push / workflow_dispatch publish (never PRs or the merge queue), got: {cond}",
+        cond
+        == f"!cancelled() && {PUBLISH_EVENTS} && needs.changes.outputs.{matrix} != '[]'"
+        f" && needs.{build}.result == 'success'",
+        f"{publish}: unexpected if: {cond}",
     )
 
 # 2. A skipped publish must not block retag-skipped or fail CI Complete:
@@ -74,10 +74,38 @@ for publish in ("docker-build-merge", "docker-build-extra-merge"):
         f"needs.{publish}.result == 'success'" not in retag,
         f"retag-skipped: must not require {publish} success (it skips when nothing was built)",
     )
-complete_steps = " ".join(str(s.get("run", "")) for s in jobs["ci-complete"]["steps"])
+# Exact: push only (never merge_group: the queue publishes nothing), and the
+# publish jobs block only on 'failure'.
+RETAG_IF = (
+    "!cancelled() && github.event_name == 'push' && needs.changes.outputs.retag_matrix != '[]'"
+    " && needs.integration-test.result == 'success'"
+    " && needs.docker-build.result != 'failure' && needs.docker-build-extra.result != 'failure'"
+    " && needs.docker-build-merge.result != 'failure' && needs.docker-build-extra-merge.result != 'failure'"
+)
+check(retag == RETAG_IF, f"retag-skipped: unexpected if: {retag}")
+
+# CI Complete's check step: fails on failure OR cancelled, exits 1, nothing
+# softens it (`|| true`, success(), always(), a 'skipped' check).
+complete_runs = [str(s.get("run", "")) for s in jobs["ci-complete"]["steps"] if s.get("run")]
+check(len(complete_runs) == 1, "ci-complete: exactly one run step")
+lines = [ln.strip() for ln in (complete_runs[0] if complete_runs else "").splitlines() if ln.strip()]
+for required in (
+    "FAILED=\"${{ contains(needs.*.result, 'failure') }}\"",
+    "CANCELLED=\"${{ contains(needs.*.result, 'cancelled') }}\"",
+    'if [[ "$FAILED" == "true" || "$CANCELLED" == "true" ]]; then',
+    "exit 1",
+):
+    check(required in lines, f"ci-complete: step must contain the line: {required}")
+if "exit 1" in lines and lines[0].startswith("FAILED="):
+    if_at = next((i for i, ln in enumerate(lines) if ln.startswith("if ")), -1)
+    fi_at = lines.index("fi") if "fi" in lines else -1
+    check(if_at < lines.index("exit 1") < fi_at, "ci-complete: exit 1 must sit inside the failure branch")
+body = " ".join(lines)
+for banned in ("'skipped'", "success()", "always()"):
+    check(banned not in body, f"ci-complete: step must not use {banned}")
 check(
-    "'failure'" in complete_steps and "'cancelled'" in complete_steps and "'skipped'" not in complete_steps,
-    "ci-complete: must fail only on failure/cancelled results",
+    not any(ln.startswith(("FAILED=", "CANCELLED=", "if ", "exit")) and "|| true" in ln for ln in lines),
+    "ci-complete: failure detection must not be softened with || true",
 )
 
 # 3. (#1555) Merge queue.
@@ -121,17 +149,36 @@ check(
 
 # Every job CI Complete needs runs in the queue when its check runs on a main
 # push; SonarCloud (informational) and the publishing jobs are the exceptions.
-check(job_if("ci-complete") == "${{ !cancelled() }}", "ci-complete: must run on every event, merge_group included")
-for name in ("integration-test", "service-tests"):
-    check("run_all_checks == 'true'" in job_if(name), f"{name}: must run on run_all_checks (queue runs)")
+check(job_if("ci-complete") == "${{ !cancelled() }}", "ci-complete: if must be exactly ${{ !cancelled() }}")
+check(
+    job_if("sonarcloud").startswith(
+        "!cancelled() && !contains(needs.*.result, 'failure') && github.event_name != 'merge_group' && "
+    ),
+    f"sonarcloud: must skip in the merge queue: {job_if('sonarcloud')}",
+)
+# Every other job CI Complete needs is gated ONLY by `changes` outputs: an OR of
+# `needs.changes.outputs.X == 'true'` terms that includes run_all_checks, or a
+# non-empty matrix (the matrices are full on run_all_checks). No event_name
+# restriction, no always()/success()/true, no &&.
+EXEMPT = {"changes", "sonarcloud", "docker-build-merge", "docker-build-extra-merge", "retag-skipped"}
+MATRIX_GATED = {"service-checks", "docker-build", "docker-build-extra"}
+TERM = re.compile(r"needs\.changes\.outputs\.\w+ == 'true'")
+RUN_ALL = "needs.changes.outputs.run_all_checks == 'true'"
 for name in jobs["ci-complete"]["needs"]:
+    if name in EXEMPT:
+        continue
     cond = job_if(name)
-    if name == "sonarcloud":
-        check("github.event_name != 'merge_group'" in cond, "sonarcloud: must skip in the merge queue")
+    check("github.event_name" not in cond, f"{name}: must not restrict github.event_name: {cond}")
+    if name in MATRIX_GATED:
+        check(
+            re.fullmatch(r"needs\.changes\.outputs\.\w+_matrix != '\[\]'", cond) is not None,
+            f"{name}: if must be exactly a non-empty-matrix gate: {cond}",
+        )
         continue
-    if name in ("docker-build-merge", "docker-build-extra-merge", "retag-skipped"):
-        continue
-    check("merge_group" not in cond, f"{name}: must not exclude merge_group: {cond}")
+    terms = cond.split(" || ")
+    check(all(TERM.fullmatch(t) for t in terms), f"{name}: if must be an OR of changes outputs only: {cond}")
+    check(RUN_ALL in terms, f"{name}: must run on run_all_checks (queue and main runs): {cond}")
+check(not job_if("changes"), "changes: must run unconditionally")
 
 # Image builds in the queue: amd64 only, push nothing (only push / dispatch publish).
 for build in ("docker-build", "docker-build-extra"):
@@ -146,7 +193,6 @@ for build in ("docker-build", "docker-build-extra"):
                 step.get("if") == "github.event_name == 'push' || github.event_name == 'workflow_dispatch'",
                 f"{build}/{step.get('name')}: only on publishing events",
             )
-check("github.event_name == 'push'" in job_if("retag-skipped"), "retag-skipped: push only")
 
 if failures:
     for f in failures:
