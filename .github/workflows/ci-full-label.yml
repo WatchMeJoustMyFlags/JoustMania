@@ -1,0 +1,80 @@
+name: ci-full label
+
+# #1527: ci.yml does not trigger on `labeled`. GitHub takes required checks from
+# the NEWEST run of a workflow on the head SHA, so every label-only CI run (which
+# tests nothing and has no "CI Complete") left the PR BLOCKED. Only `ci-full`
+# needs CI when a label is added: this workflow re-runs the PR's latest real CI
+# run in place (same run, same check suite). That run's `changes` job reads the
+# labels live, so the re-run builds all images and runs all checks, and its
+# "CI Complete" lands on the head SHA as the newest CI result. A label never
+# posts a "CI Complete" for code it did not test.
+#
+# Fork PRs get a read-only token here, so they push a commit after adding the
+# label instead (docs/CONTRIBUTING.md).
+
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  rerun-full:
+    name: Re-run CI in full mode
+    if: github.event.label.name == 'ci-full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: write        # re-run the CI run
+      pull-requests: read   # re-check the PR head before re-running
+    concurrency:
+      group: ci-full-label-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Re-run the latest CI run of the PR head in full mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # This run was created after the label was added.
+          label_time=$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID" --jq .created_at)
+          run_id=""
+          # The PR's own CI run may still be being created (PR opened with the label).
+          for _ in $(seq 1 12); do
+            run_id=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --event pull_request \
+                       --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            [ -n "$run_id" ] && break
+            sleep 10
+          done
+          if [ -z "$run_id" ]; then
+            echo "::warning::No CI run for $HEAD_SHA; the next push runs CI with ci-full."
+            exit 0
+          fi
+          status=$(gh run view "$run_id" --json status --jq .status)
+          if [ "$status" != "completed" ]; then
+            # A run whose `changes` job started after the label read it live: already full.
+            started=$(gh run view "$run_id" --json jobs \
+                        --jq '.jobs[] | select(.name == "Detect changes") | .startedAt // empty' | head -n1)
+            if [ -n "$started" ] && [[ ! "$started" < "$label_time" ]]; then
+              echo "CI run $run_id started its change detection after the label: already full."
+              exit 0
+            fi
+            # A run can only be re-run once it has finished.
+            echo "CI run $run_id is $status and predates the label; waiting for it to finish"
+            while [ "$(gh run view "$run_id" --json status --jq .status)" != "completed" ]; do
+              sleep 30
+            done
+          fi
+          # A newer push has its own run, which reads the label itself. Re-running
+          # the old head's run would cancel it (same concurrency group).
+          head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha)
+          if [ "$head" != "$HEAD_SHA" ]; then
+            echo "PR head moved to $head; its own CI run reads the ci-full label."
+            exit 0
+          fi
+          echo "Re-running CI run $run_id in full mode"
+          gh run rerun "$run_id"

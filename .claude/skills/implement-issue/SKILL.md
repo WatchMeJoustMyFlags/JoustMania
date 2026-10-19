@@ -55,7 +55,7 @@ The brief gives you the issue, scope and decisions. Everything else is here: do 
    ```bash
    git push -u origin HEAD
    gh pr create --base main --title "<conventional title> (#N)" --body-file <scratchpad>/<N>-body.md
-   gh pr edit <PR> --add-label <labels>     # never `gh pr create --label` (duplicate CI run)
+   gh pr edit <PR> --add-label <labels>     # labels start no CI run (#1527); `ci-full` re-runs it in full
    ```
    Body follows `.github/PULL_REQUEST_TEMPLATE.md`: Summary, `Spec changes:`, Changes, Test Plan,
    `Part of #N` (never `closes`/`fixes`), last line `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.

@@ -1,8 +1,8 @@
 name: Spec label re-run
 
 # #1263: adding or removing the `no-spec-change` (or `spec-baseline-growth`)
-# label must flip the Spec Gate without a new push. ci.yml deliberately ignores non-`ci-full` label events
-# (#1086: no redundant heavy runs), so this workflow re-runs only the Spec Gate
+# label must flip the Spec Gate without a new push. ci.yml does not trigger on label events
+# (#1527: a newer label-only CI run would hide "CI Complete" and block the PR), so this workflow re-runs only the Spec Gate
 # job of the latest real CI run for the PR head; GitHub re-runs its dependents
 # (CI Complete) with it, which updates the required status. The Spec Gate step
 # reads the labels live from the API, so the re-run sees the change. Fork PRs
@@ -31,7 +31,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          # Newest first; skip the label-event runs whose Spec Gate was skipped.
+          # Newest first; skip runs whose Spec Gate was skipped (label-event runs from before #1527).
           for run_id in $(gh run list --workflow ci.yml --commit "$HEAD_SHA" --event pull_request \
                             --limit 20 --json databaseId --jq '.[].databaseId'); do
             job=$(gh run view "$run_id" --json jobs \

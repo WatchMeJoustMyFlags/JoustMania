@@ -205,10 +205,20 @@ The `Spec Gate` job in `ci.yml` (#1263, required through `CI Complete`) has two 
    `agent/experiment-*` in this repository, title `Flag experiment: ...`).
 
 Adding or removing `no-spec-change` or `spec-baseline-growth` re-runs the Spec Gate
-automatically (`spec-label-rerun.yml`). Label events run in their own concurrency
-group, so they never cancel a CI run in progress. On a **fork PR** the re-run
-workflow has no permission to re-run jobs: push a commit (an empty one is fine)
-after adding the label instead.
+automatically (`spec-label-rerun.yml`).
+
+**Labels and CI (#1527).** Adding or removing a label never starts a `CI` run.
+GitHub takes the required `CI Complete` check from the newest run of the `CI`
+workflow on the head SHA, so a label-only run, which tests nothing, would block
+the PR. Labels can be added at any time after `gh pr create`. The one label that
+changes CI is `ci-full` (build every image, run every check). Adding it later
+re-runs the PR's latest CI run in place through `ci-full-label.yml`. That run
+reads the labels live, so the re-run is a full one, and its `CI Complete` is the
+one that counts. If the run is still in progress and started before the label,
+the workflow waits for it to finish and then re-runs it.
+
+On a **fork PR** neither label workflow has permission to re-run jobs: push a
+commit (an empty one is fine) after adding the label instead.
 
 ### Traceability IDs
 
