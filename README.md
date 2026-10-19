@@ -8,7 +8,7 @@
   <a href="https://github.com/WatchMeJoustMyFlags/JoustMania/actions/workflows/ci.yml"><img src="https://github.com/WatchMeJoustMyFlags/JoustMania/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://sonarcloud.io/summary/new_code?id=WatchMeJoustMyFlags_JoustMania"><img src="https://sonarcloud.io/api/project_badges/measure?project=WatchMeJoustMyFlags_JoustMania&metric=alert_status" alt="Quality Gate Status"></a>
   <a href="https://sonarcloud.io/summary/new_code?id=WatchMeJoustMyFlags_JoustMania"><img src="https://sonarcloud.io/api/project_badges/measure?project=WatchMeJoustMyFlags_JoustMania&metric=coverage" alt="Coverage"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.14-blue.svg" alt="Python 3.14"></a>
 </p>
 
 **Microservices-based motion gaming platform for PlayStation Move controllers.**
@@ -130,7 +130,7 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 
 ## Technology Stack
 
-- **Language:** Python 3.11+
+- **Language:** Python 3.14
 - **Communication:** gRPC with Protocol Buffers
 - **Observability:** OpenTelemetry, Jaeger, VictoriaMetrics, Loki, Grafana
 - **Infrastructure:** Docker, Docker Compose
