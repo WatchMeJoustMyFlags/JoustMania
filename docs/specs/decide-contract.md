@@ -397,9 +397,9 @@ call already in flight for that game (`decide_hook.go:decideRemote`), and an emp
 allow-list (`no_interventions_allowed`, §7.1).
 
 Order of checks on the remote path (`decide_hook.go:decideRemote`, `gateRemoteDecide`): in-flight claim →
-resolve backend (unknown / unavailable) → async wired → admission seam
-(`remoteDecideAdmitted`, always true on `main`) → eligibility → allow-list not empty →
-cadence → budget → fire.
+resolve backend (unknown / unavailable) → async wired → eligibility → allow-list not empty →
+cadence → budget → fire. There is no separate admission gate: the always-true
+`remoteDecideAdmitted` seam was removed in the #1322 cleanup.
 
 ### 7.1 Call gate: no interventions allowed (#1298)
 
@@ -452,9 +452,9 @@ the kill switch `enabled` and the shared LLM budget (NFR-011).
 where the LLM was a length-gated async upgrade
 (`expected_seconds = players × llm.seconds_per_player × llm.style_factor`). PR #1252 (the change for issue
 #1234, which removed the LiteLLM gateway and the legacy in-game LLM path) removed it from the code; none of
-those flags exist on `main`. `remoteDecideAdmitted` is always true **by design** (#1231, comment updated in
-PR #1257): the cadence, the global budget and the per-game in-flight guard are the gates
-(`decide_hook.go:remoteDecideAdmitted`).
+those flags exist on `main`. There is no game-length admission gate **by design** (#1231): the cadence,
+the global budget and the per-game in-flight guard are the gates (`decide_hook.go:gateRemoteDecide`). The
+always-true `remoteDecideAdmitted` seam that stood in for the length gate was removed in the #1322 cleanup.
 
 ### 8.1 Measured latencies (cited)
 
