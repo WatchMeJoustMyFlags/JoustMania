@@ -1,9 +1,9 @@
-# Agent Trace Visualization for Stage / Demo Visibility
+# Agent Trace Visualization for Stage Visibility
 
 The agent's trace **is** the audit log. During the talk it stays on screen so the
 audience can watch the agent observe, decide, and act in real time. This guide
 makes that trace legible from a projector: it explains the decision-span
-hierarchy, ships pre-built Jaeger deep links for each demo act, and lists
+hierarchy, ships pre-built Jaeger deep links for each stage act, and lists
 stage-display tuning tips.
 
 > Scope: this is a **docs + saved-query** guide. It does not change any span or
@@ -19,8 +19,8 @@ stage-display tuning tips.
   live performance tooling.
 - [services/agent/README.md → Span schema (#724)](../services/agent/README.md#span-schema-724--the-trace-is-the-audit-log)
   — the authoritative span/attribute schema this guide visualizes.
-- The #745 demo runbook (`docs/agent-demo-runbook.md`, authored separately) — the
-  act-by-act stage script; this guide supplies the Jaeger views it points at.
+- [talk/two-standards-runbook.md](talk/two-standards-runbook.md) — the stage
+  script; this guide supplies the Jaeger views it points at.
 
 **Jaeger base URL:** `http://localhost/jaeger/` (behind Envoy on host port 80;
 port 8080 is not published to the host).
@@ -33,12 +33,15 @@ Every triggering OTLP Export from a watched game produces **one trace** with a
 three-span spine. Verified live (trace `4f0a8448…`):
 
 ```
-agent.signal_received          entry — "a signal arrived, the agent woke up"
+agent.signal_received          remote child of the game's game_cycle span — "a signal arrived, the agent woke up"
   └─ agent.decision            child — "the agent thought; here is the verdict"
        └─ agent.action         child — "the agent did (or was blocked from doing) it"
 ```
 
-Read top-to-bottom on the projector it is a sentence: **signal → decision →
+`agent.signal_received` is the root of the agent's own spine, but not of the
+trace: it is a remote child of the coordinator's `game_cycle` span (fallback
+order `gameplay_phase`, the game root, else its own root; #1325, see
+[telemetry.md](specs/telemetry.md)). Read top-to-bottom on the projector it is a sentence: **signal → decision →
 action**. A blocked decision still emits `signal_received → decision`; the
 `action` span records the block reason rather than a real effect.
 
@@ -79,7 +82,7 @@ agent storyline for a single game (act (d)).
 
 ---
 
-## 2. Pre-built Jaeger deep links / saved queries per demo act
+## 2. Pre-built Jaeger deep links / saved queries per stage act
 
 Each act below gives a click-ready URL **and** the manual field values (service /
 operation / tags) in case the bookmark is stale or you need to retype on stage.
@@ -114,7 +117,7 @@ Manual: **Service** `agent` · **Operation** `agent.infrastructure.decision`.
 **NOT yet populated on this stack** (live query returned 0 results, and the op
 does not currently appear in `/api/operations?service=agent`). This is the
 infrastructure-agent decision path; it needs a **live infra-agent run** during
-the demo (or a dry-run that exercises remediation) before the operation shows up
+the talk (or a dry-run that exercises remediation) before the operation shows up
 in the dropdown. Until then, the operation field will be empty — keep this as the
 "run it live" act rather than a pre-canned trace. *(See the noted follow-up in
 §4.)*
@@ -177,9 +180,9 @@ remediation.
 
 ### Bonus — interventions that actually *dispatched* (post-#1127)
 
-Once `interventions_allowed` is set to a permitting variant (the demo uses
-`shadow_experimental` — see
-[demo runbook → Act 2b](agent-demo-runbook.md#act-2b--interventions-applying-not-just-blocked)),
+Once `interventions_allowed` is set to a permitting variant such as
+`shadow_experimental` (the stage baseline sets `standard`) — see
+[act runbook → intervention ladder](agent-act-runbook.md#step-3--open-the-permission-surface),
 decisions stop blocking `not_allowed` and **dispatch**. The dispatched ones are
 the `agent.action` spans **without** `decision.blocked=true`. Filter for the
 applied side directly:
@@ -290,7 +293,7 @@ as follow-ups for the span-schema owners.
 3. **`agent.infrastructure.decision` not emitted** — the operation does not
    appear in live Jaeger (`/api/operations?service=agent`) and act (b) returns
    no traces without a live infra-agent run. Confirm the infra path emits this
-   span under the demo's infra scenario, or the act (b) bookmark will show an
+   span under an infra scenario, or the act (b) bookmark will show an
    empty operation dropdown. *Operational/verification follow-up.*
 
 ---
@@ -299,7 +302,7 @@ as follow-ups for the span-schema owners.
 
 - **Hierarchy** (`signal_received → decision → action`): verified against live
   trace `4f0a8448…`.
-- **Demo-act queries**: validated live except where explicitly flagged — (a) ✓,
+- **Stage-act queries**: validated live except where explicitly flagged — (a) ✓,
   (b) ✗ not yet emitted (needs live infra run), (c) ✓ (10), (d) ✓ (4), (e) ✓
   (20), action bonus ✓ (10), code-improvement bonus ✓ (5).
 - **Attribute names/values**: read from real span data, not assumed.
