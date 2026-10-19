@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/promote"
 )
@@ -129,6 +130,42 @@ func TestOnGameEnd_StaleEndExcludedFromExperiments(t *testing.T) {
 		}
 	})
 
+	t.Run("UC-041/A4 stale-ended experiment game: released as stale and refilled", func(t *testing.T) {
+		spawner := &recordingSpawner{}
+		resolve := func(context.Context) promote.Config {
+			return promote.Config{Mode: promote.ModeIssue, Target: promote.TargetLocal, Enabled: true}
+		}
+		loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+		id, err := loop.registry.Declare(experiment.Intent{
+			FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		})
+		if err != nil {
+			t.Fatalf("declare: %v", err)
+		}
+		if err := loop.registry.Start(context.Background(), id); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		loop.registry.AllocateAndSpawn(context.Background())
+		rec := spawner.drain()
+		if len(rec) == 0 {
+			t.Fatal("expected a spawned game")
+		}
+		if loop.registry.AllocateAndSpawn(context.Background()) != 0 {
+			t.Fatal("precondition: every slot should be in flight before the stale end")
+		}
+
+		stale := gcFor(rec[0].gameID, rec[0].experimentID, rec[0].arm)
+		stale.EndReason = gamecontext.EndReasonStale
+		loop.onGameEnd(stale)
+
+		if note := staleReleaseNote(loop, id, rec[0].gameID); note != experiment.ReleaseReasonStale {
+			t.Fatalf("release note = %q, want %q (BR-015: a stale rerun must not use up the budget)", note, experiment.ReleaseReasonStale)
+		}
+		if refill := spawner.drain(); len(refill) == 0 {
+			t.Fatal("the freed slot was not refilled after the stale end")
+		}
+	})
+
 	t.Run("UC-041/A4 stale-ended real game never seeds the recent-real baseline", func(t *testing.T) {
 		store := experiment.NewFitnessStore(0)
 		loop := loopWithStore(store)
@@ -202,6 +239,17 @@ func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// staleReleaseNote returns the game_released note of gameID, or "" when none.
+func staleReleaseNote(loop *experimentLoop, id, gameID string) string {
+	cv, _ := loop.registry.CompactView(id)
+	for _, ev := range cv.RecentTail {
+		if ev.GameID == gameID && ev.Kind == journal.KindGameReleased {
+			return ev.Note
+		}
+	}
+	return ""
 }
 
 // metricnoopProvider is a meter provider that records nothing.

@@ -892,7 +892,7 @@ func (e *experimentLoop) releaseStaleGame(gc gamecontext.GameContext) {
 	if gc.ExperimentID == "" || e.registry == nil {
 		return
 	}
-	if e.registry.ReleaseGame(gc.SessionID, gamecontext.EndReasonStale) {
+	if e.registry.ReleaseGame(gc.SessionID, experiment.ReleaseReasonStale) {
 		e.allocateIfEnabled(context.Background())
 	}
 }

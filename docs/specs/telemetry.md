@@ -390,7 +390,8 @@ parameter objects, parameter digests, safety cap and a note when the cap fell ba
 `censored`, elimination order and its source, winner slot, signal hashes, checkpoints, replay classification, decision
 sequence) per pattern game, and a `pattern_pair_rerun` / `pattern_archetype_skipped` decision note when a pair runs
 again or an archetype is skipped (UC-046 BR-015); a rerun after a real game preempted the pair
-(`preempted_by_real_game`) is noted as `pattern_pair_rerun_preempted` instead and does not use up the 3-rerun budget.
+(`preempted_by_real_game`) is noted as `pattern_pair_rerun_preempted` instead, and one after a stale end (UC-041 A4) as
+`pattern_pair_rerun_stale`; neither uses up the 3-rerun budget.
 The experiment's conclusion (`outcome` event) reports the timeout count and rate per arm and whether one arm timed out
 clearly more often (UC-046 BR-013), followed by the `agent_ended` count and rate per arm when any game ended that way;
 both rates are over the arm's pattern games that ended with a sample (`winner`, `tie`, `timeout`, `agent_ended`).
