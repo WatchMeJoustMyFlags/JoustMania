@@ -101,7 +101,7 @@ Controllers receive LED feedback based on their state and the selected game mode
 
 | State | LED Behavior | Transition |
 |-------|--------------|------------|
-| Connected (not ready) | Dim game color (15-50% based on battery) | Trigger → Ready |
+| Connected (not ready) | Dim game color (fixed 30%, `DIM_FACTOR`) | Trigger → Ready |
 | Ready | Bright game color (100% brightness) | Move → Connected |
 | Admin Mode | White (see full reference for details) | PS or timeout → Connected |
 
@@ -193,23 +193,13 @@ flowchart TD
 
     subgraph ControllerState["Controller LED States"]
         direction TB
-        CS_Connected["Connected (not ready)<br/>Dim color (15-50%)<br/>Based on battery level"]
+        CS_Connected["Connected (not ready)<br/>Dim color (fixed 30%)"]
         CS_Ready["Ready (trigger pressed)<br/>Full brightness (100%)"]
         CS_Admin["Admin Mode<br/>⚪ White (255,255,255)"]
     end
 
-    subgraph BatteryDim["Battery → Dim Factor"]
-        B5["Battery 5 (100%) → 50%"]
-        B4["Battery 4 (80%) → 45%"]
-        B3["Battery 3 (60%) → 40%"]
-        B2["Battery 2 (40%) → 30%"]
-        B1["Battery 1 (20%) → 20%"]
-        B0["Battery 0 (critical) → 15%"]
-    end
-
     GameModes --> CS_Connected
     GameModes --> CS_Ready
-    BatteryDim --> CS_Connected
 ```
 
 ### Lobby Decision Flow

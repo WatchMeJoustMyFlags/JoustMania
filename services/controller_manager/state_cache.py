@@ -117,13 +117,13 @@ class StateCache:
                 f"{state_dict.get(ButtonKey.PS, False)}|"
                 f"{accel.get(AxisKey.X, 0):.2f},{accel.get(AxisKey.Y, 0):.2f},{accel.get(AxisKey.Z, 0):.2f}|"
                 f"{gyro.get(AxisKey.X, 0):.2f},{gyro.get(AxisKey.Y, 0):.2f},{gyro.get(AxisKey.Z, 0):.2f}|"
-                f"{info.get(ControllerInfoKey.TEAM, 0)}|{led}"
+                f"{info.get(ControllerInfoKey.TEAM, 0)}|{led}|{info.get(ControllerInfoKey.NAME, '')}"
             )
 
         # No state available, return hash based on info only
         battery = info.get(ControllerInfoKey.BATTERY, 0)
         team = info.get(ControllerInfoKey.TEAM, 0)
-        return f"{battery}|{team}|{led}"
+        return f"{battery}|{team}|{led}|{info.get(ControllerInfoKey.NAME, '')}"
 
     def build_or_get_cached_state(self, serial: str, info: dict) -> controller_manager_pb2.ControllerState:
         """
