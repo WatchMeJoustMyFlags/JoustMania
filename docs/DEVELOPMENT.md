@@ -26,7 +26,7 @@
 - **Docker** (20.10+)
 - **Docker Compose** (v2.0+)
 - **Git**
-- **Python** 3.11+ (for local development)
+- **Python** 3.14 (for local development)
 - **grpcurl** (for API testing)
 
 ### Optional Software
@@ -220,13 +220,13 @@ Services use multi-stage Docker builds:
 
 ```dockerfile
 # Stage 1: Build dependencies
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 RUN pip install uv
 COPY pyproject.toml .
 RUN uv sync
 
 # Stage 2: Runtime
-FROM python:3.11-slim
+FROM python:3.14-slim
 COPY --from=builder /app/.venv /app/.venv
 COPY . .
 CMD ["python", "server.py"]
@@ -630,13 +630,13 @@ if __name__ == '__main__':
 5. **Create Dockerfile**
 
 ```dockerfile
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 RUN pip install --no-cache-dir uv
 WORKDIR /app
 COPY pyproject.toml .
 RUN uv sync --frozen
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY . .

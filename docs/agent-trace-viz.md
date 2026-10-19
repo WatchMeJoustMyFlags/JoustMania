@@ -33,7 +33,7 @@ Every triggering OTLP Export from a watched game produces **one trace** with a
 three-span spine. Verified live (trace `4f0a8448…`):
 
 ```
-agent.signal_received          ROOT  — "a signal arrived, the agent woke up"
+agent.signal_received          entry — "a signal arrived, the agent woke up"
   └─ agent.decision            child — "the agent thought; here is the verdict"
        └─ agent.action         child — "the agent did (or was blocked from doing) it"
 ```
@@ -42,7 +42,7 @@ Read top-to-bottom on the projector it is a sentence: **signal → decision →
 action**. A blocked decision still emits `signal_received → decision`; the
 `action` span records the block reason rather than a real effect.
 
-`agent.signal_received` is the single root span for both trigger kinds (an OTLP
+`agent.signal_received` is the single entry span (a SERVER remote child of the game's `game_cycle`, falling back to `gameplay_phase`, the game root, else its own root; see [telemetry.md](specs/telemetry.md)) for both trigger kinds (an OTLP
 *metrics* or *trace* Export). The former `agent.span_received` root was retired;
 no such span is emitted any more.
 
