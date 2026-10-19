@@ -825,7 +825,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_cycle_option.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="A6")
+    @pytest.mark.uc("UC-012", flow="A6", br=["BR-005"])
     async def test_dispatch_trigger_to_hold_tracking(self, handler):
         """TRIGGER button should dispatch to _start_trigger_hold_tracking."""
         handler._start_trigger_hold_tracking = AsyncMock()
@@ -855,7 +855,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_game_mode.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="A1")
+    @pytest.mark.uc("UC-012", flow="A1", br=["BR-005"])
     async def test_dispatch_circle_to_sensitivity(self, handler):
         """CIRCLE button should dispatch to handle_sensitivity."""
         handler.handle_sensitivity = AsyncMock()
@@ -863,7 +863,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_sensitivity.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="A2")
+    @pytest.mark.uc("UC-012", flow="A2", br=["BR-005"])
     async def test_dispatch_triangle_to_battery(self, handler):
         """TRIANGLE button should dispatch to handle_battery."""
         handler.handle_battery = AsyncMock()

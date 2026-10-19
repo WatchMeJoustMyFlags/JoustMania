@@ -153,7 +153,7 @@ class TestConnectedHandler:
         mock_state_manager.led.set_connected_color.assert_called_once_with("serial1", "Werewolf")
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-010", flow="main", steps=[2])
+    @pytest.mark.uc("UC-010", flow="main", steps=[2], br=["BR-005"])
     async def test_handle_button_trigger(self, handler, mock_state_manager):
         """Trigger press should transition to READY."""
         mock_state_manager.register_handler(handler)
@@ -310,7 +310,7 @@ class TestReadyHandler:
         assert order == ["bright_led", "sleep 0.3", "start"]
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-010", flow="A1")
+    @pytest.mark.uc("UC-010", flow="A1", br=["BR-005"])
     async def test_handle_button_move_unreadies(self, handler, mock_state_manager):
         """Move press should transition back to CONNECTED."""
         handler.set_state_manager(mock_state_manager)
