@@ -138,6 +138,10 @@ archetypes: the agent resolves and pins the parameters and passes them in `AddCo
 | `AddControllersResponse` | new fields 4 to 6 | `archetype`, `stream_rate_hz`, `players` | Echo of the installed archetype; `success=false` with the failed rules when the parameters are invalid | Implemented (#1258) |
 | `RemoveControllerResponse` | new fields 3 to 8 | `pattern_slot`, `frames_delivered` (uint64), `signal_hash` (fixed64), `frame_overruns` (uint32), `signal_checkpoints` (repeated string), `archetype` | For a pattern controller: the replay record of UC-046 step 8 (definitions in [telemetry.md §9](telemetry.md#9-pattern-games-1258)); `archetype` is empty for other controllers | Implemented (#1258, FR-108, FR-109) |
 
+### `controller_manager_mock.MockControllerService`: `SetAutoGameEnd` removed
+
+`SetAutoGameEnd` and its `AutoGameEndRequest` / `AutoGameEndResponse` messages were deleted in #1623 (UC-003 A1 retired, D-C8): the scripted kill hit every mock controller except the last-added one, including reserved shadow-game controllers. Games on mock controllers end through `SimulateDeath` (UC-003 step 4) or organic deaths (UC-046 BR-004). Regenerated with `make protos` and `make protos-agent`; connect-proxy forwards no `MockControllerService` RPC, and the dashboard has no mock client. The remaining RPCs are listed in [generated/grpc-rpcs.md](generated/grpc-rpcs.md) and described in [UC-003](../use_cases/UC-003.md).
+
 The agent's OTLP receiver implements the standard `opentelemetry.proto.collector.{trace,metrics}.v1` Export
 services (`services/agent/receiver.go`); they are not JoustMania protos.
 
