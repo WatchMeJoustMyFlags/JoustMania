@@ -865,14 +865,19 @@ class DiscoveryLoop:
             self._reset_health_window(now)
             return
 
-        # Window-level rollout summary (target backend + cohort size).
+        # Window-level rollout summary (target backend + cohort size). A failed
+        # read is NOT reported as "off" (""/0): target and count are omitted and
+        # bluetooth.rollout_read_error is set, so the agent holds its rollout
+        # state instead of treating a flagd hiccup as an operator act (#1489).
         target_backend = ""
         rollout_count = 0
+        rollout_read_error = False
         rollout_summary = getattr(self.backend, "rollout_summary", None)
         if rollout_summary is not None:
             try:
                 target_backend, rollout_count = rollout_summary()
             except Exception:
+                rollout_read_error = True
                 logger.debug("Failed to read rollout summary for health span", exc_info=True)
 
         # Active rollout strategy ("off"/"immediate"/"progressive"). The agent
@@ -897,8 +902,11 @@ class DiscoveryLoop:
             span.set_attribute("bluetooth.dropped_events_pct", float(signals["dropped_events_pct"]))
             span.set_attribute("bluetooth.movement_update_hz", float(signals["movement_update_hz"]))
             span.set_attribute("bluetooth.active_controllers", int(signals["active_controllers"]))
-            span.set_attribute("bluetooth.target_backend", target_backend)
-            span.set_attribute("bluetooth.rollout_count", int(rollout_count))
+            if rollout_read_error:
+                span.set_attribute("bluetooth.rollout_read_error", True)
+            else:
+                span.set_attribute("bluetooth.target_backend", target_backend)
+                span.set_attribute("bluetooth.rollout_count", int(rollout_count))
             span.set_attribute("bluetooth.rollout_strategy", rollout_strategy)
 
             # One event per active serial with per-serial signals.

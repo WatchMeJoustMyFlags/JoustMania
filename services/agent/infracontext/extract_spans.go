@@ -25,6 +25,7 @@ const (
 	AttrTargetBackend     = "bluetooth.target_backend"
 	AttrRolloutCount      = "bluetooth.rollout_count"
 	AttrRolloutStrategy   = "bluetooth.rollout_strategy"
+	AttrRolloutReadError  = "bluetooth.rollout_read_error"
 
 	// Per-sample event attributes. AttrDroppedEventsPct and AttrMovementUpdateHz
 	// are reused at the per-serial scope.
@@ -86,7 +87,7 @@ func (s *Store) applyHealthSpan(span ptrace.Span) bool {
 	return true
 }
 
-// windowFromAttrs reads the six window-level attributes, setting a pointer only
+// windowFromAttrs reads the window-level attributes, setting a pointer only
 // for attributes that are present. Numeric attributes tolerate both Int and
 // Double pvalue encodings.
 func windowFromAttrs(attrs pcommon.Map) WindowSignals {
@@ -111,6 +112,9 @@ func windowFromAttrs(attrs pcommon.Map) WindowSignals {
 	}
 	if v, ok := attrs.Get(AttrRolloutStrategy); ok {
 		w.RolloutStrategy = v.AsString()
+	}
+	if v, ok := attrs.Get(AttrRolloutReadError); ok && v.Type() == pcommon.ValueTypeBool {
+		w.RolloutReadError = v.Bool()
 	}
 	return w
 }

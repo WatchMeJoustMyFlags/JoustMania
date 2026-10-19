@@ -173,6 +173,7 @@ A ~1Hz root span; **absent when no controllers are connected**.
 | `bluetooth.active_controllers` | int | active controller count |
 | `bluetooth.target_backend` | string | rollout target adapter_type (`""` when off) |
 | `bluetooth.rollout_count` | int | current rollout controller count (`0` when off) |
+| `bluetooth.rollout_read_error` | bool | `true` when the rollout flags could not be read; `target_backend` and `rollout_count` are then absent (#1489) |
 
 One `bluetooth_controller_sample` **span event per active serial** carries the
 per-controller view: `controller.serial`, `bluetooth.movement_update_hz`,
@@ -272,7 +273,8 @@ span, **not** a flag re-read):
 
 | Rollout state | Fitness | Allowed / Dwell-or-hold | Action | `remediation.action` | Span? |
 |---------------|---------|--------------------------|--------|----------------------|-------|
-| inactive (`target_backend==""`) | — | — | nothing | — | **no span** |
+| unknown (`rollout_read_error`) | — | — | nothing; rollout record kept (UC-050 A5) | — | **no span** |
+| inactive (`target_backend==""`) | — | — | nothing; rollout record reset (UC-050 BR-001) | — | **no span** |
 | active, stage `< all` | passing | dwell elapsed, not held | flip to next variant | `expand` | yes |
 | active, stage `< all` | passing | dwell not elapsed / held (cooldown) | nothing | `none` | yes |
 | active, stage `== all` | passing | — | nothing (terminal) | `none` | yes |

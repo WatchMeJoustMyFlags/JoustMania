@@ -320,7 +320,8 @@ class MultiplexerBackend(ControllerBackend):
         """Window-level rollout summary ``(target_backend, cohort_count)``.
 
         Public seam for telemetry (the bluetooth-health span); delegates to the
-        RolloutRouter, which degrades to ``("", 0)`` on any flag error.
+        RolloutRouter. ``("", 0)`` means the rollout is off; a failed flag read
+        raises ``RolloutReadError`` (#1489).
         """
         return self._rollout_router.current_target()
 

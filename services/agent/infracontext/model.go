@@ -72,6 +72,14 @@ type WindowSignals struct {
 	// callers treat "" as "behave as before" (the progressive ladder).
 	// Source: bluetooth.rollout_strategy.
 	RolloutStrategy string
+
+	// RolloutReadError is true when the controller-manager could not read the
+	// rollout flags (flagd error, provider not ready). TargetBackend and
+	// RolloutCount are then absent and the rollout state is UNKNOWN, not off:
+	// callers hold their state (UC-050 A5, #1489). False when the attribute is
+	// absent (a successful read, or a producer older than #1489).
+	// Source: bluetooth.rollout_read_error.
+	RolloutReadError bool
 }
 
 // InfraContext is the full accumulated infrastructure view: the latest window

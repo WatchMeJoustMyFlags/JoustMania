@@ -378,12 +378,20 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	// when the controller-manager reports a target backend ("" means strategy off).
 	target := snap.Window.TargetBackend
 	stage := snap.Window.RolloutCount
+	if snap.Window.RolloutReadError {
+		// The controller manager could not read the rollout flags: the rollout
+		// state is UNKNOWN, not off (UC-050 A5, #1489). Hold everything: no
+		// decision span, no write, and the rollout record is kept.
+		l.log.Debug("agent.rollout_state_unknown", "reason", "rollout_read_error")
+		return
+	}
 	if target == "" {
 		// Rollout inactive → no decision span. An operator ended the rollout (strategy
 		// off), so forget the last written stage: the next active rollout climbs from
 		// the observed stage instead of waiting for a write it will never see (#1384).
-		// The cooldown is kept: the controller manager also reports "" when a flag
-		// read fails, so a single blip must not re-open expansion after a rollback.
+		// The cooldown is kept: a controller manager older than #1489 also reports ""
+		// when a flag read fails, so a single blip must not re-open expansion after a
+		// rollback.
 		l.mu.Lock()
 		l.resetRolloutStateLocked("rollout_inactive")
 		l.mu.Unlock()
