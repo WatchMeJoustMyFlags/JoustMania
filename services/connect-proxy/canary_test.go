@@ -15,7 +15,8 @@ import (
 // variants per flag, a stack overlay and a fraction overlay, and a call log.
 type fakeFlags struct {
 	mu       sync.Mutex
-	variants map[string][]string // flag -> declared variant names (value == name)
+	variants map[string][]string          // flag -> declared variant names
+	values   map[string]map[string]string // flag -> variant -> value (default: the name)
 	baseline map[string]string
 	stack    map[string]string
 	fraction map[string][2]any // flag -> {variant, percent}
@@ -28,8 +29,14 @@ func newFakeFlags() *fakeFlags {
 	return &fakeFlags{
 		variants: map[string][]string{
 			"bluetooth_backend": {"python", "rust", "unstable"},
+			"backend":           {"rust", "mock", "python_rust"},
 		},
-		baseline: map[string]string{"bluetooth_backend": "rust"},
+		values: map[string]map[string]string{
+			"backend": {"python_rust": "python,rust"},
+		},
+		// python_rust: the python adapter is loaded (the opt-in, UC-002 BR-003),
+		// so a python canary is possible; tests of the default set "rust".
+		baseline: map[string]string{"bluetooth_backend": "rust", "backend": "python_rust"},
 		stack:    map[string]string{},
 		fraction: map[string][2]any{},
 	}
@@ -84,6 +91,9 @@ func (f *fakeFlags) Get(_ context.Context, flag string) (map[string]any, error) 
 	list := make([]any, 0, len(names))
 	for _, n := range names {
 		values[n] = n
+		if v, ok := f.values[flag][n]; ok {
+			values[n] = v
+		}
 		list = append(list, n)
 	}
 	view := map[string]any{"flag": flag, "variants": list, "variant_values": values, "effective_default": f.effective(flag)}
@@ -239,8 +249,11 @@ func TestCanary_FractionalIsAFractionOverlayOverTheCounterpart(t *testing.T) {
 	}
 }
 
+// Rollback clears both overlays, so every serial resolves the baseline default
+// (rust since #1371), whether or not the python adapter is loaded (#1402 S3).
+//
 // UC: UC-052 main
-func TestCanary_RollbackReturnsEveryoneToPython(t *testing.T) {
+func TestCanary_RollbackReturnsEveryoneToTheBaselineDefault(t *testing.T) {
 	t.Run("UC-052/main rollback after a fractional rust canary", func(t *testing.T) {
 		fake := useFakeFlags(t)
 		srv := newProxyServer(t)
@@ -248,14 +261,82 @@ func TestCanary_RollbackReturnsEveryoneToPython(t *testing.T) {
 			t.Fatalf("canary status = %d", status)
 		}
 		status, body := doRequest(t, http.MethodPost, srv.URL+"/canary/rollback")
-		if status != http.StatusOK || body["backend"] != "python" {
+		if status != http.StatusOK || body["backend"] != "rust" {
 			t.Fatalf("rollback = %d %v", status, body)
 		}
-		if got := fake.effective("bluetooth_backend"); got != "python" {
-			t.Errorf("default = %s, want python", got)
+		if _, present := fake.stack["bluetooth_backend"]; present {
+			t.Error("rollback must clear the stack overlay")
 		}
 		if _, present := fake.fraction["bluetooth_backend"]; present {
 			t.Error("rollback must clear the fraction overlay")
+		}
+	})
+	t.Run("UC-052/main rollback without the python adapter loaded", func(t *testing.T) {
+		fake := useFakeFlags(t)
+		fake.baseline["backend"] = "rust"
+		fake.stack["bluetooth_backend"] = "unstable"
+		srv := newProxyServer(t)
+		status, body := doRequest(t, http.MethodPost, srv.URL+"/canary/rollback")
+		if status != http.StatusOK || body["backend"] != "rust" {
+			t.Fatalf("rollback = %d %v", status, body)
+		}
+		if got := fake.effective("bluetooth_backend"); got != "rust" {
+			t.Errorf("default = %s, want rust", got)
+		}
+	})
+}
+
+// A canary that would route serials to python is refused with 409 when the
+// `backend` flag does not load the python adapter (the default "rust", #1371):
+// the controller manager would silently keep them on rust (#1402 S3).
+//
+// UC: UC-052 A3 BR-002
+func TestCanary_PythonWithoutThePythonAdapterIsRefused(t *testing.T) {
+	cases := []struct{ name, path string }{
+		{"UC-052/A3 full python canary", "/canary/python"},
+		{"UC-052/A3 fractional python canary", "/canary/python?fraction=10"},
+		{"UC-052/A3 fractional rust canary keeps the rest on python", "/canary/rust?fraction=25"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := useFakeFlags(t)
+			fake.baseline["backend"] = "rust"
+			srv := newProxyServer(t)
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+tc.path, nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusConflict {
+				t.Fatalf("status = %d, want 409 (%s)", resp.StatusCode, raw)
+			}
+			if !strings.Contains(string(raw), "python_rust") {
+				t.Errorf("the refusal must name the opt-in, got %q", raw)
+			}
+			if len(fake.stack)+len(fake.fraction) != 0 {
+				t.Errorf("nothing may be written: %v", fake.calls)
+			}
+		})
+	}
+	t.Run("UC-052/A3 full rust canary needs no python adapter", func(t *testing.T) {
+		fake := useFakeFlags(t)
+		fake.baseline["backend"] = "rust"
+		srv := newProxyServer(t)
+		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust"); status != http.StatusOK {
+			t.Errorf("status = %d, want 200", status)
+		}
+	})
+	t.Run("UC-052/A3 backend flag unreadable fails closed", func(t *testing.T) {
+		fake := useFakeFlags(t)
+		delete(fake.variants, "backend")
+		srv := newProxyServer(t)
+		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/python"); status != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", status)
+		}
+		if len(fake.stack)+len(fake.fraction) != 0 {
+			t.Error("nothing may be written")
 		}
 	})
 }

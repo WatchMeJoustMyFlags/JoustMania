@@ -10,8 +10,9 @@
 #
 # Controllers: real PS Move controllers are read through rust-hid, the default
 # Bluetooth backend (backend=rust in services/flagd/controller.json, #1371/#1318).
-# The controller manager and the pairing daemon reach it as rust-hid:50058 on the
-# joustmania network. python-hid is not part of the lite stack (opt-in on the
+# The controller manager reaches it as rust-hid:50058 on the joustmania network;
+# the pairing daemon runs on the host network (raw HCI, as in docker-compose.yml)
+# and reaches rust-hid and flagd through their loopback-published ports (#1402). python-hid is not part of the lite stack (opt-in on the
 # full stack only, `docker compose --profile python-hid up -d`).
 #
 # All images use canonical GHCR names for consistency.
@@ -68,6 +69,11 @@ services:
       flag-service:
         condition: service_healthy
         restart: true
+    ports:
+      # Sync port for the host-networked pairing-daemon (127.0.0.1:8015).
+      # Loopback only: the flag config must not be readable from the venue
+      # network (#1319).
+      - "127.0.0.1:8015:8015"
     expose:
       - "8013"
       - "8015"
@@ -117,31 +123,35 @@ services:
     container_name: joustmania-pairing-daemon
     privileged: true
     pid: "host"
+    # Host network required for AF_BLUETOOTH HCI sockets (hciconfig/hcitool,
+    # Bluetooth monitor RSSI), as in docker-compose.yml (#1402).
+    network_mode: host
     volumes:
       - /var/run/dbus:/var/run/dbus
       - /var/lib/bluetooth:/var/lib/bluetooth
       - /dev:/dev:rslave
-    networks:
-      - joustmania
-    expose:
-      - "8002"
     environment:
       - POLL_INTERVAL=10
       - BT_MONITOR_INTERVAL=5
       - METRICS_PORT=8002
-      # Bridge network: bind all container interfaces (reachable only on the
-      # joustmania network, port not published; UC-005 BR-003)
-      - CONTROL_BIND=0.0.0.0
+      # Port 8002 (health + UC-005 unpair) binds on the host via network_mode:
+      # host, only on loopback and the docker0 gateway (what host.docker.internal
+      # resolves to), so the connect-proxy reaches it but the LAN does not
+      # (UC-005 BR-003).
+      - CONTROL_BIND=${PAIRING_CONTROL_BIND:-127.0.0.1,172.17.0.1}
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SDK_DISABLED=true
       # bluetooth_backend (default rust) pairs through rust-hid's PairingService
-      # (UC-001 BR-003). Bridge network here, so the compose service name.
-      - FLAGD_HOST=flagd
+      # (UC-001 BR-003). Loopback because network_mode: host can't use Docker
+      # DNS; 127.0.0.1, not localhost: 8015 and 50058 are published on
+      # 127.0.0.1 only (#1319), and localhost may resolve to ::1 first.
+      - FLAGD_HOST=127.0.0.1
       - FLAGD_PORT=8015
-      - RUST_HID_HOST=rust-hid
+      - RUST_HID_HOST=127.0.0.1
       - RUST_HID_PORT=50058
-      # Primary game state for pairing.bluez_restart_mode=when_idle (UC-001 BR-005)
-      - GAME_STATE_URL=http://envoy/joustmania.game_coordinator.GameCoordinatorService/GetGameState
+      # Primary game state for pairing.bluez_restart_mode=when_idle (UC-001 BR-005),
+      # through envoy's published port 80 (the coordinator has no host port)
+      - GAME_STATE_URL=http://localhost/joustmania.game_coordinator.GameCoordinatorService/GetGameState
     depends_on:
       flagd:
         condition: service_started
@@ -169,6 +179,10 @@ services:
       - joustmania
     expose:
       - "50058"
+    ports:
+      # For the host-networked pairing-daemon (127.0.0.1:50058). Loopback only:
+      # the HID gRPC API must not be reachable from the venue network (#1319).
+      - "127.0.0.1:50058:50058"
     environment:
       - OTEL_SERVICE_NAME=rust-hid
       - OTEL_SERVICE_NAMESPACE=infrastructure
@@ -276,8 +290,11 @@ services:
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
       - FLAG_SERVICE_URL=http://flag-service:8070
-      # Pairing daemon control API (UC-005 unpair); bridge network here
-      - PAIRING_DAEMON_URL=http://pairing-daemon:8002
+      # Pairing daemon control API (UC-005 unpair); the daemon runs on the host network
+      - PAIRING_DAEMON_URL=http://host.docker.internal:8002
+    extra_hosts:
+      # Reach the host-networked pairing daemon (:8002) for UC-005 unpair
+      - "host.docker.internal:host-gateway"
     networks:
       - joustmania
     restart: unless-stopped

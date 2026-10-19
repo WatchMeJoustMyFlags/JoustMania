@@ -147,8 +147,13 @@ func variantFor(view map[string]any, want string) (string, bool) {
 }
 
 // statusFor maps a flag-service error to the proxy's HTTP status: a refusal
-// keeps its 4xx, an outage is 502 Bad Gateway, anything else 500.
+// keeps its 4xx, a python canary without the python adapter is 409, an outage
+// is 502 Bad Gateway, anything else 500.
 func statusFor(err error) int {
+	var notLoaded *pythonNotLoadedError
+	if errors.As(err, &notLoaded) {
+		return http.StatusConflict
+	}
 	var fe *flagServiceError
 	if errors.As(err, &fe) {
 		switch {
