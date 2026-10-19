@@ -5,7 +5,7 @@
 **ID:** TC-003  
 **Goal:** In a three-player Free-for-All game one controller disconnects and another dies, and the game ends with the last player as winner without waiting for motion from the disconnected controller.  
 **Priority:** High  
-**Status:** Draft  
+**Status:** Automated  
 **Use cases:** [UC-003](../use_cases/UC-003.md) main; [UC-010](../use_cases/UC-010.md) main; [UC-020](../use_cases/UC-020.md) A2; [UC-030](../use_cases/UC-030.md) A5; [UC-002](../use_cases/UC-002.md) A1
 
 ## Roles
@@ -41,4 +41,8 @@
 
 ## Automation
 
-- **Planned** (#1360, FFA disconnect journey). Unit coverage exists in `services/game_coordinator/tests/test_disconnect.py` and `services/game_coordinator/tests/test_ffa_uc020.py` (UC-020 A2, #1396).
+**Tier:** T2 service (`tests/service/`, `make test-service`): controller manager (mock controllers), game coordinator and menu from source at HEAD (`LOBBY`, OTel exported to the harness `OtlpSink`), one flagd and flag service, fake audio. Step 4's `player_disconnected` is read from the sink; step 8's `controller_connected{serial="MOCK0002"}` is the controller manager's gauge as exported to it.
+
+- `tests/service/test_tc003_ffa_player_disconnects.py::test_tc003_ffa_player_disconnects` (tagged `UC-003` main, `UC-010` main, `UC-020` A2, `UC-030` A5, `UC-002` A1, `tc="TC-003"`) implements steps 1 to 8 with three unreserved controllers readied through the menu. Serials are `MOCK<n>` as assigned by the manager, not the literal ids in the table.
+- Unit coverage: `services/game_coordinator/tests/test_disconnect.py` and `services/game_coordinator/tests/test_ffa_uc020.py` (UC-020 A2, #1396); `tests/service/test_otlp_sink.py` carries the headless variant of the span check.
+- Gaps: the menu's own controller list is not read (the controller manager's roster, which the menu reconciles against, is).
