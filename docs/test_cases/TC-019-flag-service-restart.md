@@ -28,7 +28,7 @@
 | 4    | Write before flagd reconnects | A flag write before flagd's stream is open is refused                                                | `503 no_sync_stream`                         | [UC-053](../use_cases/UC-053.md)    |
 | 5    | Verify the new state          | A new epoch; the persisted `sensitivity` is back; the stage overlay and the game scope are gone       | `GET /state`, `GET /game/sensitivity`        | [UC-053](../use_cases/UC-053.md)    |
 | 6    | Verify flagd                  | After flagd restarts, it serves `slow` again and the Werewolf rule still wins                          | NFR-052                                      | [UC-053](../use_cases/UC-053.md)    |
-| 7    | Restart mid-game              | A shadow game runs; the operator restarts the flag service (and flagd); the coordinator sees the new epoch and registers its live game again within 20 s; a game-scoped `player_sensitivity_factor` write is accepted and applied | headless JoustFFA on 4 reserved controllers | [UC-053](../use_cases/UC-053.md) A9 |
+| 7    | Restart mid-game              | A shadow game runs; the operator restarts the flag service (and flagd); the coordinator sees the new epoch and registers its live game again within 20 s; a game-scoped `player_sensitivity_factor` write is accepted and applied. A write that lands while the coordinator's flag sets are still reconnecting is applied once its `agent` set catches up (it is deferred, never blocked against the pre-restart allow-list), so the write needs no repeat | headless JoustFFA on 4 reserved controllers | [UC-053](../use_cases/UC-053.md) A9 |
 
 ## Validation
 
@@ -36,6 +36,7 @@
 2. **No phantom write** (A7): no write is answered 200 while flagd has no sync stream.
 3. **Live games come back** (A9 step 3): after a restart the coordinator registers its live games again (new boot epoch, read every 2 s; full reconcile every 15 s), so agent writes for a running game are not refused with 409 until it ends.
 4. **No replay** (A9 step 3): the new non-empty epoch restarts the coordinator's event count; a failed read never does.
+5. **Consistent flag sets** (A9 step 4): an intervention newer than the coordinator's allow-list is deferred until the allow-list catches up, then applied or blocked against the current one; a stale allow-list, wider or narrower, never decides it.
 
 ## Postconditions
 
@@ -44,5 +45,6 @@
 ## Automation
 
 - `tests/integration/test_flag_service_restart.py::test_restart_keeps_admin_settings_and_drops_the_rest` implements steps 1 to 6 and `test_restart_mid_game_reregisters_the_live_game` step 7 (each restarts `joustmania-flag-service`, then `joustmania-flagd`, as `scripts/flags.sh restart` does).
+- Validation 5 is `services/game_coordinator/tests/test_flag_set_consistency.py` (both directions, tagged `tc="TC-019"`), `services/flag-service/state/snapshot_stamp_test.go` (the stamp) and `tests/contract/test_flagd_resolution.py::test_snapshot_stamp_reaches_the_in_process_resolver` (real flagd passes the stamp to the in-process resolver).
 - Validation 3 is a unit test: `services/game_coordinator/tests/test_event_list_reader.py` (tagged `tc="TC-019"`); the coordinator's reconcile after the reconnect is `services/game_coordinator/tests/test_flag_service_lifecycle.py`.
 - Not asserted: the NFR-052 5 s figure itself (the test bounds recovery at 60 s on shared CI runners and prints the time).

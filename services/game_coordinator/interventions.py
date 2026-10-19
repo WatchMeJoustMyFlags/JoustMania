@@ -139,6 +139,52 @@ class _ReadFailed:
 
 _UNKNOWN = _ReadFailed()
 
+# Cross-set consistency (UC-053 A9, #1552). The flag service stamps every flag of
+# the ``interventions`` set and ``agent/interventions_allowed`` with the snapshot
+# it rendered them from. The two sets arrive on separate in-process sync streams
+# that reconnect in no fixed order after a flagd restart, so the coordinator
+# defers every intervention while the allow-list it holds is older than the
+# interventions set it holds; the catching-up ``agent`` stream fires a
+# configuration change that re-evaluates them.
+SNAPSHOT_EPOCH_KEY = "snapshotEpoch"
+SNAPSHOT_VERSION_KEY = "snapshotVersion"
+
+
+# A deferral that lasts longer than this is logged as a WARNING (rate limited to
+# one per DEFERRAL_WARN_INTERVAL_S) and re-checked every DEFERRAL_RECHECK_S even
+# when no flag changes: a steady-state deferral lasts milliseconds, a permanent
+# one (the ``agent`` set not served or its stream stuck) stops every intervention.
+DEFERRAL_WARN_AFTER_S = 5.0
+DEFERRAL_WARN_INTERVAL_S = 30.0
+DEFERRAL_RECHECK_S = 5.0
+
+
+def _hookless_provider(client: object, method: str) -> object | None:
+    """The client's provider when it has ``method``, else None.
+
+    The snapshot probes resolve through the provider directly, so the OpenFeature
+    metrics and tracing hooks do not count them (they would otherwise dominate the
+    per-flag evaluation panels). A stand-in client without a provider is read
+    through its own ``get_*_details``. A flag the provider does not know is
+    unstamped (the client would return its default without metadata); any other
+    exception propagates to the caller, which fails closed.
+    """
+    provider = getattr(client, "provider", None)
+    return provider if provider is not None and callable(getattr(provider, method, None)) else None
+
+
+def _snapshot_of(details: object) -> "tuple[str, int] | None":
+    """``(epoch, version)`` from a read's flag metadata, or None when unstamped."""
+    meta = getattr(details, "flag_metadata", None) or {}
+    epoch = meta.get(SNAPSHOT_EPOCH_KEY)
+    version = meta.get(SNAPSHOT_VERSION_KEY)
+    if not isinstance(epoch, str) or not epoch or version is None:
+        return None
+    try:
+        return epoch, int(version)
+    except (TypeError, ValueError):
+        return None
+
 
 @dataclass(frozen=True)
 class InterventionSpec:
@@ -632,6 +678,13 @@ class InterventionManager:
 
         self._interventions_client = None  # interventions domain
         self._agent_client = None  # agent domain (backstop reads)
+        # Cross-set consistency gate (#1552): the allow-list stamp last read in
+        # this pass (the allow-list only moves forward, so a cached stamp that
+        # covers the probe needs no re-read), and the current deferral episode.
+        self._pass_allow_snapshot: tuple[str, int] | None = None
+        self._deferral_since: float | None = None
+        self._deferral_last_warned: float | None = None
+        self._deferral_recheck = None  # asyncio.TimerHandle while a re-check is pending
         self._user_client = None  # user domain (on-device cue gate, #818)
 
         # Per-session, per-flag last-applied state value (state-shaped change
@@ -917,6 +970,9 @@ class InterventionManager:
         except Exception as e:
             logger.debug(f"InterventionManager: handler removal failed: {e}")
         self._started = False
+        if self._deferral_recheck is not None:
+            self._deferral_recheck.cancel()
+            self._deferral_recheck = None
 
     def forget_session(self, game_id: str) -> None:
         """Drop all per-game state for a retired session (#1299).
@@ -1045,7 +1101,12 @@ class InterventionManager:
         to the same value for every live session, primary and shadow alike.
         """
         self._refresh_budget()
+        self._pass_allow_snapshot = None
         sessions = self._live_sessions()
+        if not sessions:
+            # No game left to defer for: close the episode so the next game's
+            # brief deferral is a new episode with a fresh age, not a stale WARNING.
+            self._end_deferral()
         self._prune_stale_buckets({s.game_id for s in sessions})
         for session in sessions:
             # Create the session's buckets once, at the start of its iteration.
@@ -1085,6 +1146,8 @@ class InterventionManager:
             return
 
         raw = self._read_flag(spec, session)
+        if self._allow_list_lags(spec):
+            return  # deferred: the baseline stays, the agent stream's catch-up re-evaluates
         # State-shaped: only act on value change away from the none-value.
         with self._lock:
             bucket = self._existing_state_bucket(session.game_id)
@@ -1133,6 +1196,8 @@ class InterventionManager:
         epoch, seq, events = value
         if not epoch:
             return
+        if self._allow_list_lags(spec):
+            return  # deferred: (epoch, seq) stays, so nothing is skipped or replayed
         with self._lock:
             bucket = self._last_event.get(session.game_id)
             if bucket is None:
@@ -1235,6 +1300,8 @@ class InterventionManager:
         # grants, #1313).
         default = _spec_default(spec)
         reads = self._read_levels(spec, session.game_id, _active_player_serials(game))
+        if self._allow_list_lags(spec):
+            return  # deferred: no serial's baseline moves
 
         # Per-serial baseline for this game: ``{serial: level}``. A serial with
         # no entry is neutral, so a first non-neutral level applies.
@@ -1336,6 +1403,8 @@ class InterventionManager:
         if game is None:
             return
         reads = {serial: self._read_grant(spec, session.game_id, serial) for serial in _active_player_serials(game)}
+        if self._allow_list_lags(spec):
+            return  # deferred: no serial's baseline moves
         fired: list[tuple[str, object]] = []
         with self._lock:
             bucket = self._existing_state_bucket(session.game_id)
@@ -1742,6 +1811,131 @@ class InterventionManager:
             result[serial] = value
 
         return result
+
+    def _allow_list_lags(self, spec: InterventionSpec) -> bool:
+        """True while the allow-list held is older than the interventions set
+        held (UC-053 A9, #1552): the values just read are then deferred.
+
+        Called after the values are read and before any baseline moves. The
+        probe is read after the values, and the allow-list after the probe (and
+        again by ``_check_chain`` after this check), so when this returns False
+        the allow-list that gates a value is at least as new as that value. Fail
+        closed: a stamped interventions set is deferred against an allow-list
+        with no stamp, another epoch or an older version, and a probe or
+        allow-list read that raises defers too. An unstamped interventions set
+        (file-sourced flagd) is not gated.
+        """
+        if self._interventions_client is None:
+            return False
+        allow = None
+        try:
+            held = self._interventions_snapshot()
+        except Exception as e:
+            self._note_deferral(spec, None, None, reason=f"snapshot probe failed: {e}")
+            return True
+        if held is None:
+            self._end_deferral()
+            return False
+        cached = self._pass_allow_snapshot
+        if cached is not None and cached[0] == held[0] and cached[1] >= held[1]:
+            self._end_deferral()
+            return False
+        if self._agent_client is not None:
+            try:
+                allow = self._allow_list_snapshot()
+            except Exception as e:
+                logger.debug(f"InterventionManager: interventions_allowed snapshot read failed: {e}")
+        self._pass_allow_snapshot = allow
+        if allow is not None and allow[0] == held[0] and allow[1] >= held[1]:
+            self._end_deferral()
+            return False
+        self._note_deferral(spec, held, allow)
+        return True
+
+    def _interventions_snapshot(self) -> "tuple[str, int] | None":
+        """The interventions set's stamp, probed on ``end_game`` (in every rendering of the set)."""
+        from openfeature.exception import FlagNotFoundError
+
+        provider = _hookless_provider(self._interventions_client, "resolve_object_details")
+        try:
+            if provider is not None:
+                details = provider.resolve_object_details("end_game", {}, EvaluationContext())
+            else:
+                details = self._interventions_client.get_object_details("end_game", {}, EvaluationContext())
+        except FlagNotFoundError:
+            return None
+        return _snapshot_of(details)
+
+    def _allow_list_snapshot(self) -> "tuple[str, int] | None":
+        """The stamp of ``agent/interventions_allowed``."""
+        from openfeature.exception import FlagNotFoundError
+
+        provider = _hookless_provider(self._agent_client, "resolve_string_details")
+        try:
+            if provider is not None:
+                details = provider.resolve_string_details("interventions_allowed", "", EvaluationContext())
+            else:
+                details = self._agent_client.get_string_details("interventions_allowed", "", EvaluationContext())
+        except FlagNotFoundError:
+            return None
+        return _snapshot_of(details)
+
+    def _note_deferral(
+        self,
+        spec: InterventionSpec,
+        held: "tuple[str, int] | None",
+        allow: "tuple[str, int] | None",
+        reason: str = "",
+    ) -> None:
+        """Record a deferral: counts the episode, sets the age gauge, warns
+        (rate limited) once it lasts longer than DEFERRAL_WARN_AFTER_S and keeps
+        a re-check scheduled so a stuck deferral stays visible without changes."""
+        from services.game_coordinator import metrics
+
+        now = self._time_fn()
+        if self._deferral_since is None:
+            self._deferral_since = now
+            metrics.intervention_deferrals_total.inc()
+        age = now - self._deferral_since
+        metrics.intervention_deferral_age_seconds.set(age)
+        detail = reason or f"allow-list snapshot {allow} is older than interventions snapshot {held}"
+        if age > DEFERRAL_WARN_AFTER_S and (
+            self._deferral_last_warned is None or now - self._deferral_last_warned >= DEFERRAL_WARN_INTERVAL_S
+        ):
+            self._deferral_last_warned = now
+            logger.warning(
+                f"InterventionManager: interventions deferred for {age:.1f}s ({spec.flag_key}): {detail}; "
+                "check that the flag service serves the agent set and the coordinator's agent stream is connected"
+            )
+        else:
+            logger.debug(f"InterventionManager: {spec.flag_key} deferred: {detail}")
+        self._schedule_deferral_recheck()
+
+    def _end_deferral(self) -> None:
+        if self._deferral_since is None:
+            return
+        from services.game_coordinator import metrics
+
+        self._deferral_since = None
+        self._deferral_last_warned = None
+        metrics.intervention_deferral_age_seconds.set(0)
+        if self._deferral_recheck is not None:
+            self._deferral_recheck.cancel()
+            self._deferral_recheck = None
+
+    def _schedule_deferral_recheck(self) -> None:
+        if self._deferral_recheck is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        def _recheck() -> None:
+            self._deferral_recheck = None
+            loop.create_task(self.evaluate_all())
+
+        self._deferral_recheck = loop.call_later(DEFERRAL_RECHECK_S, _recheck)
 
     def _allowed_types(self) -> set[str]:
         # interventions_allowed is a STRING flag whose value is a comma-separated

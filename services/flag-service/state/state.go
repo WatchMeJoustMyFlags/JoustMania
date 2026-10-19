@@ -251,6 +251,12 @@ func New(b *baseline.Baseline, r *registry.Registry, opts Options) (*State, Load
 		}
 		s.served[set] = true
 	}
+	// The coordinator gates every intervention on the allow-list's snapshot
+	// stamp (UC-053 A9, #1552): an interventions set served without the agent
+	// set would be deferred forever, so refuse that configuration at start.
+	if s.served["interventions"] && !s.served["agent"] {
+		return nil, LoadReport{}, fmt.Errorf("state: served set %q needs %q (its interventions_allowed allow-list)", "interventions", "agent")
+	}
 	for _, setID := range b.Order {
 		set := b.Sets[setID]
 		for key, f := range set.Flags {

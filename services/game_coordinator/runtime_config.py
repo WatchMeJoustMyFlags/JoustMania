@@ -95,6 +95,28 @@ class GamePerformanceConfig:
     ema_weight: float = 4.0
 
 
+# Flag keys read by RuntimeConfigManager (exact keys plus the perception.* family).
+# Must stay in sync with the keys RuntimeConfigManager reads (the literals passed
+# to get_*_value in _refresh_from_flags): a key missing here is silently never refreshed.
+# test_runtime_config_flag_keys_match_the_keys_read compares them.
+RUNTIME_CONFIG_FLAG_KEYS = frozenset(
+    {
+        "game_loop.update_frequency_hz",
+        "poll_drop_threshold",
+        "countdown_phase_duration_ms",
+        "winner_rainbow_duration_ms",
+    }
+)
+RUNTIME_CONFIG_FLAG_PREFIXES = ("perception.",)
+
+
+def _affects_runtime_config(changed_flags) -> bool:
+    """Whether a configuration change names a flag this manager reads."""
+    return any(
+        key in RUNTIME_CONFIG_FLAG_KEYS or str(key).startswith(RUNTIME_CONFIG_FLAG_PREFIXES) for key in changed_flags
+    )
+
+
 class RuntimeConfigManager:
     """
     Manages runtime configuration with event-driven flag updates.
@@ -180,7 +202,12 @@ class RuntimeConfigManager:
             pass
 
         changed_flags = getattr(event_details, "flags_changed", [])
-        if changed_flags:
+        if changed_flags and not _affects_runtime_config(changed_flags):
+            # Most pushes only move intervention flags and their snapshot stamps
+            # (#1552: every write re-stamps the interventions set and the
+            # allow-list); none of them is runtime config, so keep INFO quiet.
+            logger.debug(f"🚩 Feature flags changed: {changed_flags}")
+        elif changed_flags:
             logger.info(f"🚩 Feature flags changed: {changed_flags}")
         else:
             logger.info("🚩 Feature flags changed (unspecified flags)")

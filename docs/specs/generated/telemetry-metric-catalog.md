@@ -4,8 +4,8 @@
 
 Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which defines the columns.
 
-- **145 unique Python metric names** (166 definitions; 5 names are defined in more than one module).
-- 77 of the 145 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
+- **147 unique Python metric names** (168 definitions; 5 names are defined in more than one module).
+- 79 of the 147 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
 - 0 names are defined but never recorded by any service.
 
 | Metric | Type | Labels | Defined in | Emitted | Consumers | Notes |
@@ -95,6 +95,8 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `game_flag_configuration_changes_total` | counter | (none) | game-coordinator | yes | grafana |  |
 | `game_flag_service_calls_total` | counter | `call` (register\|end\|reconcile), `result` (ok\|error\|timeout) | game-coordinator | yes | (none) | `call` = `register`, `end`, `reconcile`; `result` = `ok`, `error`, `timeout`. Recorded when `FLAG_SERVICE_URL` is set; FR-135, #1410 |
 | `game_gameplay_stream_reconnects_total` | counter | `game_mode` | game-coordinator | yes | (none) |  |
+| `game_intervention_deferral_age_seconds` | gauge | (none) | game-coordinator | yes | (none) |  |
+| `game_intervention_deferrals_total` | counter | (none) | game-coordinator | yes | (none) |  |
 | `game_intervention_dispatch_failures_total` | counter | `type`, `reason` | game-coordinator | yes | grafana |  |
 | `game_intervention_event_gaps_total` | counter | `flag` | game-coordinator | yes | (none) | event-list reader on; FR-137, #1410 |
 | `game_interventions_total` | counter | `type`, `objective`, `blocked`, `block_reason` | game-coordinator | yes | grafana, tools |  |

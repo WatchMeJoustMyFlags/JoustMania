@@ -151,6 +151,20 @@ intervention_event_gaps_total = Counter(
     ["flag"],
 )
 
+# Cross-set consistency gate (UC-053 A9, #1552): an intervention is deferred
+# while the coordinator's allow-list (agent set) is older than its interventions
+# set. The counter counts deferral episodes (a few ms each in steady state); the
+# gauge is the age of the current one (0 when none), so a stuck agent stream
+# shows as a growing age instead of silently stopped interventions.
+intervention_deferrals_total = Counter(
+    "game_intervention_deferrals_total",
+    "Intervention deferral episodes: the allow-list held lagged the interventions set held",
+)
+intervention_deferral_age_seconds = Gauge(
+    "game_intervention_deferral_age_seconds",
+    "Age of the current intervention deferral episode in seconds (0 when none)",
+)
+
 # Player metrics
 active_players = Gauge(
     "game_active_players",

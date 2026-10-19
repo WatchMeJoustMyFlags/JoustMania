@@ -188,6 +188,23 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
+// Snapshot stamp (UC-053 A9, #1552): flag metadata naming the snapshot a flag
+// was rendered from. The game coordinator reads the interventions set and the
+// agent allow-list on separate sync streams that reconnect in no fixed order,
+// and applies an intervention only once the allow-list it holds is from the
+// same epoch and at least as new as the interventions set it holds.
+const (
+	MetaSnapshotEpoch   = "snapshotEpoch"
+	MetaSnapshotVersion = "snapshotVersion"
+)
+
+// snapshotStamped reports whether a flag carries the snapshot stamp: every
+// flag of the interventions set and the agent allow-list. Other flags stay
+// unstamped, so a write does not mark them changed on every stream.
+func snapshotStamped(set, key string) bool {
+	return set == "interventions" || (set == "agent" && key == "interventions_allowed")
+}
+
 // renderLocked returns the merged configuration for a selector: "" = every
 // served set, otherwise the one set. Cached per snapshot version. Callers hold
 // s.mu.
@@ -210,6 +227,10 @@ func (s *State) renderLocked(selectorSet string) ([]byte, error) {
 		rf, err := f.render(s.opts.Epoch)
 		if err != nil {
 			return nil, err
+		}
+		if snapshotStamped(f.set, key) {
+			rf.Metadata[MetaSnapshotEpoch] = s.opts.Epoch
+			rf.Metadata[MetaSnapshotVersion] = s.version
 		}
 		cfg.Flags[key] = rf
 	}
