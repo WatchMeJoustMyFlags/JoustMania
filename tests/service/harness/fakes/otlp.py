@@ -205,7 +205,8 @@ class OtlpSink:
 
     # ------------------------------------------------------------- lifecycle
     def start(self) -> int:
-        self._server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
+        # so_reuseport=0 like the services' get_server_options: no second process can share the port.
+        self._server = grpc.server(futures.ThreadPoolExecutor(max_workers=8), options=[("grpc.so_reuseport", 0)])
         trace_service_pb2_grpc.add_TraceServiceServicer_to_server(_TraceServicer(self), self._server)
         metrics_service_pb2_grpc.add_MetricsServiceServicer_to_server(_MetricsServicer(self), self._server)
         logs_service_pb2_grpc.add_LogsServiceServicer_to_server(_LogsServicer(self), self._server)
@@ -237,11 +238,13 @@ class OtlpSink:
         spans = _decode_spans(request)
         with self._lock:
             self._spans.extend(spans)
-        if self._forward_stub is not None:
+        # Read once: stop() may clear the stub and close its channel while a forward is in flight.
+        stub = self._forward_stub
+        if stub is not None:
             try:
-                self._forward_stub.Export(request, timeout=FORWARD_TIMEOUT_SECONDS)
+                stub.Export(request, timeout=FORWARD_TIMEOUT_SECONDS)
                 ok = True
-            except grpc.RpcError:
+            except Exception:  # RpcError, or ValueError on a channel stop() closed: best effort
                 ok = False
             with self._lock:
                 if ok:
@@ -336,11 +339,13 @@ class OtlpSink:
         root: bool | None = None,
         timeout: float = DEFAULT_WAIT_SECONDS,
     ) -> SpanRecord:
-        """The first span matching the filters (see ``spans``; ``name=None`` matches any name);
+        """The OLDEST span matching the filters (see ``spans``; ``name=None`` matches any name);
         ``TimeoutError`` when none arrives.
 
         A span is exported when it ENDS: the game-session span at game end, a
         ``player_lifecycle`` span at the player's elimination or game end.
+        The sink lives as long as the (module-scoped) stack and is not cleared
+        between tests: filter by ``game.id`` so an earlier test's span cannot match.
         """
         found = self._poll(lambda: self.spans(name, attrs, service=service, event=event, root=root), timeout)
         if found:

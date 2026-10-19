@@ -18,7 +18,6 @@ from opentelemetry.proto.common.v1 import common_pb2
 from opentelemetry.proto.resource.v1 import resource_pb2
 from opentelemetry.proto.trace.v1 import trace_pb2
 
-from lib.types import get_game_display_name
 from proto import controller_manager_mock_pb2, controller_manager_pb2, game_coordinator_pb2
 from tests.integration.helpers import (
     async_poll_until,
@@ -104,7 +103,8 @@ async def test_game_root_span_and_player_disconnected_reach_the_sink(stack, head
 
     # The game-session span ends with the game, so it is exported only now.
     root = await sink.wait_span_async(
-        get_game_display_name(GAME_MODE),
+        # Pinned literally (docs/telemetry.md): a display-name rename must fail here.
+        "Joust Free-for-All",
         {"game.id": game_id},
         service=COORDINATOR,
         root=True,
@@ -122,7 +122,11 @@ async def test_game_root_span_and_player_disconnected_reach_the_sink(stack, head
     assert correlation.attributes["game_trace_id"] == root.trace_id
 
 
+CHILD_SPAN_ID = bytes(range(9, 17))
+
+
 def _export_request(span_name: str) -> trace_service_pb2.ExportTraceServiceRequest:
+    """One trace: a root span ``span_name`` and its child ``<span_name>.child``."""
     resource = resource_pb2.Resource(
         attributes=[common_pb2.KeyValue(key="service.name", value=common_pb2.AnyValue(string_value="probe"))]
     )
@@ -133,8 +137,17 @@ def _export_request(span_name: str) -> trace_service_pb2.ExportTraceServiceReque
         attributes=[common_pb2.KeyValue(key="k", value=common_pb2.AnyValue(int_value=7))],
         events=[trace_pb2.Span.Event(name="ev")],
     )
+    child = trace_pb2.Span(
+        name=f"{span_name}.child",
+        trace_id=span.trace_id,
+        span_id=CHILD_SPAN_ID,
+        parent_span_id=span.span_id,
+        attributes=[common_pb2.KeyValue(key="k", value=common_pb2.AnyValue(int_value=7))],
+    )
     return trace_service_pb2.ExportTraceServiceRequest(
-        resource_spans=[trace_pb2.ResourceSpans(resource=resource, scope_spans=[trace_pb2.ScopeSpans(spans=[span])])]
+        resource_spans=[
+            trace_pb2.ResourceSpans(resource=resource, scope_spans=[trace_pb2.ScopeSpans(spans=[span, child])])
+        ]
     )
 
 
@@ -153,8 +166,17 @@ def test_sink_tees_trace_exports_to_another_receiver():
 
         recorded = tee.wait_span("probe.span", {"k": 7}, service="probe", event="ev", root=True, timeout=5)
         assert recorded.trace_id == bytes(range(1, 17)).hex()
+        # root= tells a root span from its child (parent_span_id set).
+        assert [s.name for s in tee.spans(attrs={"k": 7}, root=True)] == ["probe.span"]
+        child = tee.wait_span(None, {"k": 7}, root=False, timeout=5)
+        assert (child.name, child.span_id, child.parent_span_id) == (
+            "probe.span.child",
+            CHILD_SPAN_ID.hex(),
+            recorded.span_id,
+        )
         forwarded = downstream.wait_span("probe.span", {"k": 7}, timeout=5)
         assert forwarded.span_id == recorded.span_id
+        assert len(downstream.spans()) == 2, "the whole request is forwarded, child included"
         assert (tee.forward_ok, tee.forward_errors) == (1, 0)
 
         assert dead_tee.wait_span("probe.span", timeout=5)

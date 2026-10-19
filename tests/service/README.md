@@ -38,7 +38,9 @@ point = await stack.otlp_sink.wait_metric_async("game_trace_correlation", {"game
 
 - A span arrives when it ENDS, after the BatchSpanProcessor delay (`otel_bsp_schedule_delay_millis`,
   5 s default); metrics every `metrics_export_interval_ms`. Use timeouts of ~30 s.
-- `wait_metric` returns the latest matching point (cumulative). Logs are accepted and counted only.
+- `wait_span` returns the oldest matching span, `wait_metric` the latest matching point (cumulative).
+  The sink lives as long as the module-scoped stack and is not cleared between tests: always filter by
+  `game.id` / `game_id`, or an earlier test's record matches at once. Logs are accepted and counted only.
 - `OtlpSink(forward_to="host:port")` tees every trace export to another OTLP/gRPC receiver (the agent's,
   like the collector's `otlp/agent` exporter); failures count in `forward_errors`.
 - Still full stack (T3): the collector's processing (filters, `span_metrics`, transforms), VictoriaMetrics
