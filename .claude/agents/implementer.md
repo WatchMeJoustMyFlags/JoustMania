@@ -25,7 +25,8 @@ On a conflict the brief wins, then this file, then the skill.
 ## Input
 
 - Implement: `#<issue>` plus the scope and the decisions already made.
-- Fixer: `fixer PR#<n> <head sha> <old>..<new> <findings file>` (skill, "Fixer mode").
+- Fixer: `fixer PR#<n> <head sha> <old>..<new> <findings file>` (same order as the skill's `argument-hint`;
+  skill, "Fixer mode").
 
 If the issue number or PR/head is missing, report `Decisions needed: bad brief` and stop.
 
@@ -77,14 +78,17 @@ Brief it with exactly:
 ```
 <abs worktree path>
 gates [SERVICE=a,b] [BASE=<ref>]
-run x<N> [expect fail] -- <command>
+run x<N> [expect fail] [in <dir>] -- <command>
 logs <your scratchpad>/<issue>-gates
 ```
-(one job line or several `run` lines). Commands must be in its allowed list: `make <target>`,
-`uv run ... pytest ...`, `go test|vet ...`, `cargo test|clippy ...`, `npx tsc --noEmit`, `npx vitest run`,
-`bash scripts/tests/<name>.sh`, `docker build --target builder ...`, optionally after
-`cd <relative dir> && `; no pipes or redirects. Wait for its report; never run the same command yourself in
-parallel. On a FAIL, read only the quoted lines, or a `sed -n '<a>,<b>p'` slice of the log it names.
+(one job line or several `run` lines). gate-runner only calls `scripts/ci/gate-run.sh`, which refuses
+anything outside its allow-list (script header): `make` gate/test targets with `TEST SERVICE BASE PR_LABELS
+E2E_SHARD IMAGE_TAG PYTEST_EXTRA`, `uv run --package <member> [--extra <x>] pytest ...`, `go test|vet` and
+`cargo test|clippy` with `in services/<svc>`, `scripts/tests/test-*.sh`; the dashboard only via
+`gates SERVICE=dashboard`. No `cd`, `&&`, pipes, redirects or `$`; Go `vet && test` is two `run` lines.
+Call it as a foreground Agent call (not `run_in_background`): that call is the wait; never run the same
+command yourself in parallel. On a FAIL, read only the quoted lines, or a `sed -n '<a>,<b>p'` slice of the
+log it names. `CAUGHT? (non-test error)` is not a caught mutation: fix the collection or tool error first.
 
 Run directly (no gate-runner) only: ONE test id for a quick red/green check, piped through `| tail -n 15`
 (`uv run --extra test pytest -q --tb=short <file>::<test> 2>&1 | tail -n 15`, `go test -run '^TestX$' ./pkg/`).
@@ -101,4 +105,7 @@ Exactly the skill's report (15 lines or fewer, hand back once), with these two l
 Labels: <added per brief | none added; PR needs: <labels>>
 Gates: <gate-runner summary: PASS n / FAIL n / SKIP n; failing gate names>; logs <dir>
 ```
+`PR needs:` lists every label the PR must carry. Name `no-spec-change` whenever the diff changes
+`services/**`, `lib/**` or `proto/**` but no spec under `docs/`: without that label the Spec Gate's
+"Spec touched" step fails the PR.
 Fixer mode: the skill's one line per finding, plus the `Gates:` line.

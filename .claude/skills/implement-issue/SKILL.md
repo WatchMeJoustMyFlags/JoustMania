@@ -10,7 +10,7 @@ description: >
   says "implement #1234", "fix issue #N", "open a PR for ...", or "apply these
   review findings to PR #N". For one use case end to end, /implement and the
   test skills hold the per-layer detail.
-argument-hint: "#ISSUE [scope / decisions] | fixer PR#N <old>..<new> <findings file>"
+argument-hint: "#ISSUE [scope / decisions] | fixer PR#N <head sha> <old>..<new> <findings file>"
 ---
 
 # Implement Issue (JoustMania)
