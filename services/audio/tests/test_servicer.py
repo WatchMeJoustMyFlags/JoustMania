@@ -119,6 +119,8 @@ class TestPlaySoundDuration:
     async def test_muted_reports_zero(self, servicer, mock_grpc_context):
         servicer.audio_enabled = False
         servicer.audio_manager.silent = False
+        # Playing would succeed and the clip is readable: only the muted return can give 0.0.
+        servicer.audio_manager.play_sound = MagicMock(return_value=True)
         with patch("services.audio.servicer.miniaudio.get_file_info", return_value=MagicMock(duration=7.0)):
             response = await servicer.PlaySound(
                 audio_pb2.PlaySoundRequest(file_path="FFA-instructions", volume=1.0, priority=2), mock_grpc_context

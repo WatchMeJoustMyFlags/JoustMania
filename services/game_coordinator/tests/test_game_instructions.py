@@ -269,6 +269,32 @@ class TestUC020InstructionsOn:
         assert game.game_outcome() == "force_ended"
         assert GameEvent.GAME_WINNER not in types
 
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A4", steps=[1, 3], br=["BR-003"])
+    async def test_force_end_during_colour_assignment_skips_the_start(self, fast_config):  # noqa: F811
+        """A4: a force-end before the start (here during colour assignment) skips it; one game_ended, force_ended."""
+        cm = RecordingControllerManager(num_controllers=3, infinite=True, max_duration=30.0)
+        audio = TimedAudio()
+        game, events = _ffa(audio, cm=cm)
+        flag_patch, init_patch = _patch_flag(_flag_client(False))
+        assign_colors = game._assign_ffa_colors
+
+        async def force_end_while_assigning():
+            await assign_colors()
+            game.force_end("admin_stop")
+
+        with flag_patch, init_patch, patch.object(game, "_assign_ffa_colors", force_end_while_assigning):
+            await asyncio.wait_for(game.run(), timeout=5.0)
+
+        types = _event_types(events)
+        assert GameEvent.GAME_STARTED not in types
+        assert GameEvent.COUNTDOWN_START not in types
+        assert cm.stream is None
+        assert not [name for name, _ in audio.calls if name == "PlayMusic"]
+        ended = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert len(ended) == 1
+        assert ended[0]["outcome"] == "force_ended"
+
 
 class TestUC020InstructionsOff:
     """UC-020 A5 step 1: off, unreadable, shadow or no clip: nothing plays, no wait."""
