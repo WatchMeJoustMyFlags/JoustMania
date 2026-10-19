@@ -16,7 +16,7 @@
 
 ## Preconditions
 
-- The integration stack is up; `sensitivity` has a baseline Werewolf rule (`game_mode == Werewolf` → level 3).
+- A service-tier stack is up; `sensitivity` has a baseline Werewolf rule (`game_mode == Werewolf` → level 3).
 
 ## Flow
 
@@ -44,7 +44,9 @@
 
 ## Automation
 
-- `tests/integration/test_flag_service_restart.py::test_restart_keeps_admin_settings_and_drops_the_rest` implements steps 1 to 6 and `test_restart_mid_game_reregisters_the_live_game` step 7 (each restarts `joustmania-flag-service`, then `joustmania-flagd`, as `scripts/flags.sh restart` does).
+**Tier:** T2 service (`tests/service/`, `make test-service`): flag service and game coordinator from source at HEAD, controller manager on mock controllers, one flagd, fake audio; each test runs on a `fresh_stack` of its own.
+
+- `tests/service/test_tc019_flag_service_restart.py::test_restart_keeps_admin_settings_and_drops_the_rest` implements steps 1 to 6 and `test_restart_mid_game_reregisters_the_live_game` step 7 (moved from the docker-compose suite in #1588). Each restarts the flag service (`FlagPlane.restart_flag_service()`: same ports and state file), then flagd (`restart_flagd()`), as `scripts/flags.sh restart` does.
 - Validation 5 is `services/game_coordinator/tests/test_flag_set_consistency.py` (both directions, tagged `tc="TC-019"`), `services/flag-service/state/snapshot_stamp_test.go` (the stamp) and `tests/contract/test_flagd_resolution.py::test_snapshot_stamp_reaches_the_in_process_resolver` (real flagd passes the stamp to the in-process resolver).
 - Validation 3 is a unit test: `services/game_coordinator/tests/test_event_list_reader.py` (tagged `tc="TC-019"`); the coordinator's reconcile after the reconnect is `services/game_coordinator/tests/test_flag_service_lifecycle.py`.
 - Not asserted: the NFR-052 5 s figure itself (the test bounds recovery at 60 s on shared CI runners and prints the time).
