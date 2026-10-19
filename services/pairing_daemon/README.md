@@ -222,7 +222,12 @@ Exposure is narrowed by:
   `control_bind.requested` and `control_bind.bound`, and the gauge
   `pairing_control_bind_unbound_addresses` counts the missing ones (#1450).
 - The connect-proxy rejects browser requests from another origin (403), so a
-  web page open on the operator's laptop cannot unpair controllers.
+  web page open on the operator's laptop cannot unpair controllers. It also
+  answers 403 when the request's Host is not an IP, `localhost`, the Pi's host
+  name / `<host name>.local` (from the host's `/etc/hostname`, mounted
+  read-only) or a name in `JOUSTMANIA_HOSTNAMES` (DNS rebinding, #1450): open
+  the dashboard by one of those, or add your name to `JOUSTMANIA_HOSTNAMES` in
+  `.env.local`.
 - A host firewall (e.g. ufw) must allow the Docker bridge to reach host port
   8002, or the connect-proxy answers 502.
 

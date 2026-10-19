@@ -649,11 +649,19 @@ services:
       - FLAG_SERVICE_URL=http://flag-service:8070
       # Pairing daemon control API (UC-005 unpair); the daemon runs on the host network
       - PAIRING_DAEMON_URL=http://host.docker.internal:8002
+      # Extra host names the dashboard is reached by (comma-separated), besides IP
+      # literals, localhost and the host's own <hostname> / <hostname>.local (read
+      # from the mount below); /pairing/unpair answers 403 for any other Host
+      # (UC-005 BR-003, DNS rebinding)
+      - JOUSTMANIA_HOSTNAMES=${JOUSTMANIA_HOSTNAMES:-}
       - OTEL_SERVICE_NAME=connect-proxy
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
+    volumes:
+      # The Pi's host name for the unpair Host allow-list (UC-005 BR-003)
+      - /etc/hostname:/etc/joustmania/host-hostname:ro
     extra_hosts:
       # Reach the host-networked pairing daemon (:8002) for UC-005 unpair
       - "host.docker.internal:host-gateway"

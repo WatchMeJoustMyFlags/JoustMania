@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -100,25 +102,44 @@ func TestUnpairHandler(t *testing.T) {
 // UC: UC-005 BR-003
 func TestSameOriginOnly(t *testing.T) {
 	called := 0
-	h := sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
+	h := sameOriginOnly([]string{"joustmania.local", "pi.local"}, func(w http.ResponseWriter, r *http.Request) {
 		called++
 		w.WriteHeader(http.StatusOK)
 	})
 	cases := []struct {
-		name, origin string
-		want         int
+		name, host, origin, secFetchSite string
+		want                             int
 	}{
-		{"UC-005/BR-003 no Origin (curl, scripts) passes", "", http.StatusOK},
-		{"UC-005/BR-003 same-origin dashboard passes", "http://joustmania.local", http.StatusOK},
-		{"UC-005/BR-003 foreign page is rejected", "https://evil.example", http.StatusForbidden},
-		{"UC-005/BR-003 same host other port is rejected", "http://joustmania.local:8080", http.StatusForbidden},
+		{"UC-005/BR-003 no Origin (curl, scripts) passes", "joustmania.local", "", "", http.StatusOK},
+		{"UC-005/BR-003 same-origin dashboard passes", "joustmania.local", "http://joustmania.local", "same-origin", http.StatusOK},
+		{"UC-005/BR-003 foreign page is rejected", "joustmania.local", "https://evil.example", "", http.StatusForbidden},
+		{"UC-005/BR-003 same host other port is rejected", "joustmania.local", "http://joustmania.local:8080", "", http.StatusForbidden},
+		{"UC-005/BR-003 DNS-rebinding host is rejected", "evil.example", "http://evil.example", "same-origin", http.StatusForbidden},
+		{"UC-005/BR-003 DNS-rebinding host without Origin is rejected", "evil.example", "", "", http.StatusForbidden},
+		{"UC-005/BR-003 configured name with a port passes", "pi.local:80", "http://pi.local:80", "same-origin", http.StatusOK},
+		{"UC-005/BR-003 configured name is case-insensitive", "JoustMania.Local", "", "", http.StatusOK},
+		{"UC-005/BR-003 IPv4 literal passes", "192.168.1.20", "http://192.168.1.20", "same-origin", http.StatusOK},
+		{"UC-005/BR-003 IPv4 literal with port passes", "10.0.0.5:80", "", "", http.StatusOK},
+		{"UC-005/BR-003 IPv6 literal passes", "[::1]:80", "", "", http.StatusOK},
+		{"UC-005/BR-003 bracketed IPv6 literal without port passes", "[::1]", "", "", http.StatusOK},
+		{"UC-005/BR-003 localhost passes", "localhost", "http://localhost", "same-origin", http.StatusOK},
+		{"UC-005/BR-003 localhost with port passes", "localhost:5173", "", "", http.StatusOK},
+		{"UC-005/BR-003 name that merely contains an allowed name is rejected", "joustmania.local.evil.example", "", "", http.StatusForbidden},
+		{"UC-005/BR-003 empty Host is rejected", "", "", "", http.StatusForbidden},
+		{"UC-005/BR-003 Sec-Fetch-Site cross-site is rejected", "joustmania.local", "", "cross-site", http.StatusForbidden},
+		{"UC-005/BR-003 Sec-Fetch-Site same-site is rejected", "joustmania.local", "", "same-site", http.StatusForbidden},
+		{"UC-005/BR-003 Sec-Fetch-Site none (typed URL) passes", "joustmania.local", "", "none", http.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			before := called
 			req := httptest.NewRequest(http.MethodPost, "http://joustmania.local/pairing/unpair", nil)
+			req.Host = tc.host
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
+			}
+			if tc.secFetchSite != "" {
+				req.Header.Set("Sec-Fetch-Site", tc.secFetchSite)
 			}
 			rec := httptest.NewRecorder()
 			h(rec, req)
@@ -130,4 +151,64 @@ func TestSameOriginOnly(t *testing.T) {
 			}
 		})
 	}
+}
+
+// UC: UC-005 BR-003
+func TestParseHostnames(t *testing.T) {
+	t.Run("UC-005/BR-003 JOUSTMANIA_HOSTNAMES is split, trimmed and normalised", func(t *testing.T) {
+		got := parseHostnames(" joustmania.local, Pi.Local. ,,")
+		want := []string{"joustmania.local", "pi.local"}
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+	t.Run("UC-005/BR-003 unset leaves only IPs and localhost", func(t *testing.T) {
+		if got := parseHostnames(""); len(got) != 0 {
+			t.Fatalf("got %v, want none", got)
+		}
+		if hostAllowed("joustmania.local", nil) {
+			t.Fatal("a name is allowed without JOUSTMANIA_HOSTNAMES")
+		}
+	})
+}
+
+// UC: UC-005 BR-003
+func TestHostHostnames(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	cases := []struct {
+		name, path string
+		want       []string
+	}{
+		{"UC-005/BR-003 host name file adds the name and its .local", write("plain", "raspberrypi"), []string{"raspberrypi", "raspberrypi.local"}},
+		{"UC-005/BR-003 trailing newline and whitespace are trimmed", write("newline", "  RaspberryPi \n"), []string{"raspberrypi", "raspberrypi.local"}},
+		{"UC-005/BR-003 a .local name is not doubled", write("mdns", "stage.local\n"), []string{"stage.local"}},
+		{"UC-005/BR-003 empty file adds nothing", write("empty", " \n"), nil},
+		{"UC-005/BR-003 absent file adds nothing", filepath.Join(dir, "missing"), nil},
+		{"UC-005/BR-003 a directory (bind mount of a missing host file) adds nothing", dir, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hostHostnames(tc.path)
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("UC-005/BR-003 the host's mDNS name passes the allow-list", func(t *testing.T) {
+		names := hostHostnames(write("pi", "raspberrypi\n"))
+		if !hostAllowed("raspberrypi.local", names) || !hostAllowed("RaspberryPi:80", names) {
+			t.Fatalf("host name not allowed with %v", names)
+		}
+		if hostAllowed("raspberrypi.local.evil.example", names) {
+			t.Fatal("a suffix trick passes")
+		}
+	})
 }
