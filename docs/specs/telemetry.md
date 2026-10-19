@@ -296,7 +296,7 @@ loop ends.
 | Talk pre-flight | Jaeger `service=agent operation=agent.decide`, tags `decide.backend`, `decide.outcome`, `decide.fallback_reason`; flag **variant names** of the stage baseline (`ambient`, `default`, `haiku`, `real_only`, ...) | `scripts/talk-preflight.sh` |
 | Calibration scripts | VictoriaMetrics `game_player_accel_magnitude{game_id,serial}` and `game_player_elimination_order` (trajectory features per player) | `scripts/calibration/vm_trajectory_features.py` |
 
-Many Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo harness or a
+Many Python metric names have no consumer in a dashboard, the agent, the dashboard SPA or a
 script (all `menu_*`, `psmove_*`, `audio_*` and others; the count is in the generated catalog); they
 are kept for ad-hoc analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers. The §6.2 catalog and its counts are **generated** from the same scans (#1280): one row per Python metric name, each Consumers cell equal to what the consumer scans find (Grafana and SPA PromQL, the agent's ingest constants, the name as a word in non-test `tools/` and `scripts/` source), and the **no** rows in Emitted equal to the metrics nothing records. A metrics PR runs `make specs`; `make specs-check` fails CI when the generated file is stale. The scans prove a name is referenced, not that the query using it is right.
 
@@ -304,7 +304,7 @@ are kept for ad-hoc analysis. `tests/contract/test_telemetry_contract.py` (#1357
 
 One row per Python metric name (`Counter` / `Gauge` / `Histogram` definitions in `services/*/metrics.py`,
 `lib/grpc_metrics.py` and `lib/flag_eval_visibility.py`), generated from the code. **Emitted** = some non-test code in the defining service records it
-(`.inc` / `.set` / `.observe` / `.labels`); **Consumers** = the directories whose dashboards (`grafana`), agent extractor (`agent`), SPA (`dashboard`), demo harness (`tools`) or scripts
+(`.inc` / `.set` / `.observe` / `.labels`); **Consumers** = the directories whose dashboards (`grafana`), agent extractor (`agent`), SPA (`dashboard`) or scripts
 (`scripts`) name it. Types: counter (C), gauge (G, observable), histogram (H). Names defined but never recorded by any
 service are listed (Emitted **no**) so a consumer does not trust them.
 
