@@ -113,7 +113,7 @@ EBUSY on the bind mount). Locks are per process or per writer instance; there is
 | W6 | Menu admin | `lib/flag_config_writer.py` (`update_default_variant` :35, `cycle_variant` :215), `services/menu/servicer.py:101-108`, `handlers/admin.py` | `user.json`, `game.json`, `agent.json` | `current_game`, `game_instructions`; `sensitivity`, `num_teams`, `force_all_start`; `interventions_allowed` | in place, no lock | host in admin mode, game selection | no |
 | W7 | connect-proxy | `canary.go` (`setCanaryRouting` :103) | `controller.json` | `bluetooth_backend` (`defaultVariant` or `fractional`) | typed remarshal (drops unknown keys), `os.WriteFile`; in CI it writes the base dir while flagd serves `ci/` | operator HTTP POST | no |
 | W8 | Stage and operator scripts | `scripts/talk-stage.sh` (`set`, `reset`, `permissions`), `scripts/agent-backend.sh`, `scripts/agent-dryrun-enable.sh`, `scripts/agent-killswitch.sh` | `ci/agent.json` (default), `talk-stage.sh reset` also `interventions.json` | `decision.*`, `enabled`, `experiments_enabled`, `interventions_allowed`, the stage baseline (`scripts/talk-baseline.json`) | Python heredoc, in place | presenter / operator | no |
-| W9 | Demo validation harness | `tools/demo/validation_harness.py` (`set_flag_default_variant` :219, `restore_flags` :211) | `<domain>.json` | `interventions_allowed`, `fitness.accelerate.target_session_seconds` | in place, snapshot and restore | per scenario | no |
+| W9 | Demo validation harness | removed in #1322 (`tools/demo/validation_harness.py` deleted; nothing ran it) | none | none | n/a | n/a | n/a |
 | W10 | Integration fixtures | `tests/integration/test_intervention_flow.py` (`flag_files` :229, `write_*`, `rewrite_edge_value` with `_reload_marker`), `test_parallel_intervention_flow.py` (`_branches` side registry, uuid5 variant names, `_FILE_LOCK`), `test_intervention_smoke.py`, `test_gameid_intervention_isolation.py`, `test_experiment_shadow_isolation.py`, `test_experiment_cohort_loop.py`, `test_decide_backend_e2e.py`, `test_admin_flow.py`, `test_rollout_plumbing.py`, `helpers.py` (`wait_flag_file_restored`) | `services/flagd/ci/*.json` | every intervention, `policy.*` budgets, agent switches, `game.json`, `user.json`, `rollout.json` | in place; snapshot and byte-for-byte restore | per test | `_branches` ladders (tests only) |
 | W11 | Script tests | `scripts/tests/test-talk-stage.sh`, `test-talk-preflight.sh`, `test-agent-backend.sh` | copies of `ci/agent.json`, `ci/interventions.json` in a temp dir | the flags W8 writes | file fixtures | CI "Script Tests" job | no |
 | W12 | `flag-dir-init` | busybox one-shot in `docker-compose.yml:65`, `docker-compose.ci.yml:75`, `docker-compose.lite.yml:40` | the flag directory | none: `chgrp 65532` + `g+w` so the nonroot menu can write | permissions only | stack start | n/a |
@@ -144,7 +144,7 @@ Non-writers (checked): the game coordinator (it keeps the in-memory nonce baseli
 | W6, R5 | Menu admin | `PUT /game/sensitivity`, `/game/num_teams`, `/game/force_all_start`, `/user/current_game`, `/user/game_instructions` (persisted, D10) and `PUT /agent/interventions_allowed` (persisted; #1412); `cycle_variant` reads `GET`; `FlagConfigWriter` deleted in #1416 | #1412 (`interventions_allowed`), #1415 (rest) |
 | W7 | connect-proxy | `PUT /controller/bluetooth_backend` with `fraction_percent` (the `chaos_fault_type` writer was removed in #1322); the CI mount gap disappears | #1420 |
 | W8, W11, R6 | Stage scripts, their tests, pre-flight | `curl -X PUT http://localhost/flags/agent/decision.backend -d '{"variant":"jev"}'` through envoy; `talk-stage.sh reset` becomes `DELETE /agent?writer=stage` (clears stage overlays); the script tests stub the HTTP endpoint instead of copying files | #1412 |
-| W9 | Validation harness | `PUT` per scenario, `DELETE` after | #1412 |
+| W9 | Validation harness | none (removed in #1322) | #1412 |
 | W10 | Integration fixtures | a `flag_service` fixture over HTTP; overlays cleared with `DELETE` between tests; no snapshots, no `_branches`, no `_reload_marker`, no `wait_flag_file_restored` | with the cutover of the set they write (#1411, #1412, #1415, #1420); shared fixture in #1413 |
 | W12 | `flag-dir-init` | removed; flag mounts read-only, on the flag service only, once every set is cut over | #1414 checklist |
 
@@ -475,7 +475,7 @@ scripts, fixtures), so the suite stays green after every step. Until a set is cu
 |---|---|---|
 | `system`, `observability` | none at runtime (proves the plumbing) | #1408 |
 | `interventions`, `rollout` | W1, W2, R1; fixtures in `test_intervention_flow.py`, `test_parallel_intervention_flow.py`, `test_intervention_smoke.py`, `test_gameid_intervention_isolation.py`, `test_rollout_plumbing.py` | #1411 |
-| `agent` | W8, W9, W11, R6, the menu's `interventions_allowed`; agent-set fixtures | #1412 |
+| `agent` | W8, W11, R6, the menu's `interventions_allowed`; agent-set fixtures | #1412 |
 | `game`, `user` | W3, W4, W5, the rest of W6, R2 to R5; `test_admin_flow.py`, `test_experiment_shadow_isolation.py`, the game part of `test_intervention_smoke.py`, `test_experiment_cohort_loop.py` | #1415 |
 | `controller` | W7 | #1420 |
 | (after every cutover) | W12 removed; the writable flag mounts of menu, agent and connect-proxy removed; every flag mount read-only | #1414 checklist |

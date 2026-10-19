@@ -353,8 +353,8 @@ class TestPollingStateCleanup:
             event_publisher=event_publisher,
         )
 
-    def test_adaptive_polling_state_initialized_empty(self):
-        """Adaptive polling state dicts start empty."""
+    def test_activity_tracking_state_initialized_empty(self):
+        """Activity tracking state dicts start empty."""
         loop = self._create_discovery_loop()
 
         assert loop._last_activity_time == {}

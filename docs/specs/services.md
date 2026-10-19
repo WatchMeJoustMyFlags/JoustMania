@@ -82,8 +82,8 @@ deployed stacks are unchanged.
 | `MOCK_CONTROL_PORT` | controller-manager (mock adapter only) | 50062 |
 
 Compose variants: `docker-compose.yml` (full), `.override.yml` (dev ports, auto-loaded by a bare `docker compose`; the Pi start path passes `-f docker-compose.yml` so it never loads it, #1319), `.lite.yml` (no
-observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318; the pairing daemon on the host network as in the full stack, #1402), `.ci.yml` (CI baseline dir for the flag service, profiles), `.ci-rust.yml`, `.dev.yml` (source mounts), `.dry-run.yml`
-(demo / experiment seed), `.decide-e2e.yml` (fake OpenAI server), `.agent-coordinator.yml`.
+observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318; the pairing daemon on the host network as in the full stack, #1402), `.ci.yml` (CI baseline dir for the flag service, profiles), `.dev.yml` (source mounts), `.dry-run.yml`
+(demo / experiment seed), `.decide-e2e.yml` (fake OpenAI server), `.agent-coordinator.yml`. (`.ci-rust.yml`, which nothing loaded, was deleted in #1322.)
 
 **Traceability:** C-014, C-015, FR-085, NFR-020 / UC-035 / `docker-compose*.yml`, `services/envoy/envoy.yaml`, `services/*/server.py` / `tests/integration/conftest.py`, `tests/service/harness/stack.py`.
 

@@ -293,11 +293,10 @@ loop ends.
 | Dashboard SPA | Jaeger `service=agent operation=agent.decide` (tags `decide.*` incl. the `decide.answers` shape, `gen_ai.request.model`, `gen_ai.response.model`, `game.id`, `game.kind`, `decision.*`, `player.serial` / `player.name` on `agent.decision` for the Decisions row target (#1295); a child is a chat span when its name starts with `chat ` or `gen_ai.operation.name=chat`); Loki agent log lines (§7); VictoriaMetrics `sum(agent_intervention_writes_total) by (result)` | `services/dashboard/src/agent.ts`, `experiments.ts` |
 | Agent | §4.4 | |
 | Integration tests | span names `agent.decide`, `agent.signal_received`, `agent.decision`, `chat {model}`, `agent.disabled`; `decide.*` tags; event `gen_ai.evaluation.result` | `tests/integration/test_decide_backend_e2e.py` |
-| Demo validation harness | span chain `agent.signal_received` → `agent.decision` → `agent.action` per game; instant queries to VictoriaMetrics (`/victoria-metrics/api/v1/query`) | `tools/demo/validation_harness.py` |
 | Talk pre-flight | Jaeger `service=agent operation=agent.decide`, tags `decide.backend`, `decide.outcome`, `decide.fallback_reason`; flag **variant names** of the stage baseline (`ambient`, `default`, `haiku`, `real_only`, ...) | `scripts/talk-preflight.sh` |
 | Calibration scripts | VictoriaMetrics `game_player_accel_magnitude{game_id,serial}` and `game_player_elimination_order` (trajectory features per player) | `scripts/calibration/vm_trajectory_features.py` |
 
-Many Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo harness or a
+Many Python metric names have no consumer in a dashboard, the agent, the dashboard SPA or a
 script (all `menu_*`, `psmove_*`, `audio_*` and others; the count is in the generated catalog); they
 are kept for ad-hoc analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers. The §6.2 catalog and its counts are **generated** from the same scans (#1280): one row per Python metric name, each Consumers cell equal to what the consumer scans find (Grafana and SPA PromQL, the agent's ingest constants, the name as a word in non-test `tools/` and `scripts/` source), and the **no** rows in Emitted equal to the metrics nothing records. A metrics PR runs `make specs`; `make specs-check` fails CI when the generated file is stale. The scans prove a name is referenced, not that the query using it is right.
 
@@ -305,7 +304,7 @@ are kept for ad-hoc analysis. `tests/contract/test_telemetry_contract.py` (#1357
 
 One row per Python metric name (`Counter` / `Gauge` / `Histogram` definitions in `services/*/metrics.py`,
 `lib/grpc_metrics.py` and `lib/flag_eval_visibility.py`), generated from the code. **Emitted** = some non-test code in the defining service records it
-(`.inc` / `.set` / `.observe` / `.labels`); **Consumers** = the directories whose dashboards (`grafana`), agent extractor (`agent`), SPA (`dashboard`), demo harness (`tools`) or scripts
+(`.inc` / `.set` / `.observe` / `.labels`); **Consumers** = the directories whose dashboards (`grafana`), agent extractor (`agent`), SPA (`dashboard`) or scripts
 (`scripts`) name it. Types: counter (C), gauge (G, observable), histogram (H). Names defined but never recorded by any
 service are listed (Emitted **no**) so a consumer does not trust them.
 
@@ -323,8 +322,8 @@ key breaks them.
 
 | Message | Keys consumers parse | Consumers | Emitted at |
 |---|---|---|---|
-| `agent.evaluate` | `session_id`, `game_mode`, `decision_backend`, `battery_threshold`, `variance_window`, `max_per_minute` (also emitted: `player_count`, `duration`) | dashboard Agent tab (Loki `{service_name="agent"}`, `services/dashboard/src/agent.ts`); `tools/demo/validation_harness.py:397` (`decision_backend=`); `tests/integration/test_experiment_cohort_loop.py:133-136` (`decision_backend=rules`) | `services/agent/decision/decision.go:551-560` |
-| `agent.decision_blocked` | `intervention`, `reason` (also: `blocked`, `target_serial`, `decision_reason`, `allowed`) | dashboard Agent tab (feed rows; its blocked tallies come from `agent_decisions_total`, the lines only as fallback, #1326); `tools/demo/validation_harness.py:398` | `services/agent/decision/decision.go:810-816`; a `rate_limit` refusal that repeats while the budget is unchanged is not logged here, only as debug `agent.decision_rate_limit_repeat` (`intervention`, `target_serial`; UC-040 A21, #1326) |
+| `agent.evaluate` | `session_id`, `game_mode`, `decision_backend`, `battery_threshold`, `variance_window`, `max_per_minute` (also emitted: `player_count`, `duration`) | dashboard Agent tab (Loki `{service_name="agent"}`, `services/dashboard/src/agent.ts`); `tests/integration/test_experiment_cohort_loop.py:133-136` (`decision_backend=rules`) | `services/agent/decision/decision.go:551-560` |
+| `agent.decision_blocked` | `intervention`, `reason` (also: `blocked`, `target_serial`, `decision_reason`, `allowed`) | dashboard Agent tab (feed rows; its blocked tallies come from `agent_decisions_total`, the lines only as fallback, #1326) | `services/agent/decision/decision.go:810-816`; a `rate_limit` refusal that repeats while the budget is unchanged is not logged here, only as debug `agent.decision_rate_limit_repeat` (`intervention`, `target_serial`; UC-040 A21, #1326) |
 | `agent.decide.backend_misconfigured` | `state` (`entered` WARN with `reason`; `cleared` INFO with `previous_reason`), `session_id`, `backend` | operators (Loki); `services/agent/decision/decide_fallback_quiet_test.go` | `services/agent/decision/decide_hook.go` (`noteMisconfigured`); once per state change per game, #1350 |
 | `agent.rollout_expand`, `agent.rollout_rollback`, `agent.rollout_rollback_recommended` | message only (they carry `dry_run`, #1375) | dashboard Agent tab | `services/agent/decision/infra_loop.go:570-578` |
 | `experiment.game_assigned` | `experiment_id`, `game_id`, `arm`, `pair_index` | dashboard Experiments tab (`services/dashboard/src/experiments.ts`) | `services/agent/experiment/registry.go:1107` |
