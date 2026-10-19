@@ -161,7 +161,7 @@ class AdminModeHandler:
         # Background tasks (to prevent garbage collection)
         self._pending_tasks: set[asyncio.Task] = set()
 
-        # Timeout task for auto-exit after 60 seconds
+        # UC-012 A4 / NFR-006: admin mode exits 60 s after entry (the one timeout source).
         self._timeout_task: asyncio.Task | None = None
         self._timeout_seconds = 60
 
@@ -236,7 +236,7 @@ class AdminModeHandler:
     def is_held_by_other(self, serial: str) -> bool:
         """True if admin mode is actively held by a controller other than ``serial``.
 
-        UC-012 precondition: only one controller may be in admin mode at a time.
+        UC-012 BR-004: only one controller may be in admin mode at a time.
         A stale session (owner no longer in ADMIN state) does not hold the lock.
         """
         return self._owned_by_other(serial) and not self._session_is_stale()
@@ -487,20 +487,22 @@ class AdminModeHandler:
             serial: Controller serial number
             button: Button name (trigger, move, cross, circle, square, triangle, ps)
         """
-        # Only the controller that owns the admin session may issue admin commands.
+        # UC-012 BR-004: only the controller that owns the admin session may issue admin commands.
         if self.is_held_by_other(serial):
             logger.warning(f"Ignoring admin button {button} from {serial}: session owned by {self.controller_serial}")
             return
 
-        # Check for admin mode timeout (60 seconds)
-        if time.time() - self.entry_time > 60:
-            logger.info("Admin mode timed out after 60 seconds")
+        # UC-012 A4 / NFR-006: a press after the timeout exits, in case the timer task has not run yet.
+        # Same limit as the timer task (_timeout_seconds), so NFR-006 has one source.
+        if time.time() - self.entry_time > self._timeout_seconds:
+            logger.info(f"Admin mode timed out after {self._timeout_seconds} seconds")
             await self._exit_to_connected(serial)
             return
 
         if not self._debouncer.should_process(serial, button):
             return
 
+        # UC-012 BR-005: the admin button map.
         match button:
             case ButtonTrackingKey.MOVE:
                 await self.handle_cycle_option(serial)
@@ -819,7 +821,7 @@ class AdminModeHandler:
             span.set_attribute("game.name", self._current_game_mode)
 
             try:
-                # Check force_all_start from flagd via OpenFeature
+                # UC-012 BR-001: force_all_start is read at force start, not when it was set.
                 from lib.feature_flags import get_flag_client
 
                 gs_client = get_flag_client("game")
@@ -1617,7 +1619,7 @@ class AdminModeHandler:
         Drop the admin session without the exit effect or a state transition.
 
         Used when controller state is cleared wholesale (lobby reset, stream
-        reconnect, StopMenu) so the single-admin lock (UC-012) is released.
+        reconnect, StopMenu) so the single-admin lock (UC-012 BR-004) is released.
 
         Args:
             span_attribute: Boolean attribute set on the session span to record why.

@@ -255,9 +255,15 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             preview_state = dict(button_state)
             preview_state[button] = True
             if self.admin_handler.check_combo_from_state(preview_state):
+                if self.state != menu_pb2.MenuState.RUNNING:
+                    # UC-012 Pre-1: admin mode only from a RUNNING menu (the button
+                    # stream already runs before StartMenu and after StopMenu).
+                    logger.info(f"Admin combo from {serial} ignored: menu is not running")
+                    await self.state_manager.handle_button_event(serial, button, is_press)
+                    return
                 self.admin_handler.release_stale_session()
                 if self.admin_handler.is_held_by_other(serial):
-                    # UC-012 precondition: only one admin at a time. Ignore the
+                    # UC-012 BR-004: only one admin at a time. Ignore the
                     # combo and handle the press as an ordinary button.
                     logger.info(
                         f"Admin combo from {serial} ignored: admin mode already active on "
@@ -376,7 +382,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             # Clear all lobby state
             self._clear_ready_state()
             self.state_manager.controller_states.clear()
-            # Controller state is gone, so release the single-admin lock (UC-012).
+            # UC-012 BR-004: controller state is gone, so release the single-admin lock.
             self.admin_handler.abandon_session()
 
             await self.event_publisher.publish("menu_stopped", {})
@@ -959,7 +965,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             game_kind=GAME_KIND_REAL,
         )
 
-        # Read game settings from flagd (game domain)
+        # UC-012 BR-001: settings are read once here, at game start; the running game keeps them.
         sensitivity = self.game_settings_client.get_integer_value("sensitivity", 2)
 
         # Build base config with the game mode's name. The menu is the REAL game

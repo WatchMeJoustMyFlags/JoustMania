@@ -32,8 +32,8 @@
 
 ## Validation
 
-1. **Settings reach the game**: the started game's mode is the one selected in step 4.
-2. **Flags persisted**: the flag service holds `sensitivity` and `current_game` as persisted admin values (`admin_value` in `GET /game/sensitivity`, `GET /user/current_game`), UC-053 A2; the flag files are unchanged.
+1. **Settings reach the game**: the started game's mode is the one selected in step 4, and it runs at the sensitivity level set in step 2 (its `game_sensitivity` gauge, UC-012 step 6).
+2. **Flags persisted**: the flag service holds `sensitivity` and `current_game` as persisted admin values (`admin_value` in `GET /game/sensitivity`, `GET /user/current_game`), UC-053 A2; the baseline flag files are byte-for-byte unchanged (UC-012 Post-S-1).
 
 ## Postconditions
 
@@ -42,7 +42,7 @@
 
 ## Automation
 
-**Tier:** T2 service (`tests/service/`, `make test-service`): menu, game coordinator and controller manager (mock controllers) from source at HEAD, flag service and one flagd, fake audio (`LOBBY` composition).
+**Tier:** T2 service (`tests/service/`, `make test-service`): menu, game coordinator and controller manager (mock controllers) from source at HEAD, flag service and one flagd, fake audio, OTLP to the stack's sink (`LOBBY` composition with `otlp=True`).
 
 - `tests/service/test_tc005_admin_journey.py::test_host_tunes_and_force_starts` implements steps 1 to 7 and Validations 1 and 2 as one journey (moved from the docker-compose suite in #1562). Along the way it asserts the partial combo (three face buttons do not enter admin), UC-012 main steps 3 to 5 (Move selects `num_teams`, Select increments it) and steps 7, 8 (PS leaves admin white; the host then re-enters admin for the force start), the UC-011 step 3 mode announcement on the fake audio service, the step 5 roster (every connected controller) and, in step 7, a game colour on the host (lit, not admin white).
 - In the test the trigger hold is about 1.5 s (the force-start duration is shortened by flag), not 3 s.

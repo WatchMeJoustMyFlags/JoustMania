@@ -257,6 +257,7 @@ class TestMenuServicerOnButton:
         """
         from proto import controller_manager_pb2
 
+        real_servicer.state = menu_pb2.MenuState.RUNNING  # Pre-1
         await _connect(real_servicer, "host", "other")
         for button in ("cross", "circle", "square", "triangle"):
             await real_servicer.on_button("host", button, True)
@@ -284,6 +285,7 @@ class TestMenuServicerOnButton:
     @pytest.mark.asyncio
     async def test_face_button_release_rearms_combo(self, real_servicer):
         """Releasing a face button clears combo_shown so the next full combo is seen again."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING  # Pre-1
         await _connect(real_servicer, "host")
         for button in ("cross", "circle", "square", "triangle"):
             await real_servicer.on_button("host", button, True)

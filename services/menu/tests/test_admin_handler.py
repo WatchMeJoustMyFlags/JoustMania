@@ -3,13 +3,14 @@
 import asyncio
 import threading
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, create_autospec, patch
 
 import pytest
 
 from lib.colors import Colors
 from lib.controller_constants import ButtonTrackingKey
 from lib.types import Sound
+from proto import menu_pb2
 from services.menu.handlers.admin import AdminModeHandler
 from services.menu.handlers.base import ControllerState
 
@@ -217,6 +218,38 @@ class TestAdminOptionNavigation:
         for expected_name in expected_sequence:
             await handler.handle_cycle_option("test_serial")
             assert handler.option_names[handler.current_option] == expected_name
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3])
+    async def test_cycle_option_shows_each_option_colour(self, handler, mock_state_manager):
+        """Move shows the selected option's colour: sensitivity blue, num_teams turquoise,
+        force_all_start orange, agent_control purple."""
+        expected = [Colors.Blue.value, Colors.Turquoise.value, Colors.Orange.value, Colors.Purple.value]
+        handler.current_option = len(handler.option_names) - 1  # the next Move selects index 0
+        sleep = create_autospec(asyncio.sleep)  # the restore-to-white task must not run here
+        with patch("services.menu.handlers.admin.asyncio.sleep", sleep):
+            for colour in expected:
+                mock_state_manager.led.send_base_color.reset_mock()
+                await handler.handle_cycle_option("test_serial")
+                assert mock_state_manager.led.send_base_color.await_args_list[0] == call("test_serial", colour)
+            for task in list(handler._pending_tasks):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-005"])
+    async def test_cycle_option_restores_white_after_the_option_colour(self, handler, mock_state_manager):
+        """BR-005 Move: the option colour shows for about 1 s, then the LED is white again (patched clock)."""
+        sleep = create_autospec(asyncio.sleep)
+        handler.current_option = 0
+        with patch("services.menu.handlers.admin.asyncio.sleep", sleep):
+            await handler.handle_cycle_option("test_serial")
+            await asyncio.gather(*handler._pending_tasks)
+
+        sleep.assert_awaited_once_with(1.1)
+        assert mock_state_manager.led.send_base_color.await_args_list == [
+            call("test_serial", Colors.Turquoise.value),
+            call("test_serial", Colors.White.value),
+        ]
 
     @pytest.mark.asyncio
     async def test_cycle_option_index_always_in_bounds(self, handler):
@@ -431,6 +464,33 @@ class TestHandleSensitivityLocalStorage:
         mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with("sensitivity", forward=True)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A1")
+    @pytest.mark.parametrize(
+        ("variant", "colour", "voice"),
+        [
+            ("ultra_slow", Colors.Blue, Sound.MENU_VOX_SENSITIVITY_ULTRA_HIGH),
+            ("slow", Colors.Turquoise, Sound.MENU_VOX_SENSITIVITY_HIGH),
+            ("medium", Colors.Green, Sound.MENU_VOX_SENSITIVITY_MEDIUM),
+            ("fast", Colors.Orange, Sound.MENU_VOX_SENSITIVITY_LOW),
+            ("ultra_fast", Colors.Red, Sound.MENU_VOX_SENSITIVITY_ULTRA_LOW),
+        ],
+    )
+    async def test_handle_sensitivity_pulses_level_colour_and_plays_level_voice(
+        self, handler, mock_state_manager, variant, colour, voice
+    ):
+        """Circle: the new level is shown as a colour pulse and announced with its voice line."""
+        from proto import controller_manager_pb2
+
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = variant
+
+        await handler.handle_sensitivity("test_serial")
+
+        effect_call = mock_state_manager.led.send_game_effect.await_args
+        assert effect_call.args == ("test_serial", controller_manager_pb2.GAME_EFFECT_PULSE)
+        assert effect_call.kwargs["color"] == colour.value
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(voice)
+
+    @pytest.mark.asyncio
     async def test_handle_sensitivity_wrapping_handled_by_writer(self, handler, mock_state_manager):
         """Sensitivity wrapping is delegated to FlagServiceWriter.cycle_variant."""
         mock_state_manager.game_settings_writer.get_current_variant.return_value = "ultra_fast"
@@ -446,6 +506,7 @@ class TestHandleForceStartFlagd:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-014", flow="main", steps=[3])
+    @pytest.mark.uc("UC-012", br=["BR-001"])
     async def test_handle_force_start_reads_from_flagd(self, handler, mock_state_manager):
         """handle_force_start should read force_all_start from flagd."""
         mock_state_manager.connected_controllers = {"s1", "s2"}
@@ -818,6 +879,7 @@ class TestHandleButtonEventDispatch:
     """Tests for button event routing in handle_button_event."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-005"])
     async def test_dispatch_move_to_cycle_option(self, handler):
         """MOVE button should dispatch to handle_cycle_option."""
         handler.handle_cycle_option = AsyncMock()
@@ -833,6 +895,7 @@ class TestHandleButtonEventDispatch:
         handler._start_trigger_hold_tracking.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4], br=["BR-005"])
     async def test_dispatch_select_to_increase(self, handler):
         """SELECT button should dispatch to handle_increase_value."""
         handler.handle_increase_value = AsyncMock()
@@ -840,6 +903,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_increase_value.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4], br=["BR-005"])
     async def test_dispatch_start_to_decrease(self, handler):
         """START button should dispatch to handle_decrease_value."""
         handler.handle_decrease_value = AsyncMock()
@@ -848,6 +912,7 @@ class TestHandleButtonEventDispatch:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", br=["BR-005"])
     async def test_dispatch_cross_to_game_mode(self, handler):
         """CROSS button should dispatch to handle_game_mode."""
         handler.handle_game_mode = AsyncMock()
@@ -871,7 +936,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_battery.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="A3")
+    @pytest.mark.uc("UC-012", flow="A3", br=["BR-005"])
     async def test_dispatch_square_to_instructions(self, handler):
         """SQUARE button should dispatch to handle_instructions."""
         handler.handle_instructions = AsyncMock()
@@ -879,7 +944,7 @@ class TestHandleButtonEventDispatch:
         handler.handle_instructions.assert_called_once_with("test_serial")
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[7])
+    @pytest.mark.uc("UC-012", flow="main", steps=[7], br=["BR-005"])
     async def test_dispatch_ps_to_exit(self, handler):
         """PS button should dispatch to _exit_to_connected."""
         handler._exit_to_connected = AsyncMock()
@@ -888,14 +953,34 @@ class TestHandleButtonEventDispatch:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="A4")
+    @pytest.mark.nfr("NFR-006")
     async def test_timeout_exits_after_60_seconds(self, handler):
         """Should auto-exit if entry_time was more than 60 seconds ago."""
+        assert handler._timeout_seconds == 60
         handler.entry_time = time.time() - 61
         handler._exit_to_connected = AsyncMock()
 
         await handler.handle_button_event("test_serial", ButtonTrackingKey.CROSS)
 
         handler._exit_to_connected.assert_called_once_with("test_serial")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A4")
+    @pytest.mark.nfr("NFR-006")
+    async def test_press_check_uses_the_timer_limit(self, handler):
+        """The per-press check and the timer task share _timeout_seconds (one NFR-006 source)."""
+        handler._timeout_seconds = 5
+        handler.handle_game_mode = AsyncMock()
+        handler._exit_to_connected = AsyncMock()
+
+        handler.entry_time = time.time() - 4
+        await handler.handle_button_event("test_serial", ButtonTrackingKey.CROSS)
+        handler._exit_to_connected.assert_not_called()
+        handler.handle_game_mode.assert_awaited_once_with("test_serial")
+
+        handler.entry_time = time.time() - 6
+        await handler.handle_button_event("test_serial", ButtonTrackingKey.SQUARE)
+        handler._exit_to_connected.assert_awaited_once_with("test_serial")
 
     @pytest.mark.asyncio
     async def test_debounce_rejects_rapid_presses(self, handler):
@@ -1369,6 +1454,7 @@ class TestShowValueFeedbackDetails:
     """Detailed tests for _show_value_feedback color calculations."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5], br=["BR-005"])
     async def test_num_teams_2_is_green(self, handler, mock_state_manager):
         """num_teams=2 should produce green (0, 255, 0)."""
         await handler._show_value_feedback("test_serial", "num_teams", 2)
@@ -1376,6 +1462,7 @@ class TestShowValueFeedbackDetails:
         assert call_kwargs["color"] == (0, 255, 0)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[5], br=["BR-005"])
     async def test_num_teams_6_is_red(self, handler, mock_state_manager):
         """num_teams=6 should produce red (255, 0, 0)."""
         await handler._show_value_feedback("test_serial", "num_teams", 6)
@@ -1916,7 +2003,7 @@ class TestForceStartThresholdFlag:
 
 @pytest.mark.uc("UC-012", br=["BR-004"])
 class TestSingleAdminSession:
-    """UC-012 precondition: only one controller may be in admin mode at a time.
+    """UC-012 Pre-1 and BR-004: admin mode needs a RUNNING menu and only one controller holds it.
 
     Drives the real MenuServicer.on_button combo detection, the real StateManager
     and the real AdminModeHandler — no re-implemented logic.
@@ -1954,7 +2041,12 @@ class TestSingleAdminSession:
         )
         state_manager.register_handler(admin_handler)
 
-        servicer = SimpleNamespace(idle_monitor=MagicMock(), state_manager=state_manager, admin_handler=admin_handler)
+        servicer = SimpleNamespace(
+            idle_monitor=MagicMock(),
+            state_manager=state_manager,
+            admin_handler=admin_handler,
+            state=menu_pb2.MenuState.RUNNING,
+        )
         return servicer, state_manager, admin_handler
 
     async def _press_combo(self, servicer, serial):
@@ -1966,7 +2058,7 @@ class TestSingleAdminSession:
             await MenuServicer.on_button(servicer, serial, button, False)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_second_controller_combo_is_rejected(self, stack):
         """A second controller completing the combo stays CONNECTED; the first keeps its session."""
         servicer, state_manager, admin_handler = stack
@@ -1984,11 +2076,14 @@ class TestSingleAdminSession:
             # The first controller's auto-exit timeout must not be cancelled/replaced.
             assert admin_handler._timeout_task is timeout_task
             assert not timeout_task.done()
+            # BR-004: the rejected combo press is handled as an ordinary button of B.
+            connected_handler = state_manager._handlers[ControllerState.CONNECTED]
+            assert call("B", "triangle") in connected_handler.handle_button.await_args_list
         finally:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_second_controller_can_enter_after_first_exits(self, stack):
         """Once the active admin leaves, another controller may enter admin mode."""
         servicer, state_manager, admin_handler = stack
@@ -2005,7 +2100,7 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_buttons_from_non_admin_serial_are_ignored(self, inactive_handler, mock_state_manager):
         """Defence in depth: admin commands are only accepted from the admin controller."""
         mock_state_manager.get_controller_state = MagicMock(return_value=ControllerState.ADMIN)
@@ -2020,7 +2115,7 @@ class TestSingleAdminSession:
         assert inactive_handler.active is True
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_on_exit_for_other_serial_keeps_session(self, inactive_handler):
         """on_exit for a controller that does not own the session must not end it."""
         inactive_handler.active = True
@@ -2041,7 +2136,7 @@ class TestSingleAdminSession:
         assert admin_handler.controller_serial == "B"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_lobby_reset_releases_lock(self, stack):
         """StateManager.reset() (lobby restart) releases the admin session."""
         servicer, state_manager, admin_handler = stack
@@ -2059,7 +2154,7 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_stream_reconnect_releases_lock(self, stack):
         """on_stream_reconnected() releases the admin session."""
         servicer, state_manager, admin_handler = stack
@@ -2075,7 +2170,7 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_stop_menu_releases_lock(self, stack):
         """StopMenu releases the admin session."""
         from proto import menu_pb2
@@ -2093,12 +2188,13 @@ class TestSingleAdminSession:
 
             assert response.success is True
             assert admin_handler.active is False
+            servicer.state = menu_pb2.MenuState.RUNNING  # StartMenu again (Pre-1)
             await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
         finally:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_admin_disconnect_releases_lock(self, stack):
         """The admin controller disconnecting while in ADMIN releases the lock."""
         servicer, state_manager, admin_handler = stack
@@ -2113,7 +2209,7 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     @pytest.mark.uc("UC-012", flow="A4")
     async def test_timeout_releases_lock(self, stack):
         """The auto-exit timeout releases the lock and returns the admin to CONNECTED."""
@@ -2130,7 +2226,7 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_timeout_ends_session_when_owner_state_already_cleared(self, stack):
         """If the owner's state was cleared behind the handler's back, the timeout still ends the session."""
         servicer, state_manager, admin_handler = stack
@@ -2146,7 +2242,7 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", flow="main", steps=[1])
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_stale_session_does_not_block_new_admin(self, stack):
         """Self-healing lock: a session whose owner is no longer ADMIN is released on the next combo."""
         servicer, state_manager, admin_handler = stack
@@ -2159,5 +2255,22 @@ class TestSingleAdminSession:
             await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
             await asyncio.sleep(0)
             assert stale_timeout.cancelled()
+        finally:
+            await admin_handler.exit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", cond=["Pre-1"])
+    @pytest.mark.parametrize("menu_state", ["STOPPED", "GAME_STARTING"])
+    async def test_combo_outside_a_running_menu_is_ignored(self, stack, menu_state):
+        """The combo enters admin mode only while the menu is RUNNING; otherwise it is an ordinary press."""
+        servicer, state_manager, admin_handler = stack
+        servicer.state = menu_pb2.MenuState.Value(menu_state)
+        try:
+            await self._press_combo(servicer, "A")
+
+            assert state_manager.get_controller_state("A") == ControllerState.CONNECTED
+            assert admin_handler.active is False
+            connected_handler = state_manager._handlers[ControllerState.CONNECTED]
+            assert call("A", "triangle") in connected_handler.handle_button.await_args_list
         finally:
             await admin_handler.exit()
