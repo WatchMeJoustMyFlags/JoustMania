@@ -18,16 +18,35 @@ CI: the `service-tests` job (path-filtered on PRs, always on main, part of `ci-c
 | flagd | real, compose image tag | container; `--uri grpc://host.docker.internal:<flag-service port>` (its only source, as in the stack); RPC 8013 and sync 8015 on fixed ephemeral host ports |
 | controller-manager, game-coordinator, menu | real, from source | `python services/<svc>/server.py` with the service-tests venv; `GRPC_PORT` / `MOCK_CONTROL_PORT` on ephemeral ports; ready on gRPC health SERVING |
 | audio | fake | `FakeAudio`, in-process gRPC server that records every call (`stack.fake_audio.calls_of("PlaySound")`) |
-| otel-collector, Jaeger | none | `OTEL_SDK_DISABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:1` in every Python service; the flag service gets no endpoint (no-op) |
+| otel-collector, Jaeger | none by default; `OtlpSink` fake on opt-in | default: `OTEL_SDK_DISABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:1` in every Python service. `Composition(..., otlp=True)`: SDK on, endpoint = the in-process `OtlpSink` (`stack.otlp_sink`, compose name `otel-collector:4317`). The flag service gets no endpoint either way (no-op) |
 | rust-hid, python-hid, BlueZ | none | controller manager: `RUST_HID_*` / `PYTHON_HID_*` = `127.0.0.1:1`, dead `DBUS_SYSTEM_BUS_ADDRESS` |
 
 Python services run as subprocesses, not in-process: OpenFeature domains, the rate limiter and the OTel
 providers are module-global.
 
-**Fidelity limit: no telemetry.** With `OTEL_SDK_DISABLED` every span is non-recording (its context is
-invalid, so the `is_valid` branches never run, e.g. the span ids behind trace correlation) and the OTel
-metrics and logs are no-ops. A TC that asserts traces, metrics or span-id correlation stays in the full stack
-(T3) until the tier has an OTLP sink fake.
+**Fidelity: telemetry is opt-in.** By default (`OTEL_SDK_DISABLED`) every span is non-recording (its
+context is invalid, so the `is_valid` branches never run, e.g. the span ids behind trace correlation) and
+the OTel metrics and logs are no-ops. A module that asserts telemetry opts in with
+`SERVICE_COMPOSITION = dataclasses.replace(GAME, otlp=True)`: the services export over their real OTLP/gRPC
+exporters to `stack.otlp_sink` (`harness/fakes/otlp.py`), which records spans and metrics:
+
+```python
+span = await stack.otlp_sink.wait_span_async(None, {"game.id": game_id}, event="player_disconnected")
+root = await stack.otlp_sink.wait_span_async("Joust Free-for-All", {"game.id": game_id}, root=True)
+point = await stack.otlp_sink.wait_metric_async("game_trace_correlation", {"game_id": game_id})
+```
+
+- A span arrives when it ENDS, after the BatchSpanProcessor delay (`otel_bsp_schedule_delay_millis`,
+  5 s default); metrics every `metrics_export_interval_ms`. Use timeouts of ~30 s.
+- `wait_span` returns the oldest matching span, `wait_metric` the latest matching point (cumulative).
+  The sink lives as long as the module-scoped stack and is not cleared between tests: always filter by
+  `game.id` / `game_id`, or an earlier test's record matches at once. Logs are accepted and counted only.
+- `OtlpSink(forward_to="host:port")` tees every trace export to another OTLP/gRPC receiver (the agent's,
+  like the collector's `otlp/agent` exporter); failures count in `forward_errors`.
+- Still full stack (T3): the collector's processing (filters, `span_metrics`, transforms), VictoriaMetrics
+  names and PromQL, Jaeger queries, Loki.
+
+Proof: `test_otlp_sink.py` (a game's root span and `player_disconnected` reach the sink).
 
 Compositions (`harness/stack.py`): `GAME` = controller-manager + game-coordinator, `LOBBY` = `GAME` + menu.
 
@@ -88,10 +107,10 @@ async def test_x(service_stack, flag_service):
 
 - New Python service: add it to `SERVICES` in `harness/stack.py` (source dir, compose port, OTel name) and
   its env wiring in `_start`. The service's `__main__` must read `GRPC_PORT` (`lib.grpc_utils.port_from_env`).
-- New fake (OtlpSink, fake Claude, fake OpenAI): an in-process server with `start() -> port` / `stop()`
-  like `FakeAudio`, started in `ServiceStack._start` and published under its compose name in `_ports`;
-  point the services at it through `Composition.env` or the common env (for OTLP: drop
-  `OTEL_SDK_DISABLED` and set `OTEL_EXPORTER_OTLP_ENDPOINT`).
+- New fake (fake Claude, fake OpenAI): an in-process server with `start() -> port` / `stop()` like
+  `FakeAudio` or `OtlpSink` (`harness/fakes/`), started in `ServiceStack._start` and published under its
+  compose name in `_ports`; point the services at it through `Composition.env` or the common env (as
+  `Composition.otlp` does for the OtlpSink).
 - Agent composition: the agent is a Go binary like the flag service; reuse `ManagedProcess` with a
   `go build` cached by source hash (see `flag_plane.build_flag_service`).
 - A moved TC keeps its `tc="TC-XXX"` tags and gets a `**Tier:**` line in its Automation section.
