@@ -39,18 +39,24 @@ to the flag service (`no_sync_stream`).
 
 **Examples:**
 
+Envoy (host port 80) has no `/canary/` route, so a request to
+`http://localhost/canary/...` reaches the dashboard instead (UC-052 A2). Call
+the connect-proxy from inside the compose network, for example through
+`docker compose exec` (the connect-proxy image ships `wget`; `localhost:8080`
+below is the connect-proxy's own listener inside its container):
+
 ```bash
 # Route all controllers to Rust
-curl -X POST http://localhost:8080/canary/rust
+docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rust'
 
 # Route 25% of controllers to Rust (deterministic by serial hash)
-curl -X POST http://localhost:8080/canary/rust?fraction=25
+docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rust?fraction=25'
 
 # Check current routing config
-curl http://localhost:8080/canary/status
+docker compose exec -T connect-proxy wget -qO- http://localhost:8080/canary/status
 
 # Immediate rollback to Python
-curl -X POST http://localhost:8080/canary/rollback
+docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rollback'
 ```
 
 Key source files:
@@ -164,7 +170,7 @@ controller_routing_decisions_total
 
 ```bash
 # Route a small fraction (e.g., 25%) of controllers to Rust
-curl -X POST http://localhost:8080/canary/rust?fraction=25
+docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rust?fraction=25'
 ```
 
 This uses flagd's fractional targeting to deterministically route ~25% of
@@ -317,18 +323,18 @@ After the initial canary is stable, expand using the canary endpoint:
 
 ```bash
 # 25% rollout
-curl -X POST http://localhost:8080/canary/rust?fraction=25
+docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rust?fraction=25'
 
 # 50% rollout
-curl -X POST http://localhost:8080/canary/rust?fraction=50
+docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rust?fraction=50'
 
 # 100% rollout
-curl -X POST http://localhost:8080/canary/rust
+docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rust'
 ```
 
 ### Between each stage
 
-- Check status: `curl http://localhost:8080/canary/status`
+- Check status: `docker compose exec -T connect-proxy wget -qO- http://localhost:8080/canary/status`
 - Watch the routing decisions metric update:
   ```promql
   sum by (adapter) (rate(controller_routing_decisions_total[2m]))
@@ -345,7 +351,7 @@ If issues arise at any stage, roll back through the canary endpoint.
 ### Immediate rollback
 
 ```bash
-curl -X POST http://localhost:8080/canary/rollback
+docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rollback'
 ```
 
 All controllers switch back to Python within one discovery cycle (~500ms).
@@ -398,7 +404,7 @@ session (or longer), make it the permanent default.
 ### Set default to rust
 
 ```bash
-curl -X POST http://localhost:8080/canary/rust
+docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:8080/canary/rust'
 ```
 
 This sets an in-memory stack overlay on `"rust"` and clears any fraction

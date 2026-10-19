@@ -402,7 +402,7 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 ### Stack
 
-All observability tools are accessed through the unified dashboard reverse proxy at `http://localhost:8080/`:
+All observability tools are accessed through the envoy reverse proxy at `http://localhost/` (host port 80, the only published UI port):
 
 | Component | Purpose | Dashboard Path | Internal Port |
 |-----------|---------|----------------|---------------|

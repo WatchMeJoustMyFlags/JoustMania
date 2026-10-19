@@ -104,7 +104,7 @@ Game-specific controls are announced at game start.
 ## Pairing Controllers
 
 Controllers can be paired via:
-1. **Dashboard UI** - http://localhost:8080 (recommended)
+1. **Dashboard UI** - http://localhost/ (recommended)
 2. **Physical pairing mode** - Hold PlayStation button until LED blinks
 
 ## LED Feedback

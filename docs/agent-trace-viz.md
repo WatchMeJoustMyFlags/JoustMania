@@ -22,9 +22,8 @@ stage-display tuning tips.
 - The #745 demo runbook (`docs/agent-demo-runbook.md`, authored separately) — the
   act-by-act stage script; this guide supplies the Jaeger views it points at.
 
-**Jaeger base URL:** `http://localhost/jaeger/` (behind Envoy). The agent-act
-runbook references the `:8080` form (`http://localhost:8080/jaeger/`); both reach
-the same UI on this stack. Use whichever the stage laptop has bookmarked.
+**Jaeger base URL:** `http://localhost/jaeger/` (behind Envoy on host port 80;
+port 8080 is not published to the host).
 
 ---
 
