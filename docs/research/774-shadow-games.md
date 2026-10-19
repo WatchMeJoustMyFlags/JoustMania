@@ -1,5 +1,7 @@
 # Research: Shadow Games — Mock-Only Parallel Games for the Agent (#774)
 
+> **Historical / superseded.** Research note from before the `game_kind` vocabulary change (#1249) and the flag-service move (#1417). Current state: [specs](../specs/) (UC-043, `GameSession` in the [entity model](../entity_model.md)); where this note disagrees, the specs win.
+
 Analysis of what is missing for the agent to start games with only mock
 controllers — possibly several in parallel — alongside a real game with real
 players, and how the same capability benefits integration tests. Informs the
@@ -68,7 +70,7 @@ design in §5.
 ### 2.4 Integration test harness (exists, single-game)
 
 CI runs the full stack with `backend=mock`
-([controller.ci.json](../../services/flagd/controller.ci.json),
+(`controller.ci.json`,
 [docker-compose.ci.yml](../../docker-compose.ci.yml)) and drives 14
 parametrized game modes end-to-end through the menu flow
 ([test_full_game_lifecycle.py](../../tests/integration/test_full_game_lifecycle.py),

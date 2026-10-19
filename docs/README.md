@@ -75,8 +75,15 @@ Kept for the reasoning; they do not describe the current system.
 |---|---|
 | [design/agent-experiment-cohorts.md](design/agent-experiment-cohorts.md) | Experiment cohorts design |
 | [research/722-intervention-surface.md](research/722-intervention-surface.md) | Intervention vocabulary |
-| [research/739-prompt-capture.md](research/739-prompt-capture.md) | In-game prompt capture spike (retired) |
 | [research/774-shadow-games.md](research/774-shadow-games.md) | Shadow games |
 | [research/844-post-game-retro.md](research/844-post-game-retro.md) | Post-game retro |
 | [research/m7-4-testing-strategy.md](research/m7-4-testing-strategy.md) | Testing propose / validate / promote |
-| [research/spike-survival-calibration-1125.md](research/spike-survival-calibration-1125.md) | Fitness calibration |
+
+### Archive
+
+Retired notes with no inbound references, moved out of `research/`; kept for history only.
+
+| Document | Topic |
+|---|---|
+| [archive/739-prompt-capture.md](archive/739-prompt-capture.md) | In-game prompt capture spike (retired by #1234) |
+| [archive/spike-survival-calibration-1125.md](archive/spike-survival-calibration-1125.md) | Fitness calibration (offline evidence) |
