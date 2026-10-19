@@ -18,23 +18,19 @@ import subprocess
 import pytest
 from openfeature.evaluation_context import EvaluationContext
 
-from proto import controller_manager_mock_pb2, menu_pb2
+from proto import controller_manager_mock_pb2
 from tests.integration.flag_service import default as flag_service_default
 from tests.integration.flag_service import variant_value
 from tests.integration.helpers import (
-    ADMIN_WHITE,
     async_poll_until,
     enter_admin_mode,
     exit_admin_mode,
     flagd_probe_client,
-    get_menu_client,
     get_mock_client,
     press_admin_button,
-    select_game_mode,
-    setup_mock_controllers,
-    wait_for_lobby_colors,
 )
 from tests.service.harness import LOBBY
+from tests.service.lobby_flow import start_lobby
 
 pytestmark = pytest.mark.tier("service")
 
@@ -43,7 +39,6 @@ SERVICE_COMPOSITION = LOBBY
 GAME = "game"
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 PERSIST_TIMEOUT_SECONDS = 5.0
-LOBBY_TIMEOUT_SECONDS = 15.0
 SCRIPT_TIMEOUT_SECONDS = 60
 
 _Button = controller_manager_mock_pb2.ButtonRequest.Button
@@ -85,22 +80,11 @@ async def test_host_and_stage_change_flags_at_runtime(fresh_stack, flag_service)
             timeout=SCRIPT_TIMEOUT_SECONDS,
         ).stdout
 
-    menu_client, menu_channel = await get_menu_client(stack)
     mock_client, mock_channel = await get_mock_client(stack)
     try:
-        # Precondition: the menu runs with connected mock controllers. The
-        # menu auto-starts (menu_auto_start); restart it and select the mode
-        # BEFORE adding the controllers, so their connect events (published on
-        # the controller manager's next discovery tick) reach the restarted
-        # menu instead of being cleared by StopMenu.
-        await menu_client.StopMenu(menu_pb2.StopMenuRequest())
-        start = await menu_client.StartMenu(menu_pb2.StartMenuRequest())
-        assert start.success, f"failed to start menu: {start.error}"
-        assert await select_game_mode(menu_client, "JoustFFA"), "could not select JoustFFA"
-        serials = await setup_mock_controllers(stack, count=4)
-        # White is not a lobby colour: the mock adapter starts every LED white,
-        # the same colour as admin.
-        await wait_for_lobby_colors(mock_client, serials, timeout=LOBBY_TIMEOUT_SECONDS, exclude=ADMIN_WHITE)
+        # Precondition: the menu runs with connected mock controllers (menu
+        # restarted and mode selected before they are added; see start_lobby).
+        serials = await start_lobby(stack, count=4)
         host = serials[0]
         baseline = _default_variant(GAME, "sensitivity")
 
@@ -142,5 +126,4 @@ async def test_host_and_stage_change_flags_at_runtime(fresh_stack, flag_service)
         assert _default_variant(GAME, "sensitivity") == host_variant
     finally:
         flag_service_default().request("DELETE", "/agent?writer=stage")
-        for channel in (menu_channel, mock_channel):
-            await channel.close()
+        await mock_channel.close()

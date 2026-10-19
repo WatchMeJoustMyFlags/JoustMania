@@ -21,10 +21,9 @@ from tests.integration.helpers import (
     get_mock_client,
     get_player_states,
     kill_player_verified,
-    setup_mock_controllers,
 )
 from tests.service.harness import LOBBY
-from tests.service.lobby_flow import open_lobby, ready_up_until_started, wait_running
+from tests.service.lobby_flow import ready_up_until_started, start_lobby, wait_running
 
 pytestmark = pytest.mark.tier("service")
 
@@ -51,8 +50,8 @@ async def test_tc003_ffa_player_disconnects(service_stack, headless_cleanup):
     sink = stack.otlp_sink
     assert sink is not None
 
-    # Step 1: three unreserved controllers.
-    serials = await setup_mock_controllers(stack, count=3)
+    # Step 1: three unreserved controllers (menu restarted and FFA selected first).
+    serials = await start_lobby(stack, count=3)
     leaver, killed, winner = serials[1], serials[0], serials[2]
     game_client, game_channel = await get_game_client(stack)
     mock_client, mock_channel = await get_mock_client(stack)
@@ -60,7 +59,6 @@ async def test_tc003_ffa_player_disconnects(service_stack, headless_cleanup):
     collector = GameEventCollector(game_client)
     try:
         await collector.start()
-        await open_lobby(stack)
 
         # Step 2: ready-up starts FFA. The countdown's EMA warmup drops frames
         # (disconnects included): remove the controller once the loop runs.
