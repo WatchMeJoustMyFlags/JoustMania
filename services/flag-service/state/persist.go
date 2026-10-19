@@ -67,7 +67,7 @@ func (s *State) loadAdmin() LoadReport {
 		report.Corrupt = true
 		pruneCorrupt(path, maxCorruptFiles-1)
 		report.CorruptPath = fmt.Sprintf("%s.corrupt-%d", path, s.opts.Now().Unix())
-		if mvErr := os.Rename(path, report.CorruptPath); mvErr != nil {
+		if mvErr := moveAside(path, report.CorruptPath); mvErr != nil {
 			s.opts.Logger.Error("flag service: state file unreadable and could not be moved aside; starting from the baseline",
 				"path", path, "error", err, "move_error", mvErr)
 			report.CorruptPath = ""
@@ -191,6 +191,10 @@ func writeAtomic(path string, doc persistedDoc) error {
 	}
 	return nil
 }
+
+// moveAside renames a corrupt state file; a variable so tests can make the
+// rename fail (UC-053 A12).
+var moveAside = os.Rename
 
 // maxCorruptFiles caps the .corrupt-<ts> copies kept next to the state file.
 const maxCorruptFiles = 3

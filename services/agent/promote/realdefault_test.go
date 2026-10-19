@@ -54,18 +54,21 @@ func effective(t *testing.T, svc *fake.Service) string {
 	return string(v.VariantValues[v.EffectiveDefault])
 }
 
+// UC: UC-053 A1
 func TestRealDefaultWriterPromotesThroughTheRealScope(t *testing.T) {
-	svc := newPromotionService(t)
-	w := writerForTest(t, svc, t.TempDir())
-	if err := w.SetRealDefault(context.Background(), promotedFlag, 3.0); err != nil {
-		t.Fatalf("SetRealDefault: %v", err)
-	}
-	if got := effective(t, svc); got != "3" {
-		t.Errorf("real default resolves %s, want 3", got)
-	}
-	if svc.Calls[0] != "PUT game/"+promotedFlag+" real" {
-		t.Errorf("write = %v, want a real-scoped PUT", svc.Calls)
-	}
+	t.Run("UC-053/A1 a promoted default is one real-scoped overlay that real games resolve", func(t *testing.T) {
+		svc := newPromotionService(t)
+		w := writerForTest(t, svc, t.TempDir())
+		if err := w.SetRealDefault(context.Background(), promotedFlag, 3.0); err != nil {
+			t.Fatalf("SetRealDefault: %v", err)
+		}
+		if got := effective(t, svc); got != "3" {
+			t.Errorf("real default resolves %s, want 3", got)
+		}
+		if svc.Calls[0] != "PUT game/"+promotedFlag+" real" {
+			t.Errorf("write = %v, want a real-scoped PUT", svc.Calls)
+		}
+	})
 }
 
 // Defence in depth (#936): a value of another JSON kind is refused before any write.

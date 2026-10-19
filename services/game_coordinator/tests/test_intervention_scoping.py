@@ -512,6 +512,7 @@ async def test_granting_b_does_not_regrant_a(flag_key):
     assert targets == ["p1", "p2"]
 
 
+@pytest.mark.uc("UC-053", flow="main", steps=[6])
 @pytest.mark.uc("UC-040", flow="A19", br=["BR-012"])
 @pytest.mark.parametrize("flag_key", GRANT_FLAGS)
 @pytest.mark.asyncio
@@ -551,6 +552,7 @@ async def test_same_value_regrant_is_a_new_decision():
     assert game.shields == [("p1", 5.0), ("p1", 5.0)]
 
 
+@pytest.mark.uc("UC-053", flow="main", steps=[6])
 @pytest.mark.uc("UC-040", flow="A19", br=["BR-012"])
 @pytest.mark.asyncio
 async def test_grant_baseline_is_per_game_for_concurrent_games():
