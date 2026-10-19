@@ -143,17 +143,16 @@ services (`services/agent/receiver.go`); they are not JoustMania protos.
 
 ### Browser-reachable RPCs (connect-proxy)
 
-All six `ControllerManagerService` RPCs (including the proxy-only `WatchGameplayData`), all four `GameCoordinatorService` RPCs and all five `MenuService`
+Four of the six `ControllerManagerService` RPCs (`RenameController`, `GetConnectedControllers`, `IdentifyController` and the proxy-only `WatchGameplayData`), all four `GameCoordinatorService` RPCs and all five `MenuService`
 RPCs are forwarded under `/joustmania` (`services/connect-proxy/main.go`, the `ControllerManagerProxy`, `GameCoordinatorProxy` and `MenuProxy` methods). Audio, HID, pairing and mock
 RPCs are not.
 
 Wire format from the dashboard (`services/dashboard/src/client.ts`, `connect.ts`): unary calls are a plain
 `application/json` POST. Server streams (`StreamGameEvents`) are `application/connect+json` with the request in
 one 5-byte Connect envelope; the response is a sequence of envelopes ending in an end-stream frame whose
-`error` the dashboard raises (a plain `application/json` POST to a stream gets 415, #1542). Bidi streams
-(`StreamGameplayData`, `StreamButtonEvents`) are not reachable from the browser: envoy talks HTTP/1.1 to
-connect-proxy and connect-go answers a bidi call over HTTP/1.1 with 505. The dashboard's controller grid therefore
-reads the server stream `WatchGameplayData` (#1595): it posts one `GameplayStreamConfig` (`{updateFrequencyHz: 30}`);
+`error` the dashboard raises (a plain `application/json` POST to a stream gets 415, #1542). Browser-facing RPCs are unary or server-streaming only (#1543): the proxy owns any bidi gRPC stream to the backend internally.
+`StreamGameplayData` and `StreamButtonEvents` are not forwarded and answer `unimplemented` (envoy talks HTTP/1.1 to
+connect-proxy, where connect-go refuses bidi calls anyway). The dashboard's controller grid reads the server stream `WatchGameplayData` (#1595): it posts one `GameplayStreamConfig` (`{updateFrequencyHz: 30}`);
 connect-proxy builds its own config from it, keeping only the rate (missing or 0 and below = 30 Hz, capped at 30 Hz) and never the browser's
 colours, so the upstream is always the unfiltered observer stream with connection quality (UC-035 BR-005,
 BR-006). It opens a `StreamGameplayData` stream to the controller manager with that config as its first control

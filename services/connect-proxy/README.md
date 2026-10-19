@@ -12,7 +12,7 @@ Written in Go with [Connect-Go](https://github.com/connectrpc/connect-go) and st
 
 | Backend | Default Address | RPCs |
 |---------|-----------------|------|
-| Controller Manager | `controller-manager:50052` | `StreamButtonEvents`, `StreamGameplayData`, `RenameController` |
+| Controller Manager | `controller-manager:50052` | `WatchGameplayData`, `RenameController`, `IdentifyController`, `GetConnectedControllers` |
 | Game Coordinator | `game-coordinator:50053` | `StreamGameEvents`, `ForceEndGame`, `GetGameState` |
 | Menu | `menu:50054` | `StartMenu`, `StopMenu`, `StreamMenuEvents`, `ProcessInput` |
 
@@ -37,7 +37,7 @@ All configuration is via environment variables:
 
 ## How It Works
 
-Each backend service has a proxy struct (e.g., `ControllerManagerProxy`) that implements the Connect service interface. Unary RPCs forward the request and return the response. Streaming RPCs spawn goroutines to relay messages in both directions between the Connect stream and the gRPC stream.
+Each backend service has a proxy struct (e.g., `ControllerManagerProxy`) that implements the Connect service interface. Unary RPCs forward the request and return the response. Server-streaming RPCs relay the gRPC stream to the Connect stream. Browser-facing RPCs are unary or server-streaming only; the proxy owns any bidi gRPC stream to a backend itself (`WatchGameplayData`), and the bidi `StreamButtonEvents` / `StreamGameplayData` answer `unimplemented` (#1543).
 
 CORS is enabled for all origins to allow browser requests from the dashboard.
 

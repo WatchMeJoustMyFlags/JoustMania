@@ -160,7 +160,7 @@ describe("UC-035: controller grid reads the WatchGameplayData server stream (#15
     const updates = await collect(controllerClient.watchGameplayData({ updateFrequencyHz: 30 }));
 
     const [url, init] = fetchMock.mock.calls[0];
-    // Not the bidi StreamGameplayData: connect-proxy answers that with 505 over HTTP/1.1.
+    // Not the bidi StreamGameplayData: connect-proxy does not serve bidi RPCs (answers unimplemented).
     expect(url).toBe("/joustmania.controller_manager.ControllerManagerService/WatchGameplayData");
     expect(init.method).toBe("POST");
     expect(init.headers["Content-Type"]).toBe("application/connect+json");
