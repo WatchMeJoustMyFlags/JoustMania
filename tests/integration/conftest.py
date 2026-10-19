@@ -52,7 +52,6 @@ E2E_SHARD_BY_MODULE = {
     "test_admin_flow.py": "core",
     "test_decide_backend_e2e.py": "agent",
     "test_experiment_cohort_loop.py": "agent",
-    "test_flag_service_restart.py": "core",
     "test_intervention_flow.py": "core",
     "test_intervention_smoke.py": "core",
     "test_tc002_ffa_game.py": "core",

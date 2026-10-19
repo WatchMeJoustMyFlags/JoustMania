@@ -61,7 +61,7 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-016](TC-016-talk-demo-rehearsal.md) | Talk demo rehearsal | UC-070, UC-044, UC-045, UC-040, UC-042, UC-035 | Medium | Draft | Manual; script tests in CI (#1389) |
 | [TC-017](TC-017-non-ffa-modes-round-backlog.md) | One round of every non-FFA mode (backlog) | UC-021 to UC-026 | Low | Draft | Partly (`tests/service/test_tc017_parallel_mode_lifecycle.py`); backlog #1361 |
 | [TC-018](TC-018-agent-intervention-through-flag-service.md) | Agent intervention through the flag service | UC-053, UC-040 | Critical | Automated | T2: `test_tc018_flag_service_eliminations::test_two_eliminations_through_the_flag_service`; failed read: unit test |
-| [TC-019](TC-019-flag-service-restart.md) | Flag service restart | UC-053 | High | Automated | `test_flag_service_restart`; epoch reset: unit test |
+| [TC-019](TC-019-flag-service-restart.md) | Flag service restart | UC-053 | High | Automated | `test_tc019_flag_service_restart` (T2 service); epoch reset: unit test |
 | [TC-020](TC-020-host-and-stage-change-flags.md) | Host and stage change flags at runtime | UC-012, UC-053, UC-044 | High | Automated | `test_admin_flow::test_host_and_stage_change_flags_at_runtime` |
 
 Status follows the skill: `Automated` = an end-to-end test implements the journey (gaps listed in the
