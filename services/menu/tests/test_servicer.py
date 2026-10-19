@@ -31,9 +31,10 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
 from lib.types import Games
-from proto import menu_pb2
+from proto import controller_manager_pb2, menu_pb2
 from services.menu.handlers.base import ControllerState
 from services.menu.tests.servicer_harness import default_returning_flag_client
+from services.menu.utils.led import GAME_MODE_COLORS
 
 
 class MockGrpcContext:
@@ -2000,6 +2001,53 @@ class TestSelectionPathsShareSelectGameMode:
         led.set_connected_color.assert_awaited_once_with("s1", Games.JoustTeams.name)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="A2", steps=[3])
+    async def test_lobby_select_event_carries_source_and_serial_without_game_selection_changed(self, real_servicer):
+        """UC-011 A2 step 3: lobby SELECT publishes selection_changed (source, serial), not game_selection_changed."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+
+        await self._lobby_select(real_servicer)
+
+        published = _published(real_servicer)
+        assert (
+            published.count(("selection_changed", {"game_name": "JoustTeams", "source": "controller", "serial": "s1"}))
+            == 1
+        )
+        assert [name for name, _ in published if name == "game_selection_changed"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="A2", steps=[5])
+    async def test_lobby_select_colour_shows_when_controller_next_enters_connected(self, real_servicer):
+        """UC-011 A2 step 5: after lobby SELECT, a controller entering CONNECTED shows the new mode's colour."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        led = real_servicer.state_manager.led
+        await real_servicer.on_button("s1", "select", True)
+        assert real_servicer.current_selection == Games.JoustTeams
+        led.reset_mock()
+
+        # s2 readies up and un-readies: it re-enters CONNECTED after the selection.
+        await _ready_up(real_servicer, "s2")
+        await real_servicer.on_button("s2", "move", True)
+
+        led.set_connected_color.assert_awaited_once_with("s2", Games.JoustTeams.name)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", steps=[3])
+    async def test_admin_cross_pulses_host_and_plays_the_mode_voice_line(self, real_servicer):
+        """UC-011 step 3: Cross pulses the host's controller and plays the selected mode's voice line."""
+        await self._admin_cross(real_servicer)
+
+        real_servicer.audio.play_game_mode_voice.assert_awaited_once_with(Games.JoustTeams.name)
+        real_servicer.state_manager.led.send_game_effect.assert_awaited_once_with(
+            "host",
+            controller_manager_pb2.GAME_EFFECT_PULSE,
+            color=GAME_MODE_COLORS[Games.JoustTeams.name],
+            duration_ms=600,
+            speed=6,
+        )
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="main")  # Post-F-1: the previous selection stays
     async def test_select_unknown_mode_changes_nothing(self, real_servicer):
         real_servicer.current_selection = Games.Tournament
@@ -2011,3 +2059,40 @@ class TestSelectionPathsShareSelectGameMode:
         assert real_servicer.state_manager.current_game_mode == Games.Tournament
         real_servicer.event_publisher.publish.assert_not_awaited()
         real_servicer.user_prefs_writer.update_default_variant.assert_not_called()
+
+
+class TestIdleWakeThenReadyUp:
+    """UC-010 A2 step 3 on the real servicer: after waking from idle the lobby continues at step 1."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A2", steps=[3])
+    @patch("services.menu.idle_monitor.metrics")
+    async def test_ready_up_works_after_wake_from_idle(self, _mock_metrics, real_servicer):
+        """Idle, wake with a press (consumed), then trigger presses ready up and start the game."""
+        from services.menu.idle_monitor import IdleMonitor
+
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        monitor = IdleMonitor(
+            state_manager=real_servicer.state_manager,
+            get_idle_enabled=lambda: True,
+            get_idle_timeout=lambda: 15,
+            get_sentinel_count=lambda: 0,
+            get_rotation_minutes=lambda: 5,
+        )
+        real_servicer.idle_handler.set_wake_callback(monitor.wake_all)
+        await _connect(real_servicer, "s1", "s2")
+        await monitor._enter_idle_mode()
+        states = real_servicer.state_manager.controller_states
+        assert set(states.values()) == {ControllerState.IDLE}
+
+        await real_servicer.on_button("s1", "trigger", True)  # the waking press is consumed
+        await real_servicer.on_button("s1", "trigger", False)
+        assert set(states.values()) == {ControllerState.CONNECTED}
+        assert real_servicer.ready_controllers == set()
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await _ready_up(real_servicer, "s1", "s2")
+            await _await_lifecycle(real_servicer)
+
+        assert _started_roster(stream) == ["s1", "s2"]
+        assert real_servicer.state == menu_pb2.MenuState.GAME_STARTING

@@ -70,6 +70,7 @@ class TestIdleHandler:
         assert handler.state == ControllerState.IDLE
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A2", steps=[1])
     async def test_on_enter_turns_off_leds(self, mock_state_manager):
         """on_enter should set LEDs to black (off)."""
         handler = IdleHandler()
