@@ -169,6 +169,8 @@ MATRIX_GATED = {"service-checks", "docker-build", "docker-build-extra"}
 TERM = re.compile(r"needs\.changes\.outputs\.\w+ == 'true'")
 RUN_ALL = "needs.changes.outputs.run_all_checks == 'true'"
 check("e2e_required == 'true'" in job_if("integration-test"), "integration-test: must gate on e2e_required (#1583)")
+check("github.event_name == 'merge_group'" in job_if("integration-test"),
+      "integration-test: must always run in the merge queue (fail closed, #1583)")
 for name in jobs["ci-complete"]["needs"]:
     if name in EXEMPT:
         continue
@@ -233,6 +235,17 @@ def to_python(expr):
     return "".join(out)
 
 
+def lookup(ctx, key):
+    if key not in ctx:
+        raise KeyError(f"simulator: unknown context key {key!r}; add it to the scenario context")
+    return ctx[key]
+
+
+# Fidelity limits (fine for the expressions ci.yml uses today):
+#   - `==` / `!=` are case-sensitive here; GitHub compares strings ignoring case.
+#   - `!x == y` binds as `not (x == y)` here; GitHub evaluates `(!x) == y`.
+#   - an unknown context key raises (GitHub would yield ''), so a typo in
+#     ci.yml or a missing scenario key cannot silently evaluate to ''.
 def evaluate(expr, ctx):
     expr = expr.strip()
     if expr.startswith("${{") and expr.endswith("}}"):
@@ -240,7 +253,7 @@ def evaluate(expr, ctx):
     return eval(  # noqa: S307 (expressions come from our own ci.yml)
         to_python(expr),
         {
-            "L": lambda k: ctx.get(k, ""),
+            "L": lambda k: lookup(ctx, k),
             "F_cancelled": lambda: False,
             "F_contains": lambda hay, needle: needle in hay,
             "F_toJSON": lambda v: json.dumps(v),
@@ -270,8 +283,12 @@ def run_step(step, ctx, extra_path=None):
     return proc.returncode, outputs
 
 
-def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success"):
-    """Results of the e2e/build/publish/complete jobs for one event."""
+def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success",
+             integration_deps=False, override=None):
+    """Results of the e2e/build/publish/complete jobs for one event.
+
+    `override` replaces `changes` outputs after the force step (e.g. an empty
+    e2e_required, to prove the gates fail closed)."""
     ctx = {
         "github.event_name": event,
         "github.event.pull_request.number": "42" if event == "pull_request" else "",
@@ -280,6 +297,7 @@ def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success"):
         "github.repository": "o/r",
         "steps.f.outputs.e2e_paths": str(e2e_paths).lower(),
         "steps.nondocs.outputs.non_docs": str(non_docs).lower(),
+        "steps.f.outputs.integration_deps": str(integration_deps).lower(),
     }
     with tempfile.TemporaryDirectory() as bindir:
         gh = os.path.join(bindir, "gh")
@@ -292,6 +310,8 @@ def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success"):
     for key, value in jobs["changes"]["outputs"].items():
         if "steps.force.outputs" in value:
             ctx[f"needs.changes.outputs.{key}"] = interpolate(value, {f"steps.force.outputs.{k}": v for k, v in out.items()})
+    for key, value in (override or {}).items():
+        ctx[f"needs.changes.outputs.{key}"] = value
     ctx.update({
         "needs.changes.result": "success",
         "needs.changes.outputs.docker_build_matrix": '["menu"]',
@@ -331,13 +351,30 @@ def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success"):
             break
     results["ci-complete"] = "success" if complete_rc == 0 else "failure"
     results["e2e_required"] = ctx.get("needs.changes.outputs.e2e_required")
+    results["e2e_steps"] = e2e_steps_run(ctx) if results["integration-test"] != "skipped" else []
     return results
+
+
+def e2e_steps_run(ctx):
+    """Names of the integration-test (agent shard) steps whose `if` holds."""
+    step_ctx = dict(ctx)
+    step_ctx.update({
+        "matrix.shard": "agent",
+        "steps.collector_image.outputs.build": "false",
+    })
+    return [
+        st.get("name", "")
+        for st in jobs["integration-test"]["steps"]
+        if "if" not in st or evaluate(str(st["if"]), step_ctx)
+    ]
 
 
 check("e2e_required" in jobs["changes"]["outputs"], "changes: must output e2e_required (#1583)")
 e2e_filter = next(s for s in jobs["changes"]["steps"] if s.get("id") == "f")["with"]["filters"]
-for path in ("docker-compose*.yml", "**/Dockerfile*", "tests/integration/**", "services/otel-collector/**", "services/envoy/**"):
-    check(f"'{path}'" in e2e_filter, f"changes/f: e2e_paths must cover {path}")
+e2e_path_list = yaml.safe_load(e2e_filter).get("e2e_paths") or []
+for path in ("docker-compose*.yml", "**/Dockerfile*", "tests/integration/**", "services/otel-collector/**", "services/envoy/**",
+             "services/flagd/**", ".github/workflows/ci.yml"):
+    check(path in e2e_path_list, f"changes/f: e2e_paths must cover {path}")
 
 SCENARIOS = [
     # (label, event, e2e_paths, non_docs, ci_full, expect_e2e)
@@ -365,6 +402,8 @@ if "e2e_required" in jobs["changes"]["outputs"]:
             # A required shard that did not run (e.g. skipped) must not pass.
             gone = simulate(event, paths, non_docs, ci_full, e2e_outcome="skipped")
             check(gone["ci-complete"] == "failure", f"{label}: required e2e skipped must fail CI Complete, got {gone}")
+            for build in ("docker-build", "docker-build-extra"):
+                check(gone[build] == "skipped", f"{label}: {build} must not run when required e2e was skipped, got {gone[build]}")
     push = simulate("push", True, True)
     check(push["docker-build-merge"] == "success" and push["docker-build-extra-merge"] == "success",
           f"push to main: publish must run without e2e, got {push}")
@@ -373,6 +412,40 @@ if "e2e_required" in jobs["changes"]["outputs"]:
     mq = simulate("merge_group", False, True)
     for name in ("docker-build-merge", "docker-build-extra-merge", "retag-skipped"):
         check(mq[name] == "skipped", f"merge_group: {name} must not run, got {mq[name]}")
+
+    # Fail closed (#1583 review): an empty/broken e2e_required must not let the
+    # queue skip e2e, and CI Complete must reject it on any event.
+    for event in ("merge_group", "pull_request"):
+        for value in ("", "maybe"):
+            r = simulate(event, False, True, override={"e2e_required": value})
+            check(r["ci-complete"] == "failure", f"{event}, e2e_required={value!r}: CI Complete must fail, got {r}")
+    r = simulate("merge_group", False, True, override={"e2e_required": ""})
+    check(r["integration-test"] == "success", f"merge_group, empty e2e_required: e2e must still run, got {r['integration-test']}")
+    r = simulate("merge_group", False, True, override={"e2e_required": ""}, e2e_outcome="skipped")
+    check(r["ci-complete"] == "failure", f"merge_group, empty e2e_required, e2e skipped: CI Complete must fail, got {r}")
+    r = simulate("merge_group", False, True, override={"e2e_required": "false"}, e2e_outcome="skipped")
+    check(r["ci-complete"] == "failure", f"merge_group, e2e_required=false, e2e skipped: CI Complete must fail, got {r}")
+
+    # Full path in the queue (#1583 review): every stack image built at HEAD,
+    # never the fast path that pulls :latest for connect-proxy/rust-hid/dashboard.
+    FULL, FAST = "Run integration tests (full build)", "Run integration tests (fast - source only)"
+    PATHS = [
+        # (label, kwargs, expect_full)
+        ("merge_group", dict(event="merge_group", e2e_paths=False, non_docs=True), True),
+        ("workflow_dispatch", dict(event="workflow_dispatch", e2e_paths=False, non_docs=True), True),
+        ("PR, ci-full label", dict(event="pull_request", e2e_paths=False, non_docs=True, ci_full=True), True),
+        ("PR, risky path", dict(event="pull_request", e2e_paths=True, non_docs=True), False),
+        ("PR, risky path + deps", dict(event="pull_request", e2e_paths=True, non_docs=True, integration_deps=True), True),
+        ("merge_group, empty e2e_full_build", dict(event="merge_group", e2e_paths=False, non_docs=True,
+                                                   override={"e2e_full_build": ""}), True),
+    ]
+    for label, kwargs, expect_full in PATHS:
+        steps = simulate(**kwargs)["e2e_steps"]
+        check((FULL in steps) == expect_full and (FAST in steps) != expect_full,
+              f"{label}: e2e must take the {'full' if expect_full else 'fast'} path, ran {steps}")
+        if expect_full:
+            fast_only = [n for n in steps if "fast path" in n]
+            check(not fast_only, f"{label}: no fast-path step may run on the full path, ran {fast_only}")
 
 if failures:
     for f in failures:

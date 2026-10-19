@@ -7,7 +7,8 @@ name: CI
 # builds use dynamic matrices so only changed images build.
 #
 # Escape hatches:
-#   - push to main / workflow_dispatch: all checks run (full SonarCloud coverage)
+#   - push to main / merge_group / workflow_dispatch: all check jobs run (full
+#     SonarCloud coverage on push); the e2e shards follow `e2e_required` below
 #   - `ci-full` PR label or workflow_dispatch: additionally forces ALL image builds.
 #     ci.yml does NOT trigger on `labeled` (#1527): GitHub takes required checks
 #     from the newest run of this workflow on the head SHA, so a label-only run
@@ -93,6 +94,13 @@ jobs:
       # #1583: run the e2e shards (merge_group, workflow_dispatch, ci-full,
       # or a non-docs PR touching an `e2e_paths` file)
       e2e_required: ${{ steps.force.outputs.e2e }}
+      # #1583: e2e builds EVERY stack image at HEAD (full path) instead of
+      # pulling :latest and overlaying source (fast path). True on merge_group
+      # and workflow_dispatch (the queue is the only e2e gate before main, so
+      # it must test the PR's code for connect-proxy, rust-hid, the dashboard
+      # too), with ci-full, or when integration_deps changed. Only an explicit
+      # 'false' takes the fast path, so an empty output fails toward the build.
+      e2e_full_build: ${{ steps.force.outputs.e2e_full_build }}
       # force_full: ALL image builds + checks (workflow_dispatch / ci-full label)
       # run_all_checks: all test/lint jobs, but builds stay path-filtered (main push)
       force_full: ${{ steps.force.outputs.full }}
@@ -290,6 +298,8 @@ jobs:
               - 'services/otel-collector/**'
               - 'images/otel-collector/**'
               - 'services/envoy/**'
+              - 'services/flagd/**'
+              - '.github/workflows/ci.yml'
             integration_deps:
               # root pyproject.toml is a deps-fingerprint input
               # (scripts/ci/deps-fingerprint.sh), so it must force fresh images
@@ -336,6 +346,7 @@ jobs:
           PAYLOAD_CI_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-full') }}
           E2E_PATHS: ${{ steps.f.outputs.e2e_paths }}
           NON_DOCS: ${{ steps.nondocs.outputs.non_docs }}
+          INTEGRATION_DEPS: ${{ steps.f.outputs.integration_deps }}
         run: |
           ci_full=false
           if [ -n "$PR_NUMBER" ]; then
@@ -356,11 +367,16 @@ jobs:
           if [ "${{ github.event_name }}" = pull_request ] && [ "$E2E_PATHS" = true ] && [ "$NON_DOCS" = true ]; then
             e2e=true
           fi
-          echo "ci-full label: $ci_full -> force_full=$full run_all_checks=$checks e2e_required=$e2e"
+          # e2e full path (every image built at HEAD): merge_group and dispatch
+          # always; elsewhere with ci-full or a deps change (fast path otherwise).
+          e2e_full_build="${{ github.event_name == 'merge_group' }}"
+          if [ "$full" = true ] || [ "$INTEGRATION_DEPS" = true ]; then e2e_full_build=true; fi
+          echo "ci-full label: $ci_full -> force_full=$full run_all_checks=$checks e2e_required=$e2e e2e_full_build=$e2e_full_build"
           {
             echo "full=$full"
             echo "checks=$checks"
             echo "e2e=$e2e"
+            echo "e2e_full_build=$e2e_full_build"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build dynamic matrices
@@ -985,7 +1001,9 @@ jobs:
     # `ci-full`, or a non-docs PR touching a risky path; docs-only PRs still
     # skip it, #1422). Skipped on a push to main: the queue ran it on that
     # commit. ci-complete accepts a skip unless e2e_required was true.
-    if: needs.changes.outputs.e2e_required == 'true'
+    # merge_group is ORed in so a wrong/empty output cannot skip the queue's
+    # e2e gate (fail closed). The full path (e2e_full_build) runs there.
+    if: needs.changes.outputs.e2e_required == 'true' || github.event_name == 'merge_group'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -1017,7 +1035,7 @@ jobs:
       # instead of erroring all 18 tests with no obvious cause. No-op on a fresh
       # image (fingerprint matches). Only runs on the fast path.
       - name: Guard against stale prebuilt images
-        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        if: needs.changes.outputs.e2e_full_build == 'false'
         # IMAGE_PREFIX is already in env scope from the "Set image prefix" step.
         env:
           IMAGE_TAG: latest
@@ -1034,7 +1052,7 @@ jobs:
       # a mismatch (~7 min uncached; read-only GHA cache).
       - name: Resolve collector image ref (fast path)
         id: collector_image
-        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        if: needs.changes.outputs.e2e_full_build == 'false'
         env:
           IMAGE_TAG: latest
         run: |
@@ -1075,7 +1093,8 @@ jobs:
       # #1254: the Go agent has no dev mount, so on the fast path it would run the
       # published :latest, which can lag the code under test: a PR changing only
       # services/agent/**/*.go never matches integration_deps, and :latest is only
-      # pushed by the agent publish job AFTER main's integration tests finish, so
+      # pushed by the agent publish job AFTER main's image builds finish (main
+      # pushes run no e2e since #1583; the queue builds everything at HEAD), so
       # any run starting in that window (2026-10-16: ~15 min after #1252) tests
       # new agent assertions against the old binary. Build the agent from this
       # checkout instead, under the exact ref compose resolves, and load it
@@ -1087,7 +1106,7 @@ jobs:
       # Only the e2e-agent shard runs the agent, so only it builds it.
       - name: Resolve agent image ref (fast path)
         id: agent_image
-        if: matrix.shard == 'agent' && needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        if: matrix.shard == 'agent' && needs.changes.outputs.e2e_full_build == 'false'
         env:
           IMAGE_TAG: latest
         run: |
@@ -1100,7 +1119,7 @@ jobs:
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
 
       - name: Build agent at HEAD (fast path)
-        if: matrix.shard == 'agent' && needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        if: matrix.shard == 'agent' && needs.changes.outputs.e2e_full_build == 'false'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -1119,14 +1138,15 @@ jobs:
       # once, never quarantines a test by name. --durations=15 lists the slowest
       # tests of the shard (#1422).
       - name: Run integration tests (fast - source only)
-        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        if: needs.changes.outputs.e2e_full_build == 'false'
         env:
           E2E_SHARD: ${{ matrix.shard }}
         run: COLLECTOR_PULL_POLICY=missing USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1 --durations=15" make test-integration
 
-      # Slow path: full build (Dockerfiles or deps changed)
+      # Slow path: every stack image built at HEAD (merge_group, dispatch, ci-full,
+      # or Dockerfiles/deps changed; see changes.e2e_full_build)
       - name: Run integration tests (full build)
-        if: needs.changes.outputs.integration_deps == 'true' || needs.changes.outputs.force_full == 'true'
+        if: needs.changes.outputs.e2e_full_build != 'false'
         env:
           E2E_SHARD: ${{ matrix.shard }}
         run: PYTEST_EXTRA="--reruns 1 --durations=15" make test-integration
@@ -1573,13 +1593,24 @@ jobs:
 
       # #1583: a skipped e2e shard is OK only where it was not required; in the
       # merge queue (and with ci-full / risky paths) it must have succeeded.
+      # Fails closed: merge_group always requires e2e, and an e2e_required
+      # that is neither 'true' nor 'false' (empty/broken output) fails.
       - name: Check required e2e shards ran
-        if: needs.changes.outputs.e2e_required == 'true'
         env:
+          E2E_REQUIRED: ${{ needs.changes.outputs.e2e_required }}
           E2E_RESULT: ${{ needs.integration-test.result }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [[ "$E2E_RESULT" != "success" ]]; then
-            echo "❌ e2e shards were required (e2e_required=true) but integration-test is '$E2E_RESULT'"
+          if [[ "$E2E_REQUIRED" != "true" && "$E2E_REQUIRED" != "false" ]]; then
+            echo "❌ changes.e2e_required is '$E2E_REQUIRED' (expected 'true' or 'false')"
             exit 1
           fi
-          echo "✅ Required e2e shards passed"
+          if [[ "$E2E_REQUIRED" == "true" || "$EVENT_NAME" == "merge_group" ]]; then
+            if [[ "$E2E_RESULT" != "success" ]]; then
+              echo "❌ e2e shards were required (e2e_required=$E2E_REQUIRED, event=$EVENT_NAME) but integration-test is '$E2E_RESULT'"
+              exit 1
+            fi
+            echo "✅ Required e2e shards passed"
+          else
+            echo "✅ e2e shards not required (result: $E2E_RESULT)"
+          fi
