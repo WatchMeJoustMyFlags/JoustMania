@@ -1,8 +1,11 @@
 package decision
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -332,6 +335,89 @@ func TestInfraLoop_ServedStageReadsStopAfterRollbackLands(t *testing.T) {
 		}
 		if got := rollout.calls(); len(got) != 1 {
 			t.Fatalf("writes = %v, want [none]", got)
+		}
+	})
+}
+
+// A rollout flag read failure in the controller manager (bluetooth.rollout_read_error,
+// no target backend) is "unknown", not "inactive" (#1489): the loop records no
+// decision and keeps its record of the last write, so a lagging observation after
+// the blip still holds the expansion instead of re-writing the same stage.
+// UC: UC-050 A5 BR-001
+func TestInfraLoop_RolloutReadErrorHoldsState(t *testing.T) {
+	t.Run("UC-050/A5 a read error neither resets nor decides", func(t *testing.T) {
+		clock := time.Unix(1000, 0)
+		rollout := &fakeRollout{}
+		l, sr := newInfraLoop(t, rollout, &clock)
+
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz)) // expand → one
+		spansBefore := len(infraSpans(sr))
+
+		clock = clock.Add(2 * time.Second)
+		blip := infraSnap("", 0, clock, passingHz)
+		blip.Window.RolloutReadError = true
+		l.OnInfraEvaluate(context.Background(), blip)
+		if got := len(infraSpans(sr)); got != spansBefore {
+			t.Fatalf("decision spans = %d, want %d (no decision on a read error)", got, spansBefore)
+		}
+
+		// The observation still lags the write (stage 0): the kept record holds it.
+		clock = clock.Add(2 * time.Second)
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz))
+		if got := rollout.calls(); len(got) != 1 || got[0] != "one" {
+			t.Fatalf("writes = %v, want [one] (read error must not reset the rollout record)", got)
+		}
+	})
+
+	t.Run("UC-050/A5 a genuine off after a read error still resets", func(t *testing.T) {
+		clock := time.Unix(1000, 0)
+		rollout := &fakeRollout{}
+		l, _ := newInfraLoop(t, rollout, &clock)
+
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz)) // expand → one
+		clock = clock.Add(2 * time.Second)
+		blip := infraSnap("", 0, clock, passingHz)
+		blip.Window.RolloutReadError = true
+		l.OnInfraEvaluate(context.Background(), blip) // read error: state held
+		clock = clock.Add(2 * time.Second)
+		l.OnInfraEvaluate(context.Background(), infraSnap("", 0, clock, passingHz)) // genuine off
+		clock = clock.Add(2 * time.Second)
+		l.OnInfraEvaluate(context.Background(), infraSnap("unstable", 0, clock, passingHz)) // next run
+		if got := rollout.calls(); len(got) != 2 || got[1] != "one" {
+			t.Fatalf("writes = %v, want [one one] (genuine off still resets)", got)
+		}
+	})
+}
+
+// A persistent read error is logged once at Warn on entering the unknown state
+// and once at Info on leaving it, not once per cycle (#1489).
+// UC: UC-050 A5
+func TestInfraLoop_RolloutReadErrorLogsOnEdges(t *testing.T) {
+	t.Run("UC-050/A5 warn once on entering, info once on leaving", func(t *testing.T) {
+		clock := time.Unix(1000, 0)
+		l, _ := newInfraLoop(t, &fakeRollout{}, &clock)
+		var logs bytes.Buffer
+		l.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+		for i := 0; i < 3; i++ {
+			clock = clock.Add(2 * time.Second)
+			blip := infraSnap("", 0, clock, passingHz)
+			blip.Window.RolloutReadError = true
+			l.OnInfraEvaluate(context.Background(), blip)
+		}
+		if got := strings.Count(logs.String(), "agent.rollout_state_unknown"); got != 1 {
+			t.Fatalf("unknown-state logs = %d, want 1 (edge-triggered)\n%s", got, logs.String())
+		}
+		if !strings.Contains(logs.String(), "level=WARN") {
+			t.Fatalf("entering the unknown state must log at Warn:\n%s", logs.String())
+		}
+
+		for i := 0; i < 2; i++ {
+			clock = clock.Add(2 * time.Second)
+			l.OnInfraEvaluate(context.Background(), infraSnap("", 0, clock, passingHz))
+		}
+		if got := strings.Count(logs.String(), "level=INFO msg=agent.rollout_state_known"); got != 1 {
+			t.Fatalf("recovery logs = %d, want 1 at Info\n%s", got, logs.String())
 		}
 	})
 }

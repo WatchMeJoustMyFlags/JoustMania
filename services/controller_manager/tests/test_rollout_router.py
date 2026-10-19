@@ -14,13 +14,18 @@ service_dir = test_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
-from services.controller_manager.multiplexer.rollout_router import RolloutRouter
+from openfeature.flag_evaluation import ErrorCode, FlagEvaluationDetails, Reason
+
+from services.controller_manager.multiplexer.rollout_router import RolloutReadError, RolloutRouter
 
 ALL = ["C", "A", "F", "B", "E", "D"]  # unsorted on purpose
 SORTED = ["A", "B", "C", "D", "E", "F"]
 
 
-def _client(strategy="off", target="unstable", count=0):
+def _client(strategy="off", target="unstable", count=0, error_key=None):
+    """Fake rollout client. ``error_key`` makes that flag's ``*_details`` read
+    resolve to its default with an error code, as the OpenFeature SDK does on a
+    flagd error or provider-not-ready."""
     client = MagicMock()
 
     def get_string(key, default, _ctx):
@@ -35,8 +40,23 @@ def _client(strategy="off", target="unstable", count=0):
             return count
         return default
 
+    def details(getter):
+        def _details(key, default, ctx):
+            if key == error_key:
+                return FlagEvaluationDetails(
+                    flag_key=key,
+                    value=default,
+                    reason=Reason.ERROR,
+                    error_code=ErrorCode.PROVIDER_NOT_READY,
+                )
+            return FlagEvaluationDetails(flag_key=key, value=getter(key, default, ctx))
+
+        return _details
+
     client.get_string_value = MagicMock(side_effect=get_string)
     client.get_integer_value = MagicMock(side_effect=get_int)
+    client.get_string_details = MagicMock(side_effect=details(get_string))
+    client.get_integer_details = MagicMock(side_effect=details(get_int))
     return client
 
 
@@ -141,10 +161,30 @@ class TestCurrentTarget:
     def test_negative_count_clamped_to_zero(self):
         assert _current(strategy="progressive", target="unstable", count=-4) == ("unstable", 0)
 
-    def test_flag_client_error_reports_off(self):
+    @pytest.mark.uc("UC-050", flow="A5")
+    def test_flag_client_error_raises_read_error(self):
+        """A failed read is not "off" (#1489): the span must be able to tell them apart."""
         router = RolloutRouter()
-        with patch("lib.feature_flags.get_flag_client", side_effect=RuntimeError("flagd down")):
-            assert router.current_target() == ("", 0)
+        with (
+            patch("lib.feature_flags.get_flag_client", side_effect=RuntimeError("flagd down")),
+            pytest.raises(RolloutReadError),
+        ):
+            router.current_target()
+
+    @pytest.mark.uc("UC-050", flow="A5")
+    @pytest.mark.parametrize("key", ["strategy", "target_backend", "current_controller_count"])
+    def test_evaluation_error_code_raises_read_error(self, key):
+        """The SDK swallows flagd errors and returns the default ("off"); the
+        evaluation details' error code is what reveals the failure (#1489)."""
+        router = RolloutRouter()
+        client = _client(strategy="progressive", target="unstable", count=3, error_key=key)
+        with patch("lib.feature_flags.get_flag_client", return_value=client), pytest.raises(RolloutReadError):
+            router.current_target()
+
+    @pytest.mark.uc("UC-050", flow="A5")
+    def test_off_read_cleanly_is_not_an_error(self):
+        # A target_backend read error is irrelevant once strategy is cleanly "off".
+        assert _current(strategy="off", error_key="target_backend") == ("", 0)
 
 
 def _strategy(**kw):

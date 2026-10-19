@@ -220,3 +220,30 @@ func TestApplySpans_SkipsOwnService(t *testing.T) {
 		t.Fatal("non-own service health spans must still apply")
 	}
 }
+
+// A controller manager that failed to read the rollout flags omits the target
+// and count and sets bluetooth.rollout_read_error (#1489). Older producers never
+// send it, so its absence means "read succeeded".
+// UC: UC-050 A5
+func TestApplySpans_RolloutReadError(t *testing.T) {
+	t.Run("UC-050/A5 read error flag is extracted", func(t *testing.T) {
+		s := newTestStore()
+		td := healthSpan(SpanBluetoothHealth, map[string]float64{AttrEventGapMs: 12.0}, "", nil, false)
+		td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0).Attributes().PutBool(AttrRolloutReadError, true)
+		s.ApplySpans(td)
+		w := s.Snapshot().Window
+		if !w.RolloutReadError {
+			t.Fatal("rollout_read_error = false, want true")
+		}
+		if w.TargetBackend != "" || w.RolloutCount != 0 {
+			t.Fatalf("target/count = %q/%d, want empty/0", w.TargetBackend, w.RolloutCount)
+		}
+	})
+	t.Run("UC-050/A5 absent flag means the read succeeded", func(t *testing.T) {
+		s := newTestStore()
+		s.ApplySpans(healthSpan(SpanBluetoothHealth, map[string]float64{AttrEventGapMs: 12.0}, "rust", nil, false))
+		if s.Snapshot().Window.RolloutReadError {
+			t.Fatal("rollout_read_error = true, want false (absent)")
+		}
+	})
+}

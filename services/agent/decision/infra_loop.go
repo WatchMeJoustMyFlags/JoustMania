@@ -238,6 +238,11 @@ type InfraLoop struct {
 	// after a rollback. Zero = no cooldown. In-memory only; resetRolloutStateLocked
 	// keeps it (a blip of the inactive signal must not re-open expansion, #1384).
 	cooldownUntil time.Time
+	// rolloutUnknown is true while the controller manager reports that it cannot
+	// read the rollout flags (#1489). It edge-triggers one Warn on entering and one
+	// Info on leaving the state, so a persistent read error is visible without a
+	// log line per cycle.
+	rolloutUnknown bool
 	// rollbackInFlight is true between writing a rollback and observing the
 	// rollout count return to 0. While set, further failing cycles record "none"
 	// (the reset is already in flight) and do NOT re-write. Cleared when the
@@ -378,12 +383,35 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	// when the controller-manager reports a target backend ("" means strategy off).
 	target := snap.Window.TargetBackend
 	stage := snap.Window.RolloutCount
+	if snap.Window.RolloutReadError {
+		// The controller manager could not read the rollout flags: the rollout
+		// state is UNKNOWN, not off (UC-050 A5, #1489). Hold everything: no
+		// decision span, no write, and the rollout record is kept.
+		l.mu.Lock()
+		entered := !l.rolloutUnknown
+		l.rolloutUnknown = true
+		l.mu.Unlock()
+		if entered {
+			l.log.Warn("agent.rollout_state_unknown", "reason", "rollout_read_error")
+		} else {
+			l.log.Debug("agent.rollout_state_unknown", "reason", "rollout_read_error")
+		}
+		return
+	}
+	l.mu.Lock()
+	recovered := l.rolloutUnknown
+	l.rolloutUnknown = false
+	l.mu.Unlock()
+	if recovered {
+		l.log.Info("agent.rollout_state_known", "target_backend", target, "rollout_count", stage)
+	}
 	if target == "" {
 		// Rollout inactive → no decision span. An operator ended the rollout (strategy
 		// off), so forget the last written stage: the next active rollout climbs from
 		// the observed stage instead of waiting for a write it will never see (#1384).
-		// The cooldown is kept: the controller manager also reports "" when a flag
-		// read fails, so a single blip must not re-open expansion after a rollback.
+		// The cooldown is kept: a controller manager older than #1489 also reports ""
+		// when a flag read fails, so a single blip must not re-open expansion after a
+		// rollback.
 		l.mu.Lock()
 		l.resetRolloutStateLocked("rollout_inactive")
 		l.mu.Unlock()

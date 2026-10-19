@@ -19,6 +19,10 @@ Flags are evaluated cheaply per routing cycle via the in-process resolver,
 mirroring how ``bluetooth_backend`` is evaluated per cycle in the multiplexer —
 no caching layer is needed. Any flag/evaluation error degrades to ``None`` so a
 flagd outage can never break controller routing.
+
+``current_target()`` (telemetry only) instead raises ``RolloutReadError`` on a
+failed read, so the bluetooth-health span can tell "rollout off" from "flags
+unreadable" (UC-050 A5, #1489).
 """
 
 from __future__ import annotations
@@ -30,6 +34,22 @@ logger = logging.getLogger(__name__)
 _DOMAIN = "rollout"
 
 
+class RolloutReadError(Exception):
+    """The ``rollout`` flags could not be read (flagd error, provider not ready)."""
+
+
+def _checked(details):
+    """Return the evaluated value, raising ``RolloutReadError`` on an error code.
+
+    The OpenFeature SDK never raises from ``get_*_value``: on any provider error
+    it returns the caller's default, which for ``strategy`` is "off". The
+    ``*_details`` evaluation carries the error code that reveals the failure.
+    """
+    if details.error_code is not None:
+        raise RolloutReadError(f"{details.flag_key}: {details.error_code} {details.error_message or ''}".strip())
+    return details.value
+
+
 class RolloutRouter:
     """Evaluates the ``rollout`` domain to pick a target backend per serial."""
 
@@ -38,8 +58,10 @@ class RolloutRouter:
 
         Used by the bluetooth-health span to report which backend the rollout is
         steering toward and how many controllers are in the cohort. Returns
-        ``("", 0)`` when the strategy is "off" or on any evaluation error, so a
-        flagd outage never breaks span emission.
+        ``("", 0)`` only when the rollout is genuinely off (strategy "off" or no
+        target). Raises ``RolloutReadError`` when a flag cannot be read, so the
+        span can report the failure instead of a false "off" (#1489); the caller
+        must catch it so a flagd outage never breaks span emission.
 
         For ``immediate`` the cohort is effectively the whole fleet, but the
         ``current_controller_count`` flag is only meaningful for ``progressive``;
@@ -52,23 +74,26 @@ class RolloutRouter:
 
             client = get_flag_client(_DOMAIN)
 
-            strategy = client.get_string_value("strategy", "off", EvaluationContext())
+            strategy = _checked(client.get_string_details("strategy", "off", EvaluationContext()))
             if strategy == "off":
                 return "", 0
 
-            target = client.get_string_value("target_backend", "", EvaluationContext())
+            target = _checked(client.get_string_details("target_backend", "", EvaluationContext()))
             if not target:
                 return "", 0
 
-            count = client.get_integer_value(
-                "current_controller_count",
-                0,
-                EvaluationContext(),
+            count = _checked(
+                client.get_integer_details(
+                    "current_controller_count",
+                    0,
+                    EvaluationContext(),
+                )
             )
             return target, max(0, int(count))
-        except Exception:
-            logger.debug("RolloutRouter.current_target failed; reporting off", exc_info=True)
-            return "", 0
+        except RolloutReadError:
+            raise
+        except Exception as exc:
+            raise RolloutReadError(str(exc)) from exc
 
     def current_strategy(self) -> str:
         """Return the active rollout ``strategy`` string for telemetry.

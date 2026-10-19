@@ -216,6 +216,94 @@ class TestSpanEmission:
         assert ev_attrs["bluetooth.dropped_events_pct"] == 0.2
         assert "bluetooth.movement_update_hz" in ev_attrs
 
+    @pytest.mark.uc("UC-050", flow="A5", steps=[1])
+    @patch("services.controller_manager.metrics.controller_bluetooth_movement_update_hz")
+    @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio")
+    @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio_window")
+    @patch("services.controller_manager.metrics.controller_bluetooth_event_gap_seconds")
+    @patch("services.controller_manager.metrics.controller_state_update_hz")
+    def test_rollout_read_error_is_not_reported_as_off(self, *_metrics):
+        """#1489: a failed rollout read omits target/count and flags the error."""
+        from services.controller_manager.multiplexer.rollout_router import RolloutReadError
+
+        backend = MagicMock()
+        backend.get_adapter_type.return_value = "python"
+        backend.rollout_summary.side_effect = RolloutReadError("flagd down")
+        # The strategy read falls back to its "off" default on the same error.
+        backend.rollout_strategy.return_value = "off"
+        loop = _make_loop(backend)
+        loop._window_start = 0.0
+        _feed(loop, "AA", [{"n": i} for i in range(5)], dt=0.01)
+
+        fake = FakeTracer()
+        with patch("services.controller_manager.discovery_loop.tracer", fake):
+            loop._emit_bluetooth_health(now=1.0)
+
+        a = fake.spans["controller.bluetooth_health"].attributes
+        assert a["bluetooth.rollout_read_error"] is True
+        assert "bluetooth.target_backend" not in a
+        assert "bluetooth.rollout_count" not in a
+        assert "bluetooth.rollout_strategy" not in a
+
+    @pytest.mark.uc("UC-050", flow="A5")
+    @patch("services.controller_manager.metrics.controller_bluetooth_movement_update_hz")
+    @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio")
+    @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio_window")
+    @patch("services.controller_manager.metrics.controller_bluetooth_event_gap_seconds")
+    @patch("services.controller_manager.metrics.controller_state_update_hz")
+    def test_rollout_read_error_logs_once_on_enter_and_leave(self, *_metrics):
+        """#1489: a persistent read error warns once, recovery logs info once."""
+        from services.controller_manager.multiplexer.rollout_router import RolloutReadError
+
+        backend = MagicMock()
+        backend.get_adapter_type.return_value = "python"
+        backend.rollout_strategy.return_value = "off"
+        loop = _make_loop(backend)
+
+        def emit(now):
+            loop._window_start = now - 1.0
+            _feed(loop, "AA", [{"n": i} for i in range(5)], dt=0.01)
+            with patch("services.controller_manager.discovery_loop.tracer", FakeTracer()):
+                loop._emit_bluetooth_health(now=now)
+
+        with patch("services.controller_manager.discovery_loop.logger") as log:
+            backend.rollout_summary.side_effect = RolloutReadError("flagd down")
+            for t in (1.0, 2.0, 3.0):
+                emit(t)
+            assert log.warning.call_count == 1
+            assert log.info.call_count == 0
+
+            backend.rollout_summary.side_effect = None
+            backend.rollout_summary.return_value = ("", 0)
+            for t in (4.0, 5.0):
+                emit(t)
+            assert log.warning.call_count == 1
+            assert log.info.call_count == 1
+
+    @pytest.mark.uc("UC-050", flow="A5")
+    @patch("services.controller_manager.metrics.controller_bluetooth_movement_update_hz")
+    @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio")
+    @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio_window")
+    @patch("services.controller_manager.metrics.controller_bluetooth_event_gap_seconds")
+    @patch("services.controller_manager.metrics.controller_state_update_hz")
+    def test_rollout_off_has_empty_target_and_no_read_error(self, *_metrics):
+        backend = MagicMock()
+        backend.get_adapter_type.return_value = "python"
+        backend.rollout_summary.return_value = ("", 0)
+        backend.rollout_strategy.return_value = "off"
+        loop = _make_loop(backend)
+        loop._window_start = 0.0
+        _feed(loop, "AA", [{"n": i} for i in range(5)], dt=0.01)
+
+        fake = FakeTracer()
+        with patch("services.controller_manager.discovery_loop.tracer", fake):
+            loop._emit_bluetooth_health(now=1.0)
+
+        a = fake.spans["controller.bluetooth_health"].attributes
+        assert a["bluetooth.target_backend"] == ""
+        assert a["bluetooth.rollout_count"] == 0
+        assert "bluetooth.rollout_read_error" not in a
+
     @patch("services.controller_manager.metrics.controller_bluetooth_event_gap_seconds")
     def test_skip_when_no_controllers(self, gap):
         loop = _make_loop()
