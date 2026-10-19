@@ -30,6 +30,14 @@
 #   scripts/tests/test-<name>.sh [args]   (or: bash scripts/tests/test-<name>.sh)
 # The dashboard (vitest / tsc) runs only through `make pr-gates SERVICE=dashboard`.
 #
+# Threat model: guards against agent and prompt mistakes (what the caller adds to a
+# command), not a sandbox for untrusted PR code. Every allowed form runs the
+# worktree's own code (Makefile recipes, pytest conftest/plugins, go test binaries,
+# cargo build.rs, scripts/tests). Run it only on PRs you would run locally.
+# Accepted risk: pytest -p/-o/--rootdir/--import-mode and go -ldflags/-gcflags pass
+# validation, but can only reach worktree or venv code because absolute paths and
+# '..' are refused; the threat model covers that, so there is no per-option allow-list.
+#
 # Exit: 0 verdict as expected (PASS, or MUTATION CAUGHT (assertion) with --expect-fail),
 #       1 any other verdict, 2 REFUSED.
 #
@@ -85,6 +93,10 @@ esac
 LOGS="${LOGS%/}"
 case "$(realpath -m -- "$LOGS")/" in
   "$WT_REAL"/*) refuse "logs dir inside the worktree: $LOGS" ;;
+esac
+# Never write logs into the main checkout or any worktree.
+case "$(realpath -m -- "$LOGS")/" in
+  "$MAIN"/* | */.worktrees/*) refuse "logs dir under the main checkout or a .worktrees/ path: $LOGS" ;;
 esac
 mkdir -p -- "$LOGS" || refuse "cannot create logs dir: $LOGS"
 LOGS="$(realpath -e -- "$LOGS")"
@@ -186,6 +198,12 @@ validate_test_script() {
   [[ -z "$RUN_DIR_REL" ]] || refuse "scripts/tests run at the worktree root (no --dir)"
   [[ "$1" =~ ^scripts/tests/test-[A-Za-z0-9_-]+\.sh$ ]] || refuse "not a scripts/tests/test-*.sh: $1"
   [[ -f "$WT_REAL/$1" && ! -L "$WT_REAL/$1" ]] || refuse "no such test script: $1"
+  local resolved
+  resolved="$(realpath -e -- "$WT_REAL/$1" 2>/dev/null)" || refuse "no such test script: $1"
+  case "$resolved" in
+    "$WT_REAL"/scripts/tests/?*) ;;
+    *) refuse "test script resolves outside scripts/tests/ (symlinked directory?): $1" ;;
+  esac
 }
 
 case "${CMD[0]}" in

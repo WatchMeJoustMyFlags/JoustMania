@@ -79,6 +79,9 @@ GATE_RUN_DRY_RUN=1 run_gr 2 'REFUSED: worktree not a directory' --worktree "${MA
 GATE_RUN_DRY_RUN=1 run_gr 2 'REFUSED: logs dir must be absolute' --worktree "$WT" --logs logs -- make lint
 GATE_RUN_DRY_RUN=1 run_gr 2 "REFUSED: logs dir contains '..'" --worktree "$WT" --logs "${WORK}/x/../logs" -- make lint
 GATE_RUN_DRY_RUN=1 run_gr 2 'REFUSED: logs dir inside the worktree' --worktree "$WT" --logs "${WT}/logs" -- make lint
+GATE_RUN_DRY_RUN=1 run_gr 2 'REFUSED: logs dir under the main checkout' --worktree "$WT" --logs "${MAIN}/logs" -- make lint
+GATE_RUN_DRY_RUN=1 run_gr 2 'REFUSED: logs dir under the main checkout' --worktree "$WT" --logs "${MAIN}/.worktrees/other/logs" -- make lint
+[[ ! -e "${MAIN}/logs" ]] || fail "logs dir in the main checkout was created"
 [[ ! -e "${WT}/logs" ]] || fail "logs dir inside the worktree was created"
 
 # --- argument validation
@@ -114,6 +117,13 @@ refused -- bash -c id
 refused -- sh scripts/tests/test-pass.sh
 refused -- bash scripts/ci/local-gates.sh
 refused -- bash scripts/tests/test-link.sh
+# symlinked scripts/tests directory resolving outside the worktree
+WT2="${MAIN}/.worktrees/wt2"
+git -C "${MAIN}" worktree add -q "${WT2}" -b wt2
+mkdir -p "${WT2}/scripts" "${WORK}/evil"
+echo "echo pwned" >"${WORK}/evil/test-x.sh"
+ln -s "${WORK}/evil" "${WT2}/scripts/tests"
+GATE_RUN_DRY_RUN=1 run_gr 2 'resolves outside scripts/tests' --worktree "$WT2" --logs "$LOGS" -- scripts/tests/test-x.sh
 refused -- scripts/tests/test-missing.sh
 refused -- npx vitest run
 refused -- docker build .

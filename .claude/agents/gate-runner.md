@@ -59,6 +59,8 @@ What the script accepts (anything else is `REFUSED`, exit 2): `make` with target
 variables `TEST SERVICE BASE PR_LABELS E2E_SHARD IMAGE_TAG PYTEST_EXTRA`; `uv run --package <member>
 [--extra <x>] pytest ...`; `go test|vet` and `cargo test|clippy` with `--dir`; `scripts/tests/test-*.sh`.
 The dashboard runs only through `make pr-gates SERVICE=dashboard`. The full rules are in the script header.
+Threat model: the script guards against agent and prompt mistakes, not untrusted PR code; every allowed form
+runs the worktree's own code, so use it only on PRs you would run locally.
 
 `make test`, `test-integration*`, `test-pulled`, `test-dev` and `test-integration-shard-check` depend on
 `clean-test-venv`, which runs `sudo rm -rf .venv-test` when that venv is not writable. The script refuses
