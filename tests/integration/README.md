@@ -147,6 +147,17 @@ shards. Use `agent` only when the module starts the agent service; writing to
 the `agent` flag set does not count. `make test-integration-shard-check`
 verifies that every collected test is in exactly one shard.
 
+### When CI runs them (#1583)
+
+The shards run in the merge queue (`merge_group`, always: that is the gate before
+`main`), on `workflow_dispatch`, and on a PR only when it has the `ci-full` label
+or its non-docs diff touches a risky path: `docker-compose*.yml`, any
+`Dockerfile*`, `tests/integration/**` (this suite, `conftest.py`, `helpers.py`),
+`services/otel-collector/**`, `images/otel-collector/**` or `services/envoy/**`.
+Plain PR pushes skip them, and so does a push to `main` (the queue already ran
+them on that commit). To force a run on a PR, add the `ci-full` label; locally,
+`make test-integration` (or `make test-integration-core` / `-agent`).
+
 ## Checks that need only flagd live in the contract tier (#1422)
 
 Tests whose subject is flagd's own resolution, not the game services, run

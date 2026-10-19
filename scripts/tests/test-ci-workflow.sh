@@ -7,6 +7,10 @@
 #   #1555: merge-queue support: the merge_group trigger, its paths-filter base,
 #          concurrency per merge-group ref, every main-gating check runs in the
 #          queue, CI Complete reports there, and nothing is published from it.
+#   #1583: the e2e shards run only where `changes.e2e_required` says so
+#          (merge_group, workflow_dispatch, ci-full, risky paths); a push to
+#          main builds and publishes without them. Checked by simulating the
+#          `changes/force` step and evaluating the job `if:`s per scenario.
 #
 # Needs python3 + PyYAML (as scripts/ci/check-retag-source.sh).
 #   ./scripts/tests/test-ci-workflow.sh [path/to/ci.yml]
@@ -164,6 +168,7 @@ EXEMPT = {"changes", "sonarcloud", "docker-build-merge", "docker-build-extra-mer
 MATRIX_GATED = {"service-checks", "docker-build", "docker-build-extra"}
 TERM = re.compile(r"needs\.changes\.outputs\.\w+ == 'true'")
 RUN_ALL = "needs.changes.outputs.run_all_checks == 'true'"
+check("e2e_required == 'true'" in job_if("integration-test"), "integration-test: must gate on e2e_required (#1583)")
 for name in jobs["ci-complete"]["needs"]:
     if name in EXEMPT:
         continue
@@ -193,6 +198,181 @@ for build in ("docker-build", "docker-build-extra"):
                 step.get("if") == "github.event_name == 'push' || github.event_name == 'workflow_dispatch'",
                 f"{build}/{step.get('name')}: only on publishing events",
             )
+
+# 4. (#1583) e2e gating, simulated per scenario. The `force` step runs for real
+#    (bash, a fake `gh` for the live label read); job `if:`s go through a small
+#    evaluator for the GitHub expression subset ci.yml uses.
+import json
+import os
+import subprocess
+import tempfile
+
+TOKEN = re.compile(r"\s*(?:(?P<str>'[^']*')|(?P<op>==|!=|&&|\|\||!|\(|\)|,)|(?P<id>[A-Za-z_][\w.*-]*))")
+
+
+def to_python(expr):
+    out, pos = [], 0
+    expr = expr.strip()
+    while pos < len(expr):
+        m = TOKEN.match(expr, pos)
+        if not m or m.end() == pos:
+            raise ValueError(f"cannot parse expression at {expr[pos:]!r}")
+        pos = m.end()
+        if m.group("str"):
+            out.append(repr(m.group("str")[1:-1]))
+        elif m.group("op"):
+            out.append({"&&": " and ", "||": " or ", "!": " not "}.get(m.group("op"), m.group("op")))
+        else:
+            name = m.group("id")
+            if expr[pos:].lstrip().startswith("("):
+                out.append(f"F_{name}")
+            elif name in ("true", "false"):
+                out.append(name.capitalize())
+            else:
+                out.append(f"L({name!r})")
+    return "".join(out)
+
+
+def evaluate(expr, ctx):
+    expr = expr.strip()
+    if expr.startswith("${{") and expr.endswith("}}"):
+        expr = expr[3:-2]
+    return eval(  # noqa: S307 (expressions come from our own ci.yml)
+        to_python(expr),
+        {
+            "L": lambda k: ctx.get(k, ""),
+            "F_cancelled": lambda: False,
+            "F_contains": lambda hay, needle: needle in hay,
+            "F_toJSON": lambda v: json.dumps(v),
+        },
+    )
+
+
+def interpolate(text, ctx):
+    def repl(m):
+        v = evaluate(m.group(1), ctx)
+        return ("true" if v else "false") if isinstance(v, bool) else str(v)
+
+    return re.sub(r"\$\{\{(.*?)\}\}", repl, str(text))
+
+
+def run_step(step, ctx, extra_path=None):
+    env = {k: interpolate(v, ctx) for k, v in (step.get("env") or {}).items()}
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out")
+        open(out, "w").close()
+        env.update(GITHUB_OUTPUT=out, PATH=f"{extra_path or tmp}:{os.environ['PATH']}")
+        proc = subprocess.run(
+            ["bash", "-eo", "pipefail", "-c", interpolate(step["run"], ctx)],
+            env=env, capture_output=True, text=True,
+        )
+        outputs = dict(line.split("=", 1) for line in open(out).read().splitlines() if "=" in line)
+    return proc.returncode, outputs
+
+
+def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success"):
+    """Results of the e2e/build/publish/complete jobs for one event."""
+    ctx = {
+        "github.event_name": event,
+        "github.event.pull_request.number": "42" if event == "pull_request" else "",
+        "github.event.pull_request.labels.*.name": ["ci-full"] if ci_full else [],
+        "github.token": "x",
+        "github.repository": "o/r",
+        "steps.f.outputs.e2e_paths": str(e2e_paths).lower(),
+        "steps.nondocs.outputs.non_docs": str(non_docs).lower(),
+    }
+    with tempfile.TemporaryDirectory() as bindir:
+        gh = os.path.join(bindir, "gh")
+        with open(gh, "w") as fh:
+            fh.write("#!/bin/sh\n" + ("echo ci-full\n" if ci_full else "echo docs\n"))
+        os.chmod(gh, 0o755)
+        force = next(s for s in jobs["changes"]["steps"] if s.get("id") == "force")
+        rc, out = run_step(force, ctx, extra_path=bindir)
+    assert rc == 0, f"force step failed for {event}"
+    for key, value in jobs["changes"]["outputs"].items():
+        if "steps.force.outputs" in value:
+            ctx[f"needs.changes.outputs.{key}"] = interpolate(value, {f"steps.force.outputs.{k}": v for k, v in out.items()})
+    ctx.update({
+        "needs.changes.result": "success",
+        "needs.changes.outputs.docker_build_matrix": '["menu"]',
+        "needs.changes.outputs.docker_extra_matrix": '[{"service":"agent"}]',
+        "needs.changes.outputs.retag_matrix": '["dashboard"]',
+        "needs.changes.outputs.non_docs": str(non_docs).lower(),
+    })
+    results = {}
+
+    def run_job(name, ok="success"):
+        cond = str(jobs[name].get("if", "true"))
+        # GitHub ANDs an implicit success() (every need succeeded) into an
+        # `if:` that calls no status function.
+        if not re.search(r"\b(success|failure|always|cancelled)\(\)", cond):
+            need_list = jobs[name]["needs"]
+            need_list = [need_list] if isinstance(need_list, str) else need_list
+            implicit = all(ctx.get(f"needs.{n}.result") == "success" for n in need_list)
+        else:
+            implicit = True
+        results[name] = ok if implicit and evaluate(cond, ctx) else "skipped"
+        ctx[f"needs.{name}.result"] = results[name]
+
+    run_job("integration-test", e2e_outcome)
+    for name in ("docker-build", "docker-build-extra", "docker-build-merge", "docker-build-extra-merge", "retag-skipped"):
+        run_job(name)
+    needs = {n: {"result": results.get(n, "success")} for n in jobs["ci-complete"]["needs"]}
+    for n, v in needs.items():
+        ctx[f"needs.{n}.result"] = v["result"]
+    ctx["needs.*.result"] = [v["result"] for v in needs.values()]
+    ctx["needs"] = needs
+    complete_rc = 0
+    for step in jobs["ci-complete"]["steps"]:
+        if "if" in step and not evaluate(str(step["if"]).lower() if isinstance(step["if"], bool) else step["if"], ctx):
+            continue
+        complete_rc, _ = run_step(step, ctx)
+        if complete_rc:
+            break
+    results["ci-complete"] = "success" if complete_rc == 0 else "failure"
+    results["e2e_required"] = ctx.get("needs.changes.outputs.e2e_required")
+    return results
+
+
+check("e2e_required" in jobs["changes"]["outputs"], "changes: must output e2e_required (#1583)")
+e2e_filter = next(s for s in jobs["changes"]["steps"] if s.get("id") == "f")["with"]["filters"]
+for path in ("docker-compose*.yml", "**/Dockerfile*", "tests/integration/**", "services/otel-collector/**", "services/envoy/**"):
+    check(f"'{path}'" in e2e_filter, f"changes/f: e2e_paths must cover {path}")
+
+SCENARIOS = [
+    # (label, event, e2e_paths, non_docs, ci_full, expect_e2e)
+    ("PR, plain code change", "pull_request", False, True, False, False),
+    ("PR, risky path", "pull_request", True, True, False, True),
+    ("PR, ci-full label", "pull_request", False, True, True, True),
+    ("PR, docs-only under a risky path", "pull_request", True, False, False, False),
+    ("merge_group", "merge_group", False, True, False, True),
+    ("merge_group, docs only", "merge_group", False, False, False, True),
+    ("workflow_dispatch", "workflow_dispatch", False, True, False, True),
+    ("push to main", "push", True, True, False, False),
+]
+if "e2e_required" in jobs["changes"]["outputs"]:
+    for label, event, paths, non_docs, ci_full, expect in SCENARIOS:
+        r = simulate(event, paths, non_docs, ci_full)
+        ran = r["integration-test"] != "skipped"
+        check(ran == expect, f"{label}: e2e shards {'should' if expect else 'should not'} run, got {r['integration-test']}")
+        check(r["ci-complete"] == "success", f"{label}: CI Complete should pass with every job green/skipped, got {r}")
+        check(r["docker-build"] == "success", f"{label}: image builds should run, got {r['docker-build']}")
+        if expect:
+            # Required e2e that failed blocks the builds and CI Complete.
+            bad = simulate(event, paths, non_docs, ci_full, e2e_outcome="failure")
+            check(bad["docker-build"] == "skipped", f"{label}: builds must wait for e2e, got {bad['docker-build']}")
+            check(bad["ci-complete"] == "failure", f"{label}: failed e2e must fail CI Complete")
+            # A required shard that did not run (e.g. skipped) must not pass.
+            gone = simulate(event, paths, non_docs, ci_full, e2e_outcome="skipped")
+            check(gone["ci-complete"] == "failure", f"{label}: required e2e skipped must fail CI Complete, got {gone}")
+    push = simulate("push", True, True)
+    check(push["docker-build-merge"] == "success" and push["docker-build-extra-merge"] == "success",
+          f"push to main: publish must run without e2e, got {push}")
+    check(push["retag-skipped"] == "success", f"push to main: retag-skipped must run without e2e, got {push}")
+    check("integration-test" not in jobs["retag-skipped"]["needs"], "retag-skipped: must not need integration-test")
+    mq = simulate("merge_group", False, True)
+    for name in ("docker-build-merge", "docker-build-extra-merge", "retag-skipped"):
+        check(mq[name] == "skipped", f"merge_group: {name} must not run, got {mq[name]}")
 
 if failures:
     for f in failures:
