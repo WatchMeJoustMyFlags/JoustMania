@@ -313,12 +313,15 @@ async def _run_mode_headless(stack, spec: ModeSpec, tag: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("modes", _BATCHES)
-@pytest.mark.uc("UC-021", flow="main", tc="TC-017")
-@pytest.mark.uc("UC-022", flow="main", tc="TC-017")
-@pytest.mark.uc("UC-023", flow="main", tc="TC-017")
-@pytest.mark.uc("UC-024", flow="main", tc="TC-017")
-@pytest.mark.uc("UC-025", flow="main", tc="TC-017")
-@pytest.mark.uc("UC-026", flow="main", tc="TC-017")
+# Steps limited to what is asserted: start, RUNNING, game colours, no game_error.
+# Win/end conditions and mode-specific deaths are unit-only (TC-017 step 7); one
+# parametrised run carries all six tags, so a failure in one mode fails every tag.
+@pytest.mark.uc("UC-021", flow="main", steps=[1, 2], tc="TC-017")
+@pytest.mark.uc("UC-022", flow="main", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-023", flow="main", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-024", flow="main", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-025", flow="main", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-026", flow="main", steps=[1], tc="TC-017")
 async def test_parallel_mode_lifecycle(service_stack, headless_cleanup, modes):
     """Run a duration-grouped batch of game modes concurrently, headless.
 
