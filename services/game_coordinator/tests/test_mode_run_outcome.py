@@ -72,7 +72,7 @@ async def test_run_override_force_ended_records_reason(mode):
 
 
 @pytest.mark.parametrize("mode", RUN_OVERRIDE_MODES, ids=[m.name for m in RUN_OVERRIDE_MODES])
-@pytest.mark.uc("UC-020", flow="main", br=["BR-003"])
+@pytest.mark.uc("UC-020", br=["BR-003"])
 def test_run_override_natural_end_is_completed_and_survives_late_force_end(mode):
     """UC-020 BR-003: a natural end latches completed; a later force-end does not rewrite it."""
     game, root = _game(mode)
@@ -86,7 +86,7 @@ def test_run_override_natural_end_is_completed_and_survives_late_force_end(mode)
 
 
 @pytest.mark.parametrize("mode", RUN_OVERRIDE_MODES, ids=[m.name for m in RUN_OVERRIDE_MODES])
-@pytest.mark.uc("UC-020", flow="main", br=["BR-003"])
+@pytest.mark.uc("UC-020", br=["BR-003"])
 def test_run_override_wires_the_outcome(mode):
     """UC-020 BR-003: the override captures the root span, latches after its loop and records in teardown."""
     import inspect
