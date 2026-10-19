@@ -12,6 +12,9 @@ ambient -> none, the TC-006 steps 1 to 3 seam: mock button -> menu admin handler
 record no ``agent.decide`` span, while its call gate proves it is evaluating the
 game (``agent_llm_gated_total{reason=no_interventions_allowed}`` grows).
 
+It also carries UC-013 main step 5 for the agent side only (the host's write reaches the agent's next
+decision); the clamp of step 3 is not exercised here.
+
 Steps 1 to 4 in full (both ends of the ladder, voice feedback) are the LOBBY
 journey ``test_tc006_agent_ladder.py`` (#1598); steps 6 and 7 stay in
 ``tests/integration/test_intervention_flow.py``. Deviation from TC-006: the host
@@ -95,6 +98,7 @@ async def _restrict_from_controller(stack, mock_client, host: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A14", tc="TC-006")
+@pytest.mark.uc("UC-013", flow="main", steps=[5], tc="TC-006")
 @pytest.mark.usefixtures("flag_service")
 async def test_agent_makes_no_remote_call_after_host_restricts_it(fresh_stack):
     """With interventions_allowed=none set by the host from the controller, the agent

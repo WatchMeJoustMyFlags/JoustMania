@@ -309,6 +309,39 @@ async def test_allowed_membership_blocks():
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-013", br=["BR-002"])
+async def test_allowed_membership_permits_listed_type():
+    """The same chain lets a type through when interventions_allowed names it."""
+    mgr, events = make_manager(
+        interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")},
+        allowed="eliminate_player",
+    )
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()
+    elim = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "eliminate_player"]
+    assert len(elim) == 1
+    assert elim[0]["blocked"] == "false"
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-013", cond=["Post-S-1"])
+async def test_none_allow_list_rejects_every_intervention():
+    """The `none` variant is the empty string: the coordinator rejects each intervention as not_allowed."""
+    mgr, events = make_manager(
+        interventions={
+            "eliminate_player": edge_event("eliminate_player", "ctrl_a"),
+            "audio_cue": edge_event("audio_cue", "beep"),
+        },
+        allowed="",
+    )
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()
+    seen = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION]
+    assert {d["type"] for d in seen} == {"eliminate_player", "play_audio_cue"}
+    assert all(d["blocked"] == "true" and d["block_reason"] == BLOCK_NOT_ALLOWED for d in seen)
+
+
+@pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
 async def test_empty_allowed_blocks_everything():
     mgr, events = make_manager(interventions={"audio_cue": edge_event("audio_cue", "beep")}, allowed=[])

@@ -510,6 +510,9 @@ func (l *Loop) SetThrottleSource(src func() time.Duration) {
 //     weighted rate limit), record the outcome (dispatched or the BlockReason)
 //     in the LayerState and on the decision/action spans, and apply only the
 //     fully-permitted decisions through the action sink.
+//
+// UC-013 BR-002: the agent-side allow-list check (step 5); the coordinator enforces
+// the same list again in _check_chain.
 func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig EvalTrigger) LayerState {
 	now := l.now
 	if now == nil {

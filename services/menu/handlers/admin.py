@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 # is routed through a separate writer/client and handled specially in the
 # value-change paths rather than the generic game.json flag cycle.
 AGENT_CONTROL_OPTION = "agent_control"
+# UC-013 BR-001: the menu writes only this one key of the agent set.
 AGENT_POLICY_FLAG = "interventions_allowed"
 
 # Ordered policy levels for the kill-switch, most-restrictive first. "none" is the

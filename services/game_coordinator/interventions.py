@@ -1631,6 +1631,9 @@ class InterventionManager:
         Order: allowed-membership -> rate limit -> battery guard -> mode matrix.
         The rate-limit reservation happens last among the cheap checks so a
         blocked intervention never consumes budget.
+
+        UC-013 BR-002: the coordinator-side allow-list check (the agent has its own
+        in the permission chain).
         """
         # (a) allowed-membership
         if spec.type_id not in self._allowed_types():
