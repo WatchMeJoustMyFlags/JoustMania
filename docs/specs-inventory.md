@@ -212,7 +212,7 @@ spec PRs. Verified against `main` @ 2d162b33; rows added or updated by the audit
 
 | ID | Finding | Kind |
 |---|---|---|
-| D-F1 | `game_instructions` has no reader: the admin toggle has no effect. | likely bug (issue #1277) |
+| D-F1 | `game_instructions` has no reader: the admin toggle has no effect. | resolved: the game coordinator reads it at game start (UC-020 A5, #1550) |
 | D-F2 | feature-flags.md misses ~30 flags and says agent lifecycle flags need a restart (hot-reloaded since #927). | stale doc; **Resolved by #1322 item 9** (feature-flags.md rewritten as a short guide pointing at specs/flags.md) |
 | D-F3 | `code_improvement.validation_games`, `fitness_improvement_threshold`, `revert_on_degradation` have no production reader (#964); the FR-067 validator is constructed but `Validate` is never called (PR #1378 open removes the unused chain, #1322). | gap; **Resolved by #1322 item 9** (the three keys were removed; FR-067 stays planned under #964) |
 | D-F4 | `policy.movement_variance_window` is read and logged but the rules engine uses a static 10 s (`decision/config.go:125`). | likely bug; **Resolved by #1322 item 9** (flag removed; the window stays a fixed 10 s) |

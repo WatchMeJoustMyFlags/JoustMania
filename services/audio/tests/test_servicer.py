@@ -81,6 +81,60 @@ class TestPlaySound:
         assert volume == 1.0
 
 
+class TestPlaySoundDuration:
+    """UC-020 A5 step 2: PlaySound reports the clip length so a caller can wait for it (#1550)."""
+
+    @pytest.fixture
+    def servicer(self, mock_audio_servicer):
+        return mock_audio_servicer
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2])
+    async def test_play_sound_returns_clip_duration(self, servicer, mock_grpc_context):
+        servicer.audio_manager.play_sound = MagicMock(return_value=True)
+        servicer.audio_manager.silent = False
+        info = MagicMock(duration=7.25)
+        with patch("services.audio.servicer.miniaudio.get_file_info", return_value=info) as get_info:
+            response = await servicer.PlaySound(
+                audio_pb2.PlaySoundRequest(file_path="FFA-instructions", volume=1.0, priority=2), mock_grpc_context
+            )
+        assert response.success is True
+        assert response.duration_seconds == pytest.approx(7.25)
+        assert "FFA-instructions" in get_info.call_args.args[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2])
+    async def test_silent_manager_reports_zero(self, servicer, mock_grpc_context):
+        assert servicer.audio_manager.silent is True
+        response = await servicer.PlaySound(
+            audio_pb2.PlaySoundRequest(file_path="FFA-instructions", volume=1.0, priority=2), mock_grpc_context
+        )
+        assert response.duration_seconds == 0.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2])
+    async def test_muted_reports_zero(self, servicer, mock_grpc_context):
+        servicer.audio_enabled = False
+        servicer.audio_manager.silent = False
+        with patch("services.audio.servicer.miniaudio.get_file_info", return_value=MagicMock(duration=7.0)):
+            response = await servicer.PlaySound(
+                audio_pb2.PlaySoundRequest(file_path="FFA-instructions", volume=1.0, priority=2), mock_grpc_context
+            )
+        assert response.duration_seconds == 0.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2])
+    async def test_failed_play_or_unreadable_file_reports_zero(self, servicer, mock_grpc_context):
+        servicer.audio_manager.silent = False
+        servicer.audio_manager.play_sound = MagicMock(return_value=False)
+        response = await servicer.PlaySound(
+            audio_pb2.PlaySoundRequest(file_path="FFA-instructions", volume=1.0, priority=2), mock_grpc_context
+        )
+        assert response.duration_seconds == 0.0
+        with patch("services.audio.servicer.miniaudio.get_file_info", side_effect=OSError("bad header")):
+            assert servicer.audio_manager.sound_duration("Menu/vox/ivy/FFA-instructions.ogg") == 0.0
+
+
 class TestPlayMusic:
     """Tests for PlayMusic RPC."""
 

@@ -8,7 +8,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 servic
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
-| `PlaySound` | unary | `PlaySoundRequest` → `PlaySoundResponse` | Play an effect (file, volume, priority LOW..CRITICAL) |
+| `PlaySound` | unary | `PlaySoundRequest` → `PlaySoundResponse` | Play an effect (file, volume, priority LOW..CRITICAL); returns the clip length in duration_seconds (0 when nothing is heard) |
 | `PlayMusic` | unary | `PlayMusicRequest` → `PlayMusicResponse` | Start looping music matching a file pattern at a tempo |
 | `StopMusic` | unary | `StopMusicRequest` → `StopMusicResponse` | Stop music |
 | `ChangeTempo` | unary | `ChangeTempoRequest` → `ChangeTempoResponse` | Change music tempo (ratio clamped to (0.5, 2.0]) with a transition |

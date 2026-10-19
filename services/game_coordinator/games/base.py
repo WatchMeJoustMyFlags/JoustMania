@@ -238,6 +238,11 @@ END_MAX_MUSIC_SLOW_TIME = 12
 # revert target for the volume_override intervention (interventions.py).
 GAME_VOLUME = 0.7
 COUNTDOWN_MUSIC_VOLUME = 0.15  # Soft background music during countdown
+# Upper bound on the wait for a spoken instruction clip (UC-020 A5), so a bad
+# duration from the audio service can never stall a game start.
+MAX_INSTRUCTIONS_WAIT_SECONDS = 60.0
+# How often the instruction wait checks for a force-end.
+INSTRUCTIONS_POLL_SECONDS = 0.1
 
 
 def _read_volume_flag(flag_name: str, default: float) -> float:
@@ -1031,6 +1036,72 @@ class BaseGameMode(ABC):
         Nonstop Joust: Player respawns, add death event but keep span open
         """
         pass
+
+    def get_instruction_clip(self) -> Sound | None:
+        """Spoken instruction clip played before the countdown (UC-020 A5).
+
+        None means the mode has no clip mapping yet: nothing plays, no wait.
+        """
+        return None
+
+    def _instructions_enabled(self) -> bool:
+        """Read ``user.game_instructions`` at use time; any failure means off."""
+        try:
+            from openfeature.evaluation_context import EvaluationContext
+
+            from lib.feature_flags import get_flag_client, init_flag_domain
+
+            init_flag_domain("user")
+            client = get_flag_client("user")
+            value = client.get_boolean_value("game_instructions", False, EvaluationContext())
+            return value is True
+        except Exception as e:
+            logger.warning(f"Failed to read game_instructions, treating as off: {e}")
+            return False
+
+    async def _play_instructions(self, span: trace.Span) -> None:
+        """Play the mode's instruction clip and wait for it to finish (UC-020 A5).
+
+        Records ``game.instructions`` on ``span``: ``played``, ``off``,
+        ``no_clip`` or ``shadow`` (a shadow game has no audience).
+        """
+        if self.game_kind == GAME_KIND_SHADOW:
+            span.set_attribute("game.instructions", "shadow")
+            return
+        if not self._instructions_enabled():
+            span.set_attribute("game.instructions", "off")
+            return
+        clip = self.get_instruction_clip()
+        if clip is None or not self.audio_client:
+            span.set_attribute("game.instructions", "no_clip")
+            return
+
+        duration = 0.0
+        try:
+            from proto import audio_pb2
+
+            response = await self.audio_client.PlaySound(
+                audio_pb2.PlaySoundRequest(file_path=clip.value, volume=1.0, priority=audio_pb2.HIGH)
+            )
+            duration = max(0.0, min(float(response.duration_seconds), MAX_INSTRUCTIONS_WAIT_SECONDS))
+        except Exception as e:
+            logger.warning(f"Failed to play instructions {clip.value}: {e}")
+
+        span.set_attribute("game.instructions", "played")
+        span.add_event(
+            "game.instructions_played",
+            {"instructions.clip": clip.value, "instructions.duration_seconds": duration},
+        )
+        logger.info(f"Playing instructions {clip.value}, waiting {duration:.1f}s before the countdown")
+
+        # Wait for the clip to finish; a force-end stops the wait at once.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + duration
+        for _ in range(math.ceil(duration / INSTRUCTIONS_POLL_SECONDS)):
+            remaining = deadline - loop.time()
+            if not self.running or remaining <= 0:
+                break
+            await asyncio.sleep(min(INSTRUCTIONS_POLL_SECONDS, remaining))
 
     @abstractmethod
     def _get_additional_phases(self) -> list:
@@ -2907,6 +2978,10 @@ class BaseGameMode(ABC):
                 for phase in self._get_additional_phases():
                     with tracer.start_as_current_span(phase.name):
                         await phase.execute()
+
+                # Spoken instructions, when the host switched them on (UC-020 A5):
+                # the clip finishes before the music and the countdown start.
+                await self._play_instructions(init_span)
 
                 # Start gameplay stream before countdown (needed for countdown effects)
                 await self._start_gameplay_stream()

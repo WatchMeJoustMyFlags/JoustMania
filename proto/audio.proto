@@ -29,6 +29,9 @@ message PlaySoundRequest {
 message PlaySoundResponse {
   bool success = 1;
   string error = 2;
+  // Length of the clip in seconds; 0 when nothing is heard (muted, silent, missing file).
+  // Lets a caller wait for a clip to finish (UC-020 A5).
+  float duration_seconds = 3;
 }
 
 message PlayMusicRequest {

@@ -44,6 +44,10 @@ class FFAGame(BaseGameMode):
         """Return game mode identifier."""
         return "FFA"
 
+    def get_instruction_clip(self) -> Sound | None:
+        """FFA's spoken instructions (UC-020 A5)."""
+        return Sound.MENU_VOX_FFA_INSTRUCTIONS
+
     async def _initialize_players_impl(self, controllers: list):
         """
         Initialize players for FFA - all players on team=0.
