@@ -649,6 +649,9 @@ services:
       - FLAG_SERVICE_URL=http://flag-service:8070
       # Pairing daemon control API (UC-005 unpair); the daemon runs on the host network
       - PAIRING_DAEMON_URL=http://host.docker.internal:8002
+      # Host names the dashboard is reached by, besides IP literals and localhost;
+      # /pairing/unpair answers 403 for any other Host (UC-005 BR-003, DNS rebinding)
+      - JOUSTMANIA_HOSTNAMES=${JOUSTMANIA_HOSTNAMES:-joustmania.local}
       - OTEL_SERVICE_NAME=connect-proxy
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
