@@ -94,7 +94,7 @@ class StateManager:
         return {serial for serial, state in self.controller_states.items() if state == ControllerState.READY}
 
     def _abandon_admin_session(self) -> None:
-        """Release the admin session (UC-012 single-admin lock) when state is cleared wholesale."""
+        """UC-012 BR-004: release the admin session (single-admin lock) when state is cleared wholesale."""
         admin_handler = self._handlers.get(ControllerState.ADMIN)
         if admin_handler is not None and hasattr(admin_handler, "abandon_session"):
             admin_handler.abandon_session()

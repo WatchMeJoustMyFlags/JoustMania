@@ -98,6 +98,7 @@ class TestUC020InstructionsOn:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="A5", steps=[1, 2, 4])
+    @pytest.mark.uc("UC-012", flow="A3", steps=[2])
     async def test_ffa_plays_clip_and_countdown_waits_for_it(self, fast_config):  # noqa: F811
         """A5: the FFA clip plays first and the music and the countdown start only after it finished."""
         cm = RecordingControllerManager(num_controllers=3, death_schedule={1.0: 0, 1.6: 1}, max_duration=8.0)

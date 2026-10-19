@@ -20,6 +20,10 @@ Mechanics (from the live code):
   agent_control]`` from index 0; Cross cycles the game mode whatever the option.
 - ``force_all_start_seconds`` is ``ci`` (0.6 s) in services/flagd/ci/game.json,
   read at use time, so a 1.5 s trigger hold force-starts (TC-005 says 3 s).
+- UC-012 step 6 (the next game uses the new value) is read from the force-started
+  game's ``game_sensitivity`` gauge, so the stack exports OTLP to its sink.
+- UC-012 Post-S-1: the admin writes are persisted admin values on the flag
+  service; the baseline flag files of the stack stay byte-for-byte unchanged.
 - The test changes stack-wide state (the ``force_all_start`` overlay and
   persisted admin values), so it runs on ``fresh_stack``: a stack of its own,
   nothing leaks to another test, and no teardown of the admin values is needed
@@ -27,6 +31,7 @@ Mechanics (from the live code):
 """
 
 import asyncio
+import dataclasses
 
 import pytest
 from openfeature.evaluation_context import EvaluationContext
@@ -56,7 +61,7 @@ from tests.service.lobby_flow import start_lobby
 
 pytestmark = pytest.mark.tier("service")
 
-SERVICE_COMPOSITION = LOBBY
+SERVICE_COMPOSITION = dataclasses.replace(LOBBY, otlp=True)
 
 GAME = "game"
 USER = "user"
@@ -74,6 +79,9 @@ PERSIST_TIMEOUT_SECONDS = 5.0
 LED_TIMEOUT_SECONDS = 5.0
 EVENT_TIMEOUT_SECONDS = 10.0
 START_TIMEOUT_SECONDS = 15.0
+# A gauge reaches the sink at the next metrics export.
+EXPORT_TIMEOUT_SECONDS = 30.0
+COORDINATOR = "game-coordinator-service"
 # Absence assertion: a partial combo must not enter admin. There is no event to
 # await when the correct behaviour is "nothing happens", so the bounded wait IS
 # the test.
@@ -106,6 +114,11 @@ async def _wait_default_variant_changes(flag_set: str, flag_key: str, baseline: 
 
     await async_poll_until(changed, timeout=PERSIST_TIMEOUT_SECONDS)
     return current
+
+
+def _flag_files(stack) -> dict[str, bytes]:
+    """The stack's baseline flag files (the flag service's baseline directory), by name."""
+    return {path.name: path.read_bytes() for path in sorted(stack.flag_plane.flag_dir.glob("*.json"))}
 
 
 def _next(order: list[str], variant: str) -> str:
@@ -157,8 +170,10 @@ async def _end_all_games(stack) -> None:
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-012", flow="main", steps=[1, 2], tc="TC-005")
 @pytest.mark.uc("UC-012", flow="main", steps=[3, 4, 5], tc="TC-005")
+@pytest.mark.uc("UC-012", flow="main", steps=[6], tc="TC-005")
 @pytest.mark.uc("UC-012", flow="main", steps=[7, 8], tc="TC-005")
 @pytest.mark.uc("UC-012", flow="A1", tc="TC-005")
+@pytest.mark.uc("UC-012", cond=["Post-S-1"], tc="TC-005")
 # UC-011 step 3: only the announcement is asserted, not the colour pulse (TC-005 gap).
 @pytest.mark.uc("UC-011", flow="main", steps=[1, 2, 4], tc="TC-005")
 @pytest.mark.uc("UC-014", flow="main", steps=[1, 2, 3, 5], tc="TC-005")
@@ -172,6 +187,8 @@ async def test_host_tunes_and_force_starts(fresh_stack):
     mock_client, mock_channel = await get_mock_client(stack)
     game_client, game_channel = await get_game_client(stack)
     try:
+        flag_files_before = _flag_files(stack)
+        assert flag_files_before, "the stack has no baseline flag files"
         await _serve_force_all_start(stack)
         serials = await start_lobby(stack, count=4, game_mode=START_MODE)
         host = serials[0]
@@ -276,6 +293,20 @@ async def test_host_tunes_and_force_starts(fresh_stack):
         # Step 7: the host's controller shows a game colour: lit and not admin white.
         color = await _wait_led_leaves_admin_white(mock_client, host)
         assert color != ADMIN_WHITE and sum(color) > 0, f"host LED not a game colour after the start (={color})"
+
+        # UC-012 step 6: the next game runs with the sensitivity changed in admin mode.
+        gauge = await stack.otlp_sink.wait_metric_async(
+            "game_sensitivity",
+            {"game_id": started[0].game_id},
+            service=COORDINATOR,
+            timeout=EXPORT_TIMEOUT_SECONDS,
+        )
+        assert gauge.value == expected_level, (
+            f"the force-started game runs at sensitivity {gauge.value}, expected the admin's {expected_level}"
+        )
+
+        # UC-012 Post-S-1: the settings live on the flag service; the flag files are unchanged.
+        assert _flag_files(stack) == flag_files_before, "an admin write changed a baseline flag file"
     finally:
         await _end_all_games(stack)
         for channel in (menu_channel, mock_channel, game_channel):

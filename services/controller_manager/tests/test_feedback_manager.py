@@ -8,7 +8,7 @@ Tests the apply_base_color() method that consolidates the cancel-if-cancellable
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -333,6 +333,7 @@ class TestCancelIfCancellable:
         assert result is False
 
 
+@pytest.mark.uc("UC-012", flow="A2")
 class TestGetBatteryColor:
     """Tests for FeedbackManager._get_battery_color() pure function."""
 
@@ -385,3 +386,21 @@ class TestGetBatteryColor:
         assert feedback_manager._get_battery_color(79) == Colors.Blue.value
         assert feedback_manager._get_battery_color(99) == Colors.Turquoise.value
         assert feedback_manager._get_battery_color(101) == Colors.Green.value
+
+
+@pytest.mark.uc("UC-012", flow="A2")
+class TestShowBatteryEffect:
+    """UC-012 A2: each controller flashes its battery colour for 1 s, then its colour is restored."""
+
+    @pytest.mark.asyncio
+    async def test_flashes_battery_colour_for_one_second_then_restores(self):
+        from lib.colors import Colors
+        from services.controller_manager.backend import ControllerBackend
+
+        backend = create_autospec(ControllerBackend, instance=True)
+        fm = FeedbackManager(backend=backend, tracked_controllers={"AA:BB": {"battery": 60}})
+
+        with patch.object(fm, "play_effect_with_restore", autospec=True) as play:
+            await fm._effect_show_battery("AA:BB", restore_color=(10, 20, 30))
+
+        play.assert_awaited_once_with("AA:BB", "flash", Colors.Blue.value, 1000, 1, (10, 20, 30))

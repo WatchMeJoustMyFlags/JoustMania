@@ -116,6 +116,43 @@ def test_unpersisted_write_is_logged(svc, caplog):
     assert "NOT persisted" in caplog.text
 
 
+@pytest.mark.uc("UC-012", flow="A5")
+def test_admin_write_failures_log_error_and_critical_on_outage(svc, caplog):
+    """A refused write logs an ERROR, an unreachable flag service a CRITICAL; an applied but
+    unpersisted write logs an ERROR and still counts as applied."""
+    w = FlagServiceWriter("game", "http://fs:8070", transport=svc)
+
+    caplog.clear()
+    assert w.update_default_variant("sensitivity", "warp") is False
+    assert [(r.levelname, "refused" in r.getMessage()) for r in caplog.records] == [("ERROR", True)]
+
+    caplog.clear()
+    svc.persist_ok = False
+    assert w.update_default_variant("sensitivity", "slow") is True
+    assert [r.levelname for r in caplog.records if "NOT persisted" in r.getMessage()] == ["ERROR"]
+
+    caplog.clear()
+    svc.down = True
+    assert w.update_default_variant("sensitivity", "fast") is False
+    assert [(r.levelname, "NOT applied" in r.getMessage()) for r in caplog.records] == [("CRITICAL", True)]
+
+
+@pytest.mark.uc("UC-012", cond=["Post-F-1"])
+def test_refused_or_unreachable_write_leaves_the_setting_unchanged(svc):
+    """Failure postcondition: after a refused write or an outage the flag service still serves the old value."""
+    w = FlagServiceWriter("game", "http://fs:8070", transport=svc)
+    assert w.get_current_variant("sensitivity") == "medium"
+
+    assert w.update_default_variant("sensitivity", "warp") is False
+    assert w.get_current_variant("sensitivity") == "medium"
+
+    svc.down = True
+    assert w.cycle_variant("sensitivity") is None
+    svc.down = False
+    assert w.get_current_variant("sensitivity") == "medium"
+    assert svc.overlay == {}
+
+
 def test_base_url_from_env(monkeypatch):
     monkeypatch.setenv("FLAG_SERVICE_URL", "http://elsewhere:9/")
     assert FlagServiceWriter("user").base_url == "http://elsewhere:9"
