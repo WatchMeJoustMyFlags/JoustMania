@@ -151,6 +151,11 @@ type SessionSignals struct {
 type GameContext struct {
 	// SessionID is a synthetic id ("session-<n>") or the adopted game_id label.
 	SessionID string
+	// EndReason is which signal ended the game (UC-041 A4, #1494): EndReasonZero,
+	// EndReasonRootSpan or EndReasonStale. Empty while the game runs; set in the
+	// OnGameEnd snapshot, so game-end consumers can tell a game whose telemetry
+	// stopped (stale) from one that ended normally.
+	EndReason string
 	// GameKind is the kind of game this session is: "real" (a live, player-facing
 	// game), "shadow" (a parallel evaluation game), or "" (unknown — not yet
 	// observed on any labeled signal). Source: the game_kind datapoint label on
@@ -226,3 +231,15 @@ type GameContext struct {
 	// compact tempo sparkline (RenderSpeedTrack) alongside the per-player sparklines.
 	SpeedTrack []SpeedSample
 }
+
+// Game end reasons (GameContext.EndReason, UC-041 A4, #1494).
+const (
+	// EndReasonZero: the game_active 1 -> 0 datapoint ended the game.
+	EndReasonZero = "zero"
+	// EndReasonRootSpan: the game root span arrived before any 0.
+	EndReasonRootSpan = "root_span"
+	// EndReasonStale: the game's game_active series stayed silent for
+	// gameActiveStaleAfter. The agent's telemetry for the game broke, so the game's
+	// data is incomplete: experiments and the retro, summary and proposer skip it.
+	EndReasonStale = "stale"
+)

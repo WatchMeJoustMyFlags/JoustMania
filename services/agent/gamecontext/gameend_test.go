@@ -250,3 +250,152 @@ func TestGameEnd_ConcurrentSignalsFireOnce(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-041 A4 BR-005
+func TestGameEnd_StaleEndLatches(t *testing.T) {
+	t.Run("UC-041/BR-005 stale end, resumed game_active=1, then 0: OnGameEnd fires once", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(1000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		mux.ApplyMetrics(playerIntensityFor("P1", "game-A", 1.5))
+		clk.advance(10 * time.Second)
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+
+		// The series goes silent past the backstop (collector restart): stale end.
+		clk.advance(gameActiveStaleAfter + time.Second)
+		mux.EvictStale()
+		if got := rec.count(); got != 1 {
+			t.Fatalf("stale end fired %d times, want 1", got)
+		}
+
+		// The series resumes: the game id is never reused, so this is the same game.
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		if snap, _ := mux.Snapshot("game-A"); snap.Session.GameActive == nil || *snap.Session.GameActive {
+			t.Fatal("resumed game_active=1 restarted a game that already ended (stale)")
+		}
+		clk.advance(5 * time.Second)
+		mux.ApplyMetrics(gameActiveFor("game-A", 0))
+		mux.ApplySpans(rootSpanFor("game-A", clk.now()))
+		clk.advance(time.Minute)
+		mux.EvictStale()
+		if got := rec.count(); got != 1 {
+			t.Fatalf("OnGameEnd fired %d times, want 1", got)
+		}
+	})
+
+	t.Run("UC-041/BR-005 zero end, then a late game_active=1 and 0: OnGameEnd fires once", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(1000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		clk.advance(10 * time.Second)
+		mux.ApplyMetrics(gameActiveFor("game-A", 0))
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		mux.ApplyMetrics(gameActiveFor("game-A", 0))
+		if got := rec.count(); got != 1 {
+			t.Fatalf("OnGameEnd fired %d times, want 1", got)
+		}
+	})
+
+	t.Run("UC-041/BR-005 ended game's partition removed, then signals resume: no second end", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(1000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		clk.advance(gameActiveStaleAfter + time.Second)
+		mux.EvictStale() // stale end
+		clk.advance(time.Minute)
+		mux.EvictStale() // grace over: partition removed
+		if hasPartition(mux, "game-A") {
+			t.Fatal("precondition: partition game-A should be removed")
+		}
+
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		clk.advance(5 * time.Second)
+		mux.ApplyMetrics(gameActiveFor("game-A", 0))
+		if got := rec.count(); got != 1 {
+			t.Fatalf("OnGameEnd fired %d times, want 1", got)
+		}
+	})
+
+	t.Run("UC-041/BR-005 fallback partition: an unlabeled 0 -> 1 is a new game", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(1000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 1))
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 0))
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 1))
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 0))
+		if got := rec.count(); got != 2 {
+			t.Fatalf("fallback partition ended %d games, want 2", got)
+		}
+	})
+}
+
+// UC: UC-041 A4
+func TestGameEnd_EndReasonAndTimelineStamp(t *testing.T) {
+	endPhase := func(t *testing.T, c GameContext) time.Time {
+		t.Helper()
+		for _, ev := range c.Timeline {
+			if ev.Kind == EventPhase && ev.Detail == "end" {
+				return ev.At
+			}
+		}
+		t.Fatal("end snapshot has no \"end\" phase event")
+		return time.Time{}
+	}
+
+	t.Run("UC-041/A4 zero end: reason zero, end stamped at arrival", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(1000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		clk.advance(10 * time.Second)
+		mux.ApplyMetrics(gameActiveFor("game-A", 0))
+		snap := rec.last()
+		if snap.EndReason != EndReasonZero {
+			t.Errorf("EndReason = %q, want %q", snap.EndReason, EndReasonZero)
+		}
+		if at := endPhase(t, snap); !at.Equal(clk.now()) {
+			t.Errorf("end phase At = %v, want %v", at, clk.now())
+		}
+	})
+
+	t.Run("UC-041/A4 root span end: reason root_span, end stamped at the span's end", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(1000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		clk.advance(20 * time.Second)
+		end := clk.now()
+		clk.advance(5 * time.Second) // span batch delay
+		mux.ApplySpans(rootSpanFor("game-A", end))
+		snap := rec.last()
+		if snap.EndReason != EndReasonRootSpan {
+			t.Errorf("EndReason = %q, want %q", snap.EndReason, EndReasonRootSpan)
+		}
+		if at := endPhase(t, snap); !at.Equal(end) {
+			t.Errorf("end phase At = %v, want the span end %v (not its arrival)", at, end)
+		}
+	})
+
+	t.Run("UC-041/A4 stale end: reason stale, end stamped at the last datapoint", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(1000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		clk.advance(12 * time.Second)
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		last := clk.now()
+		clk.advance(gameActiveStaleAfter + time.Second)
+		mux.EvictStale()
+		snap := rec.last()
+		if snap.EndReason != EndReasonStale {
+			t.Errorf("EndReason = %q, want %q", snap.EndReason, EndReasonStale)
+		}
+		if at := endPhase(t, snap); !at.Equal(last) {
+			t.Errorf("end phase At = %v, want the last datapoint %v", at, last)
+		}
+	})
+}

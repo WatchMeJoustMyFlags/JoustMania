@@ -214,6 +214,10 @@ func (c *serverComponents) startEvictionLoop(ctx context.Context) <-chan struct{
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// A stale game_active backstop end (UC-041 A4, #1494) runs the whole
+				// OnGameEnd chain (stale counter, experiment release; retro, summary and
+				// proposer skip it) synchronously on THIS goroutine, outside the store
+				// and multiplexer locks, so the tick takes as long as that chain.
 				c.mux.EvictStale()
 				c.loops.Retain(partitionSet(c.mux.Partitions()))
 				if c.pipe.infraStore != nil {

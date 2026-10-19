@@ -47,6 +47,43 @@ type Multiplexer struct {
 	// controllers ever seen and guarded by its own lock.
 	namesMu sync.RWMutex
 	names   map[string]string
+
+	// ended remembers the ids of games that ended in a partition since removed
+	// (#1494, UC-041 BR-005). Game ids are never reused, so when signals for such
+	// an id arrive again (a game_active series resuming after a stale end, a late
+	// batch) the recreated partition starts latched and never runs the game-end
+	// chain a second time. Guarded by mu; bounded to endedGamesCap ids.
+	ended endedGames
+}
+
+// endedGamesCap bounds Multiplexer.ended: far more games than can end within
+// any realistic late-delivery window, and a few KiB of memory.
+const endedGamesCap = 512
+
+// endedGames is a bounded FIFO set of ended game ids. Not concurrency-safe.
+type endedGames struct {
+	set   map[string]struct{}
+	order []string
+}
+
+func (e *endedGames) add(id string) {
+	if e.set == nil {
+		e.set = make(map[string]struct{})
+	}
+	if _, ok := e.set[id]; ok {
+		return
+	}
+	if len(e.order) >= endedGamesCap {
+		delete(e.set, e.order[0])
+		e.order = e.order[1:]
+	}
+	e.set[id] = struct{}{}
+	e.order = append(e.order, id)
+}
+
+func (e *endedGames) has(id string) bool {
+	_, ok := e.set[id]
+	return ok
 }
 
 // NewMultiplexer builds a Multiplexer over the given partition factory. The
@@ -87,6 +124,9 @@ func (m *Multiplexer) store(gameID string) *Store {
 		return s
 	}
 	s = m.newStore(gameID)
+	if gameID != FallbackGameID {
+		s.setPartition(m.ended.has(gameID))
+	}
 	m.stores[gameID] = s
 	return s
 }
@@ -285,6 +325,9 @@ func (m *Multiplexer) EvictStale() []string {
 	for _, id := range removable {
 		s := m.stores[id]
 		if s != nil && s == stores[id] && s.isDrained() {
+			if s.hasEnded() {
+				m.ended.add(id)
+			}
 			delete(m.stores, id)
 			removed = append(removed, id)
 		}

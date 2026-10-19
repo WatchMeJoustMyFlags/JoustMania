@@ -1,0 +1,187 @@
+package main
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/promote"
+)
+
+// gameend_test.go covers the game-end chain's handling of the three end signals
+// (UC-041 A4, BR-005, #1494): the duration game-end consumers derive, the stale-end
+// exclusion from experiments, retro, summary and proposer, and the stale counter.
+
+// endClock is a settable test clock.
+type endClock struct{ t time.Time }
+
+func (c *endClock) now() time.Time          { return c.t }
+func (c *endClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+func newEndClock() *endClock                { return &endClock{t: time.Unix(1_000, 0)} }
+func captureEnd(dst *[]gamecontext.GameContext) func(gamecontext.GameContext) {
+	return func(c gamecontext.GameContext) { *dst = append(*dst, c) }
+}
+
+// UC: UC-041 A4 BR-003
+func TestWithEffectiveDuration_LateAndStaleEnds(t *testing.T) {
+	t.Run("UC-041/A4 root span arriving 5 s late: duration is start -> span end", func(t *testing.T) {
+		clk := newEndClock()
+		var ends []gamecontext.GameContext
+		s := gamecontext.NewStore(time.Hour, time.Hour, clk.now)
+		s.OnGameEnd = captureEnd(&ends)
+		s.SetGameActive(true)
+		clk.advance(20 * time.Second)
+		spanEnd := clk.now()
+		clk.advance(5 * time.Second)
+		s.EndGameFromRootSpan(spanEnd)
+
+		if len(ends) != 1 {
+			t.Fatalf("OnGameEnd fired %d times, want 1", len(ends))
+		}
+		gc := withEffectiveDuration(ends[0])
+		if d := gc.Session.DurationSeconds; d == nil || *d != 20 {
+			t.Fatalf("effective duration = %v, want 20 (not inflated by the 5 s arrival delay)", d)
+		}
+	})
+
+	t.Run("UC-041/A4 stale end: duration is start -> last game_active datapoint", func(t *testing.T) {
+		clk := newEndClock()
+		var ends []gamecontext.GameContext
+		s := gamecontext.NewStore(time.Hour, time.Hour, clk.now)
+		s.OnGameEnd = captureEnd(&ends)
+		s.SetGameActive(true)
+		clk.advance(12 * time.Second)
+		s.SetGameActive(true) // last datapoint
+		clk.advance(2 * time.Minute)
+		s.EvictStale()
+
+		if len(ends) != 1 {
+			t.Fatalf("OnGameEnd fired %d times, want 1", len(ends))
+		}
+		gc := withEffectiveDuration(ends[0])
+		if d := gc.Session.DurationSeconds; d == nil || *d != 12 {
+			t.Fatalf("effective duration = %v, want 12 (not inflated by the stale timeout)", d)
+		}
+	})
+}
+
+// countingFitness wraps a fitness func and counts how often it scored a game.
+func countingFitness(n *int, f gameFitnessFunc) gameFitnessFunc {
+	return func(gc gamecontext.GameContext, objective string) float64 {
+		*n++
+		return f(gc, objective)
+	}
+}
+
+// UC: UC-041 A4
+func TestOnGameEnd_StaleEndExcludedFromExperiments(t *testing.T) {
+	t.Run("UC-041/A4 stale-ended experiment game: slot released, no fitness folded", func(t *testing.T) {
+		scored := 0
+		spawner := &recordingSpawner{}
+		resolve := func(context.Context) promote.Config {
+			return promote.Config{Mode: promote.ModeIssue, Target: promote.TargetLocal, Enabled: false}
+		}
+		loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{},
+			countingFitness(&scored, armFitness()))
+		loop.fitnessStore = experiment.NewFitnessStore(0)
+		id, err := loop.registry.Declare(experiment.Intent{
+			FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		})
+		if err != nil {
+			t.Fatalf("declare: %v", err)
+		}
+		if err := loop.registry.Start(context.Background(), id); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		loop.registry.AllocateAndSpawn(context.Background())
+		rec := spawner.drain()
+		if len(rec) < 2 {
+			t.Fatalf("expected a spawned pair, got %d games", len(rec))
+		}
+
+		stale := gcFor(rec[0].gameID, rec[0].experimentID, rec[0].arm)
+		stale.EndReason = gamecontext.EndReasonStale
+		loop.onGameEnd(stale)
+
+		if scored != 0 {
+			t.Fatalf("stale-ended game was scored %d times, want 0", scored)
+		}
+		if _, ok := loop.fitnessStore.Get(rec[0].gameID); ok {
+			t.Fatal("stale-ended game recorded a finalized fitness sample")
+		}
+		if loop.registry.ReleaseGame(rec[0].gameID, "test") {
+			t.Fatal("stale-ended game still held its experiment slot (not released)")
+		}
+
+		// Control: the sibling, ended normally, is scored and folded.
+		normal := gcFor(rec[1].gameID, rec[1].experimentID, rec[1].arm)
+		normal.EndReason = gamecontext.EndReasonZero
+		loop.onGameEnd(normal)
+		if scored != 1 {
+			t.Fatalf("normally ended game scored %d times, want 1", scored)
+		}
+	})
+
+	t.Run("UC-041/A4 stale-ended real game never seeds the recent-real baseline", func(t *testing.T) {
+		store := experiment.NewFitnessStore(0)
+		loop := loopWithStore(store)
+		gc := realEnduranceGC("game_real_stale", 600)
+		gc.EndReason = gamecontext.EndReasonStale
+		loop.onGameEnd(gc)
+		if store.Len() != 0 {
+			t.Fatalf("stale-ended real game recorded %d fitness samples, want 0", store.Len())
+		}
+	})
+}
+
+// UC: UC-041 A4
+func TestGameEndChain_StaleEndSkippedAndCounted(t *testing.T) {
+	t.Run("UC-041/A4 stale end: counter increments, retro/summary/proposer skipped", func(t *testing.T) {
+		reader := sdkmetric.NewManualReader()
+		provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+		consumed := 0
+		chain := chainGameEnd(
+			countStaleGameEnd(newGameEndStaleCounter(provider)),
+			skipStaleGameEnd(func(gamecontext.GameContext) { consumed++ }),
+		)
+		for _, reason := range []string{gamecontext.EndReasonZero, gamecontext.EndReasonRootSpan, gamecontext.EndReasonStale} {
+			chain(gamecontext.GameContext{SessionID: "game_" + reason, GameKind: "real", EndReason: reason})
+		}
+
+		if consumed != 2 {
+			t.Errorf("consumer saw %d game ends, want 2 (zero and root_span, not stale)", consumed)
+		}
+		if got := staleCounterValue(t, reader, "real"); got != 1 {
+			t.Errorf("%s{game_kind=real} = %d, want 1", metricGameEndStale, got)
+		}
+	})
+}
+
+// staleCounterValue collects agent_game_end_stale_total for one game_kind.
+func staleCounterValue(t *testing.T, reader *sdkmetric.ManualReader, kind string) int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, md := range sm.Metrics {
+			if md.Name != metricGameEndStale {
+				continue
+			}
+			for _, dp := range md.Data.(metricdata.Sum[int64]).DataPoints {
+				if v, ok := dp.Attributes.Value("game_kind"); ok && v.AsString() == kind {
+					return dp.Value
+				}
+			}
+		}
+	}
+	return 0
+}
