@@ -8,7 +8,12 @@ name: CI
 #
 # Escape hatches:
 #   - push to main / workflow_dispatch: all checks run (full SonarCloud coverage)
-#   - `ci-full` PR label or workflow_dispatch: additionally forces ALL image builds
+#   - `ci-full` PR label or workflow_dispatch: additionally forces ALL image builds.
+#     ci.yml does NOT trigger on `labeled` (#1527): GitHub takes required checks
+#     from the newest run of this workflow on the head SHA, so a label-only run
+#     without "CI Complete" would block the PR. Adding `ci-full` later re-runs
+#     the latest real run through ci-full-label.yml; the `changes` job reads
+#     the labels live, so that re-run is a full one.
 #
 # Release contract: release.yml tag-images retags IMAGE:<sha> -> IMAGE:<version>
 # for all 10 release images, so every main push must produce a :<sha> tag for
@@ -18,7 +23,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
   push:
     branches: [main]
   workflow_dispatch:
@@ -30,11 +35,9 @@ env:
 
 concurrency:
   # PRs group by number (new pushes cancel stale runs); pushes group by SHA so
-  # main runs never cancel each other mid-image-push. Label events other than
-  # `ci-full` run nothing (see the `changes` job) and get a group of their own
-  # (#1263), so adding e.g. `no-spec-change` never cancels the real run. Their
-  # skipped final job is renamed so it never posts a "CI Complete" (#1497).
-  group: ci-${{ github.event.pull_request.number || github.sha }}${{ ((github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci-full') && format('-lbl-{0}', github.run_id) || '' }}
+  # main runs never cancel each other mid-image-push. Label events start no
+  # run of this workflow (#1527), so they can never cancel the real run.
+  group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -44,19 +47,10 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # #1086: only the `ci-full` label should drive a fresh full run when added to
-    # an EXISTING PR. Adding any OTHER label (e.g. `bug`) to a PR must not spawn a
-    # redundant heavy CI run on an already-tested SHA. `opened`/`synchronize`/
-    # `reopened`/`push`/`workflow_dispatch` always proceed; a `labeled` action
-    # proceeds only when the added label is `ci-full`. (The create-PR-with-
-    # `ci-full` double fire is still handled by the concurrency group + the
-    # ci-complete `!cancelled()` guard below — both the opened and the labeled
-    # run are legitimate there; the cancelled one simply posts no blocking
-    # status.) NOTE: for pull_request events the trigger type is in
-    # `github.event.action` (event_name is always `pull_request`).
-    if: >-
-      github.event.action != 'labeled' ||
-      github.event.label.name == 'ci-full'
+    permissions:
+      contents: read
+      pull-requests: read  # paths-filter lists the PR files
+      issues: read         # the force step reads the PR labels live (#1527)
     outputs:
       lib: ${{ steps.f.outputs.lib }}
       rust: ${{ steps.f.outputs.rust }}
@@ -174,6 +168,7 @@ jobs:
               - 'proto/**'
               - 'tests/contract/**'
               - 'docker-compose.yml'
+              - 'docker-compose.ci.yml'  # CI overlay env vars (env-var coverage contract, #1535)
               - 'docs/specs/**'
               - 'scripts/**'
               - 'tools/**'
@@ -265,11 +260,31 @@ jobs:
               - '!**/*.md'
               - '!scripts/aiup/spec-lint-baseline.json'
 
+      # #1527: the PR labels are read LIVE, not from the event payload. Adding
+      # `ci-full` re-runs this run (ci-full-label.yml), and a re-run keeps the
+      # original payload, which predates the label. The payload is the fallback
+      # when the API read fails.
       - name: Determine force-full / run-all-checks
         id: force
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PAYLOAD_CI_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-full') }}
         run: |
-          full="${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci-full') }}"
-          checks="${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci-full') }}"
+          ci_full=false
+          if [ -n "$PR_NUMBER" ]; then
+            if labels=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/labels" --jq '.[].name'); then
+              grep -qx 'ci-full' <<<"$labels" && ci_full=true
+            else
+              echo "::warning::could not read the PR labels; using the event payload"
+              ci_full="$PAYLOAD_CI_FULL"
+            fi
+          fi
+          full="${{ github.event_name == 'workflow_dispatch' }}"
+          checks="${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' }}"
+          if [ "$ci_full" = true ]; then full=true; checks=true; fi
+          echo "ci-full label: $ci_full -> force_full=$full run_all_checks=$checks"
           echo "full=$full" >> "$GITHUB_OUTPUT"
           echo "checks=$checks" >> "$GITHUB_OUTPUT"
 
@@ -1368,19 +1383,11 @@ jobs:
   # that represents the entire CI pipeline's health.
   # Skipped jobs (path filter) keep this green; failures fail it.
   ci-complete:
-    # #1497: a label-only run (any label but `ci-full`) skips this job (see the
-    # `if` below), but a skipped job STILL posts a check run under its name,
-    # and GitHub counts a skipped required check as passing. On #1461 a
-    # `no-spec-change` label posted `CI Complete: SKIPPED` after the real run,
-    # so a red PR could become mergeable. An `if` cannot stop the check run
-    # (that is the bug) and Actions has no workflow-level `if`, so the name is
-    # what keeps it off the required check: only a run that really evaluates
-    # this job reports as "CI Complete". A label-only run posts its skipped
-    # check under a different name, and the head SHA's latest "CI Complete"
-    # stays the real run's result. Mirroring the real run's conclusion instead
-    # was rejected: it needs API polling, and races a real run that is still
-    # in progress.
-    name: ${{ (github.event.action == 'labeled' && github.event.label.name != 'ci-full') && 'Label event (no CI result)' || 'CI Complete' }}
+    # The required check. A skipped job still posts a check run, and GitHub
+    # counts a skipped required check as passing (#1497), so this job must
+    # never be skipped on a run that tested nothing: label events no longer
+    # start this workflow at all (#1527).
+    name: CI Complete
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs:
@@ -1417,21 +1424,9 @@ jobs:
     # so `!cancelled()` is still true on failure and the step below still
     # exit-1's — real failures keep blocking. Per-job `cancelled` results (e.g. a
     # single timed-out job in an otherwise-live run) are still caught below.
-    #
-    # The second clause guards the label-gate cascade: on a non-`ci-full`
-    # `labeled` event the `changes` job is skipped (see its `if`), so every real
-    # check is skipped too. WITHOUT this clause ci-complete would still run with
-    # all-`skipped` needs and post `CI Complete: success` on the head SHA —
-    # which, under the repo's latest-status-wins ruleset (strict checks OFF),
-    # would OVERWRITE a prior real `CI Complete: FAILURE` on that same SHA and
-    # unblock a red merge with no re-run. Skipping ci-complete on those events
-    # means the job does not succeed, but it still posts a SKIPPED check run,
-    # which is why the job `name` above differs on those events (#1497). The
-    # SHA's prior real result stands. (Adding `ci-full` itself runs the full
-    # pipeline normally, under the real name.)
-    if: >-
-      ${{ !cancelled() &&
-      (github.event.action != 'labeled' || github.event.label.name == 'ci-full') }}
+    # (Since #1527 ci.yml no longer triggers on `labeled`, so the opened+labeled
+    # double fire no longer happens; the guard stays for push-superseded runs.)
+    if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
         env:
