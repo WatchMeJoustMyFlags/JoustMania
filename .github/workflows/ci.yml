@@ -1174,7 +1174,15 @@ jobs:
     name: Publish ${{ matrix.service }}
     runs-on: ubuntu-latest
     needs: [changes, docker-build]
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.docker_build_matrix != '[]' }}
+    # #1509: publish only when every build leg succeeded. A build skipped
+    # (integration-test failed) or failed leaves no digests to assemble; the
+    # real failure is already reported by the upstream job. A skipped publish
+    # is fine for retag-skipped (gates on != 'failure') and ci-complete (only
+    # failure/cancelled fail it; it still sees docker-build's own result).
+    if: >-
+      !cancelled() && github.event_name != 'pull_request' &&
+      needs.changes.outputs.docker_build_matrix != '[]' &&
+      needs.docker-build.result == 'success'
     timeout-minutes: 10
     permissions:
       contents: read
@@ -1301,7 +1309,11 @@ jobs:
     name: Publish ${{ matrix.item.service }}
     runs-on: ubuntu-latest
     needs: [changes, docker-build-extra]
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.docker_extra_matrix != '[]' }}
+    # #1509: same gate as docker-build-merge.
+    if: >-
+      !cancelled() && github.event_name != 'pull_request' &&
+      needs.changes.outputs.docker_extra_matrix != '[]' &&
+      needs.docker-build-extra.result == 'success'
     timeout-minutes: 10
     permissions:
       contents: read
