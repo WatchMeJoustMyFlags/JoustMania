@@ -202,13 +202,13 @@ DISCONNECTED controllers show nothing. There is no dedicated "connection flash":
 | FFA player colours (`generate_colors`) | N evenly spaced hues in 0.1 to 0.9 (full saturation and value), so red is never assigned; assigned at game setup and shown when gameplay starts, after the countdown |
 | Other | White, Black, Red; White40 (100,100,100), White20 (50,50,50), Red20 (50,0,0), ZombieGray (80,80,120) |
 
-**Effects (`FeedbackManager`, `GameEffect`).** Timings marked flag come from the controller flag domain `effect.<key>` (init-frozen); the value shown is the default.
+**Effects (`FeedbackManager`, `GameEffect`).** The warning and death timings are fixed module constants in `feedback_manager.py` (the `effect.*` flags were removed in #1322); only the winner rainbow duration is a flag.
 
 | Effect | LED | Rumble | Then |
 |---|---|---|---|
-| `COUNTDOWN` | FFA-style games (`feedback_manager.py`): Red, then Yellow, then Green, 750 ms each (or `duration_ms` per phase). Team games (`teams_base.py`): the player's team colour, then a White flash, then Green, each phase with a loud beep | none | base colour |
-| `PLAYER_WARNING` | White flash, `warning_flash_ms` 200 ms | 100 intensity, `warning_vibration_ms` 200 ms | base colour |
-| `PLAYER_DEATH` | Red held `death_red_hold_ms` 300 ms, then fade to black over `death_fade_ms` 700 ms; also ends the agent shield | 255 intensity, `death_rumble_ms` 150 ms | base colour becomes Black |
+| `COUNTDOWN` | FFA-style games (`feedback_manager.py`): Red, then Yellow, then Green, each phase `countdown_phase_duration_ms` (game flag, default 750 ms; 0 skips the countdown). Team games (`teams_base.py`): the player's team colour, then a White flash, then Green, each phase `countdown_phase_duration_ms` with a loud beep, plus a start sound at the end | none | base colour |
+| `PLAYER_WARNING` | White flash, 200 ms (`WARNING_FLASH_MS`) | 100 intensity, 200 ms (`WARNING_VIBRATION_MS`) | base colour |
+| `PLAYER_DEATH` | Red held 300 ms (`DEATH_RED_HOLD_MS`), then fade to black over 700 ms (`DEATH_FADE_MS`); also ends the agent shield | 255 intensity, 150 ms (`DEATH_RUMBLE_MS`) | base colour becomes Black |
 | `PLAYER_RESPAWN` | White (spawn protection) | none | base colour becomes White |
 | `WINNER_RAINBOW` | Rainbow for the `game` flag winner duration (default 3000 ms); ends the agent shield | none | base colour |
 | `ADMIN_ENTER` | White flash 600 ms, then solid White | none | base colour White |
@@ -224,7 +224,7 @@ DISCONNECTED controllers show nothing. There is no dedicated "connection flash":
 
 Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 80% Turquoise, >= 60% Blue, >= 40% Yellow, otherwise Red.
 
-**Admin option feedback (menu, `handlers/admin.py`).** The admin mode base colour is White. Cycling the option (Cross) shows the option's colour for 1 s, then White: sensitivity Blue, `num_teams` Turquoise, `force_all_start` Orange, `agent_control` Purple. Changing sensitivity pulses the new level's colour (`PULSE`, 800 ms at speed 5), then restores the base colour: 0 Ultra Slow Blue, 1 Slow Turquoise, 2 Medium Green, 3 Fast Orange, 4 Ultra Fast Red (five levels).
+**Admin option feedback (menu, `handlers/admin.py`).** The admin mode base colour is White. Cycling the option (Cross) shows the option's colour for about 1 s (1.1 s), then White: sensitivity Blue, `num_teams` Turquoise, `force_all_start` Orange, `agent_control` Purple. Changing sensitivity pulses the new level's colour (`PULSE`, 800 ms at speed 5), then restores the base colour: 0 Ultra Slow Blue, 1 Slow Turquoise, 2 Medium Green, 3 Fast Orange, 4 Ultra Fast Red (five levels). Changing the game mode flashes the new mode's colour (600 ms, speed 6), then a brief pulse, Green when cycling forward and Blue when cycling backward (400 ms, speed 6). Toggle options pulse Green (on) or Red (off). `agent_control` pulses its level colour for 800 ms at speed 5: none Red, ambient Turquoise, standard Orange, full Green (Purple otherwise).
 
 **Per-mode in-game colours (`games/`).** Werewolf: everyone Yellow until the reveal, then werewolves LightBlue (0,100,255). Zombie: humans White, zombies ZombieGray (80,80,120). FightClub: defender Red, challenger Green, waiting players White20 (50,50,50).
 
