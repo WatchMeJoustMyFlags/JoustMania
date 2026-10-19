@@ -226,6 +226,21 @@ class TestMonitorExports:
 
     @pytest.mark.uc("UC-035", steps=[6])
     @pytest.mark.asyncio
+    async def test_disconnect_removes_the_rssi_series(self, monitor):
+        """A link that goes away drops its RSSI series instead of keeping the last value (#1468)."""
+        con = "Connections:\n\t< ACL 00:06:F7:AA:BB:CC handle 256 state 1 lm MASTER\n"
+        with patch(f"{MONITOR}.bluetooth_device_rssi_dbm") as rssi:
+            with patch(f"{MONITOR}.run_command", self._runner(HCICONFIG_TWO, con)):
+                await monitor.monitor()
+            rssi.labels.assert_called_with(serial="0006F7AABBCC", hci_adapter="hci1")
+            rssi.remove.assert_not_called()
+
+            with patch(f"{MONITOR}.run_command", self._runner(HCICONFIG_TWO, "Connections:\n")):
+                await monitor.monitor()
+            rssi.remove.assert_called_once_with("0006F7AABBCC", "hci1")
+
+    @pytest.mark.uc("UC-035", steps=[6])
+    @pytest.mark.asyncio
     async def test_unplugged_adapter_drops_its_identity(self, monitor):
         only_hci0 = HCICONFIG_TWO[HCICONFIG_TWO.index("hci0:") :]
         with patch(f"{MONITOR}.pairing_bluetooth_adapter_info") as info:
