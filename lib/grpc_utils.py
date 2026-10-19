@@ -11,6 +11,7 @@ Phase XX: Made compression conditional - disabled for local connections
 to reduce CPU overhead when bandwidth is not a concern.
 """
 
+import os
 from typing import Any
 
 import grpc
@@ -121,6 +122,23 @@ def get_optimized_channel_options(enable_compression: bool = True) -> list[tuple
         )
 
     return options
+
+
+def port_from_env(name: str, default: int) -> int:
+    """Listen port from env var ``name`` (unset or empty: ``default``).
+
+    The service entry points read ``GRPC_PORT`` (and the controller manager
+    ``MOCK_CONTROL_PORT``) through this, so the service-tier harness
+    (tests/service) can run several services on ephemeral ports; compose sets
+    neither, so the deployed ports are unchanged (docs/specs/services.md §2).
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    port = int(raw)  # a malformed value fails loudly at start, never silently
+    if not 0 < port < 65536:
+        raise ValueError(f"{name}={raw!r}: not a TCP port")
+    return port
 
 
 def get_server_options() -> list[tuple[str, any]]:

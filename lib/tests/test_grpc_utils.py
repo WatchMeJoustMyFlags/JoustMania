@@ -100,3 +100,31 @@ class TestCreateChannel:
         option_names = [name for name, _ in kwargs["options"]]
         # Local address should not have compression options
         assert "grpc.default_compression_algorithm" not in option_names
+
+
+class TestPortFromEnv:
+    """GRPC_PORT / MOCK_CONTROL_PORT for the service-tier harness (#1524)."""
+
+    def test_unset_or_empty_keeps_the_compose_default(self, monkeypatch):
+        from lib.grpc_utils import port_from_env
+
+        monkeypatch.delenv("GRPC_PORT", raising=False)
+        assert port_from_env("GRPC_PORT", 50053) == 50053
+        monkeypatch.setenv("GRPC_PORT", "  ")
+        assert port_from_env("GRPC_PORT", 50053) == 50053
+
+    def test_set_value_wins(self, monkeypatch):
+        from lib.grpc_utils import port_from_env
+
+        monkeypatch.setenv("MOCK_CONTROL_PORT", "41234")
+        assert port_from_env("MOCK_CONTROL_PORT", 50062) == 41234
+
+    def test_malformed_or_out_of_range_fails_loudly(self, monkeypatch):
+        import pytest
+
+        from lib.grpc_utils import port_from_env
+
+        for bad in ("abc", "0", "70000"):
+            monkeypatch.setenv("GRPC_PORT", bad)
+            with pytest.raises(ValueError):
+                port_from_env("GRPC_PORT", 50053)
