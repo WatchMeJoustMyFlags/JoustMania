@@ -55,7 +55,7 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 | [hardware-setup-guide.md](hardware-setup-guide.md), [25-controller-setup.md](25-controller-setup.md) | Set up a Pi 5 with many controllers |
 | [controller-guide.md](controller-guide.md) | Player button reference (stale; the use cases are authoritative) |
 | [CONTROLLER_CONNECTIVITY.md](CONTROLLER_CONNECTIVITY.md) | Troubleshoot Bluetooth (stale) |
-| [AUDIO.md](AUDIO.md) | Audio setup |
+| [AUDIO.md](AUDIO.md) | Audio hardware and ALSA setup |
 | [observability-quickstart.md](observability-quickstart.md) | Performance tooling (stale metric names) |
 | [CANARY_RUNBOOK.md](CANARY_RUNBOOK.md) | Manual backend canary |
 | [architecture/controller-backends.md](architecture/controller-backends.md) | Controller-manager backend layering |
