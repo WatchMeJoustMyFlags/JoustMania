@@ -155,7 +155,7 @@ one 5-byte Connect envelope; the response is a sequence of envelopes ending in a
 connect-proxy and connect-go answers a bidi call over HTTP/1.1 with 505, so the dashboard's controller grid
 gets no live gameplay stream through connect-proxy (open, follow-up to #1542).
 
-**Traceability:** C-014 / UC-002, UC-003, UC-004, UC-010, UC-027, UC-031 / `proto/*.proto`, `services/connect-proxy/main.go` / `tests/integration/`.
+**Traceability:** C-014 / UC-002, UC-003, UC-004, UC-010, UC-027, UC-031 / `proto/*.proto`, `services/connect-proxy/main.go`, `services/dashboard/src/connect.ts` / `tests/integration/`, `services/dashboard/src/__tests__/connect.test.ts`.
 
 ## 4. Key messages
 

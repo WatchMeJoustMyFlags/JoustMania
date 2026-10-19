@@ -7,13 +7,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { gameClient } from "../client.js";
 import {
-  CONNECT_STREAM_CONTENT_TYPE,
   ConnectStreamError,
-  END_STREAM_FLAG,
   decodeStream,
   encodeEnvelope,
   serverStream,
 } from "../connect.js";
+
+// Literal wire values, deliberately not imported from connect.ts: a regression in
+// the production constants must fail these tests.
+const END_FLAG = 0x02;
 
 function frame(message: unknown, flags = 0): Uint8Array {
   return encodeEnvelope(message, flags);
@@ -62,7 +64,7 @@ afterEach(() => {
 describe("UC-035: dashboard event stream uses the Connect streaming wire format (#1542)", () => {
   it("UC-035 main sends StreamGameEvents as application/connect+json with an enveloped request", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      streamResponse([frame({ eventType: "game_start", gameId: "game_live" }), frame({}, END_STREAM_FLAG)])
+      streamResponse([frame({ eventType: "game_start", gameId: "game_live" }), frame({}, END_FLAG)])
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -71,20 +73,30 @@ describe("UC-035: dashboard event stream uses the Connect streaming wire format 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/joustmania.game_coordinator.GameCoordinatorService/StreamGameEvents");
     expect(init.method).toBe("POST");
-    expect(init.headers["Content-Type"]).toBe(CONNECT_STREAM_CONTENT_TYPE);
+    expect(init.headers["Content-Type"]).toBe("application/connect+json");
     expect(decodeRequestEnvelope(init.body)).toEqual({ flags: 0, json: { gameId: "game_live" } });
     expect(events).toEqual([{ eventType: "game_start", gameId: "game_live" }]);
   });
 
+  it("UC-035 main accepts a hand-built end-stream frame (flag 0x02, empty object)", async () => {
+    const hand = Uint8Array.of(2, 0, 0, 0, 2, 0x7b, 0x7d);
+    expect(await collect(decodeStream(asChunks([concat(frame({ a: 1 }), hand)])))).toEqual([{ a: 1 }]);
+    expect(Array.from(frame({}, END_FLAG))).toEqual(Array.from(hand));
+  });
+
+  it("UC-035 main rejects a compressed frame instead of mis-parsing it", async () => {
+    await expect(collect(decodeStream(asChunks([frame({ a: 1 }, 0x01)])))).rejects.toThrow(/compressed/);
+  });
+
   it("UC-035 main yields every message frame in order and ends cleanly on the end-stream frame", async () => {
     const events = await collect(
-      decodeStream(asChunks([concat(frame({ timestamp: 1 }), frame({ timestamp: 2 }), frame({}, END_STREAM_FLAG))]))
+      decodeStream(asChunks([concat(frame({ timestamp: 1 }), frame({ timestamp: 2 }), frame({}, END_FLAG))]))
     );
     expect(events).toEqual([{ timestamp: 1 }, { timestamp: 2 }]);
   });
 
   it("UC-035 main reassembles frames split across body chunks", async () => {
-    const whole = concat(frame({ eventType: "countdown_start" }), frame({ eventType: "game_started" }), frame({}, END_STREAM_FLAG));
+    const whole = concat(frame({ eventType: "countdown_start" }), frame({ eventType: "game_started" }), frame({}, END_FLAG));
     // One byte per chunk: headers and payloads both straddle chunk boundaries.
     const chunks = Array.from(whole, (b) => Uint8Array.of(b));
     expect(await collect(decodeStream(asChunks(chunks)))).toEqual([
@@ -99,7 +111,7 @@ describe("UC-035: dashboard event stream uses the Connect streaming wire format 
       for await (const msg of decodeStream(
         asChunks([
           frame({ timestamp: 1 }),
-          frame({ error: { code: "internal", message: "coordinator gone" } }, END_STREAM_FLAG),
+          frame({ error: { code: "internal", message: "coordinator gone" } }, END_FLAG),
         ])
       )) {
         seen.push(msg);
@@ -107,7 +119,7 @@ describe("UC-035: dashboard event stream uses the Connect streaming wire format 
     };
     await expect(run()).rejects.toThrow(ConnectStreamError);
     await expect(
-      collect(decodeStream(asChunks([frame({ error: { code: "internal", message: "coordinator gone" } }, END_STREAM_FLAG)])))
+      collect(decodeStream(asChunks([frame({ error: { code: "internal", message: "coordinator gone" } }, END_FLAG)])))
     ).rejects.toThrow(/internal: coordinator gone/);
     expect(seen).toEqual([{ timestamp: 1 }]);
   });
@@ -124,7 +136,7 @@ describe("UC-035: dashboard event stream uses the Connect streaming wire format 
   });
 
   it("UC-070 BR-005 passes the abort signal through so following another game ends the stream", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(streamResponse([frame({}, END_STREAM_FLAG)]));
+    const fetchMock = vi.fn().mockResolvedValue(streamResponse([frame({}, END_FLAG)]));
     vi.stubGlobal("fetch", fetchMock);
     const abort = new AbortController();
 

@@ -48,33 +48,45 @@ export function encodeEnvelope(message: unknown, flags = 0): Uint8Array<ArrayBuf
  */
 export async function* readFrames(chunks: AsyncIterable<Uint8Array>): AsyncGenerator<Frame> {
   let buffer = new Uint8Array(0);
+  let offset = 0;
   for await (const chunk of chunks) {
-    const joined = new Uint8Array(buffer.length + chunk.length);
-    joined.set(buffer);
-    joined.set(chunk, buffer.length);
+    // Keep only the unread tail, then append: each byte is copied once per
+    // chunk it waits through, not once per frame.
+    const unread = buffer.length - offset;
+    const joined = new Uint8Array(unread + chunk.length);
+    joined.set(buffer.subarray(offset));
+    joined.set(chunk, unread);
     buffer = joined;
+    offset = 0;
 
-    while (buffer.length >= HEADER_BYTES) {
-      const length = new DataView(buffer.buffer, buffer.byteOffset).getUint32(1, false);
-      if (buffer.length < HEADER_BYTES + length) break;
-      yield { flags: buffer[0], payload: buffer.slice(HEADER_BYTES, HEADER_BYTES + length) };
-      buffer = buffer.slice(HEADER_BYTES + length);
+    while (buffer.length - offset >= HEADER_BYTES) {
+      const length = new DataView(buffer.buffer, buffer.byteOffset + offset).getUint32(1, false);
+      const end = offset + HEADER_BYTES + length;
+      if (buffer.length < end) break;
+      yield { flags: buffer[offset], payload: buffer.subarray(offset + HEADER_BYTES, end) };
+      offset = end;
     }
   }
-  if (buffer.length > 0) {
+  if (buffer.length - offset > 0) {
     throw new ConnectStreamError("internal", "stream ended inside a frame");
   }
 }
 
 async function* bodyChunks(body: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
   const reader = body.getReader();
+  let finished = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) return;
+      if (done) {
+        finished = true;
+        return;
+      }
       if (value) yield value;
     }
   } finally {
+    // Early exit (parse error, consumer break): close the HTTP connection.
+    if (!finished) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
