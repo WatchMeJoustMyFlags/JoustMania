@@ -15,7 +15,7 @@
 
 ## Preconditions
 
-- The integration stack and the agent built at HEAD are up (the `decide_stack` pattern of `tests/integration/test_decide_backend_e2e.py`), agent `enabled` and `interventions_enabled` on, `interventions_allowed` = `standard`, `decision.backend` = `openai` against the fake OpenAI server (`tests/integration/fake_openai`) scripted to answer `adjust_global_difficulty` at high confidence.
+- The agent built at HEAD runs next to the game services (service tier `AGENT` composition, `tests/service/harness`, #1600), agent `enabled` and `interventions_enabled` on, `interventions_allowed` = `standard`, `decision.backend` = `openai` against the fake OpenAI server (`tests/integration/fake_openai`) scripted to answer `adjust_global_difficulty` at high confidence.
 - Mock controllers `MOCK0001` (host) … `MOCK0004` connected; a `JoustFFA` game runs with `MOCK0002` … `MOCK0004`.
 
 ## Flow
@@ -42,9 +42,10 @@
 
 ## Automation
 
-**Tier:** T2 service for steps 1 to 4 (`tests/service/`, `make test-service`): menu, game coordinator and controller manager (mock controllers) from source at HEAD, flag service and one flagd, fake audio (`LOBBY` composition). Steps 6 and 7 stay on the integration tier.
+**Tier:** T2 service for steps 1 to 5 (`tests/service/`, `make test-service`): menu, game coordinator and controller manager (mock controllers) from source at HEAD, flag service and one flagd, fake audio (`LOBBY` composition for steps 1 to 4; `AGENT` composition for step 5: plus the agent built at HEAD, the harness `OtlpSink` and the fake OpenAI server). Steps 6 and 7 stay on the integration tier.
 
 - Precondition difference: the service test runs the `LOBBY` composition with 4 controllers, no game and no agent (the "outside the game" host).
 - `tests/service/test_tc006_agent_ladder.py::test_host_walks_the_agent_ladder_from_the_controller` covers steps 1 to 4 and Validation 2 (#1598): admin combo, three Move presses to `agent_control`, then the whole ladder with Select (`none` to `full`) and back with Start, asserting after every press the persisted admin value of `interventions_allowed`, the per-level voice on the fake audio service (`adminop_off`, `adminop_1` to `adminop_3`) and, at the end, the value flagd serves. It presses past both ends (Start at `none`, Select at `full`) and asserts the value does not wrap (#1340, clamped since #1373), and starts from `probe` to cover UC-013 A1 (jump to `none`).
+- `tests/service/test_tc006_agent_blocked_by_host.py::test_agent_makes_no_remote_call_after_host_restricts_it` covers step 5 (#1600): the host steps the agent from `standard` to `none` from the controller (admin combo, `agent_control`, Start twice; persisted admin value, flagd serves `none`), a `JoustFFA` game starts, and once the agent reports `agent_llm_gated_total{reason=no_interventions_allowed}` a 10 s window shows no request to the fake server and no `agent.decide` span for the game while that counter keeps growing; no unblocked `agent_intervention` reaches the game (Validation 1 for that window). Precondition difference: the host restricts in the lobby before the game starts and then plays in it (admin mode runs in the lobby only).
 - `tests/integration/test_intervention_flow.py::test_permission_layer_blocks_disallowed_intervention` covers steps 6 and 7 with `interventions_allowed` set to `ambient` as a flag-service overlay (not from the controller).
-- **Status stays Draft** (partly automated). Gaps: no colour feedback of steps 3 and 4 is asserted (turquoise, orange, green, and the 800 ms red pulse, too short to read through `GetColor` without a sleep); only the voice is checked; step 5 (UC-040 A14, no remote call) needs the agent composition (S7 of #1422) and is covered by Go unit tests only (`services/agent/decision/decide_no_allowed_test.go`, #1395); the chained controller-to-blocked journey (steps 1 to 7 with `none`) does not exist yet.
+- **Status stays Draft** (partly automated). Gaps: no colour feedback of steps 3 and 4 is asserted (turquoise, orange, green, and the 800 ms red pulse, too short to read through `GetColor` without a sleep); only the voice is checked; steps 6 and 7 run on the integration tier, not T2; the chained controller-to-blocked journey (steps 1 to 7 with `none`) does not exist yet.

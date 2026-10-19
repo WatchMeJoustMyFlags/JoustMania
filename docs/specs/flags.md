@@ -149,7 +149,7 @@ The agent's governor: existence (`enabled`), actuation gates, allow-list, policy
 | `decision.jev.timeout_ms` | int | fast=1500, default=2500, patient=5000 | `default` = 2500 | N | agent: services/agent/flags/decision_backend.go:226 | manual edit only | live |
 | `decision.min_interval_ms` | int | fast=1500, default=3000, slow=10000 | `default` = 3000 | N | agent: services/agent/flags/decision_backend.go:280 -> services/agent/decision/decide_hook.go:458 | manual edit only | live |
 
-**Traceability:** FR-019, FR-040 to FR-052, FR-056 to FR-066, FR-071, FR-072 / UC-013, UC-040 to UC-045, UC-050, UC-051 / `services/agent/flags/flags.go`, `services/agent/flags/decision_backend.go`, `services/game_coordinator/runtime_config.py`, `services/game_coordinator/interventions.py` / `services/agent/flags/*_test.go`, `tests/integration/test_decide_backend_e2e.py`, `tests/service/test_tc020_host_and_stage_flags.py`.
+**Traceability:** FR-019, FR-040 to FR-052, FR-056 to FR-066, FR-071, FR-072 / UC-013, UC-040 to UC-045, UC-050, UC-051 / `services/agent/flags/flags.go`, `services/agent/flags/decision_backend.go`, `services/game_coordinator/runtime_config.py`, `services/game_coordinator/interventions.py` / `services/agent/flags/*_test.go`, `tests/service/test_tc008_remote_backend_routing.py`, `tests/service/test_tc006_agent_blocked_by_host.py`, `tests/service/test_tc020_host_and_stage_flags.py`.
 
 ### 3.1 Pattern-game flags (UC-046)
 

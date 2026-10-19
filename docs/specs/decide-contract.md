@@ -475,7 +475,7 @@ No p50 / p95 from production `agent.decide` spans has been published yet (#1231)
 
 | Change while a remote call is in flight | Effect | Evidence |
 |---|---|---|
-| `enabled` → off | HTTP call is **not** cancelled; on landing the live flags are re-read and the answer is `discarded/kill_switch`; the rules fallback is suppressed too | `decide_hook.go:runDecideRemote` (landing re-read); `TestRemote_KillSwitchAtLanding`, `TestRemote_KillSwitchSuppressesTimeoutFallback`; e2e `tests/integration/test_decide_backend_e2e.py::test_kill_switch_discards_inflight_answer` |
+| `enabled` → off | HTTP call is **not** cancelled; on landing the live flags are re-read and the answer is `discarded/kill_switch`; the rules fallback is suppressed too | `decide_hook.go:runDecideRemote` (landing re-read); `TestRemote_KillSwitchAtLanding`, `TestRemote_KillSwitchSuppressesTimeoutFallback`; service tier `tests/service/test_tc009_kill_switch.py::test_kill_switch_discards_inflight_answer` |
 | `decision.backend` changed | `discarded/backend_changed` | `decide_hook.go:runDecideRemote`; `TestRemote_BackendChangedMidFlight` |
 | `decision.act_confidence_threshold` / `decision.jev.act_confidence_threshold` changed | the effective threshold for the answering backend is re-read at landing (§5); the answer is `act` or `held` against the new value | `decide_hook.go:runDecideRemote`; `TestRemote_ThresholdRaisedMidFlight`, `TestThreshold_JevRaisedMidFlightAppliesAtLanding`, `TestThreshold_JevInheritFlippedMidFlightAppliesAtLanding` |
 | `interventions_allowed` narrowed (including to `none`) | outcome stays `act`; the permission chain blocks `not_allowed` (`decide.blocked=true`, `decide.block_reason=not_allowed`); the next cycle makes no new call (§7.1) | `TestRemote_AllowListAtLanding`, `TestRemote_BlockedDecisionNamesTargetAndDecideBlocked`, `TestRemote_NoInterventionsAllowed`, `TestRemote_NoInterventionsAllowedAtLanding` |
@@ -663,7 +663,7 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   `choice`, `probabilities` and `noul` are omitted when empty. On the rules path the `ffa.intervention` /
   `ffa.target` choices are the emitted decision's (§5), also when the permission chain blocks it. Consumers: the dashboard Agent tab reads
   `question_id` / `choice` for `ffa.intervention` and `ffa.target` (`services/dashboard/src/agent.ts`), and the
-  decide e2e test matches the scripted intervention in it (`tests/integration/test_decide_backend_e2e.py`).
+  decide service-tier tests match the scripted intervention in it (`tests/service/test_tc008_remote_backend_routing.py`, `tests/service/test_tc009_kill_switch.py`).
   Changing this shape breaks both.
 - `chat {model}` (CLIENT) per remote call: OTel GenAI semantic conventions
   (`gen_ai.operation.name=chat`, `gen_ai.provider.name`, request / response model,
@@ -689,4 +689,4 @@ The contract tests live in `decide/*_test.go`, the backend tests `decide/backend
 
 **Traceability:** FR-044, FR-045, FR-046, FR-047, FR-048, FR-049, FR-050, FR-051, FR-052, FR-053, FR-054 / UC-040, UC-044, UC-045 /
 `services/agent/decide/`, `services/agent/decision/decide_hook.go`, `decide_registry.go`, `decide_rules.go`, `decision.go`, `services/agent/decide_backends.go`, `services/agent/actions/`, `services/game_coordinator/interventions.py` /
-`services/agent/decide/*_test.go`, `services/agent/decision/decide_hook_test.go`, `tests/integration/test_decide_backend_e2e.py`, `tests/integration/test_tc013_shadow_alongside_real.py`.
+`services/agent/decide/*_test.go`, `services/agent/decision/decide_hook_test.go`, `tests/service/test_tc008_remote_backend_routing.py`, `tests/service/test_tc009_kill_switch.py`, `tests/service/test_tc006_agent_blocked_by_host.py`, `tests/integration/test_tc013_shadow_alongside_real.py`.

@@ -14,6 +14,12 @@ per-composition env overrides go in ``Composition.env``.
 Telemetry is off by default (``OTEL_SDK_DISABLED``). ``Composition(...,
 otlp=True)`` starts an ``OtlpSink`` (``stack.otlp_sink``) and points every
 service's OTLP exporter at it instead.
+
+``Composition(..., agent=True)`` (needs ``otlp=True``; the ``AGENT``
+composition) adds the Go agent built at HEAD (``stack.agent``) and a
+scriptable fake OpenAI-compatible backend (``stack.fake_openai``): the sink tees
+the services' traces and metrics to the agent, as the collector does in compose,
+and the agent exports its own telemetry to the sink.
 """
 
 from __future__ import annotations
@@ -22,7 +28,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .agent import AgentProcess
 from .fake_audio import FakeAudio
+from .fakes.openai import API_KEY as FAKE_OPENAI_API_KEY
+from .fakes.openai import FakeOpenAI
 from .fakes.otlp import OtlpSink
 from .flag_plane import FlagPlane
 from .processes import PyService, free_port
@@ -39,6 +48,10 @@ MOCK_CONTROL_PORT = 50062  # controller-manager's mock control API in compose
 AUDIO_PORT = 50056
 OTLP_GRPC_PORT = 4317  # otel-collector's OTLP/gRPC port in compose
 FLAG_SERVICE_HTTP_PORT = 8070
+AGENT_OTLP_PORT = 4317  # the agent's OTLP/gRPC receiver in compose
+FAKE_OPENAI_PORT = 8080  # fake-openai in docker-compose.decide-e2e.yml
+# The ci/agent.json variant of decision.openai.base_url the agent is pointed at the fake with.
+FAKE_OPENAI_VARIANT = ("agent", "decision.openai.base_url", "fake")
 # TCP port 1 (tcpmux) is never served here: a dial fails at once.
 UNREACHABLE_PORT = 1
 
@@ -52,26 +65,40 @@ class Composition:
     env: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     # Telemetry on, exported to an in-process OtlpSink (``stack.otlp_sink``).
     otlp: bool = False
+    # The Go agent (``stack.agent``) plus a fake OpenAI backend (``stack.fake_openai``).
+    agent: bool = False
 
     def __post_init__(self):
         unknown = set(self.services) - set(SERVICES)
         if unknown:
             raise ValueError(f"unknown services {sorted(unknown)}; known: {sorted(SERVICES)}")
+        if self.agent and not (self.otlp and "game-coordinator" in self.services):
+            raise ValueError("agent=True needs otlp=True (the agent observes through OTLP) and the game coordinator")
 
 
 # Coordinator on mock controllers: headless games, interventions, flag service lifecycle.
 GAME = Composition(("controller-manager", "game-coordinator"))
 # Plus the menu: lobby, ready state, menu-started games, admin writes.
 LOBBY = Composition(("controller-manager", "game-coordinator", "menu"))
+# Plus the agent at HEAD observing over OTLP and a fake OpenAI backend: in-game decisions.
+AGENT = Composition(("controller-manager", "game-coordinator", "menu"), otlp=True, agent=True)
 
 
 class ServiceStack:
     def __init__(self, composition: Composition, workdir: Path):
         self.composition = composition
         self.workdir = workdir
-        self.flag_plane = FlagPlane(workdir)
+        self.fake_openai: FakeOpenAI | None = FakeOpenAI(workdir) if composition.agent else None
+        # Picked up front: the sink tees to it, and the agent must not be found by a stale address.
+        self.agent_port: int | None = free_port() if composition.agent else None
+        self.agent: AgentProcess | None = None
+        self.flag_plane = FlagPlane(
+            workdir,
+            variant_values={FAKE_OPENAI_VARIANT: self.fake_openai.base_url} if self.fake_openai else None,
+        )
         self.fake_audio = FakeAudio()
-        self.otlp_sink: OtlpSink | None = OtlpSink() if composition.otlp else None
+        forward_to = f"127.0.0.1:{self.agent_port}" if self.agent_port else None
+        self.otlp_sink: OtlpSink | None = OtlpSink(forward_to=forward_to) if composition.otlp else None
         self.services: dict[str, PyService] = {}
         self._ports: dict[tuple[str, int], int] = {}
 
@@ -102,6 +129,8 @@ class ServiceStack:
         return self
 
     def _start(self) -> None:
+        if self.fake_openai is not None:
+            self._ports[("fake-openai", FAKE_OPENAI_PORT)] = self.fake_openai.start()
         plane = self.flag_plane
         plane.start()
         self._ports[("flag-service", FLAG_SERVICE_HTTP_PORT)] = plane.http_port
@@ -122,6 +151,21 @@ class ServiceStack:
             self._ports[(name, SERVICES[name][1])] = ports[name]
         if "controller-manager" in ports:
             self._ports[("controller-manager", MOCK_CONTROL_PORT)] = mock_port
+
+        if self.composition.agent:
+            # Before the services: their first exports (game start) reach a live agent.
+            self.agent = AgentProcess(
+                self.workdir,
+                listen_port=self.agent_port,
+                flagd_eval_port=plane.flagd_eval_port,
+                flag_service_url=plane.flag_service_url,
+                otlp_endpoint=self.otlp_sink.endpoint,
+                coordinator_port=ports["game-coordinator"],
+                mock_control_port=mock_port,
+                openai_api_key=FAKE_OPENAI_API_KEY,
+            )
+            self._ports[("agent", AGENT_OTLP_PORT)] = self.agent_port
+            self.agent.start()
 
         envs = self.service_envs(ports, mock_port=mock_port, audio_port=audio_port, otlp_port=otlp_port)
         for name in self.composition.services:
@@ -206,14 +250,23 @@ class ServiceStack:
         """Stop everything, in reverse start order; never raises."""
         for service in reversed(list(self.services.values())):
             service.stop()
+        # After the services (their last exports), before the sink (its own last export).
+        if self.agent is not None:
+            self.agent.stop()
         self.fake_audio.stop()
         # After the services: their exporters flush to the sink on shutdown.
         if self.otlp_sink is not None:
             self.otlp_sink.stop()
         self.flag_plane.stop()
+        if self.fake_openai is not None:
+            self.fake_openai.stop()
 
     # ------------------------------------------------------------- debugging
     def log_tail(self) -> str:
         parts = [s.log_tail() for s in self.services.values()]
+        if self.agent is not None:
+            parts.append(self.agent.log_tail())
+        if self.fake_openai is not None:
+            parts.append(self.fake_openai.log_tail())
         parts.append(self.flag_plane.log_tail())
         return "\n".join(parts)

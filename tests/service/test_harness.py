@@ -6,6 +6,7 @@ docker test, which skips without it).
 """
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -14,8 +15,8 @@ import time
 
 import pytest
 
-from tests.service.harness import LOBBY, ServiceStack
-from tests.service.harness.flag_plane import _docker, prune_binary_cache
+from tests.service.harness import AGENT, LOBBY, Composition, FlagPlane, ServiceStack
+from tests.service.harness.flag_plane import _docker, fh, prune_binary_cache
 from tests.service.harness.processes import ManagedProcess
 
 pytestmark = pytest.mark.tier("service")
@@ -94,6 +95,47 @@ def test_binary_cache_keeps_the_newest(tmp_path):
         "flag-service-b",
         "flag-service-e.tmp-123456",
     ]
+
+
+def test_binary_cache_prunes_per_binary(tmp_path):
+    """The agent's binaries and the flag service's share the cache but not the keep budget."""
+    for age, name in enumerate(["agent-a", "agent-b", "flag-service-a"]):
+        path = tmp_path / name
+        path.write_bytes(b"")
+        mtime = time.time() - 100 * age
+        os.utime(path, (mtime, mtime))
+
+    pruned = prune_binary_cache(tmp_path, keep=1, prefix="agent-")
+
+    assert [p.name for p in pruned] == ["agent-b"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["agent-a", "flag-service-a"]
+
+
+def test_agent_composition_wires_sink_agent_and_fake(tmp_path):
+    """No start: the sink tees to the agent's port, and the fake OpenAI URL lands in the baseline variant."""
+    stack = ServiceStack(AGENT, tmp_path)
+    assert stack.otlp_sink is not None and stack.fake_openai is not None
+    assert stack.otlp_sink.forward_to == f"127.0.0.1:{stack.agent_port}"
+    assert stack.flag_plane.variant_values == {
+        ("agent", "decision.openai.base_url", "fake"): f"http://127.0.0.1:{stack.fake_openai.port}/v1"
+    }
+    assert ServiceStack(LOBBY, tmp_path).fake_openai is None
+    with pytest.raises(ValueError, match="otlp=True"):
+        Composition(("controller-manager", "game-coordinator"), agent=True)
+
+
+def test_flag_plane_rewrites_only_declared_variants(tmp_path):
+    variant = ("agent", "decision.openai.base_url", "fake")
+    plane = FlagPlane(tmp_path / "a", variant_values={variant: "http://127.0.0.1:9/v1"})
+    fh.copy_ci_flag_dir(plane.flag_dir)
+    plane._rewrite_variants()
+    flags = json.loads((plane.flag_dir / "agent.json").read_text())["flags"]
+    assert flags["decision.openai.base_url"]["variants"]["fake"] == "http://127.0.0.1:9/v1"
+
+    unknown = FlagPlane(tmp_path / "b", variant_values={("agent", "decision.openai.base_url", "nope"): "x"})
+    fh.copy_ci_flag_dir(unknown.flag_dir)
+    with pytest.raises(KeyError, match="no variant 'nope'"):
+        unknown._rewrite_variants()
 
 
 @pytest.mark.skipif(

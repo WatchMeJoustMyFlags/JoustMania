@@ -16,7 +16,7 @@
 
 ## Preconditions
 
-- The integration stack, the agent built at HEAD and the fake OpenAI server are up through `docker-compose.decide-e2e.yml` (the `decide_stack` fixture of `tests/integration/test_decide_backend_e2e.py`); the agent has a dummy `DECISION_OPENAI_API_KEY`.
+- The service tier's `AGENT` composition is up (`tests/service/harness`, one fresh stack per case): menu, game coordinator and controller manager from source at HEAD, the agent built at HEAD, a fresh flag plane, and the fake OpenAI server (`tests/integration/fake_openai`) behind the `fake` variant of `decision.openai.base_url`; the agent has a dummy `DECISION_OPENAI_API_KEY`.
 - Agent `enabled` on, `interventions_allowed` = `full`; mock controllers `MOCK0001` … `MOCK0004` connected.
 
 ## Flow
@@ -39,10 +39,12 @@
 
 ## Postconditions
 
-- The `agent` overlays are deleted by the `decide_flags` fixture; game-scoped interventions died with the game; the fake's script is reset. No flag file changed.
-- Three ended games; the agent and fake containers are removed by the module fixture.
+- The `agent` overlays are deleted by the `flag_service` fixture; game-scoped interventions died with the game. No flag file changed (the fake's URL is written to the stack's temporary copy of `services/flagd/ci`).
+- Each case's stack, agent and fake are stopped by the `fresh_stack` fixture.
 
 ## Automation
 
-- `tests/integration/test_decide_backend_e2e.py`: `test_openai_high_confidence_acts` (steps 1 to 3), `test_openai_low_confidence_held` (steps 4 and 5), `test_openai_garbage_falls_back_to_rules` (steps 6 and 7), `test_rules_backend_default_unchanged` (step 8). Each case runs in its own game, as the journey does.
+**Tier:** T2 service (`tests/service/`, `make test-service`): menu, game coordinator and controller manager (mock controllers) from source at HEAD, the agent built at HEAD (`AGENT` composition, #1600), one flagd and flag service, fake audio, the harness `OtlpSink` in the collector's place (it tees the services' telemetry to the agent; the agent's spans are read from it instead of Jaeger), the fake OpenAI server. Step 3's audio side effect is the `SetVolume(0.65)` call the fake audio records.
+
+- `tests/service/test_tc008_remote_backend_routing.py`: `test_openai_high_confidence_acts` (steps 1 to 3), `test_openai_low_confidence_held` (steps 4 and 5), `test_openai_garbage_falls_back_to_rules` (steps 6 and 7), `test_rules_backend_default_unchanged` (step 8). Each case runs in its own game on a stack of its own (moved from the e2e-agent shard, #1600).
 - Gaps (planned): Jev and Claude backends (only `openai` is faked) and missing key (UC-044 A1): #1404; timeout fallback (UC-040 A2 `timeout`) and backend switch while a call is in flight (UC-044 A2, UC-040 A7 `backend_changed`): Go unit tests only (`services/agent/decision/decide_hook_test.go`, #1395), end to end #1404. The `scripts/agent-backend.sh` helper of UC-044 step 1 is tested by `scripts/tests/test-agent-backend.sh`.

@@ -16,7 +16,7 @@
 
 ## Preconditions
 
-- Same stack as [TC-008](TC-008-remote-backend-confidence-routing.md): agent at HEAD, fake OpenAI server, `decision.backend` = `openai`, `enabled` and `interventions_enabled` on, `interventions_allowed` = `full`.
+- Same stack as [TC-008](TC-008-remote-backend-confidence-routing.md) (service tier `AGENT` composition): agent at HEAD, fake OpenAI server, `decision.backend` = `openai`, `enabled` and `interventions_enabled` on, `interventions_allowed` = `full`.
 - Mock controllers `MOCK0001` … `MOCK0004` connected.
 
 ## Flow
@@ -38,11 +38,13 @@
 
 ## Postconditions
 
-- The `agent` overlays (kill switch first) are deleted by the `decide_flags` fixture; no flag file changed.
-- One game that the suite fixture ends.
+- The `agent` overlays (kill switch first) are deleted by the `flag_service` fixture; no flag file changed.
+- One game, ended with its stack by the `fresh_stack` fixture.
 
 ## Automation
 
-- `tests/integration/test_decide_backend_e2e.py::test_kill_switch_discards_inflight_answer` implements steps 1 to 6 (it waits for the `agent.disabled` span for the game before releasing the held answer).
+**Tier:** T2 service (`tests/service/`, `make test-service`): the `AGENT` composition of [TC-008](TC-008-remote-backend-confidence-routing.md) (#1600), on a stack of its own (`enabled` is global).
+
+- `tests/service/test_tc009_kill_switch.py::test_kill_switch_discards_inflight_answer` implements steps 1 to 7 (it waits for the `agent.disabled` span for the game before releasing the held answer; step 7 waits for a new `agent.decide` span for the game after `enabled` is on again). Moved from the e2e-agent shard (#1600).
 - Validation 2 (UC-045 A1) has no end-to-end test: `lib/tests/test_shipped_safety_defaults.py::test_agent_interventions_disabled_by_default` only reads the shipped flag defaults (#1424).
-- Gaps (unit-tested only since #1395; #1363 is closed): step 7 (resume) and Validation 2 are not asserted end to end; aborting running experiments on the next tick (UC-045 step 5) and the capture-only retro after the switch (UC-045 step 6) are covered by Go unit tests only (#1362).
+- Gaps (unit-tested only since #1395; #1363 is closed): Validation 2 is not asserted end to end; aborting running experiments on the next tick (UC-045 step 5) and the capture-only retro after the switch (UC-045 step 6) are covered by Go unit tests only (#1362).

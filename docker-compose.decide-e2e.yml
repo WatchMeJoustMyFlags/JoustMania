@@ -1,7 +1,8 @@
 # Decide-backend e2e overlay (#1230, epic #1225). TEST-ONLY.
 #
-# Layered by tests/integration/test_decide_backend_e2e.py ON TOP of the suite's
-# session stack (docker-compose.yml + override + ci) under `--profile agent`:
+# No test layers it since #1600 (the decide tests run on the service tier's AGENT
+# composition, tests/service/); kept until a follow-up removes it. It layers ON TOP
+# of the suite's session stack (docker-compose.yml + override + ci) under `--profile agent`:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.override.yml \
 #     -f docker-compose.ci.yml -f docker-compose.decide-e2e.yml \
