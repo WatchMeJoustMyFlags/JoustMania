@@ -377,15 +377,21 @@ class TestUC020FreeForAll:
         session.game_thread = game_thread
         game_thread.start()
 
-        deadline = time.time() + 10.0
-        # start_time is a plain attribute the game loop sets on its first frame; nothing to await on.
-        while game.start_time is None and time.time() < deadline:  # noqa: ASYNC110
-            await asyncio.sleep(0.02)
-        assert game.start_time is not None, "game loop never started"
+        try:
+            deadline = time.time() + 10.0
+            # start_time is a plain attribute the game loop sets on its first frame; nothing to await on.
+            while game.start_time is None and time.time() < deadline:  # noqa: ASYNC110
+                await asyncio.sleep(0.02)
+            assert game.start_time is not None, "game loop never started"
 
-        ok, error = await session.force_end("operator_stop")
-        game_thread.join(timeout=10.0)
-        assert not game_thread.is_alive(), "game thread did not stop"
+            ok, error = await session.force_end("operator_stop")
+            game_thread.join(timeout=10.0)
+            assert not game_thread.is_alive(), "game thread did not stop"
+        finally:
+            # Never leave the game thread spinning on the infinite mock stream if an assert fired early.
+            if game_thread.is_alive():
+                game.force_end("teardown")
+                game_thread.join(timeout=10.0)
 
         assert (ok, error) == (True, "")
         session.event_bus.publish.assert_awaited_once_with(
