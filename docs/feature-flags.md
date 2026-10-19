@@ -1,789 +1,92 @@
-> **Partly superseded** (2026-10-16): the flag inventory is superseded by [docs/specs/flags.md](specs/flags.md); the architecture, naming and how-to sections are still current background.
+# Feature Flags
 
-# Feature Flags with Event-Driven Updates
+A short guide to how JoustMania uses flags. The flag catalog (every key, its variants, default, readers,
+writers and reload behaviour) is [docs/specs/flags.md](specs/flags.md): that file is the source of truth, and a
+PR that adds, removes or changes a flag updates it. The per-set counts are generated into
+[specs/generated/flag-counts.md](specs/generated/flag-counts.md) by `make specs`.
 
-## Overview
+## 1. How it works
 
-JoustMania uses [OpenFeature](https://openfeature.dev/) with [flagd](https://flagd.dev/) for runtime configuration management. Feature flags allow changing game behavior without redeploying code.
-
-**Key Features:**
-- **Event-driven updates** - Changes propagate instantly via gRPC streams (no polling)
-- **Type-safe evaluation** - Flags are strongly typed (boolean, string, integer, float, object)
-- **Observable** - Metrics and logging for flag evaluations and changes
-- **Domain-scoped** - One baseline flag file per domain, isolated by `flagSetId` metadata
-- **One write path** - Runtime changes go through the flag service's HTTP API (`scripts/flags.sh`, or `http://localhost/flags/`); the files in `services/flagd/` are the read-only baseline (C-033)
-
-## Naming Convention
-
-The flag schema follows a strict convention (issue #725):
-
-- **`flagSetId` is THE namespace.** Each flag file declares a single `flagSetId`
-  (the domain name) and contains only flags belonging to that domain. The
-  filename matches the domain: `system.json` → `flagSetId: "system"`.
-- **Bare `snake_case` keys.** A flag's key is just its name within the domain —
-  there is no domain prefix on the key. The domain is already expressed by the
-  file's `flagSetId`. For example, the controller backend flag is keyed
-  `backend` (not `controller_backend`) inside `controller.json`.
-- **Dotted sub-keys only for genuine sub-structure.** Use a dot when a flag is
-  one leaf of a logically grouped cluster, e.g. `game_loop.update_frequency_hz`,
-  `idle.timeout_minutes`, `nonstop.time_limit_seconds`,
-  `werewolf.reveal_time_seconds`. A dot is *not* used to namespace by domain.
-
-### Domains
-
-| File | `flagSetId` | Purpose | Primary consumers |
-|------|-------------|---------|-------------------|
-| `system.json` | `system` | Game loop cadence, idle behavior, sentinel rotation, pairing intervals | game-coordinator, controller-manager |
-| `controller.json` | `controller` | Controller backend selection, Bluetooth routing, fault injection | controller-manager |
-| `observability.json` | `observability` | Metrics export cadence, span detail | all services |
-| `game.json` | `game` | Game-mode settings (admin-adjustable) | game-coordinator, menu |
-| `user.json` | `user` | User preferences (host admin choices persist in the flag service's state file) | menu, audio |
-| `agent.json` | `agent` | Autonomous agent control (existence/objective/capability/permission + fitness) | agent, game-coordinator |
-| `interventions.json` | `interventions` | Runtime ACT control plane: neutral baseline; the agent writes game-scoped values and events through the flag service | agent (writer), game-coordinator (applier) |
-| `rollout.json` | `rollout` | Act 2 progressive backend rollout control | controller-manager (reads), agent (writes `current_controller_count` through the flag service, reads `remediation_allowed`) |
-
-## Architecture
-
-### Components
+JoustMania uses [OpenFeature](https://openfeature.dev/) with [flagd](https://flagd.dev/). Flags are the only
+runtime control surface: host settings, the agent's governor, the agent's interventions and the rollout are all
+flags (C-002).
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Baseline flag files (services/flagd/, or ci/) —        │
-│  one file per domain, READ-ONLY, loaded once at start   │
-│  - system.json         (flagSetId: "system")            │
-│  - controller.json     (flagSetId: "controller")        │
-│  - observability.json  (flagSetId: "observability")     │
-│  - game.json           (flagSetId: "game")              │
-│  - user.json           (flagSetId: "user")              │
-│  - agent.json          (flagSetId: "agent")             │
-│  - interventions.json  (flagSetId: "interventions")     │
-│  - rollout.json        (flagSetId: "rollout")           │
-└──────────────────┬──────────────────────────────────────┘
-                   │ read at start
-                   ▼
-┌─────────────────────────────────────────────────────────┐
-│  flag-service (Go; HTTP API :8070, envoy /flags/)       │
-│  - Writers: agent, menu admin, connect-proxy, scripts   │
-│    PUT/POST/DELETE /{set}/{flag}, checked against the   │
-│    mutable-flag registry (flags.md §13)                 │
-│  - Holds overlays, game-scoped values, experiment arms  │
-│    in memory; admin settings persisted to admin.json    │
-│  - Renders one merged config, per-flag flagSetId        │
-└──────────────────┬──────────────────────────────────────┘
-                   │ flagd.sync.v1 SyncFlags (:50064),
-                   │ pushed on every accepted write
-                   ▼
-┌─────────────────────────────────────────────────────────┐
-│  flagd service (stock)                                  │
-│  - gRPC server implementing OpenFeature Flagd Protocol  │
-│  - ONE source: --uri grpc://flag-service:50064          │
-│  - Uses flagSetId metadata for domain scoping           │
-│  - Pushes flag updates to clients on every sync message │
-└──────────────────┬──────────────────────────────────────┘
-                   │
-                   │ gRPC bidirectional stream
-                   │ SyncFlags() RPC
-                   ▼
-┌─────────────────────────────────────────────────────────┐
-│  OpenFeature Domain-Scoped Providers                    │
-│  - One provider per domain, bound by flagSetId          │
-│  - Each provider uses selector="flagSetId=<domain>"     │
-│  - Connects to flagd via IN_PROCESS resolver            │
-│  - Emits PROVIDER_CONFIGURATION_CHANGED event           │
-└──────────────────┬──────────────────────────────────────┘
-                   │
-                   │ Event callback / Direct reads
-                   ▼
-┌─────────────────────────────────────────────────────────┐
-│  Service Consumers                                      │
-│  - RuntimeConfigManager: event-driven cache             │
-│    (reads system + controller + game)                   │
-│  - Menu: reads game + user; writes admin settings to    │
-│    the flag service (persist: true)                     │
-│  - Audio: reads user (voice, audio on/off)              │
-│  - Agent: reads agent; writes interventions (game-      │
-│    scoped values + events) to the flag service          │
-│  - Game Coordinator: registers games with the flag      │
-│    service; applies interventions by gameId             │
-└─────────────────────────────────────────────────────────┘
+services/flagd/<set>.json  (read-only baseline, one file per flag set)
+        │ read once at start
+        ▼
+flag-service  (HTTP API :8070, envoy /flags/; holds overlays, game-scoped values,
+        │      experiment arms; persists admin settings)
+        │ flagd.sync.v1, pushed on every accepted write
+        ▼
+flagd  ──►  OpenFeature providers in each service (Python: in-process, one per flag set;
+            agent and rust-hid: RPC)
 ```
 
-**Latency:** flag-service write accepted → flagd serving it: p95 at most 200 ms, p99 at most 500 ms (NFR-050, measured by `tests/integration/test_flag_propagation.py`). A baseline file change takes effect only after `scripts/flags.sh restart` (flag service, then flagd).
+- **Flag sets.** Each file declares one `flagSetId` that matches its file name (`game.json` is `game`).
+  Python services select a set with `flagSetId=<set>` (`lib/feature_flags.py`).
+- **Writes.** Nothing writes a flag file at runtime (C-033). Runtime changes go through the flag service:
+  the menu (admin settings), the agent (interventions, experiment arms, rollout count), connect-proxy (canary)
+  and the operator scripts. Only flags listed in the mutable-flag registry
+  ([flags.md §13](specs/flags.md#13-mutable-flag-registry), `services/flag-service/registry.yaml`) accept writes.
+- **CI baseline.** `services/flagd/ci/` replaces the baseline in the CI, dry-run and demo stacks
+  (`docker-compose.ci.yml`); the differences are listed in
+  [specs/generated/flags-ci-diff.md](specs/generated/flags-ci-diff.md).
+- **Propagation.** A write reaches flagd within the NFR-050 bound (p95 200 ms). A baseline file change needs
+  `scripts/flags.sh restart`. Whether a reader picks a change up live, per game or only at startup is the
+  Reload column of the catalog.
 
-### Three-Layer Context Merging
+## 2. Naming
 
-Flag evaluation uses a three-layer evaluation context that flagd merges in order
-of increasing precedence:
+- The flag set is the namespace; keys are bare `snake_case` (`backend` in `controller.json`, not
+  `controller_backend`).
+- A dotted key only for a real sub-group (`idle.timeout_minutes`, `nonstop.respawn_seconds`), never to repeat
+  the set name.
 
-1. **Global context** — process-wide defaults set when the provider is
-   initialized (e.g. service name, environment).
-2. **Domain/client context** — attributes attached to a specific domain client.
-3. **Per-evaluation context** — attributes passed at the call site (e.g. a
-   controller `serial`, a `service.name` for per-service targeting).
+## 3. Edit flag values
 
-Targeting rules (fractional rollout, per-serial routing, per-service overrides)
-read attributes from this merged context. The most specific layer wins on
-conflict.
+**Mutable flags** (with a registry row) change at runtime, without a restart:
 
-### How Event-Driven Updates Work
-
-1. **Startup:** Each consumer registers a callback for
-   `PROVIDER_CONFIGURATION_CHANGED` events on the domains it cares about.
-2. **Normal Operation:** Config is cached and served from memory (zero overhead).
-3. **Flag Change:** When the flag service accepts a write:
-   - the flag service sends the merged configuration to flagd over the sync stream
-   - flagd pushes update to all connected clients via gRPC stream
-   - the OpenFeature provider for that domain emits
-     `PROVIDER_CONFIGURATION_CHANGED`
-   - the consumer's callback fires, re-evaluates flags, updates its cache
-   - Logs show e.g. `🚩 Feature flags changed: ['game_loop.update_frequency_hz']`
-   - Metrics increment `game_flag_configuration_changes_total`
-
-**Why event-driven?**
-- **No polling overhead** - Config is read from cache, not from flagd on every game loop iteration
-- **Push updates** - Changes propagate within the NFR-050 bound (p95 200 ms) instead of waiting for the next poll interval
-- **Lower CPU usage** - No periodic flag evaluations
-- **No rate limiting** - Avoids "too_many_pings" errors from excessive gRPC keepalives
-
-### Thread Safety
-
-Flag change events fire in a background thread. Consumers such as
-RuntimeConfigManager use `threading.RLock()` to protect the config cache during
-reads/writes.
-
-## Consuming a Domain
-
-Services consume a domain by initializing it once with its `flagSetId` and then
-reading flags from the returned client:
-
-```python
-from lib.feature_flags import init_flag_domain, get_flag_client
-
-init_flag_domain("game")            # flagSetId == filename == domain
-client = get_flag_client("game")
-hz = client.get_integer_value("game_loop.update_frequency_hz", 60)
+```bash
+scripts/flags.sh set agent decision.backend claude   # stack overlay, in memory
+scripts/flags.sh get agent decision.backend          # baseline, overlays and the rendered flagd JSON
+scripts/flags.sh clear agent decision.backend        # back to the baseline
 ```
 
-- **RuntimeConfigManager** initializes and reads `system`, `controller`, and
-  `game`.
-- **Menu** reads `game` and `user`, and writes the host's admin settings
-  (`sensitivity`, `num_teams`, `force_all_start`, `current_game`,
-  `game_instructions`, `interventions_allowed`) to the flag service with
-  `persist: true` (`lib/flag_service_writer.py`); the flag service keeps them in
-  its state file `/var/lib/flag-service/admin.json`.
-- **Audio** reads `user`.
-- **Agent** reads `agent` and writes the `interventions` set through the flag
-  service; the **Game Coordinator** applies the values and events of its own
-  `gameId`.
+An overlay lasts until it is cleared or the flag service restarts. The flag service answers `422 out_of_bounds`
+for a value outside the registry bounds, `422 flag_read_only` for a flag without a registry row and
+`503 no_sync_stream` while flagd is not connected.
 
-No service writes a flag file and no service mounts the flag directory
-writable.
+**Every other flag** is a reviewed edit of its baseline file, then `scripts/flags.sh restart`
+(flag service, then flagd).
 
-## Available Flags
+## 4. Add or remove a flag
 
-### System (`services/flagd/system.json`, `flagSetId: "system"`)
-
-| Flag | Type | Values | Description |
-|------|------|--------|-------------|
-| `game_loop.update_frequency_hz` | integer | 15, 30, 60 (default 60) | Game loop update frequency |
-| `idle.enabled` | boolean | true, false | Enable idle mode |
-| `idle.timeout_minutes` | integer | minutes | Minutes of inactivity before idle |
-| `sentinel.count` | integer | count | Number of sentinel controllers |
-| `sentinel.rotation_minutes` | integer | minutes | Sentinel rotation interval |
-| `pairing.poll_interval` | number | seconds | Controller pairing poll interval |
-| `pairing.bt_monitor_interval` | number | seconds | Bluetooth monitor interval |
-| `pairing.bluez_restart_mode` | string | `never`, `always`, `when_idle` (default `when_idle`, #1466) | Whether the pairing daemon restarts bluetoothd after a USB pairing (UC-001 BR-005, #1446). `when_idle`: restart only after a new BlueZ device record was written for a controller new to that adapter (UC-001 A7, BR-008) and only while no real game is starting / running / ending (state from the coordinator's `GetGameState` via envoy; unreadable = busy, deferred); the pairing agent is registered again after the restart. `never`: no restart (a controller new to the adapter cannot connect until bluetoothd restarts). `always`: restart after every pairing (pre-#1446 behaviour, drops every controller). Read at use time; unknown or unreachable = `never` |
-
-**Sentinel animation (calibration, #766 F7).** The idle sentinel breathing/hue
-animation constants (`menu/idle_monitor.py`), consumed by the **menu** service.
-Snapshotted **once at sentinel-loop start** (init-frozen — a 10 Hz animation loop
-must not call flagd per frame). Malformed values fall back to the hardcoded
-defaults: periods must be positive, brightness in `[0, 1]`, and
-`min_brightness < max_brightness` (an inverted pair resets both).
-
-| Flag | Type | Variants | Default | Read | Consumer | Description |
-|------|------|----------|---------|------|----------|-------------|
-| `sentinel.update_hz` | integer | slow 5, default 10, fast 20 | 10 | startup (init-frozen) | menu | Sentinel animation update rate (Hz) |
-| `sentinel.min_brightness` | number | dim 0.05, default 0.09, bright 0.15 | 0.09 | startup (init-frozen) | menu | Minimum sentinel LED brightness |
-| `sentinel.max_brightness` | number | dim 0.2, default 0.3, bright 0.5 | 0.30 | startup (init-frozen) | menu | Maximum sentinel LED brightness |
-| `sentinel.breath_period_seconds` | number | fast 2.0, default 4.0, slow 8.0 | 4.0 | startup (init-frozen) | menu | Breathing (brightness) cycle period |
-| `sentinel.hue_period_seconds` | number | fast 15.0, default 30.0, slow 60.0 | 30.0 | startup (init-frozen) | menu | Hue rotation cycle period |
-
-### Controller (`services/flagd/controller.json`, `flagSetId: "controller"`)
-
-| Flag | Type | Values | Description |
-|------|------|--------|-------------|
-| `backend` | string | `mock`, `python`, `rust`, comma-separated combos (default `rust`; variants naming `python` are opt-in and need the `python-hid` compose profile, #1371) | Controller backend selection |
-| `poll_drop_threshold` | integer | count | Poll-drop tolerance before action |
-| `bluetooth_backend` | string | `python`, `rust`, `unstable` (default `rust`) | Per-serial Bluetooth adapter routing (renamed from `controller_adapter_routing`; Act 2 agent rollout target); also selects the pairing daemon's backend (UC-001 BR-003) |
-
-**Effect timings (calibration, #766 F7).** Warning/death feedback timings
-(`feedback_manager.py` inline magic numbers), consumed by the **controller-manager**
-service. Read **once at init** via `init_effect_timings()` (called from the
-`init_game_settings_listener()` startup hook); malformed values fall back to the
-hardcoded defaults (each must be a positive integer).
-
-| Flag | Type | Variants (ms) | Default (ms) | Read | Consumer | Description |
-|------|------|---------------|--------------|------|----------|-------------|
-| `effect.warning_flash_ms` | integer | short 100, default 200, long 400 | 200 | startup (init-frozen) | controller-manager | Warning LED flash duration |
-| `effect.warning_vibration_ms` | integer | short 100, default 200, long 400 | 200 | startup (init-frozen) | controller-manager | Warning rumble duration |
-| `effect.death_rumble_ms` | integer | short 100, default 150, long 250 | 150 | startup (init-frozen) | controller-manager | Death rumble duration |
-| `effect.death_red_hold_ms` | integer | short 150, default 300, long 500 | 300 | startup (init-frozen) | controller-manager | Death red-LED hold duration |
-| `effect.death_fade_ms` | integer | short 400, default 700, long 1200 | 700 | startup (init-frozen) | controller-manager | Death LED fade-out duration |
-
-### Observability (`services/flagd/observability.json`, `flagSetId: "observability"`)
-
-| Flag | Type | Values | Description |
-|------|------|--------|-------------|
-| `metrics_export_interval_ms` | integer | milliseconds | Metrics export cadence (supports per-service targeting via `service.name`) |
-| `grpc_rpc_spans` | boolean | true, false | Emit per-RPC gRPC spans |
-
-### Game (`services/flagd/game.json`, `flagSetId: "game"`)
-
-| Flag | Type | Values | Description |
-|------|------|--------|-------------|
-| `sensitivity` | integer | 0-4 | Death detection sensitivity (Werewolf targeting supported) |
-| `num_teams` | integer | 2-6 | Number of teams for team modes |
-| `random_assignment` | boolean | true, false | Random team assignment |
-| `force_all_start` | boolean | true, false | Force start with all connected controllers |
-| `countdown_phase_duration_ms` | integer | milliseconds | Countdown phase duration |
-| `winner_rainbow_duration_ms` | integer | milliseconds | Winner rainbow LED duration |
-| `invincibility_seconds` | float | 2.0-8.0 | Invincibility duration (Tournament, FightClub) |
-| `nonstop.time_limit_seconds` | integer | 0, 60-300 | Nonstop Joust time limit (0 = unlimited) |
-| `fight_club.min_rounds` | integer | 5-20 | Minimum rounds for Fight Club |
-| `werewolf.reveal_time_seconds` | float | 20.0-60.0 | Werewolf reveal time |
-
-#### Game calibration surface (#766 F1–F3)
-
-These flags promote previously hardcoded game-mode constants (the #722 §2b
-**calibration surface**) into `game.json`. They are read **once per game at
-`BaseGameMode.__init__`** (init-frozen — a mid-game flag change has no effect, by
-design) and consumed by the **game-coordinator**. Every default equals the prior
-hardcoded constant, so promotion is **behavior-neutral**; malformed/missing values
-fall back to the module constants (which remain the source of truth).
-
-**Death/warning thresholds (F1).** Object flags: the four 5-element sensitivity
-arrays plus per-mode overrides. Validation requires exactly 5 numeric entries per
-row with `warning < max` per sensitivity, else the whole set falls back.
-
-| Flag | Type | Default | Read | Consumer | Description |
-|------|------|---------|------|----------|-------------|
-| `thresholds` | object | `slow_warning [1.2,1.3,1.6,2.0,2.5]`, `slow_max [1.3,1.5,1.8,2.5,3.2]`, `fast_warning [1.4,1.6,1.9,2.7,2.8]`, `fast_max [1.6,1.8,2.8,3.2,3.5]` | init-frozen | game-coordinator | Base death/warning threshold tables (per sensitivity 0-4) |
-| `zombie.thresholds` | object | `warning [1.4,1.7,2.1,2.9,3.5]`, `max [1.6,1.9,2.6,3.9,4.5]` | init-frozen | game-coordinator | Zombies per-mode threshold override |
-| `werewolf.thresholds` | object | `warning [1.4,1.7,2.1,2.9,3.5]`, `max [1.6,1.9,2.6,3.9,4.5]` | init-frozen | game-coordinator | Werewolf per-mode threshold override |
-
-**Durations, roles, scoring (F2).** Each mode reads its flags at init; no proto
-changes (calibration flags bypass `StartGameConfig`). Per-flag validation falls
-back to the class/module constant on malformed values.
-
-| Flag | Type | Variants | Default | Read | Consumer | Description |
-|------|------|----------|---------|------|----------|-------------|
-| `death_grace_period_seconds` | float | none 0.0, short 0.25, default 0.5, long 1.0 | 0.5 | init-frozen | game-coordinator | Grace period after a death before re-arming |
-| `nonstop.respawn_seconds` | float | fast 1.5, default 3.0, slow 5.0 | 3.0 | init-frozen | game-coordinator | Nonstop Joust respawn delay |
-| `nonstop.spawn_protection_seconds` | float | none 0.0, default 2.0, long 4.0 | 2.0 | init-frozen | game-coordinator | Nonstop Joust post-respawn protection |
-| `nonstop.scoring` | object | `{base: 100, death_penalty: 10}` | base 100 / death_penalty 10 | init-frozen | game-coordinator | Nonstop scoring weights (`base - deaths*death_penalty`) |
-| `fight_club.round_seconds` | float | short 15.0, default 22.0, long 30.0 | 22.0 | init-frozen | game-coordinator | Fight Club round duration |
-| `tournament.match_seconds` | float | short 15.0, default 22.0, long 30.0 | 22.0 | init-frozen | game-coordinator | Tournament match duration |
-| `tournament.time_between_matches_seconds` | float | short 3.0, default 5.0, long 8.0 | 5.0 | init-frozen | game-coordinator | Tournament inter-match delay |
-| `werewolf.werewolf_fraction` | float | third 0.33, default 0.44, half 0.5 | 0.44 | init-frozen | game-coordinator | Fraction of players assigned werewolf (validated in (0,1)) |
-| `traitor.count_tiers` | object | `tiers` 5/8/11 → 1/2/3, `fallback_divisor` 3 | tiers + divisor 3 | init-frozen | game-coordinator | Traitor count by player-count tier (ascending) |
-| `zombie.initial_count` | integer | one 1, default 2, three 3 | 2 | init-frozen | game-coordinator | Initial zombie count |
-| `zombie.respawn_min_seconds` | float | fast 1.0, default 2.0, slow 4.0 | 2.0 | init-frozen | game-coordinator | Zombie respawn minimum delay |
-| `zombie.respawn_max_seconds` | float | fast 6.0, default 10.0, slow 15.0 | 10.0 | init-frozen | game-coordinator | Zombie respawn maximum delay (`min <= max`) |
-
-**Music schedule windows (F3).** Object flag covering the eight tempo-change
-scheduling windows. Read once at `__init__` into `self.music_windows`; all eight
-values must be finite and strictly positive and each `(min, max)` pair must satisfy
-`min <= max`, else the whole set reverts to the module-constant defaults. The named
-variants `calm` / `default` / `frantic` are the `pacing_profile` presets that the
-F6 `pacing_profile` intervention will swap between (live, via atomic reassignment).
-
-| Flag | Type | Variants | Default | Read | Consumer | Description |
-|------|------|----------|---------|------|----------|-------------|
-| `windows` | object | `calm`, `default`, `frantic` (pacing presets) | `default`: fast 4-8 s, slow 10-23 s, end fast 6-10 s, end slow 8-12 s | init-frozen (F6-swappable) | game-coordinator | Music fast/slow tempo-change scheduling windows |
-
-### User (`services/flagd/user.json`, `flagSetId: "user"`)
-
-| Flag | Type | Values | Description |
-|------|------|--------|-------------|
-| `menu_voice` | string | aaron, ivy | Voice actor for announcements |
-| `play_audio` | boolean | true, false | Enable/disable audio output |
-| `current_game` | string | game mode names | Currently selected game mode |
-| `game_instructions` | boolean | true, false | Show game instructions |
-| `menu_auto_start` | boolean | true, false | Auto-start menu on boot |
-
-**Per-channel audio volumes (calibration, #766 F7).** Mix levels promoted to the
-`user` domain in the domain of their consumer. `audio_volume.game` and
-`audio_volume.countdown_music` are read at `BaseGameMode.__init__`
-(**game-coordinator**); the menu/lobby channels are read at `AudioHelper.__init__`
-(**menu**). All are init-frozen for their consumer; the module constants are retained
-as the revert target for the `volume_override` intervention. Validation: number in
-`[0.0, 1.0]` (bool rejected), else fall back to default.
-
-| Flag | Type | Variants | Default | Read | Consumer | Description |
-|------|------|----------|---------|------|----------|-------------|
-| `audio_volume.game` | number | quiet 0.5, default 0.7, loud 0.9 | 0.7 | init-frozen | game-coordinator | In-game effects/music volume |
-| `audio_volume.countdown_music` | number | silent 0.0, default 0.15, loud 0.3 | 0.15 | init-frozen | game-coordinator | Countdown music volume |
-| `audio_volume.lobby_music` | number | quiet 0.2, default 0.4, loud 0.6 | 0.4 | startup (init-frozen) | menu | Lobby music volume |
-| `audio_volume.menu_sound` | number | quiet 0.6, default 0.8, loud 1.0 | 0.8 | startup (init-frozen) | menu | Menu sound-effect volume |
-| `audio_volume.menu_voice` | number | quiet 0.7, default 0.9, loud 1.0 | 0.9 | startup (init-frozen) | menu | Menu voice-announcement volume |
-
-### Agent (`services/flagd/agent.json`, `flagSetId: "agent"`)
-
-The agent domain is organized into **four flag layers** (issue #725 acceptance
-criterion), plus a fitness configuration block used to score agent behavior.
-The layers form a deliberate gate sequence: *existence* decides whether the
-agent runs at all; *objective* shapes what it optimizes for; *capability*
-constrains how it reasons; *permission* bounds what it is allowed to do.
-
-#### Layer 1 — Existence
-
-Controls whether the autonomous agent runs.
-
-| Flag | Type | Values | Default | Description |
-|------|------|--------|---------|-------------|
-| `enabled` | boolean | true, false | false (off) | Master switch for the agent |
-
-#### Layer 2 — Objective
-
-Selects a weight preset over the optimization axes `{endurance, balanced,
-accelerate, chaos}`.
-
-| Flag | Type | Values | Description |
-|------|------|--------|-------------|
-| `objectives` | object | preset names `endurance_focused`, `balanced_focused`, `accelerate_focused`, `chaos_focused`, `mixed` | Weight preset over `{endurance, balanced, accelerate, chaos}` |
-
-#### Layer 3 — Decision backend
-
-Selects who answers the in-game decide contract (epic #1225). The legacy
-`mode`, `model` and `prompt_variant` flags were removed in #1234; see
-[agent-inference.md](agent-inference.md).
-
-| Flag | Type | Values | Description |
-|------|------|--------|-------------|
-| `decision.backend` | string | `rules`, `claude`, `openai`, `jev` | Who decides; `rules` is the default and the fallback floor |
-| `decision.act_confidence_threshold` | number | 0..1 | Below it a remote answer is held, not acted on (claude/openai; jev when its own flag is `inherit`) |
-| `decision.jev.act_confidence_threshold` | number | 0..1, or -1 = inherit | Jev's own act threshold (default 0.6, calibrated for the gate p_yes, #1287) |
-| `decision.<backend>.model` / `.timeout_ms` | string / int | per backend | Model and per-call budget of a remote backend |
-| `llm.eligible_game_kinds` | string | `real`, `real,shadow`, `""` | Game kinds that may call a remote backend |
-| `llm.max_requests_per_minute` | int | 3, 6, 12 | Global per-minute cap on remote decide calls and post-game retros |
-
-#### Layer 4 — Permission
-
-Bounds what the agent is allowed to do at runtime. The `interventions_allowed`
-variants are populated from the #722 research — see
-[722-intervention-surface.md §6](research/722-intervention-surface.md).
-
-| Flag | Type | Values | Default | Description |
-|------|------|--------|---------|-------------|
-| `interventions_allowed` | string | `none`, `ambient`, `standard`, `full` | `ambient` | Permitted intervention surface (from #722 §6) |
-| `policy.battery_threshold` | integer | percent | 20 | Battery floor before agent acts |
-| `policy.movement_variance_window` | integer | samples | 10 | Window for movement-variance checks |
-| `policy.max_interventions_per_minute` | integer | count | 2 | **Authoritative per-game** rate cap, enforced by the agent (one budget per `game_id`, see [agent runbook → rate-limit ownership](agent-act-runbook.md#rate-limit-ownership--defense-in-depth-contract-919)) |
-| `policy.coordinator_backstop_per_minute` | integer | count | 60 | **Generous global backstop** (#919) for the coordinator `_RateLimiter` — a process-wide flood ceiling across all games, *not* a per-game cap; only trips on a runaway agent |
-
-#### Fitness configuration
-
-Thresholds the agent uses to evaluate whether its objective is being met.
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `fitness.endurance.min_session_seconds` | integer | 120 | Minimum session length for endurance objective |
-| `fitness.balanced.max_skill_gap` | float | 0.4 | Maximum acceptable skill gap |
-| `fitness.balanced.spike_survival_threshold` | float | 0.8 | Spike-survival fitness threshold |
-| `fitness.accelerate.target_session_seconds` | integer | 60 | Target session length for accelerate objective |
-| `fitness.bluetooth.max_event_gap_ms` | integer | 50 | Max acceptable Bluetooth event gap |
-| `fitness.bluetooth.max_dropped_events_pct` | float | 0.02 | Max acceptable dropped-event fraction |
-| `fitness.bluetooth.min_movement_update_hz` | integer | 10 | Min acceptable movement update rate |
-
-#### Perception calibration (#766 F4)
-
-Perception-layer calibration constants promoted to the `agent` domain. The `agent`
-domain is initialized in `RuntimeConfigManager` (**game-coordinator**). Promotion is
-behavior-neutral (each default equals the prior hardcoded value); malformed values
-fall back to the hardcoded defaults.
-
-**Read semantics differ within this group:**
-
-- **Zone boundaries + playstyle thresholds** are refreshed on
-  `PROVIDER_CONFIGURATION_CHANGED` (change-event) — games read `config.analytics`
-  fresh at game start, consistent with the manager's other domains.
-- **`perception.ema_weight`** is read **once at game init**
-  (`BaseGameMode.__init__`) and frozen for the life of the game — never
-  re-evaluated mid-game, because changing it on a running game would invalidate the
-  per-player movement-variance baseline the perception layer relies on (#722 §5).
-
-| Flag | Type | Variants | Default | Read | Consumer | Description |
-|------|------|----------|---------|------|----------|-------------|
-| `perception.zone_still_max` | number | twitchy 0.9, default 1.1, relaxed 1.3 | 1.1 | change-event | game-coordinator | Upper bound of the "still" movement zone |
-| `perception.zone_active_max` | number | twitchy 1.3, default 1.5, relaxed 1.7 | 1.5 | change-event | game-coordinator | Upper bound of the "active" movement zone |
-| `perception.zone_warning_max` | number | twitchy 1.8, default 2.0, relaxed 2.2 | 2.0 | change-event | game-coordinator | Upper bound of the "warning" movement zone (zones must be strictly increasing) |
-| `perception.playstyle.aggressive_warning_danger_min` | integer | lenient 20, default 30, strict 40 | 30 | change-event | game-coordinator | Aggressive-playstyle warning+danger % floor |
-| `perception.playstyle.calm_still_min` | integer | lenient 60, default 70, strict 80 | 70 | change-event | game-coordinator | Calm-playstyle still % floor |
-| `perception.playstyle.calm_warning_danger_max` | integer | strict 5, default 10, lenient 15 | 10 | change-event | game-coordinator | Calm-playstyle warning+danger % ceiling |
-| `perception.playstyle.balanced_still_min` | integer | lenient 30, default 40, strict 50 | 40 | change-event | game-coordinator | Balanced-playstyle still % floor |
-| `perception.playstyle.balanced_warning_danger_max` | integer | strict 15, default 20, lenient 25 | 20 | change-event | game-coordinator | Balanced-playstyle warning+danger % ceiling (playstyle thresholds validated in [0,100]) |
-| `perception.ema_weight` | number | responsive 2.0, default 4.0, smooth 6.0 | 4.0 | init-frozen | game-coordinator | EMA smoothing weight (positive; frozen per game) |
-
-#### Agent lifecycle & decision throttle (#766 F5)
-
-Go-agent lifecycle/throttle constants promoted to the `agent` domain, evaluated by
-the **agent** service (`flags/flags.go` → `main.go`). Read **once at startup** (after
-the flagd provider registers; defaults if flagd isn't ready) — deliberately **not
-hot-reload**, so a restart is required to pick up changes. Non-positive values fall
-back to the default.
-
-| Flag | Type | Variants | Default | Read | Consumer | Description |
-|------|------|----------|---------|------|----------|-------------|
-| `lifecycle.player_ttl_seconds` | integer | short 3, default 5, long 10 | 5 | read-at-startup | agent | Per-player gamecontext-store TTL |
-| `lifecycle.session_grace_seconds` | integer | short 5, default 15, long 30 | 15 | read-at-startup | agent | Session grace before eviction |
-| `lifecycle.evict_interval_seconds` | number | fast 0.5, default 1, slow 2 | 1 | read-at-startup | agent | Eviction-ticker interval |
-| `decision.throttle_seconds` | number | chatty 0.5, default 1, quiet 5 | 1 | read-at-startup | agent | Decision-loop log/act throttle interval |
-
-### Interventions (`services/flagd/interventions.json`, `flagSetId: "interventions"`)
-
-The interventions domain is the **runtime ACT control plane**: the agent
-*writes* these flags through the flag service, always scoped to one game
-(`scope.game_id`, plus `scope.serial` for per-player flags), and the game
-coordinator *applies* them, evaluating with its `gameId`. A game's values and
-events die with the game (UC-053 BR-003). All baseline defaults are inert, so an
-idle or absent agent has no effect. See
-[722-intervention-surface.md §8](research/722-intervention-surface.md) for the
-design rationale behind this control plane.
-
-**State-shaped** (continuously applied while set):
-
-| Flag | Type | Targeting | Description |
-|------|------|-----------|-------------|
-| `music_tempo_override` | object/number | — | Override music tempo |
-| `global_sensitivity_override` | object/number | — | Override death-detection sensitivity globally |
-| `global_difficulty_factor` | object/number | — | Continuous difficulty scale 0.5–2.0 (default 1.0); combines with the per-player factor in the effective-threshold division (#766 F6) |
-| `pacing_profile` | object/string | — | Live-swap the active music windows to a named preset (`default`/`calm`/`frantic`) from the `game.windows` flag variants; revert restores the game's init-resolved windows (#766 F6) |
-| `player_sensitivity_factor` | object/number | per-serial | Per-player sensitivity multiplier |
-| `shield_seconds` | object/number | per-serial | Grant per-player shield duration |
-| `volume_override` | object/number | — | Override audio volume |
-
-**One-shot events** (a per-game event list `{"epoch","seq","events"}` holding
-the last 16 events; the agent appends with `POST /interventions/{flag}`, the
-coordinator applies every event with a `seq` above the last one it applied):
-
-| Flag | Type | Description |
-|------|------|-------------|
-| `eliminate_player` | object (event list) | Eliminate a target player (`serial` in the payload) |
-| `revive_player` | object (event list) | Revive a target player (`serial` in the payload) |
-| `audio_cue` | object (event list) | Play a one-shot audio cue |
-| `controller_effect` | object (event list) | Trigger a one-shot controller effect |
-| `end_game` | object (event list) | End the game |
-
-### Rollout (`services/flagd/rollout.json`, `flagSetId: "rollout"`)
-
-Act 2 progressive backend rollout control. The **controller-manager reads** this
-domain to route controllers; the **agent writes** `current_controller_count`
-through the flag service (`PUT /rollout/current_controller_count`) to
-advance/roll-back the rollout (#734/#736) and **reads** `remediation_allowed`
-through flagd to gate auto-rollback.
-
-| Flag | Type | Values | Description |
-|------|------|--------|-------------|
-| `target_backend` | string | `python`, `rust`, `unstable` | Backend to migrate controllers toward (agent leaves untouched on rollback) |
-| `strategy` | string | `progressive`, `immediate`, `off` | Rollout strategy |
-| `current_controller_count` | integer | `0`/`1`/`3`/`6`/`99` (variants `none`/`one`/`three`/`six`/`all`) | Controllers on the target backend; **written by the agent** along the expansion ladder, reset to `none` on rollback |
-| `remediation_allowed` | boolean | `true`, `false` (default `false`, fail-closed) | Allow the agent's automatic rollback; **read by the agent** each cycle |
-
-### Adding New Flags
-
-1. Pick the domain (file) the flag belongs to and add it to that file only —
-   the file's `flagSetId` is its namespace. **Calibration vs intervention:**
-   a flag the agent changes *mid-game* in response to signals is an
-   intervention and belongs in `interventions.json` (policy-enforced, an
-   event list if one-shot); a parameter tuned per venue/session/experiment is calibration
-   and belongs in `game.json` / `agent.json` / `system.json` with plain
-   defaults and no policy budget — see
-   [722-intervention-surface.md §2b](research/722-intervention-surface.md) for
-   the placement rule and the audited candidate list.
-2. Name the key in bare `snake_case`. Use a dotted sub-key only if it is one
-   leaf of a genuine sub-structure (e.g. `idle.timeout_minutes`), never to
-   re-encode the domain.
-3. Add the flag definition with `"state": "ENABLED"` and variants.
-4. In your service code, initialize the domain and read the flag:
+1. Pick the set. A value the agent changes mid-game in response to signals is an intervention and belongs in
+   `interventions.json`; a value tuned per venue or experiment is calibration and belongs in `game.json`,
+   `agent.json` or `system.json`
+   ([722-intervention-surface.md §2b](research/722-intervention-surface.md)).
+2. Add the flag to `services/flagd/<set>.json` and, when CI needs a different value, to `services/flagd/ci/`.
+3. Read it at use time, not once at init, unless the reader can only apply it at startup. A safety gate falls
+   back to its closed state when the flag cannot be read.
    ```python
-   from lib.feature_flags import init_flag_domain, get_flag_client
+   from lib.feature_flags import get_flag_client, init_flag_domain
 
    init_flag_domain("game")
-   client = get_flag_client("game")
-   value = client.get_integer_value("my_new_flag", default_value)
+   value = get_flag_client("game").get_integer_value("my_new_flag", 10)
    ```
-5. If anything must change the flag at runtime, add its row to the mutable-flag
-   registry (`services/flag-service/registry.yaml` and
-   [flags.md §13](specs/flags.md#13-mutable-flag-registry), same PR); without a
-   row the flag is read-only baseline and the flag service rejects writes with
-   `422 flag_read_only`.
-6. Run `scripts/flags.sh restart` (flag service, then flagd) to load the new
-   baseline file.
-
-## How to Test
-
-### 1. Start the System
-
-```bash
-# On Raspberry Pi
-cd ~/JoustMania
-docker compose up -d
-
-# Verify flagd is running
-docker compose ps flagd
-```
-
-### 2. Watch for Flag Events
-
-```bash
-docker compose logs -f game-coordinator | grep -E "🎯|🚩|Flag"
-```
-
-You should see on startup:
-```
-INFO - Feature flag client initialized
-INFO - Registered PROVIDER_CONFIGURATION_CHANGED event handler
-```
-
-### 3. Edit Flag Values
-
-**Runtime (mutable flags).** A flag with a row in the mutable-flag registry
-([flags.md §13](specs/flags.md#13-mutable-flag-registry)) changes through the
-flag service, with no restart:
-
-```bash
-scripts/flags.sh set agent decision.backend claude      # stack overlay (in memory)
-scripts/flags.sh get agent decision.backend             # effective state (baseline, overlays) + rendered flagd JSON
-scripts/flags.sh clear agent decision.backend           # back to the baseline
-```
-
-An overlay lasts until it is cleared or the flag service restarts. A value
-outside the registry's bounds is rejected with `422 out_of_bounds`, a flag
-without a registry row with `422 flag_read_only`, and every write while flagd
-has no sync stream with `503 no_sync_stream`.
-
-**Baseline (every other flag).** Edit the baseline file for the domain in a
-reviewed change, then restart the flag service and flagd:
-
-```bash
-# On Raspberry Pi
-nano services/flagd/system.json
-scripts/flags.sh restart
-```
-
-Change a flag value (e.g., `game_loop.update_frequency_hz` from `low` to `high`):
-
-```json
-{
-  "flags": {
-    "game_loop.update_frequency_hz": {
-      "state": "ENABLED",
-      "variants": {
-        "low": 15,
-        "medium": 30,
-        "high": 60
-      },
-      "defaultVariant": "high"
-    }
-  }
-}
-```
-
-Save the file (Ctrl+O, Enter, Ctrl+X) and run `scripts/flags.sh restart`.
-
-### 4. Verify Event Detection
-
-After the write is accepted (or within 5 s of the restart, when flagd serves the
-new baseline), you should see in the logs:
-
-```
-🚩 Feature flags changed: ['game_loop.update_frequency_hz']
-🎯 Config updated: update_frequency_hz 15 → 60 Hz
-```
-
-### 5. Test During Gameplay
-
-1. Start a game with 2+ controllers
-2. In another terminal, change `game_loop.update_frequency_hz` to `low` (15 Hz): a baseline edit plus `scripts/flags.sh restart` (the flag is not in the mutable registry)
-3. Observe gameplay becomes less responsive
-4. Change back to `high` (60 Hz)
-5. Observe gameplay becomes more responsive
-
-The game adapts in real-time without restarting.
-
-### 6. Check Metrics
-
-View metrics in Grafana Explore or the VictoriaMetrics UI at `http://localhost/victoria-metrics/vmui/`:
-
-**Flag evaluations by key** (standard OpenFeature OTel hook metric, every service):
-```promql
-sum by (feature_flag_key) (rate(feature_flag_evaluation_requests_total[1m]))
-```
-
-**Configuration change events:**
-```promql
-game_flag_configuration_changes_total
-```
-
-**Current update frequency:**
-```promql
-game_current_update_frequency_hz
-```
-
-Or view in Grafana's **Flags / OpenFeature** dashboard (folder Platform, uid `feature-flags`).
-
-## Metrics
-
-The following metrics are exported over OTLP and stored in VictoriaMetrics:
-
-### `feature_flag_evaluation_*` (OpenFeature OTel hooks)
-
-**Type:** Counters (`_requests_total`, `_success_total`, `_error_total`) and an up-down counter (`_active_count`)
-**Labels:** `feature_flag_key`, `feature_flag_provider_name`; on `_success_total` also `feature_flag_result_variant` and `reason`
-**Description:** Every flag evaluation in every Python service and the agent, recorded by the standard OpenFeature
-OpenTelemetry hooks (#1427; they replaced `game_flag_evaluations_total`). Names and label rules:
-[telemetry.md §6](specs/telemetry.md#6-metrics).
-
-```promql
-# Evaluation rate per flag
-sum by (feature_flag_key) (rate(feature_flag_evaluation_requests_total[1m]))
-
-# Variants served, by flag
-sum by (feature_flag_key, feature_flag_result_variant) (rate(feature_flag_evaluation_success_total[5m]))
-```
-
-### `game_flag_configuration_changes_total`
-
-**Type:** Counter
-**Description:** Total number of PROVIDER_CONFIGURATION_CHANGED events received
-
-```promql
-increase(game_flag_configuration_changes_total[1h])
-rate(game_flag_configuration_changes_total[5m]) > 2
-```
-
-### `game_current_update_frequency_hz`
-
-**Type:** Gauge
-**Description:** Current configured update frequency in Hz (15, 30, or 60)
-
-```promql
-game_current_update_frequency_hz
-game_current_update_frequency_hz < 30
-```
-
-## Troubleshooting
-
-### No flag change events detected
-
-**Symptoms:** A flag change but no `🚩 Feature flags changed` log appears
-
-```bash
-docker compose ps flagd flag-service
-scripts/flags.sh state                  # open sync streams must be 1
-docker compose logs flagd flag-service --tail=50
-```
-
-**Solutions:**
-- Edited a file under `services/flagd/`? Nothing reads it until `scripts/flags.sh restart`
-- Ensure flagd is connected to the flag service (0 sync streams = writes return `503 no_sync_stream`)
-- Check the write's HTTP status and reason (`scripts/flags.sh` prints it)
-
-### "Could not initialize feature flags" error
-
-```bash
-docker compose exec game-coordinator pip list | grep openfeature
-```
-
-**Solutions:**
-- Rebuild image: `docker compose up -d --build game-coordinator`
-- Verify `pyproject.toml` includes `openfeature-sdk` and `openfeature-provider-flagd`
-
-### "too_many_pings" errors (HTTP 429)
-
-This should NOT happen with event-driven updates. If you see this:
-
-```bash
-docker compose logs game-coordinator | grep "Registered PROVIDER_CONFIGURATION_CHANGED"
-```
-
-**Solutions:**
-- Verify the consumer registers the event handler on startup
-- Check that `get_config()` returns cached values, not re-evaluating flags
-
-### Metrics not showing up in VictoriaMetrics
-
-```bash
-curl -s localhost/victoria-metrics/api/v1/label/__name__/values | jq -r '.data[]' | grep game_flag
-docker compose logs otel-collector | grep game-coordinator
-```
-
-**Solutions:**
-- Wait for the metrics export interval
-- Verify the collector exports to VictoriaMetrics (`docker compose logs otel-collector | grep prometheusremotewrite`)
-- Check OTEL_EXPORTER_OTLP_ENDPOINT is set correctly
-
-### Flag changes don't affect gameplay
-
-```bash
-docker compose logs game-coordinator | tail -20
-# Should see "🎯 Config updated" logs
-```
-
-**Solutions:**
-- Ensure the flag key matches exactly in code and JSON (including any dotted sub-key)
-- Verify you wrote the correct flag set (the `flagSetId` must match the consumer)
-- Verify the config value is actually being used in game logic
-
-## Development
-
-### Running Tests
-
-```bash
-# Unit tests
-cd services/game_coordinator
-uv run pytest tests/test_runtime_config.py -v
-
-# Integration tests with flagd
-docker compose -f docker-compose.test.yml up --abort-on-container-exit
-```
-
-### Local Development Without flagd
-
-If flagd is unavailable, the system gracefully degrades:
-
-```python
-try:
-    from lib.feature_flags import init_flag_domain, get_flag_client
-    init_flag_domain("system")
-    self.flags = get_flag_client("system")
-except ImportError:
-    logger.warning("Feature flags disabled - using defaults")
-    self.flags = None
-```
-
-Default values are used when flags can't be evaluated.
-
-### Debugging Flag Evaluation
-
-Enable DEBUG logging to see every flag evaluation:
-
-```bash
-# In docker-compose.yml
-environment:
-  - LOG_LEVEL=DEBUG
-```
-
-```
-DEBUG - Evaluating flag: game_loop.update_frequency_hz
-DEBUG - Flag value: 60
-```
-
-## References
-
-- [OpenFeature Documentation](https://openfeature.dev/docs)
-- [flagd Documentation](https://flagd.dev/reference/overview/)
-- [OpenFeature Python SDK](https://github.com/open-feature/python-sdk)
-- [flagd Provider for Python](https://github.com/open-feature/python-sdk-contrib/tree/main/providers/openfeature-provider-flagd)
-- [Intervention surface research (#722)](research/722-intervention-surface.md)
+4. If something must change it at runtime, add a registry row (`registry.yaml` and flags.md §13, same PR).
+5. Add the catalog row to [specs/flags.md](specs/flags.md) and run `make specs`.
+
+To remove a flag, delete it from both baseline files, remove every reader, writer and registry row, delete its
+catalog row and run `make specs`. Do not add a flag nothing reads.
+
+## 5. Check it
+
+- Effective value: `scripts/flags.sh get <set> <flag>`.
+- Evaluations: the OpenFeature hook metrics `feature_flag_evaluation_*` and the `feature_flag` span events
+  ([specs/telemetry.md](specs/telemetry.md)); Grafana dashboard **Flags / OpenFeature** (uid `feature-flags`).
+- No change seen: confirm the flag has a registry row (or that the baseline was restarted), then check the
+  Reload column: a startup flag needs a restart of its reader.
+- Tests: `lib/tests/` (Python client), `services/agent/flags/` (agent), `services/flag-service/` (registry and
+  API), `tests/integration/test_flag_propagation.py` (NFR-050).

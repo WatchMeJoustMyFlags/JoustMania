@@ -34,7 +34,7 @@ type Policy struct {
 	BatteryThreshold float64
 	// MovementVarianceWindow gates variance-triggered rules and sets the
 	// cooldown after difficulty interventions
-	// (policy.movement_variance_window, default 10s).
+	// (fixed 10s; the unused policy.movement_variance_window flag was removed in #1322).
 	MovementVarianceWindow time.Duration
 	// MaxInterventionsPerMinute is the weighted intervention budget per
 	// sliding 60s window (policy.max_interventions_per_minute, default 2).

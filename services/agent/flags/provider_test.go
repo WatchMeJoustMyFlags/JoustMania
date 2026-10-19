@@ -41,11 +41,6 @@ func TestEvaluate_WithInMemoryProvider(t *testing.T) {
 			DefaultVariant: "strict",
 			Variants:       map[string]any{"strict": 30, "default": 20},
 		},
-		keyMovementVarianceWindow: {
-			State:          memprovider.Enabled,
-			DefaultVariant: "long",
-			Variants:       map[string]any{"long": 20, "default": 10},
-		},
 		keyMaxInterventionsPerMinute: {
 			State:          memprovider.Enabled,
 			DefaultVariant: "aggressive",
@@ -70,7 +65,7 @@ func TestEvaluate_WithInMemoryProvider(t *testing.T) {
 	if !reflect.DeepEqual(got.InterventionsAllowed, []string{"play_audio_cue", "adjust_volume"}) {
 		t.Errorf("InterventionsAllowed = %v", got.InterventionsAllowed)
 	}
-	wantPolicy := Policy{BatteryThreshold: 30, MovementVarianceWindow: 20, MaxInterventionsPerMinute: 4}
+	wantPolicy := Policy{BatteryThreshold: 30, MaxInterventionsPerMinute: 4}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v, want %+v", got.Policy, wantPolicy)
 	}

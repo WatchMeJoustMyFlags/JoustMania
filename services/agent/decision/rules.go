@@ -340,7 +340,7 @@ func applyBatteryPolicy(cands []candidate, c gamecontext.GameContext, pol Policy
 	return kept
 }
 
-// applyVarianceCooldown enforces policy.movement_variance_window: after any
+// applyVarianceCooldown enforces Policy.MovementVarianceWindow (10s): after any
 // difficulty intervention the variance baseline is invalid and players are
 // still adapting, so ALL chaos candidates — variance-triggered (R8) and the
 // random nudge (R9) alike — are suppressed for one full window. Suppressing

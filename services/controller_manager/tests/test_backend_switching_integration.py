@@ -255,12 +255,16 @@ class TestRustIsTheDefaultBackend:
 
     @pytest.mark.uc("UC-002", flow="main", steps=[2], br=["BR-003"])
     def test_shipped_flags_default_to_rust_and_keep_python_opt_in(self):
-        """controller.json defaults backend and bluetooth_backend to rust; python variants stay selectable."""
+        """controller.json defaults backend and bluetooth_backend to rust; python stays opt-in; no mock_* doubles."""
         flags = json.loads(_CONTROLLER_FLAGS.read_text())["flags"]
 
         backend = flags["backend"]
         assert backend["variants"][backend["defaultVariant"]] == "rust"
-        assert {"python", "mock_python", "python_rust", "mock_python_rust"} <= set(backend["variants"])
+        assert set(backend["variants"]) == {"python", "mock", "rust", "python_rust"}
+        # The mock adapter is always added, so no variant needs to name it next to a real backend.
+        assert not any(name.startswith("mock_") for name in backend["variants"])
+        # Warning and death effect timings are fixed constants, not flags (#1322).
+        assert not any(key.startswith("effect.") for key in flags)
 
         routing = flags["bluetooth_backend"]
         assert routing["variants"][routing["defaultVariant"]] == "rust"

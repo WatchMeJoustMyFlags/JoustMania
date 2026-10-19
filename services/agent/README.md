@@ -491,10 +491,6 @@ model**, applied in order:
      `end_game`) = 2 (see `docs/research/722-intervention-surface.md` §5). When
      the budget for the trailing minute is exhausted, further decisions are
      blocked (`reason=rate_limit`), not queued.
-   - `policy.movement_variance_window` (int seconds, default 10): evaluated and
-     **recorded in the LayerState**. The rules engine reads the window from its
-     `PolicySource` (flagd-schema default); the recorded value is what #731's
-     variance logic and #729's span attribution consume.
 
 Every value evaluated this cycle plus the per-decision outcomes (dispatched /
 blocked + reason, with the rate-limit weight charged) are captured in a single
@@ -560,7 +556,7 @@ are intentionally unreached by `rules_decide`, not dead code.
   difficulty raises; session-wide demand raises are blocked while *anyone* is
   low; `eliminate_player` of a low-battery player stays available only as the
   accelerate-dominant graceful exit.
-- `movement_variance_window` (10s): ALL chaos candidates (variance-triggered
+- movement variance window (fixed 10s, not a flag): ALL chaos candidates (variance-triggered
   statue nudges and the random R9 nudge alike) are suppressed for one window
   after any difficulty intervention — the variance baseline is invalid, and a
   random rumble right after a tempo change would muddy attribution of the
@@ -694,7 +690,6 @@ decision in the cycle):
 | `decide.backend` | the backend that decided this cycle (only when the decide hook ran) | `"rules"` / `"claude"` / ... | — |
 | `interventions.allowed` | permission flag `interventions_allowed` | `"none"` / `a,b,c` | — |
 | `policy.battery_threshold` | policy flag | live int | — |
-| `policy.movement_variance_window` | policy flag | live int | — |
 | `policy.max_interventions_per_minute` | policy flag | live int | — |
 | `fitness.evaluated` (cycle) | `LayerState.FitnessEvaluated` — dotted per-objective thresholds + results (#731) | live (e.g. `endurance.session_progress=0.5`) | — |
 | `gen_ai.agent.name` | agent identity | `"joustmania-agent"` | — |

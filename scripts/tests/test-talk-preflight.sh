@@ -256,7 +256,7 @@ check "missing flag-service container named" "FAIL  joustmania-flag-service: not
 controller_fixture() {
   python3 - "${FAKE_CONTROLLER_FLAGS}" "$1" <<'PY'
 import json, sys
-variants = {"python": "python", "mock": "mock", "rust": "rust", "mock_rust": "mock,rust", "python_rust": "python,rust"}
+variants = {"python": "python", "mock": "mock", "rust": "rust", "python_rust": "python,rust"}
 json.dump({"flags": {"backend": {"state": "ENABLED", "variants": variants, "defaultVariant": sys.argv[2]}}},
           open(sys.argv[1], "w"), indent=2)
 PY

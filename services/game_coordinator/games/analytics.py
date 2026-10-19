@@ -26,8 +26,8 @@ from enum import IntEnum
 from typing import TYPE_CHECKING
 
 # Rolling-window size for windowed movement variance (#730 / #722 §7).
-# Fixed for now; a policy flag (policy.movement_variance_window) will configure
-# this later. At ~60Hz this is roughly the last ~1s of motion, enough to
+# Fixed (the unused policy.movement_variance_window flag was removed in #1322).
+# At ~60Hz this is roughly the last ~1s of motion, enough to
 # distinguish steady jostling from someone gaming the EMA by holding still.
 MOVEMENT_VARIANCE_WINDOW = 64
 

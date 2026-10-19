@@ -83,7 +83,6 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 		},
 		ints: map[string]int64{
 			keyBatteryThreshold:            30,
-			keyMovementVarianceWindow:      20,
 			keyMaxInterventionsPerMinute:   4,
 			keyEnduranceMinSessionSeconds:  300,
 			keyAccelerateTargetSessionSecs: 30,
@@ -114,7 +113,7 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 	if !reflect.DeepEqual(got.InterventionsAllowed, wantAllowed) {
 		t.Errorf("InterventionsAllowed = %v, want %v", got.InterventionsAllowed, wantAllowed)
 	}
-	wantPolicy := Policy{BatteryThreshold: 30, MovementVarianceWindow: 20, MaxInterventionsPerMinute: 4}
+	wantPolicy := Policy{BatteryThreshold: 30, MaxInterventionsPerMinute: 4}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v, want %+v", got.Policy, wantPolicy)
 	}
@@ -150,7 +149,6 @@ func TestEvaluate_DefaultsWhenMissing(t *testing.T) {
 	}
 	wantPolicy := Policy{
 		BatteryThreshold:          DefaultBatteryThreshold,
-		MovementVarianceWindow:    DefaultMovementVarianceWindow,
 		MaxInterventionsPerMinute: DefaultMaxInterventionsPerMinute,
 	}
 	if got.Policy != wantPolicy {
@@ -225,7 +223,6 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 		keyObjectives:                   boom,
 		keyInterventionsAllowed:         boom,
 		keyBatteryThreshold:             boom,
-		keyMovementVarianceWindow:       boom,
 		keyMaxInterventionsPerMinute:    boom,
 		keyEnduranceMinSessionSeconds:   boom,
 		keyBalancedMaxSkillGap:          boom,
@@ -249,7 +246,6 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 	}
 	wantPolicy := Policy{
 		BatteryThreshold:          DefaultBatteryThreshold,
-		MovementVarianceWindow:    DefaultMovementVarianceWindow,
 		MaxInterventionsPerMinute: DefaultMaxInterventionsPerMinute,
 	}
 	if got.Policy != wantPolicy {
