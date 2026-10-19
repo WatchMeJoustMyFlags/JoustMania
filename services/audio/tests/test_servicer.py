@@ -105,10 +105,13 @@ class TestPlaySoundDuration:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="A5", steps=[2])
     async def test_silent_manager_reports_zero(self, servicer, mock_grpc_context):
+        # A readable 7 s clip and a "successful" play: 0.0 can only come from the silent guard.
         assert servicer.audio_manager.silent is True
-        response = await servicer.PlaySound(
-            audio_pb2.PlaySoundRequest(file_path="FFA-instructions", volume=1.0, priority=2), mock_grpc_context
-        )
+        servicer.audio_manager.play_sound = MagicMock(return_value=True)
+        with patch("services.audio.servicer.miniaudio.get_file_info", return_value=MagicMock(duration=7.0)):
+            response = await servicer.PlaySound(
+                audio_pb2.PlaySoundRequest(file_path="FFA-instructions", volume=1.0, priority=2), mock_grpc_context
+            )
         assert response.duration_seconds == 0.0
 
     @pytest.mark.asyncio
@@ -127,9 +130,11 @@ class TestPlaySoundDuration:
     async def test_failed_play_or_unreadable_file_reports_zero(self, servicer, mock_grpc_context):
         servicer.audio_manager.silent = False
         servicer.audio_manager.play_sound = MagicMock(return_value=False)
-        response = await servicer.PlaySound(
-            audio_pb2.PlaySoundRequest(file_path="FFA-instructions", volume=1.0, priority=2), mock_grpc_context
-        )
+        # A readable 7 s clip: 0.0 can only come from the failed-play guard.
+        with patch("services.audio.servicer.miniaudio.get_file_info", return_value=MagicMock(duration=7.0)):
+            response = await servicer.PlaySound(
+                audio_pb2.PlaySoundRequest(file_path="FFA-instructions", volume=1.0, priority=2), mock_grpc_context
+            )
         assert response.duration_seconds == 0.0
         with patch("services.audio.servicer.miniaudio.get_file_info", side_effect=OSError("bad header")):
             assert servicer.audio_manager.sound_duration("Menu/vox/ivy/FFA-instructions.ogg") == 0.0
