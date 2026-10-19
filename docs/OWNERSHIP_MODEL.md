@@ -343,7 +343,7 @@ LED color (red = off / Turquoise / Orange / green = full) and a voice line.
 
 ## See Also
 
-- [Architecture](ARCHITECTURE.md)
+- [Services spec](specs/services.md)
 - [Intervention Surface research (#722)](research/722-intervention-surface.md)
 - [Agent README](../services/agent/README.md)
 - [Feature flags](feature-flags.md)

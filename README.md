@@ -84,7 +84,7 @@ make up-mock
                                       └───────────────┘
 ```
 
-**For detailed architecture:** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+**For detailed architecture:** See [docs/specs/services.md](docs/specs/services.md)
 
 ## Development
 
@@ -108,11 +108,11 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](docs/ARCHITECTURE.md) | System design and service interactions |
+| [Services spec](docs/specs/services.md) | Services, ports, RPCs and service interactions |
 | [Development](docs/DEVELOPMENT.md) | Building, running, debugging |
 | [Contributing](docs/CONTRIBUTING.md) | Code style, PR workflow |
 | [Controller Guide](docs/controller-guide.md) | Button layout, admin mode |
-| [LED Feedback](docs/controller-feedback.md) | Controller LED color reference |
+| [LED states](docs/specs/services.md#led-states-controller-feedback) | Lobby, game and admin LED colours and effects |
 | [Observability](docs/observability-quickstart.md) | Tracing, metrics, dashboards |
 
 ## Services
@@ -140,6 +140,7 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 - **[Adam Engert](https://github.com/adangert)** - Original JoustMania creator
 - **[Original JoustMania](https://github.com/adangert/JoustMania)** - The game this fork is based on
 - **[Steam Release](https://store.steampowered.com/app/1093850/JoustMania/)** - Original game on Steam
+- **[psmoveapi](https://github.com/thp/psmoveapi)** by Thomas Perl - the PS Move support was originally built on it; its protocol documentation and reference implementation guided the direct HID implementation
 
 ## License
 

@@ -832,7 +832,7 @@ grpcurl -plaintext localhost:4317 list
 
 ## Resources
 
-- [Architecture Documentation](ARCHITECTURE.md)
+- [Services spec](specs/services.md)
 - [gRPC Python Guide](https://grpc.io/docs/languages/python/)
 - [OpenTelemetry Python](https://opentelemetry.io/docs/instrumentation/python/)
 - [Docker Compose Reference](https://docs.docker.com/compose/compose-file/)

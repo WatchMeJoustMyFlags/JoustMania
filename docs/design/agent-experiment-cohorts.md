@@ -1,3 +1,5 @@
+> Historical design record (#982); the spec in docs/specs/ and UC-043 is authoritative.
+
 > **Superseded** by [UC-043](../use_cases/UC-043.md), [entity_model.md](../entity_model.md#experiment) and [flags.md](../specs/flags.md#3-agent) (the design shipped in epic #982) (2026-10-16); kept for history.
 > The flag-writing mechanics below (the experiment Writer's read-modify-write of `game.json`, `agent_experiment__<id>` variants, chained `if`-branches) are themselves superseded by the flag service (epic #1407, [flags.md §13.3](../specs/flags.md#13-mutable-flag-registry)): an experiment arm is `PUT /game/{flag}` with scope `{experiment_id, arm}`, teardown is `DELETE /game/{flag}?experiment_id=<id>`, and the flag service renders the shadow-only rung. No process writes a flag file.
 

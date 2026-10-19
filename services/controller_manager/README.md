@@ -221,5 +221,5 @@ services/controller_manager/
 ## See Also
 
 - [Main Project Documentation](../../README.md)
-- [Architecture Overview](../../docs/ARCHITECTURE.md)
+- [Services spec](../../docs/specs/services.md)
 - [Proto Definitions](../../proto/controller_manager.proto)

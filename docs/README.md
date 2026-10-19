@@ -75,11 +75,10 @@ Kept for the reasoning; they do not describe the current system.
 
 | Document | Topic |
 |---|---|
-| [design/agent-experiment-cohorts.md](design/agent-experiment-cohorts.md) | Cohort experiment framework design (#982) |
+| [design/agent-experiment-cohorts.md](design/agent-experiment-cohorts.md) | Experiment cohorts design |
 | [research/722-intervention-surface.md](research/722-intervention-surface.md) | Intervention vocabulary |
 | [research/739-prompt-capture.md](research/739-prompt-capture.md) | In-game prompt capture spike (retired) |
 | [research/774-shadow-games.md](research/774-shadow-games.md) | Shadow games |
 | [research/844-post-game-retro.md](research/844-post-game-retro.md) | Post-game retro |
 | [research/m7-4-testing-strategy.md](research/m7-4-testing-strategy.md) | Testing propose / validate / promote |
 | [research/spike-survival-calibration-1125.md](research/spike-survival-calibration-1125.md) | Fitness calibration |
-| [CADDY_PROXY.md](CADDY_PROXY.md), [controller-feedback.md](controller-feedback.md), [led-feedback.md](led-feedback.md), [ARCHITECTURE.md](ARCHITECTURE.md) | Superseded docs (bannered) |
