@@ -1,6 +1,7 @@
 /**
  * Simple Connect-protocol client for JoustMania services
- * Uses fetch with JSON encoding (Connect protocol supports JSON)
+ * Unary calls: fetch with plain JSON. Server streams: Connect streaming
+ * framing (application/connect+json envelopes, connect.ts, #1542).
  */
 
 import type {
@@ -22,6 +23,7 @@ import type {
   ProcessInputResponse,
 } from "./gen/menu_pb.js";
 import type { GetGameStateResponseLike, ListGamesResponseLike } from "./follow.js";
+import { serverStream as connectServerStream } from "./connect.js";
 
 const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
 
@@ -49,58 +51,14 @@ async function unaryCall<Req, Res>(
   return response.json();
 }
 
-// Generic server streaming call (uses Server-Sent Events style)
-async function* serverStream<Req, Res>(
+// Generic server streaming call: Connect streaming framing (#1542), see connect.ts
+function serverStream<Req, Res>(
   service: string,
   method: string,
   request: Req,
   signal?: AbortSignal
 ): AsyncGenerator<Res> {
-  const url = `${BASE_URL}/${service}/${method}`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(request),
-    signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(`RPC failed: ${response.status} ${response.statusText}`);
-  }
-
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error("No response body");
-  }
-
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-
-    // Parse newline-delimited JSON messages
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    for (const line of lines) {
-      if (line.trim()) {
-        try {
-          const msg = JSON.parse(line);
-          // Connect protocol wraps messages in { "result": ... } for streaming
-          yield (msg.result || msg) as Res;
-        } catch {
-          // Skip malformed lines
-        }
-      }
-    }
-  }
+  return connectServerStream<Req, Res>(`${BASE_URL}/${service}/${method}`, request, signal);
 }
 
 // Controller Manager Client

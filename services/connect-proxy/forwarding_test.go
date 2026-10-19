@@ -9,6 +9,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +28,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	controllerpb "github.com/joustmania/connect-proxy/gen/controller_manager"
@@ -872,24 +875,164 @@ func TestProxyDashboardWireFormat(t *testing.T) {
 	})
 }
 
-// CURRENT BUGGY BEHAVIOUR (#1542): the dashboard's plain fetch POST with
-// Content-Type application/json is rejected by the streaming procedures with
-// 415 Unsupported Media Type (Connect streaming needs application/connect+json).
-// The fix for #1542 must flip these assertions to a success status.
+// dashboardStreamFrame is one Connect envelope of a streaming response.
+type dashboardStreamFrame struct {
+	flags   byte
+	payload []byte
+}
+
+// postConnectStream sends a request the way services/dashboard/src/connect.ts
+// does for server streams (#1542): Content-Type application/connect+json, the
+// JSON request in one 5-byte envelope, over HTTP/1.1 as the browser reaches
+// connect-proxy through envoy. It returns the response and its frames.
+func postConnectStream(t *testing.T, rig *proxyRig, path string, body any) (*http.Response, []dashboardStreamFrame) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := make([]byte, 5+len(raw))
+	binary.BigEndian.PutUint32(env[1:5], uint32(len(raw)))
+	copy(env[5:], raw)
+
+	req, err := http.NewRequestWithContext(testCtx(t), http.MethodPost, rig.url+path, bytes.NewReader(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/connect+json")
+	req.Header.Set("Connect-Protocol-Version", "1")
+
+	tr := rig.httpClient.Transport.(*http.Transport).Clone()
+	tr.ForceAttemptHTTP2 = false
+	tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	t.Cleanup(tr.CloseIdleConnections)
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.ProtoMajor != 1 {
+		t.Fatalf("proto = %s, want HTTP/1.1 like the browser behind envoy", resp.Proto)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var frames []dashboardStreamFrame
+	if resp.StatusCode != http.StatusOK {
+		return resp, frames
+	}
+	for len(data) > 0 {
+		if len(data) < 5 {
+			t.Fatalf("truncated frame header: % x", data)
+		}
+		n := int(binary.BigEndian.Uint32(data[1:5]))
+		if len(data) < 5+n {
+			t.Fatalf("truncated frame: want %d payload bytes, have %d", n, len(data)-5)
+		}
+		frames = append(frames, dashboardStreamFrame{flags: data[0], payload: data[5 : 5+n]})
+		data = data[5+n:]
+	}
+	return resp, frames
+}
+
+// The dashboard's live event feed through connect-proxy (#1542): the wire
+// format of services/dashboard/src/connect.ts is accepted and the events come
+// back as enveloped frames ending in an end-stream frame.
 //
 // UC: UC-035 MSS
+// UC: UC-070 BR-005
 func TestProxyDashboardStreamingJSON(t *testing.T) {
-	for _, path := range []string{
-		"/joustmania.game_coordinator.GameCoordinatorService/StreamGameEvents",
-		"/joustmania.controller_manager.ControllerManagerService/StreamGameplayData",
-	} {
-		t.Run("UC-035/MSS application/json POST to "+path+" is 415 (#1542)", func(t *testing.T) {
-			rig := newProxyRig(t)
-			resp, body := postJSON(t, rig, path, map[string]any{}, "")
-			if resp.StatusCode != http.StatusUnsupportedMediaType {
-				t.Errorf("status = %d (%s), want 415 (current behaviour, #1542)", resp.StatusCode, body)
+	const path = "/joustmania.game_coordinator.GameCoordinatorService/StreamGameEvents"
+
+	t.Run("UC-035/MSS dashboard connect+json StreamGameEvents relays events and ends cleanly (#1542)", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.game.events = []*gamepb.GameEvent{
+			{EventType: "game_start", GameId: "game_live", Timestamp: 1},
+			{EventType: "game_started", GameId: "game_live", Data: map[string]string{"players": "2"}, Timestamp: 2},
+		}
+		resp, frames := postConnectStream(t, rig, path, map[string]any{})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "application/connect+json" {
+			t.Errorf("Content-Type = %q, want application/connect+json", ct)
+		}
+		if len(frames) != len(rig.game.events)+1 {
+			t.Fatalf("got %d frames, want %d events + end-stream", len(frames), len(rig.game.events))
+		}
+		for i, ev := range rig.game.events {
+			if frames[i].flags != 0 {
+				t.Errorf("frame %d flags = %#x, want 0 (message)", i, frames[i].flags)
 			}
-			rig.otherBackendsUntouched(t, "")
-		})
-	}
+			got := &gamepb.GameEvent{}
+			if err := protojson.Unmarshal(frames[i].payload, got); err != nil {
+				t.Fatalf("frame %d: %v (%s)", i, err, frames[i].payload)
+			}
+			eq(t, got, ev)
+		}
+		end := frames[len(frames)-1]
+		if end.flags&0x02 == 0 {
+			t.Errorf("last frame flags = %#x, want end-stream (0x02)", end.flags)
+		}
+		if strings.Contains(string(end.payload), "error") {
+			t.Errorf("end-stream = %s, want no error", end.payload)
+		}
+		eq(t, rig.game.log.only(t, "StreamGameEvents"), &gamepb.StreamEventsRequest{})
+		rig.otherBackendsUntouched(t, "game")
+	})
+
+	t.Run("UC-070/BR-005 dashboard game id filter reaches the coordinator", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, _ := postConnectStream(t, rig, path, map[string]any{"gameId": "game_shadow"})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		eq(t, rig.game.log.only(t, "StreamGameEvents"), &gamepb.StreamEventsRequest{GameId: proto.String("game_shadow")})
+	})
+
+	t.Run("UC-035/MSS backend error arrives in the end-stream frame the dashboard parses", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.game.endErr = status.Error(codes.Unavailable, "coordinator gone")
+		resp, frames := postConnectStream(t, rig, path, map[string]any{})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (Connect streams report errors in the end-stream frame)", resp.StatusCode)
+		}
+		if len(frames) != 1 || frames[0].flags&0x02 == 0 {
+			t.Fatalf("frames = %v, want one end-stream frame", frames)
+		}
+		var end struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(frames[0].payload, &end); err != nil {
+			t.Fatalf("end-stream payload %s: %v", frames[0].payload, err)
+		}
+		if end.Error.Code != "internal" || !strings.Contains(end.Error.Message, "coordinator gone") {
+			t.Errorf("end-stream error = %+v, want internal / coordinator gone", end.Error)
+		}
+	})
+}
+
+// StreamGameplayData is bidirectional at the Connect layer, and connect-go
+// refuses a bidi stream over HTTP/1.1 (505), which is what envoy uses towards
+// connect-proxy. The dashboard's new framing does not change that: the
+// controller grid's live stream through connect-proxy stays unavailable until
+// the proxy exposes a server-streaming route for it (follow-up to #1542).
+//
+// UC: UC-035 MSS
+func TestProxyDashboardGameplayStreamHTTP1(t *testing.T) {
+	t.Run("UC-035/MSS dashboard connect+json StreamGameplayData over HTTP/1.1 is 505 (current behaviour)", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, _ := postConnectStream(t, rig,
+			"/joustmania.controller_manager.ControllerManagerService/StreamGameplayData",
+			map[string]any{"config": map[string]any{"updateFrequencyHz": 30}})
+		if resp.StatusCode != http.StatusHTTPVersionNotSupported {
+			t.Errorf("status = %d, want 505 (bidi needs HTTP/2)", resp.StatusCode)
+		}
+		rig.otherBackendsUntouched(t, "")
+	})
 }

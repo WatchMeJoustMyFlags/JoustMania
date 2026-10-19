@@ -147,7 +147,15 @@ All five `ControllerManagerService` RPCs, all four `GameCoordinatorService` RPCs
 RPCs are forwarded under `/joustmania` (`services/connect-proxy/main.go`, the `ControllerManagerProxy`, `GameCoordinatorProxy` and `MenuProxy` methods). Audio, HID, pairing and mock
 RPCs are not.
 
-**Traceability:** C-014 / UC-002, UC-003, UC-004, UC-010, UC-027, UC-031 / `proto/*.proto`, `services/connect-proxy/main.go` / `tests/integration/`.
+Wire format from the dashboard (`services/dashboard/src/client.ts`, `connect.ts`): unary calls are a plain
+`application/json` POST. Server streams (`StreamGameEvents`) are `application/connect+json` with the request in
+one 5-byte Connect envelope; the response is a sequence of envelopes ending in an end-stream frame whose
+`error` the dashboard raises (a plain `application/json` POST to a stream gets 415, #1542). Bidi streams
+(`StreamGameplayData`, `StreamButtonEvents`) are not reachable from the browser: envoy talks HTTP/1.1 to
+connect-proxy and connect-go answers a bidi call over HTTP/1.1 with 505, so the dashboard's controller grid
+gets no live gameplay stream through connect-proxy (open, follow-up to #1542).
+
+**Traceability:** C-014 / UC-002, UC-003, UC-004, UC-010, UC-027, UC-031 / `proto/*.proto`, `services/connect-proxy/main.go`, `services/dashboard/src/connect.ts` / `tests/integration/`, `services/dashboard/src/__tests__/connect.test.ts`.
 
 ## 4. Key messages
 
