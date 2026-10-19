@@ -1,8 +1,12 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -515,7 +519,7 @@ func TestRestart_NewEpochNeverReusesVariants(t *testing.T) {
 	})
 }
 
-// UC: UC-053 A2 BR-004
+// UC: UC-053 A2 A12 BR-004
 func TestAdminPersistence(t *testing.T) {
 	newPersisting := func(t *testing.T, path, epoch string) *fixture {
 		return newFixture(t, fixtureOpts{stateFile: path, epoch: epoch})
@@ -571,7 +575,7 @@ func TestAdminPersistence(t *testing.T) {
 			t.Fatalf("directory holds %v", entries)
 		}
 	})
-	t.Run("UC-053/A2 a corrupt state file is moved aside and the service starts from the baseline", func(t *testing.T) {
+	t.Run("UC-053/A12 a corrupt state file is moved aside and the service starts from the baseline", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "admin.json")
 		if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
@@ -587,6 +591,59 @@ func TestAdminPersistence(t *testing.T) {
 		}
 		if _, err := os.Stat(report.CorruptPath); err != nil {
 			t.Fatalf("the corrupt file was not moved aside: %v", err)
+		}
+	})
+	t.Run("UC-053/A12 a state file with an unsupported version is moved aside as corrupt", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		doc := `{"version":2,"values":[{"flag_set":"game","flag":"sensitivity","variant":"slow","written_at":"2026-10-16T12:00:00Z"}]}`
+		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f := newFixture(t, fixtureOpts{})
+		g, report, err := New(f.state.base, f.state.reg, Options{Epoch: "e9", Served: f.state.base.Order, StateFile: path,
+			Now: func() time.Time { return time.Unix(1700000000, 0) }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		if err != nil {
+			t.Fatalf("an unsupported version refused the start: %v", err)
+		}
+		if !report.Corrupt || report.CorruptPath != path+".corrupt-1700000000" || report.AdminValues != 0 {
+			t.Fatalf("report %+v, want corrupt, moved aside, no admin values", report)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("the file was not moved aside: %v", err)
+		}
+		if _, err := os.Stat(report.CorruptPath); err != nil {
+			t.Fatalf("no corrupt copy: %v", err)
+		}
+		if v := (&fixture{t: t, state: g}).snapshotFlag("sensitivity")["defaultVariant"]; v == "slow" {
+			t.Fatal("a value from an unsupported-version file was applied")
+		}
+	})
+	t.Run("UC-053/A12 a corrupt file whose rename fails stays in place and the error is logged", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		orig := moveAside
+		moveAside = func(string, string) error { return errors.New("rename refused") }
+		t.Cleanup(func() { moveAside = orig })
+		var logs bytes.Buffer
+		f := newFixture(t, fixtureOpts{})
+		_, report, err := New(f.state.base, f.state.reg, Options{Epoch: "e9", Served: f.state.base.Order, StateFile: path,
+			Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+		if err != nil {
+			t.Fatalf("a failed rename refused the start: %v", err)
+		}
+		if !report.Corrupt || report.CorruptPath != "" {
+			t.Fatalf("report %+v, want corrupt with no corrupt path", report)
+		}
+		if raw, err := os.ReadFile(path); err != nil || string(raw) != "{not json" {
+			t.Fatalf("the corrupt file did not stay in place: %q %v", raw, err)
+		}
+		if m, _ := filepath.Glob(path + ".corrupt-*"); len(m) != 0 {
+			t.Fatalf("corrupt copies %v after a failed rename", m)
+		}
+		if out := logs.String(); !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "could not be moved aside") || !strings.Contains(out, "rename refused") {
+			t.Fatalf("the failed move was not logged as an error:\n%s", out)
 		}
 	})
 	t.Run("UC-053/A2 stale entries are dropped, the rest load", func(t *testing.T) {

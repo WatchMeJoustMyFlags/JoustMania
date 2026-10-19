@@ -207,10 +207,10 @@ func TestWriter_FailsClosed(t *testing.T) {
 	})
 }
 
-// UC: UC-053 main
+// UC: UC-053 A1 A8
 // UC: UC-050 main
 func TestRolloutWriter(t *testing.T) {
-	t.Run("UC-053/main a stage move is a stack overlay on rollout/current_controller_count", func(t *testing.T) {
+	t.Run("UC-053/A1 a stage move is a stack overlay on rollout/current_controller_count", func(t *testing.T) {
 		svc := &fakeService{}
 		w := NewRolloutWriter(svc, discardLogger())
 		if err := w.SetControllerCount(StageThreeVariant); err != nil {

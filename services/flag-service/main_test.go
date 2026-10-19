@@ -196,3 +196,36 @@ func TestRecordLoadReport_CountsACorruptStateFile(t *testing.T) {
 		})
 	}
 }
+
+// UC: UC-053 A3
+func TestSweep_ExpiresIdleExperimentValues(t *testing.T) {
+	t.Run("UC-053/A3 arm values no game referenced for 2 h are dropped, logged and counted", func(t *testing.T) {
+		e := newSweepEnv(t)
+		sub, err := e.st.Subscribe("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(sub.Close)
+		if _, werr := e.st.Put(state.WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: json.RawMessage("4"),
+			Scope: state.Scope{ExperimentID: "exp_orphan", Arm: "experimental"}, Writer: "agent"}); werr != nil {
+			t.Fatalf("arm write: %v", werr)
+		}
+		e.now = e.now.Add(state.DefaultExperimentIdle - time.Minute)
+		e.sweep()
+		if n := counterTotal(t, e.reader, "flagservice_experiments_expired_total"); n != 0 {
+			t.Fatalf("expired %d before the idle time", n)
+		}
+		e.now = e.now.Add(2 * time.Minute)
+		e.sweep()
+		if n := counterTotal(t, e.reader, "flagservice_experiments_expired_total"); n != 1 {
+			t.Fatalf("flagservice_experiments_expired_total = %d, want 1", n)
+		}
+		if !strings.Contains(e.logs.String(), `"level":"WARN","msg":"flag service: experiment values expired`) {
+			t.Fatalf("no WARN record for the expiry:\n%s", e.logs.String())
+		}
+		payload, _, _ := e.st.Snapshot("")
+		if strings.Contains(string(payload), "exp_orphan") {
+			t.Fatal("the configuration still carries the expired experiment")
+		}
+	})
+}

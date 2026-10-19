@@ -395,36 +395,39 @@ func TestWriter_ConcurrentApplies(t *testing.T) {
 
 // Strip restores the pre-experiment resolution, leaves other experiments and the
 // baseline targeting alone, and is idempotent; an unknown flag is a no-op.
+// UC: UC-053 A3
 func TestWriter_Strip(t *testing.T) {
-	svc := newGameService(t)
-	w := NewWriter(svc, discardLogger())
-	g := NewGate(w, nil, discardLogger())
-	tw := NewGateTargetingWriter(g, w)
-	ctx := context.Background()
-	const flagKey = "sensitivity"
-	if err := tw.Apply(ctx, Proposal{FlagKey: flagKey, ExperimentID: "exp_a", ExperimentalValue: 0}); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Apply(ctx, Proposal{FlagKey: flagKey, ExperimentID: "exp_b", ExperimentalValue: 4}); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		if err := tw.Strip(ctx, flagKey, "exp_a"); err != nil {
-			t.Fatalf("strip %d: %v", i, err)
+	t.Run("UC-053/A3 a teardown strip clears that experiment's arm value and nothing else", func(t *testing.T) {
+		svc := newGameService(t)
+		w := NewWriter(svc, discardLogger())
+		g := NewGate(w, nil, discardLogger())
+		tw := NewGateTargetingWriter(g, w)
+		ctx := context.Background()
+		const flagKey = "sensitivity"
+		if err := tw.Apply(ctx, Proposal{FlagKey: flagKey, ExperimentID: "exp_a", ExperimentalValue: 0}); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if v, _ := resolve(t, svc, flagKey, experimentalCtx("exp_a")); v != "medium" {
-		t.Fatalf("stripped experiment still resolves %s", v)
-	}
-	if _, val := resolve(t, svc, flagKey, experimentalCtx("exp_b")); val != 4.0 {
-		t.Fatalf("other experiment lost: %v", val)
-	}
-	if v, _ := resolve(t, svc, flagKey, map[string]any{GameKindVar: GameKindReal, "game_mode": "Werewolf"}); v != "fast" {
-		t.Fatalf("baseline targeting lost: %s", v)
-	}
-	if err := w.Strip(ctx, "flag_that_does_not_exist", "exp_z"); err != nil {
-		t.Fatalf("strip of an unknown flag should be a no-op: %v", err)
-	}
+		if err := tw.Apply(ctx, Proposal{FlagKey: flagKey, ExperimentID: "exp_b", ExperimentalValue: 4}); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := tw.Strip(ctx, flagKey, "exp_a"); err != nil {
+				t.Fatalf("strip %d: %v", i, err)
+			}
+		}
+		if v, _ := resolve(t, svc, flagKey, experimentalCtx("exp_a")); v != "medium" {
+			t.Fatalf("stripped experiment still resolves %s", v)
+		}
+		if _, val := resolve(t, svc, flagKey, experimentalCtx("exp_b")); val != 4.0 {
+			t.Fatalf("other experiment lost: %v", val)
+		}
+		if v, _ := resolve(t, svc, flagKey, map[string]any{GameKindVar: GameKindReal, "game_mode": "Werewolf"}); v != "fast" {
+			t.Fatalf("baseline targeting lost: %s", v)
+		}
+		if err := w.Strip(ctx, "flag_that_does_not_exist", "exp_z"); err != nil {
+			t.Fatalf("strip of an unknown flag should be a no-op: %v", err)
+		}
+	})
 }
 
 // The registry seam's Apply is gated: a mistyped value writes nothing.
