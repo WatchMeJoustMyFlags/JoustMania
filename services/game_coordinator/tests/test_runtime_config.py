@@ -306,3 +306,15 @@ def test_game_client_initialized(mock_get_client, _mock_add_handler):
     assert manager.system_client is not None
     assert manager.controller_client is not None
     assert manager.game_client is not None
+
+
+def test_runtime_config_flag_keys_match_the_keys_read():
+    """RUNTIME_CONFIG_FLAG_KEYS must list every exact key _refresh_from_flags reads (#1552)."""
+    import inspect
+    import re
+
+    from services.game_coordinator.runtime_config import RUNTIME_CONFIG_FLAG_KEYS
+
+    source = inspect.getsource(RuntimeConfigManager._refresh_from_flags)
+    read_keys = set(re.findall(r'get_\w+_value\(\s*"([^"]+)"', source))
+    assert read_keys == set(RUNTIME_CONFIG_FLAG_KEYS)

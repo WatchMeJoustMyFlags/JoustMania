@@ -96,6 +96,9 @@ class GamePerformanceConfig:
 
 
 # Flag keys read by RuntimeConfigManager (exact keys plus the perception.* family).
+# Must stay in sync with the keys RuntimeConfigManager reads (the literals passed
+# to get_*_value in _refresh_from_flags): a key missing here is silently never refreshed.
+# test_runtime_config_flag_keys_match_the_keys_read compares them.
 RUNTIME_CONFIG_FLAG_KEYS = frozenset(
     {
         "game_loop.update_frequency_hz",

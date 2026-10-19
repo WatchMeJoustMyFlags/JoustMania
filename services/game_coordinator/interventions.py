@@ -970,6 +970,9 @@ class InterventionManager:
         except Exception as e:
             logger.debug(f"InterventionManager: handler removal failed: {e}")
         self._started = False
+        if self._deferral_recheck is not None:
+            self._deferral_recheck.cancel()
+            self._deferral_recheck = None
 
     def forget_session(self, game_id: str) -> None:
         """Drop all per-game state for a retired session (#1299).
@@ -1100,6 +1103,10 @@ class InterventionManager:
         self._refresh_budget()
         self._pass_allow_snapshot = None
         sessions = self._live_sessions()
+        if not sessions:
+            # No game left to defer for: close the episode so the next game's
+            # brief deferral is a new episode with a fresh age, not a stale WARNING.
+            self._end_deferral()
         self._prune_stale_buckets({s.game_id for s in sessions})
         for session in sessions:
             # Create the session's buckets once, at the start of its iteration.

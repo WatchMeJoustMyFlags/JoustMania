@@ -476,3 +476,59 @@ async def test_probe_reads_through_the_provider_without_hooks():
     assert interventions.provider.calls > 0
     # Only the end_game spec's own value read goes through the client.
     assert interventions.client_probes == 1
+
+
+# --------------------------------------------------------------------------- #
+# Episode boundaries and shutdown
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.asyncio
+async def test_deferral_open_when_the_last_game_ends_does_not_leak_into_the_next(caplog):
+    interventions = InterventionsStore(("e2", 7))
+    interventions.state["volume_override"] = 0.4
+    agent = AgentStore(("e1", 41), AMBIENT)
+    clock = Clock()
+    h = Harness(interventions, agent, time_fn=clock)
+
+    with (
+        patch("services.game_coordinator.metrics.intervention_deferrals_total") as episodes,
+        patch("services.game_coordinator.metrics.intervention_deferral_age_seconds") as age,
+        caplog.at_level(logging.DEBUG, logger="services.game_coordinator.interventions"),
+    ):
+        await h.flag_change()
+        assert episodes.inc.call_count == 1
+
+        # The last game ends while the deferral is open; the next pass sees no session.
+        h.mgr._get_sessions = lambda: []
+        clock.now += 60.0
+        await h.flag_change()
+        assert h.mgr._deferral_since is None
+        assert h.mgr._deferral_recheck is None
+
+        # The next game defers briefly: a NEW episode with a small age, no WARNING.
+        h.mgr._get_sessions = lambda: [h.view]
+        clock.now += 1.0
+        await h.flag_change()
+        assert episodes.inc.call_count == 2
+        assert age.set.call_args.args[0] == pytest.approx(0.0)
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.asyncio
+async def test_stop_cancels_the_pending_deferral_recheck():
+    interventions = InterventionsStore(("e2", 7))
+    interventions.state["volume_override"] = 0.4
+    agent = AgentStore(("e1", 41), AMBIENT)
+    h = Harness(interventions, agent)
+
+    await h.flag_change()
+    handle = h.mgr._deferral_recheck
+    assert handle is not None and not handle.cancelled()
+
+    h.mgr._started = True
+    h.mgr.stop()
+    assert handle.cancelled()
+    assert h.mgr._deferral_recheck is None
