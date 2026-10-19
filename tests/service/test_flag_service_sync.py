@@ -13,7 +13,6 @@ UC-053: the flag service as flagd's gRPC sync source (epic #1407, #1408-#1410).
 
 import json
 import os
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -22,13 +21,14 @@ import uuid
 import pytest
 from openfeature.evaluation_context import EvaluationContext
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from tests.integration.helpers import flagd_probe_client, poll_until
+from tests.service.compositions import FLAG_PLANE
 
-from tests.integration.helpers import flagd_probe_client, poll_until  # noqa: E402
+pytestmark = pytest.mark.tier("service")
 
-FLAG_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "..", "services", "flagd", "ci"
-)
+SERVICE_COMPOSITION = FLAG_PLANE
+
+FLAG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "services", "flagd", "ci")
 FLAG_SETS = (
     "system",
     "controller",
@@ -53,16 +53,16 @@ PROBE_CONTEXTS = {
 BAD_REASONS = {"DEFAULT", "ERROR"}
 
 
-def _flag_service_url(docker_compose) -> str:
-    host = docker_compose.get_service_host("flag-service", 8070)
-    port = docker_compose.get_service_port("flag-service", 8070)
+def _flag_service_url(stack) -> str:
+    host = stack.get_service_host("flag-service", 8070)
+    port = stack.get_service_port("flag-service", 8070)
     return f"http://{host}:{port}"
 
 
-def _http(docker_compose, method: str, path: str, body=None) -> tuple[int, dict]:
+def _http(stack, method: str, path: str, body=None) -> tuple[int, dict]:
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
-        _flag_service_url(docker_compose) + path,
+        _flag_service_url(stack) + path,
         method=method,
         data=data,
         headers={"Content-Type": "application/json"},
@@ -100,29 +100,22 @@ def _reason(details) -> str:
 @pytest.mark.uc("UC-053", flow="main", br=["BR-007"])
 @pytest.mark.parametrize("resolver", ["in_process", "rpc"])
 @pytest.mark.parametrize("flag_set", FLAG_SETS)
-def test_every_flag_resolves_through_its_flag_set_selector(
-    docker_compose, flag_set, resolver
-):
+def test_every_flag_resolves_through_its_flag_set_selector(stack, flag_set, resolver):
     """C1: every flag resolves via flagSetId=<set>, reason neither DEFAULT nor ERROR."""
     flags = _load_set(flag_set)
     failures = []
-    with flagd_probe_client(docker_compose, flag_set, resolver=resolver) as client:
+    with flagd_probe_client(stack, flag_set, resolver=resolver) as client:
         # The provider connects asynchronously; wait until the set is served.
         first_key = sorted(flags)[0]
         first_default = flags[first_key]["variants"][flags[first_key]["defaultVariant"]]
         poll_until(
-            lambda: (
-                _reason(_details(client, first_key, first_default, EvaluationContext()))
-                != "ERROR"
-            ),
+            lambda: _reason(_details(client, first_key, first_default, EvaluationContext())) != "ERROR",
             timeout=15.0,
         )
         for key, flag in sorted(flags.items()):
             default = flag["variants"][flag["defaultVariant"]]
             probe = dict(PROBE_CONTEXTS.get(key, {}))
-            ctx = EvaluationContext(
-                targeting_key=probe.pop("targetingKey", None), attributes=probe
-            )
+            ctx = EvaluationContext(targeting_key=probe.pop("targetingKey", None), attributes=probe)
             details = _details(client, key, default, ctx)
             if _reason(details) in BAD_REASONS or details.error_code is not None:
                 failures.append(
@@ -132,28 +125,29 @@ def test_every_flag_resolves_through_its_flag_set_selector(
 
 
 @pytest.mark.uc("UC-053", flow="main")
-def test_flagd_holds_one_sync_stream(docker_compose):
+def test_flagd_holds_one_sync_stream(stack):
     """flagd opens ONE SyncFlags stream that carries every served set (N1, N6)."""
     assert poll_until(
-        lambda: _http(docker_compose, "GET", "/state")[1].get("sync_streams") == 1,
+        lambda: _http(stack, "GET", "/state")[1].get("sync_streams") == 1,
         timeout=15.0,
     )
-    status, state = _http(docker_compose, "GET", "/state")
+    status, state = _http(stack, "GET", "/state")
     assert status == 200 and state["epoch"]
     assert {"system", "observability"} <= set(state["served_sets"])
 
 
 @pytest.mark.uc("UC-053", flow="A1", br=["BR-001"])
-def test_write_reaches_both_resolvers_and_clears(docker_compose):
+@pytest.mark.usefixtures("fresh_stack")
+def test_write_reaches_both_resolvers_and_clears(stack):
     """A stack overlay written to the service is served by flagd, then cleared."""
     nonce = f"probe-{uuid.uuid4().hex[:8]}"
     ctx = EvaluationContext()
     with (
-        flagd_probe_client(docker_compose, PROBE_SET) as in_process,
-        flagd_probe_client(docker_compose, PROBE_SET, resolver="rpc") as rpc,
+        flagd_probe_client(stack, PROBE_SET) as in_process,
+        flagd_probe_client(stack, PROBE_SET, resolver="rpc") as rpc,
     ):
         status, body = _http(
-            docker_compose,
+            stack,
             "PUT",
             f"/{PROBE_SET}/{PROBE_FLAG}",
             {"value": nonce, "writer": "integration-test"},
@@ -166,23 +160,15 @@ def test_write_reaches_both_resolvers_and_clears(docker_compose):
                 lambda: in_process.get_string_value(PROBE_FLAG, "", ctx) == nonce,
                 timeout=5.0,
             )
-            assert poll_until(
-                lambda: rpc.get_string_value(PROBE_FLAG, "", ctx) == nonce, timeout=5.0
-            )
-            print(
-                f"\nwrite -> both resolvers: {1000 * (time.monotonic() - started):.0f} ms"
-            )
+            assert poll_until(lambda: rpc.get_string_value(PROBE_FLAG, "", ctx) == nonce, timeout=5.0)
+            print(f"\nwrite -> both resolvers: {1000 * (time.monotonic() - started):.0f} ms")
         finally:
-            assert (
-                _http(docker_compose, "DELETE", f"/{PROBE_SET}/{PROBE_FLAG}")[0] == 204
-            )
-        assert poll_until(
-            lambda: in_process.get_string_value(PROBE_FLAG, "x", ctx) == "", timeout=5.0
-        )
+            assert _http(stack, "DELETE", f"/{PROBE_SET}/{PROBE_FLAG}")[0] == 204
+        assert poll_until(lambda: in_process.get_string_value(PROBE_FLAG, "x", ctx) == "", timeout=5.0)
 
 
 @pytest.mark.uc("UC-053", flow="A5", br=["BR-001", "BR-002"])
-def test_rejected_writes(docker_compose):
+def test_rejected_writes(stack):
     cases = [
         ("PUT", "/system/idle.enabled", {"variant": "off"}, 422, "flag_read_only"),
         ("PUT", "/nope/x", {"variant": "a"}, 404, "unknown_flag_set"),
@@ -212,7 +198,7 @@ def test_rejected_writes(docker_compose):
         ),
     ]
     for method, path, body, want_status, want_reason in cases:
-        status, resp = _http(docker_compose, method, path, body)
+        status, resp = _http(stack, method, path, body)
         assert (status, resp.get("error")) == (want_status, want_reason), (
             path,
             body,
@@ -222,7 +208,7 @@ def test_rejected_writes(docker_compose):
 
 
 @pytest.mark.uc("UC-053", flow="main", br=["BR-003"])
-def test_game_scope_lifecycle_over_http(docker_compose):
+def test_game_scope_lifecycle_over_http(stack):
     """PUT /games registers, a repeat is already_registered, DELETE drops it."""
     game_id = f"game_{uuid.uuid4().hex[:12]}"
     body = {
@@ -230,24 +216,15 @@ def test_game_scope_lifecycle_over_http(docker_compose):
         "game_kind": "shadow",
         "serials": ["MOCK9001"],
     }
-    assert _http(docker_compose, "PUT", f"/games/{game_id}", body) == (
+    assert _http(stack, "PUT", f"/games/{game_id}", body) == (
         200,
         {
             "game_id": game_id,
             "status": "registered",
-            "epoch": _http(docker_compose, "GET", "/state")[1]["epoch"],
+            "epoch": _http(stack, "GET", "/state")[1]["epoch"],
         },
     )
-    assert (
-        _http(docker_compose, "PUT", f"/games/{game_id}", body)[1]["status"]
-        == "already_registered"
-    )
-    assert any(
-        g["game_id"] == game_id
-        for g in _http(docker_compose, "GET", "/games")[1]["games"]
-    )
-    assert _http(docker_compose, "DELETE", f"/games/{game_id}")[0] == 204
-    assert not any(
-        g["game_id"] == game_id
-        for g in _http(docker_compose, "GET", "/games")[1]["games"]
-    )
+    assert _http(stack, "PUT", f"/games/{game_id}", body)[1]["status"] == "already_registered"
+    assert any(g["game_id"] == game_id for g in _http(stack, "GET", "/games")[1]["games"])
+    assert _http(stack, "DELETE", f"/games/{game_id}")[0] == 204
+    assert not any(g["game_id"] == game_id for g in _http(stack, "GET", "/games")[1]["games"])

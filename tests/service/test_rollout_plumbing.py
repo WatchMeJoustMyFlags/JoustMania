@@ -21,19 +21,19 @@ Scope decision (tests/integration/README.md, "Rollout plumbing"):
 The ``flag_service`` fixture clears every overlay this test sets.
 """
 
-import os
-import sys
-
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from tests.integration.helpers import poll_until
+from tests.service.compositions import FLAG_PLANE
 
-from tests.integration.helpers import poll_until  # noqa: E402
+pytestmark = pytest.mark.tier("service")
+
+SERVICE_COMPOSITION = FLAG_PLANE
 
 ROLLOUT = "rollout"
 
 
-def _rollout_client(docker_compose):
+def _rollout_client(stack):
     """An OpenFeature flagd RPC client bound to the rollout flag set — the same
     flagd (port 8013) the controller-manager reads the rollout domain from."""
     from openfeature import api
@@ -41,8 +41,8 @@ def _rollout_client(docker_compose):
     from openfeature.contrib.provider.flagd.config import CacheType, ResolverType
 
     provider = FlagdProvider(
-        host=docker_compose.get_service_host("flagd", 8013),
-        port=int(docker_compose.get_service_port("flagd", 8013)),
+        host=stack.get_service_host("flagd", 8013),
+        port=int(stack.get_service_port("flagd", 8013)),
         resolver_type=ResolverType.RPC,
         selector="flagSetId=rollout",
         # Live re-resolution is the point: no RPC cache (CI run 27029212634).
@@ -54,9 +54,8 @@ def _rollout_client(docker_compose):
 
 @pytest.mark.uc("UC-053", flow="A1", br=["BR-001"])
 @pytest.mark.asyncio
-async def test_rollout_write_shape_resolves_via_live_flagd(
-    flag_service, docker_compose
-):
+@pytest.mark.usefixtures("fresh_stack")
+async def test_rollout_write_shape_resolves_via_live_flagd(flag_service, stack):
     """The agent's rollout writes (strategy=progressive, target_backend, and the
     current_controller_count stage ladder) resolve via the live flagd RPC the
     controller-manager reads, walking none -> one -> three -> six -> all and the
@@ -68,15 +67,15 @@ async def test_rollout_write_shape_resolves_via_live_flagd(
     flag_service.put(ROLLOUT, "strategy", variant="progressive")
     flag_service.put(ROLLOUT, "target_backend", variant="rust")
 
-    client, provider = _rollout_client(docker_compose)
+    client, provider = _rollout_client(stack)
     try:
         empty = EvaluationContext()
-        assert poll_until(
-            lambda: client.get_string_value("strategy", "off", empty) == "progressive"
-        ), f"strategy resolved to {client.get_string_value('strategy', 'off', empty)!r}"
-        assert poll_until(
-            lambda: client.get_string_value("target_backend", "python", empty) == "rust"
-        ), "target_backend did not resolve to the written rust"
+        assert poll_until(lambda: client.get_string_value("strategy", "off", empty) == "progressive"), (
+            f"strategy resolved to {client.get_string_value('strategy', 'off', empty)!r}"
+        )
+        assert poll_until(lambda: client.get_string_value("target_backend", "python", empty) == "rust"), (
+            "target_backend did not resolve to the written rust"
+        )
 
         # Walk the expansion ladder: each stage write resolves to its integer.
         for variant, expected in [
@@ -86,29 +85,21 @@ async def test_rollout_write_shape_resolves_via_live_flagd(
             ("six", 6),
             ("all", 99),
         ]:
-            flag_service.put(
-                ROLLOUT, "current_controller_count", variant=variant, writer="agent"
-            )
+            flag_service.put(ROLLOUT, "current_controller_count", variant=variant, writer="agent")
             assert poll_until(
-                lambda e=expected: (
-                    client.get_integer_value("current_controller_count", -1, empty) == e
-                )
+                lambda e=expected: client.get_integer_value("current_controller_count", -1, empty) == e
             ), (
                 f"current_controller_count={variant!r} resolved to "
                 f"{client.get_integer_value('current_controller_count', -1, empty)}, want {expected}"
             )
 
         # Rollback shape: the loop resets current_controller_count to "none" (0).
-        flag_service.put(
-            ROLLOUT, "current_controller_count", variant="none", writer="agent"
+        flag_service.put(ROLLOUT, "current_controller_count", variant="none", writer="agent")
+        assert poll_until(lambda: client.get_integer_value("current_controller_count", -1, empty) == 0), (
+            "rollback-to-none did not resolve to 0"
         )
-        assert poll_until(
-            lambda: client.get_integer_value("current_controller_count", -1, empty) == 0
-        ), "rollback-to-none did not resolve to 0"
         # An unknown stage is rejected by the registry, not written (UC-053 A5).
-        status, body = flag_service.request(
-            "PUT", f"/{ROLLOUT}/current_controller_count", {"variant": "seven"}
-        )
+        status, body = flag_service.request("PUT", f"/{ROLLOUT}/current_controller_count", {"variant": "seven"})
         assert (status, body.get("error")) == (422, "out_of_bounds"), (status, body)
     finally:
         provider.shutdown()

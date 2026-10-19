@@ -42,9 +42,9 @@ expect "proto/menu.proto" "$ALWAYS py:lib $PY_ALL connect-proxy contract service
 # rust filter includes the HID proto
 expect "proto/psmove_hid.proto" "$ALWAYS py:lib $PY_ALL connect-proxy rust-hid contract service"
 expect "services/agent/decision/rules.go" "$ALWAYS go:agent contract contract-flagd"
-# lib filter pins one agent file and one integration test
+# lib filter pins one agent file and one service-tier test
 expect "services/agent/experiment/targeting.go" "$ALWAYS py:lib go:agent contract contract-flagd"
-expect "tests/integration/test_experiment_shadow_isolation.py" "$ALWAYS py:lib"
+expect "tests/service/test_experiment_shadow_isolation.py" "$ALWAYS py:lib service"
 # agent_tests reads the registry; flagd_contract does not include it
 expect "services/flag-service/registry.yaml" "$ALWAYS go:agent go:flag-service contract service yaml-dupkeys"
 expect "services/flag-service/main.go" "$ALWAYS go:flag-service contract service"

@@ -35,19 +35,21 @@ for distinct contexts. The `experiment_values` fixture deletes the experiment
 values afterwards and waits until flagd no longer serves them.
 """
 
+import contextlib
 import math
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-
-from tests.integration.helpers import (  # noqa: E402
+from tests.integration.helpers import (
     FLAGD_RESOLVE_TIMEOUT_SECONDS,
     flagd_probe_client,
     poll_until,
 )
+from tests.service.compositions import FLAG_PLANE
+
+pytestmark = pytest.mark.tier("service")
+
+SERVICE_COMPOSITION = FLAG_PLANE
 
 # Evaluation-context keys and values, pinned to lib.feature_flags and the Go
 # sources by test_game_kind_constants_match_source (the integration venv does
@@ -86,18 +88,14 @@ def _ctx(**attributes):
 
 
 @pytest.fixture
-def experiment_values(docker_compose, flag_service):
+def experiment_values(stack, flag_service):
     """Delete this test's experiment values and wait until flagd stops serving them."""
     yield
 
     def _strip():
         for flag in EXPERIMENT_FLAGS:
-            try:
-                flag_service.delete(
-                    GAME, flag, experiment_id=EXPERIMENT_ID, arm=ARM_EXPERIMENTAL
-                )
-            except AssertionError:
-                pass
+            with contextlib.suppress(AssertionError):
+                flag_service.delete(GAME, flag, experiment_id=EXPERIMENT_ID, arm=ARM_EXPERIMENTAL)
 
     _strip()
     shadow = _ctx(
@@ -108,7 +106,7 @@ def experiment_values(docker_compose, flag_service):
         }
     )
     real = _ctx(**{GAME_KIND_VAR: GAME_KIND_REAL})
-    with flagd_probe_client(docker_compose, GAME, resolver="rpc") as client:
+    with flagd_probe_client(stack, GAME, resolver="rpc") as client:
 
         def _gone() -> bool:
             a = client.get_float_value("invincibility_seconds", float("nan"), shadow)
@@ -123,9 +121,8 @@ def experiment_values(docker_compose, flag_service):
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-053", flow="A3")
 @pytest.mark.uc("UC-042", flow="main")
-async def test_experiment_reaches_shadow_never_real(
-    experiment_values, flag_service, docker_compose
-):
+@pytest.mark.usefixtures("fresh_stack", "experiment_values")
+async def test_experiment_reaches_shadow_never_real(flag_service, stack):
     """An experiment-arm value resolves for that experiment's experimental arm only.
 
     Baselines are read from the live flagd before the write (the CI baseline
@@ -168,7 +165,7 @@ async def test_experiment_reaches_shadow_never_real(
     # No context at all: no experiment_id, so no experiment rung can match.
     empty = _ctx()
 
-    with flagd_probe_client(docker_compose, GAME, resolver="rpc") as client:
+    with flagd_probe_client(stack, GAME, resolver="rpc") as client:
 
         def _inv(ctx) -> float:
             return client.get_float_value("invincibility_seconds", float("nan"), ctx)
@@ -209,8 +206,7 @@ async def test_experiment_reaches_shadow_never_real(
             ("empty context", empty),
         ):
             assert abs(_inv(ctx) - inv_baseline) <= 0.01, (
-                f"{name} resolved the experiment: invincibility={_inv(ctx)} "
-                f"(must stay {inv_baseline})"
+                f"{name} resolved the experiment: invincibility={_inv(ctx)} (must stay {inv_baseline})"
             )
         assert _sens(real) == sens_baseline, f"REAL sensitivity leaked: {_sens(real)}"
         assert _sens(control) == sens_baseline
