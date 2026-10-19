@@ -157,22 +157,10 @@ class TestUC030DeathDetection:
         assert player.warning_until >= before + WARNING_DURATION
         assert WARNING_DURATION == 0.5
 
-    @pytest.mark.asyncio
-    @pytest.mark.uc("UC-030", flow="A1")
-    @pytest.mark.parametrize("window_field", ["grace_until", "invincible_until"])
-    async def test_grace_resets_ema_and_fires_no_warning_or_death(self, window_field):
-        """UC-030 A1: inside either immunity window the EMA is reset; no warning, death_warning or death fires.
-
-        ``invincible_until`` exists on Tournament/Fight Club players only, so the
-        player is a ``TournamentPlayer`` driven through the base detection path.
-        """
-        game, events = _game(2)
-        player = TournamentPlayer(serial="p0", team=0, alive=True, color=(255, 0, 0))
-        player.span = game.players["p0"].span
-        game.players["p0"] = player
+    async def _assert_window_suppresses_detection(self, game, events, player):
+        """Drive warning-zone / lethal / warning-zone frames; the EMA resets and nothing fires."""
         warn, death = game._compute_effective_thresholds(player)
         warning_zone = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=(warn + death) / 2)
-        setattr(player, window_field, time.time() + 60.0)
         player.smoothed_accel = death + 1.0  # a spike left in the filter
 
         for sample in (warning_zone, LETHAL, warning_zone):
@@ -186,6 +174,36 @@ class TestUC030DeathDetection:
         assert _span_events(player.span, "death_warning") == []
         assert _span_events(player.span, "player_death") == []
         assert events.get_events_of_type(GameEvent.PLAYER_DEATH) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A1")
+    async def test_grace_resets_ema_and_fires_no_warning_or_death(self):
+        """UC-030 A1: inside ``grace_until`` the EMA is reset; no warning, death_warning or death fires."""
+        game, events = _game(2)
+        player = game.players["p0"]
+        player.grace_until = time.time() + 60.0
+        await self._assert_window_suppresses_detection(game, events, player)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A1")
+    async def test_agent_shield_on_plain_ffa_player_suppresses_detection(self):
+        """UC-030 A1: ``grant_shield`` on a plain FFA player writes ``grace_until`` and detection is suppressed."""
+        game, events = _game(2)
+        player = game.players["p0"]
+        assert await game.grant_shield("p0", 60.0) is True
+        assert player.grace_until > time.time()
+        await self._assert_window_suppresses_detection(game, events, player)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-025", br=["BR-001"])
+    async def test_match_invincibility_resets_ema_and_fires_no_warning_or_death(self):
+        """UC-025 BR-001: per-match ``invincible_until`` (Tournament/Fight Club only) also blocks detection."""
+        game, events = _game(2)
+        player = TournamentPlayer(serial="p0", team=0, alive=True, color=(255, 0, 0))
+        player.span = game.players["p0"].span
+        game.players["p0"] = player
+        player.invincible_until = time.time() + 60.0
+        await self._assert_window_suppresses_detection(game, events, player)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-030", flow="A4")

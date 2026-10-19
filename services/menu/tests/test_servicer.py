@@ -31,9 +31,10 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
 from lib.types import Games
-from proto import menu_pb2
+from proto import controller_manager_pb2, menu_pb2
 from services.menu.handlers.base import ControllerState
 from services.menu.tests.servicer_harness import default_returning_flag_client
+from services.menu.utils.led import GAME_MODE_COLORS
 
 
 class MockGrpcContext:
@@ -2038,7 +2039,13 @@ class TestSelectionPathsShareSelectGameMode:
         await self._admin_cross(real_servicer)
 
         real_servicer.audio.play_game_mode_voice.assert_awaited_once_with(Games.JoustTeams.name)
-        real_servicer.state_manager.led.send_game_effect.assert_awaited_once()
+        real_servicer.state_manager.led.send_game_effect.assert_awaited_once_with(
+            "host",
+            controller_manager_pb2.GAME_EFFECT_PULSE,
+            color=GAME_MODE_COLORS[Games.JoustTeams.name],
+            duration_ms=600,
+            speed=6,
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="main")  # Post-F-1: the previous selection stays

@@ -113,8 +113,18 @@ async def test_sentinel_loop_reads_animation_once():
     monitor._sentinel_serials = ["s1"]
 
     task = asyncio.create_task(monitor._sentinel_pulse_loop())
-    await asyncio.sleep(0.1)
-    task.cancel()
+
+    async def breathed():
+        while True:
+            colours = {c.args[1] for c in state_manager.led.set_color.await_args_list if c.args[0] == "s1"}
+            if len(colours - {(0, 0, 0)}) > 1:
+                return
+            await asyncio.sleep(0.005)
+
+    try:
+        await asyncio.wait_for(breathed(), timeout=2.0)
+    finally:
+        task.cancel()
     # The loop swallows CancelledError to clean up LEDs (NOSONAR pattern), so
     # awaiting completes normally rather than re-raising.
     await task
