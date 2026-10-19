@@ -18,6 +18,22 @@ Local PR gates selected from the changed files; see the script header and
 docs/CONTRIBUTING.md "PR gates and merging". Test: `scripts/tests/test-local-gates.sh`.
 `yaml-dupkeys.py` is its YAML duplicate-key check.
 
+### `gate-run.sh`
+
+Validated runner for the gate-runner agent (#1565): checks the worktree, the log
+directory and the command against an allow-list in code, runs it N times without
+a shell, writes logs outside the worktree and prints a compact verdict
+(PASS / FAIL / FLAKY k/N, mutation-check verdicts with `--expect-fail`). Usage
+and the allow-list in the script header. Test: `scripts/tests/test-gate-run.sh`.
+
+Threat model: guards against agent and prompt mistakes (what the caller adds to a
+command), not a sandbox for untrusted PR code. Every allowed form runs the
+worktree's own code (Makefile recipes, pytest conftest/plugins, go test binaries,
+cargo build.rs, scripts/tests). Run it only on PRs you would run locally.
+Accepted risk: pytest `-p`/`-o`/`--rootdir`/`--import-mode` and go
+`-ldflags`/`-gcflags` pass validation but can only reach worktree or venv code,
+because absolute paths and `..` are refused; no per-option allow-list.
+
 ### `safe-merge.sh`
 
 Gentle CI wait + exact-head squash merge + post-merge issue close/comment, or

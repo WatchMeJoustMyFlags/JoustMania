@@ -10,7 +10,7 @@ description: >
   says "implement #1234", "fix issue #N", "open a PR for ...", or "apply these
   review findings to PR #N". For one use case end to end, /implement and the
   test skills hold the per-layer detail.
-argument-hint: "#ISSUE [scope / decisions] | fixer PR#N <old>..<new> <findings file>"
+argument-hint: "#ISSUE [scope / decisions] | fixer PR#N <head sha> <old>..<new> <findings file>"
 ---
 
 # Implement Issue (JoustMania)
@@ -47,6 +47,8 @@ The brief gives you the issue, scope and decisions. Everything else is here: do 
 5. **Implement** the smallest change that satisfies the spec. Per-layer detail: `/implement`, `/pytest-test`,
    `/go-test`, `/integration-test`.
 6. **Gates.** `make pr-gates` (auto-detects from the diff; `SERVICE=menu,agent` to force). Fix every FAIL.
+   Agents send gate and test-suite runs to the Haiku `gate-runner` agent (`.claude/agents/gate-runner.md`),
+   which keeps the logs out of your context; the `implementer` agent says when.
    Integration (`make test-dev`) only when the brief asks or the change is cross-service.
 7. **Commit.** Conventional Commits (`fix(menu): ...`, `feat(agent): ...`), small and focused, ending with
    the attribution lines from the session's system reminder (never a hard-coded model name). A failing pre-commit hook may
@@ -87,7 +89,7 @@ diff range. Do not resume the original implementer and do not re-read the whole 
    `git worktree add .worktrees/<slug>-fix origin/<branch>` (a branch checkout, not detached).
 2. Confirm `git rev-parse HEAD` matches the given head; if not, stop and report the mismatch.
 3. Fix exactly the listed findings, each with a test where it is a behaviour bug. Nothing else.
-4. `make pr-gates`, commit (`fix: address review on #<PR>` + the session's attribution lines), push. No force-push unless told.
+4. `make pr-gates` (via `gate-runner`), commit (`fix: address review on #<PR>` + the session's attribution lines), push. No force-push unless told.
 5. Report: one line per finding: `fixed <sha> | not fixed: <reason>`.
 
 ## Report (hand back once, 15 lines or fewer)

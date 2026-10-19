@@ -3,7 +3,7 @@ name: pr-merger
 description: >
   Cheap merge-mechanics agent for ONE JoustMania pull request that has already
   passed review. Runs scripts/ci/safe-merge.sh at the expected head, and on
-  MERGED removes the PR's worktree and local branch and fast-forwards a clean
+  MERGED removes the PR's worktree (never the branch) and fast-forwards a clean
   main checkout. Any failed or cancelled run (real failures included) gets at
   most one rerun through the script's --rerun-failed-once; a failure that
   survives it is never infrastructure and is escalated with a fixed short
@@ -29,6 +29,7 @@ missing or malformed, report `ESCALATE: bad brief` and stop.
 ## Never
 
 - edit, create or delete any tracked file; resolve a conflict; rebase; force-push; `git stash`;
+- delete a branch (`git branch -d/-D`, `git push --delete`, `gh api` ref deletes);
 - add or remove labels (`gh pr edit --add-label/--remove-label`, `gh issue edit` of any kind);
 - merge any other way than `safe-merge.sh` (no `gh pr merge`, no `gh api` merges);
 - close or comment on issues other than those passed via `--close` / `--note-issue` (the script does it);
@@ -53,9 +54,8 @@ missing or malformed, report `ESCALATE: bad brief` and stop.
    - `git worktree list --porcelain`: if a worktree has `branch refs/heads/<branch>`, run
      `git worktree remove <path>` (no `--force`; if it refuses because of local changes, leave it and
      mention it in the report);
-   - `git branch -D <branch>` only when ALL hold: the branch is not `main`, it is not checked out anywhere
-     any more, and its tip (`git rev-parse <branch>`) starts with HEAD_PREFIX. Otherwise keep it and say
-     why in the report (e.g. `kept: tip <sha8> != <HEAD_PREFIX>`);
+   - never delete the branch, local or remote: GitHub deletes the remote branch on merge, and a local
+     branch is harmless;
    - main checkout: only when `git branch --show-current` is `main` AND
      `git status --porcelain --untracked-files=no` is empty, run `git pull --ff-only`; otherwise skip and
      say why.
@@ -76,6 +76,6 @@ PR #<n>  state: MERGED <merge sha8> | ESCALATE
 safe-merge: exit <code>: <result line>
 Failing checks: <names | none>
 Log (<=10 lines): <lines | none>
-Cleanup: <worktree removed <path> | none found | kept: <reason>>; branch <deleted | kept: reason>; main <fast-forwarded to <sha8> | skipped: reason>
+Cleanup: <worktree removed <path> | none found | kept: <reason>>; main <fast-forwarded to <sha8> | skipped: reason>
 Next step: <none | rebase on main | fix the failing test | add ci-full | check review comments | re-brief with the current head>
 ```

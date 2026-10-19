@@ -31,6 +31,15 @@ line; when code and spec disagree they stop and propose a spec change.
 | `implement-issue` | one issue end to end: worktree, spec, code, tests, PR (then stops) | Orchestration |
 | `review-pr` | nothing (review worktree removed at the end) | Review |
 
+Agents in `.claude/agents/` that run these workflows:
+
+| Agent | Model | Role |
+|---|---|---|
+| `implementer` | sonnet (opus for hot path, concurrency, safety) | runs `implement-issue` (and its fixer mode); delegates gates and test runs to `gate-runner`, broad searches to `Explore` |
+| `gate-runner` | haiku | runs only `scripts/ci/gate-run.sh` (allow-list enforced in code) for `make pr-gates` or test commands (repeat counts, mutation checks) in one worktree, in the background so 10-17 min integration runs finish; logs to files, relays the script's verdict and at most 20 failing lines; never edits |
+| `pr-merger` | haiku | merge mechanics after a clean review (below) |
+| `uc-coverage` | inherit | read-only coverage audit behind `coverage-check` |
+
 After a clean review, hand the merge to the Haiku `pr-merger` agent (`.claude/agents/pr-merger.md`) with
 `<PR> <HEAD_PREFIX>` and any `--close` / `--note-issue` options: it runs `scripts/ci/safe-merge.sh
 --rerun-failed-once`, cleans up the worktree and branch on MERGED, and escalates everything else with a
