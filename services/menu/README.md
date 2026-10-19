@@ -165,7 +165,7 @@ stateDiagram-v2
 
     note right of Connected
         LED: Dim game color
-        (~15-50% based on battery)
+        (fixed 30%, DIM_FACTOR)
     end note
 
     note right of Ready

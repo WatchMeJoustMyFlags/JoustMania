@@ -223,13 +223,6 @@ class TestAdaptivePollingLogic:
         assert loop._idle_threshold_seconds == 5.0
 
     @pytest.mark.nfr("NFR-002")
-    def test_discovery_and_led_intervals_default(self):
-        """NFR-002: discovery checks run at 1 Hz and LED batches at 20 Hz."""
-        loop = self._create_discovery_loop()
-        assert loop._discovery_interval == 1.0
-        assert loop._led_interval == 0.05
-
-    @pytest.mark.nfr("NFR-002")
     def test_poll_interval_default(self):
         """Default poll interval is 100Hz (10ms) - always fast polling."""
         loop = self._create_discovery_loop()

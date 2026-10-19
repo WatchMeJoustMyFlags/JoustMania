@@ -428,3 +428,17 @@ class TestStateCacheRename:
 
         info[ControllerInfoKey.NAME] = "New Name"
         assert cache.build_or_get_cached_state("serial_1", info).name == "New Name"
+
+    @patch("services.controller_manager.metrics.state_cache_hits_total")
+    @patch("services.controller_manager.metrics.state_cache_misses_total")
+    @pytest.mark.uc("UC-002", flow="A2", steps=[3])
+    def test_renamed_controller_without_hardware_state_carries_new_name(self, mock_misses, mock_hits):
+        """The no-state branch of the snapshot hash also changes on a rename."""
+        cache = StateCache(MockMonitoring())
+        cache._controller_states = {}
+        info = {ControllerInfoKey.BATTERY: 80, ControllerInfoKey.TEAM: 0, ControllerInfoKey.NAME: "Old Name"}
+
+        assert cache.build_or_get_cached_state("serial_1", info).name == "Old Name"
+
+        info[ControllerInfoKey.NAME] = "New Name"
+        assert cache.build_or_get_cached_state("serial_1", info).name == "New Name"
