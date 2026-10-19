@@ -163,117 +163,14 @@ func main() {
 }
 
 // ControllerManagerProxy implements the Connect handler by proxying to gRPC
+//
+// Browser-facing RPCs are unary or server-streaming only (#1543): the proxy owns
+// any bidi gRPC stream to the backend (WatchGameplayData). StreamButtonEvents and
+// StreamGameplayData are not forwarded; the embedded Unimplemented handler answers
+// them with CodeUnimplemented.
 type ControllerManagerProxy struct {
+	controller_managerconnect.UnimplementedControllerManagerServiceHandler
 	client controllerpb.ControllerManagerServiceClient
-}
-
-func (p *ControllerManagerProxy) StreamButtonEvents(
-	ctx context.Context,
-	stream *connect.BidiStream[controllerpb.ButtonEventStreamControl, controllerpb.ButtonEvent],
-) error {
-	// For bidirectional streaming, we need to handle both directions
-	grpcStream, err := p.client.StreamButtonEvents(ctx)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
-	}
-
-	// Forward messages in both directions
-	errCh := make(chan error, 2)
-
-	// Client -> gRPC
-	go func() {
-		for {
-			msg, err := stream.Receive()
-			if err == io.EOF {
-				grpcStream.CloseSend()
-				errCh <- nil
-				return
-			}
-			if err != nil {
-				errCh <- err
-				return
-			}
-			if err := grpcStream.Send(msg); err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	// gRPC -> Client
-	go func() {
-		for {
-			msg, err := grpcStream.Recv()
-			if err == io.EOF {
-				errCh <- nil
-				return
-			}
-			if err != nil {
-				errCh <- err
-				return
-			}
-			if err := stream.Send(msg); err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	// Wait for either direction to finish
-	return <-errCh
-}
-
-func (p *ControllerManagerProxy) StreamGameplayData(
-	ctx context.Context,
-	stream *connect.BidiStream[controllerpb.GameplayStreamControl, controllerpb.GameplayDataUpdate],
-) error {
-	grpcStream, err := p.client.StreamGameplayData(ctx)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
-	}
-
-	errCh := make(chan error, 2)
-
-	// Client -> gRPC
-	go func() {
-		for {
-			msg, err := stream.Receive()
-			if err == io.EOF {
-				grpcStream.CloseSend()
-				errCh <- nil
-				return
-			}
-			if err != nil {
-				errCh <- err
-				return
-			}
-			if err := grpcStream.Send(msg); err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	// gRPC -> Client
-	go func() {
-		for {
-			msg, err := grpcStream.Recv()
-			if err == io.EOF {
-				errCh <- nil
-				return
-			}
-			if err != nil {
-				errCh <- err
-				return
-			}
-			if err := stream.Send(msg); err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	return <-errCh
 }
 
 // WatchGameplayData is the browser's server-streaming view of the bidi

@@ -177,7 +177,6 @@ type fakeController struct {
 	log     callLog
 	err     error
 	updates []*controllerpb.GameplayDataUpdate
-	buttons []*controllerpb.ButtonEvent
 
 	// Gameplay stream knobs for WatchGameplayData (#1595): holdOpen keeps the
 	// stream open after the updates until the caller goes away, gameplayEndErr
@@ -186,22 +185,6 @@ type fakeController struct {
 	holdOpen       bool
 	gameplayEndErr error
 	gameplayDone   chan struct{}
-}
-
-// StreamButtonEvents records the first control message, sends the canned
-// button events and then ends the stream from the backend side.
-func (f *fakeController) StreamButtonEvents(s grpc.BidiStreamingServer[controllerpb.ButtonEventStreamControl, controllerpb.ButtonEvent]) error {
-	first, err := s.Recv()
-	if err != nil {
-		return err
-	}
-	f.log.record("StreamButtonEvents", first)
-	for _, e := range f.buttons {
-		if err := s.Send(e); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // StreamGameplayData records the first control message, sends the canned
@@ -785,70 +768,6 @@ func TestProxyBackendUnreachable(t *testing.T) {
 	})
 }
 
-// The menu's lobby stream; not a dashboard path, so no use-case step of its own.
-func TestProxyStreamButtonEvents(t *testing.T) {
-	// Same backend-ends pattern as TestProxyStreamGameplayData (#1543).
-	t.Run("button stream config reaches the controller manager and events are relayed", func(t *testing.T) {
-		rig := newProxyRig(t)
-		rig.controller.buttons = []*controllerpb.ButtonEvent{{Serial: "AA:01", Timestamp: 1}, {Serial: "AA:02", Timestamp: 2}}
-		stream := rig.controllerClient.StreamButtonEvents(testCtx(t))
-		cfg := &controllerpb.ButtonEventStreamControl{Control: &controllerpb.ButtonEventStreamControl_Config{
-			Config: &controllerpb.ButtonEventStreamConfig{},
-		}}
-		if err := stream.Send(cfg); err != nil {
-			t.Fatalf("Send: %v", err)
-		}
-		for i := range rig.controller.buttons {
-			msg, err := stream.Receive()
-			if err != nil {
-				t.Fatalf("Receive %d: %v", i, err)
-			}
-			eq(t, msg, rig.controller.buttons[i])
-		}
-		if _, err := stream.Receive(); !errors.Is(err, io.EOF) {
-			t.Errorf("after the backend ended: err = %v, want io.EOF", err)
-		}
-		eq(t, rig.controller.log.only(t, "StreamButtonEvents"), cfg)
-		rig.otherBackendsUntouched(t, "controller")
-		_ = stream.CloseRequest()
-		_ = stream.CloseResponse()
-	})
-}
-
-// UC: UC-035 MSS
-func TestProxyStreamGameplayData(t *testing.T) {
-	// The backend ends the stream here, not the client: when the client
-	// half-closes first, the proxy's bidi forwarder returns while its
-	// backend->client goroutine may still be sending, which the race
-	// detector flags inside main.go (tracked in #1543, not fixed here). The client-half-close
-	// path is therefore not exercised by these tests.
-	t.Run("UC-035/MSS gameplay config reaches the controller manager and updates are relayed", func(t *testing.T) {
-		rig := newProxyRig(t)
-		rig.controller.updates = []*controllerpb.GameplayDataUpdate{{Timestamp: 1}, {Timestamp: 2}}
-		stream := rig.controllerClient.StreamGameplayData(testCtx(t))
-		cfg := &controllerpb.GameplayStreamControl{Control: &controllerpb.GameplayStreamControl_Config{
-			Config: &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: 30},
-		}}
-		if err := stream.Send(cfg); err != nil {
-			t.Fatalf("Send: %v", err)
-		}
-		for i := range rig.controller.updates {
-			msg, err := stream.Receive()
-			if err != nil {
-				t.Fatalf("Receive %d: %v", i, err)
-			}
-			eq(t, msg, rig.controller.updates[i])
-		}
-		if _, err := stream.Receive(); !errors.Is(err, io.EOF) {
-			t.Errorf("after the backend ended: err = %v, want io.EOF", err)
-		}
-		eq(t, rig.controller.log.only(t, "StreamGameplayData"), cfg)
-		rig.otherBackendsUntouched(t, "controller")
-		_ = stream.CloseRequest()
-		_ = stream.CloseResponse()
-	})
-}
-
 // postJSON sends a request the way services/dashboard/src/client.ts does:
 // a plain fetch POST with Content-Type application/json.
 func postJSON(t *testing.T, rig *proxyRig, path string, body any, accept string) (*http.Response, []byte) {
@@ -1053,21 +972,39 @@ func TestProxyDashboardStreamingJSON(t *testing.T) {
 	})
 }
 
-// StreamGameplayData is bidirectional at the Connect layer, and connect-go
-// refuses a bidi stream over HTTP/1.1 (505), which is what envoy uses towards
-// connect-proxy. The dashboard therefore reads the server stream
-// WatchGameplayData instead (#1595, watch_gameplay_test.go).
+// The bidi pass-through forwarders were removed (#1543): browser-facing RPCs
+// are unary or server-streaming, and the proxy owns the bidi gRPC stream
+// itself (WatchGameplayData, watch_gameplay_test.go). The removed methods fall
+// through to the embedded Unimplemented handler.
 //
 // UC: UC-035 MSS
-func TestProxyDashboardGameplayStreamHTTP1(t *testing.T) {
-	t.Run("UC-035/MSS dashboard connect+json StreamGameplayData over HTTP/1.1 is 505 (bidi needs HTTP/2)", func(t *testing.T) {
+func TestProxyBidiRPCsUnimplemented(t *testing.T) {
+	t.Run("UC-035/MSS StreamGameplayData is unimplemented and never reaches the controller manager", func(t *testing.T) {
 		rig := newProxyRig(t)
-		resp, _ := postConnectStream(t, rig,
-			"/joustmania.controller_manager.ControllerManagerService/StreamGameplayData",
-			map[string]any{"config": map[string]any{"updateFrequencyHz": 30}})
-		if resp.StatusCode != http.StatusHTTPVersionNotSupported {
-			t.Errorf("status = %d, want 505 (bidi needs HTTP/2)", resp.StatusCode)
+		stream := rig.controllerClient.StreamGameplayData(testCtx(t))
+		_ = stream.Send(&controllerpb.GameplayStreamControl{Control: &controllerpb.GameplayStreamControl_Config{
+			Config: &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: 30},
+		}})
+		_, err := stream.Receive()
+		if connect.CodeOf(err) != connect.CodeUnimplemented {
+			t.Errorf("code = %v (%v), want unimplemented", connect.CodeOf(err), err)
 		}
-		rig.otherBackendsUntouched(t, "")
+		rig.controller.log.none(t)
+		_ = stream.CloseRequest()
+		_ = stream.CloseResponse()
+	})
+	t.Run("StreamButtonEvents is unimplemented and never reaches the controller manager", func(t *testing.T) {
+		rig := newProxyRig(t)
+		stream := rig.controllerClient.StreamButtonEvents(testCtx(t))
+		_ = stream.Send(&controllerpb.ButtonEventStreamControl{Control: &controllerpb.ButtonEventStreamControl_Config{
+			Config: &controllerpb.ButtonEventStreamConfig{},
+		}})
+		_, err := stream.Receive()
+		if connect.CodeOf(err) != connect.CodeUnimplemented {
+			t.Errorf("code = %v (%v), want unimplemented", connect.CodeOf(err), err)
+		}
+		rig.controller.log.none(t)
+		_ = stream.CloseRequest()
+		_ = stream.CloseResponse()
 	})
 }
