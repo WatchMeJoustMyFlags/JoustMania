@@ -53,7 +53,7 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Build, run and debug (partly stale, see the inventory) |
 | [DOCKER_WORKFLOW.md](DOCKER_WORKFLOW.md) | Compose and image workflow (partly stale) |
 | [hardware-setup-guide.md](hardware-setup-guide.md), [25-controller-setup.md](25-controller-setup.md) | Set up a Pi 5 with many controllers |
-| [controller-guide.md](controller-guide.md) | Player button reference (stale; the use cases are authoritative) |
+| [UC-010](use_cases/UC-010.md), [UC-012](use_cases/UC-012.md) | Lobby and admin button maps (BR-005 in each) |
 | [CONTROLLER_CONNECTIVITY.md](CONTROLLER_CONNECTIVITY.md) | Troubleshoot Bluetooth (stale) |
 | [AUDIO.md](AUDIO.md) | Audio hardware and ALSA setup |
 | [observability-quickstart.md](observability-quickstart.md) | Performance tooling (stale metric names) |
