@@ -94,6 +94,10 @@ class MockGrpcContext:
     def invocation_metadata(self):
         return []
 
+    async def send_initial_metadata(self, _metadata):
+        """The stream servicers send headers once subscribed (#1613)."""
+        self.initial_metadata_sent = True
+
 
 def _config(game_name="FFA", serials=("p1", "p2"), sensitivity=2, origin=None):
     # Default to MENU origin (#837): the characterization tests assert the legacy

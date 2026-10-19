@@ -51,6 +51,10 @@ class MockGrpcContext:
     def invocation_metadata(self):
         return self._metadata
 
+    async def send_initial_metadata(self, _metadata):
+        """The stream servicers send headers once subscribed (#1613)."""
+        self.initial_metadata_sent = True
+
 
 class _MockSpanContext:
     """trace_id=0 (invalid, like an unsampled span) so the servicer attempts no

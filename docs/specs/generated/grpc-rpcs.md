@@ -46,7 +46,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 servic
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
 | `ForceEndGame` | unary | `ForceEndGameRequest` → `ForceEndGameResponse` | Force end current game |
-| `StreamGameEvents` | server stream | `StreamEventsRequest` → `GameEvent` | Stream game events (deaths, scoring, etc.) If start_config is provided, starts a new game before streaming events. If start_config is empty, subscribes to current/upcoming game events. |
+| `StreamGameEvents` | server stream | `StreamEventsRequest` → `GameEvent` | Stream game events (deaths, scoring, etc.) If start_config is provided, starts a new game before streaming events. If start_config is empty, subscribes to current/upcoming game events. The server sends the response headers (empty initial metadata) as soon as the subscriber is registered on the event bus, before the first event, so a client can await `initial_metadata()` and know that every event published after that is delivered (#1613). |
 | `GetGameState` | unary | `GetGameStateRequest` → `GetGameStateResponse` | Get current game state (for testing/observability) |
 | `ListGames` | unary | `ListGamesRequest` → `ListGamesResponse` | List all live game sessions (primary + shadow). Lets agents and tests enumerate concurrent games and learn their game_ids; the dashboard uses it to pick the shadow game it follows (UC-070 BR-005). |
 
@@ -56,7 +56,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 servic
 |---|---|---|---|
 | `StartMenu` | unary | `StartMenuRequest` → `StartMenuResponse` | Start menu |
 | `StopMenu` | unary | `StopMenuRequest` → `StopMenuResponse` | Stop menu |
-| `StreamMenuEvents` | server stream | `StreamMenuEventsRequest` → `MenuEvent` | Stream menu events (button presses, selections) |
+| `StreamMenuEvents` | server stream | `StreamMenuEventsRequest` → `MenuEvent` | Stream menu events (button presses, selections). The server sends the response headers (empty initial metadata) as soon as the subscriber is registered, before the first event, so a client can await `initial_metadata()` and know that every event published after that is delivered (#1613). |
 | `ProcessInput` | unary | `ProcessInputRequest` → `ProcessInputResponse` | Process menu input. `web_command` `start_game` with a `mode` selects that mode first; an unknown or unimplemented mode returns `success=false` with the error and publishes `game_start_rejected` (UC-010 A6, UC-011 BR-002) |
 | `ListGameModes` | unary | `ListGameModesRequest` → `ListGameModesResponse` | The playable modes (`game_modes`, menu cycle order, UC-011 BR-001) and the mode to preselect (`default_mode`, `JoustFFA`); the dashboard builds its mode selector from it (UC-011 BR-002) |
 

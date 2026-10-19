@@ -49,6 +49,10 @@ class MockGrpcContext:
     def cancel(self):
         self._cancelled = True
 
+    async def send_initial_metadata(self, _metadata):
+        """The stream servicers send headers once subscribed (#1613)."""
+        self.initial_metadata_sent = True
+
 
 class FakeMenuServicer:
     """A lightweight fake of MenuServicer for testing individual methods.

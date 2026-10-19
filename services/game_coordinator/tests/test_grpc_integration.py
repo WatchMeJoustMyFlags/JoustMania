@@ -210,6 +210,25 @@ class TestStreamSubscription:
         assert received[1].event_type == "test_event_2"
 
     @pytest.mark.asyncio
+    async def test_headers_mark_the_subscription(self, grpc_service):
+        """Headers arrive once the subscriber is registered, before any event (#1613).
+
+        A client that awaits ``initial_metadata()`` and then acts must see the
+        event of that action: no polling of the server's subscriber list.
+        """
+        servicer, stub = grpc_service
+
+        stream = stub.StreamGameEvents(game_coordinator_pb2.StreamEventsRequest())
+        await asyncio.wait_for(stream.initial_metadata(), timeout=2.0)
+        assert servicer.event_bus.subscriber_count == 1
+
+        await servicer.event_bus.publish("test_event_1", {"key": "value1"})
+        event = await asyncio.wait_for(stream.read(), timeout=2.0)
+        stream.cancel()
+
+        assert event.event_type == "test_event_1"
+
+    @pytest.mark.asyncio
     async def test_stream_multiple_subscribers(self, grpc_service):
         """Two concurrent streams both receive the same events."""
         servicer, stub = grpc_service

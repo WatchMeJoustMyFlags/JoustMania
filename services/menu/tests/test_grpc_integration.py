@@ -213,6 +213,25 @@ class TestStreamMenuEvents:
         assert received[1].event_type == "menu_started"
 
     @pytest.mark.asyncio
+    async def test_headers_mark_the_subscription(self, grpc_service):
+        """Headers arrive once the subscriber is registered, before any event (#1613).
+
+        A client that awaits ``initial_metadata()`` and then acts must see the
+        event of that action: no polling of the server's subscriber list.
+        """
+        servicer, stub = grpc_service
+
+        stream = stub.StreamMenuEvents(menu_pb2.StreamMenuEventsRequest())
+        await asyncio.wait_for(stream.initial_metadata(), timeout=2.0)
+        assert len(servicer.event_publisher._subscribers) == 1
+
+        await servicer.event_publisher.publish("selection_changed", {"game_name": "FFA"})
+        event = await asyncio.wait_for(stream.read(), timeout=2.0)
+        stream.cancel()
+
+        assert event.event_type == "selection_changed"
+
+    @pytest.mark.asyncio
     async def test_stream_client_disconnect_cleanup(self, grpc_service):
         """Cancelling stream triggers unsubscribe cleanup."""
         servicer, stub = grpc_service

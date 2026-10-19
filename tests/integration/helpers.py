@@ -345,6 +345,26 @@ async def get_ready_players(docker_compose):
     return players
 
 
+# How long a collector waits for the server to confirm its subscription.
+STREAM_SUBSCRIBE_TIMEOUT = 10.0
+
+
+async def open_subscribed_stream(call, timeout: float = STREAM_SUBSCRIBE_TIMEOUT):
+    """Return a server-stream ``call`` once the server has registered it (#1613).
+
+    ``StreamGameEvents`` and ``StreamMenuEvents`` send their headers right after
+    the subscriber joins the event bus, so after ``initial_metadata()`` every
+    event published later reaches this call. Cancels the call and raises
+    ``TimeoutError`` when the headers do not come within ``timeout``.
+    """
+    try:
+        await asyncio.wait_for(call.initial_metadata(), timeout=timeout)
+    except BaseException:
+        call.cancel()
+        raise
+    return call
+
+
 # =============================================================================
 # Game event stream collector
 # =============================================================================
@@ -415,8 +435,15 @@ class GameEventCollector:
         return False
 
     async def start(self):
-        """Start collecting game events in background."""
-        self._task = asyncio.create_task(self._collect())
+        """Subscribe, then collect game events in the background.
+
+        Returns only once the coordinator has registered the subscription, so an
+        action taken right after ``start()`` cannot lose its event (#1613).
+        """
+        call = await open_subscribed_stream(
+            self.game_client.StreamGameEvents(self._build_request())
+        )
+        self._task = asyncio.create_task(self._collect(call))
 
     def _build_request(self):
         """Build the StreamEventsRequest for this collector's mode."""
@@ -442,10 +469,10 @@ class GameEventCollector:
             return True
         return event.game_id == self.game_id
 
-    async def _collect(self):
+    async def _collect(self, call):
         """Background task to collect events from stream."""
         try:
-            async for event in self.game_client.StreamGameEvents(self._build_request()):
+            async for event in call:
                 # Headless start only: learn the assigned game_id from the first
                 # event that carries one and adopt it as the filter. Never do
                 # this for an unfiltered primary collector.
@@ -601,14 +628,19 @@ class MenuEventCollector:
         return False
 
     async def start(self):
-        """Start collecting menu events in the background."""
-        self._task = asyncio.create_task(self._collect())
+        """Subscribe, then collect menu events in the background.
 
-    async def _collect(self):
+        Returns only once the menu has registered the subscription, so an action
+        taken right after ``start()`` cannot lose its event (#1613).
+        """
+        call = await open_subscribed_stream(
+            self.menu_client.StreamMenuEvents(menu_pb2.StreamMenuEventsRequest())
+        )
+        self._task = asyncio.create_task(self._collect(call))
+
+    async def _collect(self, call):
         try:
-            async for event in self.menu_client.StreamMenuEvents(
-                menu_pb2.StreamMenuEventsRequest()
-            ):
+            async for event in call:
                 self.events.append(event)
                 if event.event_type in self._event_conditions:
                     self._event_conditions[event.event_type].set()

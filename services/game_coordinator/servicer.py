@@ -832,6 +832,8 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
         # Subscribe to event bus
         event_queue = await event_bus.subscribe(subscriber_id)
+        # Headers now = "subscribed": a client awaiting initial_metadata() sees every later event (#1613).
+        await context.send_initial_metadata(())
 
         try:
             while not context.cancelled():
