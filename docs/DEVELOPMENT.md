@@ -1,847 +1,326 @@
 # JoustMania Development Guide
 
-**Getting started with JoustMania development**
+How to build, run, test and debug the stack. This is a guide: ports, RPCs, flags and
+compose variants are owned by the specs, and this page links to them instead of repeating them.
+Process and CI rules are in [CONTRIBUTING.md](CONTRIBUTING.md); the service layout and per-service
+gotchas are in [`.claude/rules/development.md`](../.claude/rules/development.md).
 
----
-
-## Table of Contents
+## Contents
 
 1. [Prerequisites](#prerequisites)
-2. [Quick Start](#quick-start)
-3. [Development Workflow](#development-workflow)
-4. [Building Services](#building-services)
-5. [Running Services](#running-services)
-6. [Testing](#testing)
-7. [Debugging](#debugging)
-8. [Code Organization](#code-organization)
-9. [Adding New Features](#adding-new-features)
-10. [Best Practices](#best-practices)
-
----
+2. [Quick start](#quick-start)
+3. [Compose and images](#compose-and-images)
+4. [Development workflow](#development-workflow)
+5. [Testing](#testing)
+6. [Debugging](#debugging)
+7. [Code organization](#code-organization)
+8. [Adding features](#adding-features)
+9. [Containers and privileges](#containers-and-privileges)
+10. [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
 
-### Required Software
+| Tool | Why |
+|---|---|
+| Docker with Compose v2.24+ | The stack. The CI overlay uses `!reset`, which needs v2.24 |
+| Git | |
+| [uv](https://docs.astral.sh/uv/) | Python environments, tests, lint (`uv run ...`) |
+| Python 3.14 | The services pin `requires-python = ">=3.14,<3.15"` in each `pyproject.toml`; uv installs it for you |
+| make | Shortcuts below |
+| grpcurl (optional) | Calling gRPC by hand |
+| Go, Rust toolchains (optional) | Only when you change `services/agent`, `services/flag-service`, `services/connect-proxy` or `services/rust-hid` outside Docker |
 
-- **Docker** (20.10+)
-- **Docker Compose** (v2.0+)
-- **Git**
-- **Python** 3.14 (for local development)
-- **grpcurl** (for API testing)
-
-### Optional Software
-
-- **uv** (Python package manager)
-- **make** (for convenience commands)
-- **VS Code** (recommended IDE)
-
-### Hardware (Optional)
-
-- **PS Move Controllers** (for hardware testing)
-- **USB Bluetooth Adapter** (CSR chipset recommended, e.g. Feasycom FSC-BP119; see [hardware guide](hardware-setup-guide.md#bluetooth-adapter-recommendations))
-- **Raspberry Pi** or **Linux machine** (for full hardware testing)
-
-### Installation
-
-#### Docker
+Hardware is optional: PS Move controllers, and a USB Bluetooth adapter for a real venue (see the
+[hardware guide](hardware-setup-guide.md#bluetooth-adapter-recommendations)). Everything except real
+Bluetooth runs with the mock controller backend.
 
 ```bash
-# Linux (using convenience script)
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-sudo usermod -aG docker $USER
-
-# Log out and back in for group changes to take effect
+curl -LsSf https://astral.sh/uv/install.sh | sh      # uv
+sudo apt-get install grpcurl                          # or: brew install grpcurl
 ```
 
-#### grpcurl
-
-```bash
-# Linux
-sudo apt-get install grpcurl
-
-# macOS
-brew install grpcurl
-
-# Or download binary from https://github.com/fullstorydev/grpcurl/releases
-```
-
-#### uv (Python Package Manager)
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
----
-
-## Quick Start
-
-### 1. Clone the Repository
+## Quick start
 
 ```bash
 git clone https://github.com/WatchMeJoustMyFlags/JoustMania.git
 cd JoustMania
+make up-mock                                  # full stack, mock controllers, no hardware
+docker compose -f docker-compose.yml -f docker-compose.ci.yml ps
 ```
 
-### 2. Build Docker Images
+`make up-mock` runs `docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d` (add
+`BUILD=1` to build from your checkout). It starts envoy, the dashboard, the services and the observability
+stack with `backend=mock` (the CI flag baseline, `services/flagd/ci/`). Stop it with the same `-f` flags and
+`down`.
+
+Everything a browser needs is behind **envoy on port 80** (the only port reachable from the network):
+
+| URL | What |
+|---|---|
+| `http://localhost/` | Dashboard |
+| `http://localhost/jaeger/` | Traces |
+| `http://localhost/grafana/` | Dashboards |
+| `http://localhost/victoria-metrics/vmui/` | Metrics (the only metric store) |
+
+For real controllers, `docker compose up -d` (or the Pi path in [Compose and images](#compose-and-images))
+reads them through `rust-hid`, the default Bluetooth backend (`backend=rust` in
+`services/flagd/controller.json`). `python-hid` is opt-in; the three switches are in
+[hardware-setup-guide.md](hardware-setup-guide.md#opting-in-to-python-hid) and [services.md, Backend layering](specs/services.md#backend-layering).
+
+## Compose and images
+
+The stack is one base file plus overlays. Which overlay does what, which `make` target uses it and which
+host ports are published: [services.md, Compose variants and host ports](specs/services.md#compose-variants-and-host-ports).
+Pick the entry point that matches what you are doing:
+
+| Goal | Command |
+|---|---|
+| No hardware, mock controllers | `make up-mock` |
+| Hot-reload Python source | `make dev` |
+| Agent experiment dry run (mock controllers, agent + dashboard profiles) | `make dry-run`, see [agent-dry-run-runbook.md](agent-dry-run-runbook.md) |
+| Real hardware on a dev machine | `docker compose up -d` |
+| Raspberry Pi, as the venue runs it | `./scripts/setup/joustmania-compose.sh up -d` |
+| Pi without observability | `docker compose -f docker-compose.lite.yml up -d` |
+
+A bare `docker compose` also loads `docker-compose.override.yml`, which publishes the dev gRPC ports on all
+interfaces. That is fine on a dev machine and wrong on the Pi, so the Pi wrapper names
+`-f docker-compose.yml` and the env files explicitly (#1319, #1488).
+
+### Image names and tags
+
+Each service has both `build:` and `image:` in the compose file, so a local build and a pulled image carry
+the same canonical GHCR name:
+
+```
+ghcr.io/watchmejoustmyflags/joustmania/<image>:${IMAGE_TAG:-latest}
+```
+
+Images in `docker-compose.yml`: `agent`, `audio-service`, `connect-proxy`, `controller-manager-service`,
+`dashboard`, `flag-service`, `game-coordinator-service`, `menu-service`, `otel-collector`,
+`pairing-daemon-service`, `python-hid`, `rust-hid`. Third-party images (envoy, flagd, jaeger, victoria-metrics,
+grafana, loki) are pinned to exact versions in the compose file.
+
+`IMAGE_TAG` defaults to `latest` in the compose file, but a plain `docker compose` also reads `.env`, which
+pins the **release** tag (`IMAGE_TAG=0.7.0`). For current builds override it, and never commit that change:
 
 ```bash
-docker compose build --parallel
+IMAGE_TAG=latest docker compose pull && IMAGE_TAG=latest docker compose up -d
 ```
 
-### 3. Start the Stack
+`make up-mock`, `make dev` and `make dry-run` do not set it for you (only `dry-run` pins `latest`), so a stale
+release tag is the first thing to check when a stack runs old code.
 
 ```bash
-docker compose up -d
+docker compose pull              # fetch images from GHCR
+docker compose up -d --build     # build from your checkout instead
 ```
 
-> **Note:** By default, `docker compose up` uses the pinned release version from `.env` (e.g., `0.2.0`).
-> For development with the latest builds, override with:
-> ```bash
-> IMAGE_TAG=latest docker compose up -d
-> ```
-> Or set `IMAGE_TAG=latest` in your local `.env` (don't commit this change).
-
-> **Controller backend:** the stack reads real PS Move controllers through `rust-hid`, the default
-> Bluetooth backend (`backend=rust` in the read-only baseline `services/flagd/controller.json`). `python-hid`
-> is opt-in only: `docker compose --profile python-hid up -d` (or `COMPOSE_PROFILES=python-hid`) plus
-> `backend=python_rust` **and** `bluetooth_backend=python` (without the second, every controller stays on rust-hid). `backend` is not in the flag service's mutable registry, so that is a
-> reviewed baseline edit followed by `scripts/flags.sh restart` (restarts flag-service, then flagd). See [hardware-setup-guide.md](hardware-setup-guide.md#opting-in-to-python-hid) and [services.md, Backend layering](specs/services.md#backend-layering).
-> Without hardware, use `make up-mock` (`backend=mock`).
-
-### 4. Verify Services
+CI builds each service image separately, tags it with the commit SHA and the branch, and pushes to GHCR
+(`.github/workflows/`). Public images pull without login; for a private fork, authenticate once:
 
 ```bash
-# Check service status
-docker compose ps
-
-# Should show all services running (or Up)
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin   # token with read:packages
 ```
 
-### 5. Access UIs
+Fixed `container_name`s (`joustmania-<service>`) mean a service cannot be scaled: `--scale
+game-coordinator=3` fails. A second coordinator is a separate service, as in
+`docker-compose.agent-coordinator.yml`.
 
-All UIs are accessible through the unified dashboard at **http://localhost**:
-
-- **Dashboard:** http://localhost
-- **Jaeger:** http://localhost/jaeger/
-- **Grafana:** http://localhost/grafana/
-- **VictoriaMetrics:** http://localhost/victoria-metrics/vmui/
-
-### 6. View Logs
-
-```bash
-# All services
-docker compose logs -f
-
-# Specific service
-docker compose logs -f controller-manager
-```
-
-### 7. Stop the Stack
-
-```bash
-docker compose down
-```
-
----
-
-## Development Workflow
-
-### Typical Development Cycle
+## Development workflow
 
 ```mermaid
 graph LR
-    A[Edit Code] --> B[Rebuild Service]
-    B --> C[Restart Service]
-    C --> D[Test Changes]
-    D --> E{Working?}
-    E -->|No| A
-    E -->|Yes| F[Commit]
-    F --> G[Push]
+    A[Edit] --> B[Rebuild or restart]
+    B --> C[Test]
+    C --> D{Works?}
+    D -->|No| A
+    D -->|Yes| E[make pr-gates, commit, push]
 ```
 
-### Hot Reloading
-
-Currently, services require rebuild after code changes. Future: Add volume mounts for hot reloading.
-
-### Development Commands
+- **Python services**: `make dev` volume-mounts `services/*` and `lib/`; after an edit,
+  `docker compose restart game-coordinator` (use the same `-f` flags `make dev` printed, or export
+  `COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.dev.yml`).
+- **Rust (`rust-hid`), Go (`agent`, `flag-service`, `connect-proxy`), dashboard, Dockerfile changes**: rebuild:
+  `docker compose up -d --build <service>`.
+- **Flags**: change them live with `scripts/flags.sh`, not by editing files while the stack runs; see
+  [flags.md](specs/flags.md) and [feature-flags.md](feature-flags.md).
+- **Before every commit**: `make lint`, the tests for what you touched, then `make pr-gates` (the local
+  version of the PR gates for the files you changed; `SERVICE=menu,agent` picks gates explicitly).
 
 ```bash
-# Rebuild specific service
-docker compose build game-coordinator
-
-# Restart specific service
-docker compose restart game-coordinator
-
-# Rebuild and restart
-docker compose up -d --build game-coordinator
-
-# View logs in real-time
-docker compose logs -f game-coordinator
+docker compose build <service>              # one image (--no-cache, --pull as needed)
+docker compose up -d --build <service>      # rebuild and restart
+docker compose up -d flagd flag-service     # a subset
 ```
 
----
-
-## Building Services
-
-### Build All Services
-
-```bash
-docker compose build --parallel
-```
-
-### Build Single Service
-
-```bash
-docker compose build <service-name>
-```
-
-**Service names:**
-- `controller-manager`
-- `game-coordinator`
-- `menu`
-- `audio`
-- `dashboard`
-
-### Build Options
-
-```bash
-# No cache (clean build)
-docker compose build --no-cache game-coordinator
-
-# Pull latest base images
-docker compose build --pull game-coordinator
-```
-
-### Understanding Multi-Stage Builds
-
-Services use multi-stage Docker builds:
-
-```dockerfile
-# Stage 1: Build dependencies
-FROM python:3.14-slim AS builder
-RUN pip install uv
-COPY pyproject.toml .
-RUN uv sync
-
-# Stage 2: Runtime
-FROM python:3.14-slim
-COPY --from=builder /app/.venv /app/.venv
-COPY . .
-CMD ["python", "server.py"]
-```
-
-**Benefits:**
-- Smaller final images
-- Faster builds (cached layers)
-- Clean separation of build/runtime dependencies
-
----
-
-## Running Services
-
-### Run All Services
-
-```bash
-docker compose up -d
-```
-
-### Run Specific Services
-
-```bash
-# Only infrastructure
-docker compose up -d jaeger otel-collector
-
-# Only application services
-docker compose up -d controller-manager game-coordinator menu
-```
-
-### Run in Foreground (with logs)
-
-```bash
-docker compose up
-```
-
-### Scale Services
-
-```bash
-# Run multiple game coordinators
-docker compose up -d --scale game-coordinator=3
-```
-
-### Override Configuration
-
-```bash
-# Use custom compose file
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
-```
-
----
+Service names are the compose names in [services.md section 2](specs/services.md#2-service-catalog).
 
 ## Testing
 
-### Unit Tests
+Run the narrowest test that proves your change; the full suites are for CI and for the end of a task.
 
-Each service has its own tests. Run from within the service directory:
+| Tier | Command | Needs |
+|---|---|---|
+| Unit, one service | `cd services/<service> && uv run pytest -v` | uv |
+| Unit and integration | `make test` (`TEST=name` filters with `-k`) | uv, docker |
+| Integration only (CI) | `make test-integration` | docker |
+| Integration shards (CI runs them as two jobs) | `make test-integration-core`, `make test-integration-agent` | docker |
+| Shard assignment check | `make test-integration-shard-check` | uv |
+| Service tier (T2): services from source, fake audio, real flag plane | `make test-service` | uv, go, docker |
+| Contract tier: telemetry and infra static checks, flagd contract | `make test-contract`, `make test-contract-flagd` | uv, docker |
+| Integration against pulled images | `make test-pulled` (`IMAGE_TAG=main`) | docker, GHCR |
+| Integration against pulled images plus source mounts | `make test-dev` | docker, `make dev` images |
+| Integration, pause before teardown for Jaeger | `make test-debug` | docker |
+
+Integration tests start the stack from `docker-compose.yml`, `docker-compose.override.yml` and
+`docker-compose.ci.yml` (`tests/integration/conftest.py`). `SKIP_TEARDOWN=1` (or `CI`) leaves it running; stop it with
+`docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.ci.yml down`.
+Tag tests per the traceability rules in [CONTRIBUTING.md](CONTRIBUTING.md#spec-driven-development-aiup);
+service-tier details are in `tests/service/README.md`.
+
+Test conventions that bite (OTEL off in `conftest.py`, metric patching, shared state in parallel tests) are in
+[`.claude/rules/development.md`](../.claude/rules/development.md#testing). If `.venv-test` is root-owned after
+a Docker run, `make` removes it for you; otherwise `sudo rm -rf .venv-test`.
+
+### Calling a service by hand
+
+The gRPC servers do not enable reflection, so give grpcurl the proto. The dev ports are published by
+`docker-compose.override.yml` only (so not on the Pi, #1319):
 
 ```bash
-# Run tests for a service
-cd services/<service-name>
-uv run pytest
-
-# Run with verbose output
-uv run pytest -v
-
-# Run with coverage
-uv run pytest --cov=.
+grpcurl -plaintext -import-path proto -proto game_coordinator.proto localhost:50053 list
+grpcurl -plaintext -import-path proto -proto game_coordinator.proto \
+  -d '{}' localhost:50053 joustmania.game_coordinator.GameCoordinatorService/ListGames
 ```
 
-### Integration Tests
+The RPC list and the service ports are in [services.md](specs/services.md#3-grpc-services).
 
-Integration tests use Docker Compose:
-
-```bash
-# Run full integration test suite
-make test
-
-# Keep containers running after tests (for debugging)
-SKIP_TEARDOWN=1 make test
-
-# CI runs the suite as two shards, each in its own job and compose stack:
-make test-integration-core         # e2e-core: no agent built or started
-make test-integration-agent        # e2e-agent: modules that start the agent
-make test-integration-shard-check  # every test is in exactly one shard
-
-# Clean up after SKIP_TEARDOWN
-docker compose -f docker-compose.test.yml down
-```
-
-### Testing with grpcurl
-
-#### List Services
+### Hardware
 
 ```bash
-grpcurl -plaintext localhost:50052 list
-# Output: joustmania.ControllerManagerService
-```
-
-#### Test All Services
-
-```bash
-# ControllerManager (50052)
-grpcurl -plaintext localhost:50052 list
-
-# GameCoordinator (50053)
-grpcurl -plaintext localhost:50053 list
-
-# Menu (50054)
-grpcurl -plaintext localhost:50054 list
-
-# Audio (50056)
-grpcurl -plaintext localhost:50056 list
-```
-
-### Hardware Testing
-
-```bash
-# Remove PS Move registrations only (other Bluetooth devices stay)
-scripts/hardware/reset_bluetooth_connections.sh --dry-run
+python tools/manualpair.py                                   # pair one controller by hand
+scripts/hardware/reset_bluetooth_connections.sh --dry-run    # remove PS Move registrations only
 scripts/hardware/reset_bluetooth_connections.sh
 ```
 
----
-
 ## Debugging
 
-### View Logs
-
 ```bash
-# All services
-docker compose logs -f
-
-# Specific service
-docker compose logs -f game-coordinator
-
-# Last N lines
-docker compose logs --tail=100 game-coordinator
-
-# With timestamps
-docker compose logs -f -t game-coordinator
-```
-
-### Access Container
-
-```bash
-# Get shell in running container
-docker compose exec game-coordinator bash
-
-# Or if bash not available
-docker compose exec game-coordinator sh
-
-# Run command in container
-docker compose exec game-coordinator python -c "import sys; print(sys.version)"
-```
-
-### Inspect Container
-
-```bash
-# View container details
-docker inspect joustmania-game-coordinator
-
-# View environment variables
+docker compose logs -f game-coordinator                 # follow; --tail=100, -t for timestamps
+docker compose exec game-coordinator sh                 # a shell (bash is not in every image)
 docker inspect joustmania-game-coordinator | jq '.[0].Config.Env'
-
-# View mounts
-docker inspect joustmania-game-coordinator | jq '.[0].Mounts'
+docker network inspect joustmania-network               # the compose network (name set in the file)
 ```
 
-### Debug gRPC Issues
+Use the same `-f` flags the stack was started with, or `docker compose` will not see overlay services.
+
+- **Traces**: `http://localhost/jaeger/`, pick the service, filter by operation or `error=true`. Span names
+  and attributes: [telemetry.md](specs/telemetry.md).
+- **Metrics and dashboards**: `http://localhost/victoria-metrics/vmui/` and `http://localhost/grafana/`
+  (dashboards in `services/grafana/dashboards/`); see [observability-quickstart.md](observability-quickstart.md).
+- **No traces**: check `docker compose logs otel-collector` and that the service has
+  `OTEL_EXPORTER_OTLP_ENDPOINT` set (`docker compose exec <service> env | grep OTEL`). OTLP is published on
+  `127.0.0.1:4317` only, for the host-networked pairing daemon.
+- **Flags**: `scripts/flags.sh` shows and changes live state; the flag service is at `http://localhost/flags/`
+  through envoy ([services.md section 7](specs/services.md#7-flag-service-epic-1407)).
+- **Service-to-service connectivity**: DNS names are the compose service names on `joustmania-network`
+  (`controller-manager:50052`), for example `docker compose exec game-coordinator python -c "import socket; print(socket.getaddrinfo('controller-manager', 50052))"`.
+- **Agent**: [agent runbooks](agent-dry-run-runbook.md) and `http://localhost/experiments`.
+- **Bluetooth and pairing**: [CONTROLLER_CONNECTIVITY.md](CONTROLLER_CONNECTIVITY.md).
+
+## Code organization
+
+```
+lib/            shared Python: types.py (enums), colors.py, telemetry.py, otel_metrics.py,
+                grpc_tracing.py, feature_flags.py, ... (list: services.md section 6)
+proto/          .proto files; generated *_pb2*.py are committed
+services/       controller_manager, game_coordinator, menu, audio, python_hid, pairing_daemon (Python);
+                agent, flag-service, connect-proxy (Go); rust-hid (Rust); dashboard (TypeScript);
+                flagd, envoy, otel-collector, jaeger, loki, grafana (config)
+tests/          integration/ (docker), service/ (T2), contract/
+scripts/        ci/, setup/ (Pi install and start), hardware/, aiup/, flags.sh, ...
+tools/          manualpair.py, live_dashboard.py, ci-proto/, ...
+docs/           specs/ (normative), use_cases/, test_cases/, guides
+docker-compose*.yml
+```
+
+A Python service is `server.py` (entry), `servicer.py` (gRPC), `metrics.py`, `tests/`, `pyproject.toml`
+([layout](../.claude/rules/development.md#service-layout)). Language, ports and source of each service:
+[services.md section 2](specs/services.md#2-service-catalog). Shared libraries, proto files and the mode to
+config-message table: [services.md](specs/services.md#mode-to-config-message-privileges-libraries-and-proto-files).
+
+Proto changes:
 
 ```bash
-# Enable gRPC debug logging
-docker compose exec game-coordinator python -c "
-import grpc
-import logging
-logging.basicConfig(level=logging.DEBUG)
-"
-
-# Test connection
-grpcurl -plaintext -v localhost:50052 list
-```
-
-### View Traces in Jaeger
-
-1. Open http://localhost/jaeger/
-2. Select service from dropdown (e.g., "game-coordinator-service")
-3. Click "Find Traces"
-4. Click on trace to see details
-
-**Useful filters:**
-- Service: `game-coordinator-service`
-- Operation: `joustmania.GameCoordinatorService/StreamGameEvents`
-- Min Duration: `100ms` (find slow requests)
-- Tags: `error=true` (find failures)
-
-### Debug OpenTelemetry
-
-```bash
-# Check OTel Collector health
-curl http://localhost:13133/
-
-# View collector logs
-docker compose logs -f otel-collector
-
-# Test OTLP endpoint
-grpcurl -plaintext localhost:4317 list
-```
-
-### Debug Network Issues
-
-```bash
-# Test service connectivity
-docker compose exec game-coordinator nc -zv controller-manager 50052
-
-# View network
-docker network ls
-docker network inspect joustmania_default
-
-# DNS resolution
-docker compose exec game-coordinator nslookup game-coordinator
-```
-
-### Performance Profiling
-
-```bash
-# Python profiling
-docker compose exec game-coordinator python -m cProfile -s cumtime server.py
-
-# Memory profiling
-pip install memory_profiler
-python -m memory_profiler services/game_coordinator/server.py
-```
-
----
-
-## Code Organization
-
-### Project Structure
-
-```
-JoustMania/
-├── lib/                     # Shared libraries
-│   ├── colors.py           # Color constants
-│   ├── types.py            # Game enums, types
-│   ├── telemetry.py        # OpenTelemetry setup
-│   ├── otel_metrics.py     # Metrics helpers
-│   ├── grpc_tracing.py     # gRPC interceptors
-│   └── feature_flags.py    # Feature flag client
-├── proto/                   # Protocol buffer definitions
-│   ├── controller_manager.proto
-│   ├── game_coordinator.proto
-│   ├── menu.proto
-│   └── audio.proto
-├── services/                # Microservices
-│   ├── controller_manager/
-│   ├── game_coordinator/
-│   ├── menu/
-│   ├── audio/
-│   ├── dashboard/          # Web UI + reverse proxy
-│   ├── flag-service/       # Runtime flag state (Go), flagd's only sync source
-│   ├── flagd/              # Read-only baseline flag files
-│   └── grafana/            # Dashboards
-├── tests/                   # Integration tests
-│   └── integration/
-├── scripts/                 # Helper scripts
-│   ├── ci/                 # CI/CD scripts
-│   ├── setup/              # Installation scripts
-│   └── pairing-daemon/     # PS Move pairing daemon
-├── tools/                   # Development tools
-│   └── live_dashboard.py   # Performance monitoring
-├── docs/                    # Documentation
-├── audio/                   # Audio files
-├── docker-compose.yml
-└── README.md
-```
-
-### Service Structure
-
-Each service follows this pattern:
-
-```
-services/<service-name>/
-├── server.py               # Entry point, gRPC server setup
-├── servicer.py             # gRPC servicer implementation
-├── metrics.py              # Prometheus/OTEL metrics
-├── Dockerfile              # Multi-stage build
-├── pyproject.toml          # Python dependencies (uv managed)
-├── tests/                  # Unit tests
-│   ├── conftest.py
-│   └── test_*.py
-└── README.md               # Service documentation
-```
-
-Proto files are centralized in the `proto/` directory.
-
-### Protobuf Code Generation
-
-Proto files are in the `proto/` directory. After modifying any `.proto` file:
-
-```bash
-# Regenerate all Python bindings
-make protos
-
-# Verify changes
+make protos        # Python bindings (generated files are committed)
+make protos-all    # also Go (connect-proxy, agent)
 git diff proto/
 ```
 
-Generated files (`*_pb2.py`, `*_pb2_grpc.py`) are committed to the repo.
+A new browser-reachable RPC also needs a forwarding method in `services/connect-proxy/main.go`; a new or
+changed RPC needs its description in `docs/specs/notes/grpc-rpcs.yaml` and `make specs`
+([services.md section 3](specs/services.md#3-grpc-services)).
 
-### Import Conventions
+Import conventions: `from lib.types import Games`, `from lib.otel_metrics import Counter` (never
+`prometheus_client` directly), `from proto import game_coordinator_pb2`. Metric and span naming:
+[`.claude/rules/development.md`](../.claude/rules/development.md#metrics).
 
-```python
-# Shared libraries
-from lib import colors
-from lib.types import Games
-from lib.telemetry import setup_tracing
-from lib.otel_metrics import Counter, Gauge
+## Adding features
 
-# Proto definitions
-from proto import controller_manager_pb2
-from proto import game_coordinator_pb2
+All feature work starts spec-first ([CONTRIBUTING.md](CONTRIBUTING.md#spec-driven-development-aiup)); the
+checklists below are the code side.
 
-# gRPC
-import grpc
+- **Game mode**: steps in [`.claude/rules/development.md`](../.claude/rules/development.md#adding-a-game-mode)
+  and `services/game_coordinator/games/README.md`.
+- **RPC on an existing service**: edit the `.proto`, `make protos` (and `make protos-all` for Go clients),
+  implement it in the servicer, add the forwarder in connect-proxy if browsers call it, add the RPC note,
+  `make specs`, then tests.
+- **Flag**: register it in the right set under `services/flagd/` and in [flags.md](specs/flags.md); read it at
+  use time, and fail closed for safety gates.
+- **New service**:
+  1. `services/<name>/` with the [standard layout](../.claude/rules/development.md#service-layout), a
+     multi-stage Dockerfile on `python:3.14-slim` (copy `services/game_coordinator/Dockerfile`; it has no
+     compiler, only audio installs a toolchain), non-root user, pinned base.
+  2. Proto in `proto/`, `make protos`, a servicer and `server.py` that reads its port with
+     `lib.grpc_utils.port_from_env`.
+  3. A compose entry with `build:`, `image: ghcr.io/watchmejoustmyflags/joustmania/<name>:${IMAGE_TAG:-latest}`,
+     `container_name: joustmania-<name>`, the `joustmania` network, a healthcheck, memory and CPU limits
+     (budget for a 4 GB Pi), and `OTEL_*` env. Publish no host port unless a test or the pairing daemon needs
+     one, and then bind `127.0.0.1` ([host ports](specs/services.md#compose-variants-and-host-ports)).
+  4. Mirror it in the CI and lite overlays when they must run there, add a row to
+     [services.md section 2](specs/services.md#2-service-catalog), and cover its environment variables in
+     the env coverage contract test (`tests/contract/test_env_coverage.py`).
 
-# OpenTelemetry
-from opentelemetry import trace
-```
+## Containers and privileges
 
----
+`controller-manager`, `python-hid`, `rust-hid` and `pairing-daemon` run `privileged` for USB/HID and
+Bluetooth access; `pairing-daemon` also uses the host network (raw HCI). `audio` is unprivileged and gets the
+sound devices. Details and the reasons: [services.md](specs/services.md#mode-to-config-message-privileges-libraries-and-proto-files).
+Without hardware, `docker-compose.ci.yml` removes the audio devices and moves the hardware services behind
+the `hardware` profile.
 
-## Adding New Features
-
-### Adding a New Service
-
-1. **Create Service Directory**
-
-```bash
-mkdir -p services/newservice
-cd services/newservice
-```
-
-2. **Define Protobuf Schema**
-
-```protobuf
-// newservice.proto
-syntax = "proto3";
-package joustmania;
-
-service NewService {
-  rpc DoSomething(DoSomethingRequest) returns (DoSomethingResponse);
-}
-
-message DoSomethingRequest {
-  string param = 1;
-}
-
-message DoSomethingResponse {
-  bool success = 1;
-  string message = 2;
-}
-```
-
-3. **Generate Python Code**
-
-```bash
-python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. newservice.proto
-```
-
-4. **Implement Server**
-
-```python
-# server.py
-import asyncio
-import logging
-import grpc.aio
-from proto import newservice_pb2, newservice_pb2_grpc
-
-class NewServiceServicer(newservice_pb2_grpc.NewServiceServicer):
-    async def DoSomething(self, request, context):
-        # Implementation
-        return newservice_pb2.DoSomethingResponse(
-            success=True,
-            message=f"Processed: {request.param}"
-        )
-
-async def serve():
-    server = grpc.aio.server()
-    newservice_pb2_grpc.add_NewServiceServicer_to_server(
-        NewServiceServicer(), server
-    )
-    server.add_insecure_port('[::]:50057')
-    await server.start()
-    await server.wait_for_termination()
-
-if __name__ == '__main__':
-    asyncio.run(serve())
-```
-
-5. **Create Dockerfile**
-
-```dockerfile
-FROM python:3.14-slim AS builder
-RUN pip install --no-cache-dir uv
-WORKDIR /app
-COPY pyproject.toml .
-RUN uv sync --frozen
-
-FROM python:3.14-slim
-WORKDIR /app
-COPY --from=builder /app/.venv /app/.venv
-COPY . .
-ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONUNBUFFERED=1
-CMD ["python", "server.py"]
-```
-
-6. **Add to docker-compose.yml**
-
-```yaml
-newservice:
-  build: ./services/newservice
-  container_name: joustmania-newservice
-  ports:
-    - "50057:50057"
-  environment:
-    - OTEL_SERVICE_NAME=joustmania-newservice
-    - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-  depends_on:
-    - otel-collector
-  restart: unless-stopped
-```
-
-7. **Test the Service**
-
-```bash
-# Build
-docker compose build newservice
-
-# Start
-docker compose up -d newservice
-
-# Test with grpcurl
-grpcurl -plaintext localhost:50057 list
-grpcurl -plaintext -d '{"param":"test"}' \
-    localhost:50057 joustmania.NewService/DoSomething
-```
-
-### Adding a New RPC to Existing Service
-
-1. Update `.proto` file
-2. Regenerate Python code
-3. Implement new method in Servicer class
-4. Rebuild service
-5. Test with grpcurl
-
-### Adding a New Game Mode
-
-See `services/game_coordinator/games/README.md` for the game mode implementation guide.
-
----
-
-## Best Practices
-
-### Code Style
-
-- **Python:** Follow PEP 8
-- **Docstrings:** Use Google style
-- **Type hints:** Use where appropriate
-- **Linting:** Use `ruff` (run `make lint`)
-- **Formatting:** Use `ruff format` (run `make format`)
-
-### gRPC Best Practices
-
-1. **Use streaming for real-time data**
-   ```python
-   def StreamData(self, request, context):
-       while True:
-           yield DataResponse(...)
-   ```
-
-2. **Handle errors properly**
-   ```python
-   try:
-       # ...
-   except Exception as e:
-       context.set_code(grpc.StatusCode.INTERNAL)
-       context.set_details(str(e))
-       return ErrorResponse()
-   ```
-
-3. **Add deadlines/timeouts**
-   ```python
-   with grpc.insecure_channel('localhost:50053') as channel:
-       stub = GameCoordinatorStub(channel)
-       response = stub.GetGameState(request, timeout=5.0)
-   ```
-
-### OpenTelemetry Best Practices
-
-1. **Add spans for critical operations**
-   ```python
-   from opentelemetry import trace
-
-   tracer = trace.get_tracer(__name__)
-
-   with tracer.start_as_current_span("operation_name") as span:
-       span.set_attribute("key", "value")
-       # Do work
-   ```
-
-2. **Propagate context**
-   ```python
-   # Context automatically propagated in gRPC
-   ```
-
-3. **Add meaningful attributes**
-   ```python
-   span.set_attribute("setting.key", key)
-   span.set_attribute("setting.value", value)
-   span.set_attribute("validation.result", "success")
-   ```
-
-### Docker Best Practices
-
-1. **Use multi-stage builds**
-2. **Don't run as root** (add USER in Dockerfile)
-3. **Use `.dockerignore`**
-4. **Pin base image versions**
-5. **Minimize layers**
-
-### Testing Best Practices
-
-1. **Write unit tests for business logic**
-2. **Write integration tests for gRPC APIs**
-3. **Mock external dependencies**
-4. **Test error cases**
-5. **Use fixtures for common setup**
-
----
+Base images are pinned and Dockerfiles are linted in CI (`make ci-lint-dockerfiles`). Python service
+images are multi-stage: a builder stage with uv, a slim runtime stage copying the virtual environment.
 
 ## Troubleshooting
 
-### Common Issues
-
-#### Services won't start
-
-```bash
-# Check logs
-docker compose logs <service>
-
-# Check if ports are in use
-sudo netstat -tulpn | grep 5005
-
-# Rebuild from scratch
-docker compose down
-docker compose build --no-cache
-docker compose up -d
-```
-
-#### gRPC connection refused
-
-```bash
-# Verify service is running
-docker compose ps
-
-# Test with grpcurl
-grpcurl -plaintext localhost:50053 list
-
-# Check service logs for errors
-docker compose logs game-coordinator
-```
-
-#### Permission denied (hardware access)
-
-```bash
-# Ensure containers are privileged
-# Check docker-compose.yml for:
-privileged: true
-devices:
-  - /dev/bus/usb:/dev/bus/usb
-```
-
-#### Traces not appearing in Jaeger
-
-```bash
-# Check OTel Collector
-docker compose logs otel-collector
-
-# Verify OTLP endpoint
-docker compose exec game-coordinator env | grep OTEL
-
-# Test trace export
-grpcurl -plaintext localhost:4317 list
-```
-
----
+| Symptom | Check |
+|---|---|
+| A service will not start | `docker compose logs <service>`; `docker compose ps` for restarts and health |
+| Old behaviour after a rebuild | `.env` pins the release `IMAGE_TAG`; set `IMAGE_TAG=latest` and verify the image, not just the tag |
+| Port in use on 80 or 50052-50056 | Another stack or process holds it: `ss -ltnp \| grep -E ':(80\|5005)'` |
+| gRPC connection refused from the host | Dev ports exist only with `docker-compose.override.yml`; the Pi start path does not publish them |
+| Overlay service missing from `docker compose ps` | Profiles: `agent`, `dashboard`, `hardware`, `python-hid` ([matrix](specs/services.md#compose-variants-and-host-ports)) |
+| Hardware access denied | The hardware services must run `privileged` with the USB devices; check the compose entry |
+| Traces missing | `docker compose logs otel-collector`; service `OTEL_*` env |
+| `compose config` prints secrets | Use `config -q` or `--services` when output is logged |
+| Disk full of images | `docker image prune`; `docker images \| grep joustmania` |
+| `pull` fails with "not found" | The tag is not published (or the images are private): build with `up -d --build` or log in to GHCR |
 
 ## Resources
 
-- [Services spec](specs/services.md)
-- [gRPC Python Guide](https://grpc.io/docs/languages/python/)
-- [OpenTelemetry Python](https://opentelemetry.io/docs/instrumentation/python/)
-- [Docker Compose Reference](https://docs.docker.com/compose/compose-file/)
-- [grpcurl Documentation](https://github.com/fullstorydev/grpcurl)
-
----
-
-## Getting Help
-
-- **Issues:** https://github.com/WatchMeJoustMyFlags/JoustMania/issues
-- **Discussions:** https://github.com/WatchMeJoustMyFlags/JoustMania/discussions
-- **Documentation:** Browse `docs/` directory
-
----
-
-Happy coding! 🎮
+- [Services spec](specs/services.md), [flags spec](specs/flags.md), [telemetry spec](specs/telemetry.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md) and the [documentation map](README.md)
+- [gRPC Python](https://grpc.io/docs/languages/python/), [OpenTelemetry Python](https://opentelemetry.io/docs/languages/python/),
+  [Compose reference](https://docs.docker.com/compose/compose-file/), [grpcurl](https://github.com/fullstorydev/grpcurl)
+- Issues: https://github.com/WatchMeJoustMyFlags/JoustMania/issues
