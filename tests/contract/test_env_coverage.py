@@ -120,12 +120,6 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "agent",
         "GITHUB_REPOSITORY",
     ): "read only when AGENT_CODE_IMPROVEMENT_ENABLED=true (GitHub promotion target)",
-    # ---- agent: known gap, tracked in #1544 ----
-    ("agent", "AGENT_EXPERIMENT_PROPOSER_ENABLED"): (
-        _OPT_IN_OFF
-        + ". KNOWN GAP (tracked in #1544; found by #1526): UC-042's trigger has no compose passthrough, "
-        "so a host export or .env value never reaches the container (cf. #1078, #1041)"
-    ),
 }
 
 
