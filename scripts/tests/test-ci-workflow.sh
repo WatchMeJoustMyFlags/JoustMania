@@ -79,19 +79,24 @@ for publish in ("docker-build-merge", "docker-build-extra-merge"):
         f"retag-skipped: must not require {publish} success (it skips when nothing was built)",
     )
 # Exact: push only (never merge_group: the queue publishes nothing), and the
-# publish jobs block only on 'failure'.
+# publish jobs block only on 'failure'. No integration-test: a push to main runs
+# no e2e since #1583 (the queue ran it on that commit).
 RETAG_IF = (
-    "!cancelled() && github.event_name == 'push' && needs.changes.outputs.retag_matrix != '[]'"
-    " && needs.integration-test.result == 'success'"
+    "!cancelled() && github.event_name == 'push' && needs.changes.result == 'success'"
+    " && needs.changes.outputs.retag_matrix != '[]'"
     " && needs.docker-build.result != 'failure' && needs.docker-build-extra.result != 'failure'"
     " && needs.docker-build-merge.result != 'failure' && needs.docker-build-extra-merge.result != 'failure'"
 )
 check(retag == RETAG_IF, f"retag-skipped: unexpected if: {retag}")
 
 # CI Complete's check step: fails on failure OR cancelled, exits 1, nothing
-# softens it (`|| true`, success(), always(), a 'skipped' check).
-complete_runs = [str(s.get("run", "")) for s in jobs["ci-complete"]["steps"] if s.get("run")]
-check(len(complete_runs) == 1, "ci-complete: exactly one run step")
+# softens it (`|| true`, success(), always(), a 'skipped' check). The second
+# run step (#1583, required e2e) is checked below.
+E2E_STEP = "Check required e2e shards ran"
+complete_runs = [
+    str(s.get("run", "")) for s in jobs["ci-complete"]["steps"] if s.get("run") and s.get("name") != E2E_STEP
+]
+check(len(complete_runs) == 1, "ci-complete: exactly one generic check step (plus the e2e step)")
 lines = [ln.strip() for ln in (complete_runs[0] if complete_runs else "").splitlines() if ln.strip()]
 for required in (
     "FAILED=\"${{ contains(needs.*.result, 'failure') }}\"",
@@ -165,14 +170,44 @@ check(
 # non-empty matrix (the matrices are full on run_all_checks). No event_name
 # restriction, no always()/success()/true, no &&.
 EXEMPT = {"changes", "sonarcloud", "docker-build-merge", "docker-build-extra-merge", "retag-skipped"}
-MATRIX_GATED = {"service-checks", "docker-build", "docker-build-extra"}
+MATRIX_GATED = {"service-checks"}
 TERM = re.compile(r"needs\.changes\.outputs\.\w+ == 'true'")
 RUN_ALL = "needs.changes.outputs.run_all_checks == 'true'"
-check("e2e_required == 'true'" in job_if("integration-test"), "integration-test: must gate on e2e_required (#1583)")
+
+# (#1583) Jobs gated by e2e_required, exact. integration-test always runs in the
+# queue (fail closed even if e2e_required is empty); the builds wait for it only
+# where it ran, and a required shard must have succeeded.
+check(
+    job_if("integration-test") == "needs.changes.outputs.e2e_required == 'true' || github.event_name == 'merge_group'",
+    f"integration-test: must gate on e2e_required and always run in the merge queue: {job_if('integration-test')}",
+)
+for build, matrix in (("docker-build", "docker_build_matrix"), ("docker-build-extra", "docker_extra_matrix")):
+    check(
+        job_if(build)
+        == f"needs.changes.outputs.{matrix} != '[]' && !cancelled() && needs.changes.result == 'success' &&"
+        " (needs.integration-test.result == 'success' ||"
+        " (needs.integration-test.result == 'skipped' && needs.changes.outputs.e2e_required != 'true'))",
+        f"{build}: unexpected if: {job_if(build)}",
+    )
+E2E_GATED = {"integration-test", "docker-build", "docker-build-extra"}
+e2e_steps = [s for s in jobs["ci-complete"]["steps"] if s.get("name") == E2E_STEP]
+check(len(e2e_steps) == 1, f"ci-complete: must have the step {E2E_STEP!r}")
+if e2e_steps:
+    step = e2e_steps[0]
+    check("if" not in step, f"ci-complete/{E2E_STEP}: must run unconditionally (fail closed)")
+    check(
+        step.get("env") == {
+            "E2E_REQUIRED": "${{ needs.changes.outputs.e2e_required }}",
+            "E2E_RESULT": "${{ needs.integration-test.result }}",
+            "EVENT_NAME": "${{ github.event_name }}",
+        },
+        f"ci-complete/{E2E_STEP}: unexpected env: {step.get('env')}",
+    )
+    check("|| true" not in str(step["run"]), f"ci-complete/{E2E_STEP}: must not be softened with || true")
 check("github.event_name == 'merge_group'" in job_if("integration-test"),
       "integration-test: must always run in the merge queue (fail closed, #1583)")
 for name in jobs["ci-complete"]["needs"]:
-    if name in EXEMPT:
+    if name in EXEMPT or name in E2E_GATED:
         continue
     cond = job_if(name)
     check("github.event_name" not in cond, f"{name}: must not restrict github.event_name: {cond}")
