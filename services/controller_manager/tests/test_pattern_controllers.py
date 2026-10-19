@@ -243,6 +243,7 @@ class TestUC046MockRpcs:
         assert service.SimulateDeath(controller_manager_mock_pb2.DeathRequest(serial=plain), _Ctx()).success
 
     @pytest.mark.uc("UC-046", flow="main", steps=[8], br=["BR-005"])
+    @pytest.mark.uc("UC-003", flow="A4", steps=[2])
     def test_remove_controller_returns_replay_record(self, service, adapter, archetype):
         """UC-046 step 8: removing a pattern controller returns frames, signal hash, checkpoints and overruns."""
         serials = list(_add_pattern(service).serials)

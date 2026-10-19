@@ -32,6 +32,7 @@ def _make_service(num_controllers: int = 0) -> tuple[MockControllerService, Mock
 
 
 class TestAddController:
+    @pytest.mark.uc("UC-003", flow="main", steps=[2])
     def test_add_controller_auto_serial(self):
         service, adapter = _make_service()
         request = controller_manager_mock_pb2.AddControllerRequest()
@@ -40,6 +41,7 @@ class TestAddController:
         assert response.serial == "MOCK0000"
         assert "MOCK0000" in adapter.controllers
 
+    @pytest.mark.uc("UC-003", flow="main", steps=[2])
     def test_add_controller_with_serial(self):
         service, adapter = _make_service()
         request = controller_manager_mock_pb2.AddControllerRequest(serial="MY_CTRL")
@@ -58,6 +60,7 @@ class TestAddController:
 
 
 class TestRemoveController:
+    @pytest.mark.uc("UC-003", flow="A4", steps=[1])
     def test_remove_existing_controller(self):
         service, adapter = _make_service()
         adapter.add_controller("TO_REMOVE")
@@ -66,10 +69,50 @@ class TestRemoveController:
         assert response.success
         assert "TO_REMOVE" not in adapter.controllers
 
+    @pytest.mark.uc("UC-003", flow="A4", steps=[3])
     def test_remove_nonexistent_controller(self):
-        service, _adapter = _make_service()
+        service, adapter = _make_service()
+        adapter.add_controller("KEEP")
         request = controller_manager_mock_pb2.RemoveControllerRequest(serial="NOPE")
         response = service.RemoveController(request, None)
+        assert not response.success
+        assert "not found" in response.error
+        assert list(adapter.controllers) == ["KEEP"]
+
+
+class TestUC003SetColor:
+    """UC-003 A5: SetColor stores a colour directly; the next system LED write replaces it."""
+
+    @pytest.mark.uc("UC-003", flow="A5", steps=[1])
+    def test_color_reads_back_without_an_observability_event(self):
+        service, adapter = _make_service()
+        serial = adapter.add_controller("LED0")
+        events = adapter.add_observer()
+
+        response = service.SetColor(controller_manager_mock_pb2.ColorRequest(serial=serial, r=10, g=20, b=30), None)
+
+        assert response.success, response.error
+        color = service.GetColor(controller_manager_mock_pb2.GetColorRequest(serial=serial), None)
+        assert (color.r, color.g, color.b) == (10, 20, 30)
+        assert events.empty(), "SetColor publishes no observability event"
+
+    @pytest.mark.uc("UC-003", flow="A5", steps=[1])
+    def test_next_system_led_write_replaces_the_color(self):
+        service, adapter = _make_service()
+        serial = adapter.add_controller("LED0")
+        service.SetColor(controller_manager_mock_pb2.ColorRequest(serial=serial, r=10, g=20, b=30), None)
+
+        adapter.set_output(serial, 0, 255, 0, 0)
+
+        color = service.GetColor(controller_manager_mock_pb2.GetColorRequest(serial=serial), None)
+        assert (color.r, color.g, color.b) == (0, 255, 0)
+
+    @pytest.mark.uc("UC-003", flow="A5", steps=[2])
+    def test_unknown_controller_returns_error(self):
+        service, _adapter = _make_service()
+
+        response = service.SetColor(controller_manager_mock_pb2.ColorRequest(serial="NOPE", r=1, g=2, b=3), None)
+
         assert not response.success
         assert "not found" in response.error
 
@@ -597,6 +640,45 @@ class TestUC003HeldMovement:
         z_values = [frame[AxisKey.Z] for frame in streamed]
         assert len(set(z_values)) == len(z_values)
         assert all(_magnitude(frame) < 1.5 for frame in streamed)
+
+    @pytest.mark.uc("UC-003", flow="A3", steps=[1])
+    def test_reset_releases_every_button_and_clears_the_death_latch(self):
+        """UC-003 A3: ResetController releases every button and clears a pending death latch."""
+        service, adapter = _make_service(num_controllers=1)
+        for button in (
+            controller_manager_mock_pb2.ButtonRequest.TRIGGER,
+            controller_manager_mock_pb2.ButtonRequest.MOVE,
+            controller_manager_mock_pb2.ButtonRequest.PS,
+        ):
+            pressed = service.SimulateButton(
+                controller_manager_mock_pb2.ButtonRequest(serial=self.SERIAL, button=button, pressed=True), None
+            )
+            assert pressed.success
+        assert service.SimulateDeath(controller_manager_mock_pb2.DeathRequest(serial=self.SERIAL), None).success
+
+        resp = service.ResetController(controller_manager_mock_pb2.ResetRequest(serial=self.SERIAL), None)
+
+        assert resp.success, resp.error
+        controller = adapter.controllers[self.SERIAL]
+        assert controller["death_accel"] is None
+        assert controller["death_frames_remaining"] == 0
+        state = adapter.poll(self.SERIAL)
+        assert {key: state[key] for key in ButtonKey} == dict.fromkeys(ButtonKey, False)
+        streamed = _run_data_plane(adapter, self.SERIAL, seconds=0.5)
+        assert all(_magnitude(frame) < 3.0 for frame in streamed), "no death frame after the reset"
+
+    @pytest.mark.uc("UC-003", br=["BR-002"])
+    def test_gyroscope_always_reports_noise(self):
+        """UC-003 BR-002: the gyroscope reports fresh noise every poll, also while a movement is held."""
+        service, adapter = _make_service(num_controllers=1)
+        self._move(service, self.WARNING_VEC)
+
+        gyro_frames = [adapter.poll(self.SERIAL)[StateKey.GYRO] for _ in range(50)]
+
+        for axis in (AxisKey.X, AxisKey.Y, AxisKey.Z):
+            values = [frame[axis] for frame in gyro_frames]
+            assert len(set(values)) == len(values), f"gyro {axis} repeats a value"
+            assert abs(sum(values) / len(values)) < 0.5, f"gyro {axis} noise is not centred on 0"
 
     def test_simulate_movement_unknown_controller_returns_error(self):
         """SimulateMovement on an unknown serial fails without holding anything."""

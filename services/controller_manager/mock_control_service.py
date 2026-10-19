@@ -166,6 +166,7 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
                     context.set_details(PATTERN_REFUSAL)
                 return controller_manager_mock_pb2.DeathResponse(success=False, accel_magnitude=0.0)
 
+            # UC-003 BR-001: latch about 9.95 g for DEATH_DELIVERY_FRAMES (2) delivered frames.
             # Set death-level acceleration. Sized (~9.95g) so that 2 DELIVERED
             # death frames cross the HIGHEST per-sensitivity death threshold the
             # mock can face (sensitivity 4 fast = 3.5g) from a resting-primed EMA
