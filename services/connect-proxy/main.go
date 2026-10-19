@@ -276,6 +276,68 @@ func (p *ControllerManagerProxy) StreamGameplayData(
 	return <-errCh
 }
 
+// WatchGameplayData is the browser's server-streaming view of the bidi
+// StreamGameplayData (#1595): envoy reaches connect-proxy over HTTP/1.1, where
+// connect-go refuses bidi streams (505). It opens StreamGameplayData to the
+// controller manager and relays the updates. The upstream config is built
+// here, never forwarded: only the rate (default 30 Hz, capped at 30 Hz), so the browser
+// always gets the unfiltered observer stream and cannot claim controllers or
+// set their colours (UC-035 BR-006). It runs in the handler goroutine only (no relay
+// goroutines), and the deferred cancel closes the upstream stream on every
+// return: browser gone (ctx cancelled), upstream error or end, or a failed send.
+// The send side is never half-closed, so the controller manager keeps streaming.
+func (p *ControllerManagerProxy) WatchGameplayData(
+	ctx context.Context,
+	req *connect.Request[controllerpb.GameplayStreamConfig],
+	stream *connect.ServerStream[controllerpb.GameplayDataUpdate],
+) error {
+	upstreamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	grpcStream, err := p.client.StreamGameplayData(upstreamCtx)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	config := &controllerpb.GameplayStreamControl{
+		Control: &controllerpb.GameplayStreamControl_Config{Config: observerGameplayConfig(req.Msg)},
+	}
+	if err := grpcStream.Send(config); err != nil && err != io.EOF {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	// On io.EOF from Send the real status comes from Recv below.
+
+	for {
+		msg, err := grpcStream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return connect.NewError(connect.CodeCanceled, ctx.Err())
+			}
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		if err := stream.Send(msg); err != nil {
+			return err
+		}
+	}
+}
+
+// maxWatchGameplayHz caps the browser's requested rate (UC-035 BR-006).
+const maxWatchGameplayHz = 30
+
+// observerGameplayConfig keeps only the browser's rate and drops its colours
+// (UC-035 BR-006). A missing, zero or negative rate means the default 30 Hz,
+// as in the controller manager; the rate is capped at maxWatchGameplayHz.
+func observerGameplayConfig(in *controllerpb.GameplayStreamConfig) *controllerpb.GameplayStreamConfig {
+	hz := in.GetUpdateFrequencyHz()
+	if hz <= 0 {
+		hz = maxWatchGameplayHz
+	}
+	hz = min(hz, maxWatchGameplayHz)
+	return &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: hz}
+}
+
 func (p *ControllerManagerProxy) RenameController(
 	ctx context.Context,
 	req *connect.Request[controllerpb.RenameControllerRequest],

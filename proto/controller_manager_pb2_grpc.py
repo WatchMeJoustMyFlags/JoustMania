@@ -60,6 +60,11 @@ class ControllerManagerServiceStub:
                 request_serializer=controller__manager__pb2.IdentifyControllerRequest.SerializeToString,
                 response_deserializer=controller__manager__pb2.IdentifyControllerResponse.FromString,
                 _registered_method=True)
+        self.WatchGameplayData = channel.unary_stream(
+                '/joustmania.controller_manager.ControllerManagerService/WatchGameplayData',
+                request_serializer=controller__manager__pb2.GameplayStreamConfig.SerializeToString,
+                response_deserializer=controller__manager__pb2.GameplayDataUpdate.FromString,
+                _registered_method=True)
 
 
 class ControllerManagerServiceServicer:
@@ -108,6 +113,18 @@ class ControllerManagerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def WatchGameplayData(self, request, context):
+        """Browser view of StreamGameplayData (#1595): one config in, the gameplay
+        updates out. Served by connect-proxy only, which opens a StreamGameplayData
+        stream to the controller manager with this config, relays its updates and
+        closes it when the browser goes away. A server stream works over the
+        HTTP/1.1 hop from envoy, a bidi stream does not (505). The controller
+        manager does not implement it (UNIMPLEMENTED).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ControllerManagerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -135,6 +152,11 @@ def add_ControllerManagerServiceServicer_to_server(servicer, server):
                     servicer.IdentifyController,
                     request_deserializer=controller__manager__pb2.IdentifyControllerRequest.FromString,
                     response_serializer=controller__manager__pb2.IdentifyControllerResponse.SerializeToString,
+            ),
+            'WatchGameplayData': grpc.unary_stream_rpc_method_handler(
+                    servicer.WatchGameplayData,
+                    request_deserializer=controller__manager__pb2.GameplayStreamConfig.FromString,
+                    response_serializer=controller__manager__pb2.GameplayDataUpdate.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -273,6 +295,33 @@ class ControllerManagerService:
             '/joustmania.controller_manager.ControllerManagerService/IdentifyController',
             controller__manager__pb2.IdentifyControllerRequest.SerializeToString,
             controller__manager__pb2.IdentifyControllerResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WatchGameplayData(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/joustmania.controller_manager.ControllerManagerService/WatchGameplayData',
+            controller__manager__pb2.GameplayStreamConfig.SerializeToString,
+            controller__manager__pb2.GameplayDataUpdate.FromString,
             options,
             channel_credentials,
             insecure,

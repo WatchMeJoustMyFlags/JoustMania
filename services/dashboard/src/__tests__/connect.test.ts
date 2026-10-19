@@ -5,7 +5,7 @@
  * scenario; UC-070 BR-005 follows a shadow game's stream the same way).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { gameClient } from "../client.js";
+import { controllerClient, gameClient } from "../client.js";
 import {
   ConnectStreamError,
   decodeStream,
@@ -143,5 +143,53 @@ describe("UC-035: dashboard event stream uses the Connect streaming wire format 
     await collect(gameClient.streamGameEvents({ gameId: "game_shadow" }, abort.signal));
 
     expect(fetchMock.mock.calls[0][1].signal).toBe(abort.signal);
+  });
+});
+
+describe("UC-035: controller grid reads the WatchGameplayData server stream (#1595)", () => {
+  it("UC-035 main posts the GameplayStreamConfig shape to WatchGameplayData as a Connect server stream", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      streamResponse([
+        frame({ controllers: [{ serial: "AA:01" }], timestamp: "1" }),
+        frame({ controllers: [], timestamp: "2" }),
+        frame({}, END_FLAG),
+      ])
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const updates = await collect(controllerClient.watchGameplayData({ updateFrequencyHz: 30 }));
+
+    const [url, init] = fetchMock.mock.calls[0];
+    // Not the bidi StreamGameplayData: connect-proxy answers that with 505 over HTTP/1.1.
+    expect(url).toBe("/joustmania.controller_manager.ControllerManagerService/WatchGameplayData");
+    expect(init.method).toBe("POST");
+    expect(init.headers["Content-Type"]).toBe("application/connect+json");
+    // The request is the config itself, not the bidi {config: {...}} control wrapper.
+    expect(decodeRequestEnvelope(init.body)).toEqual({ flags: 0, json: { updateFrequencyHz: 30 } });
+    expect(updates).toEqual([
+      { controllers: [{ serial: "AA:01" }], timestamp: "1" },
+      { controllers: [], timestamp: "2" },
+    ]);
+  });
+
+  it("UC-035 main passes the abort signal through so the grid can drop its stream", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(streamResponse([frame({}, END_FLAG)]));
+    vi.stubGlobal("fetch", fetchMock);
+    const abort = new AbortController();
+
+    await collect(controllerClient.watchGameplayData({ updateFrequencyHz: 30 }, abort.signal));
+
+    expect(fetchMock.mock.calls[0][1].signal).toBe(abort.signal);
+  });
+
+  it("UC-035 main surfaces an upstream error from the end-stream frame so the grid retries", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      streamResponse([frame({ error: { code: "internal", message: "controller manager gone" } }, END_FLAG)])
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(collect(controllerClient.watchGameplayData({ updateFrequencyHz: 30 }))).rejects.toThrow(
+      /internal: controller manager gone/
+    );
   });
 });

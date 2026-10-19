@@ -178,6 +178,14 @@ type fakeController struct {
 	err     error
 	updates []*controllerpb.GameplayDataUpdate
 	buttons []*controllerpb.ButtonEvent
+
+	// Gameplay stream knobs for WatchGameplayData (#1595): holdOpen keeps the
+	// stream open after the updates until the caller goes away, gameplayEndErr
+	// ends it with that status, and gameplayDone (when set) is closed once the
+	// backend's stream handler has returned, i.e. the upstream stream is closed.
+	holdOpen       bool
+	gameplayEndErr error
+	gameplayDone   chan struct{}
 }
 
 // StreamButtonEvents records the first control message, sends the canned
@@ -199,6 +207,9 @@ func (f *fakeController) StreamButtonEvents(s grpc.BidiStreamingServer[controlle
 // StreamGameplayData records the first control message, sends the canned
 // updates and then ends the stream from the backend side.
 func (f *fakeController) StreamGameplayData(s grpc.BidiStreamingServer[controllerpb.GameplayStreamControl, controllerpb.GameplayDataUpdate]) error {
+	if f.gameplayDone != nil {
+		defer close(f.gameplayDone)
+	}
 	first, err := s.Recv()
 	if err != nil {
 		return err
@@ -209,7 +220,11 @@ func (f *fakeController) StreamGameplayData(s grpc.BidiStreamingServer[controlle
 			return err
 		}
 	}
-	return nil
+	if f.holdOpen {
+		<-s.Context().Done()
+		return s.Context().Err()
+	}
+	return f.gameplayEndErr
 }
 
 func (f *fakeController) RenameController(_ context.Context, r *controllerpb.RenameControllerRequest) (*controllerpb.RenameControllerResponse, error) {
@@ -282,15 +297,30 @@ func dialFake(t *testing.T, register func(*grpc.Server)) *grpc.ClientConn {
 
 func newProxyRig(t *testing.T) *proxyRig {
 	t.Helper()
-	rig := &proxyRig{menu: &fakeMenu{}, game: &fakeGame{}, controller: &fakeController{}}
+	return newProxyRigWith(t, &fakeController{}, nil)
+}
+
+// newProxyRigWith is newProxyRig with a given controller backend and an
+// optional wrapper around the controller proxy (to observe its handlers).
+func newProxyRigWith(
+	t *testing.T,
+	controller *fakeController,
+	wrap func(*ControllerManagerProxy) controller_managerconnect.ControllerManagerServiceHandler,
+) *proxyRig {
+	t.Helper()
+	rig := &proxyRig{menu: &fakeMenu{}, game: &fakeGame{}, controller: controller}
 
 	menuConn := dialFake(t, func(s *grpc.Server) { menupb.RegisterMenuServiceServer(s, rig.menu) })
 	gameConn := dialFake(t, func(s *grpc.Server) { gamepb.RegisterGameCoordinatorServiceServer(s, rig.game) })
 	ctrlConn := dialFake(t, func(s *grpc.Server) { controllerpb.RegisterControllerManagerServiceServer(s, rig.controller) })
 
 	mux := http.NewServeMux()
-	mux.Handle(controller_managerconnect.NewControllerManagerServiceHandler(
-		&ControllerManagerProxy{client: controllerpb.NewControllerManagerServiceClient(ctrlConn)}))
+	ctrlProxy := &ControllerManagerProxy{client: controllerpb.NewControllerManagerServiceClient(ctrlConn)}
+	var ctrlHandler controller_managerconnect.ControllerManagerServiceHandler = ctrlProxy
+	if wrap != nil {
+		ctrlHandler = wrap(ctrlProxy)
+	}
+	mux.Handle(controller_managerconnect.NewControllerManagerServiceHandler(ctrlHandler))
 	mux.Handle(game_coordinatorconnect.NewGameCoordinatorServiceHandler(
 		&GameCoordinatorProxy{client: gamepb.NewGameCoordinatorServiceClient(gameConn)}))
 	mux.Handle(menuconnect.NewMenuServiceHandler(
@@ -885,6 +915,17 @@ type dashboardStreamFrame struct {
 // does for server streams (#1542): Content-Type application/connect+json, the
 // JSON request in one 5-byte envelope, over HTTP/1.1 as the browser reaches
 // connect-proxy through envoy. It returns the response and its frames.
+// http1Client talks HTTP/1.1 to the proxy, as envoy does in production.
+func http1Client(t *testing.T, rig *proxyRig) *http.Client {
+	t.Helper()
+	tr := rig.httpClient.Transport.(*http.Transport).Clone()
+	tr.ForceAttemptHTTP2 = false
+	tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	t.Cleanup(tr.CloseIdleConnections)
+	return &http.Client{Transport: tr}
+}
+
 func postConnectStream(t *testing.T, rig *proxyRig, path string, body any) (*http.Response, []dashboardStreamFrame) {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -902,12 +943,7 @@ func postConnectStream(t *testing.T, rig *proxyRig, path string, body any) (*htt
 	req.Header.Set("Content-Type", "application/connect+json")
 	req.Header.Set("Connect-Protocol-Version", "1")
 
-	tr := rig.httpClient.Transport.(*http.Transport).Clone()
-	tr.ForceAttemptHTTP2 = false
-	tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-	tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
-	t.Cleanup(tr.CloseIdleConnections)
-	resp, err := (&http.Client{Transport: tr}).Do(req)
+	resp, err := http1Client(t, rig).Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
@@ -1019,13 +1055,12 @@ func TestProxyDashboardStreamingJSON(t *testing.T) {
 
 // StreamGameplayData is bidirectional at the Connect layer, and connect-go
 // refuses a bidi stream over HTTP/1.1 (505), which is what envoy uses towards
-// connect-proxy. The dashboard's new framing does not change that: the
-// controller grid's live stream through connect-proxy stays unavailable until
-// the proxy exposes a server-streaming route for it (follow-up to #1542).
+// connect-proxy. The dashboard therefore reads the server stream
+// WatchGameplayData instead (#1595, watch_gameplay_test.go).
 //
 // UC: UC-035 MSS
 func TestProxyDashboardGameplayStreamHTTP1(t *testing.T) {
-	t.Run("UC-035/MSS dashboard connect+json StreamGameplayData over HTTP/1.1 is 505 (current behaviour)", func(t *testing.T) {
+	t.Run("UC-035/MSS dashboard connect+json StreamGameplayData over HTTP/1.1 is 505 (bidi needs HTTP/2)", func(t *testing.T) {
 		rig := newProxyRig(t)
 		resp, _ := postConnectStream(t, rig,
 			"/joustmania.controller_manager.ControllerManagerService/StreamGameplayData",

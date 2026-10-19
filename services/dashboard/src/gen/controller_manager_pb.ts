@@ -45,8 +45,9 @@ export interface GameplayDataUpdate {
   timestamp: bigint;
 }
 
-// Gameplay stream request
-export interface GameplayStreamRequest {
+// WatchGameplayData request (#1595): the GameplayStreamConfig itself.
+// No colours = the unfiltered stream with connection quality (UC-035 BR-005).
+export interface GameplayStreamConfig {
   updateFrequencyHz: number;
 }
 

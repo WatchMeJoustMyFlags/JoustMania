@@ -177,20 +177,22 @@ async function startControllerStream() {
   controllerGrid.setLoading(false);
 
   try {
-    const stream = controllerClient.streamGameplayData({
+    const stream = controllerClient.watchGameplayData({
       updateFrequencyHz: 30,
     });
 
     for await (const update of stream) {
       // Update controller state
       state.controllers.clear();
-      for (const controller of update.controllers) {
+      for (const controller of update.controllers ?? []) {
         state.controllers.set(controller.serial, controller);
       }
 
       // Render controllers; the count covers the tiles shown (UC-070 BR-005)
       updatePlayerCount(renderGrid());
     }
+    // A clean end (controller manager restarted) also needs a new stream.
+    throw new Error("controller stream ended");
   } catch (error) {
     console.error("Controller stream error:", error);
     state.isStreaming = false;

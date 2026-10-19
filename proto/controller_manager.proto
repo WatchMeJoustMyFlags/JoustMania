@@ -28,6 +28,14 @@ service ControllerManagerService {
   // connected, reserved, or players of an open game gameplay stream.
   rpc IdentifyController(IdentifyControllerRequest) returns (IdentifyControllerResponse);
 
+  // Browser view of StreamGameplayData (#1595): one config in, the gameplay
+  // updates out. Served by connect-proxy only, which opens a StreamGameplayData
+  // stream to the controller manager with this config, relays its updates and
+  // closes it when the browser goes away. A server stream works over the
+  // HTTP/1.1 hop from envoy, a bidi stream does not (505). The controller
+  // manager does not implement it (UNIMPLEMENTED).
+  rpc WatchGameplayData(GameplayStreamConfig) returns (stream GameplayDataUpdate);
+
 }
 
 // Controller state data
