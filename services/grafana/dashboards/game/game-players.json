@@ -1989,7 +1989,7 @@
       ],
       "title": "Movement Zone Distribution (time range)",
       "type": "piechart",
-      "description": "Share of acceleration samples per movement zone over the time range, all modes (game_accel_distribution buckets 1.1, 1.5 and 2.0 g)."
+      "description": "Share of acceleration samples per movement zone over the time range, all modes. The edges are fixed game_accel_distribution histogram buckets (1.1, 1.5 and 2.0 g, the default zone edges): they do not follow the perception.zone_* flags, whose twitchy and relaxed variants move a game's own zones (game_player_movement_zone) but not these buckets."
     },
     {
       "datasource": {
@@ -2799,7 +2799,8 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(controller_info * on(serial) group_left() (game_player_alive == 1))",
+        "description": "The list is empty between games and shows only players alive in the running primary game.",
+        "definition": "query_result(controller_info * on(serial) group_left() max by (serial) ((game_player_alive == 1) and on(game_id) (max by (game_id) (game_active{game_kind=\"primary\"}) == 1)))",
         "hide": 0,
         "includeAll": true,
         "label": "Player",
@@ -2807,7 +2808,7 @@
         "name": "player",
         "options": [],
         "query": {
-          "query": "query_result(controller_info * on(serial) group_left() (game_player_alive == 1))",
+          "query": "query_result(controller_info * on(serial) group_left() max by (serial) ((game_player_alive == 1) and on(game_id) (max by (game_id) (game_active{game_kind=\"primary\"}) == 1)))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
