@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 
 	"connectrpc.com/connect"
 	"github.com/rs/cors"
@@ -171,63 +172,36 @@ func (p *ControllerManagerProxy) StreamButtonEvents(
 	ctx context.Context,
 	stream *connect.BidiStream[controllerpb.ButtonEventStreamControl, controllerpb.ButtonEvent],
 ) error {
-	// For bidirectional streaming, we need to handle both directions
-	grpcStream, err := p.client.StreamButtonEvents(ctx)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
-	}
-
-	// Forward messages in both directions
-	errCh := make(chan error, 2)
-
-	// Client -> gRPC
-	go func() {
-		for {
-			msg, err := stream.Receive()
-			if err == io.EOF {
-				grpcStream.CloseSend()
-				errCh <- nil
-				return
-			}
-			if err != nil {
-				errCh <- err
-				return
-			}
-			if err := grpcStream.Send(msg); err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	// gRPC -> Client
-	go func() {
-		for {
-			msg, err := grpcStream.Recv()
-			if err == io.EOF {
-				errCh <- nil
-				return
-			}
-			if err != nil {
-				errCh <- err
-				return
-			}
-			if err := stream.Send(msg); err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	// Wait for either direction to finish
-	return <-errCh
+	return relayBidi(ctx, stream, func(ctx context.Context) (grpc.BidiStreamingClient[controllerpb.ButtonEventStreamControl, controllerpb.ButtonEvent], error) {
+		return p.client.StreamButtonEvents(ctx)
+	})
 }
 
 func (p *ControllerManagerProxy) StreamGameplayData(
 	ctx context.Context,
 	stream *connect.BidiStream[controllerpb.GameplayStreamControl, controllerpb.GameplayDataUpdate],
 ) error {
-	grpcStream, err := p.client.StreamGameplayData(ctx)
+	return relayBidi(ctx, stream, func(ctx context.Context) (grpc.BidiStreamingClient[controllerpb.GameplayStreamControl, controllerpb.GameplayDataUpdate], error) {
+		return p.client.StreamGameplayData(ctx)
+	})
+}
+
+// relayBidi forwards a Connect bidi stream to a gRPC bidi stream in both
+// directions and returns when either direction ends (#1543). Before it
+// returns it cancels the upstream call and joins the backend->client
+// goroutine, so no stream.Send runs after the handler has returned (connect-go
+// forbids that; it is a data race). The client->backend goroutine is not
+// joined: it blocks in stream.Receive, which only unblocks once the handler
+// returns, and it only touches the gRPC stream, which tolerates use after
+// cancel.
+func relayBidi[Req, Res any](
+	ctx context.Context,
+	stream *connect.BidiStream[Req, Res],
+	open func(context.Context) (grpc.BidiStreamingClient[Req, Res], error),
+) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	grpcStream, err := open(ctx)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
@@ -255,7 +229,10 @@ func (p *ControllerManagerProxy) StreamGameplayData(
 	}()
 
 	// gRPC -> Client
+	var backendToClient sync.WaitGroup
+	backendToClient.Add(1)
 	go func() {
+		defer backendToClient.Done()
 		for {
 			msg, err := grpcStream.Recv()
 			if err == io.EOF {
@@ -273,7 +250,11 @@ func (p *ControllerManagerProxy) StreamGameplayData(
 		}
 	}()
 
-	return <-errCh
+	// Wait for either direction to finish, then stop and join the sender.
+	err = <-errCh
+	cancel()
+	backendToClient.Wait()
+	return err
 }
 
 // WatchGameplayData is the browser's server-streaming view of the bidi

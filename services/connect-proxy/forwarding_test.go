@@ -787,7 +787,8 @@ func TestProxyBackendUnreachable(t *testing.T) {
 
 // The menu's lobby stream; not a dashboard path, so no use-case step of its own.
 func TestProxyStreamButtonEvents(t *testing.T) {
-	// Same backend-ends pattern as TestProxyStreamGameplayData (#1543).
+	// The backend ends the stream here; the client-half-close path is in
+	// bidi_lifecycle_test.go.
 	t.Run("button stream config reaches the controller manager and events are relayed", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.controller.buttons = []*controllerpb.ButtonEvent{{Serial: "AA:01", Timestamp: 1}, {Serial: "AA:02", Timestamp: 2}}
@@ -817,11 +818,8 @@ func TestProxyStreamButtonEvents(t *testing.T) {
 
 // UC: UC-035 MSS
 func TestProxyStreamGameplayData(t *testing.T) {
-	// The backend ends the stream here, not the client: when the client
-	// half-closes first, the proxy's bidi forwarder returns while its
-	// backend->client goroutine may still be sending, which the race
-	// detector flags inside main.go (tracked in #1543, not fixed here). The client-half-close
-	// path is therefore not exercised by these tests.
+	// The backend ends the stream here; the client-half-close path is in
+	// bidi_lifecycle_test.go.
 	t.Run("UC-035/MSS gameplay config reaches the controller manager and updates are relayed", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.controller.updates = []*controllerpb.GameplayDataUpdate{{Timestamp: 1}, {Timestamp: 2}}
