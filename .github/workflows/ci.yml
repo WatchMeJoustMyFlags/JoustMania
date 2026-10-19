@@ -791,8 +791,33 @@ jobs:
             services/flag-service/go.sum
             services/agent/go.sum
 
+      # #1612: a failed run names its exit code and the failing tests as
+      # annotations and in the job summary, so the failure is visible without
+      # scrolling the log (`gh run view --log` shows the LATEST attempt only).
       - name: Run service tier tests
-        run: make test-service PYTEST_EXTRA="--durations=15"
+        shell: bash
+        run: |
+          set +e -o pipefail
+          log="$RUNNER_TEMP/service-tests.log"
+          make test-service PYTEST_EXTRA="--durations=15" 2>&1 | tee "$log"
+          status=$?
+          echo "make test-service exit=$status"
+          if [ "$status" -ne 0 ]; then
+            if grep -qE '^(FAILED|ERROR) ' "$log"; then
+              grep -E '^(FAILED|ERROR) ' "$log" | while IFS= read -r line; do
+                echo "::error title=Service Tests (exit $status)::$line"
+              done
+            else
+              echo "::error title=Service Tests (exit $status)::no FAILED/ERROR line; see the log tail"
+            fi
+            {
+              echo "### Service Tests failed (exit $status)"
+              echo '```'
+              grep -E '^(FAILED|ERROR) |^=+ .*in [0-9.]+s' "$log" || tail -n 40 "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
 
   lint-dockerfiles:
     name: Lint Dockerfiles

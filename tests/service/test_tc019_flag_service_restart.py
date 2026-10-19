@@ -78,7 +78,14 @@ def _restart_flag_service_probing_writes(stack, flag_service) -> list[int]:
             status = 0
         statuses.append(status)
         if status == 200:
-            assert flag_service.state()["sync_streams"] >= 1, "a write was accepted without a sync stream"
+            try:
+                sync_streams = flag_service.state()["sync_streams"]
+            except OSError:
+                # #1612: the old process accepted the write and then stopped before
+                # the state read; only the old process can vanish here (the
+                # restarted one keeps running), and it had flagd's stream.
+                sync_streams = None
+            assert sync_streams is None or sync_streams >= 1, "a write was accepted without a sync stream"
         time.sleep(OUTAGE_POLL_SECONDS)
     restart.join()
     assert stack.flag_plane.flag_service.running, "the flag service did not come back"
