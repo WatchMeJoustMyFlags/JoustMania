@@ -4,9 +4,9 @@
 
 Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which defines the columns.
 
-- **160 unique Python metric names** (183 definitions; 7 names are defined in more than one module).
-- 92 of the 160 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
-- 13 names are defined but never recorded by any service.
+- **145 unique Python metric names** (166 definitions; 5 names are defined in more than one module).
+- 77 of the 145 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
+- 0 names are defined but never recorded by any service.
 
 | Metric | Type | Labels | Defined in | Emitted | Consumers | Notes |
 |---|---|---|---|---|---|---|
@@ -15,8 +15,8 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `audio_channels_active` | gauge | (none) | audio | yes | (none) |  |
 | `audio_music_playing` | gauge | (none) | audio | yes | (none) |  |
 | `audio_music_tempo` | gauge | (none) | audio | yes | (none) |  |
-| `audio_playback_errors_total` | counter | (none) | audio, game-coordinator | emitted by audio; defined but never recorded in game-coordinator | (none) | dead duplicate definitions; cleanup tracked in #1322 |
-| `audio_sounds_played_total` | counter | `result`, `sound_type` | audio, game-coordinator | emitted by audio; defined but never recorded in game-coordinator | (none) | labels per service: game-coordinator `sound_type`, audio `result`. Dead duplicate definition; cleanup tracked in #1322 |
+| `audio_playback_errors_total` | counter | (none) | audio | yes | (none) |  |
+| `audio_sounds_played_total` | counter | `result` | audio | yes | (none) |  |
 | `bluetooth_adapter_connections` | gauge | `hci_adapter` | pairing-daemon | yes | grafana |  |
 | `bluetooth_adapter_count` | gauge | (none) | controller-manager | yes | (none) |  |
 | `bluetooth_device_connected` | gauge | `serial`, `hci_adapter` | pairing-daemon | yes | grafana |  |
@@ -27,8 +27,6 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `controller_accel_y` | gauge | `serial` | controller-manager | yes | (none) |  |
 | `controller_accel_z` | gauge | `serial` | controller-manager | yes | (none) |  |
 | `controller_adapter_info` | gauge | `serial`, `adapter` | controller-manager | yes | grafana |  |
-| `controller_adaptive_polling_active` | gauge | (none) | controller-manager | yes | (none) |  |
-| `controller_adaptive_polling_idle` | gauge | (none) | controller-manager | yes | (none) |  |
 | `controller_backend_info` | gauge | `serial`, `backend` | controller-manager | yes | grafana |  |
 | `controller_battery_check_duration_seconds` | histogram | (none) | controller-manager | yes | (none) |  |
 | `controller_battery_checks_total` | counter | (none) | controller-manager | yes | (none) |  |
@@ -57,7 +55,6 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `controller_input_lag_seconds` | histogram | `serial` | controller-manager | yes | grafana | #1376; game streams only |
 | `controller_led_batch_updates_total` | counter | (none) | controller-manager | yes | (none) |  |
 | `controller_led_controllers_updated_per_batch` | histogram | (none) | controller-manager | yes | (none) |  |
-| `controller_object_pool_utilization` | gauge | `pool_type` | controller-manager | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
 | `controller_poll_batch_duration_seconds` | histogram | (none) | controller-manager | yes | (none) |  |
 | `controller_poll_batch_size` | histogram | (none) | controller-manager | yes | (none) |  |
 | `controller_poll_drops_total` | counter | `serial` | controller-manager | yes | grafana |  |
@@ -86,10 +83,8 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `game_active_controllers` | gauge | (none) | game-coordinator | yes | (none) |  |
 | `game_active_players` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana |  |
 | `game_actual_update_frequency_hz` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana |  |
-| `game_analytics_replay_bytes` | histogram | `game_mode` | game-coordinator | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
 | `game_analytics_samples_total` | counter | `game_mode` | game-coordinator | yes | grafana |  |
 | `game_config_changes_total` | counter | `parameter` | game-coordinator | yes | (none) |  |
-| `game_countdown_accuracy_seconds` | histogram | (none) | game-coordinator | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
 | `game_current_mode` | gauge | `mode`, `game_kind`, `game_id` | game-coordinator | yes | agent, grafana | #1379; 1 while the game is live, removed at retire |
 | `game_current_update_frequency_hz` | gauge | (none) | game-coordinator | yes | grafana | process-wide: the configured `game_loop.update_frequency_hz`, the same for every game; the per-game measured rate is `game_actual_update_frequency_hz` |
 | `game_duration_seconds` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana, tools |  |
@@ -112,13 +107,11 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `game_player_alive` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, tools |  |
 | `game_player_deaths_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana | #1376 |
 | `game_player_elimination_order` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, scripts |  |
-| `game_player_kills_total` | counter | `mode`, `serial` | game-coordinator | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
 | `game_player_movement_variance` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |  |
 | `game_player_movement_variance_aggregate` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |
 | `game_player_movement_zone` | gauge | `serial`, `game_id` | game-coordinator | yes | grafana |  |
 | `game_player_peak_accel` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana |  |
 | `game_player_playstyle` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana |  |
-| `game_player_respawns_total` | counter | `serial` | game-coordinator | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
 | `game_player_skill_level` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |  |
 | `game_player_warnings_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |  |
 | `game_players_alive` | gauge | (none) | game-coordinator | yes | grafana |  |
@@ -126,7 +119,6 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `game_shadow_games_blocked_total` | counter | (none) | game-coordinator | yes | grafana |  |
 | `game_shadow_games_preempted_total` | counter | (none) | game-coordinator | yes | grafana |  |
 | `game_trace_correlation` | gauge | `game_kind`, `game_id`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id` | game-coordinator | yes | agent |  |
-| `game_winner_announcement_delay_seconds` | histogram | (none) | game-coordinator | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
 | `games_completed_total` | counter | `mode`, `game_kind`, `outcome` (winner\|tie\|completed\|force_ended\|error) | game-coordinator | yes | grafana | `outcome` = `winner`, `tie`, `completed`, `force_ended`, or `error` when the session published `game_error`; #1427 |
 | `games_started_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana |  |
 | `grpc_client_errors_total` | counter | `service`, `method`, `code` | lib (`lib/grpc_metrics.py`) | yes | grafana |  |
@@ -143,7 +135,6 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `menu_idle_mode_active` | gauge | (none) | menu | yes | (none) |  |
 | `menu_idle_mode_entries_total` | counter | (none) | menu | yes | (none) |  |
 | `menu_idle_mode_wake_total` | counter | (none) | menu | yes | (none) |  |
-| `menu_lobby_updates_total` | counter | (none) | menu | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
 | `menu_player_ready` | gauge | `serial` | menu | yes | (none) |  |
 | `menu_sentinel_controllers_count` | gauge | (none) | menu | yes | (none) |  |
 | `menu_stream_connections_active` | gauge | (none) | menu | yes | (none) |  |
@@ -164,9 +155,3 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `psmove_pairing_polls_total` | counter | (none) | pairing-daemon | yes | (none) |  |
 | `psmove_pairing_success_total` | counter | (none) | pairing-daemon | yes | (none) |  |
 | `psmove_pairing_usb_controllers` | gauge | (none) | pairing-daemon | yes | (none) |  |
-| `python_hid_active_streams` | gauge | (none) | python-hid | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
-| `python_hid_devices_open` | gauge | (none) | python-hid | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
-| `python_hid_discover_total` | counter | (none) | python-hid | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
-| `python_hid_open_total` | counter | `success` | python-hid | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
-| `python_hid_poll_duration_seconds` | histogram | (none) | python-hid | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |
-| `python_hid_sensor_data_total` | counter | (none) | python-hid | **no**: defined, never recorded | (none) | dead definition; cleanup tracked in #1322 |

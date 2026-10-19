@@ -282,7 +282,7 @@ loop ends.
 | Calibration scripts | VictoriaMetrics `game_player_accel_magnitude{game_id,serial}` and `game_player_elimination_order` (trajectory features per player) | `scripts/calibration/vm_trajectory_features.py` |
 
 Many Python metric names have no consumer in a dashboard, the agent, the dashboard SPA, the demo harness or a
-script (all `menu_*`, `psmove_*`, `python_hid_*`, `audio_*` and others; the count is in the generated catalog); they
+script (all `menu_*`, `psmove_*`, `audio_*` and others; the count is in the generated catalog); they
 are kept for ad-hoc analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers. The §6.2 catalog and its counts are **generated** from the same scans (#1280): one row per Python metric name, each Consumers cell equal to what the consumer scans find (Grafana and SPA PromQL, the agent's ingest constants, the name as a word in non-test `tools/` and `scripts/` source), and the **no** rows in Emitted equal to the metrics nothing records. A metrics PR runs `make specs`; `make specs-check` fails CI when the generated file is stale. The scans prove a name is referenced, not that the query using it is right.
 
 ### 6.2 Python metric catalog
@@ -334,10 +334,7 @@ span names in dot notation for new spans, attributes namespaced as in §2.1.
 Known violations on `main` (do not copy them; fix opportunistically, D-T6): gauge `active_controllers_total`;
 `games_*`, `bluetooth_*`, `event_bus_*`, `psmove_*` and `grpc_requests_total` / `grpc_request_duration_seconds`
 without a service prefix; `bluetooth_device_last_seen_timestamp` without a unit suffix; gauges `menu_idle_controllers_count`
-and `menu_sentinel_controllers_count`, whose `_count` suffix collides with the histogram `_count` series;
-`audio_sounds_played_total` and `audio_playback_errors_total` are also **defined** in game-coordinator with different
-labels, but only the audio service records them (the coordinator copies are dead definitions, cleanup tracked in
-#1322); histograms
+and `menu_sentinel_controllers_count`, whose `_count` suffix collides with the histogram `_count` series; histograms
 `controller_streamed_per_frame`, `controller_poll_batch_size`, `controller_led_controllers_updated_per_batch`,
 `game_accel_distribution`, `agent_intervention_effect_delta`; `game_loop_jitter_ms` in milliseconds; most
 coordinator / menu spans in snake_case; rust `grpc.server` vs Python `{Service}/{Method}`.

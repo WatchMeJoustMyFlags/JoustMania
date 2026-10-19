@@ -166,33 +166,6 @@ players_alive = Gauge("game_players_alive", "Number of players currently alive")
 # game_player_elimination_order{serial,game_id} (a gauge cleared at game end).
 player_deaths_total = Counter("game_player_deaths_total", "Total player deaths", ["mode", "game_kind"])
 
-player_kills_total = Counter("game_player_kills_total", "Total player kills", ["mode", "serial"])
-
-player_respawns_total = Counter("game_player_respawns_total", "Total player respawns (Nonstop Joust only)", ["serial"])
-
-
-# Audio playback metrics (Phase 29)
-audio_sounds_played_total = Counter(
-    "audio_sounds_played_total",
-    "Total sounds played",
-    ["sound_type"],  # 'countdown', 'start', 'death', 'victory', 'respawn', 'join'
-)
-
-audio_playback_errors_total = Counter("audio_playback_errors_total", "Total audio playback errors")
-
-# Game quality metrics
-countdown_accuracy_seconds = Histogram(
-    "game_countdown_accuracy_seconds",
-    "Accuracy of countdown timing",
-    buckets=[0.001, 0.005, 0.010, 0.020, 0.050, 0.100],
-)
-
-winner_announcement_delay_seconds = Histogram(
-    "game_winner_announcement_delay_seconds",
-    "Time from last death to winner announcement",
-    buckets=[0.1, 0.2, 0.5, 1.0, 2.0, 5.0],
-)
-
 # System metrics
 process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")
 
@@ -425,13 +398,6 @@ game_analytics_samples_total = Counter(
     ["game_mode"],
 )
 
-game_analytics_replay_bytes = Histogram(
-    "game_analytics_replay_bytes",
-    "Size of replay data stored in bytes",
-    ["game_mode"],
-    buckets=[10000, 50000, 100000, 200000, 500000, 1000000],
-)
-
 
 def clear_player_analytics(serial: str, game_id: str = "") -> None:
     """
@@ -440,7 +406,7 @@ def clear_player_analytics(serial: str, game_id: str = "") -> None:
     Only used for targeted cleanup (e.g., controller disconnect during game).
     Normal player death sets player_alive=0 instead, letting dashboard queries
     filter dead players via game_player_alive==1 in template variables.
-    Bulk cleanup at game end uses clear_all_player_analytics().
+    Cleanup at game end uses clear_session_player_analytics().
 
     The per-player gauges carry both a ``serial`` and a ``game_id`` label (#845),
     so removal must supply the same tuple the emitter set; ``game_id`` is the
@@ -494,8 +460,7 @@ def clear_session_player_analytics(
     """
     Clear analytics metrics for a single game session at game end (#775).
 
-    Multi-session-safe replacement for ``clear_all_player_analytics()``: removes
-    only the gauges belonging to ``serials`` (the ending session's players)
+    Multi-session safe: removes only the gauges belonging to ``serials`` (the ending session's players)
     rather than globally wiping every player gauge. With two concurrent games
     this prevents the first game to end from erasing the live game's dashboard.
 
@@ -513,41 +478,6 @@ def clear_session_player_analytics(
         clear_player_analytics(serial, game_id)
 
     clear_game_state_gauges(game_kind, game_id)
-
-
-def clear_all_player_analytics() -> None:
-    """
-    Clear all player analytics metrics at game end.
-
-    This is the single cleanup point for the game lifecycle, removing all
-    label combinations so the Game & Players dashboard shows no data
-    between games. Per-death metric removal was eliminated (Issue #458)
-    to prevent dashboard flicker during game transitions.
-
-    DEPRECATED for multi-session use (#775): does a global wipe that clobbers
-    concurrent sessions. Prefer ``clear_session_player_analytics()``. Retained
-    for any callers that genuinely want a full reset.
-    """
-    player_accel_magnitude._metrics.clear()
-    player_accel_magnitude._values.clear()
-    player_movement_zone._metrics.clear()
-    player_movement_zone._values.clear()
-    player_playstyle._metrics.clear()
-    player_playstyle._values.clear()
-    player_movement_variance._metrics.clear()
-    player_movement_variance._values.clear()
-    player_skill_level._metrics.clear()
-    player_skill_level._values.clear()
-    player_movement_variance_aggregate._metrics.clear()
-    player_movement_variance_aggregate._values.clear()
-    player_peak_accel._metrics.clear()
-    player_peak_accel._values.clear()
-    player_elimination_order._metrics.clear()
-    player_elimination_order._values.clear()
-    player_alive._metrics.clear()
-    player_alive._values.clear()
-    for gauge in GAME_STATE_GAUGES:
-        gauge.clear()
 
 
 # Agent intervention audit metric (#730, #722 §7).

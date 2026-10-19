@@ -53,21 +53,7 @@ CONSUMED_METRIC_KNOWN_GAPS: dict[
 CONSUMED_LABEL_KNOWN_GAPS: dict[tuple[str, str], str] = {}  # empty since #1353
 
 # Python metric definitions that nothing records (no consumer depends on them).
-DEAD_DEFINITION_KNOWN_GAPS = {
-    "controller_object_pool_utilization": "#1322 item 7 (dead metrics)",
-    "game_analytics_replay_bytes": "#1322 item 7",
-    "game_countdown_accuracy_seconds": "#1322 item 7",
-    "game_player_kills_total": "#1322 item 7",
-    "game_player_respawns_total": "#1322 item 7",
-    "game_winner_announcement_delay_seconds": "#1322 item 7",
-    "menu_lobby_updates_total": "#1322 item 7",
-    "python_hid_active_streams": "#1322 item 7",
-    "python_hid_devices_open": "#1322 item 7",
-    "python_hid_discover_total": "#1322 item 7",
-    "python_hid_open_total": "#1322 item 7",
-    "python_hid_poll_duration_seconds": "#1322 item 7",
-    "python_hid_sensor_data_total": "#1322 item 7",
-}
+DEAD_DEFINITION_KNOWN_GAPS: dict[str, str] = {}  # empty since #1322 item 7
 
 # Metrics produced outside this repo's code (not gaps). Matched by exact name or prefix.
 EXTERNAL_METRICS = {
