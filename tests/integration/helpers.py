@@ -434,14 +434,16 @@ class GameEventCollector:
         await self.stop()
         return False
 
-    async def start(self):
+    async def start(self, timeout: float = STREAM_SUBSCRIBE_TIMEOUT):
         """Subscribe, then collect game events in the background.
 
         Returns only once the coordinator has registered the subscription, so an
-        action taken right after ``start()`` cannot lose its event (#1613).
+        action taken right after ``start()`` cannot lose its event (#1613). With
+        ``start_config`` the headers follow the game start, so ``timeout`` also
+        bounds that start.
         """
         call = await open_subscribed_stream(
-            self.game_client.StreamGameEvents(self._build_request())
+            self.game_client.StreamGameEvents(self._build_request()), timeout=timeout
         )
         self._task = asyncio.create_task(self._collect(call))
 
@@ -1011,7 +1013,7 @@ async def start_game_headless(
         RuntimeError: If the coordinator rejects the start.
     """
     collector = GameEventCollector(game_client, start_config=start_config)
-    await collector.start()
+    await collector.start(timeout=timeout)
 
     # A rejected start yields a single game_start_error event then closes the
     # stream — surface it instead of hanging until timeout.

@@ -32,6 +32,10 @@ EVENT_TIMEOUT_SECONDS = 10.0
 
 
 async def test_menu_collector_sees_an_action_taken_on_entry(service_stack):
+    """The web select publishes selection_changed before ProcessInput returns.
+
+    Without #1613 the event was lost in 4 of 5 runs.
+    """
     menu_client, menu_channel = await get_menu_client(service_stack)
     try:
         async with MenuEventCollector(menu_client) as collector:
@@ -44,6 +48,12 @@ async def test_menu_collector_sees_an_action_taken_on_entry(service_stack):
 
 
 async def test_game_collector_sees_an_action_taken_on_entry(service_stack, headless_cleanup):
+    """Smoke test: the force-end event arrives late enough to pass even without #1613.
+
+    The deterministic proof for the coordinator is the in-process
+    ``test_headers_mark_the_subscription``; this one checks the collector wiring
+    (start() over a real stream, game_id filter) end to end.
+    """
     game_client, game_channel = await get_game_client(service_stack)
     tag = headless_cleanup.add_tag("collector-1613")
     serials = await setup_mock_controllers(service_stack, count=2, reserved=True, tag=tag)

@@ -832,10 +832,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
         # Subscribe to event bus
         event_queue = await event_bus.subscribe(subscriber_id)
-        # Headers now = "subscribed": a client awaiting initial_metadata() sees every later event (#1613).
-        await context.send_initial_metadata(())
 
         try:
+            # Headers now = "subscriber registered" (#1613); inside the try so a client that leaves
+            # during the send still runs the unsubscribe below.
+            await context.send_initial_metadata(())
             while not context.cancelled():
                 try:
                     # Async wait with timeout
