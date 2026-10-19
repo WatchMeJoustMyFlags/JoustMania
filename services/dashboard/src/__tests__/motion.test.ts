@@ -2,14 +2,14 @@
  * Controller card numbers when proto3 JSON omits zero scalars (#1604).
  */
 import { describe, expect, it } from "vitest";
-import { accelDotOffset, batteryView, normalizeGameplay } from "../motion.js";
+import { accelDotOffset, batteryView, normalizeGameplay, statusView } from "../motion.js";
 
 describe("UC-035: controller card reads omitted proto3-JSON zero scalars as 0", () => {
-  it("UC-035 main step 3 a frame without battery, team and axes renders 0, not NaN", () => {
-    // What the server sends for battery 0, team 0, accel (0, 0.5, 0), gyro all zero
+  it("UC-035 main step 3 a frame without battery and axes renders 0 values, not NaN", () => {
+    // What the server sends for battery 0, accel (0, 0.5, 0), gyro all zero
     const frame = normalizeGameplay({ serial: "AA", accel: { y: 0.5 } as never, gyro: {} as never });
     expect(frame.battery).toBe(0);
-    expect(frame.team).toBe(0);
+    expect(frame.team).toBeUndefined();
     expect(frame.rssi).toBe(0);
     expect(frame.accel).toEqual({ x: 0, y: 0.5, z: 0 });
     expect(frame.gyro).toEqual({ x: 0, y: 0, z: 0 });
@@ -25,5 +25,23 @@ describe("UC-035: controller card reads omitted proto3-JSON zero scalars as 0", 
 
   it("UC-035 main step 3 a full battery still maps to 100 %", () => {
     expect(batteryView(5)).toEqual({ percent: 100, className: "high" });
+  });
+
+  it("UC-035 main step 3 battery undefined reads as empty, not NaN", () => {
+    expect(batteryView(undefined)).toEqual({ percent: 0, className: "low" });
+  });
+
+  it("UC-035 main step 3 a frame with no team (always team 0 on the wire) renders Alive, not Dead", () => {
+    const frame = normalizeGameplay({ serial: "AA" });
+    expect(statusView(frame.team)).toEqual({ state: "alive", text: "Alive" });
+    expect(statusView(0)).toEqual({ state: "alive", text: "Alive" });
+  });
+
+  it("UC-035 main step 3 only the followed roster marks a card Dead; admin and teams keep their badges", () => {
+    expect(statusView(undefined, false)).toEqual({ state: "dead", text: "Dead" });
+    expect(statusView(undefined, true)).toEqual({ state: "alive", text: "Alive" });
+    expect(statusView(-1)).toEqual({ state: "admin", text: "Admin" });
+    expect(statusView(2)).toEqual({ state: "alive", text: "Team 2" });
+    expect(statusView(2, true)).toEqual({ state: "alive", text: "Alive" });
   });
 });

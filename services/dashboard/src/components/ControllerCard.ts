@@ -4,7 +4,8 @@
  * Displays a single controller with LED color, battery, accelerometer visualization.
  */
 import type { ConnectionQuality, GameplayData, RGB } from "../gen/controller_manager_pb.js";
-import { accelDotOffset, batteryView, normalizeGameplay } from "../motion.js";
+import { accelDotOffset, batteryView, normalizeGameplay, statusView } from "../motion.js";
+import type { StatusView } from "../motion.js";
 import { qualityBadge } from "../quality.js";
 import { shieldBadge } from "../shield.js";
 import type { ShieldState } from "../shield.js";
@@ -147,10 +148,9 @@ export class ControllerCard {
     // Update accelerometer visualization
     this.updateAccelerometer(data.accel);
 
-    // Update status: a followed shadow game's roster says alive/dead (UC-070
-    // BR-005); otherwise the team (team -1 = admin, team 0 = dead)
-    if (alive === undefined) this.updateStatus(data.team);
-    else this.updateStatus(alive ? 1 : 0, true);
+    // Status: a followed shadow game's roster says alive/dead (UC-070 BR-005);
+    // otherwise the team (-1 = admin, > 0 = team n, 0 or unset = alive)
+    this.updateStatus(statusView(data.team, alive));
   }
 
   private updateLedColor(color: RGB | undefined) {
@@ -197,26 +197,12 @@ export class ControllerCard {
     this.accelDot.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
   }
 
-  private updateStatus(team: number, fromRoster = false) {
+  private updateStatus(view: StatusView) {
     this.element.classList.remove("alive", "dead", "admin");
     this.statusBadge.classList.remove("connected", "alive", "dead", "admin");
-
-    if (team === -1) {
-      // Admin mode
-      this.element.classList.add("admin");
-      this.statusBadge.classList.add("admin");
-      this.statusBadge.textContent = "Admin";
-    } else if (team === 0) {
-      // Dead or not in game
-      this.element.classList.add("dead");
-      this.statusBadge.classList.add("dead");
-      this.statusBadge.textContent = "Dead";
-    } else {
-      // Alive
-      this.element.classList.add("alive");
-      this.statusBadge.classList.add("alive");
-      this.statusBadge.textContent = team > 0 && !fromRoster ? `Team ${team}` : "Alive";
-    }
+    this.element.classList.add(view.state);
+    this.statusBadge.classList.add(view.state);
+    this.statusBadge.textContent = view.text;
   }
 
   remove() {
