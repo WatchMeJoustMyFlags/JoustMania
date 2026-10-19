@@ -147,6 +147,10 @@ graph LR
   `COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.dev.yml`).
 - **Rust (`rust-hid`), Go (`agent`, `flag-service`, `connect-proxy`), dashboard, Dockerfile changes**: rebuild:
   `docker compose up -d --build <service>`.
+- **Rust toolchain pin**: `services/rust-hid/rust-toolchain.toml` pins the exact rustc (with clippy and rustfmt);
+  rustup picks it up automatically in that directory and CI (Rust Checks) reads the same file. The `rust:<version>-slim`
+  base in `services/rust-hid/Dockerfile` must carry the same version. Renovate proposes bumps (regex manager in
+  `renovate.json`), so new lints show up in a reviewed PR, not on main (#1255).
 - **Flags**: change them live with `scripts/flags.sh`, not by editing files while the stack runs; see
   [flags.md](specs/flags.md) and [feature-flags.md](feature-flags.md).
 - **Before every commit**: `make lint`, the tests for what you touched, then `make pr-gates` (the local

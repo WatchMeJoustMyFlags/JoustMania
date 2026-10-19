@@ -14,7 +14,23 @@
     "enabled": true,
     "schedule": ["before 6am on monday"]
   },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Pinned Rust toolchain (#1255): services/rust-hid/rust-toolchain.toml, mirrored by the rust:<version>-slim Dockerfile base",
+      "managerFilePatterns": ["/(^|/)rust-toolchain\\.toml$/"],
+      "matchStrings": ["channel\\s*=\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
   "packageRules": [
+    {
+      "description": "Rust toolchain pin and rust-hid Dockerfile base move together (#1255); the Dockerfile tag must equal rust-toolchain.toml",
+      "matchPackageNames": ["rust-lang/rust", "rust"],
+      "groupName": "rust toolchain",
+      "prBodyNotes": ["Keep `services/rust-hid/rust-toolchain.toml` and the `rust:<version>-slim` base in `services/rust-hid/Dockerfile` on the same version."]
+    },
     {
       "description": "Group the OpenTelemetry Python suite — versions are interdependent",
       "matchManagers": ["pep621"],
