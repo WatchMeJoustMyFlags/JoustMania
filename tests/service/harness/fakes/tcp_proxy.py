@@ -5,14 +5,15 @@ manager: ``Composition(env={"menu": {"CONTROLLER_MANAGER_PORT": str(proxy.port)}
 so a test can drop the gRPC connection without restarting either process, the
 way a network blip or a controller-manager hiccup does::
 
-    proxy = TcpProxy()                      # binds now: the port goes into the composition
+    proxy = TcpProxy()                      # binds now: the port goes into the composition (in a fixture)
     proxy.start(target_port)                # forwards from here on
     proxy.drop_connections()                # both ends see the connection reset
     proxy.wait_for_connections(n, timeout)  # the client dialled again
 
 Connections that arrive before ``start`` wait in the listen backlog. Threads
 only, no event loop: it works under any test's loop. ``wait_for_connections``
-waits on a condition, never on a sleep.
+waits on a condition, never on a sleep. Create it in a fixture that also owns
+``stop()`` (try/finally), never at import: a deselected test would leak it.
 """
 
 from __future__ import annotations
@@ -64,8 +65,13 @@ class TcpProxy:
             return self._lock.wait_for(lambda: self._accepted >= count, timeout=timeout)
 
     def stop(self) -> None:
-        """Close the listener and every connection; never raises."""
-        self._stopped = True
+        """Close the listener and every connection; never raises.
+
+        ``shutdown()`` on the listener wakes a blocked ``accept()`` on Linux; on
+        other systems the join below may wait out its timeout.
+        """
+        with self._lock:
+            self._stopped = True
         _close(self._listener)
         self.drop_connections()
         if self._thread is not None:
@@ -84,6 +90,11 @@ class TcpProxy:
                 _close(client)
                 continue
             with self._lock:
+                if self._stopped:
+                    # Accepted while stop() ran: its drop_connections() never saw this pair.
+                    _close(client)
+                    _close(upstream)
+                    return
                 self._sockets += [client, upstream]
                 self._accepted += 1
                 self._lock.notify_all()

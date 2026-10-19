@@ -403,8 +403,9 @@ class TestPollIntervalMeasured:
     """NFR-001: the python-hid thread reads every open controller every 1 ms plus read time."""
 
     POLLS = 300
-    # 1 ms sleep + read time + scheduler wake-up; generous for a loaded CI runner.
-    MEDIAN_BUDGET_S = 0.005
+    # NFR-001: 1 ms plus read time. Measured median 1.1-1.2 ms, also with 2x CPU overload
+    # (review of #1619); a 2 ms budget still fails a loop that sleeps 2 ms or more.
+    MEDIAN_BUDGET_S = 0.002
 
     @pytest.mark.nfr("NFR-001")
     def test_open_device_is_read_about_every_millisecond(self):

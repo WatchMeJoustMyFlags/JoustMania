@@ -316,7 +316,11 @@ class TestGetConnectedControllers:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-002", flow="A2", steps=[3])
     async def test_roster_shows_the_new_name_after_rename(self, servicer_components, tmp_path):
-        """After RenameController, the live roster (what the dashboard lists) carries the new name."""
+        """After RenameController, the GetConnectedControllers roster carries the new name.
+
+        Roster half of A2 step 3 only: spans set ``controller.name`` when tracking starts
+        (discovery_loop ``_spawn_controller_process``), so a rename does not reach them.
+        """
         from lib.controller_constants import ControllerInfoKey
         from services.controller_manager.name_manager import NameManager
 
