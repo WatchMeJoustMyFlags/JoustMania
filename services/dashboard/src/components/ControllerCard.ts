@@ -4,6 +4,7 @@
  * Displays a single controller with LED color, battery, accelerometer visualization.
  */
 import type { ConnectionQuality, GameplayData, RGB } from "../gen/controller_manager_pb.js";
+import { accelDotOffset, batteryView, normalizeGameplay } from "../motion.js";
 import { qualityBadge } from "../quality.js";
 import { shieldBadge } from "../shield.js";
 import type { ShieldState } from "../shield.js";
@@ -124,11 +125,13 @@ export class ControllerCard {
   }
 
   update(
-    data: GameplayData,
+    frame: GameplayData,
     shield: ShieldState | null = null,
     nowMs: number = Date.now(),
     alive: boolean | undefined = undefined,
   ) {
+    // Proto3 JSON omits zero scalars: default them so nothing renders as NaN (#1604)
+    const data = normalizeGameplay(frame);
     // Update LED color: the colour last written to the LED (shield fade included, #1301)
     this.updateLedColor(data.color);
 
@@ -181,31 +184,16 @@ export class ControllerCard {
     this.qualityElement.title = badge.title;
   }
 
-  private updateBattery(level: number) {
+  private updateBattery(level: number | undefined) {
     // Battery level is 0-5, convert to percentage
-    const percent = Math.min(100, Math.max(0, (level / 5) * 100));
+    const { percent, className } = batteryView(level);
     this.batteryElement.style.width = `${percent}%`;
-
-    // Update color based on level
     this.batteryElement.classList.remove("high", "medium", "low");
-    if (percent > 50) {
-      this.batteryElement.classList.add("high");
-    } else if (percent > 20) {
-      this.batteryElement.classList.add("medium");
-    } else {
-      this.batteryElement.classList.add("low");
-    }
+    this.batteryElement.classList.add(className);
   }
 
-  private updateAccelerometer(accel: { x: number; y: number; z: number } | undefined) {
-    if (!accel) return;
-
-    // Map accelerometer values to dot position
-    // Typical values are -1 to 1 g, multiply for visual effect
-    const maxOffset = 15; // pixels from center
-    const x = Math.max(-maxOffset, Math.min(maxOffset, accel.x * 10));
-    const y = Math.max(-maxOffset, Math.min(maxOffset, accel.z * 10)); // Use z for vertical
-
+  private updateAccelerometer(accel: { x?: number; y?: number; z?: number } | undefined) {
+    const { x, y } = accelDotOffset(accel);
     this.accelDot.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
   }
 
