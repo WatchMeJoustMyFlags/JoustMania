@@ -142,6 +142,7 @@ class AdminModeHandler:
         # simply no longer cycled blind on the controller. See
         # docs/OWNERSHIP_MODEL.md §3 for the per-flag keep/move decision.
         self.current_option = 0
+        # UC-012 BR-002: the controller-cycled options; the other game.json tunables are file / flagd only.
         self.option_names = [
             "sensitivity",  # 0-4 (Ultra Slow to Ultra Fast)
             "num_teams",  # 2-6 teams (for Teams, RandomTeams, Traitor)
@@ -1461,40 +1462,10 @@ class AdminModeHandler:
         Returns:
             Typed value corresponding to the variant
         """
-        # Map variant names to their values for feedback purposes
+        # UC-012 BR-002: only the controller-cycled options (option_names) need a mapping.
         variant_maps = {
             "sensitivity": {"ultra_slow": 0, "slow": 1, "medium": 2, "fast": 3, "ultra_fast": 4},
             "num_teams": {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6},
-            "random_assignment": {"on": True, "off": False},
-            "nonstop.time_limit_seconds": {
-                "unlimited": 0,
-                "one_min": 60,
-                "two_min": 120,
-                "three_min": 180,
-                "four_min": 240,
-                "five_min": 300,
-            },
-            "invincibility_seconds": {
-                "2s": 2.0,
-                "3s": 3.0,
-                "4s": 4.0,
-                "5s": 5.0,
-                "6s": 6.0,
-                "7s": 7.0,
-                "8s": 8.0,
-            },
-            "fight_club.min_rounds": {"five": 5, "ten": 10, "fifteen": 15, "twenty": 20},
-            "werewolf.reveal_time_seconds": {
-                "20s": 20.0,
-                "25s": 25.0,
-                "30s": 30.0,
-                "35s": 35.0,
-                "40s": 40.0,
-                "45s": 45.0,
-                "50s": 50.0,
-                "55s": 55.0,
-                "60s": 60.0,
-            },
             "force_all_start": {"on": True, "off": False},
         }
         mapping = variant_maps.get(option_name, {})
@@ -1532,29 +1503,9 @@ class AdminModeHandler:
                     g = int(255 * (6 - num) / 4)
                     pulse_color = (r, g, 0)
 
-                case "random_assignment" | "force_all_start":
+                case "force_all_start":
                     # Green for True, red for False
                     pulse_color = Colors.Green.value if value else Colors.Red.value
-
-                case "nonstop.time_limit_seconds":
-                    # Purple intensity based on time (0=dim, 300=bright)
-                    intensity = int(255 * int(value) / 300) if int(value) > 0 else 50
-                    pulse_color = (intensity, 0, intensity)
-
-                case "invincibility_seconds":
-                    # Green intensity based on duration (2s=dim, 8s=bright)
-                    intensity = int(255 * (float(value) - 2.0) / 6.0)
-                    pulse_color = (0, intensity + 50, 0)
-
-                case "fight_club.min_rounds":
-                    # Orange intensity based on rounds (5=dim, 20=bright)
-                    intensity = int(255 * (int(value) - 5) / 15)
-                    pulse_color = (255, intensity + 50, 0)
-
-                case "werewolf.reveal_time_seconds":
-                    # Purple intensity based on time (20s=dim, 60s=bright)
-                    intensity = int(255 * (float(value) - 20.0) / 40.0)
-                    pulse_color = (intensity + 50, 0, 255)
 
                 case _:
                     pulse_color = Colors.White.value
