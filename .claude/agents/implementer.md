@@ -87,10 +87,11 @@ E2E_SHARD IMAGE_TAG PYTEST_EXTRA`, `uv run --package <member> [--extra <x>] pyte
 `cargo test|clippy` with `in services/<svc>`, `scripts/tests/test-*.sh`; the dashboard only via
 `gates SERVICE=dashboard`. No `cd`, `&&`, pipes, redirects or `$`; Go `vet && test` is two `run` lines.
 Call it as a foreground Agent call (not `run_in_background`): that call is the wait; never run the same
-command yourself in parallel. gate-runner runs anything under ~9 min in the foreground and returns a real
-verdict; a reply without a `VERDICT:` line is not a result: do not report PASS. Runs over 9 min
-(`make test-integration*`, e2e shards) are backgrounded by gate-runner: wait for its completion before
-reporting, or report `gates running` with the log path and never claim PASS. On a FAIL, read only the quoted lines, or a `sed -n '<a>,<b>p'` slice of the
+command yourself in parallel. gate-runner chooses foreground or background itself and hands back only
+when the run has finished. Report PASS only when the reply contains `VERDICT: PASS` (or `VERDICT: MUTATION
+CAUGHT (assertion)` for an `expect fail` run). Report FLAKY, FAIL, REFUSED, `CAUGHT?`, `ERROR: killed` and a
+reply without a `VERDICT:` line as exactly that, never as PASS. On a FAIL, read only the quoted lines, or a
+`sed -n '<a>,<b>p'` slice of the
 log it names. `CAUGHT? (non-test error)` is not a caught mutation: fix the collection or tool error first.
 
 Run directly (no gate-runner) only: ONE test id for a quick red/green check, piped through `| tail -n 15`
