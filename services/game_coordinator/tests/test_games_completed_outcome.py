@@ -102,7 +102,7 @@ class TestGamesCompletedOutcomeLabel:
 
         assert labels == {"mode": "FFA", "game_kind": GAME_KIND_PRIMARY, "outcome": outcome}
 
-    @pytest.mark.uc("UC-020", flow="A4", br=["BR-003"])
+    @pytest.mark.uc("UC-020", br=["BR-003"])
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.metrics")
     @patch("services.game_coordinator.game_session.GameFactory")

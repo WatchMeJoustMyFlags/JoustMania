@@ -19,6 +19,7 @@ Units covered here:
 """
 
 import asyncio
+import threading
 import time
 from unittest.mock import create_autospec, patch
 
@@ -343,7 +344,11 @@ class TestUC020FreeForAll:
     @pytest.mark.uc("UC-020", flow="A4")
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
     async def test_force_end_stops_ffa_without_a_winner(self, fast_config):
-        """UC-020 A4 / UC-027 step 3: a force-end mid-game stops FFA with no winner and publishes game_force_ended."""
+        """UC-020 A4 / UC-027 step 3: a force-end mid-game stops FFA with no winner.
+
+        A4 step 3: ``player_analytics`` for each player and ``game_ended`` (``force_ended``, reason, duration),
+        then the session's ``game_force_ended``.
+        """
         cm = RecordingControllerManager(num_controllers=3, infinite=True)
         events = EventCollector()
         audio = RecordingAudio()
@@ -362,19 +367,32 @@ class TestUC020FreeForAll:
             event_bus=create_autospec(EventBus, instance=True),
             game_kind=GAME_KIND_PRIMARY,
         )
+        # Record the session's bus publications in the same timeline as the game's, to check ordering.
+        session.event_bus.publish.side_effect = events.publish
         session.current_game = game
         session.game_running = True
         session.game_state = game_coordinator_pb2.GameState.RUNNING
+        # As in production (GameSession._run_game_loop_threaded), the game runs on its own thread and loop,
+        # so force_end() joins it before publishing game_force_ended.
+        game_thread = threading.Thread(target=lambda: asyncio.run(game.run()), daemon=True)
+        session.game_thread = game_thread
+        game_thread.start()
 
-        run_task = asyncio.create_task(game.run())
-        deadline = time.time() + 10.0
-        # start_time is a plain attribute the game loop sets on its first frame; nothing to await on.
-        while game.start_time is None and time.time() < deadline:  # noqa: ASYNC110
-            await asyncio.sleep(0.02)
-        assert game.start_time is not None, "game loop never started"
+        try:
+            deadline = time.time() + 10.0
+            # start_time is a plain attribute the game loop sets on its first frame; nothing to await on.
+            while game.start_time is None and time.time() < deadline:  # noqa: ASYNC110
+                await asyncio.sleep(0.02)
+            assert game.start_time is not None, "game loop never started"
 
-        ok, error = await session.force_end("operator_stop")
-        await asyncio.wait_for(run_task, timeout=10.0)
+            ok, error = await session.force_end("operator_stop")
+            game_thread.join(timeout=10.0)
+            assert not game_thread.is_alive(), "game thread did not stop"
+        finally:
+            # Never leave the game thread spinning on the infinite mock stream if an assert fired early.
+            if game_thread.is_alive():
+                game.force_end("teardown")
+                game_thread.join(timeout=10.0)
 
         assert (ok, error) == (True, "")
         session.event_bus.publish.assert_awaited_once_with(
@@ -388,6 +406,15 @@ class TestUC020FreeForAll:
         assert cm.stream.effects(controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW) == []
         assert Sound.VOX_CONGRATULATIONS.value not in audio.sounds()
         assert game.running is False
+        # A4 step 3: per-player analytics (none a winner), game_ended force_ended, then the session's event.
+        analytics = events.get_events_of_type(GameEvent.PLAYER_ANALYTICS)
+        assert sorted(a["serial"] for a in analytics) == sorted(game.players)
+        assert not any(a["winner"] for a in analytics)
+        (ended,) = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert (ended["outcome"], ended["reason"]) == ("force_ended", "operator_stop")
+        assert ended["duration"] > 0
+        types = _event_types(events)
+        assert types.index(GameEvent.GAME_ENDED) < types.index(GameEvent.GAME_FORCE_ENDED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="main", steps=[5, 6], br=["BR-001"])

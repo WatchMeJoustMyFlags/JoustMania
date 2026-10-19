@@ -485,6 +485,7 @@ def resolve_music_windows(flag_value: dict) -> MusicWindows:
 # This is purely visual feedback, NOT protection (player can still die during warning)
 WARNING_DURATION = 0.5
 
+# UC-020 BR-002: death_grace_period_seconds has no effect in FFA (no respawn).
 # Post-respawn/conversion invincibility window (no death or warning during this
 # time). This is a RESPAWN-MODE concept ONLY: it protects a player who has just
 # respawned, been revived, or been converted (e.g. zombie infection) from being
@@ -782,6 +783,7 @@ class BaseGameMode(ABC):
         # back to the hardcoded default (4.0) when flagd is unavailable.
         self._ema_weight = get_config_manager().read_ema_weight()
 
+        # UC-020 BR-002: read here but consumed only by respawn modes; no effect in FFA.
         # #766 F2: post-respawn grace period promoted to ``game.death_grace_period_seconds``.
         # Read ONCE here (init-frozen); malformed/negative values fall back to the
         # DEATH_GRACE_PERIOD module constant (the source of truth).
@@ -1282,6 +1284,7 @@ class BaseGameMode(ABC):
         Returns:
             True if game is over (win condition met), False otherwise
         """
+        # UC-020 BR-001: win check after every disconnect and every controller sample.
         # Handle disconnects first (#580)
         for disconnect in gameplay_update.disconnects:
             await self._handle_disconnect(disconnect.serial)

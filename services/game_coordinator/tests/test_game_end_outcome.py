@@ -262,7 +262,7 @@ class TestWinLatchedBeforeForceEnd:
         game._latch_game_outcome()
         assert game._game_outcome_attributes()["game.outcome"] == "force_ended"
 
-    @pytest.mark.uc("UC-020", flow="A4", br=["BR-003"])
+    @pytest.mark.uc("UC-020", br=["BR-003"])
     def test_outcome_is_recorded_once(self):
         """UC-020 BR-003: the outcome lands on the root span once, even if recorded again."""
         game, _ = _ffa_game(2)
