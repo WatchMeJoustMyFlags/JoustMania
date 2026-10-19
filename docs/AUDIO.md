@@ -1,197 +1,50 @@
-# Audio Service
+# Audio hardware and ALSA guide
 
-The Audio Service manages all sound playback in JoustMania, including game music with dynamic tempo control, sound effects, and voice announcements.
+How to get sound out of the audio container. Behaviour (music, tempo, channels, formats, assets, RPCs) is specified in
+[UC-031](use_cases/UC-031.md) and [services.md section 6, audio](specs/services.md#audio); the `play_audio` and
+`menu_voice` flags are in [flags.md](specs/flags.md). The audio service plays through ALSA only, so it needs a sound card
+visible under `/dev/snd` on the host.
 
-## Hardware Requirements
+## Hardware
 
-### Raspberry Pi 5
+| Host | Output |
+|------|--------|
+| Raspberry Pi 5 | No 3.5mm jack: use a USB audio adapter. |
+| Raspberry Pi 4 and earlier | The built-in jack or a USB adapter. |
+| HDMI | Works, but only if a monitor or TV is attached; not suited to a party setup. |
 
-The Pi 5 has no 3.5mm headphone jack. You need a **USB audio adapter** for sound output.
+## How the container gets the card
 
-Recommended: Any USB sound card with 3.5mm output (cheap ones work fine).
+- Compose passes `/dev/snd` through (`devices: /dev/snd:/dev/snd`) and adds the host `audio` group by number
+  (`group_add: "29"` in `docker-compose.yml`). If your host `audio` group has another GID (`getent group audio`), change it.
+  `docker-compose.lite.yml` runs the container `privileged` instead.
+- `ALSA_CARD` defaults to `auto` (compose). At start-up `services/audio/alsa_config.py` lists the cards, prefers the first one
+  whose name contains "USB" and otherwise takes the first card (on a Pi often an HDMI card, so set `ALSA_CARD` when the
+  speakers are on the jack). It retries up to 3 times, one second apart, because `/dev/snd` can fill late, and falls
+  back to card 0.
+- The service then rewrites `/etc/asound.conf` with that card: a `dmix` software mixer (44.1 kHz, 2 channels) as the
+  default PCM. The image ships a template with `hw:0,0` that the rewrite replaces; the file is owned by the non-root user
+  (uid 65532) so it can be rewritten.
+- To force a card: `ALSA_CARD=1` (a card number). To use your own config instead, mount it read-only at
+  `/etc/asound.conf`; the rewrite is then skipped with a warning when the file is not writable.
+- Music opens the PCM through a fallback chain: `default` (dmix), then `plughw:N,0`, then `hw:N,0`, so a stale dmix after a
+  crash or a permission problem does not mute the game.
+- Test and CI stacks (`docker-compose.ci.yml`) mount no sound device and run with `play_audio` off.
 
-### Raspberry Pi 4 and Earlier
+## Muting
 
-Built-in 3.5mm audio jack works out of the box. USB audio adapters also work if you prefer.
-
-### HDMI Audio
-
-HDMI audio output is supported but not recommended for portable/party setups where a monitor may not be available.
-
-## Features
-
-### Sound Effects
-
-- 8 simultaneous sound channels with priority-based mixing
-- Priority levels: LOW, MEDIUM, HIGH, CRITICAL
-- When channels are full, lower priority sounds are evicted
-- Fire-and-forget playback (non-blocking)
-
-### Background Music
-
-- Looping background music with random track selection
-- Glob pattern support (e.g., `Joust/music/*.wav` plays a random track)
-- One music track at a time
-
-### Dynamic Tempo Control (Linux Only)
-
-The signature JoustMania feature - music speeds up and slows down during gameplay:
-
-- Normal speed: 1.0x
-- Fast speed: 1.3x (30% faster)
-- Smooth transitions over 1.5 seconds
-- Tempo affects death sensitivity thresholds (faster music = harder to die)
-
-This creates the classic JoustMania tension where slow music means careful movement, and fast music lets players move more freely.
-
-**Note:** Tempo control requires Linux with ALSA. On other platforms, music plays at fixed speed.
-
-### Voice Announcements
-
-Two voice actors available:
-- **aaron** - Male voice
-- **ivy** - Female voice
-
-Voice selection is configured in Settings (admin mode or settings service).
-
-### Volume Control
-
-- Master volume affects all audio (0.0 to 1.0)
-- Game music typically plays at 0.7 volume
-- Individual sound effects can have per-sound volume
-
-## Audio File Formats
-
-**Recommended:** WAV files (44.1 kHz, 16-bit, stereo)
-
-**Supported with conversion overhead:** MP3, FLAC, OGG (decoded via miniaudio)
-
-For best performance, use WAV files. Other formats require runtime conversion which adds latency.
-
-## Asset Structure
-
-Audio files are organized by game mode:
-
-```
-services/audio/assets/
-├── Joust/
-│   ├── music/          # Background music tracks
-│   │   ├── track1.wav
-│   │   └── ...
-│   ├── sounds/         # Sound effects
-│   │   ├── Explosion34.wav
-│   │   ├── beep_loud.wav
-│   │   └── ...
-│   └── voice/
-│       ├── aaron/      # Aaron's voice files
-│       └── ivy/        # Ivy's voice files
-├── Menu/
-│   ├── music/
-│   ├── sounds/
-│   └── voice/
-├── Commander/
-├── Zombie/
-└── ...
-```
-
-## Custom Music
-
-To add custom music:
-
-1. Place WAV files in the appropriate `music/` folder
-2. Files are selected randomly when the game starts
-3. Restart the audio service to pick up new files
-
-Example: Add custom Joust music to `services/audio/assets/Joust/music/`
-
-**Supported formats:** WAV (recommended), MP3, FLAC, OGG
-
-**Requirements:**
-- 44.1 kHz sample rate (or will be resampled)
-- Stereo or mono
-- Any bit depth (converted to 16-bit)
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AUDIO_ASSETS_DIR` | `services/audio/assets` | Path to audio files |
-| `play_audio` (flagd) | `on` | Audio output toggle (user_preferences domain) |
-| `LOG_LEVEL` | `INFO` | Logging verbosity |
-
-### Configuration (flagd)
-
-- **Voice actor:** Selectable via admin mode (persisted in `user.json`)
-- **Play audio:** Can be disabled entirely via admin mode
-- **Volume:** Controlled per-game by the game coordinator
-
-## Limitations
-
-### Platform Support
-
-| Feature | Linux | Windows/Mac |
-|---------|-------|-------------|
-| Sound effects | Yes | Yes |
-| Background music | Yes | Yes |
-| Dynamic tempo | Yes | No (fixed speed) |
-
-Full features require Linux with ALSA audio backend.
-
-### Technical Constraints
-
-- Maximum 8 simultaneous sounds (pygame mixer limit)
-- One music track at a time (no layered music)
-- No crossfading between tracks
-- No audio ducking (music doesn't lower for voice)
-- No text-to-speech (all voice files are pre-recorded)
-- No microphone/input support (output only)
-- No audio device selection (uses system default)
-
-### Tempo Control Constraints
-
-- Range limited to 0.5x - 2.0x speed
-- Real-time resampling uses CPU (scipy)
-- No pitch correction (tempo change affects pitch slightly)
+`play_audio` off makes the service accept every request and play nothing. Turning it on later opens the hardware at runtime
+(UC-031 A1). It is a flag, not an environment variable; see flags.md.
 
 ## Troubleshooting
 
-### No Sound Output
-
-1. Check audio device is connected (USB adapter for Pi 5)
-2. Verify ALSA can see the device: `aplay -l`
-3. Check audio service logs: `docker compose logs audio`
-4. Ensure `play_audio` setting is enabled
-
-### Choppy or Stuttering Audio
-
-1. Check CPU usage during tempo transitions
-2. Use WAV files instead of MP3/FLAC (avoids conversion overhead)
-3. Reduce number of simultaneous sound effects
-
-### Wrong Audio Device
-
-The service uses the system default audio device. To change:
-
-1. List devices: `aplay -l`
-2. Set default in `/etc/asound.conf` or `~/.asoundrc`:
-   ```
-   defaults.pcm.card 1
-   defaults.ctl.card 1
-   ```
-   (Replace `1` with your device number)
-
-## API Reference
-
-The audio service exposes a gRPC API on port 50056:
-
-| RPC | Description |
-|-----|-------------|
-| `PlaySound` | Play a one-shot sound effect |
-| `PlayMusic` | Start looping background music |
-| `StopMusic` | Stop current music track |
-| `ChangeTempo` | Change music playback speed |
-| `SetVolume` | Set master volume |
-
-See `proto/audio.proto` for full API definition.
+1. No sound: run `aplay -l` on the host (the runtime image has no shell or ALSA tools), check the adapter is plugged in and
+   `/dev/snd` exists, then `docker compose logs audio` for "Detected ALSA cards", "Wrote /etc/asound.conf with card N" and
+   "Opened ALSA PCM device".
+2. Wrong output (for example the Pi 4 jack while no USB card is present, so an HDMI card was picked): set `ALSA_CARD` to the number from
+   `aplay -l` and restart the audio container.
+3. "Permission denied" on `/dev/snd/*`: the `group_add` GID does not match the host `audio` group.
+4. Cards that appear after the container started (USB hot-plug): restart the audio container so the card is detected again.
+5. Check `play_audio` is on and the volume flags are not zero.
+6. Choppy music during tempo changes is CPU load from resampling; check `docker stats` on a loaded Pi.
+7. Custom music and sounds, formats and limits: see UC-031 BR-003 and services.md.
