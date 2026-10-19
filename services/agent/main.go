@@ -952,6 +952,7 @@ func main() {
 	// `var mux` is declared earlier so the per-game loop factory's ContextProvider can
 	// close over it (the remote decide path re-fetches the current context via the
 	// multiplexer); assign it here.
+	staleEnds := newGameEndStaleCounter(globalMeterProvider())
 	mux = gamecontext.NewMultiplexer(func(gameID string) *gamecontext.Store {
 		// Prime with the holder's current values as the static fallback, then wire the
 		// LIVE TTL sources (#927): EvictStale reads lifecycle.player_ttl_seconds /
@@ -981,7 +982,11 @@ func main() {
 		if expLoop != nil {
 			experimentOnGameEnd = expLoop.onGameEnd
 		}
-		s.OnGameEnd = chainGameEnd(experimentOnGameEnd, retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd)
+		// A stale end (UC-041 A4, #1494: the game's game_active series went silent,
+		// so its telemetry broke) is counted, kept out of experiments by
+		// expLoop.onGameEnd itself, and skipped by retro, summary and proposer.
+		s.OnGameEnd = buildGameEndChain(staleEnds,
+			experimentOnGameEnd, retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd)
 		return s
 	})
 	mux.SetOwnService(ownService)

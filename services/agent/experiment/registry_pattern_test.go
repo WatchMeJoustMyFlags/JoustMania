@@ -653,6 +653,83 @@ func TestRegistryPatternPreemptionRerunBudget(t *testing.T) {
 	})
 }
 
+// staleNotes counts the BR-015 stale-rerun journal notes.
+func (h *preemptionHarness) staleNotes() int {
+	n := 0
+	for _, e := range eventsOfKind(journalEvents(h.t, h.r, h.id), journal.KindDecision) {
+		if e.Note == notePairRerunStale {
+			n++
+		}
+	}
+	return n
+}
+
+// UC: UC-046 A9 BR-015 UC-041 A4
+func TestRegistryPatternStaleRerunBudget(t *testing.T) {
+	const errorRelease = "game ended without usable fitness sample: error"
+
+	t.Run("UC-046/A9 stale ends rerun the pair without using up the 3-rerun budget", func(t *testing.T) {
+		h := newPreemptionHarness(t, "")
+		for i := 0; i < 5; i++ {
+			if !h.releaseNext(ReleaseReasonStale) {
+				t.Fatalf("stale end %d: no game spawned", i+1)
+			}
+		}
+		for i := 0; i < maxPairReruns+1; i++ {
+			if !h.releaseNext(errorRelease) {
+				t.Fatalf("error release %d: no game spawned, the stale ends used up the budget", i+1)
+			}
+		}
+		if h.releaseNext(errorRelease) {
+			t.Fatal("a game spawned after the archetype should have been skipped")
+		}
+		reruns, preempted, skips := h.notes()
+		if stale := h.staleNotes(); reruns != maxPairReruns || stale != 5 || preempted != 0 || skips != 1 {
+			t.Errorf("reruns=%d stale=%d preempted=%d skips=%d, want %d/5/0/1", reruns, stale, preempted, skips, maxPairReruns)
+		}
+	})
+
+	t.Run("UC-046/BR-015 stale safety valve: after 10 stale ends a further one counts against the budget", func(t *testing.T) {
+		h := newPreemptionHarness(t, "")
+		spawned := 0
+		for h.releaseNext(ReleaseReasonStale) {
+			spawned++
+			if spawned > 100 {
+				t.Fatal("a constantly stale pair never stops rerunning")
+			}
+		}
+		if want := 1 + maxPairStaleReruns + maxPairReruns; spawned != want {
+			t.Errorf("games spawned = %d, want %d", spawned, want)
+		}
+		if reruns, _, skips := h.notes(); reruns != maxPairReruns || h.staleNotes() != maxPairStaleReruns || skips != 1 {
+			t.Errorf("reruns=%d stale=%d skips=%d, want %d/%d/1", reruns, h.staleNotes(), skips, maxPairReruns, maxPairStaleReruns)
+		}
+	})
+
+	t.Run("UC-046/BR-015 a restart restores the stale-rerun count", func(t *testing.T) {
+		root := t.TempDir()
+		h := newPreemptionHarness(t, root)
+		for i := 0; i < maxPairStaleReruns; i++ {
+			if !h.releaseNext(ReleaseReasonStale) {
+				t.Fatalf("stale end %d: no game spawned", i+1)
+			}
+		}
+		spawner2 := &patternSpawner{}
+		r2 := newTestRegistry(t, RegistryConfig{Root: root, MaxShadowGames: 2, EffectiveConcurrency: 1, MaxGamesPerExperiment: -1,
+			Spawner: spawner2, Verdict: alwaysInconclusive{}, Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "x")}}})
+		if err := r2.Rehydrate([]string{h.id}); err != nil {
+			t.Fatal(err)
+		}
+		h2 := &preemptionHarness{t: t, r: r2, spawner: spawner2, id: h.id}
+		if !h2.releaseNext(ReleaseReasonStale) {
+			t.Fatal("the restored pair did not run again")
+		}
+		if reruns, _, _ := h2.notes(); h2.staleNotes() != maxPairStaleReruns || reruns != 1 {
+			t.Errorf("after restart: stale=%d reruns=%d, want %d/1 (the valve was already used up)", h2.staleNotes(), reruns, maxPairStaleReruns)
+		}
+	})
+}
+
 // UC: UC-046 A14 BR-013
 func TestRegistryPatternAgentEndedReporting(t *testing.T) {
 	t.Run("UC-046/A14 agent ends are journaled as censored and reported apart from timeouts", func(t *testing.T) {

@@ -810,6 +810,14 @@ func (e *experimentLoop) declareAndStart(ctx context.Context, in experiment.Inte
 // existing per-game retro/summary path. After a conclusion it nudges
 // AllocateAndSpawn so the freed slot is refilled promptly (capacity churn).
 func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
+	// A stale end (UC-041 A4, #1494) means the game's telemetry stopped mid-game:
+	// its snapshot is truncated, so it is never scored. An experiment game's slot is
+	// released without a sample (ReleaseGame, as for an errored game, #1014) and a
+	// real game never seeds the recent-real baseline.
+	if gc.EndReason == gamecontext.EndReasonStale {
+		e.releaseStaleGame(gc)
+		return
+	}
 	// The coordinator sets the FINAL game_duration_seconds in the session teardown,
 	// so for an agent-spawned shadow game it routinely loses the race against the
 	// game_active=0 datapoint that fires THIS hook — leaving gc.Session.DurationSeconds
@@ -869,6 +877,22 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 	}
 	if status == experiment.StatusRunning {
 		// A freed in-flight slot; refill it (respecting the kill-switch).
+		e.allocateIfEnabled(context.Background())
+	}
+}
+
+// releaseStaleGame frees a stale-ended experiment game's in-flight slot without
+// folding a fitness sample (#1494) and refills the freed slot. A non-experiment
+// game, or a loop without a registry, needs nothing.
+func (e *experimentLoop) releaseStaleGame(gc gamecontext.GameContext) {
+	if e.log != nil {
+		e.log.Warn("experiment: stale-ended game excluded from fitness (telemetry lost)",
+			"game_id", gc.SessionID, "experiment_id", gc.ExperimentID, "arm", gc.Arm)
+	}
+	if gc.ExperimentID == "" || e.registry == nil {
+		return
+	}
+	if e.registry.ReleaseGame(gc.SessionID, experiment.ReleaseReasonStale) {
 		e.allocateIfEnabled(context.Background())
 	}
 }
@@ -1285,8 +1309,10 @@ func withEffectiveDuration(gc gamecontext.GameContext) gamecontext.GameContext {
 // narrative: the seconds between the session's "start" phase event and its "end"
 // phase event. It returns false when either bracket is missing or the span is
 // non-positive (nothing trustworthy to recover). The end snapshot the Store hands
-// OnGameEnd is taken right AFTER appending the "end" phase (store.go SetGameActive),
-// so both brackets are present on a normally concluded game.
+// OnGameEnd is taken right AFTER appending the "end" phase (store.go endGameLocked),
+// so both brackets are present on a concluded game. The "end" event is stamped at
+// the game's actual end (the 0's arrival, the root span's end time, or the last
+// game_active datapoint), not at when the agent learned of it (#1494).
 func timelinePhaseDuration(timeline []gamecontext.TimelineEvent) (float64, bool) {
 	var start, end time.Time
 	var haveStart, haveEnd bool

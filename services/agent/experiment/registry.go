@@ -274,9 +274,11 @@ type entry struct {
 	// pairReruns counts reruns per pair; pairSkipped marks archetypes given up
 	// after maxPairReruns (BR-015). pairPreemptions counts the reruns after a
 	// real-game preemption, which do not use up maxPairReruns (bounded by
-	// maxPairPreemptions).
+	// maxPairPreemptions); pairStaleReruns likewise counts the reruns after a stale
+	// end (UC-041 A4, bounded by maxPairStaleReruns).
 	pairReruns      map[int]int
 	pairPreemptions map[int]int
+	pairStaleReruns map[int]int
 	pairSkipped     map[int]bool
 	// patternGames / patternTimeouts / patternAgentEnded count finished pattern
 	// games, timeouts and agent ends (A14) per arm (BR-013 reporting).
