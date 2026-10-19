@@ -136,6 +136,28 @@ def test_on_flags_changed_event(mock_get_client, _mock_add_handler, caplog):
     assert "Feature flags changed" in caplog.text
 
 
+@pytest.mark.uc("UC-053", flow="A9")
+@patch("openfeature.api.add_handler")
+@patch("lib.feature_flags.get_flag_client")
+def test_intervention_only_changes_log_at_debug(mock_get_client, _mock_add_handler, caplog):
+    """#1552: every flag-service write re-stamps the interventions set and the
+    allow-list, so most pushes name only intervention flags; those are not
+    runtime config and stay out of the INFO log."""
+    mock_get_client.return_value = MagicMock()
+    manager = RuntimeConfigManager()
+
+    event = MagicMock()
+    event.flags_changed = ["end_game", "volume_override", "interventions_allowed"]
+    with caplog.at_level(logging.INFO, logger="services.game_coordinator.runtime_config"):
+        manager._on_flags_changed(event)
+    assert "Feature flags changed" not in caplog.text
+
+    event.flags_changed = ["interventions_allowed", "perception.zone_still_max"]
+    with caplog.at_level(logging.INFO, logger="services.game_coordinator.runtime_config"):
+        manager._on_flags_changed(event)
+    assert "Feature flags changed" in caplog.text
+
+
 @patch("openfeature.api.add_handler")
 @patch("lib.feature_flags.get_flag_client")
 def test_on_flags_changed_no_flag_list(mock_get_client, _mock_add_handler, caplog):

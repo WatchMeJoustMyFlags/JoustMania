@@ -2197,7 +2197,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "game_flag_configuration_changes_total: PROVIDER_CONFIGURATION_CHANGED events the game-coordinator's providers received from flagd, i.e. flag-service pushes that reached an in-process client.",
+      "description": "game_flag_configuration_changes_total: PROVIDER_CONFIGURATION_CHANGED events the game-coordinator's providers received from flagd, i.e. flag-service pushes that reached an in-process client. Since #1552 one write counts about three times (the written set plus the interventions and agent sets, whose snapshot stamps move on every write).",
       "fieldConfig": {
         "defaults": {
           "color": {
