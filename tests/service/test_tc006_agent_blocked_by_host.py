@@ -26,7 +26,6 @@ from proto import controller_manager_mock_pb2
 from tests.integration.flag_service import default as flag_service_default
 from tests.integration.flag_service import variant_value
 from tests.integration.helpers import (
-    ADMIN_WHITE,
     GameEventCollector,
     async_poll_until,
     enter_admin_mode,
@@ -35,8 +34,6 @@ from tests.integration.helpers import (
     get_game_client,
     get_mock_client,
     press_admin_button,
-    setup_mock_controllers,
-    wait_for_lobby_colors,
 )
 from tests.service.agent_flow import (
     AGENT,
@@ -49,7 +46,7 @@ from tests.service.agent_flow import (
     wait_agent_flags_served,
 )
 from tests.service.harness import AGENT as AGENT_COMPOSITION
-from tests.service.lobby_flow import open_lobby, ready_up_until_started, wait_running
+from tests.service.lobby_flow import ready_up_until_started, start_lobby, wait_running
 
 pytestmark = pytest.mark.tier("service")
 
@@ -58,7 +55,6 @@ SERVICE_COMPOSITION = AGENT_COMPOSITION
 FLAG = "interventions_allowed"
 START_LEVEL = "standard"  # TC-006 precondition
 PERSIST_TIMEOUT_SECONDS = 5.0
-LOBBY_TIMEOUT_SECONDS = 15.0
 # TC-006 step 5 test data: the agent's next cycles over a 10 s window.
 NO_CALL_WINDOW_SECONDS = 10.0
 GATED_METRIC = "agent_llm_gated_total"
@@ -99,7 +95,6 @@ async def _restrict_from_controller(stack, mock_client, host: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A14", tc="TC-006")
-@pytest.mark.uc("UC-013", flow="main", steps=[1, 2, 3], tc="TC-006")
 @pytest.mark.usefixtures("flag_service")
 async def test_agent_makes_no_remote_call_after_host_restricts_it(fresh_stack):
     """With interventions_allowed=none set by the host from the controller, the agent
@@ -115,11 +110,8 @@ async def test_agent_makes_no_remote_call_after_host_restricts_it(fresh_stack):
     game_client, game_channel = await get_game_client(stack)
     mock_client, mock_channel = await get_mock_client(stack)
     try:
-        # Menu restart + mode select BEFORE the controllers are added (#1575).
-        await open_lobby(stack)
-        serials = await setup_mock_controllers(stack, count=4)
-        # White does not count: the mock adapter starts every LED white, the same as admin.
-        await wait_for_lobby_colors(mock_client, serials, timeout=LOBBY_TIMEOUT_SECONDS, exclude=ADMIN_WHITE)
+        # Menu restart + mode select BEFORE the controllers are added (#1575), lobby colours shown.
+        serials = await start_lobby(stack, count=4)
         await _restrict_from_controller(stack, mock_client, host=serials[0])
 
         collector = GameEventCollector(game_client)

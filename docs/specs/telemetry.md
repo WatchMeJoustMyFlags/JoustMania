@@ -27,7 +27,7 @@ Service identities (`OTEL_SERVICE_NAME` / namespace): `controller-manager-servic
 `rust-hid`, `python-hid`, `connect-proxy`, `agent` (namespace `infrastructure`); `game-coordinator-service`,
 `menu-service`, `audio-service` (namespace `joustmania`) (`docker-compose.yml`).
 
-**Traceability:** C-001, FR-040, FR-080 to FR-082, NFR-021 to NFR-024 / UC-035, UC-041 / `services/otel-collector/config.yaml`, `lib/telemetry.py`, `lib/otel_metrics.py` / `tests/integration/test_decide_backend_e2e.py` (Jaeger relay).
+**Traceability:** C-001, FR-040, FR-080 to FR-082, NFR-021 to NFR-024 / UC-035, UC-041 / `services/otel-collector/config.yaml`, `lib/telemetry.py`, `lib/otel_metrics.py` / `tests/service/test_otlp_sink.py` (OTLP export to a receiver; the collector-to-Jaeger hop has no end-to-end test since #1600 moved the decide tests to the service tier).
 
 ## 2. Conventions
 
@@ -227,7 +227,7 @@ fitness sample (and records no recent-real sample for a real game), and the retr
 (`services/agent/gamecontext/store.go` `endGameLocked`, `EndGameFromRootSpan`, `EvictStale`; `gamecontext/multiplexer.go`;
 `services/agent/gameend.go`).
 
-**Traceability:** FR-040 to FR-049, FR-056, FR-063, FR-071, FR-072 / UC-040 to UC-045, UC-050, UC-051 / `services/agent/decision/`, `services/agent/experiment/`, `services/agent/gamecontext/` / `services/agent/decision/*_test.go` (trace_link, signal_telemetry, gameplay_phase_parent, game_cycle_parent, effect_parent), `tests/integration/test_decide_backend_e2e.py`, `tests/integration/test_experiment_cohort_loop.py`.
+**Traceability:** FR-040 to FR-049, FR-056, FR-063, FR-071, FR-072 / UC-040 to UC-045, UC-050, UC-051 / `services/agent/decision/`, `services/agent/experiment/`, `services/agent/gamecontext/` / `services/agent/decision/*_test.go` (trace_link, signal_telemetry, gameplay_phase_parent, game_cycle_parent, effect_parent), `tests/service/test_tc008_remote_backend_routing.py`, `tests/service/test_tc009_kill_switch.py`, `tests/integration/test_experiment_cohort_loop.py`.
 
 ## 5. Game events
 

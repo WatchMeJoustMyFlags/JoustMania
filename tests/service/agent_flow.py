@@ -23,10 +23,9 @@ from tests.integration.helpers import (
     flagd_probe_client,
     get_game_client,
     poll_until,
-    setup_mock_controllers,
 )
 from tests.service.harness.fakes import SpanRecord
-from tests.service.lobby_flow import open_lobby, ready_up_until_started, wait_running
+from tests.service.lobby_flow import ready_up_until_started, start_lobby, wait_running
 
 AGENT = "agent"
 AGENT_SERVICE = "agent"  # the agent's OTEL_SERVICE_NAME (harness/agent.py)
@@ -127,8 +126,7 @@ async def start_ffa(stack, collector: GameEventCollector, players: int = 4) -> t
     The menu is restarted and the mode selected BEFORE the controllers are added
     (#1575: controllers added first can connect before the restart and be lost).
     """
-    await open_lobby(stack)
-    serials = await setup_mock_controllers(stack, count=players)
+    serials = await start_lobby(stack, count=players)
     game_id = await ready_up_until_started(stack, serials, collector, known_ids=set())
     game_client, channel = await get_game_client(stack)
     try:

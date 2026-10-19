@@ -38,7 +38,7 @@ Same `uc` marker as `/pytest-test` (registered in `tests/integration/pyproject.t
 ```python
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A6", br=["BR-001"])
-async def test_kill_switch_mid_flight_discards(decide_flags, ...):
+async def test_kill_switch_mid_flight_discards(flag_service, ...):
     """UC-040 A6: enabled flipped while the answer is in flight -> discarded, nothing applied."""
 ```
 

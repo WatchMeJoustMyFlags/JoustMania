@@ -14,6 +14,7 @@ to the sink, where the tests read them (Jaeger's role in compose).
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import subprocess
@@ -39,14 +40,37 @@ LLM_MAX_REQUESTS_PER_MINUTE = "600"
 UNREACHABLE = "127.0.0.1:1"
 
 
+@functools.cache
+def _go_target() -> str:
+    """GOOS, GOARCH and GOFLAGS as ``go build`` sees them: a change must not reuse a binary."""
+    result = subprocess.run(["go", "env", "GOOS", "GOARCH", "GOFLAGS"], capture_output=True, text=True, check=False)
+    return result.stdout.strip().replace("\n", "|") or "unknown"
+
+
+def _agent_files() -> list[Path]:
+    """Every file of services/agent git tracks (or would track: untracked, not ignored), tests excluded.
+
+    Not only ``.go`` / ``go.mod`` / ``go.sum``: a ``//go:embed`` of any other file is
+    part of the binary, so it is part of the key.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."],
+        cwd=AGENT_SRC,
+        capture_output=True,
+        check=True,
+    )
+    names = sorted({n for n in result.stdout.decode().split("\0") if n and not n.endswith("_test.go")})
+    return [AGENT_SRC / n for n in names if (AGENT_SRC / n).is_file()]
+
+
 def agent_source_hash() -> str:
-    """Hash of every file ``go build`` reads (sources, go.mod/go.sum) and the Go toolchain."""
+    """Hash of the agent's non-test files, the Go toolchain and the build target."""
     digest = hashlib.sha256()
     digest.update(_go_version().encode())
-    for path in sorted(AGENT_SRC.rglob("*")):
-        if path.is_file() and path.suffix in (".go", ".mod", ".sum"):
-            digest.update(str(path.relative_to(AGENT_SRC)).encode())
-            digest.update(path.read_bytes())
+    digest.update(_go_target().encode())
+    for path in _agent_files():
+        digest.update(str(path.relative_to(AGENT_SRC)).encode())
+        digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
 
 
