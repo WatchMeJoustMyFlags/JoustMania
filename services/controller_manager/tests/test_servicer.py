@@ -775,8 +775,10 @@ class TestExtractedHelpers:
         assert filt is None
 
     @pytest.mark.asyncio
+    @pytest.mark.nfr("NFR-003")
+    @pytest.mark.uc("UC-030", flow="main", steps=[2])
     async def test_process_gameplay_config_default_hz(self, servicer_components):
-        """_process_gameplay_config should default to 30Hz when frequency is 0."""
+        """UC-030 step 2 / NFR-003: the controller manager streams at 30 Hz when the game requests no rate."""
         servicer, _ = servicer_components
         span = MagicMock()
 

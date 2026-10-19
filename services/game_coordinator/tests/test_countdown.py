@@ -42,6 +42,7 @@ def _config_manager(phase_duration_ms: int):
 class TestCountdown:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", steps=[6])
+    @pytest.mark.uc("UC-031", flow="main", steps=[4])
     async def test_three_phases_with_beeps_then_start_sound(self):
         """UC-010 step 6: a countdown effect per player, three beeps one phase apart, then the start sound."""
         events = EventCollector()
@@ -74,6 +75,7 @@ class TestCountdown:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", steps=[6])
+    @pytest.mark.nfr("NFR-005")
     async def test_default_phase_is_750_ms(self):
         """UC-010 step 6 / NFR-005: with the default config each phase (effect and beep gap) lasts 750 ms."""
         assert GamePerformanceConfig().countdown_phase_duration_ms == 750

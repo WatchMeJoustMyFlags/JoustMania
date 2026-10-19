@@ -62,6 +62,7 @@ class TestAudioManagerPlaySound:
         result = manager.play_sound("definitely_not_a_real_file.ogg", volume=1.0, priority=2)
         assert result is False
 
+    @pytest.mark.uc("UC-031", flow="main")  # Post-F-1: a missing file is counted as file_not_found
     @patch("services.audio.metrics.audio_sounds_played_total")
     def test_play_sound_missing_file_increments_metric(self, mock_metric):
         """Missing file increments file_not_found metric."""
@@ -258,3 +259,74 @@ class TestAudioManagerSetVolume:
         result = mock_audio_manager.set_volume(-0.5)
         assert result is True
         assert mock_audio_manager.master_volume == 0.0
+
+
+class TestMasterVolumeAndMixing:
+    """UC-031 step 5: up to 8 effect channels; one master volume for music and effects."""
+
+    @pytest.fixture
+    def sound_file(self, tmp_path):
+        path = tmp_path / "effect.ogg"
+        path.write_bytes(b"fake")
+        return str(path)
+
+    @pytest.mark.uc("UC-031", flow="main", steps=[5])
+    def test_eight_effect_channels(self):
+        """UC-031 step 5: the mixer has 8 effect channels."""
+        from services.audio.servicer import AudioManager
+
+        manager = AudioManager(silent=False)
+        assert AudioManager.MAX_CHANNELS == 8
+        assert len(manager.channels) == 8
+
+    @pytest.mark.uc("UC-031", flow="main", steps=[5])
+    def test_set_volume_drives_music_and_effects(self, sound_file):
+        """UC-031 step 5: SetVolume sets the music volume, and an effect played afterwards is scaled by it."""
+        from services.audio.servicer import AudioManager
+
+        manager = AudioManager(silent=False)
+        with patch.object(manager.music_player, "set_volume") as music_volume:
+            assert manager.set_volume(0.4) is True
+        music_volume.assert_called_once_with(0.4)
+
+        channel = manager._find_channel()
+        with patch.object(channel, "play", return_value=True) as play:
+            assert manager.play_sound(sound_file, volume=0.5, priority=2) is True
+        play.assert_called_once()
+        assert play.call_args.kwargs["volume"] == pytest.approx(0.2)
+
+
+class TestPlaybackFailureIsCounted:
+    """UC-031 Post-F-1: a playback error is counted and frees the channel; it never raises to the caller."""
+
+    @pytest.mark.uc("UC-031", flow="main")  # Post-F-1: playback errors counted in audio_playback_errors_total
+    @patch("services.audio.metrics.audio_playback_errors_total")
+    def test_playback_error_increments_audio_playback_errors_total(self, mock_errors, tmp_path):
+        import threading
+
+        from services.audio.servicer import SoundChannel
+
+        channel = SoundChannel(channel_id=0)
+        done = threading.Event()
+
+        def broken_playback(*_args):
+            raise RuntimeError("ALSA device gone")
+
+        def count(*_args):
+            done.set()
+
+        mock_errors.inc.side_effect = count
+        with (
+            patch("services.audio.servicer.miniaudio.get_file_info") as file_info,
+            patch.object(channel, "_play_full_volume", side_effect=broken_playback),
+        ):
+            file_info.return_value.duration = 0.1
+            assert channel.play(str(tmp_path / "effect.ogg"), volume=1.0, priority=2) is True
+            assert done.wait(timeout=2.0), "the playback error was never counted"
+
+        mock_errors.inc.assert_called_once()
+        for _ in range(100):  # the playback thread clears the flag right after counting
+            if not channel.is_playing:
+                break
+            threading.Event().wait(0.01)
+        assert channel.is_playing is False

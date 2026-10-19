@@ -72,6 +72,7 @@ class TestUC040ShieldFeedback:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-007", "BR-008"])
+    @pytest.mark.uc("UC-031", flow="main", steps=[4])
     async def test_grant_sends_shield_effect_sound_and_event(self, game):
         """UC-040 A16: grant_shield -> GAME_EFFECT_SHIELD for the duration, shield_up, player_shielded."""
         with patch.object(game, "_play_sound", new_callable=AsyncMock) as play:

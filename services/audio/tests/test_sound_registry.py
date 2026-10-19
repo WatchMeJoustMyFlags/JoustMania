@@ -284,12 +284,14 @@ class TestUC040InterventionSounds:
         assert _writer_default_audio_cue() == Sound.SFX_AGENT_CUE.value == "agent_cue"
 
     @pytest.mark.uc("UC-040", flow="main", br=["BR-007"])
+    @pytest.mark.uc("UC-031", flow="main", steps=[4])
     def test_agent_cue_plays_the_lobby_ready_ping(self, registry):
         """UC-040 BR-007: agent_cue is the ping the lobby plays when a controller readies."""
         assert relative_path(registry, "agent_cue") == relative_path(registry, Sound.SFX_BEEP_LOUD.value)
         assert relative_path(registry, "agent_cue") == "Joust/sounds/beep_loud.ogg"
 
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-007"])
+    @pytest.mark.uc("UC-031", flow="main", steps=[4])
     def test_shield_up_plays_commander_power_ready(self, registry):
         """UC-040 BR-007: shield_up is an alias of an existing sting, no new asset."""
         assert relative_path(registry, "shield_up") == "Commander/sounds/power_ready.ogg"

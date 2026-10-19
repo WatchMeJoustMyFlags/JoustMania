@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
 project_root = service_dir.parent.parent
@@ -27,6 +29,8 @@ class TestOnSystemFlagsChanged:
     def _restore(self):
         servicer_mod._frequency_override = self._original
 
+    @pytest.mark.nfr("NFR-003")
+    @pytest.mark.uc("UC-030", flow="main", steps=[2])
     @patch("services.controller_manager.servicer.metrics")
     @patch("lib.feature_flags.get_flag_client")
     def test_valid_value_updates_override(self, mock_get_client, mock_metrics):
@@ -71,6 +75,8 @@ class TestOnSystemFlagsChanged:
         finally:
             self._restore()
 
+    @pytest.mark.nfr("NFR-003")
+    @pytest.mark.uc("UC-030", flow="main", steps=[2])
     @patch("services.controller_manager.servicer.metrics")
     @patch("lib.feature_flags.get_flag_client")
     def test_clamped_to_max(self, mock_get_client, mock_metrics):
