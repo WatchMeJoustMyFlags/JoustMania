@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -28,7 +29,7 @@ const maxDaemonResponseBytes = 64 << 10
 // no authentication (UC-005 BR-003), like the canary endpoints.
 func registerPairingHandlers(mux *http.ServeMux) {
 	client := &http.Client{Timeout: 35 * time.Second}
-	hostnames := parseHostnames(getEnv("JOUSTMANIA_HOSTNAMES", ""))
+	hostnames := append(parseHostnames(getEnv("JOUSTMANIA_HOSTNAMES", "")), hostHostnames(hostHostnameFile)...)
 	mux.HandleFunc("/pairing/unpair", sameOriginOnly(hostnames, unpairHandler(pairingDaemonURL, client)))
 	slog.Info("Pairing handlers registered", "pairing_daemon", pairingDaemonURL, "hostnames", strings.Join(hostnames, ","))
 }
@@ -43,6 +44,33 @@ func parseHostnames(value string) []string {
 		}
 	}
 	return names
+}
+
+// hostHostnameFile is the host's /etc/hostname, mounted read-only by compose
+// (full and lite stack). The container's own /etc/hostname is its container id.
+const hostHostnameFile = "/etc/joustmania/host-hostname"
+
+// hostHostnames reads the Pi's host name from path once at startup and returns
+// it as `<name>` and `<name>.local` (mDNS), so the dashboard opened by the
+// Pi's own name passes the Host allow-list (UC-005 BR-003). A missing or
+// unreadable file (not mounted, a directory, empty) adds nothing.
+func hostHostnames(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("cannot read the host's hostname file; only IPs, localhost and JOUSTMANIA_HOSTNAMES pass", "path", path, "error", err)
+		}
+		return nil
+	}
+	firstLine, _, _ := strings.Cut(string(data), "\n")
+	name := normaliseHostname(firstLine)
+	if name == "" {
+		return nil
+	}
+	if strings.HasSuffix(name, ".local") {
+		return []string{name}
+	}
+	return []string{name, name + ".local"}
 }
 
 func normaliseHostname(name string) string {

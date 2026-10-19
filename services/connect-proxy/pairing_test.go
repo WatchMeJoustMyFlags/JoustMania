@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -119,6 +121,7 @@ func TestSameOriginOnly(t *testing.T) {
 		{"UC-005/BR-003 IPv4 literal passes", "192.168.1.20", "http://192.168.1.20", "same-origin", http.StatusOK},
 		{"UC-005/BR-003 IPv4 literal with port passes", "10.0.0.5:80", "", "", http.StatusOK},
 		{"UC-005/BR-003 IPv6 literal passes", "[::1]:80", "", "", http.StatusOK},
+		{"UC-005/BR-003 bracketed IPv6 literal without port passes", "[::1]", "", "", http.StatusOK},
 		{"UC-005/BR-003 localhost passes", "localhost", "http://localhost", "same-origin", http.StatusOK},
 		{"UC-005/BR-003 localhost with port passes", "localhost:5173", "", "", http.StatusOK},
 		{"UC-005/BR-003 name that merely contains an allowed name is rejected", "joustmania.local.evil.example", "", "", http.StatusForbidden},
@@ -165,6 +168,47 @@ func TestParseHostnames(t *testing.T) {
 		}
 		if hostAllowed("joustmania.local", nil) {
 			t.Fatal("a name is allowed without JOUSTMANIA_HOSTNAMES")
+		}
+	})
+}
+
+// UC: UC-005 BR-003
+func TestHostHostnames(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	cases := []struct {
+		name, path string
+		want       []string
+	}{
+		{"UC-005/BR-003 host name file adds the name and its .local", write("plain", "raspberrypi"), []string{"raspberrypi", "raspberrypi.local"}},
+		{"UC-005/BR-003 trailing newline and whitespace are trimmed", write("newline", "  RaspberryPi \n"), []string{"raspberrypi", "raspberrypi.local"}},
+		{"UC-005/BR-003 a .local name is not doubled", write("mdns", "stage.local\n"), []string{"stage.local"}},
+		{"UC-005/BR-003 empty file adds nothing", write("empty", " \n"), nil},
+		{"UC-005/BR-003 absent file adds nothing", filepath.Join(dir, "missing"), nil},
+		{"UC-005/BR-003 a directory (bind mount of a missing host file) adds nothing", dir, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hostHostnames(tc.path)
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("UC-005/BR-003 the host's mDNS name passes the allow-list", func(t *testing.T) {
+		names := hostHostnames(write("pi", "raspberrypi\n"))
+		if !hostAllowed("raspberrypi.local", names) || !hostAllowed("RaspberryPi:80", names) {
+			t.Fatalf("host name not allowed with %v", names)
+		}
+		if hostAllowed("raspberrypi.local.evil.example", names) {
+			t.Fatal("a suffix trick passes")
 		}
 	})
 }

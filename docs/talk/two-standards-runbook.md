@@ -195,6 +195,11 @@ decisions it changes.
 ### URLs (through envoy on port 80)
 
 Replace `localhost` with the Pi's address from the presenter laptop.
+Unpair on a controller card (UC-005) only works when the dashboard is opened by
+the Pi's IP, `localhost`, the Pi's host name or `<host name>.local` (read from
+the host's `/etc/hostname`); any other name (a DNS alias, a router-assigned
+name) answers 403 until it is added to `JOUSTMANIA_HOSTNAMES` in `.env.local`
+(comma-separated) and the connect-proxy is recreated (DNS-rebinding guard, #1450).
 
 | Tab | URL |
 |---|---|
