@@ -498,6 +498,59 @@ an empty value means `rules`.
 `threshold {low|gate|default|strict}`, `capture {on|off}`, `effort {…}`. The flag service
 pushes the change to flagd at once (NFR-050); the agent reads the flags at use time.
 
+### 10.1 The text backend (post-game retro and proposer)
+
+Not part of the decide contract, but it shares the key, the budget and the eligibility gate, so it is
+specified here (#1234). The agent talks to models **directly**: there is no gateway or router (NORTHSTAR:
+hosted inference is allowed, local inference is not a goal, rules are the offline floor). The LiteLLM gateway
+(#1049) and the `mode` / `model` / `prompt_variant` flags were removed in #1234.
+
+To enable the model-backed retro and proposer (the compose `agent` service has no profile, so a plain `up` starts it;
+the old `--profile agent` flag selects nothing):
+
+```bash
+AGENT_INFERENCE_BACKEND=claude ANTHROPIC_API_KEY=<key> docker compose up -d agent
+```
+
+| Seam | Used for | Selected by | Backends |
+|---|---|---|---|
+| Decision backend | in-game decisions (FFA) | `decision.backend` flag, live | `rules` (default), `jev`, `claude`, `openai` |
+| Text backend | post-game retro (`agent.llm.retro`), experiment proposer | `AGENT_INFERENCE_BACKEND` env, at startup | `stub` (default), `claude` |
+
+The text backend takes a System + User prompt and returns raw text (`Infer(ctx, llm.Prompt) (string, error)`,
+`inference/claude.go`, official Anthropic Go SDK). Env vars (`AGENT_INFERENCE_*`, `ANTHROPIC_API_KEY`) are in the
+agent env table in [services.md](services.md) section 6. Keys live in the agent environment only (compose passes
+`ANTHROPIC_API_KEY`, `DECISION_OPENAI_API_KEY`, `JEV_API_KEY`); a backend without its key is unavailable and
+decisions fall back to rules (§7). Keep keys out of the tracked `.env`: export them or use the git-ignored
+`.env.local` (`docker compose --env-file .env --env-file .env.local up`).
+
+- **Stub** (default, or `claude` without a key, which logs a warning): the proposer proposes nothing, the retro is
+  capture-only (`inference.used=none`, `inference.fallback_reason=no_backend_available`).
+- **Retro**: calls the model only for game kinds in `llm.eligible_game_kinds` (default `real`); a shadow-game
+  retro stays capture-only (`inference.fallback_reason=llm_not_eligible`). A model call draws one slot of the
+  shared `llm.max_requests_per_minute` budget (§8). With `enabled` off the retro is capture-only
+  (`inference.fallback_reason=agent_disabled`): no model call, no slot (#1270).
+- **Proposer**: runs on every game end while `enabled` and `experiments_enabled` are both on (read at each game
+  end; `enabled` fails closed when flagd is unreachable) and checks both again just before writing the
+  experiment value to the flag service, so switching the agent off during a model call still blocks the write.
+  With `claude`, a proposal that passes the cadence floor (`code_improvement.min_interval_seconds`) calls the
+  model only for eligible game kinds and only when a budget slot is free; otherwise it records
+  `agent_llm_gated_total{reason=llm_not_eligible|llm_budget_exhausted}` and retries at the next game end (#1270).
+  The stub never draws from the budget. The `code_improvement.engine` flag is recorded on the propose span only;
+  `AGENT_INFERENCE_BACKEND` selects the backend.
+- **The budget is tight during a remote-decide session.** The window is a sliding 60 s shared by decisions, the
+  retro and the proposer. With a remote `decision.backend` and `decision.min_interval_ms` 3000 one game wants
+  about 20 calls a minute against the default cap of 6, so at game end the retro and proposer usually find it
+  full (`llm_budget_exhausted`). For retros or proposals in such a session use the `stage` cap
+  (`llm.max_requests_per_minute` = 30) or `decision.backend=rules`.
+- **Shadow-only runs make no proposals** with the default `llm.eligible_game_kinds = real`. `real_and_shadow`
+  allows them but also lets shadow games use remote decide calls and retros.
+- On models that accept it (Opus 5.5, Opus 5, Sonnet 5.5, Fable 5.1) the client sends `fallbacks: "default"`
+  (beta `server-side-fallback-2026-07-01`), so a policy refusal is re-run on a fallback model inside the same call.
+- Telemetry: every model call is one GenAI-semconv `chat {model}` CLIENT span (§12), nested under `agent.decide`
+  or `agent.llm.retro`, with W3C `traceparent` injected. Failures record only a low-cardinality `error.type`;
+  vendor error text never reaches a span (#1242).
+
 ## 11. From decision to game effect
 
 The action sink writes to the flag service's `interventions` set, always for the deciding

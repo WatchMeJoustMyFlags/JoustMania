@@ -13,7 +13,7 @@ them. Read the linked one when you need the detail:
   demo.**
 - [`agent-act-runbook.md`](agent-act-runbook.md) — the live-intervention ACT path
   (two gates, the kill-switch panic button, blocked vs applied interventions).
-- [`agent-inference.md`](agent-inference.md) — which model the agent calls for
+- [`decide-contract.md` 10.1](specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer) — which model the agent calls for
   what: the `decision.backend` flag in game, the Claude text backend for the
   retro and the proposer.
 
@@ -98,7 +98,7 @@ docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent up
   **never** an agent outage.
 - The post-game retro and the experiment proposer can also call Claude:
   `AGENT_INFERENCE_BACKEND=claude` (agent restart). See
-  [`agent-inference.md`](agent-inference.md).
+  [`decide-contract.md` 10.1](specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer).
 
 ### Observability URLs
 

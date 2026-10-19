@@ -470,7 +470,7 @@ model**, applied in order:
    - `decision.backend` (string, default `rules`): `rules` runs the deterministic
      rules engine; `claude` / `openai` / `jev` hand the decision to that remote
      backend, with the rules engine as the fallback. See **Decision backends**
-     below and [docs/agent-inference.md](../../docs/agent-inference.md). The
+     below and [decide-contract.md 10.1](../../docs/specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer). The
      legacy `mode` / `model` / `prompt_variant` flags were removed in #1234.
 4. **Permission** (constrains which actions dispatch, and how fast) — applied to
    each candidate decision in this order, blocking with an attributed reason:
@@ -886,44 +886,16 @@ is a possible follow-up but not needed today.
 
 ## Configuration
 
-All configuration is via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_LISTEN_ADDR` | `:4317` | OTLP gRPC receiver listen address |
-| `AGENT_HEALTH_ADDR` | `:13134` | HTTP health endpoint listen address (`GET /healthz`) |
-| `FLAGD_HOST` | `flagd` | flagd host for OpenFeature flag evaluation |
-| `FLAGD_PORT` | `8013` | flagd gRPC **evaluation** port (RPC resolver) |
-| `LOG_LEVEL` | `info` | Log verbosity |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | set in compose | Self-telemetry export (decision audit traces → collector → Jaeger); no-op when unset |
-| `OTEL_SERVICE_NAME` | `agent` | Service identity; also drives the self-ingestion skip |
-| `AGENT_INFERENCE_BACKEND` | `stub` | Text backend for the post-game retro and the shadow-experiment proposer (#1234): `claude` calls the Anthropic API directly (needs `ANTHROPIC_API_KEY`, else stays on the stub); anything else is the stub. Not used for in-game decisions (`decision.backend`). Retros and the proposer call the model only for game kinds in `llm.eligible_game_kinds`, and both draw from the shared `llm.max_requests_per_minute` budget. The proposer runs only while `enabled` and `experiments_enabled` are both on (#1270). The `code_improvement.engine` flag is recorded on the propose span only and selects nothing. See [docs/agent-inference.md](../../docs/agent-inference.md) |
-| `AGENT_INFERENCE_MODEL` | `claude-opus-5-5` | Model of the `claude` text backend |
-| `AGENT_INFERENCE_EFFORT` | `medium` | `output_config.effort` of the `claude` text backend (not sent to Claude Haiku 4.5) |
-| `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | Per-call deadline of the text backend, also the retro's deadline |
-| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | _unset_ | Overrides the `llm.max_requests_per_minute` flag as the per-minute cap on remote decide calls and retros (#964) |
-| `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions. See [Probe mode](#probe-mode-agent_probe_decisions) |
-| `interventions_enabled` (**flagd flag**, `agent.json`) | `off` | **#1213: migrated from the `AGENT_INTERVENTIONS_ENABLED` env var to a LIVE flag**, read per `Apply` against the live `Flags` (never cached at startup). `on` → the gated action sink writes a fully-permitted decision to the flag service via the real **Writer** (#730); `off` (or flagd unreachable — **fail-closed**) → the decision is still recorded/spanned but **not** written (inert scaffold). Distinct from the `enabled` kill switch (gates whether the loop **decides**) and `interventions_allowed` (gates **which** intervention types may dispatch); this gates whether a permitted decision is **applied**. Flip it through the flag service (`scripts/flags.sh set agent interventions_enabled on`), no restart. |
-| `FLAG_SERVICE_URL` | `http://flag-service:8070` | Flag service HTTP API every agent writer calls (interventions, rollout stage, experiment arms, promotion); the agent mounts no flag file |
-| `AGENT_EXPERIMENTS_ENABLED` | `false` | **Bootstrap default for the live `experiments_enabled` flag** gating the #991 experiment cohort loop (epic #982). When on, the `experiment.Registry` (built with the real spawner/targeting/verdict/promoter seams) runs the declare→spawn→conclude→verdict→(gated)promote loop. Since #1044 the loop is always built + run and self-gates on the live flag; **default off ⇒ the loop is behaviorally inert — no shadow spawns, no experiment-arm writes, no promotions (the only residual work is one ~30 s no-op tick).** Promotion still routes through the existing `code_improvement` gates + kill-switch |
-| `AGENT_MAX_SHADOW_GAMES` | `20` | Fixed cap on concurrent shadow games across all live experiments (epic #982 decision 2); the registry round-robins this **capacity-bookkeeping** cap across experiments |
-| `AGENT_SHADOW_EFFECTIVE_CONCURRENCY` | `4` | **Effective** in-flight shadow-spawn concurrency, bounding how many concurrent shadow starts the registry holds at once. Since #1018 (option b) the game-coordinator runs shadow games **concurrently** (the single-game guard is REAL-only; shadows run in parallel up to `GAME_MAX_SHADOW_GAMES`), so the registry can keep several in flight without each being a doomed "Game already in progress" start. Default 4 makes #1003's same-tick atomic pair reservation activate (it needs >= 2 to reserve BOTH arms in one tick). Clamped to `AGENT_MAX_SHADOW_GAMES`. A coordinator-at-capacity rejection (cap full) is still treated as **backpressure** (release + retry next tick), not a spawn failure |
-| `AGENT_EXPERIMENT_TICK_SECONDS` | `30` | Cadence of the registry's `AllocateAndSpawn` (refills free shadow capacity) |
-| `AGENT_EXPERIMENT_DIR` | `/var/lib/joustmania/agent/experiments` | Durable experiment journal root (intent/events/summary per experiment); the registry rehydrates from it on startup |
-| `AGENT_VERDICT_MIN_N` | `8` | #979 min games per arm before a conclusive verdict (else inconclusive). **Bootstrap default for the live `verdict_min_n` flag** (#1044) |
-| `verdict_effect_threshold` (flag) | `0.5` | #979 minimum \|Cohen's d\| for a promote/discard verdict. **Migrated to a live `agent.json` flag (#1214)** — no longer an env var; the `0.5` default is the fail-open fallback (`DefaultEffectThreshold`) |
-| `verdict_min_raw_effect` (flag) | `0.02` | #1042 practical-significance floor: minimum RAW effect (\|mean_d\| paired / \|mean_exp − mean_ctl\| two-arm) for a promote/discard. Below it ⇒ inconclusive regardless of how large the standardized d_z / Cohen's d is — stops near-deterministic shadow games promoting on a trivially-tiny but perfectly-consistent delta. 0.02 = 2% of the ~0..1 fitness range. **Migrated to a live `agent.json` flag (#1214)** — fail-open fallback `DefaultMinRawEffect` |
-| `verdict_sd_floor` (flag) | `0.0001` | #1042 minimum-SD floor (defense in depth): floors the d_z / Cohen's d denominator so the standardized stat stays finite when the spread collapses toward 0 (sd→0). 1e-4 is two orders below any real-play spread, so it never distorts a real-noise verdict. **Migrated to a live `agent.json` flag (#1214)** — fail-open fallback `DefaultSDFloor` |
-| `verdict_anchor_margin` (flag) | `0.02` | #992 recent-real regression margin: a PROMOTE is downgraded to inconclusive only when the experimental arm regresses below the recent-real baseline by MORE than this. Mirrors the #1042 raw-effect floor. **Migrated to a live `agent.json` flag (#1214)** — fail-open fallback `DefaultAnchorMargin` |
-| `AGENT_EXPERIMENT_SEED_FLAG` | _unset_ | When set (and the loop is enabled), declares ONE env-seeded experiment at startup on this `game` set flag (it must be in the experiment catalog, flags.md §13.3) — the simplest declaration trigger for the demo. Paired with `AGENT_EXPERIMENT_SEED_VALUE` / `_OBJECTIVE` / `_TARGET_N` / `_HYPOTHESIS` |
-| `AGENT_EXPERIMENT_SEED_VALUE` | _unset_ | The seed experiment's experimental value. Parsed as a number when it parses as a float, else bool for `true`/`false`, else a JSON object/array when the text begins with `{`/`[` and parses as valid JSON (#1090 — lets an object-valued FFA lever such as `windows` or `thresholds` be seeded), else the raw string. Its JSON kind must match the flag's existing variants (the Gate's type guard rejects a mistyped seed) and the value must be within the registry bounds (else the flag service answers `422 out_of_bounds`) |
-| `AGENT_EXPERIMENT_SEED_OBJECTIVE` | `balanced` | The seed experiment's fitness objective (`endurance` / `balanced` / `accelerate` / `chaos`) |
-| `AGENT_EXPERIMENT_SEED_TARGET_N` | _unset_ | Target games per arm for the seed experiment (positive int; falls back to the registry default when unset) |
-| `AGENT_EXPERIMENT_SEED_HYPOTHESIS` | _generated_ | Free-text hypothesis recorded on the seed experiment's intent |
+The environment variable table (names, defaults, whether `docker-compose.yml` passes them through, purpose) lives in
+[docs/specs/services.md](../../docs/specs/services.md#6-per-service-notes) under `### agent`, so there is one
+table to keep in sync with the code. Live gates (`enabled`, `interventions_enabled`, `experiments_enabled`,
+`verdict_*`, `llm.*`) are flagd flags, documented in [flags.md](../../docs/specs/flags.md) and
+[feature-flags.md](../../docs/feature-flags.md). The text backend (`AGENT_INFERENCE_*`) is specified in
+[decide-contract.md 10.1](../../docs/specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer).
 
 > **#1044 — runtime-tunable experiment knobs are now LIVE `agent.json` flags.**
 > The experiment loop reads these on **every tick** from the `agent` flagd domain,
-> with the env var above as the **bootstrap default** the flag falls back to when
+> with the env var (services.md table) as the **bootstrap default** the flag falls back to when
 > absent/unreadable (the kill-switch pattern: flag overrides, env is the floor). So
 > a change takes effect with **no container restart**: through the flag service
 > (`scripts/flags.sh set agent <flag> <variant>`) for the flags in its mutable

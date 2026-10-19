@@ -63,7 +63,6 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 | [agent-act-runbook.md](agent-act-runbook.md) | Take the agent from inert to acting |
 | [agent-demo-runbook.md](agent-demo-runbook.md) | Run the three-act demo |
 | [agent-dry-run-runbook.md](agent-dry-run-runbook.md) | Run the experiment loop as a dry run |
-| [agent-inference.md](agent-inference.md) | Configure model backends and keys |
 | [agent-trace-viz.md](agent-trace-viz.md) | Show agent traces on stage |
 | [talk/two-standards-runbook.md](talk/two-standards-runbook.md) | Run the "Two Standards Walk Into an Agent" talk (with `scripts/talk-preflight.sh`) |
 
