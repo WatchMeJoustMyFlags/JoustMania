@@ -10,6 +10,7 @@ Units covered here:
   span event, win check
 - steps 6-7: the warning flash (``GAME_EFFECT_PLAYER_WARNING``) and the
   ``death_warning`` span event with its attributes, at most once per window
+- A1: during grace or invincibility the EMA is reset and no warning or death fires
 - A4: below the warning threshold nothing happens
 - BR-003: ``_warmup_ema`` primes the EMA without any death check, and
   ``_game_loop`` itself sets the 0.3 s start grace
@@ -25,6 +26,7 @@ from lib.types import GameEvent, Sound
 from proto import audio_pb2, controller_manager_pb2
 from services.game_coordinator.games.base import WARNING_DURATION, Player
 from services.game_coordinator.games.ffa import FFAGame
+from services.game_coordinator.games.tournament import TournamentPlayer
 from services.game_coordinator.tests.conftest import EventCollector, MockControllerManagerService
 
 LETHAL = controller_manager_pb2.Vector3(x=6.0, y=6.0, z=6.0)  # ~10.4 g
@@ -154,6 +156,36 @@ class TestUC030DeathDetection:
         assert warn < warnings[0]["accel_magnitude"] < death
         assert player.warning_until >= before + WARNING_DURATION
         assert WARNING_DURATION == 0.5
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A1")
+    @pytest.mark.parametrize("window_field", ["grace_until", "invincible_until"])
+    async def test_grace_resets_ema_and_fires_no_warning_or_death(self, window_field):
+        """UC-030 A1: inside either immunity window the EMA is reset; no warning, death_warning or death fires.
+
+        ``invincible_until`` exists on Tournament/Fight Club players only, so the
+        player is a ``TournamentPlayer`` driven through the base detection path.
+        """
+        game, events = _game(2)
+        player = TournamentPlayer(serial="p0", team=0, alive=True, color=(255, 0, 0))
+        player.span = game.players["p0"].span
+        game.players["p0"] = player
+        warn, death = game._compute_effective_thresholds(player)
+        warning_zone = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=(warn + death) / 2)
+        setattr(player, window_field, time.time() + 60.0)
+        player.smoothed_accel = death + 1.0  # a spike left in the filter
+
+        for sample in (warning_zone, LETHAL, warning_zone):
+            await game._process_controller_state(controller_manager_pb2.GameplayData(serial="p0", accel=sample))
+            assert player.smoothed_accel == 0.0  # reset every frame inside the window
+
+        assert player.alive is True
+        assert player.warning_until == 0.0
+        assert game.gameplay_stream.effects(controller_manager_pb2.GAME_EFFECT_PLAYER_WARNING) == []
+        assert game.gameplay_stream.effects(controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH) == []
+        assert _span_events(player.span, "death_warning") == []
+        assert _span_events(player.span, "player_death") == []
+        assert events.get_events_of_type(GameEvent.PLAYER_DEATH) == []
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-030", flow="A4")

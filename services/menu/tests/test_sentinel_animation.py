@@ -86,8 +86,12 @@ def test_read_error_falls_back():
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A2", steps=[1])
 async def test_sentinel_loop_reads_animation_once():
-    """The pulse loop snapshots the animation getter once at start (init-frozen)."""
+    """The pulse loop snapshots the animation getter once at start (init-frozen) and breathes the sentinel LED.
+
+    UC-010 A2 step 1: the sentinel's LED is driven with changing, non-black colours.
+    """
     state_manager = MagicMock()
     state_manager.led.set_color = AsyncMock(return_value=True)
 
@@ -96,7 +100,7 @@ async def test_sentinel_loop_reads_animation_once():
     def getter():
         calls["n"] += 1
         # Fast update rate so the loop iterates quickly under test.
-        return SentinelAnimation(update_hz=1000)
+        return SentinelAnimation(update_hz=1000, breath_period_seconds=0.05, hue_period_seconds=0.05)
 
     monitor = IdleMonitor(
         state_manager=state_manager,
@@ -109,7 +113,7 @@ async def test_sentinel_loop_reads_animation_once():
     monitor._sentinel_serials = ["s1"]
 
     task = asyncio.create_task(monitor._sentinel_pulse_loop())
-    await asyncio.sleep(0.02)
+    await asyncio.sleep(0.1)
     task.cancel()
     # The loop swallows CancelledError to clean up LEDs (NOSONAR pattern), so
     # awaiting completes normally rather than re-raising.
@@ -117,4 +121,6 @@ async def test_sentinel_loop_reads_animation_once():
 
     # Getter consulted exactly once despite many loop iterations.
     assert calls["n"] == 1
-    assert state_manager.led.set_color.await_count >= 1
+    colours = [call.args[1] for call in state_manager.led.set_color.await_args_list if call.args[0] == "s1"]
+    pulse_colours = [colour for colour in colours if colour != (0, 0, 0)]  # the last call is the cancel cleanup (off)
+    assert len(set(pulse_colours)) > 1  # the colour breathes rather than staying fixed
