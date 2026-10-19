@@ -59,16 +59,24 @@ Ripgrep skips git-ignored paths (`.venv`, `node_modules`); still restrict paths 
 
 | What | Grep call |
 |---|---|
-| pytest marker (may span lines) | pattern `mark\.uc\(\s*["']UC-040["']`, `multiline: true`, `type: py`, paths `services`, `lib`, `tests` ; then Read the matched decorator to get `flow=`, `br=`, `steps=`, `tc=` |
+| pytest marker (may span lines) | pattern `mark\.uc\(\s*["']UC-040["']`, `multiline: true`, `type: py`, paths `services`, `lib`, `tests` ; then Read the matched decorator to get `flow=`, `br=`, `steps=`, `cond=`, `tc=` |
 | pytest marker for a test case | pattern `mark\.uc\([^)]*tc\s*=\s*["']TC-001["']`, `multiline: true`, `type: py`, paths `tests`, `services`, `lib` (T3 `tests/integration`, T2 `tests/service`, unit tests tagged `tc=`) |
+| pytest condition tag (for `Pre-n` / `Post-S-n` / `Post-F-n` rows) | the same marker call; `cond=[...]` holds the ids (`cond=\[[^\]]*["']Pre-1["']`, `multiline: true`, `type: py`) |
 | Go comment tag | pattern `^// UC: UC-040\b`, glob `*_test.go`, path `services` (agent and connect-proxy) |
 | Go subtests | pattern `"UC-040/`, glob `*_test.go`, path `services` (agent and connect-proxy) |
-| Shell test tag (header line) | pattern `^# UC: .*\bUC-040\b`, path `scripts/tests` ; the units follow the id on the same line (`# UC: UC-070 A8 BR-003`) |
+| Shell test tag (header line) | pattern `^# UC: .*\bUC-040\b`, path `scripts/tests` ; the units follow the id on the same line (`# UC: UC-070 A8 BR-003`); in Go, shell and vitest a condition is just another unit token (`Pre-1`, `Post-F-1`) |
 | Dashboard (vitest) | pattern `describe\(\s*['"\x60]UC-040`, path `services/dashboard/src/__tests__` |
 | Business-rule markers in code | pattern `UC-040 BR-\d{3}`, paths `services`, `lib` (glob `!**/*_test.go`, `type` per language as needed) |
 | NFR tag (pytest), for `NFR-XXX` units | pattern `mark\.nfr\([^)]*["']NFR-014["']`, `multiline: true`, `type: py`, paths `services`, `lib`, `tests` (also on classes) |
 | NFR tag (Go), for `NFR-XXX` units | pattern `^// NFR: .*\bNFR-012\b`, glob `*_test.go`, path `services` |
 | Untagged evidence | pattern `UC-040`, then the tests on the UC's `**Code / tests:**` line, then domain vocabulary (flag keys, span names, outcome / reason strings) |
+
+A `Pre-n` / `Post-*-n` row is `Covered` by a `cond=` tag (or a `Pre-1` / `Post-F-1` unit token in Go, shell,
+vitest) on a test whose body establishes or asserts that condition. `cond=` is informational: a `cond=`-only
+test is never evidence for `Main` or `A<n>`, and conditions stay out of the `Tested` computation. Also flag
+(a traceability gap, not a coverage change) every `flow="main"` test whose docstring or body names a
+condition (`Pre-1`, `Post-F-1`, "precondition", "postcondition") as its subject: recommend retagging with
+`cond=`, and do not count it as a condition test until it carries one.
 
 Untagged evidence (docstring or comment mention, a `Code / tests` reference, a matching file name) is a
 **traceability gap**, never tagged coverage. Record `file:line` for everything; when a search finds nothing,
