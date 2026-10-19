@@ -50,5 +50,4 @@ replace (
 	github.com/joustmania/connect-proxy/gen/controller_manager_mock => ./gen/controller_manager_mock
 	github.com/joustmania/connect-proxy/gen/game_coordinator => ./gen/game_coordinator
 	github.com/joustmania/connect-proxy/gen/menu => ./gen/menu
-	github.com/joustmania/connect-proxy/gen/settings => ./gen/settings
 )

@@ -76,16 +76,6 @@ scripts/hardware/reset_bluetooth_connections.sh             # remove, then re-pa
 
 **Use when:** PS Move controllers won't pair or have connection issues.
 
-### update_asound.sh
-
-Configures ALSA audio settings for Pi 4/5 audio output.
-
-```bash
-scripts/hardware/update_asound.sh
-```
-
-**Use when:** Audio output issues or after changing audio hardware.
-
 ### update_permissions.sh
 
 Sets ownership of JoustMania directory to current user.

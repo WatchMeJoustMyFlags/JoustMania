@@ -67,8 +67,8 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | agent-game-coordinator | Python (game-coordinator image) | 50053 gRPC (`expose` only) | no | **Test-only** (profile `agent`, #1163): a dedicated game coordinator for the agent's experiment cohort-loop soak, so the suite's per-test `coordinator_idle` quiesce never wipes the agent's shadow games. Service name `agent-game-coordinator-service`; the overlay points the agent at it with `GAME_COORDINATOR_ADDR=agent-game-coordinator:50053`; shares flagd and the controller manager | `docker-compose.agent-coordinator.yml` (layered on `docker-compose.dry-run.yml` by `tests/integration/test_experiment_cohort_loop.py`) |
 
 Compose variants: `docker-compose.yml` (full), `.override.yml` (dev ports, auto-loaded by a bare `docker compose`; the Pi start path passes `-f docker-compose.yml` so it never loads it, #1319), `.lite.yml` (no
-observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318; the pairing daemon on the host network as in the full stack, #1402), `.ci.yml` (CI baseline dir for the flag service, profiles), `.ci-rust.yml`, `.dev.yml` (source mounts), `.dry-run.yml`
-(demo / experiment seed), `.decide-e2e.yml` (fake OpenAI server), `.agent-coordinator.yml`.
+observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318; the pairing daemon on the host network as in the full stack, #1402), `.ci.yml` (CI baseline dir for the flag service, profiles), `.dev.yml` (source mounts), `.dry-run.yml`
+(demo / experiment seed), `.decide-e2e.yml` (fake OpenAI server), `.agent-coordinator.yml`. (`.ci-rust.yml`, which nothing loaded, was deleted in #1322.)
 
 **Traceability:** C-014, C-015, FR-085, NFR-020 / UC-035 / `docker-compose*.yml`, `services/envoy/envoy.yaml` / `tests/integration/conftest.py`.
 

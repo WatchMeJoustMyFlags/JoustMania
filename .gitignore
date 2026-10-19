@@ -1,6 +1,5 @@
 # Environment files (local overrides)
 .env
-!.env.mock
 # Local secrets (API keys) for docker compose --env-file; never commit.
 .env.local
 

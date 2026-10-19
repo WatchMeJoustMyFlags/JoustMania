@@ -345,9 +345,6 @@ grpcurl -plaintext localhost:50056 list
 ### Hardware Testing
 
 ```bash
-# Test controller pairing
-python tools/manualpair.py
-
 # Remove PS Move registrations only (other Bluetooth devices stay)
 scripts/hardware/reset_bluetooth_connections.sh --dry-run
 scripts/hardware/reset_bluetooth_connections.sh
@@ -500,7 +497,6 @@ JoustMania/
 │   ├── setup/              # Installation scripts
 │   └── pairing-daemon/     # PS Move pairing daemon
 ├── tools/                   # Development tools
-│   ├── manualpair.py       # Manual controller pairing
 │   └── live_dashboard.py   # Performance monitoring
 ├── docs/                    # Documentation
 ├── audio/                   # Audio files
