@@ -5,6 +5,7 @@
 #
 #   --wait-ci                 wait and report only; never merge, never touch issues
 #   --rerun-failed-once       on red, rerun the failed jobs once and wait again
+#                             (a cancelled run: rerun the whole run once)
 #   --close N,N               close these issues after the merge ...
 #   --comment-file F          ... with this comment ({MERGE} -> short merge SHA)
 #   --note-issue N            comment on one more issue after the merge ...
@@ -26,13 +27,20 @@
 #     `gh pr merge --squash --match-head-commit <full sha>`.
 #   - Issues are closed / commented ONLY after the PR state reads MERGED and
 #     the merged head still starts with HEAD_PREFIX.
+#   - A CONFLICTING PR fails fast (exit 5): GitHub runs no CI on it, so
+#     waiting would only end in a timeout. It needs a rebase.
+#   - A newest run that was cancelled before its matrix expanded (every
+#     non-green check CANCELLED, job names still show `${{ ... }}`) is
+#     infrastructure (infra=cancelled-run): --rerun-failed-once reruns the
+#     whole run with `gh run rerun <id>`. A cancelled run that a newer run on
+#     the same head superseded is already ignored (rule above).
 #   - On red, the failed job logs are scanned for known infrastructure
 #     failures (stale images, registry blobs) and the advice says rerun or
 #     add the ci-full label.
 #
 # Prints ONE result line on stdout (progress goes to stderr).
 # Exit: 0 merged (or green with --wait-ci), 1 red CI / merge failed,
-#       2 usage, 3 head mismatch, 4 timeout.
+#       2 usage, 3 head mismatch, 4 timeout, 5 CONFLICTING (needs rebase).
 #
 # Env: SAFE_MERGE_POLL (75), SAFE_MERGE_MAX_WAIT (seconds, 7200),
 #      SAFE_MERGE_SETTLE (seconds before re-reading the merged state, 5),
@@ -104,14 +112,22 @@ def skipped_like: .__typename == "CheckRun" and .status == "COMPLETED"
           ((.conclusion // "") | IN("FAILURE","TIMED_OUT","CANCELLED","ACTION_REQUIRED","STARTUP_FAILURE"))) or
         (.__typename == "StatusContext" and (.state == "FAILURE" or .state == "ERROR"))) | (.name // .context) ],
     failing_runs: [ $live[] | select(.__typename == "CheckRun" and .status == "COMPLETED" and
-          ((.conclusion // "") | IN("FAILURE","TIMED_OUT","STARTUP_FAILURE"))) | .run ] | unique
+          ((.conclusion // "") | IN("FAILURE","TIMED_OUT","STARTUP_FAILURE"))) | .run ] | unique,
+    # Cancelled before the matrix expanded: something CANCELLED, nothing else
+    # red, and a job name still holds an unexpanded `${{ ... }}` template.
+    # A job timeout also reads CANCELLED but has expanded names: not matched.
+    cancelled_runs: [ $live | map(select(.__typename == "CheckRun" and .run != 0)) | group_by(.run)[]
+          | select(any(.[]; .status == "COMPLETED" and .conclusion == "CANCELLED")
+                   and all(.[]; ((.conclusion // "") | IN("FAILURE","TIMED_OUT","ACTION_REQUIRED","STARTUP_FAILURE")) | not)
+                   and any(.[]; (.name // "") | contains("${{")))
+          | .[0].run ]
   }
 JQ
 # Fetch PR state with backoff on API errors. Sets $VIEW.
 fetch_view() {
   local delay="$POLL" i
   for i in 1 2 3 4 5 6; do
-    if VIEW="$(gh pr view "$PR" --json headRefOid,state,statusCheckRollup 2>/dev/null)" && [[ -n "$VIEW" ]]; then
+    if VIEW="$(gh pr view "$PR" --json headRefOid,state,mergeable,statusCheckRollup 2>/dev/null)" && [[ -n "$VIEW" ]]; then
       return 0
     fi
     log "gh pr view failed (attempt $i), backing off ${delay}s"
@@ -151,6 +167,9 @@ while :; do
   if [[ "$head" != "$WANT"* ]]; then
     done_line "NOT MERGED: head $short does not match $WANT" 3
   fi
+  if [[ "$(jq -r '.mergeable // ""' <<<"$VIEW")" == CONFLICTING ]]; then
+    done_line "NOT MERGED: CONFLICTING (head $short); needs a rebase on main" 5
+  fi
 
   cls="$(jq -c "$JQ_CLASSIFY" <<<"$VIEW")"
   n_pending="$(jq '.pending | length' <<<"$cls")"
@@ -160,12 +179,17 @@ while :; do
 
   if [[ "$n_pending" == 0 && "$n_failing" != 0 ]]; then
     mapfile -t runs < <(jq -r '.failing_runs[]' <<<"$cls")
-    if $RERUN && ! $reran && [[ ${#runs[@]} -gt 0 ]]; then
+    mapfile -t cancelled < <(jq -r '.cancelled_runs[]' <<<"$cls")
+    if $RERUN && ! $reran && [[ ${#runs[@]} -gt 0 || ${#cancelled[@]} -gt 0 ]]; then
+      for id in "${cancelled[@]}"; do log "rerunning cancelled run $id"; gh run rerun "$id" >&2 || true; done
       for id in "${runs[@]}"; do log "rerunning failed jobs of run $id"; gh run rerun "$id" --failed >&2 || true; done
       reran=true
       sleep "$POLL"; continue
     fi
     failing="$(jq -r '.failing | join(", ")' <<<"$cls")"
+    if [[ ${#cancelled[@]} -gt 0 && ${#runs[@]} -eq 0 ]]; then
+      done_line "CI RED (head $short): [$failing] infra=cancelled-run; advice: rerun the whole run (gh run rerun ${cancelled[*]})" 1
+    fi
     diag="$(diagnose "${runs[@]}")"
     if [[ -n "$diag" ]]; then
       done_line "CI RED (head $short): [$failing] infra=${diag%%|*}; advice: ${diag#*|}" 1

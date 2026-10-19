@@ -31,6 +31,11 @@ line; when code and spec disagree they stop and propose a spec change.
 | `implement-issue` | one issue end to end: worktree, spec, code, tests, PR (then stops) | Orchestration |
 | `review-pr` | nothing (review worktree removed at the end) | Review |
 
+After a clean review, hand the merge to the Haiku `pr-merger` agent (`.claude/agents/pr-merger.md`) with
+`<PR> <HEAD_PREFIX>` and any `--close` / `--note-issue` options: it runs `scripts/ci/safe-merge.sh
+--rerun-failed-once`, cleans up the worktree and branch on MERGED, and escalates everything else with a
+fixed report (it never edits code, rebases, or changes labels).
+
 Dashboard (vitest) tests have no writing skill yet, deliberately: write them by hand with the
 `describe('UC-040: ...')` convention; `coverage-check` already reads it.
 

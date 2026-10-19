@@ -254,4 +254,50 @@ calls | grep -q 'issue close 7 --comment Merged in https://github.com/o/r/pull/4
   || fail "empty merge sha must fall back to the PR URL: $(calls)"
 ok
 
+# 15. CONFLICTING: fail fast with exit 5 (GitHub runs no CI on it), no merge.
+reset; SAFE_MERGE_MAX_WAIT=8
+printf '{"headRefOid":"%s","state":"OPEN","mergeable":"CONFLICTING","statusCheckRollup":[%s]}' "$HEAD" \
+  "$(check 'CI Complete' QUEUED '' 100)" >"${STUB_DIR}/view.json"
+run 42 abcdef1 --rerun-failed-once --close 7 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 5 && "$OUT" == *"CONFLICTING"*"rebase"* ]] || fail "conflicting: rc=$RC $OUT"
+calls | grep -qE 'pr merge|issue|run rerun' && fail "conflicting must not merge, rerun or touch issues: $(calls)"
+run 42 abcdef1 --wait-ci
+[[ $RC -eq 5 ]] || fail "conflicting --wait-ci: rc=$RC $OUT"
+# MERGEABLE / UNKNOWN never trip it.
+reset; printf '{"headRefOid":"%s","state":"OPEN","mergeable":"UNKNOWN","statusCheckRollup":[%s]}' "$HEAD" "$GREEN" \
+  >"${STUB_DIR}/view.json"
+run 42 abcdef1
+[[ $RC -eq 0 && "$OUT" == *"MERGED as"* ]] || fail "mergeable UNKNOWN: rc=$RC $OUT"
+SAFE_MERGE_MAX_WAIT=5
+ok
+
+# 16. Newest run cancelled before its matrix expanded (runs 39206900261 /
+#     39213800861): infrastructure; --rerun-failed-once reruns the WHOLE run.
+CI_COMPLETE_EXPR="(github.event.action == 'labeled' && github.event.label.name != 'ci-full') && 'Label event (no CI result)' || 'CI Complete'"
+CANCELLED_RUN="$(check 'Detect changes' COMPLETED CANCELLED 400),$(check 'Integration Tests (e2e-${{ matrix.shard }})' COMPLETED CANCELLED 400),$(check 'Lint Dockerfiles' COMPLETED SKIPPED 400),$(check "${CI_COMPLETE_EXPR}" COMPLETED CANCELLED 400)"
+reset; view "$CANCELLED_RUN"
+run 42 abcdef1 --close 7 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 1 && "$OUT" == *"infra=cancelled-run"*"gh run rerun 400"* ]] || fail "cancelled run: rc=$RC $OUT"
+calls | grep -qE 'pr merge|issue|run rerun' && fail "cancelled run without --rerun-failed-once must only report: $(calls)"
+reset; view "$CANCELLED_RUN"
+printf '{"headRefOid":"%s","state":"OPEN","statusCheckRollup":[%s,%s]}' "$HEAD" \
+  "$(check 'Integration Tests (e2e-core)' COMPLETED SUCCESS 400)" "$(check 'CI Complete' COMPLETED SUCCESS 400)" \
+  >"${STUB_DIR}/view-after-rerun.json"
+run 42 abcdef1 --rerun-failed-once
+[[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"*"after one rerun"* ]] || fail "cancelled rerun: rc=$RC $OUT"
+calls | grep -qx 'gh run rerun 400' || fail "cancelled run must be rerun whole (no --failed): $(calls)"
+# Superseded by a newer green run on the same head: ignored, no rerun.
+reset; view "$CANCELLED_RUN" "$(check 'Lint' COMPLETED SUCCESS 500)" "$(check 'CI Complete' COMPLETED SUCCESS 500)"
+run 42 abcdef1 --rerun-failed-once
+[[ $RC -eq 0 && "$OUT" == *"MERGED as"* && "$OUT" != *"rerun"* ]] || fail "superseded cancelled run: rc=$RC $OUT"
+calls | grep -q 'run rerun' && fail "superseded cancelled run must not be rerun: $(calls)"
+# Cancelled with expanded names (a job timeout) or next to a real failure: not infra.
+reset; view "$GREEN" "$(check 'Integration Tests (e2e-core)' COMPLETED CANCELLED 100)"
+run 42 abcdef1
+[[ $RC -eq 1 && "$OUT" == *"not infrastructure"* ]] || fail "timeout-cancel: rc=$RC $OUT"
+reset; view "$CANCELLED_RUN" "$(check 'Lib Unit Tests' COMPLETED FAILURE 400)"
+run 42 abcdef1
+[[ $RC -eq 1 && "$OUT" != *"cancelled-run"* ]] || fail "cancel next to a failure: rc=$RC $OUT"
+ok
+
 echo "test-safe-merge: ${pass} groups passed"
