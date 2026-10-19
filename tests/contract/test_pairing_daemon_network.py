@@ -54,7 +54,15 @@ def test_pairing_daemon_reaches_loopback_published_ports(
     env = _env(services["pairing-daemon"])
     assert env[host_var] == "127.0.0.1"
     port = env[port_var]
-    assert f"127.0.0.1:{port}:{port}" in (services[service].get("ports") or [])
+    assert set(services[service].get("ports") or []) == {f"127.0.0.1:{port}:{port}"}
+
+
+@pytest.mark.uc("UC-001", flow="main", br=["BR-003"])
+@pytest.mark.parametrize("stack", sorted(STACKS))
+def test_pairing_daemon_game_state_goes_through_the_host_published_proxy(stack):
+    """The host network cannot resolve ``envoy``: the game state URL must use the published port."""
+    url = _env(_services(stack)["pairing-daemon"])["GAME_STATE_URL"]
+    assert url.startswith("http://localhost/")
 
 
 @pytest.mark.uc("UC-005", flow="main", br=["BR-003"])

@@ -367,7 +367,8 @@ docker compose exec -T connect-proxy wget -qO- --post-data= 'http://localhost:80
 The rollback clears the stack and fraction overlays, so all controllers switch
 back to the baseline default of `bluetooth_backend` (`rust` since #1371) within
 one discovery cycle (~500ms). To return everyone to python instead, call
-`/canary/python` (needs the python adapter loaded).
+`/canary/python` (needs the python adapter loaded). If the python baseline came from a
+`/canary/python` stack overlay, rollback goes to rust, not python.
 **No service restart needed.**
 
 ### Verify rollback

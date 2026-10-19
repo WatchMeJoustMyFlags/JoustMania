@@ -150,7 +150,7 @@ Both stacks start `rust-hid` (privileged, host PID namespace, `/dev:/dev:rslave`
 | rust-hid | always | always (#1318) |
 | python-hid | `--profile python-hid` | not shipped |
 | controller-manager → rust-hid | `RUST_HID_HOST=rust-hid` | `RUST_HID_HOST=rust-hid` |
-| pairing-daemon → rust-hid | host network, `127.0.0.1:50058` (published on loopback only, #1319) | bridge network, `rust-hid:50058` |
+| pairing-daemon → rust-hid | host network, `127.0.0.1:50058` (published on loopback only, #1319) | host network, `127.0.0.1:50058` (published on loopback only, #1402) |
 
 ### Pairing daemon backend (UC-001 BR-003, #1320)
 
