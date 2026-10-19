@@ -122,7 +122,7 @@ silently applied.
 
 1. Bring up the observability stack and run the agent in llm mode
    (`agent.mode = "llm"`) so it emits captures.
-2. Open Jaeger (`http://localhost:8080/jaeger/`) and find an `agent.llm.prompt`
+2. Open Jaeger (`http://localhost/jaeger/`) and find an `agent.llm.prompt`
    span.
 3. Copy the `llm.prompt.system` attribute value into `system.txt` and
    `llm.prompt.user` into `user.txt`.
