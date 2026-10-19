@@ -2100,7 +2100,6 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_buttons_from_non_admin_serial_are_ignored(self, inactive_handler, mock_state_manager):
         """Defence in depth: admin commands are only accepted from the admin controller."""
         mock_state_manager.get_controller_state = MagicMock(return_value=ControllerState.ADMIN)
@@ -2115,7 +2114,6 @@ class TestSingleAdminSession:
         assert inactive_handler.active is True
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_on_exit_for_other_serial_keeps_session(self, inactive_handler):
         """on_exit for a controller that does not own the session must not end it."""
         inactive_handler.active = True
@@ -2136,7 +2134,6 @@ class TestSingleAdminSession:
         assert admin_handler.controller_serial == "B"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_lobby_reset_releases_lock(self, stack):
         """StateManager.reset() (lobby restart) releases the admin session."""
         servicer, state_manager, admin_handler = stack
@@ -2154,7 +2151,6 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_stream_reconnect_releases_lock(self, stack):
         """on_stream_reconnected() releases the admin session."""
         servicer, state_manager, admin_handler = stack
@@ -2194,7 +2190,6 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_admin_disconnect_releases_lock(self, stack):
         """The admin controller disconnecting while in ADMIN releases the lock."""
         servicer, state_manager, admin_handler = stack
@@ -2209,7 +2204,6 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     @pytest.mark.uc("UC-012", flow="A4")
     async def test_timeout_releases_lock(self, stack):
         """The auto-exit timeout releases the lock and returns the admin to CONNECTED."""
@@ -2226,7 +2220,6 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-012", cond=["Pre-1"])
     async def test_timeout_ends_session_when_owner_state_already_cleared(self, stack):
         """If the owner's state was cleared behind the handler's back, the timeout still ends the session."""
         servicer, state_manager, admin_handler = stack
