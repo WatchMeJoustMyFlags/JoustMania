@@ -172,6 +172,40 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - `UnstableAdapter` (≈ 8.3 Hz, 10 % drops) is registered alongside python for the rollout demo; real adapters are used directly (the ChaosAdapter wrapper, D-C2, was removed in #1322).
 - Mock serials `MOCK%04d`; reserved mock controllers are hidden from the roster.
 
+#### Backend layering
+
+Two layers (`backend.py`, `multiplexer/`): `ControllerManagerServicer` calls the async `ControllerBackend`; its only implementation, `MultiplexerBackend`, owns all state (LED colour, rumble and effects per serial, serial to adapter assignment, the 2 s LED keep-alive) and drives thin, blocking `ControllerIOAdapter`s through `asyncio.to_thread()`. `CentralizedBTDiscovery` (`multiplexer/bt_discovery.py`) scans the Bluetooth adapters.
+
+`ControllerIOAdapter` (`multiplexer/adapter.py`): `adapter_type`, `discover(force)`, `open(serial)`, `poll(serial)`, `set_output(serial, r, g, b, rumble)` (LED and rumble in one call, like the HID output report, so an LED refresh never resets rumble), `close(serial)`, `close_all()`, `get_adapter_for_serial(serial)`.
+
+| Adapter (`adapter_type`) | Class | Role |
+|---|---|---|
+| `rust` | `RustServiceAdapter` (`rust_adapter.py`) | gRPC client of `rust-hid` (`RUST_HID_HOST` / `RUST_HID_PORT`, default `localhost:50058`); background bidirectional `StreamIO` stream, `poll()` reads the cached last sample per serial, `set_output()` queues an `IOCommand` (queue capacity 256). Default. |
+| `python` | `PythonHidAdapter` (`python_hid_adapter.py`) | Same shape, gRPC client of `python-hid` (`PYTHON_HID_HOST` / `PYTHON_HID_PORT`, default `localhost:50059`). Opt-in. |
+| `mock` | `MockAdapter` (`mock_adapter.py`) | Simulated I/O, always loaded with zero controllers (added through `AddController`, `MockControllerService`). |
+| `unstable` | `UnstableAdapter` (`unstable_adapter.py`) | Routing-only decorator around the *same* python instance: fresh polls at most every 0.12 s (about 8.3 Hz), every 10th dropped. Registered automatically when a `python` adapter is loaded (`backend_factory._build_routing_only_adapters`); never a default or fallback winner, never discovers on its own. |
+
+**`backend` flag** (domain `controller`, read once at startup, restart to change): a comma-separated adapter list validated by `multiplexer/validation.py` (`mock`, `python`, `rust` and combinations without duplicates; anything else raises). `mock` is appended when missing. Variants in `services/flagd/controller.json`:
+
+| Variant | Value | Adapters loaded |
+|---|---|---|
+| `rust` (default; fallback when the flag is empty or flagd is down) | `rust` | rust + mock |
+| `python` | `python` | python + unstable + mock |
+| `python_rust` | `python,rust` | python + rust + unstable + mock |
+| `mock` | `mock` | mock only (default of `services/flagd/ci/controller.json`) |
+
+A value is one variant's string; "mock,bluetooth" and similar are not valid. The `python-hid` compose service sits behind the `python-hid` profile, so reading real controllers through python-hid takes all three: the profile, a `backend` variant naming `python`, and `bluetooth_backend=python` (UC-002 BR-003, #1402).
+
+**Per-controller routing** (`MultiplexerBackend._resolve_adapter_for_serial`), highest first:
+
+1. `bluetooth_backend` (`python` | `rust` | `unstable`, default `rust`), honoured only when the evaluation reason is `TARGETING_MATCH` (a per-serial rule, not the default variant);
+2. `RolloutRouter` (`rollout_router.py`, flag domain `rollout`, `services/flagd/rollout.json`): `strategy` `off` (default) / `immediate` / `progressive`; the target is `target_backend`, and `progressive` applies it to the first `current_controller_count` serials in sorted order (0, 1, 3, 6, 99). Any flag error degrades to "no rollout", and so to step 3;
+3. the `bluetooth_backend` flag's default variant (`rust`), if that adapter is loaded; only when nothing above resolves to a loaded adapter, the first non-`mock`, non-`unstable` adapter (the fallback).
+
+A target naming an adapter that is not loaded falls through. Routing re-runs every discovery cycle; losing adapters close their handle for the serial (unless they share the winner's device owner, as `unstable` does), and `controller_routing_decisions_total{serial,adapter,method}` counts each decision (`targeted` / `rollout` / `default` / `fallback`, the last when the preferred adapter fails to open the device). The same `bluetooth_backend` flag also picks the pairing daemon's backend (see pairing-daemon below). The python backend, `UnstableAdapter` and the rollout router are removed after the talk (UC-050 to UC-052 need them until then).
+
+History: the in-process psmoveapi/SWIG backend was replaced by hidapi, then split out as the `python-hid` service, mirroring `rust-hid`; `lib/psmove_hid.py` documents the HID report layout.
+
 ### LED states (controller feedback)
 
 Verified against `lib/colors.py`, `services/menu/utils/led.py`, `services/menu/handlers/` and `services/controller_manager/feedback_manager.py`. RGB values are `(r, g, b)`; "base colour" is the colour an effect restores to when it ends.

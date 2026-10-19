@@ -6,24 +6,18 @@ This guide helps diagnose and resolve PS Move controller connectivity issues in 
 
 ### Checking Signal Strength (RSSI)
 
-**Via WebUI:**
-1. Navigate to http://localhost/battery
-2. Check the "Signal" column for each controller
-3. Colors indicate quality:
-   - **Green** = Excellent/Good (-55 dBm or better)
-   - **Yellow** = Fair (-70 to -80 dBm)
-   - **Red** = Poor (below -80 dBm)
-   - **Gray** = USB connection
+RSSI comes from the pairing daemon, not the controller manager: every `pairing.bt_monitor_interval`
+(5 s by default) it runs `hcitool -i <hciN> rssi <address>` for each connected controller and exports
+`bluetooth_device_rssi_dbm{serial,hci_adapter}` over OTLP. The controller manager reports `rssi = 0`
+in its controller state, so the dashboard and the gRPC state carry no signal value.
 
-**Via metrics:** the controller manager pushes its metrics over OTLP; it no longer serves a
-`/metrics` endpoint on :8000 (removed in #1447). Query them in Grafana (`/grafana/`) or the
-VictoriaMetrics query API (`/victoria-metrics/`); names are listed in
-[telemetry.md §6](specs/telemetry.md#6-metrics).
-
-**Via Controller LED Warnings:**
-- **Orange pulse** (3 flashes): Weak signal warning (<-80 dBm)
-- Displayed at most once per minute to avoid spam
-- Move closer to Raspberry Pi when you see this
+- **Grafana** (`/grafana/d/controller-overview`, see [Monitoring with Grafana](#monitoring-with-grafana)):
+  the Controller Health table shows RSSI per controller; Weak Signal counts controllers below -80 dBm.
+- **Raw metric:** query `bluetooth_device_rssi_dbm` in Grafana Explore or the VictoriaMetrics query API
+  (`/victoria-metrics/`); names are listed in [telemetry.md section 6](specs/telemetry.md#6-metrics).
+  Neither the controller manager nor the pairing daemon serves `/metrics` (removed in #1447; the pairing
+  daemon's port 8002 serves `/healthz` and the unpair API only).
+- **No on-controller warning:** no controller LED signals a weak link. Watch the dashboard instead.
 
 ## Understanding RSSI Values
 
@@ -35,7 +29,7 @@ RSSI (Received Signal Strength Indicator) measures Bluetooth signal quality in d
 | -55 to -65 | Good | 2-5 meters | Smooth gameplay |
 | -70 to -80 | Fair | 5-8 meters | Occasional lag possible |
 | -85 or lower | Poor | > 8 meters | Frequent disconnections |
-| 0 | USB | N/A | Wired connection (no RSSI) |
+| none | USB | N/A | Wired connection (no RSSI sample) |
 
 **What affects RSSI?**
 - Distance from Raspberry Pi
@@ -50,10 +44,9 @@ RSSI (Received Signal Strength Indicator) measures Bluetooth signal quality in d
 **Symptoms:**
 - Controller shows as disconnected frequently
 - Gameplay interrupted by connection loss
-- Orange warning flashes during play
 
 **Diagnosis:**
-1. Check RSSI value in WebUI
+1. Check the RSSI of the controller in Grafana
 2. If RSSI < -80 dBm, signal is too weak
 
 **Solutions:**
@@ -85,12 +78,13 @@ RSSI (Received Signal Strength Indicator) measures Bluetooth signal quality in d
 - **Check CPU load** on Pi (high CPU can cause lag)
 - **Restart services** if lag persists
 
-### Issue: Orange Flashing During Gameplay
+### Issue: Weak Signal Reported in Grafana
 
-**Meaning:** Weak signal warning (RSSI < -80 dBm)
+**Meaning:** the controller's RSSI is below -80 dBm (the Weak Signal panel counts it). Nothing on the
+controller or in the game tells the player.
 
 **Immediate Action:**
-- Move closer to Raspberry Pi
+- Move the controller closer to the Raspberry Pi, or tell the player to
 - Check for obstacles blocking signal
 - Ensure Pi is powered properly (weak power = weak Bluetooth)
 
@@ -104,7 +98,7 @@ RSSI (Received Signal Strength Indicator) measures Bluetooth signal quality in d
 **Symptoms:**
 - Controller works when plugged in (USB)
 - Disconnects immediately when unplugged
-- RSSI shows 0 or N/A
+- RSSI is missing in Grafana
 
 **Diagnosis:**
 1. Controller not properly paired to Pi
@@ -185,12 +179,10 @@ sudo rfkill block wifi
 - External CSR Bluetooth adapter (Feasycom FSC-BP119 recommended; identify the chipset with `hciconfig -a`, not by "Class 1" or range claims). The Pi 5 internal radio only suits a few PS4 Moves (ZCM2); see the [hardware guide](hardware-setup-guide.md#bluetooth-adapter-recommendations)
 - Good 5V 3A power supply for Pi (weak power = weak Bluetooth)
 - Pi connected via Ethernet (not WiFi 2.4GHz)
-- Bluetooth keepalive tuned (already done in Phase 26)
 
 **Player Guidelines:**
 - Stay within 5 meters of Pi
 - Avoid standing between Pi and other players
-- Call out "weak signal" if orange pulse appears
 - Charge controllers when battery < 40%
 
 ### Testing Your Setup
@@ -198,10 +190,10 @@ sudo rfkill block wifi
 **Signal Strength Test:**
 ```bash
 # 1. Connect one controller
-# 2. Navigate to http://pi-address:5000/battery
-# 3. Note RSSI value
+# 2. Open the Controller Health table in Grafana (/grafana/d/controller-overview)
+# 3. Note the RSSI value
 # 4. Walk to different positions in play area
-# 5. Refresh page and check RSSI at each position
+# 5. Wait one monitor interval (5 s) and check RSSI at each position
 
 # Expected results:
 # - 1m: -40 to -50 dBm (Excellent)
@@ -213,7 +205,7 @@ sudo rfkill block wifi
 **Multi-Controller Test:**
 ```bash
 # 1. Connect all controllers for your event
-# 2. Check RSSI for each controller
+# 2. Check RSSI for each controller in Grafana
 # 3. Identify weakest controller
 # 4. If any < -75 dBm, reposition players or Pi
 # 5. Run a test game and monitor for disconnections
@@ -241,7 +233,7 @@ No alert rules ship (FR-083 Rejected, #1425): watch the dashboard.
 
 ### BlueZ RSSI Inspection
 
-If RSSI is not showing in WebUI:
+If RSSI is not showing in Grafana:
 
 ```bash
 # Check BlueZ version (need 5.0+)
@@ -263,46 +255,31 @@ bluetoothctl
 
 ### Manual RSSI Query
 
-```python
-# Run from controller_manager directory
-python3 << 'EOF'
-from bluetooth import get_hci_dict, get_all_device_rssi_values
+The pairing daemon uses the same command, per adapter and controller address:
 
-hci_dict = get_hci_dict()
-print(f"HCI adapters: {hci_dict}")
-
-for hci in hci_dict.keys():
-    rssi_values = get_all_device_rssi_values(hci)
-    print(f"{hci} RSSI values:")
-    for addr, rssi in rssi_values.items():
-        print(f"  {addr}: {rssi} dBm")
-EOF
+```bash
+hciconfig | grep -E '^hci'           # adapters
+hcitool -i hci0 con                  # connected controllers on hci0
+hcitool -i hci0 rssi AA:BB:CC:DD:EE:FF
+# RSSI return value: -45
 ```
 
 ### Service Logs
 
-Check logs for RSSI warnings:
+The monitor runs in the pairing daemon (set `DEBUG=1` for per-device detail; see
+`services/pairing_daemon/README.md`):
 
 ```bash
-# Controller manager logs
-docker logs joustmania-controller-manager-1 | grep -i "rssi\|weak signal"
-
-# Expected output:
-# WARNING - Controller ABCD1234 has weak signal: -85 dBm
-# INFO - Weak signal warning displayed for ABCD1234
-# INFO - Mapped controller ABCD1234 to BT address 00:1A:2B:3C:4D:5E
+docker compose logs --tail=100 pairing-daemon
 ```
 
 ## FAQ
 
 **Q: Does RSSI checking affect performance?**
-A: No. RSSI is checked once every 10 seconds via efficient DBus calls (~1-2ms per controller). No impact on gameplay.
+A: Not measurably. The pairing daemon runs one `hcitool rssi` call per connected controller every `pairing.bt_monitor_interval` (5 s by default), outside the game services.
 
 **Q: Why does RSSI show 0?**
-A: Either USB connection (no wireless signal) or RSSI not available (older BlueZ version, disconnected controller).
-
-**Q: Can I disable weak signal warnings?**
-A: Not currently. Warnings are rate-limited to once per minute and are important for user experience.
+A: The controller is not connected over Bluetooth, `hcitool rssi` returned nothing for it, or the pairing daemon is not running (the controller manager itself always reports 0).
 
 **Q: My controller is 2 meters away but shows poor RSSI. Why?**
 A: Could be interference, obstacles, or a weak Bluetooth radio in the controller or the Pi. Try an external CSR adapter, and check the chipset of the one you have (`hciconfig -a`): RSSI can look fine while a weak chipset still delivers gappy reports.
@@ -311,16 +288,14 @@ A: Could be interference, obstacles, or a weak Bluetooth radio in the controller
 A: No. Older PS Move controllers may have degraded Bluetooth radios. RSSI helps identify weak units.
 
 **Q: Does charging affect Bluetooth signal?**
-A: Controllers work fine while charging via USB (wired mode, RSSI = 0). When unplugged, RSSI may initially be lower due to battery state.
+A: Controllers work fine while charging via USB (wired mode, no RSSI sample). When unplugged, RSSI may initially be lower due to battery state.
 
 ## Related Documentation
 
-- **Phase 48 Planning:** `planning/phases/completed/phase-48-controller-connection-strength-monitoring.md`
 - **Controller Manager:** `services/controller_manager/README.md`
-- **Proto Schema:** `proto/controller_manager.proto` (rssi field)
-- **Bluetooth Module:** `services/controller_manager/bluetooth.py`
+- **Pairing daemon (RSSI monitor):** `services/pairing_daemon/psmove_pairing/bluetooth_monitor.py`, [README](../services/pairing_daemon/README.md)
+- **Hardware and adapters:** [hardware-setup-guide.md](hardware-setup-guide.md)
 - **Metrics:** Grafana at http://localhost/grafana/ ([telemetry.md §6](specs/telemetry.md#6-metrics))
-- **WebUI:** http://localhost/battery (Signal strength display)
 
 ## Getting Help
 
@@ -336,8 +311,3 @@ If connectivity issues persist:
    - Number of controllers
    - Pi model and OS version
    - Service logs
-
----
-
-**Last Updated:** Phase 48 - January 2026
-**Maintainer:** JoustMania Development Team

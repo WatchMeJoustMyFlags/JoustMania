@@ -107,7 +107,7 @@ docker compose up -d
 > Bluetooth backend (`backend=rust` in the read-only baseline `services/flagd/controller.json`). `python-hid`
 > is opt-in only: `docker compose --profile python-hid up -d` (or `COMPOSE_PROFILES=python-hid`) plus
 > `backend=python_rust` **and** `bluetooth_backend=python` (without the second, every controller stays on rust-hid). `backend` is not in the flag service's mutable registry, so that is a
-> reviewed baseline edit followed by `scripts/flags.sh restart` (restarts flag-service, then flagd). See [controller-backends.md](architecture/controller-backends.md#python-hid-is-opt-in-1371).
+> reviewed baseline edit followed by `scripts/flags.sh restart` (restarts flag-service, then flagd). See [hardware-setup-guide.md](hardware-setup-guide.md#opting-in-to-python-hid) and [services.md, Backend layering](specs/services.md#backend-layering).
 > Without hardware, use `make up-mock` (`backend=mock`).
 
 ### 4. Verify Services

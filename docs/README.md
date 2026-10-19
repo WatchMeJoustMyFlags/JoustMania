@@ -52,13 +52,12 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Set up, follow the spec-first workflow, pass CI |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Build, run and debug (partly stale, see the inventory) |
 | [DOCKER_WORKFLOW.md](DOCKER_WORKFLOW.md) | Compose and image workflow (partly stale) |
-| [hardware-setup-guide.md](hardware-setup-guide.md), [25-controller-setup.md](25-controller-setup.md) | Set up a Pi 5 with many controllers |
+| [hardware-setup-guide.md](hardware-setup-guide.md) (includes the 25-controller setup) | Set up a Pi 5 with many controllers |
 | [UC-010](use_cases/UC-010.md), [UC-012](use_cases/UC-012.md) | Lobby and admin button maps (BR-005 in each) |
 | [CONTROLLER_CONNECTIVITY.md](CONTROLLER_CONNECTIVITY.md) | Troubleshoot Bluetooth (stale) |
 | [AUDIO.md](AUDIO.md) | Audio hardware and ALSA setup |
 | [observability-quickstart.md](observability-quickstart.md) | Performance tooling (stale metric names) |
 | [CANARY_RUNBOOK.md](CANARY_RUNBOOK.md) | Manual backend canary |
-| [architecture/controller-backends.md](architecture/controller-backends.md) | Controller-manager backend layering |
 | [architecture/flag-service.md](architecture/flag-service.md) | Flag service: one gRPC sync source for flagd partitioned by flagSetId, `PUT /{flagSetId}/{flagName}` writes, mutable-flag registry, persisted admin settings, migration plan (epic #1407) |
 | [agent-act-runbook.md](agent-act-runbook.md) | Take the agent from inert to acting |
 | [agent-demo-runbook.md](agent-demo-runbook.md) | Run the three-act demo |

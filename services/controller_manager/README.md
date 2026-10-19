@@ -42,7 +42,7 @@ The Controller Manager service is the central component for managing PS Move con
 └─────────────────────────────────────────────────────────────┘
 ```
 
-`MultiplexerBackend` routes per-controller calls through thin `ControllerIOAdapter` instances with centralized state. See [Controller Backend Architecture](../../docs/architecture/controller-backends.md) for details.
+`MultiplexerBackend` routes per-controller calls through thin `ControllerIOAdapter` instances with centralized state. See [Backend layering](../../docs/specs/services.md#backend-layering) in the services spec for details.
 
 ## Configuration
 
