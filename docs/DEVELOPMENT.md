@@ -44,16 +44,21 @@ sudo apt-get install grpcurl                          # or: brew install grpcurl
 ```bash
 git clone https://github.com/WatchMeJoustMyFlags/JoustMania.git
 cd JoustMania
-make up-mock                                  # full stack, mock controllers, no hardware
-docker compose -f docker-compose.yml -f docker-compose.ci.yml ps
+uv sync                                       # optional: local Python env for editors and unit tests
+make up-mock                                  # services and observability, mock controllers, no hardware
+docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile dashboard up -d   # adds envoy, dashboard, connect-proxy
+docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile dashboard ps
 ```
 
 `make up-mock` runs `docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d` (add
-`BUILD=1` to build from your checkout). It starts envoy, the dashboard, the services and the observability
-stack with `backend=mock` (the CI flag baseline, `services/flagd/ci/`). Stop it with the same `-f` flags and
-`down`.
+`BUILD=1` to build from your checkout). The CI overlay puts envoy, connect-proxy and the dashboard in the
+compose profile `dashboard`, so `make up-mock` alone does **not** serve port 80; the second command adds
+them. (`make dry-run` also passes `--profile dashboard`, plus `agent`.) Everything runs with `backend=mock`
+(the CI flag baseline, `services/flagd/ci/`). Stop it with the same `-f` and `--profile` flags and `down`.
+The repo has a `.pre-commit-config.yaml`; `pre-commit install` enables the hooks. Lint and CI checks: [CONTRIBUTING](CONTRIBUTING.md).
 
-Everything a browser needs is behind **envoy on port 80** (the only port reachable from the network):
+With the `dashboard` profile up, everything a browser needs is behind **envoy on port 80** (the only port
+reachable from the network):
 
 | URL | What |
 |---|---|
@@ -138,7 +143,7 @@ graph LR
 ```
 
 - **Python services**: `make dev` volume-mounts `services/*` and `lib/`; after an edit,
-  `docker compose restart game-coordinator` (use the same `-f` flags `make dev` printed, or export
+  `docker compose restart game-coordinator` (use the `-f` files from the `dev` target in the `Makefile`, or export
   `COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.dev.yml`).
 - **Rust (`rust-hid`), Go (`agent`, `flag-service`, `connect-proxy`), dashboard, Dockerfile changes**: rebuild:
   `docker compose up -d --build <service>`.
@@ -198,7 +203,6 @@ The RPC list and the service ports are in [services.md](specs/services.md#3-grpc
 ### Hardware
 
 ```bash
-python tools/manualpair.py                                   # pair one controller by hand
 scripts/hardware/reset_bluetooth_connections.sh --dry-run    # remove PS Move registrations only
 scripts/hardware/reset_bluetooth_connections.sh
 ```
@@ -239,7 +243,7 @@ services/       controller_manager, game_coordinator, menu, audio, python_hid, p
                 flagd, envoy, otel-collector, jaeger, loki, grafana (config)
 tests/          integration/ (docker), service/ (T2), contract/
 scripts/        ci/, setup/ (Pi install and start), hardware/, aiup/, flags.sh, ...
-tools/          manualpair.py, live_dashboard.py, ci-proto/, ...
+tools/          live_dashboard.py, ci-proto/, ...
 docs/           specs/ (normative), use_cases/, test_cases/, guides
 docker-compose*.yml
 ```
@@ -263,7 +267,7 @@ changed RPC needs its description in `docs/specs/notes/grpc-rpcs.yaml` and `make
 
 Import conventions: `from lib.types import Games`, `from lib.otel_metrics import Counter` (never
 `prometheus_client` directly), `from proto import game_coordinator_pb2`. Metric and span naming:
-[`.claude/rules/development.md`](../.claude/rules/development.md#metrics).
+[`.claude/rules/development.md`](../.claude/rules/development.md#metrics-and-spans).
 
 ## Adding features
 
