@@ -67,7 +67,7 @@ in-memory services).
 ### Condition tag (`cond=`)
 
 `cond=` is an optional marker keyword, analogous to `br=`, for a test whose purpose is a precondition or
-postcondition of the use case: `Pre-<n>`, `Post-S-<n>`, `Post-F-<n>`, exactly as numbered in the UC spec
+postcondition of the use case: `Pre-<n>`, `Post-S-<n>`, `Post-F-<n>`, numbered in order of appearance under the UC spec's Preconditions and Success/Failure Postconditions headings
 (`@pytest.mark.uc("UC-020", cond=["Pre-1"])`, `@pytest.mark.uc("UC-020", cond=["Post-F-1"])`).
 
 - Use it only when the test is about the condition. Many preconditions are setup-only and need no test of their

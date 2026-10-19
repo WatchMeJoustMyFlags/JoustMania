@@ -116,7 +116,6 @@ class TestGameSessionLoop:
         session.clients.connect.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-020", flow="main")
     @pytest.mark.uc("UC-020", cond=["Post-F-1"])
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
@@ -137,7 +136,6 @@ class TestGameSessionLoop:
         assert session.game_state == game_coordinator_pb2.GameState.ENDED
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-020", flow="main")
     @pytest.mark.uc("UC-020", cond=["Post-F-1"])
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
@@ -176,7 +174,6 @@ class TestGameSessionLoop:
         assert session.current_game is None
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-020", flow="main")
     @pytest.mark.uc("UC-020", cond=["Post-F-1"])
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
