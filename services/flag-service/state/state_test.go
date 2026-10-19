@@ -13,7 +13,7 @@ import (
 	"github.com/joustmania/flag-service/fserr"
 )
 
-// UC: UC-053 main BR-003 BR-007
+// UC: UC-053 main BR-003 BR-007 Post-S-1
 func TestGameScopedWrite_ResolvesInItsGameOnly(t *testing.T) {
 	t.Run("UC-053/main a game value resolves for that game and no other", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
@@ -366,7 +366,7 @@ func TestAppend_EventList(t *testing.T) {
 	})
 }
 
-// UC: UC-053 main BR-003
+// UC: UC-053 main BR-003 Post-S-3
 func TestEndGame_DropsScopeAndValues(t *testing.T) {
 	t.Run("UC-053/main after the game ends nothing of it is left", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
@@ -625,9 +625,9 @@ func TestAdminPersistence(t *testing.T) {
 	})
 }
 
-// UC: UC-053 main
+// UC: UC-052 main
 func TestFraction_RendersAFractionalElse(t *testing.T) {
-	t.Run("UC-053/main a fraction overlay splits between its variant and the effective default", func(t *testing.T) {
+	t.Run("UC-052/main a fraction overlay splits between its variant and the effective default", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
 		f.put(WriteRequest{Set: "controller", Flag: "bluetooth_backend", Variant: "python", Scope: Scope{FractionPercent: intp(10)}, Writer: "canary"})
 		targeting, _ := json.Marshal(f.snapshotFlag("bluetooth_backend")["targeting"])
@@ -639,6 +639,7 @@ func TestFraction_RendersAFractionalElse(t *testing.T) {
 }
 
 // UC: UC-053 main
+// NFR: NFR-051
 func TestNFR051_SnapshotBounded(t *testing.T) {
 	t.Run("UC-053/main 8 games x 16 players stay within 64 KiB per game and 1 MiB per snapshot", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
@@ -728,9 +729,10 @@ func TestClear_RemovesTheValue(t *testing.T) {
 	})
 }
 
-// UC: UC-053 main
+// UC: UC-053 main A6 A10
+// NFR: NFR-051
 func TestGameScopeBounds(t *testing.T) {
-	t.Run("UC-053/main the number of live game scopes is capped (NFR-051)", func(t *testing.T) {
+	t.Run("UC-053/A6 the number of live game scopes is capped: one more registration is 409 too_many_games (NFR-051)", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{maxGames: 2})
 		f.register("game_a", "c/1")
 		f.register("game_b", "c/1")
@@ -815,12 +817,13 @@ func TestDryRunRendersWithoutApplying(t *testing.T) {
 	})
 }
 
-// UC: UC-053 main
+// UC: UC-053 A3
+// NFR: NFR-051
 func TestExpireExperiments(t *testing.T) {
 	arm := func(id string) WriteRequest {
 		return WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("4"), Scope: Scope{ExperimentID: id, Arm: "experimental"}}
 	}
-	t.Run("UC-053/main an experiment no game references is dropped after the idle time (NFR-051)", func(t *testing.T) {
+	t.Run("UC-053/A3 an experiment no game references is dropped after the idle time (NFR-051)", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
 		f.put(arm("exp_orphan"))
 		f.put(arm("exp_live"))
@@ -840,7 +843,7 @@ func TestExpireExperiments(t *testing.T) {
 			t.Fatalf("want exp_live kept and exp_orphan dropped: %s", payload)
 		}
 	})
-	t.Run("UC-053/main an experiment whose games ended expires one idle time after the last one", func(t *testing.T) {
+	t.Run("UC-053/A3 an experiment whose games ended expires one idle time after the last one", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
 		f.put(arm("exp_done"))
 		if _, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1", Kind: "shadow", ExperimentID: "exp_done", Arm: "experimental"}); err != nil {
@@ -878,9 +881,9 @@ func TestClearWriter_KeepsPersistedAdminValues(t *testing.T) {
 	})
 }
 
-// UC: UC-053 A9
+// UC: UC-053 A12
 func TestStateFileCorruptCopiesAreCapped(t *testing.T) {
-	t.Run("UC-053/A9 at most three .corrupt copies are kept", func(t *testing.T) {
+	t.Run("UC-053/A12 a corrupt state file is moved aside and at most three .corrupt copies are kept", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "admin.json")
 		for i := 0; i < 5; i++ {
@@ -892,6 +895,9 @@ func TestStateFileCorruptCopiesAreCapped(t *testing.T) {
 			t.Fatal(err)
 		}
 		newFixture(t, fixtureOpts{stateFile: path, epoch: "e1"})
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("the corrupt state file was not moved aside: %v", err)
+		}
 		matches, _ := filepath.Glob(path + ".corrupt-*")
 		if len(matches) != 3 {
 			t.Fatalf("%d corrupt copies, want 3: %v", len(matches), matches)
@@ -899,9 +905,9 @@ func TestStateFileCorruptCopiesAreCapped(t *testing.T) {
 	})
 }
 
-// UC: UC-053 A2
+// UC: UC-053 A12
 func TestUnreadableStateFileBlocksPersistence(t *testing.T) {
-	t.Run("UC-053/A2 a read error keeps the file and applies admin values in memory only", func(t *testing.T) {
+	t.Run("UC-053/A12 a read error keeps the file and applies admin values in memory only", func(t *testing.T) {
 		// A directory at the state-file path: ReadFile fails with an I/O error, not "not exist".
 		path := filepath.Join(t.TempDir(), "admin.json")
 		if err := os.Mkdir(path, 0o755); err != nil {

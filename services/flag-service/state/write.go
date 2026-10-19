@@ -162,6 +162,10 @@ func (s *State) streamCheckLocked(set string) *fserr.Error {
 }
 
 // Put sets a value in a scope (PUT /{flagSetId}/{flagName}).
+//
+// UC-053 BR-002: validation, not authorization. A write is checked only
+// against the registry (mutable, in bounds, scope fits), the game scope and
+// the sync stream; the writer label is informational and grants nothing.
 func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -194,6 +198,8 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 		ttl = time.Duration(*req.TTLSeconds * float64(time.Second))
 	}
 	if req.Persist {
+		// UC-053 BR-004: only a stack-scoped admin setting the registry marks
+		// persistable goes to the state file; nothing else outlives a restart.
 		switch {
 		case !p.Persist || scopeName != registry.ScopeStack:
 			return res, fserr.BadRequest("%s cannot persist in scope %s (registry persist: %v)", req.Flag, scopeName, p.Persist)

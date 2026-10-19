@@ -313,18 +313,25 @@ func sweep(ctx context.Context, st *state.State, metrics *telemetry.Metrics, tra
 			return
 		case <-ticker.C:
 		}
-		for _, end := range st.ExpireGames() {
-			logger.Warn("flag service: game scope expired (its end was never reported)", "game_id", end.GameID,
-				"coordinator_instance", end.CoordinatorInstance, "dropped_values", end.DroppedValues)
-			metrics.ScopesExpired.Add(ctx, 1)
-			telemetry.GameEndSpan(ctx, tracer, end)
-		}
-		if n := st.ExpireOverlays(); n > 0 {
-			logger.Info("flag service: overlays expired (ttl)", "count", n)
-		}
-		if n := st.ExpireExperiments(); n > 0 {
-			logger.Warn("flag service: experiment values expired (no game referenced them)", "count", n)
-			metrics.ExperimentsExpired.Add(ctx, int64(n))
-		}
+		sweepOnce(ctx, st, metrics, tracer, logger)
+	}
+}
+
+// sweepOnce runs one pass of the sweep: expired game scopes are dropped,
+// logged and counted (UC-053 A11), then TTL overlays and idle experiment
+// values (UC-053 A3) expire.
+func sweepOnce(ctx context.Context, st *state.State, metrics *telemetry.Metrics, tracer trace.Tracer, logger *slog.Logger) {
+	for _, end := range st.ExpireGames() {
+		logger.Warn("flag service: game scope expired (its end was never reported)", "game_id", end.GameID,
+			"coordinator_instance", end.CoordinatorInstance, "dropped_values", end.DroppedValues)
+		metrics.ScopesExpired.Add(ctx, 1)
+		telemetry.GameEndSpan(ctx, tracer, end)
+	}
+	if n := st.ExpireOverlays(); n > 0 {
+		logger.Info("flag service: overlays expired (ttl)", "count", n)
+	}
+	if n := st.ExpireExperiments(); n > 0 {
+		logger.Warn("flag service: experiment values expired (no game referenced them)", "count", n)
+		metrics.ExperimentsExpired.Add(ctx, int64(n))
 	}
 }

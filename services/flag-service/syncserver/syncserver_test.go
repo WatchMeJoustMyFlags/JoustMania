@@ -248,9 +248,9 @@ func TestSyncFlags_Selectors(t *testing.T) {
 	})
 }
 
-// UC: UC-053 A8
+// Configuration check (architecture note §5.4), not flow evidence: no UC tag.
 func TestKeepalive(t *testing.T) {
-	t.Run("UC-053/A8 the server pings (flagd v0.16.0 sets no client keepalive) and allows client pings", func(t *testing.T) {
+	t.Run("the server pings (flagd v0.16.0 sets no client keepalive) and allows client pings", func(t *testing.T) {
 		if KeepaliveParams.Time != 30*time.Second || KeepaliveParams.Timeout != 10*time.Second {
 			t.Fatalf("server keepalive %+v", KeepaliveParams)
 		}

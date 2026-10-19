@@ -184,7 +184,7 @@ func TestWriter_NoGameNoWrite(t *testing.T) {
 	})
 }
 
-// UC: UC-053 A6 A7 A8
+// UC: UC-053 A7 A8
 func TestWriter_FailsClosed(t *testing.T) {
 	t.Run("UC-053/A7 a rejected write is an error (fail closed)", func(t *testing.T) {
 		w, svc := newTestWriter(t)
@@ -192,6 +192,17 @@ func TestWriter_FailsClosed(t *testing.T) {
 		err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume, GameID: "g"})
 		if !flagservice.IsReason(err, flagservice.ReasonNoSyncStream) {
 			t.Fatalf("err %v", err)
+		}
+	})
+	t.Run("UC-053/A8 an unreachable flag service fails the decision once, with no second write", func(t *testing.T) {
+		w, svc := newTestWriter(t)
+		svc.err = errors.New("dial tcp: connection refused")
+		err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume, GameID: "g"})
+		if err == nil {
+			t.Fatal("an unreachable flag service must fail the decision (fail closed)")
+		}
+		if n := len(svc.all()); n != 1 {
+			t.Fatalf("writer sent %d writes for one decision, want 1 (no retry)", n)
 		}
 	})
 }

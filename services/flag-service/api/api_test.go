@@ -132,7 +132,7 @@ func (e *env) writes(result, reason string) int64 {
 	return n
 }
 
-// UC: UC-053 main BR-005
+// UC: UC-053 main A5 BR-005 Post-S-2 Post-F-1
 func TestWriteAudit(t *testing.T) {
 	t.Run("UC-053/main an accepted write returns a WriteResult, a span and a counted ok", func(t *testing.T) {
 		e := newEnv(t, true)
@@ -162,9 +162,13 @@ func TestWriteAudit(t *testing.T) {
 	})
 	t.Run("UC-053/A5 a rejected write is a span and a counted rejection with its reason", func(t *testing.T) {
 		e := newEnv(t, true)
+		version := e.st.Version()
 		status, body := e.do("PUT", "/system/idle.enabled", map[string]any{"variant": "off", "writer": "stage"})
 		if status != http.StatusUnprocessableEntity || body["error"] != "flag_read_only" || body["detail"] == "" {
 			t.Fatalf("%d %v", status, body)
+		}
+		if e.st.Version() != version {
+			t.Fatal("a rejected write changed the configuration flagd serves (Post-F-1)")
 		}
 		attrs := e.writeSpan("idle.enabled")
 		if attrs["flagservice.result"].AsString() != "rejected" || attrs["flagservice.reason"].AsString() != "flag_read_only" {
