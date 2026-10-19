@@ -2,7 +2,6 @@
 
 > **Historical / superseded in parts.** Kept in place because code comments cite its section numbers. The allow-list format and rate-limiter location changed (#1127, #919); current state: [flags.md](../specs/flags.md) and [decide-contract.md](../specs/decide-contract.md). Where this note disagrees, the specs win.
 
-
 Analysis of what an agent can change at runtime in JoustMania, mapped to session
 objectives and policy constraints. This document populates `interventions_allowed`
 in the flag schema (#725) and informs the M2 intervention API (#730).

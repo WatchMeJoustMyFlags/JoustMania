@@ -2,7 +2,6 @@
 
 > **Historical / archived.** Offline calibration evidence for #1125; kept for the reasoning only. Current fitness behaviour: `services/agent/decision/fitness.go` and the [agent README](../../services/agent/README.md). The calibration script is `scripts/calibration/calibrate_spike_survival.py`.
 
-
 **Status:** offline calibration evidence. The live fitness path (`services/agent/decision/fitness.go`)
 is **unchanged** — `spikeSurvivalRatio` stays observability-only until #1125 consumes this.
 

@@ -48,15 +48,16 @@ banner pointing at their replacement; nothing was deleted.
 | `observability-quickstart.md` | 373 | Performance tooling | stale | Four metrics that do not exist, `StartGame` RPC, port 50051, `localhost:9090/metrics` (D-T5). | guide; telemetry |
 | `CANARY_RUNBOOK.md` | 513 | Manual Python→Rust canary | stale | `/canary/*` not routed by envoy (D-B3); `localhost:8080`; obsolete #612 stub note; ignores the agent rollout. | guide; UC-052 |
 | `architecture/controller-backends.md` | 203 | CM backend layering | current (minor drift) | Invalid example `defaultVariant: "mock,bluetooth"`; misses UnstableAdapter, rollout router. | services §controller-manager |
+| `architecture/flag-service.md` | - | Flag service decision record (#1417) | historical | Sections 1 and 3 ("Today") describe the pre-#1417 file-writer design; banner added in #1579. | services §7, flags §13 |
 | `agent-act-runbook.md` | 406 | Taking the agent live | stale (minor) | Greps for a log line that no longer exists (D-A7); `localhost:8080`; describes the startup self-heal that never runs (D-A1). | guide; UC-040, UC-045 |
 | `agent-demo-runbook.md` | 482 | Three-act demo operator playbook | current (one stale line) | Same stale log grep (D-A7); tells you to edit base `agent.json` while the demo serves `ci/`. | guide; UC-070 |
 | `agent-dry-run-runbook.md` | 159 | Experiment loop dry run | stale (minor) | Seeded flag is `windows`, not `death_grace_period_seconds`; omits the env gates on promotion (D-A6). Kill-switch span name corrected to `agent.disabled` in the consistency pass. | guide; UC-043 |
 | `talk/two-standards-runbook.md` | n/a (PR #1256, merged after the snapshot) | Talk operator runbook: setup, timing, beat table, pre-flight, reset, failure modes | current | Added by PR #1256; rewritten for the C-018 role split (#743): Jev-first model beat with act / noop / held on Jev's own threshold (#1288), Claude as the manual backup and the closing post-game summary, `stage` budget, kill-switch scope (#1284). Beats map to UC-070; rehearsal record still open. | guide; UC-070 |
 | `agent-trace-viz.md` | 307 | Agent trace on stage | stale (minor); **fixed in #1546 (D1)** | `agent.span_received` retired (#1053); `agent.signal_received` is a remote child of `game_cycle` (#1325), not a root (D-T2). | telemetry §agent; guide |
 | `design/agent-experiment-cohorts.md` | 389 | Cohort framework design (#982) | historical | Says "no implementation" but shipped (`services/agent/experiment/`). | ENT (Experiment, Arm), UC-043; kept as a historical record (banner added in #1541) |
-| `research/722-intervention-surface.md` | 576 | Intervention vocabulary research | historical | Allow-list format and limiter location changed (#1127, #919). | ENT (Intervention), flags; history |
+| `research/722-intervention-surface.md` | 576 | Intervention vocabulary research | historical | Allow-list format and limiter location changed (#1127, #919); banner added in #1579. | ENT (Intervention), flags; history |
 | `archive/739-prompt-capture.md` | 146 | In-game LLM prompt spike | historical | Already bannered; path retired by PR #1252 (issue #1234). | history |
-| `research/774-shadow-games.md` | 267 | Shadow game analysis | historical | `game_kind` vocabulary changed (#1249); broken link to `controller.ci.json`. | ENT (GameSession), UC-043; history |
+| `research/774-shadow-games.md` | 267 | Shadow game analysis | historical | `game_kind` vocabulary changed (#1249); broken `controller.ci.json` link de-linked and banner added in #1579. | ENT (GameSession), UC-043; history |
 | `research/844-post-game-retro.md` | 168 | Retro capture | historical | Already bannered. | UC-042; history |
 | `research/m7-4-testing-strategy.md` | 412 | Test strategy for propose / validate / promote | historical | Already bannered; pre-#1234. | history |
 | `archive/spike-survival-calibration-1125.md` | 153 | Offline fitness calibration | historical | Self-declared offline evidence (#1125 open). | history |
@@ -255,7 +256,6 @@ spec PRs. Verified against `main` @ 2d162b33; rows added or updated by the audit
 |---|---|---|
 | `docs/agent-act-runbook.md:122` | `#probe-mode-full-path-without-touching-the-game` | Heading slug has a double hyphen (em dash). |
 | `docs/controller-feedback.md:246-247`, `docs/led-feedback.md:237,249` | `../planning/...` | `planning/` does not exist. |
-| `docs/research/774-shadow-games.md:71` | `../../services/flagd/controller.ci.json` | File does not exist. |
 | `services/controller_manager/MOCK_ENVIRONMENT.md:511-512` | `../game_coordinator/PER_PLAYER_TRACING.md`, `../../planning/...` | Wrong directory / missing. |
 | `tests/integration/README.md:374` | `../../planning/PHASE_14_MOCK_HARDWARE.md` | Missing. |
 

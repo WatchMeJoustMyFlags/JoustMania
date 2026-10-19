@@ -2,7 +2,6 @@
 
 > **Historical / decision record (status: implemented, #1417).** Sections 1 and 3 ("Today") describe the pre-#1417 world, where every writer edited the flagd JSON files in place; that file-writer design no longer exists. Kept in place because specs and test cases cite its decisions. Normative content now lives in [services.md §7](../specs/services.md#7-flag-service-epic-1407), [flags.md §13](../specs/flags.md#13-mutable-flag-registry) and [telemetry.md §10](../specs/telemetry.md#10-flag-service-epic-1407).
 
-
 > Architecture note. Status: **implemented** (epic #1407, delivered in one PR, #1417; see §12.1). Written 2026-10-16 against `main`; revised the same day
 > with the maintainer's decisions on the review of PR #1417 (§1, decisions D3, D4, D10 to D13), and again with
 > the decisions on the re-review (N1 to N6: sync fan-out §5.4, event-list reader §6, persistence on request D10
