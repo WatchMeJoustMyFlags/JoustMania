@@ -17,6 +17,7 @@ Both directions are covered, each on a fake pair of in-process stores:
   allow-list flagd no longer serves (the fail-closed second check is bypassed).
 """
 
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -127,7 +128,7 @@ class FakeGame:
 
 
 class Harness:
-    def __init__(self, interventions: InterventionsStore, agent: AgentStore):
+    def __init__(self, interventions, agent, time_fn=None):
         self.events: list[dict] = []
         self.game = FakeGame()
 
@@ -136,7 +137,8 @@ class Harness:
                 self.events.append(data)
 
         self.view = SessionView(game_id=GAME, game=self.game, publish=publish, is_real=True)
-        self.mgr = InterventionManager(event_publisher=publish, get_sessions=lambda: [self.view])
+        kwargs = {"time_fn": time_fn} if time_fn is not None else {}
+        self.mgr = InterventionManager(event_publisher=publish, get_sessions=lambda: [self.view], **kwargs)
         self.mgr._interventions_client = interventions
         self.mgr._agent_client = agent
         self.mgr.register_ambient_handlers()
@@ -275,3 +277,202 @@ async def test_newer_allow_list_and_unstamped_sets_apply_at_once():
     h = Harness(interventions, AgentStore(None, AMBIENT))
     await h.flag_change()
     assert h.outcomes("adjust_volume") == [("false", "")]
+
+
+# --------------------------------------------------------------------------- #
+# Read order: value, then probe, then allow-list (review of #1559, finding 5)
+# --------------------------------------------------------------------------- #
+
+
+class BumpOnValueRead(InterventionsStore):
+    """A store whose revision moves on the first read of one flag's value: a
+    write lands between the value read and the probe. A gate that probed
+    before reading the value would see the older stamp and let a newer value
+    through against the older allow-list."""
+
+    def __init__(self, revision, bump_key, bumped_revision):
+        super().__init__(revision)
+        self.bump_key, self.bumped_revision = bump_key, bumped_revision
+
+    def _bump(self, key):
+        if key == self.bump_key and self.bumped_revision is not None:
+            self.revision, self.bumped_revision = self.bumped_revision, None
+
+    def get_float_value(self, key, default, _ctx=None):
+        self._bump(key)
+        return super().get_float_value(key, default, _ctx)
+
+    def get_float_details(self, key, default, ctx=None):
+        self._bump(key)
+        return super().get_float_details(key, default, ctx)
+
+
+@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.asyncio
+async def test_state_gate_probes_after_the_value_read():
+    interventions = BumpOnValueRead(("e1", 12), "music_tempo_override", ("e1", 13))
+    interventions.state["music_tempo_override"] = 1.2  # written at version 13
+    agent = AgentStore(("e1", 12), AMBIENT)  # the allow-list of version 12 forbids tempo
+    h = Harness(interventions, agent)
+
+    await h.flag_change()
+    assert h.outcomes("adjust_music_tempo") == []  # deferred, not blocked against version 12
+
+    agent.revision, agent.allowed = ("e1", 13), STANDARD
+    await h.flag_change()
+    assert h.outcomes("adjust_music_tempo") == [("false", "")]
+
+
+@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.asyncio
+async def test_level_gate_probes_after_the_value_read():
+    interventions = BumpOnValueRead(("e1", 12), "player_sensitivity_factor", ("e1", 13))
+    interventions.per_serial[("player_sensitivity_factor", "MOCK0001")] = ("r_e1_13", 0.6)
+    agent = AgentStore(("e1", 12), AMBIENT)
+    h = Harness(interventions, agent)
+
+    await h.flag_change()
+    assert h.outcomes("adjust_player_sensitivity") == []
+
+    agent.revision, agent.allowed = ("e1", 13), STANDARD
+    await h.flag_change()
+    assert h.outcomes("adjust_player_sensitivity") == [("false", "")]
+
+
+# --------------------------------------------------------------------------- #
+# Fail closed on a probe that raises (finding 6)
+# --------------------------------------------------------------------------- #
+
+
+class ProbeRaises(InterventionsStore):
+    def __init__(self, revision):
+        super().__init__(revision)
+        self.raising = True
+
+    def get_object_details(self, key, default, _ctx=None):
+        if key == "end_game" and self.raising:
+            raise RuntimeError("store unavailable")
+        return super().get_object_details(key, default, _ctx)
+
+
+@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.asyncio
+async def test_probe_that_raises_defers_instead_of_applying_ungated():
+    interventions = ProbeRaises(("e1", 4))
+    interventions.state["volume_override"] = 0.4
+    h = Harness(interventions, AgentStore(("e1", 4), AMBIENT))
+
+    await h.flag_change()
+    assert h.outcomes("adjust_volume") == []
+
+    interventions.raising = False
+    await h.flag_change()
+    assert h.outcomes("adjust_volume") == [("false", "")]
+
+
+# --------------------------------------------------------------------------- #
+# A deferral is visible (finding 1)
+# --------------------------------------------------------------------------- #
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.asyncio
+async def test_a_lasting_deferral_is_counted_aged_and_warned(caplog):
+    interventions = InterventionsStore(("e2", 7))
+    interventions.state["volume_override"] = 0.4
+    agent = AgentStore(("e1", 41), AMBIENT)  # stuck on the pre-restart epoch
+    clock = Clock()
+    h = Harness(interventions, agent, time_fn=clock)
+
+    with (
+        patch("services.game_coordinator.metrics.intervention_deferrals_total") as episodes,
+        patch("services.game_coordinator.metrics.intervention_deferral_age_seconds") as age,
+        caplog.at_level(logging.DEBUG, logger="services.game_coordinator.interventions"),
+    ):
+        await h.flag_change()
+        assert episodes.inc.call_count == 1  # one episode, however many specs deferred
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert h.mgr._deferral_recheck is not None  # re-checked even if no flag changes
+
+        clock.now += 6.0
+        await h.flag_change()
+        assert episodes.inc.call_count == 1
+        assert age.set.call_args.args[0] == pytest.approx(6.0)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1  # rate limited: one per DEFERRAL_WARN_INTERVAL_S
+        assert "('e2', 7)" in warnings[0] and "('e1', 41)" in warnings[0]
+
+        agent.revision = ("e2", 7)
+        await h.flag_change()
+        assert age.set.call_args.args[0] == 0
+        assert h.mgr._deferral_recheck is None
+        assert h.outcomes("adjust_volume") == [("false", "")]
+
+
+# --------------------------------------------------------------------------- #
+# Probe cost (finding 4)
+# --------------------------------------------------------------------------- #
+
+
+class CountingAgent(AgentStore):
+    def __init__(self, revision, allowed):
+        super().__init__(revision, allowed)
+        self.snapshot_reads = 0
+
+    def get_string_details(self, key, default, _ctx=None):
+        if key == "interventions_allowed":
+            self.snapshot_reads += 1
+        return super().get_string_details(key, default, _ctx)
+
+
+@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.asyncio
+async def test_allow_list_stamp_is_read_once_per_pass():
+    agent = CountingAgent(("e1", 3), AMBIENT)
+    h = Harness(InterventionsStore(("e1", 3)), agent)
+    await h.flag_change()
+    assert agent.snapshot_reads == 1
+
+
+class _Provider:
+    def __init__(self, store):
+        self.store = store
+        self.calls = 0
+
+    def resolve_object_details(self, key, default, ctx=None):
+        self.calls += 1
+        return self.store.get_object_details(key, default, ctx)
+
+
+class HooklessInterventions(InterventionsStore):
+    """A client with a provider: the probe goes to the provider, so the
+    OpenFeature hooks (evaluation metrics and spans) never see it."""
+
+    def __init__(self, revision):
+        super().__init__(revision)
+        self.provider = _Provider(InterventionsStore(revision))
+        self.client_probes = 0
+
+    def get_object_details(self, key, default, _ctx=None):
+        if key == "end_game":
+            self.client_probes += 1
+        return super().get_object_details(key, default, _ctx)
+
+
+@pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.asyncio
+async def test_probe_reads_through_the_provider_without_hooks():
+    interventions = HooklessInterventions(("e1", 3))
+    h = Harness(interventions, AgentStore(("e1", 3), AMBIENT))
+    await h.flag_change()
+    assert interventions.provider.calls > 0
+    # Only the end_game spec's own value read goes through the client.
+    assert interventions.client_probes == 1

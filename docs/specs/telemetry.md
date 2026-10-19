@@ -448,6 +448,9 @@ elimination order, winner and decisions are the evidence that the game played ou
 | `flagservice_admin_persist_errors_total` | counter | | failed writes of the state file (the value still applies in memory) |
 | `flagservice_admin_state_corrupt_total` | counter | | state files that did not parse at start and were moved aside to `admin.json.corrupt-<ts>`; the service started from the baseline |
 | `game_intervention_event_gaps_total` | counter | `flag` | game-coordinator: an event list read whose oldest event is newer than the last applied seq + 1 (more than K events between two reads, architecture note §6) |
+| `game_intervention_deferrals_total` | counter | | game-coordinator: deferral episodes of the cross-set gate ([UC-053](../use_cases/UC-053.md) A9 step 4, #1552): the allow-list it holds lagged the `interventions` set it holds, so interventions waited. One per episode, not per deferred flag; a steady-state episode lasts milliseconds |
+| `game_intervention_deferral_age_seconds` | gauge | | game-coordinator: age of the current deferral episode, 0 when none. Re-checked every 5 s while deferred, so a stuck `agent` stream shows as a growing age; past 5 s the coordinator also logs a WARNING (at most one per 30 s) naming both snapshot stamps |
+| `game_flag_configuration_changes_total` | counter | | game-coordinator: PROVIDER_CONFIGURATION_CHANGED events its providers received. Since #1552 every flag-service write moves the snapshot stamps of the `interventions` set and of `agent/interventions_allowed`, so one write is counted about three times (the written set, `interventions`, `agent`); read it as push activity, not as a write count. A change that names no flag the runtime config reads is logged at DEBUG |
 
 Labels never carry `game_id`, `serial` or the free-text `writer` (unbounded cardinality); those live on the
 spans. The names follow §8: service prefix `flagservice_`, counters end `_total`, histograms in seconds.
