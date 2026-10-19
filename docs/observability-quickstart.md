@@ -254,7 +254,7 @@ curl 'http://localhost/victoria-metrics/api/v1/query?query=game_current_update_f
 
 ### Grafana Dashboards
 
-**Access Grafana:** `http://localhost:8080/grafana/`
+**Access Grafana:** `http://localhost/grafana/`
 
 Six dashboards ship, in four folders ([telemetry.md §6.1](specs/telemetry.md#61-consumers)):
 **Game** (Game & Players, Controllers & Bluetooth), **Agent** (Agent Decisions & Interventions),
@@ -262,7 +262,7 @@ Six dashboards ship, in four folders ([telemetry.md §6.1](specs/telemetry.md#61
 The game-loop panels below are on Game & Players (row Game Loop Health).
 
 **Create custom dashboard:**
-1. Open Grafana: `http://localhost:8080/grafana/`
+1. Open Grafana: `http://localhost/grafana/`
 2. Create new dashboard
 3. Add panels:
 

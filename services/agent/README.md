@@ -421,13 +421,13 @@ The `recommended_only` variant (operator has **not** set `remediation_allowed`)
 stalls at step 3: the loop records `recommended_only` (with the violations) and
 never writes, so the story does not progress to recovery.
 
-**Query it in Jaeger.** The observability stack is at `http://localhost:8080/`
+**Query it in Jaeger.** The observability stack is at `http://localhost/`
 with Jaeger under the `/jaeger` base path:
 
 - UI: select **service `agent`**, **operation `agent.infrastructure.decision`**,
   order by time, and read the `remediation.action` timeline down the trace list.
 - Jaeger v2 API (note the `/jaeger` prefix):
-  `http://localhost:8080/jaeger/api/traces?service=agent&operation=agent.infrastructure.decision`
+  `http://localhost/jaeger/api/traces?service=agent&operation=agent.infrastructure.decision`
   (or `http://jaeger:16686/jaeger/api/traces?service=agent` from inside the
   compose network). Filter for `remediation.action=rollback` to jump straight to
   the remediation events.

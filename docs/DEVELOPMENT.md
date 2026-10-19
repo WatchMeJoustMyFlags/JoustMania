@@ -415,7 +415,7 @@ grpcurl -plaintext -v localhost:50052 list
 
 ### View Traces in Jaeger
 
-1. Open http://localhost:8080/jaeger/
+1. Open http://localhost/jaeger/
 2. Select service from dropdown (e.g., "game-coordinator-service")
 3. Click "Find Traces"
 4. Click on trace to see details

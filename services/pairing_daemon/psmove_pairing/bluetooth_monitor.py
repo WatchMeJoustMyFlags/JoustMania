@@ -194,6 +194,9 @@ class BluetoothMonitor:
                 if (serial, hci) not in currently_seen:
                     # Device disconnected
                     bluetooth_device_connected.labels(serial=serial, hci_adapter=hci).set(0)
+                    # Drop the RSSI series so a link that moved adapters is not
+                    # still counted with its old adapter's last value (#1468).
+                    bluetooth_device_rssi_dbm.remove(serial, hci)
                     role = self._link_roles.pop((serial, hci), None)
                     if role is not None:
                         pairing_bluetooth_link_role_info.remove(serial, hci, role)

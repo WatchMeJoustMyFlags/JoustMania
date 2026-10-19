@@ -103,3 +103,55 @@ def test_grafana_home_page_is_an_existing_dashboard():
     assert match, "home_page not set"
     uids = {d["uid"] for d in _dashboards().values()}
     assert _linked_uids(match.group(1)) == {"talk"} <= uids
+
+
+def _game_players() -> dict:
+    return next(d for d in _dashboards().values() if d["uid"] == "game-players")
+
+
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
+def test_player_variable_dedupes_serials_alive_in_two_games():
+    """#1471 item 2: a serial alive in two games must not duplicate the join's right-hand side.
+
+    game_player_alive carries (serial, game_id) only, so the query keeps primary games through
+    game_active and collapses the result to one series per serial before joining controller_info.
+    """
+    variable = next(
+        v for v in _game_players()["templating"]["list"] if v["name"] == "player"
+    )
+    query = re.sub(r"\s+", "", variable["query"]["query"])
+    assert variable["definition"] == variable["query"]["query"]
+    assert "group_left()maxby(serial)(" in query, query
+    liveness = 'and on(game_id)(max by(game_id)(game_active{game_kind="primary"})==1)'
+    assert re.sub(r"\s+", "", liveness) in query, query
+    assert "empty between games" in variable["description"], variable
+    assert "game_player_alive{" not in query, (
+        "game_player_alive has no game_kind label; filter through game_active"
+    )
+
+
+def _histogram_buckets(metric: str) -> set[float]:
+    source = (ic.REPO_ROOT / "services" / "game_coordinator" / "metrics.py").read_text()
+    match = re.search(rf'"{metric}".*?buckets=\[([^\]]+)\]', source, flags=re.DOTALL)
+    assert match, f"{metric}: no buckets= in metrics.py"
+    return {float(b) for b in match.group(1).split(",")}
+
+
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
+def test_movement_zone_pie_uses_fixed_histogram_buckets():
+    """#1471 item 3: the pie edges are game_accel_distribution buckets, not perception.zone_* flags."""
+    panel = next(
+        p
+        for p in _game_players()["panels"]
+        if p.get("title", "").startswith("Movement Zone Distribution")
+    )
+    edges = {
+        float(le)
+        for t in panel["targets"]
+        for le in re.findall(r'le="([0-9.]+)"', t["expr"])
+    }
+    assert edges and edges <= _histogram_buckets("game_accel_distribution"), edges
+    assert "fixed" in panel["description"], panel["description"]
+    assert "perception.zone_" in panel["description"], (
+        "say that the pie does not follow the perception.zone_* flags"
+    )
