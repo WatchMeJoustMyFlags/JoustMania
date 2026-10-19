@@ -398,8 +398,7 @@ allow-list (`no_interventions_allowed`, §7.1).
 
 Order of checks on the remote path (`decide_hook.go:decideRemote`, `gateRemoteDecide`): in-flight claim →
 resolve backend (unknown / unavailable) → async wired → eligibility → allow-list not empty →
-cadence → budget → fire. There is no separate admission gate: the always-true
-`remoteDecideAdmitted` seam was removed in the #1322 cleanup.
+cadence → budget → fire. There is no separate admission gate (see §8).
 
 ### 7.1 Call gate: no interventions allowed (#1298)
 

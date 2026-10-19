@@ -9,11 +9,11 @@ import (
 )
 
 // ProbeRules is a demo/verification rules engine that emits a synthetic
-// "noop" decision at most once per interval. It exists because the agent only
-// emits its audit trace when the rules engine returns decisions — with the
-// default NoopRules the trace pipeline can never be observed end-to-end until
-// the real rules engine (#726) lands. Enable via AGENT_PROBE_DECISIONS=true;
-// off by default and never meant for production sessions.
+// "noop" decision at most once per interval, so the whole decide → permission →
+// act path and its audit trace can be exercised without any game effect
+// (UC-040 A23, the `probe` permission level). Enable via
+// AGENT_PROBE_DECISIONS=true; off by default and never meant for production
+// sessions.
 type ProbeRules struct {
 	interval time.Duration
 	now      func() time.Time
