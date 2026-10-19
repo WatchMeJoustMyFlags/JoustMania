@@ -1,7 +1,10 @@
 """Tests for the unpair control API (UC-005): USBPairing.unpair + HTTP mapping."""
 
 import asyncio
+import json
 import threading
+import urllib.error
+import urllib.request
 from unittest.mock import AsyncMock, create_autospec, patch
 
 import pytest
@@ -349,11 +352,121 @@ class TestControlBind:
         assert server.bind_addresses("127.0.0.1, 172.17.0.1") == ["127.0.0.1", "172.17.0.1"]
 
     @pytest.mark.uc("UC-005", br=["BR-003"])
-    def test_binds_each_address_and_skips_unbindable_ones(self):
-        servers = server.start_health_server(0, ["127.0.0.1", "192.0.2.123"])  # TEST-NET: not local
+    def test_binds_each_address_and_retries_unbindable_ones(self):
+        status = server.ControlBindStatus()
+        stop = threading.Event()
+        servers = server.start_health_server(
+            0, ["127.0.0.1", "192.0.2.123"], status=status, stop=stop, initial_delay=0.01, max_delay=0.01
+        )  # TEST-NET: not local, never binds
         try:
             assert [s.server_address[0] for s in servers] == ["127.0.0.1"]
+            assert status.snapshot() == {"requested": ["127.0.0.1", "192.0.2.123"], "bound": ["127.0.0.1"]}
         finally:
+            stop.set()
             for s in servers:
                 s.shutdown()
                 s.server_close()
+
+    @pytest.mark.uc("UC-005", br=["BR-003"])
+    def test_failed_bind_is_retried_until_it_succeeds(self):
+        """docker0 not up at daemon start: the gateway binds once it appears (#1450)."""
+        failures = {"172.17.0.1": 2}
+        attempts: list[str] = []
+
+        def factory(address_port, handler):
+            address, _ = address_port
+            attempts.append(address)
+            if failures.get(address, 0) > 0:
+                failures[address] -= 1
+                raise OSError(99, "Cannot assign requested address")
+            return server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+
+        status = server.ControlBindStatus()
+        stop = threading.Event()
+        with patch.object(server.metrics, "pairing_control_bind_unbound_addresses") as gauge:
+            servers = server.start_health_server(
+                0,
+                ["127.0.0.1", "172.17.0.1"],
+                status=status,
+                server_factory=factory,
+                stop=stop,
+                initial_delay=0.01,
+                max_delay=0.02,
+            )
+            try:
+                assert status.snapshot()["bound"] == ["127.0.0.1"]
+                assert gauge.set.call_args.args == (1,)
+                for _ in range(200):
+                    if len(servers) == 2:
+                        break
+                    stop.wait(0.01)
+                assert len(servers) == 2
+                assert attempts.count("172.17.0.1") == 3
+                assert status.snapshot() == {
+                    "requested": ["127.0.0.1", "172.17.0.1"],
+                    "bound": ["127.0.0.1", "172.17.0.1"],
+                }
+                assert gauge.set.call_args.args == (0,)
+            finally:
+                stop.set()
+                for s in servers:
+                    s.shutdown()
+                    s.server_close()
+
+    @pytest.mark.uc("UC-005", br=["BR-003"])
+    def test_retry_stops_when_asked(self):
+        def factory(address_port, handler):
+            raise OSError(99, "Cannot assign requested address")
+
+        status = server.ControlBindStatus()
+        stop = threading.Event()
+        stop.set()
+        assert server.start_health_server(0, ["172.17.0.1"], status=status, server_factory=factory, stop=stop) == []
+        assert status.snapshot() == {"requested": ["172.17.0.1"], "bound": []}
+
+
+class TestHealthz:
+    """/healthz reports the requested and bound CONTROL_BIND addresses (#1450)."""
+
+    @pytest.fixture
+    def healthz(self):
+        def get(daemon):
+            status = server.ControlBindStatus()
+            status.set_requested(["127.0.0.1", "172.17.0.1"])
+            status.mark_bound("127.0.0.1")
+            with (
+                patch.object(server, "_control_bind", status),
+                patch.object(server, "_daemon", daemon),
+            ):
+                srv = server.ThreadingHTTPServer(("127.0.0.1", 0), server.HealthHandler)
+                threading.Thread(target=srv.serve_forever, daemon=True).start()
+                try:
+                    url = f"http://127.0.0.1:{srv.server_address[1]}/healthz"
+                    try:
+                        with urllib.request.urlopen(url, timeout=5) as resp:
+                            return resp.status, json.loads(resp.read())
+                    except urllib.error.HTTPError as e:
+                        return e.code, json.loads(e.read())
+                finally:
+                    srv.shutdown()
+                    srv.server_close()
+
+        return get
+
+    @pytest.mark.uc("UC-005", br=["BR-003"])
+    def test_healthz_reports_requested_and_bound(self, healthz):
+        daemon = create_autospec(server.PairingDaemon, instance=True)
+        daemon.get_health_status.return_value = {"healthy": True, "uptime_seconds": 1.0}
+        code, body = healthz(daemon)
+        assert code == 200
+        assert body == {
+            "healthy": True,
+            "uptime_seconds": 1.0,
+            "control_bind": {"requested": ["127.0.0.1", "172.17.0.1"], "bound": ["127.0.0.1"]},
+        }
+
+    @pytest.mark.uc("UC-005", br=["BR-003"])
+    def test_healthz_before_daemon_start_still_reports_bind(self, healthz):
+        code, body = healthz(None)
+        assert code == 503
+        assert body["control_bind"] == {"requested": ["127.0.0.1", "172.17.0.1"], "bound": ["127.0.0.1"]}

@@ -20,7 +20,9 @@ Environment:
   CONTROL_BIND  - comma-separated addresses that port binds to (default: 127.0.0.1).
                   Full stack: 127.0.0.1 plus the docker0 gateway (172.17.0.1), so
                   the connect-proxy reaches it via host.docker.internal but the
-                  LAN does not. Lite stack: 0.0.0.0 (container network only).
+                  LAN does not. An address that cannot be bound yet (docker0
+                  not up) is retried in the background with backoff; /healthz
+                  reports the requested and bound addresses (#1450).
   OTEL_EXPORTER_OTLP_ENDPOINT - OTLP collector endpoint (default: http://localhost:4317)
   FLAGD_HOST    - flagd host for feature flags (default: flagd)
   FLAGD_PORT    - flagd sync port (default: 8015)
@@ -39,8 +41,9 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Thread
+from threading import Event, Lock, Thread
 
 from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
@@ -98,10 +101,11 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(503)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"healthy": False, "error": "daemon not started"}).encode())
+            body = {"healthy": False, "error": "daemon not started", "control_bind": _control_bind.snapshot()}
+            self.wfile.write(json.dumps(body).encode())
             return
 
-        status = _daemon.get_health_status()
+        status = {**_daemon.get_health_status(), "control_bind": _control_bind.snapshot()}
         if status["healthy"]:
             self.send_response(200)
         else:
@@ -121,21 +125,121 @@ def bind_addresses(value: str | None) -> list[str]:
     return addresses or ["127.0.0.1"]
 
 
-def start_health_server(port: int, addresses: list[str]) -> list[ThreadingHTTPServer]:
+# Backoff for an address that cannot be bound yet (#1450): 1 s, 2 s, 4 s ... capped.
+BIND_RETRY_INITIAL_SECONDS = 1.0
+BIND_RETRY_MAX_SECONDS = 30.0
+
+ServerFactory = Callable[[tuple[str, int], type[BaseHTTPRequestHandler]], ThreadingHTTPServer]
+
+
+class ControlBindStatus:
+    """The CONTROL_BIND addresses requested and actually bound, for /healthz (#1450).
+
+    A requested address that is not bound means the connect-proxy may get 502 on
+    every unpair (docker0 gateway) while /healthz on loopback stays green.
+    """
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._requested: list[str] = []
+        self._bound: set[str] = set()
+
+    def set_requested(self, addresses: list[str]) -> None:
+        with self._lock:
+            self._requested = list(addresses)
+            self._bound = set()
+            self._publish()
+
+    def mark_bound(self, address: str) -> None:
+        with self._lock:
+            self._bound.add(address)
+            self._publish()
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "requested": list(self._requested),
+                "bound": [a for a in self._requested if a in self._bound],
+            }
+
+    def _publish(self) -> None:
+        unbound = sum(1 for a in self._requested if a not in self._bound)
+        metrics.pairing_control_bind_unbound_addresses.set(unbound)
+
+
+_control_bind = ControlBindStatus()
+
+
+def _serve(server: ThreadingHTTPServer) -> None:
+    Thread(target=server.serve_forever, daemon=True).start()
+
+
+def _retry_bind(
+    address: str,
+    port: int,
+    server_factory: ServerFactory,
+    status: ControlBindStatus,
+    stop: Event,
+    on_bound: Callable[[ThreadingHTTPServer], None],
+    initial_delay: float,
+    max_delay: float,
+) -> None:
+    """Keep trying to bind one address, doubling the wait up to max_delay."""
+    delay = initial_delay
+    attempt = 1
+    while not stop.wait(delay):
+        attempt += 1
+        try:
+            server = server_factory((address, port), HealthHandler)
+        except OSError as e:
+            logger.warning(
+                f"Bind retry {attempt} for {address}:{port} failed: {e}; next in {min(delay * 2, max_delay):.0f}s"
+            )
+            delay = min(delay * 2, max_delay)
+            continue
+        _serve(server)
+        status.mark_bound(address)
+        on_bound(server)
+        logger.info(f"HTTP server (healthz, control API) listening on {address}:{port} (after {attempt} attempts)")
+        return
+
+
+def start_health_server(
+    port: int,
+    addresses: list[str],
+    *,
+    status: ControlBindStatus | None = None,
+    server_factory: ServerFactory = ThreadingHTTPServer,
+    stop: Event | None = None,
+    initial_delay: float = BIND_RETRY_INITIAL_SECONDS,
+    max_delay: float = BIND_RETRY_MAX_SECONDS,
+) -> list[ThreadingHTTPServer]:
     """Serve /healthz and the control API on each address (UC-005 BR-003).
 
     The port is not bound on every interface: on the host network that would
     make the unpair route reachable from the LAN. An address that cannot be
-    bound (e.g. docker0 missing) is logged and skipped.
+    bound (e.g. docker0 not up yet) is logged and retried in a background
+    thread with backoff until it binds or ``stop`` is set (#1450). The returned
+    list holds the servers bound so far and grows when a retry succeeds.
     """
-    servers = []
+    status = status if status is not None else _control_bind
+    stop = stop if stop is not None else Event()
+    status.set_requested(addresses)
+    servers: list[ThreadingHTTPServer] = []
     for address in addresses:
         try:
-            server = ThreadingHTTPServer((address, port), HealthHandler)
+            server = server_factory((address, port), HealthHandler)
         except OSError as e:
-            logger.error(f"Cannot bind HTTP server to {address}:{port}: {e}")
+            logger.error(f"Cannot bind HTTP server to {address}:{port}: {e}; retrying in the background")
+            Thread(
+                target=_retry_bind,
+                args=(address, port, server_factory, status, stop, servers.append, initial_delay, max_delay),
+                name=f"control-bind-retry-{address}",
+                daemon=True,
+            ).start()
             continue
-        Thread(target=server.serve_forever, daemon=True).start()
+        _serve(server)
+        status.mark_bound(address)
         logger.info(f"HTTP server (healthz, control API) listening on {address}:{port}")
         servers.append(server)
     return servers

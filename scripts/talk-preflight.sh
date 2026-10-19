@@ -11,6 +11,9 @@
 #   1b. the controller backend: when the `backend` flag of the controller set (read
 #      from the flag service) names rust (the default, #1371), the rust-hid
 #      container is running and healthy (UC-002 BR-003)
+#   1c. the pairing daemon's control port (host.docker.internal:8002) is
+#      reachable from the connect-proxy container (TCP connect only); WARN
+#      otherwise: every dashboard unpair answers 502 (UC-005 A7, BR-003, #1450)
 #   2. the flag service: flagd holds an open sync stream (else every write is
 #      refused with 503 no_sync_stream), the boot epoch, the agent set served
 #   3. the stage baseline of the decision.* + safety flags (the effective variant
@@ -151,6 +154,22 @@ else
     fail "backend = ${backend_value} but joustmania-rust-hid is not healthy (health: ${rust_health:-none})"
   else
     pass "backend = ${backend_value}; joustmania-rust-hid running (healthy)"
+  fi
+fi
+
+# --- 1c. pairing daemon reachable from the connect-proxy (UC-005, #1450) ---
+section "pairing daemon control port (from the connect-proxy)"
+if [[ "${docker_ok}" -ne 1 ]]; then
+  info "pairing daemon reachability not checked (docker unavailable, see above)"
+else
+  proxy_state="$(docker inspect -f '{{.State.Status}}' joustmania-connect-proxy 2>/dev/null)" || proxy_state=""
+  proxy_state="${proxy_state%% *}"
+  if [[ "${proxy_state}" != "running" ]]; then
+    warn "pairing daemon reachability not checked: joustmania-connect-proxy ${proxy_state:-not found} (dashboard unpair unavailable)"
+  elif docker exec joustmania-connect-proxy nc -z -w 3 host.docker.internal 8002 >/dev/null 2>&1; then
+    pass "connect-proxy reaches the pairing daemon at host.docker.internal:8002"
+  else
+    warn "connect-proxy cannot reach host.docker.internal:8002: every dashboard unpair will answer 502 (pairing daemon down, CONTROL_BIND address not bound yet (see control_bind in curl -s 127.0.0.1:8002/healthz), or a host firewall)"
   fi
 fi
 

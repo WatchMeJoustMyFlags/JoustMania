@@ -33,6 +33,8 @@ cat >"${WORK}/bin/docker" <<'SH'
 [[ "$1" == "info" && -n "${STUB_DOCKER_DOWN:-}" ]] && exit 1
 [[ "$1" == "info" ]] && exit 0
 if [[ "$1" == "exec" ]]; then
+  # docker exec joustmania-connect-proxy nc -z -w 3 host.docker.internal 8002 (#1450)
+  if [[ "$2" == "joustmania-connect-proxy" ]]; then [[ -z "${STUB_PAIRING_UNREACHABLE:-}" ]]; exit; fi
   # docker exec joustmania-audio python -m services.audio.sound_catalog <cue>
   if [[ -n "${STUB_CUE_FAIL:-}" ]]; then echo "${@: -1}: not in the sound registry"; exit 1; fi
   echo "${@: -1}: Joust/sounds/beep_loud.ogg"; exit 0
@@ -166,6 +168,15 @@ check "clock in sync" "PASS  clock skew 0s"
 check "stage allow-list is standard" "PASS  interventions_allowed = standard"
 check "perceptible interventions listed" "PASS  perceptible interventions allowed: play_audio_cue, adjust_music_tempo, grant_shield"
 check "audio cue resolves in the audio container" "PASS  audio cue agent_cue: Joust/sounds/beep_loud.ogg"
+check "pairing daemon reachable from the connect-proxy" "PASS  connect-proxy reaches the pairing daemon at host.docker.internal:8002"
+
+# --- pairing daemon unreachable from the connect-proxy is a WARN (UC-005, #1450)
+fixture
+STUB_BUDGET=30 STUB_PAIRING_UNREACHABLE=1 run_preflight
+if [[ "${RC}" -eq 0 ]]; then ok "unreachable pairing daemon only warns (exit 0)"; else not_ok "unreachable pairing daemon only warns (rc=${RC})"; fi
+check "unreachable pairing daemon warns" "WARN  connect-proxy cannot reach host.docker.internal:8002: every dashboard unpair will answer 502"
+STUB_BUDGET=30 STUB_MISSING=joustmania-connect-proxy run_preflight
+check "missing connect-proxy skips the reachability check" "WARN  pairing daemon reachability not checked: joustmania-connect-proxy not found"
 if has "${SECRET}"; then not_ok "key value never printed"; else ok "key value never printed"; fi
 
 # --- drift from the stage baseline -----------------------------------------
