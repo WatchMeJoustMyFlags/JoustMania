@@ -159,37 +159,6 @@ def test_on_flags_changed_no_flag_list(mock_get_client, _mock_add_handler, caplo
     assert "unspecified flags" in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_get_update_interval():
-    """Test get_update_interval returns correct interval."""
-    manager = RuntimeConfigManager()
-    manager.config.update_frequency_hz = 60
-
-    interval = await manager.get_update_interval()
-    assert interval == 1.0 / 60
-
-
-@pytest.mark.asyncio
-async def test_get_update_interval_custom_hz():
-    """Test get_update_interval with custom frequency."""
-    manager = RuntimeConfigManager()
-    manager.config.update_frequency_hz = 30
-
-    interval = await manager.get_update_interval()
-    assert interval == 1.0 / 30
-
-
-def test_export_config():
-    """Test export_config returns dict copy."""
-    manager = RuntimeConfigManager()
-    manager.config.update_frequency_hz = 45
-
-    exported = manager.export_config()
-
-    assert isinstance(exported, dict)
-    assert exported["update_frequency_hz"] == 45
-
-
 def test_get_config_manager_singleton():
     """Test get_config_manager returns singleton."""
     from services.game_coordinator.runtime_config import get_config_manager
@@ -198,14 +167,6 @@ def test_get_config_manager_singleton():
     manager2 = get_config_manager()
 
     assert manager1 is manager2
-
-
-def test_get_current_config():
-    """Test get_current_config convenience function."""
-    from services.game_coordinator.runtime_config import get_current_config
-
-    config = get_current_config()
-    assert isinstance(config, GamePerformanceConfig)
 
 
 def test_setup_feature_flags_import_error(caplog):

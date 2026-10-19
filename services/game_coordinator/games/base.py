@@ -1652,7 +1652,6 @@ class BaseGameMode(ABC):
         self,
         player: Player,
         serial: str,
-        accel,
         accel_mag: float,
         smoothed: float,
         effective_death: float,
@@ -1664,7 +1663,6 @@ class BaseGameMode(ABC):
         Args:
             player: Player to record analytics for
             serial: Controller serial number
-            accel: Raw acceleration vector
             accel_mag: Raw acceleration magnitude
             smoothed: Smoothed acceleration value
             effective_death: Current effective death threshold
@@ -1682,9 +1680,6 @@ class BaseGameMode(ABC):
 
         # Record sample (returns current movement zone)
         zone = player.analytics.record_sample(
-            accel_x=accel.x,
-            accel_y=accel.y,
-            accel_z=accel.z,
             raw_accel_mag=accel_mag,
             smoothed_accel=smoothed,
             death_threshold=effective_death,
@@ -1863,7 +1858,6 @@ class BaseGameMode(ABC):
             self._record_player_analytics(
                 player,
                 serial,
-                accel,
                 accel_mag,
                 accel_mag,
                 self._compute_effective_thresholds(player)[1],
@@ -1877,7 +1871,7 @@ class BaseGameMode(ABC):
         smoothed = player.smoothed_accel
 
         # Record analytics (handles enabled check internally)
-        self._record_player_analytics(player, serial, accel, accel_mag, smoothed, effective_death, controller_state)
+        self._record_player_analytics(player, serial, accel_mag, smoothed, effective_death, controller_state)
 
         # Death and warning checks (matches original JoustMania logic)
         # Key: warning is just feedback, NOT protection - player can die during warning!
@@ -2618,7 +2612,7 @@ class BaseGameMode(ABC):
 
         # Mark player as dead in metrics - dashboard template variables filter
         # on game_player_alive==1 so dead players naturally disappear from panels.
-        # Metric removal happens at game end via clear_all_player_analytics().
+        # Metric removal happens at game end via clear_session_player_analytics().
         metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(0)
         alive_count = len([p for p in self.players.values() if p.alive])
         self._set_players_alive_aggregate(alive_count)

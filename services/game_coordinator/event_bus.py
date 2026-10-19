@@ -215,13 +215,3 @@ class EventBus:
             if entry is not None and entry[0] is event_queue:
                 del self._subscribers[sub_id]
                 metrics.event_bus_active_subscribers.set(len(self._subscribers))
-
-    async def get_subscriber_ids(self) -> list[str]:
-        """
-        Get list of current subscriber IDs.
-
-        Returns:
-            List of subscriber IDs
-        """
-        with self._event_lock:
-            return list(self._subscribers.keys())

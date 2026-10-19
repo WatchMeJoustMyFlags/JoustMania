@@ -33,7 +33,6 @@ class AnalyticsConfig:
 
     # Feature toggles
     track_gyro: bool = False  # Track rotation data (increases memory/cpu slightly)
-    enable_replay: bool = False  # Store 60Hz samples for replay/testing
 
     # Zone thresholds (in g-force units, ~4096 raw = 1g). Defaults promoted to
     # the agent domain `perception.zone_*` flags (#766 F4); the values here are
@@ -369,16 +368,6 @@ class RuntimeConfigManager:
         with self._config_lock:
             return self.config
 
-    async def get_update_interval(self) -> float:
-        """Get current update interval in seconds (1/Hz)."""
-        with self._config_lock:
-            return 1.0 / self.config.update_frequency_hz
-
-    def export_config(self) -> dict:
-        """Export current configuration as dict (for reports/logs)."""
-        with self._config_lock:
-            return self.config.__dict__.copy()
-
 
 # Global singleton instance
 _global_config_manager: RuntimeConfigManager | None = None
@@ -404,8 +393,3 @@ def refresh_runtime_config() -> None:
         _global_config_manager = RuntimeConfigManager()
         return
     _global_config_manager._refresh_from_flags()
-
-
-def get_current_config() -> GamePerformanceConfig:
-    """Quick access to current configuration."""
-    return get_config_manager().get_config()

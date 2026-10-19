@@ -252,14 +252,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         """Primary session's game_id (back-compat), or None."""
         return self._primary_game_id
 
-    def get_live_game(self):
-        """Return the currently running PRIMARY game instance, or None.
-
-        Used by tests and the battery-guard fallback. The InterventionManager now
-        evaluates per session via :meth:`get_intervention_sessions` (#838).
-        """
-        return self.current_game
-
     def get_intervention_sessions(self) -> list["SessionView"]:
         """Snapshot the live sessions for the InterventionManager (#838).
 

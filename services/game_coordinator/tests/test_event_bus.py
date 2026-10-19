@@ -86,22 +86,6 @@ class TestSubscription:
         result = await bus.unsubscribe("nonexistent")
         assert result is False
 
-    @pytest.mark.asyncio
-    async def test_get_subscriber_ids(self, bus):
-        """get_subscriber_ids should return list of subscriber IDs."""
-        await bus.subscribe("sub1")
-        await bus.subscribe("sub2")
-
-        ids = await bus.get_subscriber_ids()
-
-        assert set(ids) == {"sub1", "sub2"}
-
-    @pytest.mark.asyncio
-    async def test_get_subscriber_ids_empty(self, bus):
-        """get_subscriber_ids should return empty list when no subscribers."""
-        ids = await bus.get_subscriber_ids()
-        assert ids == []
-
 
 class TestEventPublishing:
     """Tests for event publishing."""

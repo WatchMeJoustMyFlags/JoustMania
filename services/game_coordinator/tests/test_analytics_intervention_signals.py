@@ -26,12 +26,9 @@ def _config() -> AnalyticsConfig:
 
 
 def _feed(analytics: PlayerAnalytics, magnitudes: list[float], config: AnalyticsConfig) -> None:
-    """Record a sequence of accel magnitudes (decomposed onto the x-axis)."""
+    """Record a sequence of accel magnitudes."""
     for mag in magnitudes:
         analytics.record_sample(
-            accel_x=mag,
-            accel_y=0.0,
-            accel_z=0.0,
             raw_accel_mag=mag,
             smoothed_accel=mag,
             death_threshold=10.0,  # high so nothing counts as near-death
