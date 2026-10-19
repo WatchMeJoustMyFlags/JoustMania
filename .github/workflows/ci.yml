@@ -168,6 +168,7 @@ jobs:
               - 'proto/**'
               - 'tests/contract/**'
               - 'docker-compose.yml'
+              - 'docker-compose.ci.yml'  # CI overlay env vars (env-var coverage contract, #1535)
               - 'docs/specs/**'
               - 'scripts/**'
               - 'tools/**'
