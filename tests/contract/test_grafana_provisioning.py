@@ -122,7 +122,9 @@ def test_player_variable_dedupes_serials_alive_in_two_games():
     query = re.sub(r"\s+", "", variable["query"]["query"])
     assert variable["definition"] == variable["query"]["query"]
     assert "group_left()maxby(serial)(" in query, query
-    assert 'game_active{game_kind="primary"}' in query, query
+    liveness = 'and on(game_id)(max by(game_id)(game_active{game_kind="primary"})==1)'
+    assert re.sub(r"\s+", "", liveness) in query, query
+    assert "empty between games" in variable["description"], variable
     assert "game_player_alive{" not in query, (
         "game_player_alive has no game_kind label; filter through game_active"
     )

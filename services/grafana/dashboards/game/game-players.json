@@ -2799,6 +2799,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
+        "description": "The list is empty between games and shows only players alive in the running primary game.",
         "definition": "query_result(controller_info * on(serial) group_left() max by (serial) ((game_player_alive == 1) and on(game_id) (max by (game_id) (game_active{game_kind=\"primary\"}) == 1)))",
         "hide": 0,
         "includeAll": true,
