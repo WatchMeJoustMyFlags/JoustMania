@@ -361,7 +361,12 @@ and squash-merges only at the expected head (`--match-head-commit`). `--close N,
 `--note-issue N --note-file F` act only once the PR reads `MERGED` (`{MERGE}` becomes the short merge SHA).
 `--wait-ci` waits and reports without merging; on red it names known infrastructure failures (stale
 collector image, fast-path stale prebuilt images, `blob not found`) with "add `ci-full`" or "rerun" advice.
-`--rerun-failed-once` reruns failed jobs once before giving up. Both scripts have tests in `scripts/tests/`.
+`--rerun-failed-once` reruns the failed jobs of ANY red run once (real failures included) before giving
+up; a failure that survives the rerun is not infrastructure. A CONFLICTING PR fails fast with exit 5
+(GitHub runs no CI on it: rebase). A newest run cancelled before its matrix expanded (a CANCELLED job's
+name still shows `${{ ... }}`, nothing failed) is reported as `infra=cancelled-run`, and `--rerun-failed-once` reruns the
+whole run. Agents hand this step to the `pr-merger` agent (`.claude/agents/pr-merger.md`). Both scripts have
+tests in `scripts/tests/`.
 
 **In Dev Container:**
 

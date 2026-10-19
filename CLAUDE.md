@@ -21,7 +21,7 @@ Specs are the source of truth; code and tests follow from them. Start at [docs/R
 ## Agent workflows
 
 - Implementing an issue (agent or human): [.claude/skills/implement-issue](.claude/skills/implement-issue/SKILL.md): worktree, spec first, failing test, `make pr-gates`, push, stop, 15-line report.
-- Reviewing a PR: [.claude/skills/review-pr](.claude/skills/review-pr/SKILL.md): depth by PR type, mutation check, delta mode; merge with `scripts/ci/safe-merge.sh`.
+- Reviewing a PR: [.claude/skills/review-pr](.claude/skills/review-pr/SKILL.md): depth by PR type, mutation check, delta mode; merge with `scripts/ci/safe-merge.sh`, delegated to the Haiku [pr-merger](.claude/agents/pr-merger.md) agent.
 
 ## Session Management
 
