@@ -42,13 +42,16 @@ missing or malformed, report `ESCALATE: bad brief` and stop.
 1. Run from the main checkout: the path on the FIRST `worktree` line of `git worktree list --porcelain`
    (not `git rev-parse --show-toplevel`, which returns a `.worktrees/` path when you start inside one):
    ```bash
-   scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX> --rerun-failed-once [--close ... --comment-file ...] [--note-issue ... --note-file ...]
+   scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX> --rerun-failed-once --wait-queue [--close ... --comment-file ...] [--note-issue ... --note-file ...]
    ```
-   It polls gently for up to two hours, but a foreground Bash command is killed after 10 minutes. Start it
+   It polls gently for up to about 3 hours (up to 2 h for CI, then up to 1 h in the merge queue with
+   `--wait-queue`), but a foreground Bash command is killed after 10 minutes. Start it
    with the Bash tool's `run_in_background: true`, wait for the completion notification (do not poll, do
    not sleep), then read its output: the LAST stdout line is the result; keep the exit code. If it was
    killed or timed out without a result line, escalate (`safe-merge: killed`) and NEVER start it again.
 2. Exit `0` and the line says `MERGED` (including `already MERGED`): clean up (step 3), report `MERGED`.
+   Exit `6` `QUEUED` (merge queue, #1555: the PR is still queued when the script's queue wait ran out):
+   no cleanup, no issue changes, report `QUEUED` with Next step `re-check later`; do not run the script again.
 3. Cleanup, only after MERGED:
    - `gh pr view <PR> --json headRefName --jq .headRefName` gives the branch;
    - `git worktree list --porcelain`: if a worktree has `branch refs/heads/<branch>`, run
@@ -65,17 +68,18 @@ missing or malformed, report `ESCALATE: bad brief` and stop.
    - exit 1 otherwise (`CI Complete` not green, merge failed, or a failure that came back after the one
      rerun): escalate as a real failure. A run that fails again after the rerun is never infrastructure:
      the next step is a fix, not another rerun;
-   - exit 3 head mismatch, 4 timeout, 5 CONFLICTING (needs rebase), 2 usage: escalate.
+   - exit 3 head mismatch, 4 timeout, 5 CONFLICTING (needs rebase), 7 EJECTED from the merge queue
+     (the merge_group run failed or the group conflicted), 2 usage: escalate.
    For a red result, read at most 10 relevant lines of the failing log
    (`gh run view <run id> --log-failed | grep -iE 'error|fail|assert' | head -10`); never paste more.
 
 ## Report (hand back once, fixed format, 15 lines or fewer)
 
 ```
-PR #<n>  state: MERGED <merge sha8> | ESCALATE
+PR #<n>  state: MERGED <merge sha8> | QUEUED | ESCALATE
 safe-merge: exit <code>: <result line>
 Failing checks: <names | none>
 Log (<=10 lines): <lines | none>
 Cleanup: <worktree removed <path> | none found | kept: <reason>>; main <fast-forwarded to <sha8> | skipped: reason>
-Next step: <none | rebase on main | fix the failing test | add ci-full | check review comments | re-brief with the current head>
+Next step: <none | re-check later | rebase on main | fix the failing test | add ci-full | check review comments | re-brief with the current head>
 ```

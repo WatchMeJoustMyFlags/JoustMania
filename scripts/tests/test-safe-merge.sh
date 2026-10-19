@@ -15,7 +15,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 export STUB_DIR="${WORK}/stub"
 mkdir -p "${STUB_DIR}" "${WORK}/bin"
-export SAFE_MERGE_TEST=1 SAFE_MERGE_POLL=0 SAFE_MERGE_SETTLE=0 SAFE_MERGE_MAX_WAIT=5
+export SAFE_MERGE_TEST=1 SAFE_MERGE_POLL=0 SAFE_MERGE_SETTLE=0 SAFE_MERGE_CONFIRM=0 SAFE_MERGE_MAX_WAIT=5
 
 HEAD=abcdef1234567890abcdef1234567890abcdef12
 MERGE_SHA=9876543210fedcba9876543210fedcba98765432
@@ -30,6 +30,17 @@ case "$1 $2" in
     jqexpr=""; prev=""
     for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
     jq -r "$jqexpr" "$STUB_DIR/after-merge.json" ;;
+  "api graphql")
+    # Merge queue reads: serve queue.1, queue.2, ... in order; the last one
+    # sticks. A file holding FAIL is a failed read (API error).
+    jqexpr=""; prev=""
+    for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
+    mapfile -t qs < <(ls "$STUB_DIR"/queue.* 2>/dev/null | sort -V)
+    [[ ${#qs[@]} -gt 0 ]] || exit 1
+    rc=0
+    if [[ "$(cat "${qs[0]}")" == FAIL ]]; then rc=1; else jq -r "$jqexpr" "${qs[0]}"; fi
+    [[ ${#qs[@]} -gt 1 ]] && rm -f "${qs[0]}"
+    exit "$rc" ;;
   "pr merge") exit "$(cat "$STUB_DIR/merge-rc" 2>/dev/null || echo 0)" ;;
   "run view") cat "$STUB_DIR/log.txt" 2>/dev/null ;;
   "run rerun") echo x >>"$STUB_DIR/reruns"; [[ -f "$STUB_DIR/view-after-rerun.json" ]] && mv "$STUB_DIR/view-after-rerun.json" "$STUB_DIR/view.json"; exit 0 ;;
@@ -59,6 +70,13 @@ after_merge() {  # state head merge_sha
   printf '{"state":"%s","headRefOid":"%s","url":"https://github.com/o/r/pull/42","mergeCommit":%s}' \
     "$1" "$2" "$( [[ -n "$3" ]] && printf '{"oid":"%s"}' "$3" || echo null)" >"${STUB_DIR}/after-merge.json"
 }
+queue_fx() {  # n state in_queue entry_state merge_sha [auto_merge_enabled_at]
+  printf '{"data":{"repository":{"pullRequest":{"state":"%s","headRefOid":"%s","isInMergeQueue":%s,"url":"https://github.com/o/r/pull/42","mergeQueueEntry":%s,"mergeCommit":%s,"autoMergeRequest":%s}}}}' \
+    "$2" "$HEAD" "$3" "$( [[ -n "$4" ]] && printf '{"state":"%s"}' "$4" || echo null)" \
+    "$( [[ -n "$5" ]] && printf '{"oid":"%s"}' "$5" || echo null)" \
+    "$( [[ -n "${6-}" ]] && printf '{"enabledAt":"%s"}' "$6" || echo null)" >"${STUB_DIR}/queue.$1"
+}
+queue_fail() { echo FAIL >"${STUB_DIR}/queue.$1"; }  # n: this read fails
 reset() {
   rm -f "${STUB_DIR}"/*
   after_merge MERGED "$HEAD" "$MERGE_SHA"
@@ -314,6 +332,83 @@ calls | grep -qE 'run rerun|pr merge' && fail "human cancel must not be rerun or
 reset; view "$CANCELLED_RUN" "$(check 'Lib Unit Tests' COMPLETED FAILURE 400)"
 run 42 abcdef1
 [[ $RC -eq 1 && "$OUT" != *"cancelled-run"* ]] || fail "cancel next to a failure: rc=$RC $OUT"
+ok
+
+# 17. Merge queue (#1555): `gh pr merge` enqueues instead of merging.
+# Without --wait-queue: QUEUED, exit 6, issues untouched.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""
+queue_fx 1 OPEN true AWAITING_CHECKS ""
+run 42 abcdef1 --close 7 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 6 && "$OUT" == "#42 QUEUED in the merge queue (head abcdef12, entry AWAITING_CHECKS)"*"no issue changes"* ]] \
+  || fail "queued: rc=$RC $OUT"
+calls | grep -q 'issue' && fail "queued must not touch issues: $(calls)"
+calls | grep -q 'pr merge 42 --squash --match-head-commit '"$HEAD" || fail "enqueue at full head: $(calls)"
+# --wait-queue: the queue merges it -> normal MERGED path, issues closed.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""
+queue_fx 1 OPEN true AWAITING_CHECKS ""; queue_fx 2 OPEN true MERGEABLE ""; queue_fx 3 MERGED false "" "$MERGE_SHA"
+run 42 abcdef1 --wait-queue --close 7 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 0 && "$OUT" == "#42 MERGED as 98765432 (head abcdef12); closed #7" ]] || fail "queue merged: rc=$RC $OUT"
+calls | grep -q 'issue close 7 --comment Merged in 98765432, thanks.' || fail "queue merged close: $(calls)"
+# --wait-queue: ejected (left the queue, still OPEN on the confirming read) -> exit 7.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""
+queue_fx 1 OPEN true AWAITING_CHECKS ""; queue_fx 2 OPEN false "" ""; queue_fx 3 OPEN false "" ""
+run 42 abcdef1 --wait-queue --close 7 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 7 && "$OUT" == *"EJECTED"*"no issue changes"* ]] || fail "ejected: rc=$RC $OUT"
+calls | grep -q 'issue' && fail "ejected must not touch issues: $(calls)"
+# Left the queue a moment before reading MERGED: the confirming read wins.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""
+queue_fx 1 OPEN true MERGEABLE ""; queue_fx 2 OPEN false "" ""; queue_fx 3 MERGED false "" "$MERGE_SHA"
+run 42 abcdef1 --wait-queue
+[[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "dequeue-then-merged race: rc=$RC $OUT"
+# Closed while queued: ejected.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""
+queue_fx 1 OPEN true QUEUED ""; queue_fx 2 CLOSED false "" ""
+run 42 abcdef1 --wait-queue
+[[ $RC -eq 7 && "$OUT" == *"EJECTED: PR is CLOSED"* ]] || fail "closed while queued: rc=$RC $OUT"
+# Wait budget spent while still queued: QUEUED, exit 6.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""; queue_fx 1 OPEN true QUEUED ""
+SAFE_MERGE_QUEUE_WAIT=0 run 42 abcdef1 --wait-queue --close 7 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 6 && "$OUT" == *"QUEUED after 0s wait"* ]] || fail "queue wait spent: rc=$RC $OUT"
+calls | grep -q 'issue' && fail "still queued must not touch issues: $(calls)"
+# Not merged and not in the queue: still MERGE FAILED (exit 1).
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""; queue_fx 1 OPEN false "" ""
+run 42 abcdef1 --wait-queue
+[[ $RC -eq 1 && "$OUT" == *"MERGE FAILED"* ]] || fail "not queued, not merged: rc=$RC $OUT"
+# gh pr view still reads OPEN but GraphQL already reads MERGED: merged, issues closed.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""; queue_fx 1 MERGED false "" "$MERGE_SHA"
+run 42 abcdef1 --close 7 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 0 && "$OUT" == "#42 MERGED as 98765432 (head abcdef12); closed #7" ]] || fail "view OPEN, graphql MERGED: rc=$RC $OUT"
+# Auto-merge enabled instead of enqueued (checks still pending): QUEUED, exit 6.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""
+queue_fx 1 OPEN false "" "" 2026-10-19T10:00:00Z
+run 42 abcdef1 --close 7 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 6 && "$OUT" == *"QUEUED"*"auto-merge enabled at 2026-10-19T10:00:00Z"*"no issue changes"* ]] \
+  || fail "auto-merge armed: rc=$RC $OUT"
+calls | grep -q 'issue' && fail "auto-merge armed must not touch issues: $(calls)"
+# --wait-queue with auto-merge armed: waits through auto-merge -> queue -> MERGED.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""
+queue_fx 1 OPEN false "" "" 2026-10-19T10:00:00Z; queue_fx 2 OPEN false "" "" 2026-10-19T10:00:00Z
+queue_fx 3 OPEN true AWAITING_CHECKS ""; queue_fx 4 MERGED false "" "$MERGE_SHA"
+run 42 abcdef1 --wait-queue --close 7 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 0 && "$OUT" == "#42 MERGED as 98765432 (head abcdef12); closed #7" ]] || fail "auto-merge then merged: rc=$RC $OUT"
+# A failed confirming read never counts as "not in the queue": dequeued, read
+# fails, still dequeued, then MERGED (beyond a single settle) -> merged.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""
+queue_fx 1 OPEN true MERGEABLE ""; queue_fx 2 OPEN false "" ""; queue_fail 3; queue_fx 4 OPEN false "" ""
+queue_fx 5 MERGED false "" "$MERGE_SHA"
+run 42 abcdef1 --wait-queue
+[[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "failed confirm read: rc=$RC $OUT"
+# Every confirming read fails: keep waiting, never EJECTED; then MERGED.
+reset; view "$GREEN"; after_merge OPEN "$HEAD" ""
+queue_fx 1 OPEN true MERGEABLE ""; queue_fx 2 OPEN false "" ""; queue_fail 3; queue_fail 4; queue_fail 5
+queue_fx 6 MERGED false "" "$MERGE_SHA"
+run 42 abcdef1 --wait-queue
+[[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "all confirm reads failed: rc=$RC $OUT"
+# --wait-ci never enqueues.
+reset; view "$GREEN"; queue_fx 1 OPEN true QUEUED ""
+run 42 abcdef1 --wait-ci --wait-queue
+[[ $RC -eq 0 && "$OUT" == *"CI GREEN"* ]] || fail "--wait-ci with --wait-queue: rc=$RC $OUT"
+calls | grep -qE 'pr merge|api graphql' && fail "--wait-ci must not enqueue: $(calls)"
 ok
 
 echo "test-safe-merge: ${pass} groups passed"
