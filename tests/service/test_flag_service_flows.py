@@ -5,7 +5,7 @@ UC-053 flows through the real flag service, flagd and game coordinator (#1413).
   tests/service/test_tc018_flag_service_eliminations.py (#1524).
 - A6 / A5: a game that is not registered.
 - A10: a coordinator's reconcile drops only its own games.
-- A2: a persisted admin value through the API (the menu path is test_admin_flow).
+- A2: a persisted admin value through the API (the menu path is test_tc005_admin_journey).
 """
 
 import uuid

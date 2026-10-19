@@ -526,4 +526,4 @@ the agent (interventions, rollout count, experiment arms, promotion; it retries 
 validation harness (`curl http://localhost/flags/...`); the integration fixtures.
 
 **Traceability:** FR-130 to FR-139, NFR-050 to NFR-053, C-030 to C-033 / UC-053 / `services/flag-service/`
-/ `services/flag-service/*/*_test.go`, `tests/integration/test_flag_service_*.py`, TC-018 to TC-020.
+/ `services/flag-service/*/*_test.go`, `tests/service/test_flag_service_*.py`, `tests/service/test_tc019_flag_service_restart.py`, TC-018 to TC-020.

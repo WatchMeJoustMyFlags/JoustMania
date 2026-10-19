@@ -5,7 +5,7 @@
 **ID:** TC-005  
 **Goal:** The host enters admin mode, changes the sensitivity and the game mode, and force-starts a game that uses the new settings.  
 **Priority:** High  
-**Status:** Draft  
+**Status:** Automated  
 **Use cases:** [UC-012](../use_cases/UC-012.md) main, A1; [UC-011](../use_cases/UC-011.md) main; [UC-014](../use_cases/UC-014.md) main; [UC-010](../use_cases/UC-010.md) main; [UC-053](../use_cases/UC-053.md) A2
 
 ## Roles
@@ -16,7 +16,7 @@
 ## Preconditions
 
 - The integration stack is up with the menu running; mock controllers `MOCK0001` (host) … `MOCK0004` connected.
-- `sensitivity` serves `medium` (the baseline in `services/flagd/ci/game.json`); `force_all_start` is `on` (a stack overlay on the flag service). The `admin_flags` fixture of `tests/integration/test_admin_flow.py` deletes the persisted admin values afterwards; the flag files are never written.
+- `sensitivity` serves `medium` (the baseline in `services/flagd/ci/game.json`); `force_all_start` is `on` (a stack overlay on the flag service). The test runs on its own fresh flag plane, so the persisted admin values go away with it; the flag files are never written.
 
 ## Flow
 
@@ -37,10 +37,13 @@
 
 ## Postconditions
 
-- `sensitivity` and `current_game` are persisted admin values; the `admin_flags` fixture deletes them (`DELETE ?persist=true`).
-- One started game that the suite's `coordinator_idle` fixture ends.
+- `sensitivity` and `current_game` are persisted admin values; they live only in the test's flag plane, which is discarded with it.
+- One started game, which the test force-ends at teardown.
 
 ## Automation
 
-- `tests/integration/test_admin_flow.py`: `test_combo_entry_lights_admin_white` (step 1), `test_sensitivity_change_persists` (steps 2 and 3, and the admin value of Validation 2), `test_option_cycle_and_value_change_persists` (UC-012 main steps 3 to 6), `test_force_start_requests_game` (steps 5 and 6), `test_force_start_respects_selected_game_mode` (steps 4 to 6), `test_ps_exit_restores_lobby_color` (UC-012 steps 7 and 8).
-- **Partly automated**: the steps run as separate tests, not as one chained journey; in CI the trigger hold is about 1.5 s (the force-start duration is shortened by flag), not 3 s. Step 6 asserts only that the coordinator start path is reached (`game_started` or `game_start_cancelled`); step 7 and Validations 1 and 2 are not asserted. Gaps (unit-tested only, #1400; #1359 is closed and no end-to-end test is tracked yet): mode announcement and colour pulse (UC-011 step 3), the early release of the trigger (UC-014 A1) and the admin timeout (UC-012 A4) are not covered end to end.
+**Tier:** T2 service (`tests/service/`, `make test-service`): menu, game coordinator and controller manager (mock controllers) from source at HEAD, flag service and one flagd, fake audio (`LOBBY` composition).
+
+- `tests/service/test_tc005_admin_journey.py::test_host_tunes_and_force_starts` implements steps 1 to 7 and Validations 1 and 2 as one journey (moved from the docker-compose suite in #1562). Along the way it asserts the partial combo (three face buttons do not enter admin), UC-012 main steps 3 to 5 (Move selects `num_teams`, Select increments it) and steps 7, 8 (PS leaves admin white; the host then re-enters admin for the force start), the UC-011 step 3 mode announcement on the fake audio service, the step 5 roster (every connected controller) and, in step 7, a game colour on the host (lit, not admin white).
+- In the test the trigger hold is about 1.5 s (the force-start duration is shortened by flag), not 3 s.
+- Gaps (unit-tested only, #1400): the colour pulse of UC-011 step 3, the early release of the trigger (UC-014 A1) and the admin timeout (UC-012 A4) are not covered end to end.

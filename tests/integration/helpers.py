@@ -1366,6 +1366,7 @@ async def wait_for_lobby_colors(
     tolerance: int = 30,
     timeout: float = 5.0,
     poll_interval: float = 0.2,
+    exclude: tuple[int, int, int] | None = None,
 ):
     """Wait for all controllers to show expected lobby colors.
 
@@ -1379,6 +1380,10 @@ async def wait_for_lobby_colors(
         tolerance: Max difference per channel (default 30 for dimming variations)
         timeout: Maximum time to wait in seconds
         poll_interval: Time between polls in seconds
+        exclude: A colour that does not count as a lobby colour, e.g.
+            ``ADMIN_WHITE``: the mock adapter starts every LED white
+            (services/controller_manager/multiplexer/mock_adapter.py), so an admin-white check would pass
+            before the menu has registered the controller.
 
     Raises:
         AssertionError: If colors don't match within timeout
@@ -1394,7 +1399,7 @@ async def wait_for_lobby_colors(
             last_colors[serial] = color
 
             # Check if LED is on
-            if sum(color) == 0:
+            if sum(color) == 0 or color == exclude:
                 all_match = False
                 continue
 
@@ -1414,6 +1419,8 @@ async def wait_for_lobby_colors(
         color = last_colors.get(serial, (0, 0, 0))
         if sum(color) == 0:
             mismatches.append(f"{serial}: LED is off (color: {color})")
+        elif color == exclude:
+            mismatches.append(f"{serial}: still the excluded colour {color}")
         elif expected_color is not None and not _color_matches(
             color, expected_color, tolerance
         ):
