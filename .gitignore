@@ -73,6 +73,8 @@ target/
 # Python virtualenv
 venv
 .venv/
+# make test-integration / test-service environments
+.venv-*/
 
 # Docker setup
 get-docker.sh

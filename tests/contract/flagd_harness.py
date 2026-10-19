@@ -22,6 +22,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import infra_config as ic
@@ -41,17 +42,60 @@ REWRITE_INTERVAL_SECONDS = 2.0
 # restored content (flagd reloads a whole file at once).
 RESTORE_PROBE_FLAG = "contract_restore_epoch"
 
-# Labels on every contract flagd container, so a run can remove containers a
-# killed earlier run left behind (``--rm`` only fires on a clean stop) without
-# touching a parallel run's container (another worktree, same docker daemon).
-CONTAINER_LABEL = "joustmania.contract=flagd"
-OWNER_PID_LABEL = "joustmania.contract.owner_pid"
-OWNER_HOST_LABEL = "joustmania.contract.owner_host"
-STARTED_LABEL = "joustmania.contract.started"
-# Worst-case lifetime of one module run (startup + every test's deadlines, incl.
-# NFR-014's 12 samples). An older container is orphaned whoever owns it; this
-# also covers owners on another host, whose pid cannot be checked here.
-MAX_CONTAINER_AGE_SECONDS = 30 * 60
+
+@dataclass(frozen=True)
+class Ownership:
+    """Docker labels that let a run remove only the containers it orphaned.
+
+    Every harness flagd container carries a kind label (``<prefix>=<kind>``)
+    plus its owner's pid, host and start time, so a run can remove containers a
+    killed earlier run left behind (``--rm`` only fires on a clean stop) without
+    touching a parallel run's container (another worktree, same docker daemon).
+    Each tier has its own prefix: the contract tier ``joustmania.contract``, the
+    service tier (tests/service) ``joustmania.service``.
+    """
+
+    prefix: str
+    kind: str = "flagd"
+    # Worst-case lifetime of one run's container. An older container is
+    # orphaned whoever owns it; this also covers owners on another host, whose
+    # pid cannot be checked here.
+    max_age_seconds: float = 30 * 60
+
+    @property
+    def kind_label(self) -> str:
+        return f"{self.prefix}={self.kind}"
+
+    @property
+    def owner_pid_label(self) -> str:
+        return f"{self.prefix}.owner_pid"
+
+    @property
+    def owner_host_label(self) -> str:
+        return f"{self.prefix}.owner_host"
+
+    @property
+    def started_label(self) -> str:
+        return f"{self.prefix}.started"
+
+    def docker_run_args(self) -> list[str]:
+        """``--label`` arguments for ``docker run`` (owner = this process)."""
+        return [
+            "--label", self.kind_label,
+            "--label", f"{self.owner_pid_label}={os.getpid()}",
+            "--label", f"{self.owner_host_label}={socket.gethostname()}",
+            "--label", f"{self.started_label}={int(time.time())}",
+        ]  # fmt: skip
+
+
+# Contract tier: worst-case lifetime of one module run is startup + every
+# test's deadlines, incl. NFR-014's 12 samples.
+CONTRACT = Ownership("joustmania.contract")
+CONTAINER_LABEL = CONTRACT.kind_label
+OWNER_PID_LABEL = CONTRACT.owner_pid_label
+OWNER_HOST_LABEL = CONTRACT.owner_host_label
+STARTED_LABEL = CONTRACT.started_label
+MAX_CONTAINER_AGE_SECONDS = CONTRACT.max_age_seconds
 
 
 def flagd_command() -> list[str]:
@@ -142,10 +186,7 @@ class FlagdContainer:
         subprocess.run(
             [
                 "docker", "run", "-d", "--rm", "--name", self.name,
-                "--label", CONTAINER_LABEL,
-                "--label", f"{OWNER_PID_LABEL}={os.getpid()}",
-                "--label", f"{OWNER_HOST_LABEL}={socket.gethostname()}",
-                "--label", f"{STARTED_LABEL}={int(time.time())}",
+                *CONTRACT.docker_run_args(),
                 "-v", f"{self.flag_dir}:/etc/flagd:ro",
                 "-p", f"{self.host}::{EVAL_PORT}", "-p", f"{self.host}::{SYNC_PORT}",
                 ic.compose_image("flagd"), *flagd_command(),
@@ -235,32 +276,38 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def is_stale(labels: dict[str, str], *, host: str, now: float) -> bool:
-    """True when a contract container's owning run is gone.
+def is_stale(
+    labels: dict[str, str],
+    *,
+    host: str,
+    now: float,
+    ownership: Ownership = CONTRACT,
+) -> bool:
+    """True when a harness container's owning run is gone.
 
-    Stale = older than MAX_CONTAINER_AGE_SECONDS, or started on THIS host by a
-    process that no longer exists. A container from a live run (any worktree)
+    Stale = older than ``ownership.max_age_seconds``, or started on THIS host by
+    a process that no longer exists. A container from a live run (any worktree)
     or from another host within the age bound is left alone.
     """
     try:
-        started = float(labels.get(STARTED_LABEL, ""))
+        started = float(labels.get(ownership.started_label, ""))
     except ValueError:
         started = 0.0  # unlabelled (pre-owner-label) container: treat as old
-    if now - started > MAX_CONTAINER_AGE_SECONDS:
+    if now - started > ownership.max_age_seconds:
         return True
-    if labels.get(OWNER_HOST_LABEL) != host:
+    if labels.get(ownership.owner_host_label) != host:
         return False
     try:
-        pid = int(labels.get(OWNER_PID_LABEL, ""))
+        pid = int(labels.get(ownership.owner_pid_label, ""))
     except ValueError:
         return True
     return not _pid_alive(pid)
 
 
-def remove_stale_containers() -> None:
-    """Remove contract flagd containers whose owning run is gone (see is_stale)."""
+def remove_stale_containers(ownership: Ownership = CONTRACT) -> None:
+    """Remove ``ownership``'s containers whose owning run is gone (see is_stale)."""
     ids = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", f"label={CONTAINER_LABEL}"],
+        ["docker", "ps", "-aq", "--filter", f"label={ownership.kind_label}"],
         capture_output=True, text=True, check=False,
     ).stdout.split()  # fmt: skip
     host, now = socket.gethostname(), time.time()
@@ -274,7 +321,7 @@ def remove_stale_containers() -> None:
             labels = json.loads(out) or {}
         except json.JSONDecodeError:
             continue  # gone meanwhile
-        if is_stale(labels, host=host, now=now):
+        if is_stale(labels, host=host, now=now, ownership=ownership):
             stale.append(container_id)
     if stale:
         subprocess.run(["docker", "rm", "-f", *stale], capture_output=True, check=False)

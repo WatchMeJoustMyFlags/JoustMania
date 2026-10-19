@@ -60,10 +60,12 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-015](TC-015-canary-by-hand.md) | Canary a backend by hand | UC-052, UC-035 | Medium | Draft | Manual; contract tests for routes; `/canary/*` handler tests (#1388) |
 | [TC-016](TC-016-talk-demo-rehearsal.md) | Talk demo rehearsal | UC-070, UC-044, UC-045, UC-040, UC-042, UC-035 | Medium | Draft | Manual; script tests in CI (#1389) |
 | [TC-017](TC-017-non-ffa-modes-round-backlog.md) | One round of every non-FFA mode (backlog) | UC-021 to UC-026 | Low | Draft | Partly (`test_parallel_lifecycle`); backlog #1361 |
-| [TC-018](TC-018-agent-intervention-through-flag-service.md) | Agent intervention through the flag service | UC-053, UC-040 | Critical | Automated | `test_flag_service_flows::test_two_eliminations_through_the_flag_service`; failed read: unit test |
+| [TC-018](TC-018-agent-intervention-through-flag-service.md) | Agent intervention through the flag service | UC-053, UC-040 | Critical | Automated | T2: `test_tc018_flag_service_eliminations::test_two_eliminations_through_the_flag_service`; failed read: unit test |
 | [TC-019](TC-019-flag-service-restart.md) | Flag service restart | UC-053 | High | Automated | `test_flag_service_restart`; epoch reset: unit test |
 | [TC-020](TC-020-host-and-stage-change-flags.md) | Host and stage change flags at runtime | UC-012, UC-053, UC-044 | High | Automated | `test_admin_flow::test_host_and_stage_change_flags_at_runtime` |
 
 Status follows the skill: `Automated` = an end-to-end test implements the journey (gaps listed in the
-file), `Draft` = not or only partly automated, or written for review. Tests that implement a journey carry
+file), `Draft` = not or only partly automated, or written for review. A service-tier test (T2,
+`tests/service/`: real services from source on a fresh flag plane, audio and collector faked) counts as
+end-to-end for this purpose; the TC's Automation section then starts with a `**Tier:**` line (#1422). Tests that implement a journey carry
 `tc="TC-XXX"` (TC-002 and TC-013 so far); tagging the rest is part of #1356 and #1422.

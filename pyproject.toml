@@ -48,6 +48,7 @@ members = [
     "services/pairing_daemon",
     "services/python_hid",
     "tests/integration",
+    "tests/service",
 ]
 
 # pytest configuration (migrated from pytest.ini)

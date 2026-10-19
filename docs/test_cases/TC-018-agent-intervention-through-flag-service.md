@@ -46,6 +46,8 @@
 
 ## Automation
 
-- `tests/integration/test_flag_service_flows.py::test_two_eliminations_through_the_flag_service` implements steps 1 to 8.
+**Tier:** T2 service (`tests/service/`, `make test-service`): flag service and game coordinator from source at HEAD, controller manager on mock controllers, one flagd, fake audio.
+
+- `tests/service/test_tc018_flag_service_eliminations.py::test_two_eliminations_through_the_flag_service` implements steps 1 to 8 (moved from the docker-compose suite in #1524).
 - Validation 2 is a unit test: `services/game_coordinator/tests/test_event_list_reader.py` (tagged `tc="TC-018"`): a failed read does nothing, a gap larger than K is counted. It cannot be provoked against the live stack.
 - `tests/integration/test_tc013_shadow_alongside_real.py` (TC-013) covers the cross-game half of BR-003: an event or a per-player value written for one game never reaches a concurrent game.
