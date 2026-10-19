@@ -11,7 +11,11 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-use crate::hid;
+use crate::hid::{self, HidDeviceIo};
+
+/// Interval between two polls of the open devices. PS Move hardware reports
+/// at ~1 kHz, so 1 ms keeps up with it without busy-waiting (UC-030 step 2).
+const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Discovered controller info returned from discovery.
 #[derive(Debug, Clone)]
@@ -62,9 +66,38 @@ pub struct StreamSensorData {
     pub report: hid::ParsedInputReport,
 }
 
+/// Device enumeration and opening, the seam between the device loop and
+/// HidApi. Production uses `HidApi` (static dispatch); tests use a fake.
+pub trait HidBackend {
+    type Device: HidDeviceIo;
+
+    /// Re-enumerate the attached HID devices.
+    fn refresh_devices(&mut self) -> hidapi::HidResult<()>;
+    /// Open every attached PS Move: (serial, device, product_id, adapter_name).
+    fn discover_controllers(&self) -> Vec<(String, Self::Device, u16, Option<String>)>;
+    /// Open the attached PS Move with this serial: (device, product_id).
+    fn open_controller_by_serial(&self, serial: &str) -> Option<(Self::Device, u16)>;
+}
+
+impl HidBackend for HidApi {
+    type Device = hidapi::HidDevice;
+
+    fn refresh_devices(&mut self) -> hidapi::HidResult<()> {
+        HidApi::refresh_devices(self)
+    }
+
+    fn discover_controllers(&self) -> Vec<(String, Self::Device, u16, Option<String>)> {
+        hid::discover_controllers(self)
+    }
+
+    fn open_controller_by_serial(&self, serial: &str) -> Option<(Self::Device, u16)> {
+        hid::open_controller_by_serial(self, serial)
+    }
+}
+
 /// An open HID device with its product metadata.
-struct DeviceEntry {
-    device: hidapi::HidDevice,
+struct DeviceEntry<D> {
+    device: D,
     product_id: u16,
     adapter_name: Option<String>,
 }
@@ -74,15 +107,19 @@ struct DeviceEntry {
 /// This function does not return until a `Shutdown` command is received.
 /// It owns all HidDevice handles and processes commands + polls devices.
 pub fn run_device_manager(cmd_rx: mpsc::Receiver<DeviceCmd>) {
-    let mut api = match HidApi::new() {
+    let api = match HidApi::new() {
         Ok(api) => api,
         Err(e) => {
             warn!(error = %e, "Failed to initialize HID API for device manager");
             return;
         }
     };
+    run_device_loop(api, cmd_rx);
+}
 
-    let mut devices: HashMap<String, DeviceEntry> = HashMap::new();
+/// The device manager loop over any `HidBackend` (see `run_device_manager`).
+fn run_device_loop<B: HidBackend>(mut api: B, cmd_rx: mpsc::Receiver<DeviceCmd>) {
+    let mut devices: HashMap<String, DeviceEntry<B::Device>> = HashMap::new();
     let mut stream_sender: Option<tokio::sync::mpsc::Sender<StreamSensorData>> = None;
 
     info!("Device manager thread started");
@@ -116,17 +153,16 @@ pub fn run_device_manager(cmd_rx: mpsc::Receiver<DeviceCmd>) {
             poll_all_devices(&devices, sender);
         }
 
-        // Brief sleep to avoid busy-waiting
-        // 1ms gives ~1kHz poll rate (hardware is 1kHz for PS Move)
-        std::thread::sleep(Duration::from_millis(1));
+        // Brief sleep to avoid busy-waiting (~1 kHz poll rate)
+        std::thread::sleep(POLL_INTERVAL);
     }
 }
 
 /// Handle a single command. Returns false if shutdown requested.
-fn handle_command(
+fn handle_command<B: HidBackend>(
     cmd: DeviceCmd,
-    api: &mut HidApi,
-    devices: &mut HashMap<String, DeviceEntry>,
+    api: &mut B,
+    devices: &mut HashMap<String, DeviceEntry<B::Device>>,
     stream_sender: &mut Option<tokio::sync::mpsc::Sender<StreamSensorData>>,
 ) -> bool {
     match cmd {
@@ -172,9 +208,9 @@ fn handle_command(
 /// `exclude_serials` lists controllers claimed by another adapter (e.g. hidapi).
 /// Excluded serials are skipped during enumeration — the device handle is not
 /// opened, avoiding the open→close churn that causes LED flashing.
-fn handle_discover(
-    api: &mut HidApi,
-    devices: &mut HashMap<String, DeviceEntry>,
+fn handle_discover<B: HidBackend>(
+    api: &mut B,
+    devices: &mut HashMap<String, DeviceEntry<B::Device>>,
     force: bool,
     verify_only: bool,
     exclude_serials: &[String],
@@ -202,7 +238,7 @@ fn handle_discover(
             warn!(error = %e, "Failed to refresh HID device list");
         }
 
-        let discovered = hid::discover_controllers(api);
+        let discovered = api.discover_controllers();
         for (serial, device, product_id, adapter_name) in discovered {
             // Skip controllers claimed by another adapter
             if exclude_serials.iter().any(|s| s == &serial) {
@@ -227,9 +263,9 @@ fn handle_discover(
 }
 
 /// Open a specific controller by serial.
-fn handle_open(
-    api: &mut HidApi,
-    devices: &mut HashMap<String, DeviceEntry>,
+fn handle_open<B: HidBackend>(
+    api: &mut B,
+    devices: &mut HashMap<String, DeviceEntry<B::Device>>,
     serial: &str,
 ) -> bool {
     if devices.contains_key(serial) {
@@ -240,7 +276,7 @@ fn handle_open(
         warn!(error = %e, "Failed to refresh HID device list");
     }
 
-    match hid::open_controller_by_serial(api, serial) {
+    match api.open_controller_by_serial(serial) {
         Some((device, product_id)) => {
             info!(serial = %serial, "Opened controller");
             devices.insert(serial.to_string(), DeviceEntry { device, product_id, adapter_name: None });
@@ -254,7 +290,7 @@ fn handle_open(
 }
 
 /// Close a specific controller.
-fn handle_close(devices: &mut HashMap<String, DeviceEntry>, serial: &str) {
+fn handle_close<D: HidDeviceIo>(devices: &mut HashMap<String, DeviceEntry<D>>, serial: &str) {
     if let Some(entry) = devices.remove(serial) {
         let off = hid::build_output_report(0, 0, 0, 0);
         let _ = entry.device.write(&off);
@@ -263,7 +299,7 @@ fn handle_close(devices: &mut HashMap<String, DeviceEntry>, serial: &str) {
 }
 
 /// Close all controllers.
-fn handle_close_all(devices: &mut HashMap<String, DeviceEntry>) {
+fn handle_close_all<D: HidDeviceIo>(devices: &mut HashMap<String, DeviceEntry<D>>) {
     for (serial, entry) in devices.drain() {
         let off = hid::build_output_report(0, 0, 0, 0);
         let _ = entry.device.write(&off);
@@ -273,8 +309,8 @@ fn handle_close_all(devices: &mut HashMap<String, DeviceEntry>) {
 }
 
 /// Poll all open devices and send sensor data through the stream.
-fn poll_all_devices(
-    devices: &HashMap<String, DeviceEntry>,
+fn poll_all_devices<D: HidDeviceIo>(
+    devices: &HashMap<String, DeviceEntry<D>>,
     sender: &tokio::sync::mpsc::Sender<StreamSensorData>,
 ) {
     for (serial, entry) in devices.iter() {
@@ -290,5 +326,184 @@ fn poll_all_devices(
                 debug!(serial = %serial, "Stream channel full, dropping sensor data");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
+    use std::time::Instant;
+
+    const SERIAL: &str = "00:06:f7:aa:bb:cc";
+    const PRODUCT_ID_ZCM2: u16 = 0x0C5E;
+
+    #[derive(Default)]
+    struct FakeDeviceState {
+        /// Input reports the device will return, oldest first.
+        pending: VecDeque<[u8; hid::INPUT_REPORT_SIZE]>,
+        /// When a read found no pending report: once per poll of this device.
+        drained_at: Vec<Instant>,
+    }
+
+    /// In-memory HID device shared between the test and the device loop thread.
+    #[derive(Clone, Default)]
+    struct FakeDevice(Arc<Mutex<FakeDeviceState>>);
+
+    impl HidDeviceIo for FakeDevice {
+        fn read(&self, buf: &mut [u8]) -> hidapi::HidResult<usize> {
+            let mut state = self.0.lock().unwrap();
+            match state.pending.pop_front() {
+                Some(report) => {
+                    buf[..report.len()].copy_from_slice(&report);
+                    Ok(report.len())
+                }
+                None => {
+                    state.drained_at.push(Instant::now());
+                    Ok(0)
+                }
+            }
+        }
+
+        fn write(&self, data: &[u8]) -> hidapi::HidResult<usize> {
+            Ok(data.len())
+        }
+    }
+
+    /// Backend with one attached ZCM2 controller.
+    struct FakeBackend {
+        device: FakeDevice,
+    }
+
+    impl HidBackend for FakeBackend {
+        type Device = FakeDevice;
+
+        fn refresh_devices(&mut self) -> hidapi::HidResult<()> {
+            Ok(())
+        }
+
+        fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+            vec![(SERIAL.to_string(), self.device.clone(), PRODUCT_ID_ZCM2, Some("hci0".to_string()))]
+        }
+
+        fn open_controller_by_serial(&self, serial: &str) -> Option<(FakeDevice, u16)> {
+            (serial == SERIAL).then(|| (self.device.clone(), PRODUCT_ID_ZCM2))
+        }
+    }
+
+    fn spawn_loop(device: &FakeDevice) -> (mpsc::Sender<DeviceCmd>, JoinHandle<()>) {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let backend = FakeBackend { device: device.clone() };
+        let handle = std::thread::spawn(move || run_device_loop(backend, cmd_rx));
+        (cmd_tx, handle)
+    }
+
+    fn shutdown(cmd_tx: &mpsc::Sender<DeviceCmd>, handle: JoinHandle<()>) {
+        cmd_tx.send(DeviceCmd::Shutdown).unwrap();
+        handle.join().unwrap();
+    }
+
+    /// A ZCM2 input report: trigger 200, Cross pressed, gyro x = -1234.
+    fn sample_report() -> [u8; hid::INPUT_REPORT_SIZE] {
+        let mut data = [0u8; hid::INPUT_REPORT_SIZE];
+        data[0] = 0x01;
+        data[2] = hid::Button::CROSS as u8;
+        data[6] = 200;
+        data[31..33].copy_from_slice(&(-1234i16).to_le_bytes());
+        data
+    }
+
+    fn recv_within(
+        rx: &mut tokio::sync::mpsc::Receiver<StreamSensorData>,
+        timeout: Duration,
+    ) -> Option<StreamSensorData> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Ok(data) = rx.try_recv() {
+                return Some(data);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        None
+    }
+
+    // UC: UC-002 main step 2
+    #[test]
+    fn test_discovered_device_is_opened_and_its_reports_streamed() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Discover {
+                force: false,
+                verify_only: false,
+                exclude_serials: vec![],
+                reply: reply_tx,
+            })
+            .unwrap();
+        let discovered = reply_rx.blocking_recv().unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].serial, SERIAL);
+        assert_eq!(discovered[0].adapter_name, "hci0");
+        assert_eq!(discovered[0].product_id, PRODUCT_ID_ZCM2 as u32);
+
+        let (sensor_tx, mut sensor_rx) = tokio::sync::mpsc::channel(16);
+        cmd_tx.send(DeviceCmd::RegisterStream { sender: sensor_tx }).unwrap();
+        device.0.lock().unwrap().pending.push_back(sample_report());
+
+        let data = recv_within(&mut sensor_rx, Duration::from_secs(2))
+            .expect("the device loop streamed no sensor data from the opened device");
+        shutdown(&cmd_tx, handle);
+
+        assert_eq!(data.serial, SERIAL);
+        assert!(data.report.button_cross());
+        assert_eq!(data.report.trigger, 200);
+        // ZCM2 product id: gyro decoded as signed 16-bit
+        assert_eq!(data.report.gyro_x, -1234.0);
+    }
+
+    // UC: UC-030 main step 2
+    // NFR: NFR-001
+    #[test]
+    fn test_poll_loop_polls_open_device_about_every_millisecond() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Open { serial: SERIAL.to_string(), reply: reply_tx })
+            .unwrap();
+        assert!(reply_rx.blocking_recv().unwrap());
+        let (sensor_tx, _sensor_rx) = tokio::sync::mpsc::channel(16);
+        cmd_tx.send(DeviceCmd::RegisterStream { sender: sensor_tx }).unwrap();
+
+        std::thread::sleep(Duration::from_millis(300));
+        shutdown(&cmd_tx, handle);
+
+        let polls = std::mem::take(&mut device.0.lock().unwrap().drained_at);
+        let mut intervals: Vec<Duration> = polls.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(intervals.len() >= 50, "only {} poll intervals in 300 ms", intervals.len());
+        intervals.sort();
+        let min = intervals[0];
+        let median = intervals[intervals.len() / 2];
+        let p90 = intervals[intervals.len() * 9 / 10];
+        println!(
+            "rust-hid poll interval: n={} min={:?} median={:?} p90={:?} max={:?}",
+            intervals.len(),
+            min,
+            median,
+            p90,
+            intervals[intervals.len() - 1]
+        );
+        // Every pass sleeps POLL_INTERVAL (1 ms), so no interval is shorter (no busy-wait).
+        // A median within 2 ms keeps up with the ~1 kHz controller, and p90 within 5 ms
+        // catches periodic stalls. The max is not bounded: one scheduler hiccup under
+        // CI load is not a defect.
+        assert!(min >= POLL_INTERVAL, "min poll interval {min:?} < 1 ms: busy-waiting");
+        assert!(median <= Duration::from_millis(2), "median poll interval {median:?} > 2 ms");
+        assert!(p90 <= Duration::from_millis(5), "p90 poll interval {p90:?} > 5 ms");
     }
 }

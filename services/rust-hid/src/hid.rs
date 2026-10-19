@@ -498,11 +498,32 @@ pub fn open_controller_by_serial(api: &HidApi, target_serial: &str) -> Option<(H
     None
 }
 
+/// I/O surface of an open HID device used by the device manager.
+///
+/// This is the test seam for the device loop: `HidDevice` implements it by
+/// plain delegation (static dispatch, no allocation), and tests supply a fake.
+pub trait HidDeviceIo {
+    /// Non-blocking read of one input report into `buf`; `Ok(0)` when none is pending.
+    fn read(&self, buf: &mut [u8]) -> hidapi::HidResult<usize>;
+    /// Write one output report.
+    fn write(&self, data: &[u8]) -> hidapi::HidResult<usize>;
+}
+
+impl HidDeviceIo for HidDevice {
+    fn read(&self, buf: &mut [u8]) -> hidapi::HidResult<usize> {
+        HidDevice::read(self, buf)
+    }
+
+    fn write(&self, data: &[u8]) -> hidapi::HidResult<usize> {
+        HidDevice::write(self, data)
+    }
+}
+
 /// Read the latest input report from a device (non-blocking).
 ///
 /// Drains all available reports and returns the most recent one,
 /// matching the Python HidapiAdapter.poll() pattern.
-pub fn read_latest_input(device: &HidDevice, zcm2: bool) -> Option<ParsedInputReport> {
+pub fn read_latest_input<D: HidDeviceIo>(device: &D, zcm2: bool) -> Option<ParsedInputReport> {
     let mut latest: Option<[u8; INPUT_REPORT_SIZE]> = None;
     let mut buf = [0u8; INPUT_REPORT_SIZE];
 
