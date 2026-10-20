@@ -18,6 +18,7 @@
 # Runs as part of `make lint`, or directly:
 #   ./scripts/tests/test-pi-start-compose-files.sh
 # UC: UC-035 BR-001
+# UC: UC-070 Pre-2
 # UC: UC-002 BR-003
 set -euo pipefail
 

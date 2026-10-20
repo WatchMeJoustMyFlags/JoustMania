@@ -509,6 +509,98 @@ func TestDeclareDynamic_KillSwitchOffDeclaresNothing(t *testing.T) {
 	}
 }
 
+// TestDeclareDynamic_TalkFallbackKeepsAGameInProgress: in the talk's screen-only
+// fallback a game must always be in progress. The dynamic declarer keeps declaring
+// after the kill-switch beat or a `fallback off` aborted every experiment, while
+// the AGENT_EXPERIMENT_SEED_* env seed is declared only once per agent start.
+// UC: UC-070 A9 BR-007
+func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
+	ctx := context.Background()
+	declarer := func(svc *fake.Service) *dynamicDeclarer {
+		return &dynamicDeclarer{
+			gameFlags:        svc,
+			candidates:       []string{"sensitivity"},
+			defaultObjective: decision.ObjectiveBalanced,
+		}
+	}
+
+	t.Run("UC-070/BR-007 the declarer re-declares after the kill switch aborted the experiments", func(t *testing.T) {
+		loop, svc := loopWithRealRegistry(t, 8)
+		loop.dynamic = declarer(svc)
+		enabled := true
+		loop.enabledOverride = func(context.Context) bool { return enabled }
+
+		loop.allocateIfEnabled(ctx)
+		if got := loop.registry.LiveCount(); got != 1 {
+			t.Fatalf("first tick LiveCount = %d, want 1", got)
+		}
+		enabled = false // the kill-switch beat
+		loop.allocateIfEnabled(ctx)
+		if got := loop.registry.LiveCount(); got != 0 {
+			t.Fatalf("kill switch off LiveCount = %d, want 0 (aborted)", got)
+		}
+		enabled = true // the presenter switches the agent back on
+		loop.allocateIfEnabled(ctx)
+		if got := loop.registry.LiveCount(); got != 1 {
+			t.Fatalf("after switching back on LiveCount = %d, want 1 (re-declared)", got)
+		}
+		if _, ok := loop.registry.ActiveFlags()["sensitivity"]; !ok {
+			t.Fatalf("re-declared experiment not on sensitivity: %v", loop.registry.ActiveFlags())
+		}
+	})
+
+	t.Run("UC-070/BR-007 the declarer re-declares after fallback off and on", func(t *testing.T) {
+		loop, svc := loopWithRealRegistry(t, 8)
+		loop.dynamic = declarer(svc)
+		on := dynCfg(defaultDynamicMaxConcurrent)
+		cfg := on
+		loop.configOverride = func(context.Context) flags.ExperimentConfig { return cfg }
+
+		loop.allocateIfEnabled(ctx)
+		cfg = flags.ExperimentConfig{Enabled: false} // fallback off: experiments_enabled off
+		loop.allocateIfEnabled(ctx)
+		if got := loop.registry.LiveCount(); got != 0 {
+			t.Fatalf("fallback off LiveCount = %d, want 0 (aborted)", got)
+		}
+		cfg = on // fallback on again
+		loop.allocateIfEnabled(ctx)
+		if got := loop.registry.LiveCount(); got != 1 {
+			t.Fatalf("fallback on again LiveCount = %d, want 1 (re-declared)", got)
+		}
+	})
+
+	t.Run("UC-070/BR-007 the env seed is declared once per agent start", func(t *testing.T) {
+		loop, svc := loopWithRealRegistry(t, 8)
+		loop.dynamic = declarer(svc)
+		loop.seed = &experiment.Intent{
+			Hypothesis: "h", FlagKey: "invincibility_seconds",
+			ExperimentalValue: 6.0, Objective: decision.ObjectiveBalanced, TargetNPerArm: 50,
+		}
+		enabled := true
+		loop.enabledOverride = func(context.Context) bool { return enabled }
+
+		loop.allocateIfEnabled(ctx)
+		active := loop.registry.ActiveFlags()
+		if _, ok := active["invincibility_seconds"]; !ok {
+			t.Fatalf("first tick did not declare the env seed: %v", active)
+		}
+		if _, ok := active["sensitivity"]; !ok {
+			t.Fatalf("first tick did not declare the dynamic experiment: %v", active)
+		}
+		enabled = false
+		loop.allocateIfEnabled(ctx)
+		enabled = true
+		loop.allocateIfEnabled(ctx)
+		active = loop.registry.ActiveFlags()
+		if _, ok := active["invincibility_seconds"]; ok {
+			t.Fatalf("the env seed was declared again after the kill switch: %v", active)
+		}
+		if _, ok := active["sensitivity"]; !ok {
+			t.Fatalf("the dynamic declarer did not re-declare: %v", active)
+		}
+	})
+}
+
 // TestDynamicDeclarer_DefaultRotationSkipsPlumbingFlags asserts the default
 // rotation over the SHIPPED game.json files never offers a plumbing, lobby/admin
 // or ceremony-timing flag (#1316), while game-tuning flags stay candidates.

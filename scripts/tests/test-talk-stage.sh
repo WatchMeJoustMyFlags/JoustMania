@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-contained tests for scripts/talk-stage.sh (#1301, #1316, UC-070 BR-003, BR-007, A7, A8, A9; UC-053 A1).
+# Self-contained tests for scripts/talk-stage.sh (#1301, #1316, UC-070 BR-001, BR-003, BR-007, A7, A8, A9; UC-053 A1).
 #
 # Runs the helper against scripts/tests/fake_flag_service.py serving the shipped
 # CI agent flag set with the REAL registry (epic #1407), never a running stack.
@@ -7,7 +7,7 @@
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-talk-stage.sh
 #
-# UC: UC-070 A7 A8 A9 BR-003 BR-007
+# UC: UC-070 main A7 A8 A9 BR-001 BR-003 BR-007 Pre-3 Post-S-1
 # UC: UC-053 A1
 set -euo pipefail
 
@@ -22,6 +22,10 @@ trap 'stop_fake_flag_service; rm -rf "${WORK}"' EXIT
 
 pass=0
 fail=0
+# BR-001: the helper changes flags only through the flag service; the shipped
+# flag files (rehearsal and stage baselines) are never edited.
+flag_files_sum() { cat "${REPO_ROOT}"/services/flagd/*.json "${REPO_ROOT}"/services/flagd/ci/*.json | cksum; }
+FLAG_FILES_BEFORE="$(flag_files_sum)"
 ok() { echo "ok   - $1"; pass=$((pass + 1)); }
 not_ok() { echo "FAIL - $1"; fail=$((fail + 1)); }
 
@@ -122,6 +126,32 @@ for sig in TERM HUP; do
   expect "permissions (${sig}): restored after the interruption" interventions_allowed standard
 done
 
+# --- permissions beat restores on Ctrl-C (INT) ------------------------------
+# A background job of a non-interactive shell starts with SIGINT ignored, and an
+# ignored signal cannot be trapped; job control (set -m) starts it with the
+# default disposition, as a presenter's foreground helper has.
+fresh
+"${HELPER}" reset >/dev/null
+set -m
+"${HELPER}" permissions none 30 >/dev/null 2>&1 &
+pid=$!
+set +m
+for _ in $(seq 50); do
+  [[ "$(variant interventions_allowed)" == "none" ]] && break
+  sleep 0.1
+done
+expect "permissions (INT): held at none during the beat" interventions_allowed none
+kill -INT "${pid}"
+# Poll instead of `wait`: a helper that ignored INT would only restore after its
+# 30 s hold, which must not count as restored on Ctrl-C.
+for _ in $(seq 30); do
+  [[ "$(variant interventions_allowed)" == "standard" ]] && break
+  sleep 0.1
+done
+expect "permissions (INT): restored at once on Ctrl-C" interventions_allowed standard
+kill -TERM "${pid}" 2>/dev/null || true
+wait "${pid}" 2>/dev/null || true
+
 # --- unknown variant is refused and leaves the baseline ---------------------
 fresh
 "${HELPER}" reset >/dev/null
@@ -177,6 +207,13 @@ rc=0; "${HELPER}" >/dev/null 2>&1 || rc=$?
 [[ "${rc}" -eq 2 ]] && ok "no action is a usage error" || not_ok "no action is a usage error (rc=${rc})"
 rc=0; "${HELPER}" permissions none soon >/dev/null 2>&1 || rc=$?
 [[ "${rc}" -eq 2 ]] && ok "bad seconds is a usage error" || not_ok "bad seconds is a usage error (rc=${rc})"
+
+# --- BR-001: no flag file was edited by any beat ---------------------------
+if [[ "$(flag_files_sum)" == "${FLAG_FILES_BEFORE}" ]]; then
+  ok "BR-001: the shipped flag files are unchanged (flags change only through the flag service)"
+else
+  not_ok "BR-001: a beat edited a shipped flag file under services/flagd/"
+fi
 
 echo
 echo "${pass} passed, ${fail} failed"
