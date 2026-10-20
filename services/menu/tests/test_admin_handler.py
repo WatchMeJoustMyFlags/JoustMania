@@ -2290,3 +2290,34 @@ class TestSingleAdminSession:
             assert call("A", "triangle") in connected_handler.handle_button.await_args_list
         finally:
             await admin_handler.exit()
+
+
+class TestOptionAnnouncementUsesEffectiveValue:
+    """D-M6 (#1739): selecting an option announces the EFFECTIVE value (UC-012 step 3, BR-006)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-006"])
+    async def test_selecting_sensitivity_announces_agent_override(self, handler, mock_state_manager):
+        """Baseline medium, agent override ultra_fast: colour and voice are ultra_fast's."""
+        handler.current_option = len(handler.option_names) - 1  # next Move press wraps to sensitivity
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 4
+        handler._show_value_feedback = AsyncMock()
+        handler._play_value_voice = AsyncMock()
+
+        await handler.handle_cycle_option("test_serial")
+
+        assert handler.option_names[handler.current_option] == "sensitivity"
+        handler._show_value_feedback.assert_awaited_once_with("test_serial", "sensitivity", 4)
+        handler._play_value_voice.assert_awaited_once_with("sensitivity", 4)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-006"])
+    async def test_agent_control_is_not_announced_as_a_value(self, handler):
+        handler.current_option = handler.option_names.index("force_all_start")
+        handler._show_value_feedback = AsyncMock()
+        handler._play_value_voice = AsyncMock()
+
+        await handler.handle_cycle_option("test_serial")
+
+        assert handler.option_names[handler.current_option] == "agent_control"
+        handler._show_value_feedback.assert_not_awaited()

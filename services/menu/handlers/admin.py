@@ -1145,6 +1145,7 @@ class AdminModeHandler:
                     "admin_option_changed",
                     {"option": option_name, "option_index": self.current_option},
                 )
+                await self._announce_effective_value(serial, option_name)
                 logger.info(f"Admin option changed to {option_name} by controller {serial}")
 
             except Exception as e:
@@ -1253,6 +1254,26 @@ class AdminModeHandler:
 
             except Exception as e:
                 logger.error(f"Error decreasing admin value: {e}", exc_info=True)
+
+    async def _announce_effective_value(self, serial: str, option_name: str) -> None:
+        """
+        Announce the EFFECTIVE value of the selected option (colour pulse and voice line).
+
+        The effective value is the human baseline plus any active agent delta
+        (OWNERSHIP_MODEL section 6, #818; UC-012 step 3, BR-006). Options without
+        a value ladder (agent_control has its own flow) are skipped. Best effort.
+        """
+        if self._state_manager is None or option_name not in ("sensitivity", "num_teams", "force_all_start"):
+            return
+        try:
+            variant = await asyncio.to_thread(self._effective_variant, option_name)
+            if variant is None:
+                return
+            value = self._variant_to_value(option_name, variant)
+            await self._show_value_feedback(serial, option_name, value)
+            await self._play_value_voice(option_name, value)
+        except Exception as e:
+            logger.error(f"Error announcing effective value for {option_name}: {e}", exc_info=True)
 
     @staticmethod
     def _cycle_baseline(writer, flag_key: str, forward: bool) -> tuple[str | None, str | None]:
