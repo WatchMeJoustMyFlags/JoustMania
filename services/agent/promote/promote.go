@@ -123,6 +123,12 @@ type Config struct {
 	// live real-player change). A disabled agent degrades autonomous to a recorded
 	// no-op (OutcomeDiscarded + reason), never a silent real change.
 	Enabled bool
+
+	// killEpoch is Promoter.KillSwitchEpoch read before Enabled was resolved
+	// (epochKnown); an autonomous write is refused when a kill-switch tick ran since
+	// (#1704). Unset, Promote reads the epoch on entry.
+	killEpoch  uint64
+	epochKnown bool
 }
 
 // Evidence is the fitness + provenance the promotion records into an issue/PR
@@ -305,13 +311,22 @@ type Promoter struct {
 	// reverted at most once and nothing writes after the kill-switch revert. Guarded
 	// by mu.
 	applied map[string]*appliedPromotion
+	// killEpoch counts kill-switch ticks (guarded by mu); killMu serialises the
+	// autonomous write with RevertOnKillSwitch (killswitch.go, #1704).
+	killEpoch uint64
+	killMu    sync.Mutex
 }
 
 // appliedPromotion is one autonomous real default this agent run wrote and has not
-// reverted (#1704). cancel stops its background re-watch (nil when none runs).
+// reverted (#1704). cancel stops its background re-watch (nil when none runs);
+// syncPending is true while its Promote call runs; killed is set when the kill
+// switch took it. Guarded by Promoter.mu.
 type appliedPromotion struct {
-	proposal experiment.Proposal
-	cancel   context.CancelFunc
+	proposal     experiment.Proposal
+	cancel       context.CancelFunc
+	syncPending  bool
+	killed       bool
+	killReverted bool
 }
 
 // DefaultRevertCooldown is the default post-revert cooldown before the same flag may
@@ -440,6 +455,9 @@ func NewPromoter(github GitHubClient, git GitClient, realDef RealDefaultWriter, 
 func (pr *Promoter) Promote(ctx context.Context, p experiment.Proposal, dec experiment.Decision, cfg Config, ev Evidence) Result {
 	mode := normalizeMode(cfg.Mode)
 	target := normalizeTarget(cfg.Target)
+	if !cfg.epochKnown {
+		cfg.killEpoch, cfg.epochKnown = pr.KillSwitchEpoch(), true
+	}
 
 	ctx, span := pr.tracer.Start(ctx, SpanPromote, trace.WithAttributes(
 		attribute.String(AttrGate, string(mode)),

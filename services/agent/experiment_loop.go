@@ -1139,7 +1139,7 @@ func (e *experimentLoop) recordFinalizedRealFitness(gc gamecontext.GameContext, 
 		}
 		return
 	}
-	startedAt := timelinePhaseAt(gc.Timeline, "start")
+	startedAt := gameStartedAt(gc)
 	eval := decision.EvaluateFitness(gc, e.fitnessThresholds())
 	for objective, r := range eval.Results {
 		if !r.Evaluated || !decision.IsExperimentable(objective) {
@@ -1379,6 +1379,18 @@ func (s flagsFitnessSource) Fitness() decision.FitnessThresholds {
 		return decision.DefaultStaticConfig().FitnessThresholds
 	}
 	return decision.FitnessThresholdsFromFlags(s.flags.Evaluate(context.Background()).Fitness)
+}
+
+// gameStartedAt is when the game started, for the autonomous watch window (#1702):
+// the session's StartedAt (set at the game_active 0->1 transition, never evicted),
+// else the timeline's "start" phase event. The timeline is a 64-entry ring, so on a
+// normal-length game the start event is long evicted by game end and only serves
+// as a fallback for a context without a session start.
+func gameStartedAt(gc gamecontext.GameContext) time.Time {
+	if !gc.Session.StartedAt.IsZero() {
+		return gc.Session.StartedAt
+	}
+	return timelinePhaseAt(gc.Timeline, "start")
 }
 
 // timelinePhaseAt returns the time of the session's last phase event with the
