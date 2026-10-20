@@ -84,7 +84,7 @@ def rig():
         event_publisher=create_autospec(EventPublisher, instance=True),
     )
     servicer.discovery_loop = loop
-    servicer.state_cache_manager.build_state = MagicMock(return_value=_state())
+    servicer.state_builder.build_state = MagicMock(return_value=_state())
     servicer.tracked_controllers[SERIAL] = {}
 
     loop._poll_drops[SERIAL] = 2

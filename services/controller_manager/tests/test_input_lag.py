@@ -114,7 +114,7 @@ class TestGameplayFrameObservesLag:
             state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
             state.rssi = 0
             state.name = "P1"
-            servicer.state_cache_manager.build_state = MagicMock(return_value=state)
+            servicer.state_builder.build_state = MagicMock(return_value=state)
             servicer.tracked_controllers[SERIAL] = {}
             yield servicer, mock_loop
 
