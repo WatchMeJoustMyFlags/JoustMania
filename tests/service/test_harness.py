@@ -176,3 +176,69 @@ def test_flag_plane_rewrites_only_declared_variants(tmp_path):
 def test_docker_failure_carries_dockers_stderr():
     with pytest.raises(RuntimeError, match=r"docker restart failed .*joustmania-service-no-such-container"):
         _docker("restart", "joustmania-service-no-such-container")
+
+
+class _FakeStack:
+    """ServiceStack stand-in: start() fails with the given messages in turn."""
+
+    outcomes: list[str | None] = []
+    started = 0
+
+    def __init__(self, _composition, workdir):
+        self.workdir = workdir
+
+    def start(self):
+        outcome = type(self).outcomes[type(self).started]
+        type(self).started += 1
+        if outcome is not None:
+            raise processes.ServiceStartError(outcome)
+        return self
+
+
+def _start_with(monkeypatch, tmp_path, outcomes):
+    from tests.service.harness import stack as stack_module
+
+    fake = type("Fake", (_FakeStack,), {"outcomes": outcomes, "started": 0})
+    monkeypatch.setattr(stack_module, "ServiceStack", fake)
+    workdirs = []
+
+    def make_workdir():
+        workdirs.append(tmp_path / f"w{len(workdirs)}")
+        return workdirs[-1]
+
+    return stack_module.start_stack(LOBBY, make_workdir), fake, workdirs
+
+
+def test_start_stack_retries_on_fresh_ports_when_a_port_is_in_use(monkeypatch, tmp_path):
+    """#1763: a service lost the bind race; the stack is rebuilt (new workdir, new ports)."""
+    in_use = "agent exited with 1 during start\nlisten tcp 127.0.0.1:36905: bind: address already in use"
+    started, fake, workdirs = _start_with(monkeypatch, tmp_path, [in_use, in_use, None])
+
+    assert fake.started == 3
+    assert started.workdir == workdirs[-1] and len(set(workdirs)) == 3
+
+
+def test_start_stack_gives_up_after_three_port_conflicts(monkeypatch, tmp_path):
+    in_use = "bind: address already in use"
+    with pytest.raises(processes.ServiceStartError, match="already in use"):
+        _start_with(monkeypatch, tmp_path, [in_use] * 3)
+
+
+def test_start_stack_does_not_retry_other_start_failures(monkeypatch, tmp_path):
+    from tests.service.harness import stack as stack_module
+
+    fake = type("Fake", (_FakeStack,), {"outcomes": ["menu not ready within 45s"], "started": 0})
+    monkeypatch.setattr(stack_module, "ServiceStack", fake)
+    with pytest.raises(processes.ServiceStartError, match="not ready"):
+        stack_module.start_stack(LOBBY, lambda: tmp_path)
+    assert fake.started == 1
+
+
+def test_start_stack_retries_on_grpc_failed_to_bind_and_warns(monkeypatch, tmp_path, caplog):
+    """Python gRPC's RuntimeError text; the C++ "address already in use" line may be hidden."""
+    bind_error = "game-coordinator exited with 1 during start\nRuntimeError: Failed to bind to address 127.0.0.1:1"
+    with caplog.at_level("WARNING", logger="tests.service.harness.stack"):
+        _, fake, _ = _start_with(monkeypatch, tmp_path, [bind_error, None])
+
+    assert fake.started == 2
+    assert any("1/3" in r.getMessage() and "game-coordinator exited with 1" in r.getMessage() for r in caplog.records)

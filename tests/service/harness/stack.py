@@ -24,7 +24,8 @@ and the agent exports its own telemetry to the sink.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import logging
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,7 +35,7 @@ from .fakes.openai import API_KEY as FAKE_OPENAI_API_KEY
 from .fakes.openai import FakeOpenAI
 from .fakes.otlp import OtlpSink
 from .flag_plane import FlagPlane
-from .processes import PyService, free_port
+from .processes import PyService, ServiceStartError, free_port
 
 # Compose name -> (source dir under services/, compose gRPC port, compose OTEL_SERVICE_NAME).
 # Start order is this order: the coordinator needs the controller manager, the
@@ -273,3 +274,40 @@ class ServiceStack:
             parts.append(self.fake_openai.log_tail())
         parts.append(self.flag_plane.log_tail())
         return "\n".join(parts)
+
+
+logger = logging.getLogger(__name__)
+
+START_ATTEMPTS = 3
+_PORT_CONFLICT_MARKERS = ("address already in use", "failed to bind to address")
+
+
+def start_stack(
+    composition: Composition,
+    make_workdir: Callable[[], Path],
+    *,
+    attempts: int = START_ATTEMPTS,
+) -> ServiceStack:
+    """A started stack; retried on fresh ports when a service lost a port race.
+
+    ``free_port()`` cannot reserve a port: another process (an outgoing
+    connection's source port, a parallel job) may take it before the service
+    binds it (#1763). Such a start fails with "address already in use" in the
+    log tail; the stack is then rebuilt, with a new workdir and new ports. Any
+    other start failure is raised at once.
+    """
+    for attempt in range(1, attempts + 1):
+        stack = ServiceStack(composition, make_workdir())
+        try:
+            return stack.start()
+        except ServiceStartError as exc:
+            message = str(exc)
+            if not any(marker in message.lower() for marker in _PORT_CONFLICT_MARKERS) or attempt == attempts:
+                raise
+            logger.warning(
+                "service-tier stack start %d/%d lost a port race (#1763), retrying on fresh ports: %s",
+                attempt,
+                attempts,
+                message.splitlines()[0] if message else "",
+            )
+    raise AssertionError("unreachable")  # pragma: no cover
