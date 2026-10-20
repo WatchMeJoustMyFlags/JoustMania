@@ -151,8 +151,8 @@ main() {
     trap 'rm -rf "${WORK_DIR}"' EXIT
     normalize "$2" >"${WORK_DIR}/recorded.json" || exit 3
     local archetype seed
-    archetype="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["archetype"])' "${WORK_DIR}/recorded.json")"
-    seed="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["rng_seed"])' "${WORK_DIR}/recorded.json")"
+    archetype="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("archetype") or "")' "${WORK_DIR}/recorded.json")"
+    seed="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("rng_seed") or "")' "${WORK_DIR}/recorded.json")"
     [[ -n "${archetype}" ]] || { echo "record has no archetype" >&2; exit 3; }
     run_once "${archetype}" "${seed}" "${WORK_DIR}/replay.json" replay || exit 3
     compare "${WORK_DIR}/recorded.json" "${WORK_DIR}/replay.json"

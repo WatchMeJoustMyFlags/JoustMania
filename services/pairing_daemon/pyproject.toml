@@ -14,7 +14,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
 
     # DBus for BlueZ adapter management
-    "dbus-fast>=2.0.0; sys_platform == 'linux'",  # Async D-Bus
+    "dbus-fast>=4.0.0; sys_platform == 'linux'",  # Async D-Bus; 4.0.0 adds dbus_fast.annotations (pairing agent)
 
     # HID access for USB controller pairing (feature reports)
     "hidapi>=0.14.0",
@@ -63,7 +63,7 @@ ignore = ["ANN"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # Unused imports OK in __init__
 "server.py" = ["N802"]  # HTTP handler do_GET is from parent class
-"psmove_pairing/bluez_agent.py" = ["N802"]  # D-Bus method names (RequestPinCode etc.) come from BlueZ spec
+"psmove_pairing/bluez_agent.py" = ["N802", "ARG002"]  # D-Bus method names and arguments (RequestPinCode etc.) come from the BlueZ Agent1 API
 "tests/*.py" = ["ARG001", "ARG002", "E402", "SIM105", "SIM117", "F841"]  # Test fixtures, test patterns
 
 [tool.ruff.lint.isort]

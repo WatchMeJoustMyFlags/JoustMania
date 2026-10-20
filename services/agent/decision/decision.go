@@ -104,6 +104,15 @@ type ActionSink interface {
 	Apply(context.Context, Decision) error
 }
 
+// ActionApplier is optionally implemented by a sink that can turn an Apply into a
+// no-op (actions.GatedActionSink while interventions_enabled is off). It reads the
+// gate and writes in one call and reports which happened: applied=false means
+// nothing was written, so the loop does not count the decision in
+// agent_interventions_applied_total (UC-040 A11, D-A9, #1681).
+type ActionApplier interface {
+	ApplyReported(context.Context, Decision) (applied bool, err error)
+}
+
 // FlagSource resolves the agent control flags for a single decision cycle.
 // *flags.Flags satisfies it; tests supply a fake.
 type FlagSource interface {
@@ -818,23 +827,6 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	}
 
 	state.recordDispatched(d, cost)
-	// Intervention-effect MEASUREMENT (#918): stamp a baseline of this game's
-	// fitness/objective signals NOW (the same fitness.evaluated quantities the decision
-	// span carries) and schedule a follow-up sample after the window to measure the
-	// delta, attributed to a dispatch-unique intervention id. This closes the game-path
-	// measurement loop the infra path already has (fitness->rollback). It is MEASUREMENT
-	// ONLY — it never reverts the intervention. Scheduled only for DISPATCHED decisions
-	// (a blocked one never moved the game). The id is stamped on this decision span so a
-	// Jaeger query joins decision->effect; "" means no sample was scheduled (effect
-	// measurement un-wired, no baseline signals this cycle, or the pending cap reached) —
-	// then the decision span simply carries no effect id. Reuses state.FitnessEvaluated,
-	// which OnEvaluate lifted from this cycle's engine evaluation, and the live
-	// thresholds from this cycle's snapshot, so baseline and follow-up sample the SAME
-	// fitness functions against the SAME thresholds. Off the hot path: a cheap map copy
-	// plus a goroutine + timer (bounded, leak-safe via effectWG + rootCtx).
-	if id := l.scheduleEffectSample(dCtx, c, d, state.FitnessEvaluated, fitnessThresholds(snapshot.Fitness)); id != "" {
-		dSpan.SetAttributes(attribute.String(AttrDecisionInterventionID, id))
-	}
 	// Feed the DISPATCHED outcome into this game's #916 rolling narrative timeline
 	// (#945): recorded BEFORE the action sink applies it (it passed every gate, so it
 	// IS dispatched regardless of a downstream apply error — the timeline tracks the
@@ -848,7 +840,8 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// BR-011): the sink needs it so end_game can never end another game (#1310).
 	addressed := d
 	addressed.GameID = c.SessionID
-	if err := l.Actions.Apply(dCtx, addressed); err != nil {
+	applied, err := applyAction(dCtx, l.Actions, addressed)
+	if err != nil {
 		aSpan.RecordError(err)
 		// semconv.ErrorType derives the low-cardinality error class from the
 		// Go error's dynamic type, per the error.type convention.
@@ -859,9 +852,41 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		return
 	}
 	// Apply succeeded: count the intervention as applied (#790) — the numerator for
-	// the dashboard's applied-rate panel. Only a clean Apply increments this; an
-	// apply error returns above so a failed dispatch is NOT counted as applied.
+	// the dashboard's applied-rate panel. Only a clean Apply that wrote something
+	// increments this: an apply error returns above, and a gated no-op
+	// (interventions_enabled off, UC-040 A11) is not counted (#1681).
+	if !applied {
+		return
+	}
 	l.recordInterventionApplied(ctx, d.Intervention)
+	// Intervention-effect MEASUREMENT (#918): stamp a baseline of this game's
+	// fitness/objective signals NOW (the same fitness.evaluated quantities the decision
+	// span carries) and schedule a follow-up sample after the window to measure the
+	// delta, attributed to a dispatch-unique intervention id. This closes the game-path
+	// measurement loop the infra path already has (fitness->rollback). It is MEASUREMENT
+	// ONLY — it never reverts the intervention. Scheduled only for WRITTEN decisions:
+	// a blocked one, a gated no-op (interventions_enabled off) and a failed write
+	// never moved the game, so they get no sample and no id (#1728 review). The decision
+	// span is still open here, so the id lands on it. The id is stamped on this decision span so a
+	// Jaeger query joins decision->effect; "" means no sample was scheduled (effect
+	// measurement un-wired, no baseline signals this cycle, or the pending cap reached) —
+	// then the decision span simply carries no effect id. Reuses state.FitnessEvaluated,
+	// which OnEvaluate lifted from this cycle's engine evaluation, and the live
+	// thresholds from this cycle's snapshot, so baseline and follow-up sample the SAME
+	// fitness functions against the SAME thresholds. Off the hot path: a cheap map copy
+	// plus a goroutine + timer (bounded, leak-safe via effectWG + rootCtx).
+	if id := l.scheduleEffectSample(dCtx, c, d, state.FitnessEvaluated, fitnessThresholds(snapshot.Fitness)); id != "" {
+		dSpan.SetAttributes(attribute.String(AttrDecisionInterventionID, id))
+	}
+}
+
+// applyAction applies d through sink and reports whether anything was written. A
+// sink without the ActionApplier seam always writes on a nil error.
+func applyAction(ctx context.Context, sink ActionSink, d Decision) (applied bool, err error) {
+	if ap, ok := sink.(ActionApplier); ok {
+		return ap.ApplyReported(ctx, d)
+	}
+	return true, sink.Apply(ctx, d)
 }
 
 // emitDisabledSpan emits the kill-switch trace for a cycle where the existence

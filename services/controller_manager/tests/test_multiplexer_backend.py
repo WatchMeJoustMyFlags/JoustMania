@@ -3,6 +3,7 @@ Unit tests for MultiplexerBackend — composite wrapper that routes
 per-controller operations through ControllerIOAdapter instances.
 """
 
+import asyncio
 import sys
 import threading
 from pathlib import Path
@@ -223,15 +224,15 @@ class TestControllerInfoSeriesRemoval:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @pytest.mark.asyncio
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    async def test_metrics_update_after_disconnect_does_not_resurrect_series(self, mock_metrics):
-        """A discovery pass holding a pre-disconnect snapshot must not re-export the gone serial."""
+    async def test_metrics_update_after_shutdown_does_not_resurrect_series(self, mock_metrics):
+        """A discovery pass holding a pre-shutdown snapshot must not re-export the gone serial."""
         a1 = _make_adapter("mock", serials=["AA:AA"])
         a1.get_adapter_for_serial.return_value = "hci0"
         mux = MultiplexerBackend(adapters=[a1])
         mux.get_connected_controllers()
         stale_seen = dict(mux._serial_to_adapter)
 
-        await mux.disconnect_controller("AA:AA")
+        await mux.shutdown()
         mock_metrics.controller_backend_info.labels.reset_mock()
         mock_metrics.controller_adapter_info.labels.reset_mock()
         mux._update_controller_metrics(stale_seen)
@@ -240,20 +241,6 @@ class TestControllerInfoSeriesRemoval:
         mock_metrics.controller_adapter_info.labels.assert_not_called()
         assert "AA:AA" not in mux._last_backend
         assert "AA:AA" not in mux._last_adapter
-
-    @pytest.mark.uc("UC-035", flow="main", steps=[6])
-    @pytest.mark.asyncio
-    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    async def test_disconnect_removes_adapter_and_backend_series(self, mock_metrics):
-        a1 = _make_adapter("mock", serials=["AA:AA"])
-        a1.get_adapter_for_serial.return_value = "hci0"
-        mux = MultiplexerBackend(adapters=[a1])
-        mux.get_connected_controllers()
-
-        await mux.disconnect_controller("AA:AA")
-
-        mock_metrics.controller_adapter_info.remove.assert_called_once_with("AA:AA", "hci0")
-        mock_metrics.controller_backend_info.remove.assert_called_once_with("AA:AA", "mock")
 
 
 class TestMultiplexerRouting:
@@ -516,73 +503,10 @@ class TestMultiplexerShutdown:
         a2.close_all.assert_called_once()
 
 
-class TestMultiplexerConnectDisconnect:
-    @pytest.mark.asyncio
-    async def test_connect_tries_adapters(self):
-        a1 = _make_adapter()
-        a2 = _make_adapter()
-        a1.open.return_value = False
-        a2.open.return_value = True
-        mux = MultiplexerBackend(adapters=[a1, a2])
-
-        result = await mux.connect_controller("SERIAL01")
-
-        assert result is True
-        a1.open.assert_called_once_with("SERIAL01")
-        a2.open.assert_called_once_with("SERIAL01")
-
-    @pytest.mark.asyncio
-    async def test_connect_returns_false_if_none_succeed(self):
-        a1 = _make_adapter()
-        a1.open.return_value = False
-        mux = MultiplexerBackend(adapters=[a1])
-
-        result = await mux.connect_controller("SERIAL01")
-
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_connect_stops_on_first_success(self):
-        a1 = _make_adapter()
-        a2 = _make_adapter()
-        a1.open.return_value = True
-        mux = MultiplexerBackend(adapters=[a1, a2])
-
-        await mux.connect_controller("SERIAL01")
-
-        a2.open.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    async def test_disconnect_cleans_up_state(self, mock_metrics):
-        a1 = _make_adapter(serials=["AA:AA"])
-        mux = MultiplexerBackend(adapters=[a1])
-        mux.get_connected_controllers()
-        mux._led_colors["AA:AA"] = (255, 0, 0)
-        mux._rumble["AA:AA"] = 64
-
-        result = await mux.disconnect_controller("AA:AA")
-
-        assert result is True
-        a1.close.assert_called_once_with("AA:AA")
-        assert "AA:AA" not in mux._serial_to_adapter
-        assert "AA:AA" not in mux._led_colors
-        assert "AA:AA" not in mux._rumble
-
-    @pytest.mark.asyncio
-    async def test_disconnect_unknown_returns_false(self):
-        a1 = _make_adapter()
-        mux = MultiplexerBackend(adapters=[a1])
-
-        result = await mux.disconnect_controller("ZZ:ZZ")
-
-        assert result is False
-
-
-class TestRoutingTableDiscoveryRace:
-    """#1478: discovery builds and swaps _serial_to_adapter in a worker thread
-    while connect/disconnect change it on the event loop. The swap must merge
-    those changes, never overwrite them. Interleaving is forced with events."""
+class TestShutdownDuringDiscovery:
+    """#1630: discovery builds the routing table in a worker thread. A shutdown()
+    that lands while a pass is running must not have that pass reinstall routes
+    to the adapters it just closed. The interleaving is forced with events."""
 
     _METRICS = "services.controller_manager.multiplexer.multiplexer_backend.metrics"
 
@@ -605,93 +529,49 @@ class TestRoutingTableDiscoveryRace:
         adapter.discover.side_effect = discover
         return adapter, gate, in_discover, release
 
-    @staticmethod
-    def _run_pass(mux: MultiplexerBackend) -> tuple[threading.Thread, dict]:
+    @pytest.mark.uc("UC-002", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_pass_finishing_after_shutdown_installs_no_routes(self):
+        adapter, gate, in_discover, release = self._gated_adapter(["AA:AA"])
+        mux = MultiplexerBackend(adapters=[adapter])
         result: dict = {}
-        worker = threading.Thread(target=lambda: result.update(serials=mux.get_connected_controllers()))
-        worker.start()
-        return worker, result
-
-    @pytest.mark.uc("UC-002", flow="main", steps=[3])
-    @pytest.mark.asyncio
-    async def test_connect_during_discovery_swap_is_not_lost(self):
-        adapter, gate, in_discover, release = self._gated_adapter(["AA:AA"])
-        mux = MultiplexerBackend(adapters=[adapter])
         with patch(self._METRICS, autospec=True):
             gate["armed"] = True
-            worker, result = self._run_pass(mux)
+            worker = threading.Thread(target=lambda: result.update(serials=mux.get_connected_controllers()))
+            worker.start()
             assert in_discover.wait(timeout=5)
 
-            # Discovery has already enumerated without BB:BB; connect it now.
-            assert await mux.connect_controller("BB:BB") is True
+            # The pass has enumerated (and opened) AA:AA; shut down now.
+            await mux.shutdown()
+            adapter.close.reset_mock()
 
             release.set()
             worker.join(timeout=5)
 
         assert not worker.is_alive()
-        assert mux._serial_to_adapter.get("BB:BB") is adapter
-        assert sorted(result["serials"]) == ["AA:AA", "BB:BB"]
-
-    @pytest.mark.uc("UC-002", flow="A1", steps=[1])
-    @pytest.mark.asyncio
-    async def test_disconnect_during_discovery_swap_is_not_revived(self):
-        adapter, gate, in_discover, release = self._gated_adapter(["AA:AA", "BB:BB"])
-        mux = MultiplexerBackend(adapters=[adapter])
-        with patch(self._METRICS, autospec=True):
-            mux.get_connected_controllers()
-            mux._led_colors["BB:BB"] = (255, 0, 0)
-
-            gate["armed"] = True
-            worker, result = self._run_pass(mux)
-            assert in_discover.wait(timeout=5)
-
-            # Discovery's result still holds BB:BB; the disconnect must win.
-            assert await mux.disconnect_controller("BB:BB") is True
-
-            release.set()
-            worker.join(timeout=5)
-
-        assert not worker.is_alive()
-        assert "BB:BB" not in mux._serial_to_adapter
-        assert "BB:BB" not in mux._led_colors
-        assert result["serials"] == ["AA:AA"]
+        assert result["serials"] == []
+        assert mux._serial_to_adapter == {}
+        assert await mux.get_controller_state("AA:AA") is None
+        # The handle the pass held after close_all() is closed again.
+        adapter.close.assert_called_once_with("AA:AA")
 
     @pytest.mark.uc("UC-002", flow="main", steps=[3])
-    @pytest.mark.asyncio
-    async def test_change_merged_by_one_pass_does_not_override_the_next(self):
-        """A disconnect only wins over the pass it raced; later passes are authoritative."""
-        adapter, gate, in_discover, release = self._gated_adapter(["AA:AA"])
-        mux = MultiplexerBackend(adapters=[adapter])
-        with patch(self._METRICS, autospec=True):
-            mux.get_connected_controllers()
-            gate["armed"] = True
-            worker, _ = self._run_pass(mux)
-            assert in_discover.wait(timeout=5)
-            assert await mux.disconnect_controller("AA:AA") is True
-            release.set()
-            worker.join(timeout=5)
-            assert "AA:AA" not in mux._serial_to_adapter
-
-            gate["armed"] = False
-            result = mux.get_connected_controllers()
-
-        assert result == ["AA:AA"]
-
-    @pytest.mark.uc("UC-002", flow="main", steps=[3])
-    @pytest.mark.asyncio
-    async def test_change_between_passes_does_not_override_next_discovery(self):
-        """Changes made before a pass starts are not merged over that pass's result."""
+    def test_no_discovery_after_shutdown(self):
         adapter, _gate, _in_discover, _release = self._gated_adapter(["AA:AA"])
         mux = MultiplexerBackend(adapters=[adapter])
+        asyncio.run(mux.shutdown())
+
+        assert mux.get_connected_controllers() == []
+        adapter.discover.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_initialize_after_shutdown_reopens(self):
+        adapter, _gate, _in_discover, _release = self._gated_adapter(["AA:AA"])
+        mux = MultiplexerBackend(adapters=[adapter])
+        await mux.shutdown()
+        await mux.initialize()
         with patch(self._METRICS, autospec=True):
-            mux.get_connected_controllers()
-            assert await mux.disconnect_controller("AA:AA") is True
-
-            # The adapter still reports AA:AA: discovery is authoritative again.
-            result = mux.get_connected_controllers()
-
-        assert result == ["AA:AA"]
-        assert mux._serial_to_adapter.get("AA:AA") is adapter
+            assert mux.get_connected_controllers() == ["AA:AA"]
 
 
 class TestMultiplexerScanControllers:

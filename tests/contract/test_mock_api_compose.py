@@ -57,3 +57,19 @@ def test_port_parser_reads_both_syntaxes(entry, expected):
 @pytest.mark.uc("UC-003", cond=["Post-F-1"])
 def test_base_compose_does_not_publish_the_mock_api_port():
     assert not _publishes_mock_api(_published_ports(ic.COMPOSE_FILE))
+
+
+@pytest.mark.uc("UC-003", cond=["Post-F-1"])
+def test_override_binds_the_mock_api_to_loopback_only():
+    """#1628: the mock control API has no auth, so it must not listen on the LAN."""
+    entries = [
+        e
+        for e in _published_ports(OVERRIDE_FILE)
+        if _container_port(e) == MOCK_API_PORT
+    ]
+    assert entries
+    for entry in entries:
+        if isinstance(entry, dict):
+            assert entry.get("host_ip") == "127.0.0.1"
+        else:
+            assert str(entry).startswith("127.0.0.1:")

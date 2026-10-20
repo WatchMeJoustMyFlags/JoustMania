@@ -110,8 +110,6 @@ Used by the servicer. `MultiplexerBackend` implements this:
 class ControllerBackend(ABC):
     async def initialize(self) -> bool
     async def scan_controllers(self) -> list[dict]
-    async def connect_controller(self, address: str) -> bool
-    async def disconnect_controller(self, serial: str) -> bool
     async def get_controller_state(self, serial: str) -> dict | None
     async def set_led_color(self, serial: str, r: int, g: int, b: int) -> bool
     async def set_rumble(self, serial: str, intensity: int) -> bool

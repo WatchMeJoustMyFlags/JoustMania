@@ -11,7 +11,7 @@ controller, so it is governed by the ``pairing.bluez_restart_mode`` flag:
 - ``never`` (fallback when flagd is unreachable): never restart.
 - ``always``: restart after every successful pairing (pre-#1446 behaviour).
 
-A restart ends the bluetoothctl agent session (#632), so the pairing agent is
+A restart drops BlueZ's agent registration (#632), so the pairing agent is
 registered again after every restart.
 
 The primary game's state comes from the game coordinator's ``GetGameState``
@@ -78,11 +78,11 @@ async def primary_game_busy() -> bool:
 async def restart_bluetoothd() -> None:
     """Restart bluetooth.service through systemd's D-Bus API, let it settle, re-register the agent.
 
-    The restart ends the bluetoothctl agent session (#632); without a new one a
+    The restart drops BlueZ's agent registration (#632); without a new one a
     ZCM2 has no PIN agent. Once systemd has accepted the restart, the agent is
     registered again even if the wait is cut short. When ``RestartUnit`` itself
     fails, no job was queued and bluetoothd keeps running with the current agent
-    session, so the agent is left alone: a new one would only open a window
+    registration, so the agent is left alone: a new one would only open a window
     without any agent.
     """
     await bluez_dbus.restart_systemd_unit("bluetooth.service")

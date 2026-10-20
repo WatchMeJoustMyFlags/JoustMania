@@ -376,6 +376,9 @@ func newRemoteHarness(t *testing.T, snap flags.Snapshot, be decide.Backend) remo
 	// other tests' goleak checks.
 	root, cancel := context.WithCancel(context.Background())
 	l.SetRootContext(root)
+	// A dispatched remote decision schedules an effect sample (#1699) that
+	// AwaitInflight joins: a short window keeps h.run from waiting the default 20 s.
+	l.SetEffectWindow(time.Millisecond)
 	t.Cleanup(func() {
 		cancel()
 		l.AwaitInflight()
