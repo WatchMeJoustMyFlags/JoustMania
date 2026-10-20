@@ -1074,28 +1074,28 @@ gates, reaches the real `Writer`, and completes the `agent.action` span — all
 without touching the game. Revert with `scripts/flags.sh clear agent
 interventions_allowed` (back to the baseline `ambient`) or set `none`.
 
-### Lifecycle flags — live via OpenFeature config-change (#766 F5, #927)
+### Lifecycle flags — live via a 1 s reload (#766 F5, #927, #1709)
 
 The agent's lifecycle and throttle calibration values live in the flagd `agent`
 domain ([`services/flagd/agent.json`](../flagd/agent.json)). Like the four
-decision-cycle flag layers above they are **live** — but via a
-different mechanism. #766 F5 originally read them once at startup, so retuning
-the store TTLs / eviction cadence / throttle needed a restart. **#927 makes them
-live** by wiring the **OpenFeature provider's configuration-change event
-listener** (`openfeature.ProviderConfigChange`, the mechanism the maintainer
-requested): flagd emits a config-change when its source (the flag service's
-sync stream) changes, the Go SDK
-surfaces the event, and a domain-scoped handler re-evaluates these four flags
-into a shared, concurrency-safe `flags.LifecycleHolder`
-([`flags/holder.go`](flags/holder.go)). The consumers read the holder on their
-hot path — the GameContext store reads the TTLs at eviction time, `main.go`'s
-eviction ticker re-reads (and `Reset`s to) the interval each loop, and the
-decision loop reads the throttle in `shouldLog()` — so **changing one takes
-effect with no agent restart**, and **without** polling the flag client per decision
-cycle (a holder read is a lock-free atomic load; only the rare config-change
-event re-reads flagd). The holder is **primed once at startup**, so values are
-correct before any event arrives; if flagd is not yet reachable each value falls
-back to its safe default, which reproduces the former hardcoded constant exactly.
+decision-cycle flag layers above they are **live**, but via a different
+mechanism. #766 F5 originally read them once at startup, so retuning the store
+TTLs / eviction cadence / throttle needed a restart. #927 made them live through
+the OpenFeature configuration-change listener (`openfeature.ProviderConfigChange`).
+Since #1709 the agent reads flagd **without the RPC resolver's cache** (the cache
+was invalidated only by that event stream, which could wedge for good and keep
+the kill switch stale), and the uncached resolver emits no configuration-change
+events. So `LifecycleHolder.Poll` re-evaluates these four flags every
+`LifecycleReloadInterval` (1 s) into a shared, concurrency-safe
+`flags.LifecycleHolder` ([`flags/holder.go`](flags/holder.go)); the #927 handler
+stays registered for a provider that emits the event. The consumers read the
+holder on their hot path (the GameContext store reads the TTLs at eviction time,
+`main.go`'s eviction ticker re-reads (and `Reset`s to) the interval each loop,
+and the decision loop reads the throttle in `shouldLog()`), so **changing one
+takes effect within about a second, with no agent restart** (a holder read is a
+lock-free atomic load). The holder is **primed once at startup**; if flagd is not
+yet reachable each value falls back to its safe default, which reproduces the
+former hardcoded constant exactly.
 
 | Flag | Default | Configures |
 |------|---------|------------|
@@ -1105,8 +1105,8 @@ back to its safe default, which reproduces the former hardcoded constant exactly
 | `decision.throttle_seconds` | `1` | How often the `agent.evaluate` log line and the `agent.disabled` span are emitted |
 
 A non-positive value for any of these falls back to its default (a zero TTL or
-ticker interval would be unsafe), both at startup and on every config change, so a
-transient bad flag read during a config-change can never collapse a TTL.
+ticker interval would be unsafe), both at startup and on every reload, so a
+transient bad flag read can never collapse a TTL.
 
 These four flags are not in the flag service's mutable registry: a change is a
 reviewed edit of the baseline `services/flagd/agent.json` plus `scripts/flags.sh

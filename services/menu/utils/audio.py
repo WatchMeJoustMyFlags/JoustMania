@@ -104,7 +104,7 @@ class AudioHelper:
             )
             logger.debug(f"Played sound: {sound_name}")
         except Exception as e:
-            logger.debug(f"Could not play sound {sound}: {e}")
+            logger.warning(f"Could not play sound {sound}: {e}")
 
     async def play_voice(self, voice: str | Sound, volume: float | None = None) -> None:
         """
