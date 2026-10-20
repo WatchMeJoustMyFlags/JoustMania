@@ -63,6 +63,9 @@ def _configure_agent() -> None:
     fs = flag_service_default()
     fs.put(AGENT, "enabled", variant="on")
     fs.put(AGENT, "experiments_enabled", variant="on")
+    # The text-backend model is the inference.model flag since #1788: the flag wins
+    # over AGENT_INFERENCE_MODEL (FR-151), so the fake's model is set here.
+    fs.put(AGENT, "inference.model", value=FAKE_CLAUDE_MODEL)
 
 
 def _wait_flags_served(stack) -> None:
@@ -72,6 +75,7 @@ def _wait_flags_served(stack) -> None:
             lambda: (
                 client.get_boolean_value("experiments_enabled", False, ctx) is True
                 and client.get_string_value("llm.eligible_game_kinds", "", ctx) == "real"
+                and client.get_string_value("inference.model", "", ctx) == FAKE_CLAUDE_MODEL
             ),
             rewrite=_configure_agent,
         )

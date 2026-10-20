@@ -22,7 +22,7 @@ func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard
 func TestSelectInferenceBackend_DefaultIsStub(t *testing.T) {
 	t.Setenv("AGENT_INFERENCE_BACKEND", "") // unset/empty == stub
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-	backend, name := selectInferenceBackend(quietLogger())
+	backend, name := selectInferenceBackend(quietLogger(), nil)
 	if backend != nil || name != "stub" {
 		t.Errorf("default = (%v, %q), want (nil, stub)", backend != nil, name)
 	}
@@ -33,7 +33,7 @@ func TestSelectInferenceBackend_UnknownValueFailsSafeToStub(t *testing.T) {
 	for _, v := range []string{"gpt-9000", "openai"} { // openai was retired in #1234
 		t.Setenv("AGENT_INFERENCE_BACKEND", v)
 		t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-		backend, name := selectInferenceBackend(quietLogger())
+		backend, name := selectInferenceBackend(quietLogger(), nil)
 		if backend != nil || name != "stub" {
 			t.Errorf("%s = (%v, %q), want (nil, stub)", v, backend != nil, name)
 		}
@@ -44,7 +44,7 @@ func TestSelectInferenceBackend_UnknownValueFailsSafeToStub(t *testing.T) {
 func TestSelectInferenceBackend_ClaudeWithoutKeyIsStub(t *testing.T) {
 	t.Setenv("AGENT_INFERENCE_BACKEND", "claude")
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	backend, name := selectInferenceBackend(quietLogger())
+	backend, name := selectInferenceBackend(quietLogger(), nil)
 	if backend != nil || name != "stub" {
 		t.Errorf("claude without key = (%v, %q), want (nil, stub)", backend != nil, name)
 	}
@@ -55,7 +55,7 @@ func TestSelectInferenceBackend_ClaudeSelectsRealClient(t *testing.T) {
 	t.Setenv("AGENT_INFERENCE_BACKEND", "Claude") // case-insensitive
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 	t.Setenv("AGENT_INFERENCE_MODEL", "claude-sonnet-5-5")
-	backend, name := selectInferenceBackend(quietLogger())
+	backend, name := selectInferenceBackend(quietLogger(), nil)
 	if backend == nil || name != "claude" {
 		t.Fatalf("claude = (%v, %q), want a real client", backend != nil, name)
 	}
@@ -137,7 +137,7 @@ func TestSelectInferenceBackend_BaseURL(t *testing.T) {
 			t.Setenv("AGENT_INFERENCE_BACKEND", "claude")
 			t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 			t.Setenv("AGENT_INFERENCE_BASE_URL", tc.url)
-			backend, name := selectInferenceBackend(quietLogger())
+			backend, name := selectInferenceBackend(quietLogger(), nil)
 			if tc.wantBase == "" {
 				if backend != nil || name != "stub" {
 					t.Fatalf("%q = (backend %v, %q), want rejected (nil, stub)", tc.url, backend != nil, name)

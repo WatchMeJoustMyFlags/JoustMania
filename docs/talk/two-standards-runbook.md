@@ -97,7 +97,7 @@ JEV_API_KEY=...                        # Jev, the main in-game backend
 ANTHROPIC_API_KEY=...                  # Claude: in-game backup AND the post-game summary
 AGENT_INFERENCE_BACKEND=claude         # post-game summary (retro) on Claude; default "stub" = capture only
 # DECISION_OPENAI_API_KEY=...          # only for the optional second-vendor beat (6b)
-# AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30 # alternative to the `stage` budget flag, see "Budget"
+# AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30 # optional ceiling on the budget flag (can only lower it), see "Budget"
 ```
 
 The agent reads all of these **once at startup**. Changing one means
@@ -118,15 +118,15 @@ re-check the act/noop beat in rehearsal.
 window): every remote decision (one slot per decision; a Jev act round's two
 HTTP calls count once) and every post-game Claude summary (retro). The cap is
 the `llm.max_requests_per_minute` flag (`conservative` 3, `default` 6,
-`aggressive` 12, `stage` 30), **unless** `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` is
-set: then the env value **replaces** the flag and the flag is ignored
-(`budgetCap`, `services/agent/decision/decision.go`). One game on a remote
+`aggressive` 12, `stage` 30), capped by `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`
+when that is set: the cap is `min(env, flag)`, so the env can only lower the
+flag, never raise it (#1788, `ceilBudget`, `services/agent/decision/llmbudget.go`). One game on a remote
 backend at `decision.min_interval_ms=3000` wants about 15-20 calls a minute,
 so the default budget runs out after six calls: the rest fall back to rules
 with `decide.fallback_reason=llm_budget_exhausted`, and the summary at game end
 finds the budget full. For the talk use the **`stage` variant** (30/min, a live
-flag flip, part of the baseline in section 6), or set the env override to 30;
-set one, not both.
+flag flip, part of the baseline in section 6); leave the env unset or at 30 or
+more, since a lower env value caps `stage`.
 
 ### The second vendor (optional beat 6b: fill in before T-24h or cut it)
 
@@ -626,7 +626,7 @@ gone; the host's persisted admin settings stay):
 | Beat 8: no `agent.llm.retro` span at all | The budget was full at game end: the retro is gated before any span is created | `docker compose logs agent \| grep agent.llm.retro_gated` (`fallback_reason=llm_budget_exhausted`) | `setflag agent llm.max_requests_per_minute stage` (or the env override ≥ 30); show the summary of an earlier game or a captured trace |
 | Beat 8: `agent.llm.retro` with `inference.used=none` | `inference.fallback_reason`: `no_backend_available` = `AGENT_INFERENCE_BACKEND` not `claude` (or the key empty); `agent_disabled` = the kill switch was off when the game ended; `llm_not_eligible` = not a real game | the retro span tags; preflight `AGENT_INFERENCE_BACKEND` line | Env: fix `.env.local`, recreate the agent (before the talk only). Otherwise show the summary of an earlier game |
 | Beat 8: `inference.used=claude` but `llm.retro.parse_ok=false` | The model call failed (timeout, HTTP error, refusal) or the reply did not decode | `llm.infer.error` / `error.type` on the span (status error); log `agent.llm.retro_failed` | Check the uplink (beat 7 option A restored?) and Anthropic credit; show the summary of an earlier game |
-| Beat 8: the summary takes too long | The retro model call is slow (default Opus, effort medium) | `llm.retro.latency_ms` from rehearsal | Show the summary of the game that ended earlier; for the next talk set `AGENT_INFERENCE_MODEL` to a faster model in `.env.local` (**verify in rehearsal**) |
+| Beat 8: the summary takes too long | The retro model call is slow (default Opus, effort medium) | `llm.retro.latency_ms` from rehearsal | Show the summary of the game that ended earlier; for the next talk set the `inference.model` agent flag to a faster model through the flag service (#1788; the `AGENT_INFERENCE_MODEL` env var is only a fallback now) (**verify in rehearsal**) |
 | Vendor budget / credit exhausted (HTTP 429 / 402) | Account limit | Jaeger: `fallback_reason=error`, `error.type` | Switch to the other backend (`backend.sh jev` / `claude`); the fallback itself is a talking point |
 | `fallback_reason=llm_not_eligible` | Game kind is not `real` (a shadow game, or eligibility flag changed) | `game.kind` on the span | Play a menu-started game; `setflag agent llm.eligible_game_kinds real_only` |
 | No new rows at all | No game running, kill switch off, or on `rules` and nothing to decide | Is a game running? `agent-killswitch.sh status` | Start a game; `agent-killswitch.sh on` |

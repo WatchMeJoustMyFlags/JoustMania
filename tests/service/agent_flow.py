@@ -87,6 +87,9 @@ def configure_agent(
     fs.put(AGENT, "decision.openai.model", value=FAKE_MODEL)
     fs.put(AGENT, "decision.openai.timeout_ms", value=DECIDE_TIMEOUT_MS)
     fs.put(AGENT, "decision.min_interval_ms", value=DECIDE_MIN_INTERVAL_MS)
+    # The remote-call budget: since #1788 the env AGENT_LLM_MAX_REQUESTS_PER_MINUTE is
+    # only a ceiling (min(env, flag)), so the flag itself is lifted to `stage` (30).
+    fs.put(AGENT, "llm.max_requests_per_minute", variant="stage")
 
 
 def set_enabled(enabled: bool) -> None:

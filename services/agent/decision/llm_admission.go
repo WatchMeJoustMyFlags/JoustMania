@@ -18,8 +18,8 @@ import (
 //     (default ["real"]), so shadow-game ends never spend the budget that real-game
 //     remote decide calls need (reason llm_not_eligible);
 //   - budget: one slot of the ONE shared global per-minute budget
-//     (llm.max_requests_per_minute, or the AGENT_LLM_MAX_REQUESTS_PER_MINUTE
-//     override when set) that every per-game Loop and the retro also draw from
+//     (llm.max_requests_per_minute, capped by the AGENT_LLM_MAX_REQUESTS_PER_MINUTE
+//     ceiling when set) that every per-game Loop and the retro also draw from
 //     (reason llm_budget_exhausted).
 //
 // A refusal increments agent_llm_gated_total{reason} — the same counter and reason
@@ -28,10 +28,10 @@ import (
 // LLMAdmission admits or gates one model call against the shared LLM call gate.
 // Safe for concurrent use (the budget is mutex-guarded; the rest is read-only).
 type LLMAdmission struct {
-	flags          FlagSource
-	budget         *llmBudget
-	budgetOverride int
-	llmGated       otelmetric.Int64Counter
+	flags         FlagSource
+	budget        *llmBudget
+	budgetCeiling int
+	llmGated      otelmetric.Int64Counter
 	// gatedEvent is the log event name for a refusal: agent.llm.<source>_gated.
 	gatedEvent string
 	log        *slog.Logger
@@ -39,36 +39,33 @@ type LLMAdmission struct {
 }
 
 // NewLLMAdmission builds the gate over the live flag source and the shared budget
-// (the instance main.go injects into every Loop and the retro). budgetOverride > 0
-// replaces llm.max_requests_per_minute as the cap (AGENT_LLM_MAX_REQUESTS_PER_MINUTE,
-// #964); 0 means the flag governs. A nil budget leaves the call ungated by the cap
+// (the instance main.go injects into every Loop and the retro). budgetCeiling > 0
+// caps llm.max_requests_per_minute: the cap is min(ceiling, flag)
+// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE, #1788); 0 means the flag governs. A nil budget leaves the call ungated by the cap
 // (eligibility still applies), mirroring the retro's nil-budget test wiring.
 // source names the caller (e.g. "proposer") and sets the refusal log event to
 // agent.llm.<source>_gated.
-func NewLLMAdmission(src FlagSource, budget *llmBudget, budgetOverride int, source string, log *slog.Logger) *LLMAdmission {
+func NewLLMAdmission(src FlagSource, budget *llmBudget, budgetCeiling int, source string, log *slog.Logger) *LLMAdmission {
 	if log == nil {
 		log = slog.Default()
 	}
-	if budgetOverride < 0 {
-		budgetOverride = 0
+	if budgetCeiling < 0 {
+		budgetCeiling = 0
 	}
 	return &LLMAdmission{
-		flags:          src,
-		budget:         budget,
-		budgetOverride: budgetOverride,
-		llmGated:       defaultLLMGatedCounter(),
-		gatedEvent:     "agent.llm." + source + "_gated",
-		log:            log,
-		now:            time.Now,
+		flags:         src,
+		budget:        budget,
+		budgetCeiling: budgetCeiling,
+		llmGated:      defaultLLMGatedCounter(),
+		gatedEvent:    "agent.llm." + source + "_gated",
+		log:           log,
+		now:           time.Now,
 	}
 }
 
-// budgetCap returns the per-minute cap: the override when set, else the flag value.
+// budgetCap returns the per-minute cap: the flag value, capped by the env ceiling.
 func (a *LLMAdmission) budgetCap(flagValue int) int {
-	if a.budgetOverride > 0 {
-		return a.budgetOverride
-	}
-	return flagValue
+	return ceilBudget(a.budgetCeiling, flagValue)
 }
 
 // Admit reports whether one model call for a game of gameKind may be made now. On

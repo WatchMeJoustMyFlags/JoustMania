@@ -59,8 +59,8 @@ func newInterventionID() string { return uuid.NewString() }
 // dispatched the loop samples the game's fitness signals again to measure the effect
 // (#918). 20s sits in the issue's 15-30s band — long enough for an intervention
 // (shield, sensitivity nudge, audio cue) to move the objective signals, short enough to
-// still attribute the change to that intervention. Override at startup with
-// AGENT_EFFECT_WINDOW_SECONDS (see SetEffectWindow / main.go).
+// still attribute the change to that intervention. Tuned live by the
+// effect.window_seconds agent flag (#1788, see SetEffectWindowSource / tuning.go).
 const DefaultEffectWindow = 20 * time.Second
 
 // maxPendingEffects bounds the in-flight follow-up samples PER LOOP (per game) so a
@@ -76,6 +76,9 @@ type effectSampler struct {
 	// window is the follow-up delay; zero means DefaultEffectWindow. Set by
 	// SetEffectWindow at construction.
 	window time.Duration
+	// windowSource, when set, resolves the window at use time (#1788) and wins
+	// over window.
+	windowSource func() time.Duration
 	// effectWG tracks every in-flight follow-up goroutine so AwaitInflight can join
 	// them at shutdown (no leak) and tests can wait for a sample to land deterministically.
 	effectWG sync.WaitGroup
@@ -96,6 +99,12 @@ type effectSampler struct {
 	afterFunc func(d time.Duration, fn func()) (stop func() bool)
 }
 
+// SetEffectWindowSource makes the loop resolve the follow-up window at use time, on
+// every dispatched intervention (effect.window_seconds, #1788). It wins over
+// SetEffectWindow; a non-positive result falls back to DefaultEffectWindow. Set at
+// construction, before the loop serves.
+func (l *Loop) SetEffectWindowSource(src func() time.Duration) { l.windowSource = src }
+
 // SetEffectWindow overrides the follow-up window (#918). A non-positive value leaves
 // DefaultEffectWindow in place. main.go reads AGENT_EFFECT_WINDOW_SECONDS and passes it
 // here. Set at construction, before the loop serves; not safe to call concurrently with
@@ -110,6 +119,12 @@ func (l *Loop) SetEffectWindow(d time.Duration) {
 // effectWindow returns the configured follow-up window, defaulting to
 // DefaultEffectWindow when unset.
 func (l *Loop) effectWindow() time.Duration {
+	if l.windowSource != nil {
+		if d := l.windowSource(); d > 0 {
+			return d
+		}
+		return DefaultEffectWindow
+	}
 	if l.window <= 0 {
 		return DefaultEffectWindow
 	}
