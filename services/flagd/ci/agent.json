@@ -93,7 +93,8 @@
         "conservative": 3,
         "default": 6,
         "aggressive": 12,
-        "stage": 30
+        "stage": 30,
+        "journey": 600
       },
       "defaultVariant": "default"
     },

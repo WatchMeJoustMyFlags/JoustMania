@@ -524,8 +524,8 @@ Stage values: `decision.backend=rules` (the session start; beat 2 flips to
 bar), `decision.act_confidence_threshold=default` (0.8, claude/openai),
 `decision.min_interval_ms=default` (3000 ms), `decision.claude.timeout_ms=default`
 (5000 ms; `patient` = 8000 only if rehearsal says so), `decision.jev.timeout_ms=default`
-(2500 ms), `llm.max_requests_per_minute=stage` (30/min; or the env override
-≥ 30), `decision.capture_content=on`, `enabled=on`, `experiments_enabled=off`,
+(2500 ms), `llm.max_requests_per_minute=stage` (30/min; the flag sets the budget, a set
+`AGENT_LLM_MAX_REQUESTS_PER_MINUTE` can only lower it), `decision.capture_content=on`, `enabled=on`, `experiments_enabled=off`,
 `interventions_allowed=standard` (all of it: `./scripts/talk-stage.sh reset`).
 
 ---
@@ -582,7 +582,7 @@ both thresholds (`default` and Jev's `gate`), capture `on`, `min_interval_ms`
 `decision.jev.timeout_ms` `default`, `llm.eligible_game_kinds=real_only`,
 `decision.jev.base_url` not left on `blackhole` and the `blackhole` variant
 present). It
-checks the budget (env override ≥ 30, else the flag's value ≥ 30, i.e. `stage`),
+checks the budget (the flag's value ≥ 30, i.e. `stage`, and that a set env ceiling is not below 30),
 that `JEV_API_KEY` and `ANTHROPIC_API_KEY` are present (presence only) and that
 `AGENT_INFERENCE_BACKEND=claude` (WARN otherwise: beat 8 shows a capture-only
 retro). It FAILs when the resolved allow-list holds no perceptible
@@ -619,11 +619,11 @@ gone; the host's persisted admin settings stay):
 | Rows show `~~jev~~ -> rules`, `backend_unavailable` | `JEV_API_KEY` not in the agent container (keys are read at startup) | `talk-preflight.sh` key section | Add the key to `.env.local`, recreate the agent (`... up -d agent`). On stage: flip to the backup, `backend.sh claude` |
 | `~~jev~~ -> rules` with `timeout` or `error` on every row | Jev unreachable or slow from the venue (network, TypeSafe outage, 401 / 429 / 5xx; `error.type` says which) | `error.type` and `decide.latency_ms` on the span | **`backend.sh claude`** (the manual backup; there is no automatic jev -> claude chain). Rules already covered every cycle, so the game never stalled: say so. Try `backend.sh jev` again later |
 | `~~claude~~ -> rules`, `backend_unavailable` | `ANTHROPIC_API_KEY` missing | `talk-preflight.sh` key section | Add it to `.env.local`, recreate the agent; on stage go back to `backend.sh jev` |
-| `fallback_reason=llm_budget_exhausted` after a minute of remote decisions | Global budget spent (decisions + summaries share it); baseline not applied | `talk-preflight.sh` budget line | Without the env override: `setflag agent llm.max_requests_per_minute stage` (live). With `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` set, the flag is ignored: a bigger env value needs an agent recreate; the only live lever is `setflag agent decision.min_interval_ms slow` (10 s cadence) |
+| `fallback_reason=llm_budget_exhausted` after a minute of remote decisions | Global budget spent (decisions + summaries share it); baseline not applied | `talk-preflight.sh` budget line | `setflag agent llm.max_requests_per_minute stage` (live; the flag sets the budget). If `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` is set below 30 it caps the flag: raising it needs an agent recreate, the only live lever is `setflag agent decision.min_interval_ms slow` (10 s cadence) |
 | `fallback_reason=timeout` on Claude | Slow venue network or slow model (`decision.claude.timeout_ms` default 5000 ms; Haiku warm about 2.7-3.0 s, Sonnet about 2.85 s) | `decide.latency_ms` on earlier rows | `setflag agent decision.claude.timeout_ms patient` (8000 ms); stay on haiku; or back to `backend.sh jev` |
 | Jev never acts in beat 2 | The game is calm (gate p_yes below 0.6) | `jev.gate.p_yes` on the stage-1 chat span | Push the players to the edge / let eliminations pile up (mock: `demo_driver.py --scenario death_cascade`); if `jev-latest` changed, `backend.sh jev pinned`. Do not lower the bar on stage unless you say why |
 | `held` never appears in 3a | No open gate during the beat (calm play gives `noop`, not `held`) | `decide.outcome` on recent rows | Keep players near the threshold; narrate the evaluation event of a captured held trace |
-| Beat 8: no `agent.llm.retro` span at all | The budget was full at game end: the retro is gated before any span is created | `docker compose logs agent \| grep agent.llm.retro_gated` (`fallback_reason=llm_budget_exhausted`) | `setflag agent llm.max_requests_per_minute stage` (or the env override ≥ 30); show the summary of an earlier game or a captured trace |
+| Beat 8: no `agent.llm.retro` span at all | The budget was full at game end: the retro is gated before any span is created | `docker compose logs agent \| grep agent.llm.retro_gated` (`fallback_reason=llm_budget_exhausted`) | `setflag agent llm.max_requests_per_minute stage` (an env ceiling below 30 must be raised or unset first); show the summary of an earlier game or a captured trace |
 | Beat 8: `agent.llm.retro` with `inference.used=none` | `inference.fallback_reason`: `no_backend_available` = `AGENT_INFERENCE_BACKEND` not `claude` (or the key empty); `agent_disabled` = the kill switch was off when the game ended; `llm_not_eligible` = not a real game | the retro span tags; preflight `AGENT_INFERENCE_BACKEND` line | Env: fix `.env.local`, recreate the agent (before the talk only). Otherwise show the summary of an earlier game |
 | Beat 8: `inference.used=claude` but `llm.retro.parse_ok=false` | The model call failed (timeout, HTTP error, refusal) or the reply did not decode | `llm.infer.error` / `error.type` on the span (status error); log `agent.llm.retro_failed` | Check the uplink (beat 7 option A restored?) and Anthropic credit; show the summary of an earlier game |
 | Beat 8: the summary takes too long | The retro model call is slow (default Opus, effort medium) | `llm.retro.latency_ms` from rehearsal | Show the summary of the game that ended earlier; for the next talk set the `inference.model` agent flag to a faster model through the flag service (#1788; the `AGENT_INFERENCE_MODEL` env var is only a fallback now) (**verify in rehearsal**) |
@@ -701,7 +701,7 @@ steer the games it runs on its own. Same flags, same traces."
 
 **Cost.** While the fallback is on, Jev / Claude also decide on shadow games
 (up to four at once). All remote calls share the one per-minute budget,
-`llm.max_requests_per_minute` (`stage` 30/min, or the env override), so the
+`llm.max_requests_per_minute` (`stage` 30/min; a set env ceiling can only lower it), so the
 cost is bounded by it; once it is spent, decisions fall back to rules with
 `llm_budget_exhausted`. Turn the fallback off as soon as real controllers are
 back, and always after the talk (`reset` also does it).
