@@ -599,3 +599,40 @@ class TestPlaySoundAllChannelsBusy:
         assert response.success is False
         channel_play.assert_not_called()
         saturation.inc.assert_called_once()
+
+
+class TestStopSound:
+    """UC-020 A5 step 2 (#1586): StopSound cuts a playing effect (the instruction clip) short."""
+
+    @pytest.fixture
+    def servicer(self, mock_audio_servicer):
+        return mock_audio_servicer
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2])
+    async def test_stop_sound_stops_playing_channels_only(self, servicer, mock_grpc_context):
+        from services.audio.servicer import SoundChannel
+
+        playing, idle = SoundChannel(0), SoundChannel(1)
+        playing._playing.set()
+        servicer.audio_manager.channels = [playing, idle]
+        response = await servicer.StopSound(audio_pb2.StopSoundRequest(), mock_grpc_context)
+        assert response.success is True
+        assert response.stopped == 1
+        assert playing.is_playing is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2])
+    async def test_stop_sound_with_nothing_playing_succeeds(self, servicer, mock_grpc_context):
+        servicer.audio_manager.channels = []
+        response = await servicer.StopSound(audio_pb2.StopSoundRequest(), mock_grpc_context)
+        assert response.success is True
+        assert response.stopped == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2])
+    async def test_stop_sound_reports_failure(self, servicer, mock_grpc_context):
+        servicer.audio_manager.stop_sounds = MagicMock(side_effect=RuntimeError("boom"))
+        response = await servicer.StopSound(audio_pb2.StopSoundRequest(), mock_grpc_context)
+        assert response.success is False
+        assert response.error

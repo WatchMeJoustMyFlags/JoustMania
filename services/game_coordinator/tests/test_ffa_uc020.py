@@ -92,6 +92,10 @@ class RecordingAudio:
         self.calls.append(("PlayMusic", request))
         return audio_pb2.PlayMusicResponse(track_id="track-1", success=True)
 
+    async def StopSound(self, request):  # noqa: N802 - gRPC stub name
+        self.calls.append(("StopSound", request))
+        return audio_pb2.StopSoundResponse(success=True)
+
     async def StopMusic(self, request):  # noqa: N802 - gRPC stub name
         self.calls.append(("StopMusic", request))
         return audio_pb2.StopMusicResponse(success=True)

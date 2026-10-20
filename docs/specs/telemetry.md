@@ -67,7 +67,7 @@ Service identities (`OTEL_SERVICE_NAME` / namespace): `controller-manager-servic
 | `grpc.server` (rust-hid) | SERVER | same flag | `services/rust-hid/src/grpc_tracing.rs:105-115` |
 | renamed: `StreamButtonEvents`, `StreamGameplayData` (CM); `PlaySound:{sound}`, `PlayMusic:{dir}`, `ChangeTempo:{x}x`, `SetVolume:{pct}` (audio) | SERVER | | `services/controller_manager/servicer.py` (`StreamButtonEvents`, `StreamGameplayData`); `services/audio/servicer.py` (`PlaySound`, `PlayMusic`, `ChangeTempo`, `SetVolume`) |
 
-Audio span attributes: `PlaySound:{sound}` carries `audio.file`; `PlaySound` and `PlayMusic` carry `audio.muted=true` when `play_audio` is off (read at use time); `PlaySound` carries `audio.silent=true` when `play_audio` is on but the audio hardware is not open yet, so nothing is heard (#1387). `PlaySound` carries `audio.duration_seconds`, the clip length it returns in `PlaySoundResponse.duration_seconds` (0 when nothing is heard; UC-020 A5, #1550).
+Audio span attributes: `PlaySound:{sound}` carries `audio.file`; `PlaySound` and `PlayMusic` carry `audio.muted=true` when `play_audio` is off (read at use time); `PlaySound` carries `audio.silent=true` when `play_audio` is on but the audio hardware is not open yet, so nothing is heard (#1387). `PlaySound` carries `audio.duration_seconds`, the clip length it returns in `PlaySoundResponse.duration_seconds` (0 when nothing is heard; UC-020 A5, #1550). `StopSound` (server span, unrenamed) carries `audio.stopped`, the number of channels it stopped (UC-020 A5, #1586).
 
 connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` client spans only.
 

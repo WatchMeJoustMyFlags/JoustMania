@@ -271,6 +271,66 @@ class TestUC020InstructionsOn:
         assert GameEvent.GAME_WINNER not in types
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2], br=["BR-003"])
+    async def test_force_end_during_wait_stops_the_clip(self, fast_config):  # noqa: F811
+        """A5 step 2 (#1586): a force-end during the clip sends StopSound once, after the clip started."""
+        cm = RecordingControllerManager(num_controllers=3, infinite=True, max_duration=30.0)
+        audio = TimedAudio(clip_seconds=30.0)
+        game, _events = _ffa(audio, cm=cm)
+        flag_patch, init_patch = _patch_flag(_flag_client(True))
+
+        with flag_patch, init_patch:
+            task = asyncio.create_task(game.run())
+            for _ in range(100):
+                if INSTRUCTIONS in audio.sounds():
+                    break
+                await asyncio.sleep(0.02)
+            game.force_end("admin_stop")
+            await asyncio.wait_for(task, timeout=3.0)
+
+        names = [name for name, _ in audio.calls]
+        assert names.count("StopSound") == 1
+        assert names.index("PlaySound") < names.index("StopSound")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2], br=["BR-003"])
+    async def test_stop_sound_failure_does_not_block_the_end(self, fast_config):  # noqa: F811
+        """A5 step 2 (#1586): StopSound failing is logged; the game still ends as force_ended."""
+
+        class StopFailsAudio(TimedAudio):
+            async def StopSound(self, request):  # noqa: N802 - gRPC stub name
+                raise ConnectionError("audio unreachable")
+
+        cm = RecordingControllerManager(num_controllers=3, infinite=True, max_duration=30.0)
+        audio = StopFailsAudio(clip_seconds=30.0)
+        game, events = _ffa(audio, cm=cm)
+        flag_patch, init_patch = _patch_flag(_flag_client(True))
+
+        with flag_patch, init_patch:
+            task = asyncio.create_task(game.run())
+            for _ in range(100):
+                if INSTRUCTIONS in audio.sounds():
+                    break
+                await asyncio.sleep(0.02)
+            game.force_end("admin_stop")
+            await asyncio.wait_for(task, timeout=3.0)
+
+        assert events.get_events_of_type(GameEvent.GAME_ENDED)[0]["outcome"] == "force_ended"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2])
+    async def test_clip_that_finishes_is_not_stopped(self, fast_config):  # noqa: F811
+        """A5 step 2 (#1586): without a force-end the clip plays out and no StopSound is sent."""
+        audio = TimedAudio(clip_seconds=0.1)
+        game, _events = _ffa(audio)
+        flag_patch, init_patch = _patch_flag(_flag_client(True))
+
+        with flag_patch, init_patch:
+            await asyncio.wait_for(game.run(), timeout=10.0)
+
+        assert "StopSound" not in [name for name, _ in audio.calls]
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="A4", steps=[1, 3], br=["BR-003"])
     async def test_force_end_during_colour_assignment_skips_the_start(self, fast_config):  # noqa: F811
         """A4: a force-end before the start (here during colour assignment) skips it; one game_ended, force_ended."""

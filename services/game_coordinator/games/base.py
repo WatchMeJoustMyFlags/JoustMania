@@ -1112,6 +1112,21 @@ class BaseGameMode(ABC):
                 break
             await asyncio.sleep(min(INSTRUCTIONS_POLL_SECONDS, remaining))
 
+        if not self.running:
+            await self._stop_instruction_clip()
+
+    async def _stop_instruction_clip(self) -> None:
+        """Cut the instruction clip short after a force-end (UC-020 A5, #1586).
+
+        Best effort: a failure is logged and never blocks the end.
+        """
+        try:
+            from proto import audio_pb2
+
+            await self.audio_client.StopSound(audio_pb2.StopSoundRequest())
+        except Exception as e:
+            logger.warning(f"Failed to stop the instruction clip after force-end: {e}")
+
     @abstractmethod
     def _get_additional_phases(self) -> list:
         """
