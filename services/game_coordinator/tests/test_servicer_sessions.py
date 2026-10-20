@@ -1607,3 +1607,122 @@ class TestHeadlessStartStream:
         collected = await _collect_stream_events(servicer, request, context, until="player_death", after=_publish)
 
         assert [e.event_type for e in collected] == ["player_death"]
+
+
+class TestFailedStartRetiresSession:
+    """UC-010 A7 / BR-007: a start that fails or is cancelled after admission
+    retires its session like a normal end (#1791), so it never holds the primary
+    slot, its controllers or a shadow-cap slot."""
+
+    @pytest.fixture
+    def servicer(self):
+        return GameCoordinatorServicer()
+
+    @staticmethod
+    def _assert_retired(servicer, game_id):
+        assert game_id not in servicer.sessions
+        assert servicer._primary_game_id is None
+        assert servicer.primary_event_bus.current_game_id == ""
+        # Its controllers are no longer held by any live game.
+        assert servicer._flag_service_live_games() == []
+
+    @staticmethod
+    async def _start_via_stream(servicer, config):
+        request = game_coordinator_pb2.StreamEventsRequest(start_config=config)
+        return [event async for event in servicer.StreamGameEvents(request, MockGrpcContext())]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
+    async def test_start_thread_failure_retires_primary_and_next_start_succeeds(self, servicer):
+        admitted = []
+
+        def _start_fails(session):
+            admitted.append(session.game_id)
+            raise RuntimeError("thread start failed")
+
+        with (
+            patch.object(game_session_mod.GameSession, "start_thread", _start_fails),
+            patch.object(servicer.flag_service, "end") as flag_end,
+        ):
+            collected = await self._start_via_stream(servicer, _config())
+
+        assert [e.event_type for e in collected] == ["game_start_error"]
+        (game_id,) = admitted
+        self._assert_retired(servicer, game_id)
+        flag_end.assert_called_once_with(game_id)
+
+        with _NO_THREAD:
+            ok, next_id = await servicer._start_game_from_config(_config(), _MockSpan())
+        assert ok is True, next_id
+        assert servicer._primary_game_id == next_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
+    async def test_game_start_publish_failure_retires_primary_and_next_start_succeeds(self, servicer):
+        real_publish = servicer.primary_event_bus.publish
+        admitted = []
+
+        async def _publish_fails(event_type, data):
+            if event_type == GameEvent.GAME_START:
+                admitted.append(data["game_id"])
+                raise RuntimeError("publish failed")
+            return await real_publish(event_type, data)
+
+        with _NO_THREAD, patch.object(servicer.primary_event_bus, "publish", _publish_fails):
+            collected = await self._start_via_stream(servicer, _config())
+
+        assert [e.event_type for e in collected] == ["game_start_error"]
+        assert "publish failed" in collected[0].data["error"]
+        (game_id,) = admitted
+        self._assert_retired(servicer, game_id)
+
+        with _NO_THREAD:
+            ok, next_id = await servicer._start_game_from_config(_config(), _MockSpan())
+        assert ok is True, next_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
+    async def test_cancel_during_register_retires_primary_and_propagates(self, servicer):
+        register_entered = asyncio.Event()
+
+        async def _register_blocks(_record):
+            register_entered.set()
+            await asyncio.Event().wait()
+
+        with (
+            _NO_THREAD,
+            patch.object(servicer.flag_service, "register", _register_blocks),
+            patch.object(servicer.flag_service, "end") as flag_end,
+        ):
+            start = asyncio.create_task(servicer._start_game_from_config(_config(), _MockSpan()))
+            async with asyncio.timeout(2.0):
+                await register_entered.wait()
+            game_id = servicer._primary_game_id
+            assert game_id in servicer.sessions
+            start.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await start
+
+        self._assert_retired(servicer, game_id)
+        flag_end.assert_called_once_with(game_id)
+
+        with _NO_THREAD:
+            ok, next_id = await servicer._start_game_from_config(_config(), _MockSpan())
+        assert ok is True, next_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
+    async def test_failed_shadow_start_frees_its_shadow_cap_slot(self, servicer):
+        def _start_fails(_session):
+            raise RuntimeError("thread start failed")
+
+        with _caps(concurrent=8, shadow=1):
+            with patch.object(game_session_mod.GameSession, "start_thread", _start_fails):
+                ok, error = await servicer._start_game_from_config(_shadow_config(), _MockSpan())
+            assert ok is False
+            assert "thread start failed" in error
+            assert servicer.sessions == {}
+
+            with _NO_THREAD:
+                ok, game_id = await servicer._start_game_from_config(_shadow_config(), _MockSpan())
+        assert ok is True, game_id
