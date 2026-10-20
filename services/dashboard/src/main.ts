@@ -15,6 +15,8 @@ import { AgentView } from "./components/AgentView.js";
 import { DecideStore, fetchAgentView, fetchDecideFeed } from "./agent.js";
 import { createPoller } from "./poller.js";
 import { ShieldStore } from "./shield.js";
+import { reduceGameEvent } from "./gameEvents.js";
+import { onAgentPollFailed, onDecidePollFailed, onExperimentsPollFailed } from "./degrade.js";
 import { FollowTracker, followBanner, visibleTiles } from "./follow.js";
 import { loadModeChoices, startGameEvent } from "./modes.js";
 import type { Poller } from "./poller.js";
@@ -52,6 +54,7 @@ interface AppState {
   controllers: Map<string, GameplayData>;
   gameState: string;
   alivePlayers: number;
+  winner: string | null;
   totalPlayers: number;
   events: string[];
   isStreaming: boolean;
@@ -61,6 +64,7 @@ const state: AppState = {
   controllers: new Map(),
   gameState: "Idle",
   alivePlayers: 0,
+  winner: null,
   totalPlayers: 0,
   events: [],
   isStreaming: false,
@@ -232,11 +236,7 @@ function startExperimentsPolling() {
       console.error("Experiments poll error:", error);
       // Keep whatever is on screen if we've rendered before (and flag it stale);
       // otherwise show why.
-      if (experimentsView.rendered) {
-        experimentsView.markStale();
-      } else {
-        experimentsView.setError("Could not reach Loki for experiment telemetry.");
-      }
+      onExperimentsPollFailed(experimentsView);
     } finally {
       // Only reschedule while visible; visibilitychange restarts an idle loop.
       if (!document.hidden) {
@@ -281,11 +281,7 @@ function startAgentPolling() {
       agentView.render(view);
     } catch (error) {
       console.error("Agent poll error:", error);
-      if (agentView.rendered) {
-        agentView.markStale();
-      } else {
-        agentView.setError("Could not reach Loki for agent telemetry.");
-      }
+      onAgentPollFailed(agentView);
     } finally {
       if (!document.hidden) {
         agentPollTimer = setTimeout(tick, AGENT_POLL_MS);
@@ -327,9 +323,7 @@ function startDecidePolling() {
     },
     onError: (error) => {
       console.error("Decide feed poll error:", error);
-      if (!agentView.decideHasRendered) {
-        agentView.setDecideError("Could not reach Jaeger for agent.decide spans.");
-      }
+      onDecidePollFailed(agentView);
     },
   });
 
@@ -452,51 +446,15 @@ function startFollowPolling() {
 
 // Handle game events
 function handleGameEvent(event: { eventType: string; data: { [key: string]: string }; timestamp: bigint }) {
-  const eventType = event.eventType;
-  const data = event.data;
-
   // Shield badges (UC-040 A16 / A17): the next controller frame re-renders them.
   shields.apply(event);
 
-  // Update state based on event type
-  switch (eventType) {
-    case "game_start":
-      state.gameState = "Running";
-      state.alivePlayers = state.totalPlayers;
-      controls.setGameRunning(true);
-      addEvent("Game started!");
-      break;
-
-    case "game_end": {
-      state.gameState = "Ended";
-      controls.setGameRunning(false);
-      const winner = data["winner"] || "Unknown";
-      addEvent(`Game ended! Winner: ${winner}`);
-      break;
-    }
-
-    case "player_death": {
-      state.alivePlayers = Math.max(0, state.alivePlayers - 1);
-      const player = data["serial"]?.slice(-4) || "???";
-      addEvent(`Player ${player} eliminated`);
-      break;
-    }
-
-    case "player_shielded": {
-      const player = data["serial"]?.slice(-4) || "???";
-      const kind = data["kind"] === "partial" ? "partial shield" : "shield";
-      addEvent(`Agent: ${kind} for ${player} (${data["seconds"] ?? "?"}s)`);
-      break;
-    }
-
-    case "countdown":
-      state.gameState = "Starting";
-      addEvent("Countdown...");
-      break;
-
-    default:
-      console.log("Unknown event:", eventType, data);
-  }
+  const effect = reduceGameEvent(state, event);
+  state.gameState = effect.state.gameState;
+  state.alivePlayers = effect.state.alivePlayers;
+  state.winner = effect.state.winner;
+  if (effect.gameRunning !== null) controls.setGameRunning(effect.gameRunning);
+  if (effect.feedLine !== null) addEvent(effect.feedLine);
 
   gameStatus.updateState(state.gameState);
   gameStatus.updatePlayerCount(state.totalPlayers, state.alivePlayers);
