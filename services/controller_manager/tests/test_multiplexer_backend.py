@@ -1309,7 +1309,6 @@ class TestRoutingSwitchKeepsTheController:
         from services.controller_manager.feedback_manager import FeedbackManager
         from services.controller_manager.monitoring import ControllerMonitoring
         from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
-        from services.controller_manager.state_cache import StateCache
 
         def adapter(adapter_type):
             spec = create_autospec(ControllerIOAdapter, instance=True)
@@ -1332,7 +1331,6 @@ class TestRoutingSwitchKeepsTheController:
             tracked_controllers=tracked,
             controller_states={},
             button_detector=button_detector,
-            state_cache_manager=create_autospec(StateCache, instance=True),
             feedback_manager=create_autospec(FeedbackManager, instance=True),
             monitoring=create_autospec(ControllerMonitoring, instance=True),
             rescan_timer=rescan_timer,

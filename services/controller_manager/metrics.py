@@ -151,12 +151,6 @@ button_events_total = Counter(
     ["serial", "button", "action"],  # action: 'press' or 'release'
 )
 
-# Cache metrics (Phase 18 validation)
-state_cache_hits_total = Counter("controller_state_cache_hits_total", "Number of state cache hits (no rebuild needed)")
-
-state_cache_misses_total = Counter(
-    "controller_state_cache_misses_total", "Number of state cache misses (rebuild required)"
-)
 
 # System metrics
 process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")

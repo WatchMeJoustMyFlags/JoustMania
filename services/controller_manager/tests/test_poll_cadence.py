@@ -68,7 +68,6 @@ def _make_loop(backend):
     from services.controller_manager.event_publisher import EventPublisher
     from services.controller_manager.feedback_manager import FeedbackManager
     from services.controller_manager.monitoring import ControllerMonitoring
-    from services.controller_manager.state_cache import StateCache
 
     monitoring = create_autospec(ControllerMonitoring, instance=True)
     monitoring.last_battery_check = 0.0
@@ -79,7 +78,6 @@ def _make_loop(backend):
         tracked_controllers={},
         controller_states={},
         button_detector=create_autospec(ButtonDetector, instance=True),
-        state_cache_manager=create_autospec(StateCache, instance=True),
         feedback_manager=create_autospec(FeedbackManager, instance=True),
         monitoring=monitoring,
         rescan_timer=rescan,

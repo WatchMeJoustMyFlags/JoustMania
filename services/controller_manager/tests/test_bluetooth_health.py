@@ -65,7 +65,6 @@ def _make_loop(backend=None):
         tracked_controllers={},
         controller_states={},
         button_detector=MagicMock(),
-        state_cache_manager=MagicMock(),
         feedback_manager=MagicMock(),
         monitoring=MagicMock(),
         rescan_timer=MagicMock(),

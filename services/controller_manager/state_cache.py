@@ -1,10 +1,9 @@
 """
-State caching and building for ControllerManager.
+Controller state message building for ControllerManager.
 
-Handles protobuf message construction and caching to avoid rebuilding
-controller state messages on every frame.
-
-Phase 18: Object pooling and state caching for performance.
+Builds the ControllerState protobuf a gameplay frame reads, from the live
+controller state, using pooled messages (Phase 18). The name is historical: the
+per-frame state cache was removed in #1675 (it did not pay off).
 """
 
 import logging
@@ -26,25 +25,16 @@ logger = logging.getLogger(__name__)
 
 
 class StateCache:
-    """
-    Manages controller state caching and protobuf message building.
-
-    Caches protobuf messages to avoid rebuilding on every frame when
-    the underlying state hasn't changed.
-    """
+    """Builds ControllerState protobuf messages from the live controller state (no cache, #1675)."""
 
     def __init__(self, monitoring: "ControllerMonitoring"):
         """
-        Initialize state cache.
+        Initialize the state builder.
 
         Args:
             monitoring: ControllerMonitoring instance for RSSI data
         """
         self.monitoring = monitoring
-
-        # State caching (Phase 18 - Task 1)
-        # Format: {serial: {'cached_state': ControllerState, 'snapshot_hash': str}}
-        self._cache: dict[str, dict] = {}
 
         # Protobuf object pools (Phase 18 - Task 3, Issue #542: scaled for 20+ controllers)
         self._controller_state_pool = MessagePool(controller_manager_pb2.ControllerState, pool_size=30)
@@ -65,93 +55,23 @@ class StateCache:
         """Set reference to the shared current-LED-colour dict (#1301)."""
         self._led_colors = led_colors
 
-    def clear_controller(self, serial: str) -> None:
-        """Clear cached state for a controller."""
-        if serial in self._cache:
-            del self._cache[serial]
-
-    def _snapshot_hash(self, serial: str, info: dict) -> str:
+    def build_state(self, serial: str, info: dict) -> controller_manager_pb2.ControllerState:
         """
-        Create a hash of controller hardware snapshot (Phase 18 - Task 1).
+        Build the controller's ControllerState from its live state, every call.
 
-        Every field `_build_controller_state_message` reads must be in the hash,
-        or a cache hit serves a stale value (#1638). Accel and gyro are hashed at
-        2 decimals, so changes below 0.005 are deliberately served from the cache.
-
-        Phase 57: state is now a dict from backend (no get_snapshot() method).
+        There is no cache (#1675): a per-controller cache keyed on a snapshot of
+        the fields cost about as much to key as the message costs to build, hit
+        almost never with sensor noise, and served stale values whenever a field
+        was missing from the key (#1635, #1638).
 
         Args:
             serial: Controller serial number
             info: Controller info dict
 
         Returns:
-            Hash string representing the current state snapshot
+            ControllerState protobuf message
         """
-        state_dict = self._controller_states.get(serial)
-        # The live LED colour is part of the snapshot so an effect frame (e.g.
-        # the shield fade, #1301) invalidates the cached state.
-        led = self._led_colors.get(serial)
-
-        if state_dict:
-            accel = state_dict.get(StateKey.ACCEL, {})
-            gyro = state_dict.get(StateKey.GYRO, {})
-            return (
-                f"{info.get(ControllerInfoKey.BATTERY, 0)}|"
-                f"{state_dict.get(ButtonKey.TRIGGER, False)}|{state_dict.get(ButtonKey.MOVE, False)}|"
-                f"{state_dict.get(ButtonKey.CROSS, False)}|{state_dict.get(ButtonKey.CIRCLE, False)}|"
-                f"{state_dict.get(ButtonKey.SQUARE, False)}|{state_dict.get(ButtonKey.TRIANGLE, False)}|"
-                f"{state_dict.get(ButtonKey.PS, False)}|"
-                f"{state_dict.get(ButtonKey.SELECT, False)}|{state_dict.get(ButtonKey.START, False)}|"
-                f"{accel.get(AxisKey.X, 0):.2f},{accel.get(AxisKey.Y, 0):.2f},{accel.get(AxisKey.Z, 0):.2f}|"
-                f"{gyro.get(AxisKey.X, 0):.2f},{gyro.get(AxisKey.Y, 0):.2f},{gyro.get(AxisKey.Z, 0):.2f}|"
-                f"{info.get(ControllerInfoKey.TEAM, 0)}|{led}|{info.get(ControllerInfoKey.NAME, '')}|"
-                f"{info.get(ControllerInfoKey.MOVE_NUM, 0)}"
-            )
-
-        # No state available, return hash based on info only (buttons are all
-        # built as False here, so only the info fields can change the state).
-        battery = info.get(ControllerInfoKey.BATTERY, 0)
-        team = info.get(ControllerInfoKey.TEAM, 0)
-        move_num = info.get(ControllerInfoKey.MOVE_NUM, 0)
-        return f"{battery}|{team}|{led}|{info.get(ControllerInfoKey.NAME, '')}|{move_num}"
-
-    def build_or_get_cached_state(self, serial: str, info: dict) -> controller_manager_pb2.ControllerState:
-        """
-        Return cached state if unchanged, rebuild if dirty (Phase 18 - Task 1).
-
-        Note: Button transition detection has been moved to the discovery loop
-        (_detect_button_transitions_from_state), so caching here is safe - we no
-        longer need to rebuild state on every call to detect button events.
-
-        Args:
-            serial: Controller serial number
-            info: Controller info dict
-
-        Returns:
-            ControllerState protobuf message (may be cached)
-        """
-        from services.controller_manager import metrics
-
-        # Check if we have a cached state with matching hash
-        current_hash = self._snapshot_hash(serial, info)
-        cache_entry = self._cache.get(serial)
-
-        if cache_entry and cache_entry.get("snapshot_hash") == current_hash:
-            # Cache hit - return cached state
-            metrics.state_cache_hits_total.inc()
-            return cache_entry["cached_state"]
-
-        # Cache miss - rebuild state
-        metrics.state_cache_misses_total.inc()
-        new_state = self._build_controller_state_message(serial, info)
-
-        # Update cache
-        self._cache[serial] = {
-            "cached_state": new_state,
-            "snapshot_hash": current_hash,
-        }
-
-        return new_state
+        return self._build_controller_state_message(serial, info)
 
     def _build_controller_state_message(self, serial: str, info: dict) -> controller_manager_pb2.ControllerState:
         """
