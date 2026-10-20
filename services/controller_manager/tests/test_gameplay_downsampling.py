@@ -4,7 +4,7 @@ The hardware poll (``DiscoveryLoop._update_controller_states``) stores each
 poll's state, and each gameplay frame is built from what is stored when the
 frame is built. So several polls between two frames collapse to the last one:
 a spike shorter than a frame can be missed. Drives the real servicer, the real
-``DiscoveryLoop`` poll and the real ``StateCache``; only the hardware backend is
+``DiscoveryLoop`` poll and the real ``StateBuilder``; only the hardware backend is
 autospec'd (its ``get_controller_state`` returns the scripted polls).
 """
 

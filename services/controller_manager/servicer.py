@@ -35,7 +35,7 @@ from services.controller_manager.event_publisher import EventPublisher as EventP
 from services.controller_manager.feedback_manager import FeedbackManager, clamp_identify_duration
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.name_manager import NameManager
-from services.controller_manager.state_cache import StateCache
+from services.controller_manager.state_builder import StateBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -101,14 +101,14 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         # Battery monitoring - Phase 39, extracted to monitoring.py
         # NOTE: RSSI monitoring is handled by the host pairing-daemon
-        # NOTE: Must be initialized before StateCache which depends on it
+        # NOTE: Must be initialized before StateBuilder which depends on it
         self.monitoring = ControllerMonitoring(
             low_battery_threshold=1,
         )
 
         # State caching (Phase 18 - Task 1, refactored)
-        self.state_cache_manager = StateCache(self.monitoring)
-        self.state_cache_manager.set_controller_states(self.controller_states)
+        self.state_builder = StateBuilder(self.monitoring)
+        self.state_builder.set_controller_states(self.controller_states)
 
         # Button detector for button transitions (Phase 41, refactored)
         self.button_detector = ButtonDetector(self.event_publisher)
@@ -120,7 +120,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             tracked_controllers=self.tracked_controllers,
         )
         # Stream the live LED colour (effect frames included) to clients (#1301).
-        self.state_cache_manager.set_led_colors(self.feedback_manager.current_colors)
+        self.state_builder.set_led_colors(self.feedback_manager.current_colors)
 
         # Phase 79: Periodic rescan timer for externally paired controllers
         self.rescan_timer = PeriodicRescanTimer(interval=10.0)
@@ -428,7 +428,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             if current_filter is not None and serial not in current_filter:
                 continue
 
-            full_state = self.state_cache_manager.build_state(serial, info)
+            full_state = self.state_builder.build_state(serial, info)
             accel = full_state.accel
             if serial in pattern_serials:
                 # Evaluated BEFORE consume_death so an active latch is delivered first (BR-012).
@@ -675,7 +675,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             logger.info(f"Gameplay subscriber disconnected: {subscriber_id}")
 
     # NOTE: Internal feedback methods moved to feedback_manager.py
-    # NOTE: State cache methods moved to state_cache.py
+    # NOTE: State message building lives in state_builder.py
     # NOTE: Button detection methods moved to button_detector.py
     # NOTE: Event publishing methods moved to event_publisher.py
 

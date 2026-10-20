@@ -319,7 +319,7 @@ class TestGetConnectedControllers:
         """After RenameController, the GetConnectedControllers roster carries the new name.
 
         Roster half of A2 step 3 only. On spans the new name appears only in games started
-        after the rename (state_cache copies it into the controller state, the game fills
+        after the rename (state_builder copies it into the controller state, the game fills
         ``player.name`` from that); a running game and the controller manager's spawn-time
         ``controller.name`` keep the old name. The span half is not asserted here.
         """
@@ -620,7 +620,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should include all controllers when filter is None."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
 
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
@@ -633,7 +633,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should only include filtered controllers."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
 
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
@@ -710,7 +710,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should return empty when filter matches nothing."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
 
         update = servicer._build_gameplay_update({"XX:YY"})
@@ -721,7 +721,7 @@ class TestExtractedHelpers:
         """Each streamed controller drains its mock death latch once (#926)."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
         # Backend exposes the duck-typed hook (only MockAdapter does in prod).
@@ -740,7 +740,7 @@ class TestExtractedHelpers:
         """Filtered-out controllers don't get a death-frame tick (#926)."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
         servicer.backend.consume_death_frame = MagicMock()
@@ -754,7 +754,7 @@ class TestExtractedHelpers:
         """Backends without the hook (hardware) stream normally (#926)."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         # MockBackend has no consume_death_frame — must not raise.
         if hasattr(servicer.backend, "consume_death_frame"):
@@ -1105,7 +1105,7 @@ class TestStreamGameplayData:
     async def test_yields_gameplay_updates(self, servicer):
         """Stream should yield GameplayDataUpdate messages with controller data."""
         servicer.tracked_controllers["AA:BB"] = {}
-        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state("AA:BB", "P1"))
+        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state("AA:BB", "P1"))
 
         context = MockGrpcContext()
         updates = []
@@ -1140,9 +1140,7 @@ class TestStreamGameplayData:
         servicer.tracked_controllers["CC:DD"] = {}
         servicer.feedback_manager.set_controller_color = AsyncMock(return_value=True)
 
-        servicer.state_cache_manager.build_state = MagicMock(
-            side_effect=lambda serial, _info: self._make_mock_state(serial)
-        )
+        servicer.state_builder.build_state = MagicMock(side_effect=lambda serial, _info: self._make_mock_state(serial))
 
         # Build config that sets 60Hz and filters to AA:BB only
         config_msg = controller_manager_pb2.GameplayStreamControl(
@@ -1199,9 +1197,7 @@ class TestStreamGameplayData:
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
 
-        servicer.state_cache_manager.build_state = MagicMock(
-            side_effect=lambda serial, _info: self._make_mock_state(serial)
-        )
+        servicer.state_builder.build_state = MagicMock(side_effect=lambda serial, _info: self._make_mock_state(serial))
 
         # Send a filter_update to restrict to AA:BB only
         filter_msg = controller_manager_pb2.GameplayStreamControl(

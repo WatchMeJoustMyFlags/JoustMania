@@ -2,8 +2,9 @@
 Controller state message building for ControllerManager.
 
 Builds the ControllerState protobuf a gameplay frame reads, from the live
-controller state, using pooled messages (Phase 18). The name is historical: the
-per-frame state cache was removed in #1675 (it did not pay off).
+controller state. A fresh message is built per call (the per-frame state cache
+was removed in #1675; the ControllerState pool in #1708, it was never refilled).
+Only the Vector3 messages are pooled.
 """
 
 import logging
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class StateCache:
+class StateBuilder:
     """Builds ControllerState protobuf messages from the live controller state (no cache, #1675)."""
 
     def __init__(self, monitoring: "ControllerMonitoring"):
@@ -36,8 +37,7 @@ class StateCache:
         """
         self.monitoring = monitoring
 
-        # Protobuf object pools (Phase 18 - Task 3, Issue #542: scaled for 20+ controllers)
-        self._controller_state_pool = MessagePool(controller_manager_pb2.ControllerState, pool_size=30)
+        # Vector3 pool (Phase 18 - Task 3, Issue #542: scaled for 20+ controllers)
         self._vector3_pool = MessagePool(controller_manager_pb2.Vector3, pool_size=60)
 
         # Reference to shared state (set by servicer)
@@ -124,8 +124,7 @@ class StateCache:
         gyro_vec.y = gyro[AxisKey.Y]
         gyro_vec.z = gyro[AxisKey.Z]
 
-        # Use pooled ControllerState (Phase 18 - Task 3)
-        controller_state = self._controller_state_pool.get()
+        controller_state = controller_manager_pb2.ControllerState()
         controller_state.serial = serial
         controller_state.move_num = info.get(ControllerInfoKey.MOVE_NUM, 0)
         controller_state.battery = info.get(ControllerInfoKey.BATTERY, 0)

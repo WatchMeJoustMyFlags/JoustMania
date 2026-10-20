@@ -14,7 +14,7 @@ from lib.clock import FakeClock
 from proto import controller_manager_pb2
 from services.controller_manager.effects_base import shield_frame
 from services.controller_manager.feedback_manager import FeedbackManager
-from services.controller_manager.state_cache import StateCache
+from services.controller_manager.state_builder import StateBuilder
 
 WHITE = (255, 255, 255)
 OFF = (0, 0, 0)
@@ -389,7 +389,7 @@ class TestUC040LiveLedColourInStream:
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-008"])
     async def test_stream_state_follows_the_shield_frames(self, manager, clock):
         """UC-040 A16: ControllerState.color is the colour the LED shows right now."""
-        cache = StateCache(_Monitoring())
+        cache = StateBuilder(_Monitoring())
         cache.set_led_colors(manager.current_colors)
         info = {"battery": 5, "team": 1}
 
