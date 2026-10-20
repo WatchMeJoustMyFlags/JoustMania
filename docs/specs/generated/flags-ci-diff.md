@@ -28,6 +28,7 @@ Part of [flags.md §12](../flags.md#12-ci-differences).
 | File | Key | Variant |
 |---|---|---|
 | agent.json | `decision.openai.base_url` | `fake` = "http://fake-openai:8080/v1" |
+| agent.json | `llm.max_requests_per_minute` | `journey` = 600 |
 | game.json | `force_all_start_seconds` | `ci` = 0.6 |
 | game.json | `tournament.match_seconds` | `ci` = 6.0 |
 | game.json | `tournament.time_between_matches_seconds` | `ci` = 1.0 |
