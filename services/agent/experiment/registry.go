@@ -1703,12 +1703,18 @@ func (r *Registry) SetTerminalHook(f func(experimentID string)) { r.onTerminal =
 // restart semantics and keeps Rehydrate free of an event replay.
 func (r *Registry) Rehydrate(ids []string) error {
 	r.mu.Lock()
-	var lost []string
+	var lost, unstarted []string
 	defer func() {
 		r.mu.Unlock()
 		// UC-046 BR-015: a pattern experiment whose pin cannot be restored is discarded.
 		for _, id := range lost {
 			r.teardown(context.Background(), id, r.flagKeyOf(id), StatusDiscarded, patterngame.DiscardPinLost)
+		}
+		// UC-043 A8 (#1700): a restored PROPOSED experiment never started (its start
+		// failed, or the agent stopped between declare and start) and nothing starts
+		// it again, so abort it rather than let it hold its flag and a budget slot.
+		for _, id := range unstarted {
+			r.teardown(context.Background(), id, r.flagKeyOf(id), StatusAborted, AbortReasonStartFailed)
 		}
 	}()
 	for _, id := range ids {
@@ -1743,6 +1749,10 @@ func (r *Registry) Rehydrate(ids []string) error {
 		// (idempotent), so no double span.
 		r.startSpanLocked(e, jrnl.Intent())
 		r.entries[id] = e
+		if st == StatusProposed {
+			unstarted = append(unstarted, id)
+			continue
+		}
 		if r.patterns != nil && !r.restorePatternLocked(e) {
 			lost = append(lost, id)
 		}

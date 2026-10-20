@@ -3,6 +3,8 @@ package experiment
 import (
 	"context"
 	"testing"
+
+	"github.com/joustmania/agent/experiment/journal"
 )
 
 // The experiment's end state follows what the promotion achieved, and the
@@ -97,5 +99,49 @@ func TestPromotionRacedByAbortAllStaysAborted(t *testing.T) {
 			t.Errorf("journal status = %q, want aborted", view.Status)
 		}
 		assertPromotionJournaled(t, r, id, applied)
+	})
+}
+
+// An experiment aborted between its conclusion and its promotion is not promoted:
+// the promoter is never called, the status stays aborted and no promotion event is
+// journaled (D-A22, #1701).
+// UC: UC-043 A1
+func TestPromotionSkippedWhenAbortedBeforePromote(t *testing.T) {
+	t.Run("UC-043/A1 aborted before promotion: promoter not called", func(t *testing.T) {
+		promoter := &fakePromoter{}
+		r := newTestRegistry(t, RegistryConfig{
+			Root:           t.TempDir(),
+			MaxShadowGames: 4,
+			Spawner:        &fakeSpawner{},
+			Promoter:       promoter,
+			Targeting:      &fakeTargeting{},
+		})
+		ctx := context.Background()
+		id, err := r.Declare(sampleIntent())
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		if err := r.Start(ctx, id); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		r.mu.Lock()
+		jrnl := r.entries[id].journal
+		r.mu.Unlock()
+		r.AbortAll(ctx, "kill-switch: agent disabled")
+
+		res := r.promote(ctx, id, jrnl)
+
+		if res.Outcome != PromotionDiscarded {
+			t.Errorf("promote result = %+v, want discarded", res)
+		}
+		if n := promoter.count(); n != 0 {
+			t.Errorf("promoter called %d times, want 0", n)
+		}
+		if st, _ := r.Status(id); st != StatusAborted {
+			t.Errorf("status = %s, want aborted", st)
+		}
+		if evs := eventsOfKind(journalEvents(t, r, id), journal.KindPromotion); len(evs) != 0 {
+			t.Errorf("promotion events = %+v, want none", evs)
+		}
 	})
 }

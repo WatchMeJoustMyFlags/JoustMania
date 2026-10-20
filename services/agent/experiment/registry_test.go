@@ -449,7 +449,7 @@ func TestConcludeGameRecordsAndTransitionsOnVerdict(t *testing.T) {
 
 // Rehydrate: drop the in-memory registry, rebuild from the journal → same live
 // experiments / status.
-// UC: UC-043 main
+// UC: UC-043 main A8
 func TestRehydrateRebuildsLiveExperiments(t *testing.T) {
 	root := t.TempDir()
 	clock := fixedClock()
@@ -480,11 +480,19 @@ func TestRehydrateRebuildsLiveExperiments(t *testing.T) {
 	if !okA || stA != StatusRunning {
 		t.Fatalf("rehydrated A status = (%v,%v), want (running,true)", stA, okA)
 	}
+	// UC-043 A8 (#1700): B was never started, and nothing would start it again, so
+	// rehydrate aborts it with start_failed instead of restoring it PROPOSED.
 	stB, okB := r2.Status(idB)
-	if !okB || stB != StatusProposed {
-		t.Fatalf("rehydrated B status = (%v,%v), want (proposed,true)", stB, okB)
+	if !okB || stB != StatusAborted {
+		t.Fatalf("rehydrated B status = (%v,%v), want (aborted,true)", stB, okB)
 	}
-	// A is live (running) and spawnable; B is proposed (not yet spawnable).
+	if _, held := r2.ActiveFlags()[sampleIntent().FlagKey]; !held {
+		t.Fatalf("A still holds its flag")
+	}
+	if n := r2.LiveCount(); n != 1 {
+		t.Fatalf("LiveCount = %d, want 1 (B frees its budget slot)", n)
+	}
+	// A is live (running) and spawnable; B is aborted.
 	live := r2.Live()
 	if len(live) != 1 || live[0] != idA {
 		t.Fatalf("live = %v, want [%s] (only running A)", live, idA)
