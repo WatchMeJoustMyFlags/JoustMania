@@ -104,6 +104,10 @@ def test_every_image_follows_image_tag_and_no_layer_hard_pins_a_tag():
     for name, service in ic.compose_services().items():
         image = service.get("image", "")
         if "joustmania/" in image:
+            # #1780: the collector may be overridden by its content-hash tag in CI.
+            image = image.replace(
+                "${OTEL_COLLECTOR_TAG:-${IMAGE_TAG:-latest}}", "${IMAGE_TAG:-latest}"
+            )
             assert image.endswith(":${IMAGE_TAG:-latest}"), f"{name}: {image}"
     for layer in ("docker-compose.override.yml", "docker-compose.ci.yml"):
         services = _load_layer(REPO_ROOT / layer).get("services", {})

@@ -1,0 +1,12 @@
+# Use a prebuilt otel-collector image instead of building it (#1780).
+#
+# CI's `collector-image` job pushes ghcr.io/<owner>/joustmania/otel-collector:<hash>
+# (hash = scripts/ci/collector-image-hash.sh) and the e2e jobs export
+# OTEL_COLLECTOR_TAG=<hash>. tests/integration/conftest.py appends this file
+# whenever OTEL_COLLECTOR_TAG is set, so `compose up --build` pulls the image
+# instead of compiling the collector with OCB (~7 min, fetches Go modules).
+# Without OTEL_COLLECTOR_TAG (local runs, fork PRs) nothing changes: the
+# `build:` in docker-compose.yml applies.
+services:
+  otel-collector:
+    build: !reset null
