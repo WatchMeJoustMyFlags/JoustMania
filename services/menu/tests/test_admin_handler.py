@@ -1673,6 +1673,20 @@ class TestAgentControlOption:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="main", steps=[4])
+    async def test_voice_still_plays_when_pulse_fails(self, handler, mock_state_manager):
+        """A failing LED pulse must not drop the level voice (#1643)."""
+        from services.menu.handlers.admin import AGENT_CONTROL_OPTION
+
+        handler.current_option = handler.option_names.index(AGENT_CONTROL_OPTION)
+        set_agent_level(mock_state_manager, "ambient")
+        mock_state_manager.led.send_game_effect.side_effect = RuntimeError("stream gone")
+
+        await handler.handle_increase_value("test_serial")
+
+        mock_state_manager.audio.play_voice.assert_awaited_once()
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="main", steps=[3])
     async def test_panic_off_clamps_at_none(self, handler, mock_state_manager):
         """Restricting from 'none' stays at 'none' — the kill switch never wraps to 'full' (UC-013)."""

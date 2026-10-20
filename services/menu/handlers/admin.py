@@ -1376,13 +1376,18 @@ class AdminModeHandler:
                     "full": Colors.Green,  # all interventions
                 }
                 color = level_colors.get(new_level, Colors.Purple).value
-                await self._send_game_effect(
-                    serial,
-                    controller_manager_pb2.GAME_EFFECT_PULSE,
-                    color=color,
-                    duration_ms=800,
-                    speed=5,
-                )
+                # The pulse is cosmetic: a failure or slow stream must not drop the
+                # voice line that follows (#1643).
+                try:
+                    await self._send_game_effect(
+                        serial,
+                        controller_manager_pb2.GAME_EFFECT_PULSE,
+                        color=color,
+                        duration_ms=800,
+                        speed=5,
+                    )
+                except Exception as e:
+                    logger.warning(f"Agent policy pulse failed for {serial}: {e}")
 
                 # Voice feedback: "off" announces the panic-off; permissive levels
                 # announce a numbered level (1..3). Reuses existing vox assets.
