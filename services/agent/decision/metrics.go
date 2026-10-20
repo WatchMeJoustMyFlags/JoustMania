@@ -98,7 +98,8 @@ func defaultDecisionsCounter() otelmetric.Int64Counter {
 // newInterventionsAppliedCounter builds the agent_interventions_applied_total
 // counter from the given meter provider (#790). It is incremented once per
 // decision that passes EVERY permission gate AND is successfully applied through
-// the ActionSink — the numerator for the demo dashboard's "interventions applied"
+// the ActionSink (a gated no-op while interventions_enabled is off is not
+// counted, #1681) — the numerator for the demo dashboard's "interventions applied"
 // rate panel (#789/#1113). Label: action=<intervention id or "noop">. An
 // instrument-creation error yields a no-op counter so the Loop always has a usable
 // instrument and tests that never wire a real meter provider still work — mirrors

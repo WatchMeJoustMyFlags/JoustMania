@@ -611,6 +611,16 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 	// have ended or the target may be gone (#917 re-validation).
 	current, ok := l.ctxProvider.Current(l.gameID)
 	state := newLayerState(live)
+	// The fitness baseline of the landing (UC-040 step 14, #1699): the synchronous
+	// path lifts it from the rules engine's cycle evaluation; here it is evaluated
+	// on the current context with the live thresholds, the same functions and
+	// thresholds runDecision hands the effect sampler, so a dispatched remote
+	// decision (and its rules fallback) gets an effect sample and an id.
+	if ok {
+		if vals := EvaluateFitness(current, fitnessThresholds(live.Fitness)).Evaluated(); len(vals) > 0 {
+			state.FitnessEvaluated = vals
+		}
+	}
 	if rec.fallbackReason != "" {
 		l.decideRemoteFallback(spanCtx, live, current, ok, rec, &state)
 		return
