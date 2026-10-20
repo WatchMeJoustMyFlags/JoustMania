@@ -93,7 +93,7 @@ func realOnlyGate(maxPerMinute int) snapshotFlags {
 
 // With the stub backend no admission is installed, so a propose cycle never
 // charges the shared LLM budget; with a real backend each model call takes a slot.
-// UC: UC-042 A2 BR-001
+// UC: UC-042 A7 BR-001
 func TestProposerAdmissionFor_StubNeverChargesBudget(t *testing.T) {
 	budget := decision.NewLLMBudget()
 	src := realOnlyGate(1)
@@ -117,7 +117,7 @@ func TestProposerAdmissionFor_StubNeverChargesBudget(t *testing.T) {
 	}
 }
 
-// UC: UC-042 A2 BR-001
+// UC: UC-042 A7 BR-001
 // NFR: NFR-011
 func TestProposerAdmissionFor_RealBackendChargesSharedBudget(t *testing.T) {
 	budget := decision.NewLLMBudget()

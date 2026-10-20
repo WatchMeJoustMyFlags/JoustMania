@@ -132,6 +132,7 @@ func TestLoopSet_PerGameBudgetIndependence(t *testing.T) {
 // TestLoopSet_PerGameThrottleIndependence: a single rapid cycle on each of two
 // games each emits its own throttled trace within the same throttle interval —
 // game A consuming its throttle slot does not silence game B.
+// UC: UC-040 A28
 func TestLoopSet_PerGameThrottleIndependence(t *testing.T) {
 	clock := time.Unix(3000, 0)
 	snap := flags.Snapshot{Enabled: false} // disabled -> throttled agent.disabled span

@@ -57,7 +57,7 @@ func fiveArchetypes() map[string]any {
 	return v
 }
 
-// UC: UC-046 main A1 A2 A4 A5 A13 BR-003 BR-006 BR-013 Pre-4 Post-F-1
+// UC: UC-046 main A1 A2 A4 A5 A13 BR-003 BR-006 BR-013 Pre-4
 func TestResolve(t *testing.T) {
 	ctx := context.Background()
 	t.Run("UC-046/main pins archetypes in selection order with digests and the cap", func(t *testing.T) {

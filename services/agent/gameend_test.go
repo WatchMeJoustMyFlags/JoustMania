@@ -83,7 +83,7 @@ func countingFitness(n *int, f gameFitnessFunc) gameFitnessFunc {
 }
 
 // UC: UC-041 A4
-// UC: UC-043 main
+// UC: UC-043 main A11
 func TestOnGameEnd_StaleEndExcludedFromExperiments(t *testing.T) {
 	t.Run("UC-041/A4 stale-ended experiment game: slot released, no fitness folded", func(t *testing.T) {
 		scored := 0
@@ -181,6 +181,7 @@ func TestOnGameEnd_StaleEndExcludedFromExperiments(t *testing.T) {
 }
 
 // UC: UC-041 A4
+// UC: UC-042 A6
 func TestGameEndChain_StaleEndSkippedAndCounted(t *testing.T) {
 	t.Run("UC-041/A4 stale end: counter increments, retro/summary/proposer skipped", func(t *testing.T) {
 		reader := sdkmetric.NewManualReader()
@@ -206,6 +207,7 @@ func TestGameEndChain_StaleEndSkippedAndCounted(t *testing.T) {
 }
 
 // UC: UC-041 A4 main
+// UC: UC-042 A6
 func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
 	newChain := func() (func(gamecontext.GameContext), map[string][]string) {
 		seen := map[string][]string{}

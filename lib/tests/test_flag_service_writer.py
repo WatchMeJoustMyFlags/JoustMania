@@ -109,6 +109,7 @@ def test_refusals_and_outage_fail_closed(svc, caplog):
     assert "NOT applied" in caplog.text
 
 
+@pytest.mark.uc("UC-013", flow="A3")
 @pytest.mark.uc("UC-013", cond=["Post-F-1"])
 def test_unreachable_flag_service_leaves_the_agent_policy_unchanged_and_logs_critical(svc, caplog):
     """UC-013 Post-F-1: the PUT fails, the stored value is untouched, the failure is CRITICAL."""
@@ -128,6 +129,7 @@ def test_unreachable_flag_service_leaves_the_agent_policy_unchanged_and_logs_cri
 
 
 @pytest.mark.uc("UC-053", flow="A2")
+@pytest.mark.uc("UC-013", flow="A4")
 def test_unpersisted_write_is_logged(svc, caplog):
     svc.persist_ok = False
     w = FlagServiceWriter("game", "http://fs:8070", transport=svc)
@@ -136,6 +138,7 @@ def test_unpersisted_write_is_logged(svc, caplog):
 
 
 @pytest.mark.uc("UC-012", flow="A5")
+@pytest.mark.uc("UC-013", flow="A3")
 def test_admin_write_failures_log_error_and_critical_on_outage(svc, caplog):
     """A refused write logs an ERROR, an unreachable flag service a CRITICAL; an applied but
     unpersisted write logs an ERROR and still counts as applied."""

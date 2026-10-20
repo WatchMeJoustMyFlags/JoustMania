@@ -233,7 +233,7 @@ func rolloutHealthSpan(td ptrace.Traces, serial string) {
 // the receiver still reaches the real infrastructure loop, which evaluates fitness
 // and records an agent.infrastructure.decision span: `enabled` does not govern the
 // rollout, only rollout_enabled / remediation_allowed do.
-// UC: UC-045 A4 Post-S-2
+// UC: UC-045 A4 Post-S-3
 func TestKillSwitch_InfraLoopKeepsEvaluatingWhileAgentOff(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	agentFlags := flags.New(&switchableEvaluator{booleans: map[string]bool{"enabled": false}}, nil)
