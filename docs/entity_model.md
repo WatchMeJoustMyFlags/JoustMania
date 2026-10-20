@@ -315,7 +315,7 @@ One agent decision cycle for a game: one evaluation, recorded on one `agent.deci
 | backend | Backend that actually decided | String | 10 | Not Null, Values: rules, claude, openai, jev |
 | outcome | Decide outcome | String | 10 | Not Null, Values: act, held, noop, invalid, fallback, discarded |
 | fallback_reason | Why rules decided instead | String | 22 | Optional, Values: unknown_backend, backend_unavailable, async_not_wired, llm_not_eligible, llm_budget_exhausted, timeout, invalid_answer, error |
-| discarded_reason | Why a valid answer was dropped | String | 16 | Optional, Values: stale_context, game_ended, target_gone, kill_switch, backend_changed, shutdown |
+| discarded_reason | Why a remote answer (valid, or under the kill switch also a failed or timed-out call) or its rules fallback was dropped | String | 16 | Optional, Values: stale_context, game_ended, target_gone, kill_switch, backend_changed, shutdown |
 | confidence | Routing confidence of `ffa.intervention` | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | act_confidence_threshold | Effective threshold read at landing (the answering backend's own, else the global) | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | act_confidence_threshold_source | Flag the threshold came from | String | 6 | Optional, Values: jev, global |
@@ -326,7 +326,7 @@ One agent decision cycle for a game: one evaluation, recorded on one `agent.deci
 | latency_ms | Decide latency | Integer | 6 | Not Null, Min: 0 |
 
 **Constraints:**
-- Cardinality: one cycle (one evaluation, at most one per second per game on the rules path) emits 0 to 2 decisions. A cycle in which the rules ranking emitted nothing records no `agent.decide` span (UC-040 A1).
+- Cardinality: one cycle (one evaluation, at most one per second per game on the rules path) emits 0 to 2 decisions. A cycle in which the rules ranking emitted nothing records no `agent.decide` span (UC-040 A1), except a configuration fallback (`unknown_backend`, `backend_unavailable`, `async_not_wired`), which records one throttled span per reason (UC-040 A3).
 - The answer fields (`outcome`, `confidence`, ...) and `blocked` / `block_reason` describe the first decision of the cycle only. Each decision goes through the permission chain on its own and is reported on its own `agent.decision` span; several decisions of one cycle can be blocked, for example when a scarce budget (`policy.max_interventions_per_minute`) blocks the first decision that does not fit and every lower-ranked one with `rate_limit` without charging it (UC-040 A20, BR-014). A repeat the budget already refused emits no new `agent.decision` span (A21).
 
 ### QUESTION
@@ -388,10 +388,10 @@ A hypothesis about one `game.json` flag value, tested in shadow games (`services
 | target_n | Games per arm | Integer | 4 | Not Null, Min: 1 |
 | status | Lifecycle | String | 10 | Not Null, Values: proposed, running, concluded, promoting, done, discarded, aborted |
 
-**Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off. Status transitions (`services/agent/experiment/registry.go` `Status`): `proposed` → `running` → `concluded` → `promoting` → `done`, or `concluded` → `discarded`; `proposed`, `running`, `concluded` or `promoting` → `aborted` when `enabled` or `experiments_enabled` is off (`AbortAll`), at agent shutdown, or when the M7-4 proposer's start fails (`start_failed`, UC-042 A4). `done`, `discarded` and `aborted` are terminal.
+**Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off. Status transitions (`services/agent/experiment/registry.go` `Status`): `proposed` → `running` → `concluded` → `promoting` → `done`, or `concluded` → `discarded`; `proposed`, `running`, `concluded` or `promoting` → `aborted` when `enabled` or `experiments_enabled` is off (`AbortAll`), at agent shutdown, or when the M7-4 proposer's start fails (`start_failed`, UC-042 A4). `done`, `discarded` and `aborted` are terminal, except that a `promoting` experiment aborted by `AbortAll` is still set `done` when its promotion returns (#1701).
 - An experiment whose start fails stays `proposed` on the env-seed, dynamic and retro paths, holding its flag and a budget slot until the next `AbortAll` (#1700, UC-043 A8).
 - `running` → `discarded` **without any verdict** (`registry_pattern.go` `pinPending`, `Rehydrate`): a pattern experiment is discarded before its first game when its archetype selection cannot be pinned, with the reason `pattern_selection_empty`, `pattern_selection_too_small` (fewer than `verdict_min_pairs` or a duplicate), `pattern_archetype_invalid`, `pattern_mode_unsupported` (UC-046 A1, A2, A4, A13), or after an agent restart when the pin cannot be restored, `pattern_pin_lost` (BR-015). No VERDICT exists for such an experiment.
-- Every conclusion goes through `concluded`; the end state then depends on the verdict outcome: `promote` → `promoting` → `done` (today always `done`, also when the promotion failed and when `AbortAll` raced it and set `aborted` first; there is no `promoting` → `discarded` transition, #1701), `discard` and `inconclusive` → `discarded`. A final `inconclusive` is a verdict like any other: it comes from the give-up guard (#1001: target N passed or zero variance, `registry.go` `shouldGiveUp`) or from exhausted pattern archetypes (UC-046 A6), and maps to `discarded`. An interim `inconclusive` verdict keeps the experiment `running`.
+- Every conclusion goes through `concluded`; the end state then depends on the verdict outcome: `promote` → `promoting` → `done` (today always `done`, also when the promotion failed and when `AbortAll` raced it and set `aborted` first; there is no `promoting` → `discarded` transition, #1701), `discard` and `inconclusive` → `discarded`. A final `inconclusive` is a verdict like any other: it comes from the give-up guard ([UC-043](use_cases/UC-043.md) A3, `registry.go` `shouldGiveUp`) or from exhausted pattern archetypes (UC-046 A6), and maps to `discarded`. An interim `inconclusive` verdict keeps the experiment `running`.
 
 ### ARM
 
