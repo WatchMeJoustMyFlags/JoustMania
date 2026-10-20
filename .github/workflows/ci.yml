@@ -26,11 +26,19 @@ name: CI
 # Full-stack e2e shards (#1583) run only where `changes.e2e_required` is true:
 #   merge_group                       unless the queued group is docs-only
 #                                     (`non_docs` exactly 'false'); an empty or
-#                                     unknown output still runs e2e. The
-#                                     merge_group diff is base_sha..head_sha,
-#                                     so it includes every PR ahead in the
-#                                     group: a docs PR queued behind a code PR
-#                                     still runs e2e (grouped entries)
+#                                     unknown output still runs e2e.
+#                                     merge_group.base_sha is the PARENT of
+#                                     the group commit (the previous queue
+#                                     entry's temporary head), so the diff
+#                                     covers this entry's PR only: a docs PR
+#                                     queued behind a code PR skips e2e. That
+#                                     is safe because the main ruleset's merge
+#                                     queue uses grouping_strategy ALLGREEN:
+#                                     every entry must pass its own checks,
+#                                     and the code PR ahead runs its own e2e.
+#                                     If the grouping strategy changes from
+#                                     ALLGREEN (e.g. HEADGREEN), revisit this
+#                                     skip.
 #   workflow_dispatch                 always
 #   pull_request                      with `ci-full`, or a non-docs diff touching
 #                                     a risky path (`e2e_paths` filter)
@@ -104,8 +112,8 @@ jobs:
       e2e_required: ${{ steps.force.outputs.e2e }}
       # #1583: e2e builds EVERY stack image at HEAD (full path) instead of
       # pulling :latest and overlaying source (fast path). True on merge_group
-      # and workflow_dispatch (when e2e runs; the queue is the only e2e gate before main, so
-      # it must test the PR's code for connect-proxy, rust-hid, the dashboard
+      # and workflow_dispatch (when e2e runs). The queue is the only e2e gate
+      # before main, so it must test the PR's code for connect-proxy, rust-hid, the dashboard
       # too), with ci-full, or when integration_deps changed. Only an explicit
       # 'false' takes the fast path, so an empty output fails toward the build.
       e2e_full_build: ${{ steps.force.outputs.e2e_full_build }}
@@ -376,8 +384,10 @@ jobs:
           # #1583: e2e shards gate the merge queue; on PRs only with ci-full or
           # a non-docs diff touching a risky path; never on a push to main.
           # Merge queue: skipped only for a docs-only group (NON_DOCS exactly
-          # 'false'; empty/unknown fails closed to running e2e). The merge_group
-          # diff is base_sha..head_sha, i.e. every PR ahead in the group too.
+          # 'false'; empty/unknown fails closed to running e2e). base_sha is
+          # the parent of the group commit, so the diff is this entry's PR
+          # only; safe under the ALLGREEN grouping strategy (the PR ahead ran
+          # its own e2e). Revisit if the strategy changes (e.g. HEADGREEN).
           e2e="${{ github.event_name == 'workflow_dispatch' }}"
           if [ "${{ github.event_name }}" = merge_group ] && [ "$NON_DOCS" != false ]; then
             e2e=true
@@ -1059,10 +1069,11 @@ jobs:
     # `ci-full`, or a non-docs PR touching a risky path; docs-only PRs still
     # skip it, #1422). Skipped on a push to main: the queue ran it on that
     # commit. ci-complete accepts a skip unless e2e_required was true.
-    # The queue skips it only for a docs-only group (non_docs exactly 'false';
-    # the merge_group diff covers every PR ahead in the group). merge_group is
-    # ORed in with that test so a wrong/empty output cannot skip the queue's
-    # e2e gate (fail closed). The full path (e2e_full_build) runs there.
+    # The queue skips it only when this entry's diff is docs-only (non_docs
+    # exactly 'false'); safe under the ALLGREEN grouping strategy, revisit if
+    # it changes (e.g. HEADGREEN). merge_group is ORed in with that test so a
+    # wrong/empty output cannot skip the queue's e2e gate (fail closed). The
+    # full path (e2e_full_build) runs there.
     if: >-
       needs.changes.outputs.e2e_required == 'true' ||
       (github.event_name == 'merge_group' && needs.changes.outputs.non_docs != 'false')

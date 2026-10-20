@@ -158,6 +158,9 @@ check(
 
 # Every job CI Complete needs runs in the queue when its check runs on a main
 # push; SonarCloud (informational) and the publishing jobs are the exceptions.
+# The docs-only queue skip relies on the ALLGREEN grouping strategy; keep the warning next to it.
+check("ALLGREEN" in open(sys.argv[1]).read() and "HEADGREEN" in open(sys.argv[1]).read(),
+      "ci.yml: the docs-only queue skip must document its ALLGREEN grouping assumption")
 check(job_if("ci-complete") == "${{ !cancelled() }}", "ci-complete: if must be exactly ${{ !cancelled() }}")
 check(
     job_if("sonarcloud").startswith(
@@ -465,7 +468,10 @@ if "e2e_required" in jobs["changes"]["outputs"]:
         check(r["integration-test"] == "success", f"merge_group, non_docs={value!r}: e2e must run, got {r['integration-test']}")
         r = simulate("merge_group", False, False, override={"non_docs": value}, e2e_outcome="skipped")
         check(r["ci-complete"] == "failure", f"merge_group, non_docs={value!r}, e2e skipped: CI Complete must fail, got {r}")
-    # force step: empty NON_DOCS in the queue -> e2e_required true.
+    # force step: empty/unknown NON_DOCS in the queue -> e2e_required true (non_docs feeds the step).
+    for value in ("", "maybe"):
+        r = simulate("merge_group", False, value)
+        check(r["e2e_required"] == "true", f"force step, merge_group NON_DOCS={value!r}: e2e_required must be true, got {r['e2e_required']}")
     r = simulate("merge_group", False, True)
     check(r["e2e_required"] == "true", f"merge_group non-docs: e2e_required must be true, got {r['e2e_required']}")
     r = simulate("merge_group", False, False)
