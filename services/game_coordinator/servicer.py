@@ -626,20 +626,27 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
             try:
                 return await self._run_admitted_start(session, game_kind, game_id, on_admitted)
+            except asyncio.CancelledError:
+                # UC-010 BR-007 (#1791): a client cancel after admission retires
+                # the session like a normal end; the cancel propagates.
+                self._abort_admitted_session(session, "cancelled")
+                raise
             except BaseException:
-                # UC-010 BR-007 (#1791): an error or a client cancel after admission
-                # retires the session like a normal end, so it holds no primary
-                # slot, controllers or shadow-cap slot. CancelledError re-raises;
-                # an error becomes the (False, error) answer below.
-                self._abort_admitted_session(session)
+                # UC-010 BR-007 (#1791): an error after admission retires the
+                # session like a normal end, so it holds no primary slot,
+                # controllers or shadow-cap slot; it becomes the (False, error)
+                # answer below.
+                self._abort_admitted_session(session, "error")
                 raise
 
         except Exception as e:
             logger.error(f"StartGame error: {e}", exc_info=True)
             return False, str(e)
 
-    def _abort_admitted_session(self, session: GameSession) -> None:
+    def _abort_admitted_session(self, session: GameSession, reason: str) -> None:
         """Retire a session whose start failed or was cancelled after admission.
+
+        ``reason`` is ``"error"`` or ``"cancelled"`` (log only).
 
         No ``game_ended`` is published: the game never started (UC-010 A7). The
         flag-service ``end`` queued by ``_retire_session`` waits for an in-flight
@@ -654,9 +661,10 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         if still_registered:
             self._retire_session(session.game_id)
         logger.warning(
-            "Start of %s game %s failed after admission; session retired",
+            "Start of %s game %s aborted after admission (reason=%s); session retired",
             session.game_kind,
             session.game_id,
+            reason,
         )
 
     async def _run_admitted_start(
@@ -695,14 +703,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             metrics.active_players.labels(**labels).set(len(session.players))
 
         session._set_gauges_unless_retired(write_start_gauges)
-        # games_started_total is a CUMULATIVE counter: it deliberately does
-        # NOT carry experiment_id/arm (a label on a cumulative counter is one
-        # permanent series per experiment, forever). Per-experiment counts
-        # come from the game span's experiment.id/arm attributes (#975).
-        metrics.games_started_total.labels(
-            mode=session.game_name,
-            game_kind=game_kind,
-        ).inc()
 
         # Publish game_start on this session's bus.
         await session.event_bus.publish(
@@ -715,7 +715,29 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         )
 
         # Start game in background thread (with async support).
-        session.start_thread()
+        try:
+            session.start_thread()
+        except Exception as e:
+            # UC-010 A7 (#1791): observers of this bus already saw game_start
+            # (the dashboard shows Running); game_start_error moves them off it.
+            # The caller then retires the session.
+            await session.event_bus.publish(
+                "game_start_error",
+                {"error": str(e), "game_id": game_id},
+            )
+            raise
+
+        # Counted only once the game thread started (telemetry.md): a start that
+        # fails after admission is not a started game. No await since
+        # start_thread(), so a cancel can not land between the two.
+        # games_started_total is a CUMULATIVE counter: it deliberately does
+        # NOT carry experiment_id/arm (a label on a cumulative counter is one
+        # permanent series per experiment, forever). Per-experiment counts
+        # come from the game span's experiment.id/arm attributes (#975).
+        metrics.games_started_total.labels(
+            mode=session.game_name,
+            game_kind=game_kind,
+        ).inc()
 
         logger.info(f"Started {game_kind} game {game_id}: {session.game_name} with {len(session.players)} players")
         return True, game_id

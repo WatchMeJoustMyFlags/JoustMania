@@ -17,6 +17,7 @@ behavior with GAME_MAX_CONCURRENT_GAMES raised above 1.
 """
 
 import asyncio
+import logging
 import sys
 import threading
 from pathlib import Path
@@ -1658,6 +1659,50 @@ class TestFailedStartRetiresSession:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
+    async def test_start_thread_failure_after_game_start_publishes_game_start_error_on_primary_bus(self, servicer):
+        """A primary-bus observer saw game_start (Running); the failed thread start
+        must answer it with game_start_error so it leaves Running."""
+        observer = await servicer.primary_event_bus.subscribe("observer")
+
+        def _start_fails(_session):
+            raise RuntimeError("thread start failed")
+
+        with patch.object(game_session_mod.GameSession, "start_thread", _start_fails):
+            ok, error = await servicer._start_game_from_config(_config(), _MockSpan())
+
+        assert ok is False
+        assert "thread start failed" in error
+        seen = []
+        while not observer.empty():
+            seen.append(observer.get_nowait())
+        assert [e.event_type for e in seen] == ["game_start", "game_start_error"]
+        assert "thread start failed" in seen[1].data["error"]
+        assert seen[1].data["game_id"] == seen[0].data["game_id"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
+    @patch("services.game_coordinator.servicer.metrics")
+    async def test_failed_thread_start_is_not_counted_in_games_started_total(self, mock_metrics, servicer, caplog):
+        def _start_fails(_session):
+            raise RuntimeError("thread start failed")
+
+        with (
+            caplog.at_level(logging.WARNING, logger="services.game_coordinator.servicer"),
+            patch.object(game_session_mod.GameSession, "start_thread", _start_fails),
+        ):
+            ok, _ = await servicer._start_game_from_config(_config(), _MockSpan())
+
+        assert ok is False
+        mock_metrics.games_started_total.labels.return_value.inc.assert_not_called()
+        assert any("after admission (reason=error)" in r.getMessage() for r in caplog.records)
+
+        with _NO_THREAD:
+            ok, _ = await servicer._start_game_from_config(_config(), _MockSpan())
+        assert ok is True
+        mock_metrics.games_started_total.labels.return_value.inc.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
     async def test_game_start_publish_failure_retires_primary_and_next_start_succeeds(self, servicer):
         real_publish = servicer.primary_event_bus.publish
         admitted = []
@@ -1682,7 +1727,7 @@ class TestFailedStartRetiresSession:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
-    async def test_cancel_during_register_retires_primary_and_propagates(self, servicer):
+    async def test_cancel_during_register_retires_primary_and_propagates(self, servicer, caplog):
         register_entered = asyncio.Event()
 
         async def _register_blocks(_record):
@@ -1700,8 +1745,12 @@ class TestFailedStartRetiresSession:
             game_id = servicer._primary_game_id
             assert game_id in servicer.sessions
             start.cancel()
-            with pytest.raises(asyncio.CancelledError):
+            with (
+                caplog.at_level(logging.WARNING, logger="services.game_coordinator.servicer"),
+                pytest.raises(asyncio.CancelledError),
+            ):
                 await start
+        assert any("after admission (reason=cancelled)" in r.getMessage() for r in caplog.records)
 
         self._assert_retired(servicer, game_id)
         flag_end.assert_called_once_with(game_id)
