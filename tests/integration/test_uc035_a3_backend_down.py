@@ -14,17 +14,17 @@ collector delivered is read back from the backends' own query APIs:
 - Jaeger holds the game's root span, found by ``game.id``;
 - the collector container is still running;
 - Loki holds the game's log lines under the root span's trace id (Post-S-1);
-- through envoy, ``/experiments`` fails with envoy's own error and Loki has no
-  new agent lines (A1, A3).
+- Loki gets no new agent lines, so the dashboard's Agent and Experiments tabs
+  show no new rows (A3; envoy's own error for ``/experiments`` is the contract
+  test ``test_agent_down_envoy_answers_experiments_with_its_own_error``).
 
-Jaeger and VictoriaMetrics are queried on the loopback-only ports that
+Jaeger, VictoriaMetrics and Loki are queried on the loopback-only ports that
 ``docker-compose.override.yml`` publishes for tests (C-015).
 """
 
 import json
 import subprocess
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -41,8 +41,7 @@ from tests.integration.helpers import (
 
 JAEGER_API = "http://127.0.0.1:16686/jaeger/api"
 VICTORIA_METRICS_API = "http://127.0.0.1:8428/api/v1"
-ENVOY = "http://127.0.0.1"
-LOKI_API = f"{ENVOY}/loki/loki/api/v1"
+LOKI_API = "http://127.0.0.1:3100/loki/api/v1"
 COORDINATOR = "game-coordinator-service"
 GAME_MODE = "JoustFFA"
 TAG = "uc035-a3"
@@ -137,14 +136,6 @@ def _trace_log_lines(trace_id: str, start_s: float) -> list[str]:
     return _loki_lines(f'{{service_name=~".+"}} | trace_id="{trace_id}"', start_s)
 
 
-def _get_status(url: str) -> tuple[int, str]:
-    try:
-        with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310 - loopback test URL
-            return response.status, response.read().decode(errors="replace")
-    except urllib.error.HTTPError as error:
-        return error.code, error.read().decode(errors="replace")
-
-
 @pytest.fixture
 def agent_down(docker_compose):
     """Make sure the agent is unreachable; restart it at teardown if this stopped it."""
@@ -232,23 +223,14 @@ async def test_agent_down_collector_still_delivers_to_jaeger_and_victoria_metric
     ), f"Loki has no log line for trace {trace_id} of game {game_id}"
 
 
-@pytest.mark.uc("UC-035", flow="A1")
 @pytest.mark.uc("UC-035", flow="A3")
-def test_agent_down_experiments_fails_with_envoys_error_and_no_new_agent_rows(
-    docker_compose, agent_down
-):
-    """UC-035 A1 / A3: with the agent down, envoy answers /experiments itself and Loki gets no agent lines."""
+def test_agent_down_no_new_agent_lines_reach_loki(docker_compose, agent_down):
+    """UC-035 A3: with the agent down, the Agent and Experiments tabs' Loki source gets no new agent lines."""
     assert not _container_running(docker_compose, "agent"), (
         "precondition: the agent must be down"
     )
     down_since = time.time()
-
-    status, body = _get_status(f"{ENVOY}/experiments")
-    assert status == 503, (
-        f"/experiments answered {status} with the agent down: {body[:200]}"
-    )
-    assert "no healthy upstream" in body or "upstream connect error" in body, body[:200]
-
-    # The Agent and Experiments tabs read {service_name="agent"} from Loki: nothing new arrives.
+    # Loki answers (so an empty result means no lines, not an unreachable store).
+    assert _get_json(f"{LOKI_API}/labels")["status"] == "success"
     time.sleep(5)
     assert _loki_lines('{service_name="agent"}', down_since) == []

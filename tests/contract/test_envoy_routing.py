@@ -7,6 +7,10 @@ Static checks over services/envoy/envoy.yaml and docker-compose.yml, plus
 from __future__ import annotations
 
 import subprocess
+import time
+import urllib.error
+import urllib.request
+import uuid
 
 import infra_config as ic
 import pytest
@@ -169,6 +173,55 @@ def test_envoy_config_validates_with_the_compose_image():
         capture_output=True, text=True, check=False, timeout=300,
     )  # fmt: skip
     assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+
+
+@pytest.mark.uc("UC-035", flow="A1")
+@pytest.mark.uc("UC-035", flow="A3")
+def test_agent_down_envoy_answers_experiments_with_its_own_error():
+    """UC-035 A1 / A3: with no agent to route to, envoy itself answers /experiments with 503."""
+    if not ic.docker_available():
+        pytest.skip("docker not available")
+    name = f"uc035-envoy-{uuid.uuid4().hex[:8]}"
+    subprocess.run(
+        [
+            "docker", "run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::80",
+            "-v", f"{ic.ENVOY_FILE}:/etc/envoy/envoy.yaml:ro",
+            ic.compose_image("envoy"), "-c", "/etc/envoy/envoy.yaml",
+        ],
+        capture_output=True, text=True, check=True, timeout=300,
+    )  # fmt: skip
+    try:
+        port = (
+            subprocess.run(
+                ["docker", "port", name, "80/tcp"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            .stdout.split(":")[-1]
+            .strip()
+        )
+        base = f"http://127.0.0.1:{port}"
+        deadline = time.monotonic() + 60
+        while True:  # envoy's own /health answers once the listener is up
+            try:
+                with urllib.request.urlopen(f"{base}/health", timeout=2) as response:
+                    if response.status == 200:
+                        break
+            except OSError:
+                pass
+            assert time.monotonic() < deadline, "envoy did not start"
+            time.sleep(0.5)
+
+        with pytest.raises(urllib.error.HTTPError) as answer:
+            urllib.request.urlopen(f"{base}/experiments", timeout=10)
+        assert answer.value.code == 503
+        assert answer.value.read().decode() == "no healthy upstream"
+    finally:
+        subprocess.run(
+            ["docker", "rm", "-f", name], capture_output=True, check=False, timeout=60
+        )
 
 
 @pytest.mark.parametrize(
