@@ -196,7 +196,7 @@ def _assert_replay_matches(first: dict, other: dict) -> None:
     flow="main",
     steps=[3, 4, 5, 6, 8],
     br=["BR-001", "BR-004", "BR-005", "BR-014"],
-    cond=["Post-S-2", "Post-F-1"],
+    cond=["Post-S-2"],
     tc="TC-012",
 )
 async def test_pattern_game_replays_identically(service_stack):
@@ -215,10 +215,12 @@ SOAK_RERUNS = 10
     reason="NFR-040/041 soak: 10 games, about 3.5 min; opt-in with JOUSTMANIA_REPLAY_SOAK=1 (nightly tier)",
 )
 @pytest.mark.asyncio
-@pytest.mark.nfr("NFR-040", "NFR-041")
 @pytest.mark.uc("UC-046", flow="main", steps=[8], br=["BR-014"], tc="TC-012")
 async def test_pattern_game_replays_identically_10_of_10(service_stack):
-    """NFR-040 / NFR-041: 10 of 10 reruns of one game at a time replay the first run exactly."""
+    """10 of 10 reruns of one game at a time replay the first run exactly (NFR-040 / NFR-041).
+
+    Opt-in (JOUSTMANIA_REPLAY_SOAK=1), not run in CI, so deliberately not nfr-tagged: not verified by CI.
+    """
     first = await _run_pattern_game(service_stack, "s0")
     for rerun in range(1, SOAK_RERUNS):
         await asyncio.sleep(1.0)
