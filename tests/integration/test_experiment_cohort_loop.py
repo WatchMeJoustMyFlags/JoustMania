@@ -85,11 +85,17 @@ import os
 import subprocess
 
 import pytest
+from openfeature.evaluation_context import EvaluationContext
 
 from tests.integration.flag_service import FlagService
 from tests.integration.helpers import (
     flagd_probe_client,
     poll_until,
+)
+from tests.integration.setup_guard import (
+    SetupGuard,
+    compose_diagnostics,
+    run_bounded,
 )
 
 # Fixed container name from docker-compose.yml (container_name: joustmania-agent).
@@ -129,6 +135,14 @@ LOG_TORN_DOWN = (
 # deterministic regardless of which verdict the synthetic games happen to produce.
 LOG_PROMOTED = "code_improvement.promoted"  # promote routed (target/local sink)
 LOG_PROMOTE_FAILED = "experiment.promote_failed"  # promote attempted, sink unavailable
+
+# Agent bring-up bounds (#1649): the subprocess bound covers the agent image
+# build in build mode plus the health wait; --wait-timeout bounds the wait alone.
+AGENT_UP_TIMEOUT = 600.0
+AGENT_WAIT_TIMEOUT = 180
+
+# The agent bring-up runs at most once per session (#1649), see setup_guard.py.
+_AGENT_SETUP = SetupGuard("agent + dedicated coordinator bring-up")
 
 # Polling budgets (seconds). Generous worst-case bounds under CI load, NOT paid
 # waits — each poll returns as soon as the line appears.
@@ -265,26 +279,11 @@ def _agent_logs() -> str:
     return (result.stdout or "") + (result.stderr or "")
 
 
-@pytest.fixture(scope="module")
-def agent_experiment_stack(docker_compose):
-    """Bring up the agent container with the experiment cohort loop ENABLED on
-    the inference-absent path, layered onto the running session stack.
-
-    Its agent-set overlays (the gates and the bounded tuning) are cleared on
-    teardown, and the agent container is stopped/removed so it never leaks into
-    other test modules (which assume the agent is absent)."""
-    global _FLAGS
-    cwd = str(docker_compose.context)
-    _FLAGS = FlagService.from_compose(docker_compose)
-
-    prefix = _compose_prefix(docker_compose)
-    env = _agent_env()
-
+def _bring_up_agent(docker_compose, prefix: list[str], cwd: str, env: dict) -> None:
+    """Serve the bounded experiment flags, then start the agent + its coordinator."""
     # 1. Flip the LIVE gating flags ON and confirm flagd SERVES them before the
     #    agent boots, so the very first tick is already enabled.
     _enable_experiments_live()
-    from openfeature.evaluation_context import EvaluationContext
-
     with flagd_probe_client(docker_compose, "agent") as client:
         served = poll_until(
             lambda: (
@@ -313,27 +312,46 @@ def agent_experiment_stack(docker_compose):
     # coordinator reuses the SAME game-coordinator-service image the session stack
     # already built/pulled, so no extra build cost — only the profile-gated agent
     # image may need a build in build mode. --wait blocks until both are healthy so
-    # the agent's first shadow spawn lands on a ready coordinator.
+    # the agent's first shadow spawn lands on a ready coordinator; --wait-timeout
+    # bounds that health wait, the subprocess timeout bounds build + wait (#1649).
     # --no-deps: the dry-run overlay gives the flag service its own state file, so
     # without it compose would RECREATE the running flag service (and restart
     # flagd) as a changed dependency, dropping every overlay set in step 1 and
     # every registered game of the session stack.
     up_cmd = [*prefix, "--profile", AGENT_SERVICE, "up", "-d", "--wait", "--no-deps"]
+    up_cmd += ["--wait-timeout", str(AGENT_WAIT_TIMEOUT)]
     if not use_prebuilt and not use_dev_mounts:
         up_cmd.append("--build")
     up_cmd += [AGENT_COORDINATOR_SERVICE, AGENT_SERVICE]
-    up = subprocess.run(
+    run_bounded(
         up_cmd,
+        what="start agent + dedicated coordinator containers",
+        timeout=AGENT_UP_TIMEOUT,
         cwd=cwd,
         env=env,
-        capture_output=True,
-        text=True,
-        timeout=600,
     )
-    assert up.returncode == 0, (
-        "failed to start agent + dedicated coordinator containers:\n"
-        f"STDOUT:{up.stdout}\nSTDERR:{up.stderr}"
-    )
+
+
+@pytest.fixture(scope="module")
+def agent_experiment_stack(docker_compose, request):
+    """Bring up the agent container with the experiment cohort loop ENABLED on
+    the inference-absent path, layered onto the running session stack.
+
+    Its agent-set overlays (the gates and the bounded tuning) are cleared on
+    teardown, and the agent container is stopped/removed so it never leaks into
+    other test modules (which assume the agent is absent)."""
+    global _FLAGS
+    cwd = str(docker_compose.context)
+    prefix = _compose_prefix(docker_compose)
+    env = _agent_env()
+
+    # Setup runs at most once per session (#1649): under --reruns 1 a failed
+    # bring-up used to repeat for every test of the module, ~10 min each.
+    with _AGENT_SETUP.attempt(
+        request.config, diagnose=lambda: compose_diagnostics(prefix, cwd=cwd, env=env)
+    ):
+        _FLAGS = FlagService.from_compose(docker_compose)
+        _bring_up_agent(docker_compose, prefix, cwd, env)
 
     try:
         yield docker_compose

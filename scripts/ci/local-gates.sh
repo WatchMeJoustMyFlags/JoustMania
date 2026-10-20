@@ -129,7 +129,7 @@ classify() {  # map one changed path to gates; each case mirrors a ci.yml filter
   esac
   # telemetry (telemetry-contract)
   case "$f" in
-    services/*|lib/*|proto/*|tests/contract/*|docker-compose.yml|docs/specs/*|scripts/*|tools/*|Makefile)
+    services/*|lib/*|proto/*|tests/contract/*|tests/integration/setup_guard.py|docker-compose.yml|docs/specs/*|scripts/*|tools/*|Makefile)
       selected[contract]=1 ;;
   esac
   # flagd_contract (flagd-contract)
@@ -213,7 +213,7 @@ gate_cmd() {  # print the shell command for a gate
       echo "export PATH='$node/bin':\"\$PATH\" && cd services/dashboard && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && npx tsc --noEmit && npx vitest run" ;;
     rust-hid) echo "cd services/rust-hid && cargo clippy --all-targets -- -D warnings && cargo test" ;;
     # Same steps as the Telemetry Contract job: generated specs, then the tests.
-    contract) echo "make specs-check && uv run --no-project --with pytest --with pyyaml pytest tests/contract -q --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py" ;;
+    contract) echo "make specs-check && uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -q --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py" ;;
     contract-flagd) echo "make test-contract-flagd" ;;
     service) echo "make test-service" ;;
     grafana-json)

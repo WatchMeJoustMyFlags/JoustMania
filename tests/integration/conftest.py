@@ -32,6 +32,22 @@ from proto import (
     game_coordinator_pb2,
     game_coordinator_pb2_grpc,
 )
+from tests.integration.setup_guard import (
+    SetupGuard,
+    compose_diagnostics,
+    run_bounded,
+)
+
+# Time bounds for the session stack bring-up (#1649). A full build of every
+# image takes ~7 min on a CI runner (446 s setup in a passing e2e job); the
+# health wait is separate and short because --wait only starts after the build.
+STACK_PULL_TIMEOUT_SECONDS = 600
+STACK_UP_TIMEOUT_SECONDS = 900
+WAIT_TIMEOUT_SECONDS = 180
+
+# The session stack is built and started at most once (#1649): with --reruns 1
+# a failed bring-up used to run again for every test of the shard.
+_STACK_SETUP = SetupGuard("session docker compose stack")
 
 _COMPOSE_FILES = [
     "docker-compose.yml",
@@ -128,7 +144,29 @@ def docker_compose(request):
     else:
         print("\nBuilding images locally")
 
-    compose.start()
+    # Not compose.start(): it has no time bound and hides the compose stderr in
+    # a logger. Same commands, bounded, at most once per session (#1649).
+    base_cmd = compose.docker_compose_command()
+    with _STACK_SETUP.attempt(
+        request.config,
+        diagnose=lambda: compose_diagnostics(base_cmd, cwd=str(compose.context)),
+    ):
+        if use_prebuilt:
+            run_bounded(
+                [*base_cmd, "pull"],
+                what="docker compose pull (session stack)",
+                timeout=STACK_PULL_TIMEOUT_SECONDS,
+                cwd=str(compose.context),
+            )
+        build_flag = ["--build"] if compose.build else []
+        up_cmd = [*base_cmd, "up", *build_flag, "--wait"]
+        up_cmd += ["--wait-timeout", str(WAIT_TIMEOUT_SECONDS)]
+        run_bounded(
+            up_cmd,
+            what="docker compose up (session stack)",
+            timeout=STACK_UP_TIMEOUT_SECONDS,
+            cwd=str(compose.context),
+        )
 
     # Wait for services to be ready
     # Docker Compose --wait already waits for health checks, so minimal wait needed
