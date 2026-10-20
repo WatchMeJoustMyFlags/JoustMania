@@ -3,8 +3,10 @@ package decision
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/joustmania/agent/decide"
 )
@@ -157,6 +159,24 @@ func TestRemote_ProbeDecidesInARulesFallback(t *testing.T) {
 		}
 		if be.callCount() != 0 {
 			t.Fatal("an unavailable backend must not be called")
+		}
+	})
+}
+
+// UC: UC-040 main
+func TestRemote_RationaleTruncatedTo256Runes(t *testing.T) {
+	t.Run("UC-040/main step 14 the rationale on the spans is cut at 256 runes", func(t *testing.T) {
+		long := strings.Repeat("é", 300) // multi-byte: runes, not bytes
+		be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, long))
+		h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+		span := h.run(t)
+
+		want := strings.Repeat("é", 256) + "..."
+		if g := strAttr(t, span, AttrDecideRationale); g != want {
+			t.Fatalf("decide.rationale = %d runes, want the first 256 runes and an ellipsis", utf8.RuneCountInString(g))
+		}
+		if got := h.sink.decisions(); len(got) != 1 || got[0].Reason != want {
+			t.Fatalf("decision reason = %+v, want the same 256-rune cut", got)
 		}
 	})
 }
