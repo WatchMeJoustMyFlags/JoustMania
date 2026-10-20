@@ -8,7 +8,7 @@ import time
 from opentelemetry import trace
 
 from .bluetooth_monitor import BluetoothMonitor
-from .bluez_agent import register_pairing_agent, set_known_controller_check
+from .bluez_agent import ensure_pairing_agent, register_pairing_agent, set_known_controller_check
 from .config import DEBUG, METRICS_PORT, get_bt_monitor_interval, get_poll_interval
 from .usb_pairing import USBPairing
 from .utils import run_command
@@ -139,6 +139,9 @@ class PairingDaemon:
                 self.update_bt_monitor_timestamp()
             except Exception as e:
                 logger.error(f"Error during Bluetooth monitor: {e}", exc_info=DEBUG)
+            # Registers the pairing agent again while BlueZ has not confirmed it on the
+            # current bus connection: bluetoothd not up yet, or a new connection (UC-001 BR-009)
+            await ensure_pairing_agent()
             await asyncio.sleep(get_bt_monitor_interval())
 
     async def run(self) -> None:

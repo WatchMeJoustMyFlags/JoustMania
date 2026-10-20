@@ -177,3 +177,21 @@ def test_pairing_agent_answers_for_the_daemons_usb_pairings(daemon):
     from psmove_pairing.bluez_agent import agent
 
     assert agent.is_known == daemon.usb_pairing.paired_this_session
+
+
+@pytest.mark.uc("UC-001", br=["BR-009"])
+async def test_monitor_cycle_makes_sure_the_agent_is_registered(daemon):
+    """Every Bluetooth monitor cycle re-registers the agent if BlueZ has not confirmed it, also after an error."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    daemon.bt_monitor.monitor = AsyncMock(side_effect=RuntimeError("monitor failed"))
+    ensure = AsyncMock(return_value=False)
+    with (
+        patch("psmove_pairing.daemon.ensure_pairing_agent", ensure),
+        patch("psmove_pairing.daemon.asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError])),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await daemon._bt_monitor_loop()
+
+    assert ensure.await_count == 2
