@@ -115,10 +115,27 @@ type CohortVerdict interface {
 // FitnessAfter = experimental mean, SyntheticGames = N) and calls
 // promote.Promoter.Promote under the live mode/target flags.
 type Promoter interface {
-	// Promote acts on a concluded, promote-verdict experiment. The error is
-	// recorded but never blocks teardown — a failed promotion still releases
-	// capacity (the experiment is concluded either way).
-	Promote(ctx context.Context, view journal.CompactView) error
+	// Promote acts on a concluded, promote-verdict experiment and returns what the
+	// promotion achieved. The registry journals the result; an applied or reverted
+	// promotion ends the experiment done, a discarded one ends it discarded (#1701).
+	// A failed promotion never blocks teardown: capacity is released either way.
+	Promote(ctx context.Context, view journal.CompactView) PromotionResult
+}
+
+// PromotionResult is what one promotion achieved (entity PROMOTION, #1701).
+type PromotionResult = journal.Promotion
+
+// Promotion outcomes; the same values as promote.Outcome (code_improvement.outcome).
+const (
+	PromotionApplied   = "applied"
+	PromotionDiscarded = "discarded"
+	PromotionReverted  = "reverted"
+)
+
+// promotionActed reports whether a promotion acted (applied, or applied and then
+// reverted by the watch); anything else, an unknown outcome included, did not.
+func promotionActed(res PromotionResult) bool {
+	return res.Outcome == PromotionApplied || res.Outcome == PromotionReverted
 }
 
 // TargetingWriter scopes / un-scopes the experiment's shadow targeting branch on

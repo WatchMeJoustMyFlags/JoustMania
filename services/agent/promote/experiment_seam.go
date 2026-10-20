@@ -2,7 +2,7 @@ package promote
 
 // experiment_seam.go is the #980 adapter that lets the experiment REGISTRY
 // (#978) drive the EXISTING #961 Promoter unchanged. It implements the registry's
-// promotion seam (experiment.Promoter: Promote(ctx, journal.CompactView) error)
+// promotion seam (experiment.Promoter: Promote(ctx, journal.CompactView) PromotionResult)
 // as a thin adapter over *Promoter — it REUSES the env-gated mode/target dispatch
 // and the whole safety rail (NewGitHubClientFromEnv / kill-switch / safe issue+
 // local defaults). It does NOT reimplement promotion, the env gates, or the
@@ -98,11 +98,15 @@ func NewExperimentPromoter(p *Promoter, resolveConfig ConfigResolver) *Experimen
 // Intent.ExperimentalValue. The Decision is synthesized as OutcomePromote —
 // the registry routes here ONLY on a promote verdict, so the underlying Promoter's
 // "only a PROMOTE verdict acts" guard passes; a non-promote view (defensive) yields
-// OutcomeDiscard and the Promoter no-ops. A failed promotion is returned as an error
-// (recorded by the registry) but never blocks teardown.
-func (a *ExperimentPromoter) Promote(ctx context.Context, view journal.CompactView) error {
+// OutcomeDiscard and the Promoter no-ops. The result (outcome, reason, reference) is
+// returned to the registry, which journals it (#1701); a failed promotion never
+// blocks teardown.
+func (a *ExperimentPromoter) Promote(ctx context.Context, view journal.CompactView) experiment.PromotionResult {
 	if a.promoter == nil {
-		return fmt.Errorf("promote: experiment seam has no underlying promoter")
+		return experiment.PromotionResult{
+			Outcome: string(OutcomeDiscarded),
+			Reason:  "experiment seam has no underlying promoter",
+		}
 	}
 
 	intent := view.Intent
@@ -147,15 +151,14 @@ func (a *ExperimentPromoter) Promote(ctx context.Context, view journal.CompactVi
 	// defaults, and kill-switch (cfg.Enabled gates autonomous) apply as-is.
 	res := a.promoter.Promote(ctx, prop, dec, cfg, ev)
 
-	// A discarded outcome with a reason is a RECORDED no-op (e.g. github target not
-	// enabled, or agent disabled) — the safety rail working as designed, NOT a
-	// failure. Surface it as an error so the registry logs it, but it never blocks
-	// teardown (the registry treats a Promote error as non-fatal). A clean applied/
-	// reverted outcome returns nil.
-	if res.Outcome == OutcomeDiscarded && res.Reason != "" {
-		return fmt.Errorf("promote: %s (mode=%s target=%s)", res.Reason, res.Mode, res.Target)
+	// Hand the result to the registry, which journals it and ends the experiment
+	// done (applied / reverted) or discarded (#1701). A discarded outcome with a
+	// reason is a recorded no-op or a failure; it never blocks teardown.
+	reason := res.Reason
+	if res.Outcome == OutcomeDiscarded && reason != "" {
+		reason = fmt.Sprintf("%s (mode=%s target=%s)", reason, res.Mode, res.Target)
 	}
-	return nil
+	return experiment.PromotionResult{Outcome: string(res.Outcome), Reason: reason, Reference: res.URL}
 }
 
 // armMean returns the rolling mean fitness for an arm, or 0 if the arm has no

@@ -2,55 +2,79 @@ package experiment
 
 import (
 	"context"
-	"errors"
 	"testing"
+
+	"github.com/joustmania/agent/experiment/journal"
 )
 
-// An inert promotion (the env gates are not set, stock stack) makes the promoter
-// return the recorded no-op error. The experiment must still run step 8: reach a
-// terminal status and have its targeting stripped, instead of lingering with the
-// arm targeting applied.
+// concludeWithPromotion runs one experiment to a promote verdict through promoter
+// and returns the registry and the experiment id.
+func concludeWithPromotion(t *testing.T, promoter *fakePromoter, targeting *fakeTargeting) (*Registry, string) {
+	t.Helper()
+	spawner := &fakeSpawner{}
+	r := newTestRegistry(t, RegistryConfig{
+		Root:           t.TempDir(),
+		MaxShadowGames: 4,
+		Spawner:        spawner,
+		Verdict:        fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 2, alwaysReport: true},
+		Promoter:       promoter,
+		Targeting:      targeting,
+	})
+	ctx := context.Background()
+
+	id, err := r.Declare(sampleIntent())
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if r.AllocateAndSpawn(ctx) == 0 {
+		t.Fatal("no games spawned")
+	}
+	games := append([]spawnCall(nil), spawner.calls...)
+	for _, g := range games[:2] {
+		if _, err := r.ConcludeGame(ctx, g.gameID, 0.7, 120); err != nil {
+			t.Fatalf("ConcludeGame: %v", err)
+		}
+	}
+	if promoter.count() != 1 {
+		t.Fatalf("promoter called %d times, want 1", promoter.count())
+	}
+	return r, id
+}
+
+// assertPromotionJournaled checks the experiment journal holds exactly one
+// promotion event carrying want (#1701).
+func assertPromotionJournaled(t *testing.T, r *Registry, id string, want PromotionResult) {
+	t.Helper()
+	evs := eventsOfKind(journalEvents(t, r, id), journal.KindPromotion)
+	if len(evs) != 1 || evs[0].Promotion == nil {
+		t.Fatalf("promotion events = %+v, want exactly one with a result", evs)
+	}
+	if got := *evs[0].Promotion; got != want {
+		t.Errorf("journaled promotion = %+v, want %+v", got, want)
+	}
+}
+
+// An inert promotion (the env gates are not set, stock stack) is a promotion that
+// could not act: the promoter returns outcome discarded with a reason. The
+// experiment still runs step 8 (terminal, targeting stripped) and ends discarded,
+// with the promotion outcome and reason in its journal (#1701).
 // UC: UC-043 A4
 func TestPromotionInertStillTearsDown(t *testing.T) {
-	t.Run("UC-043/A4 promoter returns the recorded no-op error: experiment ends terminal, targeting stripped", func(t *testing.T) {
-		spawner := &fakeSpawner{}
-		promoter := &fakePromoter{retErr: errors.New("promote: recorded no-op: github target not enabled")}
+	t.Run("UC-043/A4 inert promotion: experiment ends discarded, outcome journaled, targeting stripped", func(t *testing.T) {
+		inert := PromotionResult{Outcome: PromotionDiscarded, Reason: "github target not enabled (mode=pr target=github)"}
 		targeting := &fakeTargeting{}
-		r := newTestRegistry(t, RegistryConfig{
-			Root:           t.TempDir(),
-			MaxShadowGames: 4,
-			Spawner:        spawner,
-			Verdict:        fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 2, alwaysReport: true},
-			Promoter:       promoter,
-			Targeting:      targeting,
-		})
-		ctx := context.Background()
+		r, id := concludeWithPromotion(t, &fakePromoter{result: inert}, targeting)
 
-		id, err := r.Declare(sampleIntent())
-		if err != nil {
-			t.Fatalf("Declare: %v", err)
+		if st, _ := r.Status(id); st != StatusDiscarded {
+			t.Errorf("status = %s, want discarded after an inert promotion", st)
 		}
-		if err := r.Start(ctx, id); err != nil {
-			t.Fatalf("Start: %v", err)
+		if view, _ := r.CompactView(id); view.Status != string(StatusDiscarded) {
+			t.Errorf("journal status = %q, want discarded", view.Status)
 		}
-		if r.AllocateAndSpawn(ctx) == 0 {
-			t.Fatal("no games spawned")
-		}
-		games := append([]spawnCall(nil), spawner.calls...)
-		for _, g := range games[:2] {
-			if _, err := r.ConcludeGame(ctx, g.gameID, 0.7, 120); err != nil {
-				t.Fatalf("ConcludeGame: %v", err)
-			}
-		}
-
-		if promoter.count() != 1 {
-			t.Fatalf("promoter called %d times, want 1", promoter.count())
-		}
-		// The recorded no-op error is non-fatal: the promotion is still routed (done),
-		// not discarded.
-		if st, _ := r.Status(id); st != StatusDone {
-			t.Errorf("status = %s, want done after an inert promotion", st)
-		}
+		assertPromotionJournaled(t, r, id, inert)
 		if got := targeting.strippedIDs(); len(got) != 1 || got[0] != id {
 			t.Errorf("stripped = %v, want [%s] (teardown after a no-op promotion)", got, id)
 		}

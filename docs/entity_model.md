@@ -403,10 +403,9 @@ A hypothesis about one `game.json` flag value, tested in shadow games (`services
 | target_n | Games per arm | Integer | 4 | Not Null, Min: 1 |
 | status | Lifecycle | String | 10 | Not Null, Values: proposed, running, concluded, promoting, done, discarded, aborted |
 
-**Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off. Status transitions (`services/agent/experiment/registry.go` `Status`): `proposed` → `running` → `concluded` → `promoting` → `done`, or `concluded` → `discarded`; `proposed`, `running`, `concluded` or `promoting` → `aborted` when `enabled` or `experiments_enabled` is off (`AbortAll`), at agent shutdown, or when the M7-4 proposer's start fails (`start_failed`, UC-042 A4). `done`, `discarded` and `aborted` are terminal, except that a `promoting` experiment aborted by `AbortAll` is still set `done` when its promotion returns (#1701).
-- An experiment whose start fails stays `proposed` on the env-seed, dynamic and retro paths, holding its flag and a budget slot until the next `AbortAll` (D-A21, #1700, UC-043 A8).
+**Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off. Status transitions (`services/agent/experiment/registry.go` `Status`): `proposed` → `running` → `concluded` → `promoting` → `done`, or `concluded` → `discarded`; `proposed`, `running`, `concluded` or `promoting` → `aborted` when `enabled` or `experiments_enabled` is off (`AbortAll`), at agent shutdown, or when its start fails (`start_failed`, on every declarer path, UC-042 A4, UC-043 A8, #1700). `done`, `discarded` and `aborted` are terminal and never overwritten: a `promoting` experiment aborted by `AbortAll` stays `aborted` when its promotion returns (#1701).
 - `running` → `discarded` **without any verdict** (`registry_pattern.go` `pinPending`, `Rehydrate`): a pattern experiment is discarded before its first game when its archetype selection cannot be pinned, with the reason `pattern_selection_empty`, `pattern_selection_too_small` (fewer than `verdict_min_pairs` or a duplicate), `pattern_archetype_invalid`, `pattern_mode_unsupported` (UC-046 A1, A2, A4, A13), or after an agent restart when the pin cannot be restored, `pattern_pin_lost` (BR-015). No VERDICT exists for such an experiment.
-- Every conclusion goes through `concluded`; the end state then depends on the verdict outcome: `promote` → `promoting` → `done` (today always `done`, also when the promotion failed and when `AbortAll` raced it and set `aborted` first; there is no `promoting` → `discarded` transition, #1701), `discard` and `inconclusive` → `discarded`. A final `inconclusive` is a verdict like any other: it comes from the give-up guard ([UC-043](use_cases/UC-043.md) A3, `registry.go` `shouldGiveUp`) or from exhausted pattern archetypes (UC-046 A6), and maps to `discarded`. An interim `inconclusive` verdict keeps the experiment `running`.
+- Every conclusion goes through `concluded`; the end state then depends on the verdict outcome: `promote` → `promoting` → `done` when the promotion outcome is `applied` or `reverted`, `promoting` → `discarded` when it is `discarded` (inert or failed, UC-043 A4, A9, #1701), `discard` and `inconclusive` → `discarded`. A final `inconclusive` is a verdict like any other: it comes from the give-up guard ([UC-043](use_cases/UC-043.md) A3, `registry.go` `shouldGiveUp`) or from exhausted pattern archetypes (UC-046 A6), and maps to `discarded`. An interim `inconclusive` verdict keeps the experiment `running`.
 
 ### ARM
 
@@ -447,7 +446,7 @@ What happens to a promote verdict (`services/agent/promote/promote.go:91-105,420
 | reason | Why it was discarded | String | 200 | Optional |
 | reference | Issue / PR URL or commit | String | 200 | Optional |
 
-**Constraints:** the outcome, reason and reference are on the `code_improvement.promote` span and the log only, never in the experiment journal (#1701).
+**Constraints:** the outcome, reason and reference are on the `code_improvement.promote` span and in the experiment journal as a `promotion` event (`journal.Promotion`, `services/agent/experiment/journal/record.go`, #1701); the outcome sets the experiment's end state (`applied`, `reverted` → `done`; `discarded` → `discarded`).
 
 ### RETRO
 

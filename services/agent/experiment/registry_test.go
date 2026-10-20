@@ -84,18 +84,27 @@ func (f fakeVerdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 	return journal.Verdict{Outcome: f.outcome, Significant: f.outcome == CohortOutcomePromote}, true
 }
 
-// fakePromoter records Promote calls.
+// fakePromoter records Promote calls. It returns result, or an applied promotion
+// when result is zero; during, when set, runs inside Promote (before it returns).
 type fakePromoter struct {
 	mu     sync.Mutex
 	calls  []string // experiment ids (from the view's intent)
-	retErr error
+	result PromotionResult
+	during func()
 }
 
-func (f *fakePromoter) Promote(_ context.Context, view journal.CompactView) error {
+func (f *fakePromoter) Promote(_ context.Context, view journal.CompactView) PromotionResult {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls = append(f.calls, view.Intent.ExperimentID)
-	return f.retErr
+	res, during := f.result, f.during
+	f.mu.Unlock()
+	if during != nil {
+		during()
+	}
+	if res.Outcome == "" {
+		res = PromotionResult{Outcome: PromotionApplied, Reference: "local:fake"}
+	}
+	return res
 }
 
 func (f *fakePromoter) count() int {
