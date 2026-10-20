@@ -146,10 +146,16 @@ try:
             view = flag_view(f"decision.{backend}.model")
             if model not in view["variants"]:
                 sys.exit(f"variant {model!r} not defined for flag 'decision.{backend}.model'; valid: {', '.join(view['variants'])}")
-        set_variant("decision.backend", backend)
+        # Validate the backend variant too, then write the model first and the backend
+        # last: a failed write leaves the previous backend active (UC-044 A4, Post-F-1).
+        backend_view = flag_view("decision.backend")
+        if backend not in backend_view["variants"]:
+            sys.exit(f"variant {backend!r} not defined for flag 'decision.backend'; valid: {', '.join(backend_view['variants'])}")
         msg = f"agent backend -> {backend}"
         if model is not None:
             value = set_variant(f"decision.{backend}.model", model)
+        set_variant("decision.backend", backend)
+        if model is not None:
             msg += f"  model -> {model} ({value})"
         print(msg)
 except FlagServiceUnreachable as err:
