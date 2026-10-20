@@ -104,7 +104,7 @@ classify() {  # map one changed path to gates; each case mirrors a ci.yml filter
   esac
   # lib (lib-tests)
   case "$f" in
-    lib/*|proto/*|services/flagd/*|services/agent/experiment/targeting.go|tests/service/test_experiment_shadow_isolation.py)
+    lib/*|proto/*|services/flagd/*|services/agent/experiment/targeting.go|tests/service/test_experiment_shadow_isolation.py|tools/demo/*)
       selected[py:lib]=1 ;;
   esac
   # rust (rust-checks)
