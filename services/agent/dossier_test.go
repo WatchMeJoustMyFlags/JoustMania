@@ -243,6 +243,7 @@ func TestDossierEmptyRoot(t *testing.T) {
 	}
 }
 
+// UC: UC-035 A1
 func TestDossierHTMLIndex(t *testing.T) {
 	root := t.TempDir()
 	seedJournal(t, root, "exp_done0002", true)
@@ -260,6 +261,43 @@ func TestDossierHTMLIndex(t *testing.T) {
 	if !strings.Contains(body, "exp_done0002") || !strings.Contains(body, "/experiments/exp_done0002") {
 		t.Errorf("html missing experiment link: %s", body)
 	}
+}
+
+// UC: UC-035 A1
+// A browser (Accept: text/html) gets the HTML table; any other client gets JSON.
+func TestDossierListHTMLTableForABrowserJSONOtherwise(t *testing.T) {
+	root := t.TempDir()
+	seedJournal(t, root, "exp_done0003", true)
+	reader := &dossierReader{root: root}
+
+	t.Run("UC-035/A1 browser Accept header gets an HTML table", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/experiments", nil)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+		rec := httptest.NewRecorder()
+		reader.handleList(rec, req)
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Fatalf("content-type = %q, want text/html", ct)
+		}
+		body := rec.Body.String()
+		for _, want := range []string{"<table", "<th>ID</th><th>Status</th><th>Flag</th><th>Candidate</th>", "<th>Verdict</th><th>Started</th>", "exp_done0003"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("html missing %q: %s", want, body)
+			}
+		}
+	})
+
+	t.Run("UC-035/A1 a non-browser client gets JSON", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/experiments", nil)
+		req.Header.Set("Accept", "application/json")
+		rec := httptest.NewRecorder()
+		reader.handleList(rec, req)
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Fatalf("content-type = %q, want application/json", ct)
+		}
+		if !strings.Contains(rec.Body.String(), `"exp_done0003"`) {
+			t.Errorf("json missing experiment: %s", rec.Body.String())
+		}
+	})
 }
 
 // TestDossierRoutesMountedOnHealthServer verifies the dossier routes are served by

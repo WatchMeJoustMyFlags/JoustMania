@@ -3,7 +3,7 @@
  *
  * Real-time controller visualization and game controls using Connect-Web.
  */
-import { keepStreamOpen } from "./stream.js";
+import { keepGameEventStreamOpen } from "./stream.js";
 import { keepControllerStreamOpen } from "./controllerStream.js";
 import { controllerClient, gameClient, menuClient } from "./client.js";
 import { ControllerGrid } from "./components/ControllerGrid.js";
@@ -201,11 +201,7 @@ function startControllerStream() {
 // Stream game events
 function startGameEventStream() {
   // Reopened after a failure and after a clean end (UC-035 A4, #1706).
-  return keepStreamOpen({
-    open: () => gameClient.streamGameEvents({}),
-    onEvent: handleGameEvent,
-    onLost: (error) => console.warn("Game event stream lost, reopening:", error ?? "ended"),
-  });
+  return keepGameEventStreamOpen(() => gameClient.streamGameEvents({}), handleGameEvent);
 }
 
 // Poll the agent's experiment telemetry from Loki and refresh the view.
