@@ -30,6 +30,7 @@ func endedSessionWithTrace(traceID string) gamecontext.GameContext {
 // agent.llm.retro span whose target trace_id is that game trace, the link carries
 // game.trace_id as an attribute, and the span itself stamps game.trace_id as a
 // queryable tag. The retro stays a root span (no parent).
+// UC: UC-070 main
 func TestRetroSpan_LinksToGameTrace(t *testing.T) {
 	const gameTrace = "4bf92f3577b34da6a3ce929d0e0e4736" // valid 16-byte hex trace id
 

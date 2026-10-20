@@ -58,6 +58,7 @@ func promotionEvents(t *testing.T, root, id string) []journal.Event {
 }
 
 // UC: UC-043 A1
+// UC: UC-045 main
 func TestUC043_A1_KillSwitchTickRevertsPromotions(t *testing.T) {
 	t.Run("UC-043/A1 enabled off: revert journaled with reason kill_switch", func(t *testing.T) {
 		loop, _, lc := loopForConfigTest(t, 8)

@@ -1033,7 +1033,7 @@ func TestDefaultGameFitness_TimeoutAtCap(t *testing.T) {
 	})
 }
 
-// UC: UC-046 A8 A12 A14 BR-013 BR-015
+// UC: UC-046 A8 A9 A14 BR-013 BR-015
 func TestExperimentLoop_OnGameTerminal_PatternOutcomes(t *testing.T) {
 	// start declares and starts one experiment and returns its id and first game.
 	start := func(t *testing.T) (*experimentLoop, string, string) {
@@ -1085,7 +1085,7 @@ func TestExperimentLoop_OnGameTerminal_PatternOutcomes(t *testing.T) {
 			t.Fatalf("release note = %q, want %q (BR-015: the rerun must not use up the budget)", note, experiment.ReleaseReasonPreempted)
 		}
 	})
-	t.Run("UC-046/A12 a kill-switch or foreign force-end is released with a counting reason", func(t *testing.T) {
+	t.Run("UC-046/A9 a force-end that is not an experiment abort is released with a counting reason", func(t *testing.T) {
 		loop, id, gameID := start(t)
 		loop.onGameTerminal(gameID, gamerunner.OutcomeForceEnded)
 		note := releaseNote(loop, id, gameID)

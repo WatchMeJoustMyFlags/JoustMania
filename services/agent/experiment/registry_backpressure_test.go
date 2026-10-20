@@ -172,6 +172,7 @@ func TestEffectiveCapClampedToMaxShadowGames(t *testing.T) {
 // reservation (no leak / no over-spawn), does NOT emit experiment.spawn_failed,
 // and retries on the next tick (which succeeds once the coordinator frees up).
 // UC: UC-043 A13
+// UC: UC-046 A15
 func TestSpawnBackpressureReleasesAndRetriesWithoutFailureLog(t *testing.T) {
 	spawner := &fakeSpawner{backpressNow: true}
 	logger, rec := newRecordingLogger()

@@ -335,6 +335,11 @@ func TestRegistryPatternFailedSpawnUsesNoArchetype(t *testing.T) {
 			if cursor != 0 || st != StatusRunning {
 				t.Fatalf("after 20 failed ticks: armCursor=%d status=%s, want 0/running", cursor, st)
 			}
+			for _, kind := range []journal.EventKind{journal.KindGameAssigned, journal.KindGameReleased, journal.KindGameConcluded, journal.KindPatternGameEnded} {
+				if got := eventsOfKind(journalEvents(t, r, id), kind); len(got) != 0 {
+					t.Errorf("failed spawns journaled %d %s events, want none", len(got), kind)
+				}
+			}
 		})
 	}
 }

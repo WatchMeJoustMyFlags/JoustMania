@@ -138,7 +138,7 @@ func TestKillSwitch_AbortsRunningExperiment(t *testing.T) {
 // games in flight. The operator turns `enabled` off; the next experiment tick
 // force-ends every in-flight pattern game (UC-046 A12) and aborts the experiment.
 // The promotion revert of the same step (#1704) is covered by
-// promotion_killswitch_uc045_test.go.
+// promotion_killswitch_uc043_test.go.
 // UC: UC-045 main
 func TestKillSwitch_ForceEndsPatternGames(t *testing.T) {
 	t.Run("UC-045/main step 5 in-flight pattern games are force-ended with kill_switch", func(t *testing.T) {

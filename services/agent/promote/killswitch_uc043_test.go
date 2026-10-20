@@ -34,6 +34,7 @@ func deleteCalls(svc *fake.Service) int {
 }
 
 // UC: UC-043 A1
+// UC: UC-045 main
 func TestUC043_A1_KillSwitchRevertsFromFlagService(t *testing.T) {
 	ctx := context.Background()
 	on := Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: true}

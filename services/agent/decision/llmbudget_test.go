@@ -38,6 +38,7 @@ func TestLLMBudget_ZeroCapDeniesAll(t *testing.T) {
 // TestLLMBudget_WindowSlides: admissions older than the one-minute window are
 // pruned, so the budget replenishes as time passes.
 // NFR: NFR-011
+// UC: UC-070 A4
 func TestLLMBudget_WindowSlides(t *testing.T) {
 	b := NewLLMBudget()
 	t0 := time.Unix(1000, 0)
