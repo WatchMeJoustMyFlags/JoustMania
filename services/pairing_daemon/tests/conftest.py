@@ -7,7 +7,7 @@ Mocks hidraw module and provides test utilities.
 import os
 import sys
 from types import ModuleType
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Disable OTEL metrics and logging before importing modules that use them
 from lib.otel_logging import disable_logging_for_tests
@@ -220,3 +220,17 @@ def bluez_tree(adapters: dict[str, tuple[str, list[dict]]]) -> dict:
 def devices(count: int, *, connected: bool = False, prefix: str = "00:06:F7") -> list[dict]:
     """`count` BlueZ device entries with distinct addresses under `prefix`."""
     return [{"Address": f"{prefix}:00:00:{i:02X}", "Connected": connected} for i in range(count)]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_pairing_agent_state():
+    """The pairing agent's bus bookkeeping is module state: no test sees another test's fake bus (UC-001 BR-009)."""
+    from psmove_pairing import bluez_agent
+
+    with (
+        patch.object(bluez_agent, "_exported_on", None),
+        patch.object(bluez_agent, "_registered_on", None),
+        patch.object(bluez_agent, "_watched_bus", None),
+        patch.object(bluez_agent, "_last_failure", None),
+    ):
+        yield

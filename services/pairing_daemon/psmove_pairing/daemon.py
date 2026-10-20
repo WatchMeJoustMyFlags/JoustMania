@@ -8,7 +8,7 @@ import time
 from opentelemetry import trace
 
 from .bluetooth_monitor import BluetoothMonitor
-from .bluez_agent import register_pairing_agent
+from .bluez_agent import ensure_pairing_agent, register_pairing_agent, set_known_controller_check
 from .config import DEBUG, METRICS_PORT, get_bt_monitor_interval, get_poll_interval
 from .usb_pairing import USBPairing
 from .utils import run_command
@@ -25,6 +25,8 @@ class PairingDaemon:
     def __init__(self, tracer: trace.Tracer):
         self.tracer = tracer
         self.usb_pairing = USBPairing(tracer)
+        # The pairing agent answers only for controllers paired over USB this session (UC-001 BR-009)
+        set_known_controller_check(self.usb_pairing.paired_this_session)
         self.bt_monitor = BluetoothMonitor(tracer)
 
         # Health tracking timestamps
@@ -137,6 +139,9 @@ class PairingDaemon:
                 self.update_bt_monitor_timestamp()
             except Exception as e:
                 logger.error(f"Error during Bluetooth monitor: {e}", exc_info=DEBUG)
+            # Registers the pairing agent again while BlueZ has not confirmed it on the
+            # current bus connection: bluetoothd not up yet, or a new connection (UC-001 BR-009)
+            await ensure_pairing_agent()
             await asyncio.sleep(get_bt_monitor_interval())
 
     async def run(self) -> None:
@@ -152,7 +157,7 @@ class PairingDaemon:
         if not await self.validate_prerequisites():
             logger.warning("Some prerequisites failed - daemon may not work correctly")
 
-        # Register BlueZ pairing agent for ZCM2 (PS4-era) controllers
+        # Register the BlueZ pairing agent (UC-001 BR-009)
         await register_pairing_agent()
 
         # Run both loops concurrently
