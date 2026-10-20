@@ -550,3 +550,20 @@ func TestWindow_AggregatesSurviveTimelineOverflow(t *testing.T) {
 	}
 	assertNoSerial(t, Render(w), realisticSerials)
 }
+
+// UC: UC-042 Post-S-1
+func TestWindow_RecordedGameAggregatesAreInTheWindow(t *testing.T) {
+	t.Run("UC-042/Post-S-1 a finished real game's aggregates are in the cross-game window", func(t *testing.T) {
+		s := NewStore()
+		s.Record(realGame())
+		w := s.SnapshotFor(gamecontext.GameKindReal, "")
+		if len(w.Games) != 1 {
+			t.Fatalf("window games = %d, want 1", len(w.Games))
+		}
+		g := w.Games[0]
+		want := FromSummary(realGame())
+		if g.Outcome != want.Outcome || g.PlayerCount != 4 || g.Mode != "JoustFFA" || g.DeathRate == nil || *g.DeathRate != 0.75 {
+			t.Fatalf("window aggregate = %+v, want the game's aggregates (%+v)", g, want)
+		}
+	})
+}

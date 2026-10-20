@@ -1579,6 +1579,27 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 	return res
 }
 
+// RecordPromotion journals a later outcome of an experiment's promotion (UC-043
+// A1, #1704: the kill switch reverted its autonomous real default). It appends a
+// promotion event whatever the experiment's status is, and never changes that
+// status. An unknown experiment id is ignored (logged).
+func (r *Registry) RecordPromotion(id string, res PromotionResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.entries[id]
+	if e == nil {
+		r.log.Warn("experiment.promotion_unrecorded", "experiment_id", id, "outcome", res.Outcome, "reason", res.Reason)
+		return
+	}
+	promotion := res
+	r.appendEvent(e.journal, journal.Event{
+		Kind:      journal.KindPromotion,
+		Status:    res.Outcome,
+		Note:      res.Reason,
+		Promotion: &promotion,
+	})
+}
+
 // Abort terminates an experiment (kill-switch / capacity reclaim / error): it
 // records the ABORTED transition, tears down the targeting, and frees capacity.
 // A terminal experiment is a no-op. reason is recorded for the audit trail.

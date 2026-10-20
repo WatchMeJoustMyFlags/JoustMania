@@ -52,6 +52,7 @@ func newRecordingServer(t *testing.T, script ...func(http.ResponseWriter, *http.
 }
 
 // UC: UC-053 A6
+// UC: UC-040 A27
 func TestClient_GameNotLiveRetriesOnce(t *testing.T) {
 	gameWrite := Write{Variant: "on", Scope: Scope{GameID: "g"}}
 

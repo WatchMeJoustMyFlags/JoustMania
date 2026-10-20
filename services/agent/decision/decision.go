@@ -1258,6 +1258,11 @@ func (disabledFlags) Evaluate(context.Context) flags.Snapshot {
 // fitnessThresholds converts the flag-layer fitness snapshot into the engine's
 // FitnessThresholds (the flag carries seconds as ints; the engine works in
 // float seconds). #731.
+// FitnessThresholdsFromFlags converts the evaluated fitness.* flags into the
+// thresholds the fitness evaluator scores with (the experiment loop's live
+// scoring, #1740, uses the same conversion as the decision loop).
+func FitnessThresholdsFromFlags(f flags.Fitness) FitnessThresholds { return fitnessThresholds(f) }
+
 func fitnessThresholds(f flags.Fitness) FitnessThresholds {
 	return FitnessThresholds{
 		EnduranceMinSessionSeconds:     float64(f.EnduranceMinSessionSeconds),

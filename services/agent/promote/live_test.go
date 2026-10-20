@@ -18,13 +18,14 @@ import (
 
 func TestStoreRealGameFitnessReadsRecentReal(t *testing.T) {
 	store := experiment.NewFitnessStore(0)
+	started := time.Unix(1000, 0)
 	// Two real games for "endurance" and one shadow game (must be ignored).
-	store.Record(experiment.FitnessSample{GameID: "g1", Fitness: 0.7, Objective: "endurance", GameKind: experiment.GameKindReal})
-	store.Record(experiment.FitnessSample{GameID: "g2", Fitness: 0.6, Objective: "endurance", GameKind: experiment.GameKindReal})
-	store.Record(experiment.FitnessSample{GameID: "s1", Fitness: 0.1, Objective: "endurance", GameKind: "shadow"})
+	store.Record(experiment.FitnessSample{GameID: "g1", Fitness: 0.7, Objective: "endurance", GameKind: experiment.GameKindReal, StartedAt: started})
+	store.Record(experiment.FitnessSample{GameID: "g2", Fitness: 0.6, Objective: "endurance", GameKind: experiment.GameKindReal, StartedAt: started})
+	store.Record(experiment.FitnessSample{GameID: "s1", Fitness: 0.1, Objective: "endurance", GameKind: "shadow", StartedAt: started})
 
 	src := NewStoreRealGameFitness(store, func(string) string { return "endurance" })
-	got, err := src.Recent(context.Background(), "death_grace_period_ms", 5)
+	got, err := src.Recent(context.Background(), "death_grace_period_ms", started.Add(-time.Second), 5)
 	if err != nil {
 		t.Fatalf("Recent err = %v", err)
 	}
@@ -35,7 +36,7 @@ func TestStoreRealGameFitnessReadsRecentReal(t *testing.T) {
 
 func TestStoreRealGameFitnessNilStoreYieldsNoSamples(t *testing.T) {
 	src := NewStoreRealGameFitness(nil, nil)
-	got, err := src.Recent(context.Background(), "f", 5)
+	got, err := src.Recent(context.Background(), "f", time.Time{}, 5)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("nil store: got (%v, %v), want (nil, no error)", got, err)
 	}
@@ -58,7 +59,7 @@ func TestObserveTriState(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := NewFitnessWatcher(fakeRealGameFitness{samples: tc.samples}, policy, discardLogger())
-			got, err := w.Observe(context.Background(), "f", baseline)
+			got, err := w.Observe(context.Background(), "f", baseline, time.Time{})
 			if err != nil {
 				t.Fatalf("Observe err = %v", err)
 			}
@@ -173,7 +174,7 @@ type stepWatcher struct {
 	i        int
 }
 
-func (s *stepWatcher) Observe(context.Context, string, float64) (WatchVerdict, error) {
+func (s *stepWatcher) Observe(context.Context, string, float64, time.Time) (WatchVerdict, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v := s.verdicts[len(s.verdicts)-1]
@@ -185,8 +186,8 @@ func (s *stepWatcher) Observe(context.Context, string, float64) (WatchVerdict, e
 }
 
 // Degraded satisfies the Watcher interface (collapse to bool).
-func (s *stepWatcher) Degraded(ctx context.Context, f string, b float64) (bool, error) {
-	v, err := s.Observe(ctx, f, b)
+func (s *stepWatcher) Degraded(ctx context.Context, f string, b float64, since time.Time) (bool, error) {
+	v, err := s.Observe(ctx, f, b, since)
 	return v == VerdictDegraded, err
 }
 

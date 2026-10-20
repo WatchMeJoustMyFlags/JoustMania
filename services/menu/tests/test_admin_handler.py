@@ -1767,7 +1767,7 @@ class TestAgentControlOption:
 
         await handler.handle_increase_value("test_serial")
 
-        mock_state_manager.led.send_game_effect.assert_not_called()
+        # No success feedback (level colour / level voice); the error cue is covered in TestAgentWriteErrorCue.
         mock_state_manager.audio.play_voice.assert_not_called()
 
     @pytest.mark.asyncio
@@ -2292,6 +2292,82 @@ class TestSingleAdminSession:
             assert call("A", "triangle") in connected_handler.handle_button.await_args_list
         finally:
             await admin_handler.exit()
+
+
+class TestAgentWriteErrorCue:
+    """UC-013 A3 error cue (#1705), A4 and BR-001 at handler level (#1725)."""
+
+    @staticmethod
+    def _select_agent_control(handler, manager, level="ambient"):
+        handler.current_option = handler.option_names.index("agent_control")
+        set_agent_level(manager, level)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A3", steps=[2])
+    async def test_refused_write_gives_error_pulse_only(self, handler, mock_state_manager):
+        """A refused or unreachable write pulses red 400 ms at speed 10, with no sound."""
+        from proto import controller_manager_pb2
+
+        self._select_agent_control(handler, mock_state_manager)
+        mock_state_manager.agent_settings_writer.update_default_variant.return_value = False
+
+        await handler.handle_increase_value("test_serial")
+
+        mock_state_manager.led.send_game_effect.assert_called_once()
+        call = mock_state_manager.led.send_game_effect.call_args
+        assert call[0][1] == controller_manager_pb2.GAME_EFFECT_PULSE
+        assert call.kwargs["color"] == Colors.Red.value
+        assert call.kwargs["duration_ms"] == 400
+        assert call.kwargs["speed"] == 10
+        mock_state_manager.audio.play_sound.assert_not_called()
+        # No level voice line: it must not read as a level change.
+        mock_state_manager.audio.play_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="main", steps=[4])
+    async def test_successful_write_gives_no_error_cue(self, handler, mock_state_manager):
+        """The success path plays the level voice and no error cue."""
+        self._select_agent_control(handler, mock_state_manager)
+        mock_state_manager.agent_settings_writer.update_default_variant.return_value = True
+
+        await handler.handle_increase_value("test_serial")
+
+        mock_state_manager.audio.play_voice.assert_awaited_once()
+        mock_state_manager.audio.play_sound.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A4", steps=[2])
+    async def test_applied_but_not_persisted_continues_with_level_feedback(self, handler, mock_state_manager):
+        """Applied-but-unpersisted counts as True: step 4 feedback, no error cue."""
+        from lib.types import Sound
+
+        self._select_agent_control(handler, mock_state_manager, "ambient")
+        mock_state_manager.agent_settings_writer.update_default_variant.return_value = True  # applied, NOT persisted
+
+        await handler.handle_increase_value("test_serial")
+
+        assert mock_state_manager.led.send_game_effect.call_args.kwargs["color"] == Colors.Orange.value
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_2)
+        mock_state_manager.audio.play_sound.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", br=["BR-001"])
+    @pytest.mark.parametrize("button", ["increase", "decrease"])
+    async def test_only_interventions_allowed_is_written(self, handler, mock_state_manager, button):
+        """The menu writes interventions_allowed and no other flag, in any writer."""
+        self._select_agent_control(handler, mock_state_manager, "standard")
+
+        if button == "increase":
+            await handler.handle_increase_value("test_serial")
+        else:
+            await handler.handle_decrease_value("test_serial")
+
+        writer = mock_state_manager.agent_settings_writer
+        assert [c.args[0] for c in writer.update_default_variant.call_args_list] == ["interventions_allowed"]
+        writer.cycle_variant.assert_not_called()
+        for other in (mock_state_manager.game_settings_writer, mock_state_manager.user_prefs_writer):
+            other.update_default_variant.assert_not_called()
+            other.cycle_variant.assert_not_called()
 
 
 class TestOptionAnnouncementUsesEffectiveValue:

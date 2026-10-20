@@ -130,30 +130,43 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 		return
 	}
 
-	// The one sanctioned real-player-affecting write, through the gated seam.
-	if err := pr.realDef.SetRealDefault(ctx, p.FlagKey, ev.RealDefaultValue); err != nil {
+	// The one sanctioned real-player-affecting write, through the gated seam. It is
+	// serialised with the kill switch (#1704): a kill-switch tick since this
+	// promotion's config was resolved refuses the write, and a tick that starts
+	// after it finds the written overlay.
+	entry, err := pr.writeTracked(ctx, p, ev.RealDefaultValue, cfg)
+	if err != nil {
 		res.Outcome = OutcomeDiscarded
-		res.Reason = fmt.Sprintf("set real default: %v", err)
+		res.Reason = err.Error()
 		return
 	}
 	res.Outcome = OutcomeApplied
+	defer func() {
+		// The kill switch reverted it while this call ran: report that here, once.
+		if pr.endSync(entry) && res.Outcome == OutcomeApplied {
+			res.Outcome = OutcomeReverted
+			res.Reason = KillSwitchReason
+		}
+	}()
+	// The watch counts only real games that started after the write (#1702).
+	appliedAt := pr.clock()
 
 	// Watch real-game fitness for the promoted flag's objective and act on the verdict.
 	// Use the tri-state Observe when the watcher supports it so an INSUFFICIENT-games
 	// result schedules a re-watch (#1065 item 4) instead of silently keeping an
 	// unverified change; otherwise fall back to the boolean Degraded.
-	verdict, err := pr.observe(ctx, p.FlagKey, ev.FitnessBefore)
+	verdict, err := pr.observe(ctx, p.FlagKey, ev.FitnessBefore, appliedAt)
 	switch {
 	case err != nil:
 		// Cannot CONFIRM healthy — fail safe by reverting rather than leaving a
 		// real-player change unverified.
-		pr.revertReal(ctx, p, res, err)
+		pr.revertReal(ctx, p, entry, res, err)
 	case verdict == VerdictDegraded:
-		pr.revertReal(ctx, p, res, nil)
+		pr.revertReal(ctx, p, entry, res, nil)
 	case verdict == VerdictInsufficient:
 		// Apply stands, but unverified. Schedule a background re-watch (if wired) that
 		// reverts later if degradation is confirmed as more real games complete.
-		pr.scheduleRewatch(ctx, p, ev)
+		pr.scheduleRewatch(ctx, p, ev, appliedAt, entry)
 	default: // VerdictHealthy — confirmed keep, nothing to do.
 	}
 }
@@ -164,11 +177,11 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 // Otherwise it adapts the boolean Degraded (degraded→VerdictDegraded, else
 // VerdictHealthy — a boolean-only watcher cannot signal insufficiency, so no re-watch
 // is scheduled, matching the prior behavior).
-func (pr *Promoter) observe(ctx context.Context, flagKey string, baseline float64) (WatchVerdict, error) {
+func (pr *Promoter) observe(ctx context.Context, flagKey string, baseline float64, since time.Time) (WatchVerdict, error) {
 	if obs, ok := pr.watcher.(Observer); ok {
-		return obs.Observe(ctx, flagKey, baseline)
+		return obs.Observe(ctx, flagKey, baseline, since)
 	}
-	degraded, err := pr.watcher.Degraded(ctx, flagKey, baseline)
+	degraded, err := pr.watcher.Degraded(ctx, flagKey, baseline, since)
 	if err != nil {
 		return VerdictInsufficient, err
 	}
@@ -182,7 +195,7 @@ func (pr *Promoter) observe(ctx context.Context, flagKey string, baseline float6
 // fitnessWatcher implements it; the Promoter type-asserts for it so a boolean-only
 // Watcher still works (it just cannot trigger a re-watch).
 type Observer interface {
-	Observe(ctx context.Context, flagKey string, baseline float64) (WatchVerdict, error)
+	Observe(ctx context.Context, flagKey string, baseline float64, since time.Time) (WatchVerdict, error)
 }
 
 // scheduleRewatch hands an insufficient-games apply to the background re-watcher
@@ -190,7 +203,7 @@ type Observer interface {
 // the apply stands unverified (prior behavior). The revert closure performs a gated,
 // recorded fail-safe revert with its own Result so the journal/span reflects the
 // later auto-revert.
-func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, ev Evidence) {
+func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, ev Evidence, since time.Time, entry *appliedPromotion) {
 	if pr.rewatcher == nil {
 		pr.log.Info("autonomous watch: insufficient real games and no re-watcher wired; apply stands unverified",
 			"flag", p.FlagKey)
@@ -200,11 +213,18 @@ func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, 
 		"flag", p.FlagKey)
 	revert := func(rctx context.Context) {
 		var rres Result
-		pr.revertReal(rctx, p, &rres, nil)
+		pr.revertReal(rctx, p, entry, &rres, nil)
 		pr.log.Warn("autonomous re-watch confirmed degradation; reverted real default (#1065)",
 			"flag", p.FlagKey, "outcome", string(rres.Outcome), "reason", rres.Reason)
 	}
-	pr.rewatcher.Schedule(ctx, p.FlagKey, ev.FitnessBefore, pr.watcher, revert)
+	// The re-watch outlives this call; the kill switch cancels it (#1704).
+	wctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if !pr.setCancel(entry, cancel) {
+		// The kill switch already reverted this promotion: nothing to watch.
+		cancel()
+		return
+	}
+	pr.rewatcher.Schedule(wctx, p.FlagKey, ev.FitnessBefore, since, pr.watcher, revert)
 }
 
 // cooldownRemaining reports the time left in flagKey's post-revert cooldown, and
@@ -250,7 +270,24 @@ func (pr *Promoter) clock() time.Time {
 // unconfirmable watch). A nil RealDefaultReverter (no rollback wired) records the
 // degradation but cannot undo it — logged + reasoned so it is visible, never
 // silent. On a successful revert the outcome becomes OutcomeReverted.
-func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, res *Result, watchErr error) {
+//
+// entry is the tracked applied promotion (#1704): the revert runs only when this
+// call claims it; when the kill switch already reverted it, nothing is written and
+// the result records the kill-switch revert.
+func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry *appliedPromotion, res *Result, watchErr error) {
+	switch pr.claimApplied(entry) {
+	case claimKilled:
+		// The kill switch reverted it while this promotion was still running; the
+		// kill switch left the journaling to this result (#1704).
+		res.Outcome = OutcomeReverted
+		res.Reason = KillSwitchReason
+		return
+	case claimSuperseded:
+		// A newer promotion of the flag replaced this one: its default is not ours to
+		// revert, so nothing is written and the outcome stays applied.
+		res.Reason = "superseded by a newer promotion of the flag; not reverted"
+		return
+	}
 	reason := "real-game fitness degraded after autonomous change"
 	if watchErr != nil {
 		reason = fmt.Sprintf("could not confirm real-game fitness healthy (%v); reverting fail-safe", watchErr)
@@ -262,6 +299,10 @@ func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, res *
 	}
 	if err := pr.reverter.RevertRealDefault(ctx, p.FlagKey); err != nil {
 		res.Reason = fmt.Sprintf("%s; revert failed: %v", reason, err)
+		// Still applied: the kill switch may revert it later (#1704).
+		if entry != nil {
+			pr.retrack(entry)
+		}
 		return
 	}
 	// Start the post-revert cooldown so a re-promotion of this flag cannot immediately
