@@ -25,10 +25,11 @@ erDiagram
     FLAG_SET ||--|{ FLAG : "contains"
     FLAG ||--|{ FLAG_VARIANT : "offers"
     GAME_SESSION }o--o{ FLAG : "is configured by"
-    GAME_SESSION ||--o{ DECISION : "receives"
-    DECISION ||--|{ QUESTION : "asks"
+    GAME_SESSION ||--o{ DECISION_CYCLE : "receives"
+    DECISION_CYCLE ||--|{ QUESTION : "asks"
     QUESTION ||--o| ANSWER : "is answered by"
-    DECISION ||--o{ INTERVENTION : "results in (up to 2 per cycle)"
+    DECISION_CYCLE ||--o{ DECISION : "emits (0 to 2)"
+    DECISION ||--o| INTERVENTION : "is written as (when dispatched)"
     INTERVENTION }o--|| FLAG : "is written as"
     INTERVENTION }o--o| PLAYER : "targets"
     EXPERIMENT ||--|{ ARM : "has"
@@ -303,13 +304,13 @@ own state file and restored at the next start.
 
 **Constraints:** dropped with its GAME_SCOPE, by a `DELETE` of its flag and scope, when its time-to-live ends, or by a restart (a `persist` value is restored from the state file).
 
-### DECISION
+### DECISION_CYCLE
 
-One agent decision cycle for a game: one evaluation, recorded on one `agent.decide` span (`services/agent/decision/decision.go`, `decide_hook.go`; contract in [decide-contract.md](specs/decide-contract.md)). A cycle emits up to two decisions (the rules path, UC-040 A1; a remote backend gives one answer, hence one decision), each with its own `agent.decision` span and permission check; the outcome, answer, confidence and latency fields below describe the cycle, `blocked` / `block_reason` its first decision (see Constraints).
+One agent decision cycle for a game: one evaluation, recorded on one `agent.decide` span (`services/agent/decision/decision.go`, `decide_hook.go`; contract in [decide-contract.md](specs/decide-contract.md)). A cycle has no id of its own; its natural identifier is the span. It emits 0 to 2 DECISIONs (the rules path, UC-040 A1; a remote backend gives one answer, hence at most one decision).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| decision_id | Correlates decision and effect (`intervention.id`): a UUID assigned when a decision is dispatched and its effect sample is scheduled; a blocked, held, noop or invalid decision has none. Each dispatched decision of a cycle has its own. Today only decisions of the rules engine's own cycle get one: a decision that lands on the remote path (also its rules fallback) gets none, because no fitness baseline is carried into the landing (#1699) | String | 40 | Primary Key, Format: UUID |
+| decide_span_id | Span id of the cycle's `agent.decide` span (no agent-assigned id exists) | String | 16 | Primary Key, Format: 16 hex characters |
 | game_id | Game decided for | String | 17 | Not Null, Foreign Key (GAME_SESSION.game_id) |
 | backend_requested | `decision.backend` at fire time (`decide.backend.requested`); empty counts as `rules`, an unknown name is kept verbatim and decided by rules with `fallback_reason=unknown_backend` | String | 20 | Not Null, Values: rules, claude, openai, jev, or an unknown name |
 | backend | Backend that actually decided | String | 10 | Not Null, Values: rules, claude, openai, jev |
@@ -319,15 +320,29 @@ One agent decision cycle for a game: one evaluation, recorded on one `agent.deci
 | confidence | Routing confidence of `ffa.intervention` | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | act_confidence_threshold | Effective threshold read at landing (the answering backend's own, else the global) | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | act_confidence_threshold_source | Flag the threshold came from | String | 6 | Optional, Values: jev, global |
-| blocked | Permission chain blocked the decision (`decide.blocked`); absent when the decision never reached the permission chain | Boolean | 1 | Optional |
-| block_reason | Permission block | String | 18 | Optional, Values: not_allowed, battery_threshold, rate_limit |
 | invalid_reason | Why an answer was invalid (`decide.invalid_reason`, UC-040 A8; cross-question consistency, [decide-contract §4.3](specs/decide-contract.md)); outcome `invalid` has no action and no fallback | String | 34 | Optional, Values: noop_with_target, player_intervention_without_target, session_intervention_with_target, missing_intervention_answer |
 | state_digest | SHA-256 of the canonical state | String | 64 | Not Null |
 | latency_ms | Decide latency | Integer | 6 | Not Null, Min: 0 |
 
 **Constraints:**
-- Cardinality: one cycle (one evaluation, at most one per second per game on the rules path) emits 0 to 2 decisions. A cycle in which the rules ranking emitted nothing records no `agent.decide` span (UC-040 A1), except a configuration fallback (`unknown_backend`, `backend_unavailable`, `async_not_wired`), which records one throttled span per reason (UC-040 A3).
-- The answer fields (`outcome`, `confidence`, ...) and `blocked` / `block_reason` describe the first decision of the cycle only. Each decision goes through the permission chain on its own and is reported on its own `agent.decision` span; several decisions of one cycle can be blocked, for example when a scarce budget (`policy.max_interventions_per_minute`) blocks the first decision that does not fit and every lower-ranked one with `rate_limit` without charging it (UC-040 A20, BR-014). A repeat the budget already refused emits no new `agent.decision` span (A21).
+- Cardinality: at most one evaluation per second per game on the rules path. A cycle in which the rules ranking emitted nothing records no `agent.decide` span (UC-040 A1), except a configuration fallback (`unknown_backend`, `backend_unavailable`, `async_not_wired`), which records one throttled span per reason (UC-040 A3).
+- The answer fields (`outcome`, `confidence`, ...) describe the cycle. `decide.blocked` / `decide.block_reason` on the `agent.decide` span mirror the cycle's first DECISION only.
+
+### DECISION
+
+One decision a cycle emits, recorded on its own `agent.decision` span (`services/agent/decision/decision.go` `runDecision`). Each decision goes through the permission chain on its own; a dispatched one may get an effect sample and with it `decision.intervention_id` (`decision/effect.go`).
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| decide_span_id | Cycle that emitted the decision | String | 16 | Primary Key, Foreign Key (DECISION_CYCLE.decide_span_id) |
+| rank | Position in the cycle's ranking (the first decision is 1) | Integer | 1 | Primary Key, Min: 1, Max: 2 |
+| action | Intervention type decided (`decision.action`) | String | 30 | Not Null, Foreign Key (INTERVENTION.type) |
+| target_serial | Player targeted (`player.serial`), player-scoped types only | String | 17 | Optional, Foreign Key (PLAYER.serial) |
+| blocked | Permission chain blocked the decision (`decision.blocked`); absent when the decision never reached the permission chain | Boolean | 1 | Optional |
+| block_reason | Permission block (`decision.block_reason`) | String | 18 | Optional, Values: not_allowed, battery_threshold, rate_limit |
+| intervention_id | `decision.intervention_id`, the same value as `intervention.id` on the `agent.intervention.effect` span that measures it: a UUID assigned when a dispatched decision's effect sample is scheduled. A blocked decision has none, and neither has a dispatched one whose sample was not scheduled (effect measurement not wired, no baseline signals this cycle, pending cap reached). Today a decision that lands on the remote path, also its rules fallback, never gets one, because no fitness baseline is carried into the landing (D-A20, #1699) | String | 36 | Optional, Unique, Format: UUID |
+
+**Constraints:** several decisions of one cycle can be blocked, for example when a scarce budget (`policy.max_interventions_per_minute`) blocks the first decision that does not fit and every lower-ranked one with `rate_limit` without charging it (UC-040 A20, BR-014). A repeat the budget already refused emits no new `agent.decision` span (A21).
 
 ### QUESTION
 
@@ -348,7 +363,7 @@ A backend's answer to one question (`decide.go:77-90`, validation `validate.go`)
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| decision_id | Decision the answer belongs to | String | 40 | Primary Key, Foreign Key (DECISION.decision_id) |
+| decide_span_id | Cycle whose request the answer belongs to | String | 16 | Primary Key, Foreign Key (DECISION_CYCLE.decide_span_id) |
 | question_id | Answered question | String | 30 | Primary Key, Foreign Key (QUESTION.question_id) |
 | choice | Chosen option (choice kind) | String | 60 | Optional |
 | probabilities | Option → probability, sum 1 ± 0.001, choice is the argmax | String | 2000 | Optional |
@@ -389,7 +404,7 @@ A hypothesis about one `game.json` flag value, tested in shadow games (`services
 | status | Lifecycle | String | 10 | Not Null, Values: proposed, running, concluded, promoting, done, discarded, aborted |
 
 **Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off. Status transitions (`services/agent/experiment/registry.go` `Status`): `proposed` → `running` → `concluded` → `promoting` → `done`, or `concluded` → `discarded`; `proposed`, `running`, `concluded` or `promoting` → `aborted` when `enabled` or `experiments_enabled` is off (`AbortAll`), at agent shutdown, or when the M7-4 proposer's start fails (`start_failed`, UC-042 A4). `done`, `discarded` and `aborted` are terminal, except that a `promoting` experiment aborted by `AbortAll` is still set `done` when its promotion returns (#1701).
-- An experiment whose start fails stays `proposed` on the env-seed, dynamic and retro paths, holding its flag and a budget slot until the next `AbortAll` (#1700, UC-043 A8).
+- An experiment whose start fails stays `proposed` on the env-seed, dynamic and retro paths, holding its flag and a budget slot until the next `AbortAll` (D-A21, #1700, UC-043 A8).
 - `running` → `discarded` **without any verdict** (`registry_pattern.go` `pinPending`, `Rehydrate`): a pattern experiment is discarded before its first game when its archetype selection cannot be pinned, with the reason `pattern_selection_empty`, `pattern_selection_too_small` (fewer than `verdict_min_pairs` or a duplicate), `pattern_archetype_invalid`, `pattern_mode_unsupported` (UC-046 A1, A2, A4, A13), or after an agent restart when the pin cannot be restored, `pattern_pin_lost` (BR-015). No VERDICT exists for such an experiment.
 - Every conclusion goes through `concluded`; the end state then depends on the verdict outcome: `promote` → `promoting` → `done` (today always `done`, also when the promotion failed and when `AbortAll` raced it and set `aborted` first; there is no `promoting` → `discarded` transition, #1701), `discard` and `inconclusive` → `discarded`. A final `inconclusive` is a verdict like any other: it comes from the give-up guard ([UC-043](use_cases/UC-043.md) A3, `registry.go` `shouldGiveUp`) or from exhausted pattern archetypes (UC-046 A6), and maps to `discarded`. An interim `inconclusive` verdict keeps the experiment `running`.
 
@@ -534,7 +549,7 @@ The agent's view of one game, built from the OTLP metrics and spans the collecto
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| session_id | The adopted `game_id`, or a synthetic `session-<n>` for the fallback context of signals that carry no game id (renewed on each `game_active` 0 to 1, UC-041 A5) | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
+| session_id | The adopted `game_id`, or a synthetic `session-<n>` for the fallback context of signals that carry no game id (renewed on each `game_active` 0 to 1, UC-041 A5) | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) except a synthetic `session-<n>`, which has no GAME_SESSION |
 | game_kind | Kind in the flag vocabulary, normalised at ingest (`primary` becomes `real`; empty and unknown stay as they are and never count as real) | String | 10 | Optional, Values: real, shadow, empty / unknown (never real) |
 | experiment_id | Experiment attribution of a shadow game (partition enrichment, not a routing key) | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
@@ -563,7 +578,7 @@ The compact narrative of one finished game, built once per game at game end by a
 |---|---|---|---|---|
 | game_id | Finished game | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
 | schema_version | Version of the summary shape | Integer | 2 | Not Null, Min: 1 |
-| game_kind | Kind in the flag vocabulary | String | 10 | Optional, Values: real, shadow, empty (never real) |
+| game_kind | Kind in the flag vocabulary, as normalised in AGENT_GAME_CONTEXT | String | 10 | Optional, Values: real, shadow, empty / unknown (never real) |
 | experiment_id | Experiment of a shadow game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
 | game_mode | Mode played | String | 20 | Optional, Foreign Key (GAME_MODE.name) |

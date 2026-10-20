@@ -62,6 +62,15 @@ Propagation (write accepted to value served): the flag service pushes the new co
 stream at once; `tests/service/test_flag_propagation.py` measures it for NFR-050. A baseline file change takes
 effect only on the next start of the flag service (`scripts/flags.sh restart`).
 
+**Known bug: the agent serves cached flag values (#1709, D-F7).** "Live" does not hold for the agent today.
+Its flagd provider (`services/agent/flags/provider.go`, RPC resolver with the default resolver cache on)
+keeps serving the value it cached at the first evaluation after the flag service changes the flag; flagd
+itself serves the new value. A flip of an agent flag that the agent has already evaluated (`enabled`,
+`experiments_enabled`, `decision.backend`, `interventions_enabled`, `interventions_allowed`, `rollout_enabled`,
+`policy.*`, ...) therefore takes effect only after the agent restarts. Every use case and requirement that says
+an agent flag flip "takes effect on the next cycle / tick" or "live" points here; the Python services
+(in-process resolver) are not affected. The fix removes this paragraph.
+
 **Traceability:** C-002, C-033, NFR-050 / UC-012, UC-044, UC-053 / `docker-compose.yml`, `lib/feature_flags.py`, `lib/flag_service_writer.py`, `services/agent/flags/` / `lib/tests/`, `services/agent/flags/*_test.go`, `tests/service/test_flag_propagation.py`.
 
 ## 2. Ownership by flag set
