@@ -25,18 +25,28 @@ type innerFactory func(initDeadline time.Duration) (innerProvider, error)
 
 // syncTiming paces the init attempts (flags.md §1.1, #1713).
 type syncTiming struct {
-	initDeadline time.Duration // inner Init deadline: effectively none (see syncedProvider)
-	firstPause   time.Duration // pause after the first failed attempt; doubles per attempt
-	maxPause     time.Duration // cap for the pause
-	waitLog      time.Duration // how often a pending Init logs that it still waits
+	initDeadline    time.Duration // inner Init deadline: effectively none (see syncedProvider)
+	firstPause      time.Duration // pause after a failed TCP probe; doubles per probe
+	maxPause        time.Duration // cap for the probe pause
+	firstBuildPause time.Duration // pause after a built provider failed; doubles per build
+	maxBuildPause   time.Duration // cap for the build pause: bounds the upstream leak
+	waitLog         time.Duration // how often a pending Init logs that it still waits
 }
 
 // noInitDeadline is longer than any outage the agent outlives, so the inner Init ends
 // only on a first sync or on an error event, never on its timer.
 const noInitDeadline = 365 * 24 * time.Hour
 
-// defaultSyncTiming: no Init deadline, attempts 250 ms apart doubling to 10 s.
-var defaultSyncTiming = syncTiming{initDeadline: noInitDeadline, firstPause: 250 * time.Millisecond, maxPause: 10 * time.Second, waitLog: 10 * time.Second}
+// defaultSyncTiming: no Init deadline; probes 250 ms apart doubling to 10 s; failed
+// builds 1 s apart doubling to 5 min.
+var defaultSyncTiming = syncTiming{
+	initDeadline:    noInitDeadline,
+	firstPause:      250 * time.Millisecond,
+	maxPause:        10 * time.Second,
+	firstBuildPause: time.Second,
+	maxBuildPause:   5 * time.Minute,
+	waitLog:         10 * time.Second,
+}
 
 var errProviderShutDown = errors.New("flagd provider shut down before its first sync")
 
@@ -48,10 +58,19 @@ var errProviderShutDown = errors.New("flagd provider shut down before its first 
 // first STALE / ERROR event (flagd refusing the stream), with the same result. So:
 //   - the inner Init gets no effective deadline (noInitDeadline): it waits for the first
 //     sync, logging every waitLog that it still waits;
+//   - a provider is built only once a TCP probe of flagd's sync port succeeds (probes
+//     cost nothing; pause firstPause doubling to maxPause);
 //   - an Init that fails on an error event is shut down and a FRESH provider is tried
-//     after a pause (firstPause doubling to maxPause), logged at WARN, with no overall
-//     limit. (Shutting a provider down after its timer fired would race its still-running
-//     service Init; after an error event it is ordered, so the timer is never used.)
+//     after a pause (firstBuildPause doubling to maxBuildPause), logged at WARN, with no
+//     overall limit. (Shutting a provider down after its timer fired would race its
+//     still-running service Init; after an error event it is ordered, so the timer is
+//     never used.)
+//
+// Residual leak: v0.6.0's service Init blocks in waitForInitialization, which ignores
+// its context, so every FAILED build keeps ~1 goroutine and ~300 KB for good. The probe
+// keeps a down flagd from causing builds; a flagd that accepts TCP but refuses the
+// stream (e.g. a bad selector) costs at most one build per domain per 5 min (~7 MB/h
+// for the two domains).
 //
 // Reads fail closed while the domain is not READY: before the first sync (the SDK keeps
 // the domain NOT_READY while Init runs) and while the sync stream is lost (STALE / ERROR
@@ -60,8 +79,11 @@ var errProviderShutDown = errors.New("flagd provider shut down before its first 
 type syncedProvider struct {
 	name    string
 	factory innerFactory
-	timing  syncTiming
-	log     *slog.Logger
+	probe   func() bool // TCP probe of flagd's sync port; nil = always reachable
+	// afterSync, when set (tests), runs between the inner first sync and adopt.
+	afterSync func()
+	timing    syncTiming
+	log       *slog.Logger
 
 	events   chan openfeature.Event
 	stop     chan struct{}
@@ -108,17 +130,37 @@ func (p *syncedProvider) EventChannel() <-chan openfeature.Event { return p.even
 // flagd never blocks the agent's start.
 func (p *syncedProvider) Init(evalCtx openfeature.EvaluationContext) error {
 	started := time.Now()
-	pause := p.timing.firstPause
-	for attempt := 1; ; attempt++ {
+	probePause, buildPause := p.timing.firstPause, p.timing.firstBuildPause
+	probes, builds := 0, 0
+	for {
+		// A provider is built only once flagd's sync port accepts a connection: every
+		// failed build leaks memory upstream (see syncedProvider), a failed probe nothing.
+		if p.probe != nil && !p.probe() {
+			probes++
+			if probes == 1 || probes%10 == 0 {
+				p.log.Warn("flagd sync port not reachable yet; reads fail closed, retrying",
+					"domain", p.name, "probes", probes, "retry_in", probePause)
+			}
+			if !p.sleep(probePause) {
+				return errProviderShutDown
+			}
+			probePause = min(2*probePause, p.timing.maxPause)
+			continue
+		}
+		builds++
 		inner, err := p.factory(p.timing.initDeadline)
 		if err == nil {
 			err = p.initInner(inner, evalCtx)
 			if err == nil {
-				p.mu.Lock()
-				p.inner, p.serving = inner, true
-				p.mu.Unlock()
+				if p.afterSync != nil {
+					p.afterSync()
+				}
+				if !p.adopt(inner) {
+					go inner.Shutdown()
+					return errProviderShutDown
+				}
 				go p.forward(inner)
-				p.log.Info("flagd in-process provider synced", "domain", p.name, "attempts", attempt,
+				p.log.Info("flagd in-process provider synced", "domain", p.name, "builds", builds,
 					"waited", time.Since(started).Round(time.Millisecond))
 				return nil
 			}
@@ -127,15 +169,37 @@ func (p *syncedProvider) Init(evalCtx openfeature.EvaluationContext) error {
 		if errors.Is(err, errProviderShutDown) {
 			return err
 		}
-		p.log.Warn("flagd in-process provider has no first sync yet; reads fail closed, retrying",
-			"domain", p.name, "attempt", attempt, "retry_in", pause, "error", err)
-		select {
-		case <-p.stop:
+		p.log.Warn("flagd in-process provider got no first sync; reads fail closed, retrying",
+			"domain", p.name, "builds", builds, "retry_in", buildPause, "error", err)
+		if !p.sleep(buildPause) {
 			return errProviderShutDown
-		case <-time.After(pause):
 		}
-		pause = min(2*pause, p.timing.maxPause)
+		buildPause = min(2*buildPause, p.timing.maxBuildPause)
 	}
+}
+
+// sleep waits d; false when the provider is shut down first.
+func (p *syncedProvider) sleep(d time.Duration) bool {
+	select {
+	case <-p.stop:
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
+// adopt makes inner the synced provider unless Shutdown already ran (checked under the
+// lock Shutdown takes, so a synced provider is never left running after Shutdown).
+func (p *syncedProvider) adopt(inner innerProvider) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	select {
+	case <-p.stop:
+		return false
+	default:
+	}
+	p.inner, p.serving = inner, true
+	return true
 }
 
 // initInner runs inner.Init but returns at once on Shutdown (the flagd provider holds its

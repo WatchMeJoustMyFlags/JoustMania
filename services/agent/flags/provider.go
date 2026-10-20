@@ -3,6 +3,8 @@ package flags
 import (
 	"context"
 	"log/slog"
+	"net"
+	"strconv"
 	"time"
 
 	flagd "github.com/open-feature/go-sdk-contrib/providers/flagd/pkg"
@@ -65,18 +67,31 @@ func flagdFactory(cfg ProviderConfig, flagSet string) innerFactory {
 // emits one per flag sync) and, as the safety net that keeps a lost or never-started
 // event path from freezing it (#1709), every LifecycleReloadInterval until ctx ends.
 func SetupFlagd(ctx context.Context, cfg ProviderConfig, log *slog.Logger) (*Flags, *LifecycleHolder, func(), error) {
-	return setupFlagd(ctx, flagdFactory(cfg, Domain), flagdFactory(cfg, RolloutDomain), defaultSyncTiming, log)
+	probe := tcpProbe(net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))))
+	return setupFlagd(ctx, flagdFactory(cfg, Domain), flagdFactory(cfg, RolloutDomain), probe, defaultSyncTiming, log)
 }
 
-func setupFlagd(ctx context.Context, agentSet, rolloutSet innerFactory, timing syncTiming, log *slog.Logger) (*Flags, *LifecycleHolder, func(), error) {
+// tcpProbe reports whether addr accepts a TCP connection within 1 s.
+func tcpProbe(addr string) func() bool {
+	return func() bool {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}
+}
+
+func setupFlagd(ctx context.Context, agentSet, rolloutSet innerFactory, probe func() bool, timing syncTiming, log *slog.Logger) (*Flags, *LifecycleHolder, func(), error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	client, err := registerDomain(Domain, agentSet, timing, log)
+	client, err := registerDomain(Domain, agentSet, probe, timing, log)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	rollout, err := registerDomain(RolloutDomain, rolloutSet, timing, log)
+	rollout, err := registerDomain(RolloutDomain, rolloutSet, probe, timing, log)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -96,8 +111,9 @@ func setupFlagd(ctx context.Context, agentSet, rolloutSet innerFactory, timing s
 // registerDomain sets a syncedProvider for one domain and returns its client. The
 // SDK runs Init in the background (SetNamedProvider, non-blocking), so a late or
 // unreachable flagd never wedges startup.
-func registerDomain(domain string, factory innerFactory, timing syncTiming, log *slog.Logger) (openfeature.IClient, error) {
+func registerDomain(domain string, factory innerFactory, probe func() bool, timing syncTiming, log *slog.Logger) (openfeature.IClient, error) {
 	provider := newSyncedProvider(domain, factory, timing, log)
+	provider.probe = probe
 	if err := openfeature.SetNamedProvider(domain, provider); err != nil {
 		return nil, err
 	}

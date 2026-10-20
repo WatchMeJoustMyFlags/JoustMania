@@ -100,7 +100,10 @@ func fakeFactory(src *fakeFlagdSource) innerFactory {
 	}
 }
 
-var testSyncTiming = syncTiming{initDeadline: noInitDeadline, firstPause: 20 * time.Millisecond, maxPause: 80 * time.Millisecond, waitLog: time.Second}
+var testSyncTiming = syncTiming{
+	initDeadline: noInitDeadline, firstPause: 5 * time.Millisecond, maxPause: 20 * time.Millisecond,
+	firstBuildPause: 20 * time.Millisecond, maxBuildPause: 80 * time.Millisecond, waitLog: time.Second,
+}
 
 func waitBool(t *testing.T, what string, read func() bool, want bool, timeout time.Duration) {
 	t.Helper()
@@ -123,7 +126,7 @@ func waitBool(t *testing.T, what string, read func() bool, want bool, timeout ti
 func TestSyncedProvider_LateFirstSyncThenEveryFlipIsSeen(t *testing.T) {
 	agentSrc, rolloutSrc := newFakeFlagdSource("on"), newFakeFlagdSource("on")
 	ctx, cancel := context.WithCancel(context.Background())
-	f, holder, shutdown, err := setupFlagd(ctx, fakeFactory(agentSrc), fakeFactory(rolloutSrc), testSyncTiming, nil)
+	f, holder, shutdown, err := setupFlagd(ctx, fakeFactory(agentSrc), fakeFactory(rolloutSrc), nil, testSyncTiming, nil)
 	if err != nil {
 		t.Fatalf("setupFlagd: %v", err)
 	}
@@ -286,4 +289,86 @@ func TestSyncedProvider_RetriesThenFailsClosedWhileTheStreamIsLost(t *testing.T)
 			t.Fatal("Init still running after Shutdown")
 		}
 	})
+}
+
+// TestSyncedProvider_BuildsOnlyOnceFlagdAcceptsConnections: while the sync port refuses
+// TCP no provider is built (each failed build leaks upstream, #1713 review); once the
+// probe passes, one provider is built and synced.
+//
+// UC: UC-045 A3
+func TestSyncedProvider_BuildsOnlyOnceFlagdAcceptsConnections(t *testing.T) {
+	factory := &scriptedFactory{}
+	var mu sync.Mutex
+	probes, reachable := 0, false
+	p := newSyncedProvider("synced-provider-probe", factory.build, testSyncTiming, nil)
+	p.probe = func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		probes++
+		return reachable
+	}
+	t.Cleanup(p.Shutdown)
+	done := make(chan error, 1)
+	go func() { done <- p.Init(openfeature.EvaluationContext{}) }()
+
+	t.Run("UC-045/A3 failed probes build no provider", func(t *testing.T) {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			mu.Lock()
+			n := probes
+			mu.Unlock()
+			if n >= 5 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("only %d probes in 2s", n)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		factory.mu.Lock()
+		built := len(factory.built)
+		factory.mu.Unlock()
+		if built != 0 {
+			t.Fatalf("%d providers built while flagd refused TCP, want 0", built)
+		}
+	})
+
+	t.Run("UC-045/A3 reachable flagd: one provider, synced", func(t *testing.T) {
+		mu.Lock()
+		reachable = true
+		mu.Unlock()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Init = %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Init did not return after the probe passed")
+		}
+		if got := len(factory.built); got != 1 {
+			t.Fatalf("providers built = %d, want 1", got)
+		}
+	})
+}
+
+// TestSyncedProvider_ShutdownBeforeAdoptStopsTheSyncedProvider: a Shutdown that lands
+// after the inner provider synced but before the wrapper adopted it still shuts that
+// provider down, and Init reports the shutdown.
+//
+// UC: UC-045 A3
+func TestSyncedProvider_ShutdownBeforeAdoptStopsTheSyncedProvider(t *testing.T) {
+	factory := &scriptedFactory{}
+	p := newSyncedProvider("synced-provider-race", factory.build, testSyncTiming, nil)
+	p.afterSync = p.Shutdown
+	if err := p.Init(openfeature.EvaluationContext{}); !errors.Is(err, errProviderShutDown) {
+		t.Fatalf("Init = %v, want errProviderShutDown", err)
+	}
+	select {
+	case <-factory.last().shutdown:
+	case <-time.After(time.Second):
+		t.Fatal("the synced inner provider was not shut down")
+	}
+	if p.current() != nil {
+		t.Fatal("provider serves after Shutdown")
+	}
 }

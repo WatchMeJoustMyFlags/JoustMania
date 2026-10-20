@@ -188,7 +188,6 @@ services:
       - OTEL_SERVICE_NAME=rust-hid
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - FLAGD_HOST=flagd
-      - FLAGD_PORT=8015  # in-process resolver (sync port, #1713)
       - RUST_LOG=info
     depends_on:
       flagd:

@@ -352,7 +352,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 |---|---|---|---|
 | `AGENT_LISTEN_ADDR` | `:4317` | yes | OTLP gRPC receiver listen address |
 | `AGENT_HEALTH_ADDR` | `:13134` | yes | HTTP health listen address |
-| `FLAGD_HOST` / `FLAGD_PORT` | `flagd` / `8015` | yes | flagd sync endpoint (in-process resolver, selectors `flagSetId=agent` and `flagSetId=rollout`, #1713) |
+| `FLAGD_HOST` / `FLAGD_PORT` | `flagd` / `8015` | `FLAGD_HOST` only | flagd sync endpoint (in-process resolver, selectors `flagSetId=agent` and `flagSetId=rollout`, #1713). Compose leaves `FLAGD_PORT` unset so an image pinned before #1713 keeps its own default (8013, RPC) |
 | `FLAGD_OFREP_URL` | `http://$FLAGD_HOST:8016` | no | flagd OFREP endpoint for the pattern-game flag digest |
 | `FLAG_SERVICE_URL` | `http://flag-service:8070` | yes | flag service every agent writer calls (interventions, rollout, experiment arms, promotion) |
 | `LOG_LEVEL` | `info` | yes | log verbosity |
