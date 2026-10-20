@@ -181,19 +181,14 @@ else
 fi
 
 # --- the flag service unreachable -----------------------------------------
-# A4: a flip attempted while the service is down fails clearly and sends no write.
+# A4: a flip attempted while the service is down fails clearly (non-zero exit, clear message).
+# The stopped fake cannot log a PUT, so "nothing written" is not checked here; the refusal
+# case above (overlays stay 0) carries the "nothing changes" half.
 fixture
 "${HELPER}" openai >/dev/null
-puts_before="$(grep -c '^PUT ' "${FAKE_FLAG_LOG}")"
 stop_fake_flag_service
 expect "unreachable flag service fails a switch clearly" 1 "flag service unreachable" -- claude sonnet
 expect "unreachable flag service fails clearly" 1 "flag service unreachable" -- status
-puts_after="$(grep -c '^PUT ' "${FAKE_FLAG_LOG}")"
-if [[ "${puts_before}" == "${puts_after}" ]]; then
-  ok "a switch while the flag service is unreachable writes nothing"
-else
-  not_ok "a switch while the flag service is unreachable writes nothing (PUTs ${puts_before} -> ${puts_after})"
-fi
 echo
 echo "${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
