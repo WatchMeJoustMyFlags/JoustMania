@@ -101,7 +101,7 @@ func eventsOfKind(evs []journal.Event, kind journal.EventKind) []journal.Event {
 }
 
 // UC: UC-046 main A6 BR-006 BR-010
-// UC: UC-043 A7
+// UC: UC-043 A3 A7
 func TestRegistryPatternPairsOneAtATime(t *testing.T) {
 	t.Run("UC-046/main pins at first spawn, one pair per archetype, one game at a time, concludes when exhausted", func(t *testing.T) {
 		spawner := &patternSpawner{}
@@ -190,6 +190,7 @@ func TestRegistryPatternPinIsKept(t *testing.T) {
 }
 
 // UC: UC-046 A1 A2 A4 A13 BR-010
+// UC: UC-043 A7
 func TestRegistryPatternDiscardsAndNoise(t *testing.T) {
 	flowOf := map[string]string{
 		patterngame.DiscardArchetypeInvalid: "A2",
