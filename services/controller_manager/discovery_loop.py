@@ -539,7 +539,8 @@ class DiscoveryLoop:
         Update states for all tracked controllers from backend.
 
         Polls all controllers in parallel using asyncio.gather().
-        Called at fixed intervals (100Hz gameplay, 10Hz idle) for consistent timing.
+        Called at a fixed 100 Hz (no idle mode); the gameplay stream rate is set
+        separately by the flag `game_loop.update_frequency_hz` (fallback 30 Hz).
         """
         if not self.backend_initialized:
             return
