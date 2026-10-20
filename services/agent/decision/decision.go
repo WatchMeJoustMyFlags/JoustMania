@@ -827,23 +827,6 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	}
 
 	state.recordDispatched(d, cost)
-	// Intervention-effect MEASUREMENT (#918): stamp a baseline of this game's
-	// fitness/objective signals NOW (the same fitness.evaluated quantities the decision
-	// span carries) and schedule a follow-up sample after the window to measure the
-	// delta, attributed to a dispatch-unique intervention id. This closes the game-path
-	// measurement loop the infra path already has (fitness->rollback). It is MEASUREMENT
-	// ONLY — it never reverts the intervention. Scheduled only for DISPATCHED decisions
-	// (a blocked one never moved the game). The id is stamped on this decision span so a
-	// Jaeger query joins decision->effect; "" means no sample was scheduled (effect
-	// measurement un-wired, no baseline signals this cycle, or the pending cap reached) —
-	// then the decision span simply carries no effect id. Reuses state.FitnessEvaluated,
-	// which OnEvaluate lifted from this cycle's engine evaluation, and the live
-	// thresholds from this cycle's snapshot, so baseline and follow-up sample the SAME
-	// fitness functions against the SAME thresholds. Off the hot path: a cheap map copy
-	// plus a goroutine + timer (bounded, leak-safe via effectWG + rootCtx).
-	if id := l.scheduleEffectSample(dCtx, c, d, state.FitnessEvaluated, fitnessThresholds(snapshot.Fitness)); id != "" {
-		dSpan.SetAttributes(attribute.String(AttrDecisionInterventionID, id))
-	}
 	// Feed the DISPATCHED outcome into this game's #916 rolling narrative timeline
 	// (#945): recorded BEFORE the action sink applies it (it passed every gate, so it
 	// IS dispatched regardless of a downstream apply error — the timeline tracks the
@@ -876,6 +859,25 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		return
 	}
 	l.recordInterventionApplied(ctx, d.Intervention)
+	// Intervention-effect MEASUREMENT (#918): stamp a baseline of this game's
+	// fitness/objective signals NOW (the same fitness.evaluated quantities the decision
+	// span carries) and schedule a follow-up sample after the window to measure the
+	// delta, attributed to a dispatch-unique intervention id. This closes the game-path
+	// measurement loop the infra path already has (fitness->rollback). It is MEASUREMENT
+	// ONLY — it never reverts the intervention. Scheduled only for WRITTEN decisions:
+	// a blocked one, a gated no-op (interventions_enabled off) and a failed write
+	// never moved the game, so they get no sample and no id (#1728 review). The decision
+	// span is still open here, so the id lands on it. The id is stamped on this decision span so a
+	// Jaeger query joins decision->effect; "" means no sample was scheduled (effect
+	// measurement un-wired, no baseline signals this cycle, or the pending cap reached) —
+	// then the decision span simply carries no effect id. Reuses state.FitnessEvaluated,
+	// which OnEvaluate lifted from this cycle's engine evaluation, and the live
+	// thresholds from this cycle's snapshot, so baseline and follow-up sample the SAME
+	// fitness functions against the SAME thresholds. Off the hot path: a cheap map copy
+	// plus a goroutine + timer (bounded, leak-safe via effectWG + rootCtx).
+	if id := l.scheduleEffectSample(dCtx, c, d, state.FitnessEvaluated, fitnessThresholds(snapshot.Fitness)); id != "" {
+		dSpan.SetAttributes(attribute.String(AttrDecisionInterventionID, id))
+	}
 }
 
 // applyAction applies d through sink and reports whether anything was written. A

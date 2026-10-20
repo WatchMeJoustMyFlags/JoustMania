@@ -2,6 +2,7 @@ package decision
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -112,4 +113,53 @@ func TestRemote_FallbackSchedulesEffectSample(t *testing.T) {
 		ids, effects := remoteEffectIDs(t, h)
 		assertEffectSpansFor(t, ids, effects)
 	})
+}
+
+// errSink fails every write (UC-040 A27).
+type errSink struct{}
+
+func (errSink) Apply(context.Context, Decision) error { return errors.New("write failed") }
+
+// UC: UC-040 A11 A27
+func TestEffectSample_OnlyForWrittenDecisions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sink ActionSink
+		want int
+	}{
+		{"UC-040/A11 gated no-op gets no effect sample", &gatedSink{gateOn: false}, 0},
+		{"UC-040/A27 failed write gets no effect sample", errSink{}, 0},
+		{"UC-040/main written decision gets one effect sample", &gatedSink{gateOn: true}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, "shield"))
+			h := newRemoteHarness(t, effectSnapshot(time.Second), be)
+			h.loop.Actions = tc.sink
+			sched := &allScheduler{}
+			h.loop.afterFunc = sched.after
+			h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+			h.loop.inferWG.Wait()
+
+			ids := 0
+			for _, dec := range spansByName(h.sr.Ended(), SpanDecision) {
+				if id, _ := attrMap(dec.Attributes())[AttrDecisionInterventionID].(string); id != "" {
+					ids++
+				}
+			}
+			if ids != tc.want {
+				t.Errorf("decisions with decision.intervention_id = %d, want %d", ids, tc.want)
+			}
+			sched.mu.Lock()
+			scheduled := len(sched.fns)
+			sched.mu.Unlock()
+			if scheduled != tc.want {
+				t.Errorf("effect samples scheduled = %d, want %d", scheduled, tc.want)
+			}
+			sched.fireAll()
+			h.loop.AwaitEffects()
+			if got := len(spansByName(h.sr.Ended(), SpanInterventionEffect)) > 0; got != (tc.want > 0) {
+				t.Errorf("agent.intervention.effect spans present = %v, want %v", got, tc.want > 0)
+			}
+		})
+	}
 }
