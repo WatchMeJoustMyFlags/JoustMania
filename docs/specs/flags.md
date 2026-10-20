@@ -575,23 +575,22 @@ Surfaces (#818):
 Planned rows, **not in the flag files yet** (status Open, #1788, FR-150 to FR-152, C-034). Each row replaces one environment variable that is read once at startup today. Rules for every row:
 
 - **Read at use time** (each call, tick or log record), not at startup.
-- **Env fallback for one release** (FR-151): the variable stays, documented as deprecated. Resolution: a non-default flag value wins; else the env var when set; else the compiled default. The flag default equals today's default, so an unset env and an unreachable flagd behave as before.
-- **Fail mode: fall back** (env or default). None of these limits the agent, so none needs fail-closed.
+- **Flag first, env fallback for one release** (FR-151): the flag always wins when flagd resolves it. Only when the flag cannot be resolved (flagd unreachable, flag missing, no first sync yet) the deprecated env var is used when set, else the compiled default. The flag default equals today's default, so an unset env and an unreachable flagd behave as before.
+- **Fail mode (every row): flag, else env, else default.** None of these limits the agent, so none needs fail-closed. The agent-limiting settings are not in this table (§15.2, FR-152, C-034).
 - **Owner: operator.** Written through the flag service registry as stack-scoped overlays (§13.2, rows below), never by the agent (C-008, C-034). Bounds are validated by the registry.
 
 | Key (set) | Replaces env | Type | Variants (planned) | Default (today's) | Owner | Fail mode | Status |
 |---|---|---|---|---|---|---|---|
-| `inference.model` (`agent`) | `AGENT_INFERENCE_MODEL` | string | `default`="claude-opus-5-5" (`inference.DefaultModel`) | `default` | operator | env, then default | Open (#1788) |
-| `inference.effort` (`agent`) | `AGENT_INFERENCE_EFFORT` | string | `low`, `medium`, `high`, `xhigh`, `max` | `medium` (`inference.DefaultEffort`) | operator | env, then default | Open (#1788) |
-| `inference.timeout_seconds` (`agent`) | `AGENT_INFERENCE_TIMEOUT_SECONDS` | int | `default`=120 (`inference.DefaultTimeout`), `short`=30 | `default` = 120 | operator | env, then default | Open (#1788) |
-| `effect.window_seconds` (`agent`) | `AGENT_EFFECT_WINDOW_SECONDS` | int | `default`=20 (`decision.DefaultEffectWindow`), declared shorter and longer variants | `default` = 20 | operator | env, then default | Open (#1788) |
-| `probe.decisions` (`agent`) | `AGENT_PROBE_DECISIONS` | bool | `on`=true, `off`=false | `off` = false | operator (demo only) | `off` | Open (#1788) |
-| `promotion.rewatch_interval_seconds` (`agent`) | `AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS` | int | `default`=60 (`promote.DefaultRewatchInterval`) | `default` = 60 | operator | env, then default | Open (#1788) |
-| `promotion.rewatch_timeout_seconds` (`agent`) | `AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS` | int | `default`=3600 (`promote.DefaultRewatchTimeout`) | `default` = 3600 | operator | env, then default | Open (#1788) |
-| `promotion.revert_cooldown_seconds` (`agent`) | `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS` | int | `default`=600 (`promote.DefaultRevertCooldown`) | `default` = 600 | operator | env, then default | Open (#1788) |
-| `log_level` (`observability`, targeting on `service`) | `LOG_LEVEL` (all Python services, flag service, agent) | string | `debug`, `info`, `warning`, `error` | `info` (Python and Go both default to INFO) | operator | env, then `info` | Open (#1788) |
-| `flag_eval_startup_grace_seconds` (`observability`) | `FLAG_EVAL_STARTUP_GRACE_SECONDS` (`lib/flag_eval_visibility.py:56`) | int | `default`=15 | `default` = 15 | operator | env, then default | Open (#1788) |
-| `debug` (`observability`) | `DEBUG` (`services/pairing_daemon/psmove_pairing/config.py:9`, `"1"` = on) | bool | `on`, `off` | `off` | operator | `off` | Open (#1788); see "Open points" |
+| `inference.model` (`agent`) | `AGENT_INFERENCE_MODEL` | string | `default`="claude-opus-5-5" (`inference.DefaultModel`) | `default` | operator | flag, env, default | Open (#1788) |
+| `inference.effort` (`agent`) | `AGENT_INFERENCE_EFFORT` | string | `low`, `medium`, `high`, `xhigh`, `max` | `medium` (`inference.DefaultEffort`) | operator | flag, env, default | Open (#1788) |
+| `inference.timeout_seconds` (`agent`) | `AGENT_INFERENCE_TIMEOUT_SECONDS` | int | `default`=120 (`inference.DefaultTimeout`), `short`=30 | `default` = 120 | operator | flag, env, default | Open (#1788) |
+| `effect.window_seconds` (`agent`) | `AGENT_EFFECT_WINDOW_SECONDS` | float (the code parses a float, `services/agent/main.go` `effectWindowFromEnv`; non-positive falls to the default) | `default`=20 (`decision.DefaultEffectWindow`), `short`=10, `long`=40 | `default` = 20 | operator | flag, env, default | Open (#1788) |
+| `promotion.rewatch_interval_seconds` (`agent`) | `AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS` | int | `default`=60 (`promote.DefaultRewatchInterval`) | `default` = 60 | operator | flag, env, default | Open (#1788) |
+| `promotion.rewatch_timeout_seconds` (`agent`) | `AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS` | int | `default`=3600 (`promote.DefaultRewatchTimeout`) | `default` = 3600 | operator | flag, env, default | Open (#1788) |
+| `promotion.revert_cooldown_seconds` (`agent`) | `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS` | int | `default`=600 (`promote.DefaultRevertCooldown`) | `default` = 600 | operator | flag, env, default | Open (#1788) |
+| `log_level` (`observability`, targeting on `service`) | `LOG_LEVEL` (Python services, flag service, agent) | string | `debug`, `info`, `warning`, `error` | `info` (Python and Go both default to INFO) | operator | env, then `info` | Open (#1788) |
+| `flag_eval_startup_grace_seconds` (`observability`) | `FLAG_EVAL_STARTUP_GRACE_SECONDS` (`lib/flag_eval_visibility.py:56`) | int | `default`=15 | `default` = 15 | operator | flag, env, default | Open (#1788) |
+| `debug` (`observability`) | `DEBUG` (`services/pairing_daemon/psmove_pairing/config.py:9`, `"1"` = on) | bool | `on`, `off` | `off` | operator | flag, env, `off` | Open (#1788); see "Open points" |
 
 ### 15.1 Planned registry entries (extends §13.2 and §13.5)
 
@@ -607,12 +606,13 @@ Each key above is added to the mutable-flag registry as a stack-scoped `overlay`
 | `FLAG_SERVICE_*` | The flag service cannot depend on itself. |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS`, `AGENT_ROLLOUT_DWELL_SECONDS` | Parked rollout (UC-050 / UC-051); revisit when un-parked. |
 | `AGENT_INFERENCE_BACKEND` | Selects the text backend at startup (builds clients); not in the #1788 candidate list. |
-| `AGENT_AUTONOMOUS_ENABLED`, `AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_CODE_IMPROVEMENT_TARGET` | Limit the agent: stay env ceilings (C-034, FR-152). The human-owned flags `enabled` and `code_improvement.mode` may only tighten them; both fail closed. No new flag. |
-| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | Stays an env ceiling; the existing `llm.max_requests_per_minute` (§3) can only lower it: effective = `min(env, flag)` (FR-152, NFR-011). The flag is operator-written (§13.2), never agent-written. |
+| `AGENT_PROBE_DECISIONS` | Makes the agent emit probe decisions (demo/verification, `services/agent/main.go:590`), so it drives the agent: C-034 territory, env-only gate, unset = off (FR-152). |
+| `AGENT_AUTONOMOUS_ENABLED`, `AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_CODE_IMPROVEMENT_TARGET` | Limit the agent: stay env ceilings (C-034, FR-152). Combination with the existing human-owned flags: autonomous promotion = env AND `code_improvement.mode`=`autonomous` AND `enabled`; code changes = env AND `enabled`; target = `local` unless env and `code_improvement.target` both say `github`. Unset env = closed. A missing flag or lost sync resolves to its code default (`enabled` off, mode `issue`, target `local`), so they fail closed. No new flag. |
+| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | Stays an env ceiling; the existing `llm.max_requests_per_minute` (§3) can only lower it: effective = `min(env, flag)`, unset env = no ceiling (FR-152, NFR-011). A lost sync resolves the flag to its default 6 (not the lowest variant 3). The flag is operator-written (§13.2), never agent-written. |
 
 ### 15.3 Open points
 
 - `debug` and `log_level` for the pairing daemon: it runs host-networked and may have no flagd client; if so it stays env-only and its rows are dropped at implementation.
 - The Python log level is applied by `logging.basicConfig` at import; use-time reads need a periodic or per-record level refresh. Implementation detail for the logging PR.
 
-**Traceability:** FR-150 to FR-152, C-034, NFR-011 / UC-045 (planned note) / `services/agent/main.go`, `lib/otel_logging.py`, `lib/flag_eval_visibility.py`.
+**Traceability:** FR-150 to FR-152, C-034, NFR-011 / UC-045 (planned note) / `services/agent/main.go`, `lib/otel_logging.py` (OTLP handler level), `lib/flag_eval_visibility.py`; the Python services read `LOG_LEVEL` themselves in `services/game_coordinator/server.py:21`, `services/menu/server.py:22`, `services/audio/server.py:33`, `services/python_hid/server.py:31`, `services/controller_manager/server.py:39`.
