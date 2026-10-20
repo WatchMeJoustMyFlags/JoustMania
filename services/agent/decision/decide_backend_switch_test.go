@@ -19,7 +19,7 @@ func newDecideSpans(h remoteHarness, seen int) ([]sdktrace.ReadOnlySpan, int) {
 // cycle, never cached, so a flip of decision.backend applies to the next
 // decision without a restart, and the agent.decide span names the new value.
 //
-// UC: UC-044 main
+// UC: UC-044 main Post-S-1
 func TestRemote_BackendSwitchAppliesNextCycle(t *testing.T) {
 	t.Run("UC-044/main rules -> claude -> rules applies on the next cycle each time", func(t *testing.T) {
 		be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "switch"))

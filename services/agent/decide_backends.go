@@ -23,6 +23,7 @@ import (
 // snapshot, so they must be cheap and do no I/O:
 //   - API keys are read ONCE at startup (decideBackendEnvFromOS) and closed over.
 //     They are env secrets, never flags, and never recorded on a span.
+//     UC: UC-044 BR-001 (a key set or changed later needs a restart), C-016.
 //   - openai and jev share one *http.Client with claude, so TLS connections are
 //     pooled across the per-cycle backend values. Decide's ctx deadline (the
 //     decision.<backend>.timeout_ms flag) is the real budget; the client timeout

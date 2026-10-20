@@ -8,7 +8,7 @@
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-agent-backend.sh
 #
-# UC: UC-044 main A3
+# UC: UC-044 main A3 A4 Post-F-1
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -181,7 +181,13 @@ else
 fi
 
 # --- the flag service unreachable -----------------------------------------
+# A4: a flip attempted while the service is down fails clearly (non-zero exit, clear message).
+# The stopped fake cannot log a PUT, so "nothing written" is not checked here; the refusal
+# case above (overlays stay 0) carries the "nothing changes" half.
+fixture
+"${HELPER}" openai >/dev/null
 stop_fake_flag_service
+expect "unreachable flag service fails a switch clearly" 1 "flag service unreachable" -- claude sonnet
 expect "unreachable flag service fails clearly" 1 "flag service unreachable" -- status
 echo
 echo "${pass} passed, ${fail} failed"
