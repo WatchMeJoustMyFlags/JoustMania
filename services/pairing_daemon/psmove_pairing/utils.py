@@ -11,6 +11,7 @@ async def run_command(
     cmd: list[str],
     capture_stderr: bool = True,
     env: dict[str, str] | None = None,
+    timeout_seconds: float = 60,
 ) -> tuple[int, str]:
     """Run a subprocess command asynchronously and return exit code and output.
 
@@ -18,6 +19,7 @@ async def run_command(
         cmd: Command and arguments to run
         capture_stderr: Whether to capture stderr in output
         env: Additional environment variables to set (merged with current env)
+        timeout_seconds: Seconds to wait for the command before killing it
     """
     proc = None
     try:
@@ -35,7 +37,7 @@ async def run_command(
             stderr=stderr,
             env=run_env,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         output = stdout.decode("utf-8", errors="replace").strip()
         return proc.returncode or 0, output
     except TimeoutError:
