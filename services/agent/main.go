@@ -496,16 +496,16 @@ func main() {
 	slog.Info("OpenFeature flagd provider registered", "host", flagCfg.Host, "port", flagCfg.Port)
 
 	// Lifecycle + throttle calibration flags (#766 F5) are HOT-RELOADED live since
-	// #927: SetupFlagd primed the holder with the four flags and wired the
-	// OpenFeature configuration-change listener (the maintainer's requested
-	// mechanism), so the store TTLs, eviction ticker, and decision-loop throttle
+	// #927: SetupFlagd primed the holder with the four flags; since #1709 the holder
+	// is re-read every 1 s (the uncached RPC resolver emits no configuration-change
+	// events), so the store TTLs, eviction ticker, and decision-loop throttle
 	// read the CURRENT values from the holder on their hot path and a flag change
 	// takes effect with no restart. The initial snapshot below is only for the
 	// startup log; the consumers wired further down read the holder's live source
 	// funcs, never this captured value. If flagd is not yet ready every value falls
 	// back to its safe default (the former hardcoded constants).
 	lifecycle := lifecycleHolder.Load()
-	slog.Info("Agent lifecycle flags primed (hot-reloaded live via OpenFeature config-change, #927)",
+	slog.Info("Agent lifecycle flags primed (hot-reloaded live, re-read every 1 s, #927 #1709)",
 		"player_ttl", lifecycle.PlayerTTL,
 		"session_grace", lifecycle.SessionGrace,
 		"evict_interval", lifecycle.EvictInterval,

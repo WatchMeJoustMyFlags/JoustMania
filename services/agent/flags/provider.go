@@ -31,8 +31,12 @@ type ProviderConfig struct {
 // started), the provider never starts forwarding events; the stream goroutine then
 // blocks on its second event and every later change is lost, so the cache served
 // the old `enabled` / `experiments_enabled` / `decision.backend` until a restart.
-// An uncached read is one local RPC; the agent reads its flags about once per
-// decision cycle per game (~1/s), well within what flagd serves.
+// An uncached read is one local RPC. A full Flags.Evaluate snapshot is about 20
+// RPCs (one per flag), taken per decision cycle per game (~1/s) and by the
+// experiment loop, retro and admission paths: a few dozen local RPCs per second,
+// well within what flagd serves. A hung (not refusing) flagd costs up to the
+// 500 ms deadline per read while values stay fail-closed; #1713 moves the agent
+// to the in-process resolver.
 //
 // Provider setup never blocks startup: if flagd is unreachable the provider
 // still registers and every evaluation falls back to its safe default, so the
