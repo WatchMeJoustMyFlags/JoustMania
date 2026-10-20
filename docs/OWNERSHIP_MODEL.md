@@ -277,8 +277,8 @@ admin an on-device way to constrain the agent (`interventions_allowed` lives in 
 
 ### 6.1 Visibility (`#818`, partly shipped)
 
-The normative contract, the on-device agent cue (shipped) and the truthful admin announcement (voice line and LED colour of the selected option,
-UC-012 step 3, #1739) live in
+The normative contract, the on-device agent cue (shipped) and the truthful admin announcement (voice line and LED colour: effective value on option select, agent cue plus
+effective value after a step that an overlay differs from; UC-012 step 3, BR-006, #1739) live in
 [flags.md section 14.2](specs/flags.md#142-the-visibility-contract).
 
 ### 6.2 Kill-switch / policy control (`#819`)

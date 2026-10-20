@@ -484,6 +484,7 @@ class TestHandleSensitivityLocalStorage:
         from proto import controller_manager_pb2
 
         mock_state_manager.game_settings_writer.cycle_variant.return_value = variant
+        mock_state_manager.game_settings_client.get_integer_value.return_value = SENSITIVITY_VALUES[variant]
 
         await handler.handle_sensitivity("test_serial")
 
@@ -1544,6 +1545,7 @@ class TestPlayValueVoice:
         """SELECT on the sensitivity option pulses and announces the new level (UC-012 step 5)."""
         handler.current_option = handler.option_names.index("sensitivity")
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 3  # no overlay
 
         await handler.handle_increase_value("test_serial")
 
@@ -1556,6 +1558,7 @@ class TestPlayValueVoice:
         """START on the sensitivity option announces the new level (UC-012 step 5)."""
         handler.current_option = handler.option_names.index("sensitivity")
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "slow"
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 1  # no overlay
 
         await handler.handle_decrease_value("test_serial")
 
@@ -1959,8 +1962,8 @@ class TestCycleFeedbackIsBaselineTransition:
         _name, attrs = self._cycle_event(handler)
         assert attrs["old_variant"] == "medium"
         assert attrs["new_variant"] == "fast"
-        # The effective-display path must NOT have been used to source old_variant.
-        mock_state_manager.game_settings_writer.get_flag_view.assert_not_called()
+        # old_variant comes from get_current_variant (baseline), never the effective path.
+        mock_state_manager.game_settings_writer.get_current_variant.assert_called()
 
     @pytest.mark.asyncio
     async def test_increase_value_old_variant_is_baseline_not_override(self, handler, mock_state_manager):
@@ -1975,7 +1978,6 @@ class TestCycleFeedbackIsBaselineTransition:
         _name, attrs = self._cycle_event(handler)
         assert attrs["old_variant"] == "medium"
         assert attrs["new_variant"] == "fast"
-        mock_state_manager.game_settings_writer.get_flag_view.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_decrease_value_old_variant_is_baseline_not_override(self, handler, mock_state_manager):
@@ -1990,7 +1992,6 @@ class TestCycleFeedbackIsBaselineTransition:
         _name, attrs = self._cycle_event(handler)
         assert attrs["old_variant"] == "medium"
         assert attrs["new_variant"] == "slow"
-        mock_state_manager.game_settings_writer.get_flag_view.assert_not_called()
 
 
 class TestForceStartThresholdFlag:
@@ -2321,3 +2322,108 @@ class TestOptionAnnouncementUsesEffectiveValue:
 
         assert handler.option_names[handler.current_option] == "agent_control"
         handler._show_value_feedback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-006"])
+    async def test_selecting_num_teams_announces_effective_value(self, handler, mock_state_manager):
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(
+            {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}, "two"
+        )
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 4
+        handler.current_option = handler.option_names.index("sensitivity")
+        handler._show_value_feedback = AsyncMock()
+        handler._play_value_voice = AsyncMock()
+
+        await handler.handle_cycle_option("test_serial")
+
+        handler._show_value_feedback.assert_awaited_once_with("test_serial", "num_teams", 4)
+        handler._play_value_voice.assert_awaited_once_with("num_teams", 4)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-006"])
+    async def test_selecting_force_all_start_announces_effective_value(self, handler, mock_state_manager):
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(
+            {"on": True, "off": False}, "off"
+        )
+        mock_state_manager.game_settings_client.get_boolean_value.return_value = True
+        handler.current_option = handler.option_names.index("num_teams")
+        handler._show_value_feedback = AsyncMock()
+        handler._play_value_voice = AsyncMock()
+
+        await handler.handle_cycle_option("test_serial")
+
+        handler._show_value_feedback.assert_awaited_once_with("test_serial", "force_all_start", True)
+        handler._play_value_voice.assert_awaited_once_with("force_all_start", True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-006"])
+    async def test_selecting_without_flagd_client_announces_baseline(self, handler, mock_state_manager):
+        mock_state_manager.game_settings_client = None
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "fast")
+        handler.current_option = len(handler.option_names) - 1
+        handler._show_value_feedback = AsyncMock()
+        handler._play_value_voice = AsyncMock()
+
+        await handler.handle_cycle_option("test_serial")
+
+        handler._show_value_feedback.assert_awaited_once_with("test_serial", "sensitivity", 3)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-006"])
+    async def test_selecting_with_flag_service_down_is_silent(self, handler, mock_state_manager):
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = None
+        handler.current_option = len(handler.option_names) - 1
+        handler._show_value_feedback = AsyncMock()
+        handler._play_value_voice = AsyncMock()
+
+        await handler.handle_cycle_option("test_serial")
+
+        handler._show_value_feedback.assert_not_awaited()
+        handler._play_value_voice.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5], br=["BR-006"])
+    async def test_step_with_overlay_announces_baseline_then_agent_cue_and_effective(self, handler, mock_state_manager):
+        """Baseline steps to fast; agent overlay holds ultra_fast: new setting, magenta cue, effective value."""
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 4
+        order = []
+
+        async def show(_serial, _option, value):
+            order.append(("show", value))
+
+        async def voice(_option, value):
+            order.append(("voice", value))
+
+        async def effect(*_args, **kwargs):
+            order.append(("cue", kwargs.get("color")))
+
+        handler._show_value_feedback = show
+        handler._play_value_voice = voice
+        handler._send_game_effect = effect
+
+        await handler.handle_increase_value("test_serial")
+
+        assert order == [
+            ("show", 3),
+            ("voice", 3),
+            ("cue", Colors.Magenta.value),
+            ("show", 4),
+            ("voice", 4),
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5], br=["BR-006"])
+    async def test_step_without_overlay_announces_only_baseline(self, handler, mock_state_manager):
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 3
+        handler._show_value_feedback = AsyncMock()
+        handler._play_value_voice = AsyncMock()
+        handler._send_game_effect = AsyncMock()
+
+        await handler.handle_decrease_value("test_serial")
+
+        handler._show_value_feedback.assert_awaited_once_with("test_serial", "sensitivity", 3)
+        handler._send_game_effect.assert_not_awaited()

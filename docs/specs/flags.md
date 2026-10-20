@@ -551,12 +551,14 @@ instrumentation.
 
 Surfaces (#818):
 
-1. **Truthful admin announcement (shipped, #1739).** When the host selects an option in admin mode (UC-012 step 3),
-   `AdminModeHandler._effective_variant` (`services/menu/handlers/admin.py`) resolves the option through the live flagd
-   `game` client and maps the value back to a variant name; the controller announces that effective value (voice line,
-   LED colour), including an active agent override, not the baseline `defaultVariant`. It falls back to the baseline
-   when the client is missing or the value matches no variant. Cycling still advances the human baseline and its
-   feedback describes the baseline transition (UC-012 BR-006).
+1. **Truthful admin announcement (shipped, #1739).** Selecting an option in admin mode (Move, UC-012 step 3) announces the
+   EFFECTIVE value (voice line, LED colour): `AdminModeHandler._effective_variant` (`services/menu/handlers/admin.py`)
+   resolves the option through the live flagd `game` client and maps the value back to a variant name, so an active
+   agent override is announced, not the baseline `defaultVariant`. It falls back to the baseline when the client is
+   missing or the value matches no variant; with the flag service unreadable nothing is announced beyond the option
+   colour. Stepping a value (Select / Start, Circle) writes the baseline and announces the new setting; when an agent
+   overlay makes the effective value differ, it follows with the magenta agent cue and the effective value
+   (UC-012 BR-006).
 2. **On-device cue.** When the coordinator applies a **HARD-class** intervention (`spec.weight >= WEIGHT_HARD`, in
    `services/game_coordinator/interventions.py`; `end_game` is excluded because its game has just ended, UC-040
    BR-018) it emits a short magenta `GAME_EFFECT_PULSE` on the affected controller(s), broadcast for non-targeted
