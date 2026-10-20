@@ -180,6 +180,34 @@ else
   not_ok "a backend+model flip is two PUTs, writer=stage, not persisted (${puts})"
 fi
 
+# --- a failed write never leaves a half switch (#1680) ---------------------
+# The 2nd PUT fails (the backend write, model goes first): the previous backend stays.
+fixture
+stop_fake_flag_service
+start_fake_flag_service "${WORK}" --fail-put 2
+expect "failed second write fails the switch" 1 "flag service" -- claude sonnet
+check_variant decision.backend rules
+# The model was written first (validated) and stays set; it is inert while rules is active.
+check_variant decision.claude.model sonnet
+# The 1st PUT fails: nothing is written at all.
+stop_fake_flag_service
+start_fake_flag_service "${WORK}" --fail-put 1
+expect "failed first write fails the switch" 1 "flag service" -- claude sonnet
+check_variant decision.backend rules
+check_variant decision.claude.model haiku
+# A backend variant the service does not declare is refused before any write.
+fixture
+python3 - "${FAKE_AGENT_FLAGS}" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+del d["flags"]["decision.backend"]["variants"]["claude"]
+json.dump(d, open(sys.argv[1], "w"))
+PY
+stop_fake_flag_service
+start_fake_flag_service "${WORK}"
+expect "undeclared backend variant is refused" 1 "variant 'claude' not defined for flag 'decision.backend'" -- claude sonnet
+check_variant decision.claude.model haiku
+
 # --- the flag service unreachable -----------------------------------------
 # A4: a flip attempted while the service is down fails clearly (non-zero exit, clear message).
 # The stopped fake cannot log a PUT, so "nothing written" is not checked here; the refusal
