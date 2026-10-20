@@ -98,3 +98,31 @@ func TestProposeBackendFor_DelegateErrorPropagates(t *testing.T) {
 		t.Fatalf("err = %v, want delegate error", err)
 	}
 }
+
+// UC: UC-042 Pre-2
+func TestSelectInferenceBackend_BaseURL(t *testing.T) {
+	cases := []struct {
+		name, url string
+		wantReal  bool
+	}{
+		{"unset keeps the Anthropic API", "", true},
+		{"plain http fake", "http://127.0.0.1:9999", true},
+		{"https proxy", "https://proxy.example.com/anthropic", true},
+		{"not a url", "::nope", false},
+		{"other scheme", "ftp://127.0.0.1:9999", false},
+		{"no host", "http://", false},
+		{"credentials in url", "http://user:pw@127.0.0.1:9999", false},
+		{"query string", "http://127.0.0.1:9999?x=1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_INFERENCE_BACKEND", "claude")
+			t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+			t.Setenv("AGENT_INFERENCE_BASE_URL", tc.url)
+			backend, name := selectInferenceBackend(quietLogger())
+			if (backend != nil) != tc.wantReal {
+				t.Fatalf("%q = (%v, %q), want real=%v", tc.url, backend != nil, name, tc.wantReal)
+			}
+		})
+	}
+}

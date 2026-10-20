@@ -118,6 +118,7 @@ class AgentProcess(ManagedProcess):
         coordinator_port: int,
         mock_control_port: int,
         openai_api_key: str,
+        extra_env: dict[str, str] | None = None,
     ):
         self.listen_port = listen_port
         self.health_port = free_port()
@@ -144,6 +145,7 @@ class AgentProcess(ManagedProcess):
             "OTEL_EXPORTER_OTLP_ENDPOINT": otlp_endpoint,
             "OTEL_BSP_SCHEDULE_DELAY": BSP_SCHEDULE_DELAY_MS,
             "SERVICE_VERSION": "service-tier",
+            **(extra_env or {}),
         }
         super().__init__(
             "agent",

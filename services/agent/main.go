@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -456,12 +457,39 @@ func selectInferenceBackend(logger *slog.Logger) (*inference.Claude, string) {
 		logger.Warn("AGENT_INFERENCE_BACKEND=claude but ANTHROPIC_API_KEY is empty; proposer/retro stay on the stub")
 		return nil, "stub"
 	}
+	baseURL, ok := inferenceBaseURL(logger)
+	if !ok {
+		return nil, "stub"
+	}
 	return inference.NewClaude(inference.Config{
 		APIKey:  key,
+		BaseURL: baseURL,
 		Model:   getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
 		Effort:  getEnv("AGENT_INFERENCE_EFFORT", inference.DefaultEffort),
 		Timeout: secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout),
 	}), inference.Name
+}
+
+// inferenceBaseURL reads AGENT_INFERENCE_BASE_URL (#1422 S10): the root the Claude text
+// backend sends ANTHROPIC_API_KEY to. Empty = the Anthropic API. The key travels to this
+// host, so a value is accepted only as a plain http(s) URL with a host and no credentials,
+// query or fragment; anything else fails safe (ok=false: the caller stays on the stub and
+// the key is sent nowhere). A non-default host is logged at WARN. The URL itself is never
+// put on a span.
+func inferenceBaseURL(logger *slog.Logger) (string, bool) {
+	raw := strings.TrimSpace(os.Getenv("AGENT_INFERENCE_BASE_URL"))
+	if raw == "" {
+		return "", true
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" ||
+		u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		logger.Warn("AGENT_INFERENCE_BASE_URL is not a plain http(s) URL with a host; proposer/retro stay on the stub")
+		return "", false
+	}
+	logger.Warn("AGENT_INFERENCE_BASE_URL overrides the Anthropic API root: ANTHROPIC_API_KEY is sent to it",
+		"host", u.Host)
+	return raw, true
 }
 
 func main() {

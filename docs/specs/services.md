@@ -367,6 +367,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_INFERENCE_MODEL` | `claude-opus-5-5` | yes (empty = default) | model id of the `claude` text backend |
 | `AGENT_INFERENCE_EFFORT` | `medium` | yes (empty = default) | `output_config.effort` of the text backend (not sent to Haiku 4.5) |
 | `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | yes (empty = default) | per-call deadline of the text backend, also the retro deadline |
+| `AGENT_INFERENCE_BASE_URL` | empty (= `https://api.anthropic.com`) | no | API root of the `claude` text backend, for the service-tier fake Claude (#1422 S10) or a proxy. `ANTHROPIC_API_KEY` is sent to it, so only a plain http(s) URL with a host, no credentials, query or fragment is accepted; anything else leaves the proposer and retro on the stub. A non-default host is logged at WARN. The in-game `claude` decision backend is unaffected |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | unset | yes | positive value replaces the `llm.max_requests_per_minute` flag |
 | `AGENT_PROBE_DECISIONS` | unset | yes | `true` emits a synthetic `noop` decision about every 5 s (demo and verification only) |
 | `AGENT_EFFECT_WINDOW_SECONDS` | `20` | no | intervention-effect follow-up window (float seconds, positive) |

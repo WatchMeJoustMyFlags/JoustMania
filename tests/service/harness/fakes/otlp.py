@@ -59,6 +59,7 @@ class SpanRecord:
     attributes: dict[str, Any] = field(default_factory=dict)
     events: tuple[SpanEventRecord, ...] = ()
     resource: dict[str, Any] = field(default_factory=dict)
+    start_time_unix_nano: int = 0
 
     @property
     def is_root(self) -> bool:
@@ -133,6 +134,7 @@ def _decode_spans(request) -> list[SpanRecord]:
                         attributes=_attributes(span.attributes),
                         events=tuple(SpanEventRecord(e.name, _attributes(e.attributes)) for e in span.events),
                         resource=resource,
+                        start_time_unix_nano=span.start_time_unix_nano,
                     )
                 )
     return spans
