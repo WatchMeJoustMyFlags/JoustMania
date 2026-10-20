@@ -111,6 +111,35 @@ def _safe_detach(token: object) -> None:
         logger.debug("OTEL context detach failed (token from different context) - safe to ignore")
 
 
+async def _iterate_in_context(stream: Any, ctx: otel_context.Context):
+    """Re-yield ``stream`` with ``ctx`` attached only while the inner iterator runs.
+
+    Attaching once around a whole async generator breaks when the generator is closed
+    from a different task (gRPC teardown, GeneratorExit): the detach token belongs to
+    another contextvars Context and OpenTelemetry logs "Failed to detach context" (#1769).
+    Attach and detach inside a single step, so both always happen in the same Context.
+    """
+    iterator = stream.__aiter__()
+    try:
+        while True:
+            token = otel_context.attach(ctx)
+            try:
+                item = await iterator.__anext__()
+            except StopAsyncIteration:
+                return
+            finally:
+                otel_context.detach(token)
+            yield item
+    finally:
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            token = otel_context.attach(ctx)
+            try:
+                await aclose()
+            finally:
+                otel_context.detach(token)
+
+
 def _prepare_metadata(existing_metadata: Any) -> tuple:
     """Prepare metadata with trace context injection.
 
@@ -644,39 +673,41 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
 
                 async def wrapped_unary_stream(request, context):
                     parent_ctx = _extract_context_from_metadata(context)
-                    token = otel_context.attach(parent_ctx)
+                    attrs = _build_rpc_attributes(service, method)
+                    span = self._tracer.start_span(
+                        f"{service}/{method}", context=parent_ctx, kind=SpanKind.SERVER, attributes=attrs
+                    )
+                    stream = _iterate_in_context(
+                        original_handler(request, context), trace.set_span_in_context(span, parent_ctx)
+                    )
                     try:
-                        attrs = _build_rpc_attributes(service, method)
-                        with self._tracer.start_as_current_span(
-                            f"{service}/{method}", kind=SpanKind.SERVER, attributes=attrs
-                        ) as span:
-                            try:
-                                async for response in original_handler(request, context):
-                                    yield response
-                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
-                                span.set_status(Status(StatusCode.OK))
-                            except grpc.aio.AioRpcError as e:
-                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
-                                span.set_status(Status(StatusCode.ERROR, str(e.code())))
-                                raise
-                            except Exception as exc:
-                                span.record_exception(exc)
-                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
-                                span.set_status(Status(StatusCode.ERROR))
-                                raise
+                        async for response in stream:
+                            yield response
+                        span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                        span.set_status(Status(StatusCode.OK))
+                    except grpc.aio.AioRpcError as e:
+                        span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                        span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                        raise
+                    except Exception as exc:
+                        span.record_exception(exc)
+                        span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
+                        span.set_status(Status(StatusCode.ERROR))
+                        raise
                     finally:
-                        _safe_detach(token)
+                        await stream.aclose()
+                        span.end()
 
             else:
 
                 async def wrapped_unary_stream(request, context):
                     parent_ctx = _extract_context_from_metadata(context)
-                    token = otel_context.attach(parent_ctx)
+                    stream = _iterate_in_context(original_handler(request, context), parent_ctx)
                     try:
-                        async for response in original_handler(request, context):
+                        async for response in stream:
                             yield response
                     finally:
-                        _safe_detach(token)
+                        await stream.aclose()
 
             return grpc.unary_stream_rpc_method_handler(
                 wrapped_unary_stream,
@@ -742,39 +773,41 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
 
                 async def wrapped_stream_stream(request_iterator, context):
                     parent_ctx = _extract_context_from_metadata(context)
-                    token = otel_context.attach(parent_ctx)
+                    attrs = _build_rpc_attributes(service, method)
+                    span = self._tracer.start_span(
+                        f"{service}/{method}", context=parent_ctx, kind=SpanKind.SERVER, attributes=attrs
+                    )
+                    stream = _iterate_in_context(
+                        original_handler(request_iterator, context), trace.set_span_in_context(span, parent_ctx)
+                    )
                     try:
-                        attrs = _build_rpc_attributes(service, method)
-                        with self._tracer.start_as_current_span(
-                            f"{service}/{method}", kind=SpanKind.SERVER, attributes=attrs
-                        ) as span:
-                            try:
-                                async for response in original_handler(request_iterator, context):
-                                    yield response
-                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
-                                span.set_status(Status(StatusCode.OK))
-                            except grpc.aio.AioRpcError as e:
-                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
-                                span.set_status(Status(StatusCode.ERROR, str(e.code())))
-                                raise
-                            except Exception as exc:
-                                span.record_exception(exc)
-                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
-                                span.set_status(Status(StatusCode.ERROR))
-                                raise
+                        async for response in stream:
+                            yield response
+                        span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                        span.set_status(Status(StatusCode.OK))
+                    except grpc.aio.AioRpcError as e:
+                        span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                        span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                        raise
+                    except Exception as exc:
+                        span.record_exception(exc)
+                        span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
+                        span.set_status(Status(StatusCode.ERROR))
+                        raise
                     finally:
-                        _safe_detach(token)
+                        await stream.aclose()
+                        span.end()
 
             else:
 
                 async def wrapped_stream_stream(request_iterator, context):
                     parent_ctx = _extract_context_from_metadata(context)
-                    token = otel_context.attach(parent_ctx)
+                    stream = _iterate_in_context(original_handler(request_iterator, context), parent_ctx)
                     try:
-                        async for response in original_handler(request_iterator, context):
+                        async for response in stream:
                             yield response
                     finally:
-                        _safe_detach(token)
+                        await stream.aclose()
 
             return grpc.stream_stream_rpc_method_handler(
                 wrapped_stream_stream,

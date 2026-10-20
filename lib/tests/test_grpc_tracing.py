@@ -1,10 +1,15 @@
 """Tests for lib/grpc_tracing.py"""
 
+import asyncio
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 # Add lib to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -275,6 +280,62 @@ class TestServerInterceptorSpans:
         result = await interceptor.intercept_service(continuation, mock_details)
         # Result should be a new handler wrapping the original
         assert result is not None
+
+
+class TestStreamCloseFromOtherContext:
+    """#1769: closing a wrapped stream from another task must not log a detach ERROR."""
+
+    @staticmethod
+    async def _wrapped_handler(kind: str, rpc_spans: bool):
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+        async def inner(*_args):
+            for i in range(10):
+                yield i
+
+        mock_handler = MagicMock()
+        mock_handler.unary_unary = None
+        mock_handler.unary_stream = inner if kind == "unary_stream" else None
+        mock_handler.stream_unary = None
+        mock_handler.stream_stream = inner if kind == "stream_stream" else None
+        mock_handler.request_deserializer = None
+        mock_handler.response_serializer = None
+        mock_details = MagicMock()
+        mock_details.method = "/pkg.Svc/Stream"
+
+        interceptor = get_server_interceptors()[0]
+        interceptor._tracer = provider.get_tracer("test")
+        with patch("lib.grpc_tracing._rpc_spans_enabled", return_value=rpc_spans):
+            wrapped = await interceptor.intercept_service(AsyncMock(return_value=mock_handler), mock_details)
+        return getattr(wrapped, kind), exporter
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["stream_stream", "unary_stream"])
+    @pytest.mark.parametrize("rpc_spans", [True, False])
+    async def test_close_from_other_task_logs_no_detach_error(self, kind, rpc_spans, caplog):
+        handler, exporter = await self._wrapped_handler(kind, rpc_spans)
+        context = MagicMock()
+        context.invocation_metadata.return_value = []
+        gen = handler(MagicMock(), context)
+
+        async def first_item():
+            return await gen.__anext__()
+
+        assert await asyncio.create_task(first_item()) == 0
+
+        async def close():
+            await gen.aclose()
+
+        with caplog.at_level(logging.DEBUG, logger="opentelemetry.context"):
+            await asyncio.create_task(close())
+
+        errors = [r for r in caplog.records if r.name == "opentelemetry.context" and r.levelno >= logging.ERROR]
+        assert errors == []
+        if rpc_spans:
+            spans = exporter.get_finished_spans()
+            assert [s.name for s in spans] == ["Svc/Stream"]
 
 
 class TestParseAddress:
