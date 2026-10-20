@@ -91,8 +91,11 @@ func TestCoordinator_ObservesAndSpans(t *testing.T) {
 	if v, ok := spanAttr(spans[0], attrEliminationCount); !ok || v.AsInt64() != 2 {
 		t.Errorf("span elimination_count = %v, want 2", v.AsInt64())
 	}
-	if v, ok := spanAttr(spans[0], attrInterventionCount); !ok || v.AsInt64() != 2 {
-		t.Errorf("span intervention_count = %v, want 2", v.AsInt64())
+	if v, ok := spanAttr(spans[0], attrInterventionsApplied); !ok || v.AsInt64() != 0 {
+		t.Errorf("span interventions_applied = %v, want 0", v.AsInt64())
+	}
+	if v, ok := spanAttr(spans[0], attrInterventionsBlocked); !ok || v.AsInt64() != 1 {
+		t.Errorf("span interventions_blocked = %v, want 1", v.AsInt64())
 	}
 }
 

@@ -101,8 +101,10 @@ func TestBuildSummary_TopLevel(t *testing.T) {
 	if got.EliminationCount != 2 {
 		t.Errorf("EliminationCount = %d, want 2", got.EliminationCount)
 	}
-	if got.InterventionCount != 2 {
-		t.Errorf("InterventionCount = %d, want 2", got.InterventionCount)
+	// One dispatched (no apply outcome recorded: neither applied nor blocked) and
+	// one blocked by the permission chain (#1771).
+	if got.InterventionsApplied != 0 || got.InterventionsBlocked != 1 {
+		t.Errorf("applied/blocked = %d/%d, want 0/1", got.InterventionsApplied, got.InterventionsBlocked)
 	}
 }
 
