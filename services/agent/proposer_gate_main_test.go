@@ -116,6 +116,7 @@ func TestProposerAdmissionFor_StubNeverChargesBudget(t *testing.T) {
 }
 
 // UC: UC-042 A2 BR-001
+// NFR: NFR-011
 func TestProposerAdmissionFor_RealBackendChargesSharedBudget(t *testing.T) {
 	budget := decision.NewLLMBudget()
 	src := realOnlyGate(1)

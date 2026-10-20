@@ -767,7 +767,8 @@ func main() {
 	// Game narrative builder (#928, M7-1): on the SAME GameActive true->false
 	// transition, aggregate the partition's pre-reset snapshot (live signals + the
 	// #916 rolling timeline) into a game summary, for BOTH real and shadow games,
-	// and hands it to the cross-game window (which keeps real games only). Nothing is
+	// and hands it to the cross-game window (real games feed the real-game window, shadow
+	// games their experiment's linked set, BR-005). Nothing is
 	// written to disk (#1368). It is a SEPARATE once-per-game component from
 	// the retro — the summary must run unconditionally (no LLM budget/eligibility),
 	// so it owns its own dedupe and is chained alongside retro.OnGameEnd below
@@ -775,8 +776,9 @@ func main() {
 	// agent.game.summary span.
 	summaries := gamesummary.NewCoordinator(logger)
 	// Advance the M7-2 rolling window on every game end (#929): the coordinator
-	// Records each freshly-built Summary into the shared window, which reduces a real
-	// game to its aggregates and drops a shadow game (UC-042 BR-004, BR-005).
+	// Records each freshly-built Summary into the shared window, which reduces a game to
+	// its aggregates: a real game goes to the real-game window, a shadow game to its
+	// experiment's linked set (UC-042 BR-004, BR-005).
 	summaries.SetObserver(sharedContextWindow)
 	slog.Info("Game narrative builder enabled (#928, M7-1)")
 	slog.Info("Rolling game context window enabled (#929, M7-2)", "retention_cap", gamewindow.RetentionCap)
