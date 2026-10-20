@@ -330,3 +330,33 @@ func TestLiveFlip_FlagdRestartMidRun(t *testing.T) {
 		waitFor(t, "enabled back on after the restart", read, true, liveFlipBound)
 	})
 }
+
+// liveIdleStreamHold outlasts the GOAWAY that v0.6.0's own keepalive (30 s pings,
+// PermitWithoutStream) drew from flagd v0.16.0's default ping policy: the third ping
+// strike, about 120 s into an idle stream (#1768).
+const liveIdleStreamHold = 150 * time.Second
+
+// UC: UC-045 A3
+// An idle sync stream to a healthy flagd is never dropped (#1768): with enabled on and
+// no flag change, every read for liveIdleStreamHold serves on. Before the fix flagd sent
+// GOAWAY too_many_pings every ~2-3 min and the agent read the fail-closed default (off)
+// for about a second each time.
+func TestLiveSync_IdleStreamOutlivesFlagdPingPolicy(t *testing.T) {
+	p := newLiveFlagPlane(t, 0)
+	ctx := context.Background()
+	read := func() bool { return p.flags.Evaluate(ctx).Enabled }
+
+	t.Run("UC-045/A3 Pre-1 idle stream: enabled stays on, no fail-closed read", func(t *testing.T) {
+		p.put(t, keyEnabled, "on")
+		readSettled(t, "enabled", read, true)
+		started := time.Now()
+		for time.Since(started) < liveIdleStreamHold {
+			if !read() {
+				t.Fatalf("enabled read off %s into an idle stream: the sync stream was dropped",
+					time.Since(started).Round(time.Millisecond))
+			}
+			time.Sleep(livePollInterval)
+		}
+		t.Logf("enabled served on for %s of idle stream", liveIdleStreamHold)
+	})
+}
