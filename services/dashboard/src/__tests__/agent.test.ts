@@ -12,8 +12,8 @@
  *   - VM applied-count summing across namespaced jobs, and the empty/unavailable
  *     path returning nulls
  */
-import { describe, it, expect } from "vitest";
-import { aggregateAgentLogs, parseAppliedCounts, parseBlockedCounts } from "../agent.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { aggregateAgentLogs, fetchAgentView, parseAppliedCounts, parseBlockedCounts } from "../agent.js";
 import type { VmQueryResponse } from "../agent.js";
 
 /** Build a synthetic slog TextHandler line from key→value pairs. */
@@ -229,5 +229,44 @@ describe("UC-040 A21 parseBlockedCounts (blocked tallies from agent_decisions_to
   it("returns null without samples so the Loki fold is kept", () => {
     expect(parseBlockedCounts(vm([]))).toBeNull();
     expect(parseBlockedCounts({ status: "error" })).toBeNull();
+  });
+});
+
+describe("UC-040: A21 the Agent tab's blocked tallies cover its 10-minute window", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("UC-040/A21 asks VictoriaMetrics for agent_decisions_total{blocked=\"true\"} over 600 s and the Loki lines over the same window, and prefers the counter", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        urls.push(url);
+        let body: unknown;
+        if (url.includes("/loki/")) {
+          body = {
+            status: "success",
+            data: { result: [{ stream: {}, values: [[String(BigInt(Date.now()) * 1_000_000n), logfmt({ level: "WARN", msg: "agent.decision_blocked", intervention: "grant_shield", reason: "rate_limit" })]] }] },
+          };
+        } else if (url.includes("agent_decisions_total")) {
+          body = { status: "success", data: { resultType: "vector", result: [{ metric: { action: "grant_shield", block_reason: "rate_limit" }, value: [1700, "7"] }] } };
+        } else {
+          body = { status: "success", data: { resultType: "vector", result: [] } };
+        }
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+
+    const view = await fetchAgentView();
+
+    const blockedUrl = urls.find((u) => u.includes("agent_decisions_total"));
+    expect(blockedUrl).toBeDefined();
+    const query = new URL(blockedUrl!, "http://x").searchParams.get("query") ?? "";
+    expect(query).toContain('agent_decisions_total{blocked="true"}');
+    expect(query).toContain("[600s]");
+    const loki = new URL(urls.find((u) => u.includes("/loki/"))!, "http://x").searchParams;
+    expect(BigInt(loki.get("end")!) - BigInt(loki.get("start")!)).toBe(600n * 1_000_000_000n);
+    // The counter wins over the single warning line (repeats log nothing, A21 step 2).
+    expect(view.overlay.totalBlocked).toBe(7);
   });
 });
