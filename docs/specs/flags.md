@@ -588,7 +588,7 @@ Planned rows, **not in the flag files yet** (status Open, #1788, FR-150 to FR-15
 | `promotion.rewatch_interval_seconds` (`agent`) | `AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS` | int | `default`=60 (`promote.DefaultRewatchInterval`) | `default` = 60 | operator | flag, env, default | Open (#1788) |
 | `promotion.rewatch_timeout_seconds` (`agent`) | `AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS` | int | `default`=3600 (`promote.DefaultRewatchTimeout`) | `default` = 3600 | operator | flag, env, default | Open (#1788) |
 | `promotion.revert_cooldown_seconds` (`agent`) | `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS` | int | `default`=600 (`promote.DefaultRevertCooldown`) | `default` = 600 | operator | flag, env, default | Open (#1788) |
-| `log_level` (`observability`, targeting on `service`) | `LOG_LEVEL` (Python services, flag service, agent) | string | `debug`, `info`, `warning`, `error` | `info` (Python and Go both default to INFO) | operator | env, then `info` | Open (#1788) |
+| `log_level` (`observability`, targeting on `service`) | `LOG_LEVEL` (Python services, flag service, agent) | string | `debug`, `info`, `warning`, `error` | `info` (Python and Go both default to INFO) | operator | flag, env, `info` | Open (#1788) |
 | `flag_eval_startup_grace_seconds` (`observability`) | `FLAG_EVAL_STARTUP_GRACE_SECONDS` (`lib/flag_eval_visibility.py:56`) | int | `default`=15 | `default` = 15 | operator | flag, env, default | Open (#1788) |
 | `debug` (`observability`) | `DEBUG` (`services/pairing_daemon/psmove_pairing/config.py:9`, `"1"` = on) | bool | `on`, `off` | `off` | operator | flag, env, `off` | Open (#1788); see "Open points" |
 
@@ -606,7 +606,7 @@ Each key above is added to the mutable-flag registry as a stack-scoped `overlay`
 | `FLAG_SERVICE_*` | The flag service cannot depend on itself. |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS`, `AGENT_ROLLOUT_DWELL_SECONDS` | Parked rollout (UC-050 / UC-051); revisit when un-parked. |
 | `AGENT_INFERENCE_BACKEND` | Selects the text backend at startup (builds clients); not in the #1788 candidate list. |
-| `AGENT_PROBE_DECISIONS` | Makes the agent emit probe decisions (demo/verification, `services/agent/main.go:590`), so it drives the agent: C-034 territory, env-only gate, unset = off (FR-152). |
+| `AGENT_PROBE_DECISIONS` | Startup-read demo override, not migrated: it swaps the rules engine for `decision.NewProbeRules`, which emits at most one synthetic `noop` decision per probe interval for the demo/audit trace (`services/agent/main.go:590`, `:688`). It narrows what the agent does, so it is not an agent-limiting setting (C-034); env-only, unset = off. |
 | `AGENT_AUTONOMOUS_ENABLED`, `AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_CODE_IMPROVEMENT_TARGET` | Limit the agent: stay env ceilings (C-034, FR-152). Combination with the existing human-owned flags: autonomous promotion = env AND `code_improvement.mode`=`autonomous` AND `enabled`; code changes = env AND `enabled`; target = `local` unless env and `code_improvement.target` both say `github`. Unset env = closed. A missing flag or lost sync resolves to its code default (`enabled` off, mode `issue`, target `local`), so they fail closed. No new flag. |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | Stays an env ceiling; the existing `llm.max_requests_per_minute` (§3) can only lower it: effective = `min(env, flag)`, unset env = no ceiling (FR-152, NFR-011). A lost sync resolves the flag to its default 6 (not the lowest variant 3). The flag is operator-written (§13.2), never agent-written. |
 
