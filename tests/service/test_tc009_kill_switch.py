@@ -51,7 +51,7 @@ KILL_RELEASE_HEADROOM = 3.0
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A6", tc="TC-009")
-@pytest.mark.uc("UC-045", flow="main", steps=[2, 3, 4, 7], tc="TC-009")
+@pytest.mark.uc("UC-045", flow="main", steps=[2, 3, 4, 7], cond=["Post-S-2"], tc="TC-009")
 @pytest.mark.usefixtures("flag_service")
 async def test_kill_switch_discards_inflight_answer(fresh_stack):
     """The kill switch flipped while the remote call is in flight: the late

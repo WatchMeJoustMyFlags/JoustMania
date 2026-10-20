@@ -197,7 +197,7 @@ func TestTalk_JevDownThresholdBeatOnClaude(t *testing.T) {
 	})
 }
 
-// UC: UC-070 A3
+// UC: UC-070 A3 BR-002
 func TestTalk_ClaudeTimeoutPatientBeat(t *testing.T) {
 	claudeSnap := func(timeout time.Duration) flags.Snapshot {
 		s := talkJevSnapshot(time.Second)
