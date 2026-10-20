@@ -1085,10 +1085,13 @@ jobs:
   # pull it (OTEL_COLLECTOR_TAG, docker-compose.collector-prebuilt.yml). The tag
   # is separate from the released :<sha>/:main/:latest images (docker-build-extra
   # and retag-skipped are untouched). A tag that already exists is reused, so
-  # only the first run after a collector change builds. Fork PRs and tokens
-  # without package write cannot push: `tag` stays empty and the shards fall
-  # back to the local build. Never fails the run: every risky step is
-  # continue-on-error. Same gate as integration-test.
+  # only the first run after a collector change builds. Only merge_group (and a
+  # push to main) pushes the tag: a PR runs unreviewed ci.yml and must not plant
+  # an image the queue then trusts. PRs (same repo or fork) pull the tag when it
+  # exists; otherwise `tag` stays empty and the shards build locally. Best
+  # effort: the risky steps are continue-on-error and the shards' `if` ignores
+  # this job's result, so any failure here means a local build, never a skip.
+  # Same gate as integration-test.
   collector-image:
     name: Prebuilt otel-collector
     runs-on: ubuntu-latest
@@ -1097,6 +1100,8 @@ jobs:
       needs.changes.outputs.e2e_required == 'true' ||
       (github.event_name == 'merge_group' && needs.changes.outputs.non_docs != 'false')
     timeout-minutes: 20
+    # packages: write is used only by the merge_group/push build step (job
+    # permissions cannot vary by event); PR runs only read.
     permissions:
       contents: read
       packages: write
@@ -1136,15 +1141,20 @@ jobs:
           fi
 
       - name: Set up Docker Buildx
-        if: steps.exists.outputs.exists != 'true'
+        if: >-
+          steps.exists.outputs.exists != 'true' &&
+          (github.event_name == 'merge_group' || github.event_name == 'push')
+        continue-on-error: true
         uses: docker/setup-buildx-action@v4
 
-      # PRs from forks have a read-only token: skip the push, the shards build locally.
+      # Push only from reviewed code (merge_group, push to main); PRs never push.
+      # Step timeout: #1781's retries on a ~7 min OCB build must not hit the job timeout.
       - name: Build and push collector
         if: >-
           steps.exists.outputs.exists != 'true' &&
-          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+          (github.event_name == 'merge_group' || github.event_name == 'push')
         continue-on-error: true
+        timeout-minutes: 12
         uses: docker/build-push-action@v7
         with:
           context: images/otel-collector
@@ -1199,9 +1209,12 @@ jobs:
     # it changes (e.g. HEADGREEN). merge_group is ORed in with that test so a
     # wrong/empty output cannot skip the queue's e2e gate (fail closed). The
     # full path (e2e_full_build) runs there.
+    # !cancelled() + changes.result: run whatever collector-image did (failed,
+    # skipped, timed out); an empty tag means a local collector build (#1780).
     if: >-
-      needs.changes.outputs.e2e_required == 'true' ||
-      (github.event_name == 'merge_group' && needs.changes.outputs.non_docs != 'false')
+      !cancelled() && needs.changes.result == 'success' &&
+      (needs.changes.outputs.e2e_required == 'true' ||
+      (github.event_name == 'merge_group' && needs.changes.outputs.non_docs != 'false'))
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
