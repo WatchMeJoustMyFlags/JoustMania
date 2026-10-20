@@ -1,7 +1,9 @@
 """``make dry-run`` starts the demo stack as FR-090 says (UC-070 Pre-1).
 
 FR-090: one command starts the latest images with mock controllers, the agent and a
-seeded experiment. Static checks over the Makefile recipe, the compose layers and the
+seeded experiment. "Seeded" means the seed env is set; the experiment loop itself stays
+gated by the fail-closed ``enabled`` / ``experiments_enabled`` flags until
+``scripts/agent-dryrun-enable.sh on``. Static checks over the Makefile recipe, the compose layers and the
 flagd CI baseline; ``make -n`` prints the recipe without running docker.
 """
 
@@ -61,7 +63,7 @@ def _agent_env() -> dict[str, str]:
     return dict(entry.split("=", 1) for entry in entries)
 
 
-@pytest.mark.uc("UC-070", cond=["Pre-1"], br=["FR-090"])
+@pytest.mark.uc("UC-070", cond=["Pre-1"])
 def test_dry_run_pins_latest_images_not_the_env_release_pin():
     command = _dry_run_recipe().splitlines()[0]
     assert command.startswith("IMAGE_TAG=latest docker compose")
@@ -70,20 +72,34 @@ def test_dry_run_pins_latest_images_not_the_env_release_pin():
     assert _dry_run_recipe("main").lstrip().startswith("IMAGE_TAG=main docker compose")
 
 
-@pytest.mark.uc("UC-070", cond=["Pre-1"], br=["FR-090"])
+@pytest.mark.uc("UC-070", cond=["Pre-1"])
 def test_dry_run_layers_the_ci_and_dry_run_compose_files_with_agent_profile():
     recipe = _dry_run_recipe()
-    files = re.findall(r"-f (docker-compose[\w.-]*\.yml)", recipe.split("echo")[0])
+    # Only the `docker compose` command line; later recipe lines are echo banners.
+    compose_cmd = " ".join(
+        line.rstrip("\\").strip()
+        for line in recipe.replace("\\\n", " ").splitlines()
+        if "docker compose" in line and not line.lstrip().startswith("echo")
+    )
+    files = re.findall(r"-f (docker-compose[\w.-]*\.yml)", compose_cmd)
     assert files == [
         "docker-compose.yml",
         "docker-compose.override.yml",
         "docker-compose.ci.yml",
         "docker-compose.dry-run.yml",
     ]
-    assert "--profile agent" in recipe and " up -d" in recipe
+    assert "--profile agent" in compose_cmd and " up -d" in compose_cmd
 
 
-@pytest.mark.uc("UC-070", cond=["Pre-1"], br=["FR-090"])
+def test_dry_run_layer_puts_the_agent_in_the_profile_make_dry_run_activates():
+    """FR-090: the agent only starts if its service sits in the activated profile."""
+    activated = re.findall(r"--profile (\w+)", _dry_run_recipe())
+    assert "agent" in activated
+    profiles = _load_layer(DRY_RUN_FILE)["services"]["agent"].get("profiles", [])
+    assert "agent" in profiles
+
+
+@pytest.mark.uc("UC-070", cond=["Pre-1"])
 def test_every_image_follows_image_tag_and_no_layer_hard_pins_a_tag():
     for name, service in ic.compose_services().items():
         image = service.get("image", "")
@@ -96,7 +112,7 @@ def test_every_image_follows_image_tag_and_no_layer_hard_pins_a_tag():
     assert "image" not in str(_load_layer(DRY_RUN_FILE)["services"].get("agent", {}))
 
 
-@pytest.mark.uc("UC-070", cond=["Pre-1"], br=["FR-090"])
+@pytest.mark.uc("UC-070", cond=["Pre-1"])
 def test_dry_run_uses_mock_controllers_from_the_ci_flag_baseline():
     ci = _load_layer(REPO_ROOT / "docker-compose.ci.yml")["services"]
     assert "./services/flagd/ci:/etc/flagd:ro" in ci["flag-service"]["volumes"]
@@ -106,7 +122,6 @@ def test_dry_run_uses_mock_controllers_from_the_ci_flag_baseline():
     assert backend["variants"][backend["defaultVariant"]] == "mock"
 
 
-@pytest.mark.uc("UC-070", cond=["Pre-1"], br=["FR-090"])
 def test_dry_run_agent_starts_with_a_seeded_experiment():
     env = _agent_env()
     assert env["AGENT_EXPERIMENTS_ENABLED"].startswith(
@@ -129,9 +144,14 @@ def test_dry_run_agent_starts_with_a_seeded_experiment():
     assert "AGENT_EXPERIMENT_SEED_FLAG=${AGENT_EXPERIMENT_SEED_FLAG:-}" in base_env
 
 
-@pytest.mark.uc("UC-070", cond=["Pre-1"], br=["FR-090"])
 def test_agent_reads_the_seed_env_names_the_dry_run_sets():
     source = (REPO_ROOT / "services" / "agent" / "experiment_loop.go").read_text()
     for name in _agent_env():
         if name.startswith("AGENT_EXPERIMENT_SEED_"):
-            assert f'"{name}"' in source, f"agent never reads {name}"
+            # Resolve the Go const holding the name, then require a real Getenv call
+            # on it (a comment or a bare string mention does not count).
+            const = re.search(rf'^\s*(\w+)\s*=\s*"{name}"', source, re.M)
+            assert const, f"agent declares no const for {name}"
+            assert re.search(rf"os\.Getenv\(\s*{const.group(1)}\s*\)", source), (
+                f"agent never reads {name}"
+            )

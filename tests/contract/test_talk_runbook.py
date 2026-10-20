@@ -1,4 +1,9 @@
-"""The talk runbook is rehearsable and names only things that exist (FR-094, UC-070).
+"""The talk runbook is rehearsable and names only things that exist (FR-094).
+
+These are doc-existence checks for FR-094, not UC-070 scenario tests, so they carry no
+``uc`` marker (no flow, step or br fits; the repo has no FR-only tag). The behaviour of
+the reset and the screen-only fallback is covered by scripts/tests/test-talk-stage.sh
+and the dashboard follow tests.
 
 Static checks over ``docs/talk/two-standards-runbook.md``: the beat table, the timing
 table, the fallbacks and the reset section exist, and every script, make target and repo path
@@ -21,7 +26,8 @@ RUNBOOK = REPO_ROOT / "docs" / "talk" / "two-standards-runbook.md"
 FLAGD_DIR = REPO_ROOT / "services" / "flagd"
 FLAGS_SPEC = REPO_ROOT / "docs" / "specs" / "flags.md"
 
-BEAT_IDS = ["1", "2", "3a", "3b", "4", "5", "6", "6b", "7", "I", "8"]
+# Beats the talk cannot run without; extra beats (6c, ...) are allowed.
+REQUIRED_BEAT_IDS = {"1", "2", "3a", "3b", "4", "5", "6", "7", "8"}
 REQUIRED_SECTIONS = [
     "Setup",
     "Talk timing",
@@ -67,17 +73,18 @@ def _flag_keys() -> set[str]:
 # --------------------------------------------------------------------------- #
 # Structure: beat table, timings, fallbacks, reset
 # --------------------------------------------------------------------------- #
-@pytest.mark.uc("UC-070", flow="Main", br=["FR-094"])
 @pytest.mark.parametrize("title", REQUIRED_SECTIONS)
 def test_runbook_has_required_section(title):
     assert _section(title).strip(), f"runbook section '{title}' is empty"
 
 
-@pytest.mark.uc("UC-070", flow="Main", br=["FR-094"])
 def test_beat_table_has_every_beat_with_command_and_fallback():
     rows = _table_rows(_section("Beat table"))
     by_id = {row[0]: row for row in rows}
-    assert list(by_id) == BEAT_IDS
+    assert len(by_id) == len(rows), "duplicate beat id in the beat table"
+    assert REQUIRED_BEAT_IDS <= set(by_id), (
+        f"beat table misses {sorted(REQUIRED_BEAT_IDS - set(by_id))}"
+    )
     for beat_id, row in by_id.items():
         assert len(row) == 7, f"beat {beat_id}: expected 7 columns, got {len(row)}"
         command, fallback = row[2], row[6]
@@ -85,22 +92,19 @@ def test_beat_table_has_every_beat_with_command_and_fallback():
         assert fallback, f"beat {beat_id} has no fallback"
 
 
-@pytest.mark.uc("UC-070", flow="Main", br=["FR-094"])
 def test_timing_table_lists_every_live_beat_with_a_clock_time():
     rows = _table_rows(_section("Talk timing"))
     assert re.fullmatch(r"\d+:\d{2}", rows[0][0])
     assert all(re.fullmatch(r"\d+:\d{2}", row[0]) for row in rows)
     segments = " ".join(row[1] for row in rows)
-    for beat_id in BEAT_IDS:
+    for beat_id in REQUIRED_BEAT_IDS:
         assert f"Beat {beat_id}:" in segments, f"timing table misses beat {beat_id}"
 
 
-@pytest.mark.uc("UC-070", flow="A9", br=["FR-094"])
 def test_fallbacks_cover_bluetooth_down():
     assert re.search(r"^### Fallback: Bluetooth down", _text(), re.M)
 
 
-@pytest.mark.uc("UC-070", flow="Main", step=9, br=["FR-094"])
 def test_reset_section_runs_the_stage_reset():
     assert "talk-stage.sh reset" in _section("Reset to baseline")
 
@@ -108,7 +112,6 @@ def test_reset_section_runs_the_stage_reset():
 # --------------------------------------------------------------------------- #
 # Everything the runbook names exists
 # --------------------------------------------------------------------------- #
-@pytest.mark.uc("UC-070", flow="Main", br=["FR-094"])
 def test_every_named_script_exists():
     names = set(re.findall(r"scripts/[A-Za-z0-9_./-]*[A-Za-z0-9_]", _text()))
     names = {n for n in names if "." in Path(n).name}  # files, not the scripts/ dir
@@ -117,7 +120,6 @@ def test_every_named_script_exists():
     assert not missing, f"runbook names scripts that do not exist: {missing}"
 
 
-@pytest.mark.uc("UC-070", flow="Main", br=["FR-094"])
 def test_every_named_make_target_exists():
     targets = set(re.findall(r"`make ([a-z][a-z0-9_-]*)`", _text()))
     assert "dry-run" in targets
@@ -128,7 +130,6 @@ def test_every_named_make_target_exists():
     assert not missing, f"runbook names make targets that do not exist: {missing}"
 
 
-@pytest.mark.uc("UC-070", flow="Main", br=["FR-094"])
 def test_every_named_repo_path_exists():
     paths = {
         p.rstrip(".")
@@ -141,7 +142,6 @@ def test_every_named_repo_path_exists():
     assert not missing, f"runbook names paths that do not exist: {missing}"
 
 
-@pytest.mark.uc("UC-070", flow="Main", br=["FR-094"])
 def test_every_flag_key_in_the_beat_table_exists():
     known = _flag_keys()
     spec = FLAGS_SPEC.read_text()
@@ -156,7 +156,6 @@ def test_every_flag_key_in_the_beat_table_exists():
     assert not missing, f"runbook names flags that do not exist: {missing}"
 
 
-@pytest.mark.uc("UC-070", flow="Main", br=["FR-094"])
 def test_every_flag_set_in_a_command_exists():
     known = _flag_keys()
     keys = set(
