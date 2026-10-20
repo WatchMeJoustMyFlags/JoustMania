@@ -109,6 +109,7 @@ func TestReceiver_RoutesMixedBatchToBothStores(t *testing.T) {
 	}
 }
 
+// UC: UC-041 A1
 func TestReceiver_GameOnlyBatchDoesNotTriggerInfra(t *testing.T) {
 	r, mux, infraStore, infraLoop := newTestReceiver(t)
 
@@ -306,7 +307,7 @@ func countBlockedActions(spans []sdktrace.ReadOnlySpan) int {
 // TestReceiver_PartitionsByGameID: a single trace batch carrying spans for two
 // distinct game_ids lands in two disjoint partitions through the receiver path
 // (#845 PR B) — no cross-game player bleed.
-// UC: UC-041 main Post-S-1
+// UC: UC-041 main Post-F-1
 func TestReceiver_PartitionsByGameID(t *testing.T) {
 	r, mux, _, _ := newTestReceiver(t)
 
