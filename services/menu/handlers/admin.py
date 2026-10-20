@@ -47,6 +47,9 @@ logger = logging.getLogger(__name__)
 # is routed through a separate writer/client and handled specially in the
 # value-change paths rather than the generic game.json flag cycle.
 AGENT_CONTROL_OPTION = "agent_control"
+# Error cue when the agent-level write fails (UC-013 A3): short fast red pulse.
+AGENT_ERROR_PULSE_MS = 400
+AGENT_ERROR_PULSE_SPEED = 10
 # UC-013 BR-001: the menu writes only this one key of the agent set.
 AGENT_POLICY_FLAG = "interventions_allowed"
 
@@ -1410,6 +1413,7 @@ class AdminModeHandler:
 
                 if not await asyncio.to_thread(writer.update_default_variant, AGENT_POLICY_FLAG, new_level):
                     logger.warning(f"Failed to write agent policy '{new_level}'")
+                    await self._signal_agent_write_failed(serial, controller_manager_pb2)
                     return
 
                 span.set_attribute("old_level", old_level or "")
@@ -1458,6 +1462,23 @@ class AdminModeHandler:
 
             except Exception as e:
                 logger.error(f"Error changing agent policy: {e}", exc_info=True)
+
+    async def _signal_agent_write_failed(self, serial: str, controller_manager_pb2) -> None:
+        """Error cue for a refused or unreachable agent-level write (UC-013 A3, #1705).
+
+        A short, fast red pulse, no sound and no level voice line, so it cannot be
+        mistaken for the "none" level (red, 800 ms, "off" voice). Best effort.
+        """
+        try:
+            await self._send_game_effect(
+                serial,
+                controller_manager_pb2.GAME_EFFECT_PULSE,
+                color=Colors.Red.value,
+                duration_ms=AGENT_ERROR_PULSE_MS,
+                speed=AGENT_ERROR_PULSE_SPEED,
+            )
+        except Exception as e:
+            logger.warning(f"Agent write error pulse failed for {serial}: {e}")
 
     def _current_agent_level(self) -> str | None:
         """Read the current effective agent policy level (#819).
