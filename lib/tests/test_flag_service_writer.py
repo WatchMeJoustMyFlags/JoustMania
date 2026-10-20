@@ -1,5 +1,6 @@
 """FlagServiceWriter: the menu's admin writes through the flag service (UC-053 A2, FR-018)."""
 
+import logging
 import urllib.error
 
 import pytest
@@ -106,6 +107,24 @@ def test_refusals_and_outage_fail_closed(svc, caplog):
     assert [m for m, _, _ in svc.requests[sent:]] == ["PUT"]
     assert w.cycle_variant("sensitivity") is None
     assert "NOT applied" in caplog.text
+
+
+@pytest.mark.uc("UC-013", cond=["Post-F-1"])
+def test_unreachable_flag_service_leaves_the_agent_policy_unchanged_and_logs_critical(svc, caplog):
+    """UC-013 Post-F-1: the PUT fails, the stored value is untouched, the failure is CRITICAL."""
+    w = FlagServiceWriter("agent", "http://fs:8070", transport=svc)
+    svc.down = True
+
+    with caplog.at_level(logging.WARNING, logger="lib.flag_service_writer"):
+        assert w.update_default_variant("interventions_allowed", "none") is False
+
+    assert svc.requests[-1][0] == "PUT"
+    assert svc.overlay == {}  # nothing was stored
+    critical = [r for r in caplog.records if r.levelname == "CRITICAL"]
+    assert len(critical) == 1
+    assert "interventions_allowed=none NOT applied" in critical[0].getMessage()
+    svc.down = False
+    assert w.get_current_variant("interventions_allowed") == "ambient"  # baseline default
 
 
 @pytest.mark.uc("UC-053", flow="A2")

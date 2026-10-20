@@ -98,6 +98,35 @@ func TestOnEvaluate_PermissionGateFiltersBlocked(t *testing.T) {
 	}
 }
 
+// UC: UC-013 Post-S-1
+func TestOnEvaluate_NoneAllowListBlocksEveryDecision(t *testing.T) {
+	t.Run("UC-013/Post-S-1 none blocks every non-noop decision as not_allowed", func(t *testing.T) {
+		// `none` is the empty string on the wire, parsed to an empty allow-list.
+		rules := &recordingRules{out: []Decision{
+			{Intervention: "play_audio_cue", Reason: "cosmetic"},
+			{Intervention: "grant_shield", Reason: "tunable"},
+			{Intervention: "end_game", Reason: "drastic"},
+		}}
+		actions := &recordingActions{}
+		snap := flags.Snapshot{Enabled: true, Policy: flags.Policy{MaxInterventionsPerMinute: 10}}
+		loop := newFlagLoop(snap, rules, actions)
+
+		state := loop.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+
+		if actions.called {
+			t.Fatalf("dispatched %v under the none allow-list", actions.got)
+		}
+		if len(state.Outcomes) != 3 {
+			t.Fatalf("got %d outcomes, want 3", len(state.Outcomes))
+		}
+		for i, o := range state.Outcomes {
+			if o.Dispatched || o.BlockReason != ReasonNotAllowed {
+				t.Errorf("outcome %d dispatched=%v reason=%q, want blocked not_allowed", i, o.Dispatched, o.BlockReason)
+			}
+		}
+	})
+}
+
 // UC: UC-045 A2 BR-001
 func TestOnEvaluate_EmptyAllowListDispatchesNothing(t *testing.T) {
 	rules := &recordingRules{out: []Decision{{Intervention: "play_audio_cue"}}}

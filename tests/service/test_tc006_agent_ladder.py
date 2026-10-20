@@ -92,6 +92,7 @@ async def _flagd_serves(stack, variant: str) -> bool:
 @pytest.mark.uc("UC-012", flow="A6", tc="TC-006")
 @pytest.mark.uc("UC-013", flow="main", steps=[1, 2, 3], tc="TC-006")
 @pytest.mark.uc("UC-013", flow="A1", tc="TC-006")
+@pytest.mark.uc("UC-013", cond=["Pre-1"], tc="TC-006")
 @pytest.mark.uc("UC-053", flow="A2", tc="TC-006")
 @pytest.mark.usefixtures("flag_service")  # binds the flag-service client to this stack
 async def test_host_walks_the_agent_ladder_from_the_controller(fresh_stack):

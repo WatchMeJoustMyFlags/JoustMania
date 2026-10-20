@@ -1,6 +1,7 @@
 """Unit tests for AdminModeHandler game settings."""
 
 import asyncio
+import logging
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, call, create_autospec, patch
@@ -1716,6 +1717,31 @@ class TestAgentControlOption:
         mock_state_manager.audio.play_voice.assert_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="main", steps=[4])
+    @pytest.mark.parametrize(
+        ("button", "start_level", "expected_color"),
+        [
+            ("decrease", "ambient", Colors.Red),  # none
+            ("increase", "none", Colors.Turquoise),  # ambient
+            ("increase", "ambient", Colors.Orange),  # standard
+            ("increase", "standard", Colors.Green),  # full
+        ],
+    )
+    async def test_agent_control_pulse_color_per_level(
+        self, handler, mock_state_manager, button, start_level, expected_color
+    ):
+        """Each level pulses its own colour: none red, ambient turquoise, standard orange, full green."""
+        handler.current_option = handler.option_names.index("agent_control")
+        set_agent_level(mock_state_manager, start_level)
+
+        if button == "increase":
+            await handler.handle_increase_value("test_serial")
+        else:
+            await handler.handle_decrease_value("test_serial")
+
+        assert mock_state_manager.led.send_game_effect.call_args.kwargs["color"] == expected_color.value
+
+    @pytest.mark.asyncio
     async def test_write_failure_skips_feedback(self, handler, mock_state_manager):
         """A failed agent.json write must not emit feedback as if it succeeded."""
         handler.current_option = handler.option_names.index("agent_control")
@@ -1780,13 +1806,18 @@ class TestAgentControlOption:
         assert call_threads and loop_thread not in call_threads
 
     @pytest.mark.asyncio
-    async def test_no_agent_writer_is_safe(self, handler, mock_state_manager):
-        """Missing agent writer logs and no-ops rather than raising."""
+    @pytest.mark.uc("UC-013", flow="A2")
+    async def test_no_agent_writer_is_safe(self, handler, mock_state_manager, caplog):
+        """UC-013 A2: a missing agent writer logs a warning and no-ops rather than raising."""
         handler.current_option = handler.option_names.index("agent_control")
         mock_state_manager.agent_settings_writer = None
 
-        # Should not raise.
-        await handler.handle_increase_value("test_serial")
+        with caplog.at_level(logging.WARNING, logger="services.menu.handlers.admin"):
+            await handler.handle_increase_value("test_serial")
+
+        assert any(r.levelname == "WARNING" and "Agent control unavailable" in r.getMessage() for r in caplog.records)
+        mock_state_manager.led.send_game_effect.assert_not_called()
+        mock_state_manager.audio.play_voice.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="A1")
@@ -1820,9 +1851,13 @@ class TestAgentControlOption:
         assert AdminModeHandler._next_agent_level("full", forward=False) == "standard"
         assert AdminModeHandler._next_agent_level("ambient", forward=False) == "none"
         assert AdminModeHandler._next_agent_level("none", forward=False) == "none"
-        # Unknown current value: forward starts the ladder, backward = panic-off.
-        assert AdminModeHandler._next_agent_level(None, forward=True) == "none"
-        assert AdminModeHandler._next_agent_level("bogus", forward=False) == "none"
+
+    @pytest.mark.uc("UC-013", flow="A1")
+    def test_next_agent_level_unknown_or_missing_goes_to_none(self):
+        """UC-013 A1: an unknown or unreadable current value lands on none in either direction."""
+        for current in (None, "bogus", "probe", "shadow_experimental"):
+            assert AdminModeHandler._next_agent_level(current, forward=True) == "none"
+            assert AdminModeHandler._next_agent_level(current, forward=False) == "none"
 
 
 class TestEffectiveValueDisplay:
