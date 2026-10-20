@@ -73,6 +73,7 @@ async def test_spike_that_is_the_latest_poll_is_streamed(servicer):
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-030", flow="main", steps=[2])
+@pytest.mark.nfr("NFR-002")
 async def test_poll_loop_runs_every_10_ms_and_keeps_only_the_latest_state(servicer):
     """UC-030 step 2: the real poll loop (``DiscoveryLoop._poll_loop``) polls on a fixed 100 Hz
     schedule and stores each poll's state, so the next gameplay frame carries the latest one.

@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -126,7 +128,7 @@ class TestStateCacheSnapshotHash:
 
         result = cache._snapshot_hash("serial_1", info)
 
-        assert result == "80|2|None"  # no LED written yet (#1301)
+        assert result == "80|2|None|"  # no LED written yet (#1301)
 
     def test_snapshot_hash_deterministic(self):
         """Same input should produce same hash."""
@@ -402,3 +404,41 @@ class TestStateCacheControllerStateHash:
         hash2 = cache.controller_state_hash(state2)
 
         assert hash1 != hash2
+
+
+class TestStateCacheRename:
+    """UC-002 A2 step 3: a rename reaches the controller state a game reads."""
+
+    @patch("services.controller_manager.metrics.state_cache_hits_total")
+    @patch("services.controller_manager.metrics.state_cache_misses_total")
+    @pytest.mark.uc("UC-002", flow="A2", steps=[3])
+    def test_renamed_controller_state_carries_new_name(self, mock_misses, mock_hits):
+        """After a rename the state a new game reads has the new name, even for a still controller."""
+        cache = StateCache(MockMonitoring())
+        cache._controller_states = {
+            "serial_1": {
+                **dict.fromkeys(ButtonKey, False),
+                StateKey.ACCEL: {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: 1.0},
+                StateKey.GYRO: {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: 0.0},
+            }
+        }
+        info = {ControllerInfoKey.BATTERY: 80, ControllerInfoKey.TEAM: 0, ControllerInfoKey.NAME: "Old Name"}
+
+        assert cache.build_or_get_cached_state("serial_1", info).name == "Old Name"
+
+        info[ControllerInfoKey.NAME] = "New Name"
+        assert cache.build_or_get_cached_state("serial_1", info).name == "New Name"
+
+    @patch("services.controller_manager.metrics.state_cache_hits_total")
+    @patch("services.controller_manager.metrics.state_cache_misses_total")
+    @pytest.mark.uc("UC-002", flow="A2", steps=[3])
+    def test_renamed_controller_without_hardware_state_carries_new_name(self, mock_misses, mock_hits):
+        """The no-state branch of the snapshot hash also changes on a rename."""
+        cache = StateCache(MockMonitoring())
+        cache._controller_states = {}
+        info = {ControllerInfoKey.BATTERY: 80, ControllerInfoKey.TEAM: 0, ControllerInfoKey.NAME: "Old Name"}
+
+        assert cache.build_or_get_cached_state("serial_1", info).name == "Old Name"
+
+        info[ControllerInfoKey.NAME] = "New Name"
+        assert cache.build_or_get_cached_state("serial_1", info).name == "New Name"

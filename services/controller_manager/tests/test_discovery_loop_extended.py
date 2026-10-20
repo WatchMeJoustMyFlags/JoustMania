@@ -586,6 +586,91 @@ class TestCheckForNewControllersAsync:
         ]
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A4")
+    async def test_reconnect_publishes_connect_event_before_restoring_base_color(self):
+        """UC-002 A4: the connect event is published first, then the last base colour is restored."""
+        calls = []
+
+        class RecordingButtons(MockButtonDetector):
+            def publish_connection_event(self, serial, is_connect, **kwargs):
+                calls.append(("connect_event", serial, is_connect))
+
+        class RecordingFeedback:
+            async def set_controller_color(self, serial, color):
+                calls.append(("restore_color", serial, color))
+
+        backend = MockBackend()
+        backend.connected_controllers = ["serial_A"]
+        backend.controller_states["serial_A"] = {"serial": "serial_A", "battery": 75}
+        loop = self._create_discovery_loop(
+            backend=backend,
+            button_detector=RecordingButtons(),
+            feedback_manager=RecordingFeedback(),
+            base_colors={"serial_A": (255, 0, 0)},
+        )
+        loop.backend_initialized = True
+
+        await loop._check_for_new_controllers()
+
+        assert calls == [("connect_event", "serial_A", True), ("restore_color", "serial_A", (255, 0, 0))]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A4")
+    async def test_first_connect_without_base_color_restores_nothing(self):
+        """UC-002 A4: the colour is restored only when one was set before (base_colors has the serial)."""
+        calls = []
+
+        class RecordingFeedback:
+            async def set_controller_color(self, serial, color):
+                calls.append((serial, color))
+
+        backend = MockBackend()
+        backend.connected_controllers = ["serial_A"]
+        backend.controller_states["serial_A"] = {"serial": "serial_A", "battery": 75}
+        loop = self._create_discovery_loop(backend=backend, feedback_manager=RecordingFeedback(), base_colors={})
+        loop.backend_initialized = True
+
+        await loop._check_for_new_controllers()
+
+        assert calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.nfr("NFR-002")
+    async def test_side_tasks_run_discovery_at_1_hz_and_led_at_20_hz(self):
+        """NFR-002: over ~0.35 s the real side tasks run discovery once (1 Hz) and LED batches ~20 Hz."""
+        import asyncio
+
+        loop = self._create_discovery_loop()
+        counts = {"discovery": 0, "led": 0}
+
+        async def discovery_step():
+            counts["discovery"] += 1
+
+        async def led_step():
+            counts["led"] += 1
+
+        async def noop():
+            pass
+
+        async def poll_for_a_while():
+            await asyncio.sleep(0.35)
+
+        loop.running = True
+        loop._battery_interval = loop._health_interval = 3600.0
+        with (
+            patch.object(loop, "_discovery_step", discovery_step),
+            patch.object(loop, "_led_step", led_step),
+            patch.object(loop, "_battery_step", noop),
+            patch.object(loop, "_health_step", noop),
+            patch.object(loop, "_poll_loop", poll_for_a_while),
+            patch("services.controller_manager.discovery_loop.metrics"),
+        ):
+            await loop._discovery_loop()
+
+        assert counts["discovery"] == 1  # one run at start, the next is due at 1 s
+        assert 5 <= counts["led"] <= 9  # 20 Hz: one run at start, then every 50 ms
+
+    @pytest.mark.asyncio
     async def test_skipped_when_backend_not_initialized(self):
         """_check_for_new_controllers should do nothing when backend not initialized."""
         backend = MockBackend()
