@@ -243,6 +243,8 @@ COUNTDOWN_MUSIC_VOLUME = 0.15  # Soft background music during countdown
 MAX_INSTRUCTIONS_WAIT_SECONDS = 60.0
 # How often the instruction wait checks for a force-end.
 INSTRUCTIONS_POLL_SECONDS = 0.1
+# Deadline for StopSound after a force-end, so a wedged audio service cannot stall teardown (#1586).
+STOP_SOUND_TIMEOUT_SECONDS = 2.0
 
 
 def _read_volume_flag(flag_name: str, default: float) -> float:
@@ -1118,12 +1120,16 @@ class BaseGameMode(ABC):
     async def _stop_instruction_clip(self) -> None:
         """Cut the instruction clip short after a force-end (UC-020 A5, #1586).
 
-        Best effort: a failure is logged and never blocks the end.
+        Best effort and bounded: a failure or timeout is logged and never blocks the end.
         """
         try:
             from proto import audio_pb2
 
-            await self.audio_client.StopSound(audio_pb2.StopSoundRequest())
+            await asyncio.wait_for(
+                self.audio_client.StopSound(audio_pb2.StopSoundRequest()), timeout=STOP_SOUND_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            logger.warning(f"StopSound timed out after {STOP_SOUND_TIMEOUT_SECONDS}s; the clip may play on")
         except Exception as e:
             logger.warning(f"Failed to stop the instruction clip after force-end: {e}")
 

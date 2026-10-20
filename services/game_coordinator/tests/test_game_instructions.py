@@ -318,6 +318,31 @@ class TestUC020InstructionsOn:
         assert events.get_events_of_type(GameEvent.GAME_ENDED)[0]["outcome"] == "force_ended"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A5", steps=[2], br=["BR-003"])
+    async def test_stop_sound_that_never_answers_is_bounded(self, fast_config):  # noqa: F811
+        """A5 step 2 (#1586): a wedged audio service cannot stall the end; it times out and force_ended is recorded."""
+
+        class StopHangsAudio(TimedAudio):
+            async def StopSound(self, request):  # noqa: N802 - gRPC stub name
+                await asyncio.sleep(3600)
+
+        cm = RecordingControllerManager(num_controllers=3, infinite=True, max_duration=30.0)
+        audio = StopHangsAudio(clip_seconds=30.0)
+        game, events = _ffa(audio, cm=cm)
+        flag_patch, init_patch = _patch_flag(_flag_client(True))
+
+        with flag_patch, init_patch, patch("services.game_coordinator.games.base.STOP_SOUND_TIMEOUT_SECONDS", 0.1):
+            task = asyncio.create_task(game.run())
+            for _ in range(100):
+                if INSTRUCTIONS in audio.sounds():
+                    break
+                await asyncio.sleep(0.02)
+            game.force_end("admin_stop")
+            await asyncio.wait_for(task, timeout=3.0)
+
+        assert events.get_events_of_type(GameEvent.GAME_ENDED)[0]["outcome"] == "force_ended"
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="A5", steps=[2])
     async def test_clip_that_finishes_is_not_stopped(self, fast_config):  # noqa: F811
         """A5 step 2 (#1586): without a force-end the clip plays out and no StopSound is sent."""
