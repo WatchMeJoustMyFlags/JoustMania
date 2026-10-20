@@ -137,6 +137,7 @@ func gameIDOf(attrs pcommon.Map) string {
 	return ""
 }
 
+// UC-035 BR-002: the agent's vocabulary is real / shadow, the coordinator's primary / shadow.
 // gameKindOf reads the game_kind datapoint label, normalised to the
 // flag-evaluation vocabulary (NormalizeGameKind: "primary" -> "real"); empty
 // when absent.

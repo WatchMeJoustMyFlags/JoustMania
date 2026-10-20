@@ -450,6 +450,7 @@ class Histogram(LabeledMetric):
         if self._instrument_initialized:
             return
         meter = get_meter()
+        # UC-035 BR-004: pass the declared buckets, or every latency lands in the SDK default's first bucket.
         self._histogram = meter.create_histogram(
             name=self.name,
             description=self.documentation,

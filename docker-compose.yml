@@ -842,6 +842,7 @@ services:
     image: envoyproxy/envoy:v1.38.1
     container_name: joustmania-envoy
     ports:
+      # UC-035 BR-001: the only host entry for the UIs and HTTP APIs.
       - "80:80"  # Main entry point (all services proxied through envoy)
     volumes:
       - ./services/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro

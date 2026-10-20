@@ -79,6 +79,7 @@ def _fast_ffa_game() -> FFAGame:
     return game
 
 
+@pytest.mark.uc("UC-035", flow="main", steps=[5])
 @pytest.mark.uc("UC-041", br=["BR-004"])
 @pytest.mark.asyncio
 async def test_run_publishes_game_cycle_span_id(span_exporter):

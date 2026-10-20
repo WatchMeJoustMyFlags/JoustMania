@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 tracer = get_tracer(__name__)
 
+# UC-035 BR-002: coordinator spans say primary / shadow; the agent says real / shadow (D-T7).
 GAME_KIND_PRIMARY = "primary"
 GAME_KIND_SHADOW = "shadow"
 

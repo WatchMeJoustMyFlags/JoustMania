@@ -75,6 +75,7 @@ func seedJournal(t *testing.T, root, id string, concluded bool) string {
 	return id
 }
 
+// UC: UC-035 A1
 func TestDossierList(t *testing.T) {
 	root := t.TempDir()
 	seedJournal(t, root, "exp_running01", false)
@@ -119,6 +120,7 @@ func TestDossierList(t *testing.T) {
 	}
 }
 
+// UC: UC-035 A1
 func TestDossierDetail(t *testing.T) {
 	root := t.TempDir()
 	id := seedJournal(t, root, "exp_done0002", true)

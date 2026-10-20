@@ -145,6 +145,7 @@ func newEffectDeltaHistogram(mp otelmetric.MeterProvider) otelmetric.Float64Hist
 		"agent_intervention_effect_delta",
 		otelmetric.WithDescription("Change in a game's fitness/objective signal measured a follow-up window after an intervention was dispatched, labeled by intervention type, objective, and signal (#918)"),
 		otelmetric.WithUnit("1"),
+		// UC-035 BR-004: explicit bucket boundaries, not the SDK defaults.
 		otelmetric.WithExplicitBucketBoundaries(EffectDeltaBuckets...),
 	)
 	if err != nil {
