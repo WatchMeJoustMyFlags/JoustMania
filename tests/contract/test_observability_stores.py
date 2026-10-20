@@ -34,6 +34,29 @@ def test_base_compose_publishes_no_query_port(service):
     assert "ports" not in ic.compose_services()[service]
 
 
+LITE_FILE = ic.REPO_ROOT / "docker-compose.lite.yml"
+
+
+@pytest.mark.uc("UC-035", br=["BR-001"])
+def test_lite_stack_publishes_only_envoy_to_the_network():
+    """C-015: in the lite stack only envoy's port 80 reaches the network; flagd 8015 and rust-hid 50058 are loopback."""
+    published = {
+        name: [str(p) for p in svc["ports"]]
+        for name, svc in ic.load_yaml(LITE_FILE)["services"].items()
+        if svc.get("ports")
+    }
+    assert published.pop("envoy") == ["80:80"]
+    for name, ports in published.items():
+        for port in ports:
+            assert port.startswith("127.0.0.1:"), (
+                f"lite {name} publishes {port} beyond loopback"
+            )
+    assert sorted(p for ports in published.values() for p in ports) == [
+        "127.0.0.1:50058:50058",
+        "127.0.0.1:8015:8015",
+    ]
+
+
 @pytest.mark.nfr("NFR-023")
 def test_victoria_metrics_keeps_seven_days():
     """NFR-023: VictoriaMetrics retains 7 days."""

@@ -288,6 +288,7 @@ func ptrB(b bool) *bool { return &b }
 // TestLoopSet_ShadowVsRealAttribution: two partitions, one real and one shadow,
 // each driven through its own loop. The decision spans must carry the right
 // game.kind per game.
+// UC: UC-035 BR-002
 func TestLoopSet_ShadowVsRealAttribution(t *testing.T) {
 	recorders := map[string]*tracetest.SpanRecorder{}
 
