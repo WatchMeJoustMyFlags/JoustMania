@@ -137,6 +137,8 @@ jobs:
               - 'services/flagd/**'
               - 'services/agent/experiment/targeting.go'
               - 'tests/service/test_experiment_shadow_isolation.py'
+              # lib/tests/test_demo_driver.py runs tools/demo/demo_driver.py (FR-092, #1670)
+              - 'tools/demo/**'
             rust:
               - 'services/rust-hid/**'
               - 'proto/psmove_hid.proto'
