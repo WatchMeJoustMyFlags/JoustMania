@@ -290,6 +290,47 @@ class TestUC040ShieldFeedbackEnds:
         source = inspect.getsource(BaseGameMode)
         assert source.index("await self._end_shield_feedback()") < source.index("await self._end_game_impl()")
 
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
+    async def test_real_run_ends_running_shields_before_the_winner_effects(self):
+        """UC-040 A17 (real run()): a game that ends with a shield running clears it before _end_game_impl."""
+        from conftest import EventCollector
+
+        events = EventCollector()
+        game = FFAGame(
+            controller_manager_client=MockControllerManagerService(num_controllers=3, infinite=True),
+            event_publisher=events.publish,
+            audio_client=None,
+            game_id="test_a17_run_order",
+            initial_players=[type("P", (), {"serial": f"mock_controller_{i}"})() for i in range(3)],
+        )
+        order: list[str] = []
+        end_shields, end_impl = game._end_shield_feedback, game._end_game_impl
+
+        async def recording_end_shields():
+            order.append(f"shields_cleared:{sorted(game._shield_feedback_until)}")
+            await end_shields()
+
+        async def recording_end_impl():
+            order.append(f"end_game_impl:{sorted(game._shield_feedback_until)}")
+            await end_impl()
+
+        game._end_shield_feedback = recording_end_shields
+        game._end_game_impl = recording_end_impl
+
+        task = asyncio.create_task(game.run())
+        for _ in range(200):  # up to 10 s for the game to reach RUNNING
+            if events.get_events_of_type(GameEvent.GAME_STARTED) and game.players:
+                break
+            await asyncio.sleep(0.05)
+        assert events.get_events_of_type(GameEvent.GAME_STARTED), "game never started"
+        assert await game.grant_shield("mock_controller_0", 20.0) is True
+
+        game.force_end("uc040_a17")
+        await asyncio.wait_for(task, timeout=10)
+
+        assert order == ["shields_cleared:['mock_controller_0']", "end_game_impl:[]"]
+
 
 def _span_events(span, name: str) -> list[dict]:
     """Attributes of every ``add_event(name, attributes=...)`` call on an autospec'd span."""
