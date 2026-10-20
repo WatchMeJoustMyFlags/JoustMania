@@ -30,7 +30,6 @@ from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.servicer import _stream_rate_hz
-from services.controller_manager.state_cache import StateCache
 
 SERIAL = "mock_controller_0"
 
@@ -77,7 +76,6 @@ def rig():
         tracked_controllers=servicer.tracked_controllers,
         controller_states={},
         button_detector=create_autospec(ButtonDetector, instance=True),
-        state_cache_manager=create_autospec(StateCache, instance=True),
         feedback_manager=create_autospec(FeedbackManager, instance=True),
         monitoring=monitoring,
         rescan_timer=create_autospec(PeriodicRescanTimer, instance=True),
@@ -86,7 +84,7 @@ def rig():
         event_publisher=create_autospec(EventPublisher, instance=True),
     )
     servicer.discovery_loop = loop
-    servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=_state())
+    servicer.state_cache_manager.build_state = MagicMock(return_value=_state())
     servicer.tracked_controllers[SERIAL] = {}
 
     loop._poll_drops[SERIAL] = 2

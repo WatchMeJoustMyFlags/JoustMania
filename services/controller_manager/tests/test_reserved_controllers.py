@@ -274,7 +274,6 @@ def _make_discovery_loop(tracked, backend, button_detector):
         tracked_controllers=tracked,
         controller_states={},
         button_detector=button_detector,
-        state_cache_manager=MagicMock(),
         feedback_manager=MagicMock(),
         monitoring=MagicMock(),
         rescan_timer=MagicMock(should_force_rescan=MagicMock(return_value=False)),

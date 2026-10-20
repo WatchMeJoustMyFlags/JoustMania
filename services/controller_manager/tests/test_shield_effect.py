@@ -395,9 +395,9 @@ class TestUC040LiveLedColourInStream:
 
         clock.enable_blocking()
         await _shield(manager, duration_ms=5000)
-        first = cache.build_or_get_cached_state(SERIAL, info)
+        first = cache.build_state(SERIAL, info)
         assert (first.color.r, first.color.g, first.color.b) == WHITE
 
         await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_SHIELD, duration_ms=0)
-        restored = cache.build_or_get_cached_state(SERIAL, info)
+        restored = cache.build_state(SERIAL, info)
         assert (restored.color.r, restored.color.g, restored.color.b) == PLAYER

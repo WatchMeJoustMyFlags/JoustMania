@@ -82,16 +82,6 @@ class MockButtonDetector:
         pass
 
 
-class MockStateCache:
-    """Mock state cache manager."""
-
-    def __init__(self):
-        self.cleared = []
-
-    def clear_controller(self, serial):
-        self.cleared.append(serial)
-
-
 class MockFeedbackManager:
     """Mock feedback manager."""
 
@@ -152,7 +142,6 @@ class TestDiscoveryLoopInit:
                 tracked_controllers={},
                 controller_states={},
                 button_detector=MockButtonDetector(),
-                state_cache_manager=MockStateCache(),
                 feedback_manager=MockFeedbackManager(),
                 monitoring=MockMonitoring(),
                 rescan_timer=MockRescanTimer(),
@@ -173,7 +162,6 @@ class TestDiscoveryLoopInit:
                 tracked_controllers={},
                 controller_states={},
                 button_detector=MockButtonDetector(),
-                state_cache_manager=MockStateCache(),
                 feedback_manager=MockFeedbackManager(),
                 monitoring=MockMonitoring(),
                 rescan_timer=MockRescanTimer(),
@@ -198,7 +186,6 @@ class TestDiscoveryLoopStop:
                 tracked_controllers={},
                 controller_states={},
                 button_detector=MockButtonDetector(),
-                state_cache_manager=MockStateCache(),
                 feedback_manager=MockFeedbackManager(),
                 monitoring=MockMonitoring(),
                 rescan_timer=MockRescanTimer(),
@@ -219,7 +206,6 @@ class TestControllerDisconnection:
         """Disconnected controller should be removed from tracking."""
         tracked_controllers = {"serial_1": {"battery": 80}}
         controller_states = {"serial_1": {"trigger": 0}}
-        state_cache = MockStateCache()
         button_detector = MockButtonDetector()
 
         # Simulate disconnection detection
@@ -231,12 +217,10 @@ class TestControllerDisconnection:
         for serial in disconnected:
             del tracked_controllers[serial]
             del controller_states[serial]
-            state_cache.clear_controller(serial)
             button_detector.publish_connection_event(serial, is_connect=False)
 
         assert "serial_1" not in tracked_controllers
         assert "serial_1" not in controller_states
-        assert "serial_1" in state_cache.cleared
         assert len(button_detector.connection_events) == 1
         assert button_detector.connection_events[0]["is_connect"] is False
 
@@ -460,7 +444,6 @@ class TestCheckForNewControllersAsync:
         tracked_controllers=None,
         controller_states=None,
         button_detector=None,
-        state_cache=None,
         feedback_manager=None,
         rescan_timer=None,
         base_colors=None,
@@ -473,7 +456,6 @@ class TestCheckForNewControllersAsync:
         _tracked = tracked_controllers if tracked_controllers is not None else {}
         _states = controller_states if controller_states is not None else {}
         _button = button_detector or MockButtonDetector()
-        _cache = state_cache or MockStateCache()
         _feedback = feedback_manager or MockFeedbackManager()
         _monitoring = MockMonitoring()
         _rescan = rescan_timer or MockRescanTimer()
@@ -485,7 +467,6 @@ class TestCheckForNewControllersAsync:
             tracked_controllers=_tracked,
             controller_states=_states,
             button_detector=_button,
-            state_cache_manager=_cache,
             feedback_manager=_feedback,
             monitoring=_monitoring,
             rescan_timer=_rescan,
@@ -532,13 +513,11 @@ class TestCheckForNewControllersAsync:
         tracked = {"serial_A": {"battery": 80, "name": "Player1"}}
         states = {"serial_A": {"trigger": 0}}
         button_det = MockButtonDetector()
-        cache = MockStateCache()
         loop = self._create_discovery_loop(
             backend=backend,
             tracked_controllers=tracked,
             controller_states=states,
             button_detector=button_det,
-            state_cache=cache,
         )
         loop.backend_initialized = True
         loop._last_activity_time["serial_A"] = 1.0
@@ -548,7 +527,6 @@ class TestCheckForNewControllersAsync:
 
         assert "serial_A" not in tracked
         assert "serial_A" not in states
-        assert "serial_A" in cache.cleared
         assert "serial_A" not in loop._last_activity_time
         assert "serial_A" not in loop._previous_accel
         assert len(button_det.connection_events) == 1
@@ -571,7 +549,6 @@ class TestCheckForNewControllersAsync:
             tracked_controllers=tracked,
             controller_states={},
             button_detector=MockButtonDetector(),
-            state_cache=MockStateCache(),
         )
         loop.backend_initialized = True
         info = create_autospec(Gauge, instance=True)
@@ -785,7 +762,6 @@ class TestUpdateControllerStatesAsync:
             tracked_controllers=_tracked,
             controller_states=_states,
             button_detector=_button,
-            state_cache_manager=MockStateCache(),
             feedback_manager=MockFeedbackManager(),
             monitoring=MockMonitoring(),
             rescan_timer=MockRescanTimer(),

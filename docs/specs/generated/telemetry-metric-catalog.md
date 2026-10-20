@@ -4,8 +4,8 @@
 
 Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which defines the columns.
 
-- **148 unique Python metric names** (169 definitions; 5 names are defined in more than one module).
-- 80 of the 148 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
+- **146 unique Python metric names** (167 definitions; 5 names are defined in more than one module).
+- 78 of the 146 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
 - 0 names are defined but never recorded by any service.
 
 | Metric | Type | Labels | Defined in | Emitted | Consumers | Notes |
@@ -64,8 +64,6 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `controller_polling_target_hz` | gauge | (none) | controller-manager | yes | grafana |  |
 | `controller_reconnect_total` | counter | `serial` | controller-manager | yes | grafana |  |
 | `controller_routing_decisions_total` | counter | `serial`, `adapter`, `method` | controller-manager | yes | (none) |  |
-| `controller_state_cache_hits_total` | counter | (none) | controller-manager | yes | (none) |  |
-| `controller_state_cache_misses_total` | counter | (none) | controller-manager | yes | (none) |  |
 | `controller_state_update_hz` | gauge | `serial` | controller-manager | yes | (none) |  |
 | `controller_stream_commands_total` | counter | `command_type` | controller-manager | yes | (none) |  |
 | `controller_stream_current_frequency_hz` | gauge | (none) | controller-manager | yes | (none) |  |

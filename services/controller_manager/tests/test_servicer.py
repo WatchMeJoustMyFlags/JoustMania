@@ -620,7 +620,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should include all controllers when filter is None."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
 
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
@@ -633,7 +633,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should only include filtered controllers."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
 
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
@@ -710,7 +710,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should return empty when filter matches nothing."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
 
         update = servicer._build_gameplay_update({"XX:YY"})
@@ -721,7 +721,7 @@ class TestExtractedHelpers:
         """Each streamed controller drains its mock death latch once (#926)."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
         # Backend exposes the duck-typed hook (only MockAdapter does in prod).
@@ -740,7 +740,7 @@ class TestExtractedHelpers:
         """Filtered-out controllers don't get a death-frame tick (#926)."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
         servicer.backend.consume_death_frame = MagicMock()
@@ -754,7 +754,7 @@ class TestExtractedHelpers:
         """Backends without the hook (hardware) stream normally (#926)."""
         servicer, _ = servicer_components
 
-        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=self._make_mock_state())
+        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         # MockBackend has no consume_death_frame — must not raise.
         if hasattr(servicer.backend, "consume_death_frame"):
@@ -1105,9 +1105,7 @@ class TestStreamGameplayData:
     async def test_yields_gameplay_updates(self, servicer):
         """Stream should yield GameplayDataUpdate messages with controller data."""
         servicer.tracked_controllers["AA:BB"] = {}
-        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(
-            return_value=self._make_mock_state("AA:BB", "P1")
-        )
+        servicer.state_cache_manager.build_state = MagicMock(return_value=self._make_mock_state("AA:BB", "P1"))
 
         context = MockGrpcContext()
         updates = []
@@ -1142,7 +1140,7 @@ class TestStreamGameplayData:
         servicer.tracked_controllers["CC:DD"] = {}
         servicer.feedback_manager.set_controller_color = AsyncMock(return_value=True)
 
-        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(
+        servicer.state_cache_manager.build_state = MagicMock(
             side_effect=lambda serial, _info: self._make_mock_state(serial)
         )
 
@@ -1201,7 +1199,7 @@ class TestStreamGameplayData:
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
 
-        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(
+        servicer.state_cache_manager.build_state = MagicMock(
             side_effect=lambda serial, _info: self._make_mock_state(serial)
         )
 

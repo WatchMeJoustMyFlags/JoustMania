@@ -37,7 +37,6 @@ def _make_loop(backend) -> DiscoveryLoop:
         tracked_controllers={SERIAL: {}},
         controller_states={},
         button_detector=MagicMock(),
-        state_cache_manager=MagicMock(),
         feedback_manager=MagicMock(),
         monitoring=MagicMock(last_battery_check=0),
         rescan_timer=MagicMock(),
@@ -115,7 +114,7 @@ class TestGameplayFrameObservesLag:
             state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
             state.rssi = 0
             state.name = "P1"
-            servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=state)
+            servicer.state_cache_manager.build_state = MagicMock(return_value=state)
             servicer.tracked_controllers[SERIAL] = {}
             yield servicer, mock_loop
 

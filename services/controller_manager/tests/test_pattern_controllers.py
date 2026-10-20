@@ -175,7 +175,7 @@ class TestUC046GameplayStream:
         """UC-046 step 5: each delivered frame of a pattern controller carries (0, 0, intensity(k / r))."""
         serials = [adapter.add_controller(reserved=True) for _ in range(4)]
         adapter.install_pattern(serials, archetype)
-        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(side_effect=self._state)
+        servicer.state_cache_manager.build_state = MagicMock(side_effect=self._state)
         for s in serials:
             servicer.tracked_controllers[s] = {}
         servicer.tracked_controllers["REAL01"] = {}
