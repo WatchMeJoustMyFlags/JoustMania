@@ -73,6 +73,8 @@ class Composition:
     # Also a fake Claude (``stack.fake_claude``) the agent's retro and proposer text backend is
     # pointed at (AGENT_INFERENCE_BACKEND=claude + AGENT_INFERENCE_BASE_URL; needs ``agent``).
     fake_claude: bool = False
+    # Extra env for the agent process, applied last (e.g. the experiment seed of TC-011).
+    agent_env: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.fake_claude and not self.agent:
@@ -176,7 +178,7 @@ class ServiceStack:
                 coordinator_port=ports["game-coordinator"],
                 mock_control_port=mock_port,
                 openai_api_key=FAKE_OPENAI_API_KEY,
-                extra_env=self._inference_env(),
+                extra_env={**self._inference_env(), **self.composition.agent_env},
             )
             self._ports[("agent", AGENT_OTLP_PORT)] = self.agent_port
             self.agent.start()

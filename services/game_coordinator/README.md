@@ -16,20 +16,15 @@ The Game Coordinator Service manages the game lifecycle and orchestrates gamepla
 
 ## gRPC API
 
-### StartGame
-Starts a new game with specified mode and players.
+There is no `StartGame` RPC: a game starts through `StreamGameEvents` with `start_config` set (below).
+The RPCs are `StreamGameEvents`, `ForceEndGame`, `GetGameState` and `ListGames`.
 
-```bash
-grpcurl -plaintext -d '{"game_name": "JoustFFA", "settings": {"sensitivity": "medium"}}' \
-  localhost:50053 joustmania.game_coordinator.GameCoordinatorService/StartGame
-```
-
-### GetGameStatus
-Gets current game state, players, and elapsed time.
+### GetGameState
+Gets current game state and players (`ListGames` lists every live session, primary and shadow).
 
 ```bash
 grpcurl -plaintext localhost:50053 \
-  joustmania.game_coordinator.GameCoordinatorService/GetGameStatus
+  joustmania.game_coordinator.GameCoordinatorService/GetGameState
 ```
 
 ### ForceEndGame
@@ -41,7 +36,13 @@ grpcurl -plaintext -d '{"reason": "admin_requested"}' \
 ```
 
 ### StreamGameEvents
-Streams real-time game events (deaths, scoring, etc.).
+Streams real-time game events. With `start_config` set it first starts a new game (the menu does this);
+with it empty it subscribes to the current or upcoming game.
+
+```bash
+grpcurl -plaintext -d '{"start_config": {"game_name": "JoustFFA", "sensitivity": 2}}' \
+  localhost:50053 joustmania.game_coordinator.GameCoordinatorService/StreamGameEvents
+```
 
 ```bash
 grpcurl -plaintext localhost:50053 \
@@ -53,9 +54,9 @@ grpcurl -plaintext localhost:50053 \
 | State | Description |
 |-------|-------------|
 | `IDLE` | No game running, waiting for start |
-| `STARTING` | Game initializing, countdown in progress |
-| `RUNNING` | Game in progress |
-| `ENDING` | Game finishing, determining winner |
+| `STARTING` | Session created, game initializing; becomes `RUNNING` on the `game_started` event, which is published before the countdown |
+| `RUNNING` | Game in progress (including the countdown) |
+| `ENDING` | Reserved, never set (a session goes from `RUNNING` straight to `ENDED`) |
 | `ENDED` | Game complete, showing results |
 
 ## Supported Game Modes
@@ -78,7 +79,7 @@ grpcurl -plaintext localhost:50053 \
 
 ```
 ┌──────────────────────┐
-│   Menu Service       │──── StartGame request
+│   Menu Service       │──── StreamGameEvents(start_config)
 └──────────┬───────────┘
            │
            ▼

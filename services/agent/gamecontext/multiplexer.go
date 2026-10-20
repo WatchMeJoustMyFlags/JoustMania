@@ -264,6 +264,13 @@ func (m *Multiplexer) AppendInterventionEvent(gameID, intervention, serial strin
 	m.store(gameID).AppendInterventionEvent(intervention, serial, blocked)
 }
 
+// RecordInterventionApply routes a dispatched intervention's write outcome to the
+// game_id partition's tally (#1771), with the same routing as
+// AppendInterventionEvent.
+func (m *Multiplexer) RecordInterventionApply(gameID, intervention string, outcome ApplyOutcome) {
+	m.store(gameID).RecordInterventionApply(intervention, outcome)
+}
+
 // Partitions returns the current set of partition game_ids (including
 // FallbackGameID when present). Order is unspecified.
 func (m *Multiplexer) Partitions() []string {

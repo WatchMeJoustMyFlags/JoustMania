@@ -25,9 +25,9 @@ type GameState int32
 
 const (
 	GameState_IDLE     GameState = 0
-	GameState_STARTING GameState = 1
+	GameState_STARTING GameState = 1 // session created; becomes RUNNING on game_started (published before the countdown)
 	GameState_RUNNING  GameState = 2
-	GameState_ENDING   GameState = 3
+	GameState_ENDING   GameState = 3 // reserved: never set by the coordinator
 	GameState_ENDED    GameState = 4
 )
 
@@ -1089,7 +1089,7 @@ type GameEvent struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	EventType string            `protobuf:"bytes,1,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"`                                                              // "player_death", "game_start", "game_end", "score_update"
+	EventType string            `protobuf:"bytes,1,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"`                                                              // e.g. "game_started", "game_ended", "game_winner", "team_winner", "player_death" (NonStop and FFA); full list: docs/specs/services.md
 	Data      map[string]string `protobuf:"bytes,2,rep,name=data,proto3" json:"data,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"` // Event-specific data
 	Timestamp int64             `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                                                                              // Unix timestamp in milliseconds
 	GameId    string            `protobuf:"bytes,4,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`                                                                       // Game this event belongs to (empty if no game bound)

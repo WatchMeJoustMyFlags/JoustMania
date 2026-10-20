@@ -41,13 +41,14 @@ const SpanGameSummary = "agent.game.summary"
 // Span attribute keys for agent.game.summary. Low-cardinality counts + ids only
 // (per .claude/rules: keep span attributes low-cardinality).
 const (
-	attrGameID            = "game.id"
-	attrGameKind          = "game.kind"
-	attrPlayerCount       = "summary.player_count"
-	attrEliminationCount  = "summary.elimination_count"
-	attrInterventionCount = "summary.intervention_count"
-	attrEngagementPoints  = "summary.engagement_points"
-	attrDominated         = "summary.dominated"
+	attrGameID               = "game.id"
+	attrGameKind             = "game.kind"
+	attrPlayerCount          = "summary.player_count"
+	attrEliminationCount     = "summary.elimination_count"
+	attrInterventionsApplied = "summary.interventions_applied"
+	attrInterventionsBlocked = "summary.interventions_blocked"
+	attrEngagementPoints     = "summary.engagement_points"
+	attrDominated            = "summary.dominated"
 	// attrGameTraceID / attrGameTraceSpanID are the canonical game-session-trace Link
 	// attribute keys (#1133/#1157), matching decision.AttrGameTraceID /
 	// AttrGameTraceSpanID verbatim so the summary's hub Link (#1174) carries the SAME
@@ -204,7 +205,8 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 		attribute.String(attrGameKind, summary.GameKind),
 		attribute.Int(attrPlayerCount, summary.PlayerCount),
 		attribute.Int(attrEliminationCount, summary.EliminationCount),
-		attribute.Int(attrInterventionCount, summary.InterventionCount),
+		attribute.Int(attrInterventionsApplied, summary.InterventionsApplied),
+		attribute.Int(attrInterventionsBlocked, summary.InterventionsBlocked),
 		attribute.Int(attrEngagementPoints, len(summary.EngagementTrend)),
 		attribute.Bool(attrDominated, summary.Dominance.Dominated),
 	)
@@ -214,7 +216,8 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 		"game_kind", summary.GameKind,
 		"players", summary.PlayerCount,
 		"eliminations", summary.EliminationCount,
-		"interventions", summary.InterventionCount,
+		"interventions_applied", summary.InterventionsApplied,
+		"interventions_blocked", summary.InterventionsBlocked,
 		"dominated", summary.Dominance.Dominated)
 }
 

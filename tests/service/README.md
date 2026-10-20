@@ -128,3 +128,6 @@ async def test_x(service_stack, flag_service):
   `Composition.otlp` does for the OtlpSink).
 - Agent composition: done (`AGENT`, `harness/agent.py`, `harness/fakes/openai.py`, #1600).
 - A moved TC keeps its `tc="TC-XXX"` tags and gets a `**Tier:**` line in its Automation section.
+
+`Composition(..., agent_env={...})` adds env to the agent process (TC-011 seeds its experiment this way);
+the agent's experiment journal always goes to `<stack workdir>/experiments`.

@@ -671,6 +671,7 @@ func TestReasoningEffortFor(t *testing.T) {
 // TestDecide_ReasoningEffortFlag: Config.ReasoningEffort (the
 // decision.openai.reasoning_effort flag) is normalized and sent verbatim to a
 // reasoning model, and never to a non-reasoning one.
+// UC: UC-044 A3
 func TestDecide_ReasoningEffortFlag(t *testing.T) {
 	cases := []struct {
 		model, effort string

@@ -176,6 +176,7 @@ func TestRun_GracefulShutdownNoGoroutineLeak(t *testing.T) {
 // nor does goleak pass, until that goroutine has observed the cancellation and
 // exited. If run's shutdown failed to let ctx-cancellation propagate (or returned
 // while context-bound work was still running), goleak would catch the survivor.
+// UC: UC-040 A29
 func TestRun_ShutdownCancelsContextBoundWork(t *testing.T) {
 	// The IgnoreCurrent() baseline inside leakOptions() is captured HERE (deferred
 	// args evaluate at the defer statement), which is BEFORE the context-bound

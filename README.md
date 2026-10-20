@@ -44,7 +44,7 @@ make up-mock
 | Dashboard | http://localhost | Main UI, controller visualization |
 | Jaeger | http://localhost/jaeger/ | Distributed tracing |
 | VictoriaMetrics | http://localhost/victoria-metrics/vmui/ | Metrics (Prometheus query API) |
-| Grafana | http://localhost/grafana/ | Dashboards (admin/joustmania) |
+| Grafana | http://localhost/grafana/ | Dashboards (anonymous access enabled; no login configured) |
 
 ## Game Modes
 

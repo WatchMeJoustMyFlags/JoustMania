@@ -2,6 +2,8 @@ package flags
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"strconv"
@@ -9,6 +11,9 @@ import (
 
 	flagd "github.com/open-feature/go-sdk-contrib/providers/flagd/pkg"
 	"github.com/open-feature/go-sdk/openfeature"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 )
 
 // Domain is the OpenFeature named domain / flagd flagSetId for agent flags.
@@ -27,6 +32,60 @@ const (
 	syncRetryBackoffMaxMs = 1000
 )
 
+// Sync-stream keepalive (flags.md §1.1, #1768). flagd v0.16.0 serves the sync stream from
+// a grpc-go server with no keepalive enforcement policy, so grpc-go's default applies: at
+// most one client ping per 5 min (flagdServerMinPingInterval), and none without an active
+// stream. go-sdk-contrib flagd v0.6.0 hard-codes a 30 s ping with PermitWithoutStream, so
+// on an idle stream flagd counted ping strikes and sent GOAWAY too_many_pings every ~2-3
+// min; each drop made the agent fail closed for about a second. The agent pings every
+// 10 min (as lib/feature_flags.py does) and only while the stream is open.
+const (
+	flagdServerMinPingInterval = 5 * time.Minute
+	syncKeepaliveTime          = 10 * time.Minute
+	syncKeepaliveTimeout       = 5 * time.Second
+)
+
+// syncKeepaliveParams is the client keepalive the sync connection dials with.
+var syncKeepaliveParams = keepalive.ClientParameters{
+	Time:                syncKeepaliveTime,
+	Timeout:             syncKeepaliveTimeout,
+	PermitWithoutStream: false,
+}
+
+// syncDialOptions replaces v0.6.0's dial options, whose keepalive cannot be set any
+// other way (WithGrpcDialOptionsOverride replaces them all). It keeps what the provider
+// would set for this config: plaintext transport (no TLS on the compose network), the
+// sync-service retry policy with the agent's backoff, and the selector interceptors
+// (which the provider appends to an override itself).
+func syncDialOptions() []grpc.DialOption {
+	return []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(syncKeepaliveParams),
+		grpc.WithDefaultServiceConfig(syncRetryServiceConfig()),
+	}
+}
+
+// syncRetryServiceConfig mirrors v0.6.0's buildRetryPolicy for the agent's backoff.
+func syncRetryServiceConfig() string {
+	seconds := func(ms int) string {
+		return fmt.Sprint((time.Duration(ms) * time.Millisecond).Seconds()) + "s"
+	}
+	cfg := map[string]any{
+		"methodConfig": []map[string]any{{
+			"name": []map[string]string{{"service": "flagd.sync.v1.FlagSyncService"}},
+			"retryPolicy": map[string]any{
+				"MaxAttempts":          3,
+				"InitialBackoff":       seconds(syncRetryBackoffMs),
+				"MaxBackoff":           seconds(syncRetryBackoffMaxMs),
+				"BackoffMultiplier":    2.0,
+				"RetryableStatusCodes": []string{"UNKNOWN", "UNAVAILABLE"},
+			},
+		}},
+	}
+	out, _ := json.Marshal(cfg) // a map of plain values: cannot fail
+	return string(out)
+}
+
 // ProviderConfig configures the flagd connection. Defaults mirror the compose
 // network: flagd reachable as host "flagd" on its sync port 8015 (in-process resolver).
 type ProviderConfig struct {
@@ -39,16 +98,23 @@ type ProviderConfig struct {
 // Python services select) and every read is a local evaluation.
 func flagdFactory(cfg ProviderConfig, flagSet string) innerFactory {
 	return func(initDeadline time.Duration) (innerProvider, error) {
-		return flagd.NewProvider(
-			flagd.WithInProcessResolver(),
-			flagd.WithHost(cfg.Host),
-			flagd.WithPort(cfg.Port),
-			flagd.WithSelector("flagSetId="+flagSet),
-			// syncedProvider passes noInitDeadline: the default 500 ms would wedge it (#1713).
-			flagd.WithDeadline(int(initDeadline.Milliseconds())),
-			flagd.WithRetryBackoffMs(syncRetryBackoffMs),
-			flagd.WithRetryBackoffMaxMs(syncRetryBackoffMaxMs),
-		)
+		return flagd.NewProvider(flagdProviderOptions(cfg, flagSet, initDeadline)...)
+	}
+}
+
+// flagdProviderOptions are the options every agent flagd provider is built with.
+func flagdProviderOptions(cfg ProviderConfig, flagSet string, initDeadline time.Duration) []flagd.ProviderOption {
+	return []flagd.ProviderOption{
+		flagd.WithInProcessResolver(),
+		flagd.WithHost(cfg.Host),
+		flagd.WithPort(cfg.Port),
+		flagd.WithSelector("flagSetId=" + flagSet),
+		// syncedProvider passes noInitDeadline: the default 500 ms would wedge it (#1713).
+		flagd.WithDeadline(int(initDeadline.Milliseconds())),
+		flagd.WithRetryBackoffMs(syncRetryBackoffMs),
+		flagd.WithRetryBackoffMaxMs(syncRetryBackoffMaxMs),
+		// Keepalive within flagd's ping policy (#1768).
+		flagd.WithGrpcDialOptionsOverride(syncDialOptions()),
 	}
 }
 

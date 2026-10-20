@@ -317,7 +317,7 @@ func TestTalk_AnswerLandsBeforeKillSwitch(t *testing.T) {
 	})
 }
 
-// UC: UC-070 Post-S-1
+// UC: UC-070 main Post-S-1
 func TestTalk_EveryBeatShowsItsObservable(t *testing.T) {
 	t.Run("UC-070/Post-S-1 steps 1-7 in one run, each with its agent.decide row", func(t *testing.T) {
 		jev := newScriptedBackend(flags.DecisionBackendJev, actShield)

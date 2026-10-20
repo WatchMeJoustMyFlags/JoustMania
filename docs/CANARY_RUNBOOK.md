@@ -527,7 +527,6 @@ process_resident_memory_bytes{job=~".*controller-manager.*"}
 | All controllers stuck on python despite targeting | `backend` flag doesn't include `rust` | Verify flag value includes `rust` (e.g., `"python,rust"`); restart controller-manager |
 | Canary endpoint returns 503 | flagd has no sync stream to the flag service (`no_sync_stream`) | `scripts/flags.sh state`; check `docker compose logs flagd flag-service`; `scripts/flags.sh restart` |
 | Canary routing gone after a restart | Canary overlays are in memory; a flag-service restart drops them | Re-run the canary endpoint, or make the value the baseline (Step 6) |
-| `NotImplementedError` in controller-manager logs | `RustServiceAdapter` stub not yet replaced (#612) | The Rust adapter is still a stub; wait for #612 to be merged |
 
 ### Grafana dashboards
 

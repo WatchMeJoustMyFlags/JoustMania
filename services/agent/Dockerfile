@@ -25,10 +25,14 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" \
     go build -ldflags="-s -w" -o /agent .
 
 # Stage 2: Runtime image (alpine for wget healthcheck support)
-FROM alpine:3.23
+FROM alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0
 
-# wget powers the compose healthcheck; ca-certificates for outbound TLS
-RUN apk add --no-cache wget=1.25.0-r2 ca-certificates=20260909-r0
+# wget powers the compose healthcheck; ca-certificates for outbound TLS.
+# Packages are deliberately unpinned: Alpine drops superseded versions from its
+# index, so apk pins broke the build repeatedly (#1218, #1241, #1764). The base
+# image digest above gives reproducibility; Renovate bumps the digest.
+# hadolint ignore=DL3018
+RUN apk add --no-cache wget ca-certificates
 
 COPY --from=builder /agent /agent
 

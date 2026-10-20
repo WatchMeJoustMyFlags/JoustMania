@@ -251,7 +251,7 @@ func TestGameEnd_ConcurrentSignalsFireOnce(t *testing.T) {
 	})
 }
 
-// UC: UC-041 A4 A5 BR-005
+// UC: UC-041 A2 A4 A5 BR-005
 func TestGameEnd_StaleEndLatches(t *testing.T) {
 	t.Run("UC-041/BR-005 stale end, resumed game_active=1, then 0: OnGameEnd fires once", func(t *testing.T) {
 		clk := &muxClock{t: time.Unix(1000, 0)}
@@ -386,6 +386,41 @@ func TestGameEnd_StaleEndLatches(t *testing.T) {
 		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 0))
 		if got := rec.count(); got != 1 || rec.last().EndReason != EndReasonZero {
 			t.Fatalf("fallback game end: %d ends, want 1 by game_active 0", got)
+		}
+	})
+
+	t.Run("UC-041/A5 a silent game_active series ends the fallback game once, and the fallback partition stays", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(1000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 1))
+
+		clk.advance(gameActiveStaleAfter) // not yet past the timeout
+		mux.EvictStale()
+		if got := rec.count(); got != 0 {
+			t.Fatalf("fallback game ended at exactly the stale timeout (%d fires), want 0", got)
+		}
+
+		clk.advance(time.Second)
+		mux.EvictStale()
+		if got := rec.count(); got != 1 {
+			t.Fatalf("fallback game end: %d ends after the stale timeout, want 1 by the stale backstop", got)
+		}
+		if reason := rec.last().EndReason; reason != EndReasonStale {
+			t.Fatalf("fallback game end reason = %q, want %q", reason, EndReasonStale)
+		}
+		snap, _ := mux.Snapshot(FallbackGameID)
+		if snap.Session.GameActive != nil && *snap.Session.GameActive {
+			t.Fatal("fallback game still active after the stale end")
+		}
+
+		clk.advance(10 * time.Minute)
+		mux.EvictStale()
+		if !hasPartition(mux, FallbackGameID) {
+			t.Fatal("fallback partition removed after the stale end, want it kept")
+		}
+		if got := rec.count(); got != 1 {
+			t.Fatalf("OnGameEnd fired %d times in total, want 1", got)
 		}
 	})
 }

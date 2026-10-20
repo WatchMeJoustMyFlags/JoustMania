@@ -83,8 +83,26 @@ func runTerminal(t *testing.T, coord *fakeCoord, maxGameSeconds int, setup func(
 	return run
 }
 
-// UC: UC-046 main A8 A3 A12 A14 BR-013 BR-014 BR-015 BR-016
+// UC: UC-046 main A8 A9 A3 A12 A14 BR-013 BR-014 BR-015 BR-016
 func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
+	t.Run("UC-046/A9 an operator force-end the agent did not request is released without a sample and recorded aborted", func(t *testing.T) {
+		coord := &fakeCoord{gameID: "game_op", events: []*gcpb.GameEvent{
+			ev("game_starting"), death("MOCK0002"),
+			endedEv(map[string]string{"game_id": "game_op", "outcome": "force_ended", "reason": "admin_request"}),
+			forceEndedEv("admin_request"),
+		}}
+		run := runTerminal(t, coord, 100, nil, nil)
+		if run.outcome != OutcomeForceEnded {
+			t.Fatalf("terminal outcome = %s, want force_ended (released, pair reruns on the 3-rerun budget)", run.outcome)
+		}
+		if run.record.Outcome != patterngame.OutcomeAborted || run.record.WinnerSlot != -1 {
+			t.Errorf("record = %s/winner %d, want aborted/-1", run.record.Outcome, run.record.WinnerSlot)
+		}
+		if len(run.forceEnd) != 0 {
+			t.Errorf("the agent force-ended an operator-ended game: %v", run.forceEnd)
+		}
+	})
+
 	t.Run("UC-046/A8 preempted: game_ended force_ended then game_force_ended is released without a sample", func(t *testing.T) {
 		coord := &fakeCoord{gameID: "game_pre", events: []*gcpb.GameEvent{
 			ev("game_starting"), death("MOCK0002"),
@@ -275,7 +293,7 @@ func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 	})
 }
 
-// UC: UC-046 A8 A12 A14 BR-016
+// UC: UC-046 A8 A9 A12 A14 BR-016
 func TestClassifyTerminal(t *testing.T) {
 	cases := []struct {
 		name            string

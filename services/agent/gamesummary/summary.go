@@ -33,7 +33,10 @@ import (
 // SchemaVersion is bumped when the on-disk Summary JSON shape changes in a way a
 // reader must notice. Carried on every file so #929's window builder and any
 // offline tooling can branch on it rather than guess.
-const SchemaVersion = 1
+//
+// 2 (#1771): intervention_count (dispatched + blocked) split into
+// interventions_applied and interventions_blocked.
+const SchemaVersion = 2
 
 // effectWindow is the half-width of the timeline window the best-effort
 // intervention before/after effect (effectDelta) compares: state-deltas within
@@ -79,11 +82,17 @@ type Summary struct {
 	EliminationCount int `json:"elimination_count"`
 	// SurvivorCount is PlayerCount - EliminationCount.
 	SurvivorCount int `json:"survivor_count"`
-	// InterventionCount is the number of agent interventions this game (dispatched +
-	// blocked), from the session's unbounded per-type tally when present, else from
-	// the timeline.
-	InterventionCount int `json:"intervention_count"`
-	// InterventionsByType is the per-type dispatched / blocked tally of the whole
+	// InterventionsApplied is the number of interventions the agent WROTE this game
+	// (passed the permission chain, actuation gate on, write succeeded), from the
+	// session's unbounded per-type tally (#1771).
+	InterventionsApplied int `json:"interventions_applied"`
+	// InterventionsBlocked is the number of interventions a gate refused this game:
+	// blocked by the permission chain (allow-list, battery, rate limit) plus
+	// actuation-gate no-ops (interventions_enabled off). A failed write is in
+	// neither count. Falls back to the timeline's blocked entries when the tally
+	// was never populated (#1771).
+	InterventionsBlocked int `json:"interventions_blocked"`
+	// InterventionsByType is the per-type dispatched / blocked / applied / gated-off tally of the whole
 	// game (from SessionSignals.InterventionCounts), sorted by type. Empty when the
 	// tally was never populated.
 	InterventionsByType []InterventionTypeCount `json:"interventions_by_type,omitempty"`
@@ -115,6 +124,8 @@ type InterventionTypeCount struct {
 	Type       string `json:"type"`
 	Dispatched int    `json:"dispatched"`
 	Blocked    int    `json:"blocked"`
+	Applied    int    `json:"applied"`
+	GatedOff   int    `json:"gated_off"`
 }
 
 // PlayerArc is one player's trajectory through the game (#928 player arcs). All
@@ -268,34 +279,29 @@ func BuildSummary(c gamecontext.GameContext, opts BuildOptions) Summary {
 		}
 	}
 	byType := interventionsByType(c.Session.InterventionCounts)
-	interventionCount := len(interventions)
-	if len(byType) > 0 {
-		interventionCount = 0
-		for _, t := range byType {
-			interventionCount += t.Dispatched + t.Blocked
-		}
-	}
+	applied, blocked := appliedBlocked(byType, interventions)
 
 	return Summary{
-		SchemaVersion:       SchemaVersion,
-		GameID:              c.SessionID,
-		GameKind:            c.GameKind,
-		ExperimentID:        c.ExperimentID,
-		Arm:                 c.Arm,
-		GameMode:            deref(c.Session.GameMode),
-		GeneratedAt:         opts.Now,
-		DurationSeconds:     c.Session.DurationSeconds,
-		PlayerCount:         len(arcs),
-		EliminationCount:    eliminated,
-		SurvivorCount:       len(arcs) - eliminated,
-		InterventionCount:   interventionCount,
-		InterventionsByType: byType,
-		PlayerArcs:          arcs,
-		EliminationSpread:   elims,
-		EngagementTrend:     trend,
-		SpeedSparkline:      gamecontext.RenderSpeedTrack(c.SpeedTrack),
-		Dominance:           dom,
-		Interventions:       interventions,
+		SchemaVersion:        SchemaVersion,
+		GameID:               c.SessionID,
+		GameKind:             c.GameKind,
+		ExperimentID:         c.ExperimentID,
+		Arm:                  c.Arm,
+		GameMode:             deref(c.Session.GameMode),
+		GeneratedAt:          opts.Now,
+		DurationSeconds:      c.Session.DurationSeconds,
+		PlayerCount:          len(arcs),
+		EliminationCount:     eliminated,
+		SurvivorCount:        len(arcs) - eliminated,
+		InterventionsApplied: applied,
+		InterventionsBlocked: blocked,
+		InterventionsByType:  byType,
+		PlayerArcs:           arcs,
+		EliminationSpread:    elims,
+		EngagementTrend:      trend,
+		SpeedSparkline:       gamecontext.RenderSpeedTrack(c.SpeedTrack),
+		Dominance:            dom,
+		Interventions:        interventions,
 	}
 }
 
@@ -306,10 +312,31 @@ func interventionsByType(counts map[string]gamecontext.InterventionCount) []Inte
 	}
 	out := make([]InterventionTypeCount, 0, len(counts))
 	for typ, c := range counts {
-		out = append(out, InterventionTypeCount{Type: typ, Dispatched: c.Dispatched, Blocked: c.Blocked})
+		out = append(out, InterventionTypeCount{Type: typ, Dispatched: c.Dispatched, Blocked: c.Blocked, Applied: c.Applied, GatedOff: c.GatedOff})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Type < out[j].Type })
 	return out
+}
+
+// appliedBlocked splits the game's interventions into applied (written) and
+// blocked by a gate (permission chain + actuation gate), entity model GAME_SUMMARY
+// (#1771). The unbounded per-type tally is the source; without one only the
+// timeline's blocked entries can be counted (the timeline does not know whether a
+// dispatch was written), so applied stays 0 there.
+func appliedBlocked(byType []InterventionTypeCount, timeline []InterventionOutcome) (applied, blocked int) {
+	if len(byType) > 0 {
+		for _, t := range byType {
+			applied += t.Applied
+			blocked += t.Blocked + t.GatedOff
+		}
+		return applied, blocked
+	}
+	for _, iv := range timeline {
+		if !iv.Dispatched {
+			blocked++
+		}
+	}
+	return 0, blocked
 }
 
 // timelineBounds returns the first and last event timestamps in the timeline, or

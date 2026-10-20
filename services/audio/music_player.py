@@ -5,7 +5,8 @@ Phase 70: Dynamic Music System
 Phase 80: Migrated from scipy to resampy for distroless compatibility
 Issue #911: Migrated from resampy to soxr (drops the numba/JIT dependency chain)
 
-Uses soxr (libsoxr bindings) for real-time tempo changes without pitch shifting.
+Uses soxr (libsoxr bindings) for real-time tempo changes by resampling, so a faster tempo
+also raises the pitch (no pitch-preserving time stretch).
 Runs audio playback in a separate process to avoid blocking the gRPC server.
 """
 

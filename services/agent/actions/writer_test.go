@@ -196,6 +196,7 @@ func TestWriter_NoGameNoWrite(t *testing.T) {
 // refused like an unscoped one, before any flag-service call. The counter and
 // span side is TestDecideLoop_RefusesNonGameID.
 // UC: UC-040 A18 BR-002
+// UC: UC-041 A5
 func TestWriter_RefusesNonGameID(t *testing.T) {
 	for _, id := range []string{"session-1", "s-1", "g", "Game_1", "shadow_1"} {
 		t.Run("UC-040/A18 refuses "+id, func(t *testing.T) {

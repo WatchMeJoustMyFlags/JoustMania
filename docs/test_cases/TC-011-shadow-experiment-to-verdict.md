@@ -5,7 +5,7 @@
 **ID:** TC-011  
 **Goal:** The agent runs a declared experiment as paired shadow games on pattern-driven mock controllers, scores each game, reaches a verdict and tears the experiment down, without any inference backend.  
 **Priority:** High  
-**Status:** Draft  
+**Status:** Automated  
 **Use cases:** [UC-043](../use_cases/UC-043.md) main, A3, A7; [UC-046](../use_cases/UC-046.md) main; [UC-003](../use_cases/UC-003.md) A2; [UC-041](../use_cases/UC-041.md) main; [UC-040](../use_cases/UC-040.md) A1
 
 ## Roles
@@ -15,8 +15,8 @@
 
 ## Preconditions
 
-- The integration stack with the dry-run and dedicated-coordinator overlays (`docker-compose.dry-run.yml`, `docker-compose.agent-coordinator.yml`) and the agent under `--profile agent`, as set up by `tests/integration/test_experiment_cohort_loop.py`.
-- `AGENT_INFERENCE_BACKEND=stub`, `decision.backend` = `rules`, `enabled` and `experiments_enabled` on; verdict minimums lowered to 1 pair and a short experiment tick through `agent` overlays on the flag service; an env-seeded experiment.
+- The service-tier `AGENT` composition (see Automation): the agent and the one game coordinator of the stack, which the experiment has to itself. The full-stack module `tests/integration/test_experiment_cohort_loop.py` (dry-run and dedicated-coordinator overlays, agent under `--profile agent`) still runs until the e2e shards are merged (#1422 S13).
+- `AGENT_INFERENCE_BACKEND=stub`, `decision.backend` = `rules`, `enabled` and `experiments_enabled` on; verdict minimums lowered to 1 pair and a short experiment tick through `agent` overlays on the flag service (and the same values as agent env, for the first tick); an env-seeded experiment.
 
 ## Flow
 
@@ -40,10 +40,15 @@
 ## Postconditions
 
 - The experiment is concluded and journaled on the `agent-experiments` volume; its arm values are deleted from the flag service (UC-053 A3 step 3).
-- The reserved mock controllers are removed; the module fixture removes the agent and the dedicated coordinator.
+- The reserved mock controllers are removed; the harness stops the agent and the stack's other services.
 
 ## Automation
 
-- **Partly automated**: `tests/integration/test_experiment_cohort_loop.py`: `test_inference_absent_backend_is_stub`, `test_inference_absent_degrades_to_rules` (step 1), `test_experiment_is_declared` (step 2), `test_cohort_loop_spawns_paired_games_that_conclude_with_fitness` (steps 3 to 6), `test_cohort_loop_runs_to_verdict_and_terminates` (steps 7 and 8).
-- Not asserted: pairing by seed (Validation 1), no further spawns after teardown (Validation 3), the inconclusive verdict of step 7 (the test accepts `torn_down`, `promoted` or `promote_failed`), and the deletion of the arm values (Postconditions).
-- Gaps (planned, #1404): those assertions, promotion on a `promote` verdict (UC-043 steps 6 and 7), and preemption by a real game (UC-043 A2, see [TC-013](TC-013-shadow-game-alongside-real-game.md)).
+**Tier:** T2 service (`tests/service/`, `make test-service`): menu, game coordinator and controller manager (mock controllers) from source at HEAD, the agent built at HEAD (`AGENT` composition, with `agent_env` carrying the experiment seed and `AGENT_EXPERIMENT_DIR` in the stack's temp dir), one flagd and flag service, fake audio, the harness `OtlpSink`. The agent has no state API, so its `slog` lines are the observable, as in the full-stack module.
+
+Per module (#1422 S9): the units below prove each module's rules, the T2 module proves they work together.
+
+- `tests/service/test_tc011_shadow_experiment.py`, one module-scoped stack and one live loop (about 45 s), the tests in order: `test_agent_starts_inference_absent_and_decides_with_rules` (step 1), `test_experiment_is_declared` (step 2), `test_first_game_is_a_shadow_game_on_reserved_controllers` (steps 3 and 4: own game id, registered with the flag service for the experimental arm, players are reserved controllers), `test_each_game_is_scored_for_its_arm` (steps 5 and 6), `test_verdict_is_inconclusive_and_the_experiment_is_torn_down` (steps 7 and 8; Validations 1 and 3; the postconditions: journal, shadow games deregistered, reserved controllers removed, arm value deleted), `test_no_real_game_ran_with_the_experiment` (Validation 2). One synthetic pair has no paired SD, so the verdict is always `inconclusive` and the experiment `discarded`.
+- Go unit tests of the agent (`services/agent/experiment/`, `UC: UC-043 main` / `A3` / `A7`, `UC-046 ...`): declare, spawn order and the CRN seed, scoring, the paired verdict and its give-up conditions, teardown, journal rebuild. They do not need the coordinator or the controller manager.
+- The full-stack `tests/integration/test_experiment_cohort_loop.py` still runs in the e2e-agent shard; it, `docker-compose.agent-coordinator.yml` and its contract rows go with the shard merge (#1422 S13).
+- Gaps (planned, #1404): promotion on a `promote` verdict (UC-043 steps 6 and 7) and preemption by a real game (UC-043 A2, see [TC-013](TC-013-shadow-game-alongside-real-game.md)); both are unit-tested only.
