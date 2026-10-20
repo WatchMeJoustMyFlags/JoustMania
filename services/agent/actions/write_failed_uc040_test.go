@@ -199,7 +199,7 @@ func TestDecideLoop_GateOffChargesBudgetAndSpans(t *testing.T) {
 			InterventionsAllowed: []string{decision.InterventionAdjustVolume},
 			Policy:               flags.Policy{MaxInterventionsPerMinute: 1},
 		}
-		l, svc, _, spy, _, sr := loggedLoop(t, snap,
+		l, svc, reader, spy, _, sr := loggedLoop(t, snap,
 			oneDecision{Intervention: decision.InterventionAdjustVolume, Reason: "quieter"}, false)
 		c := gamecontext.GameContext{SessionID: uc040GameID}
 
@@ -219,6 +219,10 @@ func TestDecideLoop_GateOffChargesBudgetAndSpans(t *testing.T) {
 		assertNoWrites(t, svc)
 		if calls := spy.calls(); len(calls) != 0 {
 			t.Fatalf("Writer calls = %d, want 0 (the gate skips the Writer)", len(calls))
+		}
+		// No write is counted, ok or error.
+		if ok, failed := writesTotal(t, reader, resultOK), writesTotal(t, reader, resultError); ok != 0 || failed != 0 {
+			t.Fatalf("agent_intervention_writes_total = ok %d / error %d, want 0 / 0", ok, failed)
 		}
 	})
 }
