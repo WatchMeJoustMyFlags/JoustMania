@@ -346,13 +346,9 @@ func testCtx(t *testing.T) context.Context {
 	return ctx
 }
 
-// assertBackendError checks that a backend gRPC status surfaces as a Connect
-// error. Every forwarder currently wraps it as CodeInternal (the original
-// gRPC code is only kept in the message text). CURRENT BEHAVIOUR, not a
-// contract: the gRPC code should map to the matching Connect code (e.g.
-// Unavailable, NotFound). No issue exists yet for this follow-up; a fix
-// will flip the CodeInternal assertions here and in TestProxyBackendUnreachable.
-func assertBackendError(t *testing.T, err error, backendDesc string) {
+// assertBackendError checks that a backend gRPC status surfaces as the Connect
+// error with the matching code and the backend message (#1560).
+func assertBackendError(t *testing.T, err error, wantCode connect.Code, backendDesc string) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("expected a Connect error, got nil")
@@ -361,8 +357,8 @@ func assertBackendError(t *testing.T, err error, backendDesc string) {
 	if !errors.As(err, &cerr) {
 		t.Fatalf("error %T is not a *connect.Error: %v", err, err)
 	}
-	if cerr.Code() != connect.CodeInternal {
-		t.Errorf("Connect code = %v, want %v", cerr.Code(), connect.CodeInternal)
+	if cerr.Code() != wantCode {
+		t.Errorf("Connect code = %v, want %v", cerr.Code(), wantCode)
 	}
 	if !strings.Contains(cerr.Message(), backendDesc) {
 		t.Errorf("Connect message %q does not carry the backend error %q", cerr.Message(), backendDesc)
@@ -416,7 +412,7 @@ func TestProxyProcessInputStartGame(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.menu.err = status.Error(codes.Unavailable, "menu restarting")
 		_, err := rig.menuClient.ProcessInput(testCtx(t), connect.NewRequest(&menupb.ProcessInputRequest{InputType: "web_command"}))
-		assertBackendError(t, err, "menu restarting")
+		assertBackendError(t, err, connect.CodeUnavailable, "menu restarting")
 	})
 }
 
@@ -437,7 +433,7 @@ func TestProxyListGameModes(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.menu.err = status.Error(codes.Unavailable, "menu down")
 		_, err := rig.menuClient.ListGameModes(testCtx(t), connect.NewRequest(&menupb.ListGameModesRequest{}))
-		assertBackendError(t, err, "menu down")
+		assertBackendError(t, err, connect.CodeUnavailable, "menu down")
 	})
 }
 
@@ -465,9 +461,9 @@ func TestProxyStartStopMenu(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.menu.err = status.Error(codes.FailedPrecondition, "menu busy")
 		_, err := rig.menuClient.StartMenu(testCtx(t), connect.NewRequest(&menupb.StartMenuRequest{}))
-		assertBackendError(t, err, "menu busy")
+		assertBackendError(t, err, connect.CodeFailedPrecondition, "menu busy")
 		_, err = rig.menuClient.StopMenu(testCtx(t), connect.NewRequest(&menupb.StopMenuRequest{}))
-		assertBackendError(t, err, "menu busy")
+		assertBackendError(t, err, connect.CodeFailedPrecondition, "menu busy")
 	})
 }
 
@@ -516,7 +512,7 @@ func TestProxyStreamMenuEvents(t *testing.T) {
 		if n != 1 {
 			t.Errorf("got %d events before the error, want 1", n)
 		}
-		assertBackendError(t, stream.Err(), "menu stream broke")
+		assertBackendError(t, stream.Err(), connect.CodeInternal, "menu stream broke")
 	})
 }
 
@@ -567,7 +563,7 @@ func TestProxyForceEndGame(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.game.err = status.Error(codes.Unavailable, "coordinator down")
 		_, err := rig.gameClient.ForceEndGame(testCtx(t), connect.NewRequest(&gamepb.ForceEndGameRequest{Reason: "x"}))
-		assertBackendError(t, err, "coordinator down")
+		assertBackendError(t, err, connect.CodeUnavailable, "coordinator down")
 	})
 }
 
@@ -604,9 +600,9 @@ func TestProxyGameStateAndList(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.game.err = status.Error(codes.NotFound, "no such game")
 		_, err := rig.gameClient.GetGameState(testCtx(t), connect.NewRequest(&gamepb.GetGameStateRequest{}))
-		assertBackendError(t, err, "no such game")
+		assertBackendError(t, err, connect.CodeNotFound, "no such game")
 		_, err = rig.gameClient.ListGames(testCtx(t), connect.NewRequest(&gamepb.ListGamesRequest{}))
-		assertBackendError(t, err, "no such game")
+		assertBackendError(t, err, connect.CodeNotFound, "no such game")
 	})
 }
 
@@ -651,7 +647,7 @@ func TestProxyStreamGameEvents(t *testing.T) {
 		defer stream.Close()
 		for stream.Receive() {
 		}
-		assertBackendError(t, stream.Err(), "coordinator gone")
+		assertBackendError(t, stream.Err(), connect.CodeUnavailable, "coordinator gone")
 	})
 }
 
@@ -677,7 +673,7 @@ func TestProxyRenameController(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.controller.err = status.Error(codes.InvalidArgument, "name too long")
 		_, err := rig.controllerClient.RenameController(testCtx(t), connect.NewRequest(&controllerpb.RenameControllerRequest{Serial: "aa:bb"}))
-		assertBackendError(t, err, "name too long")
+		assertBackendError(t, err, connect.CodeInvalidArgument, "name too long")
 	})
 }
 
@@ -710,7 +706,7 @@ func TestProxyIdentifyController(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.controller.err = status.Error(codes.Unavailable, "cm down")
 		_, err := rig.controllerClient.IdentifyController(testCtx(t), connect.NewRequest(&controllerpb.IdentifyControllerRequest{Serial: "aa:bb"}))
-		assertBackendError(t, err, "cm down")
+		assertBackendError(t, err, connect.CodeUnavailable, "cm down")
 	})
 }
 
@@ -733,7 +729,7 @@ func TestProxyGetConnectedControllers(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.controller.err = status.Error(codes.Unavailable, "cm down")
 		_, err := rig.controllerClient.GetConnectedControllers(testCtx(t), connect.NewRequest(&controllerpb.GetConnectedControllersRequest{}))
-		assertBackendError(t, err, "cm down")
+		assertBackendError(t, err, connect.CodeUnavailable, "cm down")
 	})
 }
 
@@ -760,8 +756,8 @@ func TestProxyBackendUnreachable(t *testing.T) {
 		client := menuconnect.NewMenuServiceClient(ts.Client(), ts.URL)
 		_, err = client.ProcessInput(testCtx(t), connect.NewRequest(&menupb.ProcessInputRequest{InputType: "web_command"}))
 		var cerr *connect.Error
-		if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
-			t.Fatalf("err = %v, want a CodeInternal Connect error", err)
+		if !errors.As(err, &cerr) || cerr.Code() != connect.CodeUnavailable {
+			t.Fatalf("err = %v, want a CodeUnavailable Connect error", err)
 		}
 	})
 }
@@ -963,8 +959,8 @@ func TestProxyDashboardStreamingJSON(t *testing.T) {
 		if err := json.Unmarshal(frames[0].payload, &end); err != nil {
 			t.Fatalf("end-stream payload %s: %v", frames[0].payload, err)
 		}
-		if end.Error.Code != "internal" || !strings.Contains(end.Error.Message, "coordinator gone") {
-			t.Errorf("end-stream error = %+v, want internal / coordinator gone", end.Error)
+		if end.Error.Code != "unavailable" || !strings.Contains(end.Error.Message, "coordinator gone") {
+			t.Errorf("end-stream error = %+v, want unavailable / coordinator gone", end.Error)
 		}
 	})
 }
@@ -1003,5 +999,47 @@ func TestProxyBidiRPCsUnimplemented(t *testing.T) {
 		rig.controller.log.none(t)
 		_ = stream.CloseRequest()
 		_ = stream.CloseResponse()
+	})
+}
+
+// UC: UC-011 BR-002
+func TestToConnectError(t *testing.T) {
+	cases := []struct {
+		grpc    codes.Code
+		connect connect.Code
+	}{
+		{codes.Canceled, connect.CodeCanceled},
+		{codes.Unknown, connect.CodeUnknown},
+		{codes.InvalidArgument, connect.CodeInvalidArgument},
+		{codes.DeadlineExceeded, connect.CodeDeadlineExceeded},
+		{codes.NotFound, connect.CodeNotFound},
+		{codes.AlreadyExists, connect.CodeAlreadyExists},
+		{codes.PermissionDenied, connect.CodePermissionDenied},
+		{codes.ResourceExhausted, connect.CodeResourceExhausted},
+		{codes.FailedPrecondition, connect.CodeFailedPrecondition},
+		{codes.Aborted, connect.CodeAborted},
+		{codes.OutOfRange, connect.CodeOutOfRange},
+		{codes.Unimplemented, connect.CodeUnimplemented},
+		{codes.Internal, connect.CodeInternal},
+		{codes.Unavailable, connect.CodeUnavailable},
+		{codes.DataLoss, connect.CodeDataLoss},
+		{codes.Unauthenticated, connect.CodeUnauthenticated},
+	}
+	for _, tc := range cases {
+		t.Run(tc.grpc.String(), func(t *testing.T) {
+			got := toConnectError(status.Error(tc.grpc, "backend said no"))
+			if got.Code() != tc.connect {
+				t.Errorf("code = %v, want %v", got.Code(), tc.connect)
+			}
+			if got.Message() != "backend said no" {
+				t.Errorf("message = %q, want the status message only", got.Message())
+			}
+		})
+	}
+	t.Run("a non-status error stays Internal", func(t *testing.T) {
+		got := toConnectError(errors.New("plain failure"))
+		if got.Code() != connect.CodeInternal || !strings.Contains(got.Message(), "plain failure") {
+			t.Errorf("got %v", got)
+		}
 	})
 }

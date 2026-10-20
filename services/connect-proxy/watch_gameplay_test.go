@@ -300,9 +300,9 @@ func TestProxyWatchGameplayData(t *testing.T) {
 			t.Fatalf("unexpected extra update %v", stream.Msg())
 		}
 		var cerr *connect.Error
-		if !errors.As(stream.Err(), &cerr) || cerr.Code() != connect.CodeInternal ||
+		if !errors.As(stream.Err(), &cerr) || cerr.Code() != connect.CodeUnavailable ||
 			!strings.Contains(cerr.Message(), "controller manager gone") {
-			t.Fatalf("err = %v, want a CodeInternal Connect error carrying the upstream message", stream.Err())
+			t.Fatalf("err = %v, want a CodeUnavailable Connect error carrying the upstream message", stream.Err())
 		}
 		waitClosed(t, returned, "WatchGameplayData handler still running after the upstream error")
 	})
