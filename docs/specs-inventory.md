@@ -108,7 +108,7 @@ spec PRs. Verified against `main` @ 2d162b33; rows added or updated by the audit
 | D-S3 | ARCHITECTURE lists 6 app services | Agent, pairing daemon, connect-proxy, envoy, VictoriaMetrics, Loki, collector, flagd all run (`docker-compose.yml`). | stale doc; **superseded**: `docs/ARCHITECTURE.md` carries a "Superseded" banner pointing at services.md |
 | D-S4 | Mock RPC names `AddMockController` etc. (proto README) | `AddController`, `RemoveController`, `AddControllers`, `Simulate*`, ... (`proto/controller_manager_mock.proto`). | stale doc |
 | D-S5 | `proto/controller_manager.proto:160` gameplay default 60 Hz | Servicer fallback 30 Hz when the client sends 0 (`services/controller_manager/servicer.py` `_process_gameplay_config`). | stale comment |
-| D-S6 | UC-035 A4: the dashboard reopens an ended stream every 2 s | A game event stream that connect-proxy ends cleanly (the coordinator's stream ended) is not reopened: the dashboard's game feed stays stopped until the page is reloaded; failed streams and an ended gameplay stream are reopened (`services/dashboard/`). Spec text: UC-035 A4. | bug (#1706) |
+| D-S6 | UC-035 A4: the dashboard reopens an ended stream every 2 s | A game event stream that connect-proxy ends cleanly (the coordinator's stream ended) is not reopened: the dashboard's game feed stays stopped until the page is reloaded; failed streams and an ended gameplay stream are reopened (`services/dashboard/`). Spec text: UC-035 A4. | **Resolved by PR #1733** (`services/dashboard/src/stream.ts`) |
 
 ### 4.3 Game modes and lifecycle (D-G)
 
