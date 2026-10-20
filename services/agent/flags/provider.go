@@ -98,18 +98,23 @@ type ProviderConfig struct {
 // Python services select) and every read is a local evaluation.
 func flagdFactory(cfg ProviderConfig, flagSet string) innerFactory {
 	return func(initDeadline time.Duration) (innerProvider, error) {
-		return flagd.NewProvider(
-			flagd.WithInProcessResolver(),
-			flagd.WithHost(cfg.Host),
-			flagd.WithPort(cfg.Port),
-			flagd.WithSelector("flagSetId="+flagSet),
-			// syncedProvider passes noInitDeadline: the default 500 ms would wedge it (#1713).
-			flagd.WithDeadline(int(initDeadline.Milliseconds())),
-			flagd.WithRetryBackoffMs(syncRetryBackoffMs),
-			flagd.WithRetryBackoffMaxMs(syncRetryBackoffMaxMs),
-			// Keepalive within flagd's ping policy (#1768).
-			flagd.WithGrpcDialOptionsOverride(syncDialOptions()),
-		)
+		return flagd.NewProvider(flagdProviderOptions(cfg, flagSet, initDeadline)...)
+	}
+}
+
+// flagdProviderOptions are the options every agent flagd provider is built with.
+func flagdProviderOptions(cfg ProviderConfig, flagSet string, initDeadline time.Duration) []flagd.ProviderOption {
+	return []flagd.ProviderOption{
+		flagd.WithInProcessResolver(),
+		flagd.WithHost(cfg.Host),
+		flagd.WithPort(cfg.Port),
+		flagd.WithSelector("flagSetId=" + flagSet),
+		// syncedProvider passes noInitDeadline: the default 500 ms would wedge it (#1713).
+		flagd.WithDeadline(int(initDeadline.Milliseconds())),
+		flagd.WithRetryBackoffMs(syncRetryBackoffMs),
+		flagd.WithRetryBackoffMaxMs(syncRetryBackoffMaxMs),
+		// Keepalive within flagd's ping policy (#1768).
+		flagd.WithGrpcDialOptionsOverride(syncDialOptions()),
 	}
 }
 

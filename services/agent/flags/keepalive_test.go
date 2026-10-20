@@ -8,19 +8,20 @@ import (
 
 	"buf.build/gen/go/open-feature/flagd/grpc/go/flagd/sync/v1/syncv1grpc"
 	syncv1 "buf.build/gen/go/open-feature/flagd/protocolbuffers/go/flagd/sync/v1"
+	flagd "github.com/open-feature/go-sdk-contrib/providers/flagd/pkg"
 	"github.com/open-feature/go-sdk/openfeature"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 )
 
-// UC: UC-045 A3
+// UC: UC-045 A3 Pre-1
 // The sync connection's keepalive stays within flagd's ping policy (#1768): flagd
 // v0.16.0's sync server enforces grpc-go's default (one ping per 5 min, none without a
 // stream), and a client pinging faster gets GOAWAY too_many_pings, which drops the
 // stream and makes the agent fail closed (UC-045 A3) while flagd is healthy.
 func TestSyncKeepalive_WithinFlagdPingPolicy(t *testing.T) {
-	t.Run("UC-045/A3 keepalive ping interval at or above flagd's MinTime", func(t *testing.T) {
+	t.Run("UC-045/A3 UC-045/Pre-1 keepalive ping interval at or above flagd's MinTime", func(t *testing.T) {
 		if syncKeepaliveParams.Time < flagdServerMinPingInterval {
 			t.Fatalf("keepalive Time = %s, want >= %s (flagd's enforced ping interval)",
 				syncKeepaliveParams.Time, flagdServerMinPingInterval)
@@ -34,6 +35,25 @@ func TestSyncKeepalive_WithinFlagdPingPolicy(t *testing.T) {
 	t.Run("UC-045/A3 keepalive still detects a dead connection", func(t *testing.T) {
 		if syncKeepaliveParams.Time <= 0 || syncKeepaliveParams.Timeout <= 0 {
 			t.Fatalf("keepalive disabled: %+v", syncKeepaliveParams)
+		}
+	})
+}
+
+// UC: UC-045 A3 Pre-1
+// Every agent provider is built with the keepalive dial-option override (#1768): without
+// it v0.6.0 dials with its own 30 s keepalive and flagd drops the stream.
+func TestFlagdProviderOptions_CarryKeepaliveOverride(t *testing.T) {
+	t.Run("UC-045/A3 provider options carry the sync dial-option override", func(t *testing.T) {
+		for _, set := range []string{Domain, RolloutDomain} {
+			cfg, err := flagd.NewProviderConfiguration(
+				flagdProviderOptions(ProviderConfig{Host: "flagd", Port: 8015}, set, time.Second))
+			if err != nil {
+				t.Fatalf("%s: NewProviderConfiguration: %v", set, err)
+			}
+			if got, want := len(cfg.GrpcDialOptionsOverride), len(syncDialOptions()); got == 0 || got != want {
+				t.Fatalf("%s: GrpcDialOptionsOverride has %d options, want the %d of syncDialOptions",
+					set, got, want)
+			}
 		}
 	})
 }
@@ -63,7 +83,7 @@ func (s *fakeSyncServer) SyncFlags(_ *syncv1.SyncFlagsRequest, stream grpc.Serve
 	return nil
 }
 
-// UC: UC-045 A3
+// UC: UC-045 A3 Pre-1
 // The dial-option override (#1768) replaces all of v0.6.0's own dial options: the real
 // flagdFactory must still reach a plaintext sync server, send its flagSetId selector and
 // serve the synced flags. The server enforces flagd's ping policy explicitly.
