@@ -37,7 +37,7 @@ services:
       - "50062"  # Mock control API (for integration tests)
     ports:
       - "50052:50052"  # Main gRPC port
-      - "50062:50062"  # Mock control API
+      - "127.0.0.1:50062:50062"  # Mock control API (loopback only, #1628)
 
   # Game Coordinator - Expose ports for testing
   game-coordinator:

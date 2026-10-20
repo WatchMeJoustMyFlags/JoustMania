@@ -212,8 +212,9 @@ protos-agent:
 	# committed INTO the agent module so `go test`/the agent Dockerfile build with
 	# no buf step. Uses Docker buf (no local buf required), then relocates the
 	# go_package-pathed output into services/agent/gen and fixes ownership.
+	# buf runs as the host user so the temp dir stays removable (#1628).
 	rm -rf /tmp/joust-agent-gen && mkdir -p /tmp/joust-agent-gen
-	docker run --rm \
+	docker run --rm -u "$(shell id -u):$(shell id -g)" -e HOME=/tmp \
 		-v "$(CURDIR)/proto:/workspace/proto" \
 		-v "/tmp/joust-agent-gen:/out" \
 		-w /workspace/proto \
