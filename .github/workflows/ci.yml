@@ -1079,6 +1079,97 @@ jobs:
           # Read-only: the publish job (docker-build-extra) owns this scope.
           cache-from: type=gha,scope=connect-proxy
 
+  # #1780: the custom collector (OCB compile, ~7 min, fetches Go modules and
+  # flakes on proxy errors) is built once per content hash of
+  # images/otel-collector/** and pushed as otel-collector:<hash>; the e2e shards
+  # pull it (OTEL_COLLECTOR_TAG, docker-compose.collector-prebuilt.yml). The tag
+  # is separate from the released :<sha>/:main/:latest images (docker-build-extra
+  # and retag-skipped are untouched). A tag that already exists is reused, so
+  # only the first run after a collector change builds. Fork PRs and tokens
+  # without package write cannot push: `tag` stays empty and the shards fall
+  # back to the local build. Never fails the run: every risky step is
+  # continue-on-error. Same gate as integration-test.
+  collector-image:
+    name: Prebuilt otel-collector
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: >-
+      needs.changes.outputs.e2e_required == 'true' ||
+      (github.event_name == 'merge_group' && needs.changes.outputs.non_docs != 'false')
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.result.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute collector content hash
+        id: hash
+        run: echo "hash=$(scripts/ci/collector-image-hash.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Set image ref
+        id: ref
+        env:
+          HASH: ${{ steps.hash.outputs.hash }}
+        run: echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}/otel-collector:${HASH}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        continue-on-error: true
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check whether the tag exists
+        id: exists
+        continue-on-error: true
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          if docker buildx imagetools inspect "$REF" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.exists.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v4
+
+      # PRs from forks have a read-only token: skip the push, the shards build locally.
+      - name: Build and push collector
+        if: >-
+          steps.exists.outputs.exists != 'true' &&
+          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        continue-on-error: true
+        uses: docker/build-push-action@v7
+        with:
+          context: images/otel-collector
+          file: images/otel-collector/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.ref.outputs.ref }}
+          # Read-only: the publish job (docker-build-extra) owns this scope.
+          cache-from: type=gha,scope=otel-collector
+
+      - name: Publish result
+        id: result
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+          HASH: ${{ steps.hash.outputs.hash }}
+        run: |
+          if docker buildx imagetools inspect "$REF" > /dev/null 2>&1; then
+            echo "tag=${HASH}" >> "$GITHUB_OUTPUT"
+            echo "Prebuilt collector: ${REF}"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "::warning::no prebuilt collector ${REF}; the e2e shards build it locally"
+          fi
+
   # #1422 step 15: one job per shard, each with its own compose stack.
   # e2e-core never builds or starts the agent; e2e-agent holds the modules
   # that start it. Assignment: E2E_SHARD_BY_MODULE in tests/integration/
@@ -1090,7 +1181,10 @@ jobs:
   integration-test:
     name: Integration Tests (e2e-${{ matrix.shard }})
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, collector-image]
+    env:
+      # #1780: prebuilt collector for this content hash; empty = build locally.
+      OTEL_COLLECTOR_TAG: ${{ needs.collector-image.outputs.tag }}
     strategy:
       # Let the other shard finish: its result and durations stay visible.
       fail-fast: false

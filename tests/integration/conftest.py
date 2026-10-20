@@ -125,6 +125,10 @@ def docker_compose(request):
     compose_files = list(_COMPOSE_FILES)
     if use_dev_mounts:
         compose_files.append("docker-compose.dev.yml")
+    if os.getenv("OTEL_COLLECTOR_TAG"):
+        # #1780: CI pulls the collector prebuilt for this content hash instead
+        # of compiling it with OCB on every run.
+        compose_files.append("docker-compose.collector-prebuilt.yml")
 
     compose = DockerCompose(
         context=".",

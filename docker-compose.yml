@@ -189,7 +189,7 @@ services:
 
   # OpenTelemetry Collector (custom build: contrib components)
   otel-collector:
-    image: ghcr.io/watchmejoustmyflags/joustmania/otel-collector:${IMAGE_TAG:-latest}
+    image: ghcr.io/watchmejoustmyflags/joustmania/otel-collector:${OTEL_COLLECTOR_TAG:-${IMAGE_TAG:-latest}}
     build:
       context: images/otel-collector
       dockerfile: Dockerfile

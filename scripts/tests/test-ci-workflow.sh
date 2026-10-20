@@ -12,6 +12,10 @@
 #          main builds and publishes without them. Checked by simulating the
 #          `changes/force` step and evaluating the job `if:`s per scenario.
 #
+#   #1780: the prebuilt collector job (collector-image) runs exactly where the
+#          e2e shards run, never fails the run, never pushes from a fork PR, and
+#          the shards take its tag as OTEL_COLLECTOR_TAG.
+#
 # Needs python3 + PyYAML (as scripts/ci/check-retag-source.sh).
 #   ./scripts/tests/test-ci-workflow.sh [path/to/ci.yml]
 set -euo pipefail
@@ -378,6 +382,7 @@ def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success",
         results[name] = ok if implicit and evaluate(cond, ctx) else "skipped"
         ctx[f"needs.{name}.result"] = results[name]
 
+    run_job("collector-image")
     run_job("integration-test", e2e_outcome)
     for name in ("docker-build", "docker-build-extra", "docker-build-merge", "docker-build-extra-merge", "retag-skipped"):
         run_job(name)
@@ -513,6 +518,41 @@ if "e2e_required" in jobs["changes"]["outputs"]:
         if expect_full:
             fast_only = [n for n in steps if "fast path" in n]
             check(not fast_only, f"{label}: no fast-path step may run on the full path, ran {fast_only}")
+
+    # (#1780) Prebuilt collector: same gate as the shards, so the shards are never
+    # skipped by it and it never runs where they do not.
+    check(job_if("collector-image") == job_if("integration-test"),
+          "collector-image: must have the same `if` as integration-test (#1780)")
+    check("collector-image" in jobs["integration-test"]["needs"],
+          "integration-test: must need collector-image (#1780)")
+    check("collector-image" not in jobs["ci-complete"]["needs"],
+          "ci-complete: must not need collector-image; it is best effort (#1780)")
+    for label, kwargs, want in (
+        ("merge_group", dict(event="merge_group", e2e_paths=False, non_docs=True), "success"),
+        ("PR, risky path", dict(event="pull_request", e2e_paths=True, non_docs=True), "success"),
+        ("PR, docs only", dict(event="pull_request", e2e_paths=False, non_docs=False), "skipped"),
+    ):
+        r = simulate(**kwargs)
+        check(r["collector-image"] == want, f"{label}: collector-image should be {want}, got {r['collector-image']}")
+        check((r["collector-image"] == "skipped") == (r["integration-test"] == "skipped"),
+              f"{label}: collector-image and integration-test must run together")
+    ci_steps = jobs["collector-image"]["steps"]
+    push = [st for st in ci_steps if "build-push-action" in str(st.get("uses", ""))]
+    check(len(push) == 1, "collector-image: exactly one build-push step")
+    if push:
+        st = push[0]
+        check(st.get("continue-on-error") is True, "collector-image: the push step must be continue-on-error")
+        check("head.repo.fork == false" in str(st.get("if", "")),
+              "collector-image: must not push from a fork PR")
+        check("steps.exists.outputs.exists != 'true'" in str(st.get("if", "")),
+              "collector-image: must build only when the hash tag is missing")
+        check(st["with"].get("push") is True and "${{ steps.ref.outputs.ref }}" in st["with"].get("tags", ""),
+              "collector-image: must push the hash tag only")
+    check(all(st.get("continue-on-error") is True for st in ci_steps
+              if "login-action" in str(st.get("uses", "")) or st.get("id") == "exists"),
+          "collector-image: login and exists check must be continue-on-error")
+    check("OTEL_COLLECTOR_TAG" in jobs["integration-test"].get("env", {}),
+          "integration-test: must export OTEL_COLLECTOR_TAG from collector-image")
 
 if failures:
     for f in failures:
