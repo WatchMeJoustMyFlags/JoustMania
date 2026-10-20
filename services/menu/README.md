@@ -79,7 +79,6 @@ rpc StreamMenuEvents(StreamMenuEventsRequest) returns (stream MenuEvent);
 | `game_requested` | `{game_name, source?, serial?}` | Game start requested |
 | `game_start_cancelled` | `{}` | Game start was cancelled |
 | `game_start_rejected` | `{game_name, source, error}` | Web `start_game` named an unknown or unimplemented mode; no game starts |
-| `admin_action` | `{action, ...}` | Admin mode action taken |
 
 ## Lobby Feedback
 
@@ -233,7 +232,7 @@ flowchart TD
     CheckAllReady -->|Yes| CheckMinPlayers{≥2 players?}
 
     CheckMinPlayers -->|No| CheckAdminCombo
-    CheckMinPlayers -->|Yes| StartGame[🎮 Start Game!<br/>State → GAME_STARTING<br/>Publish game_requested]
+    CheckMinPlayers -->|Yes| StartGame[🎮 Start Game!<br/>State → GAME_STARTING<br/>(no game_requested: only a force start publishes it)]
 
     CheckAdminCombo{All 4 face<br/>buttons held?} -->|Yes| EnterAdmin[Enter Admin Mode<br/>White LED]
     CheckAdminCombo -->|No| Stream
@@ -264,7 +263,7 @@ sequenceDiagram
     end
 
     Note over Menu: All ready, ≥2 players
-    Menu->>GC: (via Supervisor) StartGame
+    Menu->>GC: StreamGameEvents(start_config)
 
     GC-->>Menu: game_start event
     Menu->>Menu: Stop button monitor
@@ -291,11 +290,11 @@ Enter admin mode by pressing all 4 face buttons (Cross + Circle + Square + Trian
 
 | Button | Action |
 |--------|--------|
-| Move | Cycle through settings (sensitivity, num_teams, force_all_start) |
+| Move | Cycle through settings (sensitivity, num_teams, force_all_start, agent_control) |
 | Select | Increase current setting value |
 | Start | Decrease current setting value |
 | Cross | Cycle game mode |
-| Circle | Cycle sensitivity (Slow/Medium/Fast) |
+| Circle | Cycle sensitivity (5 levels, Ultra Slow to Ultra Fast) |
 | Triangle | Show battery levels on all controllers |
 | Square | Toggle instruction display |
 | Trigger | Hold 3s = force start game |
@@ -312,15 +311,15 @@ Enter admin mode by pressing all 4 face buttons (Cross + Circle + Square + Trian
 
 ### Timeout
 
-Admin mode automatically exits after 60 seconds of inactivity.
+Admin mode exits automatically 60 seconds after entry (the timer is not extended by button presses). Every exit (PS, timeout) returns the controller to CONNECTED, so it is no longer ready.
 
 ### Admin Mode LED Feedback
 
 | Action | LED Response |
 |--------|--------------|
 | Enter admin mode | White flash 3x, then persistent white |
-| Cycle option (Move) | Option color 1s (blue=teams, purple=force_all), then white |
-| Change sensitivity | Blue/Green/Red pulse (slow/medium/fast) |
+| Cycle option (Move) | Option color 1s (blue=sensitivity, turquoise=teams, orange=force_all, purple=agent_control), then white |
+| Change sensitivity | Blue/Turquoise/Green/Orange/Red pulse (ultra slow to ultra fast) |
 | Show battery | Green/Yellow/Red per controller (2s) |
 | Toggle instructions | Green/Red pulse (on/off) |
 | Change team count | White flash N times |

@@ -4,7 +4,7 @@ Docker image for protobuf generation and Python package validation.
 
 ## Tools Included
 
-- **Python** 3.11
+- **Python** 3.14
 - **uv** 0.5.11 - Fast Python package manager
 - **git** - For detecting proto file changes
 

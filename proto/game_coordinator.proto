@@ -25,9 +25,9 @@ service GameCoordinatorService {
 // Game status
 enum GameState {
   IDLE = 0;
-  STARTING = 1;
+  STARTING = 1;   // session created; becomes RUNNING on game_started (published before the countdown)
   RUNNING = 2;
-  ENDING = 3;
+  ENDING = 3;     // reserved: never set by the coordinator
   ENDED = 4;
 }
 
@@ -168,7 +168,7 @@ message StreamEventsRequest {
 }
 
 message GameEvent {
-  string event_type = 1;  // "player_death", "game_start", "game_end", "score_update"
+  string event_type = 1;  // e.g. "game_started", "game_ended", "game_winner", "team_winner", "player_death" (NonStop and FFA); full list: docs/specs/services.md
   map<string, string> data = 2;  // Event-specific data
   int64 timestamp = 3;  // Unix timestamp in milliseconds
   string game_id = 4;  // Game this event belongs to (empty if no game bound)

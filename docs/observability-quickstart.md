@@ -114,11 +114,10 @@ docker logs -f joustmania-game-coordinator
 
 ### Step 3: Start Game
 
-Via menu or gRPC:
+Via the menu (there is no `StartGame` RPC; a game starts through `StreamGameEvents` with `start_config`):
 ```bash
-# Start FFA game with 25 players
-grpcurl -plaintext -d '{"game_mode": "FFA", "force_start": true}' \
-    localhost:50053 joustmania.game_coordinator.GameCoordinatorService/StartGame
+grpcurl -plaintext -d '{"start_config": {"game_name": "JoustFFA", "sensitivity": 2}}' \
+    localhost:50053 joustmania.game_coordinator.GameCoordinatorService/StreamGameEvents
 ```
 
 ### Step 4: Monitor Performance

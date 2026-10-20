@@ -65,7 +65,7 @@ reacts.
 > `interventions_allowed=ambient` allow-list does **not** permit. That makes the
 > **permission chain visible on the dashboards** without anything reaching the game
 > — one of the acceptance criteria. To let it *through* instead, widen
-> `interventions_allowed` to `standard`/`full` in `services/flagd/agent.json`
+> `interventions_allowed` to `standard`/`full` in `services/flagd/ci/agent.json` (what `make dry-run` serves)
 > (see the ACT runbook).
 
 ## Running it
@@ -80,7 +80,7 @@ make dry-run
 ./scripts/agent-killswitch.sh on    # the agent loop is inert until you do this
 
 # (Optional) to see the agent ACT, not just decide — see docs/agent-act-runbook.md:
-#   flip interventions_enabled -> on in services/flagd/agent.json (flagd flag, #1213;
+#   flip interventions_enabled -> on in services/flagd/ci/agent.json (flagd flag, #1213;
 #   re-read at use-time, no agent restart), and widen interventions_allowed if you
 #   want a difficulty intervention to dispatch.
 

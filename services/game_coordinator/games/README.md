@@ -276,7 +276,7 @@ open http://localhost:16686
 
 ### Expected Span Structure by Game Mode
 
-All game modes follow a consistent span hierarchy. The root span is created in `server.py` with a FOLLOWS_FROM link to the `StartGame` RPC span.
+All game modes follow a consistent span hierarchy. The root span is created in `server.py` with a FOLLOWS_FROM link to the `StreamGameEvents` RPC span.
 
 #### FFA (Free-For-All) - Flat Hierarchy
 
