@@ -32,8 +32,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from tests.service.harness import GAME, ServiceStack  # noqa: E402
+from tests.service.harness import GAME  # noqa: E402
 from tests.service.harness.processes import REPO_ROOT as _HARNESS_ROOT  # noqa: E402
+from tests.service.harness.stack import start_stack  # noqa: E402
 
 assert _HARNESS_ROOT == REPO_ROOT
 
@@ -116,9 +117,7 @@ def _composition(request):
 
 
 def _run_stack(request, tmp_path_factory, label: str):
-    workdir = tmp_path_factory.mktemp(label)
-    stack = ServiceStack(_composition(request), workdir)
-    stack.start()
+    stack = start_stack(_composition(request), lambda: tmp_path_factory.mktemp(label))
     try:
         yield stack
     finally:
