@@ -300,12 +300,13 @@ func TestDecide_Failures(t *testing.T) {
 // TestAvailable: without JEV_API_KEY the backend is unavailable and never
 // touches the network, so the decision wiring falls back to rules with
 // fallback_reason=unavailable. The base URL and model have defaults.
+// UC: UC-040 main
 func TestAvailable(t *testing.T) {
 	api := newFakeAPI(t, 200, noopStage1(t), 0)
 	for name, cfg := range map[string]Config{
-		"zero config": {},
-		"no key":      {BaseURL: api.srv.URL + "/api", Model: "m"},
-		"blank key":   {APIKey: " ", BaseURL: api.srv.URL + "/api"},
+		"UC-040/main step 2 zero config": {},
+		"UC-040/main step 2 no key":      {BaseURL: api.srv.URL + "/api", Model: "m"},
+		"UC-040/main step 2 blank key":   {APIKey: " ", BaseURL: api.srv.URL + "/api"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			b := New(cfg)

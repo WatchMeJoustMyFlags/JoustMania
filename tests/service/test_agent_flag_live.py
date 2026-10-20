@@ -66,12 +66,14 @@ def _run_live_go_test(stack, name: str) -> None:
 
 @pytest.mark.uc("UC-043", flow="A1", cond=["Pre-1"])
 @pytest.mark.uc("UC-044", flow="main", steps=[3, 4])
+@pytest.mark.uc("UC-040", flow="main", steps=[1])
 def test_agent_provider_sees_flips_of_already_evaluated_flags(service_stack):
     """experiments_enabled off->on->off and decision.backend rules->openai, each read first."""
     _run_live_go_test(service_stack, "TestLiveFlip_AlreadyEvaluatedFlagsFollowTheFlagService")
 
 
 @pytest.mark.uc("UC-045", flow="main", steps=[1, 2, 3])
+@pytest.mark.uc("UC-040", flow="main", steps=[1])
 def test_agent_provider_sees_kill_switch_after_enabled_was_read_on(service_stack):
     """enabled read on, then off (overlay off, and overlay cleared to the off baseline)."""
     _run_live_go_test(service_stack, "TestLiveFlip_KillSwitch")
