@@ -15,7 +15,7 @@ LED Feedback:
   - Red flash 3x: Error
 
 Environment:
-  DEBUG         - set to 1 for verbose logging
+  DEBUG         - deprecated fallback of the `debug` flag (observability set); 1 = tracebacks on errors
   METRICS_PORT  - port for the health check and control API (default: 8002)
   CONTROL_BIND  - comma-separated addresses that port binds to (default: 127.0.0.1).
                   Full stack: 127.0.0.1 plus the docker0 gateway (172.17.0.1), so
@@ -45,11 +45,12 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Lock, Thread
 
+from lib.log_level import refresh_log_level, register_floor
 from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector_thread
 from psmove_pairing import PairingDaemon, init_telemetry, metrics
-from psmove_pairing.config import DEBUG, METRICS_PORT, init_performance_flags
+from psmove_pairing.config import METRICS_PORT, env_debug, init_performance_flags, is_debug
 from psmove_pairing.control_api import handle_post
 
 # Global daemon reference for health checks
@@ -57,7 +58,8 @@ _daemon: PairingDaemon | None = None
 
 # Logging setup
 logging.basicConfig(
-    level=logging.DEBUG if DEBUG else logging.INFO,
+    # DEBUG env is the bootstrap level only: flagd is not read yet; the `debug` flag takes over (#1788)
+    level=logging.DEBUG if env_debug() else logging.INFO,
     format="[%(asctime)s] %(levelname)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
@@ -254,8 +256,12 @@ def main() -> None:
     init_logging()
     logger.info("OTEL push metrics initialized for pairing daemon")
 
+    # The `debug` flag lowers the log level to DEBUG at runtime (#1788)
+    register_floor(lambda: logging.DEBUG if is_debug() else None)
+
     # Initialize feature flags for runtime-tunable intervals
     init_performance_flags()
+    refresh_log_level()
 
     # Start process-level system metrics collection (CPU, memory, threads)
     start_system_metrics_collector_thread(

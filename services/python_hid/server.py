@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 async def serve(port=50059):
     """Start the Python HID async gRPC server."""
+    # Bootstrap level only; the log_level flag takes over once synced (lib/log_level.py, #1788)
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),

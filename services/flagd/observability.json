@@ -65,6 +65,24 @@
         "none": ""
       },
       "defaultVariant": "none"
+    },
+    "log_level": {
+      "state": "ENABLED",
+      "variants": {
+        "debug": "debug",
+        "info": "info",
+        "warning": "warning",
+        "error": "error"
+      },
+      "defaultVariant": "info"
+    },
+    "debug": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
     }
   }
 }

@@ -9,7 +9,7 @@ from opentelemetry import trace
 
 from .bluetooth_monitor import BluetoothMonitor
 from .bluez_agent import ensure_pairing_agent, register_pairing_agent, set_known_controller_check
-from .config import DEBUG, METRICS_PORT, get_bt_monitor_interval, get_poll_interval
+from .config import METRICS_PORT, get_bt_monitor_interval, get_poll_interval, is_debug
 from .usb_pairing import USBPairing
 from .utils import run_command
 
@@ -129,7 +129,7 @@ class PairingDaemon:
                 await self.usb_pairing.poll()
                 self.update_usb_poll_timestamp()
             except Exception as e:
-                logger.error(f"Error during USB poll: {e}", exc_info=DEBUG)
+                logger.error(f"Error during USB poll: {e}", exc_info=is_debug())
             await asyncio.sleep(get_poll_interval())
 
     async def _bt_monitor_loop(self) -> None:
@@ -143,7 +143,7 @@ class PairingDaemon:
                 await self.bt_monitor.monitor()
                 self.update_bt_monitor_timestamp()
             except Exception as e:
-                logger.error(f"Error during Bluetooth monitor: {e}", exc_info=DEBUG)
+                logger.error(f"Error during Bluetooth monitor: {e}", exc_info=is_debug())
             # Registers the pairing agent again while BlueZ has not confirmed it on the
             # current bus connection: bluetoothd not up yet, or a new connection (UC-001 BR-009)
             await ensure_pairing_agent()
@@ -155,7 +155,7 @@ class PairingDaemon:
         logger.info("PS Move Pairing Daemon started")
         logger.info(f"  USB poll interval: {get_poll_interval()}s")
         logger.info(f"  Bluetooth monitor interval: {get_bt_monitor_interval()}s")
-        logger.info(f"  debug mode: {DEBUG}")
+        logger.info(f"  debug mode: {is_debug()}")
         logger.info(f"  metrics port: {METRICS_PORT}")
 
         # Validate prerequisites

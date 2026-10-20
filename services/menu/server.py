@@ -19,6 +19,7 @@ import signal
 
 # Configure logging early, before any logging calls
 # This must happen before any logging.warning/info/etc to ensure LOG_LEVEL is respected
+# Bootstrap level only: flagd is not reachable yet; the log_level flag takes over once synced (lib/log_level.py, #1788)
 log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, log_level, logging.INFO),

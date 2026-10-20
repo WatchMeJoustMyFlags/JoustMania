@@ -23,6 +23,7 @@ from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 
+from lib.log_level import register_handler, resolve_log_level, start_runtime_log_level
 from lib.otel_resource import get_otel_resource
 
 _initialized = False
@@ -70,7 +71,8 @@ def init_logging() -> None:
         OTEL_EXPORTER_OTLP_ENDPOINT: OTLP collector endpoint (default: http://otel-collector:4317)
         OTEL_SERVICE_NAME: Service name (required in docker-compose.yml)
         OTEL_SERVICE_NAMESPACE: Service namespace (default: "joustmania")
-        LOG_LEVEL: Python log level for the OTLP handler (default: INFO)
+        LOG_LEVEL: deprecated fallback for the OTLP handler level (default: INFO); the
+            ``observability/log_level`` flag wins and is followed at runtime (lib/log_level.py)
     """
     global _initialized
 
@@ -89,13 +91,16 @@ def init_logging() -> None:
         provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
 
         # Attach OTEL handler to root logger so all existing loggers flow through OTLP
-        log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
-        log_level = getattr(logging, log_level_str, logging.INFO)
+        # Flag first, then LOG_LEVEL, then INFO (#1788); the level follows the flag at runtime.
+        log_level = resolve_log_level()
+        log_level_str = logging.getLevelName(log_level)
 
         handler = LoggingHandler(level=log_level, logger_provider=provider)
         logging.getLogger().addHandler(handler)
+        register_handler(handler)
 
         _initialized = True
+        start_runtime_log_level()
 
         logger.info(
             f"OTLP log export initialized: {service_name} -> {otlp_endpoint} "

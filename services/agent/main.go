@@ -510,9 +510,12 @@ func isLoopbackHost(host string) bool {
 func main() {
 	listenAddr := getEnv("AGENT_LISTEN_ADDR", ":4317")
 	healthAddr := getEnv("AGENT_HEALTH_ADDR", ":13134")
-	level := parseLevel(getEnv("LOG_LEVEL", "info"))
+	// Bootstrap level from the deprecated LOG_LEVEL env; the log_level flag takes over at
+	// runtime once flagd has synced (flags.SetupLogLevel, #1788).
+	var logLevel slog.LevelVar
+	logLevel.Set(parseLevel(getEnv("LOG_LEVEL", "info")))
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel}))
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
@@ -538,6 +541,9 @@ func main() {
 	}
 	defer shutdownFlags()
 	slog.Info("OpenFeature flagd provider registered", "host", flagCfg.Host, "port", flagCfg.Port)
+	if err := flags.SetupLogLevel(ctx, flagCfg, resolveServiceName(), os.Getenv("LOG_LEVEL"), &logLevel, logger); err != nil {
+		slog.Warn("log_level flag not wired, keeping the LOG_LEVEL env level", "error", err)
+	}
 
 	// Lifecycle + throttle calibration flags (#766 F5) are HOT-RELOADED live since
 	// #927: SetupFlagd primed the holder with the four flags; it is reloaded on each

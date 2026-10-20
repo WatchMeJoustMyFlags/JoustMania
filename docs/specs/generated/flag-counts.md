@@ -2,7 +2,7 @@
 
 # Flag counts (generated)
 
-Part of [flags.md](../flags.md). **146 flags in 8 flag sets**; the `ci/` copies (flags.md §12) are not counted.
+Part of [flags.md](../flags.md). **148 flags in 8 flag sets**; the `ci/` copies (flags.md §12) are not counted.
 
 | Flag set | File | Flags |
 |---|---|---|
@@ -13,4 +13,4 @@ Part of [flags.md](../flags.md). **146 flags in 8 flag sets**; the `ci/` copies 
 | `rollout` | [`services/flagd/rollout.json`](../../../services/flagd/rollout.json) | 4 |
 | `system` | [`services/flagd/system.json`](../../../services/flagd/system.json) | 13 |
 | `user` | [`services/flagd/user.json`](../../../services/flagd/user.json) | 11 |
-| `observability` | [`services/flagd/observability.json`](../../../services/flagd/observability.json) | 4 |
+| `observability` | [`services/flagd/observability.json`](../../../services/flagd/observability.json) | 6 |
