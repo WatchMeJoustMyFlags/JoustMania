@@ -375,7 +375,7 @@ class TestMockAdapterObserver:
 class TestMockAdapterObserverThreadSafety:
     """#1478: set_output runs in the 20 Hz LED worker thread; asyncio.Queue is not thread-safe."""
 
-    @pytest.mark.uc("UC-003")
+    @pytest.mark.uc("UC-003", flow="main", steps=[6])
     @pytest.mark.asyncio
     async def test_publish_from_worker_thread_goes_through_call_soon_threadsafe(self):
         adapter = MockAdapter(num_controllers=1)
@@ -412,7 +412,7 @@ class TestMockAdapterObserverThreadSafety:
         assert all(ident != loop_thread for ident in scheduled_from)
         assert put_from == [loop_thread], "the queue may only be touched on its own loop"
 
-    @pytest.mark.uc("UC-003")
+    @pytest.mark.uc("UC-003", flow="main", steps=[6])
     @pytest.mark.asyncio
     async def test_publish_on_owning_loop_puts_directly(self):
         adapter = MockAdapter(num_controllers=1)
@@ -424,7 +424,7 @@ class TestMockAdapterObserverThreadSafety:
 
         assert queue.get_nowait()["g"] == 255
 
-    @pytest.mark.uc("UC-003")
+    @pytest.mark.uc("UC-003", flow="main", steps=[6])
     @pytest.mark.asyncio
     async def test_worker_then_loop_publish_keeps_order(self):
         """Review of #1629: a loop publish must not overtake an earlier worker publish."""
@@ -442,7 +442,7 @@ class TestMockAdapterObserverThreadSafety:
         assert (first["r"], first["g"]) == (255, 0)
         assert (second["r"], second["g"]) == (0, 255)
 
-    @pytest.mark.uc("UC-003")
+    @pytest.mark.uc("UC-003", flow="main", steps=[6])
     def test_publish_to_closed_loop_is_dropped(self):
         adapter = MockAdapter(num_controllers=1)
         adapter.discover()

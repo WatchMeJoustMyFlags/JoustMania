@@ -187,6 +187,7 @@ class TestSimulateButton:
         covered = {button_key for _proto_button, button_key in _BUTTON_CASES}
         assert covered == set(ButtonKey)
 
+    @pytest.mark.uc("UC-003", flow="main", steps=[3])
     def test_unknown_controller_returns_error(self):
         service, _adapter = _make_service()
         request = controller_manager_mock_pb2.ButtonRequest(
@@ -319,6 +320,7 @@ class _GameSideModel:
             self.alive = True
 
 
+@pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-001"])
 class TestSimulateDeathConverges:
     """Production-state #926 / #757 coverage driven through the real RPC path.
 
@@ -641,6 +643,16 @@ class TestUC003HeldMovement:
         assert len(set(z_values)) == len(z_values)
         assert all(_magnitude(frame) < 1.5 for frame in streamed)
 
+    @pytest.mark.uc("UC-003", flow="A3")
+    def test_reset_unknown_controller_returns_not_found(self):
+        """UC-003 A3: ResetController on an unknown serial fails with "not found"."""
+        service, _adapter = _make_service(num_controllers=0)
+
+        resp = service.ResetController(controller_manager_mock_pb2.ResetRequest(serial="NOPE"), None)
+
+        assert not resp.success
+        assert "not found" in resp.error
+
     @pytest.mark.uc("UC-003", flow="A3", steps=[1])
     def test_reset_releases_every_button_and_clears_the_death_latch(self):
         """UC-003 A3: ResetController releases every button and clears a pending death latch."""
@@ -680,6 +692,7 @@ class TestUC003HeldMovement:
             assert len(set(values)) == len(values), f"gyro {axis} repeats a value"
             assert abs(sum(values) / len(values)) < 0.5, f"gyro {axis} noise is not centred on 0"
 
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
     def test_simulate_movement_unknown_controller_returns_error(self):
         """SimulateMovement on an unknown serial fails without holding anything."""
         service, adapter = _make_service(num_controllers=0)

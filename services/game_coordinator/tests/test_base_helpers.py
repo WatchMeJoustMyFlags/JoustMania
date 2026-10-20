@@ -956,6 +956,7 @@ class TestPlayerNameCapture:
         await game._process_controller_state(controller_state)
         assert game.players["p1"].name == "Blue Phoenix"
 
+    @pytest.mark.uc("UC-002", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_updates_span_name(self, game):
         """Should call update_name on player span with controller name."""
@@ -970,6 +971,7 @@ class TestPlayerNameCapture:
         mock_span.update_name.assert_called_once_with("player: Swift Tiger")
         mock_span.set_attribute.assert_any_call("player.name", "Swift Tiger")
 
+    @pytest.mark.uc("UC-002", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_name_captured_only_once(self, game):
         """Should not overwrite name on subsequent frames."""
