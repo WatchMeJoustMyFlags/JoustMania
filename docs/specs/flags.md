@@ -72,7 +72,7 @@ effect only on the next start of the flag service (`scripts/flags.sh restart`).
 |---|---|---|---|
 | `game` | Human admin | menu admin mode (persisted admin values); agent experiment writer (experiment-arm values of the experiment catalog only); autonomous promotion (`real` overlay, gated, off in the stock stack) | per deployment (baseline); experiment arm values until teardown; promotion until the flag service restarts |
 | `user` | Human admin | menu (`current_game`, `game_instructions`) | per deployment |
-| `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays); menu admin writes `interventions_allowed` only (persisted) | per deployment (baseline); overlays until cleared or the flag service restarts |
+| `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays, except the decision backend and model flags that `agent-backend.sh` persists, #1682); menu admin writes `interventions_allowed` only (persisted) | per deployment (baseline); overlays until cleared or the flag service restarts |
 | `interventions` | Agent | agent action sink only, game-scoped (values and event lists) | per game: dropped when the game ends (UC-053 BR-003) |
 | `rollout` | Operator + agent | operator: `target_backend`, `strategy`, `remediation_allowed`; agent: `current_controller_count` | per rollout |
 | `controller` | Operator | baseline edits; connect-proxy `/canary/*` through the flag service | per deployment (baseline); canary overlays until cleared |
@@ -422,11 +422,12 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | `interventions_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh` |
 | `experiments_enabled`, `experiment_dynamic_enabled` | overlay | stack | `on`, `off` | no | `agent-dryrun-enable.sh`, `talk-stage.sh` |
 | `rollout_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh` |
-| `decision.backend` | overlay | stack | `rules`, `claude`, `openai`, `jev` | no | `agent-backend.sh`, `talk-stage.sh` |
+| `decision.backend` | overlay | stack | `rules`, `claude`, `openai`, `jev` | **yes** (the operator's backend choice survives a flag-service restart, C-018, #1682) | `agent-backend.sh` (persisted), `talk-stage.sh` |
 | `decision.act_confidence_threshold`, `decision.jev.act_confidence_threshold` | overlay | stack | declared variants | no | `agent-backend.sh`, `talk-stage.sh` |
 | `decision.capture_content` | overlay | stack | `on`, `off` | no | `agent-backend.sh` |
-| `decision.claude.model`, `decision.openai.reasoning_effort`, `decision.jev.model` | overlay | stack | declared variants | no | `agent-backend.sh` |
-| `decision.openai.model` | overlay | stack | free string | no | `agent-backend.sh`, integration fixtures (`configure_agent`, fake model name) |
+| `decision.claude.model`, `decision.jev.model` | overlay | stack | declared variants | **yes** (selected together with the backend, #1682) | `agent-backend.sh` (persisted) |
+| `decision.openai.reasoning_effort` | overlay | stack | declared variants | no | `agent-backend.sh` |
+| `decision.openai.model` | overlay | stack | free string | **yes** (selected together with the backend, #1682) | `agent-backend.sh` (persisted), integration fixtures (`configure_agent`, fake model name) |
 | `decision.openai.base_url` | overlay | stack | declared variants (credential-bearing URL: never a free string) | no | integration fixtures (`configure_agent`, the `ci/` `fake` variant) |
 | `decision.min_interval_ms`, `decision.openai.timeout_ms` | overlay | stack | int 100 to 60000 | no | integration fixtures (`configure_agent`) |
 | `llm.max_requests_per_minute` | overlay | stack | declared variants (incl. `stage`) | no | `talk-stage.sh` |

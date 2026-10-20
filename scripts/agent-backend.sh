@@ -4,8 +4,9 @@
 # The decision backend, its model, the act-confidence threshold and GenAI
 # content capture are flags in the agent flag set (decision.* keys, #1226). This
 # helper changes them through the flag service (docs/specs/services.md §7.2) as
-# in-memory stack overlays: nothing is persisted (re-review N4), the flag files
-# never change (C-033), and a flag-service restart returns to the baseline.
+# stack overlays. The backend and the per-backend model are written persisted
+# (C-018, #1682), so a flag-service restart keeps the choice; the other settings
+# stay in memory. The flag files never change (C-033).
 #
 # Usage:
 #   ./scripts/agent-backend.sh                       # show current settings
@@ -84,10 +85,10 @@ def flag_view(key):
         raise
 
 
-def set_variant(key, variant):
+def set_variant(key, variant, persist=False):
     flag_view(key)  # a missing flag is named, not a raw 404
     try:
-        fs.set_variant(SET, key, variant, writer=writer)
+        fs.set_variant(SET, key, variant, writer=writer, persist=persist)
     except FlagServiceError as err:
         if err.reason == "out_of_bounds":
             view = fs.flag(SET, key)
@@ -153,8 +154,8 @@ try:
             sys.exit(f"variant {backend!r} not defined for flag 'decision.backend'; valid: {', '.join(backend_view['variants'])}")
         msg = f"agent backend -> {backend}"
         if model is not None:
-            value = set_variant(f"decision.{backend}.model", model)
-        set_variant("decision.backend", backend)
+            value = set_variant(f"decision.{backend}.model", model, persist=True)
+        set_variant("decision.backend", backend, persist=True)
         if model is not None:
             msg += f"  model -> {model} ({value})"
         print(msg)
