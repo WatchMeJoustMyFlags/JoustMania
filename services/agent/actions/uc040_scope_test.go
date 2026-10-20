@@ -14,7 +14,6 @@ import (
 	"github.com/joustmania/agent/gamecontext"
 )
 
-// UC: UC-040 Pre-2
 // UC: UC-040 Post-S-1
 func TestDecideLoop_WriteIsScopedToTheDecidingGame(t *testing.T) {
 	snap := flags.Snapshot{
@@ -33,7 +32,7 @@ func TestDecideLoop_WriteIsScopedToTheDecidingGame(t *testing.T) {
 		return svc, sr
 	}
 
-	t.Run("UC-040/Pre-2 the registered game's scope is the only scope written", func(t *testing.T) {
+	t.Run("UC-040/Post-S-1 the deciding game's scope is the only scope written", func(t *testing.T) {
 		svcA, _ := evalGame(t, "game_aaaaaaaaaaaa")
 		svcB, _ := evalGame(t, "game_bbbbbbbbbbbb")
 		for _, c := range []struct {

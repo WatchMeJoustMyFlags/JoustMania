@@ -200,6 +200,13 @@ class Harness:
         with patch("services.game_coordinator.metrics.interventions_total"):
             await self.mgr.evaluate_all()
 
+    def published(self, game_id: str, flag_key: str) -> list[dict]:
+        """Every agent_intervention of the flag's type published for the game, blocked or not."""
+        type_id = next(s.type_id for s in INTERVENTION_SPECS if s.flag_key == flag_key)
+        return [
+            d for et, d in self.events.get(game_id, []) if et == GameEvent.AGENT_INTERVENTION and d["type"] == type_id
+        ]
+
     def applied(self, game_id: str, flag_key: str) -> list[dict]:
         type_id = next(s.type_id for s in INTERVENTION_SPECS if s.flag_key == flag_key)
         return [
@@ -229,7 +236,8 @@ async def test_event_of_an_ended_game_is_not_replayed_in_the_next_game(flag_key)
     h.start_game("game_n1")
     h.flags.scoped[("global_difficulty_factor", "game_n1")] = 1.5  # unrelated write
     await h.flag_change()
-    assert h.applied("game_n1", flag_key) == []
+    # A15 step 2: nothing applied and no agent_intervention published at all.
+    assert h.published("game_n1", flag_key) == []
 
     h.flags.scoped[(flag_key, "game_n1")] = edge_event(flag_key, _PAYLOAD[flag_key])
     await h.flag_change()
@@ -251,7 +259,7 @@ async def test_read_error_on_the_games_first_read_never_fires(flag_key, all_flag
     h.flags.scoped[(flag_key, "game_n1")] = edge_event(flag_key, "p1")
     h.flags.failing = set(EDGE_FLAGS) if all_flags_failing else {flag_key}
     await h.flag_change()
-    assert h.applied("game_n1", flag_key) == []
+    assert h.published("game_n1", flag_key) == []
     h.end_game_fn.assert_not_awaited()
     assert game.killed == []
     assert flag_key not in h.mgr._last_event["game_n1"]

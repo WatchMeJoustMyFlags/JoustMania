@@ -84,8 +84,9 @@ postcondition of the use case: `Pre-<n>`, `Post-S-<n>`, `Post-F-<n>`, numbered i
 - It is informational: `uc-coverage` reports Pre/Post coverage from it, the `Tested` rule below is unchanged.
 
 A use case may be `Tested` only when every main scenario and alternative flow has a tagged test, it carries no open
-`Known gap` line, and every FR on its `Requirements:` line can be `Verified` (every other use case listing that FR is
+blocking `Known gap` line, and every FR on its `Requirements:` line can be `Verified` (every other use case listing that FR is
 `Tested`): a use case is never above the weakest FR on its `Requirements:` line (docs/CONTRIBUTING.md "Status
 vocabularies"; same rule as `.claude/agents/uc-coverage.md` Step 5).
+A stated `Known gap` on a precondition, a postcondition, an NFR or a clause that only an e2e or hardware run can assert does not block `Tested`; a `Known gap` on a main step, an alternative flow or a BR does. (maintainer rule, #1725)
 An NFR may be `Verified` only when a test tagged with its id measures or checks the stated limit.
 Find them with `grep -rn 'mark.nfr("NFR-014"' services lib tests` and `grep -rn '^// NFR: .*NFR-012' services`.
