@@ -42,7 +42,7 @@ func postUnpair(t *testing.T, handler http.HandlerFunc, method, body string) (in
 	return rec.Code, decoded
 }
 
-// UC: UC-005 main A4 A5 A7
+// UC: UC-005 main A3 A4 A5 A7
 func TestUnpairHandler(t *testing.T) {
 	client := &http.Client{Timeout: 2 * time.Second}
 
@@ -55,6 +55,20 @@ func TestUnpairHandler(t *testing.T) {
 		}
 		want := []daemonCall{{http.MethodPost, "/controllers/00:06:F7:AA:BB:CC/unpair"}}
 		if len(*calls) != 1 || (*calls)[0] != want[0] {
+			t.Fatalf("daemon calls = %v, want %v", *calls, want)
+		}
+	})
+
+	t.Run("UC-005/A3 direct POST for an address with no card is forwarded as is", func(t *testing.T) {
+		// No controller manager is wired in at all: the endpoint needs no card, only the address.
+		daemon, calls := fakeDaemon(t, http.StatusOK, `{"address":"00:06:F7:11:22:33","removed":1,"on_usb":false}`)
+		status, body := postUnpair(t, unpairHandler(daemon.URL, client), http.MethodPost, `{"address":"00:06:F7:11:22:33"}`)
+
+		if status != http.StatusOK || body["removed"] != float64(1) {
+			t.Fatalf("got %d %v", status, body)
+		}
+		want := daemonCall{http.MethodPost, "/controllers/00:06:F7:11:22:33/unpair"}
+		if len(*calls) != 1 || (*calls)[0] != want {
 			t.Fatalf("daemon calls = %v, want %v", *calls, want)
 		}
 	})

@@ -69,7 +69,7 @@ async def poll_with_usb(usb_pairing: USBPairing, serials: list[str], path: bytes
 
 
 class TestUnpairResponse:
-    @pytest.mark.uc("UC-005", flow="main", steps=[4, 5, 6, 7], br=["BR-001"])
+    @pytest.mark.uc("UC-005", flow="main", steps=[4, 5, 6, 7], br=["BR-001"], cond=["Post-S-1"])
     async def test_unpair_removes_everywhere_and_reports_results(self, usb_pairing, remove):
         """200 with per-registration counts; PS Move only (BR-001); no longer 'verified this session'."""
         usb_pairing._verified_serials = {CONTROLLER.lower(), OTHER}
@@ -89,7 +89,7 @@ class TestUnpairResponse:
         remove.assert_awaited_once_with(CONTROLLER)  # require_psmove defaults to True (BR-001)
         assert usb_pairing._verified_serials == {OTHER}
 
-    @pytest.mark.uc("UC-005", flow="main", steps=[6])
+    @pytest.mark.uc("UC-005", flow="main", steps=[6], cond=["Post-S-2"])
     async def test_controller_not_on_usb_is_paired_again_when_plugged_in(self, usb_pairing, remove):
         """Unpaired while off USB: the next USB plug pairs it again (not UC-001 A1)."""
         stub_pairing_steps(usb_pairing)
@@ -121,7 +121,7 @@ class TestUnpairResponse:
         await poll_with_usb(usb_pairing, [CONTROLLER])  # plugged back in
         assert usb_pairing.pair_controller.await_count == 2
 
-    @pytest.mark.uc("UC-005", flow="A4")
+    @pytest.mark.uc("UC-005", flow="A4", cond=["Pre-2", "Post-F-1"])
     async def test_unknown_serial_is_404(self, usb_pairing, remove):
         """A4: 404 only when the scan finds no registration at all."""
         remove.return_value = []
@@ -131,6 +131,18 @@ class TestUnpairResponse:
         assert status == 404
         assert "not registered" in body["error"]
         assert CONTROLLER not in usb_pairing._awaiting_replug
+
+    @pytest.mark.uc("UC-005", flow="A2")
+    async def test_unpair_is_not_refused_or_deferred_during_a_running_game(self, usb_pairing, remove):
+        """A2: a controller playing in a real game is unpaired at once; the daemon never asks the game state."""
+        game_busy = AsyncMock(return_value=True)
+        usb_pairing.bluez_reloader._game_busy = game_busy
+
+        status, body = await unpair_response(usb_pairing, CONTROLLER)
+
+        assert (status, body["removed"]) == (200, 2)
+        remove.assert_awaited_once_with(CONTROLLER)
+        game_busy.assert_not_awaited()
 
     @pytest.mark.uc("UC-005", flow="A4", br=["BR-002"])
     async def test_all_already_absent_is_idempotent_success(self, usb_pairing, remove):
@@ -142,7 +154,7 @@ class TestUnpairResponse:
         assert status == 200
         assert (body["removed"], body["already_absent"], body["failed"]) == (0, 2, 0)
 
-    @pytest.mark.uc("UC-005", flow="A5")
+    @pytest.mark.uc("UC-005", flow="A5", cond=["Post-F-1"])
     async def test_mock_serial_is_400_and_bluez_untouched(self, usb_pairing, remove):
         status, body = await unpair_response(usb_pairing, "MOCK0001")
 
@@ -150,7 +162,7 @@ class TestUnpairResponse:
         assert "not a Bluetooth address" in body["error"]
         remove.assert_not_awaited()
 
-    @pytest.mark.uc("UC-005", flow="A6")
+    @pytest.mark.uc("UC-005", flow="A6", cond=["Post-F-1"])
     async def test_unpair_during_a_pairing_is_409(self, usb_pairing, remove):
         """While any pairing holds the lock (selection through trust), unpair is refused, removing nothing."""
         in_pairing = asyncio.Event()

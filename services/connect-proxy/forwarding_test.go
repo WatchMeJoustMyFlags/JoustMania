@@ -677,9 +677,9 @@ func TestProxyRenameController(t *testing.T) {
 	})
 }
 
-// UC: UC-004 MSS A1
+// UC: UC-004 main A1
 func TestProxyIdentifyController(t *testing.T) {
-	t.Run("UC-004/MSS identify forwards serial and duration", func(t *testing.T) {
+	t.Run("UC-004/main identify forwards serial and duration", func(t *testing.T) {
 		rig := newProxyRig(t)
 		req := &controllerpb.IdentifyControllerRequest{Serial: "aa:bb", DurationMs: 3000}
 		resp, err := rig.controllerClient.IdentifyController(testCtx(t), connect.NewRequest(req))
@@ -702,7 +702,7 @@ func TestProxyIdentifyController(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-004/MSS controller manager error surfaces", func(t *testing.T) {
+	t.Run("UC-004/main controller manager error surfaces", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.controller.err = status.Error(codes.Unavailable, "cm down")
 		_, err := rig.controllerClient.IdentifyController(testCtx(t), connect.NewRequest(&controllerpb.IdentifyControllerRequest{Serial: "aa:bb"}))

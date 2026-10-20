@@ -8,6 +8,8 @@ colour. Refused for unknown / disconnected, in-game and reserved controllers.
 
 import asyncio
 import contextlib
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
@@ -93,7 +95,7 @@ class TestUC004IdentifyEffect:
     """UC-004 BR-001 / BR-002: the identify effect in the feedback manager."""
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-004", br=["BR-001", "BR-002"])
+    @pytest.mark.uc("UC-004", br=["BR-001", "BR-002"], cond=["Post-S-1"])
     async def test_flashes_white_rumbles_then_restores_base_colour(self, manager, backend):
         """UC-004 BR-001: white / off frames and a 150 rumble; BR-002: base colour restored."""
         task = await _identify(manager)
@@ -139,7 +141,7 @@ class TestUC004IdentifyEffect:
         vib.assert_awaited_once_with(SERIAL, IDENTIFY_RUMBLE_INTENSITY, min(IDENTIFY_RUMBLE_MS, 500))
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-004", br=["BR-002"])
+    @pytest.mark.uc("UC-004", br=["BR-002"], cond=["Post-S-1"])
     async def test_base_colour_set_during_identify_is_shown_after_it(self, manager, backend, clock):
         """UC-004 BR-002: a base colour arriving mid-effect is stored and wins at the restore."""
         clock.enable_blocking()
@@ -185,6 +187,38 @@ class TestUC004IdentifyEffect:
         await second
         assert backend.colors[SERIAL] == LOBBY
         assert [r for r in backend.rumble if r[1] > 0] == [(SERIAL, IDENTIFY_RUMBLE_INTENSITY)] * 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", flow="A5")
+    async def test_pressing_again_gets_a_full_duration(self, backend, clock):
+        """UC-004 A5: the restarted effect runs the whole duration, not what was left of the first."""
+        baseline = FeedbackManager(backend=_Backend(), tracked_controllers={SERIAL: {"name": "P1"}})
+        baseline_clock = FakeClock(start_time=1000.0)
+        baseline._clock = baseline_clock
+        baseline.base_colors[SERIAL] = LOBBY
+        await (await _identify(baseline))
+        full_duration_s = baseline_clock.total_sleep_time
+        await _cancel_vibration(baseline)
+        assert full_duration_s >= IDENTIFY_DEFAULT_MS / 1000.0
+
+        manager = FeedbackManager(backend=backend, tracked_controllers={SERIAL: {"name": "P1"}})
+        manager._clock = clock
+        manager.base_colors[SERIAL] = LOBBY
+        clock.enable_blocking()
+        first = await _identify(manager)
+        for _ in range(3):  # the first effect is well into its duration
+            clock.release_all()
+            await asyncio.sleep(0)
+        slept_before_second = clock.total_sleep_time
+
+        second = await _identify(manager)
+        assert first.cancelled() or first.done()
+        clock.disable_blocking()
+        clock.release_all()
+        await second
+        await _cancel_vibration(manager)
+
+        assert clock.total_sleep_time - slept_before_second == pytest.approx(full_duration_s)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-004", flow="A5", br=["BR-002"])
@@ -295,7 +329,7 @@ class TestUC004IdentifyControllerRpc:
     """UC-004 main scenario and alternative flows through the IdentifyController RPC."""
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-004", steps=[3, 4, 6])
+    @pytest.mark.uc("UC-004", steps=[3, 4, 6], cond=["Post-S-2"])
     async def test_connected_lobby_controller_is_identified(self, servicer):
         """UC-004 main: started, white flash + rumble, colour restored, metric counted."""
         backend = servicer.backend
@@ -313,7 +347,7 @@ class TestUC004IdentifyControllerRpc:
         counter.labels.return_value.inc.assert_called_once()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-004", steps=[4])
+    @pytest.mark.uc("UC-004", steps=[4], cond=["Post-S-2"])
     async def test_records_controller_identify_span(self, servicer):
         """UC-004 step 4: one controller.identify span with serial, outcome and clamped duration."""
         span = create_autospec(Span, instance=True)
@@ -331,7 +365,7 @@ class TestUC004IdentifyControllerRpc:
         span.set_attribute.assert_any_call("effect.duration_ms", IDENTIFY_MAX_MS)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-004", flow="A1")
+    @pytest.mark.uc("UC-004", flow="A1", cond=["Post-F-1"])
     async def test_unknown_serial_is_not_connected(self, servicer):
         """UC-004 A1: an unknown serial is refused; nothing is written."""
         with patch("services.controller_manager.servicer.metrics.controller_identify_requests_total") as counter:
@@ -345,7 +379,7 @@ class TestUC004IdentifyControllerRpc:
         counter.labels.assert_called_once_with(outcome="not_connected")
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-004", flow="A1")
+    @pytest.mark.uc("UC-004", flow="A1", cond=["Pre-1"])
     async def test_disconnected_controller_is_not_connected(self, servicer):
         """UC-004 A1: a controller that disconnected (no longer tracked) is refused."""
         servicer.tracked_controllers.pop(SERIAL)
@@ -398,7 +432,7 @@ class TestUC004IdentifyControllerRpc:
         assert response.outcome == "started"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-004", flow="A3", br=["BR-004"])
+    @pytest.mark.uc("UC-004", flow="A3", br=["BR-004"], cond=["Post-F-1"])
     async def test_reserved_mock_controller_is_refused(self, servicer):
         """UC-004 A3 / BR-004: a reserved (shadow / pattern) mock controller is refused."""
         servicer.tracked_controllers["MOCK0900"] = {ControllerInfoKey.RESERVED: True}
@@ -544,3 +578,38 @@ class TestUC004IdentifyControllerRpc:
         fm._identify_fallback[SERIAL] = (1, 2, 3)
         fm.clear_controller(SERIAL)
         assert SERIAL not in fm._identify_fallback
+
+
+_REPO = Path(__file__).resolve().parents[3]
+
+
+class TestUC004IdentifyIsOperatorOnly:
+    """UC-004 BR-004: no flag gates Identify and the agent has no way to call it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", br=["BR-004"])
+    async def test_identify_reads_no_flag(self, servicer):
+        """The RPC starts without consulting any flag client, so no flag value can gate it."""
+        with patch("lib.feature_flags.get_flag_client", side_effect=AssertionError("identify read a flag")) as getter:
+            response = await _rpc(servicer)
+            await _drain(servicer)
+
+        assert response.outcome == "started"
+        getter.assert_not_called()
+
+    @pytest.mark.uc("UC-004", br=["BR-004"])
+    def test_no_flag_exists_for_identify(self):
+        """The agent acts only through flagd flags; none of them names or controls Identify."""
+        flag_files = sorted((_REPO / "services/flagd").glob("*.json"))
+        assert flag_files
+        for flag_file in flag_files:
+            flags = json.loads(flag_file.read_text()).get("flags", {})
+            assert not [key for key in flags if "identify" in key.lower()], flag_file.name
+
+    @pytest.mark.uc("UC-004", br=["BR-004"])
+    def test_agent_does_not_call_identify_controller(self):
+        """Only the dashboard path (connect-proxy, dashboard) refers to the RPC; the agent's code never does."""
+        agent_sources = [path for path in (_REPO / "services/agent").rglob("*.go") if "/gen/" not in path.as_posix()]
+        assert agent_sources
+        offenders = [str(p) for p in agent_sources if "IdentifyController" in p.read_text()]
+        assert offenders == []
