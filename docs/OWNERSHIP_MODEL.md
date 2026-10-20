@@ -5,7 +5,7 @@ adaptive agent share control of game parameters. It records the ownership model
 ratified with the maintainer (epic [#814](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/814),
 doc issue [#820](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/820)).
 The code fixes #815 (admin surface), #816 (sensitivity), #817 (grace/shield),
-#818 (visibility, except the truthful-display helper, which is not wired: D-M6) and #819 (kill-switch) have shipped;
+#818 (visibility, including the truthful announcement on the controller, D-M6 resolved by #1739) and #819 (kill-switch) have shipped;
 this document describes the current state, verified against the code. Where the two ever
 disagree, treat it as a bug in one of them and fix both in the same PR.
 
@@ -271,14 +271,14 @@ section 4.1.
 ## 6. Visibility & Kill-Switch Contract (#818 / #819, shipped)
 
 The model above needs a human feedback loop and an on-device control. Both have
-shipped, with the #818 display caveat in 6.1: #818 gives the human a signal when the agent acts, and #819 gives the
+shipped, #818 gives the human a signal when the agent acts, and #819 gives the
 admin an on-device way to constrain the agent (`interventions_allowed` lives in the
 `agent` set, which admin mode now writes through the `agent_control` option).
 
 ### 6.1 Visibility (`#818`, partly shipped)
 
-The normative contract, the on-device agent cue (shipped) and the truthful admin display (helper defined but not
-wired, specs-inventory D-M6) live in
+The normative contract, the on-device agent cue (shipped) and the truthful admin announcement (voice line and LED colour: effective value on option select, agent cue plus
+effective value after a step that an overlay differs from; UC-012 step 3, BR-006, #1739) live in
 [flags.md section 14.2](specs/flags.md#142-the-visibility-contract).
 
 ### 6.2 Kill-switch / policy control (`#819`)

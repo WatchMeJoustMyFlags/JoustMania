@@ -967,9 +967,9 @@ class AdminModeHandler:
                 # be the baseline value being cycled FROM, captured before the
                 # mutation. Using _effective_variant here would announce the
                 # agent's override (e.g. ultra_fast) as the source while we
-                # actually write baseline medium->fast — incoherent. The passive
-                # display path (viewing the option) still uses _effective_variant
-                # to show the truthful effective value, incl. override (#818).
+                # actually write baseline medium->fast — incoherent. Selecting an
+                # option and the agent-overlay follow-up after a step announce
+                # the effective value via _effective_variant (#818, UC-012 BR-006).
                 old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, "sensitivity", True)
 
                 if new_variant is None:
@@ -1007,6 +1007,7 @@ class AdminModeHandler:
 
                 # Play voice for sensitivity level (matches original JoustMania)
                 await self._play_voice(SENSITIVITY_VOICES[new_value])
+                await self._announce_agent_overlay(serial, "sensitivity", new_variant)
 
                 span.add_event(
                     "sensitivity_changed",
@@ -1145,6 +1146,7 @@ class AdminModeHandler:
                     "admin_option_changed",
                     {"option": option_name, "option_index": self.current_option},
                 )
+                await self._announce_effective_value(serial, option_name)
                 logger.info(f"Admin option changed to {option_name} by controller {serial}")
 
             except Exception as e:
@@ -1176,8 +1178,8 @@ class AdminModeHandler:
                 writer = self._state_manager.game_settings_writer
                 # Cycle feedback describes the baseline transition (defaultVariant
                 # being changed), captured before the mutation — NOT the effective
-                # value, which may be an agent override (#818). Passive display
-                # uses _effective_variant for the truthful effective value.
+                # value, which may be an agent override (#818). The agent-overlay
+                # follow-up (_announce_agent_overlay) announces the effective value.
                 old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, option_name, True)
 
                 if new_variant is None:
@@ -1192,6 +1194,7 @@ class AdminModeHandler:
 
                 # Voice feedback
                 await self._play_value_voice(option_name, new_value)
+                await self._announce_agent_overlay(serial, option_name, new_variant)
 
                 span.add_event(
                     "admin_value_increased",
@@ -1228,8 +1231,8 @@ class AdminModeHandler:
                 writer = self._state_manager.game_settings_writer
                 # Cycle feedback describes the baseline transition (defaultVariant
                 # being changed), captured before the mutation — NOT the effective
-                # value, which may be an agent override (#818). Passive display
-                # uses _effective_variant for the truthful effective value.
+                # value, which may be an agent override (#818). The agent-overlay
+                # follow-up (_announce_agent_overlay) announces the effective value.
                 old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, option_name, False)
 
                 if new_variant is None:
@@ -1244,6 +1247,7 @@ class AdminModeHandler:
 
                 # Voice feedback
                 await self._play_value_voice(option_name, new_value)
+                await self._announce_agent_overlay(serial, option_name, new_variant)
 
                 span.add_event(
                     "admin_value_decreased",
@@ -1254,6 +1258,51 @@ class AdminModeHandler:
             except Exception as e:
                 logger.error(f"Error decreasing admin value: {e}", exc_info=True)
 
+    async def _announce_effective_value(self, serial: str, option_name: str) -> None:
+        """
+        Announce the EFFECTIVE value of the selected option (colour pulse and voice line).
+
+        The effective value is the human baseline plus any active agent delta
+        (OWNERSHIP_MODEL section 6, #818; UC-012 step 3, BR-006). Options without
+        a value ladder (agent_control has its own flow) are skipped. Best effort.
+        """
+        if self._state_manager is None or option_name not in ("sensitivity", "num_teams", "force_all_start"):
+            return
+        try:
+            variant = await asyncio.to_thread(self._effective_variant, option_name)
+            if variant is None:
+                return
+            value = self._variant_to_value(option_name, variant)
+            await self._show_value_feedback(serial, option_name, value)
+            await self._play_value_voice(option_name, value)
+        except Exception as e:
+            logger.error(f"Error announcing effective value for {option_name}: {e}", exc_info=True)
+
+    async def _announce_agent_overlay(self, serial: str, option_name: str, new_variant: str) -> None:
+        """
+        After a host step: when an agent overlay makes the EFFECTIVE value differ from the
+        new baseline, follow the baseline announcement with the agent cue (magenta pulse,
+        as the coordinator's #818 cue) and the effective value. Equal or unknown: silent.
+        """
+        from proto import controller_manager_pb2
+
+        try:
+            effective = await asyncio.to_thread(self._effective_variant, option_name)
+            if effective is None or effective == new_variant:
+                return
+            await self._send_game_effect(
+                serial,
+                controller_manager_pb2.GAME_EFFECT_PULSE,
+                color=Colors.Magenta.value,
+                duration_ms=600,
+                speed=6,
+            )
+            value = self._variant_to_value(option_name, effective)
+            await self._show_value_feedback(serial, option_name, value)
+            await self._play_value_voice(option_name, value)
+        except Exception as e:
+            logger.error(f"Error announcing agent overlay for {option_name}: {e}", exc_info=True)
+
     @staticmethod
     def _cycle_baseline(writer, flag_key: str, forward: bool) -> tuple[str | None, str | None]:
         """(baseline variant before, variant after) one cycle step. Blocking: run via to_thread."""
@@ -1263,14 +1312,14 @@ class AdminModeHandler:
         """
         Resolve the EFFECTIVE variant for a game.json option through flagd (#818).
 
-        The admin display must reflect the value the game would actually resolve
+        The admin announcement must reflect the value the game would actually resolve
         — including any agent override applied to the same flag domain — not the
         stale game.json ``defaultVariant`` on disk. We read the live value via the
         OpenFeature "game" client and map it back to a variant name.
 
         Falls back to the on-disk ``defaultVariant`` when no client is wired, the
         resolved value matches no known variant, or anything fails — so the
-        display degrades to today's behavior rather than going blank.
+        announcement degrades to the baseline rather than going silent.
 
         Args:
             option_name: game.json flag key

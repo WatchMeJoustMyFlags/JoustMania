@@ -553,12 +553,14 @@ instrumentation.
 
 Surfaces (#818):
 
-1. **Truthful admin display (defined, not wired).** `AdminModeHandler._effective_variant`
-   (`services/menu/handlers/admin.py`) is meant to resolve option values through the live flagd `game` client and map
-   the value back to a variant name, so cycling `sensitivity` would show the value the game is actually using,
-   including an active agent override, not the baseline `defaultVariant`. The helper exists but has **no production
-   caller** (specs-inventory D-M6; listed for removal in the #1322 cleanup), so admin feedback today shows the on-disk
-   baseline. Do not treat this surface as shipped.
+1. **Truthful admin announcement (shipped, #1739).** Selecting an option in admin mode (Move, UC-012 step 3) announces the
+   EFFECTIVE value (voice line, LED colour): `AdminModeHandler._effective_variant` (`services/menu/handlers/admin.py`)
+   resolves the option through the live flagd `game` client and maps the value back to a variant name, so an active
+   agent override is announced, not the baseline `defaultVariant`. It falls back to the baseline when the client is
+   missing or the value matches no variant; with the flag service unreadable nothing is announced beyond the option
+   colour. Stepping a value (Select / Start, Circle) writes the baseline and announces the new setting; when an agent
+   overlay makes the effective value differ, it follows with the magenta agent cue and the effective value
+   (UC-012 BR-006).
 2. **On-device cue.** When the coordinator applies a **HARD-class** intervention (`spec.weight >= WEIGHT_HARD`, in
    `services/game_coordinator/interventions.py`; `end_game` is excluded because its game has just ended, UC-040
    BR-018) it emits a short magenta `GAME_EFFECT_PULSE` on the affected controller(s), broadcast for non-targeted

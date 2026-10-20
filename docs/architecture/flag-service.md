@@ -443,7 +443,7 @@ two, both display-only:
 
 | Reader | Reads | Effect of per-game rendering |
 |---|---|---|
-| menu admin display (formerly `services/menu/handlers/admin.py`, `_state_manager.interventions_client`) | `global_sensitivity_override` without context | could only ever show the baseline, so the branch was removed (PR #1417 review B); the admin display shows the admin setting |
+| menu admin feedback on the controller (formerly `services/menu/handlers/admin.py`, `_state_manager.interventions_client`) | `global_sensitivity_override` without context | could only ever show the baseline, so the branch was removed (PR #1417 review B); the admin feedback shows the admin setting |
 | agent pattern digest (`services/agent/patterngame/digest.go`, OFREP, `interventions: {"*"}`) | every `interventions` key without `gameId` | digests the baseline; a game's interventions are not part of the replay digest, which is the intent (UC-046) |
 
 ## 11. Risks
