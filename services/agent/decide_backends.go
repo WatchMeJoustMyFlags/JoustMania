@@ -95,6 +95,8 @@ func newDecideRegistry(env decideBackendEnv, client *http.Client) *decision.Deci
 			ReasoningEffort: d.OpenAI.ReasoningEffort,
 		})
 	})
+	// Jev needs only JEV_API_KEY: an empty base URL or model falls back to the jev
+	// package defaults (UC-044 BR-002).
 	reg.Register(flags.DecisionBackendJev, func(d flags.DecisionBackend) decide.Backend {
 		if env.JevAPIKey == "" {
 			return nil

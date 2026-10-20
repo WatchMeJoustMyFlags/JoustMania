@@ -8,6 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -180,7 +183,9 @@ func TestDecideRegistry_ModelFlagAppliesNextResolve(t *testing.T) {
 
 // TestDecideRegistry_ClaudeBackendCached: the claude factory reuses one backend
 // per config (claude.New builds an SDK client) and builds a new one when a flag
-// changes; the cache stays bounded under flag churn.
+// changes; the cache stays bounded under flag churn. A capture_content flip
+// (agent-backend.sh capture on) applies on the next resolve.
+// UC: UC-044 A3
 func TestDecideRegistry_ClaudeBackendCached(t *testing.T) {
 	reg := newDecideRegistry(allKeys, newDecideHTTPClient())
 	cfg := decisionFlags(t, fullyConfigured(flags.DecisionBackendClaude))
@@ -236,6 +241,7 @@ func TestDecideRegistry_ClaudeCacheConcurrent(t *testing.T) {
 // against a fake endpoint: the env key is the Bearer token, and the model and
 // reasoning_effort flags reach the wire (a flag flip applies on the next call).
 // UC: UC-070 A6
+// UC: UC-044 A3
 func TestDecideRegistry_OpenAIWiresKeyAndFlags(t *testing.T) {
 	type seen struct {
 		auth string
@@ -435,4 +441,107 @@ func TestDecideBackends_KeyNeverInSpanAttributes(t *testing.T) {
 			}
 		}
 	}
+}
+
+// flagdDir holds the shipped flag files (services/flagd, plus the CI set in ci/).
+const flagdDir = "../flagd"
+
+// secretKeyName matches a JSON key or variant name that names a credential.
+var secretKeyName = regexp.MustCompile(`(?i)(api[_.-]?key|secret|password|passwd|bearer|authorization|credential|access[_.-]?token)`)
+
+// secretValue matches a string value shaped like an API key or bearer token:
+// OpenAI / Anthropic (sk-..., sk-ant-...), GitHub, AWS, Google, a JWT, a Bearer
+// header, or an opaque run of 32+ letters and digits.
+var secretValue = regexp.MustCompile(`(?i)(\bsk-(ant-|proj-)?[a-z0-9_-]{16,}|\bgh[pousr]_[a-z0-9]{20,}|\bAKIA[0-9A-Z]{16}\b|\bAIza[0-9a-z_-]{30,}|\beyJ[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}|\bbearer\s+\S{8,}|^[a-z0-9]{32,}$)`)
+
+// secretsInFlagJSON walks one flag file and returns every JSON key or string
+// value that looks like a credential, as "<path>: <why>" findings.
+func secretsInFlagJSON(raw []byte) ([]string, error) {
+	var doc any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	var findings []string
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, child := range x {
+				if secretKeyName.MatchString(k) {
+					findings = append(findings, path+"/"+k+": credential-shaped key")
+				}
+				walk(path+"/"+k, child)
+			}
+		case []any:
+			for i, child := range x {
+				walk(fmt.Sprintf("%s[%d]", path, i), child)
+			}
+		case string:
+			if secretValue.MatchString(x) {
+				findings = append(findings, path+": API-key-shaped value")
+			}
+		}
+	}
+	walk("", doc)
+	return findings, nil
+}
+
+// TestFlagFiles_HoldNoSecrets: no flag file the stack ships (services/flagd and
+// services/flagd/ci) holds an API-key-shaped key or value, so a key can only come
+// from the environment (C-016, UC-044 BR-001).
+// UC: UC-044 C-016 BR-001
+func TestFlagFiles_HoldNoSecrets(t *testing.T) {
+	t.Run("UC-044/C-016 the scanner flags planted keys and passes clean flags", func(t *testing.T) {
+		planted := map[string]string{
+			"anthropic value": `{"flags":{"decision.claude.model":{"variants":{"x":"sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv"}}}}`,
+			"openai value":    `{"flags":{"x":{"variants":{"on":"sk-proj-AbCdEfGhIjKlMnOpQrSt"}}}}`,
+			"opaque value":    `{"flags":{"x":{"variants":{"on":"0123456789abcdef0123456789abcdef"}}}}`,
+			"bearer value":    `{"flags":{"x":{"variants":{"on":"Bearer abcdefgh12345678"}}}}`,
+			"key name":        `{"flags":{"decision.jev.api_key":{"variants":{"on":"x"}}}}`,
+		}
+		for name, doc := range planted {
+			got, err := secretsInFlagJSON([]byte(doc))
+			if err != nil || len(got) == 0 {
+				t.Errorf("%s: findings = %v (err %v), want the planted secret found", name, got, err)
+			}
+		}
+		clean := `{"flags":{"decision.claude.model":{"variants":{"haiku":"claude-haiku-4-5-20251001"}},` +
+			`"decision.openai.base_url":{"variants":{"openai":"https://api.openai.com/v1"}},` +
+			`"llm.max_tokens":{"variants":{"default":512}}}}`
+		if got, err := secretsInFlagJSON([]byte(clean)); err != nil || len(got) != 0 {
+			t.Errorf("clean flags: findings = %v (err %v), want none", got, err)
+		}
+	})
+
+	t.Run("UC-044/C-016 no shipped flag file holds a key-shaped key or value", func(t *testing.T) {
+		var files []string
+		err := filepath.WalkDir(flagdDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && strings.HasSuffix(path, ".json") {
+				files = append(files, path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", flagdDir, err)
+		}
+		if len(files) < 8 {
+			t.Fatalf("found %d flag files under %s, want the shipped set (the scan would pass vacuously)", len(files), flagdDir)
+		}
+		for _, f := range files {
+			raw, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatalf("read %s: %v", f, err)
+			}
+			findings, err := secretsInFlagJSON(raw)
+			if err != nil {
+				t.Fatalf("parse %s: %v", f, err)
+			}
+			for _, finding := range findings {
+				t.Errorf("%s%s", f, finding)
+			}
+		}
+	})
 }
