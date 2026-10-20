@@ -48,8 +48,12 @@ controller_manager_mock.MockControllerService/RemoveController: 'Remove (disconn
 controller_manager_mock.MockControllerService/AddControllers: Add multiple mock controllers at once
 joustmania.game_coordinator.GameCoordinatorService/ForceEndGame: Force end current game
 joustmania.game_coordinator.GameCoordinatorService/StreamGameEvents: Stream game events (deaths, scoring, etc.)
-  If start_config is provided, starts a new game before streaming events. If start_config is empty, subscribes to
-  current/upcoming game events. The server sends the response headers (empty initial metadata) as soon as the
+  If start_config is provided, starts a new game and streams every event of that game, beginning with game_start
+  (which carries the game_id), then game_starting, game_started, and so on. The starter is subscribed to the new session's
+  bus before game_start is published and before the game thread starts (#1783). A failed start yields one
+  game_start_error event, then the stream closes, with no subscriber left behind. If start_config is empty,
+  subscribes to current/upcoming game events; with game_id set, to that game's events from the moment of attaching
+  (observers get no replay). The server sends the response headers (empty initial metadata) as soon as the
   subscriber is registered on the event bus, before the first event; after `initial_metadata()` every later event
   is queued for this subscriber (bounded queue, drops on overflow). The start_config and unknown game_id error
   paths send no early headers, they arrive with the error event. Direct gRPC clients only, the connect-proxy does

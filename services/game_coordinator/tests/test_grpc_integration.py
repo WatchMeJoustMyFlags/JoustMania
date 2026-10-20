@@ -67,6 +67,15 @@ async def _wait_for_subscribers(servicer, count=1, max_wait=2.0):
         await asyncio.sleep(0.01)
 
 
+async def _wait_for_received(received, count=1, max_wait=2.0):
+    """Wait until the consumer collected ``count`` events (a start stream's game_start, #1783)."""
+    deadline = asyncio.get_event_loop().time() + max_wait
+    while len(received) < count:
+        if asyncio.get_event_loop().time() > deadline:
+            raise TimeoutError(f"Timed out waiting for {count} event(s)")
+        await asyncio.sleep(0.01)
+
+
 def _slow_down_subscribe(publisher, delay=0.2):
     """Make ``publisher.subscribe`` slow, so headers sent before it completes are caught."""
     real_subscribe = publisher.subscribe
@@ -378,12 +387,13 @@ class TestStreamGameStart:
                 stream = stub.StreamGameEvents(request)
                 async for event in stream:
                     received.append(event)
-                    if len(received) >= 2:
+                    if len(received) >= 3:
                         stream.cancel()
                         break
 
             task = asyncio.create_task(consume())
             await _wait_for_subscribers(servicer)
+            await _wait_for_received(received)  # the starter's own game_start
 
             # Servicer should have transitioned to STARTING
             assert servicer.game_state == game_coordinator_pb2.GameState.STARTING
@@ -394,9 +404,9 @@ class TestStreamGameStart:
 
             await asyncio.wait_for(task, timeout=5.0)
 
-        assert len(received) == 2
-        assert received[0].event_type == "game_started"
-        assert received[1].event_type == "game_ended"
+        # The starter sees its own game_start first (#1783, UC-003 BR-003).
+        assert [e.event_type for e in received] == ["game_start", "game_started", "game_ended"]
+        assert received[0].game_id == servicer.game_id
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A3")
@@ -455,21 +465,21 @@ class TestStreamGameStart:
                 stream = stub.StreamGameEvents(request)
                 async for event in stream:
                     received.append(event)
-                    if len(received) >= 1:
+                    if len(received) >= 2:
                         stream.cancel()
                         break
 
             task = asyncio.create_task(consume())
             await _wait_for_subscribers(servicer)
+            await _wait_for_received(received)  # the starter's own game_start
 
             # Simulate the error that GameFactory would publish
             await servicer.event_bus.publish("game_error", {"error": "Unknown game mode: 'TotallyFakeGame'"})
 
             await asyncio.wait_for(task, timeout=5.0)
 
-        assert len(received) == 1
-        assert received[0].event_type == "game_error"
-        assert "Unknown game mode" in received[0].data["error"]
+        assert [e.event_type for e in received] == ["game_start", "game_error"]
+        assert "Unknown game mode" in received[1].data["error"]
 
     @pytest.mark.asyncio
     async def test_stream_game_lifecycle(self, grpc_service):
@@ -486,12 +496,13 @@ class TestStreamGameStart:
                 stream = stub.StreamGameEvents(request)
                 async for event in stream:
                     received.append(event)
-                    if len(received) >= 4:
+                    if len(received) >= 5:
                         stream.cancel()
                         break
 
             task = asyncio.create_task(consume())
             await _wait_for_subscribers(servicer)
+            await _wait_for_received(received)  # the starter's own game_start
 
             # Simulate full game lifecycle
             await servicer.event_bus.publish(
@@ -513,15 +524,14 @@ class TestStreamGameStart:
 
             await asyncio.wait_for(task, timeout=5.0)
 
-        assert len(received) == 4
         types = [e.event_type for e in received]
-        assert types == ["game_started", "player_death", "player_death", "game_ended"]
+        assert types == ["game_start", "game_started", "player_death", "player_death", "game_ended"]
 
         # Verify death event data survived round-trip
-        death = received[1]
+        death = received[2]
         assert death.data["serial"] == "p0"
         assert death.data["killer"] == "p1"
 
         # Verify game_ended data
-        ended = received[3]
+        ended = received[4]
         assert ended.data["winner"] == "p1"
