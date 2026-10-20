@@ -34,14 +34,15 @@ func intp(v int) *int        { return &v }
 func realGame() gamesummary.Summary {
 	s := realisticSerials
 	return gamesummary.Summary{
-		GameID:            "game_4f2a9c1e7b3d",
-		GameKind:          gamecontext.GameKindReal,
-		GameMode:          "JoustFFA",
-		DurationSeconds:   f64(92),
-		PlayerCount:       4,
-		EliminationCount:  3,
-		SurvivorCount:     1,
-		InterventionCount: 3,
+		GameID:               "game_4f2a9c1e7b3d",
+		GameKind:             gamecontext.GameKindReal,
+		GameMode:             "JoustFFA",
+		DurationSeconds:      f64(92),
+		PlayerCount:          4,
+		EliminationCount:     3,
+		SurvivorCount:        1,
+		InterventionsApplied: 2,
+		InterventionsBlocked: 1,
 		PlayerArcs: []gamesummary.PlayerArc{
 			{Serial: s[0], Eliminated: true, EliminationOrder: 1, NearDeathRatio: f64(1.2)},
 			{Serial: s[1], Eliminated: true, EliminationOrder: 2, NearDeathRatio: f64(1.1)},

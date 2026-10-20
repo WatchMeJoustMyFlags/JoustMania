@@ -469,3 +469,30 @@ func TestRetroEmptyPlayers(t *testing.T) {
 		}
 	}
 }
+
+// TestRetroUserInterventionCounts: the retro prompt states applied vs blocked as
+// the game summary splits them, so Claude's post-game summary of a fully gated
+// game says "0 applied, 8 blocked", never "8 interventions" (#1771).
+// UC: UC-042 main
+func TestRetroUserInterventionCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		applied, blocked int
+		want             string
+	}{
+		{"UC-042/main fully gated", 0, 8, "interventions: 0 applied, 8 blocked by a gate"},
+		{"UC-042/main mixed", 2, 3, "interventions: 2 applied, 3 blocked by a gate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			user := BuildRetro(RetroInput{
+				Snapshot: retroSnapshot(),
+				Context:  gamecontext.GameContext{SessionID: "s"},
+				Summary:  gamesummary.Summary{InterventionsApplied: tc.applied, InterventionsBlocked: tc.blocked},
+				Now:      fixedNow,
+			}).User
+			if !strings.Contains(user, tc.want) {
+				t.Errorf("missing %q in:\n%s", tc.want, user)
+			}
+		})
+	}
+}

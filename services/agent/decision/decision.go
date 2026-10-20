@@ -298,6 +298,10 @@ type Loop struct {
 	// reaches is mutex-guarded (#916), so this is race-safe under the concurrent
 	// trace + metrics Export-handler goroutines that drive runDecision.
 	interventionRecorder func(intervention, serial string, blocked bool)
+	// applyOutcomeRecorder is the per-game seam for how a dispatched decision's
+	// write ended (applied / gated_off / write_failed, #1771), so the game summary
+	// can split applied from blocked. nil = record nothing.
+	applyOutcomeRecorder func(intervention string, outcome gamecontext.ApplyOutcome)
 
 	// playerName resolves a serial to the player's display name for the
 	// player.name attribute on targeted decisions (#1295), injected via
@@ -388,6 +392,23 @@ func (l *Loop) budgetCap(flagValue int) int {
 // OnEvaluate.
 func (l *Loop) SetInterventionRecorder(rec func(intervention, serial string, blocked bool)) {
 	l.interventionRecorder = rec
+}
+
+// SetApplyOutcomeRecorder installs the per-game seam that receives how each
+// dispatched decision's write ended (#1771). main.go wires a closure over the
+// Multiplexer and this loop's game_id, like SetInterventionRecorder. Set at
+// construction, before the loop serves.
+func (l *Loop) SetApplyOutcomeRecorder(rec func(intervention string, outcome gamecontext.ApplyOutcome)) {
+	l.applyOutcomeRecorder = rec
+}
+
+// recordApplyOutcome feeds one dispatched decision's write outcome to the seam;
+// nil-safe.
+func (l *Loop) recordApplyOutcome(intervention string, outcome gamecontext.ApplyOutcome) {
+	if l.applyOutcomeRecorder == nil {
+		return
+	}
+	l.applyOutcomeRecorder(intervention, outcome)
 }
 
 // SetPlayerNameResolver injects the serial -> display-name lookup (#1295) used to
@@ -849,6 +870,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		aSpan.SetStatus(codes.Error, err.Error())
 		l.Log.Error("agent.apply_failed",
 			"error", err, "intervention", d.Intervention)
+		l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeWriteFailed)
 		return
 	}
 	// Apply succeeded: count the intervention as applied (#790) — the numerator for
@@ -856,8 +878,10 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// increments this: an apply error returns above, and a gated no-op
 	// (interventions_enabled off, UC-040 A11) is not counted (#1681).
 	if !applied {
+		l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeGatedOff)
 		return
 	}
+	l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeApplied)
 	l.recordInterventionApplied(ctx, d.Intervention)
 	// Intervention-effect MEASUREMENT (#918): stamp a baseline of this game's
 	// fitness/objective signals NOW (the same fitness.evaluated quantities the decision

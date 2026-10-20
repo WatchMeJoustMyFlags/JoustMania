@@ -859,6 +859,29 @@ func (s *Store) SetEliminationOrder(serial string, order int) {
 	s.touchSession()
 }
 
+// RecordInterventionApply adds how a dispatched intervention's write ended to the
+// game's per-type tally (#1771): Applied for a write, GatedOff for an
+// actuation-gate no-op; a failed write changes nothing (it stays Dispatched only).
+// The timeline is not touched: AppendInterventionEvent already recorded the
+// dispatch.
+func (s *Store) RecordInterventionApply(intervention string, outcome ApplyOutcome) {
+	if outcome != ApplyOutcomeApplied && outcome != ApplyOutcomeGatedOff {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctx.Session.InterventionCounts == nil {
+		s.ctx.Session.InterventionCounts = make(map[string]InterventionCount)
+	}
+	tally := s.ctx.Session.InterventionCounts[intervention]
+	if outcome == ApplyOutcomeApplied {
+		tally.Applied++
+	} else {
+		tally.GatedOff++
+	}
+	s.ctx.Session.InterventionCounts[intervention] = tally
+}
+
 // AppendInterventionEvent records a dispatched OR blocked intervention in the
 // rolling narrative (#916). It is the CLEAN SEAM the decision Loop can call after
 // it decides an intervention's outcome (runDecision knows dispatched vs blocked),

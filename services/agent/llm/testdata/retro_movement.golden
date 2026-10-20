@@ -73,6 +73,7 @@ Outcome:
   final_active_players: 1
   elimination_order: [BB:22, CC:33]
   winner: AA:11
+  interventions: 0 applied, 0 blocked by a gate (permission chain or interventions_enabled)
 
 Recent events (oldest first; age relative to captured_at):
   -150s phase: start

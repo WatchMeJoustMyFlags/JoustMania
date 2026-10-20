@@ -78,10 +78,32 @@ type PlayerSignals struct {
 }
 
 // InterventionCount is one intervention type's per-game tally.
+//
+// Dispatched and Blocked split the decisions at the permission chain (allow-list,
+// battery, rate limit). Applied and GatedOff split the dispatched ones by how the
+// write ended (#1771): Applied = written, GatedOff = the actuation gate
+// (interventions_enabled) turned it into a no-op. A failed write is Dispatched
+// only. The game summary reports Applied as applied and Blocked + GatedOff as
+// blocked by a gate.
 type InterventionCount struct {
 	Dispatched int
 	Blocked    int
+	Applied    int
+	GatedOff   int
 }
+
+// ApplyOutcome is how a dispatched intervention's write ended (#1771).
+type ApplyOutcome string
+
+const (
+	// ApplyOutcomeApplied: the actuation gate was on and the write succeeded.
+	ApplyOutcomeApplied ApplyOutcome = "applied"
+	// ApplyOutcomeGatedOff: the actuation gate interventions_enabled was off (or
+	// unreadable, fail closed), so nothing was written.
+	ApplyOutcomeGatedOff ApplyOutcome = "gated_off"
+	// ApplyOutcomeWriteFailed: the write was attempted and returned an error.
+	ApplyOutcomeWriteFailed ApplyOutcome = "write_failed"
+)
 
 // SessionSignals is the per-game (session) view the agent reasons over.
 type SessionSignals struct {

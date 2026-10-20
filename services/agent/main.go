@@ -660,6 +660,12 @@ func main() {
 		loop.SetInterventionRecorder(func(intervention, serial string, blocked bool) {
 			mux.AppendInterventionEvent(gameID, intervention, serial, blocked)
 		})
+		// How each dispatched decision's write ended (applied / gated_off /
+		// write_failed) feeds the same game's tally, so the game summary splits
+		// applied from blocked (#1771).
+		loop.SetApplyOutcomeRecorder(func(intervention string, outcome gamecontext.ApplyOutcome) {
+			mux.RecordInterventionApply(gameID, intervention, outcome)
+		})
 		// Targeted-player display names (#1295): player.name on agent.decision /
 		// agent.action comes from the Multiplexer's controller_info view.
 		loop.SetPlayerNameResolver(mux.PlayerName)

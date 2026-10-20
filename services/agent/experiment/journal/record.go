@@ -39,8 +39,8 @@ import "time"
 
 // SchemaVersion is bumped when the on-disk intent.json / summary.json shape
 // changes in a way a reader must notice. Carried on both records so the registry
-// (#978) and offline tooling can branch on it rather than guess. Mirrors
-// gamesummary.SchemaVersion.
+// (#978) and offline tooling can branch on it rather than guess. Versioned on
+// its own: independent of gamesummary.SchemaVersion (which moved to 2 in #1771).
 const SchemaVersion = 1
 
 // Canonical arm names for the Common-Random-Numbers paired-difference verdict
