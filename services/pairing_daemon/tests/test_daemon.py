@@ -195,3 +195,38 @@ async def test_monitor_cycle_makes_sure_the_agent_is_registered(daemon):
         await daemon._bt_monitor_loop()
 
     assert ensure.await_count == 2
+
+
+class TestStartupAndStaleness:
+    """#1770: bounded startup commands, sane staleness before the first poll."""
+
+    @pytest.mark.asyncio
+    async def test_bluetoothctl_check_has_short_timeout(self, daemon):
+        """bluetoothctl show must not use run_command's 60 s default."""
+        seen = {}
+
+        async def fake_run(cmd, **kwargs):
+            seen["timeout"] = kwargs.get("timeout_seconds", 60)
+            return -1, "timeout"
+
+        with patch("psmove_pairing.daemon.run_command", fake_run):
+            with patch("psmove_pairing.daemon.shutil.which", return_value="/usr/bin/x"):
+                assert await daemon.validate_prerequisites() is False
+        assert seen["timeout"] <= 10
+
+    @pytest.mark.asyncio
+    async def test_run_command_honours_timeout(self):
+        """A hanging command is killed after the given timeout, not 60 s."""
+        from psmove_pairing.utils import run_command
+
+        start = time.monotonic()
+        code, output = await run_command(["sleep", "30"], timeout_seconds=0.2)
+        assert (code, output) == (-1, "timeout")
+        assert time.monotonic() - start < 5
+
+    def test_stale_log_never_reports_epoch(self, daemon, caplog):
+        """Before the first poll, staleness counts from daemon start."""
+        daemon._startup_time = time.time() - _HEALTH_STALENESS_THRESHOLD - 10
+        with caplog.at_level("WARNING", logger="psmove-pairing"):
+            assert daemon.is_healthy() is False
+        assert "never polled" in caplog.text

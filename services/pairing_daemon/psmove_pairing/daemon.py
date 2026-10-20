@@ -17,6 +17,7 @@ logger = logging.getLogger("psmove-pairing")
 
 # Health check thresholds
 _HEALTH_STALENESS_THRESHOLD = 60.0  # seconds
+_PREREQUISITE_TIMEOUT = 5.0  # seconds per startup command (#1770)
 
 
 class PairingDaemon:
@@ -50,7 +51,7 @@ class PairingDaemon:
         if not shutil.which("bluetoothctl"):
             errors.append("bluetoothctl not found")
         else:
-            exit_code, output = await run_command(["bluetoothctl", "show"])
+            exit_code, output = await run_command(["bluetoothctl", "show"], timeout_seconds=_PREREQUISITE_TIMEOUT)
             if exit_code != 0:
                 errors.append(f"bluetoothctl failed: {output}")
 
@@ -82,14 +83,18 @@ class PairingDaemon:
             return True
 
         # Check USB poll staleness
-        usb_stale = (now - self._last_usb_poll) > _HEALTH_STALENESS_THRESHOLD
-        # Check BT monitor staleness
-        bt_stale = (now - self._last_bt_monitor) > _HEALTH_STALENESS_THRESHOLD
+        # A loop that never completed is measured from daemon start, not from the epoch (#1770)
+        usb_age = now - (self._last_usb_poll or self._startup_time)
+        bt_age = now - (self._last_bt_monitor or self._startup_time)
+        usb_stale = usb_age > _HEALTH_STALENESS_THRESHOLD
+        bt_stale = bt_age > _HEALTH_STALENESS_THRESHOLD
 
         if usb_stale:
-            logger.warning(f"USB poll loop stale: {now - self._last_usb_poll:.1f}s since last poll")
+            since = "last poll" if self._last_usb_poll else "start (never polled)"
+            logger.warning(f"USB poll loop stale: {usb_age:.1f}s since {since}")
         if bt_stale:
-            logger.warning(f"BT monitor loop stale: {now - self._last_bt_monitor:.1f}s since last monitor")
+            since = "last monitor" if self._last_bt_monitor else "start (never monitored)"
+            logger.warning(f"BT monitor loop stale: {bt_age:.1f}s since {since}")
 
         return not (usb_stale or bt_stale)
 
