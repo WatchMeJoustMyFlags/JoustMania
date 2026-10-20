@@ -3,6 +3,7 @@ package decision
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -25,6 +26,8 @@ import (
 func TestRetro_TransportErrorSetsSpanError(t *testing.T) {
 	resetRetroResponseRef()
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
+	logs := &syncBuffer{}
+	rc.Log = slog.New(slog.NewTextHandler(logs, nil))
 	rc.SetBackend(fakeText("claude-test",
 		func(context.Context, llm.Prompt) (string, error) { return "", errors.New("boom sk-ant-LEAK") }))
 
@@ -32,6 +35,23 @@ func TestRetro_TransportErrorSetsSpanError(t *testing.T) {
 	rc.AwaitInflight()
 
 	span := spansByName(sr.Ended(), SpanLLMRetro)[0]
+	// UC-070 A5 step 3: the model was called (inference.used names it), the summary
+	// did not parse, llm.infer.error names the failure and a WARN log is written.
+	if v, ok := attrValue(span, AttrInferenceUsed); !ok || v.AsString() != "claude" {
+		t.Errorf("inference.used = %q (present=%v), want the called backend claude", v.AsString(), ok)
+	}
+	if v, ok := attrValue(span, AttrLLMRetroParseOK); !ok || v.AsBool() {
+		t.Errorf("llm.retro.parse_ok = %v (present=%v), want false", v.AsBool(), ok)
+	}
+	if v, ok := attrValue(span, AttrLLMInferError); !ok || v.AsString() != "_OTHER" {
+		t.Errorf("llm.infer.error = %q (present=%v), want the error type _OTHER", v.AsString(), ok)
+	}
+	if n := logs.count("level=WARN msg=" + SpanLLMRetroFailed); n != 1 {
+		t.Errorf("WARN %s logs = %d, want 1", SpanLLMRetroFailed, n)
+	}
+	if n := logs.count("sk-ant-LEAK"); n != 0 {
+		t.Error("the retro_failed log must carry the error type, never the error text")
+	}
 	if got := span.Status().Code; got != codes.Error {
 		t.Errorf("retro span status = %v, want Error on a transport failure (#1206)", got)
 	}

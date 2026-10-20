@@ -172,6 +172,7 @@ func strAttr(t *testing.T, span sdktrace.ReadOnlySpan, key string) string {
 }
 
 // UC: UC-040 A1
+// UC: UC-070 main
 func TestDefaultRulesPath_DecideSpan(t *testing.T) {
 	fx := decideFixtures()[0] // endurance: rules decide on the first evaluation
 	fx.ctx.GameKind = "real"
@@ -513,9 +514,15 @@ func TestRemote_NoopAndInvalid(t *testing.T) {
 // the current context, which applied its endurance decision.
 func assertRulesFallback(t *testing.T, h remoteHarness, span sdktrace.ReadOnlySpan, reason, errType string) {
 	t.Helper()
+	assertRulesFallbackFrom(t, h, span, flags.DecisionBackendClaude, reason, errType)
+}
+
+// assertRulesFallbackFrom is assertRulesFallback for a call to the requested backend.
+func assertRulesFallbackFrom(t *testing.T, h remoteHarness, span sdktrace.ReadOnlySpan, requested, reason, errType string) {
+	t.Helper()
 	for key, w := range map[string]string{
 		AttrDecideBackend:          "rules",
-		AttrDecideBackendRequested: "claude",
+		AttrDecideBackendRequested: requested,
 		AttrDecideFallbackReason:   reason,
 		AttrDecideOutcome:          DecideOutcomeFallback,
 		"error.type":               errType,
@@ -1093,7 +1100,9 @@ func TestRemote_RealCadenceFlag(t *testing.T) {
 // remote call and charges no cadence; rules decide in the SAME cycle and the
 // agent.decide span records outcome=fallback with llm_budget_exhausted, which
 // agent_llm_gated_total counts too.
+// NFR: NFR-011
 // UC: UC-040 A3
+// UC: UC-070 A4
 func TestRemote_BudgetExhaustedFallsBackToRules(t *testing.T) {
 	t.Run("UC-040/A3 exhausted budget: rules decide now, no remote call", func(t *testing.T) {
 		be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))

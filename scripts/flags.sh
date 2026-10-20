@@ -37,6 +37,7 @@ usage() {
   exit 2
 }
 
+# UC-070 BR-001: every flag change goes through the flag service API; no file is edited.
 # request METHOD PATH [BODY]: prints the response body; non-2xx -> stderr, exit 1.
 request() {
   local method="$1" path="$2" body="${3:-}" out code
