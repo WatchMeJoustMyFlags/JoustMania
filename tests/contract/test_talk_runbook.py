@@ -1,8 +1,9 @@
 """The talk runbook is rehearsable and names only things that exist (FR-094, UC-070).
 
 Static checks over ``docs/talk/two-standards-runbook.md``: the beat table, the timing
-table, the fallbacks and the reset section exist, and every script, make target, flag key
-and repo path the runbook names resolves in the repo. A renamed script or flag breaks the
+table, the fallbacks and the reset section exist, and every script, make target and repo path
+the runbook names, plus every flag key in the beat table and in a setflag / flags.sh
+command, resolves in the repo (flags named only in prose are not checked). A renamed script or flag breaks the
 runbook silently otherwise; the hardware rehearsal (#743) is an operational readiness
 check, not what verifies this file.
 """
