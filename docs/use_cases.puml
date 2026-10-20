@@ -7,6 +7,8 @@ actor "Operator" as operator
 actor "Presenter" as presenter
 actor "Agent" as agent
 actor "Maintainer" as maintainer
+actor "Model API" as modelapi
+actor "GitHub" as github
 
 rectangle "JoustMania" {
     package "Pairing & controllers" {
@@ -101,11 +103,13 @@ agent --> UC053
 presenter --> UC070
 presenter --> UC053
 maintainer --> UC043
+UC042 --> modelapi
+UC043 --> github
 
 UC020 ..> UC030 : <<include>>
 UC040 ..> UC041 : <<include>>
 UC043 ..> UC041 : <<include>>
-UC046 ..> UC043 : <<extend>>
+UC043 ..> UC046 : <<include>>
 UC051 ..> UC050 : <<extend>>
 UC070 ..> UC044 : <<include>>
 UC070 ..> UC045 : <<include>>
