@@ -127,12 +127,11 @@ LOG_CONCLUDED = "experiment.concluded"  # registry.go (always logged; carries ou
 LOG_TORN_DOWN = (
     "experiment.torn_down"  # registry.go teardown (discard/inconclusive/abort)
 )
-# The PROMOTE verdict routes conclude -> promote (status DONE) -> teardown, but the
-# teardown idempotency guard early-returns on the already-terminal DONE status WITHOUT
-# logging experiment.torn_down (registry.go: end-span-then-guard). So on a promote
-# outcome the terminal teardown is surfaced by the promotion log line instead. The
-# cohort soak's hard terminal assertion accepts EITHER terminal marker so it is
-# deterministic regardless of which verdict the synthetic games happen to produce.
+# The PROMOTE verdict routes conclude -> promote (status PROMOTING) -> teardown, which
+# sets DONE or DISCARDED from the promotion outcome and logs experiment.torn_down like
+# every other terminal path (#1701). The promotion also logs its own line. The cohort
+# soak's hard terminal assertion accepts EITHER marker so it is deterministic
+# regardless of which verdict the synthetic games happen to produce.
 LOG_PROMOTED = "code_improvement.promoted"  # promote routed (target/local sink)
 LOG_PROMOTE_FAILED = "experiment.promote_failed"  # promote attempted, sink unavailable
 
@@ -506,9 +505,8 @@ def test_cohort_loop_runs_to_verdict_and_terminates(agent_experiment_stack):
     )
 
     # ...and TERMINATES (targeting stripped, capacity freed). The terminal marker
-    # depends on the verdict outcome (see the LOG_PROMOTED note): a discard/
-    # inconclusive/abort logs experiment.torn_down; a promote routes through the
-    # promoter (status DONE) and surfaces the promotion log line instead. Accept
+    # is experiment.torn_down on every path (see the LOG_PROMOTED note); a promote
+    # also routes through the promoter and logs the promotion line. Accept
     # EITHER so the gate is deterministic regardless of which the synthetic mock
     # games produce — both prove the loop reached a TERMINAL state and freed the
     # experiment, which is the regression this gate guards.
