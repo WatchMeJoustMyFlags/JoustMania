@@ -142,6 +142,7 @@ check_variant decision.backend rules
 
 # --- threshold / capture --------------------------------------------------
 fixture
+expect "start the tuning beats on claude" 0 "agent backend -> claude" -- claude
 expect "threshold strict" 0 "agent act threshold -> strict (0.95)" -- threshold strict
 check_variant decision.act_confidence_threshold strict
 check_variant decision.jev.act_confidence_threshold gate
@@ -156,7 +157,7 @@ check_variant decision.capture_content off
 expect "effort omit" 0 'agent openai reasoning effort -> omit ("omit")' -- effort omit
 check_variant decision.openai.reasoning_effort omit
 # UC-044 A3: tuning never switches the backend.
-check_variant decision.backend rules
+check_variant decision.backend claude
 expect "status after effort flip" 0 "capture   = off (false)" -- status
 "${HELPER}" openai >/dev/null
 expect "status shows effort for openai" 0 'effort    = omit ("omit")' -- status
