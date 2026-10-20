@@ -2,7 +2,8 @@
 Vendored for JoustMania (#1263 pattern) from
   https://github.com/AI-Unified-Process/marketplace/blob/05af8163838df704620ebe1121cd6019dbce276c/aiup-core/skills/spec-review/SKILL.md
 (aiup-core v2.28.0). Derived from the AI Unified Process Marketplace by Simon Martinelli
-(see scripts/aiup/NOTICE). The lint script path in this repo is scripts/aiup/spec-review/scripts/spec_lint.py.
+(see scripts/aiup/NOTICE). The lint script path in this repo is scripts/aiup/spec-review/scripts/spec_lint.py; the
+baseline is scripts/aiup/spec-lint-baseline.json (not docs/.spec-lint-baseline.json): pass --baseline explicitly.
 -->
 
 ---
