@@ -230,26 +230,38 @@ func TestProposeOnce_TypeMismatchBlockedByGate(t *testing.T) {
 	assertSpanAttr(t, attemptSpan, AttrOutcome, string(ProposeBlocked))
 }
 
-// UC: UC-042 A7
+// UC: UC-042 A7 A10
 func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
 	// The sentinel-stub case: Backend.Infer errors (no text backend configured,
-	// AGENT_INFERENCE_BACKEND=stub). The Proposer degrades to NO proposal, NO error.
-	backend := &fakeProposerBackend{err: errors.New("inference not implemented")}
-	p, svc, rec, _ := proposerWithRecorder(t, backend)
+	// AGENT_INFERENCE_BACKEND=stub). The Proposer degrades to NO proposal, NO error,
+	// and the cycle uses up the cadence floor (UC-042 A7 step 3, A10).
+	t.Run("UC-042/A10 a failed call writes nothing, records no_backend and uses up the cadence floor", func(t *testing.T) {
+		backend := &fakeProposerBackend{err: errors.New("inference not implemented")}
+		p, svc, rec, clk := proposerWithRecorder(t, backend)
+		cfg := ProposerConfig{Permit: allowPropose, Engine: "stub", MinInterval: time.Minute}
 
-	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
+		res := p.ProposeOnce(context.Background(), Narrative{}, cfg)
 
-	if res.Outcome != ProposeNoBackend {
-		t.Fatalf("outcome = %q, want no_backend", res.Outcome)
-	}
-	if res.Proposal != nil {
-		t.Fatalf("no proposal expected when backend errors")
-	}
-	if _, ok := experimentVariantValue(t, svc, "death_grace_period_seconds"); ok {
-		t.Fatalf("a failed backend must not write an experiment")
-	}
-	span := findSpan(t, rec, SpanProposeAttempt)
-	assertSpanAttr(t, span, AttrOutcome, string(ProposeNoBackend))
+		if res.Outcome != ProposeNoBackend {
+			t.Fatalf("outcome = %q, want no_backend", res.Outcome)
+		}
+		if res.Proposal != nil {
+			t.Fatalf("no proposal expected when backend errors")
+		}
+		if _, ok := experimentVariantValue(t, svc, "death_grace_period_seconds"); ok {
+			t.Fatalf("a failed backend must not write an experiment")
+		}
+		span := findSpan(t, rec, SpanProposeAttempt)
+		assertSpanAttr(t, span, AttrOutcome, string(ProposeNoBackend))
+
+		clk.advance(30 * time.Second)
+		if got := p.ProposeOnce(context.Background(), Narrative{}, cfg).Outcome; got != ProposeGated {
+			t.Fatalf("cycle inside the floor = %q, want gated (the failed call used it up)", got)
+		}
+		if backend.calls != 1 {
+			t.Fatalf("Infer calls = %d, want 1", backend.calls)
+		}
+	})
 }
 
 // UC: UC-042 A7

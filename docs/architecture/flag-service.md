@@ -83,7 +83,7 @@ flowchart LR
     writers -->|"PUT/DELETE /{flagSetId}/{flagName}"| fs
     fs[flag-service<br/>registry, overlays, game scopes,<br/>merged renderer] -->|"flagd.sync.v1 SyncFlags<br/>ONE stream, all sets,<br/>per-flag metadata.flagSetId"| flagd[(stock flagd v0.16.0)]
     flagd -->|"8015 sync, selector flagSetId=&lt;set&gt;"| py[Python in-process resolvers]
-    flagd -->|8013 RPC| goagent[agent, rust-hid]
+    flagd -->|"8015 sync (since #1713; 8013 RPC before)"| goagent[agent, rust-hid]
     flagd -->|8016 OFREP| digest[agent pattern digest]
     fs -->|OTLP spans + metrics| otel[otel-collector]
 ```
@@ -91,7 +91,7 @@ flowchart LR
 Nothing changes on the read side: flagd keeps its ports 8013 / 8014 / 8015 / 8016, the Python
 services keep the in-process resolver against `flagd:8015` with `flagSetId=<set>` selectors, the agent
 and rust-hid keep the RPC resolver on 8013 (no selector; keys are unique across sets, §5.2), and the
-agent's pattern digest keeps OFREP on 8016 with `Flagd-Selector: flagSetId=<set>`.
+agent's pattern digest keeps OFREP on 8016 with `Flagd-Selector: flagSetId=<set>`. (Since #1713 the agent and rust-hid also use the in-process resolver on 8015 with `flagSetId` selectors; [flags.md §1.1](../specs/flags.md#11-clients).)
 
 The flag service mounts the flag directory **read-only** from the start. In the end state the menu, the
 agent and the connect-proxy lose their writable `./services/flagd` mounts (today nothing else is mounted `:ro`,
@@ -443,7 +443,7 @@ two, both display-only:
 
 | Reader | Reads | Effect of per-game rendering |
 |---|---|---|
-| menu admin display (formerly `services/menu/handlers/admin.py`, `_state_manager.interventions_client`) | `global_sensitivity_override` without context | could only ever show the baseline, so the branch was removed (PR #1417 review B); the admin display shows the admin setting |
+| menu admin feedback on the controller (formerly `services/menu/handlers/admin.py`, `_state_manager.interventions_client`) | `global_sensitivity_override` without context | could only ever show the baseline, so the branch was removed (PR #1417 review B); the admin feedback shows the admin setting |
 | agent pattern digest (`services/agent/patterngame/digest.go`, OFREP, `interventions: {"*"}`) | every `interventions` key without `gameId` | digests the baseline; a game's interventions are not part of the replay digest, which is the intent (UC-046) |
 
 ## 11. Risks
