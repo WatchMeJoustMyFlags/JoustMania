@@ -226,7 +226,7 @@ class TestLedController:
         assert call_color == expected
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-002", steps=[6])
+    @pytest.mark.uc("UC-002", flow="main", steps=[6])
     async def test_connected_color_is_30_percent_of_mode_color(self, led):
         """UC-002 step 6: CONNECTED lights the mode colour at a fixed 30 % (DIM_FACTOR)."""
         led.set_color = AsyncMock(return_value=True)

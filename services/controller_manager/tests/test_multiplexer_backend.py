@@ -612,7 +612,7 @@ class TestRoutingTableDiscoveryRace:
         worker.start()
         return worker, result
 
-    @pytest.mark.uc("UC-002")
+    @pytest.mark.uc("UC-002", flow="main", steps=[3])
     @pytest.mark.asyncio
     async def test_connect_during_discovery_swap_is_not_lost(self):
         adapter, gate, in_discover, release = self._gated_adapter(["AA:AA"])
@@ -632,7 +632,7 @@ class TestRoutingTableDiscoveryRace:
         assert mux._serial_to_adapter.get("BB:BB") is adapter
         assert sorted(result["serials"]) == ["AA:AA", "BB:BB"]
 
-    @pytest.mark.uc("UC-002")
+    @pytest.mark.uc("UC-002", flow="A1", steps=[1])
     @pytest.mark.asyncio
     async def test_disconnect_during_discovery_swap_is_not_revived(self):
         adapter, gate, in_discover, release = self._gated_adapter(["AA:AA", "BB:BB"])
@@ -656,7 +656,7 @@ class TestRoutingTableDiscoveryRace:
         assert "BB:BB" not in mux._led_colors
         assert result["serials"] == ["AA:AA"]
 
-    @pytest.mark.uc("UC-002")
+    @pytest.mark.uc("UC-002", flow="main", steps=[3])
     @pytest.mark.asyncio
     async def test_change_merged_by_one_pass_does_not_override_the_next(self):
         """A disconnect only wins over the pass it raced; later passes are authoritative."""
@@ -677,7 +677,7 @@ class TestRoutingTableDiscoveryRace:
 
         assert result == ["AA:AA"]
 
-    @pytest.mark.uc("UC-002")
+    @pytest.mark.uc("UC-002", flow="main", steps=[3])
     @pytest.mark.asyncio
     async def test_change_between_passes_does_not_override_next_discovery(self):
         """Changes made before a pass starts are not merged over that pass's result."""
