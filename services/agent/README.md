@@ -963,8 +963,11 @@ table to keep in sync with the code. Live gates (`enabled`, `interventions_enabl
 > `Reconfigure` → `Verdict.SetThresholds` / `SetFloatThresholds`, exactly the
 > `verdict_min_n` / `verdict_min_pairs` seam.
 
-> The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
-> not the in-process sync port `8015` that the Python services use.
+> Since #1713 the Go agent uses the flagd **in-process** resolver on the sync port
+> `8015`, like the Python services: selectors `flagSetId=agent` and (for
+> `remediation_allowed`) `flagSetId=rollout`. `flags/synced_provider.go` waits for
+> flagd's first sync however late it is, and every read fails closed until then and
+> while the sync stream is lost ([flags.md §1.1](../../docs/specs/flags.md#11-clients)).
 
 ### Decision backends (#1225, #1244)
 
@@ -1082,13 +1085,12 @@ decision-cycle flag layers above they are **live**, but via a different
 mechanism. #766 F5 originally read them once at startup, so retuning the store
 TTLs / eviction cadence / throttle needed a restart. #927 made them live through
 the OpenFeature configuration-change listener (`openfeature.ProviderConfigChange`).
-Since #1709 the agent reads flagd **without the RPC resolver's cache** (the cache
-was invalidated only by that event stream, which could wedge for good and keep
-the kill switch stale), and the uncached resolver emits no configuration-change
-events. So `LifecycleHolder.Poll` re-evaluates these four flags every
-`LifecycleReloadInterval` (1 s) into a shared, concurrency-safe
-`flags.LifecycleHolder` ([`flags/holder.go`](flags/holder.go)); the #927 handler
-stays registered for a provider that emits the event. The consumers read the
+Since #1713 the in-process resolver emits that event on every flag sync, and
+`LifecycleHolder.Poll` (#1709) re-evaluates these four flags every
+`LifecycleReloadInterval` (1 s) as the safety net, so a lost or never-started
+event path cannot freeze them (#1709: such a path once kept the kill switch
+stale). Both write a shared, concurrency-safe `flags.LifecycleHolder`
+([`flags/holder.go`](flags/holder.go)). The consumers read the
 holder on their hot path (the GameContext store reads the TTLs at eviction time,
 `main.go`'s eviction ticker re-reads (and `Reset`s to) the interval each loop,
 and the decision loop reads the throttle in `shouldLog()`), so **changing one
