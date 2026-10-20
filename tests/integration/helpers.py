@@ -932,6 +932,30 @@ async def describe_game_state(game_client, game_id: str) -> str:
         return f"unavailable ({exc})"
 
 
+async def describe_headless_start(game_client, start_config) -> str:
+    """Best-effort description of the live sessions holding a headless start's controllers.
+
+    A headless start learns its game_id only from its own event stream, so when no
+    start event arrives the session is found by its player serials instead (#1782).
+    Lists every live session when none matches (a session whose game is not built
+    yet may report no players). Never raises: diagnostics must not mask the
+    timeout they decorate.
+    """
+    try:
+        wanted = {p.serial for p in start_config.players}
+        games = await list_games(game_client)
+        matching = [g for g in games if wanted & {p.serial for p in g.players}]
+        shown = matching or games
+        if not shown:
+            return "none live"
+        prefix = "" if matching else "no session lists them; all live: "
+        return prefix + ", ".join(
+            f"{g.game_id} {g.game_mode} {game_coordinator_pb2.GameState.Name(g.state)}" for g in shown
+        )
+    except Exception as exc:  # noqa: BLE001 - diagnostics are best-effort
+        return f"unavailable ({exc})"
+
+
 _LIVE_GAME_STATES = (
     game_coordinator_pb2.GameState.STARTING,
     game_coordinator_pb2.GameState.RUNNING,
@@ -1022,9 +1046,15 @@ async def start_game_headless(
             ["game_starting", "game_started", "game_start_error"],
             timeout=timeout,
         )
-    except TimeoutError:
+    except TimeoutError as exc:
         await collector.stop()
-        raise
+        # The start RPC already returned its headers (session admitted and
+        # subscribed), so name which way the start broke (#1782): a session
+        # still STARTING = game thread stalled before game_starting; RUNNING =
+        # its start events were published before the stream subscribed; none =
+        # session never registered or already retired.
+        sessions = await describe_headless_start(game_client, start_config)
+        raise TimeoutError(f"{exc} (sessions for these controllers: {sessions})") from exc
 
     errors = collector.get_events("game_start_error")
     if errors:
