@@ -106,8 +106,12 @@ func TestSelectInferenceBackend_BaseURL(t *testing.T) {
 		wantReal  bool
 	}{
 		{"unset keeps the Anthropic API", "", true},
-		{"plain http fake", "http://127.0.0.1:9999", true},
-		{"https proxy", "https://proxy.example.com/anthropic", true},
+		{"http loopback ip (the fake)", "http://127.0.0.1:9999", true},
+		{"http localhost", "http://localhost:9999", true},
+		{"http loopback ipv6", "http://[::1]:9999", true},
+		{"http remote host", "http://proxy.example.com", false},
+		{"http remote ip", "http://10.0.0.5:9999", false},
+		{"https remote", "https://proxy.example.com/anthropic", true},
 		{"not a url", "::nope", false},
 		{"other scheme", "ftp://127.0.0.1:9999", false},
 		{"no host", "http://", false},
