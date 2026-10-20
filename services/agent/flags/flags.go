@@ -381,14 +381,12 @@ type BluetoothFitness struct {
 // These configure the gamecontext store TTLs, the eviction ticker, and the
 // decision loop's log/span throttle. #766 F5 read them ONCE at startup and baked
 // them into those consumers, so retuning the agent's perception/cadence needed a
-// restart. #927 makes them live without a restart VIA the OpenFeature provider's
-// configuration-change event listener (the mechanism the maintainer requested):
-// flagd emits a config-change when its source changes, the Go SDK surfaces it as
-// openfeature.ProviderConfigChange, and the handler re-evaluates these four flags
-// into a shared LifecycleHolder (holder.go) that the consumers read on their hot
-// path. So a flag change here takes effect on the next eviction tick / decision
-// cycle with NO restart and NO per-cycle polling of the flag client. All values
-// are durations.
+// restart. #927 made them live through the OpenFeature configuration-change
+// listener; since #1709 (uncached RPC resolver, which emits no such event)
+// LifecycleHolder.Poll re-evaluates these four flags every second into a shared
+// LifecycleHolder (holder.go) that the consumers read on their hot path. So a
+// flag change here takes effect within about a second with NO restart and NO
+// per-cycle read of the flag client. All values are durations.
 type Lifecycle struct {
 	// PlayerTTL bounds how long a silent player is retained before eviction
 	// (lifecycle.player_ttl_seconds, default 5s).

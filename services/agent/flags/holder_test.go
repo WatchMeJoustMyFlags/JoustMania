@@ -214,3 +214,37 @@ func TestLifecycleHolder_ConcurrentReloadAndRead(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// TestLifecycleHolder_PollReloadsUntilCancelled: with the uncached RPC resolver no
+// configuration-change event ever arrives (#1709), so Poll is what keeps the holder
+// live; it stops when its ctx ends.
+func TestLifecycleHolder_PollReloadsUntilCancelled(t *testing.T) {
+	ev := newSettableEvaluator()
+	ev.set(keyDecisionThrottleSecs, 1)
+	h := NewLifecycleHolder(context.Background(), New(ev, nil), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { h.Poll(ctx, 5*time.Millisecond); close(done) }()
+
+	ev.set(keyDecisionThrottleSecs, 5)
+	deadline := time.Now().Add(2 * time.Second)
+	for h.DecisionThrottle() != 5*time.Second {
+		if time.Now().After(deadline) {
+			t.Fatalf("Poll never reloaded: DecisionThrottle = %v, want 5s", h.DecisionThrottle())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll did not return after its ctx was cancelled")
+	}
+	ev.set(keyDecisionThrottleSecs, 0.5)
+	time.Sleep(20 * time.Millisecond) // absence window: no reload after cancel
+	if got := h.DecisionThrottle(); got != 5*time.Second {
+		t.Fatalf("Poll reloaded after cancel: DecisionThrottle = %v, want 5s", got)
+	}
+}
