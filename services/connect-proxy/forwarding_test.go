@@ -610,7 +610,7 @@ func TestProxyGameStateAndList(t *testing.T) {
 	})
 }
 
-// UC: UC-027 MSS
+// UC: UC-035 main, step 2
 func TestProxyStreamGameEvents(t *testing.T) {
 	t.Run("events are relayed in order with the game id filter forwarded", func(t *testing.T) {
 		rig := newProxyRig(t)
@@ -714,6 +714,7 @@ func TestProxyIdentifyController(t *testing.T) {
 	})
 }
 
+// UC: UC-070 BR-006
 func TestProxyGetConnectedControllers(t *testing.T) {
 	t.Run("connected controllers come back from the controller manager", func(t *testing.T) {
 		rig := newProxyRig(t)
