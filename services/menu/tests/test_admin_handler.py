@@ -2254,9 +2254,10 @@ class TestSingleAdminSession:
                 assert timer is not None
                 await timer
 
-            assert admin_handler.active is False
-            assert state_manager.get_controller_state("A") == ControllerState.CONNECTED
-            await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
+                assert admin_handler.active is False
+                assert state_manager.get_controller_state("A") == ControllerState.CONNECTED
+                # B's combo also runs with the 10 ms timeout: keep the clock frozen.
+                await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
         finally:
             await admin_handler.exit()
 
