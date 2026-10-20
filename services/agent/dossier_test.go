@@ -279,25 +279,35 @@ func TestDossierListHTMLTableForABrowserJSONOtherwise(t *testing.T) {
 			t.Fatalf("content-type = %q, want text/html", ct)
 		}
 		body := rec.Body.String()
-		for _, want := range []string{"<table", "<th>ID</th><th>Status</th><th>Flag</th><th>Candidate</th>", "<th>Verdict</th><th>Started</th>", "exp_done0003"} {
+		for _, want := range []string{"<table", "<th>ID</th><th>Status</th><th>Flag</th><th>Candidate</th>", "<th>Verdict</th><th>Started</th><th>Thesis</th>", "exp_done0003"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("html missing %q: %s", want, body)
 			}
 		}
 	})
 
-	t.Run("UC-035/A1 a non-browser client gets JSON", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/experiments", nil)
-		req.Header.Set("Accept", "application/json")
-		rec := httptest.NewRecorder()
-		reader.handleList(rec, req)
-		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-			t.Fatalf("content-type = %q, want application/json", ct)
-		}
-		if !strings.Contains(rec.Body.String(), `"exp_done0003"`) {
-			t.Errorf("json missing experiment: %s", rec.Body.String())
-		}
-	})
+	for _, accept := range []string{"application/json", "text/html, application/json"} {
+		t.Run("UC-035/A1 a non-browser client gets JSON: "+accept, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/experiments", nil)
+			req.Header.Set("Accept", accept)
+			rec := httptest.NewRecorder()
+			reader.handleList(rec, req)
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Fatalf("content-type = %q, want application/json", ct)
+			}
+			var body struct {
+				Experiments []map[string]any `json:"experiments"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Experiments) != 1 {
+				t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+			}
+			for _, field := range []string{"id", "hypothesis", "flag_key", "candidate", "objective", "status", "verdict", "started_at", "concluded_at"} {
+				if _, ok := body.Experiments[0][field]; !ok {
+					t.Errorf("json list item missing %q: %v", field, body.Experiments[0])
+				}
+			}
+		})
+	}
 }
 
 // TestDossierRoutesMountedOnHealthServer verifies the dossier routes are served by

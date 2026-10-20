@@ -199,3 +199,20 @@ def test_step7_grafana_provisions_a_loki_datasource_for_explore():
     # The dashboard's "Open logs in Grafana" link opens Explore on this uid.
     spa = (ic.REPO_ROOT / "services" / "dashboard" / "src" / "index.html").read_text()
     assert f"%22datasource%22:%22{loki[0]['uid']}%22" in spa
+
+
+@pytest.mark.uc("UC-035", flow="main", steps=[6], br=["BR-004"])
+def test_step6_every_latency_panel_reads_a_histogram():
+    """Every quantile panel reads a histogram's ``_bucket`` series, so it uses the declared buckets."""
+    quantile_exprs = [
+        (path.name, expr)
+        for path in sorted(DASHBOARDS.rglob("*.json"))
+        for exprs in _flatten(json.loads(path.read_text())["panels"], {}).values()
+        for expr in exprs
+        if "histogram_quantile" in expr
+    ]
+    assert quantile_exprs, "no latency panel found"
+    for name, expr in quantile_exprs:
+        assert re.search(r"_bucket\b", expr), (
+            f"{name}: quantile without a histogram: {expr}"
+        )

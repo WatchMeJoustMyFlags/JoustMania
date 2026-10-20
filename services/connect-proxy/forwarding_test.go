@@ -185,6 +185,9 @@ type fakeController struct {
 	holdOpen       bool
 	gameplayEndErr error
 	gameplayDone   chan struct{}
+	// recordControls keeps receiving after the updates and records every
+	// further control message (a filter or colours) until the stream ends.
+	recordControls bool
 }
 
 // StreamGameplayData records the first control message, sends the canned
@@ -201,6 +204,15 @@ func (f *fakeController) StreamGameplayData(s grpc.BidiStreamingServer[controlle
 	for _, u := range f.updates {
 		if err := s.Send(u); err != nil {
 			return err
+		}
+	}
+	if f.recordControls {
+		for {
+			next, err := s.Recv()
+			if err != nil {
+				return nil
+			}
+			f.log.record("StreamGameplayData.control", next)
 		}
 	}
 	if f.holdOpen {

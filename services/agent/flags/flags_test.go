@@ -334,6 +334,7 @@ func TestEvaluate_LLMGate_FlagdShape(t *testing.T) {
 
 // TestEvaluate_LLMGate_Defaults: with no flags defined, the gate falls back to the
 // fail-closed schema defaults — eligible only for ["real"], 6/min.
+// UC: UC-040 main
 func TestEvaluate_LLMGate_Defaults(t *testing.T) {
 	got := New(stubEvaluator{}, nil).Evaluate(context.Background()).LLMGate
 	if !reflect.DeepEqual(got.EligibleGameKinds, []string{"real"}) {

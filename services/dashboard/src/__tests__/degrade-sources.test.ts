@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchAgentView, fetchDecideFeed } from "../agent.js";
 import { fetchExperiments } from "../experiments.js";
 import { keepGameEventStreamOpen } from "../stream.js";
+import { ShieldStore, shieldBadge } from "../shield.js";
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -67,6 +68,28 @@ describe("UC-035: A3 VictoriaMetrics down", () => {
   });
 });
 
+describe("UC-040: A21 VictoriaMetrics unreachable", () => {
+  it("UC-040/A21 a failed VictoriaMetrics fetch falls back to the Loki warning-line count", async () => {
+    const lines = [
+      "level=WARN msg=agent.decision_blocked intervention=grant_shield reason=rate_limit",
+      "level=WARN msg=agent.decision_blocked intervention=grant_shield reason=rate_limit",
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/victoria-metrics/")) throw new TypeError("Failed to fetch");
+        return json(200, lokiBody(lines));
+      }),
+    );
+
+    const view = await fetchAgentView();
+
+    expect(view.overlay.totalBlocked).toBe(2);
+    expect(view.overlay.blockedByReason).toEqual([{ reason: "rate_limit", count: 2 }]);
+  });
+});
+
 describe("UC-035: A3 Grafana down", () => {
   it("UC-035/A3 only the Metrics tab's embed and the log links depend on Grafana", () => {
     const html = readFileSync(join(__dirname, "..", "index.html"), "utf8");
@@ -108,6 +131,25 @@ describe("UC-035: A4 the game event stream is lost", () => {
     expect(feed).toEqual(["game_start"]);
     expect(delays).toEqual([2000]);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("UC-035/A4 the shield badges stop updating, without a message, while the stream is lost", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const now = Date.now();
+    const store = new ShieldStore();
+    type Ev = { eventType: string; data: Record<string, string> };
+    async function* failing(): AsyncGenerator<Ev> {
+      yield { eventType: "player_shielded", data: { serial: "MOCK0001", kind: "full", seconds: "5.0", until_ms: String(now + 5000) } };
+      throw new Error("coordinator restarted");
+    }
+    let reopen: (() => void) | undefined;
+
+    await keepGameEventStreamOpen(failing, (e) => store.apply(e), (fn) => (reopen = fn));
+
+    // The badge from before the loss keeps counting down on its own; nothing new arrives.
+    expect(shieldBadge(store.get("MOCK0001", now + 1000), now + 1000)?.text).toBe("Shield 4.0s");
+    expect(store.get("MOCK0002", now + 1000)).toBeNull();
+    expect(reopen).toBeTypeOf("function");
   });
 
   it("UC-035/A4 a game event stream that ends cleanly shows no message either", async () => {

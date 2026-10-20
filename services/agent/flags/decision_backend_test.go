@@ -43,6 +43,7 @@ func TestDecisionBackend_DefaultsWhenMissing(t *testing.T) {
 // Jev 2500 ms. TestDecisionBackend_FlagFilesMatchDefaults holds the flag files
 // to the same values.
 // NFR: NFR-010
+// UC: UC-040 main
 func TestDecisionBackend_DefaultTimeoutsPerBackend(t *testing.T) {
 	got := New(stubEvaluator{}, nil).Evaluate(context.Background()).Decision
 	for name, c := range map[string]struct{ got, want time.Duration }{
@@ -322,5 +323,20 @@ func TestDecisionBackend_StageBudgetVariant(t *testing.T) {
 		if got := f.Variants[f.DefaultVariant]; got != float64(DefaultLLMMaxRequestsPerMinute) {
 			t.Errorf("%s: %s default = %v, want %d", path, keyLLMMaxRequestsPerMin, got, DefaultLLMMaxRequestsPerMinute)
 		}
+	}
+}
+
+// UC: UC-040 main
+// Step 3 defaults: 3 s between remote calls of a game, 6 calls a minute, real games only.
+func TestDecisionGate_Step3Defaults(t *testing.T) {
+	snap := New(stubEvaluator{}, nil).Evaluate(context.Background())
+	if snap.Decision.MinInterval != 3*time.Second {
+		t.Errorf("decision.min_interval_ms default = %v, want 3s", snap.Decision.MinInterval)
+	}
+	if snap.LLMGate.MaxRequestsPerMinute != 6 {
+		t.Errorf("llm.max_requests_per_minute default = %d, want 6", snap.LLMGate.MaxRequestsPerMinute)
+	}
+	if len(snap.LLMGate.EligibleGameKinds) != 1 || snap.LLMGate.EligibleGameKinds[0] != "real" {
+		t.Errorf("llm.eligible_game_kinds default = %v, want [real] (real_only)", snap.LLMGate.EligibleGameKinds)
 	}
 }

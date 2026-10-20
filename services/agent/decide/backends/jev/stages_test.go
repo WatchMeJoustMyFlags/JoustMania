@@ -138,6 +138,7 @@ func TestStrengthLevels(t *testing.T) {
 
 // TestDirection: help for the struggling / near-threshold player, rein in the
 // calmest, help when ambiguous or unknown.
+// UC: UC-040 A13
 func TestDirection(t *testing.T) {
 	st := testRequest().State // MOCK0003 struggling, MOCK0002 most headroom, MOCK0004 in between
 	for target, want := range map[string]string{
