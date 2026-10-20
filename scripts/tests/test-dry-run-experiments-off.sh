@@ -23,11 +23,12 @@ not_ok() { echo "FAIL - $1"; fail=$((fail + 1)); }
 
 # --- 1. the recipe ---------------------------------------------------------
 recipe="$(make -s -n -C "${ROOT}" dry-run)"
-for file in docker-compose.yml docker-compose.ci.yml docker-compose.dry-run.yml; do
-  if grep -q -- "-f ${file}" <<<"${recipe}"; then ok "dry-run layers ${file}"; else not_ok "dry-run does not layer ${file}"; fi
-done
-# Commands only: drop the echoed hints (make -n prints them as `echo ...`).
+# Commands only: drop the echoed hints (make -n prints them as `echo ...`); a
+# hint that names a compose file must not count as layering it.
 commands="$(grep -v '^[[:space:]]*echo ' <<<"${recipe}" || true)"
+for file in docker-compose.yml docker-compose.ci.yml docker-compose.dry-run.yml; do
+  if grep -qF -- "-f ${file}" <<<"${commands}"; then ok "dry-run layers ${file}"; else not_ok "dry-run does not layer ${file}"; fi
+done
 if grep -Eq 'agent-dryrun-enable\.sh|agent-killswitch\.sh|scripts/flags\.sh' <<<"${commands}"; then
   not_ok "dry-run switches flags at bring-up: ${commands}"
 else
