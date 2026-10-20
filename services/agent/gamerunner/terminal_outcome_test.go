@@ -275,7 +275,7 @@ func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 	})
 }
 
-// UC: UC-046 A8 A12 A14 BR-016
+// UC: UC-046 A8 A9 A12 A14 BR-016
 func TestClassifyTerminal(t *testing.T) {
 	cases := []struct {
 		name            string

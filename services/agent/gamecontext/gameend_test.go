@@ -251,7 +251,7 @@ func TestGameEnd_ConcurrentSignalsFireOnce(t *testing.T) {
 	})
 }
 
-// UC: UC-041 A4 A5 BR-005
+// UC: UC-041 A2 A4 A5 BR-005
 func TestGameEnd_StaleEndLatches(t *testing.T) {
 	t.Run("UC-041/BR-005 stale end, resumed game_active=1, then 0: OnGameEnd fires once", func(t *testing.T) {
 		clk := &muxClock{t: time.Unix(1000, 0)}

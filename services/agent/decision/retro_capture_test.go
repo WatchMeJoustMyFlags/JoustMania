@@ -398,6 +398,7 @@ func TestRetroCapture_SkipsEmptySession(t *testing.T) {
 
 // TestRetroCapture_BackendAttribution (#1234): with a text backend wired, the retro
 // span and log report the backend's model and name and carry NO fallback reason.
+// UC: UC-070 main
 func TestRetroCapture_BackendAttribution(t *testing.T) {
 	const configured = "claude-test"
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
