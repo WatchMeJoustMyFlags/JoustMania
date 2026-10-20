@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/inference"
 	"github.com/joustmania/agent/llm"
 )
 
@@ -101,22 +102,35 @@ func TestProposeBackendFor_DelegateErrorPropagates(t *testing.T) {
 
 // UC: UC-042 Pre-2
 func TestSelectInferenceBackend_BaseURL(t *testing.T) {
+	// wantBase "" = rejected (stub, the key goes nowhere); otherwise the API root the
+	// selected backend sends ANTHROPIC_API_KEY to.
 	cases := []struct {
-		name, url string
-		wantReal  bool
+		name, url, wantBase string
 	}{
-		{"unset keeps the Anthropic API", "", true},
-		{"http loopback ip (the fake)", "http://127.0.0.1:9999", true},
-		{"http localhost", "http://localhost:9999", true},
-		{"http loopback ipv6", "http://[::1]:9999", true},
-		{"http remote host", "http://proxy.example.com", false},
-		{"http remote ip", "http://10.0.0.5:9999", false},
-		{"https remote", "https://proxy.example.com/anthropic", true},
-		{"not a url", "::nope", false},
-		{"other scheme", "ftp://127.0.0.1:9999", false},
-		{"no host", "http://", false},
-		{"credentials in url", "http://user:pw@127.0.0.1:9999", false},
-		{"query string", "http://127.0.0.1:9999?x=1", false},
+		{"unset keeps the Anthropic API", "", inference.DefaultBaseURL},
+		{"http loopback ip (the fake)", "http://127.0.0.1:9999", "http://127.0.0.1:9999"},
+		{"http loopback 127/8", "http://127.1.2.3:9999", "http://127.1.2.3:9999"},
+		{"http localhost", "http://localhost:9999", "http://localhost:9999"},
+		{"uppercase scheme and localhost", "HTTP://LOCALHOST:9999", "HTTP://LOCALHOST:9999"},
+		{"http loopback ipv6", "http://[::1]:9999", "http://[::1]:9999"},
+		// Go's IP.IsLoopback treats an IPv4-mapped 127/8 address as loopback.
+		{"http ipv4-mapped loopback", "http://[::ffff:127.0.0.1]:9999", "http://[::ffff:127.0.0.1]:9999"},
+		{"https remote", "https://proxy.example.com/anthropic", "https://proxy.example.com/anthropic"},
+		{"https trailing slash trimmed", "https://proxy.example.com/", "https://proxy.example.com"},
+		{"http remote host", "http://proxy.example.com", ""},
+		{"http remote ip", "http://10.0.0.5:9999", ""},
+		{"http unspecified 0.0.0.0", "http://0.0.0.0:9999", ""},
+		{"http localhost suffix domain", "http://localhost.evil.com:9999", ""},
+		{"http wildcard dns to loopback", "http://127.0.0.1.nip.io:9999", ""},
+		{"http trailing-dot localhost", "http://localhost.:9999", ""},
+		{"not a url", "::nope", ""},
+		{"other scheme", "ftp://127.0.0.1:9999", ""},
+		{"no host", "http://", ""},
+		{"credentials in url", "http://user:pw@127.0.0.1:9999", ""},
+		{"https with credentials", "https://user:pw@proxy.example.com", ""},
+		{"query string", "http://127.0.0.1:9999?x=1", ""},
+		{"fragment", "http://127.0.0.1:9999#frag", ""},
+		{"https fragment", "https://proxy.example.com/#frag", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,8 +138,17 @@ func TestSelectInferenceBackend_BaseURL(t *testing.T) {
 			t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 			t.Setenv("AGENT_INFERENCE_BASE_URL", tc.url)
 			backend, name := selectInferenceBackend(quietLogger())
-			if (backend != nil) != tc.wantReal {
-				t.Fatalf("%q = (%v, %q), want real=%v", tc.url, backend != nil, name, tc.wantReal)
+			if tc.wantBase == "" {
+				if backend != nil || name != "stub" {
+					t.Fatalf("%q = (backend %v, %q), want rejected (nil, stub)", tc.url, backend != nil, name)
+				}
+				return
+			}
+			if backend == nil || name != inference.Name {
+				t.Fatalf("%q = (nil, %q), want claude backend at %q", tc.url, name, tc.wantBase)
+			}
+			if got := backend.BaseURL(); got != tc.wantBase {
+				t.Fatalf("%q: backend base URL = %q, want %q", tc.url, got, tc.wantBase)
 			}
 		})
 	}

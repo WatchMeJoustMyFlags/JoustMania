@@ -153,7 +153,13 @@ func NewClaude(cfg Config) *Claude {
 	}
 	if cfg.HTTPClient == nil {
 		// Backstop only; the per-call ctx deadline is the real budget.
-		cfg.HTTPClient = &http.Client{Timeout: cfg.Timeout + 10*time.Second}
+		cfg.HTTPClient = &http.Client{
+			Timeout: cfg.Timeout + 10*time.Second,
+			// Never follow a redirect: net/http strips only Authorization and
+			// Cookie across hosts, so x-api-key would reach the redirect target.
+			// The Anthropic API does not redirect; a 3xx surfaces as an error.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}
 	}
 	host, port := serverAddress(cfg.BaseURL)
 	return &Claude{cfg: cfg, host: host, port: port, client: newClient(cfg)}
@@ -161,6 +167,9 @@ func NewClaude(cfg Config) *Claude {
 
 // Name is the backend name ("claude").
 func (c *Claude) Name() string { return Name }
+
+// BaseURL is the API root the backend sends requests (and the API key) to.
+func (c *Claude) BaseURL() string { return c.cfg.BaseURL }
 
 // Model is the configured model id.
 func (c *Claude) Model() string { return c.cfg.Model }
