@@ -593,6 +593,21 @@ if "e2e_required" in jobs["changes"]["outputs"]:
             check(rc == 0 and out.get("tag") == want,
                   f"collector-image: Publish result with image available={available} should emit tag={want!r}, got rc={rc} {out}")
 
+# 8. (#1793) Both publish jobs run the :main ordering guard on main and keep :<sha>
+# unconditional; :main/:latest are only added behind the guard.
+for publish in ("docker-build-merge", "docker-build-extra-merge"):
+    steps = jobs[publish]["steps"]
+    check(any("actions/checkout" in str(st.get("uses", "")) and st.get("with", {}).get("fetch-depth") == 0
+              for st in steps), f"{publish}: needs a full-history checkout for the :main ordering guard")
+    manifest = next((st for st in steps if st.get("name") == "Create multi-arch manifest"), {})
+    run = manifest.get("run", "")
+    check("scripts/ci/check-main-tag-order.sh" in run, f"{publish}: manifest step must run check-main-tag-order.sh")
+    check('TAGS=(--tag "${IMAGE}:${GITHUB_SHA}")' in run, f"{publish}: :<sha> must be tagged unconditionally")
+    check("MOVE_TAGS" in run and '--tag "${IMAGE}:latest"' in run
+          and run.index("MOVE_TAGS=false") < run.index('--tag "${IMAGE}:latest"'),
+          f"{publish}: :main/:latest must be added only after the guard")
+    check('[[ "$rc" == 0 || "$rc" == 3 ]] || exit "$rc"' in run, f"{publish}: guard skip (3) must not fail the run")
+
 if failures:
     for f in failures:
         print(f"FAIL: {f}", file=sys.stderr)

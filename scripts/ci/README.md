@@ -118,6 +118,20 @@ IMAGE_PREFIX=ghcr.io/<owner>/<repo> bash scripts/ci/check-retag-source.sh otel-c
 bash scripts/ci/check-retag-source.sh --paths menu-service   # print the source globs
 ```
 
+### `check-main-tag-order.sh` (#1793)
+
+Publish guard for `docker-build-merge` / `docker-build-extra-merge`. Main runs
+are not serialised, so an older run finishing late could move `:main` and
+`:latest` back to stale content. The script reads the revision label of the
+current `:main` (amd64 config of the index; shared reader in
+`lib-image-config.sh`) and exits 0 (move the tags) when it is missing, equal to
+the run's SHA (workflow_dispatch rerun) or an ancestor of it; exit 3 (skip) when
+`:main` was built from a newer or unrelated commit, or one this checkout does
+not know. The workflow then pushes only `:<sha>`, logs a notice and does not
+fail. `release.yml` is unaffected (it consumes `:<sha>`). Complements
+`check-retag-source.sh`, which stays the guard for the retag path.
+Test: `scripts/tests/test-check-main-tag-order.sh`.
+
 ## Makefile Targets
 
 All CI operations are available as Make targets:

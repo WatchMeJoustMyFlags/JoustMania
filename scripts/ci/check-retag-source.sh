@@ -36,6 +36,9 @@
 
 set -euo pipefail
 
+# shellcheck source=scripts/ci/lib-image-config.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-image-config.sh"
+
 CI_WORKFLOW="${CI_WORKFLOW:-.github/workflows/ci.yml}"
 SOURCE_TAG="${SOURCE_TAG:-main}"
 REVISION_LABEL="org.opencontainers.image.revision"
@@ -131,13 +134,10 @@ created="${SOURCE_CREATED-}"
 if [[ -z "${SOURCE_REVISION+x}" || -z "${SOURCE_CREATED+x}" ]]; then
   : "${IMAGE_PREFIX:?IMAGE_PREFIX must be set (e.g. ghcr.io/owner/repo)}"
   # Read the amd64 image config straight from the registry (no layers pulled).
-  # An index yields a {platform: config} map, a single image the config itself.
-  if ! config_json="$(docker buildx imagetools inspect "$ref" --format '{{json .Image}}' 2>/dev/null)" ||
-    [[ -z "$config_json" || "$config_json" == "null" ]]; then
+  if ! config_json="$(read_image_config "$ref")"; then
     echo "::warning::check-retag-source: ${ref} not found"
     exit 2
   fi
-  config_json="$(jq -c 'if has("linux/amd64") then .["linux/amd64"] else . end' <<<"$config_json")"
   [[ -n "${SOURCE_REVISION+x}" ]] ||
     revision="$(jq -r --arg l "$REVISION_LABEL" '.config.Labels[$l] // ""' <<<"$config_json")"
   [[ -n "${SOURCE_CREATED+x}" ]] ||

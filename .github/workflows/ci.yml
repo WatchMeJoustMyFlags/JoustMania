@@ -1497,6 +1497,11 @@ jobs:
       matrix:
         service: ${{ fromJSON(needs.changes.outputs.docker_build_matrix) }}
     steps:
+      # Full history: the :main ordering guard (#1793) compares commits.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - name: Set image name
         run: |
           SERVICE="${{ matrix.service }}"
@@ -1528,8 +1533,20 @@ jobs:
           IMAGE="${IMAGE_PREFIX}/${IMAGE_NAME}"
           # Docker tags forbid "/" (and uppercase/other chars): same as metadata-action type=ref
           REF_TAG="$(printf '%s' "${GITHUB_REF_NAME,,}" | sed 's#[^a-z0-9._-]#-#g')"
-          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}" --tag "${IMAGE}:${REF_TAG}")
-          if [[ "$IS_MAIN" == "true" ]]; then TAGS+=(--tag "${IMAGE}:latest"); fi
+          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}")
+          MOVE_TAGS=true
+          if [[ "$IS_MAIN" == "true" ]]; then
+            # #1793: main runs are not serialised; an older run finishing late must not
+            # move :main/:latest back. Skip them (keep :<sha>) when :main is newer. Never fails the run.
+            rc=0
+            bash "${GITHUB_WORKSPACE}/scripts/ci/check-main-tag-order.sh" "${IMAGE_NAME}" || rc=$?
+            [[ "$rc" == 0 || "$rc" == 3 ]] || exit "$rc"
+            [[ "$rc" == 0 ]] || MOVE_TAGS=false
+          fi
+          if [[ "$MOVE_TAGS" == "true" ]]; then
+            TAGS+=(--tag "${IMAGE}:${REF_TAG}")
+            if [[ "$IS_MAIN" == "true" ]]; then TAGS+=(--tag "${IMAGE}:latest"); fi
+          fi
           SOURCES=()
           for digest in *; do SOURCES+=("${IMAGE}@sha256:${digest}"); done
           (( ${#SOURCES[@]} == 2 )) || { echo "expected 2 platform digests, got ${#SOURCES[@]}"; exit 1; }
@@ -1634,6 +1651,11 @@ jobs:
       matrix:
         item: ${{ fromJSON(needs.changes.outputs.docker_extra_matrix) }}
     steps:
+      # Full history: the :main ordering guard (#1793) compares commits.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - name: Set image name
         run: |
           echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -1664,8 +1686,20 @@ jobs:
           IMAGE="${IMAGE_PREFIX}/${IMAGE_NAME}"
           # Docker tags forbid "/" (and uppercase/other chars): same as metadata-action type=ref
           REF_TAG="$(printf '%s' "${GITHUB_REF_NAME,,}" | sed 's#[^a-z0-9._-]#-#g')"
-          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}" --tag "${IMAGE}:${REF_TAG}")
-          if [[ "$IS_MAIN" == "true" ]]; then TAGS+=(--tag "${IMAGE}:latest"); fi
+          TAGS=(--tag "${IMAGE}:${GITHUB_SHA}")
+          MOVE_TAGS=true
+          if [[ "$IS_MAIN" == "true" ]]; then
+            # #1793: main runs are not serialised; an older run finishing late must not
+            # move :main/:latest back. Skip them (keep :<sha>) when :main is newer. Never fails the run.
+            rc=0
+            bash "${GITHUB_WORKSPACE}/scripts/ci/check-main-tag-order.sh" "${IMAGE_NAME}" || rc=$?
+            [[ "$rc" == 0 || "$rc" == 3 ]] || exit "$rc"
+            [[ "$rc" == 0 ]] || MOVE_TAGS=false
+          fi
+          if [[ "$MOVE_TAGS" == "true" ]]; then
+            TAGS+=(--tag "${IMAGE}:${REF_TAG}")
+            if [[ "$IS_MAIN" == "true" ]]; then TAGS+=(--tag "${IMAGE}:latest"); fi
+          fi
           SOURCES=()
           for digest in *; do SOURCES+=("${IMAGE}@sha256:${digest}"); done
           (( ${#SOURCES[@]} == 2 )) || { echo "expected 2 platform digests, got ${#SOURCES[@]}"; exit 1; }
