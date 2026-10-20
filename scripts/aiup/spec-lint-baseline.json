@@ -21,13 +21,6 @@
       "path": "requirements.md",
       "element": "NFR-004",
       "message": "weak word 'fast': make it measurable, definite, or remove it"
-    },
-    {
-      "fingerprint": "eb35d161d2899c9a5eef4a6d4d008f0102f47512",
-      "code": "WEAK_WORD",
-      "path": "requirements.md",
-      "element": "NFR-020",
-      "message": "weak word 'TBD': make it measurable, definite, or remove it"
     }
   ]
 }

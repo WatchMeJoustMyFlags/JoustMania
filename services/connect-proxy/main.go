@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,7 +17,9 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	// Generated proto imports
 	controllerpb "github.com/joustmania/connect-proxy/gen/controller_manager"
@@ -193,13 +196,13 @@ func (p *ControllerManagerProxy) WatchGameplayData(
 
 	grpcStream, err := p.client.StreamGameplayData(upstreamCtx)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return toConnectError(err)
 	}
 	config := &controllerpb.GameplayStreamControl{
 		Control: &controllerpb.GameplayStreamControl_Config{Config: observerGameplayConfig(req.Msg)},
 	}
 	if err := grpcStream.Send(config); err != nil && err != io.EOF {
-		return connect.NewError(connect.CodeInternal, err)
+		return toConnectError(err)
 	}
 	// On io.EOF from Send the real status comes from Recv below.
 
@@ -212,7 +215,7 @@ func (p *ControllerManagerProxy) WatchGameplayData(
 			if ctx.Err() != nil {
 				return connect.NewError(connect.CodeCanceled, ctx.Err())
 			}
-			return connect.NewError(connect.CodeInternal, err)
+			return toConnectError(err)
 		}
 		if err := stream.Send(msg); err != nil {
 			return err
@@ -241,7 +244,7 @@ func (p *ControllerManagerProxy) RenameController(
 ) (*connect.Response[controllerpb.RenameControllerResponse], error) {
 	resp, err := p.client.RenameController(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -253,7 +256,7 @@ func (p *ControllerManagerProxy) IdentifyController(
 ) (*connect.Response[controllerpb.IdentifyControllerResponse], error) {
 	resp, err := p.client.IdentifyController(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -264,7 +267,7 @@ func (p *ControllerManagerProxy) GetConnectedControllers(
 ) (*connect.Response[controllerpb.GetConnectedControllersResponse], error) {
 	resp, err := p.client.GetConnectedControllers(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -280,7 +283,7 @@ func (p *GameCoordinatorProxy) ForceEndGame(
 ) (*connect.Response[gamepb.ForceEndGameResponse], error) {
 	resp, err := p.client.ForceEndGame(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -292,7 +295,7 @@ func (p *GameCoordinatorProxy) StreamGameEvents(
 ) error {
 	grpcStream, err := p.client.StreamGameEvents(ctx, req.Msg)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return toConnectError(err)
 	}
 
 	for {
@@ -301,7 +304,7 @@ func (p *GameCoordinatorProxy) StreamGameEvents(
 			return nil
 		}
 		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
+			return toConnectError(err)
 		}
 		if err := stream.Send(msg); err != nil {
 			return err
@@ -315,7 +318,7 @@ func (p *GameCoordinatorProxy) GetGameState(
 ) (*connect.Response[gamepb.GetGameStateResponse], error) {
 	resp, err := p.client.GetGameState(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -326,7 +329,7 @@ func (p *GameCoordinatorProxy) ListGames(
 ) (*connect.Response[gamepb.ListGamesResponse], error) {
 	resp, err := p.client.ListGames(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -342,7 +345,7 @@ func (p *MenuProxy) StartMenu(
 ) (*connect.Response[menupb.StartMenuResponse], error) {
 	resp, err := p.client.StartMenu(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -353,7 +356,7 @@ func (p *MenuProxy) StopMenu(
 ) (*connect.Response[menupb.StopMenuResponse], error) {
 	resp, err := p.client.StopMenu(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -365,7 +368,7 @@ func (p *MenuProxy) StreamMenuEvents(
 ) error {
 	grpcStream, err := p.client.StreamMenuEvents(ctx, req.Msg)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return toConnectError(err)
 	}
 
 	for {
@@ -374,7 +377,7 @@ func (p *MenuProxy) StreamMenuEvents(
 			return nil
 		}
 		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
+			return toConnectError(err)
 		}
 		if err := stream.Send(msg); err != nil {
 			return err
@@ -388,7 +391,7 @@ func (p *MenuProxy) ProcessInput(
 ) (*connect.Response[menupb.ProcessInputResponse], error) {
 	resp, err := p.client.ProcessInput(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -399,7 +402,18 @@ func (p *MenuProxy) ListGameModes(
 ) (*connect.Response[menupb.ListGameModesResponse], error) {
 	resp, err := p.client.ListGameModes(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
+}
+
+// toConnectError maps a backend gRPC error to the Connect error with the same
+// code (the two code sets are identical, numbers and names), keeping the status
+// message. Errors that carry no gRPC status stay CodeInternal (#1560).
+func toConnectError(err error) *connect.Error {
+	st, ok := status.FromError(err)
+	if !ok || st.Code() == codes.OK {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewError(connect.Code(st.Code()), errors.New(st.Message()))
 }
