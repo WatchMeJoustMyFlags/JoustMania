@@ -97,7 +97,7 @@ func controlCtx(id string) map[string]any {
 // ---- Happy path --------------------------------------------------------------
 
 // UC: UC-042 main
-// UC: UC-043 main BR-001
+// UC: UC-043 main BR-001 Post-F-1
 func TestReview_ExperimentScopedProposal(t *testing.T) {
 	g, svc, rec := gateWithRecorder(t)
 	const flagKey, expID = "invincibility_seconds", "exp_alpha"
@@ -230,6 +230,7 @@ func TestReview_BlocksUnscopedProposal(t *testing.T) {
 }
 
 // A flag outside the experiment catalog (registry) is refused before any write.
+// UC: UC-043 main
 func TestReview_BlocksFlagOutsideCatalog(t *testing.T) {
 	g, svc, _ := gateWithRecorder(t)
 	for _, key := range []string{"num_teams", "random_assignment"} {
@@ -288,6 +289,7 @@ func TestReview_ServiceErrorsFailClosed(t *testing.T) {
 // The second check runs BEFORE the write: a dry run that renders as something
 // that changes the real resolution is refused and nothing is written (PR #1417
 // review B5).
+// UC: UC-043 main Post-F-1
 func TestReview_DryRunCatchesARealLeakBeforeWriting(t *testing.T) {
 	svc := newGameService(t)
 	leaky := &leakingService{Service: svc}

@@ -82,6 +82,7 @@ func countingFitness(n *int, f gameFitnessFunc) gameFitnessFunc {
 }
 
 // UC: UC-041 A4
+// UC: UC-043 main
 func TestOnGameEnd_StaleEndExcludedFromExperiments(t *testing.T) {
 	t.Run("UC-041/A4 stale-ended experiment game: slot released, no fitness folded", func(t *testing.T) {
 		scored := 0

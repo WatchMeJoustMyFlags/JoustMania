@@ -513,6 +513,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # eval-context (targeting #977) and telemetry (attribution #975)
             # carry them from the start.
             #
+            # UC-043 BR-001 (shadow-only).
             # HARD INVARIANT (#982): experiment_id/arm only SUBDIVIDE a shadow
             # game; they MUST NOT make a real (primary) game part of an
             # experiment. We therefore apply them ONLY when this session is a

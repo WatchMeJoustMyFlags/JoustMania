@@ -541,6 +541,7 @@ const experimentInstrumentationName = "github.com/joustmania/agent"
 // fails if the journal already has this id (re-mint collision is astronomically
 // unlikely; a real collision is surfaced, not silently clobbered).
 func (r *Registry) Declare(in Intent) (string, error) {
+	// UC-043 BR-002 (no chaos experiments).
 	// Fail-fast on a non-experimentable objective (#1015). chaos has no fitness
 	// function — every game on it would fold the worst-case 0 and the experiment
 	// would run its whole budget (up to the #1001 target) only to conclude

@@ -282,7 +282,7 @@ func concludeCohort(t *testing.T, loop *experimentLoop, spawner *recordingSpawne
 // kill-switch state irrelevant for issue mode) routes through the #961 Promoter and
 // opens an ISSUE — it NEVER performs a real-default write. With the autonomous path
 // (the only real-player-affecting one) OFF, recordingRealDefault stays at zero.
-// UC: UC-043 main BR-003
+// UC: UC-043 main BR-003 Post-S-1
 func TestExperimentLoop_EndToEnd_SafeDefault_NoRealWrite(t *testing.T) {
 	spawner := &recordingSpawner{}
 	realDef := &recordingRealDefault{}
@@ -327,7 +327,7 @@ func TestExperimentLoop_EndToEnd_SafeDefault_NoRealWrite(t *testing.T) {
 // rail permits a real-player write), a promote verdict DOES route a real-default
 // write through the #961 Promoter. This proves the gate opens only when every
 // condition holds — and that the loop wires the real Promoter, not a stub.
-// UC: UC-043 main
+// UC: UC-043 main Post-S-1
 func TestExperimentLoop_EndToEnd_Autonomous_RealWriteGated(t *testing.T) {
 	spawner := &recordingSpawner{}
 	realDef := &recordingRealDefault{}

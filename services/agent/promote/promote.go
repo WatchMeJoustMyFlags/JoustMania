@@ -412,6 +412,7 @@ func NewPromoter(github GitHubClient, git GitClient, realDef RealDefaultWriter, 
 // emits the code_improvement.promote span carrying gate (mode) + target + outcome
 // (+ the fitness evidence + any degrade reason), and returns the recorded Result.
 //
+// UC-043 BR-003: issue and PR modes never change a running system; a human merges.
 // FAIL-SAFE / RECORDED: a promotion NEVER silently acts or silently no-ops. If the
 // verdict was not PROMOTE, or a github target is unreachable (real client absent),
 // or autonomous is requested while disabled, the promotion degrades to

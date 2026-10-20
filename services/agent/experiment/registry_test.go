@@ -180,6 +180,7 @@ func sampleIntent() Intent {
 // --- tests ---
 
 // Declare → PROPOSED in the registry + intent persisted in the journal.
+// UC: UC-043 Pre-2
 func TestDeclarePersistsIntentAndIsProposed(t *testing.T) {
 	root := t.TempDir()
 	r := newTestRegistry(t, RegistryConfig{Root: root})
@@ -355,7 +356,7 @@ func TestArmAssignmentRecordsJournalEventAndCallsSpawner(t *testing.T) {
 
 // Game conclusion → game_concluded recorded + CohortVerdict seam called; status
 // transitions on the (stubbed) verdict.
-// UC: UC-043 main
+// UC: UC-043 main Post-S-1
 func TestConcludeGameRecordsAndTransitionsOnVerdict(t *testing.T) {
 	root := t.TempDir()
 	spawner := &fakeSpawner{}
