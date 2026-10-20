@@ -58,14 +58,27 @@ func NewGatedActionSink(gate InterventionGate, writer decision.ActionSink, log *
 // resolves to false, so the agent does NOT write when the control plane is
 // unreachable.
 func (s *GatedActionSink) Apply(ctx context.Context, d decision.Decision) error {
+	_, err := s.ApplyReported(ctx, d)
+	return err
+}
+
+// ApplyReported is Apply with the outcome reported: applied is true only when the
+// LIVE gate was on and the real writer ran. The loop counts
+// agent_interventions_applied_total only for applied=true, so a gated no-op is not
+// counted as an applied intervention (UC-040 A11, #1681).
+func (s *GatedActionSink) ApplyReported(ctx context.Context, d decision.Decision) (applied bool, err error) {
 	// UC-045 BR-001: interventions_enabled is the actuation gate of the three.
 	if !s.gate.InterventionsEnabled(ctx) {
 		s.log.Debug("agent.intervention_gated_off",
 			"intervention", d.Intervention, "flag", keyInterventionsEnabledLog)
-		return nil
+		return false, nil
 	}
-	return s.writer.Apply(ctx, d)
+	return true, s.writer.Apply(ctx, d)
 }
+
+// Compile-time check: the loop reads the gated outcome only through this optional
+// interface, so a signature drift would silently count gated no-ops again.
+var _ decision.ActionApplier = (*GatedActionSink)(nil)
 
 // keyInterventionsEnabledLog is the flag key surfaced in the gated-off log line.
 // Mirrors flags.keyInterventionsEnabled (kept local so actions does not need the

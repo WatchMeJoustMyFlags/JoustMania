@@ -35,7 +35,10 @@ proto/
 **Key RPCs:**
 - `StreamButtonEvents` - Bidirectional stream for button events and LED control
 - `StreamGameplayData` - Bidirectional stream for gameplay data with dynamic filtering
-- `RenameController` / `GetConnectedControllers` - unary controller management
+- `RenameController` / `GetConnectedControllers` / `IdentifyController` - unary controller management
+- `WatchGameplayData` - read-only gameplay data stream
+
+The list is a summary; `proto/controller_manager.proto` is authoritative.
 
 LED colours and effects are not a separate RPC: they ride on the two streams above.
 

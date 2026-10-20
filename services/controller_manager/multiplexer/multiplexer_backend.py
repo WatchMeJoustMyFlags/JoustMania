@@ -67,16 +67,14 @@ class MultiplexerBackend(ControllerBackend):
         # (100 Hz state loop, LED batch) and the discovery thread iterating it
         # always see a consistent snapshot (#1478).
         self._serial_to_adapter: dict[str, ControllerIOAdapter] = {}
-        # Guards writes to _serial_to_adapter and _routing_changes. Never held
-        # across adapter I/O: _set_route holds it for a dict copy, and the
-        # discovery swap holds it for the merge plus _cleanup_stale_state
-        # (in-memory pops and metric series removal, CPU only), so
-        # connect/disconnect on the event loop block only briefly.
+        # Guards writes to _serial_to_adapter and _closed. Never held across
+        # adapter I/O: _set_route holds it for a dict copy, and the discovery
+        # swap holds it for the swap plus _cleanup_stale_state (in-memory pops
+        # and metric series removal, CPU only).
         self._routing_lock = threading.Lock()
-        # connect/disconnect changes made since the current discovery pass
-        # started (serial -> adapter, None = disconnected). The pass merges them
-        # into its result instead of overwriting them (#1478).
-        self._routing_changes: dict[str, ControllerIOAdapter | None] = {}
+        # Set by shutdown(). A discovery pass still running in its worker
+        # thread then installs no routes and closes what it opened (#1630).
+        self._closed = False
 
         # Centralized state
         self._led_colors: dict[str, tuple[int, int, int]] = {}
@@ -109,10 +107,10 @@ class MultiplexerBackend(ControllerBackend):
         # the old series can be removed when the controller moves or goes (#1468).
         self._last_adapter: dict[str, str] = {}
         # Guards _last_backend / _last_adapter and their info series. The
-        # discovery worker thread exports them while disconnect_controller (event
-        # loop) removes them; without it a worker set(1) landing after the
-        # remove would resurrect an orphaned series (#1468). Never held across
-        # I/O, only on the discovery / disconnect paths, not per poll.
+        # discovery worker thread exports them and removes stale ones while
+        # shutdown() (event loop) clears them; a worker set(1) landing after the
+        # clear would otherwise leave an orphaned series (#1468). Never held
+        # across I/O, only on the discovery / shutdown paths, not per poll.
         self._info_series_lock = threading.Lock()
 
         adapter_names = [a.adapter_type for a in self._adapters]
@@ -126,6 +124,8 @@ class MultiplexerBackend(ControllerBackend):
     # -- Fleet-level methods --------------------------------------------------
 
     async def initialize(self) -> bool:
+        with self._routing_lock:
+            self._closed = False
         any_success = False
         for adapter in self._adapters:
             try:
@@ -140,45 +140,38 @@ class MultiplexerBackend(ControllerBackend):
         return any_success
 
     async def shutdown(self):
+        # Mark closed BEFORE closing the adapters: a discovery pass that reopens
+        # a device after close_all() then sees the flag at its swap and closes
+        # that handle again instead of installing a route to it (#1630).
+        with self._routing_lock:
+            self._closed = True
         for adapter in self._adapters:
             try:
                 adapter.close_all()
             except Exception:
                 logger.exception(f"Failed to shutdown {adapter.adapter_type} adapter")
 
-        with self._routing_lock:
+        # Same lock order as the discovery swap: _led_lock, then _routing_lock.
+        with self._led_lock, self._routing_lock:
             self._serial_to_adapter = {}
-            self._routing_changes.clear()
-        self._led_colors.clear()
-        self._rumble.clear()
-        self._last_sent_color.clear()
-        self._last_led_update.clear()
-        self._effect_active.clear()
-        self._last_backend.clear()
-        self._last_adapter.clear()
+            self._led_colors.clear()
+            self._rumble.clear()
+            self._last_sent_color.clear()
+            self._last_led_update.clear()
+            self._led_failures.clear()
+            self._effect_active.clear()
+        with self._info_series_lock:
+            self._last_backend.clear()
+            self._last_adapter.clear()
 
-    def _set_route(self, serial: str, adapter: ControllerIOAdapter | None) -> None:
-        """Assign (or with None, drop) one serial's adapter, copy-on-write.
-
-        Called on the event loop by connect/disconnect while discovery may be
-        building a new table in its worker thread; the change is also recorded
-        so that pass merges it instead of overwriting it (#1478).
-        """
+    def _set_route(self, serial: str, adapter: ControllerIOAdapter) -> None:
+        """Assign one serial's adapter, copy-on-write (used by initialize)."""
         with self._routing_lock:
-            table = dict(self._serial_to_adapter)
-            if adapter is None:
-                table.pop(serial, None)
-            else:
-                table[serial] = adapter
-            self._serial_to_adapter = table
-            self._routing_changes[serial] = adapter
+            self._serial_to_adapter = {**self._serial_to_adapter, serial: adapter}
 
     def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
-        # Passes are serialised by the discovery loop (its only caller). Forget
-        # changes the previous pass already merged; anything recorded from here
-        # on happened while this pass was running and wins over its result.
-        with self._routing_lock:
-            self._routing_changes.clear()
+        if self._closed:
+            return []  # discover() would reopen the devices shutdown() closed
         discovered = self._route_controllers(force_rescan)
         # Discovery and the 20 Hz LED batch run in separate worker threads
         # (#1447). The routing swap and the stale-state cleanup happen under
@@ -190,21 +183,23 @@ class MultiplexerBackend(ControllerBackend):
         # to the closed handle once; set_output then fails and the failure is
         # counted in _led_failures.
         #
-        # A connect / disconnect that landed during the pass is merged on top of
-        # the discovered table, so the swap cannot lose it (#1478). Lock order:
-        # _led_lock, then _routing_lock (_set_route takes only the latter).
+        # Lock order: _led_lock, then _routing_lock (shutdown uses the same).
         with self._led_lock, self._routing_lock:
-            seen = dict(discovered)
-            for serial, adapter in self._routing_changes.items():
-                if adapter is None:
-                    seen.pop(serial, None)
-                else:
-                    seen[serial] = adapter
-            self._routing_changes.clear()
-            self._serial_to_adapter = seen
-            self._cleanup_stale_state(seen)
-        self._update_controller_metrics(seen)
-        return list(seen.keys())
+            closed = self._closed
+            if not closed:
+                self._serial_to_adapter = discovered
+                self._cleanup_stale_state(discovered)
+        if closed:
+            # shutdown() ran during this pass: install nothing, and close any
+            # handle the pass (re)opened after close_all() (#1630).
+            for serial, adapter in discovered.items():
+                try:
+                    adapter.close(serial)
+                except Exception:
+                    logger.exception(f"Failed to close {serial} after shutdown")
+            return []
+        self._update_controller_metrics(discovered)
+        return list(discovered.keys())
 
     def _route_controllers(self, force: bool) -> dict[str, ControllerIOAdapter]:
         """All adapters discover independently, routing deduplicates.
@@ -417,8 +412,8 @@ class MultiplexerBackend(ControllerBackend):
         """Update Prometheus metrics for connected controllers."""
         with self._info_series_lock:
             for serial, adapter in seen.items():
-                # disconnect_controller may have dropped the serial since this
-                # discovery pass built `seen`; re-exporting it would orphan it.
+                # shutdown() may have cleared the table since this pass
+                # swapped it in; re-exporting the serial would orphan it.
                 if serial not in self._serial_to_adapter:
                     continue
                 self._export_info_series(serial, adapter)
@@ -444,9 +439,8 @@ class MultiplexerBackend(ControllerBackend):
     def _remove_info_series(self, serial: str) -> None:
         """Remove the backend / adapter info series of a controller that is gone.
 
-        Callers drop the serial from _serial_to_adapter first, so a concurrent
-        _update_controller_metrics either exported before this removal or skips
-        the serial; it can never re-create the series afterwards.
+        The discovery swap drops the serial from _serial_to_adapter before it
+        calls this, so _update_controller_metrics never re-creates the series.
         """
         with self._info_series_lock:
             prev_backend = self._last_backend.pop(serial, None)
@@ -461,7 +455,7 @@ class MultiplexerBackend(ControllerBackend):
         current_time = time.time()
         updated_count = 0
 
-        # list() is intentional — dict may be modified by concurrent disconnect
+        # list() is intentional: discovery or shutdown may modify the dict meanwhile
         for serial in list(self._led_colors):  # NOSONAR(S7504)
             if serial in self._effect_active:
                 continue
@@ -609,40 +603,3 @@ class MultiplexerBackend(ControllerBackend):
             self._effect_active.add(serial)
         else:
             self._effect_active.discard(serial)
-
-    async def connect_controller(self, address: str) -> bool:
-        # Try targeted adapter first
-        preferred, _method = self._resolve_adapter_for_serial(address, [address])
-        if preferred:
-            try:
-                if preferred.open(address):
-                    self._set_route(address, preferred)
-                    return True
-            except Exception:
-                logger.exception(f"connect_controller targeted failed for {preferred.adapter_type}")
-
-        # Fall back to iteration order
-        for adapter in self._adapters:
-            if adapter is preferred:
-                continue  # Already tried
-            try:
-                if adapter.open(address):
-                    self._set_route(address, adapter)
-                    return True
-            except Exception:
-                logger.exception(f"connect_controller failed for {adapter.adapter_type}")
-        return False
-
-    async def disconnect_controller(self, serial: str) -> bool:
-        adapter = self._serial_to_adapter.get(serial)
-        if adapter is None:
-            return False
-        adapter.close(serial)
-        self._set_route(serial, None)
-        self._led_colors.pop(serial, None)
-        self._rumble.pop(serial, None)
-        self._last_sent_color.pop(serial, None)
-        self._last_led_update.pop(serial, None)
-        self._effect_active.discard(serial)
-        self._remove_info_series(serial)
-        return True

@@ -458,6 +458,56 @@ class TestMockAdapterObserverThreadSafety:
 
         assert queue.empty()
 
+    @staticmethod
+    def _interleave_on_first_read(adapter: MockAdapter, concurrent) -> list[threading.Thread]:
+        """Run ``concurrent`` in another thread while the caller reads the observer list.
+
+        The caller's copy-and-replace is paused mid-read until the other thread
+        finishes (unlocked code) or a 1 s grace expires (locked code: the other
+        thread is blocked on the lock and finishes afterwards).
+        """
+        started: list[threading.Thread] = []
+
+        class _Interleaving(list):
+            def __iter__(self):
+                if not started:
+                    other = threading.Thread(target=concurrent)
+                    started.append(other)
+                    other.start()
+                    other.join(timeout=1.0)
+                return super().__iter__()
+
+        adapter._observers = _Interleaving(adapter._observers)
+        return started
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[6])
+    def test_concurrent_add_observer_keeps_both_queues(self):
+        """#1630: two loops adding observers at once must not drop one queue."""
+        adapter = MockAdapter(num_controllers=1)
+        other_queue: list[asyncio.Queue] = []
+        started = self._interleave_on_first_read(adapter, lambda: other_queue.append(adapter.add_observer()))
+
+        mine = adapter.add_observer()
+        started[0].join(timeout=5)
+
+        queues = [queue for queue, _loop in adapter._observers]
+        assert mine in queues
+        assert other_queue and other_queue[0] in queues
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[6])
+    def test_concurrent_remove_does_not_revive_queue(self):
+        """#1630: a remove racing an add must not put the removed queue back."""
+        adapter = MockAdapter(num_controllers=1)
+        removed = adapter.add_observer()
+        started = self._interleave_on_first_read(adapter, lambda: adapter.remove_observer(removed))
+
+        mine = adapter.add_observer()
+        started[0].join(timeout=5)
+
+        queues = [queue for queue, _loop in adapter._observers]
+        assert mine in queues
+        assert removed not in queues
+
 
 class TestMockAdapterHeldAccel:
     """#1279: hold_accel / clear_held_accel at the adapter level."""

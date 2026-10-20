@@ -13,6 +13,7 @@ import contextlib
 import logging
 import math
 import random
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -139,6 +140,10 @@ class MockAdapter(ControllerIOAdapter):
         # outside a running loop). set_output runs in the 20 Hz LED worker
         # thread, and asyncio.Queue is not thread-safe (#1478).
         self._observers: list[tuple[asyncio.Queue, asyncio.AbstractEventLoop | None]] = []
+        # Serialises the copy-and-replace in add/remove_observer, so two loops
+        # adding at once cannot drop each other's queue (#1630). Readers
+        # (_publish_event) iterate the current list without it.
+        self._observers_lock = threading.Lock()
         # Monotonic serial counter for auto-generated serials. It NEVER decreases,
         # even when controllers are removed, so a freshly added controller can never
         # collide with one whose removal is still in flight (issue #1013): the old
@@ -507,15 +512,19 @@ class MockAdapter(ControllerIOAdapter):
             loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
-        self._observers = [*self._observers, (queue, loop)]
+        with self._observers_lock:
+            self._observers = [*self._observers, (queue, loop)]
         logger.debug(f"Added observer, total: {len(self._observers)}")
         return queue
 
     def remove_observer(self, queue: asyncio.Queue) -> None:
         """Remove an observer queue."""
-        remaining = [entry for entry in self._observers if entry[0] is not queue]
-        if len(remaining) != len(self._observers):
-            self._observers = remaining
+        with self._observers_lock:
+            remaining = [entry for entry in self._observers if entry[0] is not queue]
+            removed = len(remaining) != len(self._observers)
+            if removed:
+                self._observers = remaining
+        if removed:
             logger.debug(f"Removed observer, remaining: {len(self._observers)}")
 
     def get_led_color(self, serial: str) -> tuple[int, int, int] | None:

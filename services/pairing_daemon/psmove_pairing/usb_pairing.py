@@ -156,6 +156,9 @@ class USBPairing:
         self.adapter_manager = AdapterManager()
         # Track controllers verified this session to avoid re-processing every poll
         self._verified_serials: set[str] = set()
+        # Addresses paired over USB this session and not unpaired since: the only devices the
+        # pairing agent answers for (UC-001 BR-009). Unlike _verified_serials, a replug retry keeps them.
+        self._paired_addresses: set[str] = set()
         # Cached backend instance — reused across polls when routing is unchanged
         self._current_backend: PairingBackend | None = None
         self._current_backend_name: str | None = None
@@ -384,6 +387,7 @@ class USBPairing:
 
         # Mark as verified so we don't re-process every poll cycle
         self._verified_serials.add(serial)
+        self._paired_addresses.add(normalize_address(serial) or serial.upper())
 
         # Success message
         logger.info(
@@ -446,10 +450,15 @@ class USBPairing:
         # Pair it again only after it leaves USB and comes back (A8), never right away:
         # an immediate re-pair would undo the unpair the operator asked for.
         self._verified_serials = {s for s in self._verified_serials if normalize_address(s) != normalized}
+        self._paired_addresses.discard(normalized)
         self._awaiting_replug[normalized] = self._usb_paths.get(normalized)
         on_usb = normalized in self._usb_paths
         logger.info(f"UNPAIRED: Controller {normalized}: {[r.outcome for r in results]} (on USB: {on_usb})")
         return UnpairResult(normalized, results, on_usb)
+
+    def paired_this_session(self, address: str) -> bool:
+        """Whether the controller was paired over USB this session and not unpaired since (UC-001 BR-009)."""
+        return normalize_address(address) in self._paired_addresses
 
     async def poll(self) -> None:
         """Perform one USB polling cycle."""

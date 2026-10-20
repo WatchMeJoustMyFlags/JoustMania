@@ -58,6 +58,29 @@ func TestGatedActionSink_GateOn_Delegates(t *testing.T) {
 	}
 }
 
+// TestGatedActionSink_ApplyReportsOutcome: ApplyReported says whether the write
+// happened, so the loop counts agent_interventions_applied_total only for a real
+// write and never for a gated no-op (#1681).
+// UC: UC-040 A11
+func TestGatedActionSink_ApplyReportsOutcome(t *testing.T) {
+	t.Run("UC-040/A11 gate off reports not applied", func(t *testing.T) {
+		inner := &recordingSink{}
+		applied, err := NewGatedActionSink(staticGate(false), inner, nil).
+			ApplyReported(context.Background(), decision.Decision{Intervention: "audio_cue"})
+		if err != nil || applied || inner.applied {
+			t.Fatalf("gate off: applied=%v err=%v writer called=%v, want false nil false", applied, err, inner.applied)
+		}
+	})
+	t.Run("UC-040/main gate on reports applied", func(t *testing.T) {
+		inner := &recordingSink{}
+		applied, err := NewGatedActionSink(staticGate(true), inner, nil).
+			ApplyReported(context.Background(), decision.Decision{Intervention: "audio_cue"})
+		if err != nil || !applied || !inner.applied {
+			t.Fatalf("gate on: applied=%v err=%v writer called=%v, want true nil true", applied, err, inner.applied)
+		}
+	})
+}
+
 // TestGatedRolloutActuator_GateOff_DryRun: with the gate OFF SetControllerCount is a
 // dry-run (no write — it tolerates a non-existent path) and DryRun() reports true.
 func TestGatedRolloutActuator_GateOff_DryRun(t *testing.T) {

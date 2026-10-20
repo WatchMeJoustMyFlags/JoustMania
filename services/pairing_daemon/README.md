@@ -32,7 +32,7 @@ docker compose restart pairing-daemon
 
 ## Configuration
 
-Environment variables (set in the `pairing-daemon` service of `docker-compose.yml`):
+Environment variables (can be set in the `pairing-daemon` service of `docker-compose.yml`; the stock compose file sets only `METRICS_PORT` and the OTEL variables, the rest use the defaults):
 
 | Variable | Default | Description |
 |----------|---------|-------------|

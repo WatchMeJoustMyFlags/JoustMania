@@ -601,9 +601,17 @@ PS Move controllers come in two hardware revisions:
 | ZCM1 (PS3-era) | Mini USB | 0x03d5 | Automatic via daemon |
 | ZCM2 (PS4-era) | Micro USB | 0x0c5e | Requires manual step |
 
-ZCM2 controllers need a PIN-based Bluetooth pairing handshake that the
-automatic daemon cannot fully complete. After the daemon reports
-`PAIRING SUCCESS`, you must manually pair via `bluetoothctl`:
+> **Fallback only, until hardware verification (#1465).** Since #1492 the pairing
+> daemon is BlueZ's default pairing agent and answers the PIN (`0000`) and
+> confirmation requests itself, for controllers it paired over USB in its current
+> session (UC-001 BR-009). Use the manual steps below only if a ZCM2 still does not
+> connect after `PAIRING SUCCESS`. Running `default-agent` in `bluetoothctl` takes the
+> default-agent role from the daemon for as long as that bluetoothctl runs; quit it
+> when done.
+
+ZCM2 controllers need a PIN-based Bluetooth pairing handshake. If the daemon's
+agent did not complete it, pair manually via `bluetoothctl` after the daemon
+reports `PAIRING SUCCESS`:
 
 ```bash
 # 1. Unplug the controller from USB
