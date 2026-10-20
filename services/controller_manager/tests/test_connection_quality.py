@@ -258,6 +258,19 @@ class TestDiscoveryLoopExport:
 
     @pytest.mark.uc("UC-035", br=["BR-005"])
     @pytest.mark.asyncio
+    async def test_poll_loop_stall_is_subtracted_from_the_health_event_gap(self, loop):
+        # Same 80 ms loop stall: the health span's bluetooth.event_gap_ms stays at the 10 ms link gap.
+        times = [100.0 + i * 0.010 for i in range(20)]
+        times += [times[-1] + 0.090 + i * 0.010 for i in range(20)]
+        for t in times:
+            await _poll_at(loop, t)
+
+        signals = loop._compute_health_window(window_seconds=times[-1] - times[0])
+
+        assert signals["event_gap_ms"] == pytest.approx(10.0)
+
+    @pytest.mark.uc("UC-035", br=["BR-005"])
+    @pytest.mark.asyncio
     async def test_span_event_carries_the_quality(self, loop):
         for i in range(5):
             await _poll_at(loop, 100.0 + i * 0.010)

@@ -211,6 +211,7 @@ async def test_failed_read_applies_nothing_and_does_not_replay():
 
 
 @pytest.mark.uc("UC-053", flow="A9", br=["BR-006"], tc="TC-019")
+@pytest.mark.uc("UC-040", flow="main", br=["BR-006"])
 @pytest.mark.asyncio
 async def test_only_a_new_nonempty_epoch_resets_the_sequence():
     h = Harness()

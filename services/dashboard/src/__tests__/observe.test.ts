@@ -114,6 +114,20 @@ describe("UC-035: step 2 game event feed", () => {
     expect(state.gameState).toBe("Running");
   });
 
+  it("UC-035/main step 2 the coordinator's real start order ends the countdown in Running (#1767)", () => {
+    const { state, feed } = fold([
+      ["game_start", {}],
+      ["game_starting", {}],
+      ["players_initialized", {}],
+      ["game_started", {}],
+      ["countdown_start", { phase_duration_ms: "3000" }],
+      ["countdown_end", {}],
+    ]);
+    expect(state.gameState).toBe("Running");
+    expect(state.alivePlayers).toBe(4);
+    expect(feed).toEqual(["Game started!", "Countdown..."]);
+  });
+
   it("UC-035/main step 2 player_death lowers the alive count and names the player", () => {
     const { state, feed } = fold([["game_start", {}], ["player_death", { serial: "aa:bb:cc:dd" }]]);
     expect(state.alivePlayers).toBe(3);

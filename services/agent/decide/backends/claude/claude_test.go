@@ -414,12 +414,13 @@ func TestDecide_Failures(t *testing.T) {
 	}
 }
 
+// UC: UC-040 main
 func TestAvailable(t *testing.T) {
 	cases := map[string]Config{
-		"no key":      {Model: "claude-haiku-4-5"},
-		"blank key":   {APIKey: "  ", Model: "claude-haiku-4-5"},
-		"no model":    {APIKey: "sk-test"},
-		"blank model": {APIKey: "sk-test", Model: " "},
+		"UC-040/main step 2 no key":      {Model: "claude-haiku-4-5"},
+		"UC-040/main step 2 blank key":   {APIKey: "  ", Model: "claude-haiku-4-5"},
+		"UC-040/main step 2 no model":    {APIKey: "sk-test"},
+		"UC-040/main step 2 blank model": {APIKey: "sk-test", Model: " "},
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {

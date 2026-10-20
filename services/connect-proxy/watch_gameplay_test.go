@@ -253,6 +253,28 @@ func TestProxyWatchGameplayData(t *testing.T) {
 		}
 	})
 
+	t.Run("UC-035/BR-006 the proxy never sends a filter or colours after the config", func(t *testing.T) {
+		done := make(chan struct{})
+		rig := newProxyRigWith(t, &fakeController{
+			updates:        []*controllerpb.GameplayDataUpdate{{Timestamp: 1}},
+			recordControls: true,
+			gameplayDone:   done,
+		}, nil)
+		stream, err := rig.controllerClient.WatchGameplayData(testCtx(t),
+			connect.NewRequest(&controllerpb.GameplayStreamConfig{UpdateFrequencyHz: 30}))
+		if err != nil {
+			t.Fatalf("WatchGameplayData: %v", err)
+		}
+		if !stream.Receive() {
+			t.Fatalf("Receive: %v", stream.Err())
+		}
+		_ = stream.Close()
+		waitClosed(t, done, "upstream StreamGameplayData still open")
+		// Exactly one upstream message, the config: no FilterUpdate, no colours.
+		eq(t, rig.controller.log.only(t, "StreamGameplayData"),
+			gameplayConfigControl(&controllerpb.GameplayStreamConfig{UpdateFrequencyHz: 30}))
+	})
+
 	t.Run("UC-035/main browser disconnect over HTTP/1.1 closes the upstream stream", func(t *testing.T) {
 		// Production path: envoy talks HTTP/1.1 to connect-proxy.
 		for i := 0; i < 10; i++ {

@@ -91,6 +91,7 @@ func TestTalk_ThresholdBeatOnJev(t *testing.T) {
 }
 
 // UC: UC-070 main
+// UC: UC-040 A28
 func TestTalk_KillSwitchBeat(t *testing.T) {
 	t.Run("UC-070/main step 5 an in-flight claude answer is discarded with kill_switch", func(t *testing.T) {
 		be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
@@ -106,7 +107,7 @@ func TestTalk_KillSwitchBeat(t *testing.T) {
 	})
 
 	for _, backend := range []string{flags.DecisionBackendRules, flags.DecisionBackendClaude, flags.DecisionBackendJev} {
-		t.Run("UC-070/main step 5 kill switch off: no decision on "+backend, func(t *testing.T) {
+		t.Run("UC-070/main step 5 UC-040/A28 kill switch off: no decision and no backend call on "+backend, func(t *testing.T) {
 			snap := talkJevSnapshot(time.Second)
 			snap.Decision.Backend = backend
 			snap.Enabled = false

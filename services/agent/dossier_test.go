@@ -243,6 +243,7 @@ func TestDossierEmptyRoot(t *testing.T) {
 	}
 }
 
+// UC: UC-035 A1
 func TestDossierHTMLIndex(t *testing.T) {
 	root := t.TempDir()
 	seedJournal(t, root, "exp_done0002", true)
@@ -259,6 +260,53 @@ func TestDossierHTMLIndex(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "exp_done0002") || !strings.Contains(body, "/experiments/exp_done0002") {
 		t.Errorf("html missing experiment link: %s", body)
+	}
+}
+
+// UC: UC-035 A1
+// A browser (Accept: text/html) gets the HTML table; any other client gets JSON.
+func TestDossierListHTMLTableForABrowserJSONOtherwise(t *testing.T) {
+	root := t.TempDir()
+	seedJournal(t, root, "exp_done0003", true)
+	reader := &dossierReader{root: root}
+
+	t.Run("UC-035/A1 browser Accept header gets an HTML table", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/experiments", nil)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+		rec := httptest.NewRecorder()
+		reader.handleList(rec, req)
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Fatalf("content-type = %q, want text/html", ct)
+		}
+		body := rec.Body.String()
+		for _, want := range []string{"<table", "<th>ID</th><th>Status</th><th>Flag</th><th>Candidate</th>", "<th>Verdict</th><th>Started</th><th>Thesis</th>", "exp_done0003"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("html missing %q: %s", want, body)
+			}
+		}
+	})
+
+	for _, accept := range []string{"application/json", "text/html, application/json"} {
+		t.Run("UC-035/A1 a non-browser client gets JSON: "+accept, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/experiments", nil)
+			req.Header.Set("Accept", accept)
+			rec := httptest.NewRecorder()
+			reader.handleList(rec, req)
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Fatalf("content-type = %q, want application/json", ct)
+			}
+			var body struct {
+				Experiments []map[string]any `json:"experiments"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Experiments) != 1 {
+				t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+			}
+			for _, field := range []string{"id", "hypothesis", "flag_key", "candidate", "objective", "status", "verdict", "started_at", "concluded_at"} {
+				if _, ok := body.Experiments[0][field]; !ok {
+					t.Errorf("json list item missing %q: %v", field, body.Experiments[0])
+				}
+			}
+		})
 	}
 }
 

@@ -668,6 +668,25 @@ class TestGrantPartialShield:
         await game.grant_partial_shield("AA", 9999.0)
         assert game.players["AA"].partial_shield_until <= time.time() + game.PARTIAL_SHIELD_MAX_SECONDS + 1.0
 
+    @pytest.mark.uc("UC-040", flow="main", steps=[13])
+    @pytest.mark.asyncio
+    async def test_uc040_step13_boost_clamped_to_1_0_and_2_0(self, game):
+        """UC-040 step 13: a partial shield's boost is clamped to 1.0 to 2.0 (both bounds)."""
+        game.players["BB"] = Player(serial="BB", alive=True)
+        await game.grant_partial_shield("AA", 5.0, 0.1)
+        assert game.players["AA"].partial_shield_boost == pytest.approx(1.0)
+        await game.grant_partial_shield("BB", 5.0, 9.0)
+        assert game.players["BB"].partial_shield_boost == pytest.approx(2.0)
+
+    @pytest.mark.uc("UC-040", flow="main", steps=[13])
+    @pytest.mark.asyncio
+    async def test_uc040_step13_partial_shield_lasts_at_most_30_s(self, game):
+        """UC-040 step 13: a partial shield lasts at most 30 s, however long the grant asks."""
+        before = time.time()
+        await game.grant_partial_shield("AA", 9999.0, 1.5)
+        until = game.players["AA"].partial_shield_until
+        assert before + 29.0 <= until <= time.time() + 30.0
+
     @pytest.mark.asyncio
     async def test_nonpositive_seconds_noop(self, game):
         assert await game.grant_partial_shield("AA", 0.0) is False

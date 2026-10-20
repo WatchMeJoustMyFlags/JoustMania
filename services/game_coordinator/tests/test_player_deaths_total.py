@@ -62,6 +62,7 @@ def _yield_in_play_sound(game):
 
 
 @pytest.mark.uc("UC-030", flow="main", steps=[9])
+@pytest.mark.uc("UC-035", br=["BR-002"])
 @pytest.mark.asyncio
 async def test_kill_increments_deaths_total_once(ffa_game):
     serial = next(iter(ffa_game.players))
@@ -74,6 +75,7 @@ async def test_kill_increments_deaths_total_once(ffa_game):
 
 
 @pytest.mark.uc("UC-030", flow="main", steps=[9])
+@pytest.mark.uc("UC-035", br=["BR-002"])
 @pytest.mark.asyncio
 async def test_shadow_game_death_labelled_shadow(ffa_game):
     ffa_game.game_kind = "shadow"

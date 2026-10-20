@@ -78,6 +78,7 @@ def test_no_exporter_disables_its_sending_queue(collector):
     )
 
 
+@pytest.mark.uc("UC-035", flow="A3")
 def test_every_pipeline_starts_with_the_memory_limiter(collector):
     """A backend outage that grows queues must hit the memory limiter, not OOM the collector (#1155)."""
     for name, pipeline in collector["service"]["pipelines"].items():
@@ -91,6 +92,7 @@ def _limiter_default(value: str) -> int:
     return int(match.group(1))
 
 
+@pytest.mark.uc("UC-035", flow="A3")
 @pytest.mark.nfr("NFR-021")
 def test_memory_limiter_backpressures_at_600_mib_under_the_768_mib_container(collector):
     """NFR-021: limit 600 MiB, spike 150 MiB, both below the container's 768 MiB cgroup limit (#1155)."""

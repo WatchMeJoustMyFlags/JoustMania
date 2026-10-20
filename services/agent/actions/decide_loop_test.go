@@ -206,6 +206,31 @@ func TestDecideLoop_ProbeMode(t *testing.T) {
 		}
 	})
 
+	t.Run("UC-040/A23 probe noop without noop in the allow-list is blocked not_allowed and writes nothing", func(t *testing.T) {
+		snap := flags.Snapshot{
+			Enabled:              true,
+			InterventionsAllowed: []string{decision.InterventionGrantShield, decision.InterventionAdjustMusicTempo},
+			Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
+		}
+		l, svc, reader, spy := meteredLoop(t, snap, decision.NewProbeRules(5*time.Second, nil), true)
+
+		state := l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s-1"}, testTrigger())
+
+		if len(state.Outcomes) != 1 {
+			t.Fatalf("outcomes = %+v, want the one probe decision", state.Outcomes)
+		}
+		if o := state.Outcomes[0]; o.Intervention != decision.InterventionNoop || o.Dispatched || o.BlockReason != decision.ReasonNotAllowed {
+			t.Fatalf("outcome = %+v, want a noop blocked not_allowed", o)
+		}
+		assertNoWrites(t, svc)
+		if n := appliedTotal(t, reader, decision.InterventionNoop); n != 0 {
+			t.Fatalf("agent_interventions_applied_total{action=noop} = %d, want 0", n)
+		}
+		if calls := spy.calls(); len(calls) != 0 {
+			t.Fatalf("Writer calls = %v, want none for a blocked noop", calls)
+		}
+	})
+
 	t.Run("UC-040/A23 probe noop: no agent.decide span, decision and action spans, charges 1.0 of the budget", func(t *testing.T) {
 		// A budget of 2 admits two noops and refuses the third: the noop costs
 		// more than 2/3 and at most 1.0 (the medium weight).

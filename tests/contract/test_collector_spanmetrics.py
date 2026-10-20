@@ -50,6 +50,31 @@ def test_spanmetrics_dimensions_are_the_decide_span_attributes(collector):
     assert connector["metrics_expiration"]
 
 
+@pytest.mark.uc("UC-035", flow="main", steps=[3], br=["BR-004"])
+def test_spanmetrics_decide_histogram_buckets_span_5ms_to_32s(collector):
+    """UC-035 BR-004: the agent.decide duration histogram uses explicit 5 ms to 32 s buckets."""
+    buckets = collector["connectors"]["span_metrics"]["histogram"]["explicit"][
+        "buckets"
+    ]
+    assert buckets[0] == "5ms"
+    assert buckets[-1] == "32s"
+    assert buckets == [
+        "5ms",
+        "10ms",
+        "25ms",
+        "50ms",
+        "100ms",
+        "250ms",
+        "500ms",
+        "1s",
+        "2s",
+        "4s",
+        "8s",
+        "16s",
+        "32s",
+    ]
+
+
 def test_spanmetrics_only_sees_agent_decide_spans(collector):
     """Bounded cardinality: a dedicated traces pipeline filters to agent.decide of service agent."""
     pipelines = collector["service"]["pipelines"]

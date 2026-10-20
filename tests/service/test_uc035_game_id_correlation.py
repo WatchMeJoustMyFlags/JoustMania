@@ -38,7 +38,7 @@ EVENT_TIMEOUT_SECONDS = 15.0
 SPAN_TIMEOUT_SECONDS = 30.0
 
 
-@pytest.mark.uc("UC-035", cond=["Post-S-1"])
+@pytest.mark.uc("UC-035", flow="main", steps=[7], cond=["Post-S-1"])
 async def test_game_id_correlates_spans_metrics_and_logs(stack, headless_cleanup):
     sink = stack.otlp_sink
     assert sink is not None

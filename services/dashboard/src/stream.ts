@@ -29,3 +29,21 @@ export async function keepStreamOpen<T>(opts: KeepStreamOpenOptions<T>): Promise
   opts.onLost?.(lost);
   schedule(() => void keepStreamOpen(opts), opts.retryMs ?? 2000);
 }
+
+/**
+ * The game event stream's loss handling (UC-035 A4): the loss is only logged,
+ * the event feed and the shield badges get nothing (they stop updating without
+ * a message), and the stream is reopened every 2 s.
+ */
+export function keepGameEventStreamOpen<T>(
+  open: () => AsyncIterable<T>,
+  onEvent: (event: T) => void,
+  schedule?: (fn: () => void, ms: number) => void,
+): Promise<void> {
+  return keepStreamOpen({
+    open,
+    onEvent,
+    onLost: (error) => console.warn("Game event stream lost, reopening:", error ?? "ended"),
+    schedule,
+  });
+}

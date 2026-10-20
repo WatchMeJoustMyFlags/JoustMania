@@ -98,7 +98,7 @@ Give the same verdict on the same evidence every time.
 
 Allowed use-case status (suggestion only):
 - `Tested`: every `Main` and every `A<n>` unit has a `Covered` tagged test, every `BR-XXX` is `Covered` or
-  `n/a`, the use case carries no open `Known gap` line, **every FR on its `**Requirements:**` line can be
+  `n/a`, the use case carries no open blocking `Known gap` line (A stated `Known gap` on a precondition, a postcondition, an NFR or a clause that only an e2e or hardware run can assert does not block `Tested`; a `Known gap` on a main step, an alternative flow or a BR does; maintainer rule, #1725), **every FR on its `**Requirements:**` line can be
   `Verified`** (Grep `docs/use_cases/` for each FR id on `**Requirements:**` lines, with a word boundary so
   `NFR-013` does not match `FR-013`: every other use case listing it must be `Tested` or `Done`), and the
   caller confirms the suites pass (say you cannot verify that). A use case's status is never above the

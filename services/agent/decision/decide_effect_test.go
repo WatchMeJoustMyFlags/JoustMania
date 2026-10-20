@@ -10,6 +10,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/gamecontext"
 )
 
 // Remote-path effect measurement (#1699, D-A20): a decision that lands on the
@@ -162,4 +163,68 @@ func TestEffectSample_OnlyForWrittenDecisions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// landingBaselines runs one remote act whose call carries sent and lands after the
+// provider was switched to landing; it returns the effect spans' baselines by signal.
+func landingBaselines(t *testing.T, sent, landing gamecontext.GameContext) map[string]float64 {
+	t.Helper()
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, "shield"))
+	be.block = true
+	h := newRemoteHarness(t, effectSnapshot(5*time.Second), be)
+	sched := &allScheduler{}
+	h.loop.afterFunc = sched.after
+	h.provider.set(remoteGameID, sent)
+
+	h.loop.OnEvaluate(context.Background(), sent, testTrigger())
+	<-be.started
+	h.provider.set(remoteGameID, landing)
+	close(be.release)
+	h.loop.inferWG.Wait()
+	sched.fireAll()
+	h.loop.AwaitEffects()
+
+	out := map[string]float64{}
+	for _, s := range spansByName(h.sr.Ended(), SpanInterventionEffect) {
+		attrs := attrMap(s.Attributes())
+		signal, _ := attrs[AttrEffectSignal].(string)
+		baseline, ok := attrs[AttrEffectBaseline].(float64)
+		if !ok {
+			t.Fatalf("effect span has no %s: %v", AttrEffectBaseline, attrs)
+		}
+		out[signal] = baseline
+	}
+	if len(out) == 0 {
+		t.Fatal("no agent.intervention.effect span for the remote decision")
+	}
+	return out
+}
+
+// UC: UC-040 main
+func TestRemote_EffectBaselineIsTheLandingContext(t *testing.T) {
+	t.Run("UC-040/main step 14 a remote decision's baseline comes from the context at landing", func(t *testing.T) {
+		early := remoteContext() // 20 s into the game when the call goes out
+		late := remoteContext()
+		late.Session.DurationSeconds = fptr(90) // the game moved on while the call was in flight
+
+		atLanding := landingBaselines(t, early, late)
+		lateThroughout := landingBaselines(t, late, late)
+		earlyThroughout := landingBaselines(t, early, early)
+
+		if len(atLanding) != len(lateThroughout) {
+			t.Fatalf("signals = %v, want the landing context's %v", atLanding, lateThroughout)
+		}
+		differs := false
+		for signal, want := range lateThroughout {
+			if atLanding[signal] != want {
+				t.Errorf("%s baseline = %v, want the landing context's %v", signal, atLanding[signal], want)
+			}
+			if earlyThroughout[signal] != want {
+				differs = true
+			}
+		}
+		if !differs {
+			t.Fatal("test setup: the two contexts give the same baselines, so the test proves nothing")
+		}
+	})
 }

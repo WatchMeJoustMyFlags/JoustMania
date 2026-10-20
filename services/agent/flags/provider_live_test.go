@@ -194,6 +194,7 @@ func readSettled[T comparable](t *testing.T, what string, read func() T, want T)
 //
 // UC: UC-043 Pre-1 A1
 // UC: UC-044 main
+// UC: UC-040 main
 func TestLiveFlip_AlreadyEvaluatedFlagsFollowTheFlagService(t *testing.T) {
 	p := newLiveFlagPlane(t, liveLateFlagdDelay)
 	ctx := context.Background()
@@ -251,6 +252,7 @@ func TestLiveFlip_KillSwitchWhenFlagdWasLateAtStartup(t *testing.T) {
 // the overlay back to the fail-closed baseline (scripts/agent-dryrun-enable.sh off).
 //
 // UC: UC-045 main
+// UC: UC-040 main
 func TestLiveFlip_KillSwitch(t *testing.T) {
 	p := newLiveFlagPlane(t, 0)
 	ctx := context.Background()

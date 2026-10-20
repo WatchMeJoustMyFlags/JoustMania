@@ -508,16 +508,17 @@ func TestDecide_Failures(t *testing.T) {
 	}
 }
 
+// UC: UC-040 main
 func TestAvailable(t *testing.T) {
 	api := newFakeAPI(t, fixed(200, completion("stop", answerJSON, nil)))
 	base := api.srv.URL + "/v1"
 	cases := map[string]Config{
-		"no key":      {BaseURL: base, Model: "m"},
-		"blank key":   {APIKey: "  ", BaseURL: base, Model: "m"},
-		"no model":    {APIKey: "k", BaseURL: base},
-		"blank model": {APIKey: "k", BaseURL: base, Model: " "},
-		"no base url": {APIKey: "k", Model: "m"},
-		"blank base":  {APIKey: "k", Model: "m", BaseURL: " / "},
+		"UC-040/main step 2 no key":      {BaseURL: base, Model: "m"},
+		"UC-040/main step 2 blank key":   {APIKey: "  ", BaseURL: base, Model: "m"},
+		"UC-040/main step 2 no model":    {APIKey: "k", BaseURL: base},
+		"UC-040/main step 2 blank model": {APIKey: "k", BaseURL: base, Model: " "},
+		"UC-040/main step 2 no base url": {APIKey: "k", Model: "m"},
+		"UC-040/main step 2 blank base":  {APIKey: "k", Model: "m", BaseURL: " / "},
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -109,3 +109,62 @@ def test_recording_spans_and_metrics_never_blocks_when_collector_is_down():
         # 2000 frames of span + 3 metric ops: well under a 60 Hz budget per frame even on CI
         assert total < 5.0, f"{phase}: 2000 frames took {total:.2f}s with the collector down"
         assert worst < 0.25, f"{phase}: one frame blocked for {worst:.3f}s with the collector down"
+
+
+_LOG_SCRIPT = textwrap.dedent(
+    """
+    import json, logging, os, socket, time
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()  # nothing listens here: the "collector" is down
+    os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://127.0.0.1:{port}"
+    os.environ["OTEL_SERVICE_NAME"] = "fail-open-log-test"
+
+    from lib.otel_logging import init_logging
+    from opentelemetry.sdk._logs import LoggingHandler
+
+    logging.getLogger().setLevel(logging.INFO)
+    init_logging()
+    attached = any(isinstance(h, LoggingHandler) for h in logging.getLogger().handlers)
+    log = logging.getLogger("fail_open.game")
+
+    def burst(n):
+        worst = 0.0
+        start = time.monotonic()
+        for i in range(n):
+            t0 = time.monotonic()
+            log.info("frame %d", i)
+            worst = max(worst, time.monotonic() - t0)
+        return time.monotonic() - start, worst
+
+    first = burst(2000)
+    time.sleep(1.0)  # export attempts fail in the background meanwhile
+    second = burst(2000)
+    print(json.dumps({"first": first, "second": second, "attached": attached}), flush=True)
+    os._exit(0)
+    """
+)
+
+
+@pytest.mark.uc("UC-035", cond=["Post-F-1"])
+def test_recording_log_lines_never_blocks_when_collector_is_down():
+    """UC-035 Post-F-1: with no collector, a log line neither blocks nor raises on the game path."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OTEL_")}
+    result = subprocess.run(
+        [sys.executable, "-c", _LOG_SCRIPT],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-3000:]
+    timings = json.loads(result.stdout.strip().splitlines()[-1])
+    assert timings["attached"], "the OTLP LoggingHandler was not attached, so the timings prove nothing"
+    for phase in ("first", "second"):
+        total, worst = timings[phase]
+        assert total < 5.0, f"{phase}: 2000 log lines took {total:.2f}s with the collector down"
+        assert worst < 0.25, f"{phase}: one log line blocked for {worst:.3f}s with the collector down"

@@ -128,7 +128,7 @@ Requirements use the AIUP requirement statuses (`Open`, `In Progress`, `Implemen
 `Deferred`, `Rejected`); use cases use the use-case statuses, which map as follows: `Draft` / `Review` /
 `Approved` = requirement `Open` or `In Progress`, `Implemented` = `Implemented`, `Tested` / `Done` =
 `Verified`, `Obsolete` = `Rejected`. UC `Tested` = every main-scenario and alternative-flow step has a
-tagged test (see the `/coverage-check` skill, added by #1289). A use case's status is never above the weakest FR on its
+tagged test (see the `/coverage-check` skill, added by #1289) and no blocking `Known gap` line is open. A stated `Known gap` on a precondition, a postcondition, an NFR or a clause that only an e2e or hardware run can assert does not block `Tested`; a `Known gap` on a main step, an alternative flow or a BR does. (maintainer rule, #1725). A use case's status is never above the weakest FR on its
 `Requirements:` line; FRs that only a planned flow needs go on a separate `Planned:` line with their
 issue number, so the use case can be `Implemented` while they stay `Open`. The flows themselves go under a
 `## Planned extensions` section (IDs kept, issue and status Open); they do not count toward `Tested` until they

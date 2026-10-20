@@ -19,7 +19,7 @@ OBSERVABILITY_FLAGS = ic.REPO_ROOT / "services" / "flagd" / "observability.json"
 
 @pytest.mark.uc("UC-035", br=["BR-001"])
 @pytest.mark.parametrize(
-    ("service", "port"), [("jaeger", 16686), ("victoria-metrics", 8428)]
+    ("service", "port"), [("jaeger", 16686), ("victoria-metrics", 8428), ("loki", 3100)]
 )
 def test_override_publishes_query_ports_on_loopback_only(service, port):
     """C-015: the dev override binds Jaeger and VictoriaMetrics to 127.0.0.1, never all interfaces."""
@@ -28,10 +28,33 @@ def test_override_publishes_query_ports_on_loopback_only(service, port):
 
 
 @pytest.mark.uc("UC-035", br=["BR-001"])
-@pytest.mark.parametrize("service", ["jaeger", "victoria-metrics"])
+@pytest.mark.parametrize("service", ["jaeger", "victoria-metrics", "loki"])
 def test_base_compose_publishes_no_query_port(service):
     """C-015: the base stack (the Pi path) exposes them to the network only, never to the host."""
     assert "ports" not in ic.compose_services()[service]
+
+
+LITE_FILE = ic.REPO_ROOT / "docker-compose.lite.yml"
+
+
+@pytest.mark.uc("UC-035", br=["BR-001"])
+def test_lite_stack_publishes_only_envoy_to_the_network():
+    """C-015: in the lite stack only envoy's port 80 reaches the network; flagd 8015 and rust-hid 50058 are loopback."""
+    published = {
+        name: [str(p) for p in svc["ports"]]
+        for name, svc in ic.load_yaml(LITE_FILE)["services"].items()
+        if svc.get("ports")
+    }
+    assert published.pop("envoy") == ["80:80"]
+    for name, ports in published.items():
+        for port in ports:
+            assert port.startswith("127.0.0.1:"), (
+                f"lite {name} publishes {port} beyond loopback"
+            )
+    assert sorted(p for ports in published.values() for p in ports) == [
+        "127.0.0.1:50058:50058",
+        "127.0.0.1:8015:8015",
+    ]
 
 
 @pytest.mark.nfr("NFR-023")
