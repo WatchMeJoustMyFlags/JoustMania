@@ -45,7 +45,9 @@ AGENT = "agent"
 FLAG = "interventions_allowed"
 START_MODE = "JoustFFA"
 PERSIST_TIMEOUT_SECONDS = 5.0
-VOICE_TIMEOUT_SECONDS = 5.0
+# The voice follows the persisted write through the pulse RPC and PlaySound; under load
+# (parallel gates) that chain can take well over 5 s (#1643).
+VOICE_TIMEOUT_SECONDS = 15.0
 
 # The voice the menu asks the audio service for per level
 # (services/menu/handlers/admin.py level_voices, lib/types.py Sound.MENU_VOX_ADMINOP_*).
