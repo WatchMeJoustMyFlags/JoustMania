@@ -675,8 +675,9 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   `agent_llm_gated_total{reason}` (decide path reasons: `llm_not_eligible`, `llm_budget_exhausted`,
   `unknown_backend`, `backend_unavailable`, `async_not_wired` (#1377), `decide_interval`, `no_interventions_allowed`), `agent_decisions_total`, `agent_interventions_applied_total`.
 
-Known gap: `agent_interventions_applied_total` also counts applies that the gated sink
-turned into no-ops while `interventions_enabled` is off (`actions/gated.go:GatedActionSink.Apply`).
+`agent_interventions_applied_total` counts only interventions that were written: an apply that the
+gated sink turns into a no-op while `interventions_enabled` is off is not counted
+(`actions/gated.go:GatedActionSink.ApplyReported`, #1681).
 
 ## 13. Changing this contract
 

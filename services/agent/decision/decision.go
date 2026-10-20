@@ -104,6 +104,15 @@ type ActionSink interface {
 	Apply(context.Context, Decision) error
 }
 
+// ActionApplier is optionally implemented by a sink that can turn an Apply into a
+// no-op (actions.GatedActionSink while interventions_enabled is off). It reads the
+// gate and writes in one call and reports which happened: applied=false means
+// nothing was written, so the loop does not count the decision in
+// agent_interventions_applied_total (UC-040 A11, D-A9, #1681).
+type ActionApplier interface {
+	ApplyReported(context.Context, Decision) (applied bool, err error)
+}
+
 // FlagSource resolves the agent control flags for a single decision cycle.
 // *flags.Flags satisfies it; tests supply a fake.
 type FlagSource interface {
@@ -848,7 +857,8 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// BR-011): the sink needs it so end_game can never end another game (#1310).
 	addressed := d
 	addressed.GameID = c.SessionID
-	if err := l.Actions.Apply(dCtx, addressed); err != nil {
+	applied, err := applyAction(dCtx, l.Actions, addressed)
+	if err != nil {
 		aSpan.RecordError(err)
 		// semconv.ErrorType derives the low-cardinality error class from the
 		// Go error's dynamic type, per the error.type convention.
@@ -859,9 +869,22 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		return
 	}
 	// Apply succeeded: count the intervention as applied (#790) — the numerator for
-	// the dashboard's applied-rate panel. Only a clean Apply increments this; an
-	// apply error returns above so a failed dispatch is NOT counted as applied.
+	// the dashboard's applied-rate panel. Only a clean Apply that wrote something
+	// increments this: an apply error returns above, and a gated no-op
+	// (interventions_enabled off, UC-040 A11) is not counted (#1681).
+	if !applied {
+		return
+	}
 	l.recordInterventionApplied(ctx, d.Intervention)
+}
+
+// applyAction applies d through sink and reports whether anything was written. A
+// sink without the ActionApplier seam always writes on a nil error.
+func applyAction(ctx context.Context, sink ActionSink, d Decision) (applied bool, err error) {
+	if ap, ok := sink.(ActionApplier); ok {
+		return ap.ApplyReported(ctx, d)
+	}
+	return true, sink.Apply(ctx, d)
 }
 
 // emitDisabledSpan emits the kill-switch trace for a cycle where the existence
