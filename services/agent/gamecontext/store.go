@@ -435,7 +435,8 @@ const durationStaleAfter = 5 * time.Second
 // game-end consumers keep it out of experiments, retro, summary and proposer.
 const gameActiveStaleAfter = 60 * time.Second
 
-// SetSessionDuration records elapsed game time.
+// SetSessionDuration records elapsed game time (UC-041 BR-003: the live gauge; it
+// never steps back within a game).
 func (s *Store) SetSessionDuration(v float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -304,7 +305,7 @@ func countBlockedActions(spans []sdktrace.ReadOnlySpan) int {
 // TestReceiver_PartitionsByGameID: a single trace batch carrying spans for two
 // distinct game_ids lands in two disjoint partitions through the receiver path
 // (#845 PR B) — no cross-game player bleed.
-// UC: UC-041 main
+// UC: UC-041 main Post-S-1
 func TestReceiver_PartitionsByGameID(t *testing.T) {
 	r, mux, _, _ := newTestReceiver(t)
 
@@ -330,4 +331,140 @@ func TestReceiver_PartitionsByGameID(t *testing.T) {
 	if _, ok := b.Players["P2"]; !ok {
 		t.Error("P2 should be in game-B")
 	}
+}
+
+// recordingRules captures every context the decision Loop evaluates, so a test
+// can see exactly what a decision read.
+type recordingRules struct {
+	mu   sync.Mutex
+	seen []gamecontext.GameContext
+}
+
+func (r *recordingRules) Evaluate(_ context.Context, c gamecontext.GameContext) []decision.Decision {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = append(r.seen, c)
+	return nil
+}
+
+func (r *recordingRules) evaluations() []gamecontext.GameContext {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]gamecontext.GameContext(nil), r.seen...)
+}
+
+// TestReceiver_MetricsAndSpansFeedTheLiveContext (UC-041 BR-001): metrics make the
+// game live and trigger an evaluation; a span batch in a live game also wakes the
+// evaluation and adds the elimination order it reads; a span that arrives after the
+// game ended still lands in the elimination order but triggers no evaluation.
+// UC: UC-041 BR-001
+func TestReceiver_MetricsAndSpansFeedTheLiveContext(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	clock := time.Unix(5000, 0)
+	mux := gamecontext.NewMultiplexer(func(string) *gamecontext.Store {
+		return gamecontext.NewStore(time.Hour, time.Hour, func() time.Time { return clock })
+	})
+	rules := &recordingRules{}
+	loops := decision.NewLoopSet(func(string) *decision.Loop {
+		fl := flags.Snapshot{
+			Enabled:              true,
+			InterventionsAllowed: []string{"grant_shield"},
+			Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
+		}
+		l := decision.NewLoop(staticFlags{fl}, logger)
+		l.Rules = rules
+		return l
+	})
+	pipe := newPipeline(mux, loops, time.Hour)
+	pipe.now = func() time.Time { return clock }
+	metrics := &metricsReceiver{pipe: pipe}
+	traces := &traceReceiver{pipe: pipe}
+	deathSpan := func(serial string) ptrace.Traces {
+		td := ptrace.NewTraces()
+		span := td.ResourceSpans().AppendEmpty().ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+		span.SetName("player_lifecycle")
+		span.Attributes().PutStr("player.serial", serial)
+		span.Attributes().PutStr("game.id", "game-A")
+		span.Events().AppendEmpty().SetName("player_death")
+		return td
+	}
+
+	t.Run("UC-041/BR-001 a metric batch makes the game live and triggers an evaluation", func(t *testing.T) {
+		md := liveGameMetrics("game-A", "PA")
+		metricGauge(md, "game_player_alive", 1, map[string]string{"game_id": "game-A", "serial": "PB"})
+		if _, err := metrics.Export(context.Background(), pmetricotlp.NewExportRequestFromMetrics(md)); err != nil {
+			t.Fatalf("metrics export: %v", err)
+		}
+		evals := rules.evaluations()
+		if len(evals) != 1 {
+			t.Fatalf("evaluations = %d, want 1 after the live metric batch", len(evals))
+		}
+		if seq := evals[0].Session.EliminationSequence; len(seq) != 0 {
+			t.Fatalf("elimination order before any death = %v, want empty", seq)
+		}
+	})
+
+	t.Run("UC-041/BR-001 a span batch in a live game adds the elimination order the next evaluation reads", func(t *testing.T) {
+		before := len(rules.evaluations())
+		if _, err := traces.Export(context.Background(), ptraceotlp.NewExportRequestFromTraces(deathSpan("PB"))); err != nil {
+			t.Fatalf("trace export: %v", err)
+		}
+		evals := rules.evaluations()
+		if len(evals) != before+1 {
+			t.Fatalf("evaluations after the span batch = %d, want %d (a span batch wakes the evaluation)", len(evals), before+1)
+		}
+		if seq := evals[len(evals)-1].Session.EliminationSequence; len(seq) != 1 || seq[0] != "PB" {
+			t.Fatalf("evaluated elimination order = %v, want [PB] from the span", seq)
+		}
+	})
+
+	// The game ends on the metric path (game_active 0).
+	endMD := pmetric.NewMetrics()
+	metricGauge(endMD, "game_active", 0, map[string]string{"game_id": "game-A"})
+	if _, err := metrics.Export(context.Background(), pmetricotlp.NewExportRequestFromMetrics(endMD)); err != nil {
+		t.Fatalf("game end export: %v", err)
+	}
+
+	t.Run("UC-041/BR-001 an ended game is not re-evaluated by a late span", func(t *testing.T) {
+		before := len(rules.evaluations())
+		if _, err := traces.Export(context.Background(), ptraceotlp.NewExportRequestFromTraces(deathSpan("PA"))); err != nil {
+			t.Fatalf("trace export: %v", err)
+		}
+		snap, ok := mux.Snapshot("game-A")
+		if !ok {
+			t.Fatal("game-A partition must still hold the ended game")
+		}
+		if seq := snap.Session.EliminationSequence; len(seq) != 2 || seq[0] != "PB" || seq[1] != "PA" {
+			t.Fatalf("elimination order = %v, want [PB PA] with the late span", seq)
+		}
+		if got := len(rules.evaluations()); got != before {
+			t.Fatalf("late span triggered %d evaluation(s) of the ended game, want none", got-before)
+		}
+	})
+}
+
+// TestReceiver_RestartedAgentRebuildsContextFromSignals (UC-041 Post-F-1): the agent
+// keeps no state of its own across a restart; a fresh store rebuilds a live game's
+// context from the telemetry that arrives once the agent is back.
+// UC: UC-041 Post-F-1
+func TestReceiver_RestartedAgentRebuildsContextFromSignals(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	freshMux := gamecontext.NewMultiplexer(func(string) *gamecontext.Store {
+		return gamecontext.NewStore(time.Hour, time.Hour, fixedClock())
+	})
+	if _, ok := freshMux.Snapshot("game-A"); ok {
+		t.Fatal("a restarted agent starts with no context for the game")
+	}
+	loops := decision.NewLoopSet(func(string) *decision.Loop { return decision.NewLoop(nil, logger) })
+	r := &metricsReceiver{pipe: newPipeline(freshMux, loops, time.Hour)}
+
+	t.Run("UC-041/Post-F-1 the next metric batch rebuilds the live game context", func(t *testing.T) {
+		if _, err := r.Export(context.Background(), pmetricotlp.NewExportRequestFromMetrics(liveGameMetrics("game-A", "PA"))); err != nil {
+			t.Fatalf("Export error: %v", err)
+		}
+		snap, ok := freshMux.Snapshot("game-A")
+		if !ok || snap.Session.GameActive == nil || !*snap.Session.GameActive || snap.Players["PA"] == nil {
+			t.Fatalf("context not rebuilt from metrics alone: ok=%v %+v", ok, snap.Session.GameActive)
+		}
+	})
 }

@@ -75,8 +75,10 @@ func (s *Store) isOwnResource(res pcommon.Resource) bool {
 // system: player_lifecycle spans only end at game end, and the collector batches
 // traces (~10s), so this path is used for identity enrichment and elimination
 // confirmation, and as the second game-end signal (the game root span, #1494),
-// never as a primary live signal. It returns true if anything
-// was recognized.
+// not as the primary live signal. The state it sets (elimination order, mode,
+// kind, experiment id/arm) is part of the context decisions read, and the
+// receiver evaluates after a span batch too, so that state lags the game
+// (UC-041 BR-001). It returns true if anything was recognized.
 func (s *Store) ApplySpans(td ptrace.Traces) bool {
 	updated := false
 	rss := td.ResourceSpans()
