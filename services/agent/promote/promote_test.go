@@ -350,6 +350,41 @@ func TestPromoteAutonomousRevertsOnUnconfirmableWatch(t *testing.T) {
 	}
 }
 
+// A failed autonomous revert leaves the real default applied, records the
+// failure in the reason and starts no cooldown: the next promotion of the same
+// flag is not refused.
+// UC: UC-043 A9
+func TestPromoteAutonomousFailedRevertKeepsDefault(t *testing.T) {
+	t.Run("UC-043/A9 a failed revert stays applied, records the failure, starts no cooldown", func(t *testing.T) {
+		realDef := &recordingRealDefault{}
+		rev := &recordingReverter{err: errors.New("flag service unavailable")}
+		w := &baselineRecordingWatcher{degraded: true}
+		p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, realDef, w, rev)
+		cfg := Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: true}
+
+		res := p.Promote(context.Background(), promoteProposal, promoteVerdict, cfg, testEvidence())
+
+		if res.Outcome != OutcomeApplied {
+			t.Fatalf("outcome = %q, want applied (the revert failed, the default stays)", res.Outcome)
+		}
+		if !strings.Contains(res.Reason, "revert failed") || !strings.Contains(res.Reason, "flag service unavailable") {
+			t.Errorf("reason = %q, want it to record the failed revert", res.Reason)
+		}
+		if rev.calls != 1 || len(realDef.calls) != 1 {
+			t.Fatalf("reverts=%d writes=%d, want 1 and 1 (no retry from the watch)", rev.calls, len(realDef.calls))
+		}
+
+		// No cooldown: a re-promotion of the same flag right away is written.
+		w.degraded = false
+		rev.err = nil
+		again := p.Promote(context.Background(), promoteProposal, promoteVerdict, cfg, testEvidence())
+		if again.Outcome != OutcomeApplied || len(realDef.calls) != 2 {
+			t.Fatalf("re-promotion = %q (%s), writes=%d, want applied and written: a failed revert must not start the cooldown",
+				again.Outcome, again.Reason, len(realDef.calls))
+		}
+	})
+}
+
 // --- FAIL CLOSED (#1016): autonomous with NO Watcher REFUSES to apply. This is the
 // key safety assertion: an unguarded autonomous promotion (apply to real players
 // with no auto-revert) is the unacceptable state, so a nil Watcher is a HARD STOP —

@@ -672,6 +672,8 @@ func TestRemote_InflightRulesDoNotAct(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
 	be.block = true
 	h := newRemoteHarness(t, remoteSnapshot(5*time.Second), be)
+	reader := metric.NewManualReader()
+	h.loop.llmGated = newLLMGatedCounter(metric.NewMeterProvider(metric.WithReader(reader)))
 
 	h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
 	<-be.started
@@ -679,6 +681,10 @@ func TestRemote_InflightRulesDoNotAct(t *testing.T) {
 	state := h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
 	if len(state.Outcomes) != 0 || len(h.sink.decisions()) != 0 {
 		t.Fatal("rules acted while a remote call was in flight")
+	}
+	// UC-040 A4 step 1: a cycle that loses the in-flight claim is not counted.
+	if got := gatedByReason(t, reader); len(got) != 0 {
+		t.Fatalf("agent_llm_gated_total = %v, want nothing counted while a call is in flight", got)
 	}
 	close(be.release)
 	h.loop.AwaitInflight()
@@ -797,6 +803,10 @@ func TestRemote_CadenceRulesDoNotAct(t *testing.T) {
 	snap := remoteSnapshot(time.Second)
 	snap.Decision.MinInterval = time.Minute
 	h := newRemoteHarness(t, snap, be)
+	reader := metric.NewManualReader()
+	h.loop.llmGated = newLLMGatedCounter(metric.NewMeterProvider(metric.WithReader(reader)))
+	logs := &syncBuffer{}
+	h.loop.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	h.run(t)
 	advance(h.clock, 2*time.Second) // rules would be due again
 	state := h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
@@ -806,6 +816,13 @@ func TestRemote_CadenceRulesDoNotAct(t *testing.T) {
 	}
 	if be.callCount() != 1 || len(spansByName(h.sr.Ended(), SpanDecide)) != 1 {
 		t.Fatal("cadence-gated cycle must not call the backend or emit a decide span")
+	}
+	// UC-040 A4 step 2: the gated counter and a debug log say why.
+	if got := gatedByReason(t, reader); got[DecideGateInterval] != 1 || len(got) != 1 {
+		t.Fatalf("agent_llm_gated_total = %v, want exactly {decide_interval: 1}", got)
+	}
+	if n := logs.count("agent.decide.cadence_wait"); n != 1 {
+		t.Fatalf("agent.decide.cadence_wait logs = %d, want 1", n)
 	}
 }
 

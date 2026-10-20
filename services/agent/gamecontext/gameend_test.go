@@ -312,6 +312,11 @@ func TestGameEnd_StaleEndLatches(t *testing.T) {
 		}
 
 		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		// UC-041 A2 step 2: the recreated context of a dropped ended id stays ended.
+		// The latched store ignores the 1, so GameActive stays unset (not active).
+		if snap, ok := mux.Snapshot("game-A"); !ok || (snap.Session.GameActive != nil && *snap.Session.GameActive) {
+			t.Fatal("recreated context of a dropped ended game id is active, want it to stay ended")
+		}
 		clk.advance(5 * time.Second)
 		mux.ApplyMetrics(gameActiveFor("game-A", 0))
 		if got := rec.count(); got != 1 {
@@ -329,6 +334,58 @@ func TestGameEnd_StaleEndLatches(t *testing.T) {
 		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 0))
 		if got := rec.count(); got != 2 {
 			t.Fatalf("fallback partition ended %d games, want 2", got)
+		}
+	})
+
+	t.Run("UC-041/A5 a second game_active 1 on the active fallback game changes nothing", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(1000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 1))
+		first, _ := mux.Snapshot(FallbackGameID)
+		if first.SessionID == "" || first.Session.GameActive == nil || !*first.Session.GameActive {
+			t.Fatalf("precondition: fallback game not started: %+v", first.Session)
+		}
+		clk.advance(3 * time.Second)
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 1))
+		second, _ := mux.Snapshot(FallbackGameID)
+		if second.SessionID != first.SessionID {
+			t.Fatalf("SessionID = %q after a second 1, want unchanged %q", second.SessionID, first.SessionID)
+		}
+		if !second.Session.StartedAt.Equal(first.Session.StartedAt) {
+			t.Fatalf("StartedAt moved %v -> %v on a second 1", first.Session.StartedAt, second.Session.StartedAt)
+		}
+		if second.Session.GameActive == nil || !*second.Session.GameActive || rec.count() != 0 {
+			t.Fatal("a second 1 ended or reset the active fallback game")
+		}
+		// The next 0 -> 1 starts session-<n+1>.
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 0))
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 1))
+		if third, _ := mux.Snapshot(FallbackGameID); third.SessionID == first.SessionID {
+			t.Fatalf("a later 0 -> 1 kept SessionID %q, want a new session id", third.SessionID)
+		}
+	})
+
+	t.Run("UC-041/A5 a root span never ends the fallback game", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(1000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 1))
+		clk.advance(10 * time.Second)
+		// A root-shaped span without a game id lands in the fallback partition but
+		// is not a game root span; one with a game id belongs to its own game.
+		mux.ApplySpans(rootSpanFor(FallbackGameID, clk.now()))
+		mux.ApplySpans(rootSpanFor("game-X", clk.now()))
+		snap, _ := mux.Snapshot(FallbackGameID)
+		if snap.Session.GameActive == nil || !*snap.Session.GameActive {
+			t.Fatal("a root span ended the fallback game")
+		}
+		if got := rec.count(); got != 0 {
+			t.Fatalf("OnGameEnd fired %d times, want 0", got)
+		}
+		mux.ApplyMetrics(gameActiveFor(FallbackGameID, 0))
+		if got := rec.count(); got != 1 || rec.last().EndReason != EndReasonZero {
+			t.Fatalf("fallback game end: %d ends, want 1 by game_active 0", got)
 		}
 	})
 }

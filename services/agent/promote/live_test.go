@@ -3,6 +3,7 @@ package promote
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -259,6 +260,74 @@ func TestRewatchKeepsOnConfirmedHealthy(t *testing.T) {
 	if rev.Calls() != 0 {
 		t.Errorf("re-watch revert calls = %d, want 0 (confirmed healthy)", rev.Calls())
 	}
+}
+
+// countingObserver reports a fixed verdict and counts Observe calls (safe across
+// the re-watch goroutine).
+type countingObserver struct {
+	verdict atomic.Int32
+	calls   atomic.Int32
+}
+
+func (o *countingObserver) Observe(context.Context, string, float64, time.Time) (WatchVerdict, error) {
+	o.calls.Add(1)
+	return WatchVerdict(o.verdict.Load()), nil
+}
+
+func (o *countingObserver) Degraded(ctx context.Context, f string, b float64, since time.Time) (bool, error) {
+	v, err := o.Observe(ctx, f, b, since)
+	return v == VerdictDegraded, err
+}
+
+// TestRewatchStopsAtTimeout: with too few real games the re-watch polls every
+// interval until the timeout, then stops and the default stays: a later
+// degradation is no longer acted on.
+// UC: UC-043 main
+func TestRewatchStopsAtTimeout(t *testing.T) {
+	t.Run("UC-043/main step 7 the re-watch timeout defaults to 3600 s", func(t *testing.T) {
+		if DefaultRewatchTimeout != time.Hour {
+			t.Fatalf("DefaultRewatchTimeout = %v, want 1h", DefaultRewatchTimeout)
+		}
+		if rw := NewPollingRewatcher(context.Background(), 0, 0, discardLogger()); rw.timeout != DefaultRewatchTimeout || rw.interval != DefaultRewatchInterval {
+			t.Fatalf("unset interval/timeout = %v/%v, want the defaults", rw.interval, rw.timeout)
+		}
+	})
+
+	t.Run("UC-043/main step 7 after the timeout the re-watch stops and the default stays", func(t *testing.T) {
+		var clock atomic.Int64
+		base := time.Unix(1_700_000_000, 0)
+		clock.Store(base.UnixNano())
+		rw := NewPollingRewatcher(context.Background(), time.Millisecond, time.Minute, discardLogger())
+		rw.now = func() time.Time { return time.Unix(0, clock.Load()) }
+
+		obs := &countingObserver{}
+		obs.verdict.Store(int32(VerdictInsufficient))
+		var reverts atomic.Int32
+		rw.Schedule(context.Background(), "f", 0.5, base, obs, func(context.Context) { reverts.Add(1) })
+
+		// Before the timeout it keeps polling.
+		waitFor(t, 5*time.Second, func() bool { return obs.calls.Load() >= 3 })
+
+		// Past the timeout: the next insufficient poll ends the re-watch.
+		clock.Store(base.Add(time.Minute + time.Second).UnixNano())
+		stable := func() bool {
+			before := obs.calls.Load()
+			time.Sleep(30 * time.Millisecond) // ~30 polls at the 1 ms interval
+			return obs.calls.Load() == before
+		}
+		waitFor(t, 5*time.Second, stable)
+
+		// A degradation now is not observed: the re-watch is over, nothing reverts.
+		obs.verdict.Store(int32(VerdictDegraded))
+		settled := obs.calls.Load()
+		time.Sleep(50 * time.Millisecond)
+		if got := obs.calls.Load(); got != settled {
+			t.Fatalf("re-watch polled %d more times after the timeout, want it stopped", got-settled)
+		}
+		if reverts.Load() != 0 {
+			t.Fatalf("reverts = %d after the timeout, want 0 (the default stays)", reverts.Load())
+		}
+	})
 }
 
 // waitFor polls cond until it is true or the deadline passes (a test helper for the
