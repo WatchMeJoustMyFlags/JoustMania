@@ -54,6 +54,7 @@ func TestSafetyDefaultPromoterNeverActsForReal(t *testing.T) {
 // path) NEVER mutates the real default while the agent is disabled, even with a
 // real-default writer wired. The kill-switch is a hard gate independent of the env
 // gate.
+// UC: UC-043 main
 func TestSafetyAutonomousBlockedByKillSwitch(t *testing.T) {
 	realDef := &recordingRealDefault{}
 	p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, realDef, fakeWatcher{}, &recordingReverter{})

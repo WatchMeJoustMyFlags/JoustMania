@@ -22,6 +22,7 @@ func ev(eventType string) *gcpb.GameEvent {
 // (experiment_id, arm) and origin=AGENT onto the StartGameConfig, and the
 // background drive/cleanup runs to completion (controllers removed) when the game
 // ends — all bounded by driveCtx.
+// UC: UC-043 main
 func TestStartExperimentGame_BindsCohortAndReturnsID(t *testing.T) {
 	mock := &fakeMock{}
 	coord := &fakeCoord{
@@ -102,6 +103,7 @@ func TestStartExperimentGame_ValidatesSpec(t *testing.T) {
 	})
 }
 
+// UC: UC-043 main
 func TestRunShadowGame_HappyPath(t *testing.T) {
 	mock := &fakeMock{}
 	coord := &fakeCoord{
