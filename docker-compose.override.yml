@@ -20,6 +20,17 @@ services:
     ports:
       - "127.0.0.1:8070:8070"
 
+  # Jaeger and VictoriaMetrics - loopback-only query ports so integration tests
+  # read what the collector delivered without the envoy/dashboard profile
+  # (UC-035 A3, NFR-024). Test/dev only; the host path in production is envoy's
+  # /jaeger/ and /victoria-metrics/ routes (C-015).
+  jaeger:
+    ports:
+      - "127.0.0.1:16686:16686"
+  victoria-metrics:
+    ports:
+      - "127.0.0.1:8428:8428"
+
   # Controller Manager - Expose ports for testing
   controller-manager:
     expose:
