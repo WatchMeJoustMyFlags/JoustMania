@@ -130,12 +130,19 @@ def test_restart_keeps_admin_settings_and_drops_the_rest(fresh_stack, flag_servi
     )
     epoch_before = flag_service.state()["epoch"]
 
-    with flagd_probe_client(stack, "game", resolver="rpc") as game:
+    with (
+        flagd_probe_client(stack, "game", resolver="rpc") as game,
+        flagd_probe_client(stack, "agent", resolver="rpc") as agent,
+    ):
         # Step 2: flagd serves the admin value; the Werewolf rule still wins.
         assert poll_until(lambda: game.get_integer_value("sensitivity", -1, plain) == 1), (
             "flagd did not serve the persisted sensitivity=slow"
         )
         assert game.get_integer_value("sensitivity", -1, werewolf) == 3, "the Werewolf rule lost"
+        # UC-044 step 3: the stage switch reaches flagd before the restart.
+        assert poll_until(lambda: agent.get_string_value("decision.backend", "", None) == "claude"), (
+            "flagd did not serve the stage overlay decision.backend=claude"
+        )
 
         # Step 3: restart the flag service; writes during the outage are never 200
         # without a sync stream.
@@ -163,6 +170,11 @@ def test_restart_keeps_admin_settings_and_drops_the_rest(fresh_stack, flag_servi
             "flagd did not serve the persisted value after the restart"
         )
         assert game.get_integer_value("sensitivity", -1, werewolf) == 3
+        # UC-044 Post-S-2: the switch is not persisted; flagd serves the shipped baseline
+        # decision.backend=rules again.
+        assert poll_until(lambda: agent.get_string_value("decision.backend", "", None) == "rules", RECOVERY_SECONDS), (
+            "flagd did not serve the baseline decision.backend=rules after the restart"
+        )
         print(f"\nTC-019 recovery: {time.monotonic() - started:.1f} s, outage statuses {sorted(set(outage_statuses))}")
 
 

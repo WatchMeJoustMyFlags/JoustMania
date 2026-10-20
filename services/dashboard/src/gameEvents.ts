@@ -68,6 +68,12 @@ export function reduceGameEvent(prev: GameFeedState, event: GameEventInput): Gam
       feedLine = "Game ended with an error";
       break;
 
+    case "game_start_error":
+      state.gameState = "Ended";
+      gameRunning = false;
+      feedLine = `Game failed to start: ${data["error"] || "unknown error"}`;
+      break;
+
     case "player_death":
       state.alivePlayers = Math.max(0, state.alivePlayers - 1);
       feedLine = `Player ${shortSerial(data["serial"])} eliminated`;
