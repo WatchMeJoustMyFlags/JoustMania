@@ -348,7 +348,9 @@ var responseContracts = []responseContract{
 		}},
 }
 
-// TestContract_Responses decodes every response for its stage.
+// TestContract_Responses decodes every response for its stage. The "noul" case
+// checks Jev's native noul answer and its confidence |2p-1| (UC-040 A12).
+// UC: UC-040 A12
 func TestContract_Responses(t *testing.T) {
 	for _, c := range responseContracts {
 		t.Run(c.name, func(t *testing.T) {

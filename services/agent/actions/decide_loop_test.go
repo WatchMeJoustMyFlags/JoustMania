@@ -2,13 +2,17 @@ package actions
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flags"
@@ -171,5 +175,100 @@ func TestDecideLoop_ProbeMode(t *testing.T) {
 		if calls := spy.calls(); len(calls) != 1 || calls[0] != nil {
 			t.Fatalf("Writer calls = %v, want exactly one returning nil", calls)
 		}
+	})
+}
+
+// writesTotal reads agent_intervention_writes_total{result}.
+func writesTotal(t *testing.T, reader *metric.ManualReader, result string) int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "agent_intervention_writes_total" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("expected Sum[int64], got %T", m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				if v, _ := dp.Attributes.Value("result"); v.AsString() == result {
+					return dp.Value
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// TestDecideLoop_RefusesNonGameID: a decision taken on the partition for
+// unlabeled signals (id `session-<n>`, not a coordinator game id) reaches the
+// real Writer, which refuses it before any flag-service call: one failed write
+// counted, the agent.action span in error, nothing applied and no retry.
+// UC: UC-040 A18 BR-002
+func TestDecideLoop_RefusesNonGameID(t *testing.T) {
+	t.Run("UC-040/A18 end_game on a session-<n> partition is refused", func(t *testing.T) {
+		snap := flags.Snapshot{
+			Enabled:              true,
+			InterventionsAllowed: []string{decision.InterventionEndGame},
+			Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
+		}
+		l, svc, reader, spy := meteredLoop(t, snap,
+			oneDecision{Intervention: decision.InterventionEndGame, Reason: "end"}, true)
+		sr := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+		t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+		l.Tracer = tp.Tracer("test")
+
+		l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "session-1"}, testTrigger())
+
+		assertNoWrites(t, svc)
+		if calls := spy.calls(); len(calls) != 1 || !errors.Is(calls[0], errNoGame) {
+			t.Fatalf("Writer calls = %v, want exactly one refusal (errNoGame, no retry)", calls)
+		}
+		if n := writesTotal(t, reader, resultError); n != 1 {
+			t.Fatalf("agent_intervention_writes_total{result=error} = %d, want 1", n)
+		}
+		if n := appliedTotal(t, reader, decision.InterventionEndGame); n != 0 {
+			t.Fatalf("agent_interventions_applied_total{action=end_game} = %d, want 0", n)
+		}
+		var action sdktrace.ReadOnlySpan
+		for _, s := range sr.Ended() {
+			if s.Name() == decision.SpanAction {
+				action = s
+			}
+		}
+		if action == nil || action.Status().Code != codes.Error {
+			t.Fatalf("agent.action span = %v, want one with status Error", action)
+		}
+	})
+}
+
+// TestDecideLoop_DisabledDecidesNothing: with `enabled` off the loop stops at the
+// existence layer: the rules never decide, the Writer is never called and the
+// flag service receives nothing, even with the actuation gate on.
+// UC: UC-040 Pre-2
+func TestDecideLoop_DisabledDecidesNothing(t *testing.T) {
+	t.Run("UC-040/Pre-2 enabled=false makes no decision and writes nothing", func(t *testing.T) {
+		snap := flags.Snapshot{
+			Enabled:              false,
+			InterventionsAllowed: []string{decision.InterventionPlayAudioCue},
+			Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
+		}
+		l, svc, _, spy := meteredLoop(t, snap,
+			oneDecision{Intervention: decision.InterventionPlayAudioCue, Reason: "cue"}, true)
+
+		state := l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "game_0a1b2c3d4e5f"}, testTrigger())
+
+		if len(state.Outcomes) != 0 {
+			t.Fatalf("outcomes = %+v, want none (the kill switch decides nothing)", state.Outcomes)
+		}
+		if calls := spy.calls(); len(calls) != 0 {
+			t.Fatalf("Writer calls = %d, want 0", len(calls))
+		}
+		assertNoWrites(t, svc)
 	})
 }

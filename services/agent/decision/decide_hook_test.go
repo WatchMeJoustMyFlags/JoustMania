@@ -533,7 +533,7 @@ func assertRulesFallback(t *testing.T, h remoteHarness, span sdktrace.ReadOnlySp
 	}
 }
 
-// NFR: NFR-013
+// NFR: NFR-010 NFR-013
 // UC: UC-040 A2
 // UC: UC-070 main A2 A3
 func TestRemote_TimeoutFallsBackToRules(t *testing.T) {
@@ -882,7 +882,7 @@ func assertDiscarded(t *testing.T, h remoteHarness, span sdktrace.ReadOnlySpan, 
 	}
 }
 
-// UC: UC-040 A6
+// UC: UC-040 A6 Post-F-1
 // UC: UC-045 main
 func TestRemote_KillSwitchAtLanding(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))

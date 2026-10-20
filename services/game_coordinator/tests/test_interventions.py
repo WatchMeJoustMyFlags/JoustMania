@@ -328,6 +328,7 @@ async def test_empty_allowed_blocks_everything():
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
+@pytest.mark.nfr("NFR-015")
 async def test_backstop_blocks_after_global_budget_exhausted():
     clock = Clock()
     mgr, events = make_manager(

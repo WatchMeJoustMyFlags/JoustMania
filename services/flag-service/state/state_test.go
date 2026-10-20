@@ -371,6 +371,7 @@ func TestAppend_EventList(t *testing.T) {
 }
 
 // UC: UC-053 main BR-003 Post-S-3
+// UC: UC-040 A25 BR-016
 func TestEndGame_DropsScopeAndValues(t *testing.T) {
 	t.Run("UC-053/main after the game ends nothing of it is left", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
@@ -454,6 +455,7 @@ func TestReconcile_OnlyThatInstance(t *testing.T) {
 }
 
 // UC: UC-053 A11
+// UC: UC-040 BR-016
 func TestExpireGames(t *testing.T) {
 	t.Run("UC-053/A11 a scope older than the maximum game age is dropped", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})

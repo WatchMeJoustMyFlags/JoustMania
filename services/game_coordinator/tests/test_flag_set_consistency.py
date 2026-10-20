@@ -159,6 +159,7 @@ class Harness:
 
 
 @pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.uc("UC-040", flow="A22")
 @pytest.mark.asyncio
 async def test_level_written_after_restart_waits_for_the_allow_list_then_applies():
     # The flag service restarted (new epoch e2). The interventions stream already
@@ -202,6 +203,7 @@ async def test_state_value_newer_than_the_allow_list_is_not_lost():
 
 
 @pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
+@pytest.mark.uc("UC-040", flow="A22")
 @pytest.mark.asyncio
 async def test_event_is_not_applied_against_a_wider_stale_allow_list():
     # The restart dropped a `full` overlay: flagd now serves `ambient`, but the

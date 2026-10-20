@@ -7,6 +7,7 @@ import (
 
 // TestLLMBudget_AdmitsUpToCap: the budget admits exactly maxPerMinute requests in
 // one window, then denies.
+// NFR: NFR-011
 func TestLLMBudget_AdmitsUpToCap(t *testing.T) {
 	b := NewLLMBudget()
 	now := time.Unix(1000, 0)
@@ -36,6 +37,7 @@ func TestLLMBudget_ZeroCapDeniesAll(t *testing.T) {
 
 // TestLLMBudget_WindowSlides: admissions older than the one-minute window are
 // pruned, so the budget replenishes as time passes.
+// NFR: NFR-011
 func TestLLMBudget_WindowSlides(t *testing.T) {
 	b := NewLLMBudget()
 	t0 := time.Unix(1000, 0)

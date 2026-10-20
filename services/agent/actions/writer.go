@@ -169,6 +169,11 @@ func newWritesCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
 // intervention is game-scoped (FR-136); an unscoped write would reach every game.
 var errNoGame = errors.New("intervention requires the deciding game's id (FR-136)")
 
+// coordinatorGameIDPrefix starts every game id the game coordinator issues,
+// real or shadow. Any other id (the `session-<n>` partition for unlabeled
+// signals) names no live game and is refused like an empty one (UC-040 A18).
+const coordinatorGameIDPrefix = "game_"
+
 // Apply implements decision.ActionSink: it maps the decision's intervention to
 // one flag-service write for the deciding game.
 func (w *Writer) Apply(ctx context.Context, d decision.Decision) error {
@@ -195,6 +200,9 @@ func (w *Writer) recordWrite(ctx context.Context, result string) {
 func (w *Writer) write(ctx context.Context, d decision.Decision) error {
 	if d.GameID == "" {
 		return errNoGame
+	}
+	if !strings.HasPrefix(d.GameID, coordinatorGameIDPrefix) {
+		return fmt.Errorf("%w: %q is not a coordinator game id", errNoGame, d.GameID)
 	}
 	game := flagservice.Scope{GameID: d.GameID}
 	player := flagservice.Scope{GameID: d.GameID, Serial: d.TargetSerial}

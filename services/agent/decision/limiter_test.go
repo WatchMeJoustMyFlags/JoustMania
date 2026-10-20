@@ -13,6 +13,7 @@ import (
 // against the surviving rateLimiter.allow API. The intervention-cost weight
 // table is covered by TestInterventionCostWeightTable in layers_test.go.
 
+// NFR: NFR-015
 func TestRateLimiter_WeightedBudget(t *testing.T) {
 	now := time.Unix(1000, 0)
 
