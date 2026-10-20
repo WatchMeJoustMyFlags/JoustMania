@@ -405,3 +405,31 @@ func TestClaude_Sonnet45GetsNoEffort(t *testing.T) {
 		t.Errorf("output_config sent to sonnet 4.5: %v", req["output_config"])
 	}
 }
+
+// TestClaude_NeverFollowsRedirects pins the PR #1774 review finding: net/http strips only
+// Authorization and Cookie on a redirect, so following one would forward x-api-key to
+// the target. The default client must not follow redirects; the 3xx becomes an error.
+// UC: UC-042 Pre-2
+func TestClaude_NeverFollowsRedirects(t *testing.T) {
+	for _, status := range []int{http.StatusFound, http.StatusTemporaryRedirect} {
+		target := &fakeMessages{body: messageBody(`{"ok":true}`, "end_turn")}
+		targetSrv := httptest.NewServer(http.HandlerFunc(target.handler))
+		t.Cleanup(targetSrv.Close)
+		redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, targetSrv.URL+r.URL.Path, status)
+		}))
+		t.Cleanup(redirector.Close)
+
+		c := NewClaude(Config{APIKey: "sk-redirect-secret", BaseURL: redirector.URL})
+		_, err := c.Infer(context.Background(), llm.Prompt{User: "u"})
+		if err == nil {
+			t.Errorf("status %d: Infer succeeded through a redirect, want an error", status)
+		}
+		target.mu.Lock()
+		got := len(target.headers)
+		target.mu.Unlock()
+		if got != 0 {
+			t.Errorf("status %d: redirect target received %d request(s) (x-api-key leaked)", status, got)
+		}
+	}
+}

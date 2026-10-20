@@ -31,6 +31,9 @@ from pathlib import Path
 
 from .agent import AgentProcess
 from .fake_audio import FakeAudio
+from .fakes.claude import API_KEY as FAKE_CLAUDE_API_KEY
+from .fakes.claude import MODEL as FAKE_CLAUDE_MODEL
+from .fakes.claude import FakeClaude
 from .fakes.openai import API_KEY as FAKE_OPENAI_API_KEY
 from .fakes.openai import FakeOpenAI
 from .fakes.otlp import OtlpSink
@@ -68,10 +71,15 @@ class Composition:
     otlp: bool = False
     # The Go agent (``stack.agent``) plus a fake OpenAI backend (``stack.fake_openai``).
     agent: bool = False
+    # Also a fake Claude (``stack.fake_claude``) the agent's retro and proposer text backend is
+    # pointed at (AGENT_INFERENCE_BACKEND=claude + AGENT_INFERENCE_BASE_URL; needs ``agent``).
+    fake_claude: bool = False
     # Extra env for the agent process, applied last (e.g. the experiment seed of TC-011).
     agent_env: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
+        if self.fake_claude and not self.agent:
+            raise ValueError("fake_claude=True needs agent=True")
         unknown = set(self.services) - set(SERVICES)
         if unknown:
             raise ValueError(f"unknown services {sorted(unknown)}; known: {sorted(SERVICES)}")
@@ -85,6 +93,8 @@ GAME = Composition(("controller-manager", "game-coordinator"))
 LOBBY = Composition(("controller-manager", "game-coordinator", "menu"))
 # Plus the agent at HEAD observing over OTLP and a fake OpenAI backend: in-game decisions.
 AGENT = Composition(("controller-manager", "game-coordinator", "menu"), otlp=True, agent=True)
+# Plus a fake Claude behind the agent's retro and proposer text backend (TC-010).
+AGENT_CLAUDE = Composition(("controller-manager", "game-coordinator", "menu"), otlp=True, agent=True, fake_claude=True)
 
 
 class ServiceStack:
@@ -92,6 +102,7 @@ class ServiceStack:
         self.composition = composition
         self.workdir = workdir
         self.fake_openai: FakeOpenAI | None = FakeOpenAI(workdir) if composition.agent else None
+        self.fake_claude: FakeClaude | None = FakeClaude() if composition.fake_claude else None
         # Picked up front: the sink tees to it, and the agent must not be found by a stale address.
         self.agent_port: int | None = free_port() if composition.agent else None
         self.agent: AgentProcess | None = None
@@ -134,6 +145,8 @@ class ServiceStack:
     def _start(self) -> None:
         if self.fake_openai is not None:
             self._ports[("fake-openai", FAKE_OPENAI_PORT)] = self.fake_openai.start()
+        if self.fake_claude is not None:
+            self.fake_claude.start()
         plane = self.flag_plane
         plane.start()
         self._ports[("flag-service", FLAG_SERVICE_HTTP_PORT)] = plane.http_port
@@ -166,7 +179,7 @@ class ServiceStack:
                 coordinator_port=ports["game-coordinator"],
                 mock_control_port=mock_port,
                 openai_api_key=FAKE_OPENAI_API_KEY,
-                extra_env=dict(self.composition.agent_env),
+                extra_env={**self._inference_env(), **self.composition.agent_env},
             )
             self._ports[("agent", AGENT_OTLP_PORT)] = self.agent_port
             self.agent.start()
@@ -182,6 +195,21 @@ class ServiceStack:
             )
             self.services[name] = service
             service.start()
+
+    def _inference_env(self) -> dict[str, str]:
+        """The agent's retro/proposer text backend: the fake Claude, or the stub when there is none."""
+        if self.fake_claude is None:
+            return {}
+        return {
+            "AGENT_INFERENCE_BACKEND": "claude",
+            "ANTHROPIC_API_KEY": FAKE_CLAUDE_API_KEY,
+            "AGENT_INFERENCE_BASE_URL": self.fake_claude.base_url,
+            "AGENT_INFERENCE_MODEL": FAKE_CLAUDE_MODEL,
+            # Bootstrap default only: the live experiments_enabled flag decides (FR-066).
+            "AGENT_EXPERIMENTS_ENABLED": "true",
+            # The experiment journal (default /var/lib/joustmania/...) lives in the stack's workdir.
+            "AGENT_EXPERIMENT_DIR": str(self.workdir / "experiments"),
+        }
 
     def service_envs(
         self, ports: Mapping[str, int], *, mock_port: int, audio_port: int, otlp_port: int | None = None
@@ -264,6 +292,8 @@ class ServiceStack:
         self.flag_plane.stop()
         if self.fake_openai is not None:
             self.fake_openai.stop()
+        if self.fake_claude is not None:
+            self.fake_claude.stop()
 
     # ------------------------------------------------------------- debugging
     def log_tail(self) -> str:
@@ -272,6 +302,8 @@ class ServiceStack:
             parts.append(self.agent.log_tail())
         if self.fake_openai is not None:
             parts.append(self.fake_openai.log_tail())
+        if self.fake_claude is not None:
+            parts.append(self.fake_claude.log_tail())
         parts.append(self.flag_plane.log_tail())
         return "\n".join(parts)
 

@@ -16,6 +16,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -456,12 +458,53 @@ func selectInferenceBackend(logger *slog.Logger) (*inference.Claude, string) {
 		logger.Warn("AGENT_INFERENCE_BACKEND=claude but ANTHROPIC_API_KEY is empty; proposer/retro stay on the stub")
 		return nil, "stub"
 	}
+	baseURL, ok := inferenceBaseURL(logger)
+	if !ok {
+		return nil, "stub"
+	}
 	return inference.NewClaude(inference.Config{
 		APIKey:  key,
+		BaseURL: baseURL,
 		Model:   getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
 		Effort:  getEnv("AGENT_INFERENCE_EFFORT", inference.DefaultEffort),
 		Timeout: secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout),
 	}), inference.Name
+}
+
+// inferenceBaseURL reads AGENT_INFERENCE_BASE_URL (#1422 S10): the root the Claude text
+// backend sends ANTHROPIC_API_KEY to. Empty = the Anthropic API. The key travels to this
+// host, so a value is accepted only as an https URL (http only for a loopback host) with a host
+// and no credentials, query or fragment; anything else fails safe (ok=false: the caller stays on the stub and
+// the key is sent nowhere). A non-default host is logged at WARN. The URL itself is never
+// put on a span.
+func inferenceBaseURL(logger *slog.Logger) (string, bool) {
+	raw := strings.TrimSpace(os.Getenv("AGENT_INFERENCE_BASE_URL"))
+	if raw == "" {
+		return "", true
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" ||
+		u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		logger.Error("AGENT_INFERENCE_BASE_URL rejected: not a plain http(s) URL with a host, without credentials, query or fragment; proposer/retro stay on the stub")
+		return "", false
+	}
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		logger.Error("AGENT_INFERENCE_BASE_URL rejected: plain http is only allowed for a loopback host (the API key would travel in clear text); proposer/retro stay on the stub",
+			"host", u.Host)
+		return "", false
+	}
+	logger.Warn("AGENT_INFERENCE_BASE_URL overrides the Anthropic API root: ANTHROPIC_API_KEY is sent to it",
+		"host", u.Host)
+	return raw, true
+}
+
+// isLoopbackHost reports whether host is localhost or a loopback IP (127.0.0.0/8, ::1).
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func main() {

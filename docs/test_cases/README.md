@@ -52,7 +52,7 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-007](TC-007-agent-intervenes-in-ffa-game.md) | Agent intervenes in an FFA game on rules | UC-010, UC-041, UC-040, UC-020, UC-030, UC-031, UC-035 | Critical | Draft | Partly (`test_tc008_remote_backend_routing` T2, `test_intervention_smoke`); #1404, #1362 |
 | [TC-008](TC-008-remote-backend-confidence-routing.md) | Switch to a remote backend and route by confidence | UC-044, UC-040, UC-020 | Critical | Automated | T2: `test_tc008_remote_backend_routing` (openai fake); Jev/Claude and timeout #1404 (timeout unit-tested, #1395) |
 | [TC-009](TC-009-kill-switch-during-ffa-game.md) | Kill switch during an FFA game | UC-045, UC-040, UC-044 | Critical | Automated | T2: `test_tc009_kill_switch::test_kill_switch_discards_inflight_answer` (incl. resume) |
-| [TC-010](TC-010-ffa-game-end-retro-and-proposal.md) | FFA game end: retro, summary, proposal | UC-020, UC-041, UC-042, UC-043 | High | Draft | Partly; #1362 |
+| [TC-010](TC-010-ffa-game-end-retro-and-proposal.md) | FFA game end: retro, summary, proposal | UC-020, UC-041, UC-042, UC-043 | High | Automated | `test_tc010_game_end_runs_retro_summary_and_proposer` (T2); stub variant partly |
 | [TC-011](TC-011-shadow-experiment-to-verdict.md) | Shadow experiment runs to a verdict | UC-043, UC-046, UC-003, UC-041, UC-040 | High | Automated | T2: `tests/service/test_tc011_shadow_experiment.py`; promotion and preemption: unit tests (#1404) |
 | [TC-012](TC-012-pattern-game-replay.md) | Replay a pattern-driven game exactly | UC-046, UC-003, UC-030 | Medium | Automated | `tests/service/test_tc012_pattern_game_replay.py`; script test in CI (#1389) |
 | [TC-013](TC-013-shadow-game-alongside-real-game.md) | Shadow game alongside a real FFA game | UC-010, UC-003, UC-020, UC-040, UC-027, UC-043 | High | Automated | `test_tc013_shadow_game_alongside_real_game`; agent side unit-tested |
@@ -68,4 +68,4 @@ Status follows the skill: `Automated` = an end-to-end test implements the journe
 file), `Draft` = not or only partly automated, or written for review. A service-tier test (T2,
 `tests/service/`: real services from source on a fresh flag plane, audio and collector faked) counts as
 end-to-end for this purpose; the TC's Automation section then starts with a `**Tier:**` line (#1422). Tests that implement a journey carry
-`tc="TC-XXX"` (the T2 journeys so far, TC-011 included); tagging the rest is part of #1356 and #1422.
+`tc="TC-XXX"` (the T2 journeys so far, TC-010 and TC-011 included); tagging the rest is part of #1356 and #1422.
