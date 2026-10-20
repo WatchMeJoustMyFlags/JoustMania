@@ -145,6 +145,7 @@ func TestRetro_EmitsRawResponseOncePerHash(t *testing.T) {
 // TestRetro_ParseFailureStampsError: a reachable backend that returns garbage gets
 // parse_ok=false + llm.infer.error and NO conclusion attributes (fail-open: the span
 // still ends cleanly).
+// UC: UC-042 A9
 func TestRetro_ParseFailureStampsError(t *testing.T) {
 	resetRetroResponseRef()
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
@@ -173,6 +174,7 @@ func TestRetro_ParseFailureStampsError(t *testing.T) {
 // TestRetro_TransportErrorStampsError: a backend whose Infer ERRORS gets
 // parse_ok=false + llm.infer.error carrying the error TYPE (never the error text,
 // #1242), no conclusion, span still ends (fail-open).
+// UC: UC-042 A9
 func TestRetro_TransportErrorStampsError(t *testing.T) {
 	resetRetroResponseRef()
 	rc, sr := recordingRetro(t, retroFlagSnapshot())

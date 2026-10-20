@@ -171,6 +171,7 @@ func TestEffectiveCapClampedToMaxShadowGames(t *testing.T) {
 // (ErrSpawnBackpressure) must NOT count as a failure. The registry releases the
 // reservation (no leak / no over-spawn), does NOT emit experiment.spawn_failed,
 // and retries on the next tick (which succeeds once the coordinator frees up).
+// UC: UC-043 A13
 func TestSpawnBackpressureReleasesAndRetriesWithoutFailureLog(t *testing.T) {
 	spawner := &fakeSpawner{backpressNow: true}
 	logger, rec := newRecordingLogger()
@@ -226,6 +227,7 @@ func TestSpawnBackpressureReleasesAndRetriesWithoutFailureLog(t *testing.T) {
 
 // A GENUINE spawn error (not backpressure) still WARNs as experiment.spawn_failed
 // — the fix narrows the WARN to real errors, it does not silence all of them.
+// UC: UC-043 A13
 func TestGenuineSpawnErrorStillWarns(t *testing.T) {
 	spawner := &fakeSpawner{failNow: true}
 	logger, rec := newRecordingLogger()

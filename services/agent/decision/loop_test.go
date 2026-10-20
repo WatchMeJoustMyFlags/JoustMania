@@ -355,6 +355,7 @@ func TestOnEvaluate_RendersFitnessAndObjectives(t *testing.T) {
 // is emitted. With a disabled flag source, each gated update tries to emit a
 // throttled disabled span; the loop's injectable clock lets us assert the span
 // is suppressed until the configured interval has elapsed.
+// UC: UC-040 A28
 func TestSetThrottle_HonorsConfiguredInterval(t *testing.T) {
 	l, sr, fl := newTestLoop(t)
 	fl.snap.Enabled = false // disabled path goes through the throttled span
@@ -393,6 +394,7 @@ func TestSetThrottle_HonorsConfiguredInterval(t *testing.T) {
 // deterministically with the injected clock and a settable source — no live flagd,
 // no real time, no network: the throttle value is flipped between evaluations
 // exactly as the OpenFeature config-change handler would after a flag change.
+// UC: UC-040 A28
 func TestThrottleSource_HotReloadsMidSession(t *testing.T) {
 	l, sr, fl := newTestLoop(t)
 	fl.snap.Enabled = false // disabled path goes through the throttled span

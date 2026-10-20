@@ -156,7 +156,7 @@ func (b *switchingBackend) Infer(context.Context, llm.Prompt) (string, error) {
 
 // A refused LLM admission (budget exhausted / not eligible) skips the model call,
 // writes nothing, reports the gate reason, and rolls the cadence window back.
-// UC: UC-042 A2 BR-002
+// UC: UC-042 A7 BR-002
 func TestProposeOnce_LLMAdmissionRefusedSkipsCall(t *testing.T) {
 	backend := &fakeProposerBackend{response: validReply}
 	p, svc, rec, _ := proposerWithRecorder(t, backend)
@@ -193,6 +193,7 @@ func TestProposeOnce_LLMAdmissionRefusedSkipsCall(t *testing.T) {
 }
 
 // A cadence-gated cycle never reaches the LLM admission, so it spends no budget.
+// UC: UC-042 A7
 func TestProposeOnce_CadenceGatedCycleDoesNotChargeBudget(t *testing.T) {
 	backend := &fakeProposerBackend{response: validReply}
 	p, _, _, clk := proposerWithRecorder(t, backend)

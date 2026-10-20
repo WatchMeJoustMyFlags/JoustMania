@@ -114,13 +114,13 @@ func testTrigger() decision.EvalTrigger {
 }
 
 // TestDecideLoop_ActuationGateOff: with interventions_enabled off, a decision that
-// passes the permission chain is recorded as dispatched and counted as applied
-// (D-A9), but the gated sink never calls the Writer: the flag service receives
-// no write.
+// passes the permission chain is recorded as dispatched, but the gated sink never
+// calls the Writer: the flag service receives no write and the decision is not
+// counted as applied (D-A9 resolved, #1681).
 // UC: UC-040 A11
 // UC: UC-045 A1
 func TestDecideLoop_ActuationGateOff(t *testing.T) {
-	t.Run("UC-040/A11 gate off: dispatched, counted, nothing written", func(t *testing.T) {
+	t.Run("UC-040/A11 gate off: dispatched, nothing written, not counted", func(t *testing.T) {
 		snap := flags.Snapshot{
 			Enabled:              true,
 			InterventionsAllowed: []string{decision.InterventionPlayAudioCue},
@@ -135,8 +135,8 @@ func TestDecideLoop_ActuationGateOff(t *testing.T) {
 			t.Fatalf("outcomes = %+v, want one dispatched decision", state.Outcomes)
 		}
 		assertNoWrites(t, svc)
-		if n := appliedTotal(t, reader, decision.InterventionPlayAudioCue); n != 1 {
-			t.Fatalf("agent_interventions_applied_total{action=play_audio_cue} = %d, want 1 (D-A9)", n)
+		if n := appliedTotal(t, reader, decision.InterventionPlayAudioCue); n != 0 {
+			t.Fatalf("agent_interventions_applied_total{action=play_audio_cue} = %d, want 0 (a gated no-op is not applied, #1681)", n)
 		}
 		if calls := spy.calls(); len(calls) != 0 {
 			t.Fatalf("Writer calls = %d, want 0 (the gate must skip the Writer)", len(calls))

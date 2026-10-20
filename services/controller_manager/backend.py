@@ -47,32 +47,6 @@ class ControllerBackend(ABC):
         pass
 
     @abstractmethod
-    async def connect_controller(self, address: str) -> bool:
-        """
-        Connect to a controller by address.
-
-        Args:
-            address: Bluetooth MAC address or serial number
-
-        Returns:
-            bool: True if connection successful
-        """
-        pass
-
-    @abstractmethod
-    async def disconnect_controller(self, serial: str) -> bool:
-        """
-        Disconnect a controller.
-
-        Args:
-            serial: Controller serial number
-
-        Returns:
-            bool: True if disconnection successful
-        """
-        pass
-
-    @abstractmethod
     async def get_controller_state(self, serial: str) -> dict | None:
         """
         Get current state of a controller.

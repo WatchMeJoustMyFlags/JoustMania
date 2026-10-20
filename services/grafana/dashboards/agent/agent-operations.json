@@ -1126,7 +1126,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Interventions the agent dispatched per minute, by action. Source: agent_interventions_applied_total.",
+      "description": "Interventions the agent wrote per minute, by action; a decision the interventions_enabled gate turned into a no-op is not counted. Source: agent_interventions_applied_total.",
       "fieldConfig": {
         "defaults": {
           "color": {

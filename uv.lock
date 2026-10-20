@@ -625,7 +625,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.0.0" },
+    { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=4.0.0" },
     { name = "hidapi", specifier = ">=0.14.0" },
     { name = "joustmania-lib", editable = "lib" },
     { name = "joustmania-proto", editable = "proto" },

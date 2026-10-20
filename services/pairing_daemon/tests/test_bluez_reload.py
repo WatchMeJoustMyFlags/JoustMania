@@ -371,7 +371,7 @@ class TestGameStateReadIgnoresProxies:
 class TestRestartBluetoothd:
     @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
     async def test_restart_registers_the_pairing_agent_again(self):
-        """A bluetoothd restart ends the bluetoothctl agent session (#632); it is registered again after it."""
+        """A bluetoothd restart drops BlueZ's agent registration (#632); it is registered again after it."""
         calls = []
         with (
             patch.object(
