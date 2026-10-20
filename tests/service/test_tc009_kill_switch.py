@@ -126,7 +126,7 @@ async def test_kill_switch_discards_inflight_answer(fresh_stack):
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-045", flow="main", steps=[1, 2, 3], cond=["Pre-1", "Post-S-1"])
+@pytest.mark.uc("UC-045", flow="main", steps=[2, 3], cond=["Pre-1", "Post-S-1"])
 @pytest.mark.usefixtures("flag_service")
 async def test_kill_switch_keeps_written_state_intervention(fresh_stack):
     """UC-045 Post-S-1: the agent acts once (a state intervention written for the live
