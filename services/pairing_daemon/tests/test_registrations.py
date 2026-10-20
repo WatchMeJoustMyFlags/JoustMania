@@ -523,7 +523,7 @@ class TestRemoveControllerRegistrations:
         assert await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir) == []
         assert removed_paths(bus) == []
 
-    @pytest.mark.uc("UC-005", flow="A4", br=["BR-002"])
+    @pytest.mark.uc("UC-005", flow="main", br=["BR-002"])
     async def test_already_gone_counts_as_already_absent(self, bluez, bluetooth_dir):
         """A race with BlueZ: DoesNotExist is 'already_absent', which the API treats as success."""
         bus, set_objects = bluez
