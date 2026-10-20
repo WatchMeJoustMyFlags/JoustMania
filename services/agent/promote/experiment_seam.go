@@ -145,7 +145,11 @@ func (a *ExperimentPromoter) Promote(ctx context.Context, view journal.CompactVi
 		Games:         totalN,
 	}
 
+	// Read the kill-switch epoch BEFORE the kill switch itself, so a kill-switch tick
+	// between this read and the write refuses the write (#1704).
+	epoch := a.promoter.KillSwitchEpoch()
 	cfg := a.resolveConfig(ctx)
+	cfg.killEpoch, cfg.epochKnown = epoch, true
 
 	// Reuse the #961 Promoter UNCHANGED: its env-gated dispatch, safe issue/local
 	// defaults, and kill-switch (cfg.Enabled gates autonomous) apply as-is.

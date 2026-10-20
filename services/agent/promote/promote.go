@@ -123,6 +123,12 @@ type Config struct {
 	// live real-player change). A disabled agent degrades autonomous to a recorded
 	// no-op (OutcomeDiscarded + reason), never a silent real change.
 	Enabled bool
+
+	// killEpoch is Promoter.KillSwitchEpoch read before Enabled was resolved
+	// (epochKnown); an autonomous write is refused when a kill-switch tick ran since
+	// (#1704). Unset, Promote reads the epoch on entry.
+	killEpoch  uint64
+	epochKnown bool
 }
 
 // Evidence is the fitness + provenance the promotion records into an issue/PR
@@ -250,9 +256,10 @@ type Watcher interface {
 	// Degraded reports whether real-game fitness degraded vs baseline after the
 	// change (true → the Promoter reverts via RealDefaultReverter). baseline is the
 	// pre-promotion real-game fitness (Evidence.FitnessBefore) the recent window is
-	// compared against. An error is treated as "cannot confirm healthy" → fail-safe
-	// revert.
-	Degraded(ctx context.Context, flagKey string, baseline float64) (bool, error)
+	// compared against; since is when the promoted default was written, and only real
+	// games that started after it count (UC-043 step 7, #1702). An error is treated
+	// as "cannot confirm healthy" → fail-safe revert.
+	Degraded(ctx context.Context, flagKey string, baseline float64, since time.Time) (bool, error)
 }
 
 // RealDefaultReverter rolls back an autonomous real-default change on degradation.
@@ -296,6 +303,30 @@ type Promoter struct {
 	// no re-watch (the apply stands unverified, exactly today's behavior). Wired in
 	// main.go alongside the live watcher.
 	rewatcher Rewatcher
+
+	// --- kill-switch revert (#1704) ---
+	// applied holds every autonomous promotion this agent run wrote and has not
+	// reverted, by flag (the newest write wins). RevertOnKillSwitch reverts them all;
+	// a watch or re-watch revert claims its entry first, so each applied default is
+	// reverted at most once and nothing writes after the kill-switch revert. Guarded
+	// by mu.
+	applied map[string]*appliedPromotion
+	// killEpoch counts kill-switch ticks (guarded by mu); killMu serialises the
+	// autonomous write with RevertOnKillSwitch (killswitch.go, #1704).
+	killEpoch uint64
+	killMu    sync.Mutex
+}
+
+// appliedPromotion is one autonomous real default this agent run wrote and has not
+// reverted (#1704). cancel stops its background re-watch (nil when none runs);
+// syncPending is true while its Promote call runs; killed is set when the kill
+// switch took it. Guarded by Promoter.mu.
+type appliedPromotion struct {
+	proposal     experiment.Proposal
+	cancel       context.CancelFunc
+	syncPending  bool
+	killed       bool
+	killReverted bool
 }
 
 // DefaultRevertCooldown is the default post-revert cooldown before the same flag may
@@ -313,9 +344,11 @@ const DefaultRevertCooldown = 10 * time.Minute
 // not block on real games), so a nil Rewatcher means "no re-watch" (apply stands).
 type Rewatcher interface {
 	// Schedule starts a background re-watch. It MUST NOT block the caller. watch is the
-	// live Watcher (reuse the same degradation policy); revert performs the gated
-	// fail-safe revert + journalling when a later cycle confirms degradation.
-	Schedule(ctx context.Context, flagKey string, baseline float64, watch Watcher, revert func(ctx context.Context))
+	// live Watcher (reuse the same degradation policy); since is the write time the
+	// watch counts games from (#1702); revert performs the gated fail-safe revert when
+	// a later cycle confirms degradation. The re-watch stops when ctx is cancelled
+	// (the kill switch reverted the promotion, #1704).
+	Schedule(ctx context.Context, flagKey string, baseline float64, since time.Time, watch Watcher, revert func(ctx context.Context))
 }
 
 // SetCooldown overrides the post-revert re-promotion cooldown (#1065 item 3). A
@@ -404,6 +437,7 @@ func NewPromoter(github GitHubClient, git GitClient, realDef RealDefaultWriter, 
 		cooldown:   DefaultRevertCooldown,
 		now:        time.Now,
 		lastRevert: map[string]time.Time{},
+		applied:    map[string]*appliedPromotion{},
 	}
 }
 
@@ -421,6 +455,9 @@ func NewPromoter(github GitHubClient, git GitClient, realDef RealDefaultWriter, 
 func (pr *Promoter) Promote(ctx context.Context, p experiment.Proposal, dec experiment.Decision, cfg Config, ev Evidence) Result {
 	mode := normalizeMode(cfg.Mode)
 	target := normalizeTarget(cfg.Target)
+	if !cfg.epochKnown {
+		cfg.killEpoch, cfg.epochKnown = pr.KillSwitchEpoch(), true
+	}
 
 	ctx, span := pr.tracer.Start(ctx, SpanPromote, trace.WithAttributes(
 		attribute.String(AttrGate, string(mode)),

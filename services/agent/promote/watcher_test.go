@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/joustmania/agent/experiment"
 )
@@ -21,7 +22,7 @@ type fakeRealGameFitness struct {
 	err     error
 }
 
-func (f fakeRealGameFitness) Recent(_ context.Context, _ string, n int) ([]float64, error) {
+func (f fakeRealGameFitness) Recent(_ context.Context, _ string, _ time.Time, n int) ([]float64, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -77,7 +78,7 @@ func TestFitnessWatcherDegradationVerdict(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := NewFitnessWatcher(fakeRealGameFitness{samples: tc.samples, err: tc.fitErr}, policy, discardLogger())
-			deg, err := w.Degraded(context.Background(), "death_grace_period_ms", baseline)
+			deg, err := w.Degraded(context.Background(), "death_grace_period_ms", baseline, time.Time{})
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("Degraded err = nil, want an error (fail closed)")

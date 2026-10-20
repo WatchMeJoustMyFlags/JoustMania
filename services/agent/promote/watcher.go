@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // watcher.go is the autonomous-promotion SAFETY NET (#1016): after promoteAutonomous
@@ -105,10 +106,12 @@ func (p WatchPolicy) normalize() WatchPolicy {
 // (the watcher only averages). An error fails the watch closed (treated as "cannot
 // confirm healthy" → revert).
 type RealGameFitness interface {
-	// Recent returns up to n most-recent REAL-game fitness samples observed AFTER the
-	// promotion for flagKey's objective. Fewer than n is allowed (the window has not
-	// filled yet); the watcher applies the MinGames floor. An error fails closed.
-	Recent(ctx context.Context, flagKey string, n int) ([]float64, error)
+	// Recent returns up to n most-recent fitness samples of REAL games that started
+	// after since (the promotion's write, UC-043 step 7, #1702) for flagKey's
+	// objective. A game that started before since, or whose start is unknown, is not
+	// returned. Fewer than n is allowed (the window has not filled yet); the watcher
+	// applies the MinGames floor. An error fails closed.
+	Recent(ctx context.Context, flagKey string, since time.Time, n int) ([]float64, error)
 }
 
 // fitnessWatcher is the concrete Watcher: it pulls recent real-game fitness via the
@@ -166,8 +169,11 @@ const (
 // fails closed, same as Degraded). The Promoter uses it to tell "keep, verified"
 // apart from "keep, unverified — re-watch later". Degraded is kept as the Watcher
 // interface method (insufficient and healthy both map to false) for compatibility.
-func (w *fitnessWatcher) Observe(ctx context.Context, flagKey string, baseline float64) (WatchVerdict, error) {
-	samples, err := w.fitness.Recent(ctx, flagKey, w.policy.WindowGames)
+//
+// since is when the promoted default was written: only real games that started
+// after it count (#1702).
+func (w *fitnessWatcher) Observe(ctx context.Context, flagKey string, baseline float64, since time.Time) (WatchVerdict, error) {
+	samples, err := w.fitness.Recent(ctx, flagKey, since, w.policy.WindowGames)
 	if err != nil {
 		return VerdictInsufficient, fmt.Errorf("read recent real-game fitness for %q: %w", flagKey, err)
 	}
@@ -205,12 +211,12 @@ func (w *fitnessWatcher) Observe(ctx context.Context, flagKey string, baseline f
 //     game.);
 //  3. compute the recent mean and declare degradation when
 //     baseline - recentMean > DegradationMargin.
-func (w *fitnessWatcher) Degraded(ctx context.Context, flagKey string, baseline float64) (bool, error) {
+func (w *fitnessWatcher) Degraded(ctx context.Context, flagKey string, baseline float64, since time.Time) (bool, error) {
 	// Delegate to the tri-state Observe and collapse it: only a CONFIRMED degradation
 	// reverts; INSUFFICIENT evidence and HEALTHY both keep the apply (false). A seam
 	// error surfaces so the Promoter's fail-safe revert fires (it treats err != nil as
 	// a revert).
-	verdict, err := w.Observe(ctx, flagKey, baseline)
+	verdict, err := w.Observe(ctx, flagKey, baseline, since)
 	if err != nil {
 		return false, err
 	}

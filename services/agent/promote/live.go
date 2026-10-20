@@ -72,10 +72,11 @@ func NewStoreRealGameFitness(store *experiment.FitnessStore, objective Objective
 	return &storeRealGameFitness{store: store, objective: objective}
 }
 
-// Recent returns up to n most-recent REAL-game fitness scalars for flagKey's
-// objective, newest-first (the watcher only averages, so order is immaterial). A nil
-// store yields no samples (treated as INSUFFICIENT, never a false healthy verdict).
-func (s *storeRealGameFitness) Recent(_ context.Context, flagKey string, n int) ([]float64, error) {
+// Recent returns up to n most-recent fitness scalars of REAL games that started
+// after since (#1702) for flagKey's objective, newest-first (the watcher only
+// averages, so order is immaterial). A nil store yields no samples (treated as
+// INSUFFICIENT, never a false healthy verdict).
+func (s *storeRealGameFitness) Recent(_ context.Context, flagKey string, since time.Time, n int) ([]float64, error) {
 	if s.store == nil {
 		return nil, nil
 	}
@@ -83,7 +84,7 @@ func (s *storeRealGameFitness) Recent(_ context.Context, flagKey string, n int) 
 	if s.objective != nil {
 		objective = s.objective(flagKey)
 	}
-	samples := s.store.RecentReal(objective, n)
+	samples := s.store.RecentRealSince(objective, since, n)
 	out := make([]float64, 0, len(samples))
 	for _, sample := range samples {
 		out = append(out, sample.Fitness)
@@ -139,12 +140,18 @@ func NewPollingRewatcher(rootCtx context.Context, interval, timeout time.Duratio
 //   - VerdictHealthy → confirmed keep, stop.
 //   - VerdictInsufficient → keep polling until the timeout, then stop (apply stands;
 //     too few real games ever arrived to judge — never revert a change on no evidence).
-func (r *pollingRewatcher) Schedule(_ context.Context, flagKey string, baseline float64, watch Watcher, revert func(ctx context.Context)) {
+//
+// A cancelled ctx stops the re-watch without a write (the kill switch already
+// reverted the promotion, #1704).
+func (r *pollingRewatcher) Schedule(ctx context.Context, flagKey string, baseline float64, since time.Time, watch Watcher, revert func(ctx context.Context)) {
 	obs, ok := watch.(Observer)
 	if !ok {
 		// A boolean-only watcher cannot report insufficiency, so it can never be the
 		// source of a re-watch; nothing to schedule.
 		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	go func() {
 		deadline := r.now().Add(r.timeout)
@@ -155,8 +162,11 @@ func (r *pollingRewatcher) Schedule(_ context.Context, flagKey string, baseline 
 			case <-r.rootCtx.Done():
 				r.log.Info("autonomous re-watch cancelled (shutdown)", "flag", flagKey)
 				return
+			case <-ctx.Done():
+				r.log.Info("autonomous re-watch cancelled (promotion reverted)", "flag", flagKey)
+				return
 			case <-ticker.C:
-				verdict, err := obs.Observe(r.rootCtx, flagKey, baseline)
+				verdict, err := obs.Observe(r.rootCtx, flagKey, baseline, since)
 				switch {
 				case err != nil:
 					r.log.Warn("autonomous re-watch: telemetry error, reverting fail-safe", "flag", flagKey, "error", err)

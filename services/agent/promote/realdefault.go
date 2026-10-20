@@ -48,6 +48,7 @@ type realDefaultService interface {
 	Put(ctx context.Context, set, flag string, w flagservice.Write) (flagservice.Result, error)
 	Delete(ctx context.Context, set, flag string, query url.Values) error
 	GetFlag(ctx context.Context, set, flag string) (flagservice.FlagView, error)
+	GetSet(ctx context.Context, set string) (flagservice.SetView, error)
 }
 
 // serviceRealDefaultWriter writes and reverts the real default of a game flag
@@ -157,9 +158,12 @@ func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKe
 	if err != nil {
 		return fmt.Errorf("read %s/%s before revert: %w", gameFlagSet, flagKey, err)
 	}
-	if view.RealOverlay == nil {
-		w.log.Warn("code_improvement revert: no promotion overlay (flag service restarted?); real games already resolve the baseline",
-			"flag", flagKey)
+	if view.RealOverlay == nil || view.RealOverlay.Writer != promotionWriter {
+		// No overlay of ours: a flag-service restart dropped it, or another writer's
+		// real overlay replaced it. That overlay is not the promotion's to remove
+		// (#1704): nothing is deleted.
+		w.log.Warn("code_improvement revert: no promotion overlay; nothing to remove",
+			"flag", flagKey, "real_overlay_writer", realOverlayWriter(view))
 		w.stampRevert(flagKey)
 		return nil
 	}
@@ -169,6 +173,32 @@ func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKe
 	w.log.Warn("code_improvement.autonomous REVERTED the real default to the pre-promotion state (#1065)", "flag", flagKey)
 	w.stampRevert(flagKey)
 	return nil
+}
+
+// PromotedFlags lists the game flags whose real overlay a promotion wrote
+// (writer "promotion"), read from the flag service, so the kill switch reverts
+// them even after an agent restart (#1704). Overlays of other writers are never
+// listed.
+func (w *serviceRealDefaultWriter) PromotedFlags(ctx context.Context) ([]string, error) {
+	set, err := w.svc.GetSet(ctx, gameFlagSet)
+	if err != nil {
+		return nil, fmt.Errorf("list %s overlays: %w", gameFlagSet, err)
+	}
+	var out []string
+	for _, f := range set.Flags {
+		if f.RealOverlay != nil && f.RealOverlay.Writer == promotionWriter {
+			out = append(out, f.Flag)
+		}
+	}
+	return out, nil
+}
+
+// realOverlayWriter is the writer of view's real overlay, or "" when none.
+func realOverlayWriter(view flagservice.FlagView) string {
+	if view.RealOverlay == nil {
+		return ""
+	}
+	return view.RealOverlay.Writer
 }
 
 // stampRevert records the revert time (#1076) so the cooldown survives a
