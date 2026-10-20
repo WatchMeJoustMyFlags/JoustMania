@@ -706,6 +706,7 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 // value resolves via the TYPED bool getter, and the gate FAILS CLOSED (off) when the
 // flag is UNDEFINED (no value) or flagd is UNREACHABLE (error). A safety gate must
 // resolve to the not-acting state when the control plane cannot confirm it is on.
+// UC: UC-045 A3
 func TestInterventionsEnabled(t *testing.T) {
 	t.Run("configured on resolves", func(t *testing.T) {
 		ev := stubEvaluator{booleans: map[string]bool{keyInterventionsEnabled: true}}
@@ -732,6 +733,7 @@ func TestInterventionsEnabled(t *testing.T) {
 // TestRolloutEnabled covers the #1213 rollout safety gate: a configured value
 // resolves via the TYPED bool getter, and the gate FAILS CLOSED (off ⇒ dry-run) when
 // the flag is UNDEFINED or flagd is UNREACHABLE.
+// UC: UC-045 A3
 func TestRolloutEnabled(t *testing.T) {
 	t.Run("configured on resolves", func(t *testing.T) {
 		ev := stubEvaluator{booleans: map[string]bool{keyRolloutEnabled: true}}

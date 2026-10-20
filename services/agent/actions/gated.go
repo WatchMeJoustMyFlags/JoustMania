@@ -58,6 +58,7 @@ func NewGatedActionSink(gate InterventionGate, writer decision.ActionSink, log *
 // resolves to false, so the agent does NOT write when the control plane is
 // unreachable.
 func (s *GatedActionSink) Apply(ctx context.Context, d decision.Decision) error {
+	// UC-045 BR-001: interventions_enabled is the actuation gate of the three.
 	if !s.gate.InterventionsEnabled(ctx) {
 		s.log.Debug("agent.intervention_gated_off",
 			"intervention", d.Intervention, "flag", keyInterventionsEnabledLog)

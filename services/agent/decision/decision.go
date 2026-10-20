@@ -526,6 +526,7 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// still recorded AND emitted as a throttled agent.disabled span so a Jaeger
 	// trace shows "agent off" with the flags in effect (#729). Throttled so a
 	// disabled agent under heavy signal load does not flood the trace backend.
+	// UC-045 BR-001: `enabled` is the existence gate of the three.
 	if !snapshot.Enabled {
 		l.emitDisabledSpan(ctx, snapshot, c, trig, state)
 		l.setLastLayer(state)
@@ -897,6 +898,7 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 // charge-every-emitted-decision model now that the loop can see permissions.
 func (l *Loop) evaluatePermission(snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, now time.Time, cost float64, state *LayerState) (BlockReason, bool) {
 	// 1. Allow-list gate (#727): not in interventions_allowed.
+	// UC-045 BR-001: interventions_allowed is the permission gate of the three.
 	if !snapshot.Permits(d.Intervention) {
 		return ReasonNotAllowed, true
 	}

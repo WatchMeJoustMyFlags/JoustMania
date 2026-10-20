@@ -16,6 +16,8 @@ import pytest
 
 from tests.integration.helpers import GameEventCollector, async_poll_until, get_game_client
 from tests.service.agent_flow import (
+    ABSENCE_WINDOW,
+    APPLY_TIMEOUT,
     DECIDE_TIMEOUT_MS,
     FIRST_CALL_TIMEOUT,
     HIGH_CONFIDENCE,
@@ -25,6 +27,8 @@ from tests.service.agent_flow import (
     assert_nothing_applied,
     configure_agent,
     decide_spans,
+    intervention_events,
+    scripted_flag_value,
     set_enabled,
     start_ffa,
     wait_agent_flags_served,
@@ -47,7 +51,7 @@ KILL_RELEASE_HEADROOM = 3.0
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A6", tc="TC-009")
-@pytest.mark.uc("UC-045", flow="main", steps=[3, 4, 7], tc="TC-009")
+@pytest.mark.uc("UC-045", flow="main", steps=[2, 3, 4, 7], tc="TC-009")
 @pytest.mark.usefixtures("flag_service")
 async def test_kill_switch_discards_inflight_answer(fresh_stack):
     """The kill switch flipped while the remote call is in flight: the late
@@ -117,5 +121,54 @@ async def test_kill_switch_discards_inflight_answer(fresh_stack):
                 SPAN_TIMEOUT,
                 interval=0.5,
             ), f"no agent.decide span for {game_id} after the agent was turned on again"
+    finally:
+        await channel.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-045", flow="main", steps=[1, 2, 3], cond=["Pre-1", "Post-S-1"])
+@pytest.mark.usefixtures("flag_service")
+async def test_kill_switch_keeps_written_state_intervention(fresh_stack):
+    """UC-045 Post-S-1: the agent acts once (a state intervention written for the live
+    game), then the kill switch turns it off. Nothing new is applied, and the value the
+    agent already wrote for the game stays in place while the game runs (it is only
+    dropped with the game's scope, UC-053 BR-003)."""
+    stack = fresh_stack
+    stack.fake_openai.script("valid", intervention=SCRIPTED_INTERVENTION, confidence=HIGH_CONFIDENCE)
+    configure_agent(backend="openai")
+    wait_agent_flags_served(stack, backend="openai", enabled=True, rewrite=lambda: configure_agent(backend="openai"))
+
+    game_client, channel = await get_game_client(stack)
+    try:
+        collector = GameEventCollector(game_client)
+        async with collector:
+            # Pre-1: the agent runs and acts on the live game.
+            game_id, _ = await start_ffa(stack, collector)
+            assert await async_poll_until(lambda: scripted_flag_value(game_id) is not None, APPLY_TIMEOUT), (
+                f"the agent wrote no {SCRIPTED_INTERVENTION} for {game_id}; saw {intervention_events(collector)}"
+            )
+            written = scripted_flag_value(game_id)
+
+            # Steps 1 to 3: turn the agent off; its next cycle records agent.disabled.
+            disabled_before = {s.span_id for s in agent_spans(stack, "agent.disabled", game_id)}
+            set_enabled(False)
+            wait_agent_flags_served(stack, backend="openai", enabled=False, rewrite=lambda: set_enabled(False))
+            assert await async_poll_until(
+                lambda: any(s.span_id not in disabled_before for s in agent_spans(stack, "agent.disabled", game_id)),
+                KILL_SIGNAL_TIMEOUT,
+                interval=0.5,
+            ), f"no agent.disabled span for {game_id} within {KILL_SIGNAL_TIMEOUT}s of the kill-switch flip"
+            applied_before = len(intervention_events(collector))
+
+            # Post-S-1: no new effect reaches the game, and the state intervention the
+            # agent already wrote stays for the running game.
+            def violation() -> bool:
+                return scripted_flag_value(game_id) != written or len(intervention_events(collector)) > applied_before
+
+            assert not await async_poll_until(violation, ABSENCE_WINDOW), (
+                f"after the kill switch {SCRIPTED_INTERVENTION} for {game_id} changed: "
+                f"value {scripted_flag_value(game_id)!r} (was {written!r}), "
+                f"events {intervention_events(collector)[applied_before:]}"
+            )
     finally:
         await channel.close()
