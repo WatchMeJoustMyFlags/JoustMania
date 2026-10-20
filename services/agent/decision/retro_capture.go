@@ -160,15 +160,18 @@ type RetroCoordinator struct {
 	// ungated by the global cap (used by tests / single-purpose wiring that does not
 	// share a budget — capture proceeds as before #847). Injected via SetLLMBudget.
 	budget *llmBudget
-	// budgetOverride, when > 0, replaces llm.max_requests_per_minute as the cap
-	// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE), like Loop.budgetOverride.
-	budgetOverride int
+	// budgetCeiling, when > 0, caps llm.max_requests_per_minute
+	// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE, #1788), like Loop.budgetCeiling.
+	budgetCeiling int
 	// backend is the text backend the retro calls (#1234), injected via SetBackend.
 	// Nil (the stub default, tests) keeps the retro capture-only: the span records
 	// inference.used=none / fallback no_backend_available and ends at once.
 	backend TextBackend
 	// timeout bounds one retro inference call; not positive = DefaultRetroTimeout.
 	timeout time.Duration
+	// timeoutSource, when set, resolves the deadline at use time (each retro call,
+	// inference.timeout_seconds, #1788) and wins over timeout.
+	timeoutSource func() time.Duration
 	// llmGated counts gated retro captures (agent_llm_gated_total{reason=...}),
 	// sharing the in-game counter name. Defaults to a no-op so tests need not wire it.
 	llmGated otelmetric.Int64Counter
@@ -262,28 +265,30 @@ func (rc *RetroCoordinator) SetLLMBudget(b *llmBudget) { rc.budget = b }
 // construction.
 func (rc *RetroCoordinator) SetBackend(b TextBackend) { rc.backend = b }
 
-// SetLLMBudgetOverride sets a per-minute cap that REPLACES the
-// llm.max_requests_per_minute flag value for the retro's budget check, mirroring
-// Loop.SetLLMBudgetOverride (AGENT_LLM_MAX_REQUESTS_PER_MINUTE, #964). A
-// non-positive value is ignored. Set during construction.
-func (rc *RetroCoordinator) SetLLMBudgetOverride(maxPerMinute int) {
+// SetLLMBudgetCeiling sets the operator's ceiling on llm.max_requests_per_minute for
+// the retro's budget check, mirroring Loop.SetLLMBudgetCeiling
+// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE, #1788). A non-positive value means no ceiling.
+// Set during construction.
+func (rc *RetroCoordinator) SetLLMBudgetCeiling(maxPerMinute int) {
 	if maxPerMinute > 0 {
-		rc.budgetOverride = maxPerMinute
+		rc.budgetCeiling = maxPerMinute
 	}
 }
 
-// budgetCap returns the per-minute cap for this retro: the override when set,
-// else the live flag value.
+// budgetCap returns the per-minute cap for this retro: the live flag value, capped
+// by the env ceiling.
 func (rc *RetroCoordinator) budgetCap(flagValue int) int {
-	if rc.budgetOverride > 0 {
-		return rc.budgetOverride
-	}
-	return flagValue
+	return ceilBudget(rc.budgetCeiling, flagValue)
 }
 
-// SetTimeout sets the per-call retro inference deadline (AGENT_INFERENCE_TIMEOUT_SECONDS
-// in main.go). A non-positive value keeps DefaultRetroTimeout. Set during construction.
+// SetTimeout sets a fixed per-call retro inference deadline. A non-positive value
+// keeps DefaultRetroTimeout. Set during construction.
 func (rc *RetroCoordinator) SetTimeout(d time.Duration) { rc.timeout = d }
+
+// SetTimeoutSource makes the retro resolve its deadline at use time, once per retro
+// call (inference.timeout_seconds, #1788). It wins over SetTimeout; a non-positive
+// result keeps DefaultRetroTimeout. Set during construction.
+func (rc *RetroCoordinator) SetTimeoutSource(src func() time.Duration) { rc.timeoutSource = src }
 
 // SetFitnessLookup injects the recorded-fitness lookup seam (#1100): a func that
 // returns a finished game's settled objective fitness by game_id (reading the #965
@@ -371,8 +376,8 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	//     capture-only with fallback llm_not_eligible, no call, no budget slot — so
 	//     shadow-game retros can never starve real-game remote decide calls of the
 	//     shared budget;
-	//   - otherwise one slot from the shared llm.max_requests_per_minute budget (or
-	//     the AGENT_LLM_MAX_REQUESTS_PER_MINUTE override, as on the decide path).
+	//   - otherwise one slot from the shared llm.max_requests_per_minute budget (capped
+	//     by the AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling, as on the decide path).
 	//     When it is exhausted the retro is GATED: record the gated metric and
 	//     capture nothing (no prompt build, no span). A nil budget (tests / unshared
 	//     wiring) skips this check.
@@ -500,6 +505,9 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	// immediately; the span ends inside the goroutine once the response lands. Tracked
 	// on inferWG so shutdown/tests can join it (AwaitInflight).
 	budget := rc.timeout
+	if rc.timeoutSource != nil {
+		budget = rc.timeoutSource()
+	}
 	if budget <= 0 {
 		budget = DefaultRetroTimeout
 	}

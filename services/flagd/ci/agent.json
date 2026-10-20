@@ -93,7 +93,8 @@
         "conservative": 3,
         "default": 6,
         "aggressive": 12,
-        "stage": 30
+        "stage": 30,
+        "journey": 600
       },
       "defaultVariant": "default"
     },
@@ -691,6 +692,68 @@
         "fast": 1500,
         "default": 3000,
         "slow": 10000
+      },
+      "defaultVariant": "default"
+    },
+    "inference.model": {
+      "state": "ENABLED",
+      "variants": {
+        "default": "claude-opus-5-5"
+      },
+      "defaultVariant": "default"
+    },
+    "inference.effort": {
+      "state": "ENABLED",
+      "variants": {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": "max"
+      },
+      "defaultVariant": "medium"
+    },
+    "inference.timeout_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 120,
+        "short": 30
+      },
+      "defaultVariant": "default"
+    },
+    "effect.window_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 20.0,
+        "short": 10.0,
+        "long": 40.0
+      },
+      "defaultVariant": "default"
+    },
+    "promotion.rewatch_interval_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 30,
+        "default": 60,
+        "long": 120
+      },
+      "defaultVariant": "default"
+    },
+    "promotion.rewatch_timeout_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 1800,
+        "default": 3600,
+        "long": 7200
+      },
+      "defaultVariant": "default"
+    },
+    "promotion.revert_cooldown_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 300,
+        "default": 600,
+        "long": 1200
       },
       "defaultVariant": "default"
     }

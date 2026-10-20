@@ -288,8 +288,8 @@ func TestRewatchStopsAtTimeout(t *testing.T) {
 		if DefaultRewatchTimeout != time.Hour {
 			t.Fatalf("DefaultRewatchTimeout = %v, want 1h", DefaultRewatchTimeout)
 		}
-		if rw := NewPollingRewatcher(context.Background(), 0, 0, discardLogger()); rw.timeout != DefaultRewatchTimeout || rw.interval != DefaultRewatchInterval {
-			t.Fatalf("unset interval/timeout = %v/%v, want the defaults", rw.interval, rw.timeout)
+		if rw := NewPollingRewatcher(context.Background(), 0, 0, discardLogger()); rw.timeout() != DefaultRewatchTimeout || rw.interval() != DefaultRewatchInterval {
+			t.Fatalf("unset interval/timeout = %v/%v, want the defaults", rw.interval(), rw.timeout())
 		}
 	})
 

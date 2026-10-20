@@ -81,8 +81,8 @@ const (
 	// rules). Raise the budget (its "stage" variant, 30) for a demo, or lengthen
 	// this interval to spend less; 3000 stays the default because a shorter
 	// interval would only be absorbed by the inflight guard. Note that
-	// AGENT_LLM_MAX_REQUESTS_PER_MINUTE, when set, replaces the budget flag
-	// (Loop.budgetCap), so flipping "stage" then has no effect.
+	// AGENT_LLM_MAX_REQUESTS_PER_MINUTE, when set, is a ceiling on the budget flag
+	// (Loop.budgetCap = min(env, flag), #1788), so "stage" is capped by it.
 	DefaultDecisionMinIntervalMs = 3000
 	// DefaultDecisionClaudeModel is the claude backend's model (variant "haiku").
 	DefaultDecisionClaudeModel = "claude-haiku-4-5-20251001"

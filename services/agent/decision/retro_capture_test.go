@@ -241,21 +241,48 @@ func TestRetroCapture_StubNoCharge(t *testing.T) {
 	}
 }
 
-// TestRetroCapture_BudgetOverride: AGENT_LLM_MAX_REQUESTS_PER_MINUTE replaces the
-// flag cap on the retro's budget check, as on the decide path.
+// TestRetroCapture_BudgetCeiling: AGENT_LLM_MAX_REQUESTS_PER_MINUTE caps the flag on
+// the retro's budget check (#1788): min(env, flag), as on the decide path.
 // NFR: NFR-011
-func TestRetroCapture_BudgetOverride(t *testing.T) {
-	be := &countingText{}
-	rc, _, budget, now := budgetedRetro(t, 1, be)
-	rc.SetLLMBudgetOverride(2)
-	if !budget.allow(now, 2) { // one slot already used this minute
-		t.Fatal("pre-spend should succeed")
-	}
+func TestRetroCapture_BudgetCeiling(t *testing.T) {
+	t.Run("a flag above the env ceiling cannot loosen it", func(t *testing.T) {
+		be := &countingText{}
+		rc, _, budget, now := budgetedRetro(t, 30, be) // flag: the stage variant
+		rc.SetLLMBudgetCeiling(1)
+		if !budget.allow(now, 1) { // the ceiling's only slot is used this minute
+			t.Fatal("pre-spend should succeed")
+		}
+		rc.OnGameEnd(endedSession())
+		rc.AwaitInflight()
+		if be.count() != 0 {
+			t.Errorf("Infer calls = %d, want 0 (cap = min(env 1, flag 30) = 1, already spent)", be.count())
+		}
+	})
+	t.Run("a flag below the env ceiling tightens it", func(t *testing.T) {
+		be := &countingText{}
+		rc, _, budget, now := budgetedRetro(t, 1, be)
+		rc.SetLLMBudgetCeiling(5)
+		if !budget.allow(now, 1) {
+			t.Fatal("pre-spend should succeed")
+		}
+		rc.OnGameEnd(endedSession())
+		rc.AwaitInflight()
+		if be.count() != 0 {
+			t.Errorf("Infer calls = %d, want 0 (cap = min(env 5, flag 1) = 1, already spent)", be.count())
+		}
+	})
+}
 
+// TestRetroCapture_TimeoutSourceReadPerCall: the retro deadline is resolved on each
+// retro call (inference.timeout_seconds, #1788), not once at construction.
+func TestRetroCapture_TimeoutSourceReadPerCall(t *testing.T) {
+	rc, _, _, _ := budgetedRetro(t, 10, &countingText{})
+	calls := 0
+	rc.SetTimeoutSource(func() time.Duration { calls++; return time.Second })
 	rc.OnGameEnd(endedSession())
 	rc.AwaitInflight()
-	if be.count() != 1 {
-		t.Errorf("Infer calls = %d, want 1 (override cap 2 > flag cap 1)", be.count())
+	if calls != 1 {
+		t.Fatalf("timeout source read %d times for one retro, want 1 (use-time read)", calls)
 	}
 }
 

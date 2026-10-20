@@ -134,7 +134,7 @@ const (
 // LLMAdmission is the shared LLM call gate the Proposer consults before a model
 // call (#1270): eligibility of the triggering game kind (llm.eligible_game_kinds)
 // and one slot of the GLOBAL per-minute request budget (llm.max_requests_per_minute,
-// or the AGENT_LLM_MAX_REQUESTS_PER_MINUTE override) that the in-game decide calls
+// capped by the AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling) that the in-game decide calls
 // and the retro also draw from. Admit returns ok=false with the gate reason when
 // the call must not be made, and records the gated metric itself. A local
 // interface keeps this package free of the decision package; main.go wires

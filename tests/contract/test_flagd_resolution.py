@@ -786,6 +786,88 @@ def test_every_coordinator_flag_resolves_with_its_typed_getter(flagd, resolver):
 
 
 # --------------------------------------------------------------------------- #
+# 2b. Agent tuning flags migrated from env (#1788, flags.md §15)
+# --------------------------------------------------------------------------- #
+AGENT_TUNING_GO = ic.REPO_ROOT / "services" / "agent" / "flags" / "tuning.go"
+_GO_KEY_CONST = re.compile(r'^\s*(key\w+)\s*=\s*"([^"]+)"', re.M)
+# The flags.Flags helper each getter calls -> the typed OpenFeature getter behind it
+# (secondsFlag -> intFlag -> IntValue; durationFlag -> floatFlag -> FloatValue).
+_GO_HELPERS = {
+    "stringFlag": "string",
+    "intFlag": "integer",
+    "secondsFlag": "integer",
+    "floatFlag": "float",
+    "durationFlag": "float",
+}
+_GO_HELPER_CALL = re.compile(r"f\.(\w+Flag)\(ctx, (key\w+)")
+
+
+def agent_tuning_reads() -> list[tuple[str, str]]:
+    """(key, getter) of every tuning flag the agent reads, derived from tuning.go."""
+    source = AGENT_TUNING_GO.read_text()
+    consts = dict(_GO_KEY_CONST.findall(source))
+    reads = set()
+    for helper, const in _GO_HELPER_CALL.findall(source):
+        if helper in _GO_HELPERS and const in consts:
+            reads.add((consts[const], _GO_HELPERS[helper]))
+    return sorted(reads)
+
+
+def test_agent_tuning_scan_sees_every_key():
+    """Guards the scan: every key constant in tuning.go is read through a known helper."""
+    source = AGENT_TUNING_GO.read_text()
+    keys = set(dict(_GO_KEY_CONST.findall(source)).values())
+    assert len(keys) >= 7, keys
+    assert {k for k, _ in agent_tuning_reads()} == keys
+
+
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_agent_tuning_variants_match_the_getter(flag_dir):
+    """Static: each tuning flag exists in agent.json and every variant has the getter's type."""
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    flags = json.loads((root / "agent.json").read_text())["flags"]
+    failures = []
+    for key, getter in agent_tuning_reads():
+        flag = flags.get(key)
+        if flag is None:
+            failures.append(f"agent/{key}: not in {flag_dir}/agent.json")
+            continue
+        for variant, value in flag["variants"].items():
+            if not _type_ok(getter, value):
+                failures.append(
+                    f"{flag_dir}/agent/{key} variant {variant!r}={value!r} is not {getter}"
+                )
+    assert not failures, "\n".join(failures)
+
+
+@pytest.mark.parametrize("resolver", ["rpc", "in_process"])
+def test_agent_tuning_flags_resolve_with_their_typed_getter(flagd, resolver):
+    """Each tuning flag resolves on real flagd with the agent's getter, to its defaultVariant."""
+    failures = []
+    with _ready_client(flagd, "agent", resolver) as client:
+        for key, getter in agent_tuning_reads():
+            flag = json.loads(flagd.file("agent").read_text())["flags"].get(key)
+            if flag is None:
+                failures.append(f"agent/{key}: not in ci/agent.json")
+                continue
+            details = getattr(client, f"get_{getter}_details")(
+                key, _SENTINEL_DEFAULTS[getter], EvaluationContext()
+            )
+            want = flag["variants"][flag["defaultVariant"]]
+            if details.error_code is not None or details.reason == Reason.ERROR:
+                failures.append(
+                    f"agent/{key} via get_{getter}: {details.error_code} {details.error_message}"
+                )
+            elif not _type_ok(getter, details.value) or not _same_value(
+                details.value, want
+            ):
+                failures.append(
+                    f"agent/{key} via get_{getter}: got {details.value!r}, defaultVariant is {want!r}"
+                )
+    assert not failures, "\n".join(failures)
+
+
+# --------------------------------------------------------------------------- #
 # 3. windows preset ladder (from test_f6_flow.py)
 # --------------------------------------------------------------------------- #
 def test_windows_preset_ladder_resolves_against_live_flagd(flagd):

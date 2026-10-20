@@ -87,6 +87,11 @@ def configure_agent(
     fs.put(AGENT, "decision.openai.model", value=FAKE_MODEL)
     fs.put(AGENT, "decision.openai.timeout_ms", value=DECIDE_TIMEOUT_MS)
     fs.put(AGENT, "decision.min_interval_ms", value=DECIDE_MIN_INTERVAL_MS)
+    # The remote-call budget: since #1788 the env AGENT_LLM_MAX_REQUESTS_PER_MINUTE is
+    # only a ceiling (min(env, flag)), so the flag itself is lifted. `journey` (600/min, a
+    # CI-only variant in services/flagd/ci/agent.json) matches the old env value: `stage` (30)
+    # would run long remote journeys into llm_budget_exhausted at DECIDE_MIN_INTERVAL_MS.
+    fs.put(AGENT, "llm.max_requests_per_minute", variant="journey")
 
 
 def set_enabled(enabled: bool) -> None:

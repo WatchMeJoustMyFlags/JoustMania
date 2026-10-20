@@ -231,7 +231,8 @@ func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, 
 // whether it is still cooling. Outside the cooldown (or never reverted) it returns
 // (0, false). Guarded by mu.
 func (pr *Promoter) cooldownRemaining(flagKey string) (time.Duration, bool) {
-	if pr.cooldown <= 0 {
+	cooldown := pr.effectiveCooldown()
+	if cooldown <= 0 {
 		return 0, false
 	}
 	pr.mu.Lock()
@@ -241,10 +242,10 @@ func (pr *Promoter) cooldownRemaining(flagKey string) (time.Duration, bool) {
 		return 0, false
 	}
 	elapsed := pr.clock().Sub(last)
-	if elapsed >= pr.cooldown {
+	if elapsed >= cooldown {
 		return 0, false
 	}
-	return pr.cooldown - elapsed, true
+	return cooldown - elapsed, true
 }
 
 // markReverted stamps flagKey's last-revert time so the cooldown gate can suppress an
