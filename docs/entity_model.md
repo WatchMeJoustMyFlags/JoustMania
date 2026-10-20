@@ -5,7 +5,9 @@
 >
 > JoustMania has no database: these entities live in protobuf messages, in-memory service state, flag
 > files and the agent's experiment journal. "Primary Key" therefore means the natural identifier.
-> Source of each entity is given in its description. State: `main` @ 84c3ba15 (includes PRs #1257, #1261, #1265, #1295, #1308, #1312, #1315; consistency pass of the 2026-10-16 audit, epic #1369).
+> Source of each entity is given in its description. Entities and attributes that exist only in service memory
+> say so ("In-memory, lost on restart"); everything else is a protobuf message, a flag value or a journal
+> record. State: `main` @ a74d0d77 (agent-cluster `/spec-review` of 2026-10-20, #1679; flag service delivered by #1417).
 
 ## Entity Relationship Diagram
 
@@ -26,7 +28,7 @@ erDiagram
     GAME_SESSION ||--o{ DECISION : "receives"
     DECISION ||--|{ QUESTION : "asks"
     QUESTION ||--o| ANSWER : "is answered by"
-    DECISION ||--o| INTERVENTION : "results in"
+    DECISION ||--o{ INTERVENTION : "results in (up to 2 per cycle)"
     INTERVENTION }o--|| FLAG : "is written as"
     INTERVENTION }o--o| PLAYER : "targets"
     EXPERIMENT ||--|{ ARM : "has"
@@ -42,10 +44,19 @@ erDiagram
     MOTION_ARCHETYPE ||--o{ PATTERN_PAIR_ASSIGNMENT : "is run by"
     MOTION_ARCHETYPE |o--o{ GAME_SESSION : "drives"
     FLAG ||--o| MUTABLE_FLAG_POLICY : "may change at runtime under"
-    GAME_SESSION ||--o| GAME_SCOPE : "is registered as (planned)"
+    GAME_SESSION ||--o| GAME_SCOPE : "is registered as"
     GAME_SCOPE ||--o{ FLAG_OVERLAY : "holds game-scoped"
     FLAG ||--o{ FLAG_OVERLAY : "is overridden by"
     EXPERIMENT ||--o{ FLAG_OVERLAY : "holds arm values as"
+    GAME_SESSION ||--o| AGENT_GAME_CONTEXT : "is observed by the agent as"
+    AGENT_GAME_CONTEXT ||--o| GAME_SUMMARY : "is condensed into"
+    GAME_SUMMARY ||--o| GAME_AGGREGATE : "is reduced to"
+    LINKED_SET ||--o{ GAME_AGGREGATE : "holds shadow games as"
+    EXPERIMENT ||--o| LINKED_SET : "has the history"
+    GAME_SESSION ||--o| PATTERN_REPLAY_RECORD : "is recorded as (pattern game)"
+    PATTERN_REPLAY_RECORD ||--|{ PATTERN_SLOT_RECORD : "lists"
+    CONTROLLER ||--o| CONTROLLER_LINK_QUALITY : "is rated by"
+    BT_ADAPTER ||--o{ CONTROLLER : "carries the link of"
 ```
 
 ### CONTROLLER
@@ -106,24 +117,26 @@ One running or finished game in the game coordinator (`services/game_coordinator
 | game_mode | Mode played | String | 20 | Not Null, Foreign Key (GAME_MODE.name) |
 | origin | Who asked for the start | String | 30 | Not Null, Values: GAME_ORIGIN_UNSPECIFIED, GAME_ORIGIN_MENU, GAME_ORIGIN_AGENT |
 | game_kind_telemetry | Kind as emitted on coordinator spans and metrics (`game.kind`, `game_kind`) | String | 7 | Not Null, Values: primary, shadow |
-| game_kind_flags | Kind in the flag evaluation context and on agent spans | String | 6 | Not Null, Values: real, shadow |
-| state | Session state (proto `GameState`); a session is created in STARTING; IDLE is only what the servicer reports when no session exists | String | 8 | Not Null, Values: STARTING, RUNNING, ENDED |
+| game_kind_flags | Kind in the flag evaluation context and on agent spans. The coordinator itself only produces `real` or `shadow` (`_eval_game_kind`); the flag service stores an unspecified kind as is and the agent keeps an empty or unknown kind as is. Such a kind is **never** real (fail closed, FR-041) | String | 10 | Not Null, Values: real, shadow, or empty / unknown (never real) |
+| state | Session state (proto `GameState`); a session is created in STARTING; IDLE is only what the servicer reports when no session exists. ENDING is a defined proto value that no session-level code sets (see Constraints) | String | 8 | Not Null, Values: STARTING, RUNNING, ENDED (proto also IDLE, ENDING) |
 | sensitivity | Baseline sensitivity index | Integer | 1 | Not Null, Min: 0, Max: 4 |
 | experiment_id | Experiment the shadow game belongs to | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of the experiment | String | 12 | Optional, Values: experimental, control |
 | rng_seed | Shared seed for paired (CRN) shadow games; 0 = entropy | Long | 19 | Optional, Min: 0 |
 | pattern_archetype | Archetype that drives the game's controllers (pattern game) | String | 40 | Optional, Foreign Key (MOTION_ARCHETYPE.archetype_id) |
-| pattern_outcome | How the pattern game ended (UC-046 A3, A9, BR-013) | String | 8 | Optional, Values: winner, tie, timeout, aborted, error |
+| pattern_outcome | How the pattern game ended (UC-046 A3, A9, A14, BR-013); `agent_ended` = the agent's own `end_game` ended it | String | 11 | Optional, Values: winner, tie, timeout, agent_ended, aborted, error |
 | replay_exact | Whether the pattern game qualifies for replay comparison (UC-046 BR-008) | Boolean | 1 | Optional |
 | non_exact_reasons | Why a pattern game is not exact | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, kill_switch, unseeded_draws |
 | flag_digest | SHA-256 of the canonical resolved values of the flags that shape a pattern game, read when the agent spawned it (UC-046 BR-011), or `unavailable` | String | 64 | Optional |
-| censored | Whether the pattern game's length is right-censored at the safety cap (outcome `timeout`, UC-046 BR-013) | Boolean | 1 | Optional |
+| censored | Whether the pattern game's length is right-censored: at the safety cap (outcome `timeout`) or by the agent's own `end_game` (outcome `agent_ended`) (UC-046 BR-013, A14) | Boolean | 1 | Optional, true exactly for outcomes timeout and agent_ended |
+| force_end_reason | Reason a force end named (`game.end_reason`, JoustFFA publishes it as `reason` on `game_ended`; e.g. `shadow_game_timeout`, `pattern_kill_switch`, `preempted_by_real_game`, `unspecified`); absent for a natural end. In-memory on the game mode, lost with the session | String | 40 | Optional |
 | start_time | Start timestamp (ms) | DateTime | - | Not Null |
 
 **Constraints:**
+- The agent's own record of why it considers a game over (`zero`, `root_span`, `stale`) is not a session attribute; it is `AGENT_GAME_CONTEXT.end_reason`.
 - Two `game_kind` vocabularies exist (see #1249). The coordinator emits `primary` for the menu-started real game and `shadow` otherwise; the flag context and the agent use `real` / `shadow`. The coordinator bridges `primary → real` for flag evaluation (`game_session.py` `_eval_game_kind`) and the agent normalises at ingest (`services/agent/gamecontext/gamekind.go`). An empty or unknown kind is **not** real.
 - Only `GAME_ORIGIN_MENU` may claim the primary slot; at most one primary session; at most `max_concurrent_games` sessions and `max_shadow_games` shadows; `experiment_id`, `arm` and `rng_seed` are honoured only for shadow sessions.
-- Session state transitions (`services/game_coordinator/game_session.py`): created as `STARTING` → `RUNNING` on `game_started` (which base modes publish before the countdown, D-G4) → `ENDED` on any game-ending event, a force end or an error. A `STARTING` session can go straight to `ENDED`. The proto values `IDLE` and `ENDING` are never set on a session: `IDLE` is the servicer's answer when no (primary) session exists (`services/game_coordinator/servicer.py` `game_state`, `GetGameState`), and `ENDING` is unused at session level.
+- Session state transitions (`services/game_coordinator/game_session.py`): created as `STARTING` → `RUNNING` on `game_started` (which base modes publish before the countdown, D-G4) → `ENDED` on any game-ending event, a force end or an error. A `STARTING` session can go straight to `ENDED`. The proto values `IDLE` and `ENDING` are never set on a session (`game_session.py` assigns only `STARTING`, `RUNNING` and `ENDED`): `IDLE` is the servicer's answer when no (primary) session exists (`services/game_coordinator/servicer.py` `game_state`, `GetGameState`), and `ENDING` is a defined value that no producer sets at session level. Consumers are written to tolerate it: the dashboard treats a primary game in `ENDING` as still on stage (`services/dashboard/src/follow.ts` `REAL_LIVE_STATES`), the pairing daemon counts it as busy (`bluez_reload.py` `BUSY_GAME_STATES`), and a shadow game in `ENDING` is not followed. The mode-level `ending` phase (next bullet) is what the `game.state` span attribute reports.
 - Each game mode also has its own lifecycle, `GameState` in `services/game_coordinator/games/base.py` (`idle` → `starting` → `running` → `ending` → `ended`); `ending` is set by the modes' `_end_game_impl` (FFA, Teams, Traitor, Zombies, Swapper, Tournament, Fight Club, NonStop) and is reported on the `game.state` span attribute. Tournament (`TournamentState`: waiting, fighting, bye, champion, eliminated) and Fight Club (`FightState`: in_line, defender, fighter, face_off) add per-player sub-states.
 
 ### PLAYER
@@ -228,9 +241,10 @@ A named value of a flag.
 
 ### MUTABLE_FLAG_POLICY
 
-**Planned** (epic #1407, UC-053, FR-132). One row of the flag service's mutable-flag registry
-([flags.md §13](specs/flags.md#13-mutable-flag-registry)): a flag that may change at runtime, within which
-bounds, and whether a write may persist it. A flag without a policy is read-only baseline. There are no writer roles (local game, architecture note D11).
+Delivered by #1417 (epic #1407, UC-053, FR-132). One row of the flag service's mutable-flag registry
+(`services/flag-service/registry.yaml`, [flags.md §13](specs/flags.md#13-mutable-flag-registry)): a flag that may change at
+runtime, within which bounds, and whether a write may persist it. In-memory once loaded at start, lost on restart (the
+file is the source). A flag without a policy is read-only baseline. There are no writer roles (local game, architecture note D11).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -246,14 +260,14 @@ bounds, and whether a write may persist it. A flag without a policy is read-only
 
 ### GAME_SCOPE
 
-**Planned** (FR-135). The flag service's in-memory record of one live game, registered by the game coordinator
+Delivered by #1417 (FR-135). The flag service's record of one live game (`services/flag-service/state/games.go`), registered by the game coordinator
 at admission and dropped at the game's end, by a reconcile call of its coordinator instance, or after the
-maximum game age.
+maximum game age (1 h). In-memory, lost on restart.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
 | game_id | Game id | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id), Format: `game_<12 hex>` |
-| game_kind | Flag vocabulary | String | 6 | Not Null, Values: real, shadow (an unspecified kind is never real) |
+| game_kind | Flag vocabulary. Stored as the coordinator sent it; an unspecified or unknown kind is never real (FR-041) | String | 80 | Not Null, Values: real, shadow, or any other string (never real) |
 | serials | Serials of the game's players | String | 400 | Not Null |
 | experiment_id | Experiment of a shadow experiment game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
@@ -265,13 +279,13 @@ maximum game age.
 
 ### FLAG_OVERLAY
 
-**Planned** (FR-134, FR-136 to FR-138). One runtime value the flag service holds on top of the baseline, in memory
-(C-030); a stack overlay written with `"persist": true` (registry `persist`) is also written to the service's
-own state file.
+Delivered by #1417 (FR-134, FR-136 to FR-138). One runtime value the flag service holds on top of the baseline, in memory
+(C-030, lost on restart); a stack overlay written with `"persist": true` (registry `persist`) is also written to the service's
+own state file and restored at the next start.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| overlay_id | Generated id; also the opaque variant name it renders (`r<epoch>_<n>`) | String | 24 | Primary Key |
+| overlay_id | Generated id; also the opaque variant name it renders (`r<epoch>_<n>`, `o<epoch>_<n>` for a stack overlay); a stack overlay may instead select a declared baseline variant by name | String | 24 | Primary Key |
 | epoch | Boot id of the flag service that holds it | String | 8 | Not Null |
 | flag_key | The flag | String | 60 | Not Null, Foreign Key (MUTABLE_FLAG_POLICY.flag_key) |
 | scope | Scope of this value | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, real, fraction |
@@ -291,11 +305,11 @@ own state file.
 
 ### DECISION
 
-One agent decision cycle for a game (`services/agent/decision/decision.go`, `decide_hook.go`; contract in [decide-contract.md](specs/decide-contract.md)).
+One agent decision cycle for a game: one evaluation, recorded on one `agent.decide` span (`services/agent/decision/decision.go`, `decide_hook.go`; contract in [decide-contract.md](specs/decide-contract.md)). A cycle emits up to two decisions (the rules path, UC-040 A1; a remote backend gives one answer, hence one decision), each with its own `agent.decision` span and permission check; the outcome, answer, confidence and latency fields below describe the cycle, `blocked` / `block_reason` its first decision (see Constraints).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| decision_id | Correlates decision and effect (`intervention.id`) | String | 40 | Primary Key |
+| decision_id | Correlates decision and effect (`intervention.id`): a UUID assigned when a decision is dispatched and its effect sample is scheduled; a blocked, held, noop or invalid decision has none. Each dispatched decision of a cycle has its own | String | 40 | Primary Key, Format: UUID |
 | game_id | Game decided for | String | 17 | Not Null, Foreign Key (GAME_SESSION.game_id) |
 | backend_requested | `decision.backend` at fire time (`decide.backend.requested`); empty counts as `rules`, an unknown name is kept verbatim and decided by rules with `fallback_reason=unknown_backend` | String | 20 | Not Null, Values: rules, claude, openai, jev, or an unknown name |
 | backend | Backend that actually decided | String | 10 | Not Null, Values: rules, claude, openai, jev |
@@ -307,8 +321,13 @@ One agent decision cycle for a game (`services/agent/decision/decision.go`, `dec
 | act_confidence_threshold_source | Flag the threshold came from | String | 6 | Optional, Values: jev, global |
 | blocked | Permission chain blocked the decision (`decide.blocked`); absent when the decision never reached the permission chain | Boolean | 1 | Optional |
 | block_reason | Permission block | String | 18 | Optional, Values: not_allowed, battery_threshold, rate_limit |
+| invalid_reason | Why an answer was invalid (`decide.invalid_reason`, UC-040 A8; cross-question consistency, [decide-contract §4.3](specs/decide-contract.md)); outcome `invalid` has no action and no fallback | String | 34 | Optional, Values: noop_with_target, player_intervention_without_target, session_intervention_with_target, missing_intervention_answer |
 | state_digest | SHA-256 of the canonical state | String | 64 | Not Null |
 | latency_ms | Decide latency | Integer | 6 | Not Null, Min: 0 |
+
+**Constraints:**
+- Cardinality: one cycle (one evaluation, at most one per second per game on the rules path) emits 0 to 2 decisions. A cycle in which the rules ranking emitted nothing records no `agent.decide` span (UC-040 A1).
+- The answer fields (`outcome`, `confidence`, ...) and `blocked` / `block_reason` describe the first decision of the cycle only. Each decision goes through the permission chain on its own and is reported on its own `agent.decision` span; several decisions of one cycle can be blocked, for example when a scarce budget (`policy.max_interventions_per_minute`) blocks the first decision that does not fit and every lower-ranked one with `rate_limit` without charging it (UC-040 A20, BR-014). A repeat the budget already refused emits no new `agent.decision` span (A21).
 
 ### QUESTION
 
@@ -344,14 +363,16 @@ A bounded in-game change written for one game to the `interventions` flag set th
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
 | type | Intervention type | String | 30 | Primary Key, Values: play_audio_cue, send_controller_effect, adjust_volume, adjust_music_tempo, set_pacing_profile, adjust_player_sensitivity, grant_shield, adjust_global_sensitivity, adjust_global_difficulty, eliminate_player, revive_player, end_game, set_player_handicap, ramp_tempo, partial_shield, soft_penalty, auto_rubberband, noop |
-| flag_key | Flag written | String | 30 | Not Null, Foreign Key (FLAG.key) |
-| shape | How it is written | String | 10 | Not Null, Values: state, edge, per-player |
+| flag_key | Flag written; none for `noop`, which writes nothing | String | 30 | Optional, Foreign Key (FLAG.key) |
+| shape | How it is written and rendered: the `kind` of the flag's MUTABLE_FLAG_POLICY (`state` = a game-scoped value, `level` = a per-player value that stays, `grant` = a per-player one-time grant, `event` = an entry appended to the game's event list); `overlay` is not used by interventions | String | 5 | Optional, Values: state, level, grant, event; = MUTABLE_FLAG_POLICY.kind of flag_key |
 | weight | Rate-limit weight class | String | 6 | Not Null, Values: soft, medium, hard |
 | target_serial | Player targeted (player-scoped types) | String | 17 | Optional, Foreign Key (PLAYER.serial) |
 | value | Resolved magnitude or payload | String | 60 | Optional |
-| blocked_by_coordinator | Coordinator block reason | String | 16 | Optional, Values: not_allowed, rate_limited, low_battery, mode_unsupported, no_game, handler_error |
+| blocked_by_coordinator | Coordinator block reason (`block_reason` on `game_intervention_*` metrics and the `agent_intervention` event). `game_loop_late` is recorded as a reason but is not a block: the effect had started and may still apply | String | 21 | Optional, Values: not_allowed, rate_limited, low_battery, mode_unsupported, handler_error, game_loop_unavailable, game_loop_timeout, game_loop_late |
 
-**Constraints:** the type must be in the live `interventions_allowed` list (checked by the agent and again by the coordinator); writes happen only while `interventions_enabled` is on. Game scoping: see [D-A2](specs-inventory.md#46-agent-d-a).
+**Constraints:**
+- The type must be in the live `interventions_allowed` list (checked by the agent and again by the coordinator); writes happen only while `interventions_enabled` is on.
+- Every write is scoped to the game whose loop decided it and resolves only there (FR-069, FR-136, UC-053): `state` writes are game-scoped, `level` and `grant` writes game+serial, `event` writes append to that game's event list. The coordinator block reasons `game_loop_unavailable` (no running game loop), `game_loop_timeout` (the effect was still queued at the 5 s deadline, never applied) and `game_loop_late` (the effect started but did not finish in time, outcome unknown) come from `game_loop_dispatch.py`. `no_game` is still a constant in `interventions.py` and in the metric's label comment, but nothing produces it, so it is not listed.
 
 ### EXPERIMENT
 
@@ -368,6 +389,8 @@ A hypothesis about one `game.json` flag value, tested in shadow games (`services
 | status | Lifecycle | String | 10 | Not Null, Values: proposed, running, concluded, promoting, done, discarded, aborted |
 
 **Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off. Status transitions (`services/agent/experiment/registry.go` `Status`): `proposed` → `running` → `concluded` → `promoting` → `done`, or `concluded` → `discarded`; `running` → `aborted` on the kill switch, a capacity reclaim or an error. `done`, `discarded` and `aborted` are terminal.
+- `running` → `discarded` **without any verdict** (`registry_pattern.go` `pinPending`, `Rehydrate`): a pattern experiment is discarded before its first game when its archetype selection cannot be pinned, with the reason `pattern_selection_empty`, `pattern_selection_too_small` (fewer than `verdict_min_pairs` or a duplicate), `pattern_archetype_invalid`, `pattern_mode_unsupported` (UC-046 A1, A2, A4, A13), or after an agent restart when the pin cannot be restored, `pattern_pin_lost` (BR-015). No VERDICT exists for such an experiment.
+- Every conclusion goes through `concluded`; the end state then depends on the verdict outcome: `promote` → `promoting` → `done` (a promotion that does not reach `done` ends `discarded`), `discard` and `inconclusive` → `discarded`. A final `inconclusive` is a verdict like any other: it comes from the give-up guard (#1001: target N passed or zero variance, `registry.go` `shouldGiveUp`) or from exhausted pattern archetypes (UC-046 A6), and maps to `discarded`. An interim `inconclusive` verdict keeps the experiment `running`.
 
 ### ARM
 
@@ -415,10 +438,15 @@ A post-game retrospective (`services/agent/decision/retro_capture.go`, `services
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
 | game_id | Game reviewed | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
-| inference_used | Whether a model answered (`stub` = capture only) | Boolean | 1 | Not Null |
+| inference_used | Backend that answered the post-game call (span attribute `inference.used`); `none` = capture only, no call made | String | 6 | Not Null, Values: claude, none |
+| fallback_reason | Why no model was called (`inference.fallback_reason`) | String | 20 | Optional, Values: no_backend_available, agent_disabled, llm_not_eligible |
+| parse_ok | Whether the model reply decoded into a conclusion (`llm.retro.parse_ok`); an empty conclusion decodes fine (true). Absent for a capture-only retro | Boolean | 1 | Optional |
+| system_prompt_fingerprint | Short SHA-256 of the retro system prompt (`llm.retro.system_sha256`); the full text is logged once per fingerprint (`agent.llm.system_prompt`) | String | 16 | Not Null, Format: hex |
 | session_assessment | Model assessment | String | 1000 | Optional |
 | suggestions | Suggested interventions (type, emphasis, reason) | String | 4000 | Optional |
 | session_focus | Suggested focus | String | 200 | Optional |
+
+**Constraints:** at most one retro per game (the agent remembers the last captured session ids). A retro that finds the shared `llm.max_requests_per_minute` budget exhausted is gated: it counts `agent_llm_gated_total{reason=llm_budget_exhausted}`, logs `agent.llm.retro_gated` and records nothing, no span and no row. A game that ended stale (`end_reason=stale`) gets no retro (UC-041 A4).
 
 ### ROLLOUT
 
@@ -468,7 +496,7 @@ A named parameter object that defines the motion function of every player of a p
 
 ### PATTERN_PAIR_ASSIGNMENT
 
-The archetype an experiment's pair runs, pinned in the experiment journal when the experiment spawns its first shadow game (#1258).
+The archetype an experiment's pair runs, pinned in the experiment journal (`pattern_pinned` event) by the allocation pass that precedes the experiment's first spawn: the first `AllocateAndSpawn` tick that finds a `running` experiment without a pin (#1258, `registry_pattern.go` `pinPending`). The pin itself (names, parameters, digests, cap) is journalled; the rerun counters and the skipped flag below are in-memory on the experiment entry, lost on restart, and rebuilt from the journal notes by `Rehydrate`.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -478,8 +506,12 @@ The archetype an experiment's pair runs, pinned in the experiment journal when t
 | params_digest | Digest of the pinned parameters | String | 16 | Not Null |
 | max_game_seconds | Pinned safety cap of the experiment (`experiment.max_game_seconds`) | Integer | 4 | Not Null, Min: 30, Max: 3600 |
 | rng_seed | The pair's shared seed `pairSeed(experiment_id, pair_index)` | Long | 19 | Not Null, Min: 1 |
+| rerun_count | Reruns of the pair that used up the rerun budget (an arm released without a sample for another reason: error, `pattern_kill_switch`, a force-end the agent did not request); journal note `pattern_pair_rerun`. In-memory, rebuilt from the journal | Integer | 1 | Not Null, Min: 0, Max: 3 |
+| preemption_rerun_count | Reruns after a real game preempted the pair (`preempted_by_real_game`), which do not use up the rerun budget; journal note `pattern_pair_rerun_preempted`. In-memory, rebuilt from the journal | Integer | 2 | Not Null, Min: 0, Max: 10 |
+| stale_rerun_count | Reruns after a stale end (UC-041 A4), which do not use up the rerun budget either; journal note `pattern_pair_rerun_stale`. In-memory, rebuilt from the journal | Integer | 2 | Not Null, Min: 0, Max: 10 |
+| skipped | The pair's archetype was given up after the rerun budget was spent (journal note `pattern_archetype_skipped`); a skipped archetype counts as used. In-memory, rebuilt from the journal | Boolean | 1 | Not Null, Default: false |
 
-**Constraints:** the pinned list holds at least `verdict_min_pairs` distinct archetypes; each appears at most once per experiment, so the experiment has at most one pair per archetype (C-020, UC-046 BR-006).
+**Constraints:** after the valve of 10 preemption (or 10 stale) reruns is spent, a further such release counts against `rerun_count` like any other release, so a pair runs at most 1 + 10 + 10 + 3 times (UC-046 BR-015). The pinned list holds at least `verdict_min_pairs` distinct archetypes; each appears at most once per experiment, so the experiment has at most one pair per archetype (C-020, UC-046 BR-006).
 
 ### TRACE_CORRELATION
 
@@ -492,3 +524,158 @@ The identifiers that tie a game's telemetry together (`services/game_coordinator
 | game_trace_span_id | Span id of the game root | String | 16 | Not Null, Format: 16 hex |
 | gameplay_phase_span_id | Span id of `gameplay_phase`, the first fallback parent of in-game agent spans | String | 16 | Optional, Format: 16 hex |
 | game_cycle_span_id | Span id of `game_cycle`, the remote parent of in-game agent spans (UC-041 BR-004, #1325) | String | 16 | Optional, Format: 16 hex |
+
+### AGENT_GAME_CONTEXT
+
+The agent's view of one game, built from the OTLP metrics and spans the collector forwards (`services/agent/gamecontext/`: `model.go` `GameContext`, `multiplexer.go`; UC-041). In-memory, lost on restart: one context (partition) per `game_id`, dropped some time after the game ended (`sessionGrace`); nothing is written to disk.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| session_id | The adopted `game_id`, or a synthetic `session-<n>` for signals that carry no game id | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
+| game_kind | Kind in the flag vocabulary, normalised at ingest (`primary` becomes `real`; empty and unknown stay as they are and never count as real) | String | 10 | Optional, Values: real, shadow, empty / unknown (never real) |
+| experiment_id | Experiment attribution of a shadow game (partition enrichment, not a routing key) | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
+| arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
+| end_reason | Which signal ended the game: the `game_active` 1 to 0 datapoint (`zero`), the game root span before any 0 (`root_span`), or `game_active` silent for 60 s (`stale`, the agent's telemetry for the game broke: experiments, retro, summary and proposer skip it). Empty while the game runs; set in the game-end snapshot (UC-041 A4, #1494) | String | 9 | Optional, Values: zero, root_span, stale |
+| game_trace_id | Trace id of the coordinator's root game span, from the `game_trace_correlation` gauge (UC-041 BR-004) | String | 32 | Optional, Format: 32 hex |
+| game_trace_span_id | Span id of the game root | String | 16 | Optional, Format: 16 hex |
+| gameplay_phase_span_id | Span id of `gameplay_phase`, first fallback parent of the in-game agent spans | String | 16 | Optional, Format: 16 hex |
+| game_cycle_span_id | Span id of `game_cycle`, preferred remote parent of the in-game agent spans | String | 16 | Optional, Format: 16 hex |
+| session | Per-game signals: duration, start time, active player count, elimination sequence, per-type intervention tally (dispatched / blocked, unbounded per game), game active flag, mode, music tempo, effective death and warning thresholds | String | 4000 | Not Null, structure `SessionSignals` |
+| players | Per-controller signals by serial: movement intensity, variance, peak and aggregate variance, battery, skill, alive, a bounded movement history | String | 4000 | Not Null, map serial to `PlayerSignals` |
+| timeline | Rolling narrative of the last 64 state deltas, eliminations and phase transitions | String | 4000 | Optional, Max entries: 64 |
+| speed_track | Bounded series of (time, tempo, death threshold) samples | String | 4000 | Optional |
+| updated_at | Last signal time | DateTime | - | Not Null |
+
+**Constraints:**
+- Process-wide, outside any one context: the serial-to-display-name view from `controller_info{serial,name}` (controller metrics carry no game id; used to name targeted players on decision spans) and a FIFO set of the ids of the last 512 ended games (`endedGamesCap`), so a late datapoint for an ended game id does not run its game-end chain a second time. Both are in-memory and lost on restart.
+- A context belongs to one game; per-controller values in it never outlive the game (see GAME_AGGREGATE).
+
+### GAME_SUMMARY
+
+The compact narrative of one finished game, built once per game at game end by a pure fold over the game-end context (`services/agent/gamesummary/summary.go`, UC-042). In-memory only: it is handed to the cross-game window (reduced to a GAME_AGGREGATE) and is not written to disk (the file writer was removed in #1368, UC-042 BR-004). A game that ended `stale` gets none.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| game_id | Finished game | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
+| schema_version | Version of the summary shape | Integer | 2 | Not Null, Min: 1 |
+| game_kind | Kind in the flag vocabulary | String | 10 | Optional, Values: real, shadow, empty (never real) |
+| experiment_id | Experiment of a shadow game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
+| arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
+| game_mode | Mode played | String | 20 | Optional, Foreign Key (GAME_MODE.name) |
+| generated_at | Build time (injected clock) | DateTime | - | Not Null |
+| duration_seconds | Final observed game duration | Decimal | 8,2 | Optional, Min: 0 |
+| player_count | Players the game saw | Integer | 2 | Not Null, Min: 0 |
+| elimination_count | Eliminated players, from the full elimination sequence | Integer | 2 | Not Null, Min: 0 |
+| survivor_count | player_count minus elimination_count | Integer | 2 | Not Null, Min: 0 |
+| intervention_count | Dispatched plus blocked interventions of the game | Integer | 4 | Not Null, Min: 0 |
+| interventions_by_type | Per-type dispatched and blocked tally of the whole game | String | 2000 | Optional |
+| player_arcs | Per-player trajectory by serial (survival, elimination offset, movement sparkline, activity, near-death) | String | 4000 | Not Null |
+| elimination_spread | Ordered (time, serial) eliminations | String | 2000 | Not Null |
+| engagement_trend | Down-sampled active-count and mean-intensity series | String | 2000 | Not Null |
+| speed_sparkline | Game-speed series as a sparkline | String | 100 | Optional |
+| dominance | Dominant-player detection: flag, serial, rule, margin | String | 200 | Not Null |
+| interventions | Interventions that fired with outcome and best-effort before/after effect, with target serials | String | 4000 | Not Null |
+
+**Constraints:** the per-controller fields (player_arcs, elimination_spread, dominance serial, intervention targets) are used only inside the one game (the retro of the game just played) and are dropped when the game is recorded in the window (UC-042 BR-004, C-009).
+
+### GAME_AGGREGATE
+
+One finished game as the cross-game window keeps it: game-level numbers only, no field that can hold a serial, a name or any other per-controller value (`services/agent/gamewindow/window.go` `GameAggregate`, UC-042 BR-004). In-memory in the single process-wide window store, lost on agent restart.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| mode | Mode played | String | 20 | Optional, Foreign Key (GAME_MODE.name) |
+| player_count | Players | Integer | 2 | Not Null, Min: 0 |
+| duration_seconds | Game duration | Decimal | 8,2 | Optional, Min: 0 |
+| outcome | Outcome type derived from the survivor count (the agent sees no end reason): one survivor `winner`, none `tie`, several `multiple_survivors` (a force-end or a team win); a force-end that leaves one survivor reads as `winner` | String | 18 | Not Null, Values: winner, tie, multiple_survivors, unknown |
+| death_rate | Eliminations divided by players | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
+| near_death_rate | Share of players with an observed closest call who survived with a closest call of at least 0.8 times the death threshold | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
+| interventions | Per type: dispatched and blocked counts and the mean measured intensity and active-player deltas, no target | String | 2000 | Optional |
+| arm | Arm, for a game in a linked set | String | 12 | Optional, Values: experimental, control |
+
+**Constraints:** real games feed one real-game ring of at most 20 games, oldest evicted. A shadow game is stored only in the LINKED_SET of its experiment (UC-042 BR-005).
+
+### LINKED_SET
+
+The shadow history of one experiment, oldest first, visible only to games of that experiment (`gamewindow.LinkedSet`, UC-042 BR-005, BR-006). In-memory, lost on restart.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| experiment_id | Experiment the set belongs to | String | 50 | Primary Key, Foreign Key (EXPERIMENT.experiment_id) |
+| games | Shadow games of the experiment as GAME_AGGREGATE rows with their arm | String | 2000 | Optional, Max entries: 20 |
+| pattern_games | Per-player rows of the experiment's pattern games, keyed by archetype name, params digest and slot (elimination place, won, survival seconds), never by serial; only from PATTERN_REPLAY_RECORD | String | 2000 | Optional, Max entries: 20 |
+
+**Constraints:** evicted when the experiment is torn down (done, discarded or aborted); the window remembers the last 64 torn-down experiments and drops a game of one of them that ends late; at most 64 sets are held, past that the least recently created one is evicted (`MaxLinkedSets`). A shadow game with no experiment has no set and is dropped.
+
+### PATTERN_REPLAY_RECORD
+
+The replay record of one finished pattern game (`services/agent/patterngame/tracker.go` `Record`, UC-046 step 8, BR-008, BR-013, BR-014). Registered in the process-wide tracker when the game starts, completed by `Finish` when it ends, then journalled (`pattern_game_ended`, no serial) and reduced into the window; lost on restart.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| game_id | Pattern game | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
+| archetype_id | Archetype that drove the slots | String | 40 | Not Null, Foreign Key (MOTION_ARCHETYPE.archetype_id) |
+| params_digest | Digest of the archetype parameters | String | 16 | Not Null |
+| stream_rate_hz | Pinned gameplay stream rate | Integer | 2 | Not Null, Values: 15, 30, 60 |
+| max_game_seconds | Safety cap of the game | Integer | 4 | Not Null, Min: 30, Max: 3600 |
+| seed | Shared seed of the pair (UC-046 BR-006) | Long | 19 | Not Null, Min: 0 |
+| flag_digest | Digest of the resolved flags that shape the game (UC-046 BR-011), or `unavailable` | String | 64 | Not Null |
+| experiment_id | Experiment, empty for a one-shot game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
+| arm | Arm, empty for a one-shot game | String | 12 | Optional, Values: experimental, control |
+| pair_index | Pair p; -1 for a one-shot game | Integer | 4 | Not Null, Min: -1 |
+| outcome | How the game ended | String | 11 | Not Null, Values: winner, tie, timeout, agent_ended, aborted, error |
+| censored | Right-censored at the cap or by the agent's `end_game` | Boolean | 1 | Not Null |
+| order_source | Where the elimination order came from: the game's `player_death` events, or the frame counts as fallback | String | 6 | Not Null, Values: events, frames |
+| elimination_order | Slots in elimination order, first out first; the winner is not listed | String | 40 | Not Null |
+| winner_slot | Slot of the winner from the `game_winner` event; -1 when none | Integer | 2 | Not Null, Min: -1 |
+| decisions | The game's decisions in order as `intervention:slot` (slot -1 when the target is not a player), with the backend | String | 1000 | Optional |
+| non_exact_reasons | Why the game is not exact (UC-046 BR-008); empty means exact | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, kill_switch, unseeded_draws |
+
+**Constraints:** lists pattern controllers only. Slots, hashes and frame counts are in PATTERN_SLOT_RECORD; the live record is held in agent memory and the serials of the mock controllers are kept only for the telemetry of that one game (UC-046 BR-006).
+
+### PATTERN_SLOT_RECORD
+
+One controller's replay record in a pattern game, taken when the controller is removed (`patterngame.SlotRecord`, UC-046 BR-008, BR-014). In-memory with its PATTERN_REPLAY_RECORD.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| game_id | Pattern game | String | 17 | Primary Key, Foreign Key (PATTERN_REPLAY_RECORD.game_id) |
+| slot | Slot i of the controller in the reservation order, never the serial | Integer | 1 | Primary Key, Min: 0, Max: 7 |
+| serial | Mock serial of that one game; used only in that game's own telemetry, never stored across games | String | 17 | Not Null |
+| frames_delivered | Frames delivered to the controller; with the stream rate it gives the survival seconds | Long | 19 | Not Null, Min: 0 |
+| signal_hash | FNV-1a/64 over the delivered frames in milli-g | Long | 19 | Not Null |
+| checkpoints | Hash after every second of game time; replays compare the common prefix | String | 4000 | Not Null |
+| frame_overruns | Stream frame overruns of this controller; any overrun makes the game non-exact (`frame_overrun`, UC-046 BR-008) | Integer | 10 | Not Null, Min: 0 |
+
+### CONTROLLER_LINK_QUALITY
+
+The connection quality of one controller, classified from the gaps between consecutive fresh frames over a rolling 10 s window (`services/controller_manager/connection_quality.py`, UC-035 BR-005, FR-122). In-memory in the controller manager (gaps are measured at its poll pick-up, quantised to the 10 ms poll interval), lost on restart; the entry is dropped when the controller is forgotten.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| serial | Controller | String | 17 | Primary Key, Foreign Key (CONTROLLER.serial) |
+| p95_gap_ms | 95th percentile (nearest rank) of the fresh-frame gaps in the window; poll-loop lateness is subtracted from every gap that spans it | Decimal | 8,1 | Not Null, Min: 0 |
+| longest_gap_ms | Longest gap in the window, including the still-open gap since the last fresh frame | Decimal | 8,1 | Not Null, Min: 0 |
+| samples | Gaps in the window (at most 4096 kept) | Integer | 4 | Not Null, Min: 0, Max: 4096 |
+| quality | Class: the worse of the p95 rating (good up to 22 ms, fair up to 30 ms, poor above) and the longest-gap rating (good up to 30 ms, fair up to 50 ms, poor above); a controller silent for the whole window after earlier frames is poor | String | 4 | Optional, Values: good, fair, poor |
+
+**Constraints:** no row (no badge, no quality series) until the controller has delivered two fresh frames; `quality` is then absent (unknown). Thresholds are the upstream JoustMania ratings, provisional and not yet validated on Pi hardware.
+
+### BT_ADAPTER
+
+One local Bluetooth adapter as the pairing daemon reads it (`services/pairing_daemon/psmove_pairing/adapter_identity.py`, FR-122). In-memory: read each poll from `hciconfig`, sysfs and `hcitool`, exported as the `pairing_bluetooth_adapter_info` series, lost on restart.
+
+| Attribute | Description | Data Type | Length/Precision | Validation Rules |
+|---|---|---|---|---|
+| hci_adapter | Adapter name | String | 8 | Primary Key, Format: hci<n> |
+| address | Adapter BD address | String | 17 | Not Null, Format: 6 hex pairs with colons, or `unknown` |
+| manufacturer | HCI manufacturer name | String | 60 | Not Null, `unknown` when not readable |
+| manufacturer_id | HCI manufacturer id | String | 6 | Not Null, `unknown` when not readable |
+| hci_version | HCI version | String | 6 | Not Null, `unknown` when not readable |
+| bus | Bus the adapter is on (for example USB, UART) | String | 10 | Not Null, `unknown` when not readable |
+| usb_id | USB vendor:product, or `unknown` | String | 9 | Not Null |
+| onboard | Whether it is the board's own radio (device tree) | Boolean | 1 | Not Null |
+| rx_errors | Cumulative kernel HCI RX error counter; exported as increments (the first reading is the baseline, a drop counts the new value) | Long | 19 | Optional, Min: 0 |
+| tx_errors | Cumulative kernel HCI TX error counter, exported the same way | Long | 19 | Optional, Min: 0 |
+
+**Constraints:** the role of each link on the adapter (central or peripheral) comes from `hcitool con` (`lm` field) and is reported per link, not stored on the adapter. A controller's adapter is also reported on `controller_adapter_info{serial,adapter}`.
