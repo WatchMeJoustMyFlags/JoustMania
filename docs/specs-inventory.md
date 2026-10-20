@@ -249,7 +249,7 @@ spec PRs. Verified against `main` @ 2d162b33; rows added or updated by the audit
 | D-B1 | Compose header: controller backend is the `backend` flag | Per-controller routing is `bluetooth_backend` + rollout; `backend` selects which adapters load (startup). | stale comment |
 | D-B2 | CANARY_RUNBOOK RustServiceAdapter stub (#612) | Fully implemented. | stale doc |
 | D-B3 | `/canary/*` reachable from the host | Envoy does not route `/canary/` (`services/envoy/envoy.yaml`); the `/chaos/` route went with fault injection (#1322). | likely bug or stale doc |
-| D-D1 | UC-035 step 2: the dashboard event feed shows game start and end (`Ended` state, "Game ended! Winner"), and the Starting state on the countdown | `handleGameEvent` switched on `game_end` / `countdown`, which the coordinator never emits (`game_ended`, `game_force_ended`, `countdown_start`, `countdown_end`; the winner arrives as `game_winner`), so the end and countdown never showed. Fixed by a reducer on the real names (#1757). | bug, Resolved by #1757 (PR to be set) |
+| D-D1 | UC-035 step 2: the dashboard event feed shows game start and end (`Ended` state, "Game ended! Winner"), and the Starting state on the countdown | `handleGameEvent` switched on `game_end` / `countdown`, which the coordinator never emits (`game_ended`, `game_force_ended`, `countdown_start`, `countdown_end`; the winner arrives as `game_winner`), so the end and countdown never showed. Fixed by a reducer on the real names (#1757). | bug, Resolved by PR #1758 |
 
 ### 4.11 Broken links found
 
