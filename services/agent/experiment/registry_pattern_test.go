@@ -581,9 +581,10 @@ func (h *preemptionHarness) notes() (reruns, preempted, skips int) {
 	return reruns, preempted, skips
 }
 
-// UC: UC-046 A8 A9 BR-015
+// UC: UC-046 A8 A9 A12 BR-015
+// UC: UC-043 A12
 func TestRegistryPatternPreemptionRerunBudget(t *testing.T) {
-	const forceEndRelease = "game ended without usable fitness sample: force_ended"
+	const killSwitchRelease = "game ended without usable fitness sample: force_ended"
 	const errorRelease = "game ended without usable fitness sample: error"
 
 	t.Run("UC-046/A8 preemptions rerun the pair without using up the 3-rerun budget", func(t *testing.T) {
@@ -630,7 +631,7 @@ func TestRegistryPatternPreemptionRerunBudget(t *testing.T) {
 		}
 	})
 
-	for name, reason := range map[string]string{"A9 errors": errorRelease, "A9 force-end releases": forceEndRelease} {
+	for name, reason := range map[string]string{"A9 errors": errorRelease, "A12 kill-switch releases": killSwitchRelease} {
 		t.Run("UC-046/"+name+" still use up the 3-rerun budget", func(t *testing.T) {
 			h := newPreemptionHarness(t, "")
 			spawned := 0

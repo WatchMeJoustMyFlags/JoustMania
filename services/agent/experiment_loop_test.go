@@ -421,6 +421,7 @@ func TestExperimentLoop_OnGameEnd_IgnoresNonExperimentGames(t *testing.T) {
 // releases the in-flight slot via the registry — WITHOUT folding a fitness
 // sample — so an effective_concurrency=1 loop does not deadlock. A naturally
 // COMPLETED game is left for the telemetry onGameEnd path (no release here).
+// UC: UC-043 A12
 func TestExperimentLoop_OnGameTerminal_ReleasesErroredGame(t *testing.T) {
 	spawner := &recordingSpawner{}
 	resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }

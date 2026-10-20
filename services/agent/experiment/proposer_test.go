@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/flagservice/fake"
 	"github.com/joustmania/agent/llm"
 )
@@ -80,21 +81,31 @@ func findSpan(t *testing.T, rec *tracetest.SpanRecorder, name string) trace.Read
 // fake backend, with an in-memory span recorder and a frozen clock.
 func proposerWithRecorder(t *testing.T, backend Backend) (*Proposer, *fake.Service, *tracetest.SpanRecorder, *fakeClock) {
 	t.Helper()
+	p, svc, rec, clk, _ := proposerWithJournal(t, backend, 0)
+	return p, svc, rec, clk
+}
+
+// proposerWithJournal is proposerWithRecorder with the registry's verdict min-N
+// (0 = the env default) and the journal root the declared intents land in.
+func proposerWithJournal(t *testing.T, backend Backend, verdictMinN int) (*Proposer, *fake.Service, *tracetest.SpanRecorder, *fakeClock, string) {
+	t.Helper()
 	svc := newGameService(t)
 	rec := tracetest.NewSpanRecorder()
 	tp := trace.NewTracerProvider(trace.WithSpanProcessor(rec))
 	w := NewWriter(svc, discardLogger())
 	gate := NewGate(w, tp.Tracer("test"), discardLogger())
+	root := t.TempDir()
 	reg := NewRegistry(RegistryConfig{
-		Root:      t.TempDir(),
-		Targeting: NewGateTargetingWriter(gate, w),
-		Verdict:   fakeVerdict{concludeAtN: 1000},
-		Clock:     fixedClock(),
+		Root:        root,
+		Targeting:   NewGateTargetingWriter(gate, w),
+		Verdict:     fakeVerdict{concludeAtN: 1000},
+		Clock:       fixedClock(),
+		VerdictMinN: verdictMinN,
 	})
 	p := NewProposer(backend, &RegistrySink{Registry: reg, Objective: "balanced"}, gameVocab(svc), tp.Tracer("test"), discardLogger())
 	clk := &fakeClock{now: time.Unix(1_700_000_000, 0)}
 	p.SetClock(clk.Now)
-	return p, svc, rec, clk
+	return p, svc, rec, clk, root
 }
 
 // fakeClock is a deterministic, advanceable clock for cadence tests.
@@ -120,7 +131,8 @@ func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 	backend := &fakeProposerBackend{
 		response: `{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace may extend sessions"}`,
 	}
-	p, svc, rec, _ := proposerWithRecorder(t, backend)
+	const verdictMinN = 7
+	p, svc, rec, _, root := proposerWithJournal(t, backend, verdictMinN)
 
 	res := p.ProposeOnce(context.Background(), Narrative{GameMode: "joust"}, ProposerConfig{Permit: allowPropose, Engine: "stub"})
 
@@ -148,6 +160,37 @@ func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 	// The Gate's own SpanProposed (blocked=false) nests under the attempt.
 	gateSpan := findSpan(t, rec, SpanProposed)
 	assertSpanBoolAttr(t, gateSpan, AttrBlocked, false)
+
+	// UC-042 step 5: the declared intent (its own exp_ id, arms experimental and
+	// control, hypothesis = the rationale, objective balanced, target N =
+	// verdict_min_n games per arm).
+	ids, err := journal.List(root)
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("journal ids = %v (err %v), want exactly one declared experiment", ids, err)
+	}
+	j, err := journal.Load(root, ids[0])
+	if err != nil {
+		t.Fatalf("load journal: %v", err)
+	}
+	intent := j.Intent()
+	if !strings.HasPrefix(intent.ExperimentID, "exp_") {
+		t.Errorf("experiment id = %q, want an exp_<hex> id", intent.ExperimentID)
+	}
+	if intent.Hypothesis != "longer grace may extend sessions" {
+		t.Errorf("hypothesis = %q, want the proposal's rationale", intent.Hypothesis)
+	}
+	if intent.Objective != "balanced" {
+		t.Errorf("objective = %q, want balanced", intent.Objective)
+	}
+	if intent.TargetNPerArm != verdictMinN {
+		t.Errorf("target N per arm = %d, want verdict_min_n %d", intent.TargetNPerArm, verdictMinN)
+	}
+	if len(intent.Arms) != 2 || intent.Arms[0] != ArmExperimental || intent.Arms[1] != ArmControl {
+		t.Errorf("arms = %v, want [%s %s]", intent.Arms, ArmExperimental, ArmControl)
+	}
+	if intent.FlagKey != "death_grace_period_seconds" {
+		t.Errorf("flag key = %q, want death_grace_period_seconds", intent.FlagKey)
+	}
 }
 
 // UC: UC-042 Post-F-1
@@ -423,7 +466,7 @@ func TestProposeOnce_NoExperimentLoopWritesNothing(t *testing.T) {
 	}
 }
 
-// UC: UC-043 main
+// UC: UC-043 main A10
 func TestRestartedFlagServiceGetsTheArmValueAgain(t *testing.T) {
 	// A flag-service restart drops every experiment-arm value. Before the next
 	// pair spawns, the registry sees the new boot epoch and writes the value

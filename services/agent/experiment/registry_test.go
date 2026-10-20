@@ -1624,3 +1624,76 @@ func TestTerminationInconclusivePastTargetN(t *testing.T) {
 		}
 	})
 }
+
+// reassertTargeting is a fakeTargeting with the Reassert capability (A10): its
+// arm-value rewrite fails while reassertErr is set.
+type reassertTargeting struct {
+	fakeTargeting
+	reassertErr error
+	reasserts   int
+}
+
+func (f *reassertTargeting) Reassert(_ context.Context, _ Proposal) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reasserts++
+	return f.reassertErr
+}
+
+func (f *reassertTargeting) setReassertErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reassertErr = err
+}
+
+// TestArmValueRewriteFailureReleasesAndRetries: when the arm value must be
+// written again before a pair and that write fails, the pair's reservations are
+// released, nothing spawns this tick, and the next tick tries again (no limit).
+// UC: UC-043 A10
+func TestArmValueRewriteFailureReleasesAndRetries(t *testing.T) {
+	t.Run("UC-043/A10 a failed arm-value rewrite spawns nothing and retries next tick", func(t *testing.T) {
+		targeting := &reassertTargeting{reassertErr: fmt.Errorf("flag service down (test)")}
+		spawner := &fakeSpawner{}
+		r := newTestRegistry(t, RegistryConfig{
+			MaxShadowGames: 2,
+			Spawner:        spawner,
+			Targeting:      targeting,
+			Verdict:        fakeVerdict{concludeAtN: 1000},
+		})
+		ctx := context.Background()
+		id, err := r.Declare(sampleIntent())
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		if err := r.Start(ctx, id); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		const failedTicks = 3
+		for i := 0; i < failedTicks; i++ {
+			if n := r.AllocateAndSpawn(ctx); n != 0 {
+				t.Fatalf("tick %d spawned %d games with a failed arm-value rewrite, want 0", i, n)
+			}
+			if got := r.TotalInFlight(); got != 0 {
+				t.Fatalf("tick %d: in flight = %d, want the pair's reservations released", i, got)
+			}
+			if got := spawner.attemptCount(); got != 0 {
+				t.Fatalf("tick %d: spawn attempts = %d, want none", i, got)
+			}
+		}
+		if targeting.reasserts != failedTicks {
+			t.Fatalf("rewrite attempts = %d, want one per tick (%d)", targeting.reasserts, failedTicks)
+		}
+		if st, _ := r.Status(id); st != StatusRunning {
+			t.Fatalf("status = %v, want still running", st)
+		}
+
+		targeting.setReassertErr(nil)
+		if n := r.AllocateAndSpawn(ctx); n != 2 {
+			t.Fatalf("tick after the flag service recovered spawned %d games, want the pair (2)", n)
+		}
+		if got := spawner.count(); got != 2 {
+			t.Fatalf("spawned games = %d, want 2", got)
+		}
+	})
+}
