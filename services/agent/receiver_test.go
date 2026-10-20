@@ -304,7 +304,7 @@ func countBlockedActions(spans []sdktrace.ReadOnlySpan) int {
 // TestReceiver_PartitionsByGameID: a single trace batch carrying spans for two
 // distinct game_ids lands in two disjoint partitions through the receiver path
 // (#845 PR B) — no cross-game player bleed.
-// UC: UC-041 main
+// UC: UC-041 main Post-S-1
 func TestReceiver_PartitionsByGameID(t *testing.T) {
 	r, mux, _, _ := newTestReceiver(t)
 
@@ -330,4 +330,103 @@ func TestReceiver_PartitionsByGameID(t *testing.T) {
 	if _, ok := b.Players["P2"]; !ok {
 		t.Error("P2 should be in game-B")
 	}
+}
+
+// TestReceiver_MetricsDriveDecisionsLateSpansDoNot (UC-041 BR-001): metrics move the
+// live context and drive decisions; a player_death span that closes after the game
+// ended still lands in the elimination order but drives no decision.
+// UC: UC-041 BR-001
+func TestReceiver_MetricsDriveDecisionsLateSpansDoNot(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	clock := time.Unix(5000, 0)
+	mux := gamecontext.NewMultiplexer(func(string) *gamecontext.Store {
+		return gamecontext.NewStore(time.Hour, time.Hour, func() time.Time { return clock })
+	})
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	loops := decision.NewLoopSet(func(string) *decision.Loop {
+		fl := flags.Snapshot{
+			Enabled:              true,
+			InterventionsAllowed: []string{"grant_shield"},
+			Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
+		}
+		l := decision.NewLoop(staticFlags{fl}, logger)
+		l.Rules = staticRules{out: []decision.Decision{{Intervention: "grant_shield"}}}
+		l.Tracer = tp.Tracer("test")
+		return l
+	})
+	pipe := newPipeline(mux, loops, time.Hour)
+	pipe.now = func() time.Time { return clock }
+	metrics := &metricsReceiver{pipe: pipe}
+	traces := &traceReceiver{pipe: pipe}
+	actions := func() int { return len(spansByNameRO(sr.Ended(), decision.SpanAction)) }
+
+	t.Run("UC-041/BR-001 metrics move the live context and drive a decision", func(t *testing.T) {
+		if _, err := metrics.Export(context.Background(), pmetricotlp.NewExportRequestFromMetrics(liveGameMetrics("game-A", "PA"))); err != nil {
+			t.Fatalf("metrics export: %v", err)
+		}
+		snap, ok := mux.Snapshot("game-A")
+		if !ok || snap.Players["PA"] == nil || snap.Session.GameActive == nil || !*snap.Session.GameActive {
+			t.Fatalf("metrics must make the game live with player PA, got ok=%v %+v", ok, snap.Session.GameActive)
+		}
+		if actions() == 0 {
+			t.Fatal("a live metric batch must drive a decision")
+		}
+	})
+
+	// The game ends on the metric path (game_active 0).
+	endMD := pmetric.NewMetrics()
+	metricGauge(endMD, "game_active", 0, map[string]string{"game_id": "game-A"})
+	if _, err := metrics.Export(context.Background(), pmetricotlp.NewExportRequestFromMetrics(endMD)); err != nil {
+		t.Fatalf("game end export: %v", err)
+	}
+
+	t.Run("UC-041/BR-001 a late player_death span keeps elimination order and drives no decision", func(t *testing.T) {
+		before := actions()
+		td := ptrace.NewTraces()
+		span := td.ResourceSpans().AppendEmpty().ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+		span.SetName("player_lifecycle")
+		span.Attributes().PutStr("player.serial", "PA")
+		span.Attributes().PutStr("game.id", "game-A")
+		span.Events().AppendEmpty().SetName("player_death")
+		if _, err := traces.Export(context.Background(), ptraceotlp.NewExportRequestFromTraces(td)); err != nil {
+			t.Fatalf("trace export: %v", err)
+		}
+		snap, ok := mux.Snapshot("game-A")
+		if !ok {
+			t.Fatal("game-A partition must still hold the ended game")
+		}
+		if seq := snap.Session.EliminationSequence; len(seq) != 1 || seq[0] != "PA" {
+			t.Fatalf("elimination sequence = %v, want [PA] from the late span", seq)
+		}
+		if got := actions(); got != before {
+			t.Fatalf("late span drove %d decision(s), want none", got-before)
+		}
+	})
+}
+
+// TestReceiver_RestartedAgentRebuildsContextFromSignals (UC-041 Post-F-1): the agent
+// keeps no state of its own across a restart; a fresh store rebuilds a live game's
+// context from the telemetry that arrives once the agent is back.
+// UC: UC-041 Post-F-1
+func TestReceiver_RestartedAgentRebuildsContextFromSignals(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	freshMux := gamecontext.NewMultiplexer(func(string) *gamecontext.Store {
+		return gamecontext.NewStore(time.Hour, time.Hour, fixedClock())
+	})
+	if _, ok := freshMux.Snapshot("game-A"); ok {
+		t.Fatal("a restarted agent starts with no context for the game")
+	}
+	loops := decision.NewLoopSet(func(string) *decision.Loop { return decision.NewLoop(nil, logger) })
+	r := &metricsReceiver{pipe: newPipeline(freshMux, loops, time.Hour)}
+
+	t.Run("UC-041/Post-F-1 the next metric batch rebuilds the live game context", func(t *testing.T) {
+		if _, err := r.Export(context.Background(), pmetricotlp.NewExportRequestFromMetrics(liveGameMetrics("game-A", "PA"))); err != nil {
+			t.Fatalf("Export error: %v", err)
+		}
+		snap, ok := freshMux.Snapshot("game-A")
+		if !ok || snap.Session.GameActive == nil || !*snap.Session.GameActive || snap.Players["PA"] == nil {
+			t.Fatalf("context not rebuilt from metrics alone: ok=%v %+v", ok, snap.Session.GameActive)
+		}
+	})
 }

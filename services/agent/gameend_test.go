@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -204,7 +205,7 @@ func TestGameEndChain_StaleEndSkippedAndCounted(t *testing.T) {
 	})
 }
 
-// UC: UC-041 A4
+// UC: UC-041 A4 main
 func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
 	newChain := func() (func(gamecontext.GameContext), map[string][]string) {
 		seen := map[string][]string{}
@@ -226,6 +227,20 @@ func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
 			if len(seen[name]) != 0 {
 				t.Errorf("%s saw a stale end, want none", name)
 			}
+		}
+	})
+
+	t.Run("UC-041/main step 7 consumers run in order: experiment, retro, summary, proposer", func(t *testing.T) {
+		var order []string
+		record := func(name string) func(gamecontext.GameContext) {
+			return func(gamecontext.GameContext) { order = append(order, name) }
+		}
+		chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()),
+			record("experiment"), record("retro"), record("summary"), record("proposer"))
+		chain(gamecontext.GameContext{SessionID: "game_order", EndReason: gamecontext.EndReasonZero})
+		want := []string{"experiment", "retro", "summary", "proposer"}
+		if strings.Join(order, ",") != strings.Join(want, ",") {
+			t.Fatalf("consumer order = %v, want %v", order, want)
 		}
 	})
 

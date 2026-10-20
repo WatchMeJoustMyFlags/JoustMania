@@ -44,7 +44,6 @@ func dangerOf(t *testing.T, mux *gamecontext.Multiplexer, gameID string) map[str
 // A game_id-labelled death threshold (FR-041) reaches the game's partition, so the
 // danger classification works per game. Before #1336 the threshold was unlabelled,
 // landed in the fallback partition, and every game's danger stayed unknown.
-// UC: UC-041 main
 // UC: UC-040 main
 func TestDanger_LabelledThresholdReachesGamePartition(t *testing.T) {
 	newMux := func() *gamecontext.Multiplexer {
@@ -52,7 +51,7 @@ func TestDanger_LabelledThresholdReachesGamePartition(t *testing.T) {
 			return gamecontext.NewStore(time.Hour, time.Hour, time.Now)
 		})
 	}
-	t.Run("UC-041/main labelled threshold classifies danger in the game partition", func(t *testing.T) {
+	t.Run("UC-040/main labelled threshold classifies danger in the game partition", func(t *testing.T) {
 		mux := newMux()
 		md := pmetric.NewMetrics()
 		playersFor(md, "game-real")
@@ -64,7 +63,7 @@ func TestDanger_LabelledThresholdReachesGamePartition(t *testing.T) {
 			t.Fatalf("danger = %v, want A=%s B=%s", got, DangerSafe, DangerNearThreshold)
 		}
 	})
-	t.Run("UC-041/main unlabelled threshold leaves the game partition unclassified", func(t *testing.T) {
+	t.Run("UC-040/main unlabelled threshold leaves the game partition unclassified", func(t *testing.T) {
 		mux := newMux()
 		md := pmetric.NewMetrics()
 		playersFor(md, "game-real")

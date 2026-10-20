@@ -337,7 +337,7 @@ func contains(list []string, v string) bool {
 // dead in real games. A live Store snapshot past the accelerate target now
 // carries a real elapsed time and R5 (speed up) produces a candidate.
 //
-// UC: UC-041 BR-003
+// UC: UC-040 main
 func TestAccelerateCandidates_LiveElapsedFromStore(t *testing.T) {
 	accelDominant := map[string]float64{ObjectiveAccelerate: 0.7, ObjectiveEndurance: 0.3}
 	target := defaultFit().AccelerateTargetSessionSeconds

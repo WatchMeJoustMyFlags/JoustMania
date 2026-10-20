@@ -88,13 +88,14 @@ func TestOnGameEnd_ShadowWithoutExperimentNotInRealBaseline(t *testing.T) {
 	}
 }
 
-// TestOnGameEnd_EmptyOrUnknownKindNotInRealBaseline (FR-041, UC-041): a game with
+// TestOnGameEnd_EmptyOrUnknownKindNotInRealBaseline (FR-041): a game with
 // no game_kind label (or an unrecognised one) and no ExperimentID must NOT seed the
 // recent-real baseline. Only an explicit real (or telemetry "primary") label counts
 // as real; empty and unknown kinds fail closed.
+// UC: UC-041 main
 func TestOnGameEnd_EmptyOrUnknownKindNotInRealBaseline(t *testing.T) {
 	for _, kind := range []string{"", "bogus"} {
-		t.Run("UC-041/kind="+kind, func(t *testing.T) {
+		t.Run("UC-041/main kind="+kind, func(t *testing.T) {
 			store := experiment.NewFitnessStore(0)
 			loop := loopWithStore(store)
 

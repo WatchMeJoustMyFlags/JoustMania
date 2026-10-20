@@ -665,7 +665,8 @@ func (h *preemptionHarness) staleNotes() int {
 	return n
 }
 
-// UC: UC-046 BR-015 UC-041 A4
+// UC: UC-046 BR-015
+// UC: UC-041 A4
 func TestRegistryPatternStaleRerunBudget(t *testing.T) {
 	const errorRelease = "game ended without usable fitness sample: error"
 

@@ -76,7 +76,7 @@ func TestApplySpans_GameKindAttrAloneIsRecognized(t *testing.T) {
 	}
 }
 
-// UC: UC-041 main
+// UC: UC-041 main BR-001
 func TestApplySpans_DeathEventAppendsElimination(t *testing.T) {
 	s := newTestStore()
 	td := spanWith(map[string]string{"player.serial": "A"}, []string{"player_death"})
@@ -86,6 +86,7 @@ func TestApplySpans_DeathEventAppendsElimination(t *testing.T) {
 	}
 }
 
+// UC: UC-041 BR-001
 func TestApplySpans_DedupeAgainstMetricPath(t *testing.T) {
 	s := newTestStore()
 	// Metric-path elimination first.

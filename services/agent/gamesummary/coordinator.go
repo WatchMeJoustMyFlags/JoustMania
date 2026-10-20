@@ -152,6 +152,9 @@ const instrumentationName = "github.com/joustmania/agent"
 //   - skips if SessionID was already summarized (exactly-once per game).
 //
 // The aggregation runs under an agent.game.summary span carrying the key counts.
+//
+// UC-041 BR-002: summaries are not durable. Nothing is written to disk here; the
+// aggregates live only in the in-memory window (Observer) and are lost on restart.
 func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 	if gc.Session.GameActive != nil && *gc.Session.GameActive {
 		return // not actually a game end

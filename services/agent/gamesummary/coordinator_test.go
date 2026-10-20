@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -177,6 +178,34 @@ func TestCoordinator_OncePerGame(t *testing.T) {
 	c.OnGameEnd(snap)
 	if n := len(spansByName(sr.Ended(), SpanGameSummary)); n != 1 {
 		t.Errorf("spans = %d, want 1 (exactly-once per game)", n)
+	}
+}
+
+// TestCoordinator_GameEndWritesNoFile: game summaries are not durable (the file
+// writer was removed in #1368). Ending a game leaves the working directory and the
+// temp directory empty; the aggregates live only in the in-memory window.
+// UC: UC-041 BR-002
+func TestCoordinator_GameEndWritesNoFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("TMPDIR", dir)
+	c, _, obs := recordingCoordinator(t)
+
+	c.OnGameEnd(gamecontext.GameContext{
+		SessionID: "game_nofile",
+		GameKind:  "real",
+		Session:   gamecontext.SessionSignals{GameActive: bptr(false)},
+	})
+
+	if got := obs.gameIDs(); len(got) != 1 {
+		t.Fatalf("summary not produced (observed %v); the test would pass vacuously", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("game end wrote %d file(s) %v, want none (BR-002)", len(entries), entries)
 	}
 }
 
