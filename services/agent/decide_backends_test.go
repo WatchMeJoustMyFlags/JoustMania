@@ -8,11 +8,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/open-feature/go-sdk/openfeature"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/decide/backends/claude"
@@ -126,6 +130,7 @@ func TestDecideRegistry_KeyWithoutConfigFallsBack(t *testing.T) {
 
 // TestDecideRegistry_KeysResolveEachBackend: with keys and config every remote
 // backend resolves to itself, and an unknown name is still unknown_backend.
+// UC: UC-044 Pre-1
 func TestDecideRegistry_KeysResolveEachBackend(t *testing.T) {
 	reg := newDecideRegistry(allKeys, newDecideHTTPClient())
 	for _, name := range remoteBackends {
@@ -304,6 +309,7 @@ var (
 
 // TestJevFlagDefaultsMatchBackend: the flag fail-safe defaults are the jev
 // backend's own defaults, so a flagd outage changes nothing for jev.
+// UC: UC-044 BR-002
 func TestJevFlagDefaultsMatchBackend(t *testing.T) {
 	if flags.DefaultDecisionJevBaseURL != jev.DefaultBaseURL || flags.DefaultDecisionJevModel != jev.DefaultModel {
 		t.Errorf("flags %q/%q vs backend %q/%q", flags.DefaultDecisionJevBaseURL, flags.DefaultDecisionJevModel, jev.DefaultBaseURL, jev.DefaultModel)
@@ -312,5 +318,121 @@ func TestJevFlagDefaultsMatchBackend(t *testing.T) {
 		Resolve(decisionFlags(t, map[string]string{"decision.backend": flags.DecisionBackendJev}))
 	if b == nil || b.(modeler).Model() != jev.DefaultModel {
 		t.Fatalf("jev with key + shipped defaults = %v", b)
+	}
+}
+
+// TestDecideRegistry_EmptyBaseURL: an empty decision.openai.base_url has no
+// endpoint to call, so openai falls back to rules (backend_unavailable) even with
+// a key and a model. Jev is the documented exception: an empty base URL means
+// jev.DefaultBaseURL, so jev stays available.
+// UC: UC-044 A1
+func TestDecideRegistry_EmptyBaseURL(t *testing.T) {
+	reg := newDecideRegistry(allKeys, newDecideHTTPClient())
+
+	strs := fullyConfigured(flags.DecisionBackendOpenAI)
+	strs["decision.openai.base_url"] = ""
+	b, reason := reg.Resolve(decisionFlags(t, strs))
+	if b != nil || reason != decision.DecideFallbackUnavailable {
+		t.Errorf("openai with an empty base URL: Resolve = (%v, %q), want (nil, %q)", b, reason, decision.DecideFallbackUnavailable)
+	}
+
+	strs = fullyConfigured(flags.DecisionBackendJev)
+	strs["decision.jev.base_url"] = ""
+	if b, reason := reg.Resolve(decisionFlags(t, strs)); b == nil {
+		t.Errorf("jev with an empty base URL must default it, got fallback %q", reason)
+	}
+}
+
+// TestDecideRegistry_KeysFixedAtStartup: the keys are read once, so an env change
+// after the registry exists does not make an unavailable backend available (a new
+// key needs a restart) and does not swap the key of an available one.
+// UC: UC-044 BR-001
+func TestDecideRegistry_KeysFixedAtStartup(t *testing.T) {
+	for _, name := range []string{"ANTHROPIC_API_KEY", "DECISION_OPENAI_API_KEY", "JEV_API_KEY"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("JEV_API_KEY", "jev-at-startup")
+	reg := newDecideRegistry(decideBackendEnvFromOS(), newDecideHTTPClient())
+
+	// A key that appears after startup changes nothing.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-late")
+	t.Setenv("DECISION_OPENAI_API_KEY", "sk-late")
+	for _, name := range []string{flags.DecisionBackendClaude, flags.DecisionBackendOpenAI} {
+		b, reason := reg.Resolve(decisionFlags(t, fullyConfigured(name)))
+		if b != nil || reason != decision.DecideFallbackUnavailable {
+			t.Errorf("%s with a key set after startup: Resolve = (%v, %q), want (nil, %q)", name, b, reason, decision.DecideFallbackUnavailable)
+		}
+	}
+
+	// A key removed after startup does not disable the backend either.
+	t.Setenv("JEV_API_KEY", "")
+	if b, reason := reg.Resolve(decisionFlags(t, fullyConfigured(flags.DecisionBackendJev))); b == nil {
+		t.Errorf("jev lost its startup key after an env change: fallback %q", reason)
+	}
+}
+
+// TestDecideBackends_KeyNeverInSpanAttributes: the configured API key reaches the
+// wire as a header only; no attribute of any span the backends emit carries it,
+// with content capture on and on an error answer.
+// UC: UC-044 C-016
+func TestDecideBackends_KeyNeverInSpanAttributes(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder)))
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":{"message":"nope"}}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	reg := newDecideRegistry(allKeys, srv.Client())
+	openaiFlags := fullyConfigured(flags.DecisionBackendOpenAI)
+	openaiFlags["decision.openai.base_url"] = srv.URL + "/v1"
+	jevFlags := fullyConfigured(flags.DecisionBackendJev)
+	jevFlags["decision.jev.base_url"] = srv.URL
+	backends := map[string]decide.Backend{}
+	for name, strs := range map[string]map[string]string{"openai": openaiFlags, "jev": jevFlags} {
+		cfg := decisionFlags(t, strs)
+		cfg.CaptureContent = true
+		b, reason := reg.Resolve(cfg)
+		if b == nil {
+			t.Fatalf("%s: Resolve fell back: %q", name, reason)
+		}
+		backends[name] = b
+	}
+	backends["claude"] = claude.New(claude.Config{
+		APIKey: allKeys.AnthropicAPIKey, Model: "claude-haiku-4-5-20251001", BaseURL: srv.URL,
+		HTTPClient: srv.Client(), CaptureContent: true,
+	})
+
+	req := decide.Request{Questions: []decide.Question{{ID: decide.QuestionFFAIntervention}}}
+	for _, b := range backends {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, _ = b.Decide(ctx, req)
+		cancel()
+	}
+
+	ended := recorder.Ended()
+	if len(ended) == 0 {
+		t.Fatal("no spans recorded: the check would pass vacuously")
+	}
+	for _, sp := range ended {
+		for _, kv := range sp.Attributes() {
+			for _, secret := range []string{allKeys.AnthropicAPIKey, allKeys.OpenAIAPIKey, allKeys.JevAPIKey} {
+				if strings.Contains(kv.Value.Emit(), secret) {
+					t.Errorf("span %q attribute %s carries an API key", sp.Name(), kv.Key)
+				}
+			}
+		}
+		for _, ev := range sp.Events() {
+			for _, kv := range ev.Attributes {
+				for _, secret := range []string{allKeys.AnthropicAPIKey, allKeys.OpenAIAPIKey, allKeys.JevAPIKey} {
+					if strings.Contains(kv.Value.Emit(), secret) {
+						t.Errorf("span %q event %q attribute %s carries an API key", sp.Name(), ev.Name, kv.Key)
+					}
+				}
+			}
+		}
 	}
 }

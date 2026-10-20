@@ -8,7 +8,7 @@
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-agent-backend.sh
 #
-# UC: UC-044 main A3
+# UC: UC-044 main A3 A4 Post-F-1
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -181,8 +181,19 @@ else
 fi
 
 # --- the flag service unreachable -----------------------------------------
+# A4: a flip attempted while the service is down fails clearly and sends no write.
+fixture
+"${HELPER}" openai >/dev/null
+puts_before="$(grep -c '^PUT ' "${FAKE_FLAG_LOG}")"
 stop_fake_flag_service
+expect "unreachable flag service fails a switch clearly" 1 "flag service unreachable" -- claude sonnet
 expect "unreachable flag service fails clearly" 1 "flag service unreachable" -- status
+puts_after="$(grep -c '^PUT ' "${FAKE_FLAG_LOG}")"
+if [[ "${puts_before}" == "${puts_after}" ]]; then
+  ok "a switch while the flag service is unreachable writes nothing"
+else
+  not_ok "a switch while the flag service is unreachable writes nothing (PUTs ${puts_before} -> ${puts_after})"
+fi
 echo
 echo "${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
