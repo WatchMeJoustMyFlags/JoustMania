@@ -59,6 +59,15 @@ The orchestrator picks the model from this table; when you are the wrong depth f
    infrastructure: name them as such (advice: `ci-full` label or rerun), not as PR defects.
 6. **Conflicts.** `git merge-tree --write-tree origin/main refs/review/<PR>` for conflicts with main; skim
    `gh pr list --state open --json number,title,files` for PRs touching the same files or spec IDs.
+7. **Spec review** (every depth, when the PR touches `docs/use_cases/`, `docs/requirements.md`,
+   `docs/entity_model.md` or `docs/glossary.md`). Run the AIUP spec review on each changed use case, following
+   `scripts/aiup/spec-review/SKILL.md`:
+   - Part A: `python3 -I scripts/aiup/spec-review/scripts/spec_lint.py --docs docs --only UC-xxx`.
+   - Part B: the semantic checklist in `scripts/aiup/spec-review/references/review-checklist.md`, on the changed text.
+
+   Report only warnings the PR **introduces or leaves contradicting its own change** as findings. Pre-existing
+   warnings go under "Follow-up candidates". Part B is advisory: never block on it alone, except a new
+   contradiction between use cases, which is a `major` finding.
 
 ## Delta mode
 
