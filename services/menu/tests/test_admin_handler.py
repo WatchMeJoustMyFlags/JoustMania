@@ -2077,6 +2077,18 @@ class TestSingleAdminSession:
         )
         return servicer, state_manager, admin_handler
 
+    @staticmethod
+    def _frozen_admin_clock():
+        """Freeze the handler's wall clock so only the timer task can time the session out.
+
+        With a 10 ms timeout, the wall-clock fallback in handle_button_event (#1782) fires
+        on a slow runner while the combo press is still being dispatched: the session ends
+        inside _press_combo and _timeout_task is already None when the test awaits it.
+        """
+        fake_time = create_autospec(time, instance=False)
+        fake_time.time.return_value = 1000.0
+        return patch("services.menu.handlers.admin.time", fake_time)
+
     async def _press_combo(self, servicer, serial):
         from services.menu.servicer import MenuServicer
 
@@ -2236,12 +2248,16 @@ class TestSingleAdminSession:
         servicer, state_manager, admin_handler = stack
         admin_handler._timeout_seconds = 0.01
         try:
-            await self._press_combo(servicer, "A")
-            await admin_handler._timeout_task
+            with self._frozen_admin_clock():
+                await self._press_combo(servicer, "A")
+                timer = admin_handler._timeout_task
+                assert timer is not None
+                await timer
 
-            assert admin_handler.active is False
-            assert state_manager.get_controller_state("A") == ControllerState.CONNECTED
-            await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
+                assert admin_handler.active is False
+                assert state_manager.get_controller_state("A") == ControllerState.CONNECTED
+                # B's combo also runs with the 10 ms timeout: keep the clock frozen.
+                await self._assert_second_controller_can_enter(servicer, state_manager, admin_handler)
         finally:
             await admin_handler.exit()
 
@@ -2251,10 +2267,13 @@ class TestSingleAdminSession:
         servicer, state_manager, admin_handler = stack
         admin_handler._timeout_seconds = 0.01
         try:
-            await self._press_combo(servicer, "A")
-            # Simulate a clear that bypasses on_exit and the explicit abandon hooks.
-            state_manager.controller_states["A"] = ControllerState.CONNECTED
-            await admin_handler._timeout_task
+            with self._frozen_admin_clock():
+                await self._press_combo(servicer, "A")
+                timer = admin_handler._timeout_task
+                assert timer is not None
+                # Simulate a clear that bypasses on_exit and the explicit abandon hooks.
+                state_manager.controller_states["A"] = ControllerState.CONNECTED
+                await timer
 
             assert admin_handler.active is False
         finally:
