@@ -477,7 +477,6 @@ func TestMux_TimelineIsolation(t *testing.T) {
 }
 
 // UC: UC-041 main
-// UC: UC-040 main
 func TestMux_PlayerNameFromControllerInfo(t *testing.T) {
 	t.Run("UC-041/main controller_info maps serial to display name", func(t *testing.T) {
 		clk := &muxClock{t: time.Unix(2000, 0)}
@@ -498,7 +497,7 @@ func TestMux_PlayerNameFromControllerInfo(t *testing.T) {
 			t.Fatalf("controller_info created partitions %v", got)
 		}
 	})
-	t.Run("UC-040/main after a rename the export carries only the new label set", func(t *testing.T) {
+	t.Run("UC-041/main after a rename the export carries only the new label set", func(t *testing.T) {
 		clk := &muxClock{t: time.Unix(2000, 0)}
 		mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
 		// Export before the rename: one series per tracked controller.

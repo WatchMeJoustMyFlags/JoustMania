@@ -103,6 +103,8 @@ func TestObjectiveRules_CadenceGate(t *testing.T) {
 	r.Evaluate(context.Background(), c) // must not panic; gate reopened
 }
 
+// UC-040 A1 step 1: the rules backend emits up to two decisions per evaluation.
+// UC: UC-040 A1
 func TestObjectiveRules_MaxTwoDecisions(t *testing.T) {
 	cfg := DefaultStaticConfig()
 	cfg.ObjectiveWeights = map[string]float64{ObjectiveEndurance: 1.0, ObjectiveBalanced: 1.0}

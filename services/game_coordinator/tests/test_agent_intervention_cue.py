@@ -61,11 +61,13 @@ def _manager(user_values=None):
 # --------------------------------------------------------------------------- #
 # Gate
 # --------------------------------------------------------------------------- #
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 def test_cue_enabled_defaults_true_without_client():
     mgr = _manager(user_values=None)
     assert mgr._cue_enabled() is True
 
 
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 def test_cue_enabled_reads_user_flag():
     assert _manager({"agent_intervention_cue": True})._cue_enabled() is True
     assert _manager({"agent_intervention_cue": False})._cue_enabled() is False
@@ -74,6 +76,7 @@ def test_cue_enabled_reads_user_flag():
 # --------------------------------------------------------------------------- #
 # Emission
 # --------------------------------------------------------------------------- #
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.asyncio
 async def test_broadcast_cue_pulses_all_alive_players():
     from proto import controller_manager_pb2
@@ -93,6 +96,7 @@ async def test_broadcast_cue_pulses_all_alive_players():
     assert all(c.game_effect.effect == controller_manager_pb2.GAME_EFFECT_PULSE for c in stream.writes)
 
 
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.asyncio
 async def test_player_targeted_cue_pulses_only_target():
     stream = FakeStream()
@@ -105,6 +109,7 @@ async def test_player_targeted_cue_pulses_only_target():
     assert [c.game_effect.serial for c in stream.writes] == ["A"]
 
 
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.asyncio
 async def test_cue_suppressed_when_muted():
     stream = FakeStream()
@@ -116,6 +121,7 @@ async def test_cue_suppressed_when_muted():
     assert stream.writes == []
 
 
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.asyncio
 async def test_cue_no_stream_is_safe():
     game = FakeGame(players={"A": FakePlayer("A")}, stream=None)
@@ -124,6 +130,7 @@ async def test_cue_no_stream_is_safe():
     await mgr._emit_agent_cue(_spec("end_game"), None, game)
 
 
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.asyncio
 async def test_cue_targeted_dead_serial_no_pulse():
     stream = FakeStream()
@@ -135,6 +142,7 @@ async def test_cue_targeted_dead_serial_no_pulse():
     assert stream.writes == []
 
 
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 def test_hard_class_specs_are_the_cued_set():
     """Guard the cue trigger condition: exactly the HARD-weight specs."""
     hard = {s.type_id for s in INTERVENTION_SPECS if s.weight >= WEIGHT_HARD}

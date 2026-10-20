@@ -628,7 +628,7 @@ func TestRemote_BackendInvalidErrorIsInvalidAnswer(t *testing.T) {
 }
 
 // UC: UC-040 A3
-// UC: UC-044 A1
+// UC: UC-044 A1 Post-F-1
 func TestRemote_UnknownOrUnavailableFallsBackSynchronously(t *testing.T) {
 	unavailable := newFakeDecideBackend(nil)
 	unavailable.available = false
@@ -953,14 +953,46 @@ func TestRemote_ThresholdRaisedMidFlight(t *testing.T) {
 	}
 }
 
+// TestRemote_BackendChangedMidFlight: the operator switches claude -> openai
+// while a claude call is in flight. The late claude answer is discarded with
+// backend_changed (UC-040 A7), and the next cycle calls openai and its
+// agent.decide span carries the new backend (UC-044 A2, then main step 5).
 // UC: UC-040 A7
 // UC: UC-044 A2
 func TestRemote_BackendChangedMidFlight(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
+	next := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
+	next.name = flags.DecisionBackendOpenAI
 	h, span := fireAndMutate(t, be, time.Hour, func(h remoteHarness) {
-		h.flags.mutate(func(s *flags.Snapshot) { s.Decision.Backend = flags.DecisionBackendRules })
+		reg := NewDecideRegistry()
+		for _, b := range []*fakeDecideBackend{be, next} {
+			reg.Register(b.Name(), func(flags.DecisionBackend) decide.Backend { return b })
+		}
+		h.loop.SetDecideRegistry(reg)
+		h.flags.mutate(func(s *flags.Snapshot) { s.Decision.Backend = flags.DecisionBackendOpenAI })
 	})
 	assertDiscarded(t, h, span, DecideDiscardBackendChanged)
+
+	t.Run("UC-044/A2 the next cycle uses the new backend", func(t *testing.T) {
+		advance(h.clock, time.Minute) // past decision.min_interval_ms
+		h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+		h.loop.AwaitInflight()
+		ds := spansByName(h.sr.Ended(), SpanDecide)
+		if len(ds) != 2 {
+			t.Fatalf("agent.decide spans = %d, want 2 (the discarded call and the next cycle)", len(ds))
+		}
+		for key, want := range map[string]string{
+			AttrDecideBackend:          flags.DecisionBackendOpenAI,
+			AttrDecideBackendRequested: flags.DecisionBackendOpenAI,
+		} {
+			if got := strAttr(t, ds[1], key); got != want {
+				t.Errorf("next cycle %s = %q, want %q", key, got, want)
+			}
+		}
+		if be.callCount() != 1 || next.callCount() != 1 {
+			t.Fatalf("calls claude=%d openai=%d, want 1 and 1", be.callCount(), next.callCount())
+		}
+	})
 }
 
 func TestRemote_ShutdownDiscards(t *testing.T) {

@@ -1176,6 +1176,8 @@ class InterventionManager:
     async def _evaluate_event_list(self, spec: InterventionSpec, session: "SessionView") -> None:
         """Apply every new event of a one-shot flag's per-game event list (FR-137).
 
+        UC-040 BR-006: a one-shot intervention fires once, only in its game.
+
         The flag resolves, for this game's ``gameId``, to
         ``{"epoch","seq","events":[{"seq","payload"}, ...]}`` (the last K
         events). Rules (architecture note §6, re-review N2):
@@ -1633,7 +1635,8 @@ class InterventionManager:
         blocked intervention never consumes budget.
 
         UC-013 BR-002: the coordinator-side allow-list check (the agent has its own
-        in the permission chain).
+        in the permission chain). UC-040 BR-004: the coordinator's half of the
+        double enforcement, plus the global backstop.
         """
         # (a) allowed-membership
         if spec.type_id not in self._allowed_types():
