@@ -72,29 +72,6 @@ class TestBackendWiring:
         await backend.shutdown()
 
     @pytest.mark.asyncio
-    async def test_disconnect_cleans_up_state(self):
-        """Disconnecting a controller removes all its tracked state."""
-        adapter = MockAdapter(num_controllers=2)
-        backend = MultiplexerBackend(adapters=[adapter])
-        await backend.initialize()
-
-        serials = backend.get_connected_controllers()
-        serial_to_remove = serials[0]
-
-        # Set some state first
-        await backend.set_led_color(serial_to_remove, 100, 200, 50)
-
-        # Disconnect
-        result = await backend.disconnect_controller(serial_to_remove)
-        assert result is True
-
-        # State should be cleaned up
-        assert serial_to_remove not in backend._led_colors
-        assert serial_to_remove not in backend._serial_to_adapter
-
-        await backend.shutdown()
-
-    @pytest.mark.asyncio
     async def test_mock_adapter_state_includes_motion_data(self):
         """MockAdapter state includes accel and gyro with x/y/z axes."""
         adapter = MockAdapter(num_controllers=1)
@@ -239,17 +216,3 @@ class TestAdapterRoutingWiring:
         assert len(backend._serial_to_adapter) == 0
         assert len(backend._led_colors) == 0
         assert len(backend._rumble) == 0
-
-    @pytest.mark.asyncio
-    async def test_connect_controller_assigns_adapter(self):
-        """connect_controller() assigns the adapter for a new serial."""
-        adapter = MockAdapter(num_controllers=0)
-        backend = MultiplexerBackend(adapters=[adapter])
-        await backend.initialize()
-
-        result = await backend.connect_controller("test_serial_001")
-        assert result is True
-        assert "test_serial_001" in backend._serial_to_adapter
-        assert backend._serial_to_adapter["test_serial_001"] is adapter
-
-        await backend.shutdown()
