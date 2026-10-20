@@ -443,10 +443,10 @@ What happens to a promote verdict (`services/agent/promote/promote.go:91-105,420
 | mode | `code_improvement.mode` at promotion | String | 10 | Not Null, Values: issue, pr, autonomous |
 | target | `code_improvement.target` | String | 6 | Not Null, Values: local, github |
 | outcome | What the promotion achieved (`code_improvement.outcome`); a promotion that could not act is `discarded` with a reason | String | 10 | Not Null, Values: applied, discarded, reverted |
-| reason | Why it was discarded | String | 200 | Optional |
+| reason | Why it was discarded or reverted (`kill_switch` for a kill-switch revert, UC-043 A1) | String | 200 | Optional |
 | reference | Issue / PR URL or commit | String | 200 | Optional |
 
-**Constraints:** the outcome, reason and reference are on the `code_improvement.promote` span and in the experiment journal as a `promotion` event (`journal.Promotion`, `services/agent/experiment/journal/record.go`, #1701); the outcome sets the experiment's end state (`applied`, `reverted` → `done`; `discarded` → `discarded`).
+**Constraints:** the outcome, reason and reference are on the `code_improvement.promote` span and in the experiment journal as a `promotion` event (`journal.Promotion`, `services/agent/experiment/journal/record.go`, #1701); the outcome sets the experiment's end state (`applied`, `reverted` → `done`; `discarded` → `discarded`). A later revert of an applied autonomous promotion (kill switch, #1704) appends a second `promotion` event (`reverted`, reason `kill_switch`) to the ended experiment's journal; it does not change the end state.
 
 ### RETRO
 

@@ -205,6 +205,15 @@ type experimentLoop struct {
 	// ConcludeGame. Injected so it is overridable / testable.
 	fitness gameFitnessFunc
 
+	// thresholds supplies the fitness.* thresholds real-game fitness is scored
+	// against, read at each game end (UC-043 step 4/7, D-F5, #1740). nil uses the
+	// flagd-schema defaults (test wiring); production reads the live agent flags.
+	thresholds decision.FitnessSource
+
+	// promotions reverts the autonomous promotions this agent run applied when the
+	// kill switch is off (UC-043 A1, UC-045 step 5, #1704). nil: nothing to revert.
+	promotions promotionKillSwitch
+
 	// completedGrace is the bounded-grace window (#1020): how long onGameTerminal
 	// waits after a COMPLETED game before releasing its in-flight slot non-counting
 	// if ConcludeGame has not folded it. Resolved from envCompletedGrace.
@@ -362,6 +371,7 @@ func buildExperimentLoop(
 	}
 	spawner.SetPatternCallbacks(registry.RecordPatternStart, patternEndChain(registry.RecordPatternEnd, windowSink))
 
+	thresholds := flagsFitnessSource{flags: flagsClient}
 	loop := &experimentLoop{
 		registry:       registry,
 		spawner:        spawner,
@@ -371,7 +381,8 @@ func buildExperimentLoop(
 		fitnessStore:   fitnessStore,
 		expDefaults:    expDefaults,
 		seed:           seedIntentFromEnv(),
-		fitness:        defaultGameFitness,
+		fitness:        gameFitnessWith(thresholds),
+		thresholds:     thresholds,
 		completedGrace: completedGrace(),
 		dynamic:        newDynamicDeclarerFromEnv(gameFlags, nil),
 		// #1184: the retro-seeded thesis proposer is ALWAYS built (like the #995
@@ -379,6 +390,9 @@ func buildExperimentLoop(
 		// it actually DECLARES is gated by proposerEnabled() (default OFF) in
 		// declareFromRetroIfEnabled. Backlog is bounded (DefaultMaxRetroBacklog).
 		proposer: experiment.NewThesisProposer(0),
+	}
+	if promoter != nil {
+		loop.promotions = promoter
 	}
 	logger.Info("Dynamic experiment declarer constructed (#995/#1044) — gated LIVE by agent.json experiment_dynamic_enabled",
 		"env_dynamic_default", expDefaults.DynamicEnabled,
@@ -523,6 +537,13 @@ func (e *experimentLoop) tickInterval(ctx context.Context) time.Duration {
 // decision loop obeys. When enabled, it lazily runs the one-time rehydrate+seed
 // (startup-gate inversion), applies the live caps, then allocates.
 func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
+	// UC-043 A1 / UC-045 step 5 (#1704): with the kill switch off (or failed closed)
+	// every tick reverts the autonomous promotions this agent run applied, whatever
+	// experiments_enabled says, so none survives the switch.
+	agentOn := e.agentEnabled(ctx)
+	if !agentOn {
+		e.revertPromotionsOnKillSwitch(ctx)
+	}
 	cfg := e.config(ctx)
 	if !cfg.Enabled {
 		if ids := e.registry.AbortAll(ctx, "experiments_enabled flag off"); len(ids) > 0 {
@@ -530,7 +551,7 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 		}
 		return
 	}
-	if !e.agentEnabled(ctx) {
+	if !agentOn {
 		if ids := e.registry.AbortAll(ctx, "kill-switch: agent disabled"); len(ids) > 0 {
 			e.log.Warn("experiment: kill-switch active — aborted live experiments", "count", len(ids))
 		}
@@ -565,6 +586,33 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	if n := e.registry.AllocateAndSpawn(ctx); n > 0 {
 		e.log.Debug("experiment: spawned shadow games this tick", "count", n,
 			"in_flight", e.registry.TotalInFlight(), "capacity", e.registry.Capacity())
+	}
+}
+
+// promotionKillSwitch is the Promoter half the kill switch drives (#1704):
+// RevertOnKillSwitch restores the previous real default of every autonomous
+// promotion still applied, stops its re-watch and returns what it reverted.
+type promotionKillSwitch interface {
+	RevertOnKillSwitch(ctx context.Context) []promote.KillSwitchRevert
+}
+
+// revertPromotionsOnKillSwitch reverts the applied autonomous promotions and
+// journals each revert on its experiment (outcome reverted, reason kill_switch).
+func (e *experimentLoop) revertPromotionsOnKillSwitch(ctx context.Context) {
+	if e.promotions == nil {
+		return
+	}
+	for _, rv := range e.promotions.RevertOnKillSwitch(ctx) {
+		e.log.Warn("experiment: kill-switch reverted an autonomous promotion (#1704)",
+			"experiment_id", rv.ExperimentID, "flag", rv.FlagKey,
+			"outcome", string(rv.Outcome), "reason", rv.Reason)
+		if rv.ExperimentID == "" || e.registry == nil {
+			continue
+		}
+		e.registry.RecordPromotion(rv.ExperimentID, experiment.PromotionResult{
+			Outcome: string(rv.Outcome),
+			Reason:  rv.Reason,
+		})
 	}
 }
 
@@ -1091,7 +1139,8 @@ func (e *experimentLoop) recordFinalizedRealFitness(gc gamecontext.GameContext, 
 		}
 		return
 	}
-	eval := decision.EvaluateFitness(gc, decision.DefaultStaticConfig().FitnessThresholds)
+	startedAt := timelinePhaseAt(gc.Timeline, "start")
+	eval := decision.EvaluateFitness(gc, e.fitnessThresholds())
 	for objective, r := range eval.Results {
 		if !r.Evaluated || !decision.IsExperimentable(objective) {
 			continue
@@ -1102,6 +1151,7 @@ func (e *experimentLoop) recordFinalizedRealFitness(gc gamecontext.GameContext, 
 			Objective: objective,
 			GameKind:  experiment.GameKindReal,
 			DurationS: duration,
+			StartedAt: startedAt,
 		})
 	}
 }
@@ -1276,15 +1326,72 @@ func (e *experimentLoop) stopAllCompletedGrace() {
 // that produced no measurable signal contributes a worst-case sample rather than a
 // fabricated one). This is deliberately the SIMPLEST honest mapping — a richer
 // blended fitness is a follow-up (it does not change the assembly).
+//
+// It scores with the flagd-schema default thresholds; the production loop scores
+// with the live fitness.* flags through gameFitnessWith (#1740).
 func defaultGameFitness(gc gamecontext.GameContext, objective string) float64 {
+	return scoreGameFitness(gc, objective, decision.DefaultStaticConfig().FitnessThresholds)
+}
+
+// gameFitnessWith returns the gameFitnessFunc that scores against src's fitness.*
+// thresholds, read at each game end so an operator's threshold change applies to
+// the next game (UC-043 step 4, D-F5, #1740). A nil src scores with the defaults.
+func gameFitnessWith(src decision.FitnessSource) gameFitnessFunc {
+	if src == nil {
+		return defaultGameFitness
+	}
+	return func(gc gamecontext.GameContext, objective string) float64 {
+		return scoreGameFitness(gc, objective, src.Fitness())
+	}
+}
+
+// scoreGameFitness is the shared body of defaultGameFitness / gameFitnessWith.
+func scoreGameFitness(gc gamecontext.GameContext, objective string, thresholds decision.FitnessThresholds) float64 {
 	if objective == "" {
 		objective = decision.ObjectiveBalanced
 	}
-	eval := decision.EvaluateFitness(gc, decision.DefaultStaticConfig().FitnessThresholds)
+	eval := decision.EvaluateFitness(gc, thresholds)
 	if r, ok := eval.Results[objective]; ok && r.Evaluated {
 		return r.Progress
 	}
 	return 0
+}
+
+// fitnessThresholds returns the fitness.* thresholds in force now: the live source
+// when wired (#1740), else the flagd-schema defaults.
+func (e *experimentLoop) fitnessThresholds() decision.FitnessThresholds {
+	if e.thresholds == nil {
+		return decision.DefaultStaticConfig().FitnessThresholds
+	}
+	return e.thresholds.Fitness()
+}
+
+// flagsFitnessSource is the production decision.FitnessSource of the experiment
+// loop: it reads the agent fitness.* flags at each call (never cached, #1740), the
+// same flags the rules engine scores against. A nil client serves the defaults.
+type flagsFitnessSource struct {
+	flags *flags.Flags
+}
+
+// Fitness implements decision.FitnessSource.
+func (s flagsFitnessSource) Fitness() decision.FitnessThresholds {
+	if s.flags == nil {
+		return decision.DefaultStaticConfig().FitnessThresholds
+	}
+	return decision.FitnessThresholdsFromFlags(s.flags.Evaluate(context.Background()).Fitness)
+}
+
+// timelinePhaseAt returns the time of the session's last phase event with the
+// given detail ("start", as timelinePhaseDuration reads it), or the zero time when
+// there is none.
+func timelinePhaseAt(timeline []gamecontext.TimelineEvent, detail string) time.Time {
+	var at time.Time
+	for _, ev := range timeline {
+		if ev.Kind == gamecontext.EventPhase && ev.Detail == detail {
+			at = ev.At
+		}
+	}
+	return at
 }
 
 // withEffectiveDuration returns gc with Session.DurationSeconds populated from the

@@ -137,25 +137,131 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 		return
 	}
 	res.Outcome = OutcomeApplied
+	// The watch counts only real games that started after the write (#1702).
+	appliedAt := pr.clock()
+	// Track the applied default until it is reverted, so the kill switch can revert
+	// it (#1704).
+	entry := pr.trackApplied(p)
 
 	// Watch real-game fitness for the promoted flag's objective and act on the verdict.
 	// Use the tri-state Observe when the watcher supports it so an INSUFFICIENT-games
 	// result schedules a re-watch (#1065 item 4) instead of silently keeping an
 	// unverified change; otherwise fall back to the boolean Degraded.
-	verdict, err := pr.observe(ctx, p.FlagKey, ev.FitnessBefore)
+	verdict, err := pr.observe(ctx, p.FlagKey, ev.FitnessBefore, appliedAt)
 	switch {
 	case err != nil:
 		// Cannot CONFIRM healthy — fail safe by reverting rather than leaving a
 		// real-player change unverified.
-		pr.revertReal(ctx, p, res, err)
+		pr.revertReal(ctx, p, entry, res, err)
 	case verdict == VerdictDegraded:
-		pr.revertReal(ctx, p, res, nil)
+		pr.revertReal(ctx, p, entry, res, nil)
 	case verdict == VerdictInsufficient:
 		// Apply stands, but unverified. Schedule a background re-watch (if wired) that
 		// reverts later if degradation is confirmed as more real games complete.
-		pr.scheduleRewatch(ctx, p, ev)
+		pr.scheduleRewatch(ctx, p, ev, appliedAt, entry)
 	default: // VerdictHealthy — confirmed keep, nothing to do.
 	}
+}
+
+// KillSwitchReason is the promotion reason a kill-switch revert journals (UC-043
+// A1, #1704).
+const KillSwitchReason = "kill_switch"
+
+// KillSwitchRevert is what RevertOnKillSwitch did for one applied promotion: the
+// experiment and flag, and the outcome (reverted, or applied when the revert could
+// not happen) with its reason.
+type KillSwitchRevert struct {
+	ExperimentID string
+	FlagKey      string
+	Outcome      Outcome
+	Reason       string
+}
+
+// RevertOnKillSwitch restores the previous real default of every autonomous
+// promotion this agent run applied and has not reverted, and stops its re-watch
+// (UC-043 A1, UC-045 step 5, #1704). The caller invokes it on each experiment tick
+// while `enabled` is off (or fails closed). It is the last real-default write of
+// those promotions: a watch or re-watch revert that runs afterwards finds its entry
+// claimed and writes nothing. A revert that fails keeps its entry, so the next tick
+// tries again. Returns one KillSwitchRevert per promotion handled (none when
+// nothing is applied).
+func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
+	pr.mu.Lock()
+	entries := make([]*appliedPromotion, 0, len(pr.applied))
+	for flagKey, entry := range pr.applied {
+		entries = append(entries, entry)
+		delete(pr.applied, flagKey)
+	}
+	pr.mu.Unlock()
+
+	out := make([]KillSwitchRevert, 0, len(entries))
+	for _, entry := range entries {
+		if entry.cancel != nil {
+			entry.cancel()
+		}
+		p := entry.proposal
+		rv := KillSwitchRevert{ExperimentID: p.ExperimentID, FlagKey: p.FlagKey, Outcome: OutcomeApplied}
+		switch {
+		case pr.reverter == nil:
+			rv.Reason = KillSwitchReason + "; no real-default reverter wired"
+		default:
+			if err := pr.reverter.RevertRealDefault(ctx, p.FlagKey); err != nil {
+				rv.Reason = fmt.Sprintf("%s; revert failed: %v", KillSwitchReason, err)
+				pr.retrack(entry)
+			} else {
+				pr.markReverted(p.FlagKey)
+				rv.Outcome = OutcomeReverted
+				rv.Reason = KillSwitchReason
+			}
+		}
+		pr.log.Warn("autonomous promotion: kill switch", "flag", p.FlagKey,
+			"experiment_id", p.ExperimentID, "outcome", string(rv.Outcome), "reason", rv.Reason)
+		out = append(out, rv)
+	}
+	return out
+}
+
+// trackApplied records an applied autonomous promotion (#1704). A newer write of the
+// same flag replaces the entry; the older one's re-watch is stopped.
+func (pr *Promoter) trackApplied(p experiment.Proposal) *appliedPromotion {
+	entry := &appliedPromotion{proposal: p}
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	if pr.applied == nil {
+		pr.applied = map[string]*appliedPromotion{}
+	}
+	if old := pr.applied[p.FlagKey]; old != nil && old.cancel != nil {
+		old.cancel()
+	}
+	pr.applied[p.FlagKey] = entry
+	return entry
+}
+
+// retrack puts back an entry whose kill-switch revert failed, unless a newer
+// promotion of the flag took its place meanwhile.
+func (pr *Promoter) retrack(entry *appliedPromotion) {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	if _, ok := pr.applied[entry.proposal.FlagKey]; !ok {
+		entry.cancel = nil
+		pr.applied[entry.proposal.FlagKey] = entry
+	}
+}
+
+// claimApplied removes entry if it is still the applied promotion of its flag and
+// reports whether the caller now owns its revert. false: the kill switch (or a
+// newer promotion) took it, so the caller must not write.
+func (pr *Promoter) claimApplied(entry *appliedPromotion) bool {
+	if entry == nil {
+		return true
+	}
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	if pr.applied[entry.proposal.FlagKey] != entry {
+		return false
+	}
+	delete(pr.applied, entry.proposal.FlagKey)
+	return true
 }
 
 // observe runs the watcher and returns a tri-state verdict. When the wired Watcher
@@ -164,11 +270,11 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 // Otherwise it adapts the boolean Degraded (degraded→VerdictDegraded, else
 // VerdictHealthy — a boolean-only watcher cannot signal insufficiency, so no re-watch
 // is scheduled, matching the prior behavior).
-func (pr *Promoter) observe(ctx context.Context, flagKey string, baseline float64) (WatchVerdict, error) {
+func (pr *Promoter) observe(ctx context.Context, flagKey string, baseline float64, since time.Time) (WatchVerdict, error) {
 	if obs, ok := pr.watcher.(Observer); ok {
-		return obs.Observe(ctx, flagKey, baseline)
+		return obs.Observe(ctx, flagKey, baseline, since)
 	}
-	degraded, err := pr.watcher.Degraded(ctx, flagKey, baseline)
+	degraded, err := pr.watcher.Degraded(ctx, flagKey, baseline, since)
 	if err != nil {
 		return VerdictInsufficient, err
 	}
@@ -182,7 +288,7 @@ func (pr *Promoter) observe(ctx context.Context, flagKey string, baseline float6
 // fitnessWatcher implements it; the Promoter type-asserts for it so a boolean-only
 // Watcher still works (it just cannot trigger a re-watch).
 type Observer interface {
-	Observe(ctx context.Context, flagKey string, baseline float64) (WatchVerdict, error)
+	Observe(ctx context.Context, flagKey string, baseline float64, since time.Time) (WatchVerdict, error)
 }
 
 // scheduleRewatch hands an insufficient-games apply to the background re-watcher
@@ -190,7 +296,7 @@ type Observer interface {
 // the apply stands unverified (prior behavior). The revert closure performs a gated,
 // recorded fail-safe revert with its own Result so the journal/span reflects the
 // later auto-revert.
-func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, ev Evidence) {
+func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, ev Evidence, since time.Time, entry *appliedPromotion) {
 	if pr.rewatcher == nil {
 		pr.log.Info("autonomous watch: insufficient real games and no re-watcher wired; apply stands unverified",
 			"flag", p.FlagKey)
@@ -200,11 +306,30 @@ func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, 
 		"flag", p.FlagKey)
 	revert := func(rctx context.Context) {
 		var rres Result
-		pr.revertReal(rctx, p, &rres, nil)
+		pr.revertReal(rctx, p, entry, &rres, nil)
 		pr.log.Warn("autonomous re-watch confirmed degradation; reverted real default (#1065)",
 			"flag", p.FlagKey, "outcome", string(rres.Outcome), "reason", rres.Reason)
 	}
-	pr.rewatcher.Schedule(ctx, p.FlagKey, ev.FitnessBefore, pr.watcher, revert)
+	// The re-watch outlives this call; the kill switch cancels it (#1704).
+	wctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if !pr.setCancel(entry, cancel) {
+		// The kill switch already reverted this promotion: nothing to watch.
+		cancel()
+		return
+	}
+	pr.rewatcher.Schedule(wctx, p.FlagKey, ev.FitnessBefore, since, pr.watcher, revert)
+}
+
+// setCancel attaches the re-watch cancel to entry while it is still applied, and
+// reports whether it is.
+func (pr *Promoter) setCancel(entry *appliedPromotion, cancel context.CancelFunc) bool {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	if pr.applied[entry.proposal.FlagKey] != entry {
+		return false
+	}
+	entry.cancel = cancel
+	return true
 }
 
 // cooldownRemaining reports the time left in flagKey's post-revert cooldown, and
@@ -250,7 +375,18 @@ func (pr *Promoter) clock() time.Time {
 // unconfirmable watch). A nil RealDefaultReverter (no rollback wired) records the
 // degradation but cannot undo it — logged + reasoned so it is visible, never
 // silent. On a successful revert the outcome becomes OutcomeReverted.
-func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, res *Result, watchErr error) {
+//
+// entry is the tracked applied promotion (#1704): the revert runs only when this
+// call claims it; when the kill switch already reverted it, nothing is written and
+// the result records the kill-switch revert.
+func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry *appliedPromotion, res *Result, watchErr error) {
+	if !pr.claimApplied(entry) {
+		// The kill switch reverted it already (or a newer write of the flag replaced
+		// it): this call writes nothing.
+		res.Outcome = OutcomeReverted
+		res.Reason = KillSwitchReason
+		return
+	}
 	reason := "real-game fitness degraded after autonomous change"
 	if watchErr != nil {
 		reason = fmt.Sprintf("could not confirm real-game fitness healthy (%v); reverting fail-safe", watchErr)
@@ -262,6 +398,10 @@ func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, res *
 	}
 	if err := pr.reverter.RevertRealDefault(ctx, p.FlagKey); err != nil {
 		res.Reason = fmt.Sprintf("%s; revert failed: %v", reason, err)
+		// Still applied: the kill switch may revert it later (#1704).
+		if entry != nil {
+			pr.retrack(entry)
+		}
 		return
 	}
 	// Start the post-revert cooldown so a re-promotion of this flag cannot immediately

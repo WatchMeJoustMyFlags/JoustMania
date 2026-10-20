@@ -110,7 +110,9 @@ func (r *recordingRealDefault) count() int {
 // a promoted change is kept (the gating-and-keep path these tests assert).
 type loopWatcher struct{}
 
-func (loopWatcher) Degraded(context.Context, string, float64) (bool, error) { return false, nil }
+func (loopWatcher) Degraded(context.Context, string, float64, time.Time) (bool, error) {
+	return false, nil
+}
 
 // recordingGitHub records OpenIssue/OpenPR so a test can assert the safe (issue)
 // path was taken instead of a real-default mutation.

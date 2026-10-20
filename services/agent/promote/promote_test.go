@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -79,7 +80,7 @@ type fakeWatcher struct {
 	err      error
 }
 
-func (w fakeWatcher) Degraded(context.Context, string, float64) (bool, error) {
+func (w fakeWatcher) Degraded(context.Context, string, float64, time.Time) (bool, error) {
 	return w.degraded, w.err
 }
 
@@ -93,7 +94,7 @@ type baselineRecordingWatcher struct {
 	err          error
 }
 
-func (w *baselineRecordingWatcher) Degraded(_ context.Context, flag string, baseline float64) (bool, error) {
+func (w *baselineRecordingWatcher) Degraded(_ context.Context, flag string, baseline float64, _ time.Time) (bool, error) {
 	w.calls++
 	w.lastFlag = flag
 	w.lastBaseline = baseline
