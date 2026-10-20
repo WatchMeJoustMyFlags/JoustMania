@@ -83,14 +83,14 @@ flowchart LR
     writers -->|"PUT/DELETE /{flagSetId}/{flagName}"| fs
     fs[flag-service<br/>registry, overlays, game scopes,<br/>merged renderer] -->|"flagd.sync.v1 SyncFlags<br/>ONE stream, all sets,<br/>per-flag metadata.flagSetId"| flagd[(stock flagd v0.16.0)]
     flagd -->|"8015 sync, selector flagSetId=&lt;set&gt;"| py[Python in-process resolvers]
-    flagd -->|8013 RPC| goagent[agent, rust-hid]
+    flagd -->|"8015 sync (since #1713; 8013 RPC before)"| goagent[agent, rust-hid]
     flagd -->|8016 OFREP| digest[agent pattern digest]
     fs -->|OTLP spans + metrics| otel[otel-collector]
 ```
 
 Nothing changes on the read side: flagd keeps its ports 8013 / 8014 / 8015 / 8016, the Python
 services keep the in-process resolver against `flagd:8015` with `flagSetId=<set>` selectors, the agent
-and rust-hid keep the RPC resolver on 8013 (no selector; keys are unique across sets, §5.2), and the
+and rust-hid keep the RPC resolver on 8013 (no selector; keys are unique across sets, §5.2; since #1713 both use the in-process resolver on 8015 with `flagSetId` selectors), and the
 agent's pattern digest keeps OFREP on 8016 with `Flagd-Selector: flagSetId=<set>`.
 
 The flag service mounts the flag directory **read-only** from the start. In the end state the menu, the
