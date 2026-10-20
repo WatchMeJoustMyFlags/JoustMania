@@ -167,7 +167,7 @@ func TestWriter_EveryInterventionIsOneGameScopedWrite(t *testing.T) {
 }
 
 // UC: UC-053 BR-003
-// UC: UC-040 A11
+// UC: UC-040 A23 BR-002
 func TestWriter_NoGameNoWrite(t *testing.T) {
 	t.Run("UC-053/BR-003 a decision without its game id is never written (FR-136)", func(t *testing.T) {
 		w, svc := newTestWriter(t)
@@ -182,6 +182,35 @@ func TestWriter_NoGameNoWrite(t *testing.T) {
 			t.Fatalf("err=%v writes=%d", err, len(svc.all()))
 		}
 	})
+	t.Run("UC-040/BR-002 a decision with its coordinator game id is written for that game", func(t *testing.T) {
+		w, svc := newTestWriter(t)
+		err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume, GameID: "game_0a1b2c3d4e5f"})
+		if err != nil || len(svc.all()) != 1 || svc.last(t).write.Scope.GameID != "game_0a1b2c3d4e5f" {
+			t.Fatalf("err=%v writes=%d", err, len(svc.all()))
+		}
+	})
+}
+
+// TestWriter_RefusesNonGameID: the partition for unlabeled signals has a
+// `session-<n>` id, not a coordinator game id; a decision taken there is
+// refused like an unscoped one, before any flag-service call. The counter and
+// span side is TestDecideLoop_RefusesNonGameID.
+// UC: UC-040 A18 BR-002
+func TestWriter_RefusesNonGameID(t *testing.T) {
+	for _, id := range []string{"session-1", "s-1", "g", "Game_1", "shadow_1"} {
+		t.Run("UC-040/A18 refuses "+id, func(t *testing.T) {
+			w, svc := newTestWriter(t)
+			err := w.Apply(context.Background(), decision.Decision{
+				Intervention: decision.InterventionEndGame, GameID: id,
+			})
+			if !errors.Is(err, errNoGame) {
+				t.Fatalf("err=%v, want errNoGame", err)
+			}
+			if n := len(svc.all()); n != 0 {
+				t.Fatalf("flag service got %d writes for game id %q, want 0", n, id)
+			}
+		})
+	}
 }
 
 // UC: UC-053 A7 A8
@@ -189,7 +218,7 @@ func TestWriter_FailsClosed(t *testing.T) {
 	t.Run("UC-053/A7 a rejected write is an error (fail closed)", func(t *testing.T) {
 		w, svc := newTestWriter(t)
 		svc.err = &flagservice.Error{Status: 503, Reason: flagservice.ReasonNoSyncStream}
-		err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume, GameID: "g"})
+		err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume, GameID: "game_g"})
 		if !flagservice.IsReason(err, flagservice.ReasonNoSyncStream) {
 			t.Fatalf("err %v", err)
 		}
@@ -197,7 +226,7 @@ func TestWriter_FailsClosed(t *testing.T) {
 	t.Run("UC-053/A8 an unreachable flag service fails the decision once, with no second write", func(t *testing.T) {
 		w, svc := newTestWriter(t)
 		svc.err = errors.New("dial tcp: connection refused")
-		err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume, GameID: "g"})
+		err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustVolume, GameID: "game_g"})
 		if err == nil {
 			t.Fatal("an unreachable flag service must fail the decision (fail closed)")
 		}

@@ -558,8 +558,8 @@ game (`actions/writer.go`, gated by `interventions_enabled`; [UC-053](../use_cas
 a state value with `PUT … scope {game_id}`, a per-player value with
 `scope {game_id, serial}`, a one-shot event with `POST` (appended to the game's event list).
 A decision without a coordinator game id (`game_…`), such as the `session-<n>` id of the
-agent's partition for unlabeled signals, is not written and is recorded as a failed write
-(`agent_intervention_writes_total{result=error}`, #1323); a `game_not_live` refusal is retried
+agent's partition for unlabeled signals, is not written (no flag-service call, no retry) and is recorded as a failed write
+(`agent_intervention_writes_total{result=error}`, `agent.action` span error; #1323, #1651); a `game_not_live` refusal is retried
 once after 250 ms. The game coordinator applies the result
 (`services/game_coordinator/interventions.py`). Full flag shapes and bounds:
 [flags.md § interventions](flags.md#5-interventions), [§13.1](flags.md#131-interventions-all-writes-are-game-scoped).

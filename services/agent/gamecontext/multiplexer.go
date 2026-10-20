@@ -290,8 +290,9 @@ func (m *Multiplexer) Partitions() []string {
 // finishes against that snapshot; if signals for the removed game resume, store()
 // lazily recreates the partition.
 //
-// It returns the ids of the partitions it removed, so the caller can prune the
-// retired games' per-player intervention entries (UC-040 A25, #1323).
+// It returns the ids of the partitions it removed. A game's per-player
+// intervention values need no agent-side pruning: the flag service drops them
+// when the game ends (UC-040 BR-016).
 func (m *Multiplexer) EvictStale() []string {
 	// Snapshot the partition pointers under RLock, then release before the
 	// per-store eviction (long work) so Apply*/Snapshot are not blocked.

@@ -37,6 +37,27 @@ func TestDecisionBackend_DefaultsWhenMissing(t *testing.T) {
 	}
 }
 
+// TestDecisionBackend_DefaultTimeoutsPerBackend pins the NFR-010 default
+// remote-call timeouts as literal values (the other tests compare against the
+// constants, so a changed constant would pass them): Claude 5000 ms, OpenAI and
+// Jev 2500 ms. TestDecisionBackend_FlagFilesMatchDefaults holds the flag files
+// to the same values.
+// NFR: NFR-010
+func TestDecisionBackend_DefaultTimeoutsPerBackend(t *testing.T) {
+	got := New(stubEvaluator{}, nil).Evaluate(context.Background()).Decision
+	for name, c := range map[string]struct{ got, want time.Duration }{
+		"claude": {got.Claude.Timeout, 5000 * time.Millisecond},
+		"openai": {got.OpenAI.Timeout, 2500 * time.Millisecond},
+		"jev":    {got.Jev.Timeout, 2500 * time.Millisecond},
+	} {
+		t.Run("NFR-010 "+name+" default timeout", func(t *testing.T) {
+			if c.got != c.want {
+				t.Fatalf("decision.%s.timeout_ms default = %v, want %v", name, c.got, c.want)
+			}
+		})
+	}
+}
+
 // UC: UC-044 main
 func TestDecisionBackend_FlagdShape(t *testing.T) {
 	stub := stubEvaluator{

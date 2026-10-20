@@ -585,9 +585,9 @@ func TestMux_GameStateGaugesPerGame(t *testing.T) {
 	})
 }
 
-// UC: UC-040 A25
+// UC: UC-041 A2
 func TestMux_EvictStaleReturnsRetiredPartitions(t *testing.T) {
-	t.Run("UC-040/A25 EvictStale names the partitions it removed so their entries can be pruned", func(t *testing.T) {
+	t.Run("UC-041/A2 an ended game's partition is evicted after grace, a live one stays", func(t *testing.T) {
 		clk := &muxClock{t: time.Unix(5000, 0)}
 		mux := newTestMux(clk, 5*time.Second, 5*time.Second, nil, nil)
 		mux.ApplyMetrics(gameActiveFor("game-A", 1))
@@ -599,6 +599,12 @@ func TestMux_EvictStaleReturnsRetiredPartitions(t *testing.T) {
 		removed := mux.EvictStale()
 		if len(removed) != 1 || removed[0] != "game-A" {
 			t.Fatalf("EvictStale removed %v, want [game-A]", removed)
+		}
+		if _, ok := mux.Snapshot("game-A"); ok {
+			t.Error("the ended game's partition must be gone after grace")
+		}
+		if _, ok := mux.Snapshot("game-B"); !ok {
+			t.Error("the live game's partition must stay")
 		}
 		if again := mux.EvictStale(); len(again) != 0 {
 			t.Fatalf("second EvictStale removed %v, want nothing", again)

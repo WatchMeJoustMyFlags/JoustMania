@@ -131,7 +131,7 @@ func TestRemote_SameCycleFallbackDecidedCycleUnthrottled(t *testing.T) {
 
 // The default rules path is untouched: a quiet rules cycle emits no span, no
 // gated metric and no fallback warning.
-// UC: UC-040 main
+// UC: UC-040 A1
 func TestRules_QuietCycleStaysSpanFree(t *testing.T) {
 	h, reader, logs := quietFallbackHarness(t, nil)
 	h.flags.mutate(func(s *flags.Snapshot) { s.Decision.Backend = flags.DecisionBackendRules })
