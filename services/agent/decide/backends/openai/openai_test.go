@@ -37,12 +37,18 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// chatSpans returns the ended chat spans whose server.port matches port, oldest
-// first (every test has its own httptest server, so its own port).
-func chatSpans(t *testing.T, port int64) []sdktrace.ReadOnlySpan {
+// chatSpans returns the ended chat spans whose server.port matches port and
+// that ended after the first `from` recorded spans, oldest first. The port alone
+// is not unique: the OS reuses ephemeral ports across tests (and -count runs),
+// so `from` is the recorder size taken when the test's fake API was created.
+func chatSpans(t *testing.T, port int64, from int) []sdktrace.ReadOnlySpan {
 	t.Helper()
 	var out []sdktrace.ReadOnlySpan
-	for _, s := range recorder.Ended() {
+	ended := recorder.Ended()
+	if from > len(ended) {
+		from = len(ended)
+	}
+	for _, s := range ended[from:] {
 		if strings.HasPrefix(s.Name(), "chat ") && attrs(s)["server.port"].AsInt64() == port {
 			out = append(out, s)
 		}
@@ -112,16 +118,18 @@ type reply struct {
 // fakeAPI is an OpenAI-compatible endpoint. respond picks the reply from the
 // decoded request body; it records every request body.
 type fakeAPI struct {
-	srv     *httptest.Server
-	calls   atomic.Int32
-	mu      sync.Mutex
-	bodies  []map[string]any
-	lastHdr http.Header
+	srv *httptest.Server
+	// spanBaseline is the recorder size when this fake API was created.
+	spanBaseline int
+	calls        atomic.Int32
+	mu           sync.Mutex
+	bodies       []map[string]any
+	lastHdr      http.Header
 }
 
 func newFakeAPI(t *testing.T, respond func(body map[string]any) reply) *fakeAPI {
 	t.Helper()
-	f := &fakeAPI{}
+	f := &fakeAPI{spanBaseline: len(recorder.Ended())}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.calls.Add(1)
 		raw, _ := io.ReadAll(r.Body)
@@ -148,6 +156,18 @@ func newFakeAPI(t *testing.T, respond func(body map[string]any) reply) *fakeAPI 
 		_, _ = w.Write(rep.body)
 	}))
 	t.Cleanup(f.srv.Close)
+	// The downgrade memory is process-global and keyed by base URL; the OS can
+	// hand this port to a later test, so forget this server's entries on both ends.
+	forget := func() {
+		schemaRejectedEndpoints.Range(func(k, _ any) bool {
+			if strings.HasPrefix(k.(string), f.srv.URL) {
+				schemaRejectedEndpoints.Delete(k)
+			}
+			return true
+		})
+	}
+	forget()
+	t.Cleanup(forget)
 	return f
 }
 
@@ -178,7 +198,7 @@ func (f *fakeAPI) spans(t *testing.T) []sdktrace.ReadOnlySpan {
 		t.Fatal(err)
 	}
 	port, _ := strconv.ParseInt(u.Port(), 10, 64)
-	return chatSpans(t, port)
+	return chatSpans(t, port, f.spanBaseline)
 }
 
 func TestDecide_HappyPath(t *testing.T) {
