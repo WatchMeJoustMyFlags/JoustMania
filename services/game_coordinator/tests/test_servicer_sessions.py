@@ -1567,6 +1567,34 @@ class TestHeadlessStartStream:
         assert sessions[0].event_bus.subscriber_count == 0
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-003", flow="A2", br=["BR-003"])
+    async def test_client_cancel_mid_start_leaves_no_subscriber(self, servicer):
+        """A cancel during the flag-service register (after the subscribe) drops the subscriber."""
+        register_entered = asyncio.Event()
+
+        async def _register_blocks(_record):
+            register_entered.set()
+            await asyncio.Event().wait()
+
+        async def _drain(gen):
+            async for _event in gen:
+                pass
+
+        request = game_coordinator_pb2.StreamEventsRequest(start_config=_shadow_config())
+        gen = servicer.StreamGameEvents(request, MockGrpcContext())
+        with patch.object(servicer.flag_service, "register", _register_blocks):
+            drain_task = asyncio.create_task(_drain(gen))
+            async with asyncio.timeout(2.0):
+                await register_entered.wait()
+            (session,) = servicer.sessions.values()
+            assert session.event_bus.subscriber_count == 1
+            drain_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await drain_task
+
+        assert session.event_bus.subscriber_count == 0
+
+    @pytest.mark.asyncio
     async def test_game_id_observer_gets_no_replay_of_earlier_events(self, servicer):
         """An observer attaching by game_id gets events from when it attaches (unchanged)."""
         game_id, session = await _start_running(servicer, _shadow_config())

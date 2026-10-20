@@ -819,12 +819,22 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 event_queue = await session.event_bus.subscribe(subscriber_id)
                 subscribed_bus.append(session.event_bus)
 
-            success, result = await self._start_game_from_config(config, span, on_admitted=_subscribe_starter)
+            async def _unsubscribe_starter() -> None:
+                for bus in subscribed_bus:
+                    await bus.unsubscribe(subscriber_id)
+
+            try:
+                success, result = await self._start_game_from_config(config, span, on_admitted=_subscribe_starter)
+            except BaseException:
+                # A client cancel mid-start (CancelledError, e.g. during the
+                # flag-service register) skips the paths below: drop the
+                # starter's subscriber here so it does not leak (#1783).
+                await _unsubscribe_starter()
+                raise
 
             if not success:
                 # No leaked subscriber on a failed start (#1783).
-                for bus in subscribed_bus:
-                    await bus.unsubscribe(subscriber_id)
+                await _unsubscribe_starter()
                 # Yield error event and close stream
                 logger.error(f"Failed to start game via stream: {result}")
                 span.set_attribute("error", result)
