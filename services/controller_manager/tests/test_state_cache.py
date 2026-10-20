@@ -128,7 +128,7 @@ class TestStateCacheSnapshotHash:
 
         result = cache._snapshot_hash("serial_1", info)
 
-        assert result == "80|2|None|"  # no LED written yet (#1301)
+        assert result == "80|2|None||0"  # no LED written yet (#1301), no name, move_num 0
 
     def test_snapshot_hash_deterministic(self):
         """Same input should produce same hash."""
@@ -350,62 +350,6 @@ class TestStateCacheBuildMessage:
         assert result.move_pressed is False
 
 
-class TestStateCacheControllerStateHash:
-    """Tests for controller_state_hash method."""
-
-    def test_controller_state_hash(self):
-        """controller_state_hash should create deterministic hash."""
-        from proto import controller_manager_pb2
-
-        cache = StateCache(MockMonitoring())
-
-        state = controller_manager_pb2.ControllerState(
-            serial="test",
-            battery=80,
-            trigger_pressed=True,
-            move_pressed=False,
-            cross_pressed=True,
-            circle_pressed=False,
-            square_pressed=True,
-            triangle_pressed=False,
-            ps_pressed=True,
-            select_pressed=False,
-            start_pressed=True,
-            team=2,
-            color=controller_manager_pb2.RGB(r=255, g=128, b=64),
-        )
-
-        hash1 = cache.controller_state_hash(state)
-        hash2 = cache.controller_state_hash(state)
-
-        assert hash1 == hash2
-        assert "80" in hash1  # Battery
-        assert "True" in hash1  # Trigger
-        assert "255,128,64" in hash1  # Color
-
-    def test_controller_state_hash_changes_with_button(self):
-        """controller_state_hash should change when button changes."""
-        from proto import controller_manager_pb2
-
-        cache = StateCache(MockMonitoring())
-
-        state1 = controller_manager_pb2.ControllerState(
-            battery=80,
-            trigger_pressed=False,
-            color=controller_manager_pb2.RGB(r=0, g=0, b=0),
-        )
-        state2 = controller_manager_pb2.ControllerState(
-            battery=80,
-            trigger_pressed=True,
-            color=controller_manager_pb2.RGB(r=0, g=0, b=0),
-        )
-
-        hash1 = cache.controller_state_hash(state1)
-        hash2 = cache.controller_state_hash(state2)
-
-        assert hash1 != hash2
-
-
 class TestStateCacheRename:
     """UC-002 A2 step 3: a rename reaches the controller state a game reads."""
 
@@ -442,3 +386,65 @@ class TestStateCacheRename:
 
         info[ControllerInfoKey.NAME] = "New Name"
         assert cache.build_or_get_cached_state("serial_1", info).name == "New Name"
+
+
+class TestStateCacheServesEveryField:
+    """UC-002 main step 2: the state served to the gameplay stream matches the live controller (#1638).
+
+    A still controller keeps accel/gyro unchanged, so only the snapshot hash decides whether
+    a change of SELECT, START or move number reaches the stream.
+    """
+
+    @staticmethod
+    def _still_controller_state() -> dict:
+        return {
+            **dict.fromkeys(ButtonKey, False),
+            StateKey.ACCEL: {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: 1.0},
+            StateKey.GYRO: {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: 0.0},
+        }
+
+    @patch("services.controller_manager.metrics.state_cache_hits_total")
+    @patch("services.controller_manager.metrics.state_cache_misses_total")
+    @pytest.mark.uc("UC-002", flow="main", steps=[2])
+    @pytest.mark.parametrize(
+        ("button", "field"),
+        [(ButtonKey.SELECT, "select_pressed"), (ButtonKey.START, "start_pressed")],
+    )
+    def test_button_flip_on_still_controller_is_served(self, mock_misses, mock_hits, button, field):
+        cache = StateCache(MockMonitoring())
+        cache._controller_states = {"serial_1": self._still_controller_state()}
+        info = {ControllerInfoKey.BATTERY: 80, ControllerInfoKey.TEAM: 0, ControllerInfoKey.MOVE_NUM: 1}
+
+        assert getattr(cache.build_or_get_cached_state("serial_1", info), field) is False
+
+        cache._controller_states["serial_1"][button] = True
+        assert getattr(cache.build_or_get_cached_state("serial_1", info), field) is True
+
+        cache._controller_states["serial_1"][button] = False
+        assert getattr(cache.build_or_get_cached_state("serial_1", info), field) is False
+
+    @patch("services.controller_manager.metrics.state_cache_hits_total")
+    @patch("services.controller_manager.metrics.state_cache_misses_total")
+    @pytest.mark.uc("UC-002", flow="main", steps=[2])
+    def test_move_num_change_on_still_controller_is_served(self, mock_misses, mock_hits):
+        cache = StateCache(MockMonitoring())
+        cache._controller_states = {"serial_1": self._still_controller_state()}
+        info = {ControllerInfoKey.BATTERY: 80, ControllerInfoKey.TEAM: 0, ControllerInfoKey.MOVE_NUM: 1}
+
+        assert cache.build_or_get_cached_state("serial_1", info).move_num == 1
+
+        info[ControllerInfoKey.MOVE_NUM] = 2
+        assert cache.build_or_get_cached_state("serial_1", info).move_num == 2
+
+    @patch("services.controller_manager.metrics.state_cache_hits_total")
+    @patch("services.controller_manager.metrics.state_cache_misses_total")
+    @pytest.mark.uc("UC-002", flow="main", steps=[2])
+    def test_move_num_change_without_hardware_state_is_served(self, mock_misses, mock_hits):
+        cache = StateCache(MockMonitoring())
+        cache._controller_states = {}
+        info = {ControllerInfoKey.BATTERY: 80, ControllerInfoKey.TEAM: 0, ControllerInfoKey.MOVE_NUM: 1}
+
+        assert cache.build_or_get_cached_state("serial_1", info).move_num == 1
+
+        info[ControllerInfoKey.MOVE_NUM] = 2
+        assert cache.build_or_get_cached_state("serial_1", info).move_num == 2

@@ -70,27 +70,12 @@ class StateCache:
         if serial in self._cache:
             del self._cache[serial]
 
-    def controller_state_hash(self, state: controller_manager_pb2.ControllerState) -> str:
-        """
-        Create a hash of controller state for delta comparison (Phase 26 - Part 3).
-
-        Args:
-            state: ControllerState protobuf message
-
-        Returns:
-            Hash string representing the state
-        """
-        return (
-            f"{state.battery}|{state.trigger_pressed}|{state.move_pressed}|"
-            f"{state.cross_pressed}|{state.circle_pressed}|{state.square_pressed}|"
-            f"{state.triangle_pressed}|{state.ps_pressed}|{state.select_pressed}|"
-            f"{state.start_pressed}|"
-            f"{state.team}|{state.color.r},{state.color.g},{state.color.b}"
-        )
-
     def _snapshot_hash(self, serial: str, info: dict) -> str:
         """
         Create a hash of controller hardware snapshot (Phase 18 - Task 1).
+
+        Every field `_build_controller_state_message` reads must be in the hash,
+        or a cache hit serves a stale value (#1638).
 
         Phase 57: state is now a dict from backend (no get_snapshot() method).
 
@@ -115,15 +100,19 @@ class StateCache:
                 f"{state_dict.get(ButtonKey.CROSS, False)}|{state_dict.get(ButtonKey.CIRCLE, False)}|"
                 f"{state_dict.get(ButtonKey.SQUARE, False)}|{state_dict.get(ButtonKey.TRIANGLE, False)}|"
                 f"{state_dict.get(ButtonKey.PS, False)}|"
+                f"{state_dict.get(ButtonKey.SELECT, False)}|{state_dict.get(ButtonKey.START, False)}|"
                 f"{accel.get(AxisKey.X, 0):.2f},{accel.get(AxisKey.Y, 0):.2f},{accel.get(AxisKey.Z, 0):.2f}|"
                 f"{gyro.get(AxisKey.X, 0):.2f},{gyro.get(AxisKey.Y, 0):.2f},{gyro.get(AxisKey.Z, 0):.2f}|"
-                f"{info.get(ControllerInfoKey.TEAM, 0)}|{led}|{info.get(ControllerInfoKey.NAME, '')}"
+                f"{info.get(ControllerInfoKey.TEAM, 0)}|{led}|{info.get(ControllerInfoKey.NAME, '')}|"
+                f"{info.get(ControllerInfoKey.MOVE_NUM, 0)}"
             )
 
-        # No state available, return hash based on info only
+        # No state available, return hash based on info only (buttons are all
+        # built as False here, so only the info fields can change the state).
         battery = info.get(ControllerInfoKey.BATTERY, 0)
         team = info.get(ControllerInfoKey.TEAM, 0)
-        return f"{battery}|{team}|{led}|{info.get(ControllerInfoKey.NAME, '')}"
+        move_num = info.get(ControllerInfoKey.MOVE_NUM, 0)
+        return f"{battery}|{team}|{led}|{info.get(ControllerInfoKey.NAME, '')}|{move_num}"
 
     def build_or_get_cached_state(self, serial: str, info: dict) -> controller_manager_pb2.ControllerState:
         """
