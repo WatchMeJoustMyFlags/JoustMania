@@ -380,6 +380,7 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	if rc.backend != nil {
 		switch {
 		case !snapshot.Enabled:
+			// UC-045 BR-002: with the agent off the retro is capture-only, no model call.
 			skipReason = FallbackAgentDisabled
 		case !snapshot.LLMGate.EligibleFor(c.GameKind):
 			skipReason = FallbackNotEligible

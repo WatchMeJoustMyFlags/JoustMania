@@ -1089,6 +1089,7 @@ type proposerGateFlags interface {
 // the experiment loop uses, so the two never disagree.
 func proposerPermit(src proposerGateFlags, experimentsDefault bool) func(ctx context.Context) (bool, string) {
 	return func(ctx context.Context) (bool, string) {
+		// UC-045 BR-002: with the agent off the proposer makes no model call and writes nothing.
 		if !src.AgentEnabled(ctx) {
 			return false, experiment.SkipReasonAgentDisabled
 		}

@@ -295,6 +295,7 @@ async def test_state_flag_revert_to_none_not_dispatched():
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
 @pytest.mark.uc("UC-013", br=["BR-002"])
+@pytest.mark.uc("UC-045", flow="A2")
 async def test_allowed_membership_blocks():
     mgr, events = make_manager(
         interventions={"eliminate_player": edge_event("eliminate_player", "ctrl_a")},
@@ -343,6 +344,7 @@ async def test_none_allow_list_rejects_every_intervention():
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
+@pytest.mark.uc("UC-045", flow="A2")
 async def test_empty_allowed_blocks_everything():
     mgr, events = make_manager(interventions={"audio_cue": edge_event("audio_cue", "beep")}, allowed=[])
     with patch("services.game_coordinator.metrics.interventions_total"):

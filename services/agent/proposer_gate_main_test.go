@@ -32,6 +32,7 @@ func (f fakeProposerGateFlags) ExperimentsEnabled(_ context.Context, def bool) b
 func boolPtr(b bool) *bool { return &b }
 
 // UC: UC-042 A5 BR-002
+// UC: UC-045 BR-002
 func TestProposerPermit(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -60,6 +61,7 @@ func TestProposerPermit(t *testing.T) {
 // The permit is read at USE time: flipping the source after construction changes
 // the next answer (no startup caching).
 // UC: UC-042 A5 BR-002
+// UC: UC-045 BR-002
 func TestProposerPermit_ReadsLive(t *testing.T) {
 	src := &liveGateFlags{enabled: true, experiments: true}
 	permit := proposerPermit(src, false)
