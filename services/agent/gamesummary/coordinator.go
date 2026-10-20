@@ -16,7 +16,8 @@ import (
 // coordinator.go is the M7-1 game-end glue (#928): it hangs off the same
 // gamecontext.Store.OnGameEnd signal the #844 retrospective uses, builds the
 // Summary from the pre-reset snapshot, hands it to the observer (the in-memory
-// cross-game window, which keeps real games only, UC-042 BR-005), and records the
+// cross-game window: real games feed the real-game window, shadow games their
+// experiment's linked set, UC-042 BR-005), and records the
 // aggregation as an agent.game.summary span. It fires EXACTLY ONCE per game for
 // BOTH real and shadow games. Nothing is written to disk: the per-game summary
 // file writer was removed by #1368 (nothing read it, and it kept per-controller
@@ -63,8 +64,9 @@ const (
 const dedupeWindow = 8
 
 // Observer is notified of each game Summary the moment it is built: the M7-2
-// rolling-window seam (#929). The window store (gamewindow.Store) satisfies it and
-// itself drops shadow games and every per-controller field (UC-042 BR-004/BR-005).
+// rolling-window seam (#929). The window store (gamewindow.Store) satisfies it; it
+// files a real game in the real-game window and a shadow game in its experiment's
+// linked set, and drops every per-controller field (UC-042 BR-004/BR-005).
 // It is OPTIONAL (nil = only the span is emitted). Called once per game (inside
 // the dedupe), for BOTH real and shadow games.
 type Observer interface {

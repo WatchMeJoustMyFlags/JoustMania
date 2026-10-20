@@ -115,7 +115,7 @@ func experimentVariantValue(t *testing.T, svc *fake.Service, flagKey string) (st
 	return "", false
 }
 
-// UC: UC-042 main
+// UC: UC-042 main Post-S-1
 func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 	backend := &fakeProposerBackend{
 		response: `{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace may extend sessions"}`,
@@ -150,6 +150,7 @@ func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 	assertSpanBoolAttr(t, gateSpan, AttrBlocked, false)
 }
 
+// UC: UC-042 Post-F-1
 func TestProposeOnce_UndecodableReplyMakesNoProposal(t *testing.T) {
 	backend := &fakeProposerBackend{response: "I really think you should raise the grace period."}
 	p, svc, rec, _ := proposerWithRecorder(t, backend)

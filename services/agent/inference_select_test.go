@@ -17,6 +17,7 @@ import (
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+// UC: UC-042 Pre-2
 func TestSelectInferenceBackend_DefaultIsStub(t *testing.T) {
 	t.Setenv("AGENT_INFERENCE_BACKEND", "") // unset/empty == stub
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
@@ -26,6 +27,7 @@ func TestSelectInferenceBackend_DefaultIsStub(t *testing.T) {
 	}
 }
 
+// UC: UC-042 Pre-2
 func TestSelectInferenceBackend_UnknownValueFailsSafeToStub(t *testing.T) {
 	for _, v := range []string{"gpt-9000", "openai"} { // openai was retired in #1234
 		t.Setenv("AGENT_INFERENCE_BACKEND", v)
@@ -37,6 +39,7 @@ func TestSelectInferenceBackend_UnknownValueFailsSafeToStub(t *testing.T) {
 	}
 }
 
+// UC: UC-042 Pre-2
 func TestSelectInferenceBackend_ClaudeWithoutKeyIsStub(t *testing.T) {
 	t.Setenv("AGENT_INFERENCE_BACKEND", "claude")
 	t.Setenv("ANTHROPIC_API_KEY", "")
@@ -46,6 +49,7 @@ func TestSelectInferenceBackend_ClaudeWithoutKeyIsStub(t *testing.T) {
 	}
 }
 
+// UC: UC-042 Pre-2
 func TestSelectInferenceBackend_ClaudeSelectsRealClient(t *testing.T) {
 	t.Setenv("AGENT_INFERENCE_BACKEND", "Claude") // case-insensitive
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")

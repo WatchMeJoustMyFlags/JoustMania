@@ -62,7 +62,7 @@ func endedSession() gamecontext.GameContext {
 
 // TestRetroCapture_EmitsSpan: a normal game end emits exactly one agent.llm.retro
 // span with non-empty prompt text.
-// UC: UC-042 main
+// UC: UC-042 main Post-S-1
 func TestRetroCapture_EmitsSpan(t *testing.T) {
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
 	rc.OnGameEnd(endedSession())
@@ -138,6 +138,7 @@ func slotsLeft(b *llmBudget, now time.Time, limit int) int {
 // and the agent.llm.retro_gated log.
 // UC: UC-042 A2 BR-001
 // UC: UC-070 A4
+// NFR: NFR-011
 func TestRetroCapture_DrawsFromGlobalBudget(t *testing.T) {
 	be := &countingText{}
 	rc, sr, budget, now := budgetedRetro(t, 1, be)
@@ -242,6 +243,7 @@ func TestRetroCapture_StubNoCharge(t *testing.T) {
 
 // TestRetroCapture_BudgetOverride: AGENT_LLM_MAX_REQUESTS_PER_MINUTE replaces the
 // flag cap on the retro's budget check, as on the decide path.
+// NFR: NFR-011
 func TestRetroCapture_BudgetOverride(t *testing.T) {
 	be := &countingText{}
 	rc, _, budget, now := budgetedRetro(t, 1, be)

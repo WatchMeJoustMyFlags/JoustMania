@@ -111,6 +111,7 @@ func TestLLMAdmission_NotEligibleGatesWithoutCharging(t *testing.T) {
 
 // The AGENT_LLM_MAX_REQUESTS_PER_MINUTE override replaces the flag cap, as on the
 // decide path and the retro.
+// NFR: NFR-011
 func TestLLMAdmission_EnvOverrideReplacesFlagCap(t *testing.T) {
 	budget := NewLLMBudget()
 	a, _ := admissionUnderTest(t, []string{"real"}, 1, 3, budget)
