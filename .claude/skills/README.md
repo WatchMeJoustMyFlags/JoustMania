@@ -3,9 +3,14 @@
 Project skills that implement the AIUP [stack plugin contract](https://unifiedprocess.ai/stack-guide.html)
 for our stack (Python services on `lib/`, the Go agent, the TS dashboard, docker-compose e2e on mock
 controllers). The spec skills (`requirements`, `entity-model`, `use-case-diagram`, `use-case-spec`) come
-from the `aiup-core` plugin. `spec-review` and `test-case` require the switch to the
-[AI-Unified-Process/marketplace](https://github.com/AI-Unified-Process/marketplace) (PR #1290); until that
-lands, skip step 1 of the loop.
+from the `aiup-core` plugin (`ai-unified-process-marketplace`, pinned in `.claude/settings.json`). The
+`spec-review` skill is also vendored under `scripts/aiup/spec-review/` (SKILL.md, references, lint script), so
+agents and reviewers can run it even without the plugin installed: follow `scripts/aiup/spec-review/SKILL.md`.
+
+**Run `/spec-review` often:** before a use case's coverage audit, right before any Tested flip PR, and in every
+PR review that touches the specs (`review-pr` step 7). Coverage (`/coverage-check`) only checks that tests trace
+to spec units, never that the spec is consistent; the first full semantic review of the agent cluster found
+about 120 warnings, including contradictions between use cases (#1678). Part B is advisory and never a Tested gate.
 
 ## The loop, one use case at a time
 
@@ -16,6 +21,7 @@ lands, skip step 1 of the loop.
 /go-test UC-040            # Go agent tests, tagged // UC: ... + "UC-040/A2 ..." subtests
 /integration-test UC-040   # docker-compose e2e on mock controllers (or a TC-XXX journey)
 /coverage-check UC-040     # read-only: flows/BRs -> tagged tests -> gaps, allowed status, drift
+/spec-review UC-040        # again right before the Tested flip PR
 ```
 
 Run only the test skills whose side the use case touches. Skills never edit `docs/` or a `**Status:**`
