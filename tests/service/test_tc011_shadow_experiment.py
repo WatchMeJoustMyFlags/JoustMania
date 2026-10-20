@@ -114,7 +114,8 @@ def experiment_stack(service_stack):
         client.cleanup()
 
 
-@pytest.mark.uc("UC-040", flow="main", tc="TC-011")
+@pytest.mark.uc("UC-040", flow="A1", tc="TC-011")
+@pytest.mark.uc("UC-046", flow="main", steps=[7], tc="TC-011")
 def test_agent_starts_inference_absent_and_decides_with_rules(experiment_stack):
     """Step 1: no inference backend is wired (``backend=stub``) and the first shadow game is
     decided by the rules backend; the agent does not panic."""
@@ -125,7 +126,7 @@ def test_agent_starts_inference_absent_and_decides_with_rules(experiment_stack):
     assert "panic:" not in _agent_log(stack)
 
 
-@pytest.mark.uc("UC-043", flow="main", steps=[2], tc="TC-011")
+@pytest.mark.uc("UC-043", flow="main", steps=[1], tc="TC-011")
 def test_experiment_is_declared(experiment_stack):
     """Step 2: the env-seeded experiment is declared on the seeded flag, then started."""
     stack = experiment_stack
@@ -178,7 +179,6 @@ async def test_first_game_is_a_shadow_game_on_reserved_controllers(experiment_st
 
 @pytest.mark.uc("UC-043", flow="main", steps=[4], tc="TC-011")
 @pytest.mark.uc("UC-041", flow="main", tc="TC-011")
-@pytest.mark.uc("UC-046", flow="main", steps=[7], tc="TC-011")
 def test_each_game_is_scored_for_its_arm(experiment_stack):
     """Steps 5 and 6: both arms conclude, each with a fitness in [0, 1] logged for its arm."""
     stack = experiment_stack
@@ -235,7 +235,7 @@ async def test_verdict_is_inconclusive_and_the_experiment_is_torn_down(experimen
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-043", flow="main", tc="TC-011")
+@pytest.mark.uc("UC-043", flow="main", br=["BR-001"], tc="TC-011")
 async def test_no_real_game_ran_with_the_experiment(experiment_stack):
     """Validation 2: every game the agent summarised was a shadow game, and the coordinator holds no other."""
     stack = experiment_stack
