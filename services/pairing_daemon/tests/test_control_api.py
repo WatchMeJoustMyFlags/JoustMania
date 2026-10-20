@@ -103,6 +103,7 @@ class TestUnpairResponse:
         assert (status, body["on_usb"]) == (200, False)
         assert usb_pairing.pair_controller.await_count == 2
 
+    @pytest.mark.uc("UC-001", flow="A1")
     @pytest.mark.uc("UC-005", flow="A8")
     async def test_controller_on_usb_is_not_repaired_until_unplugged_and_replugged(self, usb_pairing, remove):
         """A8: no immediate re-pair (it would undo the unpair the operator asked for)."""

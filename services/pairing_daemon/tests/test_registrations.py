@@ -474,6 +474,7 @@ class TestRemoveControllerRegistrations:
         assert outcomes(results) == [(HCI1, "removed")]
         assert removed_paths(bus) == [("/org/bluez/hci1", "/org/bluez/hci1/dev_a")]
 
+    @pytest.mark.uc("UC-001", flow="A5", br=["BR-004"])
     @pytest.mark.uc("UC-005", flow="main", steps=[5], br=["BR-002"])
     async def test_saved_only_registration_of_absent_adapter_is_deleted(self, bluez, bluetooth_dir):
         """BR-002: absent adapter's PS Move dir deleted; a present adapter's storage is left to BlueZ."""
