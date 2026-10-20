@@ -112,7 +112,7 @@ class AgentProcess(ManagedProcess):
         workdir: Path,
         *,
         listen_port: int,
-        flagd_eval_port: int,
+        flagd_sync_port: int,
         flag_service_url: str,
         otlp_endpoint: str,
         coordinator_port: int,
@@ -125,9 +125,9 @@ class AgentProcess(ManagedProcess):
             **base_env(),
             "AGENT_LISTEN_ADDR": f"127.0.0.1:{listen_port}",
             "AGENT_HEALTH_ADDR": f"127.0.0.1:{self.health_port}",
-            # The agent resolves through flagd's RPC API (compose: flagd:8013).
+            # The agent's in-process resolver syncs from flagd's sync port (compose: flagd:8015, #1713).
             "FLAGD_HOST": "127.0.0.1",
-            "FLAGD_PORT": str(flagd_eval_port),
+            "FLAGD_PORT": str(flagd_sync_port),
             # flagd's OFREP port (8016) is not published by the flag plane: unreachable.
             "FLAGD_OFREP_URL": f"http://{UNREACHABLE}",
             "FLAG_SERVICE_URL": flag_service_url,

@@ -240,6 +240,7 @@ jobs:
               - 'services/controller_manager/**'
               - 'services/menu/**'
               - 'services/agent/**'
+              - 'services/rust-hid/**'
               - 'tests/service/**'
               - 'tests/integration/fake_openai/**'
               - 'tests/contract/flagd_harness.py'
@@ -789,8 +790,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.service_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
-    # ~7 min locally with the agent journeys (#1600), plus the first go builds.
-    timeout-minutes: 20
+    # ~7 min locally with the agent journeys (#1600), plus the first go builds
+    # and the rust-hid build for its live flag test (#1713).
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
 
@@ -803,6 +805,35 @@ jobs:
           cache-dependency-path: |
             services/flag-service/go.sum
             services/agent/go.sum
+
+      # rust-hid's live flag test (tests/service/test_rust_hid_flag_live.py, #1713)
+      # builds rust-hid: same toolchain and system packages as Rust Checks.
+      - name: Install rust-hid build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libhidapi-dev libudev-dev pkg-config
+
+      - name: Read pinned Rust version
+        id: rust-version
+        run: |
+          version=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' services/rust-hid/rust-toolchain.toml)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/rust-hid/target
+          key: ${{ runner.os }}-cargo-service-${{ hashFiles('services/rust-hid/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-service-
 
       # #1612: a failed run names its exit code and the failing tests as
       # annotations and in the job summary, so the failure is visible without

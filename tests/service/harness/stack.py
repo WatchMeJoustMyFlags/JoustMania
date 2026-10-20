@@ -157,7 +157,7 @@ class ServiceStack:
             self.agent = AgentProcess(
                 self.workdir,
                 listen_port=self.agent_port,
-                flagd_eval_port=plane.flagd_eval_port,
+                flagd_sync_port=plane.flagd_sync_port,
                 flag_service_url=plane.flag_service_url,
                 otlp_endpoint=self.otlp_sink.endpoint,
                 coordinator_port=ports["game-coordinator"],
