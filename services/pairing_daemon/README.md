@@ -4,76 +4,48 @@ Automatic PS Move controller pairing and Bluetooth monitoring for JoustMania on 
 
 ## Overview
 
-This daemon runs on the host system and provides:
+This daemon runs as the `pairing-daemon` container of the compose stack (`docker-compose.yml`,
+`network_mode: host`, with `/var/lib/bluetooth`, `/dev` and the system D-Bus socket mounted). There is no
+host systemd service, `install.sh` or `psmove-pairing.service`. It provides:
 
 - **USB Pairing**: Automatically pairs PS Move controllers when connected via USB
 - **Bluetooth Monitoring**: Tracks connected controllers, signal strength (RSSI), and connection status
-- **Observability**: Prometheus metrics and OpenTelemetry tracing
-
-## Installation
-
-```bash
-sudo ./install.sh
-```
-
-This installs Python dependencies, copies the daemon to `/usr/local/bin/`, and enables the systemd service.
+- **Observability**: OpenTelemetry metrics and tracing (OTLP push)
 
 ## Usage
 
 ### Pairing a Controller
 
 1. Plug in PS Move via USB
-2. Wait for LED feedback:
-   - **Yellow** = Pairing in progress
-   - **White flash (3x)** = Success
-   - **Red flash (3x)** = Error
+2. Check the logs (`docker compose logs -f pairing-daemon`); `PAIRING FAILED` means the next poll retries.
+   The daemon gives no LED feedback while pairing (UC-001 BR-002, D-C4).
 3. Unplug USB cable
 4. Press PS button to connect via Bluetooth
 
 ### Service Commands
 
 ```bash
-# Check status
-systemctl status psmove-pairing
-
-# View logs (live)
-journalctl -u psmove-pairing -f
-
-# View recent logs
-journalctl -u psmove-pairing -n 50
-
-# Restart daemon
-sudo systemctl restart psmove-pairing
+docker compose ps pairing-daemon
+docker compose logs -f pairing-daemon
+docker compose restart pairing-daemon
 ```
 
 ## Configuration
 
-Environment variables (set via systemd override):
+Environment variables (set in the `pairing-daemon` service of `docker-compose.yml`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `POLL_INTERVAL` | `10` | Seconds between USB polling |
 | `BT_MONITOR_INTERVAL` | `5` | Seconds between Bluetooth monitoring |
 | `DEBUG` | `0` | Set to `1` for verbose logging |
-| `METRICS_PORT` | `8002` | Prometheus metrics port |
+| `METRICS_PORT` | `8002` | Port of the health and unpair endpoints (no `/metrics`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP collector endpoint |
 
-To override:
-```bash
-sudo systemctl edit psmove-pairing
-```
+## Metrics
 
-Add:
-```ini
-[Service]
-Environment=POLL_INTERVAL=15
-Environment=BT_MONITOR_INTERVAL=3
-Environment=DEBUG=1
-```
-
-## Prometheus Metrics
-
-Access metrics at `http://localhost:8002/metrics`
+Metrics are pushed over OTLP to the collector; the daemon serves no `/metrics` endpoint (see
+[CONTROLLER_CONNECTIVITY](../../docs/CONTROLLER_CONNECTIVITY.md)). Port 8002 serves health and unpair only.
 
 ### Pairing Metrics
 
@@ -118,34 +90,26 @@ bluetooth_device_connected == 1 and controller_connected == 0
 
 | File | Purpose |
 |------|---------|
-| `psmove_pairing_daemon.py` | Main entry point |
+| `server.py` | Main entry point |
 | `psmove_pairing/` | Package directory |
 | `psmove_pairing/config.py` | Configuration and constants |
-| `psmove_pairing/metrics.py` | Prometheus metrics definitions |
+| `psmove_pairing/metrics.py` | Metrics definitions (exported via OTLP) |
 | `psmove_pairing/telemetry.py` | OpenTelemetry initialization |
 | `psmove_pairing/utils.py` | Utility functions |
 | `psmove_pairing/usb_pairing.py` | USB pairing logic |
 | `psmove_pairing/bluetooth_monitor.py` | Bluetooth monitoring |
 | `psmove_pairing/adapter_manager.py` | Bluetooth adapter load balancing |
 | `psmove_pairing/daemon.py` | Main daemon class |
-| `psmove-pairing.service` | systemd unit file |
-| `install.sh` | Installation script |
-| `uninstall.sh` | Removal script |
+| `Dockerfile`, `server.py` | Container image and entry point |
 | `pyproject.toml` | Python dependencies |
 | `tests/` | Unit tests |
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.14
 - psmoveapi (`psmove` CLI)
 - BlueZ (`bluetoothctl`, `hciconfig`, `hcitool`)
-- systemd
-
-## Uninstallation
-
-```bash
-sudo ./uninstall.sh
-```
+- Runs in the compose stack; the host needs BlueZ and D-Bus
 
 ## Troubleshooting
 
@@ -155,7 +119,7 @@ sudo ./uninstall.sh
 lsusb | grep Sony
 
 # Check daemon logs
-journalctl -u psmove-pairing -f
+docker compose logs -f pairing-daemon
 ```
 
 **Pairing succeeds but Bluetooth won't connect:**

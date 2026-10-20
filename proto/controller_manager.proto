@@ -179,7 +179,7 @@ message GameplayDataUpdate {
 }
 
 message GameplayStreamRequest {
-  int32 update_frequency_hz = 1;  // Desired update frequency (default: 60)
+  int32 update_frequency_hz = 1;  // Desired update frequency (servicer falls back to 30 when 0)
 }
 
 // Phase 45: Bidirectional streaming for dynamic controller filtering

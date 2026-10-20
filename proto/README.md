@@ -35,7 +35,9 @@ proto/
 **Key RPCs:**
 - `StreamButtonEvents` - Bidirectional stream for button events and LED control
 - `StreamGameplayData` - Bidirectional stream for gameplay data with dynamic filtering
-- `PlayControllerEffect` - Play visual effects (flash, pulse, rainbow)
+- `RenameController` / `GetConnectedControllers` - unary controller management
+
+LED colours and effects are not a separate RPC: they ride on the two streams above.
 
 **Features:**
 - Background hardware discovery (1Hz polling)
@@ -49,10 +51,10 @@ proto/
 **Purpose:** Control mock controllers for testing without hardware
 
 **Key RPCs:**
-- `AddMockController` - Add a simulated controller
-- `RemoveMockController` - Remove a mock controller
-- `UpdateMockController` - Update mock controller state (position, buttons, etc.)
-- `TriggerMockButton` - Simulate button press
+- `AddController` / `AddControllers` / `RemoveController` - add or remove simulated controllers
+- `SimulateMovement` / `SimulateDeath` / `SimulateButton` - drive a controller's state
+- `SetColor` / `GetColor` / `ResetController` / `ListMockControllers` - inspect and reset
+- `StreamObservability` - server stream of observability events
 
 **Use Case:** Testing and development without physical PS Move hardware
 
@@ -61,9 +63,9 @@ proto/
 **Purpose:** Game lifecycle management and event streaming
 
 **Key RPCs:**
-- `StartGame` - Start a game with specified mode and settings
+- `StreamGameEvents` - Server stream of game events; when `start_config` is set it first starts a game (there is no `StartGame` RPC)
 - `ForceEndGame` - Terminate current game
-- `StreamGameEvents` - Stream game events (server streaming)
+- `GetGameState` / `ListGames` - unary state queries
 
 **Game Modes:** 13 modes including Joust FFA, Teams, Traitor, Swapper, Tournament, etc.
 
@@ -246,7 +248,7 @@ RUN uv sync --frozen
 
 ### Service Naming
 - Service names match the microservice: `GameCoordinatorService`, `MenuService`
-- RPC names use imperative verbs: `GetGameState`, `StartGame`, `ForceEndGame`
+- RPC names use imperative verbs: `GetGameState`, `ListGames`, `ForceEndGame`
 
 ### Streaming RPCs
 - Server streaming for real-time updates (e.g., `StreamGameEvents`, `StreamMenuEvents`)

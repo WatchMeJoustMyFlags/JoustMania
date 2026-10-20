@@ -72,7 +72,7 @@ service="game-coordinator-service" AND game.mode="FFA"
 ```
 
 You should see complete end-to-end traces showing:
-- StartGame → Settings → ControllerManager → Game Loop
+- StreamGameEvents(start_config) → Settings → ControllerManager → Game Loop
 - Per-player lifecycle spans
 - Per-team spans (for team games)
 - All service interactions
@@ -328,8 +328,11 @@ async def my_scenario():
     )
 
     # Start game
-    await game_client.StartGame(
-        game_coordinator_pb2.StartGameRequest(mode="FFA")
+    # No StartGame RPC: a game starts via StreamGameEvents(start_config)
+    stream = game_client.StreamGameEvents(
+        game_coordinator_pb2.StreamEventsRequest(
+            start_config=game_coordinator_pb2.StartGameConfig(game_name="JoustFFA")
+        )
     )
 
     # Simulate specific scenario
@@ -356,12 +359,12 @@ The mock environment includes full distributed tracing support via OpenTelemetry
 
 2. **Search for game traces**:
    - Service: `game-coordinator-service`
-   - Operation: `StartGame`
+   - Operation: `StreamGameEvents`
    - Tags: `game.mode="FFA"`, `player.serial="mock_controller_0"`
 
 3. **Explore the trace hierarchy**:
    ```
-   StartGame
+   StreamGameEvents
    └── ffa_run
        ├── ffa_load_settings
        │   └── GetSettings → settings-service
@@ -453,7 +456,7 @@ docker compose ps
 
 # Test game coordinator connection
 grpcurl -plaintext localhost:50053 \
-  game_coordinator.GameCoordinatorService/GetGameStatus
+  game_coordinator.GameCoordinatorService/GetGameState
 ```
 
 **Check game coordinator logs:**
