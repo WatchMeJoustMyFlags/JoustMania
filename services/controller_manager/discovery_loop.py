@@ -44,7 +44,6 @@ if TYPE_CHECKING:
     from services.controller_manager.feedback_manager import FeedbackManager
     from services.controller_manager.monitoring import ControllerMonitoring
     from services.controller_manager.name_manager import NameManager
-    from services.controller_manager.state_cache import StateCache
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +94,6 @@ class DiscoveryLoop:
         tracked_controllers: dict[str, dict],
         controller_states: dict[str, dict],
         button_detector: "ButtonDetector",
-        state_cache_manager: "StateCache",
         feedback_manager: "FeedbackManager",
         monitoring: "ControllerMonitoring",
         rescan_timer: "PeriodicRescanTimer",
@@ -112,7 +110,6 @@ class DiscoveryLoop:
             tracked_controllers: Dict of serial -> controller info
             controller_states: Dict of serial -> state dict
             button_detector: Button transition detector
-            state_cache_manager: State caching manager
             feedback_manager: LED/vibration feedback manager
             monitoring: Battery monitoring
             rescan_timer: Periodic rescan timer
@@ -125,7 +122,6 @@ class DiscoveryLoop:
         self.tracked_controllers = tracked_controllers
         self.controller_states = controller_states
         self.button_detector = button_detector
-        self.state_cache_manager = state_cache_manager
         self.feedback_manager = feedback_manager
         self.monitoring = monitoring
         self.rescan_timer = rescan_timer
@@ -457,7 +453,6 @@ class DiscoveryLoop:
                     del self.tracked_controllers[serial]
                 if serial in self.controller_states:
                     del self.controller_states[serial]
-                self.state_cache_manager.clear_controller(serial)
                 self.button_detector.clear_controller(serial)
                 # Note: Keep base_colors[serial] so we can restore on reconnect!
                 # Activity tracking cleanup

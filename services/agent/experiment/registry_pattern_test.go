@@ -189,7 +189,7 @@ func TestRegistryPatternPinIsKept(t *testing.T) {
 	})
 }
 
-// UC: UC-046 A1 A2 A4 A13 BR-010
+// UC: UC-046 A1 A2 A4 A13 BR-010 Post-F-1
 // UC: UC-043 A7
 func TestRegistryPatternDiscardsAndNoise(t *testing.T) {
 	flowOf := map[string]string{
@@ -228,6 +228,21 @@ func TestRegistryPatternDiscardsAndNoise(t *testing.T) {
 			t.Fatalf("status = %s, want discarded", st)
 		}
 	})
+	t.Run("UC-043/A7 an empty archetype selection discards the experiment with its reason journaled", func(t *testing.T) {
+		spawner := &patternSpawner{}
+		empty := patterngame.Pin{DiscardReason: patterngame.DiscardSelectionEmpty, Errors: []string{"empty"}}
+		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2, Spawner: spawner,
+			Patterns: &queuePinner{pins: []patterngame.Pin{empty}}})
+		id := startExperiment(t, r)
+		r.AllocateAndSpawn(context.Background())
+		if spawner.count() != 0 {
+			t.Fatalf("spawns = %d, want 0", spawner.count())
+		}
+		outcomes := eventsOfKind(journalEvents(t, r, id), journal.KindOutcome)
+		if len(outcomes) == 0 || !strings.HasPrefix(outcomes[len(outcomes)-1].Note, patterngame.DiscardSelectionEmpty) {
+			t.Fatalf("outcome note = %+v, want reason %s", outcomes, patterngame.DiscardSelectionEmpty)
+		}
+	})
 	t.Run("UC-046/BR-010 one shadow game at a time across pattern experiments", func(t *testing.T) {
 		spawner := &patternSpawner{}
 		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 4, EffectiveConcurrency: 4, Spawner: spawner,
@@ -264,7 +279,7 @@ func TestRegistryPatternKillSwitch(t *testing.T) {
 	})
 }
 
-// UC: UC-046 main BR-008 BR-014
+// UC: UC-046 main BR-008 BR-014 Post-S-1
 func TestRegistryRecordPatternEnd(t *testing.T) {
 	t.Run("UC-046/main the replay record is journaled as pattern_game_ended", func(t *testing.T) {
 		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2})
@@ -474,7 +489,7 @@ func TestRegistryPatternTimeoutReportingAndDigest(t *testing.T) {
 	})
 }
 
-// UC: UC-046 main
+// UC: UC-046 main Post-S-1
 func TestRegistryPatternSpanEvents(t *testing.T) {
 	t.Run("UC-046/main the experiment span carries pattern_pinned, pattern_game and pattern_game_ended", func(t *testing.T) {
 		spawner := &patternSpawner{}

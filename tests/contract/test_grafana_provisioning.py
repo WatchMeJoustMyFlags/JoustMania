@@ -42,6 +42,7 @@ def test_compose_mounts_the_dashboard_tree_where_the_providers_read_it():
     assert f"./services/grafana/dashboards:{CONTAINER_ROOT}:ro" in volumes
 
 
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
 def test_every_dashboard_is_in_exactly_one_provisioned_folder(providers):
     assert not list(DASHBOARDS.glob("*.json")), (
         "a dashboard outside a folder directory is not provisioned"
@@ -58,6 +59,7 @@ def test_every_dashboard_is_in_exactly_one_provisioned_folder(providers):
     assert folders == EXPECTED_FOLDERS
 
 
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
 def test_folder_uids_are_stable_and_unique(providers):
     uids = [p["folderUid"] for p in providers]
     assert len(set(uids)) == len(uids)
@@ -87,6 +89,7 @@ def test_spa_embed_and_runbook_links_name_existing_dashboards():
     assert not missing, f"links to dashboards that do not exist: {missing}"
 
 
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
 def test_talk_dashboard_is_a_single_stage_view():
     talk = next(d for d in _dashboards().values() if d["uid"] == "talk")
     assert not talk["templating"]["list"], "the stage view takes no template variables"
@@ -96,6 +99,7 @@ def test_talk_dashboard_is_a_single_stage_view():
     assert any(p["datasource"]["type"] == "jaeger" for p in panels)
 
 
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
 def test_grafana_home_page_is_an_existing_dashboard():
     """grafana.ini home_page opens the Talk stage view (a missing folder uid shows an error page)."""
     ini = (GRAFANA / "grafana.ini").read_text()

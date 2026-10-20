@@ -135,7 +135,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             tracked_controllers=self.tracked_controllers,
             controller_states=self.controller_states,
             button_detector=self.button_detector,
-            state_cache_manager=self.state_cache_manager,
             feedback_manager=self.feedback_manager,
             monitoring=self.monitoring,
             rescan_timer=self.rescan_timer,
@@ -429,7 +428,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             if current_filter is not None and serial not in current_filter:
                 continue
 
-            full_state = self.state_cache_manager.build_or_get_cached_state(serial, info)
+            full_state = self.state_cache_manager.build_state(serial, info)
             accel = full_state.accel
             if serial in pattern_serials:
                 # Evaluated BEFORE consume_death so an active latch is delivered first (BR-012).

@@ -42,7 +42,6 @@ def _create_discovery_loop(**overrides):
         "tracked_controllers": {},
         "controller_states": {},
         "button_detector": MagicMock(),
-        "state_cache_manager": MagicMock(),
         "feedback_manager": MagicMock(),
         "monitoring": MagicMock(last_battery_check=0),
         "rescan_timer": MagicMock(),

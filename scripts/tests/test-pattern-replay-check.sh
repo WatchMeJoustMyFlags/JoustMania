@@ -58,6 +58,10 @@ record "${WORK}/n.json" e false
 expect "non-exact" 2 "non-exact" -- "${CHECK}" --compare "${WORK}/a.json" "${WORK}/n.json"
 record "${WORK}/f.json" e true "[2,1]" other
 expect "flag digest differs" 2 "flag_digest differs" -- "${CHECK}" --compare "${WORK}/a.json" "${WORK}/f.json"
+sed 's/send_controller_effect:2/grant_shield:1/' "${WORK}/a.json" >"${WORK}/dec.json"
+expect "decision differs" 1 "decision 0" -- "${CHECK}" --compare "${WORK}/a.json" "${WORK}/dec.json"
+sed 's/"params_digest":"abc"/"params_digest":"xyz"/' "${WORK}/a.json" >"${WORK}/p.json"
+expect "params digest differs" 2 "params_digest differs" -- "${CHECK}" --compare "${WORK}/a.json" "${WORK}/p.json"
 expect "usage" 3 "usage" -- "${CHECK}"
 
 # Two-run flow with docker stubbed: `run` succeeds, `logs` prints the record.

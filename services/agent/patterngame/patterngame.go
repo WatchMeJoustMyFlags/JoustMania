@@ -38,7 +38,10 @@ const (
 	MaxMaxGameSeconds     = 3600
 )
 
-// Non-exact reasons (UC-046 BR-008).
+// Non-exact reasons (UC-046 BR-008). UC-046 BR-005: a death frame repeats only
+// when the tempo, countdown and grace timeline repeats too (one game at a time,
+// no frame overrun), so ReasonFrameOverrun and ReasonConcurrentGame mark a game
+// whose deaths may have moved.
 const (
 	ReasonRemoteBackend  = "remote_backend"
 	ReasonFrameOverrun   = "frame_overrun"

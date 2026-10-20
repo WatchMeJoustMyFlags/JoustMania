@@ -41,7 +41,7 @@ Mode `work in progress`: same matrix, open units phrased as remaining work in sp
 | Unit | Source | Implementation must | A tagged test must |
 |---|---|---|---|
 | `Main` (+ `Step n` rows when tests use `steps=`) | `## Main Success Scenario` | produce each step's system response | drive the main flow and assert its outcome |
-| `A<n>` | `### A<n>: ...` | detect the Trigger, run the steps, honour "continues at step N" / "ends" | establish the Trigger and assert the outcome |
+| `A<n>` | `### A<n>: ...` under `## Alternative Flows` (flows under `## Planned extensions` are planned work with an issue and status Open: list them as `n/a (planned)`, never as Missing) | detect the Trigger, run the steps, honour "continues at step N" / "ends" | establish the Trigger and assert the outcome |
 | `BR-XXX` | `### BR-XXX: ...` | enforce the rule in code (marker `UC-XXX BR-XXX`) | assert the allowed and the rejected case |
 | `Pre-n` | `## Preconditions` bullet n | guard or establish it | set it up explicitly (fixture, mock controllers, flag file) |
 | `Post-S-n` | `### Success Postconditions` bullet n | leave the system in that state | assert that state after the flow |

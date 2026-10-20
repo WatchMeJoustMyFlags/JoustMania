@@ -119,6 +119,7 @@ func TestExperimentSeamGitHubGatedNoOp(t *testing.T) {
 // TestExperimentSeamAutonomousDisabledNoOp: autonomous mode while the agent is
 // DISABLED must never mutate the real default — the kill-switch (Config.Enabled) is
 // the #961 Promoter's, reused. The recordingRealDefault must record ZERO writes.
+// UC: UC-043 main
 func TestExperimentSeamAutonomousDisabledNoOp(t *testing.T) {
 	realDef := &recordingRealDefault{}
 	a, rec := adapterWithRecorder(t, nil, nil, realDef, Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: false})

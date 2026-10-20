@@ -25,7 +25,6 @@ class TestActivityTracking:
         tracked_controllers = {}
         controller_states = {}
         button_detector = MagicMock()
-        state_cache_manager = MagicMock()
         feedback_manager = MagicMock()
         monitoring = MagicMock()
         monitoring.last_battery_check = 0
@@ -40,7 +39,6 @@ class TestActivityTracking:
             tracked_controllers=tracked_controllers,
             controller_states=controller_states,
             button_detector=button_detector,
-            state_cache_manager=state_cache_manager,
             feedback_manager=feedback_manager,
             monitoring=monitoring,
             rescan_timer=rescan_timer,
@@ -194,7 +192,6 @@ class TestAdaptivePollingLogic:
         tracked_controllers = {}
         controller_states = {}
         button_detector = MagicMock()
-        state_cache_manager = MagicMock()
         feedback_manager = MagicMock()
         monitoring = MagicMock()
         monitoring.last_battery_check = 0
@@ -208,7 +205,6 @@ class TestAdaptivePollingLogic:
             tracked_controllers=tracked_controllers,
             controller_states=controller_states,
             button_detector=button_detector,
-            state_cache_manager=state_cache_manager,
             feedback_manager=feedback_manager,
             monitoring=monitoring,
             rescan_timer=rescan_timer,
@@ -282,7 +278,6 @@ class TestDiscoveryLoopLifecycle:
         tracked_controllers = {}
         controller_states = {}
         button_detector = MagicMock()
-        state_cache_manager = MagicMock()
         feedback_manager = MagicMock()
         monitoring = MagicMock()
         monitoring.last_battery_check = 0
@@ -296,7 +291,6 @@ class TestDiscoveryLoopLifecycle:
             tracked_controllers=tracked_controllers,
             controller_states=controller_states,
             button_detector=button_detector,
-            state_cache_manager=state_cache_manager,
             feedback_manager=feedback_manager,
             monitoring=monitoring,
             rescan_timer=rescan_timer,
@@ -333,7 +327,6 @@ class TestPollingStateCleanup:
         tracked_controllers = {}
         controller_states = {}
         button_detector = MagicMock()
-        state_cache_manager = MagicMock()
         feedback_manager = MagicMock()
         monitoring = MagicMock()
         monitoring.last_battery_check = 0
@@ -347,7 +340,6 @@ class TestPollingStateCleanup:
             tracked_controllers=tracked_controllers,
             controller_states=controller_states,
             button_detector=button_detector,
-            state_cache_manager=state_cache_manager,
             feedback_manager=feedback_manager,
             monitoring=monitoring,
             rescan_timer=rescan_timer,
@@ -400,7 +392,6 @@ class TestAccelerometerMovementCalculation:
         tracked_controllers = {}
         controller_states = {}
         button_detector = MagicMock()
-        state_cache_manager = MagicMock()
         feedback_manager = MagicMock()
         monitoring = MagicMock()
         monitoring.last_battery_check = 0
@@ -414,7 +405,6 @@ class TestAccelerometerMovementCalculation:
             tracked_controllers=tracked_controllers,
             controller_states=controller_states,
             button_detector=button_detector,
-            state_cache_manager=state_cache_manager,
             feedback_manager=feedback_manager,
             monitoring=monitoring,
             rescan_timer=rescan_timer,
@@ -529,7 +519,6 @@ class TestNewControllerIsTracked:
         from services.controller_manager.feedback_manager import FeedbackManager
         from services.controller_manager.monitoring import ControllerMonitoring
         from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-        from services.controller_manager.state_cache import StateCache
 
         backend = create_autospec(MultiplexerBackend, instance=True)
         backend.get_connected_controllers.return_value = ["AA:01"]
@@ -545,7 +534,6 @@ class TestNewControllerIsTracked:
             tracked_controllers=tracked,
             controller_states={},
             button_detector=button_detector,
-            state_cache_manager=create_autospec(StateCache, instance=True),
             feedback_manager=create_autospec(FeedbackManager, instance=True),
             monitoring=create_autospec(ControllerMonitoring, instance=True),
             rescan_timer=rescan_timer,

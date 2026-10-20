@@ -142,6 +142,35 @@ func TestDecideLoop_ActuationGateOff(t *testing.T) {
 			t.Fatalf("Writer calls = %d, want 0 (the gate must skip the Writer)", len(calls))
 		}
 	})
+	t.Run("UC-045/A1 gate off: the agent keeps deciding and spanning, writes nothing", func(t *testing.T) {
+		snap := flags.Snapshot{
+			Enabled:              true,
+			InterventionsAllowed: []string{decision.InterventionPlayAudioCue},
+			Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
+		}
+		l, svc, _, spy := meteredLoop(t, snap,
+			oneDecision{Intervention: decision.InterventionPlayAudioCue, Reason: "cue"}, false)
+		sr := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+		t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+		l.Tracer = tp.Tracer("test")
+
+		l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s-1"}, testTrigger())
+
+		decisions := 0
+		for _, s := range sr.Ended() {
+			if s.Name() == decision.SpanDecision {
+				decisions++
+			}
+		}
+		if decisions != 1 {
+			t.Fatalf("agent.decision spans = %d, want 1 (observe without acting still spans)", decisions)
+		}
+		assertNoWrites(t, svc)
+		if calls := spy.calls(); len(calls) != 0 {
+			t.Fatalf("Writer calls = %d, want 0", len(calls))
+		}
+	})
 }
 
 // TestDecideLoop_ProbeMode: AGENT_PROBE_DECISIONS swaps the rules engine for

@@ -192,7 +192,6 @@ def _make_loop(backend) -> DiscoveryLoop:
         tracked_controllers={SERIAL: {}},
         controller_states={},
         button_detector=MagicMock(),
-        state_cache_manager=MagicMock(),
         feedback_manager=MagicMock(),
         monitoring=MagicMock(last_battery_check=0),
         rescan_timer=MagicMock(),
@@ -336,11 +335,11 @@ class TestGameplayFrameCarriesQuality:
             state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
             state.rssi = 0
             state.name = "P1"
-            servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=state)
+            servicer.state_cache_manager.build_state = MagicMock(return_value=state)
             servicer.tracked_controllers[SERIAL] = {}
             yield servicer, mock_loop
 
-    @pytest.mark.uc("UC-035", steps=[2], br=["BR-005"])
+    @pytest.mark.uc("UC-035", flow="main", steps=[2], br=["BR-005"])
     def test_dashboard_stream_carries_class_and_gaps(self, servicer):
         servicer, mock_loop = servicer
         mock_loop.connection_quality = MagicMock(
@@ -355,7 +354,7 @@ class TestGameplayFrameCarriesQuality:
         assert quality.report_gap_p95_ms == pytest.approx(24.0)
         assert quality.report_gap_max_ms == pytest.approx(41.0)
 
-    @pytest.mark.uc("UC-035", steps=[2], br=["BR-005"])
+    @pytest.mark.uc("UC-035", flow="main", steps=[2], br=["BR-005"])
     def test_message_is_built_once_per_stats_update(self, servicer):
         servicer, mock_loop = servicer
         first = GapStats(p95_ms=10.0, max_ms=12.0, quality=GOOD, samples=900)
@@ -368,7 +367,7 @@ class TestGameplayFrameCarriesQuality:
         assert msg_b is not msg_a
         assert msg_b.level == "poor"
 
-    @pytest.mark.uc("UC-035", steps=[2], br=["BR-005"])
+    @pytest.mark.uc("UC-035", flow="main", steps=[2], br=["BR-005"])
     def test_unknown_quality_leaves_the_field_unset(self, servicer):
         servicer, mock_loop = servicer
         mock_loop.connection_quality = MagicMock(return_value=None)

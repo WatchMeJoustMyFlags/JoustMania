@@ -8,6 +8,7 @@ import (
 	gcpb "github.com/joustmania/agent/gen/game_coordinator"
 )
 
+// UC: UC-043 main
 func TestSweepOrphans_RemovesUnreferencedReserved(t *testing.T) {
 	// Three reserved+agent-tagged controllers exist; one (live-1) is still
 	// referenced by a live game, the other two are orphans. A fourth controller

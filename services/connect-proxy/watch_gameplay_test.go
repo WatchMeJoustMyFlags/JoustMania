@@ -76,11 +76,11 @@ func gameplayConfigControl(cfg *controllerpb.GameplayStreamConfig) *controllerpb
 	return &controllerpb.GameplayStreamControl{Control: &controllerpb.GameplayStreamControl_Config{Config: cfg}}
 }
 
-// UC: UC-035 MSS, BR-006
+// UC: UC-035 main, BR-006
 func TestProxyWatchGameplayData(t *testing.T) {
 	cfg := &controllerpb.GameplayStreamConfig{UpdateFrequencyHz: 30}
 
-	t.Run("UC-035/MSS config opens the controller manager stream and its updates are relayed", func(t *testing.T) {
+	t.Run("UC-035/main config opens the controller manager stream and its updates are relayed", func(t *testing.T) {
 		rig := newProxyRigWith(t, &fakeController{
 			updates: []*controllerpb.GameplayDataUpdate{{Timestamp: 1}, {Timestamp: 2}},
 		}, nil)
@@ -105,7 +105,7 @@ func TestProxyWatchGameplayData(t *testing.T) {
 		rig.otherBackendsUntouched(t, "controller")
 	})
 
-	t.Run("UC-035/MSS dashboard connect+json over HTTP/1.1 gets the updates and a clean end-stream frame", func(t *testing.T) {
+	t.Run("UC-035/main dashboard connect+json over HTTP/1.1 gets the updates and a clean end-stream frame", func(t *testing.T) {
 		rig := newProxyRigWith(t, &fakeController{
 			updates: []*controllerpb.GameplayDataUpdate{
 				{Timestamp: 1, Controllers: []*controllerpb.GameplayData{{Serial: "AA:01"}}},
@@ -145,7 +145,7 @@ func TestProxyWatchGameplayData(t *testing.T) {
 		rig.otherBackendsUntouched(t, "controller")
 	})
 
-	t.Run("UC-035/MSS browser disconnect closes the upstream stream and ends the handler", func(t *testing.T) {
+	t.Run("UC-035/main browser disconnect closes the upstream stream and ends the handler", func(t *testing.T) {
 		upstreamDone := make(chan struct{})
 		returned := make(chan struct{})
 		rig := newProxyRigWith(t, &fakeController{
@@ -168,7 +168,7 @@ func TestProxyWatchGameplayData(t *testing.T) {
 		waitClosed(t, returned, "WatchGameplayData handler still running after the browser left")
 	})
 
-	t.Run("UC-035/MSS browser disconnect before any update closes the upstream stream", func(t *testing.T) {
+	t.Run("UC-035/main browser disconnect before any update closes the upstream stream", func(t *testing.T) {
 		upstreamDone := make(chan struct{})
 		returned := make(chan struct{})
 		fake := &fakeController{holdOpen: true, gameplayDone: upstreamDone}
@@ -192,7 +192,7 @@ func TestProxyWatchGameplayData(t *testing.T) {
 		waitClosed(t, callDone, "client call still blocked after cancel")
 	})
 
-	t.Run("UC-035/MSS repeated browser reconnects leave no upstream stream or handler behind", func(t *testing.T) {
+	t.Run("UC-035/main repeated browser reconnects leave no upstream stream or handler behind", func(t *testing.T) {
 		for i := 0; i < 20; i++ {
 			upstreamDone := make(chan struct{})
 			returned := make(chan struct{})
@@ -253,7 +253,7 @@ func TestProxyWatchGameplayData(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-035/MSS browser disconnect over HTTP/1.1 closes the upstream stream", func(t *testing.T) {
+	t.Run("UC-035/main browser disconnect over HTTP/1.1 closes the upstream stream", func(t *testing.T) {
 		// Production path: envoy talks HTTP/1.1 to connect-proxy.
 		for i := 0; i < 10; i++ {
 			upstreamDone := make(chan struct{})
@@ -282,7 +282,7 @@ func TestProxyWatchGameplayData(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-035/MSS upstream error ends the browser stream with the error", func(t *testing.T) {
+	t.Run("UC-035/main upstream error ends the browser stream with the error", func(t *testing.T) {
 		returned := make(chan struct{})
 		rig := newProxyRigWith(t, &fakeController{
 			updates:        []*controllerpb.GameplayDataUpdate{{Timestamp: 1}},

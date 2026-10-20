@@ -85,9 +85,9 @@ _SCRIPT = textwrap.dedent(
 )
 
 
-@pytest.mark.uc("UC-035", flow="A3", cond=["Post-F-1"])
+@pytest.mark.uc("UC-035", cond=["Post-F-1"])
 def test_recording_spans_and_metrics_never_blocks_when_collector_is_down():
-    """UC-035 A3: with no collector, the game's telemetry calls stay fast and never raise."""
+    """UC-035 Post-F-1: with no collector, the game's telemetry calls stay fast and never raise."""
     # Scrub inherited OTEL_* (other tests' disable_telemetry_for_tests() sets
     # OTEL_SDK_DISABLED / OTEL_*_EXPORTER=none, which would yield NoOp providers).
     env = {k: v for k, v in os.environ.items() if not k.startswith("OTEL_")}
