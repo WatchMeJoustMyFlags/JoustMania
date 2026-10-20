@@ -158,6 +158,9 @@ check(
 
 # Every job CI Complete needs runs in the queue when its check runs on a main
 # push; SonarCloud (informational) and the publishing jobs are the exceptions.
+# The docs-only queue skip relies on the ALLGREEN grouping strategy; keep the warning next to it.
+check("ALLGREEN" in open(sys.argv[1]).read() and "HEADGREEN" in open(sys.argv[1]).read(),
+      "ci.yml: the docs-only queue skip must document its ALLGREEN grouping assumption")
 check(job_if("ci-complete") == "${{ !cancelled() }}", "ci-complete: if must be exactly ${{ !cancelled() }}")
 check(
     job_if("sonarcloud").startswith(
@@ -178,8 +181,10 @@ RUN_ALL = "needs.changes.outputs.run_all_checks == 'true'"
 # queue (fail closed even if e2e_required is empty); the builds wait for it only
 # where it ran, and a required shard must have succeeded.
 check(
-    job_if("integration-test") == "needs.changes.outputs.e2e_required == 'true' || github.event_name == 'merge_group'",
-    f"integration-test: must gate on e2e_required and always run in the merge queue: {job_if('integration-test')}",
+    job_if("integration-test")
+    == "needs.changes.outputs.e2e_required == 'true' ||"
+    " (github.event_name == 'merge_group' && needs.changes.outputs.non_docs != 'false')",
+    f"integration-test: must gate on e2e_required and run in the merge queue unless non_docs is 'false': {job_if('integration-test')}",
 )
 for build, matrix in (("docker-build", "docker_build_matrix"), ("docker-build-extra", "docker_extra_matrix")):
     check(
@@ -200,12 +205,13 @@ if e2e_steps:
             "E2E_REQUIRED": "${{ needs.changes.outputs.e2e_required }}",
             "E2E_RESULT": "${{ needs.integration-test.result }}",
             "EVENT_NAME": "${{ github.event_name }}",
+            "NON_DOCS": "${{ needs.changes.outputs.non_docs }}",
         },
         f"ci-complete/{E2E_STEP}: unexpected env: {step.get('env')}",
     )
     check("|| true" not in str(step["run"]), f"ci-complete/{E2E_STEP}: must not be softened with || true")
 check("github.event_name == 'merge_group'" in job_if("integration-test"),
-      "integration-test: must always run in the merge queue (fail closed, #1583)")
+      "integration-test: must run in the merge queue unless docs-only (fail closed, #1583)")
 for name in jobs["ci-complete"]["needs"]:
     if name in EXEMPT or name in E2E_GATED:
         continue
@@ -348,15 +354,15 @@ def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success",
     for key, value in jobs["changes"]["outputs"].items():
         if "steps.force.outputs" in value:
             ctx[f"needs.changes.outputs.{key}"] = interpolate(value, {f"steps.force.outputs.{k}": v for k, v in out.items()})
-    for key, value in (override or {}).items():
-        ctx[f"needs.changes.outputs.{key}"] = value
+    ctx["needs.changes.outputs.non_docs"] = str(non_docs).lower()
     ctx.update({
         "needs.changes.result": "success",
         "needs.changes.outputs.docker_build_matrix": '["menu"]',
         "needs.changes.outputs.docker_extra_matrix": '[{"service":"agent"}]',
         "needs.changes.outputs.retag_matrix": '["dashboard"]',
-        "needs.changes.outputs.non_docs": str(non_docs).lower(),
     })
+    for key, value in (override or {}).items():
+        ctx[f"needs.changes.outputs.{key}"] = value
     results = {}
 
     def run_job(name, ok="success"):
@@ -421,7 +427,7 @@ SCENARIOS = [
     ("PR, ci-full label", "pull_request", False, True, True, True),
     ("PR, docs-only under a risky path", "pull_request", True, False, False, False),
     ("merge_group", "merge_group", False, True, False, True),
-    ("merge_group, docs only", "merge_group", False, False, False, True),
+    ("merge_group, docs only", "merge_group", False, False, False, False),
     ("workflow_dispatch", "workflow_dispatch", False, True, False, True),
     ("push to main", "push", True, True, False, False),
 ]
@@ -450,6 +456,29 @@ if "e2e_required" in jobs["changes"]["outputs"]:
     mq = simulate("merge_group", False, True)
     for name in ("docker-build-merge", "docker-build-extra-merge", "retag-skipped"):
         check(mq[name] == "skipped", f"merge_group: {name} must not run, got {mq[name]}")
+
+    # Merge queue, docs-only group: e2e skipped, builds and CI Complete green.
+    dq = simulate("merge_group", False, False)
+    check(dq["integration-test"] == "skipped" and dq["ci-complete"] == "success" and dq["docker-build"] == "success"
+          and dq["docker-build-extra"] == "success",
+          f"merge_group docs-only: e2e skipped, builds and CI Complete green, got {dq}")
+    # Fail closed: an empty/unknown non_docs in the queue still runs e2e and requires it.
+    for value in ("", "maybe"):
+        r = simulate("merge_group", False, False, override={"non_docs": value})
+        check(r["integration-test"] == "success", f"merge_group, non_docs={value!r}: e2e must run, got {r['integration-test']}")
+        r = simulate("merge_group", False, False, override={"non_docs": value}, e2e_outcome="skipped")
+        check(r["ci-complete"] == "failure", f"merge_group, non_docs={value!r}, e2e skipped: CI Complete must fail, got {r}")
+    # force step: empty/unknown NON_DOCS in the queue -> e2e_required true (non_docs feeds the step).
+    for value in ("", "maybe"):
+        r = simulate("merge_group", False, value)
+        check(r["e2e_required"] == "true", f"force step, merge_group NON_DOCS={value!r}: e2e_required must be true, got {r['e2e_required']}")
+    r = simulate("merge_group", False, True)
+    check(r["e2e_required"] == "true", f"merge_group non-docs: e2e_required must be true, got {r['e2e_required']}")
+    r = simulate("merge_group", False, False)
+    check(r["e2e_required"] == "false", f"merge_group docs-only: e2e_required must be false, got {r['e2e_required']}")
+    # A docs-only group that somehow reports e2e_required=false but a non-docs diff must still be required.
+    r = simulate("merge_group", False, True, override={"e2e_required": "false"}, e2e_outcome="skipped")
+    check(r["ci-complete"] == "failure", f"merge_group non-docs, e2e_required=false, e2e skipped: must fail, got {r}")
 
     # Fail closed (#1583 review): an empty/broken e2e_required must not let the
     # queue skip e2e, and CI Complete must reject it on any event.

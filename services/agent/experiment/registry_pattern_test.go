@@ -189,7 +189,7 @@ func TestRegistryPatternPinIsKept(t *testing.T) {
 	})
 }
 
-// UC: UC-046 A1 A2 A4 A13 BR-010 Post-F-1
+// UC: UC-046 A1 A2 A4 A13 BR-010 Post-F-2
 // UC: UC-043 A7
 func TestRegistryPatternDiscardsAndNoise(t *testing.T) {
 	flowOf := map[string]string{
@@ -316,13 +316,13 @@ func (f failingSpawner) Spawn(context.Context, string, string, uint64) (string, 
 	return "", f.err
 }
 
-// UC: UC-046 A8 BR-015
+// UC: UC-046 A15 BR-015
 func TestRegistryPatternFailedSpawnUsesNoArchetype(t *testing.T) {
 	for name, err := range map[string]error{
 		"blocked by a real game": fmt.Errorf("start rejected: Shadow games blocked while a real game is running"),
 		"backpressure":           fmt.Errorf("at capacity: %w", ErrSpawnBackpressure),
 	} {
-		t.Run("UC-046/A8 "+name+" consumes no arm", func(t *testing.T) {
+		t.Run("UC-046/A15 "+name+" consumes no arm", func(t *testing.T) {
 			r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2, EffectiveConcurrency: 1,
 				Spawner: failingSpawner{err: err}, Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "a", "b")}}})
 			id := startExperiment(t, r)

@@ -34,7 +34,7 @@ procfs = "0.18"
 gethostname = "1.0"
 # Feature flags (OpenFeature + flagd provider)
 open-feature = "0.2"
-open-feature-flagd = { version = "0.1", default-features = false, features = ["rpc"] }
+open-feature-flagd = { version = "0.1", default-features = false, features = ["in-process"] }
 # Tower middleware for gRPC tracing layer
 tower = "0.5"
 # HTTP types (Request, Response, HeaderMap) used by tower tracing layer

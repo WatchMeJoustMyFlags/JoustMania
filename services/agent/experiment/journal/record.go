@@ -120,7 +120,19 @@ const (
 	// KindPatternGameEnded — the replay record of one pattern game (UC-046 step 8).
 	// Audit only; the fitness sample still arrives on game_concluded.
 	KindPatternGameEnded EventKind = "pattern_game_ended"
+	// KindPromotion — what the promotion of a promote verdict achieved (UC-043 step 7,
+	// A4, A9; #1701): outcome, reason and reference. Audit only; folds into nothing.
+	KindPromotion EventKind = "promotion"
 )
+
+// Promotion is the recorded result of one promotion (entity PROMOTION): Outcome is
+// applied, discarded or reverted (code_improvement.outcome), Reason explains a
+// discarded or reverted outcome, Reference is the issue / PR URL or local commit.
+type Promotion struct {
+	Outcome   string `json:"outcome"`
+	Reason    string `json:"reason,omitempty"`
+	Reference string `json:"reference,omitempty"`
+}
 
 // PatternFacts carries the UC-046 pattern fields of game_assigned, pattern_pinned
 // and pattern_game_ended events (telemetry.md §9 "Journal"). A union: each kind
@@ -189,6 +201,8 @@ type Event struct {
 	Note string `json:"note,omitempty"`
 	// Pattern carries the UC-046 pattern-game facts (nil for every other event).
 	Pattern *PatternFacts `json:"pattern,omitempty"`
+	// Promotion carries the promotion result (promotion events only, #1701).
+	Promotion *Promotion `json:"promotion,omitempty"`
 }
 
 // ArmStat is the per-arm rolling sufficient statistics (design §9.4c). It embeds

@@ -1,5 +1,7 @@
 """Tests for flagd-based interval configuration."""
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -197,3 +199,20 @@ class TestGetBluezRestartMode:
             flag = json.loads(flag_file.read_text())["flags"]["pairing.bluez_restart_mode"]
             assert set(flag["variants"].values()) == set(BLUEZ_RESTART_MODES), flag_file
             assert flag["variants"][flag["defaultVariant"]] == "when_idle", flag_file
+
+
+@pytest.mark.nfr("NFR-007")
+def test_nfr_007_default_cadence_is_10s_usb_and_5s_bluetooth():
+    """NFR-007: with no flag value the daemon polls USB every 10 s and Bluetooth every 5 s.
+
+    Literals, not the constants, so a changed default fails here; the shipped flagd
+    default variants must agree with the code fallback.
+    """
+    with patch("psmove_pairing.config._system_client", None):
+        assert get_poll_interval() == 10
+        assert get_bt_monitor_interval() == 5
+
+    flags = json.loads((Path(__file__).parents[3] / "services/flagd/system.json").read_text())["flags"]
+    for key, expected in (("pairing.poll_interval", 10), ("pairing.bt_monitor_interval", 5)):
+        flag = flags[key]
+        assert flag["variants"][flag["defaultVariant"]] == expected

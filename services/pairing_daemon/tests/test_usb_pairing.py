@@ -584,7 +584,7 @@ class _PairingFlowEnv:
 class TestPairingFlow(_PairingFlowEnv):
     """UC-001 main flow and alternatives A1, A2, A4, A5."""
 
-    @pytest.mark.uc("UC-001", flow="main", steps=[2, 3, 4, 5, 6], br=["BR-001"])
+    @pytest.mark.uc("UC-001", flow="main", steps=[2, 3, 4, 5, 6], br=["BR-001"], cond=["Post-S-1", "Post-S-2"])
     async def test_poll_pairs_new_controller_to_least_loaded_adapter(self, usb_pairing, env, metrics):
         """A USB controller is paired to the least-loaded adapter, trusted, success counted; no BlueZ restart."""
         backend, runner, _set_tree, restart = env
@@ -674,6 +674,7 @@ class TestPairingFlow(_PairingFlowEnv):
         backend.pair_controller.assert_awaited_once_with(FAKE_PATH_1, self.SERIAL, self.ADAPTER_FREE)
         metrics["pairing_success_total"].inc.assert_called_once()
 
+    @pytest.mark.uc("UC-001", cond=["Pre-1", "Post-F-1"])
     async def test_no_adapter_fails_and_next_poll_retries(self, usb_pairing, env, metrics):
         """Failure postcondition: no adapter -> failed_total, not verified; the next poll pairs it."""
         backend, _runner, set_tree, _restart = env
@@ -691,6 +692,7 @@ class TestPairingFlow(_PairingFlowEnv):
         backend.pair_controller.assert_awaited_once_with(FAKE_PATH_1, self.SERIAL, self.ADAPTER_FREE)
         metrics["pairing_success_total"].inc.assert_called_once()
 
+    @pytest.mark.uc("UC-001", cond=["Post-F-1"])
     async def test_pair_failure_fails_and_next_poll_retries(self, usb_pairing, env, metrics):
         """Failure postcondition: the backend write fails -> failed_total; the next poll retries."""
         backend, _runner, _set_tree, restart = env
@@ -729,7 +731,7 @@ class TestPairingNeverRestartsBluez(_PairingFlowEnv):
         assert not [c for c in runner.calls if c and c[0] in _DISRUPTIVE_COMMANDS], runner.calls
         assert runner.calls == [], runner.calls
 
-    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"], cond=["Post-S-3"])
     async def test_pairing_while_controllers_are_connected_restarts_nothing(self, usb_pairing, env, metrics):
         """Three controllers play over Bluetooth on hci0; a fourth is paired over USB without disturbing them."""
         backend, runner, set_tree, restart = env

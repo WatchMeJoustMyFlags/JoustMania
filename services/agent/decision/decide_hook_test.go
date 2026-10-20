@@ -998,19 +998,22 @@ func TestRemote_BackendChangedMidFlight(t *testing.T) {
 	})
 }
 
+// UC: UC-040 A29
 func TestRemote_ShutdownDiscards(t *testing.T) {
-	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
-	h, span := fireAndMutate(t, be, 30*time.Second, func(h remoteHarness) { h.cancel() })
-	assertDiscarded(t, h, span, decideDiscardShutdown)
-	if _, ok := attrValue(span, "error.type"); ok {
-		t.Fatal("a shutdown-cancelled call must not record error.type")
-	}
-	if span.Status().Code != 0 {
-		t.Fatalf("span status = %v, want unset", span.Status())
-	}
-	if g := strAttr(t, span, AttrDecideFallbackReason); g != "" {
-		t.Fatalf("fallback_reason = %q, want empty", g)
-	}
+	t.Run("UC-040/A29 shutdown during a remote call discards it with no rules fallback and no action", func(t *testing.T) {
+		be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
+		h, span := fireAndMutate(t, be, 30*time.Second, func(h remoteHarness) { h.cancel() })
+		assertDiscarded(t, h, span, decideDiscardShutdown)
+		if _, ok := attrValue(span, "error.type"); ok {
+			t.Fatal("a shutdown-cancelled call must not record error.type")
+		}
+		if span.Status().Code != 0 {
+			t.Fatalf("span status = %v, want unset", span.Status())
+		}
+		if g := strAttr(t, span, AttrDecideFallbackReason); g != "" {
+			t.Fatalf("fallback_reason = %q, want empty", g)
+		}
+	})
 }
 
 // UC: UC-040 A7

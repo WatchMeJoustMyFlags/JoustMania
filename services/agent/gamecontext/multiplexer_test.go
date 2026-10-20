@@ -215,6 +215,7 @@ func TestMux_TouchedIDsDeduped(t *testing.T) {
 // TestMux_FallbackPartitionZeroRegression: unlabeled batches route to the
 // fallback partition and reproduce single-Store behavior; the touched id is the
 // empty string.
+// UC: UC-041 A5
 func TestMux_FallbackPartitionZeroRegression(t *testing.T) {
 	clk := &muxClock{t: time.Unix(1000, 0)}
 	mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
@@ -397,6 +398,7 @@ func spanForGame(gameID, serial string) ptrace.Traces {
 
 // TestMux_SpanRouting: spans route to the partition named by their game.id, and
 // label-free spans land in the fallback.
+// UC: UC-041 A5
 func TestMux_SpanRouting(t *testing.T) {
 	clk := &muxClock{t: time.Unix(1000, 0)}
 	mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)

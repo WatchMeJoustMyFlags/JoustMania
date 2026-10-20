@@ -1,6 +1,7 @@
 # Hand-written RPC descriptions for docs/specs/generated/grpc-rpcs.md, merged in by scripts/gen_specs.py
 # (`make specs`). Keyed by `<package>.<Service>/<Rpc>`; every RPC needs one; a key the code no longer has fails the generator.
 joustmania.audio.AudioService/PlaySound: Play an effect (file, volume, priority LOW..CRITICAL); returns the clip length in duration_seconds (0 when nothing is heard)
+joustmania.audio.AudioService/StopSound: Stop every playing sound effect (music keeps playing); used on a force-end during the instruction clip
 joustmania.audio.AudioService/PlayMusic: Start looping music matching a file pattern at a tempo
 joustmania.audio.AudioService/StopMusic: Stop music
 joustmania.audio.AudioService/ChangeTempo: Change music tempo (ratio clamped to (0.5, 2.0]) with a transition

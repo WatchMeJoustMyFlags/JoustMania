@@ -1,7 +1,9 @@
-"""The agent's flagd provider follows flag-service writes live (#1709).
+"""The agent's flagd provider follows flag-service writes live (#1709, #1713).
 
-The agent reads its flags through ``flags.SetupFlagd`` (the go-sdk-contrib flagd
-RPC resolver on flagd's 8013). With the resolver's default cache a flag the agent
+The agent reads its flags through ``flags.SetupFlagd``: since #1713 the go-sdk-contrib
+flagd in-process resolver on flagd's sync port 8015, behind ``syncedProvider``, which
+waits for the first sync however late flagd is. Before, on the RPC resolver (8013)
+with the resolver's default cache, a flag the agent
 had evaluated once stayed at that value until the agent restarted: flagd served
 the new variant, the agent kept answering ``CACHED``. The kill switch (``enabled``
 off), the ``experiments_enabled`` gate and the live ``decision.backend`` switch were
@@ -11,7 +13,9 @@ This module starts the flag plane (real flag service + real flagd, FLAG_PLANE
 composition) and runs the Go tests in ``services/agent/flags/provider_live_test.go``
 against it: each flag is evaluated (and would be cached), flipped through the flag
 service, and must reach the agent's provider within the NFR-050 bound. Without the
-two env vars the Go tests skip, so ``go test ./...`` stays hermetic.
+two env vars the Go tests skip, so ``go test ./...`` stays hermetic. One test restarts
+flagd (``docker restart``) mid-run: reads fail closed while the stream is lost, then
+the stream reconnects and later flips are seen.
 """
 
 import os
@@ -39,8 +43,9 @@ def _run_live_go_test(stack, name: str) -> None:
     )
     env = {
         **os.environ,
-        "AGENT_LIVE_FLAGD_HOST": stack.get_service_host("flagd", 8013),
-        "AGENT_LIVE_FLAGD_PORT": str(stack.get_service_port("flagd", 8013)),
+        "AGENT_LIVE_FLAGD_HOST": stack.get_service_host("flagd", 8015),
+        "AGENT_LIVE_FLAGD_PORT": str(stack.get_service_port("flagd", 8015)),
+        "AGENT_LIVE_FLAGD_CONTAINER": stack.flag_plane.container,
         "AGENT_LIVE_FLAG_SERVICE_URL": flag_service,
     }
     result = subprocess.run(
@@ -77,3 +82,11 @@ def test_agent_provider_sees_kill_switch_when_flagd_was_late_at_startup(service_
     """The agent's provider started before flagd answered (compose: flagd only "started"):
     the kill switch still reaches it (the 2026-10-20 dry run, #1709)."""
     _run_live_go_test(service_stack, "TestLiveFlip_KillSwitchWhenFlagdWasLateAtStartup")
+
+
+@pytest.mark.uc("UC-045", flow="A3")
+@pytest.mark.uc("UC-045", flow="main", steps=[1, 2, 3])
+def test_agent_provider_reconnects_after_flagd_restart(service_stack):
+    """flagd restarts mid-run (#1713): enabled reads off while the sync stream is lost,
+    the stream reconnects, and a later kill-switch flip is seen."""
+    _run_live_go_test(service_stack, "TestLiveFlip_FlagdRestartMidRun")

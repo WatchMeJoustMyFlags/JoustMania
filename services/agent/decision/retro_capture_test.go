@@ -555,7 +555,7 @@ func TestRetroCapture_StubDefaultCaptureOnly(t *testing.T) {
 // TestRetroCapture_KillSwitchOffNoCallNoCharge (#1270, FR-042 / UC-045): with the
 // agent `enabled` kill switch off, a real game end with a backend wired is
 // capture-only: no model call, no budget slot, and the skip reason on the span.
-// UC: UC-042 A5
+// UC: UC-042 A8
 // UC: UC-045 main BR-002
 // UC: UC-070 A5
 func TestRetroCapture_KillSwitchOffNoCallNoCharge(t *testing.T) {

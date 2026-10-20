@@ -8,7 +8,7 @@
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-agent-killswitch.sh
 #
-# UC: UC-045 main
+# UC: UC-045 main A5 A6
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

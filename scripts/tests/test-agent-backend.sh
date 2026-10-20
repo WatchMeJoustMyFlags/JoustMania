@@ -8,7 +8,7 @@
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-agent-backend.sh
 #
-# UC: UC-044 main A3 A4 Post-F-1
+# UC: UC-044 main A3 A4 A5 Post-F-1
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

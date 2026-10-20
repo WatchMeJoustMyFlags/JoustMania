@@ -894,7 +894,8 @@ mod tests {
         assert!(!is_zcm2(PRODUCT_ID_NAVIGATION));
     }
 
-    // UC-001 BR-006 (#1442): 0x0C5E is the ZCM2; 0x042F is the Navigation controller
+    // #1442: 0x0C5E is the ZCM2; 0x042F is the Navigation controller
+    // UC: UC-001 BR-006 Pre-2
     #[test]
     fn test_supported_product_ids_exclude_navigation() {
         assert_eq!(PRODUCT_ID_ZCM2, 0x0C5E);
