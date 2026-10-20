@@ -279,6 +279,7 @@ func TestDecide_HappyPath(t *testing.T) {
 	}
 }
 
+// UC: UC-044 A3
 func TestDecide_ContentCapture(t *testing.T) {
 	cases := map[string]map[string]any{
 		"reasoning_content": {"reasoning_content": "Shield the weaker player."},
@@ -682,6 +683,7 @@ func TestDecide_ReasoningEffortFlag(t *testing.T) {
 	}
 }
 
+// UC: UC-044 A3
 func TestDecide_OpenAIReasoningRequestShape(t *testing.T) {
 	api := newFakeAPI(t, fixed(200, completion("stop", answerJSON, nil)))
 	b := api.backend("gpt-5-mini", false)

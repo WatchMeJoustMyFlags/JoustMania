@@ -105,6 +105,7 @@ func (c *capturingRewatcher) Schedule(ctx context.Context, _ string, _ float64, 
 }
 
 // UC: UC-043 A1
+// UC: UC-045 main
 func TestUC043_A1_KillSwitchRevertsAppliedPromotion(t *testing.T) {
 	proposal := promoteProposal
 	proposal.ExperimentID = "exp-1704"

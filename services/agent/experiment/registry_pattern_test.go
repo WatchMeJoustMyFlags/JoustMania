@@ -335,6 +335,11 @@ func TestRegistryPatternFailedSpawnUsesNoArchetype(t *testing.T) {
 			if cursor != 0 || st != StatusRunning {
 				t.Fatalf("after 20 failed ticks: armCursor=%d status=%s, want 0/running", cursor, st)
 			}
+			for _, kind := range []journal.EventKind{journal.KindGameAssigned, journal.KindGameReleased, journal.KindGameConcluded, journal.KindPatternGameEnded} {
+				if got := eventsOfKind(journalEvents(t, r, id), kind); len(got) != 0 {
+					t.Errorf("failed spawns journaled %d %s events, want none", len(got), kind)
+				}
+			}
 		})
 	}
 }
@@ -576,9 +581,9 @@ func (h *preemptionHarness) notes() (reruns, preempted, skips int) {
 	return reruns, preempted, skips
 }
 
-// UC: UC-046 A8 A9 A12 BR-015
+// UC: UC-046 A8 A9 BR-015
 func TestRegistryPatternPreemptionRerunBudget(t *testing.T) {
-	const killSwitchRelease = "game ended without usable fitness sample: force_ended"
+	const forceEndRelease = "game ended without usable fitness sample: force_ended"
 	const errorRelease = "game ended without usable fitness sample: error"
 
 	t.Run("UC-046/A8 preemptions rerun the pair without using up the 3-rerun budget", func(t *testing.T) {
@@ -625,7 +630,7 @@ func TestRegistryPatternPreemptionRerunBudget(t *testing.T) {
 		}
 	})
 
-	for name, reason := range map[string]string{"A9 errors": errorRelease, "A12 kill-switch releases": killSwitchRelease} {
+	for name, reason := range map[string]string{"A9 errors": errorRelease, "A9 force-end releases": forceEndRelease} {
 		t.Run("UC-046/"+name+" still use up the 3-rerun budget", func(t *testing.T) {
 			h := newPreemptionHarness(t, "")
 			spawned := 0
