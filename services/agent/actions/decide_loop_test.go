@@ -205,6 +205,47 @@ func TestDecideLoop_ProbeMode(t *testing.T) {
 			t.Fatalf("Writer calls = %v, want exactly one returning nil", calls)
 		}
 	})
+
+	t.Run("UC-040/A23 probe noop: no agent.decide span, decision and action spans, charges 1.0 of the budget", func(t *testing.T) {
+		// A budget of 2 admits two noops and refuses the third: the noop costs
+		// more than 2/3 and at most 1.0 (the medium weight).
+		snap := flags.Snapshot{
+			Enabled:              true,
+			InterventionsAllowed: []string{decision.InterventionNoop},
+			Policy:               flags.Policy{MaxInterventionsPerMinute: 2},
+		}
+		clock := time.Unix(1000, 0)
+		probe := decision.NewProbeRules(5*time.Second, func() time.Time { return clock })
+		l, _, _, _, _, sr := loggedLoop(t, snap, probe, true)
+		c := gamecontext.GameContext{SessionID: "s-1"}
+
+		var outcomes []decision.DecisionOutcome
+		for i := 0; i < 3; i++ {
+			st := l.OnEvaluate(context.Background(), c, testTrigger())
+			if len(st.Outcomes) != 1 {
+				t.Fatalf("cycle %d outcomes = %+v, want the one probe decision", i+1, st.Outcomes)
+			}
+			outcomes = append(outcomes, st.Outcomes[0])
+			clock = clock.Add(6 * time.Second) // past the probe's 5 s cadence
+		}
+		if !outcomes[0].Dispatched || !outcomes[1].Dispatched {
+			t.Fatalf("outcomes = %+v, want the first two noops dispatched", outcomes)
+		}
+		if outcomes[2].Dispatched || outcomes[2].BlockReason != decision.ReasonRateLimit {
+			t.Fatalf("third outcome = %+v, want blocked for rate_limit (each noop charged 1.0)", outcomes[2])
+		}
+
+		counts := map[string]int{}
+		for _, s := range sr.Ended() {
+			counts[s.Name()]++
+		}
+		if counts[decision.SpanDecide] != 0 {
+			t.Fatalf("agent.decide spans = %d, want 0 (probe mode has no rules answers)", counts[decision.SpanDecide])
+		}
+		if counts[decision.SpanDecision] < 2 || counts[decision.SpanAction] < 2 {
+			t.Fatalf("spans = %v, want an agent.decision and an agent.action span per dispatched noop", counts)
+		}
+	})
 }
 
 // writesTotal reads agent_intervention_writes_total{result}.

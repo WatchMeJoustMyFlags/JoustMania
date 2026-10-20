@@ -4,6 +4,7 @@
  * Real-time controller visualization and game controls using Connect-Web.
  */
 import { keepStreamOpen } from "./stream.js";
+import { keepControllerStreamOpen } from "./controllerStream.js";
 import { controllerClient, gameClient, menuClient } from "./client.js";
 import { ControllerGrid } from "./components/ControllerGrid.js";
 import { UNPAIR_NOTICE_EVENT } from "./unpair.js";
@@ -174,19 +175,13 @@ function setupTabs() {
   });
 }
 
-// Stream controller data at 30Hz
-async function startControllerStream() {
+// Stream controller data at 30Hz; reopened 2 s after a failure or a clean end
+// (controller manager restarted), UC-035 A4.
+function startControllerStream() {
   if (state.isStreaming) return;
-  state.isStreaming = true;
-
-  controllerGrid.setLoading(false);
-
-  try {
-    const stream = controllerClient.watchGameplayData({
-      updateFrequencyHz: 30,
-    });
-
-    for await (const update of stream) {
+  void keepControllerStreamOpen({
+    open: () => controllerClient.watchGameplayData({ updateFrequencyHz: 30 }),
+    onUpdate: (update) => {
       // Update controller state
       state.controllers.clear();
       for (const controller of update.controllers ?? []) {
@@ -195,17 +190,12 @@ async function startControllerStream() {
 
       // Render controllers; the count covers the tiles shown (UC-070 BR-005)
       updatePlayerCount(renderGrid());
-    }
-    // A clean end (controller manager restarted) also needs a new stream.
-    throw new Error("controller stream ended");
-  } catch (error) {
-    console.error("Controller stream error:", error);
-    state.isStreaming = false;
-    controllerGrid.setError("Connection lost. Retrying...");
-
-    // Retry after delay
-    setTimeout(startControllerStream, 2000);
-  }
+    },
+    grid: controllerGrid,
+    setStreaming: (streaming) => {
+      state.isStreaming = streaming;
+    },
+  });
 }
 
 // Stream game events

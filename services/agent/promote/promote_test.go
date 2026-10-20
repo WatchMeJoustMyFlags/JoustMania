@@ -457,6 +457,7 @@ func TestPromoteNonPromoteVerdictIsNoop(t *testing.T) {
 }
 
 // --- a client error degrades to a recorded no-op, never a different action. ---
+// UC: UC-043 A9
 func TestPromoteClientErrorIsRecordedNoop(t *testing.T) {
 	gh := &recordingGitHub{issueErr: errors.New("rate limited")}
 	p, _ := promoterWithRecorder(t, gh, &recordingGit{}, nil, nil, nil)

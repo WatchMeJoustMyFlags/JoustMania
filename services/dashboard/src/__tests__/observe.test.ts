@@ -125,6 +125,16 @@ describe("UC-035: step 2 game event feed", () => {
     expect(feed).toEqual(["Agent: partial shield for c:dd (2s)"]);
   });
 
+  it("UC-035/main step 2 game_error shows the Ended state and an error line", () => {
+    const effect = reduceGameEvent(
+      { ...idle, gameState: "Running" },
+      { eventType: "game_error", data: { error: "stream failed" } },
+    );
+    expect(effect.state.gameState).toBe("Ended");
+    expect(effect.gameRunning).toBe(false);
+    expect(effect.feedLine).toBe("Game ended with an error");
+  });
+
   it("UC-035/main step 2 game_start_error ends the attempt with the error in the feed", () => {
     const effect = reduceGameEvent(
       { ...idle, gameState: "Running" },

@@ -155,6 +155,8 @@ expect "capture off" 0 "agent content capture -> off" -- capture off
 check_variant decision.capture_content off
 expect "effort omit" 0 'agent openai reasoning effort -> omit ("omit")' -- effort omit
 check_variant decision.openai.reasoning_effort omit
+# UC-044 A3: tuning never switches the backend.
+check_variant decision.backend rules
 expect "status after effort flip" 0 "capture   = off (false)" -- status
 "${HELPER}" openai >/dev/null
 expect "status shows effort for openai" 0 'effort    = omit ("omit")' -- status

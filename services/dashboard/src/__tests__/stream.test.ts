@@ -3,6 +3,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { keepStreamOpen } from "../stream.js";
+import { CONTROLLER_STREAM_LOST, keepControllerStreamOpen } from "../controllerStream.js";
 import { AgentView } from "../components/AgentView.js";
 import { onAgentPollFailed, onDecidePollFailed, onExperimentsPollFailed } from "../degrade.js";
 import { ExperimentsView } from "../components/ExperimentsView.js";
@@ -49,6 +50,44 @@ describe("UC-035: A4 the dashboard loses a live stream", () => {
     });
     expect(delays).toEqual([2000]);
     expect((lost[0] as Error).message).toBe("proxy restarted");
+  });
+
+  it("UC-035/A4 the controller grid shows 'Connection lost. Retrying...' and reopens the gameplay stream after 2 s", async () => {
+    const errors: string[] = [];
+    const streaming: boolean[] = [];
+    const delays: number[] = [];
+    const updates: string[] = [];
+    const queue: Array<() => AsyncGenerator<string>> = [
+      () => stream(["frame1"], new Error("controller manager restarted")),
+      () => stream(["frame2"]),
+    ];
+    const open = vi.fn(() => queue.shift()!());
+    let reopen: (() => void) | undefined;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await keepControllerStreamOpen({
+      open,
+      onUpdate: (u) => updates.push(u),
+      grid: { setLoading: () => {}, setError: (m) => errors.push(m) },
+      setStreaming: (s) => streaming.push(s),
+      schedule: (fn, ms) => {
+        reopen = fn;
+        delays.push(ms);
+      },
+    });
+    expect(errors).toEqual([CONTROLLER_STREAM_LOST]);
+    expect(CONTROLLER_STREAM_LOST).toBe("Connection lost. Retrying...");
+    expect(delays).toEqual([2000]);
+    expect(streaming).toEqual([true, false]);
+
+    // The retry reopens the stream; its clean end is a loss as well.
+    reopen?.();
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(delays).toEqual([2000, 2000]));
+    expect(updates).toEqual(["frame1", "frame2"]);
+    expect(errors).toEqual([CONTROLLER_STREAM_LOST, CONTROLLER_STREAM_LOST]);
+    expect(streaming).toEqual([true, false, true, false]);
+    vi.restoreAllMocks();
   });
 
   it("UC-035/A4 a clean end is reported as a loss without an error", async () => {
