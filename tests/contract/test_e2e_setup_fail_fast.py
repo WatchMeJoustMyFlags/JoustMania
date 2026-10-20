@@ -29,7 +29,7 @@ FAILING_SUITE = textwrap.dedent(
 
     @pytest.fixture(scope="module")
     def stack(request):
-        with GUARD.attempt(request.config, diagnose=lambda: "container fake: unhealthy"):
+        with GUARD.attempt(request.config, diagnose=lambda: {diag!r}):
             COUNTER.write_text(str(int(COUNTER.read_text() or 0) + 1))
             run_bounded(
                 [{python!r}, "-c", "import sys; sys.stderr.write('pull denied'); sys.exit(3)"],
@@ -53,10 +53,12 @@ FAILING_SUITE = textwrap.dedent(
 )
 
 
-def _run_suite(tmp_path: Path, *extra: str) -> tuple[subprocess.CompletedProcess, int]:
+def _run_suite(
+    tmp_path: Path, *extra: str, diag: str = "container fake: unhealthy"
+) -> tuple[subprocess.CompletedProcess, int]:
     (tmp_path / "setup_runs.txt").write_text("")
     (tmp_path / "test_fake_stack.py").write_text(
-        FAILING_SUITE.format(python=sys.executable)
+        FAILING_SUITE.format(python=sys.executable, diag=diag)
     )
     result = subprocess.run(
         [
@@ -133,3 +135,12 @@ def test_setup_command_timeout_is_bounded(tmp_path):
         timeout=120,
     )
     assert result.returncode == 0, (result.stdout + result.stderr)[-3000:]
+
+
+def test_long_diagnostics_never_cut_the_real_error(tmp_path):
+    """Container dumps on a real stack are long; the command's own error (exit
+    code, stderr) must survive them in the recorded and printed cause."""
+    result, _ = _run_suite(tmp_path, diag="x" * 50_000 + "\nLAST DIAGNOSTIC LINE")
+    assert "fake compose up: exit code 3" in result.stderr, result.stderr[:3000]
+    assert "pull denied" in result.stderr
+    assert "LAST DIAGNOSTIC LINE" in result.stderr

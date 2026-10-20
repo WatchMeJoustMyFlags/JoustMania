@@ -79,10 +79,13 @@ class SetupGuard:
         try:
             yield
         except (Exception, pytest.fail.Exception) as exc:
+            # The exception text already holds bounded output tails; keep it
+            # whole so the real error (exit code, compose stderr) is never
+            # cut by the diagnostics that follow it.
             cause = f"{type(exc).__name__}: {exc}"
             if diagnose is not None:
-                cause += "\n" + diagnose()
-            self.failure = _tail(cause, 2 * OUTPUT_TAIL_CHARS)
+                cause += "\n" + _tail(diagnose(), 2 * OUTPUT_TAIL_CHARS)
+            self.failure = cause
             emit(
                 f"\n===== E2E SETUP FAILED: {self.name} (#1649) =====\n"
                 f"{self.failure}\n"
