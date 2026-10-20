@@ -67,6 +67,8 @@ class Composition:
     otlp: bool = False
     # The Go agent (``stack.agent``) plus a fake OpenAI backend (``stack.fake_openai``).
     agent: bool = False
+    # Extra env for the agent process, applied last (e.g. the experiment seed of TC-011).
+    agent_env: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         unknown = set(self.services) - set(SERVICES)
@@ -163,6 +165,7 @@ class ServiceStack:
                 coordinator_port=ports["game-coordinator"],
                 mock_control_port=mock_port,
                 openai_api_key=FAKE_OPENAI_API_KEY,
+                extra_env=dict(self.composition.agent_env),
             )
             self._ports[("agent", AGENT_OTLP_PORT)] = self.agent_port
             self.agent.start()
