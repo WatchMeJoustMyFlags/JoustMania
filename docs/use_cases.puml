@@ -101,6 +101,10 @@ agent --> UC051
 agent --> UC053
 
 presenter --> UC070
+presenter --> UC035
+agent --> UC070
+player --> UC070
+UC070 --> modelapi
 presenter --> UC053
 maintainer --> UC043
 UC042 --> modelapi
