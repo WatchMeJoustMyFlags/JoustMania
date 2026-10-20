@@ -188,6 +188,41 @@ func TestDecideLoop_FailedWrite(t *testing.T) {
 	})
 }
 
+// UC: UC-040 A11
+func TestDecideLoop_GateOffChargesBudgetAndSpans(t *testing.T) {
+	t.Run("UC-040/A11 gate off: the decision charges the per-game budget and records its agent.action span", func(t *testing.T) {
+		// adjust_volume costs 0.5; a budget of 1 fits two. With the actuation gate
+		// off nothing is written, yet the third decision is refused for the budget:
+		// the two gated decisions were charged.
+		snap := flags.Snapshot{
+			Enabled:              true,
+			InterventionsAllowed: []string{decision.InterventionAdjustVolume},
+			Policy:               flags.Policy{MaxInterventionsPerMinute: 1},
+		}
+		l, svc, _, spy, _, sr := loggedLoop(t, snap,
+			oneDecision{Intervention: decision.InterventionAdjustVolume, Reason: "quieter"}, false)
+		c := gamecontext.GameContext{SessionID: uc040GameID}
+
+		for i := 0; i < 2; i++ {
+			st := l.OnEvaluate(context.Background(), c, testTrigger())
+			if len(st.Outcomes) != 1 || !st.Outcomes[0].Dispatched {
+				t.Fatalf("cycle %d outcomes = %+v, want one dispatched (gated) decision", i+1, st.Outcomes)
+			}
+		}
+		if spans := actionSpans(sr); len(spans) != 2 {
+			t.Fatalf("agent.action spans = %d, want 2 (a gated decision still records its span)", len(spans))
+		}
+		st := l.OnEvaluate(context.Background(), c, testTrigger())
+		if len(st.Outcomes) != 1 || st.Outcomes[0].Dispatched || st.Outcomes[0].BlockReason != decision.ReasonRateLimit {
+			t.Fatalf("cycle 3 outcomes = %+v, want one blocked for rate_limit (the gated decisions were charged)", st.Outcomes)
+		}
+		assertNoWrites(t, svc)
+		if calls := spy.calls(); len(calls) != 0 {
+			t.Fatalf("Writer calls = %d, want 0 (the gate skips the Writer)", len(calls))
+		}
+	})
+}
+
 // writtenGameIDs returns the game id every flag-service call was scoped to.
 func writtenGameIDs(svc *fakeService) []string {
 	var out []string

@@ -118,6 +118,15 @@ expect "status shows model n/a for rules" 0 "model     = n/a (rules backend)" --
 expect "status shows threshold" 0 "threshold = default (0.8)" -- status
 expect "status shows capture" 0 "capture   = on (true)" -- status
 expect "status shows jev threshold" 0 "jev thr.  = gate (0.6)" -- status
+expect "status shows the flag service address" 0 "(${FLAG_SERVICE_URL})" -- status
+# UC-044 A5: status (with or without the word) only reads; it writes nothing.
+if grep -qE '^(PUT|DELETE|POST) ' "${FAKE_FLAG_LOG}"; then
+  not_ok "status writes nothing (log: $(grep -E '^(PUT|DELETE|POST) ' "${FAKE_FLAG_LOG}" | tr '\n' ';'))"
+elif ! grep -qE '^GET ' "${FAKE_FLAG_LOG}"; then
+  not_ok "status writes nothing (the request log saw no GET either; is it recording?)"
+else
+  ok "status writes nothing (only GETs reached the flag service)"
+fi
 
 # --- backend + model ------------------------------------------------------
 fixture
