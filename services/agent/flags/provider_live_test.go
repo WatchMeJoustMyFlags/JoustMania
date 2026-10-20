@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/open-feature/go-sdk/openfeature"
 )
 
 // Live flag-plane tests (#1709). They run only when tests/service/test_agent_flag_live.py
@@ -64,7 +66,26 @@ func newLiveFlagPlane(t *testing.T, startupDelay time.Duration) *liveFlagPlane {
 		shutdown()
 		cancel()
 	})
+	waitResolvesFromFlagd(t)
 	return &liveFlagPlane{flags: f, serviceURL: serviceURL}
+}
+
+// waitResolvesFromFlagd waits until the agent's client resolves a flag from flagd (no
+// error), so a test never mistakes a code default (flagd not reached yet) for a served value.
+func waitResolvesFromFlagd(t *testing.T) {
+	t.Helper()
+	client := openfeature.GetApiInstance().GetNamedClient(Domain)
+	deadline := time.Now().Add(liveSetupTimeout)
+	for {
+		d, err := client.BooleanValueDetails(context.Background(), keyEnabled, false, openfeature.EvaluationContext{})
+		if err == nil && d.ErrorCode == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the agent's provider never resolved %q from flagd: %v", keyEnabled, err)
+		}
+		time.Sleep(livePollInterval)
+	}
 }
 
 // startLateRelay listens on a free local port and relays every connection to target,
