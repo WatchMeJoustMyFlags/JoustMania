@@ -15,15 +15,35 @@ ARG OCB_VERSION=0.153.0
 ARG TARGETOS=linux
 ARG TARGETARCH
 
+# Go module servers blip (sum.golang.org 500, proxy.golang.org INTERNAL_ERROR,
+# #1780). Checksum verification stays ON (GOSUMDB default); only fetching is
+# made resilient: proxy first, direct VCS fallback, retries with backoff.
+ENV GOPROXY=https://proxy.golang.org,direct \
+    GOSUMDB=sum.golang.org
+
 # Install OCB
-RUN go install go.opentelemetry.io/collector/cmd/builder@v${OCB_VERSION}
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    for attempt in 1 2 3; do \
+      go install go.opentelemetry.io/collector/cmd/builder@v${OCB_VERSION} && exit 0; \
+      echo "go install failed (attempt ${attempt}/3)" >&2; \
+      [ "${attempt}" -lt 3 ] && sleep $((attempt * 10)); \
+    done; exit 1
 
 WORKDIR /build
 COPY builder-config.yaml .
 
 # Build the custom collector binary
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    builder --config=builder-config.yaml
+# Retried up to 3 times with backoff; the module cache mount keeps modules
+# already downloaded by a failed attempt.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    for attempt in 1 2 3; do \
+      CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+        builder --config=builder-config.yaml && exit 0; \
+      echo "collector build failed (attempt ${attempt}/3)" >&2; \
+      [ "${attempt}" -lt 3 ] && sleep $((attempt * 15)); \
+    done; exit 1
 
 # ── Stage 2: Minimal runtime ─────────────────────────────────────────
 FROM debian:bookworm-slim
