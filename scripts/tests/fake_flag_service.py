@@ -12,6 +12,8 @@ undeclared variant fails here exactly as it would against the service:
     DELETE /{set}/{flag}          clear the stack overlay
     DELETE /{set}?writer=W        clear that writer's overlays
 
+--fail-put N / --fail-delete N answer the Nth PUT / DELETE with 503 (a refused write).
+
 Every request is appended to --log as "METHOD PATH BODY". Run:
 
     python3 fake_flag_service.py --flags agent=path/agent.json --registry registry.yaml \
@@ -46,7 +48,16 @@ def load_registry(path):
 
 
 class Fake:
-    def __init__(self, sets, registry, log_path, games=0, scope_values=0, fail_put=0):
+    def __init__(
+        self,
+        sets,
+        registry,
+        log_path,
+        games=0,
+        scope_values=0,
+        fail_put=0,
+        fail_delete=0,
+    ):
         self.sets = sets  # set -> {flag: flag json}
         self.registry = registry
         self.log_path = log_path
@@ -55,6 +66,8 @@ class Fake:
         self.scope_values = scope_values
         self.fail_put = fail_put  # 1-based index of the PUT answered with 503
         self.puts = 0
+        self.fail_delete = fail_delete  # 1-based index of the DELETE answered with 503
+        self.deletes = 0
         self.lock = threading.Lock()
 
     def view(self, flag_set, key):
@@ -211,6 +224,9 @@ def make_handler(fake):
             self._log()
             parts, query = self._parts()
             with fake.lock:
+                fake.deletes += 1
+                if fake.deletes == fake.fail_delete:
+                    return self._err(503, "no_sync_stream", "injected failure")
                 if len(parts) == 1 and parts[0] in fake.sets:
                     writer = (query.get("writer") or [""])[0]
                     if not writer:
@@ -245,6 +261,9 @@ def main():
     ap.add_argument(
         "--fail-put", type=int, default=0, help="answer the Nth PUT with 503"
     )
+    ap.add_argument(
+        "--fail-delete", type=int, default=0, help="answer the Nth DELETE with 503"
+    )
     args = ap.parse_args()
     sets = {}
     for spec in args.flags:
@@ -258,6 +277,7 @@ def main():
         args.games,
         args.scope_values,
         args.fail_put,
+        args.fail_delete,
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(fake))
     with open(args.port_file + ".tmp", "w") as fh:

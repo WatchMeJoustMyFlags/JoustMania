@@ -17,16 +17,18 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/infracontext"
+	"github.com/joustmania/agent/patterngame"
 )
 
 // killswitch_uc045_test.go covers the UC-045 (kill switch) flows the per-feature
 // suites leave open (#1653): the experiment loop aborting a RUNNING experiment when
 // `enabled` flips off (main step 5), the same abort when flagd becomes unreachable
 // and `enabled` falls back to off (A3), and the infrastructure loop that `enabled`
-// does not govern (A4 step 1, Post-S-2).
+// does not govern (A4 step 1, Post-S-3).
 
 // switchableEvaluator is a flagd stand-in for the real flags client: it serves the
 // configured booleans while reachable, and fails every read once unreachable, as an
@@ -130,6 +132,95 @@ func TestKillSwitch_AbortsRunningExperiment(t *testing.T) {
 	if recs := spawner.drain(); len(recs) != 0 {
 		t.Fatalf("kill switch off still spawned %d shadow games", len(recs))
 	}
+}
+
+// TestKillSwitch_ForceEndsPatternGames: a pattern experiment runs with pattern
+// games in flight. The operator turns `enabled` off; the next experiment tick
+// force-ends every in-flight pattern game (UC-046 A12) and aborts the experiment.
+// The promotion revert of the same step (#1704) is covered by
+// promotion_killswitch_uc045_test.go.
+// UC: UC-045 main
+func TestKillSwitch_ForceEndsPatternGames(t *testing.T) {
+	t.Run("UC-045/main step 5 in-flight pattern games are force-ended with kill_switch", func(t *testing.T) {
+		ctx := context.Background()
+		arch, errs := patterngame.NewArchetype("only", map[string]any{
+			"players": 4.0, "stream_rate_hz": 30.0, "base": 1.0, "drift": 0.01, "amp": 0.1,
+			"period_s": 3.0, "phase": 0.0, "burst_h": 0.0, "burst_period_s": 0.0,
+			"d_base": 0.0, "d_drift": 0.01, "d_amp": 0.0, "d_phase": 0.25,
+		})
+		if len(errs) > 0 {
+			t.Fatalf("archetype: %v", errs)
+		}
+		pinner := &countingPinner{pin: patterngame.Pin{Selection: "only", MaxGameSeconds: 300, Archetypes: []patterngame.Archetype{arch}}}
+		spawner := &recordingSpawner{}
+		tracker := patterngame.NewTracker()
+
+		log := testLogger()
+		svc := newGameFileForLoop(t)
+
+		writer := experiment.NewWriter(svc, log)
+		targeting := experiment.NewGateTargetingWriter(experiment.NewGate(writer, nil, log), writer)
+		reg := experiment.NewRegistry(experiment.RegistryConfig{
+			Root: t.TempDir(), MaxShadowGames: 4, EffectiveConcurrency: 2, Spawner: spawner,
+			Verdict: experiment.NewVerdict(3, 0.5, nil), Targeting: targeting, Log: log,
+			Patterns: pinner, PatternTracker: tracker,
+		})
+		lc := &liveConfig{}
+		lc.set(flags.ExperimentConfig{Enabled: true, ShadowEffectiveConcurrency: 2})
+		var mu sync.Mutex
+		agentEnabled := true
+		loop := &experimentLoop{
+			registry:       reg,
+			log:            log,
+			expDefaults:    flags.ExperimentDefaults{Tick: time.Hour, DynamicMaxConcurrent: defaultDynamicMaxConcurrent},
+			configOverride: lc.get,
+			enabledOverride: func(context.Context) bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return agentEnabled
+			},
+			seed: &experiment.Intent{
+				Hypothesis: "h", FlagKey: "invincibility_seconds",
+				ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 50,
+			},
+		}
+
+		loop.allocateIfEnabled(ctx)
+		games := spawner.drain()
+		if reg.LiveCount() != 1 || len(games) == 0 {
+			t.Fatalf("precondition: LiveCount=%d spawned=%d, want a running pattern experiment", reg.LiveCount(), len(games))
+		}
+		var aborted []string
+		for _, g := range games {
+			gid := g.gameID
+			tracker.Register(patterngame.Info{GameID: gid, Abort: func() {
+				mu.Lock()
+				aborted = append(aborted, gid)
+				mu.Unlock()
+			}})
+		}
+
+		mu.Lock()
+		agentEnabled = false
+		mu.Unlock()
+		loop.allocateIfEnabled(ctx)
+
+		mu.Lock()
+		got := len(aborted)
+		mu.Unlock()
+		if got != len(games) {
+			t.Fatalf("kill switch force-ended %d of %d in-flight pattern games", got, len(games))
+		}
+		for _, g := range games {
+			rec, ok := tracker.Finish(g.gameID, patterngame.OutcomeAborted, patterngame.GameEvents{}, nil)
+			if !ok || len(rec.NonExactReasons) != 1 || rec.NonExactReasons[0] != patterngame.ReasonKillSwitch {
+				t.Errorf("game %s: non-exact reasons = %v, want [%s]", g.gameID, rec.NonExactReasons, patterngame.ReasonKillSwitch)
+			}
+		}
+		if n := reg.LiveCount(); n != 0 {
+			t.Fatalf("kill switch left %d experiments running", n)
+		}
+	})
 }
 
 // TestKillSwitch_FlagdUnreachableStopsExperimentLoop drives the REAL flags client

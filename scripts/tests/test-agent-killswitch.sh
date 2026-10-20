@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Self-contained tests for scripts/agent-killswitch.sh (UC-045 main steps 1 and 7).
+# Self-contained tests for scripts/agent-killswitch.sh (UC-045 main steps 1 and 7,
+# A5 and A6: a refused or failed change leaves `enabled` as it was, Post-F-1).
 #
 # Runs the helper against scripts/tests/fake_flag_service.py serving
 # services/flagd/ci/agent.json with the REAL registry (epic #1407): the helper
@@ -8,7 +9,7 @@
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-agent-killswitch.sh
 #
-# UC: UC-045 main A5 A6
+# UC: UC-045 main A5 A6 Post-F-1
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,9 +77,24 @@ if cmp -s "${SHIPPED}" "${FAKE_AGENT_FLAGS}"; then ok "the baseline file is unch
 
 # --- rejections ----------------------------------------------------------------
 expect "unknown action is rejected" 2 "usage:" -- maybe
+
+# --- A5: the flag service refuses the off (503 no_sync_stream) -----------------
 stop_fake_flag_service
-expect "on fails when the flag service is unreachable" 1 "" -- on
-expect "off prints the docker stop fallback when the flag service is unreachable" 1 "docker stop joustmania-agent" -- off
+start_fake_flag_service "${WORK}" --fail-delete 1
+expect "A5 setup: on" 0 "agent kill-switch -> on" -- on
+expect "A5 refused off prints the docker stop fallback" 1 "docker stop joustmania-agent" -- off
+if [[ "$(effective enabled)" == "on" ]]; then ok "A5 refused off leaves enabled on"; else not_ok "A5 refused off leaves enabled on (got $(effective enabled))"; fi
+
+# --- A6: the flag service refuses the on (503) ---------------------------------
+stop_fake_flag_service
+start_fake_flag_service "${WORK}" --fail-put 1
+expect "A6 refused on prints the error" 1 "PUT /agent/enabled -> HTTP 503" -- on
+if [[ "$(effective enabled)" == "off" ]]; then ok "A6 refused on leaves enabled off"; else not_ok "A6 refused on leaves enabled off (got $(effective enabled))"; fi
+
+# --- A5 / A6: the flag service cannot be reached --------------------------------
+stop_fake_flag_service
+expect "A6 on prints the error when the flag service is unreachable" 1 "flag service unreachable" -- on
+expect "A5 off prints the docker stop fallback when the flag service is unreachable" 1 "docker stop joustmania-agent" -- off
 
 echo "${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]

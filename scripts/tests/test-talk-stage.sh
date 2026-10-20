@@ -7,7 +7,7 @@
 # Runs as part of `make lint` (needs only bash + python3), or directly:
 #   ./scripts/tests/test-talk-stage.sh
 #
-# UC: UC-070 main A7 A8 A9 BR-001 BR-003 BR-007 Pre-3 Post-S-1 Post-S-2
+# UC: UC-070 main A7 A8 A9 BR-001 BR-003 BR-007 Pre-3 Post-S-2
 # UC: UC-053 A1
 set -euo pipefail
 

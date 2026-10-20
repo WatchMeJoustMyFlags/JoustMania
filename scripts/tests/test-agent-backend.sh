@@ -9,6 +9,7 @@
 #   ./scripts/tests/test-agent-backend.sh
 #
 # UC: UC-044 main A3 A4 A5 Post-F-1
+# UC: UC-070 A6
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -207,6 +208,20 @@ stop_fake_flag_service
 start_fake_flag_service "${WORK}"
 expect "undeclared backend variant is refused" 1 "variant 'claude' not defined for flag 'decision.backend'" -- claude sonnet
 check_variant decision.claude.model haiku
+
+# --- UC-070 A6: second vendor after the rollback to jev ---------------------
+# A model variant the flag file does not define is refused before anything is
+# switched (jev stays); a defined one switches to openai; `jev` switches back.
+fixture
+"${HELPER}" jev >/dev/null
+expect "A6 undefined openai model variant is refused" 1 "valid: unset, gpt" -- openai llama
+check_variant decision.backend jev
+check_variant decision.openai.model unset
+expect "A6 a defined openai model variant switches" 0 "agent backend -> openai" -- openai gpt
+check_variant decision.backend openai
+check_variant decision.openai.model gpt
+expect "A6 back to jev" 0 "agent backend -> jev" -- jev
+check_variant decision.backend jev
 
 # --- the flag service unreachable -----------------------------------------
 # A4: a flip attempted while the service is down fails clearly (non-zero exit, clear message).
