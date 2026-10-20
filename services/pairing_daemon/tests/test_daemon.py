@@ -200,7 +200,6 @@ async def test_monitor_cycle_makes_sure_the_agent_is_registered(daemon):
 class TestStartupAndStaleness:
     """#1770: bounded startup commands, sane staleness before the first poll."""
 
-    @pytest.mark.uc("UC-001", flow="A1")
     @pytest.mark.asyncio
     async def test_bluetoothctl_check_has_short_timeout(self, daemon):
         """bluetoothctl show must not use run_command's 60 s default."""
