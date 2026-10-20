@@ -19,7 +19,6 @@ import (
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flags"
-	"github.com/joustmania/agent/flagservice"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/infracontext"
 	"github.com/joustmania/agent/patterngame"
@@ -135,14 +134,14 @@ func TestKillSwitch_AbortsRunningExperiment(t *testing.T) {
 	}
 }
 
-// TestKillSwitch_ForceEndsPatternGamesKeepsPromotedDefault: a pattern experiment
-// runs with pattern games in flight, and an earlier autonomous promotion left a
-// real default (the flag service's `real` overlay) on a game flag. The operator
-// turns `enabled` off; the next experiment tick force-ends every in-flight pattern
-// game (UC-046 A12) and aborts the experiment, but the promoted real default stays.
+// TestKillSwitch_ForceEndsPatternGames: a pattern experiment runs with pattern
+// games in flight. The operator turns `enabled` off; the next experiment tick
+// force-ends every in-flight pattern game (UC-046 A12) and aborts the experiment.
+// The promotion revert of the same step (#1704) is covered by
+// promotion_killswitch_uc045_test.go.
 // UC: UC-045 main
-func TestKillSwitch_ForceEndsPatternGamesKeepsPromotedDefault(t *testing.T) {
-	t.Run("UC-045/main step 5 pattern games force-ended, promoted real default stays", func(t *testing.T) {
+func TestKillSwitch_ForceEndsPatternGames(t *testing.T) {
+	t.Run("UC-045/main step 5 in-flight pattern games are force-ended with kill_switch", func(t *testing.T) {
 		ctx := context.Background()
 		arch, errs := patterngame.NewArchetype("only", map[string]any{
 			"players": 4.0, "stream_rate_hz": 30.0, "base": 1.0, "drift": 0.01, "amp": 0.1,
@@ -158,18 +157,6 @@ func TestKillSwitch_ForceEndsPatternGamesKeepsPromotedDefault(t *testing.T) {
 
 		log := testLogger()
 		svc := newGameFileForLoop(t)
-		// The real default an earlier autonomous promotion wrote (promote/realdefault.go:
-		// PUT /game/{flag} with scope game_kind=real).
-		const promotedFlag = "invincibility_seconds"
-		if _, err := svc.Put(ctx, experiment.GameFlagSet, promotedFlag, flagservice.Write{
-			Value: 4.0, Scope: flagservice.Scope{GameKind: "real"}, Writer: "promotion",
-		}); err != nil {
-			t.Fatalf("precondition: promoted real default: %v", err)
-		}
-		promoted, ok := svc.RealValue(experiment.GameFlagSet, promotedFlag)
-		if !ok {
-			t.Fatal("precondition: no real overlay after the promotion write")
-		}
 
 		writer := experiment.NewWriter(svc, log)
 		targeting := experiment.NewGateTargetingWriter(experiment.NewGate(writer, nil, log), writer)
@@ -232,10 +219,6 @@ func TestKillSwitch_ForceEndsPatternGamesKeepsPromotedDefault(t *testing.T) {
 		}
 		if n := reg.LiveCount(); n != 0 {
 			t.Fatalf("kill switch left %d experiments running", n)
-		}
-		after, ok := svc.RealValue(experiment.GameFlagSet, promotedFlag)
-		if !ok || string(after) != string(promoted) {
-			t.Fatalf("promoted real default = %s (present %v), want %s kept after the kill switch", after, ok, promoted)
 		}
 	})
 }
