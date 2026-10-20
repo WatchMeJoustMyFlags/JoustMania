@@ -22,6 +22,7 @@ itself, exactly as the shadow runner does for a one-shot pattern game.
 import asyncio
 import contextlib
 import json
+import os
 
 import grpc
 import pytest
@@ -168,6 +169,27 @@ async def _play(mock, game, controller, tag: str) -> dict:
     }
 
 
+def _assert_replay_matches(first: dict, other: dict) -> None:
+    """NFR-040 checkpoints on the common prefix and NFR-041 elimination order / winner."""
+    for run in (first, other):
+        assert run["terminal"] == "game_ended", run
+        assert [r["slot"] for r in run["records"]] == [0, 1, 2]
+        assert all(r["frames"] > 30 * 5 for r in run["records"]), run["records"]
+
+    # NFR-040: checkpoints equal on the common prefix, which covers the deaths.
+    for a, b in zip(first["records"], other["records"], strict=True):
+        common = min(len(a["checkpoints"]), len(b["checkpoints"]))
+        assert common >= 5, (a, b)
+        assert a["checkpoints"][:common] == b["checkpoints"][:common], f"slot {a['slot']} diverged"
+
+    # NFR-041 / BR-014: same elimination order and winner; the fastest drift dies first.
+    order_a, winner_a = _elimination_order(first)
+    order_b, winner_b = _elimination_order(other)
+    detail = {"first": first, "other": other}
+    assert (order_a, winner_a) == (order_b, winner_b), detail
+    assert (order_a, winner_a) == ([2, 1], 0), detail
+
+
 @pytest.mark.asyncio
 @pytest.mark.uc(
     "UC-046",
@@ -182,21 +204,24 @@ async def test_pattern_game_replays_identically(service_stack):
     first = await _run_pattern_game(service_stack, "a")
     await asyncio.sleep(1.0)
     second = await _run_pattern_game(service_stack, "b")
+    _assert_replay_matches(first, second)
 
-    for run in (first, second):
-        assert run["terminal"] == "game_ended", run
-        assert [r["slot"] for r in run["records"]] == [0, 1, 2]
-        assert all(r["frames"] > 30 * 5 for r in run["records"]), run["records"]
 
-    # NFR-040: checkpoints equal on the common prefix, which covers the deaths.
-    for a, b in zip(first["records"], second["records"], strict=True):
-        common = min(len(a["checkpoints"]), len(b["checkpoints"]))
-        assert common >= 5, (a, b)
-        assert a["checkpoints"][:common] == b["checkpoints"][:common], f"slot {a['slot']} diverged"
+SOAK_RERUNS = 10
 
-    # NFR-041 / BR-014: same elimination order and winner; the fastest drift dies first.
-    order_a, winner_a = _elimination_order(first)
-    order_b, winner_b = _elimination_order(second)
-    detail = {"first": first, "second": second}
-    assert (order_a, winner_a) == (order_b, winner_b), detail
-    assert (order_a, winner_a) == ([2, 1], 0), detail
+
+@pytest.mark.skipif(
+    os.environ.get("JOUSTMANIA_REPLAY_SOAK") != "1",
+    reason="NFR-040/041 soak: 10 games, about 3.5 min; opt-in with JOUSTMANIA_REPLAY_SOAK=1 (nightly tier)",
+)
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-046", flow="main", steps=[8], br=["BR-014"], tc="TC-012")
+async def test_pattern_game_replays_identically_10_of_10(service_stack):
+    """10 of 10 reruns of one game at a time replay the first run exactly (NFR-040 / NFR-041).
+
+    Opt-in (JOUSTMANIA_REPLAY_SOAK=1), not run in CI, so deliberately not nfr-tagged: not verified by CI.
+    """
+    first = await _run_pattern_game(service_stack, "s0")
+    for rerun in range(1, SOAK_RERUNS):
+        await asyncio.sleep(1.0)
+        _assert_replay_matches(first, await _run_pattern_game(service_stack, f"s{rerun}"))

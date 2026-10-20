@@ -206,12 +206,12 @@ func TestDossierNotFound(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if e["error"] == "" {
-		t.Errorf("expected an error body")
+	if e["error"] != "experiment not found" {
+		t.Errorf("error = %q, want %q", e["error"], "experiment not found")
 	}
 }
 
-// UC: UC-035 A1
+// An empty id (trailing slash) is not an unknown id, so it carries no UC tag.
 func TestDossierEmptyIDIsNotFound(t *testing.T) {
 	reader := &dossierReader{root: t.TempDir()}
 	rec := httptest.NewRecorder()

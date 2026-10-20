@@ -68,3 +68,21 @@ async def test_game_trace_has_mode_root_phases_and_one_span_per_player(mock_fact
     assert len(lifecycles) == len(game.players) == 3
     assert {s.parent.span_id for s in lifecycles} == {players_group.context.span_id}
     assert {s.attributes["player.serial"] for s in lifecycles} == set(game.players)
+
+
+@pytest.mark.uc("UC-035", br=["BR-002"])
+@pytest.mark.parametrize("game_kind", ["primary", "shadow"])
+@pytest.mark.asyncio
+@patch("services.game_coordinator.game_session.GameFactory")
+async def test_root_span_names_game_kind_in_coordinator_vocabulary(mock_factory, span_exporter, game_kind):
+    """BR-002: coordinator spans say primary / shadow, never the agent's `real`."""
+    session = _make_session(game_kind=game_kind)
+    session.game_running = True
+    mock_factory.create_game.return_value = _fast_ffa_game()
+    session.clients.close = AsyncMock()
+
+    await session._run_game_loop_async()
+
+    (root,) = [s for s in span_exporter.get_finished_spans() if s.parent is None]
+    assert root.attributes["game.kind"] == game_kind
+    assert root.attributes["game.kind"] != "real"
