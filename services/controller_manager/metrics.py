@@ -242,7 +242,7 @@ poll_batch_size = Histogram(
 # Fixed interval polling metrics
 polling_mode = Gauge(
     "controller_polling_mode",
-    "Current polling mode (0=idle 10Hz, 1=gameplay 100Hz)",
+    "Polling mode, always 1 (fixed 100 Hz loop; the 10 Hz idle mode was removed)",
 )
 
 polling_target_hz = Gauge(
