@@ -118,6 +118,7 @@ class AgentProcess(ManagedProcess):
         coordinator_port: int,
         mock_control_port: int,
         openai_api_key: str,
+        extra_env: dict[str, str] | None = None,
     ):
         self.listen_port = listen_port
         self.health_port = free_port()
@@ -134,6 +135,8 @@ class AgentProcess(ManagedProcess):
             # Only for an env-triggered shadow game (AGENT_SHADOW_GAME, off): still this stack.
             "GAME_COORDINATOR_ADDR": f"127.0.0.1:{coordinator_port}",
             "MOCK_CONTROLLER_ADDR": f"127.0.0.1:{mock_control_port}",
+            # The experiment journal (default /var/lib/joustmania/agent/experiments is not writable here).
+            "AGENT_EXPERIMENT_DIR": str(workdir / "experiments"),
             "AGENT_INFERENCE_BACKEND": "stub",
             "AGENT_EXPERIMENTS_ENABLED": "false",
             "DECISION_OPENAI_API_KEY": openai_api_key,
@@ -144,6 +147,7 @@ class AgentProcess(ManagedProcess):
             "OTEL_EXPORTER_OTLP_ENDPOINT": otlp_endpoint,
             "OTEL_BSP_SCHEDULE_DELAY": BSP_SCHEDULE_DELAY_MS,
             "SERVICE_VERSION": "service-tier",
+            **(extra_env or {}),
         }
         super().__init__(
             "agent",
