@@ -474,6 +474,7 @@ class TestRemoveControllerRegistrations:
         assert outcomes(results) == [(HCI1, "removed")]
         assert removed_paths(bus) == [("/org/bluez/hci1", "/org/bluez/hci1/dev_a")]
 
+    @pytest.mark.uc("UC-001", flow="A5", br=["BR-004"])
     @pytest.mark.uc("UC-005", flow="main", steps=[5], br=["BR-002"])
     async def test_saved_only_registration_of_absent_adapter_is_deleted(self, bluez, bluetooth_dir):
         """BR-002: absent adapter's PS Move dir deleted; a present adapter's storage is left to BlueZ."""
@@ -523,7 +524,7 @@ class TestRemoveControllerRegistrations:
         assert await registrations.remove_controller_registrations(CONTROLLER, bluetooth_dir=bluetooth_dir) == []
         assert removed_paths(bus) == []
 
-    @pytest.mark.uc("UC-005", flow="A4", br=["BR-002"])
+    @pytest.mark.uc("UC-005", flow="main", br=["BR-002"])
     async def test_already_gone_counts_as_already_absent(self, bluez, bluetooth_dir):
         """A race with BlueZ: DoesNotExist is 'already_absent', which the API treats as success."""
         bus, set_objects = bluez

@@ -103,6 +103,7 @@ class TestUnpairResponse:
         assert (status, body["on_usb"]) == (200, False)
         assert usb_pairing.pair_controller.await_count == 2
 
+    @pytest.mark.uc("UC-001", flow="A1")
     @pytest.mark.uc("UC-005", flow="A8")
     async def test_controller_on_usb_is_not_repaired_until_unplugged_and_replugged(self, usb_pairing, remove):
         """A8: no immediate re-pair (it would undo the unpair the operator asked for)."""
@@ -144,7 +145,7 @@ class TestUnpairResponse:
         remove.assert_awaited_once_with(CONTROLLER)
         game_busy.assert_not_awaited()
 
-    @pytest.mark.uc("UC-005", flow="A4", br=["BR-002"])
+    @pytest.mark.uc("UC-005", flow="main", br=["BR-002"])
     async def test_all_already_absent_is_idempotent_success(self, usb_pairing, remove):
         """Found but every removal 'already absent' (a race with BlueZ): 200, removed 0."""
         remove.return_value = [result(ADAPTER_0, "already_absent"), result(ADAPTER_1, "already_absent")]

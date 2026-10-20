@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
@@ -585,11 +586,17 @@ class TestPairingFlow(_PairingFlowEnv):
     """UC-001 main flow and alternatives A1, A2, A4, A5."""
 
     @pytest.mark.uc("UC-001", flow="main", steps=[2, 3, 4, 5, 6], br=["BR-001"], cond=["Post-S-1", "Post-S-2"])
-    async def test_poll_pairs_new_controller_to_least_loaded_adapter(self, usb_pairing, env, metrics):
+    async def test_poll_pairs_new_controller_to_least_loaded_adapter(self, usb_pairing, env, metrics, caplog):
         """A USB controller is paired to the least-loaded adapter, trusted, success counted; no BlueZ restart."""
         backend, runner, _set_tree, restart = env
 
-        await usb_pairing.poll()
+        with caplog.at_level(logging.INFO, logger="psmove-pairing"):
+            await usb_pairing.poll()
+
+        # Step 6: the log tells the player to unplug and press PS.
+        assert any(
+            self.SERIAL in r.getMessage() and "unplug USB and press PS button" in r.getMessage() for r in caplog.records
+        )
 
         backend.pair_controller.assert_awaited_once_with(FAKE_PATH_1, self.SERIAL, self.ADAPTER_FREE)
         restart.assert_none()

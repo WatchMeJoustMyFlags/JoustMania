@@ -29,12 +29,13 @@ def _env(service: dict) -> dict[str, str]:
     return dict(item.split("=", 1) for item in env)
 
 
-@pytest.mark.uc("UC-001", flow="main")
+@pytest.mark.uc("UC-001", flow="main", cond=["Pre-1"])
 @pytest.mark.parametrize("stack", sorted(STACKS))
 def test_pairing_daemon_uses_the_host_network(stack):
     daemon = _services(stack)["pairing-daemon"]
     assert daemon.get("network_mode") == "host"
     assert "networks" not in daemon, "network_mode: host excludes compose networks"
+    assert daemon.get("privileged") is True
 
 
 @pytest.mark.uc("UC-001", flow="main", steps=[4], br=["BR-003"])
@@ -57,7 +58,7 @@ def test_pairing_daemon_reaches_loopback_published_ports(
     assert set(services[service].get("ports") or []) == {f"127.0.0.1:{port}:{port}"}
 
 
-@pytest.mark.uc("UC-001", flow="main", br=["BR-003"])
+@pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
 @pytest.mark.parametrize("stack", sorted(STACKS))
 def test_pairing_daemon_game_state_goes_through_the_host_published_proxy(stack):
     """The host network cannot resolve ``envoy``: the game state URL must use the published port."""
