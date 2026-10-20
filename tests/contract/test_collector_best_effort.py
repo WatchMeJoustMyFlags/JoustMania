@@ -92,7 +92,6 @@ def _limiter_default(value: str) -> int:
 
 
 @pytest.mark.nfr("NFR-021")
-@pytest.mark.uc("UC-035", flow="A3")
 def test_memory_limiter_backpressures_at_600_mib_under_the_768_mib_container(collector):
     """NFR-021: limit 600 MiB, spike 150 MiB, both below the container's 768 MiB cgroup limit (#1155)."""
     limiter = collector["processors"]["memory_limiter"]
