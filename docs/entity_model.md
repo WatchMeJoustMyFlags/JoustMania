@@ -309,7 +309,7 @@ One agent decision cycle for a game: one evaluation, recorded on one `agent.deci
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| decision_id | Correlates decision and effect (`intervention.id`): a UUID assigned when a decision is dispatched and its effect sample is scheduled; a blocked, held, noop or invalid decision has none. Each dispatched decision of a cycle has its own | String | 40 | Primary Key, Format: UUID |
+| decision_id | Correlates decision and effect (`intervention.id`): a UUID assigned when a decision is dispatched and its effect sample is scheduled; a blocked, held, noop or invalid decision has none. Each dispatched decision of a cycle has its own. Today only decisions of the rules engine's own cycle get one: a decision that lands on the remote path (also its rules fallback) gets none, because no fitness baseline is carried into the landing (#1699) | String | 40 | Primary Key, Format: UUID |
 | game_id | Game decided for | String | 17 | Not Null, Foreign Key (GAME_SESSION.game_id) |
 | backend_requested | `decision.backend` at fire time (`decide.backend.requested`); empty counts as `rules`, an unknown name is kept verbatim and decided by rules with `fallback_reason=unknown_backend` | String | 20 | Not Null, Values: rules, claude, openai, jev, or an unknown name |
 | backend | Backend that actually decided | String | 10 | Not Null, Values: rules, claude, openai, jev |
@@ -376,7 +376,7 @@ A bounded in-game change written for one game to the `interventions` flag set th
 
 ### EXPERIMENT
 
-A hypothesis about one `game.json` flag value, tested in shadow games (`services/agent/experiment/registry.go:48-66`, journal `services/agent/experiment/journal/`). Declared from the env seed, the M7-4 proposer, retro-seeded theses or the dynamic declarer.
+A hypothesis about one `game.json` flag value, tested in shadow games (`services/agent/experiment/registry.go:48-66`, journal `services/agent/experiment/journal/`). Declared from the env seed, the M7-4 proposer, retro-seeded theses or the dynamic declarer. The dossier (`/experiments`, `/experiments/<id>`, FR-059, UC-035 A1) is a read-only JSON / HTML view of EXPERIMENT, ARM, VERDICT and per-game rows from the journal (game id, arm, pair index, outcome, fitness, duration, note, trace hint); it has no entity of its own.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -388,9 +388,10 @@ A hypothesis about one `game.json` flag value, tested in shadow games (`services
 | target_n | Games per arm | Integer | 4 | Not Null, Min: 1 |
 | status | Lifecycle | String | 10 | Not Null, Values: proposed, running, concluded, promoting, done, discarded, aborted |
 
-**Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off. Status transitions (`services/agent/experiment/registry.go` `Status`): `proposed` → `running` → `concluded` → `promoting` → `done`, or `concluded` → `discarded`; `running` → `aborted` on the kill switch, a capacity reclaim or an error. `done`, `discarded` and `aborted` are terminal.
+**Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off. Status transitions (`services/agent/experiment/registry.go` `Status`): `proposed` → `running` → `concluded` → `promoting` → `done`, or `concluded` → `discarded`; `proposed`, `running`, `concluded` or `promoting` → `aborted` when `enabled` or `experiments_enabled` is off (`AbortAll`), at agent shutdown, or when the M7-4 proposer's start fails (`start_failed`, UC-042 A4). `done`, `discarded` and `aborted` are terminal.
+- An experiment whose start fails stays `proposed` on the env-seed, dynamic and retro paths, holding its flag and a budget slot until the next `AbortAll` (#1700, UC-043 A8).
 - `running` → `discarded` **without any verdict** (`registry_pattern.go` `pinPending`, `Rehydrate`): a pattern experiment is discarded before its first game when its archetype selection cannot be pinned, with the reason `pattern_selection_empty`, `pattern_selection_too_small` (fewer than `verdict_min_pairs` or a duplicate), `pattern_archetype_invalid`, `pattern_mode_unsupported` (UC-046 A1, A2, A4, A13), or after an agent restart when the pin cannot be restored, `pattern_pin_lost` (BR-015). No VERDICT exists for such an experiment.
-- Every conclusion goes through `concluded`; the end state then depends on the verdict outcome: `promote` → `promoting` → `done` (a promotion that does not reach `done` ends `discarded`), `discard` and `inconclusive` → `discarded`. A final `inconclusive` is a verdict like any other: it comes from the give-up guard (#1001: target N passed or zero variance, `registry.go` `shouldGiveUp`) or from exhausted pattern archetypes (UC-046 A6), and maps to `discarded`. An interim `inconclusive` verdict keeps the experiment `running`.
+- Every conclusion goes through `concluded`; the end state then depends on the verdict outcome: `promote` → `promoting` → `done` (today always `done`, also when the promotion failed and when `AbortAll` raced it and set `aborted` first; there is no `promoting` → `discarded` transition, #1701), `discard` and `inconclusive` → `discarded`. A final `inconclusive` is a verdict like any other: it comes from the give-up guard (#1001: target N passed or zero variance, `registry.go` `shouldGiveUp`) or from exhausted pattern archetypes (UC-046 A6), and maps to `discarded`. An interim `inconclusive` verdict keeps the experiment `running`.
 
 ### ARM
 
@@ -430,6 +431,8 @@ What happens to a promote verdict (`services/agent/promote/promote.go:91-105,420
 | outcome | What the promotion achieved (`code_improvement.outcome`); a promotion that could not act is `discarded` with a reason | String | 10 | Not Null, Values: applied, discarded, reverted |
 | reason | Why it was discarded | String | 200 | Optional |
 | reference | Issue / PR URL or commit | String | 200 | Optional |
+
+**Constraints:** the outcome, reason and reference are on the `code_improvement.promote` span and the log only, never in the experiment journal (#1701).
 
 ### RETRO
 
@@ -506,7 +509,7 @@ The archetype an experiment's pair runs, pinned in the experiment journal (`patt
 | params_digest | Digest of the pinned parameters | String | 16 | Not Null |
 | max_game_seconds | Pinned safety cap of the experiment (`experiment.max_game_seconds`) | Integer | 4 | Not Null, Min: 30, Max: 3600 |
 | rng_seed | The pair's shared seed `pairSeed(experiment_id, pair_index)` | Long | 19 | Not Null, Min: 1 |
-| rerun_count | Reruns of the pair that used up the rerun budget (an arm released without a sample for another reason: error, `pattern_kill_switch`, a force-end the agent did not request); journal note `pattern_pair_rerun`. In-memory, rebuilt from the journal | Integer | 1 | Not Null, Min: 0, Max: 3 |
+| rerun_count | Reruns of the pair that used up the rerun budget (an arm released without a sample for another reason: error, a force-end the agent did not request; the kill switch aborts the experiment first, so its releases find no game and count no rerun, UC-046 A12); journal note `pattern_pair_rerun`. In-memory, rebuilt from the journal | Integer | 1 | Not Null, Min: 0, Max: 3 |
 | preemption_rerun_count | Reruns after a real game preempted the pair (`preempted_by_real_game`), which do not use up the rerun budget; journal note `pattern_pair_rerun_preempted`. In-memory, rebuilt from the journal | Integer | 2 | Not Null, Min: 0, Max: 10 |
 | stale_rerun_count | Reruns after a stale end (UC-041 A4), which do not use up the rerun budget either; journal note `pattern_pair_rerun_stale`. In-memory, rebuilt from the journal | Integer | 2 | Not Null, Min: 0, Max: 10 |
 | skipped | The pair's archetype was given up after the rerun budget was spent (journal note `pattern_archetype_skipped`); a skipped archetype counts as used. In-memory, rebuilt from the journal | Boolean | 1 | Not Null, Default: false |
@@ -531,7 +534,7 @@ The agent's view of one game, built from the OTLP metrics and spans the collecto
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| session_id | The adopted `game_id`, or a synthetic `session-<n>` for signals that carry no game id | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
+| session_id | The adopted `game_id`, or a synthetic `session-<n>` for the fallback context of signals that carry no game id (renewed on each `game_active` 0 to 1, UC-041 A5) | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
 | game_kind | Kind in the flag vocabulary, normalised at ingest (`primary` becomes `real`; empty and unknown stay as they are and never count as real) | String | 10 | Optional, Values: real, shadow, empty / unknown (never real) |
 | experiment_id | Experiment attribution of a shadow game (partition enrichment, not a routing key) | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
@@ -549,6 +552,8 @@ The agent's view of one game, built from the OTLP metrics and spans the collecto
 **Constraints:**
 - Process-wide, outside any one context: the serial-to-display-name view from `controller_info{serial,name}` (controller metrics carry no game id; used to name targeted players on decision spans) and a FIFO set of the ids of the last 512 ended games (`endedGamesCap`), so a late datapoint for an ended game id does not run its game-end chain a second time. Both are in-memory and lost on restart.
 - A context belongs to one game; per-controller values in it never outlive the game (see GAME_AGGREGATE).
+- Exception: the fallback context for signals without a game id is ONE shared partition (empty key), never evicted and without an ended-id latch; signals of concurrent unlabeled games mix there, and no intervention is written for it (UC-041 A5, FR-041).
+- The end time per end reason: `zero` is the agent's receive time of the 0 datapoint, `stale` the receive time of the last `game_active` datapoint, `root_span` the root span's end time (UC-041 BR-005).
 
 ### GAME_SUMMARY
 

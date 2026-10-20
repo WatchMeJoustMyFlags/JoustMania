@@ -107,6 +107,8 @@ player --> UC070
 UC070 --> modelapi
 presenter --> UC053
 maintainer --> UC043
+UC040 --> modelapi
+player --> UC040
 UC042 --> modelapi
 UC043 --> github
 
