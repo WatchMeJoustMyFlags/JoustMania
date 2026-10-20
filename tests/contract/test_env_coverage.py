@@ -90,6 +90,10 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "agent",
         "FLAGD_OFREP_URL",
     ): "falls back to http://<FLAGD_HOST>:8016, and FLAGD_HOST is set",
+    (
+        "agent",
+        "AGENT_INFERENCE_BASE_URL",
+    ): "operator-only override of the claude text backend root (#1422 S10); empty = https://api.anthropic.com, so compose must not set it",
     # ---- agent: one-shot shadow game runner (UC-046), a dev/verification tool ----
     ("agent", "AGENT_SHADOW_GAME"): _OPT_IN_OFF
     + "; scripts/pattern-replay-check.sh sets it on its own stack",
