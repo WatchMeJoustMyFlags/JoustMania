@@ -23,7 +23,7 @@ from lib.openfeature_otel_hooks import (
 DOMAIN = "otel-hooks-test"
 
 
-@pytest.mark.uc("UC-035")
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
 @pytest.mark.parametrize(
     ("variant", "expected"),
     [
@@ -73,13 +73,13 @@ def evaluated():
     api.clear_providers()
 
 
-@pytest.mark.uc("UC-035")
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
 def test_hook_does_not_change_the_result(evaluated):
     results, _ = evaluated
     assert results == (2, 5.0, "fallback")
 
 
-@pytest.mark.uc("UC-035")
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
 def test_hook_records_the_go_hook_metric_names(evaluated):
     _, points = evaluated
     assert set(points) == {EVALUATION_ACTIVE, EVALUATION_REQUESTS, EVALUATION_SUCCESS, EVALUATION_ERRORS}
@@ -90,7 +90,7 @@ def test_hook_records_the_go_hook_metric_names(evaluated):
     assert all(v == 0 for _, v in points[EVALUATION_ACTIVE])
 
 
-@pytest.mark.uc("UC-035")
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
 def test_success_labels_are_bounded(evaluated):
     _, points = evaluated
     success = {a["feature_flag.key"]: a for a, _ in points[EVALUATION_SUCCESS]}
@@ -104,7 +104,7 @@ def test_success_labels_are_bounded(evaluated):
             assert set(attributes) <= allowed, (name, attributes)
 
 
-@pytest.mark.uc("UC-035")
+@pytest.mark.uc("UC-035", flow="main", steps=[6])
 def test_not_ready_provider_does_not_count_down_an_active_evaluation():
     """The SDK runs `finally` but not `before` for a not-ready provider: no -1 without a +1."""
     reader = InMemoryMetricReader()

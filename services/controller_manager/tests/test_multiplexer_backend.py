@@ -162,7 +162,7 @@ class TestMultiplexerGetConnectedControllers:
 class TestControllerInfoSeriesRemoval:
     """controller_adapter_info / controller_backend_info series go away with the link (#1468)."""
 
-    @pytest.mark.uc("UC-035")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_adapter_change_removes_previous_adapter_series(self, mock_metrics):
         a1 = _make_adapter("mock", serials=["AA:AA"])
@@ -177,7 +177,7 @@ class TestControllerInfoSeriesRemoval:
         mock_metrics.controller_adapter_info.remove.assert_called_once_with("AA:AA", "hci1")
         mock_metrics.controller_adapter_info.labels.assert_called_with(serial="AA:AA", adapter="hci0")
 
-    @pytest.mark.uc("UC-035")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_backend_change_removes_previous_backend_series(self, mock_metrics):
         a1 = _make_adapter("rust", serials=["AA:AA"])
@@ -189,7 +189,7 @@ class TestControllerInfoSeriesRemoval:
 
         mock_metrics.controller_backend_info.remove.assert_called_once_with("AA:AA", "rust")
 
-    @pytest.mark.uc("UC-035")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_vanished_controller_removes_adapter_and_backend_series(self, mock_metrics):
         a1 = _make_adapter("mock", serials=["AA:AA", "BB:BB"])
@@ -203,7 +203,7 @@ class TestControllerInfoSeriesRemoval:
         mock_metrics.controller_adapter_info.remove.assert_called_once_with("BB:BB", "hci1")
         mock_metrics.controller_backend_info.remove.assert_called_once_with("BB:BB", "mock")
 
-    @pytest.mark.uc("UC-035")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_vanished_controller_without_led_or_adapter_removes_backend_series(self, mock_metrics):
         """A controller that never got an LED colour nor an HCI adapter still loses its series."""
@@ -220,7 +220,7 @@ class TestControllerInfoSeriesRemoval:
         mock_metrics.controller_adapter_info.remove.assert_not_called()
         assert "BB:BB" not in mux._last_backend
 
-    @pytest.mark.uc("UC-035")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @pytest.mark.asyncio
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     async def test_metrics_update_after_disconnect_does_not_resurrect_series(self, mock_metrics):
@@ -241,7 +241,7 @@ class TestControllerInfoSeriesRemoval:
         assert "AA:AA" not in mux._last_backend
         assert "AA:AA" not in mux._last_adapter
 
-    @pytest.mark.uc("UC-035")
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @pytest.mark.asyncio
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     async def test_disconnect_removes_adapter_and_backend_series(self, mock_metrics):

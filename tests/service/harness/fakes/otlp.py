@@ -9,8 +9,9 @@ arrived::
     point = sink.wait_metric("game_players_alive", {"game_id": game_id})
 
 Both ``wait_*`` block (poll a condition, never a sleep); an async test calls
-the ``*_async`` twins, which run them on a worker thread. Logs are accepted and
-counted only, so the services' log exporters do not error.
+the ``*_async`` twins, which run them on a worker thread. Logs are recorded too
+(body, trace id, attributes; ``logs()``), so a test can follow a game's trace id
+from a span to its log lines.
 
 Tee: ``OtlpSink(forward_to="127.0.0.1:<port>")`` forwards every trace and
 metrics export request unchanged to another OTLP/gRPC receiver (the agent's, as
@@ -87,6 +88,15 @@ class MetricRecord:
     resource: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class LogRecord:
+    service: str  # resource service.name
+    body: str
+    trace_id: str  # hex, "" when the line was logged outside a span
+    span_id: str  # hex
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+
 def _any_value(value) -> Any:
     kind = value.WhichOneof("value")
     if kind is None:
@@ -126,6 +136,24 @@ def _decode_spans(request) -> list[SpanRecord]:
                     )
                 )
     return spans
+
+
+def _decode_logs(request) -> list[LogRecord]:
+    records = []
+    for resource_logs in request.resource_logs:
+        service = str(_attributes(resource_logs.resource.attributes).get("service.name", ""))
+        for scope_logs in resource_logs.scope_logs:
+            for record in scope_logs.log_records:
+                records.append(
+                    LogRecord(
+                        service=service,
+                        body=str(_any_value(record.body)),
+                        trace_id=record.trace_id.hex(),
+                        span_id=record.span_id.hex(),
+                        attributes=_attributes(record.attributes),
+                    )
+                )
+    return records
 
 
 def _decode_points(metric) -> tuple[str, tuple[MetricPoint, ...]]:
@@ -196,7 +224,7 @@ class OtlpSink:
         self._lock = threading.Lock()
         self._spans: list[SpanRecord] = []
         self._metrics: list[MetricRecord] = []
-        self._log_records = 0
+        self._logs: list[LogRecord] = []
         self._forward_ok = 0
         self._forward_errors = 0
         self._server: grpc.Server | None = None
@@ -266,9 +294,9 @@ class OtlpSink:
                 self._forward_errors += 1
 
     def _on_logs(self, request) -> None:
-        count = sum(len(s.log_records) for r in request.resource_logs for s in r.scope_logs)
+        records = _decode_logs(request)
         with self._lock:
-            self._log_records += count
+            self._logs.extend(records)
 
     # --------------------------------------------------------------- reading
     @property
@@ -284,7 +312,17 @@ class OtlpSink:
     @property
     def log_record_count(self) -> int:
         with self._lock:
-            return self._log_records
+            return len(self._logs)
+
+    def logs(self, *, service: str | None = None, trace_id: str | None = None) -> list[LogRecord]:
+        """Recorded log records matching every given filter, oldest first."""
+        with self._lock:
+            records = list(self._logs)
+        return [
+            r
+            for r in records
+            if (service is None or r.service == service) and (trace_id is None or r.trace_id == trace_id)
+        ]
 
     def spans(
         self,
@@ -334,7 +372,7 @@ class OtlpSink:
         with self._lock:
             self._spans.clear()
             self._metrics.clear()
-            self._log_records = 0
+            self._logs.clear()
 
     # --------------------------------------------------------------- waiting
     def wait_span(
@@ -390,6 +428,22 @@ class OtlpSink:
             f"no metric point {name!r} attrs={dict(attrs or {})} service={service} within {timeout}s; "
             f"metric names seen: {sorted(self.metric_names())}"
         )
+
+    def wait_log(
+        self,
+        *,
+        service: str | None = None,
+        trace_id: str | None = None,
+        timeout: float = DEFAULT_WAIT_SECONDS,
+    ) -> LogRecord:
+        """The OLDEST log record matching the filters; ``TimeoutError`` when none arrives."""
+        found = self._poll(lambda: self.logs(service=service, trace_id=trace_id), timeout)
+        if found:
+            return found[0]
+        raise TimeoutError(f"no log record service={service} trace_id={trace_id} within {timeout}s")
+
+    async def wait_log_async(self, **kwargs) -> LogRecord:
+        return await asyncio.to_thread(self.wait_log, **kwargs)
 
     async def wait_span_async(self, name: str | None, attrs: Mapping[str, Any] | None = None, **kwargs) -> SpanRecord:
         return await asyncio.to_thread(self.wait_span, name, attrs, **kwargs)

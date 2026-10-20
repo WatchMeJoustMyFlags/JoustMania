@@ -82,6 +82,7 @@ func TestSignalReceived_ParentFallbackOrder(t *testing.T) {
 }
 
 // UC: UC-040 BR-013
+// UC: UC-035 main step 5
 func TestInGameRemoteParent_GameCycleFirst(t *testing.T) {
 	parentOf := func(ctx context.Context) string {
 		return trace.SpanContextFromContext(ctx).SpanID().String()
@@ -113,6 +114,7 @@ func TestInGameRemoteParent_GameCycleFirst(t *testing.T) {
 }
 
 // UC: UC-040 main BR-013
+// UC: UC-035 main step 5
 func TestRemote_DecideLandsUnderGameCycle(t *testing.T) {
 	t.Run("UC-040/BR-013 async agent.decide is a remote child of game_cycle", func(t *testing.T) {
 		be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "shield"))
@@ -163,6 +165,7 @@ func effectsByIntervention(t *testing.T, spans []sdktrace.ReadOnlySpan) map[stri
 }
 
 // UC: UC-040 main BR-013
+// UC: UC-035 main step 5
 func TestEffectSpans_EachChildOfItsOwnDecision(t *testing.T) {
 	t.Run("UC-040/BR-013 consecutive effects never nest", func(t *testing.T) {
 		provider := newFakeContextProvider()

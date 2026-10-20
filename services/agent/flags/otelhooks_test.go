@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// UC: UC-035
+// UC: UC-035 main step 6
 func TestMetricVariant(t *testing.T) {
 	cases := map[string]string{
 		"jev":                    "jev",
@@ -56,7 +56,7 @@ func attr(set attribute.Set, key string) (string, bool) {
 	return v.String(), ok
 }
 
-// UC: UC-035
+// UC: UC-035 main step 6
 // The standard OpenFeature hooks count every evaluation with bounded labels: the flag key,
 // provider and a declared variant (a generated flag-service variant becomes its class), and the
 // error counter without the free-text error.message (dropped by MetricViews).
@@ -168,7 +168,7 @@ func (p blockedProvider) Init(openfeature.EvaluationContext) error {
 }
 func (p blockedProvider) Shutdown() {}
 
-// UC: UC-035
+// UC: UC-035 main step 6
 // The SDK short-circuits a NOT_READY provider with the error and finally hooks but no before
 // hook; the active-evaluations gauge must not drift below zero.
 func TestOTelHooks_NotReadyProviderKeepsActiveCountAtZero(t *testing.T) {
