@@ -54,6 +54,8 @@ Sessions are not carried in every signal, so the Agent synthesizes them:
 - A new synthetic session (`session-N`) is created when `game_active` transitions
   **0 → 1**.
 - Once a `game_id` label is observed, the synthetic session **adopts** that id.
+- A synthetic `session-N` is never actuated: the intervention writer refuses any id
+  without the `game_` prefix (UC-040 A18, BR-002).
 
 ### Staleness & eviction
 
