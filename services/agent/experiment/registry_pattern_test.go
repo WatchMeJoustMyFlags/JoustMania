@@ -577,6 +577,7 @@ func (h *preemptionHarness) notes() (reruns, preempted, skips int) {
 }
 
 // UC: UC-046 A8 A9 A12 BR-015
+// UC: UC-043 A12
 func TestRegistryPatternPreemptionRerunBudget(t *testing.T) {
 	const killSwitchRelease = "game ended without usable fitness sample: force_ended"
 	const errorRelease = "game ended without usable fitness sample: error"
