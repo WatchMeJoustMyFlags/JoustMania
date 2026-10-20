@@ -250,6 +250,7 @@ spec PRs. Verified against `main` @ 2d162b33; rows added or updated by the audit
 | D-B2 | CANARY_RUNBOOK RustServiceAdapter stub (#612) | Fully implemented. | stale doc |
 | D-B3 | `/canary/*` reachable from the host | Envoy does not route `/canary/` (`services/envoy/envoy.yaml`); the `/chaos/` route went with fault injection (#1322). | likely bug or stale doc |
 | D-D1 | UC-035 step 2: the dashboard event feed shows game start and end (`Ended` state, "Game ended! Winner"), and the Starting state on the countdown | `handleGameEvent` switched on `game_end` / `countdown`, which the coordinator never emits (`game_ended`, `game_force_ended`, `countdown_start`, `countdown_end`; the winner arrives as `game_winner`), so the end and countdown never showed. Fixed by a reducer on the real names (#1757). | bug, Resolved by PR #1758 |
+| D-D2 | UC-035 step 2: the game state returns to Running after the countdown | The coordinator emits `game_start`, `game_starting`, `players_initialized`, `game_started`, `countdown_start`, `countdown_end`; the reducer set Starting on `countdown_start` and ignored `countdown_end`, so the state stayed Starting until Ended (dry run #1765). | bug (#1767), Resolved by this PR (#1767: `countdown_end` sets Running) |
 
 ### 4.11 Broken links found
 

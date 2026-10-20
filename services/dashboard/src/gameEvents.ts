@@ -90,7 +90,10 @@ export function reduceGameEvent(prev: GameFeedState, event: GameEventInput): Gam
       feedLine = "Countdown...";
       break;
 
+    // The coordinator sends game_started before the countdown (#1767), so the
+    // countdown's end is what returns the state to Running.
     case "game_started":
+    case "countdown_end":
       state.gameState = "Running";
       break;
 
