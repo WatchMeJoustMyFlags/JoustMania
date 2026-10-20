@@ -118,6 +118,15 @@ expect "status shows model n/a for rules" 0 "model     = n/a (rules backend)" --
 expect "status shows threshold" 0 "threshold = default (0.8)" -- status
 expect "status shows capture" 0 "capture   = on (true)" -- status
 expect "status shows jev threshold" 0 "jev thr.  = gate (0.6)" -- status
+expect "status shows the flag service address" 0 "(${FLAG_SERVICE_URL})" -- status
+# UC-044 A5: status (with or without the word) only reads; it writes nothing.
+if grep -qE '^(PUT|DELETE|POST) ' "${FAKE_FLAG_LOG}"; then
+  not_ok "status writes nothing (log: $(grep -E '^(PUT|DELETE|POST) ' "${FAKE_FLAG_LOG}" | tr '\n' ';'))"
+elif ! grep -qE '^GET ' "${FAKE_FLAG_LOG}"; then
+  not_ok "status writes nothing (the request log saw no GET either; is it recording?)"
+else
+  ok "status writes nothing (only GETs reached the flag service)"
+fi
 
 # --- backend + model ------------------------------------------------------
 fixture
@@ -133,6 +142,7 @@ check_variant decision.backend rules
 
 # --- threshold / capture --------------------------------------------------
 fixture
+expect "start the tuning beats on claude" 0 "agent backend -> claude" -- claude
 expect "threshold strict" 0 "agent act threshold -> strict (0.95)" -- threshold strict
 check_variant decision.act_confidence_threshold strict
 check_variant decision.jev.act_confidence_threshold gate
@@ -146,6 +156,8 @@ expect "capture off" 0 "agent content capture -> off" -- capture off
 check_variant decision.capture_content off
 expect "effort omit" 0 'agent openai reasoning effort -> omit ("omit")' -- effort omit
 check_variant decision.openai.reasoning_effort omit
+# UC-044 A3: tuning never switches the backend.
+check_variant decision.backend claude
 expect "status after effort flip" 0 "capture   = off (false)" -- status
 "${HELPER}" openai >/dev/null
 expect "status shows effort for openai" 0 'effort    = omit ("omit")' -- status

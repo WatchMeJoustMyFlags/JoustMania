@@ -317,6 +317,7 @@ func (f failingSpawner) Spawn(context.Context, string, string, uint64) (string, 
 }
 
 // UC: UC-046 A15 BR-015
+// UC: UC-043 A13
 func TestRegistryPatternFailedSpawnUsesNoArchetype(t *testing.T) {
 	for name, err := range map[string]error{
 		"blocked by a real game": fmt.Errorf("start rejected: Shadow games blocked while a real game is running"),

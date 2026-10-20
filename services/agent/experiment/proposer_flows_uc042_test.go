@@ -87,6 +87,7 @@ func registryProposer(t *testing.T, backend Backend, budget int) (*Proposer, *Re
 }
 
 // UC: UC-042 A4
+// UC: UC-043 A8
 func TestProposeOnce_GateRejectionAbortsWithStartFailed(t *testing.T) {
 	cases := []struct {
 		name   string
