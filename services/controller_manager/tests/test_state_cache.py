@@ -389,10 +389,12 @@ class TestStateCacheRename:
 
 
 class TestStateCacheServesEveryField:
-    """UC-002 main step 2: the state served to the gameplay stream matches the live controller (#1638).
+    """Regression (#1638): the cached ControllerState matches the live controller.
 
     A still controller keeps accel/gyro unchanged, so only the snapshot hash decides whether
-    a change of SELECT, START or move number reaches the stream.
+    a change of SELECT, START or move number is rebuilt. Protective only: today's only
+    caller (the gameplay stream) reads none of these fields, and move_num is never set in
+    production. Untagged on purpose; whether the cache stays is #1675.
     """
 
     @staticmethod
@@ -405,7 +407,6 @@ class TestStateCacheServesEveryField:
 
     @patch("services.controller_manager.metrics.state_cache_hits_total")
     @patch("services.controller_manager.metrics.state_cache_misses_total")
-    @pytest.mark.uc("UC-002", flow="main", steps=[2])
     @pytest.mark.parametrize(
         ("button", "field"),
         [(ButtonKey.SELECT, "select_pressed"), (ButtonKey.START, "start_pressed")],
@@ -425,7 +426,6 @@ class TestStateCacheServesEveryField:
 
     @patch("services.controller_manager.metrics.state_cache_hits_total")
     @patch("services.controller_manager.metrics.state_cache_misses_total")
-    @pytest.mark.uc("UC-002", flow="main", steps=[2])
     def test_move_num_change_on_still_controller_is_served(self, mock_misses, mock_hits):
         cache = StateCache(MockMonitoring())
         cache._controller_states = {"serial_1": self._still_controller_state()}
@@ -438,7 +438,6 @@ class TestStateCacheServesEveryField:
 
     @patch("services.controller_manager.metrics.state_cache_hits_total")
     @patch("services.controller_manager.metrics.state_cache_misses_total")
-    @pytest.mark.uc("UC-002", flow="main", steps=[2])
     def test_move_num_change_without_hardware_state_is_served(self, mock_misses, mock_hits):
         cache = StateCache(MockMonitoring())
         cache._controller_states = {}

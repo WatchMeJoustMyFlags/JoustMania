@@ -75,7 +75,8 @@ class StateCache:
         Create a hash of controller hardware snapshot (Phase 18 - Task 1).
 
         Every field `_build_controller_state_message` reads must be in the hash,
-        or a cache hit serves a stale value (#1638).
+        or a cache hit serves a stale value (#1638). Accel and gyro are hashed at
+        2 decimals, so changes below 0.005 are deliberately served from the cache.
 
         Phase 57: state is now a dict from backend (no get_snapshot() method).
 
