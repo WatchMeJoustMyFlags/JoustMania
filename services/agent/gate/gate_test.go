@@ -10,8 +10,8 @@ import (
 func bptr(b bool) *bool { return &b }
 
 // TestShouldEvaluate: the decide path runs only while the game is active and at
-// least one player is fresh (UC-040 Pre-1, UC-041 main step 6).
-// UC: UC-040 Pre-1
+// least one player is fresh (UC-040 trigger, UC-041 main step 6).
+// UC: UC-040 main
 // UC: UC-041 main
 func TestShouldEvaluate(t *testing.T) {
 	now := time.Unix(1000, 0)
@@ -36,7 +36,7 @@ func TestShouldEvaluate(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		t.Run("UC-040/Pre-1 "+tc.name, func(t *testing.T) {
+		t.Run("UC-040/main evaluation gate: "+tc.name, func(t *testing.T) {
 			c := gamecontext.GameContext{
 				Session: gamecontext.SessionSignals{GameActive: tc.active},
 				Players: tc.players,

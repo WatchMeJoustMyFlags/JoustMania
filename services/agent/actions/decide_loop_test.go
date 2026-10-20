@@ -279,9 +279,9 @@ func TestDecideLoop_RefusesNonGameID(t *testing.T) {
 // TestDecideLoop_DisabledDecidesNothing: with `enabled` off the loop stops at the
 // existence layer: the rules never decide, the Writer is never called and the
 // flag service receives nothing, even with the actuation gate on.
-// UC: UC-040 Pre-2
+// UC: UC-040 A28
 func TestDecideLoop_DisabledDecidesNothing(t *testing.T) {
-	t.Run("UC-040/Pre-2 enabled=false makes no decision and writes nothing", func(t *testing.T) {
+	t.Run("UC-040/A28 enabled=false makes no decision and writes nothing", func(t *testing.T) {
 		snap := flags.Snapshot{
 			Enabled:              false,
 			InterventionsAllowed: []string{decision.InterventionPlayAudioCue},

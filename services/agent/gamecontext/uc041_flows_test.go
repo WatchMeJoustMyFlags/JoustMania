@@ -129,3 +129,82 @@ func TestMux_LostBatchRestoredByNextExport(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-041 A6
+func TestMux_LostBatchLeavesNoTraceAndIsRestored(t *testing.T) {
+	const interval = 100 * time.Millisecond
+	const tid = "4bf92f3577b34da6a3ce929d0e0e4736"
+	const sid = "051581bf3cb55c13"
+	correlation := func() pmetric.Metrics {
+		md := pmetric.NewMetrics()
+		addGauge(md, metricTraceCorrelation, 1, map[string]string{
+			attrGameID: "game-A", attrGameTraceID: tid, attrGameTraceSpanID: sid,
+		})
+		return md
+	}
+
+	t.Run("UC-041/A6 the agent counts nothing: a lost batch creates no partition and no game end", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(9000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		// The batch is lost: nothing reaches the agent. Time passes, evictions run.
+		clk.advance(5 * interval)
+		mux.EvictStale()
+		if parts := mux.Partitions(); len(parts) != 0 {
+			t.Fatalf("partitions after a lost batch = %v, want none", parts)
+		}
+		if rec.count() != 0 {
+			t.Fatalf("game ends = %d, want 0 (a lost batch is not an end)", rec.count())
+		}
+	})
+
+	t.Run("UC-041/A6 a lost game_trace_correlation is restored by the next export", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(9000, 0)}
+		mux := newEndMux(clk, &endRecorder{})
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		snap, _ := mux.Snapshot("game-A")
+		if snap.GameTraceID != "" {
+			t.Fatalf("GameTraceID = %q before any correlation datapoint, want empty", snap.GameTraceID)
+		}
+		clk.advance(interval)
+		mux.ApplyMetrics(correlation())
+		snap, _ = mux.Snapshot("game-A")
+		if snap.GameTraceID != tid || snap.GameTraceSpanID != sid {
+			t.Fatalf("trace ids = (%q, %q), want (%q, %q) from the re-export", snap.GameTraceID, snap.GameTraceSpanID, tid, sid)
+		}
+	})
+
+	t.Run("UC-041/A6 after a lost first batch the next export yields the same context as no loss", func(t *testing.T) {
+		build := func(deliverFirst bool) GameContext {
+			clk := &muxClock{t: time.Unix(9000, 0)}
+			mux := newEndMux(clk, &endRecorder{})
+			if deliverFirst {
+				mux.ApplyMetrics(gameActiveFor("game-A", 1))
+				mux.ApplyMetrics(playerIntensityFor("P1", "game-A", 1))
+			}
+			mux.ApplyMetrics(gameActiveFor("game-A", 1)) // gauges are re-exported every interval
+			mux.ApplyMetrics(playerIntensityFor("P1", "game-A", 1))
+			snap, _ := mux.Snapshot("game-A")
+			return snap
+		}
+		lost, full := build(false), build(true)
+		if lost.Session.GameActive == nil || !*lost.Session.GameActive || lost.Players["P1"] == nil {
+			t.Fatalf("restored context = %+v, want an active game with P1", lost.Session)
+		}
+		if len(lost.Players) != len(full.Players) || *lost.Session.GameActive != *full.Session.GameActive {
+			t.Fatalf("restored context differs from the no-loss context: %+v vs %+v", lost, full)
+		}
+	})
+
+	t.Run("UC-041/A6 a lost 0 and a lost root span leave the end to the stale end", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(9000, 0)}
+		rec := &endRecorder{}
+		mux := newEndMux(clk, rec)
+		mux.ApplyMetrics(gameActiveFor("game-A", 1))
+		clk.advance(gameActiveStaleAfter + time.Second) // neither the 0 nor the root span arrives
+		mux.EvictStale()
+		if rec.count() != 1 || rec.last().EndReason != EndReasonStale {
+			t.Fatalf("ends = %d reason = %q, want one %q end", rec.count(), rec.last().EndReason, EndReasonStale)
+		}
+	})
+}
