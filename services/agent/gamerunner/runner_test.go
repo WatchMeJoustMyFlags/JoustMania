@@ -149,6 +149,43 @@ func TestRunShadowGame_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRunShadowGame_StartStreamBeginsWithGameStart pins the coordinator's start
+// stream contract (#1783): the stream begins with game_start (stamped with the
+// game_id), then game_starting and game_started. The capture loop takes the id
+// from game_start and the await loop still sees every later event.
+// UC: UC-003 A2
+func TestRunShadowGame_StartStreamBeginsWithGameStart(t *testing.T) {
+	t.Run("UC-003/A2 game_start first yields the id and the full lifecycle", func(t *testing.T) {
+		mock := &fakeMock{}
+		coord := &fakeCoord{
+			gameID: "game_first",
+			events: []*gcpb.GameEvent{
+				ev("game_start"),
+				ev("game_starting"),
+				ev("game_started"),
+				ev("game_ended"),
+			},
+		}
+		h := newHarness(t, mock, coord)
+		defer h.stop()
+
+		spec := testPatternSpec(t, Spec{RunID: "run1", Sensitivity: 2})
+		res, err := h.runner.RunShadowGame(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("RunShadowGame error: %v", err)
+		}
+		if res.GameID != "game_first" {
+			t.Errorf("GameID = %q, want game_first", res.GameID)
+		}
+		if res.Outcome != OutcomeCompleted || res.TerminalEvent != eventGameEnded {
+			t.Errorf("Outcome = %q terminal = %q, want completed / game_ended", res.Outcome, res.TerminalEvent)
+		}
+		if res.EventsSeen != 3 {
+			t.Errorf("EventsSeen = %d, want 3 (game_starting, game_started, game_ended)", res.EventsSeen)
+		}
+	})
+}
+
 func TestRunShadowGame_TimeoutForceEnds(t *testing.T) {
 	mock := &fakeMock{}
 	coord := &fakeCoord{

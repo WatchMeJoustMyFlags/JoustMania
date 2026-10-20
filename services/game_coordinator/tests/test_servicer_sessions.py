@@ -18,6 +18,7 @@ behavior with GAME_MAX_CONCURRENT_GAMES raised above 1.
 
 import asyncio
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import ANY, patch
 
@@ -180,6 +181,36 @@ async def _stream_until_event(servicer, request, context, *, after=None, deadlin
     return collected
 
 
+async def _collect_stream_events(servicer, request, context, *, until, after=None, deadline_s=2.0):
+    """Run StreamGameEvents and collect events until one of type ``until`` arrives.
+
+    ``after`` (an async callable) runs once the stream had a moment to start.
+    Returns every collected event, in order (stops at the deadline otherwise).
+    """
+    gen = servicer.StreamGameEvents(request, context)
+    collected = []
+
+    async def _drain():
+        async for event in gen:
+            collected.append(event)
+            if event.event_type == until or event.event_type == "game_start_error":
+                break
+
+    drain_task = asyncio.create_task(_drain())
+    await asyncio.sleep(0.05)
+    if after is not None:
+        await after()
+    try:
+        async with asyncio.timeout(deadline_s):
+            await drain_task
+    except TimeoutError:
+        drain_task.cancel()
+    finally:
+        context.cancel()
+        await gen.aclose()
+    return collected
+
+
 class TestSingleGameCharacterization:
     """Pin existing single-game behavior (must pass before and after refactor)."""
 
@@ -189,11 +220,11 @@ class TestSingleGameCharacterization:
 
     @pytest.mark.asyncio
     async def test_start_via_stream_then_streams_events(self, servicer):
-        """StreamGameEvents(start_config) starts a game, then streams later events.
+        """StreamGameEvents(start_config) starts a game and streams all its events.
 
-        The initial ``game_start`` event is published *before* the stream
-        subscribes (that is today's behavior), so the stream sees events
-        published after the start — here a subsequent ``player_death``.
+        The starter is subscribed before ``game_start`` is published (#1783), so
+        the stream begins with ``game_start`` (carrying the game_id) and then
+        sees later events, here a ``player_death``.
         """
         request = game_coordinator_pb2.StreamEventsRequest(start_config=_config())
         context = MockGrpcContext()
@@ -204,11 +235,14 @@ class TestSingleGameCharacterization:
             await servicer.event_bus.publish("player_death", {"serial": "p1"})
 
         with _NO_THREAD:
-            collected = await _stream_until_event(servicer, request, context, after=_publish_followup)
+            collected = await _collect_stream_events(
+                servicer, request, context, until="player_death", after=_publish_followup
+            )
 
         # The game must have actually started (id recorded on the servicer).
         assert servicer.game_id is not None and servicer.game_id.startswith("game_")
-        assert any(e.event_type == "player_death" for e in collected)
+        assert [e.event_type for e in collected] == ["game_start", "player_death"]
+        assert collected[0].data["game_id"] == servicer.game_id
 
     @pytest.mark.asyncio
     async def test_zero_arg_stream_receives_running_game_events(self, servicer):
@@ -1475,3 +1509,73 @@ class TestGameModeSeriesLifecycle:
         assert {dict(k)["game_id"] for k in gauge._values} == {game_id2}
         games[1].finish()
         await asyncio.gather(*tasks)
+
+
+def _thread_runs_first(session):
+    """Stand-in for ``GameSession.start_thread`` where the game thread wins the race (#1783).
+
+    A real thread on its own event loop publishes ``game_starting`` on the
+    session bus and is joined before ``start_thread`` returns, so the event is
+    published before the servicer gets the loop back.
+    """
+    thread = threading.Thread(
+        target=lambda: asyncio.run(session.event_bus.publish(GameEvent.GAME_STARTING, {"game_id": session.game_id}))
+    )
+    thread.start()
+    thread.join()
+
+
+class TestHeadlessStartStream:
+    """UC-003 BR-003: a start_config stream receives every event of its game (#1783)."""
+
+    @pytest.fixture
+    def servicer(self):
+        return GameCoordinatorServicer()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-003", flow="A2", br=["BR-003"])
+    async def test_starter_receives_events_the_game_thread_publishes_before_start_returns(self, servicer):
+        request = game_coordinator_pb2.StreamEventsRequest(start_config=_shadow_config())
+        context = MockGrpcContext()
+
+        with patch.object(game_session_mod.GameSession, "start_thread", _thread_runs_first):
+            collected = await _collect_stream_events(servicer, request, context, until=GameEvent.GAME_STARTING)
+
+        types = [e.event_type for e in collected]
+        assert types == ["game_start", "game_starting"], types
+        game_id = collected[0].data["game_id"]
+        assert game_id in servicer.sessions
+        assert collected[1].data["game_id"] == game_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-003", flow="A2", br=["BR-003"])
+    async def test_failed_start_after_admission_yields_error_and_leaves_no_subscriber(self, servicer):
+        sessions = []
+
+        def _start_fails(session):
+            sessions.append(session)
+            raise RuntimeError("thread start failed")
+
+        request = game_coordinator_pb2.StreamEventsRequest(start_config=_shadow_config())
+        context = MockGrpcContext()
+        with patch.object(game_session_mod.GameSession, "start_thread", _start_fails):
+            collected = [event async for event in servicer.StreamGameEvents(request, context)]
+
+        assert [e.event_type for e in collected] == ["game_start_error"]
+        assert "thread start failed" in collected[0].data["error"]
+        assert len(sessions) == 1
+        assert sessions[0].event_bus.subscriber_count == 0
+
+    @pytest.mark.asyncio
+    async def test_game_id_observer_gets_no_replay_of_earlier_events(self, servicer):
+        """An observer attaching by game_id gets events from when it attaches (unchanged)."""
+        game_id, session = await _start_running(servicer, _shadow_config())
+        request = game_coordinator_pb2.StreamEventsRequest(game_id=game_id)
+        context = MockGrpcContext()
+
+        async def _publish():
+            await session.event_bus.publish("player_death", {"serial": "p1"})
+
+        collected = await _collect_stream_events(servicer, request, context, until="player_death", after=_publish)
+
+        assert [e.event_type for e in collected] == ["player_death"]
