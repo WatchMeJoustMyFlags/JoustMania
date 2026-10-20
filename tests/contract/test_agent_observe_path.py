@@ -44,12 +44,27 @@ def test_agent_service_listens_on_the_port_the_collector_targets():
 def test_storage_exporters_are_independent_of_the_agent_exporter(
     collector, pipeline, storage
 ):
-    """UC-041 Post-F-1: with the agent down, Jaeger and VictoriaMetrics keep receiving.
+    """UC-041 Post-F-1 (static proxy): the storage exporters do not depend on the agent.
 
-    Each exporter has its own queue and the agent's drops on overflow without
-    retries, so a dead agent cannot stall the storage exporters in the same pipeline.
+    A static config check, not a runtime test with the agent down. The storage
+    exporter is its own exporter in the same fan-out pipeline, targets its own
+    backend, and is the only one of the two that keeps the collector's default
+    retries; the agent exporter is the only one that is best-effort (short
+    timeout, no retries, bounded queue), so a dead agent costs at most its own
+    timeout and drops (see also test_collector_best_effort.py).
     """
     exporters = collector["exporters"]
-    assert storage in collector["service"]["pipelines"][pipeline]["exporters"]
-    assert exporters["otlp/agent"]["retry_on_failure"] == {"enabled": False}
-    assert (exporters[storage].get("sending_queue") or {}).get("enabled") is not False
+    pipe_exporters = collector["service"]["pipelines"][pipeline]["exporters"]
+    assert storage in pipe_exporters and "otlp/agent" in pipe_exporters
+    assert storage != "otlp/agent"
+
+    agent = exporters["otlp/agent"]
+    store = exporters[storage]
+    assert "agent" not in store["endpoint"]
+    assert agent["timeout"] == "2s"
+    assert agent["retry_on_failure"] == {"enabled": False}
+    assert agent["sending_queue"]["enabled"] is True
+    # The best-effort settings belong to the agent exporter only: the storage
+    # exporter carries none of them, so it keeps the collector defaults.
+    for key in ("timeout", "retry_on_failure", "sending_queue"):
+        assert key not in store, f"{storage} must not copy the agent's {key}"

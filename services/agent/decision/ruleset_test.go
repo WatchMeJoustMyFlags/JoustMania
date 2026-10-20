@@ -336,8 +336,9 @@ func contains(list []string, v string) bool {
 // (DurationSeconds nil -> sessionDuration -1), so the duration-gated rules were
 // dead in real games. A live Store snapshot past the accelerate target now
 // carries a real elapsed time and R5 (speed up) produces a candidate.
+// UC-040 A1 step 1: the rules backend ranks R5 among its candidates.
 //
-// UC: UC-040 main
+// UC: UC-040 A1
 func TestAccelerateCandidates_LiveElapsedFromStore(t *testing.T) {
 	accelDominant := map[string]float64{ObjectiveAccelerate: 0.7, ObjectiveEndurance: 0.3}
 	target := defaultFit().AccelerateTargetSessionSeconds
@@ -352,7 +353,7 @@ func TestAccelerateCandidates_LiveElapsedFromStore(t *testing.T) {
 	now = now.Add(time.Duration(target+20) * time.Second)
 	s.SetSessionDuration(target + 20) // the live gauge, past the target
 
-	t.Run("UC-041/BR-003 pre-#1305 snapshot without duration yields no accelerate candidate", func(t *testing.T) {
+	t.Run("UC-040/A1 pre-#1305 snapshot without duration yields no accelerate candidate", func(t *testing.T) {
 		old := s.Snapshot()
 		old.Session.DurationSeconds = nil
 		if cands := accelerateCandidates(old, defaultFit(), accelDominant); cands != nil {
@@ -360,7 +361,7 @@ func TestAccelerateCandidates_LiveElapsedFromStore(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-041/BR-003 live snapshot past target yields R5 tempo-up", func(t *testing.T) {
+	t.Run("UC-040/A1 live snapshot past target yields R5 tempo-up", func(t *testing.T) {
 		cands := accelerateCandidates(s.Snapshot(), defaultFit(), accelDominant)
 		if len(cands) != 1 || cands[0].decision.Intervention != InterventionAdjustMusicTempo {
 			t.Fatalf("candidates = %v, want only the R5 tempo-up", interventionsOf(cands))

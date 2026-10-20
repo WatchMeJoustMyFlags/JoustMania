@@ -44,6 +44,7 @@ func dangerOf(t *testing.T, mux *gamecontext.Multiplexer, gameID string) map[str
 // A game_id-labelled death threshold (FR-041) reaches the game's partition, so the
 // danger classification works per game. Before #1336 the threshold was unlabelled,
 // landed in the fallback partition, and every game's danger stayed unknown.
+// UC-040 main step 4: the built state carries each player's danger class.
 // UC: UC-040 main
 func TestDanger_LabelledThresholdReachesGamePartition(t *testing.T) {
 	newMux := func() *gamecontext.Multiplexer {

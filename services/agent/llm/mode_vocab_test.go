@@ -6,6 +6,7 @@ import "testing"
 // the built game's get_game_name() ("FFA", "Zombie", ...). normalizeMode must map
 // that vocabulary to the mode prompt rules. Menu enum names such as "JoustFFA"
 // are not recognised, so the coordinator must never put them on the mode label.
+// UC-040 main step 4: the prompt built for the backend picks the mode's rules.
 // UC: UC-040 main
 func TestNormalizeMode_CoordinatorGameNames(t *testing.T) {
 	for raw, want := range map[string]string{
