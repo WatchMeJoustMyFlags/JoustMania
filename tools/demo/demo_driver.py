@@ -106,6 +106,16 @@ ZONE_WARNING = _vec(SAFE_MAX_G)  # 1.5-2.0 → WARNING (aggressive playstyle), 0
 # one constant value and the variance collapses to 0 (a "statue").
 JERK_PERIOD = 0.25
 
+# After the coordinator publishes ``countdown_end`` it still primes the EMA filters
+# (``_warmup_ema``: 0.1 s, games/base.py) and then applies a 0.3 s startup grace
+# (``grace_until = time.time() + 0.3`` in ``_game_loop``) during which death checks
+# are skipped. A SimulateDeath sent earlier is drained or ignored (#1710). The extra
+# 0.1 s covers gRPC and scheduling slack.
+EMA_WARMUP_SECONDS = 0.1
+STARTUP_GRACE_SECONDS = 0.3
+LIVE_PLAY_SLACK_SECONDS = 0.1
+LIVE_PLAY_SETTLE_SECONDS = EMA_WARMUP_SECONDS + STARTUP_GRACE_SECONDS + LIVE_PLAY_SLACK_SECONDS
+
 
 def log(msg: str) -> None:
     print(f"[demo-driver] {msg}", flush=True)
@@ -226,15 +236,22 @@ def start_real_game(s: Stack, serials: list[str], game_mode: str, timeout: float
         press_trigger(s, serial)
 
     deadline = time.time() + timeout
+    game_id = ""
     for event in stream:
-        if event.event_type in ("game_started", "game_starting") and event.game_id:
-            log(f"game started: game_id={event.game_id} (event={event.event_type})")
-            return event.game_id
-        if event.game_id:
-            log(f"game live: game_id={event.game_id} (event={event.event_type})")
-            return event.game_id
+        if event.game_id and not game_id:
+            game_id = event.game_id
+            log(f"game started: game_id={game_id} (event={event.event_type})")
+        if game_id and event.event_type == "countdown_end":
+            break
         if time.time() > deadline:
             break
+    if game_id:
+        # game_started precedes the countdown; the game is only live (deaths count)
+        # once countdown_end + EMA warmup + startup grace have passed (#1710).
+        # A stream that ended early is treated as "already live".
+        time.sleep(LIVE_PLAY_SETTLE_SECONDS)
+        log(f"game live: game_id={game_id}")
+        return game_id
     raise TimeoutError(f"game did not start within {timeout}s")
 
 

@@ -342,3 +342,34 @@ def test_list_and_unknown_scenario_exit_codes(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["demo_driver.py", "--scenario", "nope"])
     assert dd.main() == 2
     assert "unknown scenario" in capsys.readouterr().err
+
+
+def _countdown_stream(clock, seen):
+    """game_started, then the countdown, then countdown_end; `seen` records when each is read."""
+    for event_type in ("game_started", "countdown_start", "countdown_end"):
+        seen[event_type] = clock.now
+        yield gcpb.GameEvent(event_type=event_type, game_id="g1")
+        clock.now += 0.75  # one countdown phase passes between events
+
+
+@pytest.mark.uc("UC-070", flow="main", steps=[1, 2])
+def test_start_real_game_returns_only_after_countdown_warmup_and_grace(stack, clock):
+    """#1710: the coordinator ignores deaths until countdown_end + EMA warmup (0.1s) + startup grace (0.3s)."""
+    seen = {}
+    stack.coord.StreamGameEvents.side_effect = lambda *_: _countdown_stream(clock, seen)
+    assert dd.start_real_game(stack, ["A"], "JoustFFA", 30.0) == "g1"
+    live_at = seen["countdown_end"] + 0.1 + 0.3
+    assert clock.now >= live_at
+    assert dd.LIVE_PLAY_SETTLE_SECONDS >= dd.EMA_WARMUP_SECONDS + dd.STARTUP_GRACE_SECONDS
+
+
+@pytest.mark.uc("UC-070", flow="main", steps=[1, 2])
+def test_death_cascade_first_kill_waits_for_live_play(stack, clock):
+    seen = {}
+    _wire_run(stack)
+    stack.coord.StreamGameEvents.side_effect = lambda *_: _countdown_stream(clock, seen)
+    kills = []
+    stack.mock.SimulateDeath.side_effect = lambda _request: kills.append(clock.now)
+    dd.run_once(stack, _args(scenario="death_cascade", duration=8.0))
+    assert kills
+    assert kills[0] >= seen["countdown_end"] + 0.1 + 0.3
