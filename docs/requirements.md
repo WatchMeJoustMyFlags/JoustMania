@@ -59,7 +59,7 @@
 
 | ID | Title | User Story | Priority | Status | Notes |
 |---|---|---|---|---|---|
-| FR-001 | USB pairing | As a player, I want to plug my controller into the Pi via USB once so that it is paired to the Pi's Bluetooth adapter and trusted. | High | Implemented |  |
+| FR-001 | USB pairing | As a player, I want to plug my controller into the Pi via USB once so that it is paired to the Pi's Bluetooth adapter and trusted. | High | Implemented | The pairing agent (D-Bus `org.bluez.Agent1`, default agent) answers BlueZ's PIN, passkey, confirmation and authorization requests only for controllers paired over USB this session and not unpaired since, and rejects every other device (UC-001 BR-009, #1492); pending hardware verification (#1465). |
 | FR-002 | Bluetooth connect | As a player, I want my paired controller to connect over Bluetooth when I press the PS button so that I can join without cables. | High | Verified |  |
 | FR-003 | Connection state on the LED | As a player, I want my controller's LED to show whether I am connected (dim) or ready (bright) so that I know my state without a screen. | High | Verified |  |
 | FR-004 | Controller names | As an operator, I want each controller to have a stable human-readable name that I can rename so that I can tell controllers apart in the dashboard. | Low | Verified |  |

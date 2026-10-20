@@ -170,3 +170,10 @@ class TestRun:
 
         assert usb_loop_started
         assert bt_loop_started
+
+
+@pytest.mark.uc("UC-001", br=["BR-009"])
+def test_pairing_agent_answers_for_the_daemons_usb_pairings(daemon):
+    from psmove_pairing.bluez_agent import agent
+
+    assert agent.is_known == daemon.usb_pairing.paired_this_session

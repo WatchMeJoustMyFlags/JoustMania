@@ -8,10 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 import pytest
 from dbus_fast import Message, MessageType
 from dbus_fast.aio import MessageBus
+from dbus_fast.errors import DBusError as DBusReplyError
 
 from psmove_pairing.adapter_manager import AdapterInfo
+from psmove_pairing.bluez_agent import PairingAgent
 from psmove_pairing.bluez_records import HID_SDP_RECORD
 from psmove_pairing.pairing_backend import HidapiBackend, PairingResult, RustServiceBackend, UsbController
+from psmove_pairing.registrations import PsMoveRegistration, RemovalResult
 from psmove_pairing.usb_pairing import (
     DEFAULT_PAIRING_BACKEND,
     VARIANT_TO_PAIRING_BACKEND,
@@ -849,7 +852,9 @@ class TestFirstTimePairing(_PairingFlowEnv):
         assert HID_SDP_RECORD in (self.bluetooth_dir / self.ADAPTER_FREE / "cache" / self.SERIAL).read_text()
         assert not (self.bluetooth_dir / self.ADAPTER_BUSY / self.SERIAL).exists()
         assert self._restart_units() == [["bluetooth.service", "replace"]]
-        assert runner.calls == [["bluetoothctl"]]  # the pairing agent, registered again after the restart
+        assert runner.calls == []  # no bluetoothctl: the agent is a D-Bus object (UC-001 BR-009)
+        # The pairing agent, registered again after the restart
+        assert order.index("RestartUnit") < order.index("RegisterAgent") < order.index("RequestDefaultAgent")
         # One restart after the poll's pairings; the trust before it may find no device object
         # yet (the record itself is trusted)
         assert order.index("Set") < order.index("RestartUnit")
@@ -1219,3 +1224,47 @@ class TestDeferredRestartRobustness1490(_PairingFlowEnv):
 
         run_pending.assert_not_awaited()
         assert self._restart_units() == []
+
+
+class TestPairingAgentFollowsUsbPairing(_PairingFlowEnv):
+    """The agent answers for a controller from its USB pairing until it is unpaired (UC-001 BR-009, #1492)."""
+
+    DEVICE = "/org/bluez/hci1/dev_00_06_F7_AA_BB_CC"
+
+    @staticmethod
+    def _pin(agent: PairingAgent):
+        return PairingAgent.RequestPinCode.__wrapped__(agent, TestPairingAgentFollowsUsbPairing.DEVICE)
+
+    @pytest.mark.uc("UC-001", br=["BR-009"])
+    async def test_agent_answers_from_usb_pairing_until_unpair(self, usb_pairing, env, metrics):
+        _backend, _runner, set_tree, _restart = env
+        set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, devices(3, connected=True)), "hci1": (self.ADAPTER_FREE, [])}))
+        agent = PairingAgent()
+        agent.is_known = usb_pairing.paired_this_session
+
+        with pytest.raises(DBusReplyError):
+            self._pin(agent)  # not paired over USB yet
+
+        await usb_pairing.poll()
+        assert self._pin(agent) == "0000"
+
+        removed = RemovalResult(PsMoveRegistration(self.ADAPTER_FREE, self.SERIAL), "removed")
+        with patch("psmove_pairing.usb_pairing.remove_controller_registrations", AsyncMock(return_value=[removed])):
+            await usb_pairing.unpair(self.SERIAL.lower())
+
+        with pytest.raises(DBusReplyError) as rejected:
+            self._pin(agent)
+        assert rejected.value.type == "org.bluez.Error.Rejected"
+
+    @pytest.mark.uc("UC-001", br=["BR-009"])
+    async def test_replug_retry_keeps_the_agent_answering(self, usb_pairing, env, metrics):
+        """A controller whose record waits for a restart leaves the verified set on unplug, not the agent's list."""
+        usb_pairing._paired_addresses.add(self.SERIAL)
+        usb_pairing._verified_serials.add(self.SERIAL)
+        usb_pairing._replug_retries.add(self.SERIAL)
+        usb_pairing._usb_paths = {}
+
+        usb_pairing._forget_unplugged_deferred()
+
+        assert self.SERIAL not in usb_pairing._verified_serials
+        assert usb_pairing.paired_this_session(self.SERIAL)
