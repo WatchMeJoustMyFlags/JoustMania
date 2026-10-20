@@ -101,7 +101,7 @@ def _approx(value):
     return pytest.approx(value, abs=1e-5)
 
 
-@pytest.mark.uc("UC-070", flow="main", steps=[2])
+@pytest.mark.uc("UC-070", flow="main", steps=[1])
 def test_registry_names_the_scenarios_fr092_promises():
     assert {"skill_gap", "statue", "death_cascade"} <= set(dd.SCENARIOS)
     for desc, rule, observable, runner in dd.SCENARIOS.values():
@@ -109,14 +109,52 @@ def test_registry_names_the_scenarios_fr092_promises():
         assert callable(runner)
 
 
-@pytest.mark.uc("UC-070", flow="main", steps=[2])
-def test_no_beat_vector_can_kill_at_the_default_threshold():
+@pytest.mark.uc("UC-070", flow="main", steps=[1])
+def test_no_zone_vector_can_kill_at_the_default_threshold():
     for vec in (dd.ZONE_DIP, dd.ZONE_STILL, dd.ZONE_ACTIVE, dd.ZONE_ACTIVE_HIGH, dd.ZONE_WARNING):
-        assert math.sqrt(sum(c * c for c in vec)) <= dd.SAFE_MAX_G + 1e-5
+        assert math.sqrt(sum(c * c for c in vec)) <= dd.SAFE_MAX_G + 1e-9
     assert dd.SAFE_MAX_G <= 1.6  # default death threshold is 1.8g, keep 0.2g margin
 
 
-@pytest.mark.uc("UC-070", flow="main", steps=[2])
+@pytest.mark.uc("UC-070", flow="main", steps=[1])
+@pytest.mark.parametrize("name", sorted(dd.SCENARIOS))
+def test_every_scenario_emits_only_safe_vectors(stack, name):
+    dd.SCENARIOS[name][3](stack, ["A", "B", "C", "D"], 12.0)
+    mags = [m for _, m in _moves(stack)]
+    assert mags
+    assert max(mags) <= dd.SAFE_MAX_G + 1e-5
+
+
+@pytest.mark.uc("UC-070", flow="main", steps=[1])
+def test_idle_dominator_alternates_the_dominator_and_holds_idlers_still(stack):
+    dd.scenario_idle_dominator(stack, ["D", "I1", "I2"], 4.0)
+    moves = _moves(stack)
+    dominator = [m for s, m in moves if s == "D"]
+    assert dominator[:4] == [_approx(1.3), _approx(1.5), _approx(1.3), _approx(1.5)]
+    assert all(m == _approx(1.0) for s, m in moves if s != "D")
+    assert {s for s, _ in moves} == {"D", "I1", "I2"}
+
+
+@pytest.mark.uc("UC-070", flow="main", steps=[1])
+def test_low_variance_holds_the_whole_field_still(stack):
+    dd.scenario_low_variance(stack, ["A", "B", "C"], 3.0)
+    moves = _moves(stack)
+    assert {s for s, _ in moves} == {"A", "B", "C"}
+    assert all(m == _approx(1.0) for _, m in moves)
+
+
+@pytest.mark.uc("UC-070", flow="main", steps=[1])
+def test_blocked_battery_plays_the_skill_gap_pattern(stack, clock):
+    dd.scenario_blocked_battery(stack, ["A", "B", "C", "D"], 2.0)
+    blocked = _moves(stack)
+    clock.now = 1000.0
+    other = SimpleNamespace(mock=_fake_stub(mockpb_grpc.MockControllerServiceServicer))
+    dd.scenario_skill_gap(other, ["A", "B", "C", "D"], 2.0)
+    assert blocked
+    assert blocked == _moves(other)
+
+
+@pytest.mark.uc("UC-070", flow="main", steps=[1, 2])
 def test_skill_gap_splits_steady_pros_from_jerky_novices(stack):
     serials = ["A", "B", "C", "D"]
     dd.scenario_skill_gap(stack, serials, 2.0)
@@ -131,7 +169,7 @@ def test_skill_gap_splits_steady_pros_from_jerky_novices(stack):
     assert {s for s, _ in moves} == set(serials)
 
 
-@pytest.mark.uc("UC-070", flow="main", steps=[2])
+@pytest.mark.uc("UC-070", flow="main", steps=[1])
 def test_skill_gap_needs_two_controllers(stack):
     with pytest.raises(RuntimeError, match="needs >= 2"):
         dd.scenario_skill_gap(stack, ["A"], 1.0)
@@ -149,7 +187,7 @@ def test_statue_holds_one_controller_still_while_the_others_jostle(stack):
     assert {s for s, _ in moves} == {"S", "M1", "M2"}
 
 
-@pytest.mark.uc("UC-070", flow="main", steps=[2])
+@pytest.mark.uc("UC-070", flow="main", steps=[1, 2])
 def test_death_cascade_eliminates_all_but_one_every_three_seconds(stack, clock):
     kill_times = []
 
@@ -166,15 +204,17 @@ def test_death_cascade_eliminates_all_but_one_every_three_seconds(stack, clock):
     assert max(m for _, m in _moves(stack)) <= dd.SAFE_MAX_G + 1e-5
 
 
-@pytest.mark.uc("UC-070", flow="main", steps=[2])
+@pytest.mark.uc("UC-070", flow="main", steps=[1])
 def test_scenarios_are_reproducible(clock):
+    """Guards against random or wall-clock inputs: under the fake clock a run is a pure function of its arguments."""
+
     def play(fn):
         clock.now = 1000.0
         s = SimpleNamespace(mock=_fake_stub(mockpb_grpc.MockControllerServiceServicer))
         fn(s, ["A", "B", "C", "D"], 5.0)
         return [repr(c) for c in s.mock.method_calls]
 
-    for name in ("skill_gap", "statue", "death_cascade", "idle_dominator", "low_variance"):
+    for name in sorted(dd.SCENARIOS):
         fn = dd.SCENARIOS[name][3]
         assert play(fn) == play(fn), name
 
