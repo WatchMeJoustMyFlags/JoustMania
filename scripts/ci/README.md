@@ -124,11 +124,17 @@ Publish guard for `docker-build-merge` / `docker-build-extra-merge`. Main runs
 are not serialised, so an older run finishing late could move `:main` and
 `:latest` back to stale content. The script reads the revision label of the
 current `:main` (amd64 config of the index; shared reader in
-`lib-image-config.sh`) and exits 0 (move the tags) when it is missing, equal to
-the run's SHA (workflow_dispatch rerun) or an ancestor of it; exit 3 (skip) when
-`:main` was built from a newer or unrelated commit, or one this checkout does
-not know. The workflow then pushes only `:<sha>`, logs a notice and does not
-fail. `release.yml` is unaffected (it consumes `:<sha>`). Complements
+`lib-image-config.sh`) and skips the moving tags (exit 3) only when it is
+proven that `:main` is newer: the run's SHA is an ancestor of the `:main`
+revision (fetching `origin/main` first when the revision is not in the
+checkout). Missing or unlabelled `:main`, an equal SHA (workflow_dispatch
+rerun) or an ancestor move the tags (exit 0); a revision that is unknown after
+the fetch or unrelated to the run's SHA is not on main, so the tags move with a
+`::warning::`. A failed `git fetch` exits 2 and fails the step. All git calls
+use `REPO_DIR` (default `$GITHUB_WORKSPACE`), because the publish step runs in
+the digests dir; the jobs check out a blobless partial clone with only
+`scripts/ci`. On skip the workflow pushes only `:<sha>` and logs a notice.
+`release.yml` is unaffected (it consumes `:<sha>`). Complements
 `check-retag-source.sh`, which stays the guard for the retag path.
 Test: `scripts/tests/test-check-main-tag-order.sh`.
 

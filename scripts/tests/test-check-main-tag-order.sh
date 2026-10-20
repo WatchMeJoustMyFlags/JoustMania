@@ -13,23 +13,33 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 pass=0
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() { echo "FAILED: $*" >&2; exit 1; }
 
-# expect_rc <want> <desc> <cmd...> (runs inside the scratch repo)
+# expect_rc <want> <desc> <cmd...>: runs from a NON-git cwd (the publish step runs in
+# the digests dir), so the script must reach the repo through REPO_DIR.
 expect_rc() {
   local want="$1" desc="$2" rc=0
   shift 2
-  (cd "$repo" && "$@") >"${WORK}/out" 2>&1 || rc=$?
+  (cd "$nogit" && REPO_DIR="$repo" "$@") >"${WORK}/out" 2>&1 || rc=$?
   if [[ "$rc" != "$want" ]]; then
     cat "${WORK}/out" >&2
     fail "${desc}: want rc ${want}, got ${rc}"
   fi
   pass=$((pass + 1))
 }
+# expect_out <grep -E pattern> <desc>: the last run's output matches.
+expect_out() { grep -qE -- "$1" "${WORK}/out" || { cat "${WORK}/out" >&2; fail "$2: output lacks /$1/"; }; pass=$((pass + 1)); }
+# expect_no_out <grep -E pattern> <desc>: the last run's output does not match.
+expect_no_out() { ! grep -qE -- "$1" "${WORK}/out" || { cat "${WORK}/out" >&2; fail "$2: output has /$1/"; }; pass=$((pass + 1)); }
 
+nogit="${WORK}/nogit"
+mkdir -p "$nogit"
+if git -C "$nogit" rev-parse --git-dir >/dev/null 2>&1; then fail "${nogit} is inside a git repo; cannot test the non-git cwd"; fi
+
+# Scratch repo with an origin (bare) whose main holds older/newer; side holds unrelated.
 repo="${WORK}/repo"
 mkdir -p "$repo"
-git -C "$repo" init -q
+git -C "$repo" init -q -b main
 git -C "$repo" config user.email t@example.com
 git -C "$repo" config user.name test
 commit() { echo "$RANDOM" >>"${repo}/f"; git -C "$repo" add -A; git -C "$repo" commit -qm c; git -C "$repo" rev-parse HEAD; }
@@ -37,15 +47,34 @@ older="$(commit)"
 newer="$(commit)"
 git -C "$repo" checkout -q -b side "$older"
 unrelated="$(commit)"
-git -C "$repo" checkout -q -
+git -C "$repo" checkout -q main
+git clone -q --bare "$repo" "${WORK}/origin.git"
+git -C "$repo" remote add origin "${WORK}/origin.git"
+# A main commit this checkout has not fetched yet (landed after the run's checkout).
+git clone -q "${WORK}/origin.git" "${WORK}/other"
+echo later >>"${WORK}/other/f"
+git -C "${WORK}/other" -c user.email=t@example.com -c user.name=test commit -qam later
+later="$(git -C "${WORK}/other" rev-parse HEAD)"
+git -C "${WORK}/other" push -q origin main
+unknown="1111111111111111111111111111111111111111"
 
 # Label override (no registry).
 expect_rc 0 "newer run, older :main" env SOURCE_REVISION="$older" "$CHECK" img "$newer"
 expect_rc 0 "equal SHA (workflow_dispatch rerun)" env SOURCE_REVISION="$newer" "$CHECK" img "$newer"
 expect_rc 3 "older run, newer :main" env SOURCE_REVISION="$newer" "$CHECK" img "$older"
-expect_rc 3 "unrelated :main revision" env SOURCE_REVISION="$unrelated" "$CHECK" img "$newer"
+expect_out "::notice::.*descends from" "older run, newer :main"
+expect_rc 0 "unrelated :main revision moves" env SOURCE_REVISION="$unrelated" "$CHECK" img "$newer"
+expect_out "::warning::.*unrelated" "unrelated :main revision"
+expect_no_out "newer" "unrelated :main revision"
 expect_rc 0 "no label on :main" env SOURCE_REVISION="" "$CHECK" img "$newer"
-expect_rc 3 "unknown revision (newer than this checkout)" env SOURCE_REVISION="1111111111111111111111111111111111111111" "$CHECK" img "$newer"
+expect_rc 3 "newer :main not fetched yet (fetch finds it)" env SOURCE_REVISION="$later" "$CHECK" img "$newer"
+expect_rc 0 "unknown revision after a successful fetch moves" env SOURCE_REVISION="$unknown" "$CHECK" img "$newer"
+expect_out "::warning::.*not on origin/main" "unknown revision after fetch"
+expect_no_out "newer" "unknown revision after fetch"
+git -C "$repo" remote set-url origin "${WORK}/missing.git"
+expect_rc 2 "fetch failure fails loud" env SOURCE_REVISION="$unknown" "$CHECK" img "$newer"
+expect_out "::error::.*fetch" "fetch failure"
+git -C "$repo" remote set-url origin "${WORK}/origin.git"
 expect_rc 1 "missing sha" env -u GITHUB_SHA SOURCE_REVISION="$older" "$CHECK" img
 
 # Registry path through a fake docker: multi-arch index and missing tag.

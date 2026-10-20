@@ -597,8 +597,12 @@ if "e2e_required" in jobs["changes"]["outputs"]:
 # unconditional; :main/:latest are only added behind the guard.
 for publish in ("docker-build-merge", "docker-build-extra-merge"):
     steps = jobs[publish]["steps"]
-    check(any("actions/checkout" in str(st.get("uses", "")) and st.get("with", {}).get("fetch-depth") == 0
-              for st in steps), f"{publish}: needs a full-history checkout for the :main ordering guard")
+    checkout = next((st for st in steps if "actions/checkout" in str(st.get("uses", ""))), {})
+    check(checkout.get("with", {}).get("fetch-depth") == 0,
+          f"{publish}: needs a full-history checkout for the :main ordering guard")
+    check(checkout.get("with", {}).get("filter") == "blob:none"
+          and "scripts/ci" in str(checkout.get("with", {}).get("sparse-checkout", "")),
+          f"{publish}: guard checkout must be a blobless partial clone with scripts/ci sparse-checked-out")
     manifest = next((st for st in steps if st.get("name") == "Create multi-arch manifest"), {})
     run = manifest.get("run", "")
     check("scripts/ci/check-main-tag-order.sh" in run, f"{publish}: manifest step must run check-main-tag-order.sh")
