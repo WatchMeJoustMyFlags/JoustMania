@@ -118,6 +118,10 @@ async def _iterate_in_context(stream: Any, ctx: otel_context.Context):
     from a different task (gRPC teardown, GeneratorExit): the detach token belongs to
     another contextvars Context and OpenTelemetry logs "Failed to detach context" (#1769).
     Attach and detach inside a single step, so both always happen in the same Context.
+
+    Limitation: ``ctx`` is attached only while the inner iterator runs, so a handler must not
+    hold a current span across a ``yield``. After the yield, spans the handler creates parent to
+    ``ctx`` (the rpc span), not to the handler's own span. No current streaming handler does this.
     """
     iterator = stream.__aiter__()
     try:
