@@ -115,7 +115,7 @@ func experimentVariantValue(t *testing.T, svc *fake.Service, flagKey string) (st
 	return "", false
 }
 
-// UC: UC-042 main Post-S-1
+// UC: UC-042 main Post-S-2
 func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 	backend := &fakeProposerBackend{
 		response: `{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace may extend sessions"}`,
@@ -230,7 +230,7 @@ func TestProposeOnce_TypeMismatchBlockedByGate(t *testing.T) {
 	assertSpanAttr(t, attemptSpan, AttrOutcome, string(ProposeBlocked))
 }
 
-// UC: UC-042 A2
+// UC: UC-042 A7
 func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
 	// The sentinel-stub case: Backend.Infer errors (no text backend configured,
 	// AGENT_INFERENCE_BACKEND=stub). The Proposer degrades to NO proposal, NO error.
@@ -252,7 +252,7 @@ func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
 	assertSpanAttr(t, span, AttrOutcome, string(ProposeNoBackend))
 }
 
-// UC: UC-042 main
+// UC: UC-042 A7
 func TestProposeOnce_CadenceGatesSecondCycleWithinInterval(t *testing.T) {
 	backend := &fakeProposerBackend{
 		response: `{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace"}`,
@@ -353,7 +353,7 @@ func hasNonEmptyAttr(span trace.ReadOnlySpan, key string) bool {
 	return false
 }
 
-// UC: UC-042 main
+// UC: UC-042 main A11 Post-S-2
 func TestProposeOnce_ProposalBecomesARegistryExperiment(t *testing.T) {
 	// PR #1417 review B2: a proposal is declared as an experiment the registry runs
 	// in shadow games (its own exp_ id and arms), never a value no game reads; a
@@ -395,7 +395,7 @@ func TestProposeOnce_ProposalBecomesARegistryExperiment(t *testing.T) {
 	}
 }
 
-// UC: UC-042 main
+// UC: UC-042 A11
 func TestProposeOnce_NoExperimentLoopWritesNothing(t *testing.T) {
 	backend := &fakeProposerBackend{
 		response: `{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace"}`,

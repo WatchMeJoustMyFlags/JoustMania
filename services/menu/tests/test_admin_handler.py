@@ -1755,6 +1755,7 @@ class TestAgentControlOption:
 
         assert mock_state_manager.led.send_game_effect.call_args.kwargs["color"] == expected_color.value
 
+    @pytest.mark.uc("UC-013", flow="A3")
     @pytest.mark.asyncio
     async def test_write_failure_skips_feedback(self, handler, mock_state_manager):
         """A failed agent.json write must not emit feedback as if it succeeded."""

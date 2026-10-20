@@ -194,6 +194,7 @@ func TestDossierDetail(t *testing.T) {
 	}
 }
 
+// UC: UC-035 A1
 func TestDossierNotFound(t *testing.T) {
 	reader := &dossierReader{root: t.TempDir()}
 	rec := httptest.NewRecorder()
@@ -210,6 +211,7 @@ func TestDossierNotFound(t *testing.T) {
 	}
 }
 
+// UC: UC-035 A1
 func TestDossierEmptyIDIsNotFound(t *testing.T) {
 	reader := &dossierReader{root: t.TempDir()}
 	rec := httptest.NewRecorder()

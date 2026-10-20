@@ -112,6 +112,7 @@ def _wait_until_served(stack, flag_service) -> None:
 @pytest.mark.uc("UC-053", flow="A2", br=["BR-004"], tc="TC-019")
 # UC-012 step 6 restart part (flagd serves the persisted admin sensitivity again) and BR-003 (Werewolf rule).
 @pytest.mark.uc("UC-012", flow="main", steps=[6], br=["BR-003"], tc="TC-019")
+@pytest.mark.uc("UC-044", cond=["Post-S-2"], tc="TC-019")
 @pytest.mark.nfr("NFR-052")
 def test_restart_keeps_admin_settings_and_drops_the_rest(fresh_stack, flag_service):
     stack = fresh_stack

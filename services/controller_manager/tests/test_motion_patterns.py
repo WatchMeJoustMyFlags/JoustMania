@@ -281,6 +281,7 @@ class TestUC046SignalHash:
 
 
 class TestUC046Performance:
+    @pytest.mark.nfr("NFR-044")
     @pytest.mark.uc("UC-046", flow="main", steps=[5], br=["BR-002"])
     def test_evaluation_cost_within_budget(self):
         """UC-046 step 5 / NFR-044: one evaluation plus hash update stays well under 50 us here."""

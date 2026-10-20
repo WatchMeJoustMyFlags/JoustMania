@@ -270,9 +270,9 @@ class TestUC046MockRpcs:
 
 
 class TestUC046PatternControllersHidden:
-    @pytest.mark.uc("UC-046", cond=["Post-F-2"], br=["BR-004"])
+    @pytest.mark.uc("UC-046", cond=["Post-F-1"], br=["BR-004"])
     def test_pattern_controllers_are_always_reserved(self, service, adapter):
-        """UC-046 Post-F-2: pattern controllers are always reserved (hidden from the lobby)."""
+        """UC-046 Post-F-1: pattern controllers are always reserved (hidden from the lobby)."""
         resp = service.AddControllers(
             controller_manager_mock_pb2.AddControllersRequest(
                 count=4, reserved=False, tag="t", archetype=ARCHETYPE, archetype_params=json.dumps(PARAMS)

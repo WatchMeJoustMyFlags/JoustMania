@@ -129,6 +129,7 @@ func TestReceiver_GameOnlyBatchDoesNotTriggerInfra(t *testing.T) {
 	}
 }
 
+// UC: UC-041 A1
 func TestReceiver_HealthOnlyBatchDoesNotCreatePlayers(t *testing.T) {
 	r, mux, infraStore, infraLoop := newTestReceiver(t)
 
