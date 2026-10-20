@@ -2302,9 +2302,8 @@ class TestAgentWriteErrorCue:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="A3", steps=[2])
-    async def test_refused_write_gives_error_pulse_and_sound(self, handler, mock_state_manager):
-        """A refused or unreachable write pulses red 400 ms at speed 10 and plays the death sound."""
-        from lib.types import Sound
+    async def test_refused_write_gives_error_pulse_only(self, handler, mock_state_manager):
+        """A refused or unreachable write pulses red 400 ms at speed 10, with no sound."""
         from proto import controller_manager_pb2
 
         self._select_agent_control(handler, mock_state_manager)
@@ -2318,26 +2317,14 @@ class TestAgentWriteErrorCue:
         assert call.kwargs["color"] == Colors.Red.value
         assert call.kwargs["duration_ms"] == 400
         assert call.kwargs["speed"] == 10
-        mock_state_manager.audio.play_sound.assert_awaited_once_with(Sound.SFX_DEATH)
+        mock_state_manager.audio.play_sound.assert_not_called()
         # No level voice line: it must not read as a level change.
         mock_state_manager.audio.play_voice.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-013", flow="A3", steps=[2])
-    async def test_error_sound_still_plays_when_pulse_fails(self, handler, mock_state_manager):
-        """A failing LED stream must not drop the error sound."""
-        self._select_agent_control(handler, mock_state_manager)
-        mock_state_manager.agent_settings_writer.update_default_variant.return_value = False
-        mock_state_manager.led.send_game_effect.side_effect = RuntimeError("stream gone")
-
-        await handler.handle_increase_value("test_serial")
-
-        mock_state_manager.audio.play_sound.assert_awaited_once()
-
-    @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="main", steps=[4])
     async def test_successful_write_gives_no_error_cue(self, handler, mock_state_manager):
-        """The success path plays the level voice and never the error sound."""
+        """The success path plays the level voice and no error cue."""
         self._select_agent_control(handler, mock_state_manager)
         mock_state_manager.agent_settings_writer.update_default_variant.return_value = True
 

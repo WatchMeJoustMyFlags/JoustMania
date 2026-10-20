@@ -1417,9 +1417,8 @@ class AdminModeHandler:
     async def _signal_agent_write_failed(self, serial: str, controller_manager_pb2) -> None:
         """Error cue for a refused or unreachable agent-level write (UC-013 A3, #1705).
 
-        A short, fast red pulse plus the death effect sound and no level voice line,
-        so it cannot be mistaken for the "none" level (red, 800 ms, "off" voice).
-        Best effort: each half is guarded so one failing never hides the other.
+        A short, fast red pulse, no sound and no level voice line, so it cannot be
+        mistaken for the "none" level (red, 800 ms, "off" voice). Best effort.
         """
         try:
             await self._send_game_effect(
@@ -1431,10 +1430,6 @@ class AdminModeHandler:
             )
         except Exception as e:
             logger.warning(f"Agent write error pulse failed for {serial}: {e}")
-        try:
-            await self._play_sound(Sound.SFX_DEATH)
-        except Exception as e:
-            logger.warning(f"Agent write error sound failed for {serial}: {e}")
 
     def _current_agent_level(self) -> str | None:
         """Read the current effective agent policy level (#819).
