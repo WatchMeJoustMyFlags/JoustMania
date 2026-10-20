@@ -610,10 +610,9 @@ func TestProxyGameStateAndList(t *testing.T) {
 	})
 }
 
-// UC: UC-035 MSS
 // UC: UC-027 MSS
 func TestProxyStreamGameEvents(t *testing.T) {
-	t.Run("UC-035/MSS events are relayed in order with the game id filter forwarded", func(t *testing.T) {
+	t.Run("events are relayed in order with the game id filter forwarded", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.game.events = []*gamepb.GameEvent{
 			{EventType: "game_start", GameId: "game_live", Timestamp: 1},
@@ -642,7 +641,7 @@ func TestProxyStreamGameEvents(t *testing.T) {
 		rig.otherBackendsUntouched(t, "game")
 	})
 
-	t.Run("UC-035/MSS backend stream error surfaces", func(t *testing.T) {
+	t.Run("backend stream error surfaces", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.game.endErr = status.Error(codes.Unavailable, "coordinator gone")
 		stream, err := rig.gameClient.StreamGameEvents(testCtx(t), connect.NewRequest(&gamepb.StreamEventsRequest{}))
@@ -715,9 +714,8 @@ func TestProxyIdentifyController(t *testing.T) {
 	})
 }
 
-// UC: UC-035 MSS
 func TestProxyGetConnectedControllers(t *testing.T) {
-	t.Run("UC-035/MSS connected controllers come back from the controller manager", func(t *testing.T) {
+	t.Run("connected controllers come back from the controller manager", func(t *testing.T) {
 		rig := newProxyRig(t)
 		resp, err := rig.controllerClient.GetConnectedControllers(testCtx(t), connect.NewRequest(&controllerpb.GetConnectedControllersRequest{}))
 		if err != nil {
@@ -731,7 +729,7 @@ func TestProxyGetConnectedControllers(t *testing.T) {
 		rig.otherBackendsUntouched(t, "controller")
 	})
 
-	t.Run("UC-035/MSS controller manager error surfaces", func(t *testing.T) {
+	t.Run("controller manager error surfaces", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.controller.err = status.Error(codes.Unavailable, "cm down")
 		_, err := rig.controllerClient.GetConnectedControllers(testCtx(t), connect.NewRequest(&controllerpb.GetConnectedControllersRequest{}))
@@ -896,12 +894,11 @@ func postConnectStream(t *testing.T, rig *proxyRig, path string, body any) (*htt
 // format of services/dashboard/src/connect.ts is accepted and the events come
 // back as enveloped frames ending in an end-stream frame.
 //
-// UC: UC-035 MSS
 // UC: UC-070 BR-005
 func TestProxyDashboardStreamingJSON(t *testing.T) {
 	const path = "/joustmania.game_coordinator.GameCoordinatorService/StreamGameEvents"
 
-	t.Run("UC-035/MSS dashboard connect+json StreamGameEvents relays events and ends cleanly (#1542)", func(t *testing.T) {
+	t.Run("dashboard connect+json StreamGameEvents relays events and ends cleanly (#1542)", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.game.events = []*gamepb.GameEvent{
 			{EventType: "game_start", GameId: "game_live", Timestamp: 1},
@@ -947,7 +944,7 @@ func TestProxyDashboardStreamingJSON(t *testing.T) {
 		eq(t, rig.game.log.only(t, "StreamGameEvents"), &gamepb.StreamEventsRequest{GameId: proto.String("game_shadow")})
 	})
 
-	t.Run("UC-035/MSS backend error arrives in the end-stream frame the dashboard parses", func(t *testing.T) {
+	t.Run("backend error arrives in the end-stream frame the dashboard parses", func(t *testing.T) {
 		rig := newProxyRig(t)
 		rig.game.endErr = status.Error(codes.Unavailable, "coordinator gone")
 		resp, frames := postConnectStream(t, rig, path, map[string]any{})
@@ -977,9 +974,9 @@ func TestProxyDashboardStreamingJSON(t *testing.T) {
 // itself (WatchGameplayData, watch_gameplay_test.go). The removed methods fall
 // through to the embedded Unimplemented handler.
 //
-// UC: UC-035 MSS
+// UC: UC-035 BR-006
 func TestProxyBidiRPCsUnimplemented(t *testing.T) {
-	t.Run("UC-035/MSS StreamGameplayData is unimplemented and never reaches the controller manager", func(t *testing.T) {
+	t.Run("UC-035/BR-006 StreamGameplayData is unimplemented and never reaches the controller manager", func(t *testing.T) {
 		rig := newProxyRig(t)
 		stream := rig.controllerClient.StreamGameplayData(testCtx(t))
 		_ = stream.Send(&controllerpb.GameplayStreamControl{Control: &controllerpb.GameplayStreamControl_Config{

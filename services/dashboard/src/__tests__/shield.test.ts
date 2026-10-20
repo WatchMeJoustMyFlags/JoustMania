@@ -103,3 +103,16 @@ describe("UC-040: A16 live LED colour on the tile (shield fade without hardware)
     expect(ledColorCss(undefined)).toEqual({ background: "#333", glow: "transparent" });
   });
 });
+
+describe("UC-035: main step 2, controller tile LED colour", () => {
+  it("UC-035 main step 2 shows the stream's LED colour with a glow of the same colour", () => {
+    expect(ledColorCss({ r: 10, g: 200, b: 30 })).toEqual({
+      background: "rgb(10, 200, 30)",
+      glow: "rgba(10, 200, 30, 0.6)",
+    });
+  });
+
+  it("UC-035 main step 2 an unlit tile has a grey dot and no glow", () => {
+    expect(ledColorCss(undefined)).toEqual({ background: "#333", glow: "transparent" });
+  });
+});
