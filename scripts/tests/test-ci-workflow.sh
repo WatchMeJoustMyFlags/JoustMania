@@ -290,6 +290,9 @@ def evaluate(expr, ctx):
         {
             "L": lambda k: lookup(ctx, k),
             "F_cancelled": lambda: False,
+            # The simulated steps never fail before a status check, so a
+            # `failure()` step (the e2e container dump, #1649) is skipped.
+            "F_failure": lambda: False,
             "F_contains": lambda hay, needle: needle in hay,
             "F_toJSON": lambda v: json.dumps(v),
         },

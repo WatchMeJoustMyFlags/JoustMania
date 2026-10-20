@@ -54,6 +54,7 @@ func TestOnEvaluate_PolicyRecorded(t *testing.T) {
 
 // --- Battery threshold ---
 
+// UC: UC-040 A10
 func TestOnEvaluate_BatteryThreshold(t *testing.T) {
 	const serial = "AA:BB"
 	tests := []struct {
@@ -63,11 +64,11 @@ func TestOnEvaluate_BatteryThreshold(t *testing.T) {
 		wantDispatch bool
 		wantReason   BlockReason
 	}{
-		{name: "below threshold blocks", battery: ptrF(10), threshold: 20, wantDispatch: false, wantReason: ReasonBatteryThreshold},
-		{name: "at threshold dispatches", battery: ptrF(20), threshold: 20, wantDispatch: true},
-		{name: "above threshold dispatches", battery: ptrF(80), threshold: 20, wantDispatch: true},
-		{name: "missing battery dispatches", battery: nil, threshold: 20, wantDispatch: true},
-		{name: "threshold off ignores low battery", battery: ptrF(1), threshold: 0, wantDispatch: true},
+		{name: "UC-040/A10 below threshold blocks", battery: ptrF(10), threshold: 20, wantDispatch: false, wantReason: ReasonBatteryThreshold},
+		{name: "UC-040/A10 at threshold dispatches", battery: ptrF(20), threshold: 20, wantDispatch: true},
+		{name: "UC-040/A10 above threshold dispatches", battery: ptrF(80), threshold: 20, wantDispatch: true},
+		{name: "UC-040/A10 missing battery dispatches", battery: nil, threshold: 20, wantDispatch: true},
+		{name: "UC-040/A10 threshold off ignores low battery", battery: ptrF(1), threshold: 0, wantDispatch: true},
 	}
 
 	for _, tc := range tests {
@@ -223,6 +224,7 @@ func TestInterventionCostWeightTable(t *testing.T) {
 
 // --- Blocked-reason attribution (ordering of gates) ---
 
+// UC: UC-040 A10
 func TestOnEvaluate_BlockedReasonAttribution(t *testing.T) {
 	const lowSerial = "LOW"
 	clock := time.Now()
@@ -261,6 +263,65 @@ func TestOnEvaluate_BlockedReasonAttribution(t *testing.T) {
 		t.Errorf("counts dispatched=%d blocked=%d candidates=%d, want 1/3/4",
 			state.Dispatched, state.Blocked, state.Candidates)
 	}
+}
+
+// TestRulesPath_BatteryThresholdOnDecideSpan: a decision whose target is below
+// policy.battery_threshold is blocked on both spans (UC-040 A10): agent.decision
+// carries decision.block_reason=battery_threshold, and the cycle's agent.decide
+// keeps outcome=act with decide.blocked=true / decide.block_reason=battery_threshold.
+// UC: UC-040 A10
+func TestRulesPath_BatteryThresholdOnDecideSpan(t *testing.T) {
+	t.Run("UC-040/A10 low battery target: decide.blocked with battery_threshold, nothing written", func(t *testing.T) {
+		low := ptrF(5)
+		snap := rulesSnapshot()
+		snap.Policy.BatteryThreshold = 20
+		clock := time.Unix(10_000, 0)
+		l, sr := decideRecordingLoop(t, snap)
+		// The balanced fixture's top decisions (R3 handicap, R4 shield) target a
+		// player; every player sits below the threshold, so whichever is ranked
+		// first is refused for its battery.
+		l.Rules = newTestEngine(withWeights(map[string]float64{ObjectiveBalanced: 1}), &clock)
+		sink := &capturingSink{}
+		l.Actions = sink
+		c := gameCtx(30, []string{"GONE"}, map[string]testPlayer{
+			"WEAK":   {skill: ptrF(0.2), battery: low, active: true},
+			"MID":    {skill: ptrF(0.5), battery: low, active: true},
+			"STRONG": {skill: ptrF(0.9), battery: low, active: true},
+		})
+
+		state := l.OnEvaluate(context.Background(), c, testTrigger())
+
+		if len(state.Outcomes) == 0 || state.Outcomes[0].TargetSerial == "" {
+			t.Fatalf("outcomes = %+v, want a player-targeted first decision", state.Outcomes)
+		}
+		if got := state.Outcomes[0].BlockReason; got != ReasonBatteryThreshold {
+			t.Fatalf("first outcome block reason = %q, want battery_threshold", got)
+		}
+		if n := len(sink.decisions()); n != 0 {
+			t.Fatalf("applied %d decisions, want none (every target is low)", n)
+		}
+		spans := sr.Ended()
+		dec := firstDecisionSpan(t, spans)
+		if v, _ := attrValue(dec, AttrDecisionBlocked); !v.AsBool() {
+			t.Error("agent.decision decision.blocked = false, want true")
+		}
+		if got := strAttr(t, dec, AttrDecisionBlockReason); got != string(ReasonBatteryThreshold) {
+			t.Errorf("agent.decision decision.block_reason = %q, want battery_threshold", got)
+		}
+		ds := spansByName(spans, SpanDecide)
+		if len(ds) != 1 {
+			t.Fatalf("agent.decide spans = %d, want 1", len(ds))
+		}
+		if got := strAttr(t, ds[0], AttrDecideOutcome); got != DecideOutcomeAct {
+			t.Errorf("decide.outcome = %q, want act (blocking does not change the outcome)", got)
+		}
+		if v, ok := attrValue(ds[0], AttrDecideBlocked); !ok || !v.AsBool() {
+			t.Errorf("decide.blocked = %v (present %v), want true", v.AsBool(), ok)
+		}
+		if got := strAttr(t, ds[0], AttrDecideBlockReason); got != string(ReasonBatteryThreshold) {
+			t.Errorf("decide.block_reason = %q, want battery_threshold", got)
+		}
+	})
 }
 
 // --- Full LayerState snapshot correctness ---

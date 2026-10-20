@@ -68,7 +68,7 @@ def _configure(stack, backend: str, **kwargs) -> None:
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A1", tc="TC-008")
 @pytest.mark.uc("UC-040", flow="A1", tc="TC-007")
-@pytest.mark.uc("UC-044", flow="main", steps=[2, 3, 4, 5], tc="TC-008")
+@pytest.mark.uc("UC-044", flow="main", steps=[3, 4, 5], tc="TC-008")
 @pytest.mark.usefixtures("flag_service")
 async def test_rules_backend_default_unchanged(fresh_stack):
     """decision.backend=rules (TC-008 step 8): the rules engine decides, recorded on an
@@ -118,7 +118,7 @@ async def test_rules_backend_default_unchanged(fresh_stack):
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="main", cond=["Post-S-1"], tc="TC-008")
 @pytest.mark.uc("UC-040", flow="A26", br=["BR-018"], tc="TC-008")
-@pytest.mark.uc("UC-044", flow="main", steps=[2, 3, 4, 5], tc="TC-008")
+@pytest.mark.uc("UC-044", flow="main", steps=[3, 4, 5], tc="TC-008")
 @pytest.mark.uc("UC-020", flow="A3", tc="TC-008")
 @pytest.mark.usefixtures("flag_service")
 async def test_openai_high_confidence_acts(fresh_stack):

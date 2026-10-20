@@ -844,8 +844,8 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// hook also covers the async apply path (#917), since applyOneAsync /
 	// fallbackToRules both dispatch through runDecision.
 	l.recordIntervention(d.Intervention, d.TargetSerial, false)
-	// Address the write to the game this loop decided for (UC-040 BR-011): the
-	// sink needs it so end_game can never end another game (#1310).
+	// Address the write to the game this loop decided for (UC-040 BR-002,
+	// BR-011): the sink needs it so end_game can never end another game (#1310).
 	addressed := d
 	addressed.GameID = c.SessionID
 	if err := l.Actions.Apply(dCtx, addressed); err != nil {
@@ -899,6 +899,8 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 func (l *Loop) evaluatePermission(snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, now time.Time, cost float64, state *LayerState) (BlockReason, bool) {
 	// 1. Allow-list gate (#727): not in interventions_allowed.
 	// UC-045 BR-001: interventions_allowed is the permission gate of the three.
+	// UC-040 BR-004: the agent's half of the double enforcement; the coordinator
+	// checks the allow-list again (interventions.py _check_chain).
 	if !snapshot.Permits(d.Intervention) {
 		return ReasonNotAllowed, true
 	}

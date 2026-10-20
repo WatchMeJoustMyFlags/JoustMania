@@ -308,7 +308,7 @@ test-service:
 # config checks, and the flagd contract (one real flagd, no game stack).
 # promtool, envoy and flagd run via docker when available (CI: required).
 # openfeature versions pinned to uv.lock (bump together with it).
-CONTRACT_DEPS = --with pytest --with pyyaml --with 'openfeature-sdk==0.10.0' --with 'openfeature-provider-flagd==0.5.0'
+CONTRACT_DEPS = --with pytest --with pyyaml --with pytest-rerunfailures --with 'openfeature-sdk==0.10.0' --with 'openfeature-provider-flagd==0.5.0'
 .PHONY: test-contract
 test-contract:
 	uv run --no-project $(CONTRACT_DEPS) pytest tests/contract -v -p no:cacheprovider

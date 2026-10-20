@@ -46,13 +46,15 @@ def load_registry(path):
 
 
 class Fake:
-    def __init__(self, sets, registry, log_path, games=0, scope_values=0):
+    def __init__(self, sets, registry, log_path, games=0, scope_values=0, fail_put=0):
         self.sets = sets  # set -> {flag: flag json}
         self.registry = registry
         self.log_path = log_path
         self.overlays = {}  # (set, flag) -> {"variant", "value", "writer", "persisted"}
         self.games = games
         self.scope_values = scope_values
+        self.fail_put = fail_put  # 1-based index of the PUT answered with 503
+        self.puts = 0
         self.lock = threading.Lock()
 
     def view(self, flag_set, key):
@@ -142,6 +144,10 @@ def make_handler(fake):
             raw = self.rfile.read(length).decode()
             self._log(raw)
             parts, _ = self._parts()
+            with fake.lock:
+                fake.puts += 1
+                if fake.puts == fake.fail_put:
+                    return self._err(503, "unavailable", "injected failure")
             if len(parts) != 2 or parts[0] not in fake.sets:
                 return self._err(404, "unknown_flag_set", self.path)
             flag_set, key = parts
@@ -236,6 +242,9 @@ def main():
         "--games", type=int, default=0, help="live games reported by GET /state"
     )
     ap.add_argument("--scope-values", type=int, default=0)
+    ap.add_argument(
+        "--fail-put", type=int, default=0, help="answer the Nth PUT with 503"
+    )
     args = ap.parse_args()
     sets = {}
     for spec in args.flags:
@@ -243,7 +252,12 @@ def main():
         with open(path) as fh:
             sets[name] = json.load(fh)["flags"]
     fake = Fake(
-        sets, load_registry(args.registry), args.log, args.games, args.scope_values
+        sets,
+        load_registry(args.registry),
+        args.log,
+        args.games,
+        args.scope_values,
+        args.fail_put,
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(fake))
     with open(args.port_file + ".tmp", "w") as fh:

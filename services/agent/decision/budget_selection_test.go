@@ -3,8 +3,11 @@ package decision
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel/sdk/metric"
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
@@ -371,6 +374,35 @@ func TestRateLimitedRepeatIsNotReEmitted(t *testing.T) {
 		}
 		if n := len(spansByName(sr.Ended(), SpanDecision)); n != 1 {
 			t.Fatalf("agent.decision spans = %d, want 1", n)
+		}
+	})
+
+	t.Run("UC-040/A21 repeats are counted in agent_decisions_total and logged at debug, never warned", func(t *testing.T) {
+		l, _, clock, _ := budgetLoop(t, 2, budgetShield("WEAK"))
+		reader := metric.NewManualReader()
+		l.decisions = newDecisionsCounter(metric.NewMeterProvider(metric.WithReader(reader)))
+		logs := &syncBuffer{}
+		l.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		l.limiter.allow(*clock, 2, 2) // budget full now
+
+		const cycles = 5
+		for i := 0; i < cycles; i++ {
+			_ = l.OnEvaluate(context.Background(), budgetCtx(), testTrigger())
+			*clock = clock.Add(5 * time.Second)
+		}
+
+		const key = "grant_shield/true/rate_limit"
+		if got := decisionsByLabels(t, reader)[key]; got != cycles {
+			t.Errorf("agent_decisions_total{%s} = %d, want %d (the first refusal and every repeat)", key, got, cycles)
+		}
+		if n := logs.count("agent.decision_rate_limit_repeat"); n != cycles-1 {
+			t.Errorf("agent.decision_rate_limit_repeat debug lines = %d, want %d (one per repeat)", n, cycles-1)
+		}
+		if n := logs.count("level=DEBUG msg=agent.decision_rate_limit_repeat"); n != cycles-1 {
+			t.Errorf("repeat log lines at debug level = %d, want %d", n, cycles-1)
+		}
+		if n := logs.count("agent.decision_blocked"); n != 1 {
+			t.Errorf("agent.decision_blocked warnings = %d, want 1 (the first refusal only, none for a repeat)", n)
 		}
 	})
 }

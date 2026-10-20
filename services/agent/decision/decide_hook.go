@@ -444,7 +444,8 @@ func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c 
 	}
 	l.llmGate.Lock()
 	defer l.llmGate.Unlock()
-	// Before cadence and budget: an empty allow-list charges neither.
+	// Before cadence and budget: an empty allow-list charges neither
+	// (UC-040 BR-005: no paid call without a possible action).
 	if !hasAllowedInterventions(snapshot.InterventionsAllowed) {
 		l.noteNoInterventions(c, true)
 		l.recordGated(ctx, DecideGateNoInterventions)
@@ -478,6 +479,8 @@ func (l *Loop) launchDecideAsync(ctx context.Context, snapshot flags.Snapshot, b
 	if root == nil {
 		root = context.Background()
 	}
+	// The remote call runs off the evaluation path; nothing waits for it
+	// (UC-040 BR-001: the game never waits).
 	l.inferWG.Add(1)
 	go func() {
 		defer l.inferWG.Done()

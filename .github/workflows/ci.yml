@@ -204,6 +204,7 @@ jobs:
               - 'lib/**'
               - 'proto/**'
               - 'tests/contract/**'
+              - 'tests/integration/setup_guard.py'  # tested by tests/contract (#1649)
               - 'docker-compose.yml'
               - 'docker-compose.ci.yml'  # CI overlay env vars (env-var coverage contract, #1535)
               - 'docs/specs/**'
@@ -755,7 +756,7 @@ jobs:
 
       - name: Run telemetry contract tests
         # test_flagd_resolution.py runs in the Flagd Contract job below.
-        run: uv run --no-project --with pytest --with pyyaml pytest tests/contract -v --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py
+        run: uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -v --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py
 
   # flagd contract tier (#1422): ONE real flagd (compose image tag) on a temp
   # copy of services/flagd/ci, no game services, no build. Typed-getter
@@ -1191,6 +1192,19 @@ jobs:
         env:
           E2E_SHARD: ${{ matrix.shard }}
         run: PYTEST_EXTRA="--reruns 1 --durations=15" make test-integration
+
+      # #1649: a cancelled run never prints the pytest summary, so the cause of a
+      # setup error was lost. Show every container's state and log tail instead.
+      - name: Dump containers on failure
+        if: failure() || cancelled()
+        timeout-minutes: 2
+        run: |
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' || true
+          for c in $(docker ps -aq); do
+            echo "::group::$(docker inspect -f '{{.Name}}' "$c")"
+            docker logs --tail 60 "$c" 2>&1 || true
+            echo "::endgroup::"
+          done
 
   # #1487: arm64 is built on a native arm64 runner (free for public repos), NOT
   # under QEMU. Emulated Go/Rust compiles (otel-collector, rust-hid) hit the
