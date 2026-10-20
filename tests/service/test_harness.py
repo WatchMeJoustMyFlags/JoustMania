@@ -232,3 +232,13 @@ def test_start_stack_does_not_retry_other_start_failures(monkeypatch, tmp_path):
     with pytest.raises(processes.ServiceStartError, match="not ready"):
         stack_module.start_stack(LOBBY, lambda: tmp_path)
     assert fake.started == 1
+
+
+def test_start_stack_retries_on_grpc_failed_to_bind_and_warns(monkeypatch, tmp_path, caplog):
+    """Python gRPC's RuntimeError text; the C++ "address already in use" line may be hidden."""
+    bind_error = "game-coordinator exited with 1 during start\nRuntimeError: Failed to bind to address 127.0.0.1:1"
+    with caplog.at_level("WARNING", logger="tests.service.harness.stack"):
+        _, fake, _ = _start_with(monkeypatch, tmp_path, [bind_error, None])
+
+    assert fake.started == 2
+    assert any("1/3" in r.getMessage() and "game-coordinator exited with 1" in r.getMessage() for r in caplog.records)

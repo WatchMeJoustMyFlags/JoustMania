@@ -24,6 +24,7 @@ and the agent exports its own telemetry to the sink.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -272,8 +273,10 @@ class ServiceStack:
         return "\n".join(parts)
 
 
+logger = logging.getLogger(__name__)
+
 START_ATTEMPTS = 3
-_PORT_IN_USE = "address already in use"
+_PORT_CONFLICT_MARKERS = ("address already in use", "failed to bind to address")
 
 
 def start_stack(
@@ -295,6 +298,13 @@ def start_stack(
         try:
             return stack.start()
         except ServiceStartError as exc:
-            if _PORT_IN_USE not in str(exc).lower() or attempt == attempts:
+            message = str(exc)
+            if not any(marker in message.lower() for marker in _PORT_CONFLICT_MARKERS) or attempt == attempts:
                 raise
+            logger.warning(
+                "service-tier stack start %d/%d lost a port race (#1763), retrying on fresh ports: %s",
+                attempt,
+                attempts,
+                message.splitlines()[0] if message else "",
+            )
     raise AssertionError("unreachable")  # pragma: no cover
