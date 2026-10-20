@@ -69,6 +69,7 @@ if grep -q "PUT /agent/enabled" "${FAKE_FLAG_LOG}"; then ok "on is a flag-servic
 expect "off returns to the fail-closed baseline" 0 "agent kill-switch -> off (baseline)" -- off
 if [[ "$(effective enabled)" == "off" ]]; then ok "enabled == off"; else not_ok "enabled == off (got $(effective enabled))"; fi
 if others_unchanged; then ok "off leaves every other flag unchanged"; else not_ok "off leaves every other flag unchanged"; fi
+if grep -q "^DELETE /agent/enabled" "${FAKE_FLAG_LOG}"; then ok "off is a flag-service DELETE"; else not_ok "off is a flag-service DELETE"; fi
 
 # --- the baseline file is never written ---------------------------------------
 if cmp -s "${SHIPPED}" "${FAKE_AGENT_FLAGS}"; then ok "the baseline file is unchanged"; else not_ok "the baseline file is unchanged"; fi

@@ -24,6 +24,7 @@ func (g fakeGate) RolloutEnabled(context.Context) bool       { return bool(g) }
 // GatedActionSink (the gate is read per Apply against the live flag), never nil and
 // never a bare *Writer. The startup-time AGENT_INTERVENTIONS_ENABLED env gate is
 // gone — the gate moved into the sink and is read live.
+// UC: UC-045 A1
 func TestActionSinkIsLiveGated(t *testing.T) {
 	sink := actionSink(fakeGate(true), actions.NewWriterFromEnv(discardLogger()), discardLogger())
 	if _, ok := sink.(*actions.GatedActionSink); !ok {
@@ -34,6 +35,7 @@ func TestActionSinkIsLiveGated(t *testing.T) {
 // TestActionSinkGateOffSuppressesApply: with the live gate OFF (the fail-closed
 // default state, and what a flagd outage resolves to) the gated sink applies
 // nothing — exactly the inert-scaffold behavior the old env default produced.
+// UC: UC-045 A1
 func TestActionSinkGateOffSuppressesApply(t *testing.T) {
 	sink := actionSink(fakeGate(false), actions.NewWriterFromEnv(discardLogger()), discardLogger())
 	// The gate-off path must short-circuit BEFORE the writer is ever called, so Apply

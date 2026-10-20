@@ -121,6 +121,7 @@ def experiment_values(stack, flag_service):
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-053", flow="A3")
 @pytest.mark.uc("UC-042", flow="main")
+@pytest.mark.uc("UC-043", br=["BR-001"], cond=["Post-F-1"])
 @pytest.mark.usefixtures("fresh_stack", "experiment_values")
 async def test_experiment_reaches_shadow_never_real(flag_service, stack):
     """An experiment-arm value resolves for that experiment's experimental arm only.

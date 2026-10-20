@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -367,6 +370,7 @@ func TestExperimentLoop_EndToEnd_Autonomous_RealWriteGated(t *testing.T) {
 // kill-switch (Config.Enabled false) blocks the real-default write EVEN in
 // autonomous mode — a promote verdict still concludes, but the real-player write
 // degrades to a recorded no-op.
+// UC: UC-043 main
 func TestExperimentLoop_EndToEnd_Autonomous_KillSwitchBlocksRealWrite(t *testing.T) {
 	spawner := &recordingSpawner{}
 	realDef := &recordingRealDefault{}
@@ -468,13 +472,14 @@ func TestExperimentLoop_OnGameTerminal_ReleasesErroredGame(t *testing.T) {
 }
 
 // A real game preempting a running shadow game force-ends it (the coordinator
-// side is covered by test_servicer_sessions.py); the agent then releases the
-// preempted game without a fitness sample so it neither biases the arm nor
-// leaks the in-flight slot.
+// side is covered by test_servicer_sessions.py); the runner reports the real
+// preemption trigger (gamerunner.OutcomePreempted) and the agent releases the
+// preempted game without a fitness sample, under the preemption reason, so it
+// neither biases the arm nor leaks the in-flight slot.
 //
 // UC: UC-043 A2
 func TestExperimentLoop_OnGameTerminal_ReleasesPreemptedGame(t *testing.T) {
-	t.Run("UC-043/A2 a force-ended (preempted) shadow game is released without a sample", func(t *testing.T) {
+	t.Run("UC-043/A2 a preempted shadow game is released without a sample", func(t *testing.T) {
 		spawner := &recordingSpawner{}
 		resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
 		loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
@@ -499,9 +504,9 @@ func TestExperimentLoop_OnGameTerminal_ReleasesPreemptedGame(t *testing.T) {
 		}
 		gameID := recs[0].gameID
 
-		loop.onGameTerminal(gameID, gamerunner.OutcomeForceEnded)
+		loop.onGameTerminal(gameID, gamerunner.OutcomePreempted)
 		if gameStillBound(loop, id, gameID) {
-			t.Fatal("a force-ended game kept its binding (slot leak)")
+			t.Fatal("a preempted game kept its binding (slot leak)")
 		}
 		cv, _ := loop.registry.CompactView(id)
 		for arm, a := range cv.Arms {
@@ -509,14 +514,14 @@ func TestExperimentLoop_OnGameTerminal_ReleasesPreemptedGame(t *testing.T) {
 				t.Fatalf("arm %q folded a sample (count=%d) from a preempted game", arm, a.Count)
 			}
 		}
-		released := false
+		releaseNote := ""
 		for _, ev := range cv.RecentTail {
 			if ev.GameID == gameID && ev.Kind == journal.KindGameReleased {
-				released = true
+				releaseNote = ev.Note
 			}
 		}
-		if !released {
-			t.Fatal("no game_released journal event for the preempted game")
+		if releaseNote != experiment.ReleaseReasonPreempted {
+			t.Fatalf("game_released note = %q, want %q (released for the preemption)", releaseNote, experiment.ReleaseReasonPreempted)
 		}
 		if st, _ := loop.registry.Status(id); st.IsTerminal() {
 			t.Fatalf("experiment status = %s; a preempted game must not end the experiment (continues at step 2)", st)
@@ -1107,4 +1112,51 @@ func TestExperimentLoop_ProposalSinkDeclaresWithinTheBudget(t *testing.T) {
 	if rej, ok := experiment.AsReject(err); !ok || rej.Reason != experiment.ReasonNoCapacity {
 		t.Fatalf("second proposal err = %v, want no_capacity (budget 1)", err)
 	}
+}
+
+// TestExperimentLoop_TickCadence: the loop spawns on the live
+// experiment_tick_seconds cadence; the shipped flag default and the env-less
+// bootstrap default are both 30 s, and a flag value replaces it on the next tick.
+//
+// UC: UC-043 main
+func TestExperimentLoop_TickCadence(t *testing.T) {
+	t.Run("UC-043/main step 2 the spawn cadence is experiment_tick_seconds, default 30 s", func(t *testing.T) {
+		raw, err := os.ReadFile(filepath.Join("..", "flagd", "agent.json"))
+		if err != nil {
+			t.Fatalf("read shipped agent.json: %v", err)
+		}
+		var file struct {
+			Flags map[string]json.RawMessage `json:"flags"`
+		}
+		var tick struct {
+			Variants       map[string]float64 `json:"variants"`
+			DefaultVariant string             `json:"defaultVariant"`
+		}
+		if err := json.Unmarshal(raw, &file); err != nil {
+			t.Fatalf("parse shipped agent.json: %v", err)
+		}
+		if err := json.Unmarshal(file.Flags["experiment_tick_seconds"], &tick); err != nil {
+			t.Fatalf("parse experiment_tick_seconds: %v", err)
+		}
+		if got := tick.Variants[tick.DefaultVariant]; got != 30 {
+			t.Fatalf("shipped experiment_tick_seconds default = %v, want 30", got)
+		}
+
+		t.Setenv(envExperimentTick, "")
+		if got := experimentTick(); got != 30*time.Second {
+			t.Fatalf("bootstrap tick = %s, want 30s", got)
+		}
+		cfg := flags.ExperimentConfig{}
+		loop := &experimentLoop{
+			expDefaults:    flags.ExperimentDefaults{Tick: experimentTick()},
+			configOverride: func(context.Context) flags.ExperimentConfig { return cfg },
+		}
+		if got := loop.tickInterval(context.Background()); got != 30*time.Second {
+			t.Fatalf("tick with the flag unresolved = %s, want the 30s default", got)
+		}
+		cfg.Tick = 10 * time.Second
+		if got := loop.tickInterval(context.Background()); got != 10*time.Second {
+			t.Fatalf("tick with experiment_tick_seconds=10 = %s, want 10s", got)
+		}
+	})
 }

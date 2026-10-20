@@ -99,6 +99,7 @@ func TestOnEvaluate_PermissionGateFiltersBlocked(t *testing.T) {
 }
 
 // UC: UC-013 Post-S-1
+// UC: UC-045 A2
 func TestOnEvaluate_NoneAllowListBlocksEveryDecision(t *testing.T) {
 	t.Run("UC-013/Post-S-1 none blocks every non-noop decision as not_allowed", func(t *testing.T) {
 		// `none` is the empty string on the wire, parsed to an empty allow-list.
