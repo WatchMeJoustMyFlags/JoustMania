@@ -382,10 +382,10 @@ type BluetoothFitness struct {
 // decision loop's log/span throttle. #766 F5 read them ONCE at startup and baked
 // them into those consumers, so retuning the agent's perception/cadence needed a
 // restart. #927 made them live through the OpenFeature configuration-change
-// listener; since #1709 (uncached RPC resolver, which emits no such event)
-// LifecycleHolder.Poll re-evaluates these four flags every second into a shared
-// LifecycleHolder (holder.go) that the consumers read on their hot path. So a
-// flag change here takes effect within about a second with NO restart and NO
+// listener (the in-process resolver emits one per flag sync, #1713), and
+// LifecycleHolder.Poll re-evaluates these four flags every second as the safety net
+// (#1709) into a shared LifecycleHolder (holder.go) that the consumers read on their
+// hot path. So a flag change here takes effect within about a second with NO restart and NO
 // per-cycle read of the flag client. All values are durations.
 type Lifecycle struct {
 	// PlayerTTL bounds how long a silent player is retained before eviction
@@ -639,7 +639,10 @@ func (s Snapshot) Permits(intervention string) bool {
 // Flags evaluates the agent control flags against an OpenFeature client.
 type Flags struct {
 	client Evaluator
-	log    *slog.Logger
+	// rollout evaluates the rollout set (remediation_allowed): its own in-process
+	// provider and selector (#1713). nil: client serves it too (tests).
+	rollout Evaluator
+	log     *slog.Logger
 }
 
 // New builds a Flags wrapper over the given evaluator. log may be nil, in which
@@ -706,10 +709,20 @@ func (f *Flags) InterventionsEnabled(ctx context.Context) bool {
 }
 
 // RemediationAllowed evaluates the rollout set's remediation_allowed flag
-// through flagd (#1411, R1; keys are unique across sets, so no selector is
-// needed). Any error resolves false: auto-rollback stays off (fail closed).
+// through flagd (#1411, R1), on the rollout domain's provider (selector
+// flagSetId=rollout, #1713). Any error resolves false: auto-rollback stays off
+// (fail closed).
 func (f *Flags) RemediationAllowed(ctx context.Context) bool {
-	return f.boolFlag(ctx, "remediation_allowed", false)
+	client := f.client
+	if f.rollout != nil {
+		client = f.rollout
+	}
+	v, err := client.BooleanValue(ctx, "remediation_allowed", false, openfeature.EvaluationContext{})
+	if err != nil {
+		f.log.Debug("flags remediation_allowed fell back to default", "error", err, "default", false)
+		return false
+	}
+	return v
 }
 
 // RolloutEnabled resolves the runtime rollout-actuation gate (#1213,

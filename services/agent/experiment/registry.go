@@ -67,6 +67,10 @@ const (
 	StatusAborted Status = "aborted"
 )
 
+// AbortReasonStartFailed is the abort reason of an experiment whose start failed
+// (UC-043 A8, UC-042 A4): it never stays PROPOSED holding its flag (#1700).
+const AbortReasonStartFailed = "start_failed"
+
 // IsTerminal reports whether a status is terminal (the experiment is finished and
 // its capacity + targeting have been released).
 func (s Status) IsTerminal() bool {
@@ -1449,8 +1453,9 @@ func (r *Registry) shouldGiveUp(s journal.Summary, targetN int) (string, bool) {
 }
 
 // conclude transitions an experiment to CONCLUDED on a final verdict, routes a
-// promote verdict to the Promoter (PROMOTING → DONE), discards otherwise, and
-// tears down the targeting + frees capacity. It is the verdict→terminal path.
+// promote verdict to the Promoter (PROMOTING → DONE when the promotion acted,
+// PROMOTING → DISCARDED when it did not, #1701), discards otherwise, and tears down
+// the targeting + frees capacity. It is the verdict→terminal path.
 func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verdict) (Status, error) {
 	r.mu.Lock()
 	e := r.entries[id]
@@ -1476,15 +1481,22 @@ func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verd
 
 	r.log.Info("experiment.concluded", "experiment_id", id, "outcome", verdict.Outcome)
 
+	var promotion *PromotionResult
 	if verdict.Outcome == CohortOutcomePromote {
-		r.promote(ctx, id, jrnl)
+		res := r.promote(ctx, id, jrnl)
+		promotion = &res
 	}
 
-	// Terminal: discard if not promoted/done. Promotion sets DONE; otherwise discard.
+	// Terminal: DONE when the promotion acted, DISCARDED otherwise (#1701). A
+	// terminal status set while the promotion ran (AbortAll: kill switch or
+	// experiments_enabled off) is kept, never overwritten.
 	r.mu.Lock()
 	e = r.entries[id]
 	final := StatusDiscarded
-	if e != nil && e.status == StatusDone {
+	switch {
+	case e != nil && e.status.IsTerminal():
+		final = e.status
+	case promotion != nil && promotionActed(*promotion):
 		final = StatusDone
 	}
 	r.mu.Unlock()
@@ -1493,19 +1505,38 @@ func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verd
 	if verdict.Reason != "" {
 		note += " (" + verdict.Reason + ")"
 	}
+	if promotion != nil {
+		note += "; promotion " + promotion.Outcome
+		if promotion.Reason != "" {
+			note += ": " + promotion.Reason
+		}
+	}
 	r.teardown(ctx, id, flagKey, final, note)
+	// teardown never overwrites a terminal status, so report the one that holds.
+	if st, ok := r.Status(id); ok {
+		return st, nil
+	}
 	return final, nil
 }
 
 // promote routes a concluded+promote experiment to the Promoter seam
-// (#961/#980), transitioning PROMOTING → DONE. A nil Promoter or a Promote error
-// is recorded but never blocks teardown — the experiment is concluded either way.
-func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal) {
+// (#961/#980), transitioning it to PROMOTING, and journals what the promotion
+// achieved (#1701). It returns the result; conclude sets the terminal status. A nil
+// Promoter is a promotion that could not act (discarded). A failed promotion never
+// blocks teardown.
+func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal) PromotionResult {
 	r.mu.Lock()
 	e := r.entries[id]
 	if e == nil {
 		r.mu.Unlock()
-		return
+		return PromotionResult{Outcome: PromotionDiscarded, Reason: "experiment no longer registered"}
+	}
+	if e.status.IsTerminal() {
+		// AbortAll (kill switch, experiments_enabled off) won the race after the
+		// conclusion: the promotion does not act.
+		st := e.status
+		r.mu.Unlock()
+		return PromotionResult{Outcome: PromotionDiscarded, Reason: "experiment " + string(st) + " before promotion"}
 	}
 	e.status = StatusPromoting
 	r.recordDecision(e.journal, StatusPromoting, "routing to promoter")
@@ -1523,18 +1554,29 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 		ctx = trace.ContextWithSpan(ctx, span)
 	}
 
+	res := PromotionResult{Outcome: PromotionDiscarded, Reason: "no promoter wired"}
 	if r.promo != nil {
-		if err := r.promo.Promote(ctx, jrnl.CompactView()); err != nil {
-			r.log.Warn("experiment.promote_failed", "experiment_id", id, "error", err)
-		}
+		res = r.promo.Promote(ctx, jrnl.CompactView())
+	}
+	if !promotionActed(res) {
+		r.log.Warn("experiment.promote_failed", "experiment_id", id,
+			"outcome", res.Outcome, "reason", res.Reason)
 	}
 
+	// Journal the result whatever the experiment's status is now: an AbortAll that
+	// raced the promotion does not undo an issue, PR or real default it produced.
 	r.mu.Lock()
 	if e := r.entries[id]; e != nil {
-		e.status = StatusDone
-		r.recordDecision(e.journal, StatusDone, "promotion routed")
+		promotion := res
+		r.appendEvent(e.journal, journal.Event{
+			Kind:      journal.KindPromotion,
+			Status:    res.Outcome,
+			Note:      res.Reason,
+			Promotion: &promotion,
+		})
 	}
 	r.mu.Unlock()
+	return res
 }
 
 // Abort terminates an experiment (kill-switch / capacity reclaim / error): it
@@ -1615,11 +1657,12 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	// #1188: end the long-lived agent.experiment ROOT span here — teardown is the
 	// SINGLE terminal chokepoint every terminal transition routes through (conclude →
 	// discarded/done, abort), so ending it here guarantees no leak on ANY terminal path.
-	// It is placed BEFORE the idempotency guard (and is itself idempotent) so the
-	// promote→DONE path — where promote() already set the terminal status, making the
-	// guard below early-return — still ends the span exactly once.
+	// It is placed BEFORE the idempotency guard (and is itself idempotent) so a path
+	// that finds the status already terminal still ends the span exactly once.
 	r.endSpanLocked(e)
-	if e.status.IsTerminal() && e.status == terminal {
+	// A terminal status is never overwritten: an AbortAll that raced a conclusion
+	// keeps the experiment aborted (#1701).
+	if e.status.IsTerminal() {
 		return
 	}
 	e.status = terminal
@@ -1660,12 +1703,18 @@ func (r *Registry) SetTerminalHook(f func(experimentID string)) { r.onTerminal =
 // restart semantics and keeps Rehydrate free of an event replay.
 func (r *Registry) Rehydrate(ids []string) error {
 	r.mu.Lock()
-	var lost []string
+	var lost, unstarted []string
 	defer func() {
 		r.mu.Unlock()
 		// UC-046 BR-015: a pattern experiment whose pin cannot be restored is discarded.
 		for _, id := range lost {
 			r.teardown(context.Background(), id, r.flagKeyOf(id), StatusDiscarded, patterngame.DiscardPinLost)
+		}
+		// UC-043 A8 (#1700): a restored PROPOSED experiment never started (its start
+		// failed, or the agent stopped between declare and start) and nothing starts
+		// it again, so abort it rather than let it hold its flag and a budget slot.
+		for _, id := range unstarted {
+			r.teardown(context.Background(), id, r.flagKeyOf(id), StatusAborted, AbortReasonStartFailed)
 		}
 	}()
 	for _, id := range ids {
@@ -1700,6 +1749,10 @@ func (r *Registry) Rehydrate(ids []string) error {
 		// (idempotent), so no double span.
 		r.startSpanLocked(e, jrnl.Intent())
 		r.entries[id] = e
+		if st == StatusProposed {
+			unstarted = append(unstarted, id)
+			continue
+		}
 		if r.patterns != nil && !r.restorePatternLocked(e) {
 			lost = append(lost, id)
 		}

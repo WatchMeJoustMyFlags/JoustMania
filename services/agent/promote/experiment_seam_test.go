@@ -66,8 +66,8 @@ func TestExperimentSeamEvidenceMapping(t *testing.T) {
 	git := &recordingGit{sha: "deadbeef"}
 	a, rec := adapterWithRecorder(t, gh, git, nil, Config{Mode: ModePR, Target: TargetLocal, Enabled: false})
 
-	if err := a.Promote(context.Background(), promoteView()); err != nil {
-		t.Fatalf("Promote returned error on clean local PR: %v", err)
+	if res := a.Promote(context.Background(), promoteView()); res.Outcome != string(OutcomeApplied) || res.Reference != "local:deadbeef" {
+		t.Fatalf("Promote on clean local PR = %+v, want applied with reference local:deadbeef", res)
 	}
 
 	// The #961 Promoter ran and stamped the fitness Evidence on its span.
@@ -102,9 +102,9 @@ func TestExperimentSeamGitHubGatedNoOp(t *testing.T) {
 	// fail-closed floor). realDef nil ⇒ no real-default writer wired.
 	a, rec := adapterWithRecorder(t, nil, nil, nil, Config{Mode: ModeIssue, Target: TargetGitHub, Enabled: false})
 
-	err := a.Promote(context.Background(), promoteView())
-	if err == nil {
-		t.Fatalf("expected a recorded no-op error when github target is not enabled")
+	res := a.Promote(context.Background(), promoteView())
+	if res.Outcome != string(OutcomeDiscarded) || res.Reason == "" {
+		t.Fatalf("Promote = %+v, want a discarded no-op with a reason when github target is not enabled", res)
 	}
 
 	span := spanByName(t, rec, SpanPromote)
@@ -124,9 +124,9 @@ func TestExperimentSeamAutonomousDisabledNoOp(t *testing.T) {
 	realDef := &recordingRealDefault{}
 	a, rec := adapterWithRecorder(t, nil, nil, realDef, Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: false})
 
-	err := a.Promote(context.Background(), promoteView())
-	if err == nil {
-		t.Fatalf("expected a recorded no-op error when autonomous is requested while disabled")
+	res := a.Promote(context.Background(), promoteView())
+	if res.Outcome != string(OutcomeDiscarded) || res.Reason == "" {
+		t.Fatalf("Promote = %+v, want a discarded no-op with a reason when autonomous is requested while disabled", res)
 	}
 	if len(realDef.calls) != 0 {
 		t.Errorf("kill-switch breached: real default written %d time(s) while disabled", len(realDef.calls))

@@ -9,25 +9,29 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/open-feature/go-sdk/openfeature"
 )
 
-// Live flag-plane tests (#1709). They run only when tests/service/test_agent_flag_live.py
-// starts a real flag service + flagd and passes their addresses; `go test ./...` skips them.
+// Live flag-plane tests (#1709, #1713). They run only when tests/service/test_agent_flag_live.py
+// starts a real flag service + flagd and passes their addresses (flagd's SYNC port: the
+// agent uses the in-process resolver); `go test ./...` skips them.
 const (
 	envLiveFlagdHost       = "AGENT_LIVE_FLAGD_HOST"
 	envLiveFlagdPort       = "AGENT_LIVE_FLAGD_PORT"
+	envLiveFlagdContainer  = "AGENT_LIVE_FLAGD_CONTAINER"
 	envLiveFlagServiceURL  = "AGENT_LIVE_FLAG_SERVICE_URL"
 	liveWriter             = "integration-test"
 	liveFlipBound          = 1500 * time.Millisecond // NFR-050 p99 500 ms, CI headroom (test_flag_propagation.py)
 	liveSetupTimeout       = 30 * time.Second
 	livePollInterval       = 10 * time.Millisecond
 	liveCachedReadsPerFlip = 20
-	liveLateFlagdDelay     = 2 * time.Second // > the provider's 500 ms init deadline
+	liveLateFlagdDelay     = 2 * time.Second // > the provider's default 500 ms init deadline
 )
 
 type liveFlagPlane struct {
@@ -267,4 +271,62 @@ func TestLiveFlip_KillSwitch(t *testing.T) {
 			t.Logf("enabled on->off seen after %s", took)
 		})
 	}
+}
+
+// TestLiveFlip_FlagdRestartMidRun: flagd restarts while the agent runs (#1713). The sync
+// stream is lost: reads fail closed (the kill switch reads off) until flagd syncs again;
+// then the stream is back and later flips are seen within NFR-050 bounds.
+//
+// UC: UC-045 main A3
+func TestLiveFlip_FlagdRestartMidRun(t *testing.T) {
+	container := os.Getenv(envLiveFlagdContainer)
+	if container == "" {
+		t.Skipf("%s not set: run via tests/service/test_agent_flag_live.py", envLiveFlagdContainer)
+	}
+	p := newLiveFlagPlane(t, 0)
+	ctx := context.Background()
+	read := func() bool { return p.flags.Evaluate(ctx).Enabled }
+
+	t.Run("UC-045/A3 UC-045/main flagd restart: fail closed, reconnect, later flips seen", func(t *testing.T) {
+		p.put(t, keyEnabled, "on")
+		readSettled(t, "enabled", read, true)
+
+		// Watch for a fail-closed read while flagd is away.
+		sawOff := make(chan struct{})
+		stop := make(chan struct{})
+		var once sync.Once
+		go func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if !read() {
+					once.Do(func() { close(sawOff) })
+				}
+				time.Sleep(livePollInterval)
+			}
+		}()
+		out, err := exec.Command("docker", "restart", "-t", "5", container).CombinedOutput()
+		if err != nil {
+			close(stop)
+			t.Fatalf("docker restart %s: %v\n%s", container, err, out)
+		}
+		took := waitFor(t, "enabled after the flagd restart (stream reconnected)", read, true, liveSetupTimeout)
+		close(stop)
+		t.Logf("enabled served again %s after docker restart returned", took)
+		select {
+		case <-sawOff:
+		default:
+			t.Fatal("enabled never read off while flagd was away: reads did not fail closed")
+		}
+
+		readSettled(t, "enabled", read, true)
+		p.put(t, keyEnabled, "off")
+		took = waitFor(t, "enabled (kill switch) after the restart", read, false, liveFlipBound)
+		t.Logf("enabled on->off seen after %s", took)
+		p.put(t, keyEnabled, "on")
+		waitFor(t, "enabled back on after the restart", read, true, liveFlipBound)
+	})
 }

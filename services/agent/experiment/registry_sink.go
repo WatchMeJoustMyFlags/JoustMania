@@ -62,7 +62,7 @@ func (s *RegistrySink) Review(ctx context.Context, p Proposal) error {
 		return err
 	}
 	if err := s.Registry.Start(ctx, id); err != nil {
-		_ = s.Registry.Abort(ctx, id, "start_failed")
+		_ = s.Registry.Abort(ctx, id, AbortReasonStartFailed)
 		return err
 	}
 	return nil
