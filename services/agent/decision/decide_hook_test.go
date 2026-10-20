@@ -1062,6 +1062,7 @@ func TestRemote_AsyncNotWiredFallsBack(t *testing.T) {
 	}
 }
 
+// UC: UC-040 BR-013
 func TestRemote_SpanParentAndFireCycleLink(t *testing.T) {
 	const (
 		traceID = "4bf92f3577b34da6a3ce929d0e0e4736"

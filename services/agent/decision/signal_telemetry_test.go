@@ -118,6 +118,7 @@ func TestSignalReceived_NameIsSignalAgnostic(t *testing.T) {
 // {signal=metrics,outcome=idle} on a metric cycle that fires NOTHING, and
 // {signal=traces,outcome=decided} on a trace cycle — proving signal arrival is
 // observable even on idle cycles where no audit span emits.
+// UC: UC-040 A1
 func TestEvaluationsCounter_DecidedAndIdle(t *testing.T) {
 	l, sr, reader := meteredTestLoop(t)
 
