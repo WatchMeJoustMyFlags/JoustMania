@@ -39,7 +39,7 @@ Dependencies (start-up, from `depends_on` and code): audio, python-hid, rust-hid
 dependencies; the controller manager waits for flagd and for rust-hid and python-hid to be healthy (compose
 `depends_on`) and talks to both HID adapters over gRPC; the game coordinator calls the controller manager and
 audio, and the menu calls the controller manager, the game coordinator and audio (code only: in compose the
-coordinator and the menu wait only for flagd); flagd waits for the flag service to be healthy and restarts with it; the agent depends only on flagd
+coordinator and the menu wait only for flagd); flagd waits for the flag service to be healthy and restarts with it; the agent depends only on flagd, and it and rust-hid wait in the background for flagd's first sync rather than at start ([flags.md §1.1](flags.md#11-clients), #1713)
 (and calls the game coordinator and the mock control API to run shadow games, the named exception in C-005).
 
 ## 2. Service catalog
@@ -57,7 +57,7 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*` writes the `controller` set through the flag service | `services/connect-proxy/` |
 | dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005); mode selector from the menu's `ListGameModes` (UC-011 BR-002) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
-| flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | `127.0.0.1:8015` (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
+| flagd | binary v0.16.0 | 8013 RPC eval (tests and tools only, #1713), 8014 mgmt, 8015 sync (every service client), 8016 OFREP | `127.0.0.1:8015` (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
 | flag-service | Go | 50064 gRPC sync (flagd only), 8070 HTTP API | 8070 via override; `/flags/` through envoy | Runtime flag state in memory over the read-only baseline files; the only writer path for runtime flags (§7) | `services/flag-service/` |
 | otel-collector | custom contrib build | 4317 / 4318 OTLP | `127.0.0.1:4317` | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Loki, agent (the :8889 Prometheus exporter was removed in #1449) | `services/otel-collector/config.yaml` |
 | jaeger | 2.19.0 | 16686 UI, 4317 / 4318 OTLP | no | Trace store (badger, bounded TTL) | `services/jaeger/config.yaml` |
@@ -333,6 +333,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 - Music in a separate process with soxr tempo resampling (also shifts pitch), output via ALSA dmix; ALSA card auto-detected at startup (prefers USB). Hardware, `ALSA_CARD` and troubleshooting: [AUDIO.md](../AUDIO.md).
 - 8 effect channels (`AudioManager.MAX_CHANNELS`); only CRITICAL steals a channel (and only one of lower priority); `play_audio=off` accepts and mutes. Priorities are the `AudioPriority` enum LOW 0, MEDIUM 1, HIGH 2, CRITICAL 3; the default is 2.
 - `PlaySound` returns the clip length in `duration_seconds` (0 when nothing is heard: `play_audio` off, silent hardware, failed play or unreadable file), so a caller can wait for a clip to finish (UC-020 A5, #1550). It does not block until the clip ends.
+- `StopSound` (empty request) stops every playing sound effect on all channels and leaves the music running; it returns `success` and `stopped`, the number of channels that were playing (0 is still success; silent hardware or `play_audio` off has nothing to stop). The game coordinator sends it when a force-end interrupts the pre-game instruction clip (UC-020 A5, #1586), best effort and bounded to 2 s (`STOP_SOUND_TIMEOUT_SECONDS`): a failure or timeout is logged and never blocks the end. There is no per-clip handle: the instruction wait is the only caller and no other effect matters at that point. Not forwarded by connect-proxy: only the game coordinator calls it, the browser never does.
 - Assets are OGG only (297 files under `services/audio/assets/<Mode>/{music,sounds,vox/<voice>}`, modes Joust, Menu, Commander, Zombie, Fight_Club; credits in `audio_credits.txt`), mounted read-only at `/app/services/audio/assets`. Effects and voice lines are registered at service start from the `*.ogg` files in the image's `services/audio/assets` (`sound_catalog.ASSETS_DIR`, not `AUDIO_ASSETS_DIR`; new sound files need a restart); music is matched by a glob at each `PlayMusic` (`Joust/music/*.ogg`) and one random decodable file is looped, decoded by miniaudio to 44.1 kHz stereo 16-bit, so no restart is needed for new tracks.
 - Voices are `aaron` and `ivy` (flag `menu_voice`, default `ivy`, event-refreshed). A bare id resolves to `<mode>/vox/<voice>/<id>.ogg` (or `<mode>/sounds/`), a `/vox/` path without a voice gets the current voice.
 - Volume: one master volume (`SetVolume`, 0.0 to 1.0, clamped) scales music and effects; the music player starts at 0.7. `PlayMusic.tempo` is clamped to 0.5 to 2.0 (`MusicPlayer.set_ratio`); `ChangeTempo` transitions over the requested duration without clamping (`transition_ratio`), and during playback a ratio of 0.5 or less, or above 2.0, plays at 1.0 (`_clamp_ratio`, `music_player.py:110-114`); the game uses 1.0 and 1.3 (UC-031 step 3). Tempo needs Linux with ALSA (`sys.platform`); elsewhere music plays at fixed speed.
@@ -354,7 +355,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 |---|---|---|---|
 | `AGENT_LISTEN_ADDR` | `:4317` | yes | OTLP gRPC receiver listen address |
 | `AGENT_HEALTH_ADDR` | `:13134` | yes | HTTP health listen address |
-| `FLAGD_HOST` / `FLAGD_PORT` | `flagd` / `8013` | yes | flagd gRPC evaluation endpoint (RPC resolver) |
+| `FLAGD_HOST` / `FLAGD_PORT` | `flagd` / `8015` | `FLAGD_HOST` only | flagd sync endpoint (in-process resolver, selectors `flagSetId=agent` and `flagSetId=rollout`, #1713). Compose leaves `FLAGD_PORT` unset so an image pinned before #1713 keeps its own default (8013, RPC) |
 | `FLAGD_OFREP_URL` | `http://$FLAGD_HOST:8016` | no | flagd OFREP endpoint for the pattern-game flag digest |
 | `FLAG_SERVICE_URL` | `http://flag-service:8070` | yes | flag service every agent writer calls (interventions, rollout, experiment arms, promotion) |
 | `LOG_LEVEL` | `info` | yes | log verbosity |

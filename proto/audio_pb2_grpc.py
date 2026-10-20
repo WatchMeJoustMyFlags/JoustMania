@@ -40,6 +40,11 @@ class AudioServiceStub:
                 request_serializer=audio__pb2.PlaySoundRequest.SerializeToString,
                 response_deserializer=audio__pb2.PlaySoundResponse.FromString,
                 _registered_method=True)
+        self.StopSound = channel.unary_unary(
+                '/joustmania.audio.AudioService/StopSound',
+                request_serializer=audio__pb2.StopSoundRequest.SerializeToString,
+                response_deserializer=audio__pb2.StopSoundResponse.FromString,
+                _registered_method=True)
         self.PlayMusic = channel.unary_unary(
                 '/joustmania.audio.AudioService/PlayMusic',
                 request_serializer=audio__pb2.PlayMusicRequest.SerializeToString,
@@ -67,6 +72,12 @@ class AudioServiceServicer:
     """
 
     def PlaySound(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StopSound(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -103,6 +114,11 @@ def add_AudioServiceServicer_to_server(servicer, server):
                     servicer.PlaySound,
                     request_deserializer=audio__pb2.PlaySoundRequest.FromString,
                     response_serializer=audio__pb2.PlaySoundResponse.SerializeToString,
+            ),
+            'StopSound': grpc.unary_unary_rpc_method_handler(
+                    servicer.StopSound,
+                    request_deserializer=audio__pb2.StopSoundRequest.FromString,
+                    response_serializer=audio__pb2.StopSoundResponse.SerializeToString,
             ),
             'PlayMusic': grpc.unary_unary_rpc_method_handler(
                     servicer.PlayMusic,
@@ -153,6 +169,33 @@ class AudioService:
             '/joustmania.audio.AudioService/PlaySound',
             audio__pb2.PlaySoundRequest.SerializeToString,
             audio__pb2.PlaySoundResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StopSound(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/joustmania.audio.AudioService/StopSound',
+            audio__pb2.StopSoundRequest.SerializeToString,
+            audio__pb2.StopSoundResponse.FromString,
             options,
             channel_credentials,
             insecure,

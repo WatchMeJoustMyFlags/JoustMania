@@ -10,7 +10,8 @@ import (
 )
 
 // LifecycleReloadInterval is how often SetupFlagd's poll re-reads the four
-// calibration flags into the holder (#1709): four flagd RPCs per second.
+// calibration flags into the holder (#1709): four local in-process evaluations per
+// second, the safety net under the configuration-change event (#1713).
 const LifecycleReloadInterval = time.Second
 
 // LifecycleHolder is the concurrency-safe, hot-reloadable home of the four
@@ -30,9 +31,9 @@ const LifecycleReloadInterval = time.Second
 // Store's eviction TTLs) read the CURRENT value from this holder on their own
 // hot path instead of a construction-time constant — so a flag change takes
 // effect with no restart and WITHOUT reading the flag client per decision cycle
-// (reads here are a lock-free atomic load). Since #1709 the agent's RPC resolver
-// runs uncached and emits no config-change events, so Poll (one Reload per
-// second) is what keeps the holder live; the event handler stays registered.
+// (reads here are a lock-free atomic load). Since #1713 the agent's in-process
+// resolver emits a config-change per flag sync; Poll (one Reload per second, #1709)
+// stays as the safety net so a lost or never-started event path cannot freeze it.
 //
 // Concurrency: the handler Reload()s from the SDK's event goroutine while the
 // Loop / ticker / Store read from their own goroutines, so the value is held in
@@ -107,10 +108,9 @@ func (h *LifecycleHolder) Reload(ctx context.Context) {
 	}
 }
 
-// Poll calls Reload every interval until ctx ends (#1709). The uncached RPC
-// resolver (provider.go) emits no configuration-change events, so this is what
-// keeps the four values live; a retune lands within interval plus flagd's
-// propagation. Each Reload evaluates with context.Background() (see
+// Poll calls Reload every interval until ctx ends (#1709): the safety net under the
+// configuration-change handler, so the four values stay live even if no event
+// arrives; a retune lands within interval plus flagd's propagation at the latest. Each Reload evaluates with context.Background() (see
 // RegisterConfigChangeHandler): ctx only stops the loop, so a reload racing the
 // shutdown never reverts the values to their defaults.
 func (h *LifecycleHolder) Poll(ctx context.Context, interval time.Duration) {
@@ -153,9 +153,8 @@ func (h *LifecycleHolder) DecisionThrottle() time.Duration { return h.Load().Dec
 // We register a DOMAIN-scoped handler on the agent client (client.AddHandler)
 // rather than the API-global openfeature.AddHandler, so the agent only reacts to
 // its OWN flagd domain's config-changes — not another provider's, were one ever
-// registered. The flagd RPC resolver (provider.go) connects to flagd's evaluation
-// port and the provider surfaces flagd's change notifications as
-// ProviderConfigChange events on this domain. The event fires for ANY flag in the
+// registered. The flagd in-process resolver (provider.go) surfaces each flag sync
+// from flagd as a ProviderConfigChange event on this domain (#1713). The event fires for ANY flag in the
 // domain (config-changes are rare), and Reload simply re-reads the four it owns.
 //
 // eventClient is the narrow interface the agent client satisfies (*openfeature.Client);

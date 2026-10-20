@@ -480,12 +480,13 @@ func main() {
 	shutdownMetrics := initMetrics(ctx)
 	defer shutdownMetrics(context.Background())
 
-	// OpenFeature / flagd control layer. Setup is non-blocking: if flagd is
-	// unreachable the provider connects in the background and every evaluation
-	// falls back to its safe default (enabled=false), so the agent still starts.
+	// OpenFeature / flagd control layer: the in-process resolver on flagd's sync port
+	// (#1713). Setup is non-blocking: until flagd's first sync (retried however late
+	// flagd is) every evaluation falls back to its safe default (enabled=false), so the
+	// agent still starts.
 	flagCfg := flags.ProviderConfig{
 		Host: getEnv("FLAGD_HOST", "flagd"),
-		Port: parsePort(getEnv("FLAGD_PORT", "8013"), 8013),
+		Port: parsePort(getEnv("FLAGD_PORT", "8015"), 8015),
 	}
 	agentFlags, lifecycleHolder, shutdownFlags, err := flags.SetupFlagd(ctx, flagCfg, logger)
 	if err != nil {
@@ -496,9 +497,8 @@ func main() {
 	slog.Info("OpenFeature flagd provider registered", "host", flagCfg.Host, "port", flagCfg.Port)
 
 	// Lifecycle + throttle calibration flags (#766 F5) are HOT-RELOADED live since
-	// #927: SetupFlagd primed the holder with the four flags; since #1709 the holder
-	// is re-read every 1 s (the uncached RPC resolver emits no configuration-change
-	// events), so the store TTLs, eviction ticker, and decision-loop throttle
+	// #927: SetupFlagd primed the holder with the four flags; it is reloaded on each
+	// configuration change and, as the safety net (#1709), every 1 s, so the store TTLs, eviction ticker, and decision-loop throttle
 	// read the CURRENT values from the holder on their hot path and a flag change
 	// takes effect with no restart. The initial snapshot below is only for the
 	// startup log; the consumers wired further down read the holder's live source

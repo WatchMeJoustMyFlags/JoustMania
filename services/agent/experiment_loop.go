@@ -647,7 +647,7 @@ func (e *experimentLoop) declareDynamicIfEnabled(ctx context.Context, cfg flags.
 	if !ok {
 		return // nothing declarable this tick (no free candidate flag).
 	}
-	if err := e.declareAndStart(ctx, intent); err != nil {
+	if _, err := e.declareAndStart(ctx, intent); err != nil {
 		// A type-mismatch / unknown-flag rejection at Start fails closed (no shadow
 		// game runs); log it and move on — the next tick rotates to another flag.
 		e.log.Warn("experiment: dynamic declare/start failed (#995)",
@@ -713,7 +713,7 @@ func (e *experimentLoop) declareFromRetroIfEnabled(ctx context.Context, cfg flag
 	if !ok {
 		return // no recorded suggestion, or nothing declarable this tick.
 	}
-	if err := e.declareAndStart(ctx, intent); err != nil {
+	if _, err := e.declareAndStart(ctx, intent); err != nil {
 		e.log.Warn("experiment: retro-seeded declare/start failed (#1184)",
 			"flag_key", intent.FlagKey, "objective", intent.Objective, "error", err)
 		return
@@ -750,7 +750,7 @@ func (e *experimentLoop) ensureStarted(ctx context.Context) {
 		e.log.Error("experiment: rehydrate from journal failed (continuing without prior experiments)", "error", err)
 	}
 	if e.seed != nil {
-		if err := e.declareAndStart(ctx, *e.seed); err != nil {
+		if _, err := e.declareAndStart(ctx, *e.seed); err != nil {
 			e.log.Error("experiment: seed declare/start failed", "error", err)
 		}
 	}
@@ -793,13 +793,20 @@ func (e *experimentLoop) proposalSink() *experiment.RegistrySink {
 }
 
 // declareAndStart declares one experiment and writes its shadow targeting,
-// transitioning it to RUNNING so it can accrue shadow games.
-func (e *experimentLoop) declareAndStart(ctx context.Context, in experiment.Intent) error {
+// transitioning it to RUNNING so it can accrue shadow games. A failed start aborts
+// the experiment with start_failed (UC-043 A8, #1700), as the M7-4 proposer's
+// RegistrySink does, so a refused start never leaves it PROPOSED holding its flag
+// under test and a slot of the concurrent-experiment budget.
+func (e *experimentLoop) declareAndStart(ctx context.Context, in experiment.Intent) (string, error) {
 	id, err := e.registry.Declare(in)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return e.registry.Start(ctx, id)
+	if err := e.registry.Start(ctx, id); err != nil {
+		_ = e.registry.Abort(ctx, id, experiment.AbortReasonStartFailed)
+		return id, err
+	}
+	return id, nil
 }
 
 // onGameEnd is the conclusion hook chained onto the Store's OnGameEnd (#928): when

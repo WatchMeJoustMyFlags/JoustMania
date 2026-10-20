@@ -321,6 +321,22 @@ class AudioManager:
             metrics.audio_sounds_played_total.labels(result="error").inc()
             return False
 
+    def stop_sounds(self) -> int:
+        """Stop every playing sound effect (music keeps playing).
+
+        Returns:
+            Number of channels that were playing and are now stopped.
+        """
+        stopped = 0
+        for channel in self.channels:
+            if channel.is_playing:
+                channel.stop()
+                stopped += 1
+        if stopped:
+            self._update_channel_gauge()
+            logger.info(f"Stopped {stopped} playing sound effect(s)")
+        return stopped
+
     def sound_duration(self, file_path: str) -> float:
         """Return the length of a sound in seconds, or 0.0 when nothing is heard.
 
@@ -786,6 +802,17 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         if track_id:
             return audio_pb2.PlayMusicResponse(track_id=track_id, success=True, error="")
         return audio_pb2.PlayMusicResponse(track_id="", success=False, error="Failed to play music")
+
+    async def StopSound(self, _request, _context):
+        """Stop every playing sound effect (UC-020 A5 force-end, #1586)."""
+        span = trace.get_current_span()
+        try:
+            stopped = self.audio_manager.stop_sounds()
+        except Exception as e:
+            logger.error(f"Error stopping sounds: {e}", exc_info=True)
+            return audio_pb2.StopSoundResponse(success=False, error="Failed to stop sounds")
+        span.set_attribute("audio.stopped", stopped)
+        return audio_pb2.StopSoundResponse(success=True, error="", stopped=stopped)
 
     async def StopMusic(self, request, _context):
         """Stop music track."""
