@@ -26,7 +26,10 @@ driven by metrics.
 
 **Spans are late by design.** `player_lifecycle` spans only flush at game end,
 and even then sit behind the ~10 s trace batch window. They are used for
-**audit/confirmation** of decisions, never as the timely trigger.
+**audit/confirmation** and the elimination order. A span batch still wakes the
+evaluation and adds span-derived state (elimination order, `game.mode`,
+`game.kind`, experiment id/arm) that decisions may read, so that state lags the
+game (UC-041 BR-001).
 
 The metric extractor already recognizes **both** today's metric names **and** the
 five #722-proposed metrics, so each signal lights up automatically the moment its
