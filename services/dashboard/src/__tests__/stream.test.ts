@@ -3,6 +3,8 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { keepStreamOpen } from "../stream.js";
+import { AgentView } from "../components/AgentView.js";
+import { onAgentPollFailed, onDecidePollFailed, onExperimentsPollFailed } from "../degrade.js";
 import { ExperimentsView } from "../components/ExperimentsView.js";
 
 /** A stream that yields the events, then ends cleanly or throws. */
@@ -106,5 +108,74 @@ describe("UC-035: A3 a telemetry backend is down (dashboard side)", () => {
     view.markStale();
     expect(view.rendered).toBe(false);
     expect(fresh.hidden).toBe(true);
+  });
+
+  /** Every element id resolves to its own fake element. */
+  function stubDom() {
+    const els = new Map<string, ReturnType<typeof fakeEl>>();
+    vi.stubGlobal("document", {
+      getElementById: (id: string) => {
+        if (!els.has(id)) els.set(id, fakeEl());
+        return els.get(id);
+      },
+    });
+    return (id: string) => els.get(id)!;
+  }
+
+  const agentView = () => new AgentView("feed", "flags", "overlay", "fresh", { strip: "strip", feed: "dfeed" });
+  const emptyView = {
+    feed: [],
+    flags: null,
+    overlay: { blockedByAction: [], blockedByReason: [], totalBlocked: 0, appliedOk: null, appliedError: null },
+  };
+
+  it("UC-035/A3 an agent panel that never rendered says Loki is unreachable", () => {
+    const el = stubDom();
+    onAgentPollFailed(agentView());
+    expect(el("feed").innerHTML).toContain("Could not reach Loki for agent telemetry.");
+  });
+
+  it("UC-035/A3 an experiments panel that never rendered says Loki is unreachable", () => {
+    const el = stubDom();
+    onExperimentsPollFailed(new ExperimentsView("grid", "fresh"));
+    expect(el("grid").innerHTML).toContain("Could not reach Loki for experiment telemetry.");
+  });
+
+  it("UC-035/A3 a decide strip that never rendered says Jaeger is unreachable", () => {
+    const el = stubDom();
+    const view = agentView();
+    onDecidePollFailed(view);
+    expect(el("dfeed").innerHTML).toContain("Could not reach Jaeger for agent.decide spans.");
+    expect(view.decideHasRendered).toBe(true);
+  });
+
+  it("UC-035/A3 a decide strip that rendered keeps its rows when Jaeger fails", () => {
+    const el = stubDom();
+    const view = agentView();
+    view.renderDecide({ current: null, rows: [] } as never);
+    const painted = el("dfeed").innerHTML;
+    onDecidePollFailed(view);
+    expect(el("dfeed").innerHTML).toBe(painted);
+  });
+
+  it("UC-035/A3 VictoriaMetrics down shows the Applied count as n/a", () => {
+    const el = stubDom();
+    agentView().render(emptyView as never);
+    expect(el("overlay").innerHTML).toContain('title="VictoriaMetrics unreachable">n/a</span>');
+  });
+
+  it("UC-035/A3 a rendered agent panel keeps its data and is marked stale", () => {
+    vi.useFakeTimers();
+    const el = stubDom();
+    const view = agentView();
+    view.render(emptyView as never);
+    const painted = el("feed").innerHTML;
+
+    vi.advanceTimersByTime(20_000);
+    onAgentPollFailed(view);
+
+    expect(el("feed").innerHTML).toBe(painted);
+    expect(el("fresh").textContent).toBe("stale — last updated 20s ago");
+    expect(el("fresh").classList.has("stale")).toBe(true);
   });
 });
