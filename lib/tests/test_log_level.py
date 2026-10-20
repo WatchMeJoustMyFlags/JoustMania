@@ -35,14 +35,12 @@ def clean_logger(monkeypatch):
     log_level.reset_for_tests()
 
 
-@pytest.mark.uc("UC-035", flow="main")
 def test_flag_wins_over_env(flagd, monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "ERROR")
     flagd.get_string_details.return_value = _details("debug")
     assert log_level.resolve_log_level() == logging.DEBUG
 
 
-@pytest.mark.uc("UC-035", flow="main")
 @pytest.mark.parametrize("reason", [Reason.ERROR])
 def test_env_used_when_flag_unresolved(flagd, monkeypatch, reason):
     monkeypatch.setenv("LOG_LEVEL", "warning")
@@ -50,27 +48,23 @@ def test_env_used_when_flag_unresolved(flagd, monkeypatch, reason):
     assert log_level.resolve_log_level() == logging.WARNING
 
 
-@pytest.mark.uc("UC-035", flow="main")
 def test_env_used_when_flagd_raises(flagd, monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     flagd.get_string_details.side_effect = RuntimeError("flagd down")
     assert log_level.resolve_log_level() == logging.DEBUG
 
 
-@pytest.mark.uc("UC-035", flow="main")
 def test_default_info_without_flag_and_env(flagd):
     flagd.get_string_details.return_value = _details("", Reason.ERROR)
     assert log_level.resolve_log_level() == logging.INFO
 
 
-@pytest.mark.uc("UC-035", flow="main")
 def test_unknown_flag_value_falls_back_to_env(flagd, monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "error")
     flagd.get_string_details.return_value = _details("loud")
     assert log_level.resolve_log_level() == logging.ERROR
 
 
-@pytest.mark.uc("UC-035", flow="main")
 def test_runtime_change_applies_without_restart(flagd):
     handler = logging.NullHandler()
     log_level.register_handler(handler)
@@ -85,7 +79,6 @@ def test_runtime_change_applies_without_restart(flagd):
     assert handler.level == logging.DEBUG
 
 
-@pytest.mark.uc("UC-035", flow="main")
 def test_floor_lowers_level(flagd):
     flagd.get_string_details.return_value = _details("warning")
     log_level.register_floor(lambda: logging.DEBUG)

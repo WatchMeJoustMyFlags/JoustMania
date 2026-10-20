@@ -35,7 +35,6 @@ func (e *logLevelEvaluator) set(value string, err error) {
 	e.mu.Unlock()
 }
 
-// UC: UC-035 main step 6
 func TestLogLevelFollower_Resolution(t *testing.T) {
 	unresolved := errors.New("provider not ready")
 	cases := []struct {
@@ -61,7 +60,6 @@ func TestLogLevelFollower_Resolution(t *testing.T) {
 	}
 }
 
-// UC: UC-035 main step 6
 func TestLogLevelFollower_RuntimeChangeWithoutRestart(t *testing.T) {
 	ev := &logLevelEvaluator{value: "info"}
 	var level slog.LevelVar
@@ -82,7 +80,6 @@ func TestLogLevelFollower_RuntimeChangeWithoutRestart(t *testing.T) {
 	}
 }
 
-// UC: UC-035 main step 6
 func TestLogLevelFollower_ServiceInContext(t *testing.T) {
 	ev := &logLevelEvaluator{value: "info"}
 	NewLogLevelFollower(ev, &slog.LevelVar{}, "agent", "", nil).Resolve(context.Background())

@@ -541,7 +541,7 @@ func main() {
 	}
 	defer shutdownFlags()
 	slog.Info("OpenFeature flagd provider registered", "host", flagCfg.Host, "port", flagCfg.Port)
-	if err := flags.SetupLogLevel(ctx, flagCfg, resolveServiceName(), os.Getenv("LOG_LEVEL"), &logLevel, logger); err != nil {
+	if err := flags.SetupLogLevel(ctx, flagCfg, resolveServiceName(), getEnv("LOG_LEVEL", "info"), &logLevel, logger); err != nil {
 		slog.Warn("log_level flag not wired, keeping the LOG_LEVEL env level", "error", err)
 	}
 
