@@ -12,8 +12,8 @@ function, and checks what the replay check relies on:
   pattern controllers (BR-004);
 - the game ends organically with a winner (no kill commands are sent);
 - per-slot checkpoint hashes are identical on their common prefix (NFR-040);
-- the elimination order derived from delivered-frame counts (BR-014) and the
-  winner slot are identical in both runs (NFR-041).
+- the elimination order, taken from the coordinator's player_death events
+  (BR-014), and the winner slot are identical in both runs (NFR-041).
 
 The agent is not involved: the test reserves the controllers and starts the game
 itself, exactly as the shadow runner does for a one-shot pattern game.
@@ -174,6 +174,7 @@ async def _play(mock, game, controller, tag: str) -> dict:
     flow="main",
     steps=[3, 4, 5, 6, 8],
     br=["BR-001", "BR-004", "BR-005", "BR-014"],
+    cond=["Post-S-2"],
     tc="TC-012",
 )
 async def test_pattern_game_replays_identically(service_stack):

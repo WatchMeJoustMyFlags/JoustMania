@@ -174,6 +174,7 @@ func TestRunShadowGame_TimeoutForceEnds(t *testing.T) {
 	}
 }
 
+// UC: UC-046 A9
 func TestRunShadowGame_CleanupOnStreamError(t *testing.T) {
 	mock := &fakeMock{}
 	coord := &fakeCoord{
