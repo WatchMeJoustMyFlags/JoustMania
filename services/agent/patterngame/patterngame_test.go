@@ -57,7 +57,7 @@ func fiveArchetypes() map[string]any {
 	return v
 }
 
-// UC: UC-046 main A1 A2 A4 A5 A13 BR-003 BR-006 BR-013
+// UC: UC-046 main A1 A2 A4 A5 A13 BR-003 BR-006 BR-013 Pre-4 Post-F-1
 func TestResolve(t *testing.T) {
 	ctx := context.Background()
 	t.Run("UC-046/main pins archetypes in selection order with digests and the cap", func(t *testing.T) {
@@ -200,7 +200,7 @@ func TestNewArchetype(t *testing.T) {
 	})
 }
 
-// UC: UC-046 main BR-003
+// UC: UC-046 main BR-003 Pre-3
 func TestShippedArchetypeVariants(t *testing.T) {
 	t.Run("UC-046/main every shipped variant validates in Go and both flag files agree", func(t *testing.T) {
 		var flagsets [2]map[string]any

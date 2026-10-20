@@ -212,7 +212,7 @@ class TestUC046MockRpcs:
         assert not broken.success
         assert adapter.controllers == {}
 
-    @pytest.mark.uc("UC-046", flow="main", steps=[3, 4], br=["BR-006"])
+    @pytest.mark.uc("UC-046", flow="main", steps=[3, 4], br=["BR-006"], cond=["Pre-2"])
     def test_add_controllers_installs_the_set(self, service, adapter):
         """UC-046 steps 3-4: AddControllers(archetype) reserves one controller per player and echoes the archetype."""
         resp = _add_pattern(service)
@@ -270,7 +270,7 @@ class TestUC046MockRpcs:
 
 
 class TestUC046PatternControllersHidden:
-    @pytest.mark.uc("UC-046", flow="main", steps=[3, 4], br=["BR-004"])
+    @pytest.mark.uc("UC-046", cond=["Post-F-2"], br=["BR-004"])
     def test_pattern_controllers_are_always_reserved(self, service, adapter):
         """UC-046 Post-F-2: pattern controllers are always reserved (hidden from the lobby)."""
         resp = service.AddControllers(

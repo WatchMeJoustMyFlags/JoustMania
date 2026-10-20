@@ -664,11 +664,11 @@ func (h *preemptionHarness) staleNotes() int {
 	return n
 }
 
-// UC: UC-046 A9 BR-015 UC-041 A4
+// UC: UC-046 BR-015 UC-041 A4
 func TestRegistryPatternStaleRerunBudget(t *testing.T) {
 	const errorRelease = "game ended without usable fitness sample: error"
 
-	t.Run("UC-046/A9 stale ends rerun the pair without using up the 3-rerun budget", func(t *testing.T) {
+	t.Run("UC-046/BR-015 stale ends rerun the pair without using up the 3-rerun budget", func(t *testing.T) {
 		h := newPreemptionHarness(t, "")
 		for i := 0; i < 5; i++ {
 			if !h.releaseNext(ReleaseReasonStale) {

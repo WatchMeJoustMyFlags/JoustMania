@@ -3,6 +3,7 @@ package gamerunner
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -72,7 +73,7 @@ func patternSpec(a patterngame.Archetype) Spec {
 	}
 }
 
-// UC: UC-046 main BR-004 BR-006 BR-014
+// UC: UC-046 main BR-004 BR-006 BR-014 Post-S-1
 func TestRunShadowGame_PatternGameEndsWithWinner(t *testing.T) {
 	t.Run("UC-046/main archetype passed, no scripted drive, replay record built", func(t *testing.T) {
 		a := testArchetype(t)
@@ -214,6 +215,12 @@ func TestStartExperimentGame_PatternAbortAndOverrun(t *testing.T) {
 		}
 		if rec.ExperimentID != "exp_x" || rec.PairIndex != 0 {
 			t.Errorf("record experiment = %s/%d", rec.ExperimentID, rec.PairIndex)
+		}
+		// A12: the abort still removes every reserved pattern controller (the record
+		// is delivered after the removal).
+		added, removed, _, _ := mock.snapshot()
+		if len(added) == 0 || !reflect.DeepEqual(added, removed) {
+			t.Errorf("reserved controllers not removed after the kill-switch abort: added=%v removed=%v", added, removed)
 		}
 	})
 }

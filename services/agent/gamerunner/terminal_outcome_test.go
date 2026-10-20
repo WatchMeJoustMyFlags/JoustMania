@@ -118,7 +118,7 @@ func TestAwaitTerminal_OutcomeClassification(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-046/A8 game_ended without outcome and no game_force_ended completes after the grace", func(t *testing.T) {
+	t.Run("UC-046/BR-016 game_ended without outcome and no game_force_ended completes after the grace", func(t *testing.T) {
 		winner := ev("game_winner")
 		winner.Data = map[string]string{"serial": "MOCK0000"}
 		coord := &fakeCoord{gameID: "game_old_win", events: []*gcpb.GameEvent{
