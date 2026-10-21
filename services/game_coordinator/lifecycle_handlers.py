@@ -33,6 +33,7 @@ not conflict structurally.
 
 import logging
 
+from .intervention_errors import InterventionNotApplied
 from .interventions import InterventionContext, InterventionManager
 
 logger = logging.getLogger(__name__)
@@ -301,6 +302,10 @@ async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionM
     ``game.grant_shield`` (extend-not-shorten, with a visible pulse). Serials at
     the neutral default (0) — or battery-gated by the helper — are skipped.
     Reverting to none requires no action: existing shields simply expire.
+
+    In trigger mode a grant becomes a shield charge (#1837, UC-040 A30). A grant
+    to a player who holds one raises ``InterventionNotApplied`` (A31); in a
+    fan-out it is re-raised only when no serial was applied.
     """
     game = ctx.game
     if game is None:
@@ -314,6 +319,8 @@ async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionM
         logger.debug("shield_seconds: game has no grant_shield, ignoring")
         return
 
+    applied = False
+    not_applied: InterventionNotApplied | None = None
     for serial, raw_seconds in shields.items():
         try:
             seconds = float(raw_seconds)
@@ -321,7 +328,13 @@ async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionM
             continue  # malformed: safe no-op for this serial
         if seconds <= SHIELD_NONE:
             continue  # neutral default: no shield for this serial
-        await grant(serial, seconds)
+        try:
+            await grant(serial, seconds)
+            applied = True
+        except InterventionNotApplied as e:
+            not_applied = not_applied or e
+    if not_applied is not None and not applied:
+        raise not_applied
 
 
 async def handle_eliminate_player(ctx: InterventionContext) -> None:
