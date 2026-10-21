@@ -3799,7 +3799,7 @@ class BaseGameMode(ABC):
         (``success=False``: the track was replaced or stopped) stops the resends
         for this track: the audio service no longer plays it.
         """
-        if self._is_shadow_game() or not self.audio_client or self.music_track_id in (None, MUTED_TRACK_ID):
+        if not self.audio_client or self.music_track_id in (None, MUTED_TRACK_ID):
             self._audio_synced = True
             return
 

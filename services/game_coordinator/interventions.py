@@ -60,6 +60,7 @@ from openfeature.evaluation_context import EvaluationContext
 from openfeature.flag_evaluation import Reason
 from openfeature.provider import ProviderEvent
 
+from lib.feature_flags import GAME_KIND_SHADOW
 from lib.flag_eval_visibility import record_flag_fallback
 from services.game_coordinator.game_loop_dispatch import (
     DEFAULT_DISPATCH_TIMEOUT_S,
@@ -845,7 +846,12 @@ class InterventionManager:
 
     async def _set_volume(self, game: object, volume: float) -> None:
         """Send a SetVolume RPC via the live game's audio client (no-op if
-        there is no running game / audio client)."""
+        there is no running game / audio client). A shadow game never sends it:
+        the audio service is shared and its room volume is the real game's
+        (UC-031 BR-006, #1835)."""
+        if getattr(game, "game_kind", None) == GAME_KIND_SHADOW:
+            logger.info("volume_override: shadow game is silent, skipping")
+            return
         audio_client = getattr(game, "audio_client", None) if game is not None else None
         if audio_client is None:
             logger.info("volume_override: no live game audio client, skipping")

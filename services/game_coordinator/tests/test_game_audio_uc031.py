@@ -357,3 +357,35 @@ async def test_real_game_keeps_its_track_next_to_a_shadow_game():
     assert audio.stops == 1  # the real game's teardown only
     assert audio.tempo_refused == 0
     assert audio.tempo_ok >= 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="main", br=["BR-006"])
+@pytest.mark.uc("UC-043", flow="main", br=["BR-004"])
+async def test_volume_intervention_and_revert_skip_a_shadow_game():
+    """UC-031 BR-006: adjust_volume and its revert on a shadow game send no SetVolume; the real game's still do."""
+    spec = next(s for s in INTERVENTION_SPECS if s.flag_key == "volume_override")
+    log: list = []
+    shadow_log: list = []
+    real = FFAGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=2),
+        event_publisher=EventCollector().publish,
+        audio_client=RecordingAudio(log),
+        game_id="test_uc031_vol_real",
+    )
+    shadow = FFAGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=2),
+        event_publisher=EventCollector().publish,
+        audio_client=RecordingAudio(shadow_log),
+        game_id="test_uc031_vol_shadow",
+    )
+    shadow.game_kind = "shadow"
+    manager = InterventionManager(event_publisher=EventCollector().publish, get_game=lambda: real)
+
+    for game in (shadow, real):
+        ctx = InterventionContext(spec=spec, value=0.3, payload="", target_serial=None, game=game, objective="balanced")
+        await manager._handle_volume_override(ctx)
+        await manager._handle_volume_revert(ctx)
+
+    assert shadow_log == []
+    assert [call for call, _ in log] == ["SetVolume", "SetVolume"]
