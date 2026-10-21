@@ -57,6 +57,9 @@ RECONCILE_PERIOD_SECONDS = 15.0
 # at its game cap) is retried every RECONCILE_RETRY_SECONDS; it logs once, then
 # at most this often, with the count of suppressed repeats (#1479).
 FAILURE_LOG_INTERVAL_SECONDS = 60.0
+# Shutdown gives the queued ends this long to reach the flag service before the
+# worker is stopped (#1849); an unreachable service costs at most this.
+FLUSH_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -178,6 +181,23 @@ class FlagServiceLifecycle:
         self._worker = self._loop.create_task(self._run())
         logger.info("Flag service lifecycle reporting enabled (instance %s, boot %s)", self.instance, BOOT_ID)
 
+    async def flush(self, limit_s: float = FLUSH_TIMEOUT_SECONDS) -> bool:
+        """Wait up to ``limit_s`` s for the queued ends to be sent (#1849).
+
+        True when every queued end was attempted; False on timeout (the rest
+        is left to the next reconcile). Never raises.
+        """
+        queue = self._queue
+        if self._worker is None or queue is None:
+            return True
+        await asyncio.sleep(0)  # let end() calls scheduled from other threads land
+        try:
+            await asyncio.wait_for(queue.join(), timeout=limit_s)
+        except TimeoutError:
+            logger.warning("Flag service end flush timed out after %.1fs; the next reconcile retires the rest", limit_s)
+            return False
+        return True
+
     async def stop(self) -> None:
         if self._worker is not None:
             self._worker.cancel()
@@ -293,10 +313,13 @@ class FlagServiceLifecycle:
             except TimeoutError:
                 await self.check_epoch()
                 continue
-            pending = self._registering.get(game_id)
-            if pending is not None:
-                # A registration still in flight would land after the DELETE and
-                # re-register the ended game; let it finish first.
-                with contextlib.suppress(Exception):
-                    await pending
-            await self._call("end", "DELETE", "/games/" + urllib.parse.quote(game_id, safe=""))
+            try:
+                pending = self._registering.get(game_id)
+                if pending is not None:
+                    # A registration still in flight would land after the DELETE and
+                    # re-register the ended game; let it finish first.
+                    with contextlib.suppress(Exception):
+                        await pending
+                await self._call("end", "DELETE", "/games/" + urllib.parse.quote(game_id, safe=""))
+            finally:
+                self._queue.task_done()  # lets flush() see the end as attempted
