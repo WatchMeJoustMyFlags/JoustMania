@@ -97,7 +97,9 @@ fi
 echo tests/service/test_harness.py >"${WORK}/files"
 got="$(SERVICE=service-touched PR_GATES_FILES="${WORK}/files" "${GATES}" --plan 2>/dev/null | tr '\n' ' ')"
 [[ "$got" == "lint spec-lint service-touched " ]] || { echo "FAIL: SERVICE=service-touched: $got" >&2; exit 1; }
-pass=$((pass + 4))
+got="$(SERVICE=menu PR_GATES_FILES="${WORK}/files" "${GATES}" --plan 2>/dev/null | tr '\n' ' ')"
+[[ "$got" == "lint spec-lint py:menu " ]] || { echo "FAIL: SERVICE=menu must not add service-touched: $got" >&2; exit 1; }
+pass=$((pass + 5))
 
 # Note: printed whenever the CI service filter matched and the full tier did not run.
 note='note: service tier not run locally; PR CI runs the full tier'
