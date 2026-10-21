@@ -132,24 +132,15 @@ The integration tests cover:
 - ✅ Distributed tracing propagation across services
 - ✅ Multiple games in sequence
 
-## CI shards: e2e-core and e2e-agent (#1422)
+## CI: one job (#1422)
 
-CI runs the suite as two jobs, each with its own compose stack:
-`Integration Tests (e2e-core)` never builds or starts the agent, and
-`Integration Tests (e2e-agent)` runs the modules that start the agent
-container (`--profile agent`). `E2E_SHARD=core|agent` selects a shard (unset
-runs everything, as `make test-integration` does locally); see
-`make test-integration-core` / `make test-integration-agent`.
-
-Every module must be listed in `E2E_SHARD_BY_MODULE` in `conftest.py`: an
-unlisted module fails collection, so a new test cannot fall out of both
-shards. Use `agent` only when the module starts the agent service; writing to
-the `agent` flag set does not count. `make test-integration-shard-check`
-verifies that every collected test is in exactly one shard.
+CI runs `make test-integration` (every module, one compose stack) as the
+`Integration Tests` job. A module that starts the agent must remove it at
+teardown (tc007's `closed_loop_stack`), because later modules share the stack.
 
 ### When CI runs them (#1583)
 
-The shards run in the merge queue (`merge_group`, always: that is the gate before
+The e2e job runs in the merge queue (`merge_group`, always: that is the gate before
 `main`), on `workflow_dispatch`, and on a PR only when it has the `ci-full` label
 or its non-docs diff touches a risky path: `docker-compose*.yml`, any
 `Dockerfile*`, `tests/integration/**` (this suite, `conftest.py`, `helpers.py`),
@@ -160,7 +151,7 @@ take the fast path (pulled `:latest` plus source mounts) unless Dockerfiles or
 dependencies changed.
 Plain PR pushes skip them, and so does a push to `main` (the queue already ran
 them on that commit). To force a run on a PR, add the `ci-full` label; locally,
-`make test-integration` (or `make test-integration-core` / `-agent`).
+`make test-integration`.
 
 ## Checks that need only flagd live in the contract tier (#1422)
 

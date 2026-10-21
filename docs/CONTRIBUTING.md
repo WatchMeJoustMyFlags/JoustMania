@@ -309,21 +309,21 @@ All pull requests must pass CI checks before merging:
 7. **Spec Gate** - Spec lint over `docs/` and the spec-touched check (see [CI spec gate](#ci-spec-gate))
 8. **Generated specs** - `docs/specs/generated/` (metric catalog, RPC tables, flag counts, `ci/` flag diffs) must match the code: run `make specs` and commit (checked by `make specs-check` in the Telemetry Contract job). After a rebase that conflicts in a generated file, take either side and run `make specs`
 
-**When the full-stack e2e shards run (#1583).** `Integration Tests (e2e-core)` and
-`(e2e-agent)` start the whole docker-compose stack and take 10-16 minutes, so they
-gate the merge queue rather than every PR push:
+**When the full-stack e2e job runs (#1583).** `Integration Tests` (one job, one
+compose stack, about 5-8 minutes) starts the whole docker-compose stack, so it
+gates the merge queue rather than every PR push:
 
-| Event | e2e shards |
+| Event | e2e |
 |---|---|
 | PR push | skipped (lint, unit, contract, service tier and builds still run) |
 | PR with the `ci-full` label | run |
 | PR whose non-docs diff touches `docker-compose*.yml`, any `Dockerfile*`, `tests/integration/**`, `services/otel-collector/**`, `images/otel-collector/**`, `services/envoy/**`, `services/flagd/**` or `.github/workflows/ci.yml` | run |
-| `merge_group` (merge queue) | always run, with every stack image built at HEAD (no `:latest` fast path); `CI Complete` fails unless both shards succeed |
+| `merge_group` (merge queue) | always run, with every stack image built at HEAD (no `:latest` fast path); `CI Complete` fails unless it succeeds |
 | push to `main` | skipped: the queue already tested that commit; images build and publish without waiting for them |
 | `workflow_dispatch` | run |
 
-To force them on a PR, add `ci-full` (it also builds every image). A skipped shard
-keeps `CI Complete` green only where the shards were not required (`e2e_required`
+To force them on a PR, add `ci-full` (it also builds every image). A skipped e2e job
+keeps `CI Complete` green only where it was not required (`e2e_required`
 output of the `changes` job).
 
 ### Running Checks Locally

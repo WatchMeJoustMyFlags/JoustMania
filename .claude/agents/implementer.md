@@ -118,7 +118,7 @@ logs <your scratchpad>/<issue>-gates
 ```
 (one job line or several `run` lines). gate-runner only calls `scripts/ci/gate-run.sh`, which refuses
 anything outside its allow-list (script header): `make` gate/test targets with `TEST SERVICE BASE PR_LABELS
-E2E_SHARD IMAGE_TAG PYTEST_EXTRA SERVICE_TESTS` (`make test-service SERVICE_TESTS=tests/service/test_x.py` runs one
+IMAGE_TAG PYTEST_EXTRA SERVICE_TESTS` (`make test-service SERVICE_TESTS=tests/service/test_x.py` runs one
 service-tier file), `uv run --package <member> [--extra <x>] pytest ...`, `go test|vet` and
 `cargo test|clippy` with `in services/<svc>`, `scripts/tests/test-*.sh`; the dashboard only via
 `gates SERVICE=dashboard`. No `cd`, `&&`, pipes, redirects or `$`; Go `vet && test` is two `run` lines.

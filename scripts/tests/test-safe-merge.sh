@@ -301,7 +301,7 @@ run 42 abcdef1 --close 7 --comment-file "${WORK}/comment.md"
 calls | grep -qE 'pr merge|issue|run rerun' && fail "cancelled run without --rerun-failed-once must only report: $(calls)"
 reset; view "$CANCELLED_RUN"
 printf '{"headRefOid":"%s","state":"OPEN","statusCheckRollup":[%s,%s]}' "$HEAD" \
-  "$(check 'Integration Tests (e2e-core)' COMPLETED SUCCESS 400)" "$(check 'CI Complete' COMPLETED SUCCESS 400)" \
+  "$(check 'Integration Tests' COMPLETED SUCCESS 400)" "$(check 'CI Complete' COMPLETED SUCCESS 400)" \
   >"${STUB_DIR}/view-after-rerun.json"
 run 42 abcdef1 --rerun-failed-once
 [[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"*"after one rerun"* ]] || fail "cancelled rerun: rc=$RC $OUT"
@@ -318,13 +318,13 @@ run 42 abcdef1 --rerun-failed-once --close 7 --comment-file "${WORK}/comment.md"
 [[ "$(grep -c 'run rerun' "${STUB_DIR}/calls")" -eq 1 ]] || fail "cancelled run must be rerun exactly once: $(calls)"
 calls | grep -qE 'pr merge|issue' && fail "still cancelled must not merge or touch issues: $(calls)"
 # Job timeout (expanded job CANCELLED, SKIPPED template jobs, CI Complete FAILURE): not infra.
-reset; view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'Integration Tests (e2e-core)' COMPLETED CANCELLED 100)" \
+reset; view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'Integration Tests' COMPLETED CANCELLED 100)" \
   "$SKIPPED_TEMPLATES" "$(check 'CI Complete' COMPLETED FAILURE 100)"
 run 42 abcdef1
 [[ $RC -eq 1 && "$OUT" == *"not infrastructure"* ]] || fail "timeout-cancel: rc=$RC $OUT"
 # Human cancel mid-run (matrix expanded, expanded jobs CANCELLED, SKIPPED
 # template jobs, CI Complete SKIPPED): not infra, never rerun.
-reset; view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'Integration Tests (e2e-core)' COMPLETED CANCELLED 100)" \
+reset; view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'Integration Tests' COMPLETED CANCELLED 100)" \
   "$(check 'Build menu' COMPLETED CANCELLED 100)" "$SKIPPED_TEMPLATES" "$(check 'CI Complete' COMPLETED SKIPPED 100)"
 run 42 abcdef1 --rerun-failed-once
 [[ $RC -eq 1 && "$OUT" != *"cancelled-run"* ]] || fail "human cancel mid-run: rc=$RC $OUT"
