@@ -118,8 +118,8 @@ stays capture-only.
 Jev needs only `JEV_API_KEY`: `decision.jev.base_url` defaults to
 `https://api.typesafe.ai/v1` and `decision.jev.model` to `latest` (`jev-latest`).
 The gate calibration below was measured on `jev-1.13.0`; if `jev-latest` moves
-before the talk, pin it with `./scripts/agent-backend.sh jev pinned` and
-re-check the act/noop beat in rehearsal.
+before the talk, pin it with `./scripts/agent-backend.sh jev pinned` **after** the
+T-1h `talk-stage.sh reset` (the reset clears a persisted model) and re-check the act/noop beat in rehearsal.
 
 **Budget.** Remote calls share one global per-minute budget (a sliding 60 s
 window): every remote decision (one slot per decision; a Jev act round's two
