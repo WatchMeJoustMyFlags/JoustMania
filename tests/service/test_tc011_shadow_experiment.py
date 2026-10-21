@@ -73,8 +73,9 @@ DECLARE_TIMEOUT = 60.0
 CONCLUDE_TIMEOUT = 300.0
 # Absence window after teardown: several experiment ticks (3 s each).
 NO_RESPAWN_WINDOW = 10.0
-# A game's flag-service end is queued at its end; the reconcile backstop runs every 15 s.
-GAME_END_TIMEOUT = 20.0
+# A game's flag-service end is queued at its end (#1847); 3 s is well below the 15 s
+# reconcile backstop, so a pass shows the end was reported, not reconciled away.
+GAME_END_TIMEOUT = 3.0
 
 
 def _agent_log(stack) -> str:
