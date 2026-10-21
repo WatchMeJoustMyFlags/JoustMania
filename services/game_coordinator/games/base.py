@@ -2169,7 +2169,21 @@ class BaseGameMode(ABC):
             player.trigger_prev = pressed
             if not pressed:
                 player.trigger_armed = True
-            if edge or player.shield_charge_seconds > 0:
+            # Await only when work is due (an edge, the expiry or the re-send),
+            # so a held charge costs a few compares per frame, not a coroutine.
+            if edge or (
+                player.shield_charge_seconds > 0
+                and (
+                    (player.shield_charge_expires_at and current_time >= player.shield_charge_expires_at)
+                    or (
+                        current_time >= player.shield_charge_layer_until - SHIELD_CHARGE_RESEND_MARGIN_SECONDS
+                        and (
+                            not player.shield_charge_expires_at
+                            or player.shield_charge_expires_at > player.shield_charge_layer_until
+                        )
+                    )
+                )
+            ):
                 await self._process_shield_charge(player, edge, current_time)
 
         # Check grace period first - no death or warning during grace period
@@ -3692,10 +3706,11 @@ class BaseGameMode(ABC):
             # Call force-end hook if game was externally stopped
             if force_ended:
                 await self.on_force_end()
+            # An error teardown skips _end_shield_feedback: end open charge spans (#1837).
+            # Before cleanup, so a raising cleanup leaves no span open.
+            self._close_shield_charge_spans()
             # Always call cleanup to cancel tracked tasks
             await self.cleanup()
-            # An error teardown skips _end_shield_feedback: end open charge spans (#1837).
-            self._close_shield_charge_spans()
             # Ensure this session's analytics are always cleared, even on error
             # (#775) — per-session targeted cleanup, never a global wipe.
             metrics.clear_session_player_analytics(

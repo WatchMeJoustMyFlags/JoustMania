@@ -329,8 +329,8 @@ async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionM
         if seconds <= SHIELD_NONE:
             continue  # neutral default: no shield for this serial
         try:
-            await grant(serial, seconds)
-            applied = True
+            # grant() returns False for a dead or unknown serial: not applied.
+            applied = bool(await grant(serial, seconds)) or applied
         except InterventionNotApplied as e:
             not_applied = not_applied or e
     if not_applied is not None and not applied:

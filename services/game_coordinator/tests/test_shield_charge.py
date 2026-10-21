@@ -244,6 +244,26 @@ class TestUC040A31AlreadyCharged:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A31", br=["BR-020"])
+    async def test_fan_out_counts_a_refused_grant_as_not_applied(self, game):
+        """A31: a dead serial (grant False) next to an already charged one still raises."""
+        from services.game_coordinator.interventions import INTERVENTION_SPECS, InterventionContext
+        from services.game_coordinator.lifecycle_handlers import handle_shield_seconds
+
+        await game.grant_shield("p2", 5.0)  # p2 holds a charge
+        game.players["p1"].alive = False  # grant_shield returns False for p1
+        spec = next(s for s in INTERVENTION_SPECS if s.flag_key == "shield_seconds")
+        ctx = InterventionContext(spec=spec, value=5.0, payload="", target_serial=None, game=game, objective="balanced")
+        with (
+            patch(
+                "services.game_coordinator.lifecycle_handlers._grant_values",
+                return_value={"p1": 5.0, "p2": 5.0},
+            ),
+            pytest.raises(InterventionNotApplied),
+        ):
+            await handle_shield_seconds(ctx, MagicMock())
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A31", br=["BR-020"])
     @pytest.mark.uc("UC-040", flow="A22")
     async def test_manager_records_already_charged_and_refunds_the_backstop(self):
         """A31 step 2 / A22: blocked=true, block_reason=already_charged, the reservation is refunded."""
@@ -541,6 +561,38 @@ async def test_real_run_drops_a_held_charge_before_the_winner_effects():
     assert seen == [[{"serial": "mock_controller_0", "reason": "game_end"}]]
 
 
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A32")
+@pytest.mark.usefixtures("flags")
+async def test_error_teardown_ends_the_charge_span_even_when_cleanup_raises():
+    """A32 (real run()): run()'s finally ends the open charge span before cleanup, which may raise."""
+    game = FFAGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=3, infinite=True),
+        event_publisher=EventCollector().publish,
+        audio_client=None,
+        game_id="test_a32_cleanup_raises",
+        initial_players=[type("P", (), {"serial": f"mock_controller_{i}"})() for i in range(3)],
+    )
+    charge_span = create_autospec(Span, instance=True)
+
+    async def failing_gameplay():
+        player_span = create_autospec(Span, instance=True)
+        player_span.get_span_context.return_value = INVALID_SPAN_CONTEXT
+        game.players["mock_controller_0"].span = player_span
+        with patch.object(base_module.tracer, "start_span", return_value=charge_span):
+            assert await game.grant_shield("mock_controller_0", 5.0) is True
+        raise RuntimeError("gameplay broke")
+
+    game._run_gameplay_phase = failing_gameplay
+    game.cleanup = AsyncMock(side_effect=RuntimeError("cleanup broke"))
+
+    with pytest.raises(RuntimeError, match="cleanup broke"):
+        await asyncio.wait_for(game.run(), timeout=10)
+
+    charge_span.set_attribute.assert_any_call("shield.charge_outcome", "game_end")
+    charge_span.end.assert_called_once()
+
+
 # --------------------------------------------------------------------------- #
 # UC-040 BR-019: activation mode
 # --------------------------------------------------------------------------- #
@@ -708,3 +760,52 @@ class TestShieldChargeHotPathAndReconnect:
         game.controller_client.StreamGameplayData.return_value = stream
         await game._create_gameplay_stream()
         assert stream.effects() == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A6", br=["BR-005"])
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    async def test_frame_path_awaits_only_when_charge_work_is_due(self, game, clock, flags):
+        """BR-005: a held charge costs compares per frame; the coroutine runs only on expiry, re-send or a press."""
+        flags.values["shield.charge_expiry_seconds"] = 0  # never: layer 120 s, re-send at 110 s
+        await game.grant_shield("p1", 5.0)
+        await game.grant_shield("p2", 5.0)
+        game.players["p2"].shield_charge_expires_at = T0 + 30.0  # p2 expires at 30 s
+        with patch.object(game, "_process_shield_charge", wraps=game._process_shield_charge) as process:
+            for _ in range(100):  # 0 to ~1.7 s: nothing due
+                clock.t += 1 / 60
+                await feed(game, "p1", False)
+                await feed(game, "p2", False)
+            assert process.await_count == 0
+
+            clock.t = T0 + 30.0  # p2's expiry
+            await feed(game, "p2", False)
+            assert process.await_count == 1
+            assert game.players["p2"].shield_charge_seconds == 0.0
+
+            clock.t = T0 + 110.0  # p1's re-send is due
+            await feed(game, "p1", False)
+            assert process.await_count == 2
+            clock.t += 1 / 60  # re-sent: nothing due again
+            await feed(game, "p1", False)
+            assert process.await_count == 2
+
+            await feed(game, "p1", True)  # a press
+            assert process.await_count == 3
+            assert game.players["p1"].shield_charge_seconds == 0.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    async def test_reconnect_resends_a_running_toughness_boost(self, game, clock):
+        """BR-021: a reconnect re-sends TOUGHNESS_BOOST with the time left, next to SHIELD."""
+        game.players["p2"].grace_until = T0 + 8.0
+        game.players["p2"].toughness_boost_until = T0 + 6.0
+        game._shield_feedback_until["p2"] = T0 + 8.0
+        stream = RecordingStream()
+        game.controller_client = MagicMock()
+        game.controller_client.StreamGameplayData.return_value = stream
+
+        clock.t += 2.0
+        await game._create_gameplay_stream()
+
+        boost = controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST
+        assert stream.effects() == [("p2", SHIELD, 6000), ("p2", boost, 4000)]
