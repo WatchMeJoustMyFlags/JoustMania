@@ -8,7 +8,7 @@ name: CI
 #
 # Escape hatches:
 #   - push to main / merge_group / workflow_dispatch: all check jobs run (full
-#     SonarCloud coverage on push); the e2e shards follow `e2e_required` below
+#     SonarCloud coverage on push); the e2e job follows `e2e_required` below
 #   - `ci-full` PR label or workflow_dispatch: additionally forces ALL image builds.
 #     ci.yml does NOT trigger on `labeled` (#1527): GitHub takes required checks
 #     from the newest run of this workflow on the head SHA, so a label-only run
@@ -18,12 +18,12 @@ name: CI
 #
 # Merge queue (#1555): `merge_group` runs test the queued commit (main plus the
 # PRs ahead of it) like a main push: every check job runs (run_all_checks),
-# including both e2e shards and service-tests, while image builds stay
+# including the e2e job and service-tests, while image builds stay
 # path-filtered against merge_group.base_sha and build amd64 only without
 # pushing (as on a PR). SonarCloud and retag-skipped do not run in the queue.
 # "CI Complete" reports on the merge-group head, which is the required check.
 #
-# Full-stack e2e shards (#1583) run only where `changes.e2e_required` is true:
+# The full-stack e2e job (#1583) runs only where `changes.e2e_required` is true:
 #   merge_group                       unless the queued group is docs-only
 #                                     (`non_docs` exactly 'false'); an empty or
 #                                     unknown output still runs e2e.
@@ -45,7 +45,7 @@ name: CI
 #   push to main                      never: the queue already ran them on this
 #                                     exact commit; builds/publish/retag no
 #                                     longer wait for integration-test there
-# A skipped shard is fine for CI Complete unless e2e_required was true.
+# A skipped e2e job is fine for CI Complete unless e2e_required was true.
 #
 # Release contract: release.yml tag-images retags IMAGE:<sha> -> IMAGE:<version>
 # for all 10 release images, so every main push must produce a :<sha> tag for
@@ -106,7 +106,7 @@ jobs:
       dashboard_tests: ${{ steps.f.outputs.dashboard_tests }}
       connect_proxy_tests: ${{ steps.f.outputs.connect_proxy_tests }}
       non_docs: ${{ steps.nondocs.outputs.non_docs }}
-      # #1583: run the e2e shards (merge_group unless the whole group is
+      # #1583: run the e2e job (merge_group unless the whole group is
       # docs-only, workflow_dispatch, ci-full, or a non-docs PR touching an
       # `e2e_paths` file)
       e2e_required: ${{ steps.force.outputs.e2e }}
@@ -312,7 +312,7 @@ jobs:
             otel_collector:
               - 'images/otel-collector/**'
             # #1583: risky for the full stack, so a PR touching them runs the
-            # e2e shards before the queue does: compose files, any image
+            # e2e before the queue does: compose files, any image
             # definition, the e2e suite itself (conftest, helpers), and the
             # collector / envoy config the stack mounts.
             e2e_paths:
@@ -384,7 +384,7 @@ jobs:
           full="${{ github.event_name == 'workflow_dispatch' }}"
           # merge_group gates main exactly like a push to main (#1555)
           checks="${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event_name == 'merge_group' }}"
-          # #1583: e2e shards gate the merge queue; on PRs only with ci-full or
+          # #1583: the e2e job gates the merge queue; on PRs only with ci-full or
           # a non-docs diff touching a risky path; never on a push to main.
           # Merge queue: skipped only for a docs-only group (NON_DOCS exactly
           # 'false'; empty/unknown fails closed to running e2e). base_sha is
@@ -1096,15 +1096,15 @@ jobs:
 
   # #1780: the custom collector (OCB compile, ~7 min, fetches Go modules and
   # flakes on proxy errors) is built once per content hash of
-  # images/otel-collector/** and pushed as otel-collector:<hash>; the e2e shards
+  # images/otel-collector/** and pushed as otel-collector:<hash>; the e2e job
   # pull it (OTEL_COLLECTOR_TAG, docker-compose.collector-prebuilt.yml). The tag
   # is separate from the released :<sha>/:main/:latest images (docker-build-extra
   # and retag-skipped are untouched). A tag that already exists is reused, so
   # only the first run after a collector change builds. Only merge_group (and a
   # push to main) pushes the tag: a PR runs unreviewed ci.yml and must not plant
   # an image the queue then trusts. PRs (same repo or fork) pull the tag when it
-  # exists; otherwise `tag` stays empty and the shards build locally. Best
-  # effort: the risky steps are continue-on-error and the shards' `if` ignores
+  # exists; otherwise `tag` stays empty and the e2e job builds it locally. Best
+  # effort: the risky steps are continue-on-error and the e2e job's `if` ignores
   # this job's result, so any failure here means a local build, never a skip.
   # Same gate as integration-test.
   collector-image:
@@ -1192,29 +1192,19 @@ jobs:
             echo "Prebuilt collector: ${REF}"
           else
             echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "::warning::no prebuilt collector ${REF}; the e2e shards build it locally"
+            echo "::warning::no prebuilt collector ${REF}; the e2e job builds it locally"
           fi
 
-  # #1422 step 15: one job per shard, each with its own compose stack.
-  # e2e-core never builds or starts the agent; e2e-agent holds the modules
-  # that start it. Assignment: E2E_SHARD_BY_MODULE in tests/integration/
-  # conftest.py (an unassigned module fails collection). The job id stays
-  # `integration-test`: `needs.integration-test.result` aggregates the matrix
-  # (success only when every shard succeeds), so docker-build,
-  # docker-build-extra and ci-complete gate on both shards where they ran.
-  # Both shards always run whenever the job runs (see e2e_required).
+  # #1422: one job, one compose stack, every module of tests/integration
+  # (formerly two shards, merged in S13 PR3). The job id stays integration-test
+  # (needs.* and ci-complete unchanged).
   integration-test:
-    name: Integration Tests (e2e-${{ matrix.shard }})
+    name: Integration Tests
     runs-on: ubuntu-latest
     needs: [changes, collector-image]
     env:
       # #1780: prebuilt collector for this content hash; empty = build locally.
       OTEL_COLLECTOR_TAG: ${{ needs.collector-image.outputs.tag }}
-    strategy:
-      # Let the other shard finish: its result and durations stay visible.
-      fail-fast: false
-      matrix:
-        shard: [core, agent]
     # #1583: runs only when e2e_required (merge_group, workflow_dispatch,
     # `ci-full`, or a non-docs PR touching a risky path; docs-only PRs still
     # skip it, #1422). Skipped on a push to main: the queue ran it on that
@@ -1248,11 +1238,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: astral-sh/setup-uv@v8.2.0
-
-      # Collection only (no docker): every e2e test is in exactly one shard.
-      - name: Check e2e shard assignment
-        if: matrix.shard == 'core'
-        run: make test-integration-shard-check
 
       # #925 fast-path freshness guard: BEFORE mounting current source into the
       # pulled :latest images, confirm each carries a deps-fingerprint label that
@@ -1326,13 +1311,12 @@ jobs:
       # checkout instead, under the exact ref compose resolves, and load it
       # locally. The suite's session `compose pull` skips the profile-gated
       # agent, and the tests that start it use pull_policy "missing", so they run
-      # this HEAD build. Runs only in the e2e-agent shard on the fast path; it costs ~1-1.5 min
+      # this HEAD build. Runs on the fast path; it costs ~1-1.5 min
       # (amd64 only; `go build` has no build-cache mount, so any source change
       # rebuilds). The full-build path already builds the agent at HEAD.
-      # Only the e2e-agent shard runs the agent, so only it builds it.
       - name: Resolve agent image ref (fast path)
         id: agent_image
-        if: matrix.shard == 'agent' && needs.changes.outputs.e2e_full_build == 'false'
+        if: needs.changes.outputs.e2e_full_build == 'false'
         env:
           IMAGE_TAG: latest
         run: |
@@ -1345,7 +1329,7 @@ jobs:
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
 
       - name: Build agent at HEAD (fast path)
-        if: matrix.shard == 'agent' && needs.changes.outputs.e2e_full_build == 'false'
+        if: needs.changes.outputs.e2e_full_build == 'false'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -1362,19 +1346,15 @@ jobs:
       # PYTEST_EXTRA="--reruns 1" (#925): tolerate a single integration flake so
       # one flake no longer skips image publish. Generic — reruns ANY failure
       # once, never quarantines a test by name. --durations=15 lists the slowest
-      # tests of the shard (#1422).
+      # tests of the run (#1422).
       - name: Run integration tests (fast - source only)
         if: needs.changes.outputs.e2e_full_build == 'false'
-        env:
-          E2E_SHARD: ${{ matrix.shard }}
         run: COLLECTOR_PULL_POLICY=missing USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1 --durations=15" make test-integration
 
       # Slow path: every stack image built at HEAD (merge_group, dispatch, ci-full,
       # or Dockerfiles/deps changed; see changes.e2e_full_build)
       - name: Run integration tests (full build)
         if: needs.changes.outputs.e2e_full_build != 'false'
-        env:
-          E2E_SHARD: ${{ matrix.shard }}
         run: PYTEST_EXTRA="--reruns 1 --durations=15" make test-integration
 
       # #1649: a cancelled run never prints the pytest summary, so the cause of a
@@ -1400,9 +1380,9 @@ jobs:
     name: Build ${{ matrix.service }} (${{ matrix.platform }})
     runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     needs: [changes, integration-test]
-    # #1583: wait for the e2e shards only where they run (merge_group,
-    # dispatch, ci-full / risky PRs); a skipped shard (push to main, plain PR)
-    # does not hold the build back. A required shard must have succeeded.
+    # #1583: wait for the e2e job only where it runs (merge_group,
+    # dispatch, ci-full / risky PRs); a skipped e2e job (push to main, plain PR)
+    # does not hold the build back. A required e2e job must have succeeded.
     if: >-
       needs.changes.outputs.docker_build_matrix != '[]' &&
       !cancelled() && needs.changes.result == 'success' &&
@@ -1576,7 +1556,7 @@ jobs:
 
   # Build non-Python services (Go/Node.js/Rust)
   # Publish (incl. :latest on main) is gated on the build (and, where the e2e
-  # shards ran, on integration-test), not on CI Complete: an unrelated red job
+  # job ran, on integration-test), not on CI Complete: an unrelated red job
   # such as Rust Checks does not stop :latest from moving (#1254). On a push to
   # main e2e is skipped (#1583): the merge queue tested that commit.
   docker-build-extra:
@@ -1872,13 +1852,13 @@ jobs:
           fi
           echo "✅ All CI checks passed (skipped jobs are OK)"
 
-      # #1583: a skipped e2e shard is OK only where it was not required; in the
+      # #1583: a skipped e2e job is OK only where it was not required; in the
       # merge queue (and with ci-full / risky paths) it must have succeeded.
       # Fails closed: merge_group requires e2e unless non_docs is exactly
       # 'false' (docs-only group; empty counts as required), and an
       # e2e_required that is neither 'true' nor 'false' (empty/broken output)
       # fails.
-      - name: Check required e2e shards ran
+      - name: Check required e2e ran
         env:
           E2E_REQUIRED: ${{ needs.changes.outputs.e2e_required }}
           E2E_RESULT: ${{ needs.integration-test.result }}
@@ -1891,10 +1871,10 @@ jobs:
           fi
           if [[ "$E2E_REQUIRED" == "true" || ( "$EVENT_NAME" == "merge_group" && "$NON_DOCS" != "false" ) ]]; then
             if [[ "$E2E_RESULT" != "success" ]]; then
-              echo "❌ e2e shards were required (e2e_required=$E2E_REQUIRED, event=$EVENT_NAME) but integration-test is '$E2E_RESULT'"
+              echo "❌ e2e was required (e2e_required=$E2E_REQUIRED, event=$EVENT_NAME) but integration-test is '$E2E_RESULT'"
               exit 1
             fi
-            echo "✅ Required e2e shards passed"
+            echo "✅ Required e2e passed"
           else
-            echo "✅ e2e shards not required (result: $E2E_RESULT)"
+            echo "✅ e2e not required (result: $E2E_RESULT)"
           fi

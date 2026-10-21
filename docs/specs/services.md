@@ -332,6 +332,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 
 ### menu
 
+- Readiness (#1826): gRPC health (`""` and `menu.MenuService`) is NOT_SERVING from server start until the boot lobby entry has run (after the bounded 5 s flag-provider wait), or until that wait ends with `menu_auto_start` off, or until the boot entry times out (`BOOT_LOBBY_ENTRY_TIMEOUT_SECONDS`, 10 s; a hung audio call) or raises (a warning is logged, the menu stays up); then SERVING. A client that trusts health never races the boot entry with StopMenu / StartMenu. A provider that never answers still ends the wait after 5 s and the menu becomes SERVING. The image healthcheck uses `--start-period=10s` so the wait is not counted as failures. The service-tier harness still also waits for the `Menu auto-started` log line (redundant now, kept).
 - Service state STOPPED / RUNNING / GAME_STARTING; controller states CONNECTED / READY / ADMIN / IDLE (UC-010 to UC-014).
 - Writes admin settings through the flag service (`lib/flag_service_writer.py`, `"persist": true`, writer `menu`); it mounts no flag file.
 

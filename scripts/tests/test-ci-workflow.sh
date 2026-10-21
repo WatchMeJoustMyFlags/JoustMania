@@ -7,14 +7,16 @@
 #   #1555: merge-queue support: the merge_group trigger, its paths-filter base,
 #          concurrency per merge-group ref, every main-gating check runs in the
 #          queue, CI Complete reports there, and nothing is published from it.
-#   #1583: the e2e shards run only where `changes.e2e_required` says so
+#   #1583: the e2e job runs only where `changes.e2e_required` says so
 #          (merge_group, workflow_dispatch, ci-full, risky paths); a push to
 #          main builds and publishes without them. Checked by simulating the
 #          `changes/force` step and evaluating the job `if:`s per scenario.
 #
+#   #1422 S13: integration-test is one job: no matrix, no matrix.* in step ifs, the
+#          agent is still built at HEAD on the fast path (#1254).
 #   #1780: the prebuilt collector job (collector-image) runs exactly where the
-#          e2e shards run, never fails or skips the shards, pushes only on
-#          merge_group / push (never from a PR), and the shards take its tag as
+#          e2e job runs, never fails or skips it, pushes only on
+#          merge_group / push (never from a PR), and the e2e job takes its tag as
 #          OTEL_COLLECTOR_TAG.
 #   #1569: the gate cannot go silently non-blocking: no `continue-on-error` on any
 #          CI Complete step, on integration-test (job or step), or at job level
@@ -106,7 +108,7 @@ check(retag == RETAG_IF, f"retag-skipped: unexpected if: {retag}")
 # CI Complete's check step: fails on failure OR cancelled, exits 1, nothing
 # softens it (`|| true`, success(), always(), a 'skipped' check). The second
 # run step (#1583, required e2e) is checked below.
-E2E_STEP = "Check required e2e shards ran"
+E2E_STEP = "Check required e2e ran"
 complete_runs = [
     str(s.get("run", "")) for s in jobs["ci-complete"]["steps"] if s.get("run") and s.get("name") != E2E_STEP
 ]
@@ -193,7 +195,7 @@ RUN_ALL = "needs.changes.outputs.run_all_checks == 'true'"
 
 # (#1583) Jobs gated by e2e_required, exact. integration-test always runs in the
 # queue (fail closed even if e2e_required is empty); the builds wait for it only
-# where it ran, and a required shard must have succeeded. (#1780) The shards'
+# where it ran, and a required e2e job must have succeeded. (#1780) Its
 # `if` ignores collector-image's result: !cancelled() + changes succeeded.
 E2E_GATE = ("needs.changes.outputs.e2e_required == 'true' ||"
             " (github.event_name == 'merge_group' && needs.changes.outputs.non_docs != 'false')")
@@ -423,10 +425,9 @@ def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success",
 
 
 def e2e_steps_run(ctx):
-    """Names of the integration-test (agent shard) steps whose `if` holds."""
+    """Names of the integration-test steps whose `if` holds."""
     step_ctx = dict(ctx)
     step_ctx.update({
-        "matrix.shard": "agent",
         "steps.collector_image.outputs.build": "false",
     })
     return [
@@ -459,7 +460,7 @@ if "e2e_required" in jobs["changes"]["outputs"]:
     for label, event, paths, non_docs, ci_full, expect in SCENARIOS:
         r = simulate(event, paths, non_docs, ci_full)
         ran = r["integration-test"] != "skipped"
-        check(ran == expect, f"{label}: e2e shards {'should' if expect else 'should not'} run, got {r['integration-test']}")
+        check(ran == expect, f"{label}: e2e {'should' if expect else 'should not'} run, got {r['integration-test']}")
         check(r["ci-complete"] == "success", f"{label}: CI Complete should pass with every job green/skipped, got {r}")
         check(r["docker-build"] == "success", f"{label}: image builds should run, got {r['docker-build']}")
         if expect:
@@ -467,7 +468,7 @@ if "e2e_required" in jobs["changes"]["outputs"]:
             bad = simulate(event, paths, non_docs, ci_full, e2e_outcome="failure")
             check(bad["docker-build"] == "skipped", f"{label}: builds must wait for e2e, got {bad['docker-build']}")
             check(bad["ci-complete"] == "failure", f"{label}: failed e2e must fail CI Complete")
-            # A required shard that did not run (e.g. skipped) must not pass.
+            # A required e2e job that did not run (e.g. skipped) must not pass.
             gone = simulate(event, paths, non_docs, ci_full, e2e_outcome="skipped")
             check(gone["ci-complete"] == "failure", f"{label}: required e2e skipped must fail CI Complete, got {gone}")
             for build in ("docker-build", "docker-build-extra"):
@@ -538,14 +539,34 @@ if "e2e_required" in jobs["changes"]["outputs"]:
             fast_only = [n for n in steps if "fast path" in n]
             check(not fast_only, f"{label}: no fast-path step may run on the full path, ran {fast_only}")
 
-    # (#1780) Prebuilt collector: same gate as the shards, so the shards are never
+    # (#1422 S13) One e2e job: no matrix, no matrix.* anywhere in it, no E2E_SHARD.
+    it = jobs["integration-test"]
+    check("strategy" not in it, "integration-test: must be one job (no strategy/matrix, #1422 S13)")
+    check(it.get("name") == "Integration Tests",
+          f"integration-test: name must be 'Integration Tests', got {it.get('name')!r}")
+    for st in it["steps"]:
+        check("matrix." not in str(st.get("if", "")),
+              f"integration-test/{st.get('name')}: `if` must not use matrix.*")
+    check("matrix." not in yaml.safe_dump(it), "integration-test: no matrix.* reference (name, env, steps)")
+    check("E2E_SHARD" not in open(sys.argv[1]).read(), "ci.yml: E2E_SHARD is gone (#1422 S13)")
+
+    # (#1254) A risky-path PR on the fast path still builds the agent at HEAD before the tests.
+    AGENT_STEPS = ("Resolve agent image ref (fast path)", "Build agent at HEAD (fast path)")
+    steps = simulate("pull_request", True, True)["e2e_steps"]
+    for name in AGENT_STEPS:
+        check(name in steps, f"PR, risky path: {name!r} must run (#1254), ran {steps}")
+    if all(n in steps for n in AGENT_STEPS) and FAST in steps:
+        check(steps.index("Build agent at HEAD (fast path)") < steps.index(FAST),
+              "PR, risky path: the agent must be built before the fast e2e run")
+
+    # (#1780) Prebuilt collector: same gate as the e2e job, so it is never
     # skipped by it and it never runs where they do not.
     check(job_if("collector-image") == E2E_GATE,
           "collector-image: must have the same e2e gate as integration-test (#1780)")
     check("collector-image" not in job_if("integration-test"),
           "integration-test: `if` must not depend on collector-image (#1780)")
     # Any collector-image failure (timeout, setup step, Publish result) must
-    # leave the shards running with an empty tag, never skipped.
+    # leave the e2e job running with an empty tag, never skipped.
     for outcome in ("failure", "cancelled"):
         for label, kwargs in (
             ("merge_group", dict(event="merge_group", e2e_paths=False, non_docs=True)),
