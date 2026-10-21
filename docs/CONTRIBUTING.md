@@ -376,6 +376,18 @@ place its generated code exists), the agent Go stub drift check (`make ci-valida
 contract, the flagd contract (flag files or the flag-service registry), Grafana dashboard JSON, compose
 `config -q` on the main file combinations and a YAML duplicate-key check.
 
+The service tier (T2, `make test-service`) is deliberately a subset locally:
+
+| Diff touches | Local service tier |
+|---|---|
+| harness / stack: non-`test_*.py` files under `tests/service/` (not `README.md`), `tests/contract/{flagd_harness,infra_config}.py`, `tests/integration/{helpers,flag_service}.py`, `tests/integration/fake_openai/**`, `docker-compose.yml`, `services/flagd/**`, `services/flag-service/**`, `proto/**`, `pyproject.toml`, `uv.lock`, the `server.py` of game_coordinator / menu / controller_manager | full (`service`) |
+| only `tests/service/**/test_*.py` (existing files) | those files (`service-touched`: `make test-service SERVICE_TESTS="<files>"`) |
+| anything else (lib, other service code, agent, rust-hid, `Makefile`, `ci.yml`) | none; the summary prints a note |
+
+PR CI "Service Tests" runs the full tier for the CI path filter (it can be path-skipped on a PR that touches
+none of them) and the merge queue always runs it. A local PASS is therefore not tier coverage for product paths;
+reviewers require "Service Tests" = pass when those paths changed.
+
 ```bash
 make pr-gates                           # auto-detect
 make pr-gates SERVICE=menu,agent        # explicit gate keys (see the script header)
@@ -383,7 +395,7 @@ scripts/ci/local-gates.sh --plan        # list the selected gates, run nothing
 ```
 
 It prints one `PASS`/`FAIL`/`SKIP` line per gate with its duration, then the output of failing gates only,
-and exits non-zero on any failure. CI stays the source of truth; the mapping is narrower than CI's filters.
+and exits non-zero on any failure. CI stays the source of truth; the mapping is narrower than CI's filters (the service tier most of all, see above).
 
 `scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX>` waits for CI (polling every 75 s with backoff, never
 `gh run watch`), ignores SonarCloud and checks of cancelled runs superseded by a newer run on the same head,
