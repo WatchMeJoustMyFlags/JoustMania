@@ -192,11 +192,19 @@ class ManagedProcess:
                 raise ServiceStartError(
                     f"{self.name} exited with {self.proc.returncode} during start\n{self.log_tail()}"
                 )
-            if self.ready() and self._marker_logged():
+            healthy = self.ready()
+            if healthy and self._marker_logged():
                 return
             if time.monotonic() > deadline:
                 self.stop()
-                raise ServiceStartError(f"{self.name} not ready within {timeout}s\n{self.log_tail()}")
+                if healthy:
+                    reason = (
+                        f"health SERVING but log marker {self.ready_log_marker!r} not seen "
+                        "(auto-start off or log level above INFO?)"
+                    )
+                else:
+                    reason = "health not SERVING"
+                raise ServiceStartError(f"{self.name} not ready within {timeout}s: {reason}\n{self.log_tail()}")
             time.sleep(READY_POLL_SECONDS)
 
     def _marker_logged(self) -> bool:

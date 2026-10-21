@@ -264,7 +264,6 @@ def _healthy_early(tmp_path, code: str) -> ManagedProcess:
     )
 
 
-@pytest.mark.uc("UC-010", flow="BR-003")
 def test_start_waits_for_the_boot_marker_after_health_is_serving(tmp_path):
     """Health SERVING is not enough: start() returns only once the boot lobby entry is logged."""
     proc = _healthy_early(tmp_path, _PRINTS_MARKER_LATE)
@@ -277,7 +276,6 @@ def test_start_waits_for_the_boot_marker_after_health_is_serving(tmp_path):
         proc.stop(grace=2)
 
 
-@pytest.mark.uc("UC-010", flow="BR-003")
 def test_restart_ignores_the_marker_of_the_previous_start(tmp_path):
     """The log is appended across restarts: the first start's marker must not satisfy the second."""
     proc = _healthy_early(tmp_path, _PRINTS_MARKER_LATE)
