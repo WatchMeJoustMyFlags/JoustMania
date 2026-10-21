@@ -154,7 +154,7 @@ func TestRulesBackend_ProbabilitiesAreSoftmaxOfScores(t *testing.T) {
 		t.Run(fx.name, func(t *testing.T) {
 			clock := time.Unix(10_000, 0)
 			twin := newTestEngine(fx.cfg, &clock)
-			ranked, _, _ := twin.rankLocked(fx.ctx, clock)
+			ranked, _, _ := twin.rankLocked(fx.ctx, clock, nil)
 
 			resp, _ := NewRulesBackend(newTestEngine(fx.cfg, &clock)).Decide(context.Background(), ffaRequest(fx.ctx, allInterventions()))
 			iv, _ := resp.Find(decide.QuestionFFAIntervention)

@@ -72,10 +72,25 @@ func (b *RulesBackend) Decide(_ context.Context, req decide.Request) (decide.Res
 	known := req.Context != nil && b.engine != nil
 	if known {
 		b.engine.mu.Lock()
-		ranked, _, _ = b.engine.rankLocked(*req.Context, b.engine.now())
+		ranked, _, _ = b.engine.rankLocked(*req.Context, b.engine.now(), chargedFromState(req.State))
 		b.engine.mu.Unlock()
 	}
 	return answerFromRanked(ranked, req, known), nil
+}
+
+// chargedFromState is the shield-charge snapshot the request's state was built
+// with (#1870): the rules backend ranks on the same view the state shows.
+func chargedFromState(st decide.State) map[string]bool {
+	var out map[string]bool
+	for _, p := range st.Players {
+		if p.ShieldCharged {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[p.Serial] = true
+		}
+	}
+	return out
 }
 
 // answerFromRanked answers req's questions from an already-ranked candidate list.

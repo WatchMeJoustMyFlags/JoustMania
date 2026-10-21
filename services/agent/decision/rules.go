@@ -58,6 +58,27 @@ type ObjectiveRules struct {
 	// lateSeed is called when the engine is seeded after it already drew chaos
 	// rolls from the time-seeded RNG (the game is then non-exact, BR-007).
 	lateSeed func()
+
+	// chargedSource is the loop's shield-charge ledger view (UC-040 A31, #1870):
+	// read once per ranking, after the throttle. nil (the golden harness, every
+	// older test) means no player is charged.
+	chargedSource func() map[string]bool
+}
+
+// SetChargedSource installs the shield-charge ledger view (Loop.ChargedSerials).
+// It is called under the engine lock, so it must not call back into the engine.
+func (r *ObjectiveRules) SetChargedSource(src func() map[string]bool) {
+	r.mu.Lock()
+	r.chargedSource = src
+	r.mu.Unlock()
+}
+
+// chargedLocked takes the one ledger snapshot of a ranking. Caller holds r.mu.
+func (r *ObjectiveRules) chargedLocked() map[string]bool {
+	if r.chargedSource == nil {
+		return nil
+	}
+	return r.chargedSource()
 }
 
 // SetLateSeedHook installs the callback for a seed that arrived after chaos draws.
@@ -152,15 +173,16 @@ func (r *ObjectiveRules) Evaluate(_ context.Context, c gamecontext.GameContext) 
 // build constructs the decide.Request lazily: it is called (under the engine
 // lock, so it must be pure and cheap enough) only when the evalInterval throttle
 // lets this evaluation actually rank, so the per-Export hot path never builds a
-// State it would throw away. ranked is false on a throttled call (no decisions,
+// State it would throw away. It receives the ranking's shield-charge snapshot
+// (#1870), so the state marks exactly the players the ranking skipped. ranked is false on a throttled call (no decisions,
 // no answers, req and resp are zero).
-func (r *ObjectiveRules) EvaluateDecide(_ context.Context, c gamecontext.GameContext, build func() decide.Request) (out []Decision, req decide.Request, resp decide.Response, ranked bool) {
+func (r *ObjectiveRules) EvaluateDecide(_ context.Context, c gamecontext.GameContext, build func(charged map[string]bool) decide.Request) (out []Decision, req decide.Request, resp decide.Response, ranked bool) {
 	return r.evaluate(c, build)
 }
 
 // evaluate is the shared body of Evaluate and EvaluateDecide. With a nil build it
 // is exactly the pre-#1226 Evaluate.
-func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func() decide.Request) ([]Decision, decide.Request, decide.Response, bool) {
+func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func(charged map[string]bool) decide.Request) ([]Decision, decide.Request, decide.Response, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -170,7 +192,10 @@ func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func() decide
 	}
 	r.lastEval = now
 
-	ranked, weights, fitEval := r.rankLocked(c, now)
+	// One ledger snapshot per ranking: the charge policy and the state built
+	// below read the same map (#1870).
+	charged := r.chargedLocked()
+	ranked, weights, fitEval := r.rankLocked(c, now, charged)
 	r.lastFitness = fitEval
 
 	// Emission is bounded to maxDecisionsPerEval per evaluation. The weighted
@@ -202,7 +227,7 @@ func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func() decide
 	// (out[0] == ranked[0]): the questions are widened to the engine's own ranked
 	// interventions and targets, so the allow-list (applied afterwards by the
 	// permission chain) cannot filter the answers into a different choice.
-	req := emissionRequest(build(), ranked)
+	req := emissionRequest(build(charged), ranked)
 	return out, req, answerFromRanked(ranked, req, true), true
 }
 
@@ -239,9 +264,10 @@ var difficultyInterventions = map[string]bool{
 // the weights and fitness evaluation used. It is the side-effect-light core
 // shared by Evaluate and the decide rules backend (decide_rules.go): it draws
 // R9's chaos roll from r.rng but does NOT touch lastEval, lastFitness or
-// lastDifficultyAt — those belong to the caller that actually emits. Caller
-// holds r.mu.
-func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time) ([]scoredCandidate, map[string]float64, FitnessEvaluation) {
+// lastDifficultyAt — those belong to the caller that actually emits. charged is
+// the ranking's shield-charge snapshot (nil: nobody is charged). Caller holds
+// r.mu.
+func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time, charged map[string]bool) ([]scoredCandidate, map[string]float64, FitnessEvaluation) {
 	weights := normalizedWeights(r.objectives.Objectives())
 	pol := r.policy.Policy()
 	fit := r.fitness.Fitness()
@@ -261,6 +287,7 @@ func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time) ([
 	cands = append(cands, chaosCandidates(c, pol, roll, rollTarget)...)
 
 	cands = applyBatteryPolicy(cands, c, pol, weights)
+	cands = applyChargePolicy(cands, charged)
 	cands = r.applyVarianceCooldown(cands, now, pol)
 	return scoreAndSort(cands, weights, fitEval), weights, fitEval
 }
@@ -292,6 +319,25 @@ func normalizedWeights(w map[string]float64) map[string]float64 {
 		cp[k] = v
 	}
 	return cp
+}
+
+// applyChargePolicy drops every grant_shield candidate whose target is charged
+// (UC-040 A31, #1870): the ledger would refuse it already_charged, so like the
+// battery policy the candidate is not ranked. It does not move the shield to
+// another player: R4 means "the weakest", and pacing stays one charge per window
+// for that player. A nil or empty charged keeps every candidate.
+func applyChargePolicy(cands []candidate, charged map[string]bool) []candidate {
+	if len(charged) == 0 {
+		return cands
+	}
+	kept := cands[:0]
+	for _, cd := range cands {
+		if cd.decision.Intervention == InterventionGrantShield && charged[cd.decision.TargetSerial] {
+			continue
+		}
+		kept = append(kept, cd)
+	}
+	return kept
 }
 
 // applyBatteryPolicy enforces policy.battery_threshold (#722 §5): players
