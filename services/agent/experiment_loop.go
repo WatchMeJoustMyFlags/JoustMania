@@ -438,6 +438,8 @@ func buildExperimentLoop(
 	}
 	if promoter != nil {
 		loop.promotions = promoter
+		// A re-watch revert journals on its experiment (UC-043 step 7, #1883).
+		promoter.SetRewatchJournal(loop.journalRewatchRevert)
 	}
 	logger.Info("Dynamic experiment declarer constructed (#995/#1044) — gated LIVE by agent.json experiment_dynamic_enabled",
 		"env_dynamic_default", expDefaults.DynamicEnabled,
@@ -665,6 +667,21 @@ func (e *experimentLoop) revertPromotionsOnKillSwitch(ctx context.Context) {
 			Reason:  rv.Reason,
 		})
 	}
+}
+
+// journalRewatchRevert journals a re-watch revert of an autonomous promotion on
+// its experiment (UC-043 step 7 and A9, #1883). The Promoter calls it from the
+// re-watch goroutine at most once per promotion, with the re-watch's one
+// outcome (`reverted`, or `applied` when the revert failed); a later retry is the
+// kill switch's (A1). The registry is read at call time and RecordPromotion takes
+// the registry lock.
+func (e *experimentLoop) journalRewatchRevert(experimentID string, res experiment.PromotionResult) {
+	e.log.Warn("experiment: re-watch journaled an autonomous promotion revert (#1883)",
+		"experiment_id", experimentID, "outcome", res.Outcome, "reason", res.Reason)
+	if e.registry == nil {
+		return
+	}
+	e.registry.RecordPromotion(experimentID, res)
 }
 
 // agentEnabled reports whether the agent kill-switch is ON (agent.json `enabled`

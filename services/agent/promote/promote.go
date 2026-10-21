@@ -318,6 +318,10 @@ type Promoter struct {
 	// autonomous write with RevertOnKillSwitch (killswitch.go, #1704).
 	killEpoch uint64
 	killMu    sync.Mutex
+
+	// rewatchJournal receives a re-watch revert's outcome for its experiment
+	// (UC-043 step 7, #1883); nil leaves it logged only. Guarded by mu.
+	rewatchJournal RewatchJournal
 }
 
 // appliedPromotion is one autonomous real default this agent run wrote and has not

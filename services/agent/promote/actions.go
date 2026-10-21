@@ -200,9 +200,9 @@ type Observer interface {
 
 // scheduleRewatch hands an insufficient-games apply to the background re-watcher
 // (#1065 item 4) so it is re-observed as more real games complete. nil rewatcher →
-// the apply stands unverified (prior behavior). The revert closure performs a gated,
-// recorded fail-safe revert with its own Result so the journal/span reflects the
-// later auto-revert.
+// the apply stands unverified (prior behavior). The revert closure performs a gated
+// fail-safe revert with its own Result and journals it on the experiment through
+// the re-watch journal (journalRewatch, UC-043 step 7, #1883).
 func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, ev Evidence, since time.Time, entry *appliedPromotion) {
 	if pr.rewatcher == nil {
 		pr.log.Info("autonomous watch: insufficient real games and no re-watcher wired; apply stands unverified",
@@ -212,10 +212,13 @@ func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, 
 	pr.log.Info("autonomous watch: insufficient real games; scheduling background re-watch (#1065)",
 		"flag", p.FlagKey)
 	revert := func(rctx context.Context) {
-		var rres Result
-		pr.revertReal(rctx, p, entry, &rres, nil)
+		rres := Result{Outcome: OutcomeApplied}
+		claim := pr.revertReal(rctx, p, entry, &rres, nil)
 		pr.log.Warn("autonomous re-watch confirmed degradation; reverted real default (#1065)",
 			"flag", p.FlagKey, "outcome", string(rres.Outcome), "reason", rres.Reason)
+		if claim == claimOwned {
+			pr.journalRewatch(p.ExperimentID, rres)
+		}
 	}
 	// The re-watch outlives this call; the kill switch cancels it (#1704).
 	wctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -274,20 +277,22 @@ func (pr *Promoter) clock() time.Time {
 //
 // entry is the tracked applied promotion (#1704): the revert runs only when this
 // call claims it; when the kill switch already reverted it, nothing is written and
-// the result records the kill-switch revert.
-func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry *appliedPromotion, res *Result, watchErr error) {
-	switch pr.claimApplied(entry) {
+// the result records the kill-switch revert. It returns the claim, so the
+// re-watch journals only a revert it owned (#1883).
+func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry *appliedPromotion, res *Result, watchErr error) claimResult {
+	claim := pr.claimApplied(entry)
+	switch claim {
 	case claimKilled:
 		// The kill switch reverted it while this promotion was still running; the
 		// kill switch left the journaling to this result (#1704).
 		res.Outcome = OutcomeReverted
 		res.Reason = KillSwitchReason
-		return
+		return claim
 	case claimSuperseded:
 		// A newer promotion of the flag replaced this one: its default is not ours to
 		// revert, so nothing is written and the outcome stays applied.
 		res.Reason = "superseded by a newer promotion of the flag; not reverted"
-		return
+		return claim
 	}
 	reason := "real-game fitness degraded after autonomous change"
 	if watchErr != nil {
@@ -296,7 +301,7 @@ func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry
 	if pr.reverter == nil {
 		// Applied but cannot roll back — record the degradation so it is actionable.
 		res.Reason = reason + "; no real-default reverter wired"
-		return
+		return claim
 	}
 	if err := pr.reverter.RevertRealDefault(ctx, p.FlagKey); err != nil {
 		res.Reason = fmt.Sprintf("%s; revert failed: %v", reason, err)
@@ -304,7 +309,7 @@ func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry
 		if entry != nil {
 			pr.retrack(entry)
 		}
-		return
+		return claim
 	}
 	// Start the post-revert cooldown so a re-promotion of this flag cannot immediately
 	// re-trigger the same failure (#1065 item 3). Marked only on a SUCCESSFUL revert —
@@ -312,4 +317,5 @@ func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry
 	pr.markReverted(p.FlagKey)
 	res.Outcome = OutcomeReverted
 	res.Reason = reason
+	return claim
 }
