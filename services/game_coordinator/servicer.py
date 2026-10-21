@@ -624,6 +624,13 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 if not is_real or attempt == 1:
                     return False, "Game already in progress"
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
+            if is_real:
+                # A shadow admitted while this real start was preempting (outside the
+                # lock) registered before the primary slot was live, so neither the
+                # preemption pass nor the shadow_policy=block gate saw it. Preempt it
+                # now: no shadow outlives a real start (UC-043 A2, UC-046 A8, #1404).
+                # From here on the live primary blocks new shadows under policy block.
+                await self._preempt_shadow_sessions()
             try:
                 return await self._run_admitted_start(session, game_kind, game_id, on_admitted)
             except asyncio.CancelledError:

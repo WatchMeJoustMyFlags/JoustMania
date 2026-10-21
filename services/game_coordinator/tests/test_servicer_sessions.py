@@ -946,9 +946,40 @@ class TestShadowGameGovernance:
             ok, gid = await servicer._start_game_from_config(_config(serials=("r1", "r2")), _MockSpan())
 
         assert ok is True, f"real game lost the admission race: {gid}"
-        assert calls["n"] == 2, "expected a second preemption pass after the cap rejection"
+        # Pass 1 (no-op), pass 2 after the cap rejection, pass 3 after the admission.
+        assert calls["n"] == 3, "expected a second preemption pass after the cap rejection"
         assert servicer.sessions[gid].game_kind == "primary"
         assert servicer._primary_game_id == gid
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-043", flow="A2")
+    @pytest.mark.uc("UC-046", flow="A8")
+    async def test_shadow_admitted_during_real_preemption_is_preempted(self, servicer):
+        """#1404: a shadow start that lands while a real start runs its preemption pass
+        (outside the lock, before the primary slot is live) passes the block gate and
+        the cap. The real start preempts it after its own admission, and under
+        shadow_policy=block the next shadow start is refused."""
+        real_preempt = servicer._preempt_shadow_sessions
+        late: dict[str, str] = {}
+
+        async def preempt_while_a_shadow_starts():
+            preempted = await real_preempt()
+            if not late:
+                ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("s1", "s2")), _MockSpan())
+                assert ok is True, gid
+                late["gid"] = gid
+            return preempted
+
+        servicer._preempt_shadow_sessions = preempt_while_a_shadow_starts
+        with _NO_THREAD, patch("services.game_coordinator.servicer._shadow_policy", lambda: "block"):
+            ok, gid = await servicer._start_game_from_config(_config(serials=("r1", "r2")), _MockSpan())
+            assert ok is True, gid
+            assert late, "the late shadow never started"
+            assert late["gid"] not in servicer.sessions, "the shadow admitted during the real start still runs"
+            assert set(servicer.sessions) == {gid}
+            ok, error = await servicer._start_game_from_config(_shadow_config(serials=("s3", "s4")), _MockSpan())
+        assert ok is False
+        assert error == "Shadow games blocked while a real game is running"
 
     @pytest.mark.asyncio
     async def test_agent_origin_start_is_shadow_even_when_idle(self, servicer):
