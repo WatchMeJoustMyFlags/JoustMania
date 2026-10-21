@@ -74,8 +74,8 @@ func renderGame(b *strings.Builder, idx int, prefix string, g GameAggregate) {
 		rateOrUnknown(g.NearDeathRate),
 	)
 	for _, iv := range g.Interventions {
-		fmt.Fprintf(b, "     intervention=%s dispatched=%d blocked=%d%s\n",
-			iv.Type, iv.Dispatched, iv.Blocked, effectSuffix(iv))
+		fmt.Fprintf(b, "     intervention=%s applied=%d blocked=%d%s\n",
+			iv.Type, iv.Applied, iv.Blocked, effectSuffix(iv))
 	}
 }
 

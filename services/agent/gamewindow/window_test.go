@@ -224,10 +224,10 @@ func TestWindow_AggregatesComputed(t *testing.T) {
 			t.Fatalf("intervention types = %d, want 2", len(agg.Interventions))
 		}
 		shield, speed := agg.Interventions[0], agg.Interventions[1]
-		if shield.Type != "grant_shield" || shield.Dispatched != 0 || shield.Blocked != 1 || shield.MeanIntensityDelta != nil {
+		if shield.Type != "grant_shield" || shield.Applied != 0 || shield.Blocked != 1 || shield.MeanIntensityDelta != nil {
 			t.Errorf("grant_shield = %+v", shield)
 		}
-		if speed.Type != "speed_up" || speed.Dispatched != 2 || speed.Blocked != 0 {
+		if speed.Type != "speed_up" || speed.Applied != 0 || speed.Blocked != 0 {
 			t.Errorf("speed_up = %+v", speed)
 		}
 		if speed.MeanIntensityDelta == nil || *speed.MeanIntensityDelta < 0.1999 || *speed.MeanIntensityDelta > 0.2001 {
@@ -269,8 +269,8 @@ func TestWindow_AggregatesComputed(t *testing.T) {
 		s.Record(realGame())
 		want := "PRIOR GAMES (real games only, most recent last; game-level aggregates, no player identity):\n" +
 			"  1. JoustFFA duration=92.0s players=4 outcome=winner death_rate=0.75 near_death_rate=0.33\n" +
-			"     intervention=grant_shield dispatched=0 blocked=1\n" +
-			"     intervention=speed_up dispatched=2 blocked=0 [mean_intensity_delta=0.20 mean_active_delta=1.0]"
+			"     intervention=grant_shield applied=0 blocked=1\n" +
+			"     intervention=speed_up applied=0 blocked=0 [mean_intensity_delta=0.20 mean_active_delta=1.0]"
 		if got := Render(s.SnapshotFor(gamecontext.GameKindReal, "")); got != want {
 			t.Errorf("Render =\n%s\nwant\n%s", got, want)
 		}
@@ -517,6 +517,7 @@ func TestWindow_AggregatesSurviveTimelineOverflow(t *testing.T) {
 		clock = clock.Add(time.Second)
 		store.SetEliminationOrder(realisticSerials[i], i+1)
 		store.AppendInterventionEvent("speed_up", "", false)
+		store.RecordInterventionApply("speed_up", gamecontext.ApplyOutcomeApplied)
 	}
 	store.AppendInterventionEvent("grant_shield", realisticSerials[3], true)
 	for i := 0; i < 100; i++ {
@@ -542,11 +543,11 @@ func TestWindow_AggregatesSurviveTimelineOverflow(t *testing.T) {
 	}
 	want := []InterventionAggregate{
 		{Type: "grant_shield", Blocked: 1},
-		{Type: "speed_up", Dispatched: 3},
+		{Type: "speed_up", Applied: 3},
 	}
 	if len(g.Interventions) != 2 ||
-		g.Interventions[0].Type != want[0].Type || g.Interventions[0].Blocked != 1 || g.Interventions[0].Dispatched != 0 ||
-		g.Interventions[1].Type != want[1].Type || g.Interventions[1].Dispatched != 3 || g.Interventions[1].Blocked != 0 {
+		g.Interventions[0].Type != want[0].Type || g.Interventions[0].Blocked != 1 || g.Interventions[0].Applied != 0 ||
+		g.Interventions[1].Type != want[1].Type || g.Interventions[1].Applied != 3 || g.Interventions[1].Blocked != 0 {
 		t.Errorf("UC-042/BR-004: interventions = %+v, want %+v", g.Interventions, want)
 	}
 	assertNoSerial(t, Render(w), realisticSerials)
@@ -565,6 +566,55 @@ func TestWindow_RecordedGameAggregatesAreInTheWindow(t *testing.T) {
 		want := FromSummary(realGame())
 		if g.Outcome != want.Outcome || g.PlayerCount != 4 || g.Mode != "JoustFFA" || g.DeathRate == nil || *g.DeathRate != 0.75 {
 			t.Fatalf("window aggregate = %+v, want the game's aggregates (%+v)", g, want)
+		}
+	})
+}
+
+// UC: UC-042 BR-004
+// A dispatched decision that the actuation gate turned into a no-op, or whose
+// write failed, is not applied; the whole-game tally decides (#1778).
+func TestWindow_InterventionsCountAppliedNotDispatched(t *testing.T) {
+	t.Run("UC-042/BR-004 dispatched but gated off is blocked, not applied", func(t *testing.T) {
+		g := realGame()
+		g.InterventionsByType = []gamesummary.InterventionTypeCount{
+			// 5 passed the permission chain; 2 written, 2 no-ops of
+			// interventions_enabled, 1 failed write; 1 more refused by the chain.
+			{Type: "speed_up", Dispatched: 5, Blocked: 1, Applied: 2, GatedOff: 2},
+			{Type: "grant_shield", Dispatched: 3, GatedOff: 3},
+		}
+		agg := FromSummary(g)
+		got := map[string]InterventionAggregate{}
+		for _, a := range agg.Interventions {
+			got[a.Type] = a
+		}
+		if a := got["speed_up"]; a.Applied != 2 || a.Blocked != 3 {
+			t.Errorf("speed_up = applied %d blocked %d, want 2 / 3", a.Applied, a.Blocked)
+		}
+		if a := got["grant_shield"]; a.Applied != 0 || a.Blocked != 3 {
+			t.Errorf("grant_shield = applied %d blocked %d, want 0 / 3 (all dispatched were no-ops)", a.Applied, a.Blocked)
+		}
+		s := NewStore()
+		s.Record(g)
+		out := Render(s.SnapshotFor(gamecontext.GameKindReal, ""))
+		for _, want := range []string{
+			"intervention=grant_shield applied=0 blocked=3",
+			"intervention=speed_up applied=2 blocked=3",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("render lacks %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "dispatched=") {
+			t.Errorf("render still names dispatched:\n%s", out)
+		}
+	})
+	t.Run("UC-042/BR-004 applied counts", func(t *testing.T) {
+		g := realGame()
+		g.InterventionsByType = []gamesummary.InterventionTypeCount{{Type: "speed_up", Dispatched: 4, Applied: 4}}
+		for _, a := range FromSummary(g).Interventions {
+			if a.Type == "speed_up" && (a.Applied != 4 || a.Blocked != 0) {
+				t.Errorf("speed_up = %+v, want applied 4 blocked 0", a)
+			}
 		}
 	})
 }

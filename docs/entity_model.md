@@ -610,7 +610,7 @@ One finished game as the cross-game window keeps it: game-level numbers only, no
 | outcome | Outcome type derived from the survivor count (the agent sees no end reason): one survivor `winner`, none `tie`, several `multiple_survivors` (a force-end or a team win); a force-end that leaves one survivor reads as `winner` | String | 18 | Not Null, Values: winner, tie, multiple_survivors, unknown |
 | death_rate | Eliminations divided by players | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | near_death_rate | Share of players with an observed closest call who survived with a closest call of at least 0.8 times the death threshold | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
-| interventions | Per type: dispatched and blocked counts and the mean measured intensity and active-player deltas, no target | String | 2000 | Optional |
+| interventions | Per type: applied and blocked counts (the GAME_SUMMARY split: applied = written, blocked = refused by the permission chain plus actuation-gate no-ops; a dispatched decision that was a no-op or whose write failed is in neither) and the mean measured intensity and active-player deltas, no target. Without the whole-game tally (a summary built from the timeline only) applied reads 0, as in GAME_SUMMARY (#1778) | String | 2000 | Optional |
 | arm | Arm, for a game in a linked set | String | 12 | Optional, Values: experimental, control |
 
 **Constraints:** real games feed one real-game ring of at most 20 games, oldest evicted. A shadow game is stored only in the LINKED_SET of its experiment (UC-042 BR-005).

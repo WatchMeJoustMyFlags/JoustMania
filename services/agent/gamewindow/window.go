@@ -81,9 +81,12 @@ type GameAggregate struct {
 // InterventionAggregate is one intervention type within a game: how often it was
 // applied or blocked and its mean measured effect (no target).
 type InterventionAggregate struct {
-	Type       string
-	Dispatched int
-	Blocked    int
+	Type string
+	// Applied: written. Blocked: refused by the permission chain or turned into a
+	// no-op by interventions_enabled (the GAME_SUMMARY split, #1771, #1778). A
+	// dispatched decision that was a no-op or a failed write is in neither.
+	Applied int
+	Blocked int
 	// MeanIntensityDelta / MeanActiveDelta average the best-effort before/after
 	// effects of this type's interventions; nil when none had that effect measured.
 	MeanIntensityDelta *float64
@@ -352,9 +355,9 @@ func aggregateInterventions(ivs []gamesummary.InterventionOutcome, tally []games
 			a = &acc{agg: InterventionAggregate{Type: iv.Intervention}}
 			byType[iv.Intervention] = a
 		}
-		if iv.Dispatched {
-			a.agg.Dispatched++
-		} else {
+		// The timeline cannot tell a written dispatch from a gated no-op, so only
+		// its blocked entries count here; applied comes from the tally.
+		if !iv.Dispatched {
 			a.agg.Blocked++
 		}
 		if iv.Effect == nil {
@@ -371,7 +374,7 @@ func aggregateInterventions(ivs []gamesummary.InterventionOutcome, tally []games
 	}
 	if len(tally) > 0 {
 		for _, a := range byType {
-			a.agg.Dispatched, a.agg.Blocked = 0, 0
+			a.agg.Applied, a.agg.Blocked = 0, 0
 		}
 		for _, t := range tally {
 			a := byType[t.Type]
@@ -379,7 +382,7 @@ func aggregateInterventions(ivs []gamesummary.InterventionOutcome, tally []games
 				a = &acc{agg: InterventionAggregate{Type: t.Type}}
 				byType[t.Type] = a
 			}
-			a.agg.Dispatched, a.agg.Blocked = t.Dispatched, t.Blocked
+			a.agg.Applied, a.agg.Blocked = t.Applied, t.Blocked+t.GatedOff
 		}
 	}
 	out := make([]InterventionAggregate, 0, len(byType))
