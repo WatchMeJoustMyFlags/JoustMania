@@ -630,7 +630,7 @@
       "state": "ENABLED",
       "variants": {
         "default": "https://api.openai.com/v1",
-        "fake": "http://fake-openai:8080/v1"
+        "fake": "http://127.0.0.1:1/v1"
       },
       "defaultVariant": "default"
     },
