@@ -394,6 +394,20 @@ async def test_tc002_ffa_game_to_winner_then_restart(
             f"Step 9: next game {restart_id} never RUNNING (running: {running})"
         )
 
+        # Cleanup (Postconditions): stop the second game by id. A force-ended FFA
+        # game sends game_force_ended (and game_ended with outcome force_ended,
+        # UC-027 step 3); that path is TC-004's journey, so only its arrival is checked.
+        assert await force_end_game_by_id(
+            game_client, restart_id, reason="tc002_cleanup"
+        ), "force-end of the second game failed"
+
+        def _restart_force_ended() -> bool:
+            return bool(_events_for(collector, restart_id, "game_force_ended"))
+
+        assert await async_poll_until(_restart_force_ended, timeout=15.0), (
+            "second game sent no game_force_ended"
+        )
+
         # Validation 3: the collector delivered the first game's root span to Jaeger.
         if not await async_poll_until(
             lambda: jaeger_has_root_span(game_id, _FFA_ROOT_SPAN),
@@ -408,20 +422,6 @@ async def test_tc002_ffa_game_to_winner_then_restart(
                 f"Validation 3: Jaeger has no root span {_FFA_ROOT_SPAN!r} with "
                 f"game.id={game_id} after {_JAEGER_TIMEOUT:.0f} s; root spans seen: {seen}"
             )
-
-        # Cleanup (Postconditions): stop the second game by id. A force-ended FFA
-        # game sends game_force_ended (and game_ended with outcome force_ended,
-        # UC-027 step 3); that path is TC-004's journey, so only its arrival is checked.
-        assert await force_end_game_by_id(
-            game_client, restart_id, reason="tc002_cleanup"
-        ), "force-end of the second game failed"
-
-        def _restart_force_ended() -> bool:
-            return bool(_events_for(collector, restart_id, "game_force_ended"))
-
-        assert await async_poll_until(_restart_force_ended, timeout=15.0), (
-            "second game sent no game_force_ended"
-        )
     finally:
         await observer.stop()
         await menu_events.stop()

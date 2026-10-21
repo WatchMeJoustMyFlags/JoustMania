@@ -45,7 +45,7 @@
 
 ## Automation
 
-**Tier:** T3 full stack (`tests/integration/`, shipped images under docker compose) for the closed loop through the real otel-collector, envoy and Jaeger; T2 service (`tests/service/`) for the rules decision written and applied with a harness sink in place of the collector (#1422 S8).
+**Tier:** T3 full stack (`tests/integration/`, shipped images under docker compose, e2e-agent shard) for the closed loop through the real otel-collector, envoy and Jaeger; T2 service (`tests/service/`) for the rules decision written and applied with a harness sink in place of the collector (#1422 S8).
 
 - **Automated (T3)**: `tests/integration/test_tc007_closed_loop_full_stack.py::test_tc007_closed_loop_through_collector_and_jaeger` starts the agent (interventions on: `interventions_allowed` = `standard`, `decision.backend` = `rules`) and envoy into the session stack, with one `uc` marker per use-case flow (`tc="TC-007"`) and a `# Step n` comment per row. It asserts:
   - Steps 1 to 4 and 6: a menu-started FFA game `G1` on four mock controllers, one early elimination, then an unblocked `agent_intervention` for `G1` on the game's stream: the coordinator's telemetry reached the agent through the collector's `otlp/agent` fan-out (UC-041 steps 1, 2, 5, 6) and the agent's decision took effect through the flag service (UC-040 step 13).
