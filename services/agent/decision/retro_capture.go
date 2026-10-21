@@ -167,6 +167,10 @@ type RetroCoordinator struct {
 	// Nil (the stub default, tests) keeps the retro capture-only: the span records
 	// inference.used=none / fallback no_backend_available and ends at once.
 	backend TextBackend
+	// backendSource, when set, picks the backend for ONE retro (inference.backend,
+	// #1810): resolved once at the start of OnGameEnd, so a flag flip while the
+	// retro runs never changes the backend it started with. It overrides backend.
+	backendSource func(ctx context.Context) TextBackend
 	// timeout bounds one retro inference call; not positive = DefaultRetroTimeout.
 	timeout time.Duration
 	// timeoutSource, when set, resolves the deadline at use time (each retro call,
@@ -264,6 +268,24 @@ func (rc *RetroCoordinator) SetLLMBudget(b *llmBudget) { rc.budget = b }
 // capture-only. Not safe to call concurrently with OnGameEnd — set it during
 // construction.
 func (rc *RetroCoordinator) SetBackend(b TextBackend) { rc.backend = b }
+
+// SetBackendSource installs the per-retro backend resolver (inference.backend,
+// #1810, C-035). It returns nil for the stub (capture-only). Resolved once per
+// retro; it takes precedence over SetBackend. Not safe to call concurrently with
+// OnGameEnd — set it during construction.
+func (rc *RetroCoordinator) SetBackendSource(f func(ctx context.Context) TextBackend) {
+	rc.backendSource = f
+}
+
+// resolveBackend returns the text backend for one retro: the source's pick when a
+// source is installed (a nil interface or typed-nil result is the stub), else the
+// fixed backend.
+func (rc *RetroCoordinator) resolveBackend(ctx context.Context) TextBackend {
+	if rc.backendSource != nil {
+		return rc.backendSource(ctx)
+	}
+	return rc.backend
+}
 
 // SetLLMBudgetCeiling sets the operator's ceiling on llm.max_requests_per_minute for
 // the retro's budget check, mirroring Loop.SetLLMBudgetCeiling
@@ -365,6 +387,9 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	// unreachable, identical to the in-game path. Evaluated up front so the budget
 	// gate below reads the live llm.max_requests_per_minute.
 	snapshot := rc.Flags.Evaluate(context.Background())
+	// inference.backend (#1810): resolved ONCE for this retro; every use below (the
+	// gates, the attribution, the call) sees the same backend.
+	backend := rc.resolveBackend(context.Background())
 
 	// Model-call gate (#847, #1234, #1270). Only a retro that will actually call the
 	// text backend counts as an LLM request:
@@ -382,7 +407,7 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	//     capture nothing (no prompt build, no span). A nil budget (tests / unshared
 	//     wiring) skips this check.
 	skipReason := ""
-	if rc.backend != nil {
+	if backend != nil {
 		switch {
 		case !snapshot.Enabled:
 			// UC-045 BR-002: with the agent off the retro is capture-only, no model call.
@@ -393,7 +418,7 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 				otelmetric.WithAttributes(attribute.String("reason", FallbackNotEligible)))
 		}
 	}
-	callBackend := rc.backend != nil && skipReason == ""
+	callBackend := backend != nil && skipReason == ""
 	if callBackend && rc.budget != nil && !rc.budget.allow(now(), rc.budgetCap(snapshot.LLMGate.MaxRequestsPerMinute)) {
 		rc.llmGated.Add(context.Background(), 1,
 			otelmetric.WithAttributes(attribute.String("reason", FallbackBudgetExhausted)))
@@ -429,7 +454,7 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 
 	// Inference attribution (#1234): the wired backend's model and name, or
 	// used=none / no_backend_available when the retro is capture-only.
-	attr := rc.retroInference(callBackend, skipReason)
+	attr := rc.retroInference(backend, callBackend, skipReason)
 	prompt.Model = attr.configured
 
 	// #1168: the retro span carries only the System-prompt fingerprint; emit the full
@@ -676,8 +701,8 @@ type retroAttribution struct {
 //     eligible): configured=its model, used="none", fallback=skipReason
 //     (agent_disabled / llm_not_eligible);
 //   - backend wired and called: configured=its model, used=its name, fallback="".
-func (rc *RetroCoordinator) retroInference(callBackend bool, skipReason string) retroAttribution {
-	if rc.backend == nil {
+func (rc *RetroCoordinator) retroInference(backend TextBackend, callBackend bool, skipReason string) retroAttribution {
+	if backend == nil {
 		return retroAttribution{used: DefaultInference, fallback: FallbackNoBackend}
 	}
 	if !callBackend {
@@ -685,15 +710,15 @@ func (rc *RetroCoordinator) retroInference(callBackend bool, skipReason string) 
 		// eligible — shadow games by default): capture-only, attributed to the model
 		// that would have served.
 		return retroAttribution{
-			configured: rc.backend.Model(),
+			configured: backend.Model(),
 			used:       DefaultInference,
 			fallback:   skipReason,
 		}
 	}
 	return retroAttribution{
-		configured: rc.backend.Model(),
-		used:       rc.backend.Name(),
-		backend:    rc.backend,
+		configured: backend.Model(),
+		used:       backend.Name(),
+		backend:    backend,
 	}
 }
 

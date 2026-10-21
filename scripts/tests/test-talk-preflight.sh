@@ -124,6 +124,7 @@ flags = {
     "decision.openai.model": f({"unset": "", "vendor": "m"}, "unset"),
     "decision.openai.base_url": f({"default": "https://api.openai.com/v1"}, "default"),
     "llm.max_requests_per_minute": f({"default": 6, "stage": 30}, "stage"),
+    "inference.backend": f({"stub": "stub", "claude": "claude"}, "claude"),
     "policy.max_interventions_per_minute": f({"conservative": 1, "default": 2, "aggressive": 4}, "aggressive"),
 }
 for key, variant in overrides.items():
@@ -155,7 +156,8 @@ check "agent set served" "PASS  the agent flag set is served by the flag service
 check "jev key present" "PASS  jev: JEV_API_KEY present"
 check "claude key present" "PASS  claude: ANTHROPIC_API_KEY present"
 check "empty openai key is only info" "INFO  openai: DECISION_OPENAI_API_KEY absent"
-check "inference backend claude passes" "PASS  AGENT_INFERENCE_BACKEND=claude"
+check "inference backend flag claude passes" "PASS  inference.backend = claude"
+check "inference backend env fallback claude passes" "PASS  AGENT_INFERENCE_BACKEND=claude (fallback"
 check "stage flag under the env ceiling passes" "PASS  LLM budget: llm.max_requests_per_minute = stage (30/min) under the AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30 ceiling"
 check "claude timeout baseline" "PASS  decision.claude.timeout_ms = default (5000)"
 check "jev threshold baseline" "PASS  decision.jev.act_confidence_threshold = gate (0.6)"
@@ -198,12 +200,26 @@ check "default flag budget warns" "WARN  LLM budget: llm.max_requests_per_minute
 check "claude timeout drift fails" "FAIL  decision.claude.timeout_ms = patient (8000), stage baseline is default"
 check "jev blackhole left on fails" "FAIL  decision.jev.base_url = blackhole"
 check "missing jev key fails" "FAIL  jev: JEV_API_KEY missing"
-check "stub summary backend warns" "WARN  AGENT_INFERENCE_BACKEND=stub (not claude)"
+check "stub summary backend env fallback warns" "WARN  AGENT_INFERENCE_BACKEND=stub (not claude)"
 STUB_BUDGET=10 run_preflight
 check "low env budget warns" "WARN  AGENT_LLM_MAX_REQUESTS_PER_MINUTE=10 caps the flag"
 # #1788: the env is a ceiling, so 30 in the env cannot raise the default flag (6).
 STUB_BUDGET=30 run_preflight
 check "env ceiling cannot raise the default flag" "WARN  LLM budget: llm.max_requests_per_minute = default (6/min)"
+
+# --- the inference.backend flag is the effective choice (#1810, FR-151) -------
+# Flag at its shipped stub default: the flag wins over a claude env, so the
+# closing summary beat would be capture-only. The baseline check FAILs.
+fixture inference.backend=stub
+STUB_BUDGET=30 run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "inference.backend stub exits 1"; else not_ok "inference.backend stub exits 1 (rc=${RC})"; fi
+check "inference.backend stub drift fails" "FAIL  inference.backend = stub (\"stub\"), stage baseline is claude"
+# Flag claude with the env unset: the effective backend is claude, the env line is a WARN only.
+fixture
+STUB_BUDGET=30 STUB_INFERENCE="" run_preflight
+if [[ "${RC}" -eq 0 ]]; then ok "flag claude + env unset exits 0"; else not_ok "flag claude + env unset exits 0 (rc=${RC})"; fi
+check "flag claude + env unset: flag passes" "PASS  inference.backend = claude"
+check "flag claude + env unset: env fallback only warns" "WARN  AGENT_INFERENCE_BACKEND=unset (not claude)"
 
 # --- missing claude key; secret still never printed ------------------------
 fixture

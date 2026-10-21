@@ -14,7 +14,7 @@ remote backend cannot answer usefully, rules decide and the game keeps playing
 
 **Backend roles** (maintainer decision, C-018): **jev** is the primary in-game backend; **claude** is the
 in-game backup, selected by a manual `decision.backend` flip, and separately serves the post-game retro /
-summary and the experiment proposer (through `AGENT_INFERENCE_BACKEND`, not this contract); **rules** is the
+summary and the experiment proposer (through the `inference.backend` flag, not this contract); **rules** is the
 automatic floor. The shipped default of `decision.backend` is `rules`; a deployment selects jev explicitly
 (`scripts/agent-backend.sh jev`).
 
@@ -506,16 +506,18 @@ hosted inference is allowed, local inference is not a goal, rules are the offlin
 (#1049) and the `mode` / `model` / `prompt_variant` flags were removed in #1234.
 
 To enable the model-backed retro and proposer (the compose `agent` service has no profile, so a plain `up` starts it;
-the old `--profile agent` flag selects nothing):
+the old `--profile agent` flag selects nothing): give the agent the key, then set the flag (the flag wins over the
+env, FR-151, #1810; the proposer additionally needs its gate, FR-152 d):
 
 ```bash
-AGENT_INFERENCE_BACKEND=claude ANTHROPIC_API_KEY=<key> docker compose up -d agent
+ANTHROPIC_API_KEY=<key> docker compose up -d agent
+./scripts/flags.sh set agent inference.backend claude
 ```
 
 | Seam | Used for | Selected by | Backends |
 |---|---|---|---|
 | Decision backend | in-game decisions (FFA) | `decision.backend` flag, live | `rules` (default), `jev`, `claude`, `openai` |
-| Text backend | post-game retro (`agent.llm.retro`), experiment proposer | `AGENT_INFERENCE_BACKEND` env, at startup | `stub` (default), `claude` |
+| Text backend | post-game retro (`agent.llm.retro`), experiment proposer | `inference.backend` flag, per use (retro / propose cycle); env `AGENT_INFERENCE_BACKEND` only as the fallback | `stub` (default), `claude` (needs the key and a valid base URL) |
 
 The text backend takes a System + User prompt and returns raw text (`Infer(ctx, llm.Prompt) (string, error)`,
 `inference/claude.go`, official Anthropic Go SDK). Env vars (`AGENT_INFERENCE_*`, `ANTHROPIC_API_KEY`) are in the
@@ -536,8 +538,8 @@ decisions fall back to rules (§7). Keep keys out of the tracked `.env`: export 
   With `claude`, a proposal that passes the cadence floor (`code_improvement.min_interval_seconds`) calls the
   model only for eligible game kinds and only when a budget slot is free; otherwise it records
   `agent_llm_gated_total{reason=llm_not_eligible|llm_budget_exhausted}` and retries at the next game end (#1270).
-  The stub never draws from the budget. `AGENT_INFERENCE_BACKEND` selects the backend (`code_improvement.engine`
-  was retired in #1810). The proposer runs at all only while the proposer gate is open:
+  The stub never draws from the budget. The `inference.backend` flag selects the backend per cycle (`code_improvement.engine`
+  was retired in #1810; a stub cycle is never charged). The proposer runs at all only while the proposer gate is open:
   `AGENT_EXPERIMENT_PROPOSER_ENABLED=true` AND `experiment_proposer_enabled` (FR-152 d, C-034); closed, it makes no
   model call and draws no budget slot.
 - **The budget is tight during a remote-decide session.** The window is a sliding 60 s shared by decisions, the

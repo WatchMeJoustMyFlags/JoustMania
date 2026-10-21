@@ -16,7 +16,7 @@
 ## Preconditions
 
 - The service-tier `AGENT` composition (see Automation): the agent and the one game coordinator of the stack, which the experiment has to itself. The former full-stack module `test_experiment_cohort_loop.py` and its dedicated-coordinator overlay were removed (#1422 S13); this module covers steps 1 to 8.
-- `AGENT_INFERENCE_BACKEND=stub`, `decision.backend` = `rules`, `enabled` and `experiments_enabled` on; verdict minimums lowered to 1 pair and a short experiment tick through `agent` overlays on the flag service (and the same values as agent env, for the first tick); an env-seeded experiment.
+- `inference.backend` at its `stub` default (the env is `stub` too), `decision.backend` = `rules`, `enabled` and `experiments_enabled` on; verdict minimums lowered to 1 pair and a short experiment tick through `agent` overlays on the flag service (and the same values as agent env, for the first tick); an env-seeded experiment.
 
 ## Flow
 

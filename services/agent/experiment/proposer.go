@@ -138,8 +138,8 @@ const (
 // and the retro also draw from. Admit returns ok=false with the gate reason when
 // the call must not be made, and records the gated metric itself. A local
 // interface keeps this package free of the decision package; main.go wires
-// decision.LLMAdmission. It is installed only when a REAL text backend is wired,
-// so a stub propose cycle (no model call) never charges the budget.
+// decision.LLMAdmission. It is always installed and consulted only for a real
+// cycle, so a stub propose cycle (no model call) never charges the budget.
 type LLMAdmission interface {
 	Admit(ctx context.Context, gameKind string) (ok bool, reason string)
 }
@@ -219,11 +219,15 @@ type Proposer struct {
 	// Gate's Writer owns the file).
 	vocab func() map[string]struct{}
 	// admission is the shared LLM call gate (#1270), consulted after the cadence
-	// floor and before Infer. nil = ungated: main.go leaves it nil for the stub
-	// backend, which makes no model call and so must not charge the budget.
+	// floor and before Infer, only when the cycle's backend is real (a stub cycle
+	// makes no model call and must not charge the budget). nil = ungated.
 	admission LLMAdmission
-	tracer    trace.Tracer
-	log       *slog.Logger
+	// source, when set, picks the backend for ONE ProposeOnce (inference.backend,
+	// #1810): it is resolved once per cycle, after the Permit gate, so a flag flip
+	// mid-cycle never splits a cycle across two backends. nil = the fixed backend.
+	source BackendSource
+	tracer trace.Tracer
+	log    *slog.Logger
 
 	// clock is injected for deterministic cadence tests (no wall-clock read on the
 	// hot path otherwise). Defaults to time.Now.
@@ -264,10 +268,35 @@ func NewProposer(backend Backend, sink ProposalSink, vocab func() map[string]str
 // calls it (defaults to time.Now).
 func (p *Proposer) SetClock(clock func() time.Time) { p.clock = clock }
 
-// SetLLMAdmission installs the shared LLM call gate (#1270). main.go calls it only
-// when a real text backend is wired (AGENT_INFERENCE_BACKEND=claude with a key), so
-// each real model call draws one slot from the global budget and a stub cycle
-// draws none. Not safe to call concurrently with ProposeOnce; wire it at startup.
+// BackendSource resolves the proposer's backend for one cycle (#1810, C-035): the
+// backend to call and whether it is a REAL one (a model call that is charged to the
+// shared LLM budget). real=false is the inert stub: it makes no model call, so the
+// admission is skipped and no budget slot is charged.
+type BackendSource func(ctx context.Context) (backend Backend, real bool)
+
+// SetBackendSource installs the per-cycle backend resolver (inference.backend). It
+// replaces the fixed backend given to NewProposer. Not safe to call concurrently
+// with ProposeOnce: set it during construction.
+func (p *Proposer) SetBackendSource(src BackendSource) { p.source = src }
+
+// resolveBackend returns the backend and the real flag for one cycle. Without a
+// source it is the fixed backend, real exactly when an admission is installed
+// (the pre-#1810 wiring: the admission was installed only for a real backend).
+func (p *Proposer) resolveBackend(ctx context.Context) (Backend, bool) {
+	if p.source != nil {
+		b, real := p.source(ctx)
+		if b == nil {
+			return p.backend, false // never charge the budget for the fixed stub
+		}
+		return b, real
+	}
+	return p.backend, p.admission != nil
+}
+
+// SetLLMAdmission installs the shared LLM call gate (#1270). main.go always installs
+// it (inference.backend can flip at run time, #1810); ProposeOnce consults it only
+// when the cycle's backend is real, so each real model call draws one slot from the
+// global budget and a stub cycle draws none. Not safe to call concurrently with ProposeOnce; wire it at startup.
 func (p *Proposer) SetLLMAdmission(a LLMAdmission) { p.admission = a }
 
 // permit evaluates the caller's kill-switch gate, failing closed on a nil Permit.
@@ -296,6 +325,8 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 		p.log.Debug("code_improvement.propose_skipped", "reason", reason)
 		return Result{Outcome: ProposeDisabled, Reason: reason}
 	}
+	// inference.backend (#1810): resolved ONCE for the whole cycle, after the gate.
+	backend, real := p.resolveBackend(ctx)
 
 	// Cadence floor (cheapest remaining gate): suppress cycles inside MinInterval
 	// with no Infer call, so proposing — an expensive LLM round-trip — happens at
@@ -311,11 +342,11 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 
 	// Shared LLM call gate (#1270): eligibility of the triggering game kind and one
 	// slot of the global per-minute budget, AFTER the cadence floor so a
-	// cadence-gated cycle never spends a budget slot. Installed only for a real
-	// backend (nil = the stub, which makes no model call). On refusal the cadence
+	// cadence-gated cycle never spends a budget slot. Always installed;
+	// consulted only for a real cycle (a stub cycle makes no model call). On refusal the cadence
 	// admission is rolled back so the next game end can try again, and nothing is
 	// captured (no span), exactly like a budget-gated retro.
-	if p.admission != nil {
+	if real && p.admission != nil {
 		if ok, reason := p.admission.Admit(ctx, cfg.GameKind); !ok {
 			p.rollback(now, prevAttempt)
 			p.log.Info("code_improvement.propose_gated", "reason", reason, "game_kind", cfg.GameKind)
@@ -332,7 +363,7 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 	vocab := p.vocab()
 	prompt := buildProposalPrompt(n, vocab)
 
-	raw, err := p.backend.Infer(ctx, prompt)
+	raw, err := backend.Infer(ctx, prompt)
 	if err != nil {
 		// DEGRADES TO NOTHING: the sentinel stub (no real backend yet), a transport
 		// error, or a timeout. Record and no-op — no proposal, no error to caller.

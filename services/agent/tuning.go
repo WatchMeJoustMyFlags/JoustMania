@@ -45,6 +45,7 @@ type tuningDefaults struct {
 
 // deprecatedTuningEnv lists the env vars FR-151 keeps as a fallback for one release.
 var deprecatedTuningEnv = []string{
+	"AGENT_INFERENCE_BACKEND",
 	"AGENT_INFERENCE_MODEL",
 	"AGENT_INFERENCE_EFFORT",
 	"AGENT_INFERENCE_TIMEOUT_SECONDS",

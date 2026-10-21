@@ -57,7 +57,7 @@ architecture/controller-backends) are no longer listed; section 4 rows that cite
 
 ## 3. Service, tool and test docs
 
-`scripts/talk-preflight.sh` (PR #1256) is a read-only pre-flight check, not a doc; it is FR-093 and is consumed by UC-070. It checks the runbook's stage baseline, including Jev's threshold, both backend keys (presence only), `AGENT_INFERENCE_BACKEND=claude` and a budget of at least 30 per minute (#743).
+`scripts/talk-preflight.sh` (PR #1256) is a read-only pre-flight check, not a doc; it is FR-093 and is consumed by UC-070. It checks the runbook's stage baseline, including Jev's threshold, both backend keys (presence only), the `inference.backend=claude` baseline flag (the env is a WARN fallback, #1810) and a budget of at least 30 per minute (#743).
 
 | Doc | Lines | Covers | Status | Evidence | Target |
 |---|---|---|---|---|---|

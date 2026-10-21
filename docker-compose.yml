@@ -727,9 +727,10 @@ services:
       # The OFFLINE LLM seams (shadow-experiment proposer, post-game retro), NOT
       # in-game decisions (those are the decision.backend flag below). Default =
       # stub: the proposer proposes nothing and the retro is capture-only, so a
-      # plain `up` needs no key. AGENT_INFERENCE_BACKEND=claude calls the Anthropic
-      # API directly with ANTHROPIC_API_KEY (no gateway); without a key it stays
-      # on the stub.
+      # plain `up` needs no key. The inference.backend flag (#1810) selects claude, which
+      # calls the Anthropic API directly with ANTHROPIC_API_KEY (no gateway); without
+      # a key it stays on the stub. AGENT_INFERENCE_BACKEND is only the deprecated
+      # fallback while flagd cannot resolve the flag.
       - AGENT_INFERENCE_BACKEND=${AGENT_INFERENCE_BACKEND:-stub}
       # Empty defaults = the agent's built-in defaults (claude-opus-5-5, effort
       # medium, 120s per call).
