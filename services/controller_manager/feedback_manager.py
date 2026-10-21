@@ -309,7 +309,7 @@ class FeedbackManager(ControllerEffectsBase):
             logger.error(f"Error setting color on {serial}: {e}", exc_info=True)
             return False
 
-    async def set_vibration(self, serial: str, intensity: int, duration_ms: int, task_name: str | None = None) -> bool:
+    async def set_vibration(self, serial: str, intensity: int, duration_ms: int) -> bool:
         """
         Set controller vibration (internal method).
 
@@ -343,7 +343,7 @@ class FeedbackManager(ControllerEffectsBase):
                 if will_schedule:
                     # Store task reference to prevent garbage collection
                     self.vibration_tasks[serial] = asyncio.create_task(
-                        self._delayed_stop_vibration(serial, duration_ms), name=task_name
+                        self._delayed_stop_vibration(serial, duration_ms)
                     )
             else:
                 logger.warning(f"Failed to set vibration on {serial}")
@@ -500,7 +500,10 @@ class FeedbackManager(ControllerEffectsBase):
             # Long rumble (~1 s, UC-030 step 9): clearly different from the 200 ms warning. It runs on its
             # own stop timer, so the red hold, the fade and the end of the game do not cut it short.
             span.add_event("vibration", {"intensity": 255, "duration_ms": rumble_ms})
-            await self.set_vibration(serial, 255, rumble_ms, task_name=DEATH_RUMBLE_TASK_NAME)
+            await self.set_vibration(serial, 255, rumble_ms)
+            stop_timer = self.vibration_tasks.get(serial)
+            if stop_timer is not None:
+                stop_timer.set_name(DEATH_RUMBLE_TASK_NAME)  # the swell and the charge tick leave it alone
 
             # Solid red briefly (default 300ms) then fade to black (default 700ms)
             # This replaces the awkward slow blink (1Hz over 1500ms)
