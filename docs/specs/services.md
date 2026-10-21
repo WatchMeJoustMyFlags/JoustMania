@@ -191,7 +191,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 `_end`, `time_announcement`, `human_converted`, `zombie_winner`, `player_swapped`, `swapper_winner`,
 `round_start`, `round_end`, `round_timeout`, `tournament_intro`, `match_start`, `match_end`,
 `tournament_champion`, `tournament_no_winner`, `player_death` (NonStop and JoustFFA), `player_respawned`,
-`agent_intervention`, `player_shielded`. Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `score_update`, `team_eliminated`.
+`agent_intervention`, `player_shielded`, `player_shield_charged`, `player_shield_charge_ended` (#1837). Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `score_update`, `team_eliminated`.
 
 **Traceability:** FR-020 to FR-029 / UC-010, UC-020 to UC-027, UC-043 / `proto/game_coordinator.proto`, `services/game_coordinator/` / `tests/integration/test_tc002_ffa_game.py`, `tests/integration/test_parallel_lifecycle.py`.
 
@@ -308,8 +308,8 @@ DISCONNECTED controllers show nothing. There is no dedicated "connection flash":
 | `PULSE` | Caller colour (default White), default 600 ms at speed 3 | none | base colour |
 | `FLASH` | Caller colour (default White), default 400 ms at speed 5 | none | base colour |
 | `RUMBLE` | none | intensity `min(255, speed * 50)` (speed default 5), default 2000 ms (secret signalling) | none |
-| `SHIELD_CHARGE` (agent, #1837; the coordinator sends it from PR-3) | The player's current base colour breathing 60% to 100% at 0.5 Hz, rendered at 5 to 10 Hz or on visible change only; the lowest shield layer (the full shield and the toughness boost draw over it); `duration_ms` capped at 120 s, re-sent by the coordinator while the charge is held; a closed game stream ends the charge and `SHIELD` layers of its controllers (serials snapshotted before release; delayed about 7 s, longer than the coordinator reconnect backoff, and cancelled when a new game stream claims the serial); after a mid-game coordinator reconnect the coordinator re-sends `SHIELD_CHARGE` and `SHIELD` with the time left (UC-040 BR-021) | one tick, 100 ms at 120, when the layer starts | base colour |
-| `SHIELD_SWELL` (agent, #1837; the coordinator sends it from PR-3) | none (neither ends nor hides a layer) | ramp 0 to 180 to 0 over 600 ms; replaced by any later rumble, the death rumble is never shortened | none |
+| `SHIELD_CHARGE` (agent, #1837) | The player's current base colour breathing 60% to 100% at 0.5 Hz, rendered at 5 to 10 Hz or on visible change only; the lowest shield layer (the full shield and the toughness boost draw over it); `duration_ms` capped at 120 s, re-sent by the coordinator while the charge is held; a closed game stream ends the charge and `SHIELD` layers of its controllers (serials snapshotted before release; delayed about 7 s, longer than the coordinator reconnect backoff, and cancelled when a new game stream claims the serial); after a mid-game coordinator reconnect the coordinator re-sends `SHIELD_CHARGE` and `SHIELD` with the time left (UC-040 BR-021) | one tick, 100 ms at 120, when the layer starts | base colour |
+| `SHIELD_SWELL` (agent, #1837) | none (neither ends nor hides a layer) | ramp 0 to 180 to 0 over 600 ms; replaced by any later rumble, the death rumble is never shortened | none |
 | `SHIELD`, `TOUGHNESS_BOOST` (agent) | A persistent layer over the base colour; short effects overlay it. Full: brightness falls 100% to 30%, last second blinks at 4 Hz. Toughness boost: breathes 10% to 50% at 0.5 Hz, last second blinks at 4 Hz | none | base colour |
 
 Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 80% Turquoise, >= 60% Blue, >= 40% Yellow, otherwise Red.

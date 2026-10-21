@@ -157,6 +157,8 @@ A controller's participation in one game (`proto/game_coordinator.proto` `Player
 | handicap_factor | Agent handicap (multiplies thresholds) | Decimal | 4,2 | Not Null, Min: 0.5, Max: 2.0 |
 | grace_until | No-death deadline from respawn, conversion or agent shield | DateTime | - | Optional |
 | invincible_until | No-death deadline from match / round start (Tournament, Fight Club) | DateTime | - | Optional |
+| shield_charge_seconds | Seconds of a held shield charge, the shield the player gets on activation (#1837, UC-040 A30, UC-030 A6); 0 = no charge, at most one charge | Decimal | 5,2 | Not Null, Min: 0 |
+| shield_charge_expires_at | When a held charge expires, fixed at grant time from `shield.charge_expiry_seconds` (UC-040 BR-020) | DateTime | - | Optional (none = never) |
 | smoothed_accel | EMA of acceleration magnitude in g | Decimal | 6,3 | Not Null, Min: 0 |
 
 **Constraints:** the player cannot die while `now < max(grace_until, invincible_until)`. In the base path (`games/base.py` `_compute_effective_thresholds`), effective thresholds are divided by `clamp(sensitivity_factor × global_difficulty_factor, 0.5, 2.0)` and multiplied by `clamp(min(max(handicap_factor, active toughness boost, rubberband_boost), soft_penalty_factor), 0.5, 2.0)`. Exception: Werewolf werewolves and Zombies zombies use a fixed role threshold table per sensitivity (`game.werewolf.thresholds`, `game.zombie.thresholds`; `werewolf.py` / `zombie.py` `_compute_effective_thresholds`), so tempo and the per-player and global factors do not apply to them. Fight Club runs its own death detection (D-G9, #1347).

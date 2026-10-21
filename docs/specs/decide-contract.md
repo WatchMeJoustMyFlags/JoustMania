@@ -586,7 +586,7 @@ once after 250 ms. The game coordinator applies the result
 | `auto_rubberband` | `auto_rubberband` | state | `gentle` |
 | `adjust_player_sensitivity` | `player_sensitivity_factor` | per serial level | 1.5 |
 | `set_player_handicap` | `player_handicap_factor` | per serial level | 1.25 |
-| `grant_shield` | `shield_seconds` | per serial grant | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16). Planned #1837: in trigger mode (`shield.activation`, UC-040 BR-019; Free-for-All only) the grant is a **charge** (`GAME_EFFECT_SHIELD_CHARGE`, UC-040 A30): the seconds are the protection the player gets when they activate it with the trigger (UC-030 A6). The coordinator may block it `already_charged` (A31) |
+| `grant_shield` | `shield_seconds` | per serial grant | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16). #1837: in trigger mode (`shield.activation`, UC-040 BR-019; Free-for-All only) the grant is a **charge** (`GAME_EFFECT_SHIELD_CHARGE`, UC-040 A30): the seconds are the protection the player gets when they activate it with the trigger (UC-030 A6). The coordinator may block it `already_charged` (A31) |
 | `toughness_boost` | `toughness_boost_seconds` | per serial grant | `5:2.0` (feedback: `shield_up` at half volume + `GAME_EFFECT_TOUGHNESS_BOOST`) |
 | `soft_penalty` | `soft_penalty_action` | per serial grant | `warn` |
 | `noop` | (no write) | | |
