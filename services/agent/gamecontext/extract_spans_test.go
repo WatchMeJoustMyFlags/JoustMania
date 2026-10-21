@@ -2,6 +2,7 @@ package gamecontext
 
 import (
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
@@ -166,4 +167,57 @@ func TestApplySpans_NoExperimentAttrsLeavesAttributionEmpty(t *testing.T) {
 	if snap.Arm != "" {
 		t.Fatalf("Arm = %q, want empty", snap.Arm)
 	}
+}
+
+// shieldChargeSpan is the coordinator's game.shield_charge span at its end (UC-040
+// A32: outcome death), which reaches the agent after the player died.
+func shieldChargeSpan(serial, gameID string) ptrace.Traces {
+	td := spanWith(map[string]string{
+		"player.serial":         serial,
+		"game.id":               gameID,
+		"game.mode":             "FFA",
+		"shield.charge_outcome": "death",
+	}, nil)
+	td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0).SetName("game.shield_charge")
+	return td
+}
+
+// UC: UC-041 main
+// UC: UC-040 A32
+func TestApplySpans_ShieldChargeSpanIsIgnored(t *testing.T) {
+	t.Run("UC-040/A32 a charge span never creates a player or adopts its game", func(t *testing.T) {
+		s := newTestStore()
+		if s.ApplySpans(shieldChargeSpan("DEAD", "game-9")) {
+			t.Fatal("game.shield_charge reported as recognized")
+		}
+		snap := s.Snapshot()
+		if snap.Players["DEAD"] != nil {
+			t.Fatal("game.shield_charge re-created the player")
+		}
+		if snap.SessionID != "" || snap.Session.GameMode != nil {
+			t.Fatalf("game.shield_charge set identity: session %q mode %v", snap.SessionID, snap.Session.GameMode)
+		}
+	})
+
+	t.Run("UC-040/A32 a charge span never refreshes a player's last update", func(t *testing.T) {
+		now := time.Unix(1000, 0)
+		s := NewStore(time.Hour, time.Hour, func() time.Time { return now })
+		s.ApplySpans(spanWith(map[string]string{"player.serial": "DEAD", "game.id": "game-9"}, nil))
+		before := s.Snapshot().Players["DEAD"].LastUpdate
+		now = now.Add(30 * time.Second)
+		s.ApplySpans(shieldChargeSpan("DEAD", "game-9"))
+		if got := s.Snapshot().Players["DEAD"].LastUpdate; !got.Equal(before) {
+			t.Fatalf("LastUpdate moved to %s, want %s (the span must not keep a dead player fresh)", got, before)
+		}
+	})
+
+	t.Run("UC-041/main a charge span never creates a partition", func(t *testing.T) {
+		m := NewMultiplexer(func(string) *Store { return newTestStore() })
+		if touched := m.ApplySpans(shieldChargeSpan("DEAD", "game-evicted")); len(touched) != 0 {
+			t.Fatalf("touched partitions = %v, want none", touched)
+		}
+		if parts := m.Partitions(); len(parts) != 0 {
+			t.Fatalf("partitions = %v, want none", parts)
+		}
+	})
 }
