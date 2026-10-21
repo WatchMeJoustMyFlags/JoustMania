@@ -432,6 +432,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # never consumes them, or it would steal them from the game. A game stream
         # keeps draining while its alive filter is empty (UC-035 BR-006, #1595).
         game_stream = self._is_game_stream(subscriber_id)
+        # An empty alive filter arrives here as None (every controller), so the
+        # stream consumes only its own roster, never another game's mocks (#1610).
+        roster = self._game_stream_serials.get(subscriber_id, set())
         # No dict copy needed — _build_gameplay_update is synchronous (no await
         # points), so no dict mutation can happen during iteration.
         for serial, info in self.tracked_controllers.items():
@@ -453,17 +456,19 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             # mock deaths are held until they have been STREAMED to the game
             # enough times to cross the EMA threshold, rather than for a fixed
             # wall-clock window a starved send loop could skip entirely (#926).
-            if consume_death is not None and game_stream:
+            if consume_death is not None and game_stream and serial in roster:
                 consume_death(serial)
 
             # The trigger is the level OR a press latched since the last game frame.
             trigger_pressed = full_state.trigger_pressed
-            if consume_trigger is not None and game_stream and consume_trigger(serial) is True:
+            if consume_trigger is not None and game_stream and serial in roster and consume_trigger(serial) is True:
                 trigger_pressed = True
 
             # Drain health counters accumulated since last frame (game streams only)
             health = None
-            drops, errors, led_fails = self.discovery_loop.drain_health_counters(serial) if game_stream else (0, 0, 0)
+            drops, errors, led_fails = (
+                self.discovery_loop.drain_health_counters(serial) if game_stream and serial in roster else (0, 0, 0)
+            )
             if drops or errors or led_fails:
                 health = controller_manager_pb2.ControllerHealth(
                     poll_drops=drops,
