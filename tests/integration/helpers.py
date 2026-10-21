@@ -61,7 +61,11 @@ COORDINATOR_SERVICE = "game-coordinator-service"
 
 
 def jaeger_root_spans(game_id: str) -> list:
-    """Root spans (no parent reference) of the coordinator's traces tagged ``game.id``."""
+    """Root spans of the coordinator's traces tagged ``game.id``.
+
+    A root has no CHILD_OF reference: the game root carries an OTel Link to the
+    inbound stream span, which Jaeger lists as a FOLLOWS_FROM reference.
+    """
     tags = urllib.parse.quote(json.dumps({"game.id": game_id}))
     url = f"{JAEGER_API}/traces?service={COORDINATOR_SERVICE}&tags={tags}&limit=20"
     with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310 - loopback test URL
@@ -70,7 +74,10 @@ def jaeger_root_spans(game_id: str) -> list:
         span
         for trace in traces
         for span in trace["spans"]
-        if not span.get("references")
+        if not any(
+            ref.get("refType", "CHILD_OF") == "CHILD_OF"
+            for ref in span.get("references", [])
+        )
         and any(t["key"] == "game.id" and t["value"] == game_id for t in span["tags"])
     ]
 

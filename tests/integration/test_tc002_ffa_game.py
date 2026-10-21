@@ -32,6 +32,7 @@ from tests.integration.helpers import (
     get_menu_client,
     get_mock_client,
     jaeger_has_root_span,
+    jaeger_root_spans,
     kill_player_verified,
     mark_controllers_ready,
     select_game_mode,
@@ -394,14 +395,19 @@ async def test_tc002_ffa_game_to_winner_then_restart(
         )
 
         # Validation 3: the collector delivered the first game's root span to Jaeger.
-        assert await async_poll_until(
+        if not await async_poll_until(
             lambda: jaeger_has_root_span(game_id, _FFA_ROOT_SPAN),
             timeout=_JAEGER_TIMEOUT,
             interval=1.0,
-        ), (
-            f"Validation 3: Jaeger has no root span {_FFA_ROOT_SPAN!r} with "
-            f"game.id={game_id} after {_JAEGER_TIMEOUT:.0f} s"
-        )
+        ):
+            try:
+                seen = [s["operationName"] for s in jaeger_root_spans(game_id)]
+            except OSError as exc:
+                seen = f"Jaeger query failed: {exc}"
+            pytest.fail(
+                f"Validation 3: Jaeger has no root span {_FFA_ROOT_SPAN!r} with "
+                f"game.id={game_id} after {_JAEGER_TIMEOUT:.0f} s; root spans seen: {seen}"
+            )
 
         # Cleanup (Postconditions): stop the second game by id. A force-ended FFA
         # game sends game_force_ended (and game_ended with outcome force_ended,
