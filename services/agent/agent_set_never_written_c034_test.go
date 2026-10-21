@@ -177,7 +177,7 @@ func c034JSON(w http.ResponseWriter, v any) {
 }
 
 // c034Row drives one agent writer. Drives names the write call sites (guard keys,
-// relpath:Func) the row exercises; the guard test fails when a call site has no row.
+// relpath:Recv.Func) the row exercises; the guard test fails when a call site has no row.
 type c034Row struct {
 	name   string
 	drives []string
@@ -194,7 +194,7 @@ const c034GameID = "game_c034"
 var c034WriterRows = []c034Row{
 	{
 		name:   "interventions",
-		drives: []string{"actions/writer.go:put", "actions/writer.go:post"},
+		drives: []string{"actions/writer.go:Writer.put", "actions/writer.go:Writer.post"},
 		run: func(t *testing.T, svc *flagservice.Client) {
 			w := actions.NewWriter(svc, testLogger())
 			for _, iv := range c034Interventions(t) {
@@ -233,7 +233,7 @@ var c034WriterRows = []c034Row{
 	},
 	{
 		name:   "rollout",
-		drives: []string{"actions/rollout_writer.go:SetControllerCount"},
+		drives: []string{"actions/rollout_writer.go:RolloutWriter.SetControllerCount"},
 		run: func(t *testing.T, svc *flagservice.Client) {
 			w := actions.NewRolloutWriter(svc, testLogger())
 			variants := []string{actions.StageNoneVariant}
@@ -266,7 +266,7 @@ var c034WriterRows = []c034Row{
 	},
 	{
 		name:   "experiment",
-		drives: []string{"experiment/writer.go:Apply", "experiment/writer.go:DryRun", "experiment/writer.go:Strip"},
+		drives: []string{"experiment/writer.go:Writer.Apply", "experiment/writer.go:Writer.DryRun", "experiment/writer.go:Writer.Strip"},
 		run: func(t *testing.T, svc *flagservice.Client) {
 			ctx := context.Background()
 			log := testLogger()
@@ -315,7 +315,7 @@ var c034WriterRows = []c034Row{
 	},
 	{
 		name:   "promotion",
-		drives: []string{"promote/realdefault.go:SetRealDefault", "promote/realdefault.go:RevertRealDefault"},
+		drives: []string{"promote/realdefault.go:serviceRealDefaultWriter.SetRealDefault", "promote/realdefault.go:serviceRealDefaultWriter.RevertRealDefault"},
 		run: func(t *testing.T, svc *flagservice.Client) {
 			ctx := context.Background()
 			t.Setenv("FLAG_SERVICE_URL", svc.BaseURL())

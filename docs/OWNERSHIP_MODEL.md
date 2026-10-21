@@ -112,8 +112,13 @@ persist its own governor (§1, §6.2).
 > rejects a proposal naming another set, `non_game_target`, and the promotion
 > writer's set is always `game`, #1293). The flag service has no roles or tokens
 > (local party game, decision D11 of the [architecture note](architecture/flag-service.md)),
-> so the guarantee rests on this client code; a write that would change the
-> `agent` set is visible as a `flagservice.write` span with `flagservice.writer`.
+> so for the `agent` set the guarantee rests on this client code, held by two tests
+> (C-034, #1799): [`agent_set_never_written_c034_test.go`](../services/agent/agent_set_never_written_c034_test.go)
+> drives every agent writer against a recording flag service and checks each
+> request's (set, key, scope), and [`agent_set_writers_guard_c034_test.go`](../services/agent/agent_set_writers_guard_c034_test.go)
+> fails on any new flag-service write call site, raw write verb or set argument
+> outside the known constants. A write that would change the `agent` set is also
+> visible as a `flagservice.write` span with `flagservice.writer`.
 
 > **Historical: the nonroot menu and the flag dir (#1031).** The menu used to write
 > the bind-mounted flag files and needed a one-shot `flag-dir-init` sidecar to make

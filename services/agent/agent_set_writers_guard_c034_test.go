@@ -15,9 +15,15 @@ package main
 //   - a raw HTTP write verb (http.MethodPut/Post/Patch/Delete, the literal verbs,
 //     http.Post/PostForm, an (*http.Client).Do) outside its known sites;
 //   - inside flagservice/, a request method other than GET sent by any function
-//     besides Client.Put, Client.Post and Client.Delete.
+//     besides Client.Put, Client.Post and Client.Delete, or any Put/Post/Delete
+//     selector outside those three (a Client wrapper such as a ClearSet calling
+//     c.Delete would otherwise hide behind another name).
 //
+// Call sites are keyed relpath:Recv.Func (relpath:Func for a plain function), so
+// a second type's method of the same name in the same file is not "known".
 // A new writer means: drive it in c034WriterRows, then add its call site here.
+// A Put/Post/Delete or raw write that is not a flag-service write goes in
+// c034OtherPostSites or c034RawWriteSites with the reason.
 
 import (
 	"go/ast"
@@ -33,21 +39,21 @@ import (
 )
 
 // c034FlagServiceWrites are the agent's flag-service write call sites
-// (relpath:EnclosingFunc). Each must be driven by a c034WriterRows row.
+// (relpath:Recv.Func). Each must be driven by a c034WriterRows row.
 var c034FlagServiceWrites = map[string]bool{
-	"actions/writer.go:put":                        true,
-	"actions/writer.go:post":                       true,
-	"actions/rollout_writer.go:SetControllerCount": true,
-	"experiment/writer.go:Apply":                   true,
-	"experiment/writer.go:DryRun":                  true,
-	"experiment/writer.go:Strip":                   true,
-	"promote/realdefault.go:SetRealDefault":        true,
-	"promote/realdefault.go:RevertRealDefault":     true,
+	"actions/writer.go:Writer.put":                                      true,
+	"actions/writer.go:Writer.post":                                     true,
+	"actions/rollout_writer.go:RolloutWriter.SetControllerCount":        true,
+	"experiment/writer.go:Writer.Apply":                                 true,
+	"experiment/writer.go:Writer.DryRun":                                true,
+	"experiment/writer.go:Writer.Strip":                                 true,
+	"promote/realdefault.go:serviceRealDefaultWriter.SetRealDefault":    true,
+	"promote/realdefault.go:serviceRealDefaultWriter.RevertRealDefault": true,
 }
 
 // c034OtherPostSites are Put/Post/Delete selectors that are not flag-service writes.
 var c034OtherPostSites = map[string]string{
-	"decide/backends/openai/openai.go:attempt": "chathttp.Post: the model API call (base URL from decision.*.base_url)",
+	"decide/backends/openai/openai.go:Backend.attempt": "chathttp.Post: the model API call (base URL from decision.*.base_url)",
 }
 
 // c034ClientSites build a flag-service client (flagservice.New / NewFromEnv).
@@ -63,14 +69,46 @@ var c034ClientSites = map[string]bool{
 var c034RawWriteSites = map[string]string{
 	"decide/backends/internal/chathttp/chathttp.go:PostResponse": "the model API POST (decide backends)",
 	"patterngame/digest.go:ResolvedFlagDigest":                   "flagd OFREP bulk evaluate: a read over POST",
-	"promote/github.go:post":                                     "GitHub REST /repos/... (promotion issue/PR)",
+	"promote/github.go:httpGitHubClient.post":                    "GitHub REST /repos/... (promotion issue/PR)",
 }
 
 // c034AllowedSets are the only values a write's set constant may have (C-034).
 var c034AllowedSets = map[string]bool{"interventions": true, "rollout": true, "game": true}
 
+// c034FuncName names a declaration for a guard key: Recv.Func for a method
+// (pointer and type parameters stripped), Func for a plain function and
+// <package-level> for anything else.
+func c034FuncName(decl ast.Decl) string {
+	fd, ok := decl.(*ast.FuncDecl)
+	if !ok {
+		return "<package-level>"
+	}
+	if fd.Recv == nil || len(fd.Recv.List) == 0 {
+		return fd.Name.Name
+	}
+	t := fd.Recv.List[0].Type
+	for {
+		switch x := t.(type) {
+		case *ast.StarExpr:
+			t = x.X
+			continue
+		case *ast.IndexExpr:
+			t = x.X
+			continue
+		case *ast.IndexListExpr:
+			t = x.X
+			continue
+		}
+		break
+	}
+	if id, ok := t.(*ast.Ident); ok {
+		return id.Name + "." + fd.Name.Name
+	}
+	return "?." + fd.Name.Name
+}
+
 type c034Site struct {
-	key  string // relpath:EnclosingFunc
+	key  string // relpath:Recv.Func or relpath:Func
 	pos  token.Position
 	call *ast.CallExpr // nil for a method value or other reference
 	sel  string
@@ -150,11 +188,7 @@ func c034ScanSources(t *testing.T) *c034Scan {
 			continue
 		}
 		for _, decl := range p.f.Decls {
-			fn := "<package-level>"
-			if fd, ok := decl.(*ast.FuncDecl); ok {
-				fn = fd.Name.Name
-			}
-			key := p.rel + ":" + fn
+			key := p.rel + ":" + c034FuncName(decl)
 			calls := map[*ast.SelectorExpr]*ast.CallExpr{}
 			ast.Inspect(decl, func(n ast.Node) bool {
 				if c, ok := n.(*ast.CallExpr); ok {
@@ -197,17 +231,17 @@ func c034ScanSources(t *testing.T) *c034Scan {
 	return s
 }
 
-// checkFlagServiceMethods asserts that inside flagservice/ only Put, Post and
-// Delete send a request method other than GET (a new ClearSet hitting DELETE
-// /{set} would otherwise hide behind another name).
+// checkFlagServiceMethods asserts that inside flagservice/ only Client.Put,
+// Client.Post and Client.Delete send a request method other than GET, and that
+// no other function there references Put, Post or Delete: a Client wrapper
+// (ClearSet -> c.Delete(ctx, "agent", ...)) would otherwise be a write path the
+// call-site scan never sees, because flagservice/ is skipped there.
 func (s *c034Scan) checkFlagServiceMethods(fset *token.FileSet, rel string, f *ast.File) {
-	allowed := map[string]bool{"Put": true, "Post": true, "Delete": true}
+	allowed := map[string]bool{"Client.Put": true, "Client.Post": true, "Client.Delete": true}
 	for _, decl := range f.Decls {
-		fd, ok := decl.(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-		ast.Inspect(fd, func(n ast.Node) bool {
+		fn := c034FuncName(decl)
+		where := rel + ":" + fn
+		ast.Inspect(decl, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.CallExpr:
 				sel, ok := x.Fun.(*ast.SelectorExpr)
@@ -217,18 +251,22 @@ func (s *c034Scan) checkFlagServiceMethods(fset *token.FileSet, rel string, f *a
 				if m, ok := x.Args[1].(*ast.SelectorExpr); ok && m.Sel.Name == "MethodGet" {
 					return true
 				}
-				if !allowed[fd.Name.Name] {
-					s.errs = append(s.errs, fset.Position(x.Pos()).String()+": "+rel+":"+fd.Name.Name+" sends a non-GET flag-service request")
+				if !allowed[fn] {
+					s.errs = append(s.errs, fset.Position(x.Pos()).String()+": "+where+" sends a non-GET flag-service request; only Client.Put/Post/Delete may")
 				}
 			case *ast.BasicLit:
 				if v, _ := strconv.Unquote(x.Value); x.Kind == token.STRING && (v == "PUT" || v == "POST" || v == "PATCH" || v == "DELETE") {
-					s.errs = append(s.errs, fset.Position(x.Pos()).String()+": "+rel+":"+fd.Name.Name+" uses the literal verb "+v)
+					s.errs = append(s.errs, fset.Position(x.Pos()).String()+": "+where+" uses the literal verb "+v)
 				}
 			case *ast.SelectorExpr:
 				switch x.Sel.Name {
 				case "MethodPut", "MethodPost", "MethodDelete", "MethodPatch":
-					if !allowed[fd.Name.Name] {
-						s.errs = append(s.errs, fset.Position(x.Pos()).String()+": "+rel+":"+fd.Name.Name+" uses http."+x.Sel.Name)
+					if !allowed[fn] {
+						s.errs = append(s.errs, fset.Position(x.Pos()).String()+": "+where+" uses http."+x.Sel.Name+"; only Client.Put/Post/Delete may")
+					}
+				case "Put", "Post", "Delete":
+					if !allowed[fn] {
+						s.errs = append(s.errs, fset.Position(x.Pos()).String()+": "+where+" references "+x.Sel.Name+"; a flag-service write must live at an agent call site (c034FlagServiceWrites), not in a Client wrapper")
 					}
 				}
 			}
@@ -255,7 +293,7 @@ func TestC034_EveryAgentWriterIsKnownAndDriven(t *testing.T) {
 			continue
 		}
 		if !c034FlagServiceWrites[site.key] {
-			t.Errorf("C-034 VIOLATION: %s: unknown %s at %s; drive the writer in c034WriterRows and list the call site", site.pos, site.sel, site.key)
+			t.Errorf("C-034 VIOLATION: %s: unknown %s at %s; a flag-service write: drive it in c034WriterRows and list it in c034FlagServiceWrites; anything else (a model API call, a map or cache Delete): list it in c034OtherPostSites with the reason", site.pos, site.sel, site.key)
 			continue
 		}
 		seenWrites[site.key] = true
@@ -330,7 +368,7 @@ func TestC034_EveryAgentWriterIsKnownAndDriven(t *testing.T) {
 	seenRaw := map[string]bool{}
 	for _, site := range s.rawWrites {
 		if _, ok := c034RawWriteSites[site.key]; !ok {
-			t.Errorf("C-034 VIOLATION: %s: raw HTTP write %s at %s; agent flag writes go through flagservice.Client only", site.pos, site.sel, site.key)
+			t.Errorf("C-034 VIOLATION: %s: raw HTTP write %s at %s; agent flag writes go through flagservice.Client only; a write that is not to the flag service (or a false match such as once.Do(namedFunc) or a POST string literal) goes in c034RawWriteSites with the reason", site.pos, site.sel, site.key)
 		}
 		seenRaw[site.key] = true
 	}
