@@ -486,6 +486,30 @@ func secretsInFlagJSON(raw []byte) ([]string, error) {
 	return findings, nil
 }
 
+// shippedFlagFiles walks flagdDir (the base flag files and ci/) and returns every
+// .json file, failing the test when the set is too small to be the shipped one
+// (a scan over it would pass vacuously).
+func shippedFlagFiles(t *testing.T) []string {
+	t.Helper()
+	var files []string
+	err := filepath.WalkDir(flagdDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".json") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", flagdDir, err)
+	}
+	if len(files) < 8 {
+		t.Fatalf("found %d flag files under %s, want the shipped set (the scan would pass vacuously)", len(files), flagdDir)
+	}
+	return files
+}
+
 // TestFlagFiles_HoldNoSecrets: no flag file the stack ships (services/flagd and
 // services/flagd/ci) holds an API-key-shaped key or value, so a key can only come
 // from the environment (C-016, UC-044 BR-001).
@@ -514,23 +538,7 @@ func TestFlagFiles_HoldNoSecrets(t *testing.T) {
 	})
 
 	t.Run("UC-044/C-016 no shipped flag file holds a key-shaped key or value", func(t *testing.T) {
-		var files []string
-		err := filepath.WalkDir(flagdDir, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if !d.IsDir() && strings.HasSuffix(path, ".json") {
-				files = append(files, path)
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("walk %s: %v", flagdDir, err)
-		}
-		if len(files) < 8 {
-			t.Fatalf("found %d flag files under %s, want the shipped set (the scan would pass vacuously)", len(files), flagdDir)
-		}
-		for _, f := range files {
+		for _, f := range shippedFlagFiles(t) {
 			raw, err := os.ReadFile(f)
 			if err != nil {
 				t.Fatalf("read %s: %v", f, err)
@@ -544,4 +552,155 @@ func TestFlagFiles_HoldNoSecrets(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestFlagFiles_BaseURLVariantsAreKeySafe: every variant of every *base_url flag
+// in the shipped flag files (base and ci/) is key-safe, so selecting one (a CI-only
+// `fake` variant in the dry-run stack, which carries real keys) can never send a
+// key in clear text to a remote host (#1814).
+// UC: UC-044 BR-003
+// UC: C-016
+func TestFlagFiles_BaseURLVariantsAreKeySafe(t *testing.T) {
+	checked := 0
+	for _, f := range shippedFlagFiles(t) {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		var doc struct {
+			Flags map[string]struct {
+				Variants map[string]any `json:"variants"`
+			} `json:"flags"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("parse %s: %v", f, err)
+		}
+		for key, flag := range doc.Flags {
+			if !strings.HasSuffix(key, "base_url") {
+				continue
+			}
+			checked++
+			for variant, v := range flag.Variants {
+				s, _ := v.(string)
+				if reason, ok := keySafeBaseURL(s); !ok {
+					t.Errorf("UC-044/BR-003 %s: %s variant %q = %q is not key-safe (%s)", f, key, variant, s, reason)
+				}
+			}
+		}
+	}
+	// decision.openai.base_url and decision.jev.base_url, in the base set and in ci/.
+	if checked < 4 {
+		t.Fatalf("checked %d base_url flags, want at least 4 (the scan would pass vacuously)", checked)
+	}
+}
+
+// TestDecideRegistry_RefusesClearTextRemoteBaseURL: an openai or jev base URL that
+// is plain http to a non-loopback host resolves to backend_unavailable, so rules
+// decide and no backend (hence no request carrying the key) exists. Loopback http
+// stays available (the service tier's fakes).
+// UC: UC-044 A1 BR-003
+// UC: C-016
+func TestDecideRegistry_RefusesClearTextRemoteBaseURL(t *testing.T) {
+	reg := newDecideRegistry(allKeys, newDecideHTTPClient())
+	for _, backend := range []string{flags.DecisionBackendOpenAI, flags.DecisionBackendJev} {
+		key := "decision." + backend + ".base_url"
+		for _, raw := range []string{"http://fake-openai:8080/v1", "http://192.168.1.5/v1", "https://u:p@api.example.test/v1"} {
+			t.Run("UC-044/A1 "+backend+" refuses "+raw, func(t *testing.T) {
+				strs := fullyConfigured(backend)
+				strs[key] = raw
+				b, reason := reg.Resolve(decisionFlags(t, strs))
+				if b != nil || reason != decision.DecideFallbackUnavailable {
+					t.Errorf("Resolve = (%v, %q), want (nil, %q)", b, reason, decision.DecideFallbackUnavailable)
+				}
+			})
+		}
+		t.Run("UC-044/BR-003 "+backend+" accepts loopback http", func(t *testing.T) {
+			strs := fullyConfigured(backend)
+			strs[key] = "http://127.0.0.1:1/v1"
+			if b, reason := reg.Resolve(decisionFlags(t, strs)); b == nil {
+				t.Errorf("loopback http fell back: %q", reason)
+			}
+		})
+	}
+}
+
+// TestDecideHTTPClient_FollowsNoRedirect: the shared decide client returns a
+// redirect as the response instead of following it, so a backend endpoint cannot
+// forward the key to another host or downgrade it to plain http. Checked for
+// every remote backend: the redirect target sees no request at all.
+// UC: UC-044 BR-003
+// UC: C-016
+func TestDecideHTTPClient_FollowsNoRedirect(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		received []string
+		hits     int
+	)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		received = append(received, r.URL.Path+" auth="+r.Header.Get("Authorization")+r.Header.Get("X-Api-Key"))
+		mu.Unlock()
+		http.Error(w, "{}", http.StatusUnauthorized)
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	client := newDecideHTTPClient()
+	reg := newDecideRegistry(allKeys, client)
+	// A question every backend encodes and sends: a backend that errors before
+	// the network would otherwise pass this test vacuously (the hit count below).
+	req := decide.Request{Questions: []decide.Question{{
+		ID: decide.QuestionFFAIntervention, Kind: decide.KindChoice, Text: "Intervene?",
+		Options: []string{"none", "boost"},
+	}}}
+
+	backends := map[string]func() decide.Backend{
+		// The claude factory sets no base URL from a flag, so the test builds
+		// claude.New by hand with the shared client, pointed at the redirector.
+		// That equals the factory, which passes the same client and no other
+		// transport setting (decide_backends.go).
+		flags.DecisionBackendClaude: func() decide.Backend {
+			return claude.New(claude.Config{APIKey: allKeys.AnthropicAPIKey, Model: "claude-haiku-4-5-20251001",
+				Timeout: 2 * time.Second, HTTPClient: client, BaseURL: redirector.URL})
+		},
+	}
+	for _, name := range []string{flags.DecisionBackendOpenAI, flags.DecisionBackendJev} {
+		backend := name
+		backends[backend] = func() decide.Backend {
+			strs := fullyConfigured(backend)
+			strs["decision."+backend+".base_url"] = redirector.URL + "/v1"
+			b, reason := reg.Resolve(decisionFlags(t, strs))
+			if b == nil {
+				t.Fatalf("%s: Resolve fell back: %q", backend, reason)
+			}
+			return b
+		}
+	}
+	for name, build := range backends {
+		t.Run("UC-044/BR-003 "+name+" does not follow a redirect", func(t *testing.T) {
+			mu.Lock()
+			received = nil
+			hits = 0
+			mu.Unlock()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := build().Decide(ctx, req); err == nil {
+				t.Error("a redirect answer must be an error")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if hits != 1 {
+				t.Errorf("redirector got %d requests, want exactly 1 (backend must reach the wire)", hits)
+			}
+			if len(received) != 0 {
+				t.Errorf("redirect target received %v, want no request", received)
+			}
+		})
+	}
 }
