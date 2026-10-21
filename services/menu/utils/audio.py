@@ -5,6 +5,7 @@ import logging
 import grpc.aio
 
 from lib.types import Sound
+from services.menu.utils.settings import validate_mode_keys
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ GAME_MODE_VOICE: dict[str, Sound] = {
     "NonstopJoust": Sound.MENU_VOX_NONSTOP_JOUST,
     "SpeedBomb": Sound.MENU_VOX_NINJABOMB,
 }
+validate_mode_keys(GAME_MODE_VOICE, "GAME_MODE_VOICE")
 
 
 class AudioHelper:

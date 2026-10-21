@@ -6,6 +6,7 @@ import logging
 import grpc.aio
 
 from lib.colors import Colors
+from services.menu.utils.settings import validate_mode_keys
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ GAME_MODE_COLORS: dict[str, tuple[int, int, int]] = {
     "NonstopJoust": Colors.Pink.value,
     "SpeedBomb": Colors.Orange.value,
 }
+validate_mode_keys(GAME_MODE_COLORS, "GAME_MODE_COLORS")
 
 # Default color when game mode not found
 DEFAULT_COLOR: tuple[int, int, int] = Colors.Orange.value
