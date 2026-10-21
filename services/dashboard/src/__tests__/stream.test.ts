@@ -2,14 +2,15 @@
  * Dashboard stream loss and telemetry-backend loss (UC-035 A4, A3; #1706, #1725).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { keepStreamOpen } from "../stream.js";
+import { keepGameEventStreamOpen, keepStreamOpen } from "../stream.js";
 import { CONTROLLER_STREAM_LOST, keepControllerStreamOpen } from "../controllerStream.js";
+import { ShieldStore, type GameEventLike } from "../shield.js";
 import { AgentView } from "../components/AgentView.js";
 import { onAgentPollFailed, onDecidePollFailed, onExperimentsPollFailed } from "../degrade.js";
 import { ExperimentsView } from "../components/ExperimentsView.js";
 
 /** A stream that yields the events, then ends cleanly or throws. */
-async function* stream(events: string[], failWith?: Error): AsyncGenerator<string> {
+async function* stream<T = string>(events: T[], failWith?: Error): AsyncGenerator<T> {
   for (const e of events) yield e;
   if (failWith) throw failWith;
 }
@@ -88,6 +89,19 @@ describe("UC-035: A4 the dashboard loses a live stream", () => {
     expect(errors).toEqual([CONTROLLER_STREAM_LOST, CONTROLLER_STREAM_LOST]);
     expect(streaming).toEqual([true, false, true, false]);
     vi.restoreAllMocks();
+  });
+
+  it("UC-035/A4 the game event stream's loss clears the shield badges (UC-040 A32 step 3)", async () => {
+    const shields = new ShieldStore();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await keepGameEventStreamOpen(
+      () => stream<GameEventLike>([{ eventType: "player_shield_charged", data: { serial: "MOCK0001", expires_ms: "0" } }]),
+      (e) => shields.apply(e),
+      () => {},
+      () => shields.clear(),
+    );
+    warn.mockRestore();
+    expect(shields.get("MOCK0001", Date.now())).toBeNull(); // folded, then cleared by the loss hook
   });
 
   it("UC-035/A4 a clean end is reported as a loss without an error", async () => {

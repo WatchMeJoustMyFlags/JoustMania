@@ -18,6 +18,9 @@ const (
 	// ReasonRateLimit: the weighted per-minute budget is exhausted
 	// (permission layer, policy.max_interventions_per_minute).
 	ReasonRateLimit BlockReason = "rate_limit"
+	// ReasonAlreadyCharged: in trigger mode the agent's charge ledger holds a
+	// grant_shield to this player within its window (UC-040 A31 step 1, BR-020).
+	ReasonAlreadyCharged BlockReason = "already_charged"
 )
 
 // DecisionOutcome records what happened to one candidate decision this cycle:

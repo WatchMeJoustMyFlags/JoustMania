@@ -3710,7 +3710,11 @@ class BaseGameMode(ABC):
             # Before cleanup, so a raising cleanup leaves no span open.
             self._close_shield_charge_spans()
             # Always call cleanup to cancel tracked tasks
-            await self.cleanup()
+            try:
+                await self.cleanup()
+            finally:
+                # A grant arriving while cleanup awaits can open a span after the first close (#1868).
+                self._close_shield_charge_spans()
             # Ensure this session's analytics are always cleared, even on error
             # (#775) — per-session targeted cleanup, never a global wipe.
             metrics.clear_session_player_analytics(

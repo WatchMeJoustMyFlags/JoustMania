@@ -43,6 +43,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/experiment/journal"
 )
 
@@ -156,8 +157,9 @@ type dossierView struct {
 	Games []gameView `json:"games"`
 	// Verdict is the current/terminal verdict.
 	Verdict *verdictView `json:"verdict,omitempty"`
-	// Decision is the terminal decision label derived from the outcome verdict:
-	// "promoted" / "discarded" / "refined", or "" while still running.
+	// Decision is the terminal decision label derived from the terminal status and
+	// the verdict (#1731): "promoted" / "discarded" / "refined" / "aborted", or ""
+	// while still running.
 	Decision string `json:"decision,omitempty"`
 	// Notes is the ordered list of decision/outcome audit notes (the closest the
 	// journal carries to the retro's narrative; see the dossier doc on retro
@@ -414,13 +416,31 @@ func gameIDs(games []gameView) []string {
 	return ids
 }
 
-// decisionLabel maps the terminal verdict outcome to the human decision label the
-// dossier reports. It returns "" while the experiment is still running (no terminal
-// decision has been made). "inconclusive" at conclusion maps to "refined" — the
-// experiment did not clear the bar and feeds the next thesis rather than promoting
-// or discarding a candidate.
+// decisionLabel maps an ended experiment to the human decision label the dossier
+// reports. It returns "" while the experiment is still running (no terminal
+// decision has been made). The terminal status wins over the verdict (#1731): a
+// promote verdict is "promoted" only when the experiment ended `done` (the
+// promotion was applied or reverted); one whose promotion could not act ends
+// `discarded` and reads "discarded", and an aborted experiment reads "aborted"
+// whatever its verdict. "inconclusive" maps to "refined": the experiment did not
+// clear the bar and feeds the next thesis. Other terminal statuses (a journal left
+// in `concluded` / `promoting`) keep the verdict-derived label.
 func decisionLabel(v *journal.Verdict, status string) string {
-	if !isTerminalStatus(status) || v == nil {
+	if !isTerminalStatus(status) {
+		return ""
+	}
+	switch status {
+	case string(experiment.StatusDone):
+		return "promoted"
+	case string(experiment.StatusAborted):
+		return "aborted"
+	case string(experiment.StatusDiscarded):
+		if v != nil && v.Outcome == experiment.OutcomeInconclusive {
+			return "refined"
+		}
+		return "discarded"
+	}
+	if v == nil {
 		return ""
 	}
 	switch v.Outcome {

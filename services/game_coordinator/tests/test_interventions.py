@@ -215,6 +215,35 @@ def test_rate_limiter_window_slide():
     assert rl.check(WEIGHT_HARD)
 
 
+@pytest.mark.uc("UC-040", flow="A31")
+def test_rate_limiter_refund_frees_its_own_reservation_not_the_newest_equal_cost_one():
+    """#1868: refunding the older of two equal-cost reservations leaves the newer one in the window."""
+    clock = Clock()
+    rl = _RateLimiter(budget=5.0, time_fn=clock)
+    first = rl.reserve(WEIGHT_MEDIUM)
+    clock.advance(30.0)
+    second = rl.reserve(WEIGHT_MEDIUM)
+    assert first is not None and second is not None and first != second
+
+    rl.refund(first)
+
+    clock.advance(31.0)  # the first reservation's slot would have expired, the second is still live
+    assert rl.current_weight() == pytest.approx(WEIGHT_MEDIUM)
+
+
+@pytest.mark.uc("UC-040", flow="A31")
+def test_rate_limiter_refund_is_idempotent_and_ignores_unknown_tokens():
+    rl = _RateLimiter(budget=5.0, time_fn=Clock())
+    token = rl.reserve(WEIGHT_MEDIUM)
+    other = rl.reserve(WEIGHT_MEDIUM)
+    rl.refund(token)
+    rl.refund(token)  # no double refund
+    rl.refund(None)
+    rl.refund(10_000)
+    assert other is not None
+    assert rl.current_weight() == pytest.approx(WEIGHT_MEDIUM)
+
+
 # --------------------------------------------------------------------------- #
 # Exactly-once per event (edge-triggered, per-game event lists, FR-137)
 # --------------------------------------------------------------------------- #

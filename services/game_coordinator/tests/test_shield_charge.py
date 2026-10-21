@@ -593,6 +593,39 @@ async def test_error_teardown_ends_the_charge_span_even_when_cleanup_raises():
     charge_span.end.assert_called_once()
 
 
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A32")
+@pytest.mark.usefixtures("flags")
+async def test_a_grant_arriving_during_cleanup_leaves_no_charge_span_open():
+    """A32 (#1868 nit): a grant that lands while cleanup() awaits is still ended by run()'s finally."""
+    game = FFAGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=3, infinite=True),
+        event_publisher=EventCollector().publish,
+        audio_client=None,
+        game_id="test_a32_grant_in_cleanup",
+        initial_players=[type("P", (), {"serial": f"mock_controller_{i}"})() for i in range(3)],
+    )
+    late_span = create_autospec(Span, instance=True)
+
+    async def failing_gameplay():
+        raise RuntimeError("gameplay broke")
+
+    async def cleanup_with_late_grant():
+        player_span = create_autospec(Span, instance=True)
+        player_span.get_span_context.return_value = INVALID_SPAN_CONTEXT
+        game.players["mock_controller_0"].span = player_span
+        with patch.object(base_module.tracer, "start_span", return_value=late_span):
+            assert await game.grant_shield("mock_controller_0", 5.0) is True
+
+    game._run_gameplay_phase = failing_gameplay
+    game.cleanup = AsyncMock(side_effect=cleanup_with_late_grant)
+
+    with pytest.raises(RuntimeError, match="gameplay broke"):
+        await asyncio.wait_for(game.run(), timeout=10)
+
+    late_span.end.assert_called_once()
+
+
 # --------------------------------------------------------------------------- #
 # UC-040 BR-019: activation mode
 # --------------------------------------------------------------------------- #

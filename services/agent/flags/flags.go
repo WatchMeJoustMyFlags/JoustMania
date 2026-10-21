@@ -670,7 +670,12 @@ type Flags struct {
 	// rollout evaluates the rollout set (remediation_allowed): its own in-process
 	// provider and selector (#1713). nil: client serves it too (tests).
 	rollout Evaluator
-	log     *slog.Logger
+	// game evaluates the game set, read-only: only the two shield flags of the
+	// charge ledger (ShieldCharge, UC-040 A31). nil: ShieldCharge returns its
+	// defaults, never a read through client.
+	game     Evaluator
+	gameWarn gameReadWarn
+	log      *slog.Logger
 	// probeDefault is the decision.probe_decisions fallback (deprecated env).
 	probeDefault bool
 }
