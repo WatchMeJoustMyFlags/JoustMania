@@ -407,7 +407,12 @@ func TestExperimentLoop_EndJoin_StaleCleansJoinState(t *testing.T) {
 	t.Run("UC-046/BR-015 a stale end after a preemption keeps the preemption reason", func(t *testing.T) {
 		rig := newJoinRig(t, 60*time.Second, armFitness())
 		rec := rig.start(t, 3)
-		rig.loop.onGameTerminal(rec.gameID, gamerunner.OutcomePreempted)
+		// A preemption outcome recorded while the game is still bound (white box:
+		// the runner's own release normally frees it first, so the stale release
+		// must carry the same reason when it is the one that frees the slot).
+		rig.loop.graceMu.Lock()
+		rig.loop.outcomes = map[string]gamerunner.Outcome{rec.gameID: gamerunner.OutcomePreempted}
+		rig.loop.graceMu.Unlock()
 		stale := shadowEnd(rec)
 		stale.EndReason = gamecontext.EndReasonStale
 		rig.loop.onGameEnd(stale)
