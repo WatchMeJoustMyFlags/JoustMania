@@ -270,7 +270,7 @@ Verified against `lib/colors.py`, `services/menu/utils/led.py`, `services/menu/h
 
 | Mode | Colour |
 |---|---|
-| JoustFFA, SpeedBomb | Orange (255,128,0) |
+| JoustFFA | Orange (255,128,0) |
 | JoustTeams | LightBlue (0,100,255) |
 | JoustRandomTeams | Turquoise (0,255,255) |
 | Swapper | Magenta (255,0,192) |
