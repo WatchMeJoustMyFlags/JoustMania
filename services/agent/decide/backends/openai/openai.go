@@ -33,7 +33,10 @@
 // the agent set. The agent never writes it, and the flag service accepts only
 // its declared variants (registry: no free string), so neither the agent loop
 // nor an unauthenticated /flags/ caller can point the Bearer key at another
-// host (no SSRF, no key exfiltration; PR #1417 review).
+// host (no SSRF, no key exfiltration; PR #1417 review). The agent's decide
+// factory also refuses a base URL that is not key-safe (https, or plain http only
+// to loopback; services/agent/keyurl.go, UC-044 BR-003), and its shared client
+// follows no redirect (#1814).
 //
 // Telemetry mirrors the claude backend: one CLIENT span per HTTP call named
 // "chat {model}" with the OTel GenAI semantic conventions (v1.41.0),
