@@ -143,3 +143,15 @@ func (b *textBackends) ProposerBackend(ctx context.Context) (experiment.Backend,
 	}
 	return proposeBackend{}, false
 }
+
+// newWiredProposer builds the M7-4 proposer with the production wiring (#1810): the
+// inert stub as the fixed backend, the per-cycle backend source (inference.backend)
+// and the shared LLM admission, always installed and consulted only for a real
+// cycle. main.go and the proposer wiring tests both use it.
+func newWiredProposer(source experiment.BackendSource, sink experiment.ProposalSink, vocab func() map[string]struct{},
+	admission experiment.LLMAdmission, logger *slog.Logger) *experiment.Proposer {
+	p := experiment.NewProposer(proposeBackend{}, sink, vocab, nil, logger)
+	p.SetLLMAdmission(admission)
+	p.SetBackendSource(source)
+	return p
+}

@@ -172,9 +172,7 @@ func TestInferenceBackendFlag_ProposerStubAfterFlipNeverCharges(t *testing.T) {
 	budget := decision.NewLLMBudget()
 	gate := realOnlyGate(1)
 
-	p := experiment.NewProposer(proposeBackend{}, nil, nil, nil, nil)
-	p.SetLLMAdmission(decision.NewLLMAdmission(gate, budget, 0, "proposer", nil))
-	p.SetBackendSource(tb.ProposerBackend)
+	p := newWiredProposer(tb.ProposerBackend, nil, nil, decision.NewLLMAdmission(gate, budget, 0, "proposer", nil), nil)
 	cfg := experiment.ProposerConfig{
 		Permit: func(context.Context) (bool, string) { return true, "" }, GameKind: "real",
 	}
@@ -203,9 +201,7 @@ func TestInferenceBackendFlag_ProposerClaudeChargesSharedBudget(t *testing.T) {
 	budget := decision.NewLLMBudget()
 	gate := realOnlyGate(1)
 
-	p := experiment.NewProposer(proposeBackend{}, nil, nil, nil, nil)
-	p.SetLLMAdmission(decision.NewLLMAdmission(gate, budget, 0, "proposer", nil))
-	p.SetBackendSource(tb.ProposerBackend)
+	p := newWiredProposer(tb.ProposerBackend, nil, nil, decision.NewLLMAdmission(gate, budget, 0, "proposer", nil), nil)
 	cfg := experiment.ProposerConfig{
 		Permit: func(context.Context) (bool, string) { return true, "" }, GameKind: "real",
 	}
@@ -235,12 +231,10 @@ func TestInferenceBackendFlag_ClaudeWithProposerGateClosedNoProposalNoSpend(t *t
 	budget := decision.NewLLMBudget()
 	gate := realOnlyGate(1)
 
-	p := experiment.NewProposer(proposeBackend{}, nil, nil, nil, nil)
-	p.SetLLMAdmission(decision.NewLLMAdmission(gate, budget, 0, "proposer", nil))
-	p.SetBackendSource(func(ctx context.Context) (experiment.Backend, bool) {
+	p := newWiredProposer(func(ctx context.Context) (experiment.Backend, bool) {
 		resolved++
 		return tb.ProposerBackend(ctx)
-	})
+	}, nil, nil, decision.NewLLMAdmission(gate, budget, 0, "proposer", nil), nil)
 	src := &liveGateFlags{enabled: true, experiments: true, proposer: false}
 	cfg := experiment.ProposerConfig{Permit: proposerPermit(src, false, true), GameKind: "real"}
 	res := p.ProposeOnce(context.Background(), experiment.Narrative{}, cfg)

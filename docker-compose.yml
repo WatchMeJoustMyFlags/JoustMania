@@ -72,7 +72,7 @@ services:
       - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
       # Admin settings persisted on request (D10, re-review N4). One state file
-      # per stack: the ci, dry-run and decide-e2e stacks override the name.
+      # per stack: the ci and dry-run stacks override the name.
       - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
       # Go runtime soft limit under the 64 MiB container limit (NFR-051).
       - GOMEMLIMIT=48MiB

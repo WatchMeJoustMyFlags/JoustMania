@@ -66,41 +66,6 @@ func TestSelectInferenceBackend_ClaudeSelectsRealClient(t *testing.T) {
 	var _ experiment.Backend = backend
 }
 
-// proposeBackendFor: nil delegate -> the inert stub (returns the not-implemented
-// sentinel); a delegate -> a Backend that forwards to it.
-func TestProposeBackendFor(t *testing.T) {
-	// nil -> stub (degrades to no proposal).
-	stub := proposeBackendFor(nil)
-	if _, err := stub.Infer(context.Background(), llm.Prompt{}); err == nil {
-		t.Error("stub backend Infer returned nil error; want sentinel")
-	}
-
-	// delegate -> forwards.
-	want := "raw model text"
-	real := proposeBackendFor(func(context.Context, llm.Prompt) (string, error) {
-		return want, nil
-	})
-	out, err := real.Infer(context.Background(), llm.Prompt{})
-	if err != nil {
-		t.Fatalf("delegate-backed Infer error: %v", err)
-	}
-	if out != want {
-		t.Errorf("out = %q, want %q", out, want)
-	}
-
-	// Both satisfy experiment.Backend (compile-time + runtime).
-	var _ experiment.Backend = stub
-	var _ experiment.Backend = real
-}
-
-func TestProposeBackendFor_DelegateErrorPropagates(t *testing.T) {
-	sentinel := errors.New("boom")
-	b := proposeBackendFor(func(context.Context, llm.Prompt) (string, error) { return "", sentinel })
-	if _, err := b.Infer(context.Background(), llm.Prompt{}); !errors.Is(err, sentinel) {
-		t.Fatalf("err = %v, want delegate error", err)
-	}
-}
-
 // UC: UC-042 Pre-2
 func TestSelectInferenceBackend_BaseURL(t *testing.T) {
 	// wantBase "" = rejected (stub, the key goes nowhere); otherwise the API root the
@@ -161,20 +126,13 @@ func selectInferenceBackend(logger *slog.Logger, tuning *agentTuning) (*inferenc
 	return newTextBackends(logger, tuning, nil).Select(context.Background())
 }
 
-// proposeBackendFor wraps a delegate as the proposer backend (test helper; main.go
-// resolves the backend per cycle through textBackends.ProposerBackend).
-func proposeBackendFor(delegate inferFunc) experiment.Backend {
-	if delegate == nil {
-		return proposeBackend{}
+// sourceFor is a proposer backend source over a test delegate: nil = the stub
+// (real=false), else a real backend.
+func sourceFor(delegate inferFunc) experiment.BackendSource {
+	return func(context.Context) (experiment.Backend, bool) {
+		if delegate == nil {
+			return proposeBackend{}, false
+		}
+		return inferBackend{infer: delegate}, true
 	}
-	return inferBackend{infer: delegate}
-}
-
-// proposerAdmissionFor returns the admission only for a real delegate (test helper
-// for the pre-#1810 fixed wiring).
-func proposerAdmissionFor(delegate inferFunc, admission *decision.LLMAdmission) experiment.LLMAdmission {
-	if delegate == nil || admission == nil {
-		return nil
-	}
-	return admission
 }

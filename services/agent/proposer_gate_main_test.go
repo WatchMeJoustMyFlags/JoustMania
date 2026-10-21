@@ -99,17 +99,12 @@ func realOnlyGate(maxPerMinute int) snapshotFlags {
 // With the stub backend no admission is installed, so a propose cycle never
 // charges the shared LLM budget; with a real backend each model call takes a slot.
 // UC: UC-042 A7 BR-001
-func TestProposerAdmissionFor_StubNeverChargesBudget(t *testing.T) {
+func TestProposerWiring_StubNeverChargesBudget(t *testing.T) {
 	budget := decision.NewLLMBudget()
 	src := realOnlyGate(1)
 
-	if adm := proposerAdmissionFor(nil, decision.NewLLMAdmission(src, budget, 0, "proposer", nil)); adm != nil {
-		t.Fatalf("stub backend got admission %T, want untyped nil", adm)
-	}
-
 	// Drive a full stub propose cycle with the stub's (nil) admission.
-	p := experiment.NewProposer(proposeBackendFor(nil), nil, nil, nil, nil)
-	p.SetLLMAdmission(proposerAdmissionFor(nil, decision.NewLLMAdmission(src, budget, 0, "proposer", nil)))
+	p := newWiredProposer(sourceFor(nil), nil, nil, decision.NewLLMAdmission(src, budget, 0, "proposer", nil), nil)
 	res := p.ProposeOnce(context.Background(), experiment.Narrative{}, experiment.ProposerConfig{
 		Permit: func(context.Context) (bool, string) { return true, "" }, GameKind: "real",
 	})
@@ -124,13 +119,12 @@ func TestProposerAdmissionFor_StubNeverChargesBudget(t *testing.T) {
 
 // UC: UC-042 A7 BR-001
 // NFR: NFR-011
-func TestProposerAdmissionFor_RealBackendChargesSharedBudget(t *testing.T) {
+func TestProposerWiring_RealBackendChargesSharedBudget(t *testing.T) {
 	budget := decision.NewLLMBudget()
 	src := realOnlyGate(1)
 	delegate := func(context.Context, llm.Prompt) (string, error) { return "not json", nil }
 
-	p := experiment.NewProposer(proposeBackendFor(delegate), nil, nil, nil, nil)
-	p.SetLLMAdmission(proposerAdmissionFor(delegate, decision.NewLLMAdmission(src, budget, 0, "proposer", nil)))
+	p := newWiredProposer(sourceFor(delegate), nil, nil, decision.NewLLMAdmission(src, budget, 0, "proposer", nil), nil)
 	cfg := experiment.ProposerConfig{
 		Permit: func(context.Context) (bool, string) { return true, "" }, GameKind: "real",
 	}

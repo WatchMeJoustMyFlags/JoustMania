@@ -787,21 +787,14 @@ func main() {
 	// proposeBackend{} so the propose path proposes nothing. The choice is resolved
 	// once per ProposeOnce through the backend source; the fixed backend below is only
 	// the stub the source never overrides.
-	proposer := experiment.NewProposer(
-		proposeBackend{},
-		proposalSink,
-		gameFlagVocab(gameFlags),
-		nil,
-		logger,
-	)
 	// #1270: a REAL proposer model call is one LLM request, so it draws from the SAME
 	// shared global budget (and the same AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling)
 	// as the per-game loops and the retro, and only for a game kind in
 	// llm.eligible_game_kinds. Always installed (inference.backend can flip at run
 	// time, #1810); the proposer consults it only when the cycle's backend is real,
 	// so a stub cycle never charges the budget.
-	proposer.SetLLMAdmission(decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCap, "proposer", logger))
-	proposer.SetBackendSource(textBackends.ProposerBackend)
+	proposer := newWiredProposer(textBackends.ProposerBackend, proposalSink, gameFlagVocab(gameFlags),
+		decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCap, "proposer", logger), logger)
 	// #1270: the kill-switch gate, read at USE time on every game end (never cached
 	// at startup: flagd may be down then). Both `enabled` and `experiments_enabled`
 	// must be on, the same two gates the experiment loop obeys (FR-066), and the

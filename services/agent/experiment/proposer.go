@@ -219,8 +219,8 @@ type Proposer struct {
 	// Gate's Writer owns the file).
 	vocab func() map[string]struct{}
 	// admission is the shared LLM call gate (#1270), consulted after the cadence
-	// floor and before Infer. nil = ungated: main.go leaves it nil for the stub
-	// backend, which makes no model call and so must not charge the budget.
+	// floor and before Infer, only when the cycle's backend is real (a stub cycle
+	// makes no model call and must not charge the budget). nil = ungated.
 	admission LLMAdmission
 	// source, when set, picks the backend for ONE ProposeOnce (inference.backend,
 	// #1810): it is resolved once per cycle, after the Permit gate, so a flag flip
@@ -293,10 +293,10 @@ func (p *Proposer) resolveBackend(ctx context.Context) (Backend, bool) {
 	return p.backend, p.admission != nil
 }
 
-// SetLLMAdmission installs the shared LLM call gate (#1270). main.go calls it only
-// when a real text backend is wired (AGENT_INFERENCE_BACKEND=claude with a key), so
-// each real model call draws one slot from the global budget and a stub cycle
-// draws none. Not safe to call concurrently with ProposeOnce; wire it at startup.
+// SetLLMAdmission installs the shared LLM call gate (#1270). main.go always installs
+// it (inference.backend can flip at run time, #1810); ProposeOnce consults it only
+// when the cycle's backend is real, so each real model call draws one slot from the
+// global budget and a stub cycle draws none. Not safe to call concurrently with ProposeOnce; wire it at startup.
 func (p *Proposer) SetLLMAdmission(a LLMAdmission) { p.admission = a }
 
 // permit evaluates the caller's kill-switch gate, failing closed on a nil Permit.
