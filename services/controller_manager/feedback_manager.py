@@ -995,6 +995,10 @@ class FeedbackManager(ControllerEffectsBase):
         if serial in self.active_effects:
             self.active_effects[serial].task.cancel()
             del self.active_effects[serial]
+        # A stale stop timer must not cut the rumble of a reconnected controller (#1832: 1 s window)
+        vibration_task = self.vibration_tasks.pop(serial, None)
+        if vibration_task is not None:
+            vibration_task.cancel()
         self._shield_layers.pop(serial, None)
         shield_task = self._shield_tasks.pop(serial, None)
         if shield_task is not None:

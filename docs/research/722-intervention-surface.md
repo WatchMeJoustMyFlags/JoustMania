@@ -155,7 +155,7 @@ existing `fitness.*` block):
 `controller.json`, volumes → `user.json`, sentinel animation → `system.json`;
 these parameterize E2–E4, they are *not* new interventions):
 
-- Feedback effect timings (warning flash 200 ms @ 5 Hz, death rumble 255/150 ms,
+- Feedback effect timings (warning flash 200 ms @ 5 Hz, death rumble 255/150 ms (superseded by #1832: 1 s),
   death fade 700 ms — `feedback_manager.py:351-380`)
 - Per-channel volumes (game 0.7 / countdown 0.15 — `base.py:84-85`; sound 0.8 /
   voice 0.9 / lobby 0.4 — `menu/utils/audio.py`)
