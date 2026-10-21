@@ -14,7 +14,7 @@ remote backend cannot answer usefully, rules decide and the game keeps playing
 
 **Backend roles** (maintainer decision, C-018): **jev** is the primary in-game backend; **claude** is the
 in-game backup, selected by a manual `decision.backend` flip, and separately serves the post-game retro /
-summary and the experiment proposer (through `AGENT_INFERENCE_BACKEND`, not this contract); **rules** is the
+summary and the experiment proposer (through the `inference.backend` flag, not this contract); **rules** is the
 automatic floor. The shipped default of `decision.backend` is `rules`; a deployment selects jev explicitly
 (`scripts/agent-backend.sh jev`).
 
@@ -97,7 +97,7 @@ bounds ignore the magnitude and the writer uses its default.
 | `adjust_global_difficulty` | 0.5 | 2.0 | 1.5 | 1.0 | |
 | `set_player_handicap` | 0.75 | 1.75 | 1.25 | 1.0 | |
 | `grant_shield` (s) | 3 | 10 | 5 | 0 | |
-| `partial_shield` (s) | 3 | 10 | 5 | 0 | |
+| `toughness_boost` (s) | 3 | 10 | 5 | 0 | |
 
 Source: `ffa.go:magnitudeBounds`.
 
@@ -234,6 +234,8 @@ and rules decide on the **current** context.
 - `Confidence` finite in [0,1]. Confidence is deliberately not tied to p(choice).
 - Choice: in options; probabilities non-empty, known options only, each finite ≥ 0,
   sum within 1e-3 of 1; p(choice) > 0 and ≥ max(p) − tolerance; score 0.
+- There is no answer-side alias: an answer naming a retired intervention id (`partial_shield`, renamed to
+  `toughness_boost` in #1838) is not among the options and is `invalid_answer`; the round falls back to the rules.
 - Score: finite, within the inclusive range, no choice / probabilities.
 
 ### 4.3 Cross-question consistency, `decision/decide_hook.go:mapAnswers`
@@ -250,7 +252,7 @@ rules fallback**.
 
 Player-scoped interventions: `send_controller_effect`, `eliminate_player`,
 `revive_player`, `adjust_player_sensitivity`, `set_player_handicap`, `grant_shield`,
-`partial_shield`, `soft_penalty` (`decide_hook.go:playerTargetedInterventions`).
+`toughness_boost`, `soft_penalty` (`decide_hook.go:playerTargetedInterventions`).
 
 ### 4.4 Re-validation when a remote answer lands
 
@@ -272,7 +274,8 @@ Order on landing (`decision/decide_hook.go:Loop.runDecideRemote`, `decideRemoteA
 
 1. `interventions_allowed` membership → blocked `not_allowed`
 2. `policy.battery_threshold` (player-targeted only; unknown battery does not block) → `battery_threshold`
-3. weighted per-game rate limit `policy.max_interventions_per_minute` → `rate_limit` (budget charged only on admit)
+3. `already_charged` (#1837, planned): in trigger mode only (`shield.activation` resolves to `trigger` for the game), a `grant_shield` whose target got a `grant_shield` from this agent in the same game within `min(shield.charge_expiry_seconds, 20 s)` (20 s when the expiry is 0) is blocked before the rate limit and charges no budget. It reads the agent's own dispatch ledger, not the coordinator's state (v1 has no shield-state gauge), so it is a heuristic: it also refuses a grant after the player activated, which the coordinator would accept (UC-040 A31, BR-020). The coordinator stays authoritative
+4. weighted per-game rate limit `policy.max_interventions_per_minute` → `rate_limit` (budget charged only on admit)
 
 Budget-aware admission (#1326, UC-040 A20/A21, BR-014/BR-015; `decision/budget.go`, `decision/ratelimit.go`):
 
@@ -282,7 +285,7 @@ Budget-aware admission (#1326, UC-040 A20/A21, BR-014/BR-015; `decision/budget.g
   admission. When the budget covers every decision, admission is unchanged.
 - `send_controller_effect` is admitted only if one medium cost (1.0) stays free after it, unless `chaos` is
   the strictly dominant objective weight or the allow-list permits no protective intervention
-  (`grant_shield`, `partial_shield`, `adjust_player_sensitivity`, `set_player_handicap`). `play_audio_cue`
+  (`grant_shield`, `toughness_boost`, `adjust_player_sensitivity`, `set_player_handicap`). `play_audio_cue`
   and `adjust_volume` (also 0.5) keep no reserve (accepted, UC-040 BR-015).
 - A `rate_limit` refusal is emitted in full (`agent.decision` + `agent.action`, warning, timeline) once per
   budget state per (intervention, target); the state changes when an intervention is admitted or one leaves
@@ -345,7 +348,7 @@ decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #
 
 `decide.outcome` is the **routing** outcome. What the permission chain then did with the decision the
 answers describe (the first decision of the cycle) is on `decide.blocked` (bool) and, when blocked,
-`decide.block_reason` (`not_allowed`, `battery_threshold`, `rate_limit`), present exactly when that decision
+`decide.block_reason` (`not_allowed`, `battery_threshold`, `already_charged`, `rate_limit`), present exactly when that decision
 reached the permission chain: outcome `act`, or `fallback` when the rules fallback emitted a decision (#1295).
 So a rules decision blocked by the allow-list reads `outcome=act`, `decide.blocked=true`,
 `decide.block_reason=not_allowed`, with answers naming the blocked intervention and target.
@@ -506,16 +509,18 @@ hosted inference is allowed, local inference is not a goal, rules are the offlin
 (#1049) and the `mode` / `model` / `prompt_variant` flags were removed in #1234.
 
 To enable the model-backed retro and proposer (the compose `agent` service has no profile, so a plain `up` starts it;
-the old `--profile agent` flag selects nothing):
+the old `--profile agent` flag selects nothing): give the agent the key, then set the flag (the flag wins over the
+env, FR-151, #1810; the proposer additionally needs its gate, FR-152 d):
 
 ```bash
-AGENT_INFERENCE_BACKEND=claude ANTHROPIC_API_KEY=<key> docker compose up -d agent
+ANTHROPIC_API_KEY=<key> docker compose up -d agent
+./scripts/flags.sh set agent inference.backend claude
 ```
 
 | Seam | Used for | Selected by | Backends |
 |---|---|---|---|
 | Decision backend | in-game decisions (FFA) | `decision.backend` flag, live | `rules` (default), `jev`, `claude`, `openai` |
-| Text backend | post-game retro (`agent.llm.retro`), experiment proposer | `AGENT_INFERENCE_BACKEND` env, at startup | `stub` (default), `claude` |
+| Text backend | post-game retro (`agent.llm.retro`), experiment proposer | `inference.backend` flag, per use (retro / propose cycle); env `AGENT_INFERENCE_BACKEND` only as the fallback | `stub` (default), `claude` (needs the key and a valid base URL) |
 
 The text backend takes a System + User prompt and returns raw text (`Infer(ctx, llm.Prompt) (string, error)`,
 `inference/claude.go`, official Anthropic Go SDK). Env vars (`AGENT_INFERENCE_*`, `ANTHROPIC_API_KEY`) are in the
@@ -536,8 +541,8 @@ decisions fall back to rules (§7). Keep keys out of the tracked `.env`: export 
   With `claude`, a proposal that passes the cadence floor (`code_improvement.min_interval_seconds`) calls the
   model only for eligible game kinds and only when a budget slot is free; otherwise it records
   `agent_llm_gated_total{reason=llm_not_eligible|llm_budget_exhausted}` and retries at the next game end (#1270).
-  The stub never draws from the budget. `AGENT_INFERENCE_BACKEND` selects the backend (`code_improvement.engine`
-  was retired in #1810). The proposer runs at all only while the proposer gate is open:
+  The stub never draws from the budget. The `inference.backend` flag selects the backend per cycle (`code_improvement.engine`
+  was retired in #1810; a stub cycle is never charged). The proposer runs at all only while the proposer gate is open:
   `AGENT_EXPERIMENT_PROPOSER_ENABLED=true` AND `experiment_proposer_enabled` (FR-152 d, C-034); closed, it makes no
   model call and draws no budget slot.
 - **The budget is tight during a remote-decide session.** The window is a sliding 60 s shared by decisions, the
@@ -581,8 +586,8 @@ once after 250 ms. The game coordinator applies the result
 | `auto_rubberband` | `auto_rubberband` | state | `gentle` |
 | `adjust_player_sensitivity` | `player_sensitivity_factor` | per serial level | 1.5 |
 | `set_player_handicap` | `player_handicap_factor` | per serial level | 1.25 |
-| `grant_shield` | `shield_seconds` | per serial grant | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16) |
-| `partial_shield` | `partial_shield_seconds` | per serial grant | `5:2.0` (feedback: `shield_up` at half volume + `GAME_EFFECT_PARTIAL_SHIELD`) |
+| `grant_shield` | `shield_seconds` | per serial grant | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16). Planned #1837: in trigger mode (`shield.activation`, UC-040 BR-019; Free-for-All only) the grant is a **charge** (`GAME_EFFECT_SHIELD_CHARGE`, UC-040 A30): the seconds are the protection the player gets when they activate it with the trigger (UC-030 A6). The coordinator may block it `already_charged` (A31) |
+| `toughness_boost` | `toughness_boost_seconds` | per serial grant | `5:2.0` (feedback: `shield_up` at half volume + `GAME_EFFECT_TOUGHNESS_BOOST`) |
 | `soft_penalty` | `soft_penalty_action` | per serial grant | `warn` |
 | `noop` | (no write) | | |
 
@@ -603,7 +608,7 @@ reads is logged and counted (`game_intervention_event_gaps_total`)
 `end_game_fn(game_id, reason)` = `GameCoordinatorServicer._force_end_session`, the same path as
 `ForceEndGame` with a `game_id`) ([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for), #1310).
 
-Per-serial **grant** flags (`shield_seconds`, `partial_shield_seconds`,
+Per-serial **grant** flags (`shield_seconds`, `toughness_boost_seconds`,
 `soft_penalty_action`) are one-shot per decision: every write gets a fresh variant from the
 flag service. The coordinator (`InterventionManager._evaluate_targeted_grant`) reads each
 player's variant and value with evaluation details and dispatches one intervention per player
@@ -622,7 +627,7 @@ No per-player entry outlives its game, so the agent prunes nothing
 The coordinator re-checks independently before any handler runs
 (`InterventionManager._enforce_and_dispatch` → `_check_chain` in `interventions.py`): allow-list membership → mode capability deny matrix
 (`MODE_CAPABILITY_DENY` in `interventions.py`) → battery guard → global backstop. Its block reasons are
-`not_allowed`, `rate_limited`, `low_battery`, `mode_unsupported`, `no_game`, plus
+`not_allowed`, `rate_limited`, `low_battery`, `mode_unsupported`, `no_game`, `already_charged` (a `grant_shield` to a player who holds a shield charge; the handler applies nothing and the backstop reservation is refunded; UC-040 A31, #1837), plus
 `handler_error`, `game_loop_unavailable` and `game_loop_timeout` (the handler did not run on the game's own
 event loop: not applied), plus `game_loop_late` on a not-blocked outcome (the handler started but had not finished
 after 5 s: outcome unknown; [UC-040 BR-018](../use_cases/UC-040.md#br-018-intervention-side-effects-run-on-the-owning-games-event-loop), #1250). Every outcome emits `game_interventions_total{type,objective,blocked,block_reason}`

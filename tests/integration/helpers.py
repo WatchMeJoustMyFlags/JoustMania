@@ -15,6 +15,7 @@ import sys
 import time
 
 import grpc
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
@@ -28,6 +29,7 @@ from proto import (
     menu_pb2,
     menu_pb2_grpc,
 )
+from tests.integration.flag_service import default as flag_service_default
 
 
 # =============================================================================
@@ -780,6 +782,48 @@ async def press_admin_button(
     await asyncio.sleep(0.05)
     await _set_button(mock_client, serial, button, False)
     await asyncio.sleep(gap)
+
+
+async def select_admin_option(
+    press_move,
+    read_color,
+    target_color: tuple[int, int, int],
+    *,
+    max_presses: int = 8,
+    settle_seconds: float = 1.0,
+) -> int:
+    """Press Move until the admin option colour ``target_color`` shows (#1845).
+
+    The menu debounces admin buttons by their PROCESSING time (300 ms), so a
+    stalled menu loop can compress two presses into one and drop the second;
+    a fixed number of Move presses then leaves a different option selected and
+    the next Start/Select edits that option. Each press shows the option's
+    colour for ~1 s, so the colour is the observable selection. Wrapping past
+    the last option is harmless: the colour comes round again.
+
+    Args:
+        press_move: async callable that presses and releases Move (with its gap).
+        read_color: async callable returning the host LED colour.
+        target_color: the LED colour of the option to select.
+
+    Returns:
+        The number of presses it took.
+
+    Raises:
+        AssertionError: if the colour never showed within ``max_presses``.
+    """
+    last = None
+
+    async def shown() -> bool:
+        nonlocal last
+        last = await read_color()
+        return last == target_color
+
+    for presses in range(1, max_presses + 1):
+        await press_move()
+        if await async_poll_until(shown, timeout=settle_seconds, interval=0.1):
+            return presses
+    raise AssertionError(f"admin option colour {target_color} never showed in {max_presses} Move presses (last={last})")
 
 
 async def exit_admin_mode(mock_client, serial: str):
@@ -2261,3 +2305,63 @@ async def _eliminate_one_fighter(
         # No death this pass; wait out invincibility/death-hold and re-probe.
         await asyncio.sleep(1.2)
     return None
+
+
+# =============================================================================
+# Intervention fixtures (moved from test_intervention_flow.py, #1422)
+# =============================================================================
+
+# Absence window: how long the flag push + coordinator re-evaluate chain is
+# given to (not) act before asserting that NOTHING happened. Positive waits are
+# condition polls (poll_until); this constant remains ONLY for negative
+# assertions, where the bounded wait IS the test.
+RELOAD_SETTLE_SECONDS = 2.0
+
+# Applying a per-player state flag and observing it can take a couple of reload
+# cycles under load; poll up to this long.
+APPLY_TIMEOUT_SECONDS = 12.0
+
+# Generous rate-limit budget the intervention tests run under. The weighted
+# sliding-window limiter is process-GLOBAL on the game-coordinator and is not
+# reset between tests; pinning a high budget removes cross-test bleed (#824).
+SUITE_RATE_LIMIT_BUDGET = 50
+
+
+def set_interventions_allowed(variant: str) -> None:
+    """Set the agent-set ``interventions_allowed`` flag to a named variant
+    (``none`` / ``ambient`` / ``standard`` / ``full``). An in-memory overlay on
+    the flag service, cleared by the ``flag_service`` fixture at teardown."""
+    flag_service_default().put("agent", "interventions_allowed", variant=variant)
+
+
+def set_policy_budget(per_minute: int) -> None:
+    """Raise BOTH weighted rate-limit budgets for headroom (#919): the agent's
+    per-game budget and the coordinator's process-global backstop (flags.md 13.2)."""
+    for flag_key in (
+        "policy.max_interventions_per_minute",
+        "policy.coordinator_backstop_per_minute",
+    ):
+        flag_service_default().put("agent", flag_key, value=int(per_minute))
+
+
+@pytest.fixture
+def intervention_env(docker_compose, flag_service):
+    """Bind the flag-service client and pin the suite-wide rate-limit budget.
+
+    Every agent-set overlay a test sets is DELETEd by the ``flag_service``
+    fixture at teardown. The budget is served by flagd before the test body
+    runs (condition poll, not a fixed settle, #894).
+    """
+    set_policy_budget(SUITE_RATE_LIMIT_BUDGET)
+    from openfeature.evaluation_context import EvaluationContext
+
+    with flagd_probe_client(docker_compose, "agent") as client:
+        assert poll_until(
+            lambda: (
+                client.get_integer_value(
+                    "policy.max_interventions_per_minute", -1, EvaluationContext()
+                )
+                == SUITE_RATE_LIMIT_BUDGET
+            ),
+        ), "flagd did not serve the pinned suite rate-limit budget"
+    yield

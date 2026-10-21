@@ -23,6 +23,18 @@ LOBBY = (0, 60, 76)
 SERIAL = "MOCK0001"
 
 
+class TestUC040ToughnessBoostEnum:
+    """#1838: the weaker shield variant is GAME_EFFECT_TOUGHNESS_BOOST, wire number unchanged."""
+
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-009"])
+    def test_enum_name_and_number(self):
+        assert controller_manager_pb2.GameEffect.Value("GAME_EFFECT_TOUGHNESS_BOOST") == 15
+        assert controller_manager_pb2.GameEffect.Name(15) == "GAME_EFFECT_TOUGHNESS_BOOST"
+        retired = "GAME_EFFECT_" + "PARTIAL" + "_SHIELD"
+        with pytest.raises(ValueError):
+            controller_manager_pb2.GameEffect.Value(retired)
+
+
 class TestUC040ShieldSchedule:
     """UC-040 BR-008 / BR-009: colour at t=0, mid-fade, last-second blink, restore."""
 
@@ -65,21 +77,21 @@ class TestUC040ShieldSchedule:
         assert shield_frame(0.15, 0.8, WHITE) == OFF
 
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-009"])
-    def test_partial_shield_breathes_between_10_and_50_percent(self):
-        """UC-040 BR-009: the partial shield is a slow dim breathing (0.5 Hz)."""
-        assert shield_frame(0.0, 5.0, WHITE, partial=True) == (26, 26, 26)  # 10 %
-        assert shield_frame(1.0, 5.0, WHITE, partial=True) == (128, 128, 128)  # 50 % at half period
-        assert shield_frame(2.0, 5.0, WHITE, partial=True) == (26, 26, 26)  # back to 10 %
+    def test_toughness_boost_breathes_between_10_and_50_percent(self):
+        """UC-040 BR-009: the toughness boost is a slow dim breathing (0.5 Hz)."""
+        assert shield_frame(0.0, 5.0, WHITE, toughness_boost=True) == (26, 26, 26)  # 10 %
+        assert shield_frame(1.0, 5.0, WHITE, toughness_boost=True) == (128, 128, 128)  # 50 % at half period
+        assert shield_frame(2.0, 5.0, WHITE, toughness_boost=True) == (26, 26, 26)  # back to 10 %
         for t in range(0, 40):
-            frame = shield_frame(t / 10, 5.0, WHITE, partial=True)
+            frame = shield_frame(t / 10, 5.0, WHITE, toughness_boost=True)
             assert 25 <= frame[0] <= 128, (t, frame)
 
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-009"])
-    def test_partial_shield_blinks_at_half_brightness(self):
-        """UC-040 BR-009: the partial shield's last second blinks between 50 % and off."""
-        assert shield_frame(4.0, 5.0, WHITE, partial=True) == (128, 128, 128)
-        assert shield_frame(4.125, 5.0, WHITE, partial=True) == OFF
-        assert shield_frame(5.0, 5.0, WHITE, partial=True) is None
+    def test_toughness_boost_blinks_at_half_brightness(self):
+        """UC-040 BR-009: the toughness boost's last second blinks between 50 % and off."""
+        assert shield_frame(4.0, 5.0, WHITE, toughness_boost=True) == (128, 128, 128)
+        assert shield_frame(4.125, 5.0, WHITE, toughness_boost=True) == OFF
+        assert shield_frame(5.0, 5.0, WHITE, toughness_boost=True) is None
 
 
 class _Backend:
@@ -156,14 +168,53 @@ class TestUC040ShieldEffect:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-009"])
-    async def test_partial_shield_is_dimmer_than_full(self, manager, backend):
-        """UC-040 BR-009: no partial-shield frame is brighter than 50 %."""
-        task = await _shield(manager, effect=controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD, duration_ms=3000)
+    async def test_toughness_boost_is_dimmer_than_full(self, manager, backend):
+        """UC-040 BR-009: no toughness boost frame is brighter than 50 %."""
+        task = await _shield(manager, effect=controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST, duration_ms=3000)
         await task
 
         frames = backend.history[:-1]  # last write is the restore
         assert frames and max(f[0] for f in frames) <= 128
         assert backend.colors[SERIAL] == PLAYER
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-009"])
+    @pytest.mark.parametrize(
+        ("effect", "kind"),
+        [
+            (controller_manager_pb2.GAME_EFFECT_SHIELD, "full"),
+            (controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST, "toughness_boost"),
+        ],
+    )
+    async def test_render_span_and_blink_event_carry_the_shield_kind(self, manager, monkeypatch, effect, kind):
+        """UC-040 A16: shield.kind on the render span and its shield_blink event is full or toughness_boost."""
+        spans = []
+
+        class _Span:
+            def __init__(self):
+                self.attributes = {}
+                self.events = []
+
+            def set_attribute(self, key, value):
+                self.attributes[key] = value
+
+            def add_event(self, name, attrs=None):
+                self.events.append((name, dict(attrs or {})))
+
+        class _Tracer:
+            @contextlib.contextmanager
+            def start_as_current_span(self, name, context=None):
+                span = _Span()
+                spans.append((name, span))
+                yield span
+
+        monkeypatch.setattr("services.controller_manager.feedback_manager.tracer", _Tracer())
+        task = await _shield(manager, effect=effect, duration_ms=3000)
+        await task
+
+        (_, span) = next(item for item in spans if item[0] == "controller.shield_effect")
+        assert span.attributes["shield.kind"] == kind
+        assert ("shield_blink", {"shield.kind": kind}) in span.events
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-010"])
@@ -292,9 +343,9 @@ class TestUC040ShieldEffect:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-009", "BR-010"])
-    async def test_partial_resumes_after_the_full_shield_ends(self, manager, backend):
-        """UC-040 BR-010: full takes precedence over partial; the partial resumes when full ends."""
-        task = await _shield(manager, effect=controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD, duration_ms=10_000)
+    async def test_toughness_boost_resumes_after_the_full_shield_ends(self, manager, backend):
+        """UC-040 BR-010: full takes precedence over toughness_boost; the toughness_boost resumes when full ends."""
+        task = await _shield(manager, effect=controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST, duration_ms=10_000)
         await _shield(manager, duration_ms=2000)
         assert manager._shield_tasks[SERIAL] is task
         for _ in range(10_000):  # fake time runs out the 2 s full shield
@@ -305,21 +356,21 @@ class TestUC040ShieldEffect:
         backend.history.clear()
         await _spin(10)
 
-        assert backend.history and max(c[0] for c in backend.history) <= 128  # partial frames only
-        assert set(manager._shield_layers[SERIAL]) == {"partial"}
+        assert backend.history and max(c[0] for c in backend.history) <= 128  # toughness_boost frames only
+        assert set(manager._shield_layers[SERIAL]) == {"toughness_boost"}
         await task
         assert backend.colors[SERIAL] == PLAYER
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
-    async def test_partial_zero_ends_only_the_partial_layer(self, manager, clock):
-        """UC-040 A17: PARTIAL_SHIELD 0 ends the partial layer; a full shield keeps painting."""
+    async def test_toughness_boost_zero_ends_only_the_toughness_boost_layer(self, manager, clock):
+        """UC-040 A17: TOUGHNESS_BOOST 0 ends the toughness_boost layer; a full shield keeps painting."""
         clock.enable_blocking()
-        await _shield(manager, effect=controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD, duration_ms=10_000)
+        await _shield(manager, effect=controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST, duration_ms=10_000)
         await _shield(manager, duration_ms=10_000)
 
         await manager.handle_game_effect(
-            serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD, duration_ms=0
+            serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST, duration_ms=0
         )
 
         assert set(manager._shield_layers[SERIAL]) == {"full"}

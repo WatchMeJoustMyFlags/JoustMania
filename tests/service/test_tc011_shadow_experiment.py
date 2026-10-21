@@ -73,6 +73,9 @@ DECLARE_TIMEOUT = 60.0
 CONCLUDE_TIMEOUT = 300.0
 # Absence window after teardown: several experiment ticks (3 s each).
 NO_RESPAWN_WINDOW = 10.0
+# A game's flag-service end is queued at its end (#1847); 3 s is well below the 15 s
+# reconcile backstop, so a pass shows the end was reported, not reconciled away.
+GAME_END_TIMEOUT = 3.0
 
 
 def _agent_log(stack) -> str:
@@ -226,8 +229,12 @@ async def test_verdict_is_inconclusive_and_the_experiment_is_torn_down(experimen
     # Postconditions: the journal holds the concluded experiment; the arm values and the
     # reserved controllers are gone.
     assert list((stack.workdir / "experiments").glob("exp_*/summary.json")), "experiment not journaled"
-    games = {g["game_id"] for g in flag_service.games()}
-    assert not games & {_field(line, "game_id") for line in spawned}, "shadow games still registered"
+    # The coordinator reports each game's end as it ends (UC-053 step 7, #1847); the
+    # DELETE is queued, so poll instead of reading once.
+    spawned_ids = {_field(line, "game_id") for line in spawned}
+    assert await async_poll_until(
+        lambda: not {g["game_id"] for g in flag_service.games()} & spawned_ids, GAME_END_TIMEOUT, interval=0.5
+    ), f"shadow games still registered: {sorted({g['game_id'] for g in flag_service.games()} & spawned_ids)}"
     assert [c.serial for c in await list_mock_controllers_detailed(stack) if c.reserved] == []
     experiment_id = _field(_lines(stack, "experiment.declared")[0], "experiment_id")
     view = flag_service.get("game", SEED_FLAG)

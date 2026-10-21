@@ -26,7 +26,9 @@ class ButtonDebouncer:
         self._last_press: dict[str, dict[str, float]] = {}
         self.default_interval = default_interval
 
-    def should_process(self, serial: str, button: str, interval: float | None = None) -> bool:
+    def should_process(
+        self, serial: str, button: str, interval: float | None = None, event_time: float | None = None
+    ) -> bool:
         """
         Check if a button press should be processed.
 
@@ -34,18 +36,22 @@ class ButtonDebouncer:
             serial: Controller serial number
             button: Button name
             interval: Optional override for debounce interval
+            event_time: When the press happened (seconds, controller-manager clock). Debouncing on the
+                event time keeps a stalled menu loop from merging two distinct presses (UC-012 BR-007);
+                falls back to the processing time when the event carries none.
 
         Returns:
             True if the button press should be processed, False if debounced
         """
         interval = interval if interval is not None else self.default_interval
-        current_time = time.time()
+        current_time = event_time if event_time is not None else time.time()
 
         if serial not in self._last_press:
             self._last_press[serial] = {}
 
         last_press = self._last_press[serial].get(button, 0)
-        if current_time - last_press < interval:
+        # A negative delta (clock stepped back, events out of order) is a new press, not a lockout.
+        if 0 <= current_time - last_press < interval:
             return False
 
         self._last_press[serial][button] = current_time
@@ -86,13 +92,14 @@ class ControllerHandler(Protocol):
         """The state this handler manages."""
         ...
 
-    async def handle_button(self, serial: str, button: str) -> None:
+    async def handle_button(self, serial: str, button: str, event_time: float | None = None) -> None:
         """
         Handle a button press event.
 
         Args:
             serial: Controller serial number
             button: Button name (trigger, move, cross, circle, square, triangle, ps, select, start)
+            event_time: When the press happened (seconds), for debouncing; None = processing time
         """
         ...
 

@@ -76,7 +76,7 @@ engine is the offline floor.
 - **Decision backends** are selected by the `decision.backend` flag (epic #1225):
   `rules` by default, `claude` / `openai` / `jev` called directly, rules on any
   failure. The post-game retro and the experiment proposer call Claude directly
-  when `AGENT_INFERENCE_BACKEND=claude`. There is no gateway (#1234).
+  when the `inference.backend` flag is `claude` (#1810). There is no gateway (#1234).
 - **Talk demo.** The live demo of that contract (observe, model switch,
   permissions, rollback, degrade to rules) is scripted in
   [talk/two-standards-runbook.md](talk/two-standards-runbook.md).

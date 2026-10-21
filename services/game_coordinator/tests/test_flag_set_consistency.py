@@ -229,6 +229,28 @@ async def test_event_is_not_applied_against_a_wider_stale_allow_list():
     assert h.outcomes("eliminate_player") == [("true", "not_allowed")]
 
 
+@pytest.mark.uc("UC-040", flow="A22")
+@pytest.mark.asyncio
+async def test_ambient_allow_list_blocks_eliminate_player_and_victim_stays_alive():
+    # Same stamp on both sets, so no deferral: the plain coordinator re-check.
+    # `ambient` does not name eliminate_player (replaces the removed
+    # integration test test_intervention_flow.py, #1422).
+    assert "eliminate_player" not in AMBIENT.split(",")
+    interventions = InterventionsStore(("e1", 3))
+    interventions.events["eliminate_player"] = {
+        "epoch": "e1",
+        "seq": 1,
+        "events": [{"seq": 1, "payload": {"serial": "MOCK0001"}}],
+    }
+    h = Harness(interventions, AgentStore(("e1", 3), AMBIENT))
+
+    await h.flag_change()
+
+    assert h.outcomes("eliminate_player") == [("true", "not_allowed")]
+    assert h.game.killed == []
+    assert h.game.players["MOCK0001"].alive
+
+
 @pytest.mark.uc("UC-053", flow="A9", tc="TC-019")
 @pytest.mark.asyncio
 async def test_grant_is_not_applied_against_a_wider_stale_allow_list():

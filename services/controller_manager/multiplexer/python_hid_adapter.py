@@ -21,7 +21,7 @@ import threading
 
 import grpc
 
-from lib.controller_constants import StateKey, normalize_serial
+from lib.controller_constants import ButtonKey, StateKey, normalize_serial
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
 from services.controller_manager.multiplexer.rust_adapter import _sensor_data_to_dict
 
@@ -61,6 +61,7 @@ class PythonHidAdapter(ControllerIOAdapter):
         self._command_queue: queue.Queue = queue.Queue(maxsize=256)
         self._latest_data: dict[str, dict] = {}
         self._last_state: dict[str, dict] = {}
+        self._trigger_latch: set[str] = set()  # trigger seen down since the last game frame (#1837)
         self._data_lock = threading.Lock()
         # Serials closed by the multiplexer (loser / switched / gone). Polls run on
         # the event loop while discovery closes serials in a worker thread (#1447),
@@ -114,6 +115,9 @@ class PythonHidAdapter(ControllerIOAdapter):
                 with self._data_lock:
                     if serial not in self._closed:
                         self._latest_data[serial] = state
+                        if state.get(ButtonKey.TRIGGER):
+                            # Latched until a game frame delivers it (#1837).
+                            self._trigger_latch.add(serial)
         except grpc.RpcError as e:
             if self._stream_running:
                 logger.warning(f"StreamIO error: {e}")
@@ -169,6 +173,14 @@ class PythonHidAdapter(ControllerIOAdapter):
             logger.warning(f"Open RPC failed for {serial}: {e}")
             return False
 
+    def consume_trigger_press(self, serial: str) -> bool:
+        """True when the trigger was down at any sample since the last call (#1837)."""
+        with self._data_lock:
+            if serial in self._trigger_latch:
+                self._trigger_latch.discard(serial)
+                return True
+            return False
+
     def poll(self, serial: str) -> dict | None:
         # All state access under _data_lock: close() runs in the discovery
         # worker thread while poll() runs on the event loop (#1447).
@@ -209,6 +221,7 @@ class PythonHidAdapter(ControllerIOAdapter):
         with self._data_lock:
             self._latest_data.pop(serial, None)
             self._last_state.pop(serial, None)
+            self._trigger_latch.discard(serial)
             self._closed.add(serial)
         self._adapter_names.pop(serial, None)
 
@@ -228,6 +241,7 @@ class PythonHidAdapter(ControllerIOAdapter):
         with self._data_lock:
             self._latest_data.clear()
             self._last_state.clear()
+            self._trigger_latch.clear()
             self._closed.clear()
         self._adapter_names.clear()
 

@@ -134,7 +134,7 @@ func TestBuildState_Shielded(t *testing.T) {
 	c.Timeline = append(c.Timeline,
 		gamecontext.TimelineEvent{At: c.UpdatedAt.Add(-4 * time.Second), Kind: gamecontext.EventIntervention, Detail: "grant_shield", Serial: "B"},
 		gamecontext.TimelineEvent{At: c.UpdatedAt.Add(-20 * time.Second), Kind: gamecontext.EventIntervention, Detail: "grant_shield", Serial: "A"},
-		gamecontext.TimelineEvent{At: c.UpdatedAt.Add(-2 * time.Second), Kind: gamecontext.EventIntervention, Detail: "partial_shield", Serial: "A", Blocked: true},
+		gamecontext.TimelineEvent{At: c.UpdatedAt.Add(-2 * time.Second), Kind: gamecontext.EventIntervention, Detail: "toughness_boost", Serial: "A", Blocked: true},
 	)
 	st := BuildState(c)
 	if st.Players[0].Shielded || !st.Players[1].Shielded {

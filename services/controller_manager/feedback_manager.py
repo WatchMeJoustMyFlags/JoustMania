@@ -21,10 +21,18 @@ from lib.telemetry import extract_trace_context, get_tracer
 from proto import controller_manager_pb2
 from services.controller_manager import metrics
 from services.controller_manager.effects_base import (
+    CHARGE_MAX_DURATION_MS,
+    CHARGE_RENDER_INTERVAL_S,
+    CHARGE_TICK_INTENSITY,
+    CHARGE_TICK_MS,
     SHIELD_BLINK_WINDOW_S,
+    SWELL_MS,
+    SWELL_STEP_S,
     ActiveEffect,
     ControllerEffectsBase,
+    charge_frame,
     shield_frame,
+    swell_intensity,
 )
 
 if TYPE_CHECKING:
@@ -60,7 +68,7 @@ _winner_rainbow_duration_ms: int | None = None
 # Warning and death effect timings (milliseconds), UC-030 steps 7 and 9.
 WARNING_FLASH_MS = 200
 WARNING_VIBRATION_MS = 200
-DEATH_RUMBLE_MS = 150
+DEATH_RUMBLE_MS = 1000  # ~1 s, distinct from the 200 ms warning: with the LED off the rumble is the signal (#1832)
 DEATH_RED_HOLD_MS = 300
 DEATH_FADE_MS = 700
 
@@ -139,8 +147,12 @@ class ShieldLayer:
     start: float
     total_s: float
     color: tuple[int, int, int]
-    partial: bool
+    kind: str = "full"  # "full" | "toughness_boost" | "charge" (#1837)
     blink_reported: bool = False
+
+    @property
+    def toughness_boost(self) -> bool:
+        return self.kind == "toughness_boost"
 
     def remaining(self, now: float) -> float:
         return self.start + self.total_s - now
@@ -148,10 +160,25 @@ class ShieldLayer:
 
 # Effects that never touch the LED: they neither overlay nor end a shield, and
 # skip the active-effect placeholder entirely (#1301).
-NON_LED_EFFECTS = frozenset({controller_manager_pb2.GAME_EFFECT_RUMBLE})
-SHIELD_EFFECTS = frozenset(
-    {controller_manager_pb2.GAME_EFFECT_SHIELD, controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD}
+NON_LED_EFFECTS = frozenset(
+    {controller_manager_pb2.GAME_EFFECT_RUMBLE, controller_manager_pb2.GAME_EFFECT_SHIELD_SWELL}
 )
+SHIELD_EFFECTS = frozenset(
+    {
+        controller_manager_pb2.GAME_EFFECT_SHIELD,
+        controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST,
+        controller_manager_pb2.GAME_EFFECT_SHIELD_CHARGE,
+    }
+)
+_SHIELD_KIND_BY_EFFECT = {
+    controller_manager_pb2.GAME_EFFECT_SHIELD: "full",
+    controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST: "toughness_boost",
+    controller_manager_pb2.GAME_EFFECT_SHIELD_CHARGE: "charge",
+}
+# The activation swell lives in the rumble slot (vibration_tasks), so any later rumble replaces it (#1837).
+SWELL_TASK_NAME = "shield_swell"
+# The death rumble owns the slot for its full duration; the swell and the charge tick never replace it.
+DEATH_RUMBLE_TASK_NAME = "death_rumble"
 
 
 class FeedbackManager(ControllerEffectsBase):
@@ -189,7 +216,7 @@ class FeedbackManager(ControllerEffectsBase):
             controller_manager_pb2.GAME_EFFECT_FORCE_START_CHARGE,
         }
 
-        # Agent shield layers per controller ("full" / "partial") and the one
+        # Agent shield layers per controller ("full" / "toughness_boost" / "charge") and the one
         # renderer task per controller that paints the top layer (#1301). The
         # shield is NOT an active_effects entry: other effects overlay it, a new
         # base colour only changes what is restored after it (UC-040 BR-010).
@@ -301,15 +328,19 @@ class FeedbackManager(ControllerEffectsBase):
                 logger.warning(f"Controller {serial} not found for vibration")
                 return False
 
+            will_schedule = duration_ms > 0 and intensity > 0
+            previous = self.vibration_tasks.get(serial)
+            if previous is not None and (will_schedule or previous.get_name() == SWELL_TASK_NAME):
+                # Cancel BEFORE writing: a running swell step must not overwrite the new rumble (#1837).
+                previous.cancel()
+                del self.vibration_tasks[serial]
+
             success = await self.backend.set_rumble(serial, intensity)
             if success:
                 logger.debug(f"Set vibration on {serial}: intensity={intensity}")
 
                 # Schedule vibration stop if duration is specified
-                if duration_ms > 0 and intensity > 0:
-                    # Cancel any existing vibration task for this controller
-                    if serial in self.vibration_tasks:
-                        self.vibration_tasks[serial].cancel()
+                if will_schedule:
                     # Store task reference to prevent garbage collection
                     self.vibration_tasks[serial] = asyncio.create_task(
                         self._delayed_stop_vibration(serial, duration_ms)
@@ -451,7 +482,7 @@ class FeedbackManager(ControllerEffectsBase):
     async def _effect_player_death(self, serial: str, trace_context: Context | None = None, **_kwargs) -> None:
         """Red + vibrate, then fade to off to signal player is out.
 
-        Improved transition: short sharp rumble + solid red briefly + fade to black.
+        Transition: ~1 s rumble + solid red briefly + fade to black (LED stays off afterwards).
         This feels more immediate and satisfying than slow blinking.
         """
         rumble_ms = DEATH_RUMBLE_MS
@@ -466,9 +497,13 @@ class FeedbackManager(ControllerEffectsBase):
             await self.end_shield_effect(serial, restore=False)
             await self.cancel_effect(serial)
 
-            # Short, sharp rumble (default 150ms feels snappier than 250ms)
+            # Long rumble (~1 s, UC-030 step 9): clearly different from the 200 ms warning. It runs on its
+            # own stop timer, so the red hold, the fade and the end of the game do not cut it short.
             span.add_event("vibration", {"intensity": 255, "duration_ms": rumble_ms})
             await self.set_vibration(serial, 255, rumble_ms)
+            stop_timer = self.vibration_tasks.get(serial)
+            if stop_timer is not None:
+                stop_timer.set_name(DEATH_RUMBLE_TASK_NAME)  # the swell and the charge tick leave it alone
 
             # Solid red briefly (default 300ms) then fade to black (default 700ms)
             # This replaces the awkward slow blink (1Hz over 1500ms)
@@ -683,13 +718,13 @@ class FeedbackManager(ControllerEffectsBase):
         return active is not None and not active.task.done()
 
     def _top_shield(self, serial: str, now: float) -> ShieldLayer | None:
-        """The shield layer to paint now: full over partial; expired layers are dropped."""
+        """The shield layer to paint now: full over toughness_boost over charge; expired layers are dropped."""
         layers = self._shield_layers.get(serial)
         if not layers:
             return None
         for kind in [k for k, layer in layers.items() if layer.remaining(now) <= 0]:
             del layers[kind]
-        return layers.get("full") or layers.get("partial")
+        return layers.get("full") or layers.get("toughness_boost") or layers.get("charge")
 
     async def _finish_effect(self, serial: str, restore: bool, fallback: tuple[int, int, int] | None = None) -> None:
         """After an effect: hand the LED back to the shield, else restore the base colour.
@@ -709,18 +744,34 @@ class FeedbackManager(ControllerEffectsBase):
         self,
         serial: str,
         duration_ms: int,
-        partial: bool = False,
+        toughness_boost: bool = False,
         color: tuple[int, int, int] | None = None,
         trace_context: Context | None = None,
+        charge: bool = False,
     ) -> None:
-        """Start or restart (extend) a shield layer; its schedule starts again at t=0."""
-        kind = "partial" if partial else "full"
-        self._shield_layers.setdefault(serial, {})[kind] = ShieldLayer(
-            start=self._clock.time(),
-            total_s=duration_ms / 1000.0,
-            color=color if color else Colors.White.value,
-            partial=partial,
-        )
+        """Start or restart (extend) a shield layer; its schedule starts again at t=0.
+
+        A charge layer (#1837) is capped at 120 s and a re-send while it is held only
+        extends it: the breathing phase continues and the start tick is not repeated.
+        """
+        kind = "charge" if charge else ("toughness_boost" if toughness_boost else "full")
+        now = self._clock.time()
+        layers = self._shield_layers.setdefault(serial, {})
+        newly_charged = False
+        if charge:
+            duration_ms = min(duration_ms, CHARGE_MAX_DURATION_MS)
+            held = layers.get("charge")
+            if held is not None and held.remaining(now) > 0:
+                held.total_s = (now - held.start) + duration_ms / 1000.0
+            else:
+                newly_charged = True
+        if kind != "charge" or newly_charged:
+            layers[kind] = ShieldLayer(
+                start=now,
+                total_s=duration_ms / 1000.0,
+                color=color if color else Colors.White.value,
+                kind=kind,
+            )
         task = self._shield_tasks.get(serial)
         if task is None or task.done():
             self.backend.set_effect_active(serial, True)
@@ -728,9 +779,12 @@ class FeedbackManager(ControllerEffectsBase):
         else:
             # The running renderer picks the new layer up on its next tick.
             logger.debug(f"Shield layer {kind} (re)started on {serial} for {duration_ms}ms")
+        if newly_charged and not self._death_rumble_running(serial):
+            # One soft tick when the charge starts, not when it is re-sent (UC-040 BR-021).
+            await self.set_vibration(serial, CHARGE_TICK_INTENSITY, CHARGE_TICK_MS)
 
     async def _shield_render_loop(self, serial: str, kind: str, trace_context: Context | None) -> None:
-        """Paint the top shield layer at 20 Hz while no overlay effect owns the LED."""
+        """Paint the top shield layer at 20 Hz (a charge at 10 Hz, on change) while no overlay effect owns the LED."""
         interval = 0.05
         with tracer.start_as_current_span("controller.shield_effect", context=trace_context) as span:
             span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
@@ -747,14 +801,25 @@ class FeedbackManager(ControllerEffectsBase):
                         end_reason = "expired"
                         break
                     elapsed = now - layer.start
-                    if not layer.blink_reported and elapsed >= max(0.0, layer.total_s - SHIELD_BLINK_WINDOW_S):
+                    is_charge = layer.kind == "charge"
+                    if (
+                        not is_charge
+                        and not layer.blink_reported
+                        and elapsed >= max(0.0, layer.total_s - SHIELD_BLINK_WINDOW_S)
+                    ):
                         layer.blink_reported = True
-                        span.add_event("shield_blink", {"shield.kind": "partial" if layer.partial else "full"})
+                        span.add_event("shield_blink", {"shield.kind": layer.kind})
                     if not self._overlay_active(serial):
-                        frame = shield_frame(elapsed, layer.total_s, layer.color, layer.partial)
+                        if is_charge:
+                            # The player's current base colour, so a team/colour change is followed.
+                            frame = charge_frame(elapsed, self.base_colors.get(serial) or layer.color)
+                            if frame == self.current_colors.get(serial):
+                                frame = None  # no visible change: skip the HID write
+                        else:
+                            frame = shield_frame(elapsed, layer.total_s, layer.color, layer.toughness_boost)
                         if frame is not None:
                             await self._set_led_color(serial, frame)
-                    await self._clock.sleep(interval)
+                    await self._clock.sleep(CHARGE_RENDER_INTERVAL_S if layer.kind == "charge" else interval)
             finally:
                 span.add_event("shield_end", {"shield.end_reason": end_reason})
                 if self._shield_tasks.get(serial) is asyncio.current_task():
@@ -765,22 +830,31 @@ class FeedbackManager(ControllerEffectsBase):
         if not self._overlay_active(serial):
             await self._finish_effect(serial, restore=True)
 
-    async def end_shield_effect(self, serial: str, partial_only: bool = False, restore: bool = True) -> bool:
+    async def end_shield_effect(
+        self,
+        serial: str,
+        toughness_boost_only: bool = False,
+        restore: bool = True,
+        kinds: frozenset[str] | None = None,
+    ) -> bool:
         """End shield layers now (#1301, UC-040 A17); other effects are untouched.
 
-        ``partial_only`` ends just the partial layer (a full shield keeps
-        painting). With no layer left the renderer is cancelled and, if
+        ``kinds`` (or ``toughness_boost_only``) ends just those layers (a full shield keeps
+        painting under a charge end). With no layer left the renderer is cancelled and, if
         ``restore`` and no overlay owns the LED, the base colour is shown.
         Returns True if a layer was ended.
         """
         layers = self._shield_layers.get(serial)
         if not layers:
             return False
-        if partial_only:
-            if layers.pop("partial", None) is None:
+        if toughness_boost_only:
+            kinds = frozenset({"toughness_boost"})
+        if kinds is not None:
+            ended = [layers.pop(kind, None) for kind in kinds]
+            if all(layer is None for layer in ended):
                 return False
             if layers:
-                return True  # the full shield keeps painting
+                return True  # another shield layer keeps painting
         self._shield_layers.pop(serial, None)
         task = self._shield_tasks.pop(serial, None)
         if task is not None and not task.done():
@@ -797,12 +871,49 @@ class FeedbackManager(ControllerEffectsBase):
     async def _handle_shield_command(
         self, serial: str, effect: int, duration_ms: int, color: tuple | None, trace_context: Context | None
     ) -> None:
-        partial = effect == controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD
+        kind = _SHIELD_KIND_BY_EFFECT[effect]
         if duration_ms <= 0:
-            # SHIELD 0 ends every shield layer (game end); PARTIAL_SHIELD 0 only the partial one.
-            await self.end_shield_effect(serial, partial_only=partial)
+            # SHIELD 0 ends every shield layer (game end); TOUGHNESS_BOOST 0 / SHIELD_CHARGE 0 only their own layer.
+            await self.end_shield_effect(serial, kinds=None if kind == "full" else frozenset({kind}))
             return
-        await self.start_shield_effect(serial, duration_ms, partial=partial, color=color, trace_context=trace_context)
+        await self.start_shield_effect(
+            serial,
+            duration_ms,
+            toughness_boost=kind == "toughness_boost",
+            color=color,
+            trace_context=trace_context,
+            charge=kind == "charge",
+        )
+
+    def _death_rumble_running(self, serial: str) -> bool:
+        task = self.vibration_tasks.get(serial)
+        return task is not None and not task.done() and task.get_name() == DEATH_RUMBLE_TASK_NAME
+
+    async def _effect_shield_swell(self, serial: str, **_kwargs) -> None:
+        """Activation swell (#1837, UC-040 BR-021): rumble 0 -> 180 -> 0 over 600 ms, no LED.
+
+        It owns the rumble slot (``vibration_tasks``), so a later rumble (warning, death)
+        cancels it and runs on its own timer.
+        """
+        if self._death_rumble_running(serial):
+            return  # the death rumble is never shortened (UC-040 BR-021)
+        previous = self.vibration_tasks.pop(serial, None)
+        if previous is not None:
+            previous.cancel()
+        self.vibration_tasks[serial] = asyncio.create_task(self._swell_loop(serial), name=SWELL_TASK_NAME)
+
+    async def _swell_loop(self, serial: str) -> None:
+        me = asyncio.current_task()
+        try:
+            start = self._clock.time()
+            while (elapsed := self._clock.time() - start) < SWELL_MS / 1000.0 - 1e-9:
+                await self.backend.set_rumble(serial, swell_intensity(elapsed))
+                await self._clock.sleep(SWELL_STEP_S)
+            await self.backend.set_rumble(serial, 0)
+        finally:
+            # Only the slot's owner clears it: a replacing rumble has already taken the slot.
+            if self.vibration_tasks.get(serial) is me:
+                del self.vibration_tasks[serial]
 
     # =========================================================================
     # Effect dispatch
@@ -828,6 +939,7 @@ class FeedbackManager(ControllerEffectsBase):
             controller_manager_pb2.GAME_EFFECT_RUMBLE: self._effect_rumble,
             controller_manager_pb2.GAME_EFFECT_PULSE: self._game_effect_pulse,
             controller_manager_pb2.GAME_EFFECT_FLASH: self._game_effect_flash,
+            controller_manager_pb2.GAME_EFFECT_SHIELD_SWELL: self._effect_shield_swell,
         }
 
     async def handle_game_effect(
@@ -994,6 +1106,10 @@ class FeedbackManager(ControllerEffectsBase):
         if serial in self.active_effects:
             self.active_effects[serial].task.cancel()
             del self.active_effects[serial]
+        # A stale stop timer must not cut the rumble of a reconnected controller (#1832: 1 s window)
+        vibration_task = self.vibration_tasks.pop(serial, None)
+        if vibration_task is not None:
+            vibration_task.cancel()
         self._shield_layers.pop(serial, None)
         shield_task = self._shield_tasks.pop(serial, None)
         if shield_task is not None:

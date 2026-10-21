@@ -693,3 +693,51 @@ async def test_a_failing_tempo_tick_does_not_end_the_music_loop():
         await asyncio.wait_for(game._music_loop(), timeout=5.0)
 
     assert ticks == [0, 1]
+
+
+@pytest.mark.uc("UC-031", flow="main", steps=[3], cond=["Post-F-1"])
+def test_persistent_tick_failure_logs_once_then_periodic_summaries(clock, caplog):
+    """#1841: 100 ms failing ticks log 1 warning, a summary per interval, and a new error at once."""
+    game = make_game(TempoAudio())
+    warnings = lambda: [r.getMessage() for r in caplog.records if "Tempo tick failed" in r.getMessage()]  # noqa: E731
+    with caplog.at_level("WARNING"):
+        for _ in range(40):  # 4 s of ticks, below the interval
+            game._log_tick_failure(RuntimeError("boom"))
+            clock.now += 0.1
+        assert len(warnings()) == 1
+
+        clock.now += 5.0
+        game._log_tick_failure(RuntimeError("boom"))
+        assert len(warnings()) == 2
+        assert "39 similar suppressed" in warnings()[1]
+
+        game._log_tick_failure(RuntimeError("other"))  # new text logs at once
+        assert len(warnings()) == 3
+        assert "suppressed" not in warnings()[2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("clock", "flags")
+@pytest.mark.uc("UC-031", flow="main", steps=[3], cond=["Post-F-1"])
+async def test_flapping_tick_failure_keeps_the_log_window_and_new_error_resets_count(caplog):
+    """#1841: fail/ok/fail/ok/fail inside the interval logs once; a new error logs at once with no count."""
+    game = make_game(TempoAudio())
+    game.running = True
+    game.game_cycle_context = None
+    outcomes = [RuntimeError("a"), None, RuntimeError("a"), None, RuntimeError("a"), RuntimeError("b")]
+
+    async def tick():
+        outcome = outcomes.pop(0)
+        if not outcomes:
+            game.running = False
+        if outcome is not None:
+            raise outcome
+
+    with caplog.at_level("WARNING"), patch.object(game, "_check_music_speed", side_effect=tick):
+        await asyncio.wait_for(game._music_loop(), timeout=5.0)
+
+    msgs = [r.getMessage() for r in caplog.records if "Tempo tick failed" in r.getMessage()]
+    assert len(msgs) == 2  # "a" once despite the ok ticks, then "b" at once
+    assert "RuntimeError('a')" in msgs[0]
+    assert "RuntimeError('b')" in msgs[1]
+    assert "suppressed" not in msgs[1]

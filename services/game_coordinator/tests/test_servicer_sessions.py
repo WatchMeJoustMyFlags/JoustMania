@@ -1267,6 +1267,35 @@ class TestShadowGameGovernance:
         assert registered_at_stop == [False]
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-053", flow="main", steps=[7])
+    async def test_shutdown_sends_end_queued_while_joining_before_stop(self, servicer):
+        """#1849: a game that ends while shutdown joins its thread queues its
+        flag-service end; the lifecycle flushes it before it stops."""
+        gid, session = await _start_running(servicer, _config())
+        order = []
+
+        async def join_thread(*_args, **_kwargs):
+            servicer._on_session_game_ended(session)  # the game thread's end hook
+            order.append("joined")
+
+        async def flush(*_args, **_kwargs):
+            order.append("flush")
+
+        async def stop():
+            order.append("stop")
+
+        with (
+            patch.object(session, "join_thread", join_thread),
+            patch.object(servicer.flag_service, "end", lambda game_id: order.append(f"end:{game_id}")),
+            patch.object(servicer.flag_service, "flush", flush),
+            patch.object(servicer.flag_service, "stop", stop),
+        ):
+            async with asyncio.timeout(5.0):
+                await servicer.shutdown()
+
+        assert order == [f"end:{gid}", "joined", "flush", "stop"]
+
+    @pytest.mark.asyncio
     async def test_agent_origin_start_is_shadow_even_when_idle(self, servicer):
         """An AGENT start is ALWAYS shadow, even with NO primary live (idle)."""
         with _NO_THREAD:
@@ -2159,3 +2188,118 @@ class TestFailedStartRetiresSession:
             with _NO_THREAD:
                 ok, game_id = await servicer._start_game_from_config(_shadow_config(), _MockSpan())
         assert ok is True, game_id
+
+
+class _NaturalEndOnlyGame(_HoldGame):
+    """A built game that ignores force_end(): only finish() (its natural end) stops it."""
+
+    def force_end(self, reason=""):
+        pass
+
+    def finish(self):
+        self._done.set()
+
+
+class TestNaturalEndReportsFlagServiceEnd:
+    """A game that ends on its own is ended in the flag service right away, exactly
+    once, not at the next start's sweep or the next 15 s reconcile (UC-053 step 7,
+    FR-135, #1847)."""
+
+    @pytest.fixture
+    def harness(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        games, tasks = [], []
+        game_class = {"cls": _HoldGame}
+
+        def create_game(**_kwargs):
+            games.append(game_class["cls"]())
+            return games[-1]
+
+        def start_in_loop(session):
+            # The real session loop (with its end-of-game finally) as a task on
+            # this loop: a deterministic stand-in for the game thread.
+            clients = MagicMock()
+            clients.connect = AsyncMock()
+            clients.close = AsyncMock()
+            clients.is_connected = True
+            session.clients = clients
+            session.game_running = True
+            tasks.append(asyncio.get_running_loop().create_task(session._run_game_loop_async()))
+
+        monkeypatch.setattr(game_session_mod.GameFactory, "create_game", staticmethod(create_game))
+        monkeypatch.setattr(game_session_mod.GameSession, "start_thread", start_in_loop)
+        return games, tasks, game_class
+
+    @staticmethod
+    async def _wait_for(predicate):
+        for _ in range(200):
+            if predicate():
+                return
+            await asyncio.sleep(0.005)
+        raise AssertionError("condition not reached")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-053", flow="main", steps=[7])
+    async def test_natural_end_ends_the_game_in_the_flag_service_once(self, harness):
+        games, tasks, _cls = harness
+        servicer = GameCoordinatorServicer()
+        with patch.object(servicer.flag_service, "end") as flag_end:
+            ok, game_id = await servicer._start_game_from_config(_config(), _MockSpan())
+            assert ok, game_id
+            await self._wait_for(lambda: games)
+
+            games[0].finish()
+            await asyncio.gather(*tasks)
+
+            # Reported at the end, before any later start or reconcile.
+            assert flag_end.call_args_list == [call(game_id)]
+            # The session stays registered: GetGameState keeps answering ENDED.
+            assert servicer.sessions[game_id].game_state == game_coordinator_pb2.GameState.ENDED
+            assert servicer._flag_service_live_games() == []
+
+            # The next start's ENDED sweep retires it without a second end.
+            ok2, game_id2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+            assert ok2, game_id2
+            assert game_id not in servicer.sessions
+            assert [c for c in flag_end.call_args_list if c.args == (game_id,)] == [call(game_id)]
+
+            await self._wait_for(lambda: len(games) == 2)
+            games[1].finish()
+            await asyncio.gather(*tasks)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-053", flow="main", steps=[7])
+    @pytest.mark.uc("UC-043", flow="A2")
+    async def test_natural_end_during_a_preemption_ends_the_game_once(self, harness):
+        """The shadow's game ends on its own while its preemption joins the game
+        thread; the preemption then retires it. One flag-service end in total."""
+        games, tasks, game_class = harness
+        game_class["cls"] = _NaturalEndOnlyGame
+        servicer = GameCoordinatorServicer()
+        with _caps(concurrent=8, shadow=1), patch.object(servicer.flag_service, "end") as flag_end:
+            ok, gid_s = await servicer._start_game_from_config(_shadow_config(serials=("s1", "s2")), _MockSpan())
+            assert ok, gid_s
+            shadow = servicer.sessions[gid_s]
+            await self._wait_for(lambda: games)
+            await shadow.event_bus.publish(GameEvent.GAME_STARTED, {"game_id": gid_s})
+            thread = _give_blocking_thread(shadow)
+
+            with _NO_THREAD:
+                start = asyncio.create_task(servicer._start_game_from_config(_config(), _MockSpan()))
+                async with asyncio.timeout(2.0):
+                    await thread.entered.wait()
+
+                # Natural end while the preemption's force end joins the thread.
+                games[0].finish()
+                await asyncio.gather(*tasks)
+                assert flag_end.call_args_list == [call(gid_s)]
+
+                thread.release.set()
+                async with asyncio.timeout(2.0):
+                    ok_real, gid_real = await start
+            assert ok_real, gid_real
+            assert gid_s not in servicer.sessions
+            assert [c for c in flag_end.call_args_list if c.args == (gid_s,)] == [call(gid_s)]
+        await asyncio.sleep(0)  # the preemption task's done callback runs
+        assert not servicer._shadow_preemptions

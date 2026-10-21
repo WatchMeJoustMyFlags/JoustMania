@@ -44,7 +44,7 @@ class ControllerEventCallbacks(Protocol):
         """Called when a controller disconnects."""
         ...
 
-    async def on_button(self, serial: str, button: str, is_press: bool) -> None:
+    async def on_button(self, serial: str, button: str, is_press: bool, event_time: float | None = None) -> None:
         """Called when a button event occurs."""
         ...
 
@@ -339,4 +339,6 @@ class ControllerEventLoop:
             button_name = BUTTON_TYPE_NAMES.get(event.button, "unknown")
 
             logger.debug(f"Button event: {serial} {button_name}={'PRESS' if is_press else 'RELEASE'}")
-            await self._callbacks.on_button(serial, button_name, is_press)
+            # Debounce on when the press happened (controller-manager stamp, ms), not when we get to it (UC-012 BR-007).
+            event_time = event.timestamp / 1000 if event.timestamp > 0 else None
+            await self._callbacks.on_button(serial, button_name, is_press, event_time)

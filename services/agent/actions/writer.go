@@ -10,7 +10,7 @@
 //     volume_override, global_difficulty_factor, pacing_profile, tempo_ramp,
 //     auto_rubberband): PUT /interventions/<flag> with scope.game_id.
 //   - Per-player levels and grants (player_sensitivity_factor,
-//     player_handicap_factor; shield_seconds, partial_shield_seconds,
+//     player_handicap_factor; shield_seconds, toughness_boost_seconds,
 //     soft_penalty_action): PUT with scope.game_id + scope.serial. The service
 //     gives every write a fresh variant, so a re-grant is a change the
 //     coordinator applies once (UC-040 BR-012).
@@ -49,8 +49,8 @@ const (
 	flagPlayerSensitivityFactor   = "player_sensitivity_factor"
 	flagPlayerHandicapFactor      = "player_handicap_factor" // #1107 (#1103 MVP action 1)
 	flagShieldSeconds             = "shield_seconds"
-	flagPartialShieldSeconds      = "partial_shield_seconds" // #1129 (#1103 Phase 2)
-	flagSoftPenaltyAction         = "soft_penalty_action"    // #1134 (#1103 Phase 3)
+	flagToughnessBoostSeconds     = "toughness_boost_seconds" // #1129 (#1103 Phase 2)
+	flagSoftPenaltyAction         = "soft_penalty_action"     // #1134 (#1103 Phase 3)
 	flagVolumeOverride            = "volume_override"
 	flagGlobalDifficultyFactor    = "global_difficulty_factor" // #766 F6
 	flagPacingProfile             = "pacing_profile"           // #766 F6
@@ -101,8 +101,8 @@ const (
 	defaultPacingProfile     = "frantic"
 	// defaultTempoRamp is the safe fallback ramp_tempo curve (#1117).
 	defaultTempoRamp = "1.3:8:linear"
-	// defaultPartialShield is the safe fallback partial_shield directive (#1129).
-	defaultPartialShield = "5:2.0"
+	// defaultToughnessBoost is the safe fallback toughness_boost directive (#1129).
+	defaultToughnessBoost = "5:2.0"
 	// defaultSoftPenalty is the safe fallback soft_penalty directive (#1134): the
 	// gentlest, fully-recoverable "warn". Never escalates an unparseable value.
 	defaultSoftPenalty = "warn"
@@ -110,18 +110,18 @@ const (
 	defaultAutoRubberband = "gentle"
 )
 
-// partial_shield / soft_penalty / tempo_ramp bounds mirror the game side's
+// toughness_boost / soft_penalty / tempo_ramp bounds mirror the game side's
 // clamps (lifecycle_handlers.py, games/base.py) and the flag registry, so the
 // writer degrades an out-of-range model value to a safe default instead of
 // sending a write the registry would reject.
 const (
-	partialShieldMaxSeconds = 30.0
-	partialShieldBoostMin   = 1.0
-	partialShieldBoostMax   = 2.0
-	softPenaltyMaxSeconds   = 30.0
-	softPenaltyFactorMin    = 0.5
-	softPenaltyFactorMax    = 1.0
-	tempoRampMaxSeconds     = 15.0 // games/base.py RAMP_TEMPO_MAX_SECONDS (#1840)
+	toughnessBoostMaxSeconds = 30.0
+	toughnessBoostFactorMin  = 1.0
+	toughnessBoostFactorMax  = 2.0
+	softPenaltyMaxSeconds    = 30.0
+	softPenaltyFactorMin     = 0.5
+	softPenaltyFactorMax     = 1.0
+	tempoRampMaxSeconds      = 15.0 // games/base.py RAMP_TEMPO_MAX_SECONDS (#1840)
 )
 
 // validTempoRampCurves is the closed curve vocabulary (mirrors base.py).
@@ -245,8 +245,8 @@ func (w *Writer) write(ctx context.Context, d decision.Decision) error {
 		return w.putPlayer(ctx, d, flagPlayerHandicapFactor, player, w.numOr(d.Value, defaultPlayerHandicap))
 	case decision.InterventionGrantShield:
 		return w.putPlayer(ctx, d, flagShieldSeconds, player, w.numOr(d.Value, defaultShieldSeconds))
-	case decision.InterventionPartialShield: // #1129, shadow-only
-		return w.putPlayer(ctx, d, flagPartialShieldSeconds, player, w.partialShieldOr(d.Value, defaultPartialShield))
+	case decision.InterventionToughnessBoost: // #1129, shadow-only
+		return w.putPlayer(ctx, d, flagToughnessBoostSeconds, player, w.toughnessBoostOr(d.Value, defaultToughnessBoost))
 	case decision.InterventionSoftPenalty: // #1134, shadow-only
 		return w.putPlayer(ctx, d, flagSoftPenaltyAction, player, w.softPenaltyOr(d.Value, defaultSoftPenalty))
 	}
@@ -278,14 +278,14 @@ func (w *Writer) post(ctx context.Context, d decision.Decision, flag string, pay
 	return err
 }
 
-// partialShieldOr validates a partial_shield directive "<seconds>" or
+// toughnessBoostOr validates a toughness_boost directive "<seconds>" or
 // "<seconds>:<boost>" (#1129) and returns it, or def when v is empty/malformed/
 // out-of-bounds. Defensive sibling of tempoRampOr: the game-side parser
-// (lifecycle_handlers.parse_partial_shield_value) independently re-validates and
+// (lifecycle_handlers.parse_toughness_boost_value) independently re-validates and
 // no-ops on garbage, but validating here keeps a malformed LLM value from ever
 // reaching the flag file. Bounds mirror the game side: seconds > 0 (capped),
 // boost in [1.0, 2.0] (default 2.0 when omitted).
-func (w *Writer) partialShieldOr(v, def string) string {
+func (w *Writer) toughnessBoostOr(v, def string) string {
 	if v == "" {
 		return def
 	}
@@ -295,13 +295,13 @@ func (w *Writer) partialShieldOr(v, def string) string {
 		return def
 	}
 	seconds, serr := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-	if serr != nil || seconds <= 0 || seconds > partialShieldMaxSeconds {
+	if serr != nil || seconds <= 0 || seconds > toughnessBoostMaxSeconds {
 		w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
 		return def
 	}
 	if len(parts) == 2 {
 		boost, berr := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-		if berr != nil || boost < partialShieldBoostMin || boost > partialShieldBoostMax {
+		if berr != nil || boost < toughnessBoostFactorMin || boost > toughnessBoostFactorMax {
 			w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
 			return def
 		}
@@ -311,7 +311,7 @@ func (w *Writer) partialShieldOr(v, def string) string {
 
 // softPenaltyOr validates a soft_penalty directive "warn" | "tighten" |
 // "tighten:<seconds>:<factor>" (#1134) and returns it, or def ("warn") when v is
-// empty/malformed/out-of-bounds. Defensive sibling of partialShieldOr: the
+// empty/malformed/out-of-bounds. Defensive sibling of toughnessBoostOr: the
 // game-side parser (lifecycle_handlers.parse_soft_penalty_value) independently
 // re-validates, but validating here keeps a malformed LLM value from ever
 // reaching the flag file and — critically — never lets garbage escalate into a

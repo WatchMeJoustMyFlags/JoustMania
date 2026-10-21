@@ -17,8 +17,8 @@ coordinator's next check does too (an eliminate_player event appended to the gam
 the victim stays alive). The clamp of step 3 is not exercised here.
 
 Steps 1 to 4 in full (both ends of the ladder, voice feedback) are the LOBBY
-journey ``test_tc006_agent_ladder.py`` (#1598); steps 6 and 7 stay in
-``tests/integration/test_intervention_flow.py``. Deviation from TC-006: the host
+journey ``test_tc006_agent_ladder.py`` (#1598); steps 6 and 7 are the
+coordinator half of the test here (#1422). Deviation from TC-006: the host
 restricts before the game starts and then plays in it (the menu's admin mode
 runs in the lobby only), so the host's controller is one of the four players.
 """
@@ -26,6 +26,7 @@ runs in the lobby only), so the host's controller is one of the four players.
 import pytest
 from openfeature.evaluation_context import EvaluationContext
 
+from lib.colors import Colors
 from proto import controller_manager_mock_pb2, game_coordinator_pb2
 from tests.integration.flag_service import append_event, variant_value
 from tests.integration.flag_service import default as flag_service_default
@@ -35,9 +36,11 @@ from tests.integration.helpers import (
     enter_admin_mode,
     exit_admin_mode,
     flagd_probe_client,
+    get_controller_color,
     get_game_client,
     get_mock_client,
     press_admin_button,
+    select_admin_option,
 )
 from tests.service.agent_flow import (
     AGENT,
@@ -95,8 +98,12 @@ def _gated_count(stack) -> float:
 async def _restrict_from_controller(stack, mock_client, host: str) -> None:
     """TC-006 steps 1 to 4: admin combo, agent_control, Start twice; flagd serves none."""
     await enter_admin_mode(mock_client, host)
-    for _ in range(3):  # Move x3: agent_control (index 0 -> 3)
-        await press_admin_button(mock_client, host, _Button.MOVE)
+    # Move x3 reaches agent_control (index 0 -> 3); the LED colour confirms it (#1845).
+    await select_admin_option(
+        lambda: press_admin_button(mock_client, host, _Button.MOVE),
+        lambda: get_controller_color(mock_client, host),
+        Colors.Purple.value,
+    )
     for level in ("ambient", "none"):
         await press_admin_button(mock_client, host, _Button.START)
         assert await async_poll_until(
@@ -115,6 +122,8 @@ async def _restrict_from_controller(stack, mock_client, host: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A14", tc="TC-006")
 @pytest.mark.uc("UC-013", flow="main", steps=[5], tc="TC-006")
+@pytest.mark.uc("UC-045", flow="A2", tc="TC-006")
+@pytest.mark.uc("UC-040", flow="A22", tc="TC-006")
 @pytest.mark.usefixtures("flag_service")
 async def test_agent_makes_no_remote_call_after_host_restricts_it(fresh_stack):
     """With interventions_allowed=none set by the host from the controller, the agent
@@ -163,10 +172,12 @@ async def test_agent_makes_no_remote_call_after_host_restricts_it(fresh_stack):
             assert not applied, f"unblocked agent_intervention under {FLAG}=none: {applied}"
             assert _persisted_admin_variant() == "none"
 
-            # Step 5, coordinator half: an intervention that does reach the coordinator
-            # (written to its source like the agent would) is rejected by its own check.
+            # Step 6: an intervention that does reach the coordinator (appended to its
+            # source like the agent would) ...
             victim = serials[1]
+            assert await _victim_alive(game_client, game_id, victim), "the victim was not alive before the event"
             append_event("eliminate_player", game_id, {"serial": victim})
+            # Step 7: ... is rejected by the coordinator's own check and the victim stays alive.
             assert await async_poll_until(lambda: _blocked_not_allowed(collector, victim), timeout=15.0), (
                 "no blocked/not_allowed agent_intervention for eliminate_player under none: "
                 f"{[e.data for e in collector.get_events('agent_intervention')]}"

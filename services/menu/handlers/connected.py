@@ -40,25 +40,26 @@ class ConnectedHandler:
         """Set the state manager reference."""
         self._state_manager = manager
 
-    async def handle_button(self, serial: str, button: str) -> None:
+    async def handle_button(self, serial: str, button: str, event_time: float | None = None) -> None:
         """
         Handle a button press event.
 
         Args:
             serial: Controller serial number
             button: Button name
+            event_time: When the press happened (seconds), for debouncing; None = processing time
         """
         if self._state_manager is None:
             logger.error("StateManager not set")
             return
 
         if button == "trigger":
-            if not self._debouncer.should_process(serial, "trigger"):
+            if not self._debouncer.should_process(serial, "trigger", event_time=event_time):
                 return
             await self._handle_trigger(serial)
 
         elif button == "select":
-            if not self._debouncer.should_process(serial, "select"):
+            if not self._debouncer.should_process(serial, "select", event_time=event_time):
                 return
             await self._handle_select(serial)
 

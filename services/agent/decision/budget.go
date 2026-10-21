@@ -56,7 +56,7 @@ func (l *Loop) admitOrHold(snapshot flags.Snapshot, d Decision, now time.Time, c
 // keeps room for (BR-015).
 var protectiveInterventions = []string{
 	InterventionGrantShield,
-	InterventionPartialShield,
+	InterventionToughnessBoost,
 	InterventionAdjustPlayerSensitivity,
 	InterventionSetPlayerHandicap,
 }

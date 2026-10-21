@@ -34,9 +34,22 @@ class ActiveEffect:
 SHIELD_BLINK_WINDOW_S = 1.0  # last second blinks
 SHIELD_BLINK_HZ = 4.0
 SHIELD_FADE_FLOOR = 0.30  # full shield fades 100% -> 30% before the blink window
-PARTIAL_SHIELD_BREATH_HZ = 0.5
-PARTIAL_SHIELD_MIN = 0.10
-PARTIAL_SHIELD_MAX = 0.50
+TOUGHNESS_BOOST_BREATH_HZ = 0.5
+TOUGHNESS_BOOST_MIN = 0.10
+TOUGHNESS_BOOST_MAX = 0.50
+
+# Shield charge (#1837, UC-040 BR-021): the held, not yet activated shield breathes the
+# player's colour; the activation swell is a rumble ramp. Pure functions, like shield_frame.
+CHARGE_BREATH_HZ = 0.5
+CHARGE_MIN = 0.60
+CHARGE_MAX = 1.00
+CHARGE_TICK_MS = 100
+CHARGE_TICK_INTENSITY = 120
+CHARGE_MAX_DURATION_MS = 120_000  # the game re-sends while the charge is held
+CHARGE_RENDER_INTERVAL_S = 0.1  # 10 Hz is plenty for a 0.5 Hz breath (battery)
+SWELL_MS = 600
+SWELL_PEAK = 180
+SWELL_STEP_S = 0.05
 
 
 def _scale(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
@@ -44,7 +57,7 @@ def _scale(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
 
 
 def shield_frame(
-    elapsed_s: float, total_s: float, color: tuple[int, int, int], partial: bool = False
+    elapsed_s: float, total_s: float, color: tuple[int, int, int], toughness_boost: bool = False
 ) -> tuple[int, int, int] | None:
     """LED colour of a shield effect ``elapsed_s`` into a ``total_s`` shield.
 
@@ -54,7 +67,7 @@ def shield_frame(
     - Full shield (BR-008): brightness falls linearly 100% -> 30% over the first
       ``total_s - 1`` seconds, then the last second blinks at 4 Hz between full
       colour and off. A shield of 1 s or less blinks for its whole duration.
-    - Partial shield (BR-009): breathes at 0.5 Hz between 10% and 50% until the
+    - Toughness boost (BR-009): breathes at 0.5 Hz between 10% and 50% until the
       last second, which blinks at 4 Hz between 50% and off.
     """
     if elapsed_s >= total_s:
@@ -66,13 +79,29 @@ def shield_frame(
         phase = ((elapsed_s - blink_start) * SHIELD_BLINK_HZ) % 1.0
         if phase >= 0.5:
             return (0, 0, 0)
-        return _scale(color, PARTIAL_SHIELD_MAX if partial else 1.0)
-    if partial:
+        return _scale(color, TOUGHNESS_BOOST_MAX if toughness_boost else 1.0)
+    if toughness_boost:
         # Sine breathing that starts at the bottom of the range: 10% -> 50% -> 10%.
-        wave = (1 - math.cos(2 * math.pi * PARTIAL_SHIELD_BREATH_HZ * elapsed_s)) / 2
-        return _scale(color, PARTIAL_SHIELD_MIN + (PARTIAL_SHIELD_MAX - PARTIAL_SHIELD_MIN) * wave)
+        wave = (1 - math.cos(2 * math.pi * TOUGHNESS_BOOST_BREATH_HZ * elapsed_s)) / 2
+        return _scale(color, TOUGHNESS_BOOST_MIN + (TOUGHNESS_BOOST_MAX - TOUGHNESS_BOOST_MIN) * wave)
     fraction = elapsed_s / blink_start  # blink_start > 0 here
     return _scale(color, 1.0 - (1.0 - SHIELD_FADE_FLOOR) * fraction)
+
+
+def charge_frame(elapsed_s: float, color: tuple[int, int, int]) -> tuple[int, int, int]:
+    """LED colour of a shield charge ``elapsed_s`` after it started (UC-040 BR-021).
+
+    Breathes the colour between 60% and 100% at 0.5 Hz (a 2 s period), starting at 60%.
+    """
+    wave = (1 - math.cos(2 * math.pi * CHARGE_BREATH_HZ * max(0.0, elapsed_s))) / 2
+    return _scale(color, CHARGE_MIN + (CHARGE_MAX - CHARGE_MIN) * wave)
+
+
+def swell_intensity(elapsed_s: float) -> int:
+    """Rumble of the activation swell: 0 -> 180 -> 0 over 600 ms (a half sine), 0 outside it."""
+    if elapsed_s < 0 or elapsed_s >= SWELL_MS / 1000.0:
+        return 0
+    return int(round(SWELL_PEAK * math.sin(math.pi * elapsed_s / (SWELL_MS / 1000.0))))
 
 
 class ControllerEffectsBase(ABC):

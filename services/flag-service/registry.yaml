@@ -34,7 +34,7 @@ flags:
   - {set: interventions, key: player_sensitivity_factor, kind: level, scope: [game+serial], bounds: {range: [0.5, 2.0]}}
   - {set: interventions, key: player_handicap_factor, kind: level, scope: [game+serial], bounds: {range: [0.5, 2.0]}}
   - {set: interventions, key: shield_seconds, kind: grant, scope: [game+serial], bounds: {range: [1, 10]}}
-  - {set: interventions, key: partial_shield_seconds, kind: grant, scope: [game+serial], bounds: {pattern: [["float 0.1 30"], ["float 0.1 30", "float 1.0 2.0"]]}}
+  - {set: interventions, key: toughness_boost_seconds, kind: grant, scope: [game+serial], bounds: {pattern: [["float 0.1 30"], ["float 0.1 30", "float 1.0 2.0"]]}}
   - {set: interventions, key: soft_penalty_action, kind: grant, scope: [game+serial], bounds: {pattern: [["enum warn|tighten"], ["enum tighten", "float 0.1 30", "float 0.5 1.0"]]}}
   - {set: interventions, key: eliminate_player, kind: event, scope: [game], bounds: {payload: {serial: serial}}}
   - {set: interventions, key: revive_player, kind: event, scope: [game], bounds: {payload: {serial: serial}}}
@@ -82,6 +82,7 @@ flags:
   - {set: agent, key: experiment_completed_grace_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 600], integer: true}}
   - {set: agent, key: experiment_proposer_enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
   # Agent tuning migrated from env (#1788, flags.md §15): operator-written, never by the agent.
+  - {set: agent, key: inference.backend, kind: overlay, scope: [stack], persist: true, bounds: {variants: [stub, claude]}}
   - {set: agent, key: inference.model, kind: overlay, scope: [stack], bounds: {free_string: true}}
   - {set: agent, key: inference.effort, kind: overlay, scope: [stack]}
   - {set: agent, key: inference.timeout_seconds, kind: overlay, scope: [stack], bounds: {range: [30, 120], integer: true}}

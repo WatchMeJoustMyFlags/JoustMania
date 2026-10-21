@@ -189,7 +189,7 @@ Unknown threshold or intensity leaves `danger` empty. Session-level:
 elevated or near_threshold). They are in the narrative (so Claude and OpenAI
 read them, and the system prompt explains them) and in the digest.
 
-`shielded` marks a player a `grant_shield` / `partial_shield` was dispatched to
+`shielded` marks a player a `grant_shield` / `toughness_boost` was dispatched to
 within the last 10 s (the longest shield, read from the timeline); the
 details-stage target description then says another shield would be wasted.
 

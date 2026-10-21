@@ -139,13 +139,13 @@ func TestRampTempoIsShadowOnly(t *testing.T) {
 	}
 }
 
-// TestPartialShieldIsShadowOnly is the load-bearing gating proof for #1129 (#1103
-// Phase 2): partial_shield MUST appear ONLY in the shadow_experimental variant of
+// TestToughnessBoostIsShadowOnly is the load-bearing gating proof for #1129 (#1103
+// Phase 2): toughness_boost MUST appear ONLY in the shadow_experimental variant of
 // interventions_allowed and MUST be absent from every real-facing variant
 // (ambient/standard/full). The allow-list is the enforcement gate, so absence from
-// the real variants means partial_shield is rejected for real games by
+// the real variants means toughness_boost is rejected for real games by
 // construction. Asserted on BOTH the production and CI flagd agent configs.
-func TestPartialShieldIsShadowOnly(t *testing.T) {
+func TestToughnessBoostIsShadowOnly(t *testing.T) {
 	paths := []string{
 		filepath.Join("..", "..", "flagd", "agent.json"),
 		filepath.Join("..", "..", "flagd", "ci", "agent.json"),
@@ -158,8 +158,8 @@ func TestPartialShieldIsShadowOnly(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s: missing shadow_experimental variant", path)
 			}
-			if !contains(shadow, InterventionPartialShield) {
-				t.Fatalf("%s: shadow_experimental must include %q", path, InterventionPartialShield)
+			if !contains(shadow, InterventionToughnessBoost) {
+				t.Fatalf("%s: shadow_experimental must include %q", path, InterventionToughnessBoost)
 			}
 
 			for _, realVariant := range []string{"ambient", "standard", "full"} {
@@ -167,8 +167,8 @@ func TestPartialShieldIsShadowOnly(t *testing.T) {
 				if !ok {
 					t.Fatalf("%s: missing expected real variant %q", path, realVariant)
 				}
-				if contains(list, InterventionPartialShield) {
-					t.Fatalf("%s: real variant %q must NOT include %q (shadow-only)", path, realVariant, InterventionPartialShield)
+				if contains(list, InterventionToughnessBoost) {
+					t.Fatalf("%s: real variant %q must NOT include %q (shadow-only)", path, realVariant, InterventionToughnessBoost)
 				}
 			}
 		})
@@ -242,6 +242,41 @@ func TestAutoRubberbandIsShadowOnly(t *testing.T) {
 				}
 				if contains(list, InterventionAutoRubberband) {
 					t.Fatalf("%s: real variant %q must NOT include %q (shadow-only)", path, realVariant, InterventionAutoRubberband)
+				}
+			}
+		})
+	}
+}
+
+// TestAllowListVariantsOnlyNameKnownInterventions pins the rename contract of
+// #1838: every id in every variant of interventions_allowed (production and CI
+// flag files) is a known Intervention* constant. A renamed or retired id left
+// behind in a flag file would otherwise become a live option with no writer
+// case, no description and no game-side implementation (there is deliberately
+// no alias table).
+// UC: UC-040 A16
+func TestAllowListVariantsOnlyNameKnownInterventions(t *testing.T) {
+	known := map[string]bool{}
+	for _, id := range []string{
+		InterventionPlayAudioCue, InterventionSendControllerEffect, InterventionAdjustVolume,
+		InterventionAdjustMusicTempo, InterventionAdjustPlayerSensitivity, InterventionSetPlayerHandicap,
+		InterventionGrantShield, InterventionToughnessBoost, InterventionSoftPenalty,
+		InterventionAdjustGlobalSensitivity, InterventionAdjustGlobalDifficulty, InterventionSetPacingProfile,
+		InterventionRampTempo, InterventionAutoRubberband, InterventionEliminatePlayer,
+		InterventionRevivePlayer, InterventionEndGame, InterventionNoop,
+	} {
+		known[id] = true
+	}
+	for _, path := range []string{
+		filepath.Join("..", "..", "flagd", "agent.json"),
+		filepath.Join("..", "..", "flagd", "ci", "agent.json"),
+	} {
+		t.Run(path, func(t *testing.T) {
+			for variant, ids := range readInterventionsAllowed(t, path) {
+				for _, id := range ids {
+					if !known[id] {
+						t.Errorf("%s: variant %q lists %q, which is not a known Intervention* constant", path, variant, id)
+					}
 				}
 			}
 		})

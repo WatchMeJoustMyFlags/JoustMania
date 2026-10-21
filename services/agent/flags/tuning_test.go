@@ -106,3 +106,27 @@ func TestTuning_ReadAtUseTime(t *testing.T) {
 		t.Fatalf("cooldown = %v, want 300s (no caching)", got)
 	}
 }
+
+// UC: UC-042 Pre-2
+func TestInferenceBackend_FlagWinsThenFallback(t *testing.T) {
+	ctx := context.Background()
+	// The flag wins over the env-derived fallback, normalised (case, spaces).
+	f := New(stubEvaluator{strings: map[string]string{keyInferenceBackend: " Claude "}}, nil)
+	if got := f.InferenceBackend(ctx, "stub"); got != "claude" {
+		t.Errorf("flag claude, env stub = %q, want claude (the flag always wins)", got)
+	}
+	f = New(stubEvaluator{strings: map[string]string{keyInferenceBackend: "stub"}}, nil)
+	if got := f.InferenceBackend(ctx, "claude"); got != "stub" {
+		t.Errorf("flag stub, env claude = %q, want stub (FR-151)", got)
+	}
+	// Unresolvable (flagd down / flag missing) -> the caller's fallback.
+	down := New(stubEvaluator{errs: map[string]error{keyInferenceBackend: errors.New("PROVIDER_NOT_READY")}}, nil)
+	if got := down.InferenceBackend(ctx, "claude"); got != "claude" {
+		t.Errorf("flagd down = %q, want the env fallback claude", got)
+	}
+	// A blank flag value also falls back.
+	blank := New(stubEvaluator{strings: map[string]string{keyInferenceBackend: " "}}, nil)
+	if got := blank.InferenceBackend(ctx, "stub"); got != "stub" {
+		t.Errorf("blank = %q, want fallback stub", got)
+	}
+}

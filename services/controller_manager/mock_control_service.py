@@ -228,6 +228,9 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
 
             # Set button state
             self.backend.controllers[serial][button_key] = request.pressed
+            if button_key == ButtonKey.TRIGGER and request.pressed:
+                # A level for polls, plus a latch so a short press reaches a game frame (#1837).
+                self.backend.latch_trigger_press(serial)
 
             logger.info(f"Mock: Set {button_key} on {serial} to {request.pressed}")
             return controller_manager_mock_pb2.ButtonResponse(success=True, error="")
@@ -247,6 +250,7 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             controller = self.backend.controllers[serial]
             controller[ButtonKey.MOVE] = False
             controller[ButtonKey.TRIGGER] = False
+            controller["trigger_latched"] = False
             controller[ButtonKey.PS] = False
             controller[ButtonKey.SELECT] = False
             controller[ButtonKey.START] = False

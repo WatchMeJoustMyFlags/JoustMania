@@ -57,7 +57,7 @@ From the caller:
 What the script accepts (anything else is `REFUSED`, exit 2): `make` with targets `pr-gates`, `lint`,
 `format-check`, `check`, `specs-check`, `test`, `test-dev`, `test-pulled`, `test-contract`,
 `test-contract-flagd`, `test-integration-shard-check`, `test-service*`, `test-integration*` and only the
-variables `TEST SERVICE BASE PR_LABELS E2E_SHARD IMAGE_TAG PYTEST_EXTRA`; `uv run --package <member>
+variables `TEST SERVICE BASE PR_LABELS E2E_SHARD IMAGE_TAG PYTEST_EXTRA SERVICE_TESTS` (`SERVICE_TESTS` only with `test-service*`: paths under `tests/service`); `uv run --package <member>
 [--extra <x>] pytest ...`; `go test|vet` and `cargo test|clippy` with `--dir`; `scripts/tests/test-*.sh`.
 The dashboard runs only through `make pr-gates SERVICE=dashboard`. The full rules are in the script header.
 Threat model: the script guards against agent and prompt mistakes, not untrusted PR code; every allowed form

@@ -15,7 +15,8 @@
     "decision.claude.model": "haiku",
     "decision.claude.timeout_ms": "default",
     "decision.jev.timeout_ms": "default",
-    "llm.eligible_game_kinds": "real_only"
+    "llm.eligible_game_kinds": "real_only",
+    "inference.backend": "claude"
   },
   "reset_also": {
     "decision.jev.base_url": "default",
@@ -37,7 +38,7 @@
   "perceptible_interventions": [
     "play_audio_cue",
     "grant_shield",
-    "partial_shield",
+    "toughness_boost",
     "adjust_music_tempo",
     "ramp_tempo",
     "eliminate_player",

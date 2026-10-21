@@ -33,10 +33,11 @@ services:
   # the read-only baseline flagd serves through it (#959: one directory), and
   # keep its admin state in a CI-only state file (re-review N4: one state file
   # per stack, so a test or demo stack never reads the production admin values).
-  # !override replaces the base mount list.
+  # !override replaces the base mount list, so the registry mount (#1838) is repeated here.
   flag-service:
     volumes: !override
       - ./services/flagd/ci:/etc/flagd:ro
+      - ./services/flag-service/registry.yaml:/etc/flag-service/registry.yaml:ro
       - flag-service-state:/var/lib/flag-service
     environment:
       - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin-ci.json

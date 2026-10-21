@@ -24,7 +24,7 @@ see [Fallback: Bluetooth down](#fallback-bluetooth-down).
 | Backend | Role on stage | How it is selected |
 |---|---|---|
 | **Jev** (TypeSafe, `jev-latest`) | The **main in-game backend**: a gated two-stage round, about 0.22-0.34 s for a "no action" round, 0.47-0.57 s for an act round | `agent-backend.sh jev` (flag `decision.backend`) |
-| **Claude** | The **backup backend** in game (one manual flip, no automatic jev -> claude chain), and the **post-game summary** (retro; the proposer belongs to the experiments act and stays off) | backup: `agent-backend.sh claude`; summary: `AGENT_INFERENCE_BACKEND=claude` (env, at agent start) |
+| **Claude** | The **backup backend** in game (one manual flip, no automatic jev -> claude chain), and the **post-game summary** (retro; the proposer belongs to the experiments act and stays off) | backup: `agent-backend.sh claude`; summary: flag `inference.backend=claude` (in the stage baseline, applied by `talk-stage.sh`; needs `ANTHROPIC_API_KEY`) |
 | **rules** | The **automatic floor**: any remote failure (no key, timeout, error, invalid answer, budget) falls back to rules in the same cycle; the game never waits | always; also `agent-backend.sh rules` |
 
 Every command below was checked against the code on `main`. Anything that
@@ -102,17 +102,16 @@ push to `main` cannot change the stage images:
 IMAGE_TAG=<the tag you rehearsed with>  # latest while rehearsing; must contain #1284 and #1288
 JEV_API_KEY=...                        # Jev, the main in-game backend
 ANTHROPIC_API_KEY=...                  # Claude: in-game backup AND the post-game summary
-AGENT_INFERENCE_BACKEND=claude         # post-game summary (retro) on Claude; default "stub" = capture only
 # DECISION_OPENAI_API_KEY=...          # only for the optional second-vendor beat (6b)
 # AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30 # optional ceiling on the budget flag (can only lower it), see "Budget"
 ```
 
-The agent reads all of these **once at startup**. Changing one means
+The agent reads all of these **once at startup**. (The post-game summary backend is no longer here: it is the flag `inference.backend`, `claude` in the stage baseline, #1810; `AGENT_INFERENCE_BACKEND` is only its fallback while flagd is down.) Changing one means
 recreating the agent:
 `./scripts/setup/joustmania-compose.sh up -d agent` (use the
 dry-run `-f` files and profiles on the rehearsal stack). With
-`AGENT_INFERENCE_BACKEND=claude` but no `ANTHROPIC_API_KEY` the agent logs
-`AGENT_INFERENCE_BACKEND=claude but ANTHROPIC_API_KEY is empty` and the summary
+the flag `inference.backend=claude` but no `ANTHROPIC_API_KEY` the agent logs
+`inference.backend=claude but ANTHROPIC_API_KEY is empty` (once per change) and the summary
 stays capture-only.
 
 Jev needs only `JEV_API_KEY`: `decision.jev.base_url` defaults to
@@ -468,7 +467,7 @@ The infra loop is not gated by the `enabled` kill switch, only by
       script removes it when the `python-hid` profile is off; by hand:
       `docker rm -f joustmania-python-hid`.
 - [ ] `.env.local` holds `JEV_API_KEY`, `ANTHROPIC_API_KEY`,
-      `AGENT_INFERENCE_BACKEND=claude`, `IMAGE_TAG` (pinned to the rehearsed
+      `IMAGE_TAG` (pinned to the rehearsed
       tag); `DECISION_OPENAI_API_KEY` only if beat 6b stays in. Nothing in
       `.env` (`git diff .env` is empty).
 - [ ] Both keys have budget/credit. In `services/agent`:
@@ -510,7 +509,7 @@ The infra loop is not gated by the `enabled` kill switch, only by
       proves success: the log `agent.llm.retro_captured` is written before
       the model call).
 - [ ] Back to baseline, then `./scripts/talk-preflight.sh`: no FAIL, and no
-      WARN on the budget or `AGENT_INFERENCE_BACKEND`.
+      WARN on the budget, and `inference.backend = claude` passes.
 
 ### T-5min
 
@@ -591,9 +590,9 @@ both thresholds (`default` and Jev's `gate`), capture `on`, `min_interval_ms`
 present). It
 checks the budget (the flag's value ≥ 30, i.e. `stage`, and that a set env ceiling is not below 30),
 that `JEV_API_KEY` and `ANTHROPIC_API_KEY` are present (presence only) and that
-`AGENT_INFERENCE_BACKEND=claude` (WARN otherwise: beat 8 shows a capture-only
-retro). It FAILs when the resolved allow-list holds no perceptible
-intervention (`play_audio_cue`, `grant_shield`, `partial_shield`,
+the stage baseline `inference.backend = claude` (FAIL otherwise: beat 8 shows a capture-only
+retro; the `AGENT_INFERENCE_BACKEND=claude` env is only a WARN fallback check). It FAILs when the resolved allow-list holds no perceptible
+intervention (`play_audio_cue`, `grant_shield`, `toughness_boost`,
 `adjust_music_tempo`, `ramp_tempo`, `eliminate_player`, `revive_player`,
 `end_game`) and when the agent's audio cue (`defaultAudioCue` in
 `services/agent/actions/writer.go`, `agent_cue`) does not resolve to a file in
@@ -637,7 +636,7 @@ first step above prevents that; the pre-flight WARN names the persisted backend.
 | Jev never acts in beat 2 | The game is calm (gate p_yes below 0.6) | `jev.gate.p_yes` on the stage-1 chat span | Push the players to the edge / let eliminations pile up (mock: `demo_driver.py --scenario death_cascade`); if `jev-latest` changed, `backend.sh jev pinned`. Do not lower the bar on stage unless you say why |
 | `held` never appears in 3a | No open gate during the beat (calm play gives `noop`, not `held`) | `decide.outcome` on recent rows | Keep players near the threshold; narrate the evaluation event of a captured held trace |
 | Beat 8: no `agent.llm.retro` span at all | The budget was full at game end: the retro is gated before any span is created | `docker compose logs agent \| grep agent.llm.retro_gated` (`fallback_reason=llm_budget_exhausted`) | `setflag agent llm.max_requests_per_minute stage` (an env ceiling below 30 must be raised or unset first); show the summary of an earlier game or a captured trace |
-| Beat 8: `agent.llm.retro` with `inference.used=none` | `inference.fallback_reason`: `no_backend_available` = `AGENT_INFERENCE_BACKEND` not `claude` (or the key empty); `agent_disabled` = the kill switch was off when the game ended; `llm_not_eligible` = not a real game | the retro span tags; preflight `AGENT_INFERENCE_BACKEND` line | Env: fix `.env.local`, recreate the agent (before the talk only). Otherwise show the summary of an earlier game |
+| Beat 8: `agent.llm.retro` with `inference.used=none` | `inference.fallback_reason`: `no_backend_available` = `inference.backend` not `claude` (or the key empty); `agent_disabled` = the kill switch was off when the game ended; `llm_not_eligible` = not a real game | the retro span tags; preflight `inference.backend` line | Flag: `./scripts/talk-stage.sh reset` (key missing: fix `.env.local`, recreate the agent, before the talk only). Otherwise show the summary of an earlier game |
 | Beat 8: `inference.used=claude` but `llm.retro.parse_ok=false` | The model call failed (timeout, HTTP error, refusal) or the reply did not decode | `llm.infer.error` / `error.type` on the span (status error); log `agent.llm.retro_failed` | Check the uplink (beat 7 option A restored?) and Anthropic credit; show the summary of an earlier game |
 | Beat 8: the summary takes too long | The retro model call is slow (default Opus, effort medium) | `llm.retro.latency_ms` from rehearsal | Show the summary of the game that ended earlier; for the next talk set the `inference.model` agent flag to a faster model through the flag service (#1788; the `AGENT_INFERENCE_MODEL` env var is only a fallback now) (**verify in rehearsal**) |
 | Vendor budget / credit exhausted (HTTP 429 / 402) | Account limit | Jaeger: `fallback_reason=error`, `error.type` | Switch to the other backend (`backend.sh jev` / `claude`); the fallback itself is a talking point |

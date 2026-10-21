@@ -177,6 +177,7 @@ class ServiceStack:
             self.fake_github.start()
         plane = self.flag_plane
         plane.start()
+        self._seed_inference_overlay()
         self._ports[("flag-service", FLAG_SERVICE_HTTP_PORT)] = plane.http_port
         self._ports[("flagd", 8013)] = plane.flagd_eval_port
         self._ports[("flagd", 8015)] = plane.flagd_sync_port
@@ -234,8 +235,27 @@ class ServiceStack:
         """The Jev decide backend's key: the fake's dummy key, or none (UC-044 A1)."""
         return {"JEV_API_KEY": FAKE_JEV_API_KEY} if self.fake_jev is not None else {}
 
+    def _seed_inference_overlay(self) -> None:
+        """Select the fake Claude as the text backend: the ``inference.backend=claude`` overlay.
+
+        The flag wins over ``AGENT_INFERENCE_BACKEND`` (FR-151, #1810), so the env alone would
+        leave the agent on the flag's ``stub`` default. Written before the agent starts, so the
+        first game end already sees it. The key and base URL (the env ceilings) stay in the env.
+        """
+        if self.fake_claude is None:
+            return
+        from tests.integration.flag_service import FlagService
+
+        FlagService(self.flag_plane.flag_service_url).put(
+            "agent", "inference.backend", variant="claude", writer="service-harness"
+        )
+
     def _inference_env(self) -> dict[str, str]:
-        """The agent's retro/proposer text backend: the fake Claude, or the stub when there is none."""
+        """The agent's text backend ceilings (the fake Claude's key and URL), or none for the stub.
+
+        The backend itself is the ``inference.backend`` overlay (``_seed_inference_overlay``);
+        ``AGENT_INFERENCE_BACKEND`` is kept as the deprecated fallback only.
+        """
         if self.fake_claude is None:
             return {}
         return {

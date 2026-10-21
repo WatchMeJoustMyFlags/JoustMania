@@ -532,6 +532,12 @@ class MultiplexerBackend(ControllerBackend):
         if consume is not None:
             consume(serial)
 
+    def consume_trigger_press(self, serial: str) -> bool:
+        """Route the per-game-frame trigger latch read to the owning adapter (#1837)."""
+        adapter = self._serial_to_adapter.get(serial)
+        consume = getattr(adapter, "consume_trigger_press", None)
+        return consume(serial) is True if consume is not None else False
+
     # -- Motion patterns (UC-046, #1258): only the MockAdapter implements them --
 
     def pattern_serials(self) -> set[str]:

@@ -121,7 +121,7 @@ type PlayerState struct {
 	ThresholdMargin *float64 `json:"threshold_margin,omitempty"`
 	// Danger is DangerSafe, DangerElevated or DangerNearThreshold; "" unknown.
 	Danger string `json:"danger,omitempty"`
-	// Shielded is true when a grant_shield / partial_shield was dispatched to
+	// Shielded is true when a grant_shield / toughness_boost was dispatched to
 	// this player within the last ShieldWindow (the longest shield), read from
 	// the timeline. Danger ignores shields (see danger.go).
 	Shielded bool `json:"shielded,omitempty"`

@@ -207,6 +207,13 @@ class GameSession:
         # it (UC-040 BR-018, #1250). None until the thread runs.
         self.game_loop: asyncio.AbstractEventLoop | None = None
         self.game_running = False
+        # Called once from the game thread when its game has ended (natural end,
+        # error or force end), after the state reached ENDED. The servicer queues
+        # the flag-service end here (UC-053 step 7, #1847). Must not block.
+        self.on_game_ended: Callable[[GameSession], None] | None = None
+        # True once the servicer queued this game's flag-service end; guarded by
+        # the servicer's _sessions_lock so the end is queued exactly once (#1847).
+        self.flag_service_end_queued = False
 
         # Protects game_state, current_game, players for this session.
         self._state_lock = threading.Lock()
@@ -711,6 +718,14 @@ class GameSession:
                     # one — otherwise it would occupy a concurrency slot
                     # forever (#775 natural-end retirement relies on this).
                     self.game_state = game_coordinator_pb2.GameState.ENDED
+
+                # Report the end now, not at the next start's sweep or the next
+                # reconcile (UC-053 step 7, #1847). Outside _state_lock.
+                if self.on_game_ended is not None:
+                    try:
+                        self.on_game_ended(self)
+                    except Exception as e:
+                        logger.warning(f"Game-ended hook failed for game {self.game_id}: {e}")
 
                 # The game is over: its mode series goes now, not at retire, so
                 # it never reads 1 between games (retire removes it again).

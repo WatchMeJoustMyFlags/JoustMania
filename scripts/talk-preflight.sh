@@ -28,8 +28,9 @@
 #      flag-service restart or a reboot brings the persisted backend back
 #   4. the agent container env (presence only; key values are never printed):
 #      JEV_API_KEY (Jev, the main in-game backend) and ANTHROPIC_API_KEY (Claude:
-#      in-game backup + post-game summary) present, AGENT_INFERENCE_BACKEND=claude
-#      (the closing summary beat), and the shared LLM budget >= 30/min (the
+#      in-game backup + post-game summary) present, the AGENT_INFERENCE_BACKEND=claude
+#      fallback (WARN; the effective inference.backend flag is checked in 3),
+#      and the shared LLM budget >= 30/min (the
 #      flag's value, capped by the AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling, #1788)
 #   4b. the agent's audio cue (defaultAudioCue in services/agent/actions/writer.go)
 #      resolves to a file in the RUNNING audio container (UC-070 BR-004)
@@ -397,12 +398,14 @@ if [[ "${docker_ok}" -eq 1 ]]; then
     if key_set JEV_API_KEY; then pass "jev: JEV_API_KEY present"; else fail "jev: JEV_API_KEY missing: the main backend falls back to rules (backend_unavailable); put it in .env.local, recreate the agent"; fi
     if key_set ANTHROPIC_API_KEY; then pass "claude: ANTHROPIC_API_KEY present"; else fail "claude: ANTHROPIC_API_KEY missing: no in-game backup and no post-game summary; put it in .env.local, recreate the agent"; fi
     if key_set DECISION_OPENAI_API_KEY; then pass "openai: DECISION_OPENAI_API_KEY present"; else info "openai: DECISION_OPENAI_API_KEY absent (only the optional second-vendor beat needs it)"; fi
-    # Not a secret: the post-game text backend, read at agent start.
+    # Not a secret: the DEPRECATED env fallback of the post-game text backend. The
+    # effective choice is the inference.backend flag (checked in the stage baseline
+    # above, #1810); the env only applies while flagd cannot resolve the flag.
     inference_backend="$(grep -E '^AGENT_INFERENCE_BACKEND=' <<<"${agent_env}" | head -1 | cut -d= -f2- | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
     if [[ "${inference_backend}" == "claude" ]]; then
-      pass "AGENT_INFERENCE_BACKEND=claude (post-game summary on Claude)"
+      pass "AGENT_INFERENCE_BACKEND=claude (fallback while flagd cannot resolve inference.backend)"
     else
-      warn "AGENT_INFERENCE_BACKEND=${inference_backend:-unset} (not claude): the closing summary beat shows a capture-only retro; set it in .env.local, recreate the agent"
+      warn "AGENT_INFERENCE_BACKEND=${inference_backend:-unset} (not claude): only the fallback for inference.backend; with flagd down the closing summary beat shows a capture-only retro; set it in .env.local, recreate the agent"
     fi
     # Not a secret: the per-minute budget ceiling, read at agent start. The cap is
     # min(env, flag) (#1788, C-034): the env can only lower the flag, never raise it.

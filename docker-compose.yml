@@ -71,6 +71,9 @@ services:
     environment:
       - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
+      # The registry comes from the same checkout as the baseline (mounted below):
+      # the image copy would reject a renamed flag (#1838).
+      - FLAG_SERVICE_REGISTRY=/etc/flag-service/registry.yaml
       # Admin settings persisted on request (D10, re-review N4). One state file
       # per stack: the ci and dry-run stacks override the name.
       - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
@@ -84,6 +87,7 @@ services:
     volumes:
       # Read-only from the start: the service never writes the flag files.
       - ./services/flagd:/etc/flagd:ro
+      - ./services/flag-service/registry.yaml:/etc/flag-service/registry.yaml:ro
       - flag-service-state:/var/lib/flag-service
     healthcheck:
       test: ["CMD", "/flag-service", "healthcheck"]
@@ -727,9 +731,10 @@ services:
       # The OFFLINE LLM seams (shadow-experiment proposer, post-game retro), NOT
       # in-game decisions (those are the decision.backend flag below). Default =
       # stub: the proposer proposes nothing and the retro is capture-only, so a
-      # plain `up` needs no key. AGENT_INFERENCE_BACKEND=claude calls the Anthropic
-      # API directly with ANTHROPIC_API_KEY (no gateway); without a key it stays
-      # on the stub.
+      # plain `up` needs no key. The inference.backend flag (#1810) selects claude, which
+      # calls the Anthropic API directly with ANTHROPIC_API_KEY (no gateway); without
+      # a key it stays on the stub. AGENT_INFERENCE_BACKEND is only the deprecated
+      # fallback while flagd cannot resolve the flag.
       - AGENT_INFERENCE_BACKEND=${AGENT_INFERENCE_BACKEND:-stub}
       # Empty defaults = the agent's built-in defaults (claude-opus-5-5, effort
       # medium, 120s per call).

@@ -737,7 +737,7 @@ When a game **ends** (the `GameActive` true→false transition fires the store's
 `OnGameEnd` hook with a pre-reset snapshot), the `decision.RetroCoordinator`
 builds the prompt for an **offline analyst** asking for tuning suggestions for
 the next game and records it on a dedicated **`agent.llm.retro`** span. With
-`AGENT_INFERENCE_BACKEND=claude` (and `ANTHROPIC_API_KEY`) it also calls Claude
+`inference.backend=claude` (the flag; `AGENT_INFERENCE_BACKEND` is its fallback; and `ANTHROPIC_API_KEY`) it also calls Claude
 directly, asynchronously, and stamps the decoded assessment / suggestions on the
 same span (#1179, #1234); with the stub default it is capture-only. It emits
 **exactly once per session** (dedup on `SessionID`) and is
@@ -1161,7 +1161,7 @@ the baseline `services/flagd/interventions.json` holds only the neutral values.
   /interventions/<flag>?game_id=<id>`, and the game resolves the neutral
   baseline again.
 - **Per-player levels and grants** (`player_sensitivity_factor`,
-  `player_handicap_factor`; `shield_seconds`, `partial_shield_seconds`,
+  `player_handicap_factor`; `shield_seconds`, `toughness_boost_seconds`,
   `soft_penalty_action`): `PUT` with `scope.game_id` + `scope.serial`; the flag
   service renders a rung on `gameId` + `targetingKey`. Every write gets a fresh
   variant, so a re-grant is a change the coordinator applies once (UC-040 BR-012).
