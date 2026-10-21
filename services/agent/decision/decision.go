@@ -328,8 +328,8 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 	}
 	return &Loop{
 		Flags:                flagSource,
-		Rules:                NoopRules{},
-		Actions:              NoopActions{},
+		Rules:                noRules{},
+		Actions:              discardActions{},
 		Log:                  log,
 		Tracer:               otel.Tracer(instrumentationName),
 		now:                  time.Now,
@@ -1297,3 +1297,18 @@ func derefFloat(p *float64) float64 {
 	}
 	return *p
 }
+
+// noRules is NewLoop's default rules engine: it never proposes an intervention.
+// main.go replaces it with the real engine; tests rely on it staying inert.
+type noRules struct{}
+
+// Evaluate always returns nil (no decisions).
+func (noRules) Evaluate(context.Context, gamecontext.GameContext) []Decision { return nil }
+
+// discardActions is NewLoop's default action sink: it discards decisions. The
+// real sink (actions.GatedActionSink over actions.Writer) writes game-scoped
+// values to the `interventions` flag set through the flag service (UC-053).
+type discardActions struct{}
+
+// Apply discards the decision and never errors.
+func (discardActions) Apply(context.Context, Decision) error { return nil }
