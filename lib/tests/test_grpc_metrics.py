@@ -419,3 +419,18 @@ class TestSyncClientErrors:
         _wait_until(lambda: metrics.observed())
         assert metrics.errors() == []
         assert metrics.observed() == [{"service": "Probe", "method": "BidiEcho"}]
+
+    def test_channel_close_mid_stream_is_not_counted(self, sync_channel, metrics):
+        stop = threading.Event()
+
+        def requests():
+            yield b"a"
+            stop.wait(5)
+
+        responses = sync_channel.stream_stream(_PATH + "BidiEcho")(requests())
+        assert next(responses) == b"a"
+        sync_channel.close()
+        stop.set()
+
+        _wait_until(lambda: metrics.observed())
+        assert metrics.errors() == []

@@ -213,7 +213,13 @@ def get_metrics_interceptors() -> list:
 
 
 # grpc's own details for a call ended by closing the channel on this side (``grpc/_channel.py``).
-_LOCAL_CHANNEL_CLOSE_DETAILS = frozenset({"Channel closed!", "Channel closed due to fork"})
+# The text varies by path (e.g. "Channel closed!", "Channel closed due to fork", "Channel deallocated!"),
+# so match substrings.
+_LOCAL_CHANNEL_CLOSE_MARKERS = ("Channel closed", "Channel deallocated")
+
+
+def _is_local_channel_close(details: str | None) -> bool:
+    return any(marker in (details or "") for marker in _LOCAL_CHANNEL_CLOSE_MARKERS)
 
 
 def _meter_sync_call(call: Any, service: str, method: str, start: float) -> Any:
@@ -226,7 +232,7 @@ def _meter_sync_call(call: Any, service: str, method: str, start: float) -> Any:
     def _on_done(finished: Any) -> None:
         code = finished.code()
         local_cancel = finished.cancelled() or (
-            code == grpc.StatusCode.CANCELLED and finished.details() in _LOCAL_CHANNEL_CLOSE_DETAILS
+            code == grpc.StatusCode.CANCELLED and _is_local_channel_close(finished.details())
         )
         if code is not None and code != grpc.StatusCode.OK and not local_cancel:
             _count_error(service, method, code)
