@@ -142,6 +142,10 @@ archetypes: the agent resolves and pins the parameters and passes them in `AddCo
 
 `SetAutoGameEnd` and its `AutoGameEndRequest` / `AutoGameEndResponse` messages were deleted in #1623 (UC-003 A1 retired, D-C8): the scripted kill hit every mock controller except the last-added one, including reserved shadow-game controllers. Games on mock controllers end through `SimulateDeath` (UC-003 step 4) or organic deaths (UC-046 BR-004). Regenerated with `make protos` and `make protos-agent`; connect-proxy forwards no `MockControllerService` RPC, and the dashboard has no mock client. The remaining RPCs are listed in [generated/grpc-rpcs.md](generated/grpc-rpcs.md) and described in [UC-003](../use_cases/UC-003.md).
 
+### `controller_manager_mock.MockControllerService`: `SetColor` and singular `AddController` removed
+
+`SetColor` (with `ColorRequest` / `ColorResponse`) and the singular `AddController` (with `AddControllerRequest` / `AddControllerResponse`) were deleted in #1322 (UC-003 A5 retired): nothing called either. A test sets an LED colour through the adapter, and `AddControllers` (`count=1`, with `reserved` / `tag`) replaces the singular call. The `reserved` / `tag` semantics now live on `AddControllersRequest`. Regenerated with `make protos` and `make protos-agent`; connect-proxy forwards no `MockControllerService` RPC and the dashboard has no mock client.
+
 The agent's OTLP receiver implements the standard `opentelemetry.proto.collector.{trace,metrics}.v1` Export
 services (`services/agent/receiver.go`); they are not JoustMania protos.
 
@@ -234,7 +238,7 @@ Two layers (`backend.py`, `multiplexer/`): `ControllerManagerServicer` calls the
 |---|---|---|
 | `rust` | `RustServiceAdapter` (`rust_adapter.py`) | gRPC client of `rust-hid` (`RUST_HID_HOST` / `RUST_HID_PORT`, default `localhost:50058`); background bidirectional `StreamIO` stream, `poll()` reads the cached last sample per serial, `set_output()` queues an `IOCommand` (queue capacity 256). Default. |
 | `python` | `PythonHidAdapter` (`python_hid_adapter.py`) | Same shape, gRPC client of `python-hid` (`PYTHON_HID_HOST` / `PYTHON_HID_PORT`, default `localhost:50059`). Opt-in. |
-| `mock` | `MockAdapter` (`mock_adapter.py`) | Simulated I/O, always loaded with zero controllers (added through `AddController`, `MockControllerService`). |
+| `mock` | `MockAdapter` (`mock_adapter.py`) | Simulated I/O, always loaded with zero controllers (added through `AddControllers`, `MockControllerService`). |
 | `unstable` | `UnstableAdapter` (`unstable_adapter.py`) | Routing-only decorator around the *same* python instance: fresh polls at most every 0.12 s (about 8.3 Hz), every 10th dropped. Registered automatically when a `python` adapter is loaded (`backend_factory._build_routing_only_adapters`); never a default or fallback winner, never discovers on its own. |
 
 **`backend` flag** (domain `controller`, read once at startup, restart to change): a comma-separated adapter list validated by `multiplexer/validation.py` (`mock`, `python`, `rust` and combinations without duplicates; anything else raises). `mock` is appended when missing. Variants in `services/flagd/controller.json`:

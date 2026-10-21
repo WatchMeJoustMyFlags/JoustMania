@@ -63,23 +63,7 @@ class TestMockAdapterReservation:
         assert adapter.get_metadata("NOPE") is None
 
 
-class TestAddControllerRpcReservation:
-    def test_add_controller_reserved_flag_plumbed(self):
-        service, adapter = _make_service()
-        req = controller_manager_mock_pb2.AddControllerRequest(serial="R1", reserved=True, tag="shadow")
-        resp = service.AddController(req, None)
-        assert resp.success
-        assert adapter.get_metadata("R1") == {"reserved": True, "tag": "shadow"}
-
-    def test_add_controller_backward_compat(self):
-        """AddController without reserved/tag behaves exactly as before."""
-        service, adapter = _make_service()
-        req = controller_manager_mock_pb2.AddControllerRequest(serial="U1")
-        resp = service.AddController(req, None)
-        assert resp.success
-        assert resp.serial == "U1"
-        assert adapter.get_metadata("U1") == {"reserved": False, "tag": ""}
-
+class TestAddControllersRpcReservation:
     def test_add_controllers_reserved_applied_to_all(self):
         service, adapter = _make_service()
         req = controller_manager_mock_pb2.AddControllersRequest(count=3, reserved=True, tag="batch")
@@ -101,11 +85,9 @@ class TestAddControllerRpcReservation:
 class TestListMockControllers:
     @pytest.mark.uc("UC-003", flow="A6")
     def test_reports_reserved_and_tag(self):
-        service, _ = _make_service()
-        service.AddController(controller_manager_mock_pb2.AddControllerRequest(serial="U1"), None)
-        service.AddController(
-            controller_manager_mock_pb2.AddControllerRequest(serial="R1", reserved=True, tag="agent-1"), None
-        )
+        service, adapter = _make_service()
+        adapter.add_controller("U1")
+        adapter.add_controller("R1", reserved=True, tag="agent-1")
 
         resp = service.ListMockControllers(controller_manager_mock_pb2.ListRequest(), None)
 

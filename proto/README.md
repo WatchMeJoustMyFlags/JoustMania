@@ -54,9 +54,9 @@ LED colours and effects are not a separate RPC: they ride on the two streams abo
 **Purpose:** Control mock controllers for testing without hardware
 
 **Key RPCs:**
-- `AddController` / `AddControllers` / `RemoveController` - add or remove simulated controllers
+- `AddControllers` / `RemoveController` - add or remove simulated controllers
 - `SimulateMovement` / `SimulateDeath` / `SimulateButton` - drive a controller's state
-- `SetColor` / `GetColor` / `ResetController` / `ListMockControllers` - inspect and reset
+- `GetColor` / `ResetController` / `ListMockControllers` - inspect and reset
 - `StreamObservability` - server stream of observability events
 
 **Use Case:** Testing and development without physical PS Move hardware
