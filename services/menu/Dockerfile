@@ -78,7 +78,7 @@ ENV OTEL_LOGS_EXPORTER=none
 EXPOSE 50054
 
 # Health check using grpc-health-probe (proper gRPC health checking)
-HEALTHCHECK --interval=2s --timeout=2s --start-period=1s --retries=3 \
+HEALTHCHECK --interval=2s --timeout=2s --start-period=10s --retries=3 \
     CMD ["/bin/grpc_health_probe", "-addr=:50054"]
 
 # Chainguard's default user is already nonroot (65532); make it explicit
