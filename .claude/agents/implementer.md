@@ -38,8 +38,8 @@ The orchestrator decides which row applies. When it is unsure, it plans.
 | Change | Plan | Implementer |
 |---|---|---|
 | Trivial: docs, comments, a single-file test fix | none | sonnet |
-| Non-trivial: touches a contract (RPC, decide field, event stream), a spec flow, persistence or flags, or crosses services | read-only opus `Plan` agent first | sonnet, against the plan |
-| Hot path, concurrency, safety gates, CI / build / release (the review-pr adversarial row) | optional, the orchestrator's call | opus |
+| Non-trivial: touches a contract (RPC, decide field, event stream), a spec flow, persistence, state or flags, or crosses services | read-only opus `Plan` agent first | sonnet, against the plan |
+| Hot path, concurrency, safety gates, CI / build / release (the review-pr adversarial row) | optional, the orchestrator's call; **required** when the opposer applies (below) | opus |
 
 The `Plan` agent is read-only, so the orchestrator saves its output as `<scratchpad>/<N>-plan.md` and names that
 file in the brief. The plan lists:
@@ -57,9 +57,9 @@ contract (RPC, event stream, decide field), a separate read-only opus opposer re
 written. Its only job is to break the plan: contradictions with the spec, missed consumers, wrong runtime assumptions,
 states the plan never considers. The orchestrator folds its findings into the plan, or asks the maintainer about any
 that need a decision, and names both files in the brief (`<scratchpad>/<N>-plan.md`, `<scratchpad>/<N>-opposer.md`).
-Other changes skip the opposer, and the PR review stays the backstop.
+Other changes, including non-trivial ones that only cross services or change a spec flow, skip the opposer; the PR review stays the backstop. The cost is deliberate: a CI change gets both an opus implementer and an opposer, because a CI miss blocks the whole queue.
 
-When the brief names a plan file, read it before implement-issue step 3 (spec first). The brief overrides the plan,
+When the brief names a plan file (and an opposer file), read both before implement-issue step 3 (spec first); the plan is authoritative once the orchestrator has folded the opposer's findings in. The brief overrides the plan,
 and a spec row overrides the plan. When they conflict, report it under `Decisions needed` instead of picking one. A
 step that departs from the plan goes in the report's deviations line, never silently. Why: in October 2026 most
 review-fix cycles came from missed interactions, not code quality: #1795 (git run outside the checkout), #1802 (a
