@@ -24,6 +24,7 @@ The ladder writes the GLOBAL ``interventions_allowed``, so the test runs on
 import pytest
 from openfeature.evaluation_context import EvaluationContext
 
+from lib.colors import Colors
 from proto import controller_manager_mock_pb2
 from tests.integration.flag_service import default as flag_service_default
 from tests.integration.flag_service import variant_value
@@ -31,8 +32,10 @@ from tests.integration.helpers import (
     async_poll_until,
     enter_admin_mode,
     flagd_probe_client,
+    get_controller_color,
     get_mock_client,
     press_admin_button,
+    select_admin_option,
 )
 from tests.service.harness import LOBBY
 from tests.service.lobby_flow import start_lobby
@@ -114,8 +117,12 @@ async def test_host_walks_the_agent_ladder_from_the_controller(fresh_stack):
         await enter_admin_mode(mock_client, host)
 
         # Step 2 (UC-013 step 1): three Move presses select agent_control (index 0 -> 3).
-        for _ in range(3):
-            await press_admin_button(mock_client, host, _Button.MOVE)
+        # The LED colour confirms the selection (#1845).
+        await select_admin_option(
+            lambda: press_admin_button(mock_client, host, _Button.MOVE),
+            lambda: get_controller_color(mock_client, host),
+            Colors.Purple.value,
+        )
 
         # A1: Start at probe lands on none.
         await _press_and_expect(stack, mock_client, host, _Button.START, "none")
