@@ -121,7 +121,7 @@ service (`scripts/flags.sh set agent interventions_allowed standard`, or
 | `ambient` (stock) | `play_audio_cue`, `send_controller_effect`, `adjust_volume` |
 | `standard` | + tempo, pacing, player sensitivity, `grant_shield` |
 | `full` | + global sensitivity/difficulty, eliminate, revive, end_game |
-| `shadow_experimental` | + `set_player_handicap` (#1107), `ramp_tempo` (#1122), `partial_shield` (#1132) — **shadow-only** levers, also gated to shadow games in the coordinator |
+| `shadow_experimental` | + `set_player_handicap` (#1107), `ramp_tempo` (#1122), `toughness_boost` (#1132) — **shadow-only** levers, also gated to shadow games in the coordinator |
 
 An intervention not on the active list is **blocked** (`decision.blocked=true`,
 `decision.block_reason=not_allowed`) — traced, never silently dropped.

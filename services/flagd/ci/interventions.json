@@ -57,7 +57,7 @@
       "defaultVariant": "none",
       "targeting": {}
     },
-    "partial_shield_seconds": {
+    "toughness_boost_seconds": {
       "state": "ENABLED",
       "variants": {
         "none": "0",

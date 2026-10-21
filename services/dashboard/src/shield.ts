@@ -8,7 +8,7 @@
  * events `player_shielded`, `player_death`, `game_ended` and `game_force_ended`.
  */
 
-export type ShieldKind = "full" | "partial";
+export type ShieldKind = "full" | "toughness_boost";
 
 export interface ShieldState {
   kind: ShieldKind;
@@ -34,7 +34,10 @@ export class ShieldStore {
         const serial = event.data["serial"];
         const untilMs = Number(event.data["until_ms"]);
         if (!serial || !Number.isFinite(untilMs)) return false;
-        const kind: ShieldKind = event.data["kind"] === "partial" ? "partial" : "full";
+        // "partial" is the pre-#1838 name of the toughness boost kind: an older coordinator
+        // must not render as an immune full shield.
+        const rawKind = event.data["kind"];
+        const kind: ShieldKind = rawKind === "toughness_boost" || rawKind === "partial" ? "toughness_boost" : "full";
         this.shields.set(serial, { kind, untilMs });
         return true;
       }
@@ -67,7 +70,7 @@ export class ShieldStore {
 }
 
 export interface ShieldBadge {
-  /** Badge text, e.g. "Shield 4.2s" / "Partial 1.0s". */
+  /** Badge text, e.g. "Shield 4.2s" / "Boost 1.0s". */
   text: string;
   /** CSS classes for the badge (and the tile ring). */
   className: string;
@@ -78,7 +81,7 @@ export function shieldBadge(shield: ShieldState | null, nowMs: number): ShieldBa
   if (!shield) return null;
   const remainingS = Math.max(0, (shield.untilMs - nowMs) / 1000);
   if (remainingS <= 0) return null;
-  const label = shield.kind === "partial" ? "Partial" : "Shield";
+  const label = shield.kind === "toughness_boost" ? "Boost" : "Shield";
   const classes = ["shield-badge", `shield-${shield.kind}`];
   if (remainingS <= SHIELD_BLINK_WINDOW_S) classes.push("shield-ending");
   return { text: `${label} ${remainingS.toFixed(1)}s`, className: classes.join(" ") };

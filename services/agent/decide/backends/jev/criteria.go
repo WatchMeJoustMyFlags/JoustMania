@@ -81,8 +81,8 @@ var interventionDescriptions = map[string]string{
 		"eliminate), to balance a lopsided game.",
 	"grant_shield": "Make one player immune to elimination for a few seconds. Saves a player who is about " +
 		"to be eliminated unfairly.",
-	"partial_shield": "Make one player much harder, but not impossible, to eliminate for a few seconds; " +
-		"a softer alternative to a full shield.",
+	"toughness_boost": "Make one player much harder, but not impossible, to eliminate for a few seconds; " +
+		"weaker than grant_shield.",
 	"soft_penalty": "Put pressure on one player: a warning cue, or briefly making them easier to " +
 		"eliminate. Recoverable, never an instant elimination.",
 	"auto_rubberband": "Automatically help the trailing players (harder to eliminate) to keep a lopsided " +
@@ -260,7 +260,7 @@ var magnitudeEnds = map[string][2]string{
 	"adjust_global_difficulty":  {"easiest game", "hardest game"},
 	"set_player_handicap":       {"player reined in", "biggest help for the player"},
 	"grant_shield":              {"shortest shield", "longest shield"},
-	"partial_shield":            {"shortest partial shield", "longest partial shield"},
+	"toughness_boost":           {"shortest toughness boost", "longest toughness boost"},
 }
 
 // magnitudeInstructions replaces ffa.magnitude's text: Jev evaluates every
@@ -357,7 +357,7 @@ func targetInstructions(iv string) string {
 
 // Suitability families of the player-targeted interventions.
 var (
-	protectInterventions = map[string]bool{"grant_shield": true, "partial_shield": true}
+	protectInterventions = map[string]bool{"grant_shield": true, "toughness_boost": true}
 	balanceInterventions = map[string]bool{"adjust_player_sensitivity": true, "set_player_handicap": true}
 	// pressureInterventions put recoverable pressure on one player.
 	// eliminate_player is deliberately NOT here: the agent must never be nudged

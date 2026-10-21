@@ -1,7 +1,7 @@
 """
 Shield feedback in the game coordinator (#1301, UC-040 A16 / A17, BR-007..BR-010).
 
-grant_shield / grant_partial_shield send ONE controller-rendered effect per
+grant_shield / grant_toughness_boost send ONE controller-rendered effect per
 grant (no LED stream, no task), play the shield sound and publish
 ``player_shielded``; the game end clears running shield effects.
 """
@@ -27,7 +27,7 @@ from services.game_coordinator.games.base import Player
 from services.game_coordinator.games.ffa import FFAGame
 
 SHIELD = controller_manager_pb2.GAME_EFFECT_SHIELD
-PARTIAL = controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD
+TOUGHNESS_BOOST = controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST
 
 
 class RecordingStream:
@@ -90,16 +90,16 @@ class TestUC040ShieldFeedback:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-009"])
-    async def test_partial_shield_sends_weaker_variant_at_half_volume(self, game):
-        """UC-040 BR-009: partial_shield -> GAME_EFFECT_PARTIAL_SHIELD and shield_up at 0.5."""
+    async def test_toughness_boost_sends_weaker_variant_at_half_volume(self, game):
+        """UC-040 BR-009: toughness_boost -> GAME_EFFECT_TOUGHNESS_BOOST and shield_up at 0.5."""
         with patch.object(game, "_play_sound", new_callable=AsyncMock) as play:
-            assert await game.grant_partial_shield("p2", 5.0) is True
+            assert await game.grant_toughness_boost("p2", 5.0) is True
 
         [(serial, effect, duration_ms)] = game.gameplay_stream.effects()
-        assert (serial, effect) == ("p2", PARTIAL)
+        assert (serial, effect) == ("p2", TOUGHNESS_BOOST)
         assert 4900 <= duration_ms <= 5000
         play.assert_awaited_once_with(Sound.SFX_SHIELD_UP, priority=2, volume=0.5)
-        assert _shielded_events(game)[0]["kind"] == "partial"
+        assert _shielded_events(game)[0]["kind"] == "toughness_boost"
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-010"])
@@ -122,8 +122,8 @@ class TestUC040ShieldFeedback:
         with patch.object(game, "_play_sound", new_callable=AsyncMock) as play:
             await game.grant_shield("p1", 8.0)
             await game.grant_shield("p1", 2.0)
-            await game.grant_partial_shield("p2", 8.0)
-            await game.grant_partial_shield("p2", 2.0)
+            await game.grant_toughness_boost("p2", 8.0)
+            await game.grant_toughness_boost("p2", 2.0)
 
         assert len(game.gameplay_stream.effects()) == 2
         assert play.await_count == 2
@@ -165,7 +165,7 @@ class TestUC040ShieldFeedback:
         before = set(asyncio.all_tasks())
         with patch.object(game, "_play_sound", new_callable=AsyncMock):
             await game.grant_shield("p1", 5.0)
-            await game.grant_partial_shield("p2", 5.0)
+            await game.grant_toughness_boost("p2", 5.0)
         assert set(asyncio.all_tasks()) == before
 
 
@@ -179,9 +179,9 @@ class TestUC040ShieldFeedbackChannels:
         with patch.object(game, "_play_sound", new_callable=AsyncMock) as play:
             await game.grant_shield("p1", 3.0)
             await game.grant_shield("p1", 6.0)
-            await game.grant_partial_shield("p1", 9.0)  # still protected: silent too
+            await game.grant_toughness_boost("p1", 9.0)  # still protected: silent too
 
-        assert [e[1] for e in game.gameplay_stream.effects()] == [SHIELD, SHIELD, PARTIAL]
+        assert [e[1] for e in game.gameplay_stream.effects()] == [SHIELD, SHIELD, TOUGHNESS_BOOST]
         play.assert_awaited_once_with(Sound.SFX_SHIELD_UP, priority=2, volume=1.0)
         assert len(_shielded_events(game)) == 3
 
@@ -234,7 +234,7 @@ class TestUC040ShieldFeedbackEnds:
         """UC-040 A17: a zero-duration SHIELD goes to every still-running shield, then the record is clear."""
         with patch.object(game, "_play_sound", new_callable=AsyncMock):
             await game.grant_shield("p1", 5.0)
-            await game.grant_partial_shield("p2", 5.0)
+            await game.grant_toughness_boost("p2", 5.0)
         game._shield_feedback_until["p2"] = time.time() - 1  # already expired
         game.gameplay_stream.writes.clear()
 
@@ -245,20 +245,20 @@ class TestUC040ShieldFeedbackEnds:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
-    async def test_shorter_partial_does_not_hide_a_running_full_shield(self, game):
-        """UC-040 A17: a short partial grant after a long full one must not drop the full one from the clear."""
+    async def test_shorter_toughness_boost_does_not_hide_a_running_full_shield(self, game):
+        """UC-040 A17: a short toughness boost grant after a long full one must not drop the full one from the clear."""
         clock = [1000.0]
         with (
             patch("services.game_coordinator.games.base.time.time", side_effect=lambda: clock[0]),
             patch.object(game, "_play_sound", new_callable=AsyncMock),
         ):
             await game.grant_shield("p1", 10.0)
-            await game.grant_partial_shield("p1", 1.0)
+            await game.grant_toughness_boost("p1", 1.0)
             sent = [(serial, effect) for serial, effect, _ in game.gameplay_stream.effects()]
-            assert sent == [("p1", SHIELD), ("p1", PARTIAL)]
+            assert sent == [("p1", SHIELD), ("p1", TOUGHNESS_BOOST)]
             game.gameplay_stream.writes.clear()
 
-            clock[0] += 5.0  # partial expired, full still running
+            clock[0] += 5.0  # toughness boost expired, full still running
             await game._end_shield_feedback()
 
         assert game.gameplay_stream.effects() == [("p1", SHIELD, 0)]
@@ -362,12 +362,12 @@ class TestUC040ShieldSpanEvents:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16")
-    async def test_partial_shield_records_partial_shield_armed_and_shield_feedback(self, game, span):
-        """UC-040 A16: grant_partial_shield records partial_shield_armed and shield_feedback (kind partial)."""
-        assert await game.grant_partial_shield("p1", 2.0) is True
+    async def test_toughness_boost_records_toughness_boost_armed_and_shield_feedback(self, game, span):
+        """UC-040 A16: grant_toughness_boost records toughness_boost_armed + shield_feedback (kind toughness_boost)."""
+        assert await game.grant_toughness_boost("p1", 2.0) is True
 
-        assert _span_events(span, "partial_shield_armed")
+        assert _span_events(span, "toughness_boost_armed")
         feedback = _span_events(span, "shield_feedback")
         assert len(feedback) == 1
-        assert feedback[0]["shield.kind"] == "partial"
+        assert feedback[0]["shield.kind"] == "toughness_boost"
         assert feedback[0]["shield.sound"] == Sound.SFX_SHIELD_UP.value

@@ -224,8 +224,8 @@ class InterventionSpec:
     # event alone is the command. An event list is per game, so ``end_game``
     # ends exactly the game whose list carries the event (UC-040 BR-011).
     payload_required: bool = True
-    # Player-targeted state only: a one-shot, time-boxed GRANT (shield, partial
-    # shield, soft penalty), not a level. Change-detected per serial on the
+    # Player-targeted state only: a one-shot, time-boxed GRANT (shield, toughness boost,
+    # soft penalty), not a level. Change-detected per serial on the
     # resolved (variant, value) and dispatched only for the serials whose grant
     # changed (UC-040 BR-012, #1313).
     per_serial_grant: bool = False
@@ -290,8 +290,8 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         per_serial_grant=True,
     ),
     InterventionSpec(
-        flag_key="partial_shield_seconds",
-        type_id="partial_shield",
+        flag_key="toughness_boost_seconds",
+        type_id="toughness_boost",
         weight=WEIGHT_MEDIUM,
         edge_triggered=False,
         player_targeted=True,
@@ -299,7 +299,7 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         # a TIME-BOXED handicap boost (much harder to die, but NOT immune — vs
         # grant_shield's total grace_until immunity). The handler parses both
         # forms; malformed values are a safe no-op. "0" (and "none"/empty) means
-        # no partial shield. SHADOW-game-only initially: allow-listed ONLY via the
+        # no toughness boost. SHADOW-game-only initially: allow-listed ONLY via the
         # `shadow_experimental` interventions_allowed variant (the load-bearing
         # gate), never the real-facing ambient/standard/full variants.
         value_kind="string",
@@ -316,7 +316,7 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         # (#1134, #1103 Phase 3): a graduated, RECOVERABLE alternative to the
         # permanent eliminate_player. "warn" fires the visible warning feedback
         # (no threshold change). "tighten" applies a short EXPIRING handicap
-        # REDUCTION (factor < 1.0, the MIRROR of partial_shield) making the player
+        # REDUCTION (factor < 1.0, the MIRROR of toughness_boost) making the player
         # temporarily EASIER to die — still clamped [0.5, 2.0], never instant-
         # death. The handler parses all forms; malformed -> safe default ("warn").
         # "none"/empty means no penalty. SHADOW-game-only initially: allow-listed
@@ -333,7 +333,7 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
     # a bounded, time-boxed handicap BOOST to the trailing player(s) — compressing
     # the gap without inverting standings or causing instant death (bounded in the
     # method + the [0.5,2.0] clamp). Reuses the #1107 handicap mechanism, composes
-    # by MAX (alongside partial_shield). NOT player_targeted — the global value is
+    # by MAX (alongside toughness_boost). NOT player_targeted — the global value is
     # read once and expanded. SHADOW-game-only initially: allow-listed ONLY via the
     # `shadow_experimental` interventions_allowed variant (the load-bearing gate),
     # never the real-facing ambient/standard/full variants.
@@ -1128,7 +1128,7 @@ class InterventionManager:
 
     async def _evaluate_one(self, spec: InterventionSpec, session: "SessionView") -> None:
         # Player-targeted state flags are driven entirely through flagd's
-        # per-serial targeting if-ladder (grants: shield/partial shield/soft
+        # per-serial targeting if-ladder (grants: shield/toughness boost/soft
         # penalty, per serial; levels: sensitivity/handicap factor); the
         # agent writer leaves the flag's global defaultVariant on its neutral
         # value, so the global evaluated read NEVER changes and can't be used for
@@ -1386,7 +1386,7 @@ class InterventionManager:
     async def _evaluate_targeted_grant(self, spec: InterventionSpec, session: "SessionView") -> None:
         """Change-detect a per-serial GRANT flag and dispatch only new grants.
 
-        Grants (shield, partial shield, soft penalty) are one-shot effects, so a
+        Grants (shield, toughness boost, soft penalty) are one-shot effects, so a
         serial whose grant did not change since this game last read it must not
         be granted again (UC-040 BR-012, #1313). Each live serial's
         ``(variant, value)`` is compared with the game's per-serial baseline;
@@ -1778,7 +1778,7 @@ class InterventionManager:
                 (e.g. 1.0 for sensitivity factor, 0 for shield seconds).
             game: Live game whose ``players`` dict supplies the active serials.
             value_kind: ``"float"``, ``"int"`` or ``"string"`` (flag value type).
-                ``"string"`` (#1129 partial_shield) returns raw per-serial strings
+                ``"string"`` (#1129 toughness_boost) returns raw per-serial strings
                 for the handler to parse; float/int return coerced numbers.
             battery_gate: If True, drop serials below the battery threshold.
             game_id: Owning session's game id, added as ``gameId`` to the context

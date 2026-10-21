@@ -36,11 +36,15 @@ services:
     environment:
       - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
+      # The registry comes from the same checkout as the baseline (mounted below):
+      # the image copy would reject a renamed flag (#1838).
+      - FLAG_SERVICE_REGISTRY=/etc/flag-service/registry.yaml
       - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
       # Go runtime soft limit under the 64 MiB container limit (NFR-051).
       - GOMEMLIMIT=48MiB
     volumes:
       - ./services/flagd:/etc/flagd:ro
+      - ./services/flag-service/registry.yaml:/etc/flag-service/registry.yaml:ro
       - flag-service-state:/var/lib/flag-service
     healthcheck:
       test: ["CMD", "/flag-service", "healthcheck"]

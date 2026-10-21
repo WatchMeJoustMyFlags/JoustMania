@@ -8,7 +8,7 @@ TC-007 step 6 for hand-written interventions.
 
 WHY THIS EXISTS (#1137 finding 2): verification run #5 could not demo the
 advanced interventions (``set_player_handicap``, ``ramp_tempo``,
-``partial_shield``, ``soft_penalty``) because the LLM backend was CUDA-down and
+``toughness_boost``, ``soft_penalty``) because the LLM backend was CUDA-down and
 the rule fallback only ever picked ``grant_shield``. So whether an advanced
 action ever reaches the coordinator's apply path was left to model selection.
 This driver removes the model from the loop: it injects EACH currently-merged
@@ -18,7 +18,7 @@ game-coordinator APPLIED it.
 
 WHAT "APPLIED" MEANS HERE. None of these five actions surface their applied
 state on the ``GetGameState`` proto — ``PlayerInfo`` exposes only
-``sensitivity_factor``; there is no handicap / shield / grace / partial-shield /
+``sensitivity_factor``; there is no handicap / shield / grace / toughness boost /
 soft-penalty / tempo field (verified against proto/game_coordinator.proto). The
 load-bearing, model-independent apply-proof is therefore the coordinator's own
 ``agent_intervention`` EventBus event with ``blocked="false"``: the
@@ -31,7 +31,7 @@ signal TC-013 uses.
 SCOPE: this driver asserts APPLY only (one ``blocked="false"`` event per action).
 Revert/neutral-transition assertions are intentionally NOT made here: the
 neutral-revert change-detection for STRING-valued targeted flags
-(``partial_shield_seconds``, ``soft_penalty_action``) is currently unreliable
+(``toughness_boost_seconds``, ``soft_penalty_action``) is currently unreliable
 because ``interventions.py`` change-detects them via a float read (TYPE_MISMATCH
 → default; tracked separately in #1150). The time-boxed actions self-expire via
 their per-frame ``*_until`` check independent of flag change-detection, so
@@ -281,15 +281,15 @@ async def _scenario_set_player_handicap(docker_compose, tag: str) -> None:
         )
 
 
-async def _scenario_partial_shield(docker_compose, tag: str) -> None:
-    """#1132 ``partial_shield``: a time-boxed threshold BOOST for the targeted
+async def _scenario_toughness_boost(docker_compose, tag: str) -> None:
+    """#1132 ``toughness_boost``: a time-boxed threshold BOOST for the targeted
     player reaches the coordinator and APPLIES (unblocked).
 
-    Apply-proof: a ``partial_shield`` ``blocked="false"`` event — permission+mode
-    +battery passed and ``handle_partial_shield`` re-resolved the "5:2.0" value as
-    a string and called ``grant_partial_shield`` without error. The boost is a
+    Apply-proof: a ``toughness_boost`` ``blocked="false"`` event — permission+mode
+    +battery passed and ``handle_toughness_boost`` re-resolved the "5:2.0" value as
+    a string and called ``grant_toughness_boost`` without error. The boost is a
     WINDOW that expires on its own (no flag revert handler; the deadline on
-    ``player.partial_shield_until`` lapses), and neither the boost nor its expiry
+    ``player.toughness_boost_until`` lapses), and neither the boost nor its expiry
     is surfaced on GetGameState, so the apply event is the load-bearing signal.
     """
     mock_client, mock_channel = await get_mock_client(docker_compose)
@@ -304,8 +304,8 @@ async def _scenario_partial_shield(docker_compose, tag: str) -> None:
         await _wait_for_game_colors(mock_client, serials)
 
         # "5:2.0" — 5s of a 2.0x harder-to-die boost, scoped to this player.
-        set_player_value("partial_shield_seconds", game_id, target, "5:2.0")
-        evt = await _wait_for_intervention(collector, "partial_shield", blocked="false")
+        set_player_value("toughness_boost_seconds", game_id, target, "5:2.0")
+        evt = await _wait_for_intervention(collector, "toughness_boost", blocked="false")
         assert evt.data.get("blocked") == "false"
     finally:
         await _teardown(
@@ -325,7 +325,7 @@ async def _scenario_soft_penalty_tighten(docker_compose, tag: str) -> None:
 
     Apply-proof: a ``soft_penalty`` ``blocked="false"`` event for this player when
     the value is ``tighten:5:0.5`` — ``handle_soft_penalty`` parsed the tighten
-    form and called ``apply_soft_penalty`` (the MIRROR of partial_shield:
+    form and called ``apply_soft_penalty`` (the MIRROR of toughness_boost:
     temporarily easier to die, clamped, window-expiring). The weakening window
     expires on its own and is not on GetGameState, so the apply event is the
     load-bearing signal.
@@ -503,7 +503,7 @@ _BATCHES = [
     pytest.param(
         {
             "set_player_handicap": _scenario_set_player_handicap,
-            "partial_shield": _scenario_partial_shield,
+            "toughness_boost": _scenario_toughness_boost,
             "soft_penalty_tighten": _scenario_soft_penalty_tighten,
             "ramp_tempo": _scenario_ramp_tempo,
         },
@@ -530,7 +530,7 @@ async def test_shadow_experimental_interventions_apply(stack, headless_cleanup, 
     Model-independent: nothing here drives the agent's decision loop; every
     action is written directly to its intervention flag scoped to its own
     headless shadow game. Proves the apply path for set_player_handicap (#1107),
-    partial_shield (#1132), soft_penalty tighten+warn (#1134), ramp_tempo
+    toughness_boost (#1132), soft_penalty tighten+warn (#1134), ramp_tempo
     (#1122), and grant_shield — the gap #1137 finding 2 flagged.
     """
     # GLOBAL permission: allow-list every advanced action ONCE (not gameId-

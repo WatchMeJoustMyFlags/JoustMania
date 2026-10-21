@@ -35,7 +35,7 @@ var playerTargeted = map[string]bool{
 	"adjust_player_sensitivity": true,
 	"set_player_handicap":       true,
 	"grant_shield":              true,
-	"partial_shield":            true,
+	"toughness_boost":           true,
 	"soft_penalty":              true,
 }
 
@@ -89,7 +89,7 @@ type Bounds struct {
 //	adjust_global_difficulty   global_difficulty_factor easier..harder combined factor [0.5,2.0] (base.py)
 //	set_player_handicap        player_handicap_factor rein_in..big_help handicap [0.5,2.0] (base.py)
 //	grant_shield               shield_seconds short..long              none (grace_until += seconds)
-//	partial_shield             partial_shield_seconds short..long      PARTIAL_SHIELD_MAX_SECONDS 30 (base.py)
+//	toughness_boost             toughness_boost_seconds short..long      TOUGHNESS_BOOST_MAX_SECONDS 30 (base.py)
 //
 // Interventions absent from the table (audio cue, controller effect, eliminate,
 // revive, end_game, pacing_profile, ramp_tempo, auto_rubberband, soft_penalty,
@@ -102,7 +102,7 @@ var magnitudeBounds = map[string]Bounds{
 	"adjust_global_difficulty":  {Min: 0.5, Max: 2.0, Default: 1.5, Neutral: 1.0, HasNeutral: true, Unit: "factor"},
 	"set_player_handicap":       {Min: 0.75, Max: 1.75, Default: 1.25, Neutral: 1.0, HasNeutral: true, Unit: "factor"},
 	"grant_shield":              {Min: 3, Max: 10, Default: 5, Neutral: 0, HasNeutral: true, Unit: "seconds"},
-	"partial_shield":            {Min: 3, Max: 10, Default: 5, Neutral: 0, HasNeutral: true, Unit: "seconds"},
+	"toughness_boost":           {Min: 3, Max: 10, Default: 5, Neutral: 0, HasNeutral: true, Unit: "seconds"},
 }
 
 // MagnitudeBounds returns the bounds of intervention's numeric Value, and false

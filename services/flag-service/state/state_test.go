@@ -719,7 +719,7 @@ func TestNFR051_SnapshotBounded(t *testing.T) {
 					{Flag: "player_sensitivity_factor", Value: raw("1.2")},
 					{Flag: "player_handicap_factor", Value: raw("1.25")},
 					{Flag: "shield_seconds", Value: raw("5")},
-					{Flag: "partial_shield_seconds", Value: raw(`"5:2.0"`)},
+					{Flag: "toughness_boost_seconds", Value: raw(`"5:2.0"`)},
 					{Flag: "soft_penalty_action", Value: raw(`"tighten:5:0.5"`)},
 				} {
 					w.Set, w.Scope = "interventions", Scope{GameID: gameID, Serial: s}
