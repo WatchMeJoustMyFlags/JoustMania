@@ -230,6 +230,15 @@ func buildLoopForTestWithTracer(
 	}
 }
 
+// endBoundGame delivers both end signals of a bound experiment game in the
+// telemetry-first order (UC-046 BR-016, #1405): the telemetry end parks, and the
+// runner's completed outcome folds it. Tests that expect an immediate fold from
+// a telemetry end use it, since a telemetry end alone no longer folds.
+func endBoundGame(loop *experimentLoop, gc gamecontext.GameContext) {
+	loop.onGameEnd(gc)
+	loop.onGameTerminal(gc.SessionID, gamerunner.OutcomeCompleted)
+}
+
 // gcFor builds a game-end GameContext for an experiment arm with a known SessionID.
 func gcFor(gameID, experimentID, arm string) gamecontext.GameContext {
 	dur := 120.0
@@ -277,7 +286,7 @@ func concludeCohort(t *testing.T, loop *experimentLoop, spawner *recordingSpawne
 			// Cap reached for this round; conclude what we have to free slots.
 		}
 		for _, c := range spawner.drain() {
-			loop.onGameEnd(gcFor(c.gameID, c.experimentID, c.arm))
+			endBoundGame(loop, gcFor(c.gameID, c.experimentID, c.arm))
 		}
 	}
 }
