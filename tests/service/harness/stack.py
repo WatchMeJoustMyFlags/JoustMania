@@ -93,6 +93,11 @@ class Composition:
             raise ValueError("agent=True needs otlp=True (the agent observes through OTLP) and the game coordinator")
 
 
+# The menu reports healthy before its boot lobby entry (menu_auto_start, services/menu/server.py);
+# a StopMenu/StartMenu restart that lands in that window sees STOPPED, then the boot flips the menu to
+# RUNNING and StartMenu fails "Menu already running" (#1798). The stack is ready after the entry.
+READY_LOG_MARKERS = {"menu": "Menu auto-started"}
+
 # Coordinator on mock controllers: headless games, interventions, flag service lifecycle.
 GAME = Composition(("controller-manager", "game-coordinator"))
 # Plus the menu: lobby, ready state, menu-started games, admin writes.
@@ -205,6 +210,7 @@ class ServiceStack:
                 grpc_port=ports[name],
                 env=envs[name],
                 log_path=self.workdir / "logs" / f"{name}.log",
+                ready_log_marker=READY_LOG_MARKERS.get(name),
             )
             self.services[name] = service
             service.start()
