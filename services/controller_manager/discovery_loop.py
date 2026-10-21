@@ -540,7 +540,8 @@ class DiscoveryLoop:
 
         Polls all controllers in parallel using asyncio.gather().
         Called at a fixed 100 Hz (no idle mode); the gameplay stream rate is set
-        separately by the flag `game_loop.update_frequency_hz` (fallback 30 Hz).
+        separately by the flag `game_loop.update_frequency_hz` (default 60 Hz; 30 Hz only when a
+        client requests no rate).
         """
         if not self.backend_initialized:
             return
