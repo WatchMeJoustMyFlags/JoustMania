@@ -173,7 +173,7 @@ func TestProposeOnce_FailedModelCallKeepsCadenceAndBudgetUsed(t *testing.T) {
 			p.SetClock(clk.Now)
 			adm := &slotAdmission{slots: 2}
 			p.SetLLMAdmission(adm)
-			cfg := ProposerConfig{Permit: allowPropose, Engine: "claude", MinInterval: time.Minute, GameKind: "real"}
+			cfg := ProposerConfig{Permit: allowPropose, MinInterval: time.Minute, GameKind: "real"}
 
 			res := p.ProposeOnce(context.Background(), Narrative{}, cfg)
 			if res.Outcome != c.outcome || res.Proposal != nil {

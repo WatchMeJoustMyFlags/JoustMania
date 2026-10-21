@@ -19,9 +19,12 @@ type fakeProposerGateFlags struct {
 	// experiments is the live flag value; nil = flag absent / flagd down, so the
 	// caller's default applies.
 	experiments *bool
+	// proposer is the live experiment_proposer_enabled flag (#1810).
+	proposer bool
 }
 
-func (f fakeProposerGateFlags) AgentEnabled(context.Context) bool { return f.agentEnabled }
+func (f fakeProposerGateFlags) ExperimentProposerEnabled(context.Context) bool { return f.proposer }
+func (f fakeProposerGateFlags) AgentEnabled(context.Context) bool              { return f.agentEnabled }
 func (f fakeProposerGateFlags) ExperimentsEnabled(_ context.Context, def bool) bool {
 	if f.experiments == nil {
 		return def
@@ -41,16 +44,16 @@ func TestProposerPermit(t *testing.T) {
 		wantOK     bool
 		wantReason string
 	}{
-		{"both on", fakeProposerGateFlags{true, boolPtr(true)}, false, true, ""},
-		{"kill switch off", fakeProposerGateFlags{false, boolPtr(true)}, false, false, experiment.SkipReasonAgentDisabled},
-		{"experiments off", fakeProposerGateFlags{true, boolPtr(false)}, true, false, experiment.SkipReasonExperimentsDisabled},
-		{"experiments flag absent, env default off", fakeProposerGateFlags{true, nil}, false, false, experiment.SkipReasonExperimentsDisabled},
-		{"experiments flag absent, env default on", fakeProposerGateFlags{true, nil}, true, true, ""},
-		{"both off reports the kill switch", fakeProposerGateFlags{false, boolPtr(false)}, false, false, experiment.SkipReasonAgentDisabled},
+		{"both on", fakeProposerGateFlags{true, boolPtr(true), true}, false, true, ""},
+		{"kill switch off", fakeProposerGateFlags{false, boolPtr(true), true}, false, false, experiment.SkipReasonAgentDisabled},
+		{"experiments off", fakeProposerGateFlags{true, boolPtr(false), true}, true, false, experiment.SkipReasonExperimentsDisabled},
+		{"experiments flag absent, env default off", fakeProposerGateFlags{true, nil, true}, false, false, experiment.SkipReasonExperimentsDisabled},
+		{"experiments flag absent, env default on", fakeProposerGateFlags{true, nil, true}, true, true, ""},
+		{"both off reports the kill switch", fakeProposerGateFlags{false, boolPtr(false), true}, false, false, experiment.SkipReasonAgentDisabled},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ok, reason := proposerPermit(tc.src, tc.envDefault)(context.Background())
+			ok, reason := proposerPermit(tc.src, tc.envDefault, true)(context.Background())
 			if ok != tc.wantOK || reason != tc.wantReason {
 				t.Fatalf("permit = (%v, %q), want (%v, %q)", ok, reason, tc.wantOK, tc.wantReason)
 			}
@@ -63,8 +66,8 @@ func TestProposerPermit(t *testing.T) {
 // UC: UC-042 A5 BR-002
 // UC: UC-045 BR-002
 func TestProposerPermit_ReadsLive(t *testing.T) {
-	src := &liveGateFlags{enabled: true, experiments: true}
-	permit := proposerPermit(src, false)
+	src := &liveGateFlags{enabled: true, experiments: true, proposer: true}
+	permit := proposerPermit(src, false, true)
 	if ok, _ := permit(context.Background()); !ok {
 		t.Fatal("want permitted while both flags are on")
 	}
@@ -74,7 +77,9 @@ func TestProposerPermit_ReadsLive(t *testing.T) {
 	}
 }
 
-type liveGateFlags struct{ enabled, experiments bool }
+type liveGateFlags struct{ enabled, experiments, proposer bool }
+
+func (f *liveGateFlags) ExperimentProposerEnabled(context.Context) bool { return f.proposer }
 
 func (f *liveGateFlags) AgentEnabled(context.Context) bool { return f.enabled }
 func (f *liveGateFlags) ExperimentsEnabled(context.Context, bool) bool {

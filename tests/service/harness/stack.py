@@ -207,6 +207,13 @@ class ServiceStack:
             "AGENT_INFERENCE_MODEL": FAKE_CLAUDE_MODEL,
             # Bootstrap default only: the live experiments_enabled flag decides (FR-066).
             "AGENT_EXPERIMENTS_ENABLED": "true",
+            # The proposer gate's operator ceiling (#1810, C-034): the M7-4 proposer runs
+            # only when it is true AND experiment_proposer_enabled is on (ci default on).
+            "AGENT_EXPERIMENT_PROPOSER_ENABLED": "true",
+            # The same gate opens the retro-seeded thesis proposer; a candidate list
+            # naming no game flag keeps it (and the dynamic declarer) from declaring a
+            # second experiment next to the M7-4 one TC-010 asserts on.
+            "AGENT_EXPERIMENT_DYNAMIC_CANDIDATES": "tc010_no_such_flag",
             # The experiment journal (default /var/lib/joustmania/...) lives in the stack's workdir.
             "AGENT_EXPERIMENT_DIR": str(self.workdir / "experiments"),
         }

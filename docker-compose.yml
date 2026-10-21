@@ -762,19 +762,23 @@ services:
       # plain `up` keeps the framework inert (the M8 dry-run finding, #999). The
       # promotion path stays gated by the `code_improvement` flags + kill-switch.
       - AGENT_EXPERIMENTS_ENABLED=${AGENT_EXPERIMENTS_ENABLED:-false}
+      # Deprecated fallback of the experiment_tick_seconds flag (FR-151, #1810).
       - AGENT_EXPERIMENT_TICK_SECONDS=${AGENT_EXPERIMENT_TICK_SECONDS:-30}
       - AGENT_EXPERIMENT_SEED_FLAG=${AGENT_EXPERIMENT_SEED_FLAG:-}
       - AGENT_EXPERIMENT_SEED_VALUE=${AGENT_EXPERIMENT_SEED_VALUE:-}
       - AGENT_EXPERIMENT_SEED_OBJECTIVE=${AGENT_EXPERIMENT_SEED_OBJECTIVE:-}
       - AGENT_EXPERIMENT_SEED_TARGET_N=${AGENT_EXPERIMENT_SEED_TARGET_N:-}
       - AGENT_EXPERIMENT_SEED_HYPOTHESIS=${AGENT_EXPERIMENT_SEED_HYPOTHESIS:-}
-      # UC-042 / FR-058: retro-seeded thesis proposer opt-in (off by default).
+      # UC-042 / FR-058: operator ceiling of the proposer gate (unset = closed). Both
+      # proposers (retro-seeded theses and M7-4) run only when this is true AND the
+      # experiment_proposer_enabled flag is on (#1810, C-034).
       - AGENT_EXPERIMENT_PROPOSER_ENABLED=${AGENT_EXPERIMENT_PROPOSER_ENABLED:-}
       # Heuristic dynamic declarer (#995): the agent autonomously picks which
       # game.json flag to experiment on. Default-OFF; subordinate to
       # AGENT_EXPERIMENTS_ENABLED + the agent.json kill-switch. Passthrough so the
       # feature is reachable in the deployed stack (#1041).
       - AGENT_EXPERIMENT_DYNAMIC_ENABLED=${AGENT_EXPERIMENT_DYNAMIC_ENABLED:-false}
+      # Operator ceiling on experiment_dynamic_max_concurrent (#1810, C-034): empty = no ceiling.
       - AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT=${AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT:-}
       - AGENT_EXPERIMENT_DYNAMIC_CANDIDATES=${AGENT_EXPERIMENT_DYNAMIC_CANDIDATES:-}
       - AGENT_EXPERIMENT_DYNAMIC_DENYLIST=${AGENT_EXPERIMENT_DYNAMIC_DENYLIST:-}
