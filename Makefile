@@ -83,6 +83,8 @@ up-mock:
 	@echo "JoustMania is running (MOCK MODE)"
 	@echo "=========================================="
 	@echo "  Using flagd ci/ dir (backend=mock)"
+	@echo "  Envoy, dashboard and connect-proxy are in the 'dashboard' profile; for the URLs below run:"
+	@echo "    docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile dashboard up -d"
 	@echo "  Dashboard:  http://localhost/"
 	@echo "  Jaeger:     http://localhost/jaeger/"
 	@echo "  Metrics:    http://localhost/victoria-metrics/vmui/"

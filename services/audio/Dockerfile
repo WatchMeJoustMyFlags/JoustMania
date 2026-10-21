@@ -2,7 +2,7 @@
 #
 # Phase 80: Migrated to distroless with miniaudio (replaces pygame)
 # - miniaudio for sound effects
-# - resampy for tempo control (replaces scipy)
+# - soxr for tempo control (replaces scipy, then resampy in #911)
 # - pyalsaaudio for ALSA music output
 #
 # Issue #79: Fixed libmvec.so.1 missing on ARM64

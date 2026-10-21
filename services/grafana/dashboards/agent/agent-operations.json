@@ -1748,7 +1748,7 @@
           "refId": "A"
         }
       ],
-      "title": "Rejected Agent Writes (1h)",
+      "title": "Rejected writes, agent flag sets (1h)",
       "type": "stat"
     },
     {

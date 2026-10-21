@@ -269,7 +269,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         built the instance) are skipped — there is nothing to apply to. This
         includes the primary and every shadow session uniformly, so a
         gameId-targeted intervention reaches the matching session and an
-        un-targeted one resolves to the same value for every live session.
+        un-targeted one (baseline default) resolves to the same value for every live session.
         """
         views: list[SessionView] = []
         with self._sessions_lock:

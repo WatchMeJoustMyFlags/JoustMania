@@ -132,7 +132,7 @@ EBUSY on the bind mount). Locks are per process or per writer instance; there is
 | R6 | `scripts/talk-preflight.sh` (12 `json.load` / `open` reads: `agent.json`, `controller.json`, `interventions.json`, the stage baseline) | stage baseline, controller backend, neutral interventions | `GET /agent`, `GET /controller`, `GET /state` | #1412 |
 
 Non-writers (checked): the game coordinator (it keeps the in-memory nonce baselines,
-`InterventionManager.prime_session` / `forget_session` / `_prune_stale_buckets`), `lib/` apart from
+`InterventionManager.forget_session` / `_prune_stale_buckets`), `lib/` apart from
 `flag_config_writer.py`, the dashboard (no flagd client), rust-hid.
 
 ## 4. After: the same writers through the service
@@ -352,7 +352,7 @@ bounds carry the per-flag knowledge, and new mutable flags need a registry row, 
 
 - It admits and retires **every** game, real and shadow; it knows the id, kind, serials, experiment and
   arm before the game loop evaluates any flag; the agent learns of a game from OTel after the batch delay.
-- It already has the hooks: `prime_session` and `forget_session` (`services/game_coordinator/servicer.py`).
+- It has an existing retire hook on the coordinator side: `InterventionManager.forget_session` (`services/game_coordinator/interventions.py`); `prime_session` no longer exists.
 - **Instance scoping (review C3).** `PUT /games/{gameId}` carries `coordinator_instance` (`FLAG_SERVICE_INSTANCE`, set per
   coordinator in compose and stable across a restart or recreate; the boot id is only logged). `PUT /coordinators/{instance}/games` (the reconcile call, at coordinator start and when its
   connection to the service recovers) drops only that instance's other games:

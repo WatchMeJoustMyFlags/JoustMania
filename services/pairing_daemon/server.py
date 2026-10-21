@@ -9,10 +9,8 @@ Provides OTEL push metrics and OpenTelemetry tracing for observability.
 
 Runs as a Docker container alongside other JoustMania services.
 
-LED Feedback:
-  - Yellow solid: Pairing in progress
-  - White flash 3x: Success - unplug and press PS button
-  - Red flash 3x: Error
+LED Feedback: none. The daemon gives no LED feedback while pairing; progress
+and failures are visible in the logs and metrics only (UC-001 BR-002, D-C4).
 
 Environment:
   DEBUG         - deprecated fallback of the `debug` flag (observability set); 1 = tracebacks on errors
