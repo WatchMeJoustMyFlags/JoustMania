@@ -3,7 +3,8 @@
 AGENT_CLAUDE composition, one ``fresh_stack`` (``enabled``, ``experiments_enabled`` and the
 agent's LLM budget are global): real menu, game coordinator and controller manager (mock
 backend) from source at HEAD, the Go agent built at HEAD with
-``AGENT_INFERENCE_BACKEND=claude`` pointed (``AGENT_INFERENCE_BASE_URL``) at the scriptable
+the ``inference.backend=claude`` overlay (the stack writes it; the flag wins over the env, #1810),
+``ANTHROPIC_API_KEY`` and ``AGENT_INFERENCE_BASE_URL`` pointed at the scriptable
 fake Claude (Anthropic Messages API), a fresh flag plane, FakeAudio and the OtlpSink that
 the agent exports its spans to (Jaeger's role).
 """
@@ -76,6 +77,7 @@ def _wait_flags_served(stack) -> None:
                 client.get_boolean_value("experiments_enabled", False, ctx) is True
                 and client.get_string_value("llm.eligible_game_kinds", "", ctx) == "real"
                 and client.get_string_value("inference.model", "", ctx) == FAKE_CLAUDE_MODEL
+                and client.get_string_value("inference.backend", "", ctx) == "claude"
             ),
             rewrite=_configure_agent,
         )

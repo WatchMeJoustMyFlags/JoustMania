@@ -86,8 +86,8 @@ real-default change.
    games to Claude when the agent has `ANTHROPIC_API_KEY`; shadow games stay on
    rules.
 
-   *(Optional) post-game proposer* — with `AGENT_INFERENCE_BACKEND=claude` and
-   `AGENT_EXPERIMENT_PROPOSER_ENABLED=true` (the proposer gate's ceiling, which
+   *(Optional) post-game proposer* — with the flag `inference.backend=claude`
+   (and `ANTHROPIC_API_KEY`) and `AGENT_EXPERIMENT_PROPOSER_ENABLED=true` (the proposer gate's ceiling, which
    also needs the `experiment_proposer_enabled` flag on, #1810) the M7-4
    proposer asks Claude for an experiment at game end, but only while gates
    1 and 2 are on and only after a **real** game ends (#1270): a shadow-only dry
