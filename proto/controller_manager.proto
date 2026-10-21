@@ -142,7 +142,7 @@ message ControllerHealth {
   uint32 led_failures = 3;  // set_output() failures since last stream frame
 }
 
-// Phase 41: Gameplay data streaming (acceleration/gyro only, no buttons)
+// Phase 41: Gameplay data streaming (acceleration/gyro, plus the trigger for the shield charge)
 message GameplayData {
   string serial = 1;
   int32 move_num = 2;
@@ -152,11 +152,16 @@ message GameplayData {
   RGB color = 6;
   Vector3 accel = 7;  // Primary gameplay data
   Vector3 gyro = 8;   // Secondary gameplay data
-  // NO button states - use StreamButtonEvents if buttons are needed
+  // No other button states - use StreamButtonEvents if buttons are needed
   int32 rssi = 9;     // Signal strength in dBm (-100 to 0, 0 = USB/unavailable)
   string name = 10;   // Human-readable controller name (Issue #7)
   ControllerHealth health = 11;  // Per-frame health counters (#571)
   ConnectionQuality connection_quality = 12;  // Unset until the 10 s gap window has data (UC-035 BR-005)
+  // The digital trigger (as the lobby ready), for the shield charge (#1837, UC-030 A6). True when the
+  // trigger is down now OR was pressed since the previous frame delivered to a game stream (a latch
+  // cleared per game frame, so a press between frames at 15/30 Hz is not lost). Only game streams
+  // clear the latch; the game does the edge detection.
+  bool trigger_pressed = 13;
 }
 
 // Connection quality of a controller from the gaps between fresh frames over a
@@ -245,6 +250,14 @@ enum GameEffect {
   // RPC-only: started by IdentifyController; a GameEffectCommand with it is rejected.
   // It only tags the running effect so a game stream can cancel it (UC-004 BR-003).
   GAME_EFFECT_IDENTIFY = 16;
+  // Shield charge (#1837, UC-040 BR-021): the held, not yet activated shield. The player's current base
+  // colour breathes 60-100% at 0.5 Hz (the lowest shield layer) for duration_ms (capped at 120 s; the
+  // game re-sends while the charge is held) plus one 100 ms rumble tick at 120 when the layer starts.
+  // duration_ms=0 ends only the charge layer (SHIELD 0 ends all layers).
+  GAME_EFFECT_SHIELD_CHARGE = 17;
+  // Shield swell (#1837, UC-040 BR-021): rumble only, 0->180->0 over 600 ms when a charge is activated.
+  // Shares the rumble slot, so any later rumble (warning, death) replaces it. No LED, no layer.
+  GAME_EFFECT_SHIELD_SWELL = 18;
 }
 
 // Trigger a game effect via stream

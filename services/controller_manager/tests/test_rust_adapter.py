@@ -20,6 +20,7 @@ def _make_adapter():
     adapter._command_queue = queue.Queue(maxsize=256)
     adapter._latest_data = {}
     adapter._last_state = {}
+    adapter._trigger_latch = set()
     adapter._data_lock = __import__("threading").Lock()
     adapter._closed = set()
     adapter._stream_thread = None

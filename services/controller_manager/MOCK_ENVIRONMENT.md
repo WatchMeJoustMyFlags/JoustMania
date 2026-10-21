@@ -187,6 +187,9 @@ Button codes:
 - `2` = SELECT
 - `3` = START
 
+A TRIGGER press sets the level and also latches a press until the next frame delivered to a game stream
+(`GameplayData.trigger_pressed`, #1837), so a short press is not lost between frames.
+
 ### Reset Controller
 
 Reset to idle state (buttons unpressed, death latch and held movement cleared,

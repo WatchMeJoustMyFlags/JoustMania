@@ -13,7 +13,7 @@ from unittest.mock import create_autospec, patch
 
 import pytest
 
-from lib.controller_constants import AxisKey, ControllerInfoKey, StateKey
+from lib.controller_constants import AxisKey, ButtonKey, ControllerInfoKey, StateKey
 from proto import controller_manager_pb2
 from services.controller_manager.backend import ControllerBackend
 
@@ -62,6 +62,10 @@ def _set_axis(key: StateKey, axis: AxisKey, value: float) -> Callable:
     return change
 
 
+def _set_trigger(svc) -> None:
+    _state(svc)[ButtonKey.TRIGGER] = True
+
+
 def _set_info(key: ControllerInfoKey, value) -> Callable:
     def change(svc) -> None:
         _info(svc)[key] = value
@@ -90,6 +94,7 @@ CASES = [
     ("color", _set_colour, lambda gd: _rgb(gd.color), (200, 100, 50)),
     # Changes below 0.005 used to be served from the cache (2-decimal key).
     ("accel", _set_axis(StateKey.ACCEL, AxisKey.X, 0.004), lambda gd: _xyz(gd.accel), (0.004, 0.0, 1.0)),
+    ("trigger_pressed", _set_trigger, lambda gd: gd.trigger_pressed, True),  # #1837
     ("gyro", _set_axis(StateKey.GYRO, AxisKey.X, 0.004), lambda gd: _xyz(gd.gyro), (0.004, 0.0, 0.0)),
 ]
 

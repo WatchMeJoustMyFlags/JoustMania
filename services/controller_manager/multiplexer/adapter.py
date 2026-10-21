@@ -55,6 +55,14 @@ class ControllerIOAdapter(ABC):
     def close(self, serial: str) -> None:
         """Release controller handle."""
 
+    def consume_trigger_press(self, serial: str) -> bool:  # noqa: ARG002
+        """Whether the trigger was pressed since the last call, then clear (#1837).
+
+        The gameplay send path calls this once per delivered game frame, so a press
+        shorter than the frame interval is not lost. Default: no latch.
+        """
+        return False
+
     def get_adapter_for_serial(self, serial: str) -> str | None:  # noqa: ARG002
         """Return BT adapter name (e.g. 'hci0') for this serial, if known."""
         return None
