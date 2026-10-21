@@ -815,8 +815,8 @@ fitness → rollback); the game path had nothing. #918 closes the **measurement*
    quantities `fitness.evaluated` carries — and tags it with a dispatch-unique
    `decision.intervention_id` (also stamped on the `agent.decision` span, so a Jaeger
    query joins *what the agent did* to *what happened next*).
-2. **After a follow-up window** (`DefaultEffectWindow` = 20 s, env-tunable via
-   `AGENT_EFFECT_WINDOW_SECONDS`) a per-game sampler re-reads the **same** game's
+2. **After a follow-up window** (`DefaultEffectWindow` = 20 s, the live
+   `effect.window_seconds` flag since #1788; `AGENT_EFFECT_WINDOW_SECONDS` only as fallback) a per-game sampler re-reads the **same** game's
    signals (through the same `ContextProvider` the #917 async path uses, so per-game
    isolation holds) and recomputes the **same** fitness functions with the
    dispatch-time thresholds.

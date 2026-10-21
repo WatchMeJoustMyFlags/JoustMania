@@ -68,7 +68,16 @@ const (
 // instrumentationName scopes the tracer.
 const instrumentationName = "github.com/joustmania/agent/inference"
 
-// Config configures a Claude backend. main.go builds it from env once at startup.
+// Settings are the per-call tuning values (#1788): the model, the effort and the
+// call deadline. Blank or non-positive fields fall back like the Config fields.
+type Settings struct {
+	Model   string
+	Effort  string
+	Timeout time.Duration
+}
+
+// Config configures a Claude backend. main.go builds it once at startup; the
+// tuning (Model, Effort, Timeout) is resolved per call through Tuning when set.
 type Config struct {
 	// APIKey is the Anthropic API key (ANTHROPIC_API_KEY). Empty = unavailable.
 	APIKey string
@@ -81,6 +90,10 @@ type Config struct {
 	Effort string
 	// Timeout bounds one call; not positive means DefaultTimeout.
 	Timeout time.Duration
+	// Tuning, when set, is called on EVERY Infer to resolve the model, effort and
+	// timeout at use time (#1788, FR-150: the inference.* agent flags, env and
+	// compiled defaults as fallbacks). Nil uses Model / Effort / Timeout above.
+	Tuning func(ctx context.Context) Settings
 	// HTTPClient overrides the default client (tests).
 	HTTPClient *http.Client
 }
@@ -138,23 +151,12 @@ func NewClaude(cfg Config) *Claude {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = DefaultBaseURL
 	}
-	cfg.Model = strings.TrimSpace(cfg.Model)
-	if cfg.Model == "" {
-		cfg.Model = DefaultModel
-	}
-	cfg.Effort = strings.ToLower(strings.TrimSpace(cfg.Effort))
-	if cfg.Effort != "" && !validEfforts[cfg.Effort] {
-		slog.Warn("AGENT_INFERENCE_EFFORT is not one of low|medium|high|xhigh|max; sending no effort",
-			"value", cfg.Effort)
-		cfg.Effort = ""
-	}
-	if cfg.Timeout <= 0 {
-		cfg.Timeout = DefaultTimeout
-	}
+	static := normalizeSettings(Settings{Model: cfg.Model, Effort: cfg.Effort, Timeout: cfg.Timeout})
+	cfg.Model, cfg.Effort, cfg.Timeout = static.Model, static.Effort, static.Timeout
 	if cfg.HTTPClient == nil {
-		// Backstop only; the per-call ctx deadline is the real budget.
+		// No client-wide timeout: the timeout is resolved per call (Tuning) and every
+		// Infer bounds its request with a ctx deadline, which is the real budget.
 		cfg.HTTPClient = &http.Client{
-			Timeout: cfg.Timeout + 10*time.Second,
 			// Never follow a redirect: net/http strips only Authorization and
 			// Cookie across hosts, so x-api-key would reach the redirect target.
 			// The Anthropic API does not redirect; a 3xx surfaces as an error.
@@ -171,8 +173,37 @@ func (c *Claude) Name() string { return Name }
 // BaseURL is the API root the backend sends requests (and the API key) to.
 func (c *Claude) BaseURL() string { return c.cfg.BaseURL }
 
-// Model is the configured model id.
-func (c *Claude) Model() string { return c.cfg.Model }
+// Model is the model id the next call uses (resolved through Tuning when set).
+func (c *Claude) Model() string { return c.settings(context.Background()).Model }
+
+// settings resolves the tuning for one call: Tuning when set, else the static
+// Config values; blank or invalid values are normalised.
+func (c *Claude) settings(ctx context.Context) Settings {
+	if c.cfg.Tuning == nil {
+		return Settings{Model: c.cfg.Model, Effort: c.cfg.Effort, Timeout: c.cfg.Timeout}
+	}
+	return normalizeSettings(c.cfg.Tuning(ctx))
+}
+
+// normalizeSettings applies the defaults: a blank model is DefaultModel, an effort
+// outside low|medium|high|xhigh|max is dropped (none is sent), a non-positive
+// timeout is DefaultTimeout.
+func normalizeSettings(s Settings) Settings {
+	s.Model = strings.TrimSpace(s.Model)
+	if s.Model == "" {
+		s.Model = DefaultModel
+	}
+	s.Effort = strings.ToLower(strings.TrimSpace(s.Effort))
+	if s.Effort != "" && !validEfforts[s.Effort] {
+		slog.Warn("inference effort is not one of low|medium|high|xhigh|max; sending no effort",
+			"value", s.Effort)
+		s.Effort = ""
+	}
+	if s.Timeout <= 0 {
+		s.Timeout = DefaultTimeout
+	}
+	return s
+}
 
 // Available reports whether an API key is configured.
 func (c *Claude) Available() bool {
@@ -185,16 +216,17 @@ func (c *Claude) Infer(ctx context.Context, prompt llm.Prompt) (string, error) {
 	if !c.Available() {
 		return "", &Error{Type: "unavailable", Err: ErrUnavailable}
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+	s := c.settings(ctx)
+	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
 
-	ctx, span := otel.Tracer(instrumentationName).Start(ctx, "chat "+c.cfg.Model,
+	ctx, span := otel.Tracer(instrumentationName).Start(ctx, "chat "+s.Model,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(c.requestAttributes(prompt.System)...),
+		trace.WithAttributes(c.requestAttributes(prompt.System, s)...),
 	)
 	defer span.End()
 
-	msg, err := c.client.Beta.Messages.New(ctx, c.params(prompt))
+	msg, err := c.client.Beta.Messages.New(ctx, params(prompt, s))
 	if err != nil {
 		// Only the low-cardinality error.type reaches the span: vendor error bodies
 		// can echo request details, so the error text never does (#1242).
@@ -261,18 +293,18 @@ var noEffortModels = map[string]bool{
 	"claude-sonnet-4-5": true,
 }
 
-func (c *Claude) usesFallback() bool { return fallbackModels[stripDateSuffix(c.cfg.Model)] }
+func usesFallback(s Settings) bool { return fallbackModels[stripDateSuffix(s.Model)] }
 
-func (c *Claude) effort() string {
-	if noEffortModels[stripDateSuffix(c.cfg.Model)] {
+func effort(s Settings) string {
+	if noEffortModels[stripDateSuffix(s.Model)] {
 		return ""
 	}
-	return c.cfg.Effort
+	return s.Effort
 }
 
-func (c *Claude) params(p llm.Prompt) anthropic.BetaMessageNewParams {
+func params(p llm.Prompt, s Settings) anthropic.BetaMessageNewParams {
 	params := anthropic.BetaMessageNewParams{
-		Model:     anthropic.Model(c.cfg.Model),
+		Model:     anthropic.Model(s.Model),
 		MaxTokens: MaxTokens,
 		Messages: []anthropic.BetaMessageParam{
 			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(p.User)),
@@ -281,10 +313,10 @@ func (c *Claude) params(p llm.Prompt) anthropic.BetaMessageNewParams {
 	if p.System != "" {
 		params.System = []anthropic.BetaTextBlockParam{{Text: p.System}}
 	}
-	if e := c.effort(); e != "" {
+	if e := effort(s); e != "" {
 		params.OutputConfig = anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffort(e)}
 	}
-	if c.usesFallback() {
+	if usesFallback(s) {
 		params.Betas = []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01}
 		params.Fallbacks = anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()}
 	}
@@ -304,17 +336,17 @@ func systemSHA(system string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-func (c *Claude) requestAttributes(system string) []attribute.KeyValue {
+func (c *Claude) requestAttributes(system string, s Settings) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		semconv.GenAIOperationNameChat,
 		semconv.GenAIProviderNameAnthropic,
-		semconv.GenAIRequestModel(c.cfg.Model),
+		semconv.GenAIRequestModel(s.Model),
 		semconv.GenAIRequestMaxTokens(MaxTokens),
 		semconv.ServerAddress(c.host),
 		semconv.ServerPort(c.port),
 		attrSystemSHA256.String(systemSHA(system)),
 	}
-	if e := c.effort(); e != "" {
+	if e := effort(s); e != "" {
 		attrs = append(attrs, attrRequestReasoningLevel.String(e))
 	}
 	return attrs

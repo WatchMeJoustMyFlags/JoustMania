@@ -230,15 +230,12 @@ type Loop struct {
 	// a single budget. Nil until injected; a nil budget gates every remote decide
 	// call with llm_budget_exhausted (fail-closed: no shared cap means no LLM).
 	budget *llmBudget
-	// budgetOverride, when > 0, replaces the per-cycle llm.max_requests_per_minute
-	// flag value as the budget cap (#964). It exists for LIVE inference operation
-	// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE): a busy demo can exhaust the flag default
-	// (6/min), gating remote decide calls with llm_budget_exhausted even when a
-	// backend is reachable. An operator can raise the
-	// cap for a live dry-run via one env knob without editing flagd. Zero (the default,
-	// and every existing test) means "no override" → the flag value governs exactly as
-	// before, so the default-off path is unchanged. Set at construction, before serving.
-	budgetOverride int
+	// budgetCeiling, when > 0, is the operator's env ceiling on the per-cycle
+	// llm.max_requests_per_minute flag value (AGENT_LLM_MAX_REQUESTS_PER_MINUTE,
+	// #1788, NFR-011, FR-152, C-034): the enforced cap is min(ceiling, flag), so a
+	// flag value can only tighten it, never loosen it. Zero (unset env, every
+	// existing test) means no ceiling: the flag governs. Set at construction.
+	budgetCeiling int
 
 	// llmGated counts gated remote decide cycles (agent_llm_gated_total{reason=...}). Defaults
 	// to a no-op so a Loop built without metrics wiring still works.
@@ -354,29 +351,20 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 // with OnEvaluate — set it during construction, before the loop serves.
 func (l *Loop) SetLLMBudget(b *llmBudget) { l.budget = b }
 
-// SetLLMBudgetOverride sets a per-minute LLM request cap that REPLACES the live
-// llm.max_requests_per_minute flag value (#964). main.go passes
-// AGENT_LLM_MAX_REQUESTS_PER_MINUTE when an operator wants a higher live cap for a
-// live run (the flag default of 6/min can gate remote decide calls with
-// llm_budget_exhausted even with a reachable backend).
-// A non-positive value is ignored (the flag governs), so the default-off path is
-// unchanged. Set during construction, before the loop serves.
-func (l *Loop) SetLLMBudgetOverride(maxPerMinute int) {
+// SetLLMBudgetCeiling sets the operator's per-minute ceiling on remote model calls
+// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE, #1788). The cap enforced each cycle is
+// min(ceiling, llm.max_requests_per_minute): the stricter wins (C-034). A
+// non-positive value means no ceiling (the flag governs). Set during construction.
+func (l *Loop) SetLLMBudgetCeiling(maxPerMinute int) {
 	if maxPerMinute > 0 {
-		l.budgetOverride = maxPerMinute
+		l.budgetCeiling = maxPerMinute
 	}
 }
 
-// budgetCap returns the per-minute LLM request cap to enforce this cycle: the
-// startup env override (#964) when one is set, else the live
-// llm.max_requests_per_minute flag value (#847). Keeping the flag as the default
-// preserves the never-cached, tune-live contract; the override is purely an
-// operator escape hatch for live inference and defaults to off.
+// budgetCap returns the per-minute LLM request cap to enforce this cycle: the live
+// llm.max_requests_per_minute flag value (#847), capped by the env ceiling.
 func (l *Loop) budgetCap(flagValue int) int {
-	if l.budgetOverride > 0 {
-		return l.budgetOverride
-	}
-	return flagValue
+	return ceilBudget(l.budgetCeiling, flagValue)
 }
 
 // SetInterventionRecorder installs the PER-GAME seam that feeds each decision's

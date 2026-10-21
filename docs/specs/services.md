@@ -344,7 +344,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 
 ### agent
 
-- Environment: see `docker-compose.yml:667-765`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214). Still env: API keys, `AGENT_INFERENCE_*`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`, `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
+- Environment: see `docker-compose.yml:667-765`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214), the text-backend tuning, effect window and promotion timers (#1788, [flags.md §15](flags.md#15-planned-env-to-flag-migration-1788); their env vars are deprecated fallbacks). Still env: API keys, `AGENT_INFERENCE_BACKEND` / `_BASE_URL`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (a ceiling), `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
 - Writes: `interventions.json` (action sink), `rollout.json` (`current_controller_count`), `game.json` (experiment targeting; autonomous real default when enabled). Never `agent.json` (code guard in `experiment/gate.go`; the mount is read-write).
 - Persistent volume `agent-experiments` for the experiment journal and autonomous-revert snapshots.
 - Pattern games (#1258, UC-046): the one-shot runner reads `SHADOW_GAME_ARCHETYPE` and `SHADOW_GAME_SEED`; for a pattern game the runner sends no `SimulateMovement` / `SimulateDeath` and force-ends the game at the pinned safety cap `experiment.max_game_seconds` (outcome `timeout`).
@@ -365,13 +365,13 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_INFERENCE_BACKEND` | `stub` | yes | text backend for the retro and proposer: `claude` or the stub; not used for in-game decisions ([decide-contract.md](decide-contract.md) 10.1) |
 | `ANTHROPIC_API_KEY` | empty | yes | Claude key: text backend and the `claude` decision backend; without it that backend is unavailable |
 | `DECISION_OPENAI_API_KEY`, `JEV_API_KEY` | empty | yes | keys of the `openai` and `jev` decision backends, read once at startup |
-| `AGENT_INFERENCE_MODEL` | `claude-opus-5-5` | yes (empty = default) | model id of the `claude` text backend |
-| `AGENT_INFERENCE_EFFORT` | `medium` | yes (empty = default) | `output_config.effort` of the text backend (not sent to Haiku 4.5) |
-| `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | yes (empty = default) | per-call deadline of the text backend, also the retro deadline |
+| `AGENT_INFERENCE_MODEL` | `claude-opus-5-5` | yes (empty = default) | deprecated (#1788): fallback for the `inference.model` flag, used only while the flag cannot be resolved |
+| `AGENT_INFERENCE_EFFORT` | `medium` | yes (empty = default) | deprecated (#1788): fallback for `inference.effort` (`output_config.effort`, not sent to Haiku 4.5) |
+| `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | yes (empty = default) | deprecated (#1788): fallback for `inference.timeout_seconds` (per-call deadline of the text backend, also the retro deadline) |
 | `AGENT_INFERENCE_BASE_URL` | empty (= `https://api.anthropic.com`) | no | API root of the `claude` text backend, for the service-tier fake Claude (#1422 S10) or a proxy. `ANTHROPIC_API_KEY` is sent to it, so only an `https` URL is accepted (plain `http` only for a loopback host: `localhost` in any case, 127.0.0.0/8, `::1`, and IPv4-mapped 127.0.0.0/8 such as `[::ffff:127.0.0.1]`, which Go's `IsLoopback` counts as loopback; `localhost.`, `0.0.0.0` and DNS names that resolve to loopback are rejected), with a host and no credentials, query or fragment; anything else is rejected with an ERROR log and leaves the proposer and retro on the stub. A non-default host is logged at WARN. The text backend never follows an HTTP redirect (net/http would forward `x-api-key` to the target): a 3xx answer is a failed call. The in-game `claude` decision backend is unaffected |
-| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | unset | yes | positive value replaces the `llm.max_requests_per_minute` flag |
+| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | unset | yes | operator ceiling: the enforced cap is `min(env, llm.max_requests_per_minute)`; unset = no ceiling (#1788, C-034) |
 | `AGENT_PROBE_DECISIONS` | unset | yes | `true` emits a synthetic `noop` decision about every 5 s (demo and verification only) |
-| `AGENT_EFFECT_WINDOW_SECONDS` | `20` | no | intervention-effect follow-up window (float seconds, positive) |
+| `AGENT_EFFECT_WINDOW_SECONDS` | `20` | no | deprecated (#1788): fallback for `effect.window_seconds` (float seconds, positive) |
 | `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | no | dwell between rollout expansions |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | yes | re-expansion cooldown after a rollback |
 | `AGENT_SHADOW_GAME` | unset | no | `true` runs one one-shot shadow game at startup; `SHADOW_GAME_MODE` (`JoustFFA`), `SHADOW_GAME_SENSITIVITY` (`2`, 0 to 4), `SHADOW_GAME_ARCHETYPE`, `SHADOW_GAME_SEED` tune it |
@@ -395,7 +395,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_LOCAL_REPO_DIR` | unset | no | repo directory for the local target; unset = no-op |
 | `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_BASE_BRANCH`, `GITHUB_API_URL` | unset, unset, `main`, `https://api.github.com` | no | GitHub target (`owner/repo`); misconfiguration falls back to an inert no-op |
 | `AGENT_AUTONOMOUS_ENABLED` | `false` | no | opt-in for the autonomous real-default path (needs `AGENT_CODE_IMPROVEMENT_ENABLED`) |
-| `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS`, `_REWATCH_INTERVAL_SECONDS`, `_REWATCH_TIMEOUT_SECONDS` | `600`, `60`, `3600` | no | autonomous revert cooldown and live re-watch cadence and timeout |
+| `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS`, `_REWATCH_INTERVAL_SECONDS`, `_REWATCH_TIMEOUT_SECONDS` | `600`, `60`, `3600` | no | deprecated (#1788): fallbacks for `promotion.revert_cooldown_seconds`, `promotion.rewatch_interval_seconds`, `promotion.rewatch_timeout_seconds` |
 
 ### connect-proxy
 

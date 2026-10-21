@@ -291,10 +291,13 @@ type Promoter struct {
 	// flag enters a cooldown; an autonomous re-promotion of the SAME flag inside the
 	// cooldown is refused (recorded no-op), so the loop cannot run hot. Defaults to
 	// DefaultRevertCooldown; SetCooldown overrides (env-driven from main.go).
-	cooldown   time.Duration
-	now        func() time.Time // injectable clock (tests); defaults to time.Now
-	mu         sync.Mutex       // guards lastRevert
-	lastRevert map[string]time.Time
+	cooldown time.Duration
+	// cooldownSource, when set, resolves the cooldown at use time (each cooldown
+	// check, promotion.revert_cooldown_seconds, #1788) and wins over cooldown.
+	cooldownSource func() time.Duration
+	now            func() time.Time // injectable clock (tests); defaults to time.Now
+	mu             sync.Mutex       // guards lastRevert
+	lastRevert     map[string]time.Time
 
 	// --- re-watch scheduling (#1065 item 4) ---
 	// When a watch sees INSUFFICIENT real games, the apply stands but is unverified. If
@@ -358,6 +361,25 @@ func (pr *Promoter) SetCooldown(d time.Duration) {
 	if d > 0 {
 		pr.cooldown = d
 	}
+}
+
+// SetCooldownSource makes the post-revert cooldown resolve at use time, on every
+// cooldown check (promotion.revert_cooldown_seconds, #1788). It wins over
+// SetCooldown; a non-positive result falls back to DefaultRevertCooldown.
+func (pr *Promoter) SetCooldownSource(src func() time.Duration) {
+	pr.cooldownSource = src
+}
+
+// effectiveCooldown is the cooldown in force now: the source when set, else the
+// static value.
+func (pr *Promoter) effectiveCooldown() time.Duration {
+	if pr.cooldownSource != nil {
+		if d := pr.cooldownSource(); d > 0 {
+			return d
+		}
+		return DefaultRevertCooldown
+	}
+	return pr.cooldown
 }
 
 // SetClock injects the time source the cooldown uses (tests drive a fake clock). A

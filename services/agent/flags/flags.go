@@ -163,8 +163,9 @@ const (
 	// The agent.json "stage" variant (30/min) is for a live remote-backend demo:
 	// one game at decision.min_interval_ms=3000 asks ~15-20 times a minute
 	// (#1231), and post-game retros draw on the same budget, so that is a lower
-	// bound on demand. AGENT_LLM_MAX_REQUESTS_PER_MINUTE, when set, REPLACES this
-	// flag (Loop.budgetCap, #964): flipping "stage" then changes nothing.
+	// bound on demand. AGENT_LLM_MAX_REQUESTS_PER_MINUTE, when set, is the operator's
+	// ceiling: the cap is min(env, this flag) (Loop.budgetCap, #1788, C-034), so the
+	// flag can only tighten it. This default is also the lost-sync value.
 	DefaultLLMMaxRequestsPerMinute = 6
 
 	// Fitness threshold defaults (#731), mirroring the services/flagd/agent.json

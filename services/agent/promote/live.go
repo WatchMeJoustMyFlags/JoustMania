@@ -109,8 +109,8 @@ const (
 // agent shutdown cancels in-flight re-watches.
 type pollingRewatcher struct {
 	rootCtx  context.Context
-	interval time.Duration
-	timeout  time.Duration
+	interval func() time.Duration
+	timeout  func() time.Duration
 	now      func() time.Time
 	log      *slog.Logger
 }
@@ -119,19 +119,43 @@ type pollingRewatcher struct {
 // spawned re-watch to the agent lifecycle (cancelled on shutdown). A non-positive
 // interval/timeout falls back to the defaults. log nil uses slog.Default().
 func NewPollingRewatcher(rootCtx context.Context, interval, timeout time.Duration, log *slog.Logger) *pollingRewatcher {
+	return NewPollingRewatcherFunc(rootCtx,
+		func() time.Duration { return interval },
+		func() time.Duration { return timeout },
+		log)
+}
+
+// NewPollingRewatcherFunc is NewPollingRewatcher with the interval and timeout
+// resolved at use time, once per scheduled re-watch
+// (promotion.rewatch_interval_seconds / promotion.rewatch_timeout_seconds, #1788).
+// A nil func or a non-positive result falls back to the default.
+func NewPollingRewatcherFunc(rootCtx context.Context, interval, timeout func() time.Duration, log *slog.Logger) *pollingRewatcher {
 	if rootCtx == nil {
 		rootCtx = context.Background()
-	}
-	if interval <= 0 {
-		interval = DefaultRewatchInterval
-	}
-	if timeout <= 0 {
-		timeout = DefaultRewatchTimeout
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &pollingRewatcher{rootCtx: rootCtx, interval: interval, timeout: timeout, now: time.Now, log: log}
+	return &pollingRewatcher{
+		rootCtx:  rootCtx,
+		interval: positiveOr(interval, DefaultRewatchInterval),
+		timeout:  positiveOr(timeout, DefaultRewatchTimeout),
+		now:      time.Now,
+		log:      log,
+	}
+}
+
+// positiveOr wraps src so a nil src or a non-positive result yields def.
+func positiveOr(src func() time.Duration, def time.Duration) func() time.Duration {
+	return func() time.Duration {
+		if src == nil {
+			return def
+		}
+		if d := src(); d > 0 {
+			return d
+		}
+		return def
+	}
 }
 
 // Schedule starts the background re-watch (non-blocking). It re-observes via the live
@@ -153,9 +177,10 @@ func (r *pollingRewatcher) Schedule(ctx context.Context, flagKey string, baselin
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	interval, timeout := r.interval(), r.timeout()
 	go func() {
-		deadline := r.now().Add(r.timeout)
-		ticker := time.NewTicker(r.interval)
+		deadline := r.now().Add(timeout)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {

@@ -65,9 +65,9 @@ services:
     environment:
       # Dummy key, matched by fake-openai (FAKE_OPENAI_API_KEY). Never a real key.
       - DECISION_OPENAI_API_KEY=fake-decide-e2e-key
-      # Lift the shared per-minute remote-call budget (llm.max_requests_per_minute,
-      # 6/min by default) for the test run: across several back-to-back games the
-      # default would exhaust and turn calls into budget_exhausted rules fallbacks.
+      # Env ceiling on the shared per-minute remote-call budget. Since #1788 the cap
+      # is min(env, llm.max_requests_per_minute): this keeps the ceiling out of the
+      # way, the flag (default 6, `stage` 30) still governs.
       - AGENT_LLM_MAX_REQUESTS_PER_MINUTE=600
     depends_on:
       fake-openai:

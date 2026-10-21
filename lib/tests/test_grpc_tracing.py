@@ -1,10 +1,17 @@
 """Tests for lib/grpc_tracing.py"""
 
+import asyncio
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
 # Add lib to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -277,6 +284,62 @@ class TestServerInterceptorSpans:
         assert result is not None
 
 
+class TestStreamCloseFromOtherContext:
+    """#1769: closing a wrapped stream from another task must not log a detach ERROR."""
+
+    @staticmethod
+    async def _wrapped_handler(kind: str, rpc_spans: bool):
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+        async def inner(*_args):
+            for i in range(10):
+                yield i
+
+        mock_handler = MagicMock()
+        mock_handler.unary_unary = None
+        mock_handler.unary_stream = inner if kind == "unary_stream" else None
+        mock_handler.stream_unary = None
+        mock_handler.stream_stream = inner if kind == "stream_stream" else None
+        mock_handler.request_deserializer = None
+        mock_handler.response_serializer = None
+        mock_details = MagicMock()
+        mock_details.method = "/pkg.Svc/Stream"
+
+        interceptor = get_server_interceptors()[0]
+        interceptor._tracer = provider.get_tracer("test")
+        with patch("lib.grpc_tracing._rpc_spans_enabled", return_value=rpc_spans):
+            wrapped = await interceptor.intercept_service(AsyncMock(return_value=mock_handler), mock_details)
+        return getattr(wrapped, kind), exporter
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["stream_stream", "unary_stream"])
+    @pytest.mark.parametrize("rpc_spans", [True, False])
+    async def test_close_from_other_task_logs_no_detach_error(self, kind, rpc_spans, caplog):
+        handler, exporter = await self._wrapped_handler(kind, rpc_spans)
+        context = MagicMock()
+        context.invocation_metadata.return_value = []
+        gen = handler(MagicMock(), context)
+
+        async def first_item():
+            return await gen.__anext__()
+
+        assert await asyncio.create_task(first_item()) == 0
+
+        async def close():
+            await gen.aclose()
+
+        with caplog.at_level(logging.DEBUG, logger="opentelemetry.context"):
+            await asyncio.create_task(close())
+
+        errors = [r for r in caplog.records if r.name == "opentelemetry.context" and r.levelno >= logging.ERROR]
+        assert errors == []
+        if rpc_spans:
+            spans = exporter.get_finished_spans()
+            assert [s.name for s in spans] == ["Svc/Stream"]
+
+
 class TestParseAddress:
     """Tests for _parse_address in grpc_utils."""
 
@@ -339,3 +402,172 @@ class TestClientInterceptorSpans:
         interceptor = ContextPropagationInterceptor()
         assert interceptor._server_address is None
         assert interceptor._server_port is None
+
+
+class TestStreamSpanScoping:
+    """#1769 review: the rpc span is current only while the handler runs, never in the caller."""
+
+    @staticmethod
+    async def _wrap(inner, kind: str = "stream_stream"):
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+        mock_handler = MagicMock()
+        mock_handler.unary_unary = None
+        mock_handler.unary_stream = inner if kind == "unary_stream" else None
+        mock_handler.stream_unary = None
+        mock_handler.stream_stream = inner if kind == "stream_stream" else None
+        mock_handler.request_deserializer = None
+        mock_handler.response_serializer = None
+        mock_details = MagicMock()
+        mock_details.method = "/pkg.Svc/Stream"
+
+        interceptor = get_server_interceptors()[0]
+        interceptor._tracer = provider.get_tracer("test")
+        with patch("lib.grpc_tracing._rpc_spans_enabled", return_value=True):
+            wrapped = await interceptor.intercept_service(AsyncMock(return_value=mock_handler), mock_details)
+        context = MagicMock()
+        context.invocation_metadata.return_value = []
+        gen = getattr(wrapped, kind)(MagicMock(), context)
+        return gen, exporter, provider.get_tracer("handler")
+
+    @staticmethod
+    def _rpc_span(exporter):
+        return next(s for s in exporter.get_finished_spans() if s.name == "Svc/Stream")
+
+    @pytest.mark.asyncio
+    async def test_child_span_after_yield_parents_to_rpc_span(self):
+        tracer_holder = {}
+
+        async def inner(*_args):
+            for i in range(3):
+                yield i
+                with tracer_holder["tracer"].start_as_current_span(f"child{i}"):
+                    pass
+
+        gen, exporter, tracer = await self._wrap(inner)
+        tracer_holder["tracer"] = tracer
+        async for _ in gen:
+            pass
+
+        spans = {s.name: s for s in exporter.get_finished_spans()}
+        rpc = spans["Svc/Stream"]
+        for i in range(3):
+            assert spans[f"child{i}"].parent.span_id == rpc.context.span_id
+        assert rpc.status.status_code == StatusCode.OK
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["stream_stream", "unary_stream"])
+    async def test_rpc_span_not_current_in_caller_between_steps(self, kind):
+        async def inner(*_args):
+            for i in range(3):
+                yield i
+
+        gen, _exporter, _tracer = await self._wrap(inner, kind)
+        async for _ in gen:
+            assert not trace.get_current_span().get_span_context().is_valid
+
+    @pytest.mark.asyncio
+    async def test_handler_span_held_across_yield_loses_parent_after_yield(self):
+        """Pins the documented limitation of _iterate_in_context."""
+        tracer_holder = {}
+
+        async def inner(*_args):
+            with tracer_holder["tracer"].start_as_current_span("outer"):
+                yield 1
+                with tracer_holder["tracer"].start_as_current_span("after_yield"):
+                    pass
+                yield 2
+
+        gen, exporter, tracer = await self._wrap(inner)
+        tracer_holder["tracer"] = tracer
+        async for _ in gen:
+            pass
+
+        spans = {s.name: s for s in exporter.get_finished_spans()}
+        assert spans["after_yield"].parent.span_id == self._rpc_span(exporter).context.span_id
+
+    @pytest.mark.asyncio
+    async def test_handler_exception_sets_error_and_ends_span_once(self):
+        async def inner(*_args):
+            yield 1
+            raise RuntimeError("boom")
+
+        gen, exporter, _tracer = await self._wrap(inner)
+        with pytest.raises(RuntimeError):
+            async for _ in gen:
+                pass
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].status.status_code == StatusCode.ERROR
+        assert len(spans[0].events) == 1  # one "exception" event from record_exception
+
+    @pytest.mark.asyncio
+    async def test_task_cancel_ends_span_once_unset(self):
+        release = asyncio.Event()
+
+        async def inner(*_args):
+            yield 1
+            await release.wait()
+            yield 2
+
+        gen, exporter, _tracer = await self._wrap(inner)
+
+        async def consume():
+            async for _ in gen:
+                pass
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].status.status_code == StatusCode.UNSET
+
+    @pytest.mark.asyncio
+    async def test_athrow_sets_error_and_inner_finally_runs_in_rpc_context(self):
+        inner_saw_rpc_span = []
+
+        async def inner(*_args):
+            try:
+                for i in range(10):
+                    yield i
+            finally:
+                inner_saw_rpc_span.append(trace.get_current_span().get_span_context().is_valid)
+
+        gen, exporter, _tracer = await self._wrap(inner)
+        await gen.__anext__()
+        with pytest.raises(ValueError):
+            await gen.athrow(ValueError("x"))
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].status.status_code == StatusCode.ERROR
+        assert inner_saw_rpc_span == [True]
+
+    @pytest.mark.asyncio
+    async def test_early_break_then_aclose_ends_span_once_unset(self):
+        inner_saw_rpc_span = []
+
+        async def inner(*_args):
+            try:
+                for i in range(10):
+                    yield i
+            finally:
+                inner_saw_rpc_span.append(trace.get_current_span().get_span_context().is_valid)
+
+        gen, exporter, _tracer = await self._wrap(inner)
+        async for i in gen:
+            if i == 2:
+                break
+        await gen.aclose()
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].status.status_code == StatusCode.UNSET
+        assert inner_saw_rpc_span == [True]

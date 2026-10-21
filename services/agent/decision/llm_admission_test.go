@@ -109,19 +109,31 @@ func TestLLMAdmission_NotEligibleGatesWithoutCharging(t *testing.T) {
 	}
 }
 
-// The AGENT_LLM_MAX_REQUESTS_PER_MINUTE override replaces the flag cap, as on the
-// decide path and the retro.
+// The AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling caps the flag (#1788): a flag
+// above the ceiling (the `stage` variant, 30) cannot loosen it, a flag below it
+// tightens it. Same rule as the decide path and the retro.
 // NFR: NFR-011
-func TestLLMAdmission_EnvOverrideReplacesFlagCap(t *testing.T) {
-	budget := NewLLMBudget()
-	a, _ := admissionUnderTest(t, []string{"real"}, 1, 3, budget)
-	for i := 0; i < 3; i++ {
-		if ok, reason := a.Admit(context.Background(), "real"); !ok {
-			t.Fatalf("call %d gated (%q), want admitted under the override cap of 3", i+1, reason)
-		}
+func TestLLMAdmission_EnvCeilingCapsFlag(t *testing.T) {
+	cases := []struct {
+		name                 string
+		flag, ceiling, admit int
+	}{
+		{"flag above the ceiling is capped (agent cannot loosen)", 30, 3, 3},
+		{"flag below the ceiling tightens", 1, 3, 1},
+		{"no ceiling: the flag governs", 2, 0, 2},
 	}
-	if ok, _ := a.Admit(context.Background(), "real"); ok {
-		t.Fatal("4th call admitted, want gated at the override cap")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := admissionUnderTest(t, []string{"real"}, tc.flag, tc.ceiling, NewLLMBudget())
+			for i := 0; i < tc.admit; i++ {
+				if ok, reason := a.Admit(context.Background(), "real"); !ok {
+					t.Fatalf("call %d gated (%q), want admitted under min(env %d, flag %d)", i+1, reason, tc.ceiling, tc.flag)
+				}
+			}
+			if ok, _ := a.Admit(context.Background(), "real"); ok {
+				t.Fatalf("call %d admitted, want gated at min(env %d, flag %d) = %d", tc.admit+1, tc.ceiling, tc.flag, tc.admit)
+			}
+		})
 	}
 }
 
