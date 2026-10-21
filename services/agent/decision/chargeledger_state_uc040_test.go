@@ -158,3 +158,41 @@ func containsString(xs []string, x string) bool {
 	}
 	return false
 }
+
+// TestChargeLedger_LiveMatchesReserve: the ledger view holds a reserved entry (a write
+// in flight) as well as a committed one, and drops a released or ended one, exactly
+// like reserve's refusal.
+//
+// UC: UC-040 A31
+func TestChargeLedger_LiveMatchesReserve(t *testing.T) {
+	t.Run("UC-040/A31 a reservation in flight counts as charged", func(t *testing.T) {
+		var cl chargeLedger
+		now := time.Unix(50_000, 0)
+		res, _ := cl.reserve("WEAK", now, 22*time.Second)
+		if res == nil {
+			t.Fatal("reserve refused on an empty ledger")
+		}
+		if !cl.live(now)["WEAK"] {
+			t.Fatal("a reserved entry must be live")
+		}
+		if again, _ := cl.reserve("WEAK", now, 22*time.Second); again != nil {
+			t.Fatal("precondition: reserve must refuse while the reservation is live")
+		}
+		cl.release("WEAK", res.gen)
+		if cl.live(now)["WEAK"] {
+			t.Fatal("a released entry must not be live")
+		}
+	})
+	t.Run("UC-040/A31 a committed entry ends with its window", func(t *testing.T) {
+		var cl chargeLedger
+		now := time.Unix(50_000, 0)
+		res, _ := cl.reserve("WEAK", now, 22*time.Second)
+		cl.commit("WEAK", res.gen, now, 22*time.Second)
+		if !cl.live(now.Add(22*time.Second - time.Millisecond))["WEAK"] {
+			t.Fatal("a committed entry must be live until its window ends")
+		}
+		if got := cl.live(now.Add(22 * time.Second)); got["WEAK"] {
+			t.Fatal("an entry must end with its window")
+		}
+	})
+}
