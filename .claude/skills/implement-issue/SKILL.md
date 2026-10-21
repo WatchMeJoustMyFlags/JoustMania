@@ -50,6 +50,9 @@ The brief gives you the issue, scope and decisions. Everything else is here: do 
 6. **Gates.** `make pr-gates` (auto-detects from the diff; `SERVICE=menu,agent` to force). Fix every FAIL.
    Agents send gate and test-suite runs to the Haiku `gate-runner` agent (`.claude/agents/gate-runner.md`),
    which keeps the logs out of your context; the `implementer` agent says when.
+   The service tier (T2) runs locally only for harness / stack changes (full) or for the `tests/service/**/test_*.py`
+   files you edit (`make test-service SERVICE_TESTS=<files>`). For product paths (lib, coordinator, menu, ...) the
+   full-tier evidence is PR CI "Service Tests" = pass; never report a local `make pr-gates` PASS as tier coverage.
    Integration (`make test-dev`) only when the brief asks or the change is cross-service.
 7. **Commit.** Conventional Commits (`fix(menu): ...`, `feat(agent): ...`), small and focused, ending with
    the attribution lines from the session's system reminder (never a hard-coded model name). A failing pre-commit hook may

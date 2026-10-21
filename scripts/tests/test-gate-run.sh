@@ -165,6 +165,9 @@ refused -- make pr-gates 'BASE=main x'
 refused -- make pr-gates BASE=--output=x
 refused -- make pr-gates 'BASE=a;b'
 refused -- make test-service 'TEST=a$b'
+refused -- make test-service SERVICE_TESTS=../x
+refused -- make test-service SERVICE_TESTS=tests/service/../../x
+refused -- make test-service SERVICE_TESTS=/etc/passwd
 
 # --- paths outside the worktree
 refused -- uv run --package joustmania-menu pytest /tmp/evil_test.py
@@ -184,6 +187,8 @@ accepted -- make specs-check
 accepted -- make test-contract
 accepted -- make test-contract-flagd
 accepted -- make test-integration-shard-check
+accepted -- make test-service SERVICE_TESTS=tests/service/test_x.py
+accepted -- make test-service 'SERVICE_TESTS=tests/service/test_a.py tests/service/test_b.py'
 accepted -- make test-service TEST=tc018 'PYTEST_EXTRA=--count 3'
 accepted -- make test-integration TEST=test_ffa E2E_SHARD=core 'PYTEST_EXTRA=--reruns 1'
 accepted -- make test-integration-core

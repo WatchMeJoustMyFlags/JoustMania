@@ -24,6 +24,7 @@
 #                test-contract, test-contract-flagd, test-integration-shard-check,
 #                test-service[-*], test-integration[-*]
 #       VAR in: TEST SERVICE BASE PR_LABELS E2E_SHARD IMAGE_TAG PYTEST_EXTRA
+#                SERVICE_TESTS (test-service only: paths under tests/service, no "..")
 #   uv run --package <workspace member> [--extra <name>]... pytest [args]
 #   go test|vet [args]          (--dir with go.mod)
 #   cargo test|clippy [args]    (--dir with Cargo.toml)
@@ -135,7 +136,7 @@ for w in "${CMD[@]}"; do
 done
 
 MAKE_TARGET_RE='^(pr-gates|lint|format-check|check|specs-check|test|test-dev|test-pulled|test-contract|test-contract-flagd|test-integration-shard-check|test-service(-[a-z0-9]+)*|test-integration(-[a-z0-9]+)*)$'
-MAKE_VAR_RE='^(TEST|SERVICE|BASE|PR_LABELS|E2E_SHARD|IMAGE_TAG|PYTEST_EXTRA)=(.*)$'
+MAKE_VAR_RE='^(TEST|SERVICE|BASE|PR_LABELS|E2E_SHARD|IMAGE_TAG|PYTEST_EXTRA|SERVICE_TESTS)=(.*)$'
 MAKE_VALUE_RE="^[A-Za-z0-9_.,/:=' -]*$"
 
 validate_make() {
@@ -149,6 +150,9 @@ validate_make() {
     [[ "$value" =~ $MAKE_VALUE_RE ]] || refuse "bad value for $name: $value"
     case "$name" in
       SERVICE) [[ "$value" =~ ^[a-z_,:-]+$ ]] || refuse "bad SERVICE: $value" ;;
+      SERVICE_TESTS)
+        [[ "$value" =~ ^(tests/service[A-Za-z0-9_./\ -]*)$ && "$value" != *..* ]] \
+          || refuse "bad SERVICE_TESTS: $value" ;;
       BASE) [[ "$value" =~ ^[A-Za-z0-9._/-]+$ && "$value" != -* ]] || refuse "bad BASE: $value" ;;
     esac
   done
