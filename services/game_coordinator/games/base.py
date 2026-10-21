@@ -579,7 +579,7 @@ class Player:
     # making the player TEMPORARILY EASIER to eliminate — graduated pressure, not
     # guaranteed elimination. While ``soft_penalty_until`` is in the future,
     # ``soft_penalty_factor`` composes into the effective handicap by taking the
-    # MIN (so it can cut through even a toughness_boost boost — pressure overrides
+    # MIN (so it can cut through even a toughness boost — pressure overrides
     # protection), then the existing [0.5, 2.0] clamp keeps the threshold finite
     # (never instant-death). On expiry the factor simply stops applying (no reset
     # task needed) and the effective handicap falls back to the standing/shielded
@@ -1757,7 +1757,7 @@ class BaseGameMode(ABC):
         #
         # Composition precedence (last-applied wins by intent):
         #   1. standing handicap_factor (set_player_handicap, #1107)
-        #   2. toughness_boost boost (#1129) — STRENGTHENS via max (protection)
+        #   2. toughness boost (#1129) — STRENGTHENS via max (protection)
         #   2b. auto_rubberband boost (#1143) — STRENGTHENS via max (gap-compression)
         #   3. soft_penalty tighten (#1134) — WEAKENS via min (pressure)
         # The two STRENGTHENING boosts (toughness_boost, auto_rubberband) both
@@ -2360,7 +2360,7 @@ class BaseGameMode(ABC):
             logger.warning(f"Ending shield feedback failed: {e}")
 
     # Soft-penalty defaults (#1134, #1103 Phase 3). The tighten factor is the
-    # MIRROR of the toughness_boost boost: a factor BELOW 1.0 weakens the player's
+    # MIRROR of the toughness boost: a factor BELOW 1.0 weakens the player's
     # threshold for a short window (easier to die). It is clamped to the same
     # lower handicap bound (0.5) so even a fully-tightened threshold stays finite
     # — never instant-death. Seconds are capped so a single arming can't last
@@ -2403,7 +2403,7 @@ class BaseGameMode(ABC):
         tighten only lowers the threshold to half — never instant-death.
 
         Because the tighten composes by ``min`` AFTER the toughness_boost ``max``,
-        it can cut through an active toughness_boost boost (pressure overrides
+        it can cut through an active toughness boost (pressure overrides
         protection). On expiry the factor silently stops applying — no reset task
         — and the standing/shielded handicap resumes.
 

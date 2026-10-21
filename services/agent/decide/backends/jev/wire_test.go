@@ -342,6 +342,10 @@ func TestToughnessBoostCriteria(t *testing.T) {
 	if !ok || !strings.Contains(ends[0], "toughness boost") || !strings.Contains(ends[1], "toughness boost") {
 		t.Errorf("magnitudeEnds[toughness_boost] = %q (ok=%v)", ends, ok)
 	}
+	// #1837 takes the word "shield": the lever is only compared to grant_shield.
+	if d := strings.ReplaceAll(interventionDescriptions["toughness_boost"], "grant_shield", ""); strings.Contains(strings.ToLower(d), "shield") {
+		t.Errorf("toughness_boost description uses the word shield: %q", interventionDescriptions["toughness_boost"])
+	}
 	for _, text := range interventionDescriptions {
 		if strings.Contains(strings.ToLower(text), "partial") {
 			t.Errorf("description still teaches the old name: %q", text)

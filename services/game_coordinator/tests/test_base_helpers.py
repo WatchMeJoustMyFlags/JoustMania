@@ -351,7 +351,7 @@ class TestComputeEffectiveThresholds:
         assert warn_c == pytest.approx(warn_n)
         assert death_c == pytest.approx(death_n)
 
-    # --- #1129: time-boxed toughness_boost boost in the threshold path ---- #
+    # --- #1129: time-boxed toughness boost in the threshold path ---- #
 
     def test_toughness_boost_active_boosts_threshold(self, game):
         """An active toughness boost raises the threshold via its boost."""
@@ -485,7 +485,7 @@ class TestComputeEffectiveThresholds:
     @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_soft_penalty_min_overrides_toughness_boost(self, game):
         """Precedence: tighten composes by MIN AFTER toughness_boost's MAX, so an
-        active tighten cuts through an active toughness_boost boost (pressure
+        active tighten cuts through an active toughness boost (pressure
         overrides protection). Effective = min(max(1.0, 2.0), 0.6) = 0.6."""
         from lib.types import Sensitivity
 

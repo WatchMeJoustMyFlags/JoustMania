@@ -82,7 +82,7 @@ var interventionDescriptions = map[string]string{
 	"grant_shield": "Make one player immune to elimination for a few seconds. Saves a player who is about " +
 		"to be eliminated unfairly.",
 	"toughness_boost": "Make one player much harder, but not impossible, to eliminate for a few seconds; " +
-		"a softer alternative to a full shield.",
+		"weaker than grant_shield.",
 	"soft_penalty": "Put pressure on one player: a warning cue, or briefly making them easier to " +
 		"eliminate. Recoverable, never an instant elimination.",
 	"auto_rubberband": "Automatically help the trailing players (harder to eliminate) to keep a lopsided " +
