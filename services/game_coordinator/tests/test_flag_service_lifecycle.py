@@ -12,6 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +20,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from services.game_coordinator.flag_service_client import (
+    FAILURE_LOG_INTERVAL_SECONDS,
     FlagServiceClient,
+    FlagServiceError,
     FlagServiceLifecycle,
     GameRecord,
 )
@@ -370,3 +373,41 @@ async def test_restarted_coordinator_reconciles_under_the_same_instance(service,
     assert restarted.instance == first.instance == register_body["coordinator_instance"]
     assert reconcile_path == "/coordinators/" + first.instance.replace("/", "%2F") + "/games"
     assert reconcile_body == {"games": []}
+
+
+@pytest.mark.uc("UC-053", flow="A8")
+@pytest.mark.asyncio
+async def test_repeated_identical_failure_logs_once_then_once_per_interval(caplog):
+    """#1479: a coordinator the flag service rejects at its game cap is retried
+    every 2 s; the warning is logged once, not on every retry, then again with
+    the suppressed count once the interval passed, and again at once when the
+    failure changes."""
+    client = FlagServiceClient("http://unused")
+    rejected = FlagServiceError("PUT /coordinators/h/games: HTTP 429 game cap")
+    lc = FlagServiceLifecycle(client, list, instance="h")
+    clock = {"now": 1000.0}
+
+    def warnings():
+        return [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+
+    with (
+        caplog.at_level("WARNING", logger="services.game_coordinator.flag_service_client"),
+        patch(
+            "services.game_coordinator.flag_service_client.time",
+            SimpleNamespace(monotonic=lambda: clock["now"]),
+        ),
+        patch.object(client, "request", side_effect=rejected),
+    ):
+        for _ in range(5):
+            assert await lc._call("reconcile", "PUT", "/coordinators/h/games", {}) is False
+            clock["now"] += 2.0
+        assert len(warnings()) == 1, warnings()
+
+        clock["now"] += FAILURE_LOG_INTERVAL_SECONDS
+        await lc._call("reconcile", "PUT", "/coordinators/h/games", {})
+        assert len(warnings()) == 2 and "4 identical failure(s) suppressed" in warnings()[1], warnings()
+
+        # A different failure is a state change: logged immediately.
+        client.request.side_effect = FlagServiceError("PUT /coordinators/h/games: connection refused")
+        await lc._call("reconcile", "PUT", "/coordinators/h/games", {})
+        assert len(warnings()) == 3 and "connection refused" in warnings()[2], warnings()

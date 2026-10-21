@@ -32,6 +32,7 @@ import logging
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -52,6 +53,10 @@ REQUEST_TIMEOUT_SECONDS = 0.5
 RECONCILE_RETRY_SECONDS = 2.0
 # Unconditional reconcile period: the backstop for anything the epoch check misses.
 RECONCILE_PERIOD_SECONDS = 15.0
+# A repeated identical failure (e.g. the flag service rejecting this coordinator
+# at its game cap) is retried every RECONCILE_RETRY_SECONDS; it logs once, then
+# at most this often, with the count of suppressed repeats (#1479).
+FAILURE_LOG_INTERVAL_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -148,6 +153,11 @@ class FlagServiceLifecycle:
         # announcing the (empty) set drops them (UC-053 A10).
         self._needs_reconcile = threading.Event()
         self._needs_reconcile.set()
+        # Failure-log rate limit: (call, error text) of the last warning, when it
+        # was logged, and how many identical failures were suppressed since.
+        self._last_failure: tuple[str, str] | None = None
+        self._last_failure_log = 0.0
+        self._suppressed_failures = 0
 
     @classmethod
     def from_env(cls, live_games: Callable[[], list[GameRecord]]) -> "FlagServiceLifecycle":
@@ -191,13 +201,31 @@ class FlagServiceLifecycle:
         try:
             resp = await asyncio.to_thread(self._client.request, method, path, body)
         except FlagServiceError as e:
-            logger.warning("Flag service %s failed: %s (will reconcile)", call, e)
+            self._log_failure(call, e)
             metrics.flag_service_calls_total.labels(call=call, result="error").inc()
             self._needs_reconcile.set()
             return False
         metrics.flag_service_calls_total.labels(call=call, result="ok").inc()
         self._observe_epoch(resp)
+        self._last_failure = None
+        self._suppressed_failures = 0
         return True
+
+    def _log_failure(self, call: str, error: FlagServiceError) -> None:
+        """Warn on the first failure, on a changed failure, then once per interval."""
+        key = (call, str(error))
+        now = time.monotonic()
+        if key == self._last_failure and now - self._last_failure_log < FAILURE_LOG_INTERVAL_SECONDS:
+            self._suppressed_failures += 1
+            return
+        suppressed, self._suppressed_failures = self._suppressed_failures, 0
+        self._last_failure, self._last_failure_log = key, now
+        logger.warning(
+            "Flag service %s failed: %s (will reconcile)%s",
+            call,
+            error,
+            f" [{suppressed} identical failure(s) suppressed]" if suppressed else "",
+        )
 
     async def check_epoch(self) -> None:
         """Read the service's boot epoch; a change schedules a reconcile (UC-053 A9)."""
