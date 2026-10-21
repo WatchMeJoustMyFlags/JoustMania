@@ -946,9 +946,40 @@ class TestShadowGameGovernance:
             ok, gid = await servicer._start_game_from_config(_config(serials=("r1", "r2")), _MockSpan())
 
         assert ok is True, f"real game lost the admission race: {gid}"
-        assert calls["n"] == 2, "expected a second preemption pass after the cap rejection"
+        # Pass 1 (no-op), pass 2 after the cap rejection, pass 3 after the admission.
+        assert calls["n"] == 3, "expected a second preemption pass after the cap rejection"
         assert servicer.sessions[gid].game_kind == "primary"
         assert servicer._primary_game_id == gid
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-043", flow="A2")
+    @pytest.mark.uc("UC-046", flow="A8")
+    async def test_shadow_admitted_during_real_preemption_is_preempted(self, servicer):
+        """#1404: a shadow start that lands while a real start runs its preemption pass
+        (outside the lock, before the primary slot is live) passes the block gate and
+        the cap. The real start preempts it after its own admission, and under
+        shadow_policy=block the next shadow start is refused."""
+        real_preempt = servicer._preempt_shadow_sessions
+        late: dict[str, str] = {}
+
+        async def preempt_while_a_shadow_starts():
+            preempted = await real_preempt()
+            if not late:
+                ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("s1", "s2")), _MockSpan())
+                assert ok is True, gid
+                late["gid"] = gid
+            return preempted
+
+        servicer._preempt_shadow_sessions = preempt_while_a_shadow_starts
+        with _NO_THREAD, patch("services.game_coordinator.servicer._shadow_policy", lambda: "block"):
+            ok, gid = await servicer._start_game_from_config(_config(serials=("r1", "r2")), _MockSpan())
+            assert ok is True, gid
+            assert late, "the late shadow never started"
+            assert late["gid"] not in servicer.sessions, "the shadow admitted during the real start still runs"
+            assert set(servicer.sessions) == {gid}
+            ok, error = await servicer._start_game_from_config(_shadow_config(serials=("s3", "s4")), _MockSpan())
+        assert ok is False
+        assert error == "Shadow games blocked while a real game is running"
 
     @pytest.mark.asyncio
     async def test_agent_origin_start_is_shadow_even_when_idle(self, servicer):
@@ -1758,6 +1789,70 @@ class TestFailedStartRetiresSession:
         with _NO_THREAD:
             ok, next_id = await servicer._start_game_from_config(_config(), _MockSpan())
         assert ok is True, next_id
+
+    @staticmethod
+    def _patch_post_admission_preempt(servicer, behaviour):
+        """Run ``behaviour`` in the real start's preemption pass that follows its
+        admission (#1404), i.e. the pass that sees the primary slot taken."""
+        real_preempt = servicer._preempt_shadow_sessions
+
+        async def preempt():
+            if servicer._primary_game_id is not None:
+                return await behaviour()
+            return await real_preempt()
+
+        return patch.object(servicer, "_preempt_shadow_sessions", preempt)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
+    async def test_cancel_during_post_admission_preemption_retires_primary(self, servicer):
+        """#1813: a client cancel while the real start preempts shadows after its
+        admission (force_end waits up to 2 s) retires the session; the next real
+        start is admitted."""
+        preempt_entered = asyncio.Event()
+
+        async def _preempt_blocks():
+            preempt_entered.set()
+            await asyncio.Event().wait()
+
+        with _NO_THREAD, self._patch_post_admission_preempt(servicer, _preempt_blocks):
+            start = asyncio.create_task(servicer._start_game_from_config(_config(), _MockSpan()))
+            async with asyncio.timeout(2.0):
+                await preempt_entered.wait()
+            game_id = servicer._primary_game_id
+            assert game_id in servicer.sessions
+            start.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await start
+
+        self._assert_retired(servicer, game_id)
+        with _NO_THREAD:
+            ok, next_id = await servicer._start_game_from_config(_config(), _MockSpan())
+        assert ok is True, next_id
+        assert servicer._primary_game_id == next_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
+    async def test_error_during_post_admission_preemption_retires_primary(self, servicer):
+        """#1813: force_end raising in the real start's post-admission preemption
+        pass retires the session; the next real start is admitted."""
+        admitted = []
+
+        async def _preempt_fails():
+            admitted.append(servicer._primary_game_id)
+            raise RuntimeError("force_end failed")
+
+        with _NO_THREAD, self._patch_post_admission_preempt(servicer, _preempt_fails):
+            ok, error = await servicer._start_game_from_config(_config(), _MockSpan())
+
+        assert ok is False
+        assert "force_end failed" in error
+        (game_id,) = admitted
+        self._assert_retired(servicer, game_id)
+        with _NO_THREAD:
+            ok, next_id = await servicer._start_game_from_config(_config(), _MockSpan())
+        assert ok is True, next_id
+        assert servicer._primary_game_id == next_id
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
