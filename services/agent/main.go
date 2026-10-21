@@ -44,7 +44,7 @@ import (
 	"github.com/joustmania/agent/promote"
 )
 
-// probeInterval rate-limits the AGENT_PROBE_DECISIONS demo probe.
+// probeInterval rate-limits the decision.probe_decisions demo probe.
 const probeInterval = 5 * time.Second
 
 // infraControllerTTL bounds how long a controller is retained in the
@@ -607,9 +607,13 @@ func main() {
 	// intervention the loop re-samples the game's fitness signals to measure the
 	// effect. Resolved at use time, per dispatched intervention, from the
 	// effect.window_seconds flag (#1788; AGENT_EFFECT_WINDOW_SECONDS only as fallback).
-	probeDecisions := strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true")
-	if probeDecisions {
-		slog.Warn("Probe decisions enabled (demo/verification mode)",
+	// Probe decisions (demo/verification, decision.probe_decisions, #1810): the flag
+	// is read per decision cycle through the snapshot; the deprecated
+	// AGENT_PROBE_DECISIONS env is only the fallback while flagd cannot resolve it.
+	probeEnvFallback := strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true")
+	agentFlags.SetProbeDefault(probeEnvFallback)
+	if probeEnvFallback {
+		slog.Warn("AGENT_PROBE_DECISIONS is deprecated; it is only the fallback for the decision.probe_decisions flag",
 			"interval", probeInterval)
 	}
 	// Forward-declared so the per-game loop factory can close over it to wire the
@@ -704,12 +708,10 @@ func main() {
 		rules.SetChaosSeedSource(patternObs.SeedSource())
 		rules.SetLateSeedHook(patternObs.LateSeed)
 		loop.Rules = rules
-		if probeDecisions {
-			// Demo/verification mode: emit a synthetic noop decision (and thus the
-			// full audit trace, #724) at most once per probe interval. Overrides
-			// the rules engine. Each loop gets its own probe clock.
-			loop.Rules = decision.NewProbeRules(probeInterval, nil)
-		}
+		// Demo/verification probe (decision.probe_decisions): built once per loop so
+		// its rate-limit clock survives flag flips; Loop.rulesFor swaps it in per
+		// cycle while the flag is on (never in pattern games).
+		loop.ProbeRules = decision.NewProbeRules(probeInterval, nil)
 		// Action sink (#730/#1213): the shared GatedActionSink applies decisions as
 		// game-scoped writes to the flag service (#1411) ONLY when the
 		// LIVE interventions_enabled flag is on; otherwise it discards them (the loop's

@@ -102,7 +102,7 @@ func TestPatternObserver_RemoteBackendMarksNonExact(t *testing.T) {
 		l, _ := decideRecordingLoop(t, snap)
 		obs := &fakePatternObserver{active: true}
 		l.SetPatternObserver(obs)
-		l.decide(context.Background(), snap, activeContext("MOCK0000"), EvalTrigger{})
+		l.decide(context.Background(), snap, l.rulesFor(snap), activeContext("MOCK0000"), EvalTrigger{})
 		if len(obs.reasons) != 1 || obs.reasons[0] != "remote_backend" {
 			t.Fatalf("reasons = %v, want [remote_backend]", obs.reasons)
 		}
@@ -111,12 +111,12 @@ func TestPatternObserver_RemoteBackendMarksNonExact(t *testing.T) {
 		l, _ := decideRecordingLoop(t, rulesSnapshot())
 		obs := &fakePatternObserver{active: true}
 		l.SetPatternObserver(obs)
-		l.decide(context.Background(), rulesSnapshot(), activeContext("MOCK0000"), EvalTrigger{})
+		l.decide(context.Background(), rulesSnapshot(), l.rulesFor(rulesSnapshot()), activeContext("MOCK0000"), EvalTrigger{})
 		snap := rulesSnapshot()
 		snap.Decision.Backend = "claude"
 		inactive := &fakePatternObserver{active: false}
 		l.SetPatternObserver(inactive)
-		l.decide(context.Background(), snap, activeContext("MOCK0000"), EvalTrigger{})
+		l.decide(context.Background(), snap, l.rulesFor(snap), activeContext("MOCK0000"), EvalTrigger{})
 		if len(obs.reasons)+len(inactive.reasons) != 0 {
 			t.Fatalf("marked %v / %v", obs.reasons, inactive.reasons)
 		}
