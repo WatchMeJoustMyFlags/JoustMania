@@ -623,7 +623,7 @@ func TestExperimentLoop_CompletedGrace_ReleasesOnDroppedDatapoint(t *testing.T) 
 	// single leaked slot is a full deadlock. A fake clock drives the grace.
 	fake := newFakeAfter()
 	loop.afterFunc = fake.schedule
-	loop.completedGrace = 60 * time.Second
+	loop.expDefaults.CompletedGrace = 60 * time.Second
 	loop.registry = newRegistryConcurrency1(t, spawner, resolve)
 
 	id, err := loop.registry.Declare(experiment.Intent{
@@ -700,7 +700,7 @@ func TestExperimentLoop_CompletedGrace_NoReleaseWhenConcluded(t *testing.T) {
 
 	fake := newFakeAfter()
 	loop.afterFunc = fake.schedule
-	loop.completedGrace = 60 * time.Second
+	loop.expDefaults.CompletedGrace = 60 * time.Second
 
 	id, err := loop.registry.Declare(experiment.Intent{
 		Hypothesis: "h", FlagKey: "death_grace_period_seconds",
@@ -761,7 +761,7 @@ func TestExperimentLoop_CompletedGrace_StopAllRaceGuard(t *testing.T) {
 	spawner := &recordingSpawner{}
 	resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
 	loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
-	loop.completedGrace = 60 * time.Second
+	loop.expDefaults.CompletedGrace = 60 * time.Second
 	ctx := context.Background()
 
 	// captureAfter records each scheduled callback (instead of firing it on a wall

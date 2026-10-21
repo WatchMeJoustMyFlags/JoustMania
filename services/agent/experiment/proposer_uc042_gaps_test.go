@@ -35,7 +35,7 @@ func TestProposeOnce_FailedProposalLeavesNoFlagChange(t *testing.T) {
 				rendered[f.Flag] = string(svc.Rendered(GameFlagSet, f.Flag))
 			}
 
-			res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose, Engine: "claude"})
+			res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: allowPropose})
 			if res.Outcome == ProposeProposed {
 				t.Fatalf("outcome = %q, want a failed proposal", res.Outcome)
 			}
@@ -59,7 +59,7 @@ func TestProposeOnce_NotEligibleIsGatedAndKeepsTheCadenceFloor(t *testing.T) {
 		p, svc, _, _ := proposerWithRecorder(t, backend)
 		adm := &fakeAdmission{ok: false, reason: "llm_not_eligible"}
 		p.SetLLMAdmission(adm)
-		cfg := ProposerConfig{Engine: "claude", MinInterval: time.Hour, Permit: allowPropose, GameKind: "shadow"}
+		cfg := ProposerConfig{MinInterval: time.Hour, Permit: allowPropose, GameKind: "shadow"}
 
 		res := p.ProposeOnce(context.Background(), Narrative{}, cfg)
 		if res.Outcome != ProposeLLMGated || res.Reason != "llm_not_eligible" {

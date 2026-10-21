@@ -86,8 +86,10 @@ real-default change.
    games to Claude when the agent has `ANTHROPIC_API_KEY`; shadow games stay on
    rules.
 
-   *(Optional) post-game proposer* — with `AGENT_INFERENCE_BACKEND=claude` the
-   M7-4 proposer asks Claude for an experiment at game end, but only while gates
+   *(Optional) post-game proposer* — with `AGENT_INFERENCE_BACKEND=claude` and
+   `AGENT_EXPERIMENT_PROPOSER_ENABLED=true` (the proposer gate's ceiling, which
+   also needs the `experiment_proposer_enabled` flag on, #1810) the M7-4
+   proposer asks Claude for an experiment at game end, but only while gates
    1 and 2 are on and only after a **real** game ends (#1270): a shadow-only dry
    run produces **no** proposals. To let shadow game ends trigger it, set
    `llm.eligible_game_kinds` to `real_and_shadow`, which also enables remote
@@ -174,7 +176,9 @@ be in its bounds; the flag service rejects anything else with HTTP 422
   `experiment_dynamic_enabled` (default off): run
   `scripts/flags.sh set agent experiment_dynamic_enabled on` (no restart), or
   re-seed with another flag as in "Seed another flag" above. The
-  `AGENT_EXPERIMENT_*` env vars only supply the fallback floor.
+  `AGENT_EXPERIMENT_*` env vars only supply the fallback floor, except
+  `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT`, `AGENT_EXPERIMENT_MAX_GAMES` and
+  `AGENT_EXPERIMENT_PROPOSER_ENABLED`, which are ceilings (#1810, C-034).
 - **Verdicts read `inconclusive`.** Expected on mock controllers: the
   scripted movement is not a real effect, so arms rarely separate. Do not treat
   `inconclusive` as a failure; the loop is working when declare, start,

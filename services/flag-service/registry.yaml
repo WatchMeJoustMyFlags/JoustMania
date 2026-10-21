@@ -76,6 +76,11 @@ flags:
   - {set: agent, key: verdict_min_pairs, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
   - {set: agent, key: experiment_tick_seconds, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
   - {set: agent, key: experiment_max_games, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
+  # Experiment settings migrated from env (#1810, flags.md §15): operator-written, never by
+  # the agent. experiment_max_games and the proposer gate are capped by their env ceilings
+  # (C-034, FR-152); the grace 0 is its `off` variant.
+  - {set: agent, key: experiment_completed_grace_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 600], integer: true}}
+  - {set: agent, key: experiment_proposer_enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
   # Agent tuning migrated from env (#1788, flags.md §15): operator-written, never by the agent.
   - {set: agent, key: inference.model, kind: overlay, scope: [stack], bounds: {free_string: true}}
   - {set: agent, key: inference.effort, kind: overlay, scope: [stack]}

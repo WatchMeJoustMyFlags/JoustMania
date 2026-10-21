@@ -49,15 +49,19 @@ const (
 	// real-default promotion action). Default false ⇒ the loop never runs.
 	envExperimentsEnabled = "AGENT_EXPERIMENTS_ENABLED"
 
-	// envExperimentTick overrides the AllocateAndSpawn cadence (seconds). The
-	// registry refills free shadow capacity on each tick.
+	// envExperimentTick is the deprecated fallback of the experiment_tick_seconds
+	// flag (the AllocateAndSpawn cadence, seconds; FR-151, #1810): used only while
+	// the flag cannot be resolved. The registry refills free shadow capacity on
+	// each tick.
 	envExperimentTick = "AGENT_EXPERIMENT_TICK_SECONDS"
 
-	// envCompletedGrace overrides the bounded-grace backstop window (seconds) for a
-	// COMPLETED shadow game whose telemetry game_active=0 datapoint never arrives
-	// (#1020). After this grace elapses without ConcludeGame having folded the game,
-	// onGameTerminal releases its in-flight slot non-counting so the
-	// effective_concurrency=1 loop cannot deadlock on a dropped completed datapoint.
+	// envCompletedGrace is the deprecated fallback of the
+	// experiment_completed_grace_seconds flag (#1810, FR-151): the bounded-grace
+	// backstop window (seconds) for a COMPLETED shadow game whose telemetry
+	// game_active=0 datapoint never arrives (#1020). After this grace elapses
+	// without ConcludeGame having folded the game, onGameTerminal releases its
+	// in-flight slot non-counting so the effective_concurrency=1 loop cannot
+	// deadlock on a dropped completed datapoint.
 	envCompletedGrace = "AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS"
 
 	// Seed-experiment env vars (the simplest env-gated declaration trigger; see
@@ -69,12 +73,18 @@ const (
 	envSeedTargetN    = "AGENT_EXPERIMENT_SEED_TARGET_N"   // target games per arm
 	envSeedHypothesis = "AGENT_EXPERIMENT_SEED_HYPOTHESIS" // free-text hypothesis
 
-	// envDynamicMaxConcurrent caps the number of LIVE experiments the heuristic
-	// dynamic declarer (#995) will keep going at once — the over-declaration
-	// backstop. It is clamped to the shadow-game capacity (each experiment needs at
-	// least one shadow slot to make progress). Unset/non-positive ⇒
-	// defaultDynamicMaxConcurrent.
+	// envDynamicMaxConcurrent is the operator's CEILING on the number of LIVE
+	// experiments the declarers keep going at once (#1810, C-034, FR-152 e): the
+	// effective budget is min(env, experiment_dynamic_max_concurrent), clamped to
+	// the shadow-game capacity (concurrentBudget). Unset, invalid or non-positive ⇒
+	// no ceiling (the flag governs).
 	envDynamicMaxConcurrent = "AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT"
+
+	// envMaxGames is the operator's CEILING on the per-experiment games budget
+	// (#1810, C-034, FR-152 f): effective = min(env, experiment_max_games), where 0
+	// or less means "no limit" on either side. Unset, invalid or non-positive ⇒ no
+	// ceiling (the flag governs).
+	envMaxGames = "AGENT_EXPERIMENT_MAX_GAMES"
 
 	// envProposerEnabled is the opt-in for the retro-seeded THESIS proposer (#1184,
 	// epic #1181 incr. 4): the seam that turns post-game retro suggestions (#1179)
@@ -85,14 +95,25 @@ const (
 	// allocateIfEnabled, which self-aborts when either is off) and, like the #995
 	// declarer, it reuses the SAME bounded flag selection + Gate + Registry caps — it
 	// adds ONLY the thesis provenance, never a new write surface.
+	//
+	// #1810 (C-034, FR-152 d): the env is the operator's CEILING of the proposer
+	// gate; the gate is open only when it is true AND the human-owned
+	// experiment_proposer_enabled flag is on (proposerGateOpen). The same gate also
+	// governs the M7-4 proposer (main.go proposerPermit).
 	envProposerEnabled = "AGENT_EXPERIMENT_PROPOSER_ENABLED"
 )
 
-// proposerEnabled reports whether the retro-seeded thesis proposer opt-in is on
-// (#1184). Distinct, default-off env gate — independent of (and subordinate to) the
-// experiment-loop opt-in and the kill-switch, mirroring dynamicEnabled().
+// proposerEnabled reports the env half of the proposer gate (#1184, #1810): the
+// operator's ceiling AGENT_EXPERIMENT_PROPOSER_ENABLED. Unset = closed.
 func proposerEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv(envProposerEnabled)), "true")
+}
+
+// proposerGateOpen is the proposer gate (#1810, C-034, FR-152 d): the env ceiling
+// AND the live experiment_proposer_enabled flag. The flag reads false when it
+// cannot be resolved, so a lost sync closes the gate.
+func proposerGateOpen(flagOn bool) bool {
+	return proposerEnabled() && flagOn
 }
 
 // defaultDynamicMaxConcurrent is the default ceiling on simultaneously-live
@@ -214,10 +235,10 @@ type experimentLoop struct {
 	// kill switch is off (UC-043 A1, UC-045 step 5, #1704). nil: nothing to revert.
 	promotions promotionKillSwitch
 
-	// completedGrace is the bounded-grace window (#1020): how long onGameTerminal
-	// waits after a COMPLETED game before releasing its in-flight slot non-counting
-	// if ConcludeGame has not folded it. Resolved from envCompletedGrace.
-	completedGrace time.Duration
+	// ceilings are the operator's env ceilings on the widening experiment settings
+	// (#1810, C-034): read once at startup (the process env does not change); 0 =
+	// no ceiling. Tests leave them zero.
+	ceilings experimentCeilings
 
 	// afterFunc schedules f to run after d, returning a stop func (true if it
 	// cancelled a not-yet-fired timer). Defaults to a time.AfterFunc adapter;
@@ -301,7 +322,7 @@ func buildExperimentLoop(
 		"env_enabled_default", expDefaults.Enabled,
 		"env_dynamic_default", expDefaults.DynamicEnabled,
 		"tick_default", expDefaults.Tick,
-		"completed_grace", completedGrace(),
+		"completed_grace_default", expDefaults.CompletedGrace,
 		"max_shadow_games", experiment.MaxShadowGamesFromEnv(),
 		"effective_concurrency_default", expDefaults.ShadowEffectiveConcurrency,
 		"seed_flag", os.Getenv(envSeedFlag))
@@ -373,21 +394,21 @@ func buildExperimentLoop(
 
 	thresholds := flagsFitnessSource{flags: flagsClient}
 	loop := &experimentLoop{
-		registry:       registry,
-		spawner:        spawner,
-		flags:          flagsClient,
-		log:            logger,
-		tracer:         otel.Tracer(experimentInstrumentationName),
-		fitnessStore:   fitnessStore,
-		expDefaults:    expDefaults,
-		seed:           seedIntentFromEnv(),
-		fitness:        gameFitnessWith(thresholds),
-		thresholds:     thresholds,
-		completedGrace: completedGrace(),
-		dynamic:        newDynamicDeclarerFromEnv(gameFlags, nil),
+		registry:     registry,
+		spawner:      spawner,
+		flags:        flagsClient,
+		log:          logger,
+		tracer:       otel.Tracer(experimentInstrumentationName),
+		fitnessStore: fitnessStore,
+		expDefaults:  expDefaults,
+		seed:         seedIntentFromEnv(),
+		fitness:      gameFitnessWith(thresholds),
+		thresholds:   thresholds,
+		ceilings:     experimentCeilingsFromEnv(logger),
+		dynamic:      newDynamicDeclarerFromEnv(gameFlags, nil),
 		// #1184: the retro-seeded thesis proposer is ALWAYS built (like the #995
 		// declarer) so the retro coordinator can Record into it unconditionally; whether
-		// it actually DECLARES is gated by proposerEnabled() (default OFF) in
+		// it actually DECLARES is gated by the proposer gate (env AND flag, #1810) in
 		// declareFromRetroIfEnabled. Backlog is bounded (DefaultMaxRetroBacklog).
 		proposer: experiment.NewThesisProposer(0),
 	}
@@ -511,6 +532,9 @@ func (e *experimentLoop) config(ctx context.Context) flags.ExperimentConfig {
 			VerdictMinRawEffect:        e.expDefaults.VerdictMinRawEffect,
 			VerdictSDFloor:             e.expDefaults.VerdictSDFloor,
 			VerdictAnchorMargin:        e.expDefaults.VerdictAnchorMargin,
+			CompletedGrace:             e.expDefaults.CompletedGrace,
+			// No flagd: the proposer gate's flag half is unresolved, so closed (C-034).
+			ProposerEnabled: false,
 		}
 	}
 	return e.flags.Experiment(ctx, e.expDefaults)
@@ -562,8 +586,9 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	e.ensureStarted(ctx)
 	// Apply the live runtime caps (#1044) before allocating so a hot-reloaded
 	// concurrency / games-budget / min-N takes effect on THIS tick's allocation +
-	// verdict evaluation.
-	e.registry.Reconfigure(cfg.ShadowEffectiveConcurrency, cfg.MaxGames, cfg.VerdictMinN, cfg.VerdictMinPairs)
+	// verdict evaluation. The games budget is capped by the operator's env ceiling
+	// (#1810, C-034, FR-152 f).
+	e.registry.Reconfigure(cfg.ShadowEffectiveConcurrency, e.maxGamesBudget(cfg), cfg.VerdictMinN, cfg.VerdictMinPairs)
 	// #1214: mirror the four migrated FLOAT verdict knobs onto the verdict the same way,
 	// so a hot-reloaded verdict_effect_threshold / verdict_min_raw_effect /
 	// verdict_sd_floor / verdict_anchor_margin takes effect on THIS tick's verdict
@@ -676,18 +701,9 @@ func (e *experimentLoop) declareDynamicIfEnabled(ctx context.Context, cfg flags.
 	defer e.dynamic.mu.Unlock()
 
 	// Over-declaration backstop: stop once the LIVE experiment set fills the
-	// concurrent-experiment budget. The budget is the LIVE
-	// experiment_dynamic_max_concurrent (#1044), clamped to the shadow capacity
-	// because an experiment with no shadow slot to ever run is pointless. A
-	// non-positive live value falls back to the env-derived default.
-	budget := cfg.DynamicMaxConcurrent
-	if budget <= 0 {
-		budget = e.expDefaults.DynamicMaxConcurrent
-	}
-	if capacity := e.registry.Capacity(); capacity > 0 && budget > capacity {
-		budget = capacity
-	}
-	if e.registry.LiveCount() >= budget {
+	// concurrent-experiment budget (concurrentBudget: the live flag capped by the env
+	// ceiling and the shadow capacity, #1810).
+	if e.registry.LiveCount() >= e.concurrentBudget(cfg) {
 		return
 	}
 	// Per-flag dedup: never stack a second experiment on a flag already under test.
@@ -708,16 +724,17 @@ func (e *experimentLoop) declareDynamicIfEnabled(ctx context.Context, cfg flags.
 
 // declareFromRetroIfEnabled lets the retro-seeded THESIS proposer (#1184) declare
 // ONE fresh experiment per call when:
-//   - the proposer is wired (proposer != nil) AND opted-in (proposerEnabled(), the
-//     default-OFF #1184 gate), AND
+//   - the proposer is wired (proposer != nil) AND the proposer gate is open (the
+//     AGENT_EXPERIMENT_PROPOSER_ENABLED ceiling AND the live
+//     experiment_proposer_enabled flag, #1184/#1810, C-034), AND
 //   - the dynamic selector is wired (the proposer DELEGATES flag/value choice to it —
 //     it adds only the thesis provenance, no new selection surface), AND
 //   - the live experiment count is below the SAME concurrent-experiment backstop the
 //     dynamic declarer obeys (clamped to shadow capacity), AND
 //   - there is a recorded retro suggestion AND the selector finds a declarable flag.
 //
-// It is a NO-OP when not opted in, so declaration is byte-identical for everyone who
-// has not flipped AGENT_EXPERIMENT_PROPOSER_ENABLED on. Reached only from
+// It is a NO-OP while the gate is closed, so declaration is byte-identical for
+// everyone who has not set AGENT_EXPERIMENT_PROPOSER_ENABLED (or has the flag off). Reached only from
 // allocateIfEnabled, which already confirmed experiments_enabled + the kill-switch —
 // so the proposer is subordinate to the SAME gates as every other declaration. At
 // most ONE experiment is declared per call (one retro suggestion drained per tick),
@@ -733,22 +750,15 @@ func (e *experimentLoop) declareFromRetroIfEnabled(ctx context.Context, cfg flag
 	if e.proposer == nil || e.dynamic == nil {
 		return // proposer/selector not wired (test path): declaration unchanged.
 	}
-	if !proposerEnabled() {
-		return // default-OFF #1184 opt-in: no retro-seeded experiments.
+	if !proposerGateOpen(cfg.ProposerEnabled) {
+		return // proposer gate closed (#1184 opt-in, #1810 env AND flag): no retro-seeded experiments.
 	}
 	// Serialize with the dynamic declarer (shared cursor + the same over-declaration
 	// budget window) — see declareDynamicIfEnabled's CONCURRENCY note.
 	e.dynamic.mu.Lock()
 	defer e.dynamic.mu.Unlock()
 
-	budget := cfg.DynamicMaxConcurrent
-	if budget <= 0 {
-		budget = e.expDefaults.DynamicMaxConcurrent
-	}
-	if capacity := e.registry.Capacity(); capacity > 0 && budget > capacity {
-		budget = capacity
-	}
-	if e.registry.LiveCount() >= budget {
+	if e.registry.LiveCount() >= e.concurrentBudget(cfg) {
 		return
 	}
 	// Adapt the #995 dynamic declarer to the proposer's FlagSelector: its Declare takes
@@ -828,10 +838,7 @@ func (e *experimentLoop) proposalSink() *experiment.RegistrySink {
 		Registry:  e.registry,
 		Objective: decision.ObjectiveBalanced,
 		Budget: func(ctx context.Context) int {
-			if b := e.config(ctx).DynamicMaxConcurrent; b > 0 {
-				return b
-			}
-			return e.expDefaults.DynamicMaxConcurrent
+			return e.concurrentBudget(e.config(ctx))
 		},
 	}
 	if e.dynamic != nil {
@@ -1225,14 +1232,17 @@ func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcom
 }
 
 // armCompletedGrace schedules the #1020 bounded-grace backstop for a COMPLETED
-// game: after e.completedGrace, if ConcludeGame has not folded the game, release
+// game: after the live grace window, if ConcludeGame has not folded the game, release
 // its in-flight slot non-counting (no fabricated fitness sample) so the
 // effective_concurrency=1 loop cannot deadlock on a dropped game_active=0
 // datapoint. The timer is tracked so run() can stop it on shutdown, and is
 // self-removing once it fires.
 func (e *experimentLoop) armCompletedGrace(gameID string) {
-	if e.completedGrace <= 0 {
-		return // grace disabled (non-positive) — preserve the pre-#1020 trust-telemetry behavior.
+	// #1810: the window is read at use time (experiment_completed_grace_seconds, else
+	// the env fallback, else 60 s), so a flag write reaches the next completed game.
+	grace := e.config(context.Background()).CompletedGrace
+	if grace <= 0 {
+		return // grace off (0) — preserve the pre-#1020 trust-telemetry behavior.
 	}
 	after := e.afterFunc
 	if after == nil {
@@ -1250,7 +1260,7 @@ func (e *experimentLoop) armCompletedGrace(gameID string) {
 	if stop, ok := e.graceTimers[gameID]; ok {
 		stop()
 	}
-	stop := after(e.completedGrace, func() { e.fireCompletedGrace(gameID) })
+	stop := after(grace, func() { e.fireCompletedGrace(gameID) })
 	e.graceTimers[gameID] = stop
 	e.graceMu.Unlock()
 }
@@ -1281,7 +1291,7 @@ func (e *experimentLoop) fireCompletedGrace(gameID string) {
 		// conclude datapoint was genuinely dropped. Audit it at Warn (distinct from the
 		// normal conclude path) so the drop is visible in the agent's logs/metrics.
 		e.log.Warn("experiment: completed-game grace backstop fired — released leaked slot (#1020)",
-			"game_id", gameID, "grace", e.completedGrace)
+			"game_id", gameID)
 		// Refill the freed slot (respecting the kill-switch). context.Background is
 		// intentional here for the same reason as the #1014 release path: this runs on
 		// a runtime timer goroutine with no request/tick context to thread.
@@ -1474,14 +1484,17 @@ func timelinePhaseDuration(timeline []gamecontext.TimelineEvent) (float64, bool)
 // bootstrap layer stays coherent with #1041/#1043.
 func experimentDefaultsFromEnv() flags.ExperimentDefaults {
 	return flags.ExperimentDefaults{
-		Enabled:                    experimentsEnabled(),
-		DynamicEnabled:             dynamicEnabled(),
-		Tick:                       experimentTick(),
-		DynamicMaxConcurrent:       dynamicMaxConcurrent(),
+		Enabled:        experimentsEnabled(),
+		DynamicEnabled: dynamicEnabled(),
+		Tick:           experimentTick(),
+		// #1810: the two widening settings fall back to their COMPILED defaults; their
+		// env vars are ceilings (experimentCeilingsFromEnv), applied after the read.
+		DynamicMaxConcurrent:       defaultDynamicMaxConcurrent,
 		VerdictMinN:                experiment.MinNFromEnv(),
 		VerdictMinPairs:            experiment.MinPairsFromEnv(),
-		MaxGames:                   experiment.MaxGamesPerExperimentFromEnv(),
+		MaxGames:                   experiment.DefaultMaxGamesPerExperiment,
 		ShadowEffectiveConcurrency: experiment.EffectiveConcurrencyFromEnv(),
+		CompletedGrace:             completedGrace(),
 		// Verdict-tuning float knobs (#1214): the BOOTSTRAP default each live agent.json
 		// flag (verdict_effect_threshold / verdict_min_raw_effect / verdict_sd_floor /
 		// verdict_anchor_margin) falls back to. These four were migrated FULLY to flags
@@ -1506,11 +1519,12 @@ func experimentTick() time.Duration {
 	return defaultExperimentTick
 }
 
-// completedGrace resolves the #1020 bounded-grace window from
-// AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS, falling back to defaultCompletedGrace
-// on an unset/invalid value. A value of 0 (or negative) explicitly DISABLES the
-// backstop — restoring the pre-#1020 trust-telemetry behavior — which is why a
-// non-positive override is honored verbatim rather than coerced to the default.
+// completedGrace resolves the FALLBACK of the experiment_completed_grace_seconds
+// flag (#1810, FR-151) from AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS, else
+// defaultCompletedGrace on an unset/invalid value. A value of 0 (or negative)
+// explicitly DISABLES the backstop — restoring the pre-#1020 trust-telemetry
+// behavior — which is why a non-positive override is honored verbatim rather than
+// coerced to the default (the flag's `off` variant is 0 for the same reason).
 func completedGrace() time.Duration {
 	if v := strings.TrimSpace(os.Getenv(envCompletedGrace)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -1520,19 +1534,82 @@ func completedGrace() time.Duration {
 	return defaultCompletedGrace
 }
 
-// dynamicMaxConcurrent resolves the dynamic-declarer concurrent-experiment
-// backstop from AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT, falling back to
-// defaultDynamicMaxConcurrent on an unset/invalid/non-positive value (a
-// zero/negative cap would let the declarer either never declare or be unbounded,
-// so it is treated as misconfiguration). It is further clamped to the shadow
-// capacity in declareDynamicIfEnabled.
-func dynamicMaxConcurrent() int {
-	if v := strings.TrimSpace(os.Getenv(envDynamicMaxConcurrent)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
+// experimentCeilings are the operator's env ceilings on the two widening
+// experiment settings (#1810, C-034, FR-152 e/f). 0 = no ceiling.
+type experimentCeilings struct {
+	// MaxConcurrent caps experiment_dynamic_max_concurrent
+	// (AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT).
+	MaxConcurrent int
+	// MaxGames caps experiment_max_games (AGENT_EXPERIMENT_MAX_GAMES).
+	MaxGames int
+}
+
+// experimentCeilingsFromEnv reads the two ceilings once at startup. Unset = no
+// ceiling. An invalid or non-positive value is no ceiling too (WARN, except a
+// max-games 0, which has always meant "no games limit").
+func experimentCeilingsFromEnv(logger *slog.Logger) experimentCeilings {
+	if logger == nil {
+		logger = slog.Default()
 	}
-	return defaultDynamicMaxConcurrent
+	return experimentCeilings{
+		MaxConcurrent: ceilingEnv(logger, envDynamicMaxConcurrent, true),
+		MaxGames:      ceilingEnv(logger, envMaxGames, false),
+	}
+}
+
+// ceilingEnv parses one ceiling env var: a positive int, else 0 (no ceiling).
+func ceilingEnv(logger *slog.Logger, key string, warnZero bool) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 || (n == 0 && warnZero) {
+		logger.Warn("experiment ceiling env invalid or not positive; no ceiling, the flag governs (#1810, C-034)", "env", key, "value", v)
+		return 0
+	}
+	return n
+}
+
+// concurrentBudget is the effective concurrent-experiment budget (#1810, FR-152 e)
+// shared by the dynamic declarer, the thesis proposer and the M7-4 proposer sink:
+// the live experiment_dynamic_max_concurrent (a non-positive value falls back to
+// the compiled default 3), capped by the AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT
+// ceiling when set, then clamped to the shadow capacity (an experiment with no
+// shadow slot to ever run is pointless).
+func (e *experimentLoop) concurrentBudget(cfg flags.ExperimentConfig) int {
+	budget := cfg.DynamicMaxConcurrent
+	if budget <= 0 {
+		budget = e.expDefaults.DynamicMaxConcurrent
+	}
+	if budget <= 0 {
+		budget = defaultDynamicMaxConcurrent
+	}
+	if ceiling := e.ceilings.MaxConcurrent; ceiling > 0 && budget > ceiling {
+		budget = ceiling
+	}
+	if capacity := e.registry.Capacity(); capacity > 0 && budget > capacity {
+		budget = capacity
+	}
+	return budget
+}
+
+// maxGamesBudget is the effective per-experiment games budget (#1810, FR-152 f):
+// min(AGENT_EXPERIMENT_MAX_GAMES, experiment_max_games), where 0 or less means no
+// limit on either side. The result is what Registry.Reconfigure takes: 0 = no limit.
+func (e *experimentLoop) maxGamesBudget(cfg flags.ExperimentConfig) int {
+	games := cfg.MaxGames
+	if games < 0 {
+		games = 0
+	}
+	ceiling := e.ceilings.MaxGames
+	if ceiling <= 0 {
+		return games
+	}
+	if games == 0 || games > ceiling {
+		return ceiling
+	}
+	return games
 }
 
 // envFitnessStoreCapacity overrides the finalized-fitness ring size (#965).

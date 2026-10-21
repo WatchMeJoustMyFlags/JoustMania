@@ -53,12 +53,11 @@ const (
 	keyBluetoothMaxDroppedEventsPct = "fitness.bluetooth.max_dropped_events_pct"
 	keyBluetoothMinMovementUpdateHz = "fitness.bluetooth.min_movement_update_hz"
 
-	// M7-4 propose-stage flags (#931). Read live (never cached) so a retune of the
-	// propose engine / cadence takes effect on the next propose cycle — same
-	// contract as the #847 llm.* gate flags and the #935 validation flags. They
-	// govern experiment.Proposer: which inference backend generates the proposal,
-	// and how often the (expensive) propose call may fire.
-	keyCodeImprovementEngine      = "code_improvement.engine"
+	// M7-4 propose-stage flag (#931). Read live (never cached) so a retune of the
+	// propose cadence takes effect on the next propose cycle — same contract as the
+	// #847 llm.* gate flags. It governs how often the (expensive) propose call of
+	// experiment.Proposer may fire. code_improvement.engine was retired in #1810
+	// (it was recorded on the span only; D-A10).
 	keyCodeImprovementMinInterval = "code_improvement.min_interval_seconds"
 
 	// M7-8 promotion flow flags (#936). Read LIVE (never cached) so flipping the
@@ -105,6 +104,12 @@ const (
 	keyVerdictMinPairs             = "verdict_min_pairs"
 	keyExperimentMaxGames          = "experiment_max_games"
 	keyExperimentShadowConcurrency = "experiment_shadow_effective_concurrency"
+	// #1810 (C-035, flags.md §15): the completed-game grace window is tuning (flag,
+	// else env, else default; 0 = off). The proposer gate limits the agent (C-034,
+	// FR-152 d): the caller ANDs it with the AGENT_EXPERIMENT_PROPOSER_ENABLED
+	// ceiling, and an unresolved flag reads false (closed).
+	keyExperimentCompletedGrace  = "experiment_completed_grace_seconds"
+	keyExperimentProposerEnabled = "experiment_proposer_enabled"
 
 	// Verdict-tuning float knobs migrated from env to agent.json flags (#1214),
 	// finishing the cluster verdict_min_n / verdict_min_pairs started in #1044. These
@@ -202,10 +207,6 @@ const (
 	// code_improvement.* defaultVariants. Applied when flagd is unreachable or a
 	// flag is undefined.
 
-	// DefaultCodeImprovementEngine is code_improvement.engine, recorded on the
-	// propose span. The propose-stage backend itself is chosen by
-	// AGENT_INFERENCE_BACKEND (stub | claude, #1234).
-	DefaultCodeImprovementEngine = "stub"
 	// DefaultCodeImprovementMinIntervalSeconds is the propose cadence floor
 	// (code_improvement.min_interval_seconds): at most one experiment proposal per
 	// this interval. Proposing is an LLM call, so it is far rarer than a decision
@@ -425,10 +426,6 @@ func (f *Flags) Lifecycle(ctx context.Context) Lifecycle {
 // and maps them, the same "package owns logic, caller owns flagd" split the
 // Gate/Writer use).
 type CodeImprovementConfig struct {
-	// Engine is code_improvement.engine (default "stub"). It is recorded on the
-	// propose span only; the propose backend itself is selected by the
-	// AGENT_INFERENCE_BACKEND env (stub | claude, #1234).
-	Engine string
 	// MinInterval is code_improvement.min_interval_seconds as a Duration (default
 	// 300s): the propose cadence floor. <= 0 in the flag falls back to the default
 	// (durationFlag guards a non-positive value).
@@ -441,7 +438,6 @@ type CodeImprovementConfig struct {
 // error (flagd unreachable / undefined).
 func (f *Flags) CodeImprovement(ctx context.Context) CodeImprovementConfig {
 	return CodeImprovementConfig{
-		Engine:      f.stringFlag(ctx, keyCodeImprovementEngine, DefaultCodeImprovementEngine),
 		MinInterval: f.durationFlag(ctx, keyCodeImprovementMinInterval, DefaultCodeImprovementMinIntervalSeconds),
 	}
 }
@@ -487,16 +483,23 @@ type ExperimentDefaults struct {
 	DynamicEnabled bool
 	// Tick is AGENT_EXPERIMENT_TICK_SECONDS as a duration (the AllocateAndSpawn cadence).
 	Tick time.Duration
-	// DynamicMaxConcurrent is AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT.
+	// DynamicMaxConcurrent is the compiled default of experiment_dynamic_max_concurrent
+	// (3). Since #1810 AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT is a ceiling the caller
+	// applies after the read (C-034, FR-152 e), never this fallback.
 	DynamicMaxConcurrent int
 	// VerdictMinN is AGENT_VERDICT_MIN_N.
 	VerdictMinN int
 	// VerdictMinPairs is AGENT_VERDICT_MIN_PAIRS.
 	VerdictMinPairs int
-	// MaxGames is AGENT_EXPERIMENT_MAX_GAMES (per-experiment termination budget).
+	// MaxGames is the compiled default of experiment_max_games (50). Since #1810
+	// AGENT_EXPERIMENT_MAX_GAMES is a ceiling the caller applies after the read
+	// (C-034, FR-152 f), never this fallback.
 	MaxGames int
 	// ShadowEffectiveConcurrency is AGENT_SHADOW_EFFECTIVE_CONCURRENCY.
 	ShadowEffectiveConcurrency int
+	// CompletedGrace is AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS, else 60 s: the
+	// fallback of experiment_completed_grace_seconds (#1810). 0 = off.
+	CompletedGrace time.Duration
 	// VerdictEffectThreshold is the verdict's standardized-effect gate
 	// (#1214; was AGENT_VERDICT_EFFECT_THRESHOLD, default 0.5).
 	VerdictEffectThreshold float64
@@ -551,6 +554,14 @@ type ExperimentConfig struct {
 	// #1214): a PROMOTE is downgraded only when the experimental arm regresses below the
 	// recent-real baseline by MORE than this (#992).
 	VerdictAnchorMargin float64
+	// CompletedGrace is the #1020 bounded-grace window for a completed shadow game
+	// (experiment_completed_grace_seconds, #1810). 0 or less = off.
+	CompletedGrace time.Duration
+	// ProposerEnabled is the flag half of the proposer gate
+	// (experiment_proposer_enabled, #1810). The caller ANDs it with the
+	// AGENT_EXPERIMENT_PROPOSER_ENABLED ceiling (C-034, FR-152 d). It never falls
+	// back to the env: an unresolved flag reads false (closed).
+	ProposerEnabled bool
 }
 
 // Experiment evaluates the migrated experiment runtime knobs (#1044, #1214) for one
@@ -578,7 +589,19 @@ func (f *Flags) Experiment(ctx context.Context, def ExperimentDefaults) Experime
 		VerdictMinRawEffect:    f.floatFlag(ctx, keyVerdictMinRawEffect, def.VerdictMinRawEffect),
 		VerdictSDFloor:         f.floatFlag(ctx, keyVerdictSDFloor, def.VerdictSDFloor),
 		VerdictAnchorMargin:    f.floatFlag(ctx, keyVerdictAnchorMargin, def.VerdictAnchorMargin),
+		// #1810: grace is tuning (flag, else env, else 60 s; 0 = off, so not
+		// durationFlag, which floors a non-positive value). The proposer gate's def
+		// is false whatever the env says: a lost sync closes it (C-034).
+		CompletedGrace:  time.Duration(f.intFlag(ctx, keyExperimentCompletedGrace, int(def.CompletedGrace/time.Second))) * time.Second,
+		ProposerEnabled: f.boolFlag(ctx, keyExperimentProposerEnabled, false),
 	}
+}
+
+// ExperimentProposerEnabled resolves only experiment_proposer_enabled (#1810), the
+// flag half of the proposer gate the M7-4 proposer reads at each game end. An
+// unresolved flag reads false (closed, C-034).
+func (f *Flags) ExperimentProposerEnabled(ctx context.Context) bool {
+	return f.boolFlag(ctx, keyExperimentProposerEnabled, false)
 }
 
 // boolFlag resolves a boolean flag, falling back to def on any error.
