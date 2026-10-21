@@ -362,7 +362,7 @@ func TestClaude_FeedsProposerSeam(t *testing.T) {
 	sink := &recordingSink{}
 	proposer := experiment.NewProposer(c, sink, gameVocab(svc), nil, nil)
 
-	res := proposer.ProposeOnce(context.Background(), experiment.Narrative{GameMode: "joust"}, experiment.ProposerConfig{Engine: "claude", Permit: func(context.Context) (bool, string) { return true, "" }})
+	res := proposer.ProposeOnce(context.Background(), experiment.Narrative{GameMode: "joust"}, experiment.ProposerConfig{Permit: func(context.Context) (bool, string) { return true, "" }})
 	if res.Outcome != experiment.ProposeProposed {
 		t.Fatalf("outcome = %q, want proposed (err=%v)", res.Outcome, res.Err)
 	}

@@ -31,34 +31,6 @@ def _make_service(num_controllers: int = 0) -> tuple[MockControllerService, Mock
     return MockControllerService(adapter), adapter
 
 
-class TestAddController:
-    @pytest.mark.uc("UC-003", flow="main", steps=[2])
-    def test_add_controller_auto_serial(self):
-        service, adapter = _make_service()
-        request = controller_manager_mock_pb2.AddControllerRequest()
-        response = service.AddController(request, None)
-        assert response.success
-        assert response.serial == "MOCK0000"
-        assert "MOCK0000" in adapter.controllers
-
-    @pytest.mark.uc("UC-003", flow="main", steps=[2])
-    def test_add_controller_with_serial(self):
-        service, adapter = _make_service()
-        request = controller_manager_mock_pb2.AddControllerRequest(serial="MY_CTRL")
-        response = service.AddController(request, None)
-        assert response.success
-        assert response.serial == "MY_CTRL"
-        assert "MY_CTRL" in adapter.controllers
-
-    def test_add_controller_duplicate_returns_existing(self):
-        service, _adapter = _make_service()
-        request = controller_manager_mock_pb2.AddControllerRequest(serial="DUP")
-        service.AddController(request, None)
-        response = service.AddController(request, None)
-        assert response.success
-        assert response.serial == "DUP"
-
-
 class TestRemoveController:
     @pytest.mark.uc("UC-003", flow="A4", steps=[1])
     def test_remove_existing_controller(self):
@@ -80,49 +52,13 @@ class TestRemoveController:
         assert list(adapter.controllers) == ["KEEP"]
 
 
-class TestUC003SetColor:
-    """UC-003 A5: SetColor stores a colour directly; the next system LED write replaces it."""
-
-    @pytest.mark.uc("UC-003", flow="A5", steps=[1])
-    def test_color_reads_back_without_an_observability_event(self):
-        service, adapter = _make_service()
-        serial = adapter.add_controller("LED0")
-        events = adapter.add_observer()
-
-        response = service.SetColor(controller_manager_mock_pb2.ColorRequest(serial=serial, r=10, g=20, b=30), None)
-
-        assert response.success, response.error
-        color = service.GetColor(controller_manager_mock_pb2.GetColorRequest(serial=serial), None)
-        assert (color.r, color.g, color.b) == (10, 20, 30)
-        assert events.empty(), "SetColor publishes no observability event"
-
-    @pytest.mark.uc("UC-003", flow="A5", steps=[1])
-    def test_next_system_led_write_replaces_the_color(self):
-        service, adapter = _make_service()
-        serial = adapter.add_controller("LED0")
-        service.SetColor(controller_manager_mock_pb2.ColorRequest(serial=serial, r=10, g=20, b=30), None)
-
-        adapter.set_output(serial, 0, 255, 0, 0)
-
-        color = service.GetColor(controller_manager_mock_pb2.GetColorRequest(serial=serial), None)
-        assert (color.r, color.g, color.b) == (0, 255, 0)
-
-    @pytest.mark.uc("UC-003", flow="A5", steps=[2])
-    def test_unknown_controller_returns_error(self):
-        service, _adapter = _make_service()
-
-        response = service.SetColor(controller_manager_mock_pb2.ColorRequest(serial="NOPE", r=1, g=2, b=3), None)
-
-        assert not response.success
-        assert "not found" in response.error
-
-
 class TestAddControllers:
     @pytest.mark.uc("UC-003", flow="main", steps=[1, 2])
     def test_add_multiple_controllers(self):
         service, adapter = _make_service()
         request = controller_manager_mock_pb2.AddControllersRequest(count=3)
         response = service.AddControllers(request, None)
+        assert list(response.serials) == ["MOCK0000", "MOCK0001", "MOCK0002"]
         assert response.success
         assert len(response.serials) == 3
         assert len(adapter.controllers) == 3

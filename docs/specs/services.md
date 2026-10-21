@@ -142,6 +142,10 @@ archetypes: the agent resolves and pins the parameters and passes them in `AddCo
 
 `SetAutoGameEnd` and its `AutoGameEndRequest` / `AutoGameEndResponse` messages were deleted in #1623 (UC-003 A1 retired, D-C8): the scripted kill hit every mock controller except the last-added one, including reserved shadow-game controllers. Games on mock controllers end through `SimulateDeath` (UC-003 step 4) or organic deaths (UC-046 BR-004). Regenerated with `make protos` and `make protos-agent`; connect-proxy forwards no `MockControllerService` RPC, and the dashboard has no mock client. The remaining RPCs are listed in [generated/grpc-rpcs.md](generated/grpc-rpcs.md) and described in [UC-003](../use_cases/UC-003.md).
 
+### `controller_manager_mock.MockControllerService`: `SetColor` and singular `AddController` removed
+
+`SetColor` (with `ColorRequest` / `ColorResponse`) and the singular `AddController` (with `AddControllerRequest` / `AddControllerResponse`) were deleted in #1322 (UC-003 A5 retired): nothing called either. A test sets an LED colour through the adapter, and `AddControllers` (`count=1`, with `reserved` / `tag`) replaces the singular call. The `reserved` / `tag` semantics now live on `AddControllersRequest`. Regenerated with `make protos` and `make protos-agent`; connect-proxy forwards no `MockControllerService` RPC and the dashboard has no mock client.
+
 The agent's OTLP receiver implements the standard `opentelemetry.proto.collector.{trace,metrics}.v1` Export
 services (`services/agent/receiver.go`); they are not JoustMania protos.
 
@@ -234,7 +238,7 @@ Two layers (`backend.py`, `multiplexer/`): `ControllerManagerServicer` calls the
 |---|---|---|
 | `rust` | `RustServiceAdapter` (`rust_adapter.py`) | gRPC client of `rust-hid` (`RUST_HID_HOST` / `RUST_HID_PORT`, default `localhost:50058`); background bidirectional `StreamIO` stream, `poll()` reads the cached last sample per serial, `set_output()` queues an `IOCommand` (queue capacity 256). Default. |
 | `python` | `PythonHidAdapter` (`python_hid_adapter.py`) | Same shape, gRPC client of `python-hid` (`PYTHON_HID_HOST` / `PYTHON_HID_PORT`, default `localhost:50059`). Opt-in. |
-| `mock` | `MockAdapter` (`mock_adapter.py`) | Simulated I/O, always loaded with zero controllers (added through `AddController`, `MockControllerService`). |
+| `mock` | `MockAdapter` (`mock_adapter.py`) | Simulated I/O, always loaded with zero controllers (added through `AddControllers`, `MockControllerService`). |
 | `unstable` | `UnstableAdapter` (`unstable_adapter.py`) | Routing-only decorator around the *same* python instance: fresh polls at most every 0.12 s (about 8.3 Hz), every 10th dropped. Registered automatically when a `python` adapter is loaded (`backend_factory._build_routing_only_adapters`); never a default or fallback winner, never discovers on its own. |
 
 **`backend` flag** (domain `controller`, read once at startup, restart to change): a comma-separated adapter list validated by `multiplexer/validation.py` (`mock`, `python`, `rust` and combinations without duplicates; anything else raises). `mock` is appended when missing. Variants in `services/flagd/controller.json`:
@@ -378,16 +382,16 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_SHADOW_GAME` | unset | no | `true` runs one one-shot shadow game at startup; `SHADOW_GAME_MODE` (`JoustFFA`), `SHADOW_GAME_SENSITIVITY` (`2`, 0 to 4), `SHADOW_GAME_ARCHETYPE`, `SHADOW_GAME_SEED` tune it |
 | `GAME_COORDINATOR_ADDR`, `MOCK_CONTROLLER_ADDR` | `game-coordinator:50053`, `controller-manager:50062` | no | shadow-game runner endpoints |
 | `AGENT_EXPERIMENTS_ENABLED` | `false` | yes | bootstrap default of the live `experiments_enabled` flag, not a gate: the flag decides each tick |
-| `AGENT_EXPERIMENT_PROPOSER_ENABLED` | `false` | no | retro-seeded thesis proposer opt-in |
-| `AGENT_EXPERIMENT_TICK_SECONDS` | `30` | yes | registry allocate-and-spawn cadence |
-| `AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS` | `60` | no | grace before a completed shadow game with no end datapoint releases its slot (0 or less disables) |
+| `AGENT_EXPERIMENT_PROPOSER_ENABLED` | `false` | yes (empty = closed) | operator ceiling of the proposer gate (#1810, C-034): the retro-seeded thesis proposer and the M7-4 proposer run only when this is `true` AND the `experiment_proposer_enabled` flag is on |
+| `AGENT_EXPERIMENT_TICK_SECONDS` | `30` | yes | deprecated (#1810): fallback for `experiment_tick_seconds` (registry allocate-and-spawn cadence) |
+| `AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS` | `60` | no | deprecated (#1810): fallback for `experiment_completed_grace_seconds` (grace before a completed shadow game with no end datapoint releases its slot; 0 or less disables) |
 | `AGENT_EXPERIMENT_SEED_FLAG`, `_VALUE`, `_OBJECTIVE`, `_TARGET_N`, `_HYPOTHESIS` | unset (objective `balanced`) | yes | declare one env-seeded experiment at startup |
 | `AGENT_EXPERIMENT_DYNAMIC_ENABLED` | `false` | yes | bootstrap default of the live `experiment_dynamic_enabled` flag, not a gate (the declarer also needs `experiments_enabled`) |
-| `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` | `3` | yes (empty = default) | cap on live dynamically declared experiments |
+| `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` | unset | yes (empty = no ceiling) | operator ceiling (#1810, C-034): the concurrent-experiment budget is `min(env, experiment_dynamic_max_concurrent)`, clamped to the shadow capacity; unset, invalid or non-positive = no ceiling |
 | `AGENT_EXPERIMENT_DYNAMIC_CANDIDATES`, `_DENYLIST`, `_OBJECTIVE`, `_TARGET_N` | unset (built-in denylist, objective `balanced`, target 0); `_DENYLIST` set but empty = no exclusions | first, second, fourth | candidate flag list, excluded flags, default objective, games per arm of dynamic experiments |
 | `AGENT_MAX_SHADOW_GAMES` | `20` | no | registry shadow-capacity cap |
 | `AGENT_SHADOW_EFFECTIVE_CONCURRENCY` | `4` | no | in-flight shadow spawns, clamped to the cap above |
-| `AGENT_EXPERIMENT_MAX_GAMES` | `50` | no | per-experiment games budget (0 or less disables) |
+| `AGENT_EXPERIMENT_MAX_GAMES` | unset | no | operator ceiling (#1810, C-034): the per-experiment games budget is `min(env, experiment_max_games)`, 0 or less = no limit on either side; unset, 0 or invalid = no ceiling |
 | `AGENT_VERDICT_MIN_N` / `AGENT_VERDICT_MIN_PAIRS` | `8` / `5` | no | bootstrap defaults of the `verdict_min_n` / `verdict_min_pairs` flags |
 | `AGENT_FITNESS_STORE_CAPACITY` | `512` | no | finalized-fitness ring size |
 | `AGENT_EXPERIMENT_DIR` | `/var/lib/joustmania/agent/experiments` | no (volume `agent-experiments` mounted there) | experiment journal and autonomous-revert snapshot root |

@@ -28,6 +28,10 @@ Review, do not fix. Never push to the PR branch.
 
 The orchestrator picks the model from this table; when you are the wrong depth for the PR, say so in one line.
 
+**Plan check.** When the brief names a plan file (`<scratchpad>/<N>-plan.md`, see `.claude/agents/implementer.md` "Plan first"),
+also check the PR against it (the plan as folded after the opposer, `<scratchpad>/<N>-opposer.md`, when one exists). Report a listed affected path the PR ignores, a listed test that is missing, or an
+unexplained deviation as a finding.
+
 ## Hard rules
 
 - Use a detached worktree and remove it at the end. Fetch into a per-PR ref, never `FETCH_HEAD`: parallel reviewers share it, and one review then checks out another PR's head.
@@ -45,7 +49,8 @@ The orchestrator picks the model from this table; when you are the wrong depth f
 1. **Context.** `gh pr view <PR> --json title,body,headRefOid,files,labels`; read the linked issue ("Part of #N")
    and the UC / FR / spec rows the PR names. Check the head SHA matches what you were told.
 2. **Correctness and safety first.** Does the diff do what the spec says, nothing more? Fail-closed where it
-   must? Async/await propagated? Flags read at use time? Proto RPC has its connect-proxy forwarding method?
+   must? Async/await propagated? Flags read at use time?
+   **C-035:** a new env-only tunable is a finding; runtime flexibility is a flag (requirements.md C-035 lists the exceptions). Proto RPC has its connect-proxy forwarding method?
    Spec IDs collide with open PRs? `Part of #N`, no closing keywords? Labels (`ci-full`, `no-spec-change`) right?
 3. **Mutation check.** In the review worktree, revert or weaken the core fix (`git show <fix> -- <file> | git apply -R`
    or a one-line edit), run the new tests: at least one must FAIL (hand the run to the Haiku `gate-runner` agent with

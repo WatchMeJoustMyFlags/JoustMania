@@ -34,6 +34,7 @@ from .fake_audio import FakeAudio
 from .fakes.claude import API_KEY as FAKE_CLAUDE_API_KEY
 from .fakes.claude import MODEL as FAKE_CLAUDE_MODEL
 from .fakes.claude import FakeClaude
+from .fakes.github import FakeGitHub
 from .fakes.openai import API_KEY as FAKE_OPENAI_API_KEY
 from .fakes.openai import FakeOpenAI
 from .fakes.otlp import OtlpSink
@@ -74,12 +75,17 @@ class Composition:
     # Also a fake Claude (``stack.fake_claude``) the agent's retro and proposer text backend is
     # pointed at (AGENT_INFERENCE_BACKEND=claude + AGENT_INFERENCE_BASE_URL; needs ``agent``).
     fake_claude: bool = False
+    # Also a fake GitHub REST API (``stack.fake_github``) the agent's promoter opens issues and
+    # PRs on (the promotion env gate + GITHUB_API_URL; needs ``agent``). Never github.com.
+    fake_github: bool = False
     # Extra env for the agent process, applied last (e.g. the experiment seed of TC-011).
     agent_env: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.fake_claude and not self.agent:
             raise ValueError("fake_claude=True needs agent=True")
+        if self.fake_github and not self.agent:
+            raise ValueError("fake_github=True needs agent=True")
         unknown = set(self.services) - set(SERVICES)
         if unknown:
             raise ValueError(f"unknown services {sorted(unknown)}; known: {sorted(SERVICES)}")
@@ -103,6 +109,7 @@ class ServiceStack:
         self.workdir = workdir
         self.fake_openai: FakeOpenAI | None = FakeOpenAI(workdir) if composition.agent else None
         self.fake_claude: FakeClaude | None = FakeClaude() if composition.fake_claude else None
+        self.fake_github: FakeGitHub | None = FakeGitHub() if composition.fake_github else None
         # Picked up front: the sink tees to it, and the agent must not be found by a stale address.
         self.agent_port: int | None = free_port() if composition.agent else None
         self.agent: AgentProcess | None = None
@@ -147,6 +154,8 @@ class ServiceStack:
             self._ports[("fake-openai", FAKE_OPENAI_PORT)] = self.fake_openai.start()
         if self.fake_claude is not None:
             self.fake_claude.start()
+        if self.fake_github is not None:
+            self.fake_github.start()
         plane = self.flag_plane
         plane.start()
         self._ports[("flag-service", FLAG_SERVICE_HTTP_PORT)] = plane.http_port
@@ -179,7 +188,11 @@ class ServiceStack:
                 coordinator_port=ports["game-coordinator"],
                 mock_control_port=mock_port,
                 openai_api_key=FAKE_OPENAI_API_KEY,
-                extra_env={**self._inference_env(), **self.composition.agent_env},
+                extra_env={
+                    **self._inference_env(),
+                    **(self.fake_github.agent_env() if self.fake_github else {}),
+                    **self.composition.agent_env,
+                },
             )
             self._ports[("agent", AGENT_OTLP_PORT)] = self.agent_port
             self.agent.start()
@@ -207,6 +220,13 @@ class ServiceStack:
             "AGENT_INFERENCE_MODEL": FAKE_CLAUDE_MODEL,
             # Bootstrap default only: the live experiments_enabled flag decides (FR-066).
             "AGENT_EXPERIMENTS_ENABLED": "true",
+            # The proposer gate's operator ceiling (#1810, C-034): the M7-4 proposer runs
+            # only when it is true AND experiment_proposer_enabled is on (ci default on).
+            "AGENT_EXPERIMENT_PROPOSER_ENABLED": "true",
+            # The same gate opens the retro-seeded thesis proposer; a candidate list
+            # naming no game flag keeps it (and the dynamic declarer) from declaring a
+            # second experiment next to the M7-4 one TC-010 asserts on.
+            "AGENT_EXPERIMENT_DYNAMIC_CANDIDATES": "tc010_no_such_flag",
             # The experiment journal (default /var/lib/joustmania/...) lives in the stack's workdir.
             "AGENT_EXPERIMENT_DIR": str(self.workdir / "experiments"),
         }
@@ -294,6 +314,8 @@ class ServiceStack:
             self.fake_openai.stop()
         if self.fake_claude is not None:
             self.fake_claude.stop()
+        if self.fake_github is not None:
+            self.fake_github.stop()
 
     # ------------------------------------------------------------- debugging
     def log_tail(self) -> str:
@@ -304,6 +326,8 @@ class ServiceStack:
             parts.append(self.fake_openai.log_tail())
         if self.fake_claude is not None:
             parts.append(self.fake_claude.log_tail())
+        if self.fake_github is not None:
+            parts.append(self.fake_github.log_tail())
         parts.append(self.flag_plane.log_tail())
         return "\n".join(parts)
 

@@ -172,8 +172,10 @@ func TestStackOverlay_SubstitutesDefaultVariant(t *testing.T) {
 		if n := f.state.ExpireOverlays(); n != 1 {
 			t.Fatalf("expired %d overlays, want 1", n)
 		}
-		if v, _ := f.resolve("decision.openai.base_url", nil); v != "default" {
-			t.Fatalf("after the TTL resolved %s, want the baseline default", v)
+		// The flag that was written, not a neighbour: after the TTL it falls back
+		// to the baseline "unset" variant (empty model), not the o-variant.
+		if v, val := f.resolve("decision.openai.model", nil); v != "unset" || val != "" {
+			t.Fatalf("after the TTL decision.openai.model resolved %s=%v, want the baseline unset=\"\"", v, val)
 		}
 	})
 	t.Run("UC-053/A1 DELETE ?writer=stage clears that writer's overlays only", func(t *testing.T) {

@@ -2063,12 +2063,6 @@ def _same_value(a: object, b: object) -> bool:
     return a == b
 
 
-def _is_level_spec(spec: InterventionSpec) -> bool:
-    """True for a per-player LEVEL flag (player_sensitivity_factor,
-    player_handicap_factor): player-targeted state, not edge, not a grant."""
-    return spec.player_targeted and not spec.edge_triggered and not spec.per_serial_grant
-
-
 def _spec_default(spec: InterventionSpec) -> object:
     if spec.edge_triggered:
         return ""
