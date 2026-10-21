@@ -30,7 +30,7 @@ def _servicer_with_call_log(calls):
 
 def _server(calls, name):
     server = create_autospec(grpc.aio.Server, instance=True, spec_set=True)
-    server.stop.side_effect = lambda _grace: calls.append(f"{name}.stop")
+    server.stop.side_effect = lambda **_kwargs: calls.append(f"{name}.stop")
     return server
 
 
