@@ -8,12 +8,12 @@ default (``env_inventory`` explains what counts as one) must be set for that
 service in every stack in STACKS, unless ALLOWLIST says why the gap is intended.
 
 Stacks: ``docker-compose.yml`` alone, with the CI overlay, with each agent
-overlay (agent-coordinator, dry-run, decide-e2e; they override ``agent`` and
+overlay (dry-run; it overrides ``agent`` and
 ``flag-service`` environment), and the standalone Pi stack
 ``docker-compose.lite.yml`` (its own file, not an overlay; it has no agent).
 Not covered: ``docker-compose.dev/override/ci-rust.yml`` (local-development and
 Rust-CI tweaks, not deployed or env-contract stacks) and services that exist
-only in an overlay (``agent-game-coordinator``). See env_inventory's docstring
+only in an overlay. See env_inventory's docstring
 for what compose features count as "set".
 """
 
@@ -28,9 +28,7 @@ import pytest
 STACKS: dict[str, tuple[Path, tuple[Path, ...]]] = {
     "base": (inv.COMPOSE_BASE, ()),
     "ci": (inv.COMPOSE_BASE, (inv.COMPOSE_CI,)),
-    "agent-coordinator": (inv.COMPOSE_BASE, (inv.COMPOSE_AGENT_COORDINATOR,)),
     "dry-run": (inv.COMPOSE_BASE, (inv.COMPOSE_DRY_RUN,)),
-    "decide-e2e": (inv.COMPOSE_BASE, (inv.COMPOSE_DECIDE_E2E,)),
     "lite": (inv.COMPOSE_LITE, ()),
 }
 

@@ -56,7 +56,7 @@ AUDIO_PORT = 50056
 OTLP_GRPC_PORT = 4317  # otel-collector's OTLP/gRPC port in compose
 FLAG_SERVICE_HTTP_PORT = 8070
 AGENT_OTLP_PORT = 4317  # the agent's OTLP/gRPC receiver in compose
-FAKE_OPENAI_PORT = 8080  # fake-openai in docker-compose.decide-e2e.yml
+FAKE_OPENAI_PORT = 8080  # the fake OpenAI server (tests/integration/fake_openai)
 # The ci/agent.json variant of decision.openai.base_url the agent is pointed at the fake with.
 FAKE_OPENAI_VARIANT = ("agent", "decision.openai.base_url", "fake")
 # Same for the Jev decide backend (#1404): the ci/agent.json `fake` variant of decision.jev.base_url.

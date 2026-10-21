@@ -227,7 +227,7 @@ fitness sample (and records no recent-real sample for a real game), and the retr
 (`services/agent/gamecontext/store.go` `endGameLocked`, `EndGameFromRootSpan`, `EvictStale`; `gamecontext/multiplexer.go`;
 `services/agent/gameend.go`).
 
-**Traceability:** FR-040 to FR-049, FR-056, FR-063, FR-071, FR-072 / UC-040 to UC-045, UC-050, UC-051 / `services/agent/decision/`, `services/agent/experiment/`, `services/agent/gamecontext/` / `services/agent/decision/*_test.go` (trace_link, signal_telemetry, gameplay_phase_parent, game_cycle_parent, effect_parent), `tests/service/test_tc008_remote_backend_routing.py`, `tests/service/test_tc009_kill_switch.py`, `tests/integration/test_experiment_cohort_loop.py`.
+**Traceability:** FR-040 to FR-049, FR-056, FR-063, FR-071, FR-072 / UC-040 to UC-045, UC-050, UC-051 / `services/agent/decision/`, `services/agent/experiment/`, `services/agent/gamecontext/` / `services/agent/decision/*_test.go` (trace_link, signal_telemetry, gameplay_phase_parent, game_cycle_parent, effect_parent), `tests/service/test_tc008_remote_backend_routing.py`, `tests/service/test_tc009_kill_switch.py`, `tests/service/test_tc011_shadow_experiment.py`.
 
 ## 5. Game events
 
@@ -324,23 +324,23 @@ key breaks them.
 
 | Message | Keys consumers parse | Consumers | Emitted at |
 |---|---|---|---|
-| `agent.evaluate` | `session_id`, `game_mode`, `decision_backend`, `battery_threshold`, `variance_window`, `max_per_minute` (also emitted: `player_count`, `duration`) | dashboard Agent tab (Loki `{service_name="agent"}`, `services/dashboard/src/agent.ts`); `tests/integration/test_experiment_cohort_loop.py:133-136` (`decision_backend=rules`) | `services/agent/decision/decision.go:551-560` |
+| `agent.evaluate` | `session_id`, `game_mode`, `decision_backend`, `battery_threshold`, `variance_window`, `max_per_minute` (also emitted: `player_count`, `duration`) | dashboard Agent tab (Loki `{service_name="agent"}`, `services/dashboard/src/agent.ts`); `tests/service/test_tc011_shadow_experiment.py::test_agent_starts_inference_absent_and_decides_with_rules` (`decision_backend=rules`) | `services/agent/decision/decision.go:551-560` |
 | `agent.decision_blocked` | `intervention`, `reason` (also: `blocked`, `target_serial`, `decision_reason`, `allowed`) | dashboard Agent tab (feed rows; its blocked tallies come from `agent_decisions_total`, the lines only as fallback, #1326) | `services/agent/decision/decision.go:810-816`; a `rate_limit` refusal that repeats while the budget is unchanged is not logged here, only as debug `agent.decision_rate_limit_repeat` (`intervention`, `target_serial`; UC-040 A21, #1326) |
 | `agent.decide.backend_misconfigured` | `state` (`entered` WARN with `reason`; `cleared` INFO with `previous_reason`), `session_id`, `backend` | operators (Loki); `services/agent/decision/decide_fallback_quiet_test.go` | `services/agent/decision/decide_hook.go` (`noteMisconfigured`); once per state change per game, #1350 |
 | `agent.rollout_expand`, `agent.rollout_rollback`, `agent.rollout_rollback_recommended` | message only (they carry `dry_run`, #1375) | dashboard Agent tab | `services/agent/decision/infra_loop.go:570-578` |
 | `experiment.game_assigned` | `experiment_id`, `game_id`, `arm`, `pair_index` | dashboard Experiments tab (`services/dashboard/src/experiments.ts`) | `services/agent/experiment/registry.go:1107` |
-| `experiment.game_concluded` | `experiment_id`, `game_id`, `arm`, `fitness` | Experiments tab; `tests/integration/test_experiment_cohort_loop.py:461` (`fitness=`, `arm=control`, `arm=experimental`) | `registry.go:1223` |
-| `experiment.concluded` | `experiment_id`, `outcome` | Experiments tab; cohort-loop test | `registry.go:1431` |
-| `experiment.torn_down` | `experiment_id`, `status`, `reason` | Experiments tab; cohort-loop test | `registry.go:1586` |
-| `experiment.declared`, `code_improvement.promoted`, `experiment.promote_failed`, absence of `panic:` | message only | `tests/integration/test_experiment_cohort_loop.py` | `registry.go:593,1482`, `promote/promote.go:475` |
-| `Proposer/retro inference backend selected` | `backend` (`backend=stub` asserted) | `tests/integration/test_experiment_cohort_loop.py:131-132` | `services/agent/main.go:570` |
+| `experiment.game_concluded` | `experiment_id`, `game_id`, `arm`, `fitness` | Experiments tab; `tests/service/test_tc011_shadow_experiment.py::test_each_game_is_scored_for_its_arm` (`fitness=`, `arm=control`, `arm=experimental`) | `registry.go:1223` |
+| `experiment.concluded` | `experiment_id`, `outcome` | Experiments tab; `tests/service/test_tc011_shadow_experiment.py` | `registry.go:1431` |
+| `experiment.torn_down` | `experiment_id`, `status`, `reason` | Experiments tab; `tests/service/test_tc011_shadow_experiment.py` | `registry.go:1586` |
+| `experiment.declared`, `code_improvement.promoted`, `experiment.promote_failed`, absence of `panic:` | message only | `tests/service/test_tc011_shadow_experiment.py` | `registry.go:593,1482`, `promote/promote.go:475` |
+| `Proposer/retro inference backend selected` | `backend` (`backend=stub` asserted) | `tests/service/test_tc011_shadow_experiment.py::test_agent_starts_inference_absent_and_decides_with_rules` | `services/agent/main.go:570` |
 | `agent.llm.system_prompt`, `agent.llm.retro_response`, `agent.llm.retro_captured`, `agent.llm.retro_failed` | prompt SHA, response | prompt resolution by hand | `decision/prompt_fingerprint.go`, `decision/retro_capture.go` |
 | `Agent intervention writes gated by LIVE interventions_enabled flag` | message only | runbooks | `services/agent/main.go:150` |
 
 Agent logs reach Loki through `filelog/docker` with `service_name` from the compose label; they carry no
 trace id (D-T9).
 
-**Traceability:** FR-082, FR-084 / UC-035, UC-043, UC-070 / files above / `tests/integration/test_experiment_cohort_loop.py`.
+**Traceability:** FR-082, FR-084 / UC-035, UC-043, UC-070 / files above / `tests/service/test_tc011_shadow_experiment.py`.
 
 ## 8. Naming rules
 

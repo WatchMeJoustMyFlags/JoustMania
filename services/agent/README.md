@@ -1047,9 +1047,12 @@ change:
    kill-switch). They stay at defaults in the dry run, so a concluded experiment
    yields a **verdict** but does **not** set a `real` promotion overlay.
 
-### Probe mode (`AGENT_PROBE_DECISIONS`)
+### Probe mode (`decision.probe_decisions`)
 
-`AGENT_PROBE_DECISIONS=true` swaps the rules engine for `ProbeRules`, which emits
+The flag `decision.probe_decisions` (agent set, default off; `AGENT_PROBE_DECISIONS=true`
+is its deprecated fallback while flagd is unreachable) swaps the rules engine for
+`ProbeRules` for the next decision cycle after a flip (no restart); pattern games
+always keep the real engine. `ProbeRules` emits
 one synthetic `noop` decision at most every 5 s. Its only purpose is to drive a
 **full audit trace** (`agent.signal_received → agent.decision → agent.action`)
 without waiting for a live game to trigger the real rules — invaluable for
