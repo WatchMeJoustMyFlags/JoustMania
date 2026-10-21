@@ -38,10 +38,13 @@ expect "services/pairing_daemon/daemon.py services/python_hid/x.py" "$ALWAYS py:
 expect "lib/feature_flags.py" "$ALWAYS py:lib $PY_ALL contract contract-flagd service"
 # root pyproject.toml is shared_python only (not the lib filter)
 expect "pyproject.toml" "$ALWAYS $PY_ALL service"
-expect "proto/menu.proto" "$ALWAYS py:lib $PY_ALL connect-proxy contract service"
+expect "proto/menu.proto" "$ALWAYS py:lib $PY_ALL connect-proxy agent-protos contract service"
 # rust filter includes the HID proto
-expect "proto/psmove_hid.proto" "$ALWAYS py:lib $PY_ALL connect-proxy rust-hid contract service"
+expect "proto/psmove_hid.proto" "$ALWAYS py:lib $PY_ALL connect-proxy agent-protos rust-hid contract service"
 expect "services/agent/decision/rules.go" "$ALWAYS go:agent contract contract-flagd"
+# proto_pkg (#1801): the committed agent Go stubs and their generator
+expect "services/agent/gen/game_coordinator/game_coordinator.pb.go" "$ALWAYS go:agent agent-protos contract contract-flagd"
+expect "scripts/ci/gen-agent-protos.sh" "$ALWAYS agent-protos contract"
 # lib filter pins one agent file and one service-tier test
 expect "services/agent/experiment/targeting.go" "$ALWAYS py:lib go:agent contract contract-flagd"
 expect "tests/service/test_experiment_shadow_isolation.py" "$ALWAYS py:lib service"

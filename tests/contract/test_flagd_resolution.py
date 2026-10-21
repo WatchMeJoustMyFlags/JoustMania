@@ -939,3 +939,91 @@ def test_snapshot_stamp_reaches_the_in_process_resolver(flagd):
             assert fh.poll_until(lambda: stamp() == ("contract", 4242)), (
                 f"{flag_set}/{key} stamp through flagd: {stamp()}"
             )
+
+
+# --------------------------------------------------------------------------- #
+# 5. gameId / serial intervention targeting on both resolvers (#1479)
+# --------------------------------------------------------------------------- #
+def _eq(var: str, value) -> dict:
+    """Same shape as ``eq`` in services/flag-service/state/render.go."""
+    return {"==": [{"var": var}, value]}
+
+
+@pytest.mark.uc("UC-053", flow="main", br=["BR-003"])
+@pytest.mark.parametrize("resolver", ["rpc", "in_process"])
+def test_gameid_and_serial_scoped_targeting_resolves_on_both_resolvers(flagd, resolver):
+    """The rungs the flag service renders (render.go: ``and`` of gameId and
+    targetingKey per player, bare gameId per game) resolve on real flagd through
+    BOTH the RPC and the in-process resolver (FR-136). Flag-service render tests
+    evaluate with Go jsonlogic, not flagd. A context that matches no rung
+    (other serial, other game, no gameId) resolves the default with no error.
+    """
+    path = flagd.file("interventions")
+    original = fh.load(path)
+    doc = json.loads(json.dumps(original))
+    doc["flags"]["player_sensitivity_factor"]["targeting"] = {
+        "if": [
+            {"and": [_eq("gameId", "game_a"), _eq("targetingKey", "SER_A")]},
+            "handicap",
+            {"and": [_eq("gameId", "game_a"), _eq("targetingKey", "SER_B")]},
+            "protect",
+            None,
+        ]
+    }
+    doc["flags"]["global_sensitivity_override"]["targeting"] = {
+        "if": [_eq("gameId", "game_a"), "fast", None]
+    }
+    fh.dump_in_place(path, doc)
+
+    def ctx(serial: str | None, game_id: str | None) -> EvaluationContext:
+        attributes = {"gameId": game_id} if game_id is not None else {}
+        return EvaluationContext(targeting_key=serial, attributes=attributes)
+
+    try:
+        with _ready_client(flagd, "interventions", resolver=resolver) as client:
+
+            def player(serial, game_id):
+                return client.get_float_details(
+                    "player_sensitivity_factor", 1.0, ctx(serial, game_id)
+                )
+
+            def game(game_id):
+                return client.get_integer_details(
+                    "global_sensitivity_override", -1, ctx(None, game_id)
+                )
+
+            assert fh.poll_until(
+                lambda: player("SER_A", "game_a").value == 1.5
+                and player("SER_B", "game_a").value == 0.7
+                and game("game_a").value == 3
+            ), (
+                f"{resolver}: targeting never served: "
+                f"{player('SER_A', 'game_a')} {player('SER_B', 'game_a')}"
+            )
+
+            # (serial, gameId) pairs that match no rung: default, no error.
+            for serial, game_id in (
+                ("SER_UNKNOWN", "game_a"),  # unknown serial
+                ("SER_A", "game_b"),  # same serial, other game
+                ("SER_A", None),  # no gameId in the context
+                (None, None),  # empty context
+            ):
+                details = player(serial, game_id)
+                assert details.error_code is None, (
+                    f"{resolver} {serial}/{game_id}: {details.error_code} "
+                    f"{details.error_message}"
+                )
+                assert details.value == 1.0, (
+                    f"{resolver} {serial}/{game_id}: want default 1.0, got {details.value}"
+                )
+
+            for game_id in ("game_b", None):
+                details = game(game_id)
+                assert details.error_code is None, (
+                    f"{resolver} game {game_id}: {details.error_code}"
+                )
+                assert details.value == -1, (
+                    f"{resolver} game {game_id}: want default -1, got {details.value}"
+                )
+    finally:
+        fh.dump_in_place(path, original)
