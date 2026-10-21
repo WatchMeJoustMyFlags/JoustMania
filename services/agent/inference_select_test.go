@@ -2,15 +2,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"testing"
 
-	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/inference"
-	"github.com/joustmania/agent/llm"
 )
 
 // inference_select_test.go covers the #1234 env-driven backend selection for the
