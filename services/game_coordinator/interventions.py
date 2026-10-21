@@ -532,7 +532,9 @@ class _RateLimiter:
     def __init__(self, budget: float, time_fn: Callable[[], float] = time.monotonic):
         self._budget = budget
         self._time_fn = time_fn
-        self._events: deque[tuple[float, float]] = deque()
+        # (timestamp, cost, reservation token); tokens are unique per reservation (#1868).
+        self._events: deque[tuple[float, float, int]] = deque()
+        self._next_token = 0
         self._lock = threading.Lock()
 
     def set_budget(self, budget: float) -> None:
@@ -547,24 +549,34 @@ class _RateLimiter:
     def current_weight(self) -> float:
         with self._lock:
             self._evict(self._time_fn())
-            return sum(cost for _, cost in self._events)
+            return sum(cost for _, cost, _ in self._events)
 
-    def check(self, cost: float) -> bool:
-        """Reserve ``cost`` if budget allows. Returns True if reserved."""
+    def reserve(self, cost: float) -> int | None:
+        """Reserve ``cost`` if budget allows. Returns the reservation token, or None when over budget."""
         with self._lock:
             now = self._time_fn()
             self._evict(now)
-            used = sum(c for _, c in self._events)
+            used = sum(c for _, c, _ in self._events)
             if used + cost > self._budget:
-                return False
-            self._events.append((now, cost))
-            return True
+                return None
+            self._next_token += 1
+            self._events.append((now, cost, self._next_token))
+            return self._next_token
 
-    def refund(self, cost: float) -> None:
-        """Give back the latest reservation of ``cost`` (an intervention that applied nothing, UC-040 A31)."""
+    def check(self, cost: float) -> bool:
+        """Reserve ``cost`` if budget allows. Returns True if reserved."""
+        return self.reserve(cost) is not None
+
+    def refund(self, token: int | None) -> None:
+        """Give back exactly the reservation ``token`` (an intervention that applied nothing, UC-040 A31).
+
+        Unknown, already-refunded or evicted tokens are ignored, so a refund never frees another write's slot.
+        """
+        if token is None:
+            return
         with self._lock:
-            for i in range(len(self._events) - 1, -1, -1):
-                if self._events[i][1] == cost:
+            for i, (_, _, event_token) in enumerate(self._events):
+                if event_token == token:
                     del self._events[i]
                     return
 
@@ -1485,7 +1497,7 @@ class InterventionManager:
         objective = self._dominant_objective()
         game = session.game
 
-        block_reason = self._check_chain(spec, target, game)
+        block_reason, reservation = self._check_chain(spec, target, game)
         if block_reason is not None:
             await self._record(spec, target, objective, session, blocked=True, block_reason=block_reason)
             return
@@ -1513,7 +1525,7 @@ class InterventionManager:
             return
         except InterventionNotApplied as e:
             # UC-040 A31: nothing applied, so the backstop reservation is refunded.
-            self._rate_limiter.refund(spec.weight)
+            self._rate_limiter.refund(reservation)
             logger.info(f"InterventionManager: {spec.flag_key} for {target or '<game>'} not applied: {e.reason}")
             await self._record(spec, target, objective, session, blocked=True, block_reason=e.reason)
             return
@@ -1645,8 +1657,9 @@ class InterventionManager:
         except Exception as e:
             logger.debug(f"agent cue emission failed for '{spec.type_id}': {e}")
 
-    def _check_chain(self, spec: InterventionSpec, target: str | None, game: object) -> str | None:
-        """Run the enforcement chain. Returns a block reason or None if allowed.
+    def _check_chain(self, spec: InterventionSpec, target: str | None, game: object) -> tuple[str | None, int | None]:
+        """Run the enforcement chain. Returns ``(block_reason, reservation)``: a reason when blocked, else
+        None plus the backstop reservation token to refund if the handler applies nothing (#1868).
 
         Order: allowed-membership -> rate limit -> battery guard -> mode matrix.
         The rate-limit reservation happens last among the cheap checks so a
@@ -1658,30 +1671,31 @@ class InterventionManager:
         """
         # (a) allowed-membership
         if spec.type_id not in self._allowed_types():
-            return BLOCK_NOT_ALLOWED
+            return BLOCK_NOT_ALLOWED, None
 
         # (d) mode-capability matrix (cheap, no budget side effect) — checked
         # before the rate limiter so unsupported types don't consume budget.
         if game is not None:
             mode_name = _game_mode_name(game)
             if spec.type_id in MODE_CAPABILITY_DENY.get(mode_name, frozenset()):
-                return BLOCK_MODE_UNSUPPORTED
+                return BLOCK_MODE_UNSUPPORTED, None
 
         # (c) battery guard (player-targeted only)
         if spec.player_targeted and target:
             pct = self._battery_pct(target)
             if pct is not None and pct < self._battery_threshold():
-                return BLOCK_LOW_BATTERY
+                return BLOCK_LOW_BATTERY, None
 
         # (b) weighted rate limit — the GENEROUS GLOBAL BACKSTOP (#919), NOT the
         # per-game governor (that is the agent's). Reserves budget; do last so
         # the reservation only happens for otherwise-allowed interventions. A
         # block here means a process-wide flood across ALL games, not a single
         # game pacing itself out.
-        if not self._rate_limiter.check(spec.weight):
-            return BLOCK_RATE_LIMITED
+        reservation = self._rate_limiter.reserve(spec.weight)
+        if reservation is None:
+            return BLOCK_RATE_LIMITED, None
 
-        return None
+        return None, reservation
 
     # ------------------------------------------------------------------ #
     # Metric + event emission
