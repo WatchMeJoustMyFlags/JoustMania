@@ -144,6 +144,22 @@ describe("UC-035: step 2 game event feed", () => {
     expect(feed).toEqual(["Agent: toughness boost for c:dd (2s)"]);
   });
 
+  it("UC-035/main step 2 shield charge events add feed lines (#1837)", () => {
+    const serial = "aa:bb:cc:dd";
+    expect(fold([["player_shield_charged", { serial, seconds: "5.0", expires_ms: "0" }]]).feed).toEqual([
+      "Agent: shield charge for c:dd (5.0s)",
+    ]);
+    expect(
+      fold([["player_shielded", { serial, kind: "full", seconds: "5.0", activation: "trigger", charge_delay_ms: "3200" }]]).feed,
+    ).toEqual(["c:dd activated the shield (after 3.2s)"]);
+    expect(fold([["player_shield_charge_ended", { serial, reason: "expired" }]]).feed).toEqual([
+      "c:dd's shield charge expired",
+    ]);
+    for (const reason of ["death", "game_end", "activated"]) {
+      expect(fold([["player_shield_charge_ended", { serial, reason }]]).feed).toEqual([]);
+    }
+  });
+
   it("UC-035/main step 2 game_error shows the Ended state and an error line", () => {
     const effect = reduceGameEvent(
       { ...idle, gameState: "Running" },

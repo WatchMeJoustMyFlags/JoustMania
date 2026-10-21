@@ -201,7 +201,7 @@ function startControllerStream() {
 // Stream game events
 function startGameEventStream() {
   // Reopened after a failure and after a clean end (UC-035 A4, #1706).
-  return keepGameEventStreamOpen(() => gameClient.streamGameEvents({}), handleGameEvent);
+  return keepGameEventStreamOpen(() => gameClient.streamGameEvents({}), handleGameEvent, undefined, () => shields.clear());
 }
 
 // Poll the agent's experiment telemetry from Loki and refresh the view.
