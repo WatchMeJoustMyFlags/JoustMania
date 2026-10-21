@@ -46,7 +46,18 @@ file in the brief. The plan lists:
 - the files and spec rows to touch;
 - **other code paths, consumers and writers affected** (callers, other services, scripts, the talk tooling, CI events);
 - the tests that must fail without the change, and the mutation that proves it;
-- the risks and the decisions taken.
+- the risks and the decisions taken;
+- **How this breaks** (mandatory): other consumers and writers, the runtime contexts the change runs in (CI events,
+  working directory, host vs container, Pi), the state left after a restart, failure or cancel, and the spec rows the
+  change could contradict.
+
+**Opposer for high-risk classes** (maintainer decision 2026-10-21). When the change touches persistence or state,
+safety gates (kill switch, fail-closed flags, interventions, agent limits), CI / build / release, or a cross-service
+contract (RPC, event stream, decide field), a separate read-only opus opposer reviews the plan before any code is
+written. Its only job is to break the plan: contradictions with the spec, missed consumers, wrong runtime assumptions,
+states the plan never considers. The orchestrator folds its findings into the plan, or asks the maintainer about any
+that need a decision, and names both files in the brief (`<scratchpad>/<N>-plan.md`, `<scratchpad>/<N>-opposer.md`).
+Other changes skip the opposer, and the PR review stays the backstop.
 
 When the brief names a plan file, read it before implement-issue step 3 (spec first). The brief overrides the plan,
 and a spec row overrides the plan. When they conflict, report it under `Decisions needed` instead of picking one. A
