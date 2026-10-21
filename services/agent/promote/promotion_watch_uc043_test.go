@@ -251,18 +251,28 @@ func TestUC043_A1_FailedKillSwitchRevertJournaledOnce(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-043/A1 a later run of failures for the same promotion adds no event", func(t *testing.T) {
-		p, rev := failingPromoter(t)
-		if got := p.RevertOnKillSwitch(context.Background()); len(got) != 1 {
-			t.Fatalf("first failure reported %d items, want 1", len(got))
+	t.Run("UC-043/A1 a failed watch revert does not use up the kill switch's failure report (re-watch)", func(t *testing.T) {
+		rev := &recordingReverter{}
+		watcher := &stepWatcher{verdicts: []WatchVerdict{VerdictInsufficient}}
+		p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, &recordingRealDefault{}, watcher, rev)
+		rw := &capturingRewatcher{}
+		p.SetRewatcher(rw)
+		if res := p.Promote(context.Background(), proposal, promoteVerdict, on, testEvidence()); res.Outcome != OutcomeApplied {
+			t.Fatalf("precondition: outcome = %q, want applied", res.Outcome)
 		}
-		// The switch goes back on (no tick), then off again: the same promotion
-		// still fails and was journaled already.
-		if got := p.RevertOnKillSwitch(context.Background()); len(got) != 0 {
-			t.Fatalf("second run of failures reported %+v, want nothing", got)
+		rev.err = errFlagService
+		rw.revert(context.Background()) // the re-watch's revert fails; its result is only logged
+		if got := p.RevertOnKillSwitch(context.Background()); len(got) != 1 || got[0].Outcome != OutcomeApplied || got[0].ExperimentID != "exp-1704" {
+			t.Fatalf("kill-switch failure after a failed re-watch revert = %+v, want one applied / exp-1704", got)
 		}
-		if rev.calls != 2 {
-			t.Fatalf("revert attempts = %d, want 2", rev.calls)
+	})
+
+	t.Run("UC-043/A1 a failed watch revert does not use up the kill switch's failure report (sync watch)", func(t *testing.T) {
+		rev := &recordingReverter{err: errFlagService}
+		p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, &recordingRealDefault{}, fakeWatcher{degraded: true}, rev)
+		p.Promote(context.Background(), proposal, promoteVerdict, on, testEvidence())
+		if got := p.RevertOnKillSwitch(context.Background()); len(got) != 1 || got[0].Outcome != OutcomeApplied || got[0].ExperimentID != "exp-1704" {
+			t.Fatalf("kill-switch failure after a failed sync watch revert = %+v, want one applied / exp-1704", got)
 		}
 	})
 

@@ -324,8 +324,9 @@ type Promoter struct {
 // reverted (#1704). cancel stops its background re-watch (nil when none runs);
 // syncPending is true while its Promote call runs; killed is set when the kill
 // switch took it; failReported is set once a failed kill-switch revert of it was
-// reported, so later failures of the same promotion are retried without another
-// report (UC-043 A1, #1753). Guarded by Promoter.mu.
+// reported (only by RevertOnKillSwitch, never by a failed watch revert), so later
+// kill-switch failures of the same promotion are retried without another report
+// (UC-043 A1, #1753). Guarded by Promoter.mu.
 type appliedPromotion struct {
 	proposal     experiment.Proposal
 	cancel       context.CancelFunc
