@@ -665,7 +665,8 @@
       "state": "ENABLED",
       "variants": {
         "default": "https://api.typesafe.ai/v1",
-        "blackhole": "https://192.0.2.1/v1"
+        "blackhole": "https://192.0.2.1/v1",
+        "fake": "http://127.0.0.1:1/v1"
       },
       "defaultVariant": "default"
     },

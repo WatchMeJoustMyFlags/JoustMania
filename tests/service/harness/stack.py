@@ -35,6 +35,8 @@ from .fakes.claude import API_KEY as FAKE_CLAUDE_API_KEY
 from .fakes.claude import MODEL as FAKE_CLAUDE_MODEL
 from .fakes.claude import FakeClaude
 from .fakes.github import FakeGitHub
+from .fakes.jev import API_KEY as FAKE_JEV_API_KEY
+from .fakes.jev import FakeJev
 from .fakes.openai import API_KEY as FAKE_OPENAI_API_KEY
 from .fakes.openai import FakeOpenAI
 from .fakes.otlp import OtlpSink
@@ -57,6 +59,8 @@ AGENT_OTLP_PORT = 4317  # the agent's OTLP/gRPC receiver in compose
 FAKE_OPENAI_PORT = 8080  # fake-openai in docker-compose.decide-e2e.yml
 # The ci/agent.json variant of decision.openai.base_url the agent is pointed at the fake with.
 FAKE_OPENAI_VARIANT = ("agent", "decision.openai.base_url", "fake")
+# Same for the Jev decide backend (#1404): the ci/agent.json `fake` variant of decision.jev.base_url.
+FAKE_JEV_VARIANT = ("agent", "decision.jev.base_url", "fake")
 # TCP port 1 (tcpmux) is never served here: a dial fails at once.
 UNREACHABLE_PORT = 1
 
@@ -75,6 +79,9 @@ class Composition:
     # Also a fake Claude (``stack.fake_claude``) the agent's retro and proposer text backend is
     # pointed at (AGENT_INFERENCE_BACKEND=claude + AGENT_INFERENCE_BASE_URL; needs ``agent``).
     fake_claude: bool = False
+    # Also a fake Jev (``stack.fake_jev``) behind the ``fake`` variant of ``decision.jev.base_url``;
+    # the agent gets the fake's dummy ``JEV_API_KEY`` (without this flag it has none: UC-044 A1).
+    fake_jev: bool = False
     # Also a fake GitHub REST API (``stack.fake_github``) the agent's promoter opens issues and
     # PRs on (the promotion env gate + GITHUB_API_URL; needs ``agent``). Never github.com.
     fake_github: bool = False
@@ -84,6 +91,8 @@ class Composition:
     def __post_init__(self):
         if self.fake_claude and not self.agent:
             raise ValueError("fake_claude=True needs agent=True")
+        if self.fake_jev and not self.agent:
+            raise ValueError("fake_jev=True needs agent=True")
         if self.fake_github and not self.agent:
             raise ValueError("fake_github=True needs agent=True")
         unknown = set(self.services) - set(SERVICES)
@@ -101,6 +110,8 @@ LOBBY = Composition(("controller-manager", "game-coordinator", "menu"))
 AGENT = Composition(("controller-manager", "game-coordinator", "menu"), otlp=True, agent=True)
 # Plus a fake Claude behind the agent's retro and proposer text backend (TC-010).
 AGENT_CLAUDE = Composition(("controller-manager", "game-coordinator", "menu"), otlp=True, agent=True, fake_claude=True)
+# Plus a fake Jev behind the agent's `jev` decide backend, with its dummy key (TC-008).
+AGENT_JEV = Composition(("controller-manager", "game-coordinator", "menu"), otlp=True, agent=True, fake_jev=True)
 
 
 class ServiceStack:
@@ -109,14 +120,15 @@ class ServiceStack:
         self.workdir = workdir
         self.fake_openai: FakeOpenAI | None = FakeOpenAI(workdir) if composition.agent else None
         self.fake_claude: FakeClaude | None = FakeClaude() if composition.fake_claude else None
+        self.fake_jev: FakeJev | None = FakeJev() if composition.fake_jev else None
         self.fake_github: FakeGitHub | None = FakeGitHub() if composition.fake_github else None
         # Picked up front: the sink tees to it, and the agent must not be found by a stale address.
         self.agent_port: int | None = free_port() if composition.agent else None
         self.agent: AgentProcess | None = None
-        self.flag_plane = FlagPlane(
-            workdir,
-            variant_values={FAKE_OPENAI_VARIANT: self.fake_openai.base_url} if self.fake_openai else None,
-        )
+        variant_values = {FAKE_OPENAI_VARIANT: self.fake_openai.base_url} if self.fake_openai else {}
+        if self.fake_jev is not None:
+            variant_values[FAKE_JEV_VARIANT] = self.fake_jev.base_url
+        self.flag_plane = FlagPlane(workdir, variant_values=variant_values or None)
         self.fake_audio = FakeAudio()
         forward_to = f"127.0.0.1:{self.agent_port}" if self.agent_port else None
         self.otlp_sink: OtlpSink | None = OtlpSink(forward_to=forward_to) if composition.otlp else None
@@ -154,6 +166,8 @@ class ServiceStack:
             self._ports[("fake-openai", FAKE_OPENAI_PORT)] = self.fake_openai.start()
         if self.fake_claude is not None:
             self.fake_claude.start()
+        if self.fake_jev is not None:
+            self.fake_jev.start()
         if self.fake_github is not None:
             self.fake_github.start()
         plane = self.flag_plane
@@ -190,6 +204,7 @@ class ServiceStack:
                 openai_api_key=FAKE_OPENAI_API_KEY,
                 extra_env={
                     **self._inference_env(),
+                    **self._jev_env(),
                     **(self.fake_github.agent_env() if self.fake_github else {}),
                     **self.composition.agent_env,
                 },
@@ -208,6 +223,10 @@ class ServiceStack:
             )
             self.services[name] = service
             service.start()
+
+    def _jev_env(self) -> dict[str, str]:
+        """The Jev decide backend's key: the fake's dummy key, or none (UC-044 A1)."""
+        return {"JEV_API_KEY": FAKE_JEV_API_KEY} if self.fake_jev is not None else {}
 
     def _inference_env(self) -> dict[str, str]:
         """The agent's retro/proposer text backend: the fake Claude, or the stub when there is none."""
@@ -314,6 +333,8 @@ class ServiceStack:
             self.fake_openai.stop()
         if self.fake_claude is not None:
             self.fake_claude.stop()
+        if self.fake_jev is not None:
+            self.fake_jev.stop()
         if self.fake_github is not None:
             self.fake_github.stop()
 
@@ -326,6 +347,8 @@ class ServiceStack:
             parts.append(self.fake_openai.log_tail())
         if self.fake_claude is not None:
             parts.append(self.fake_claude.log_tail())
+        if self.fake_jev is not None:
+            parts.append(self.fake_jev.log_tail())
         if self.fake_github is not None:
             parts.append(self.fake_github.log_tail())
         parts.append(self.flag_plane.log_tail())

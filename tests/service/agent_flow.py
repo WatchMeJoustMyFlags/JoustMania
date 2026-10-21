@@ -75,16 +75,29 @@ def _onoff(value: bool) -> str:
 
 
 def configure_agent(
-    *, backend: str, enabled: bool = True, interventions: bool = True, allowed: str = INTERVENTIONS_ALLOWED_VARIANT
+    *,
+    backend: str,
+    enabled: bool = True,
+    interventions: bool = True,
+    allowed: str = INTERVENTIONS_ALLOWED_VARIANT,
+    openai_model: str | None = FAKE_MODEL,
+    jev_fake: bool = False,
 ) -> None:
-    """Every agent-set flag a journey needs, as flag-service overlays."""
+    """Every agent-set flag a journey needs, as flag-service overlays.
+
+    ``openai_model=None`` leaves ``decision.openai.model`` at its shipped empty default
+    (UC-044 A1); ``jev_fake`` points ``decision.jev.base_url`` at the stack's fake Jev.
+    """
     fs = flag_service_default()
     fs.put(AGENT, "enabled", variant=_onoff(enabled))
     fs.put(AGENT, "interventions_enabled", variant=_onoff(interventions))
     fs.put(AGENT, "interventions_allowed", variant=allowed)
     fs.put(AGENT, "decision.backend", variant=backend)
     fs.put(AGENT, "decision.openai.base_url", variant=FAKE_BASE_URL_VARIANT)
-    fs.put(AGENT, "decision.openai.model", value=FAKE_MODEL)
+    if openai_model is not None:
+        fs.put(AGENT, "decision.openai.model", value=openai_model)
+    if jev_fake:
+        fs.put(AGENT, "decision.jev.base_url", variant=FAKE_BASE_URL_VARIANT)
     fs.put(AGENT, "decision.openai.timeout_ms", value=DECIDE_TIMEOUT_MS)
     fs.put(AGENT, "decision.min_interval_ms", value=DECIDE_MIN_INTERVAL_MS)
     # The remote-call budget: since #1788 the env AGENT_LLM_MAX_REQUESTS_PER_MINUTE is
@@ -98,7 +111,14 @@ def set_enabled(enabled: bool) -> None:
     flag_service_default().put(AGENT, "enabled", variant=_onoff(enabled))
 
 
-def wait_agent_flags_served(stack, *, backend: str, enabled: bool, rewrite: Callable[[], None] | None = None) -> None:
+def wait_agent_flags_served(
+    stack,
+    *,
+    backend: str,
+    enabled: bool,
+    rewrite: Callable[[], None] | None = None,
+    openai_model: str = FAKE_MODEL,
+) -> None:
     """flagd serves the agent flags of the journey (typed getters: the #903 trap)."""
     ctx = EvaluationContext()
     with flagd_probe_client(stack, AGENT) as client:
@@ -106,7 +126,7 @@ def wait_agent_flags_served(stack, *, backend: str, enabled: bool, rewrite: Call
             lambda: (
                 client.get_string_value("decision.backend", "", ctx) == backend
                 and client.get_boolean_value("enabled", not enabled, ctx) is enabled
-                and client.get_string_value("decision.openai.model", "", ctx) == FAKE_MODEL
+                and client.get_string_value("decision.openai.model", "", ctx) == openai_model
                 and client.get_integer_value("decision.openai.timeout_ms", -1, ctx) == DECIDE_TIMEOUT_MS
                 and client.get_string_value("llm.eligible_game_kinds", "", ctx) == ELIGIBLE_GAME_KINDS
             ),
