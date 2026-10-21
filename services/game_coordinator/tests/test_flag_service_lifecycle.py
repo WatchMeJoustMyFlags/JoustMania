@@ -383,7 +383,7 @@ async def test_repeated_identical_failure_logs_once_then_once_per_interval(caplo
     the suppressed count once the interval passed, and again at once when the
     failure changes."""
     client = FlagServiceClient("http://unused")
-    rejected = FlagServiceError("PUT /coordinators/h/games: HTTP 429 game cap")
+    rejected = FlagServiceError("PUT /coordinators/h/games: HTTP 409 too_many_games")
     lc = FlagServiceLifecycle(client, list, instance="h")
     clock = {"now": 1000.0}
 
@@ -411,3 +411,33 @@ async def test_repeated_identical_failure_logs_once_then_once_per_interval(caplo
         client.request.side_effect = FlagServiceError("PUT /coordinators/h/games: connection refused")
         await lc._call("reconcile", "PUT", "/coordinators/h/games", {})
         assert len(warnings()) == 3 and "connection refused" in warnings()[2], warnings()
+
+
+@pytest.mark.uc("UC-053", flow="A8")
+@pytest.mark.asyncio
+async def test_another_calls_success_does_not_reset_the_failure_throttle(caplog):
+    """#1479: the end DELETE succeeding between rejected reconciles must not
+    make the next reconcile warning log again."""
+    client = FlagServiceClient("http://unused")
+    rejected = FlagServiceError("PUT /coordinators/h/games: HTTP 409 too_many_games")
+    lc = FlagServiceLifecycle(client, list, instance="h")
+    clock = {"now": 1000.0}
+
+    def fake_request(method, *_args):
+        if method == "DELETE":
+            return {}
+        raise rejected
+
+    with (
+        caplog.at_level("WARNING", logger="services.game_coordinator.flag_service_client"),
+        patch(
+            "services.game_coordinator.flag_service_client.time",
+            SimpleNamespace(monotonic=lambda: clock["now"]),
+        ),
+        patch.object(client, "request", side_effect=fake_request),
+    ):
+        for _ in range(4):
+            await lc._call("reconcile", "PUT", "/coordinators/h/games", {})
+            assert await lc._call("end", "DELETE", "/games/g") is True
+            clock["now"] += 2.0
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1

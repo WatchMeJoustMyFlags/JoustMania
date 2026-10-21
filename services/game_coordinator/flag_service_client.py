@@ -153,11 +153,9 @@ class FlagServiceLifecycle:
         # announcing the (empty) set drops them (UC-053 A10).
         self._needs_reconcile = threading.Event()
         self._needs_reconcile.set()
-        # Failure-log rate limit: (call, error text) of the last warning, when it
-        # was logged, and how many identical failures were suppressed since.
-        self._last_failure: tuple[str, str] | None = None
-        self._last_failure_log = 0.0
-        self._suppressed_failures = 0
+        # Failure-log rate limit, one slot per call: [error text of the last
+        # warning, when it was logged, identical failures suppressed since].
+        self._failure_log: dict[str, list] = {}
 
     @classmethod
     def from_env(cls, live_games: Callable[[], list[GameRecord]]) -> "FlagServiceLifecycle":
@@ -207,25 +205,24 @@ class FlagServiceLifecycle:
             return False
         metrics.flag_service_calls_total.labels(call=call, result="ok").inc()
         self._observe_epoch(resp)
-        self._last_failure = None
-        self._suppressed_failures = 0
+        self._failure_log.pop(call, None)
         return True
 
     def _log_failure(self, call: str, error: FlagServiceError) -> None:
-        """Warn on the first failure, on a changed failure, then once per interval."""
-        key = (call, str(error))
+        self._warn_limited(call, str(error), "Flag service %s failed: %s (will reconcile)", call, error)
+
+    def _warn_limited(self, call: str, text: str, fmt: str, *args) -> None:
+        """Warn on the first failure of ``call``, on a changed ``text``, then once
+        per interval. Slots are per call, so another call's success or failure
+        never resets this one's throttle."""
         now = time.monotonic()
-        if key == self._last_failure and now - self._last_failure_log < FAILURE_LOG_INTERVAL_SECONDS:
-            self._suppressed_failures += 1
+        slot = self._failure_log.get(call)
+        if slot is not None and slot[0] == text and now - slot[1] < FAILURE_LOG_INTERVAL_SECONDS:
+            slot[2] += 1
             return
-        suppressed, self._suppressed_failures = self._suppressed_failures, 0
-        self._last_failure, self._last_failure_log = key, now
-        logger.warning(
-            "Flag service %s failed: %s (will reconcile)%s",
-            call,
-            error,
-            f" [{suppressed} identical failure(s) suppressed]" if suppressed else "",
-        )
+        suppressed = slot[2] if slot is not None and slot[0] == text else 0
+        self._failure_log[call] = [text, now, 0]
+        logger.warning(fmt + "%s", *args, f" [{suppressed} identical failure(s) suppressed]" if suppressed else "")
 
     async def check_epoch(self) -> None:
         """Read the service's boot epoch; a change schedules a reconcile (UC-053 A9)."""
@@ -249,7 +246,9 @@ class FlagServiceLifecycle:
             return await asyncio.wait_for(asyncio.shield(task), timeout=self._register_await)
         except TimeoutError:
             # The thread may still finish the PUT; the reconcile makes it whole either way.
-            logger.warning(
+            self._warn_limited(
+                "register_timeout",
+                "timeout",
                 "Flag service registration of %s exceeded %.0f ms; game starts anyway",
                 game.game_id,
                 self._register_await * 1000,
