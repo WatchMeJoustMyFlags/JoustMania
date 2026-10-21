@@ -92,6 +92,52 @@ func waitResolvesFromFlagd(t *testing.T) {
 	}
 }
 
+// waitGameDomainServes waits until the game domain resolves shield.activation from
+// flagd (no error): its default (instant) is also a valid value, so without this a read
+// of instant could be the not-ready fallback.
+func waitGameDomainServes(t *testing.T) {
+	t.Helper()
+	client := openfeature.GetApiInstance().GetNamedClient(GameDomain)
+	deadline := time.Now().Add(liveSetupTimeout)
+	for {
+		d, err := client.StringValueDetails(context.Background(), "shield.activation", "", shieldChargeContext("live-game", "FFA"))
+		if err == nil && d.ErrorCode == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the agent's game domain never resolved shield.activation from flagd: %v", err)
+		}
+		time.Sleep(livePollInterval)
+	}
+}
+
+// TestLiveFlip_GameDomainShieldActivation: the agent's read-only game domain (UC-040 A31,
+// #1837) follows a stage-overlay write of shield.activation it has already read, within
+// NFR-050 bounds, with the coordinator's evaluation context.
+//
+// UC: UC-040 A31
+func TestLiveFlip_GameDomainShieldActivation(t *testing.T) {
+	p := newLiveFlagPlane(t, 0)
+	waitGameDomainServes(t)
+	ctx := context.Background()
+	read := func() bool {
+		trigger, _ := p.flags.ShieldCharge(ctx, "live-game", "FFA")
+		return trigger
+	}
+
+	t.Run("UC-040/A31 shield.activation read instant, flipped to trigger and back", func(t *testing.T) {
+		p.putSet(t, GameDomain, "shield.activation", "instant")
+		readSettled(t, "shield.activation", read, false)
+		p.putSet(t, GameDomain, "shield.activation", "trigger")
+		took := waitFor(t, "shield.activation", read, true, liveFlipBound)
+		t.Logf("shield.activation instant->trigger seen after %s", took)
+		readSettled(t, "shield.activation", read, true)
+		p.putSet(t, GameDomain, "shield.activation", "instant")
+		took = waitFor(t, "shield.activation", read, false, liveFlipBound)
+		t.Logf("shield.activation trigger->instant seen after %s", took)
+	})
+}
+
 // startLateRelay listens on a free local port and relays every connection to target,
 // but accepts nothing before delay: a dial in that window hangs like a flagd that is
 // still loading its flags.
@@ -131,20 +177,27 @@ func relay(client net.Conn, target string) {
 // put writes a stack overlay (variant) for an agent flag through the flag service.
 func (p *liveFlagPlane) put(t *testing.T, flag, variant string) {
 	t.Helper()
+	p.putSet(t, Domain, flag, variant)
+}
+
+// putSet writes a stack overlay (variant) for a flag of the given set, as the test
+// writer (never the agent: C-034 keeps the agent off the game set's shield flags).
+func (p *liveFlagPlane) putSet(t *testing.T, set, flag, variant string) {
+	t.Helper()
 	body, _ := json.Marshal(map[string]string{"writer": liveWriter, "variant": variant})
-	p.do(t, http.MethodPut, flag, body)
-	t.Cleanup(func() { p.clear(t, flag) })
+	p.do(t, http.MethodPut, set, flag, body)
+	t.Cleanup(func() { p.do(t, http.MethodDelete, set, flag, nil) })
 }
 
 // clear deletes the stack overlay: the flag resolves its baseline again.
 func (p *liveFlagPlane) clear(t *testing.T, flag string) {
 	t.Helper()
-	p.do(t, http.MethodDelete, flag, nil)
+	p.do(t, http.MethodDelete, Domain, flag, nil)
 }
 
-func (p *liveFlagPlane) do(t *testing.T, method, flag string, body []byte) {
+func (p *liveFlagPlane) do(t *testing.T, method, set, flag string, body []byte) {
 	t.Helper()
-	req, err := http.NewRequest(method, p.serviceURL+"/"+Domain+"/"+url.PathEscape(flag), bytes.NewReader(body))
+	req, err := http.NewRequest(method, p.serviceURL+"/"+set+"/"+url.PathEscape(flag), bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, flag, err)
 	}
@@ -280,18 +333,27 @@ func TestLiveFlip_KillSwitch(t *testing.T) {
 // then the stream is back and later flips are seen within NFR-050 bounds.
 //
 // UC: UC-045 main A3
+// UC: UC-040 A31
 func TestLiveFlip_FlagdRestartMidRun(t *testing.T) {
 	container := os.Getenv(envLiveFlagdContainer)
 	if container == "" {
 		t.Skipf("%s not set: run via tests/service/test_agent_flag_live.py", envLiveFlagdContainer)
 	}
 	p := newLiveFlagPlane(t, 0)
+	waitGameDomainServes(t)
 	ctx := context.Background()
 	read := func() bool { return p.flags.Evaluate(ctx).Enabled }
+	readTrigger := func() bool {
+		trigger, _ := p.flags.ShieldCharge(ctx, "live-game", "FFA")
+		return trigger
+	}
 
-	t.Run("UC-045/A3 UC-045/main flagd restart: fail closed, reconnect, later flips seen", func(t *testing.T) {
+	t.Run("UC-045/A3 UC-045/main UC-040/A31 flagd restart: fail closed, reconnect, later flips seen", func(t *testing.T) {
 		p.put(t, keyEnabled, "on")
 		readSettled(t, "enabled", read, true)
+		// The game domain (UC-040 A31) has its own sync stream: read before the restart.
+		p.putSet(t, GameDomain, "shield.activation", "trigger")
+		readSettled(t, "shield.activation", readTrigger, true)
 
 		// Watch for a fail-closed read while flagd is away.
 		sawOff := make(chan struct{})
@@ -330,6 +392,12 @@ func TestLiveFlip_FlagdRestartMidRun(t *testing.T) {
 		t.Logf("enabled on->off seen after %s", took)
 		p.put(t, keyEnabled, "on")
 		waitFor(t, "enabled back on after the restart", read, true, liveFlipBound)
+
+		// The game domain reconnected too: it serves trigger again and takes a flip.
+		waitFor(t, "shield.activation after the flagd restart", readTrigger, true, liveSetupTimeout)
+		p.putSet(t, GameDomain, "shield.activation", "instant")
+		took = waitFor(t, "shield.activation trigger->instant after the restart", readTrigger, false, liveFlipBound)
+		t.Logf("shield.activation trigger->instant seen after %s", took)
 	})
 }
 

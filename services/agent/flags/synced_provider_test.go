@@ -57,6 +57,15 @@ func (s *fakeFlagdSource) config(enabled string) string {
 			"state": "ENABLED", "defaultVariant": "on",
 			"variants": map[string]any{"on": true, "off": false},
 		},
+		// The game set's shield flags (UC-040 A31): "on" reads trigger, "off" instant.
+		"shield.activation": map[string]any{
+			"state": "ENABLED", "defaultVariant": enabled,
+			"variants": map[string]any{"on": "trigger", "off": "instant"},
+		},
+		"shield.charge_expiry_seconds": map[string]any{
+			"state": "ENABLED", "defaultVariant": "short",
+			"variants": map[string]any{"short": 10, "default": 20},
+		},
 	}}
 	raw, _ := json.Marshal(doc)
 	return string(raw)
@@ -126,7 +135,7 @@ func waitBool(t *testing.T, what string, read func() bool, want bool, timeout ti
 func TestSyncedProvider_LateFirstSyncThenEveryFlipIsSeen(t *testing.T) {
 	agentSrc, rolloutSrc := newFakeFlagdSource("on"), newFakeFlagdSource("on")
 	ctx, cancel := context.WithCancel(context.Background())
-	f, holder, shutdown, err := setupFlagd(ctx, fakeFactory(agentSrc), fakeFactory(rolloutSrc), nil, testSyncTiming, nil)
+	f, holder, shutdown, err := setupFlagd(ctx, fakeFactory(agentSrc), fakeFactory(rolloutSrc), fakeFactory(newFakeFlagdSource("on")), nil, testSyncTiming, nil)
 	if err != nil {
 		t.Fatalf("setupFlagd: %v", err)
 	}
