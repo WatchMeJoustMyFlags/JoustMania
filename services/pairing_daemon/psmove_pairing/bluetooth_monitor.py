@@ -217,7 +217,7 @@ class BluetoothMonitor:
             try:
                 await self.monitor()
             except Exception as e:
-                from .config import DEBUG
+                from .config import is_debug
 
-                logger.error(f"Error during Bluetooth monitor: {e}", exc_info=DEBUG)
+                logger.error(f"Error during Bluetooth monitor: {e}", exc_info=is_debug())
             await asyncio.sleep(get_bt_monitor_interval())

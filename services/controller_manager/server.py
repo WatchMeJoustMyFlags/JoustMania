@@ -36,6 +36,7 @@ def _find_mock_backend(backend):
 async def serve(port=50052):
     """Start the ControllerManager async gRPC server."""
     # Configure logging with environment variable support
+    # Bootstrap level only; the log_level flag takes over once synced (lib/log_level.py, #1788)
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),

@@ -125,3 +125,6 @@ flags:
   # The propagation probe: read by no service, written by the integration tests
   # to measure write -> flagd -> reader propagation (#1408, NFR-050 in #1413).
   - {set: observability, key: flagservice.propagation_probe, kind: overlay, scope: [stack], bounds: {free_string: true}}
+  # The logging group of the env-to-flag migration (flags.md §15, #1788): operator-written, read by every service.
+  - {set: observability, key: log_level, kind: overlay, scope: [stack]}
+  - {set: observability, key: debug, kind: overlay, scope: [stack]}

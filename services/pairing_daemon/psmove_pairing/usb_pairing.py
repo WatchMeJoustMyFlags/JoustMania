@@ -19,7 +19,7 @@ from lib import bluez_dbus
 from .adapter_manager import AdapterManager
 from .bluez_records import RecordOutcome, write_device_record
 from .bluez_reload import BluezReloader, PendingRecord
-from .config import DEBUG, get_adapter_routing_default, get_poll_interval
+from .config import get_adapter_routing_default, get_poll_interval, is_debug
 from .metrics import (
     pairing_adapter_device_count,
     pairing_adapter_selected_total,
@@ -240,7 +240,7 @@ class USBPairing:
             except Exception as e:
                 duration = time.time() - start_time
                 pairing_duration_seconds.observe(duration)
-                logger.error(f"Exception during pairing: {e}", exc_info=DEBUG)
+                logger.error(f"Exception during pairing: {e}", exc_info=is_debug())
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 return False
@@ -554,5 +554,5 @@ class USBPairing:
             try:
                 await self.poll()
             except Exception as e:
-                logger.error(f"Error during USB poll: {e}", exc_info=DEBUG)
+                logger.error(f"Error during USB poll: {e}", exc_info=is_debug())
             await asyncio.sleep(get_poll_interval())

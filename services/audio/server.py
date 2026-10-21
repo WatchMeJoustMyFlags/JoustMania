@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 async def serve():
     """Start the Audio gRPC server."""
     # Configure logging
+    # Bootstrap level only; the log_level flag takes over once synced (lib/log_level.py, #1788)
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),
