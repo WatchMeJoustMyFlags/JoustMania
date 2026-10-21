@@ -13,6 +13,7 @@ import (
 	"github.com/joustmania/agent/decide/backends/openai"
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/keysafe"
 )
 
 // decide_backends.go wires the remote decision backends (#1244, epic #1225) into
@@ -30,7 +31,7 @@ import (
 //     is only a backstop.
 //   - A backend without its key returns nil (backend_unavailable -> rules)
 //     without building anything.
-//   - An openai or jev base URL that is not key-safe (keySafeBaseURL: https, or
+//   - An openai or jev base URL that is not key-safe (keysafe.BaseURL: https, or
 //     plain http only to a loopback host) returns nil the same way, so nothing is
 //     sent and the key never travels in clear text. It is a url.Parse, no I/O.
 //     UC: UC-044 BR-003, C-016 (#1814).
@@ -99,7 +100,7 @@ func newDecideRegistry(env decideBackendEnv, client *http.Client) *decision.Deci
 		if env.OpenAIAPIKey == "" {
 			return nil
 		}
-		if _, ok := keySafeBaseURL(d.OpenAI.BaseURL); !ok {
+		if _, ok := keysafe.BaseURL(d.OpenAI.BaseURL); !ok {
 			return nil
 		}
 		return openai.New(openai.Config{
@@ -119,7 +120,7 @@ func newDecideRegistry(env decideBackendEnv, client *http.Client) *decision.Deci
 			return nil
 		}
 		if u := strings.TrimSpace(d.Jev.BaseURL); u != "" {
-			if _, ok := keySafeBaseURL(u); !ok {
+			if _, ok := keysafe.BaseURL(u); !ok {
 				return nil
 			}
 		}

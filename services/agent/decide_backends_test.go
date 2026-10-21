@@ -27,6 +27,7 @@ import (
 	"github.com/joustmania/agent/decide/backends/openai"
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/keysafe"
 )
 
 // mapEvaluator is a flagd stand-in: string/int flags from maps, everything else
@@ -582,7 +583,7 @@ func TestFlagFiles_BaseURLVariantsAreKeySafe(t *testing.T) {
 			checked++
 			for variant, v := range flag.Variants {
 				s, _ := v.(string)
-				if reason, ok := keySafeBaseURL(s); !ok {
+				if reason, ok := keysafe.BaseURL(s); !ok {
 					t.Errorf("UC-044/BR-003 %s: %s variant %q = %q is not key-safe (%s)", f, key, variant, s, reason)
 				}
 			}
