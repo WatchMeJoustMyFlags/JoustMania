@@ -12,3 +12,6 @@ game_loop_jitter_ms: '#1471; one series per live game, removed when it ends and 
 game_player_deaths_total: '#1376'
 games_completed_total: '`outcome` = `winner`, `tie`, `completed`, `force_ended`, or `error` when the session published
   `game_error`; #1427'
+grpc_client_errors_total: '#1426; mid-stream errors and the HID adapters counted, a cancel by the caller is not; the Go
+  agent and connect-proxy are not covered (telemetry.md §6)'
+grpc_client_request_duration_seconds: '#1426; a stream is timed once, at its end'

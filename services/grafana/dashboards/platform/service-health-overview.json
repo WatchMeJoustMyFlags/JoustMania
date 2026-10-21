@@ -306,7 +306,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Failed outbound gRPC calls and stream setups from the Python services in the last 5 minutes (grpc_client_errors_total, #1353). Mid-stream and non-Python client errors are not counted (#1426).",
+      "description": "Failed outbound gRPC calls and streams from the Python services in the last 5 minutes (grpc_client_errors_total, #1353). Counts errors at call setup, at the end of a unary call and while a stream is read, from the Python services' channels and the controller-manager HID adapters; a cancel by the caller is not counted. Excluded: the Go agent's game-runner client and connect-proxy (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1094,7 +1094,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "95th percentile of outbound gRPC call duration, by callee service.",
+      "description": "95th percentile of outbound gRPC call duration, by callee service. A stream counts once, with its whole lifetime, when it ends (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1170,7 +1170,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Failed outbound gRPC calls and stream setups per second, by callee service (grpc_client_errors_total, #1353).",
+      "description": "Failed outbound gRPC calls and streams per second, by callee service (grpc_client_errors_total, #1353). Counts errors at call setup, at the end of a unary call and while a stream is read, from the Python services' channels and the controller-manager HID adapters; a cancel by the caller is not counted. Excluded: the Go agent's game-runner client and connect-proxy (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1246,7 +1246,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "99th percentile of outbound gRPC call duration, by callee service and method.",
+      "description": "99th percentile of outbound gRPC call duration, by callee service and method. A stream counts once, with its whole lifetime, when it ends (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1325,7 +1325,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Failed outbound gRPC calls per second, by callee service, method and gRPC status code.",
+      "description": "Failed outbound gRPC calls and streams per second, by callee service, method and gRPC status code (grpc_client_errors_total). Counts errors at call setup, at the end of a unary call and while a stream is read, from the Python services' channels and the controller-manager HID adapters; a cancel by the caller is not counted. Excluded: the Go agent's game-runner client and connect-proxy (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {

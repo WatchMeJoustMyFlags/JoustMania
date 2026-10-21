@@ -34,7 +34,9 @@ class RustServiceAdapter(ControllerIOAdapter):
         port = os.getenv("RUST_HID_PORT", "50058")
         address = f"{host}:{port}"
 
-        # Sync channel with trace context propagation — adapter methods are blocking
+        # Sync channel with client metrics (outermost, #1426) and trace context propagation:
+        # adapter methods are blocking.
+        from lib.grpc_metrics import get_sync_metrics_interceptors
         from lib.grpc_tracing import get_sync_context_propagation_interceptors
 
         channel = grpc.insecure_channel(
@@ -46,10 +48,10 @@ class RustServiceAdapter(ControllerIOAdapter):
                 ("grpc.max_receive_message_length", 10 * 1024 * 1024),
             ],
         )
-        interceptors = get_sync_context_propagation_interceptors(
-            server_address=host,
-            server_port=int(port),
-        )
+        interceptors = [
+            *get_sync_metrics_interceptors(),
+            *get_sync_context_propagation_interceptors(server_address=host, server_port=int(port)),
+        ]
         self._channel = grpc.intercept_channel(channel, *interceptors)
         self._stub = psmove_hid_pb2_grpc.ControllerIOServiceStub(self._channel)
 
