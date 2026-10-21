@@ -69,11 +69,10 @@ or `near_threshold` (≥ 0.85; 0.85 is the median of the game's own warning band
 player (in trigger mode a charge is not protection); `shield_charged` (alive players only, #1870) while the
 game's charge ledger (§4.5 step 3) holds a live entry for the player at the moment the state is built: the
 agent granted a trigger-mode charge within the window, and the player holds it or has already activated it
-(the agent cannot tell which: it has no shield-state feed). It is rendered as the narrative token
-`shield_charged` and in the digest as ` shield_charged=true` only when set, so a state without a charge keeps
-its digest; and on the state `most_headroom` (strictly lowest intensity) and
+(the agent cannot tell which: it has no shield-state feed); and on the state `most_headroom` (strictly lowest intensity) and
 `struggling` (strictly highest intensity when elevated or near_threshold). They appear in the narrative,
-the digest and the Jev state. Danger reads the session threshold, so per-player factors and shields are not
+the digest and the Jev state. `shield_charged` is rendered as the narrative token `shield_charged` and in the digest as
+` shield_charged=true` only when set, so a state without a charge keeps its digest. Danger reads the session threshold, so per-player factors and shields are not
 reflected. Entity: [DECIDE_PLAYER_STATE](../entity_model.md#decide_player_state).
 
 ## 2. The FFA question set

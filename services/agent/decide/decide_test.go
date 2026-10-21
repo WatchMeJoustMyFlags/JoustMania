@@ -384,7 +384,7 @@ func TestMagnitude_IntegerRounds(t *testing.T) {
 // TestValidate_RetiredInterventionIDIsInvalid pins the #1838 decision that there
 // is no answer-side alias: a backend that still answers with the retired id
 // partial_shield (renamed toughness_boost) gets invalid_answer, not a silent remap.
-// UC: UC-040 A12
+// UC: UC-040 main step 6
 func TestValidate_RetiredInterventionIDIsInvalid(t *testing.T) {
 	req := Request{Questions: []Question{
 		{ID: "iv", Kind: KindChoice, Options: []string{"noop", "toughness_boost"}},

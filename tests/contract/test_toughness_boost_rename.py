@@ -63,7 +63,7 @@ def _is_exempt(rel: str) -> bool:
     return rel.startswith(ALLOWED_PREFIXES) or Path(rel).name in ALLOWED_FILES_NAMES
 
 
-@pytest.mark.uc("UC-040", flow="A16")
+@pytest.mark.uc("UC-040", flow="main", steps=[4])
 def test_retired_name_only_in_allowlisted_files(hits):
     stray = {
         f: n
@@ -73,7 +73,7 @@ def test_retired_name_only_in_allowlisted_files(hits):
     assert not stray, f"the retired name partial_shield is back in: {stray}"
 
 
-@pytest.mark.uc("UC-040", flow="A16")
+@pytest.mark.uc("UC-040", flow="main", steps=[4])
 def test_allowlisted_files_stay_within_their_limit(hits):
     over = {
         f: (hits[f], cap)
@@ -85,7 +85,7 @@ def test_allowlisted_files_stay_within_their_limit(hits):
     )
 
 
-@pytest.mark.uc("UC-040", flow="A16")
+@pytest.mark.uc("UC-040", flow="main", steps=[4])
 def test_allowlist_has_no_stale_entries(hits):
     stale = [f for f in ALLOWED_MAX_LINES if hits.get(f, 0) == 0]
     assert not stale, (

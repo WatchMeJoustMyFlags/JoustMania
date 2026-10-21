@@ -323,13 +323,17 @@ type Promoter struct {
 // appliedPromotion is one autonomous real default this agent run wrote and has not
 // reverted (#1704). cancel stops its background re-watch (nil when none runs);
 // syncPending is true while its Promote call runs; killed is set when the kill
-// switch took it. Guarded by Promoter.mu.
+// switch took it; failReported is set once a failed kill-switch revert of it was
+// reported (only by RevertOnKillSwitch, never by a failed watch revert), so later
+// kill-switch failures of the same promotion are retried without another report
+// (UC-043 A1, #1753). Guarded by Promoter.mu.
 type appliedPromotion struct {
 	proposal     experiment.Proposal
 	cancel       context.CancelFunc
 	syncPending  bool
 	killed       bool
 	killReverted bool
+	failReported bool
 }
 
 // DefaultRevertCooldown is the default post-revert cooldown before the same flag may

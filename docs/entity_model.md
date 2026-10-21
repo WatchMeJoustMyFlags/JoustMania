@@ -449,7 +449,7 @@ What happens to a promote verdict (`services/agent/promote/promote.go:91-105,420
 | reason | Why it was discarded or reverted (`kill_switch` for a kill-switch revert, UC-043 A1) | String | 200 | Optional |
 | reference | Issue / PR URL or commit | String | 200 | Optional |
 
-**Constraints:** the outcome, reason and reference are on the `code_improvement.promote` span and in the experiment journal as a `promotion` event (`journal.Promotion`, `services/agent/experiment/journal/record.go`, #1701); the outcome sets the experiment's end state (`applied`, `reverted` → `done`; `discarded` → `discarded`). A kill-switch revert of an applied autonomous promotion (#1704) after its promotion returned appends a second `promotion` event (`reverted`, reason `kill_switch`) to the ended experiment's journal and does not change the end state; a kill-switch revert during the promotion is that promotion's single event.
+**Constraints:** the outcome, reason and reference are on the `code_improvement.promote` span and in the experiment journal as a `promotion` event (`journal.Promotion`, `services/agent/experiment/journal/record.go`, #1701); the outcome sets the experiment's end state (`applied`, `reverted` → `done`; `discarded` → `discarded`). A kill-switch revert of an applied autonomous promotion (#1704) after its promotion returned appends a second `promotion` event (`reverted`, reason `kill_switch`) to the ended experiment's journal and does not change the end state; a kill-switch revert during the promotion is that promotion's single event. A failed kill-switch revert appends one `promotion` event (`applied`, reason `kill_switch; revert failed: …`) per promotion; the retries add none, and the retry that succeeds appends the `reverted` event (#1753).
 
 ### RETRO
 

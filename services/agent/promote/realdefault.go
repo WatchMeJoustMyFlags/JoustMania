@@ -150,6 +150,13 @@ func (w *serviceRealDefaultWriter) SetRealDefault(ctx context.Context, flagKey s
 // post-revert cooldown. With no promotion overlay present (a flag-service
 // restart dropped it) real games already resolve the pre-promotion default: the
 // revert writes nothing, stamps the cooldown and succeeds (PR #1417 review).
+//
+// ACCEPTED WINDOW (#1753): the writer check is a read followed by a delete. The
+// flag service clears the real overlay whoever wrote it (it ignores `writer` for
+// that scope), so another writer's real overlay set in the milliseconds between
+// the read and the delete would be removed. w.mu serialises this agent's own
+// writes; only promotions write real overlays, so the window is accepted
+// (UC-043 A1). The flag-service precondition that would close it is #1877.
 func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKey string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -170,7 +177,7 @@ func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKe
 	if err := w.svc.Delete(ctx, gameFlagSet, flagKey, url.Values{"game_kind": {"real"}, "writer": {promotionWriter}}); err != nil {
 		return fmt.Errorf("revert %s/%s: %w", gameFlagSet, flagKey, err)
 	}
-	w.log.Warn("code_improvement.autonomous REVERTED the real default to the pre-promotion state (#1065)", "flag", flagKey)
+	w.log.Warn("code_improvement.autonomous REVERTED: removed the promotion's real-default overlay; real games resolve the default beneath it (#1065)", "flag", flagKey)
 	w.stampRevert(flagKey)
 	return nil
 }
