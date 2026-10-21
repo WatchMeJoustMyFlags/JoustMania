@@ -1,8 +1,8 @@
 """Scriptable fake OpenAI-compatible decision backend for the decide e2e tests (#1230).
 
 TEST-ONLY. Started per stack by the service tier (tests/service/harness/fakes/openai.py,
-the AGENT composition, #1600); never by the production compose path. Stdlib only, so it also runs on a stock python image with
-this file bind-mounted.
+the AGENT composition, #1600); never by the production compose path. Stdlib only, so it also runs on a
+stock python image with this file bind-mounted.
 
 It serves ``POST /v1/chat/completions`` the way the agent's ``openai`` decision
 backend (services/agent/decide/backends/openai) expects: a chat-completion

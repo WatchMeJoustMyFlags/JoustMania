@@ -478,7 +478,7 @@ scripts, fixtures), so the suite stays green after every step. Until a set is cu
 | `system`, `observability` | none at runtime (proves the plumbing) | #1408 |
 | `interventions`, `rollout` | W1, W2, R1; fixtures in `test_intervention_flow.py`, `test_parallel_intervention_flow.py`, `test_intervention_smoke.py`, `test_gameid_intervention_isolation.py`, `tests/service/test_rollout_plumbing.py` | #1411 |
 | `agent` | W8, W11, R6, the menu's `interventions_allowed`; agent-set fixtures | #1412 |
-| `game`, `user` | W3, W4, W5, the rest of W6, R2 to R5; `tests/service/test_tc005_admin_journey.py`, `tests/service/test_tc020_host_and_stage_flags.py`, `tests/service/test_experiment_shadow_isolation.py`, the game part of `test_intervention_smoke.py`, `test_experiment_cohort_loop.py` | #1415 |
+| `game`, `user` | W3, W4, W5, the rest of W6, R2 to R5; `tests/service/test_tc005_admin_journey.py`, `tests/service/test_tc020_host_and_stage_flags.py`, `tests/service/test_experiment_shadow_isolation.py`, the game part of `test_intervention_smoke.py` | #1415 |
 | `controller` | W7 | #1420 |
 | (after every cutover) | W12 removed; the writable flag mounts of menu, agent and connect-proxy removed; every flag mount read-only | #1414 checklist |
 
