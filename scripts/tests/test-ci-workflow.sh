@@ -16,6 +16,12 @@
 #          e2e shards run, never fails or skips the shards, pushes only on
 #          merge_group / push (never from a PR), and the shards take its tag as
 #          OTEL_COLLECTOR_TAG.
+#   #1569: the gate cannot go silently non-blocking: no `continue-on-error` on any
+#          CI Complete step, on integration-test (job or step), or at job level
+#          on any job CI Complete needs (job-level COE reports `success`), and
+#          CI Complete keeps `needs`-ing the required jobs. Allowed: the
+#          informational sonarcloud job, and step-level COE in publish /
+#          collector-image / retag jobs (#1795), which are not gating.
 #
 # Needs python3 + PyYAML (as scripts/ci/check-retag-source.sh).
 #   ./scripts/tests/test-ci-workflow.sh [path/to/ci.yml]
@@ -611,6 +617,29 @@ for publish in ("docker-build-merge", "docker-build-extra-merge"):
           and run.index("MOVE_TAGS=false") < run.index('--tag "${IMAGE}:latest"'),
           f"{publish}: :main/:latest must be added only after the guard")
     check('[[ "$rc" == 0 || "$rc" == 3 ]] || exit "$rc"' in run, f"{publish}: guard skip (3) must not fail the run")
+
+# 9. (#1569) The CI Complete gate stays blocking.
+REQUIRED_NEEDS = {
+    "changes", "dashboard-tests", "connect-proxy-tests", "lib-tests", "service-checks",
+    "rust-checks", "agent-tests", "flag-service-tests", "script-tests", "telemetry-contract",
+    "flagd-contract", "service-tests", "lint-dockerfiles", "spec-gate", "validate",
+    "integration-test", "docker-build", "docker-build-extra", "docker-build-merge",
+    "docker-build-extra-merge", "retag-skipped",
+}
+INFORMATIONAL_JOBS = {"sonarcloud"}  # job-level continue-on-error is deliberate (see its comment)
+needs = jobs["ci-complete"].get("needs", [])
+needs = [needs] if isinstance(needs, str) else list(needs)
+missing = sorted(REQUIRED_NEEDS - set(needs))
+check(not missing, f"ci-complete: must keep needing {missing}")
+for name in needs:
+    if name in INFORMATIONAL_JOBS or name not in jobs:
+        continue
+    check("continue-on-error" not in jobs[name],
+          f"{name}: job-level continue-on-error makes needs.result 'success'; a failure would pass CI Complete")
+for name in ("ci-complete", "integration-test"):
+    for st in jobs[name].get("steps", []):
+        check("continue-on-error" not in st,
+              f"{name}: step {st.get('name', st.get('uses', '?'))!r} must not use continue-on-error")
 
 if failures:
     for f in failures:
