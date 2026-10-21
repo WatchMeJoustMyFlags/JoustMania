@@ -187,18 +187,6 @@ Button codes:
 - `2` = SELECT
 - `3` = START
 
-### Set LED Color
-
-```bash
-grpcurl -plaintext -d '{
-  "serial": "mock_controller_0",
-  "r": 255,
-  "g": 0,
-  "b": 0
-}' localhost:50062 \
-  controller_manager_mock.MockControllerService/SetColor
-```
-
 ### Reset Controller
 
 Reset to idle state (buttons unpressed, death latch and held movement cleared,

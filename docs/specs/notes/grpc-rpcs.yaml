@@ -36,14 +36,12 @@ controller_manager_mock.MockControllerService/SimulateMovement: 'Simulate contro
   BR-002, #1279)'
 controller_manager_mock.MockControllerService/SimulateDeath: Simulate death (high acceleration)
 controller_manager_mock.MockControllerService/SimulateButton: Simulate button press
-controller_manager_mock.MockControllerService/SetColor: 'Set LED color directly; no observability event, the next system LED write replaces it (UC-003 A5)'
 controller_manager_mock.MockControllerService/ResetController: 'Reset controller to idle: buttons released, death
   latch and held movement cleared, acceleration back to resting noise (UC-003 A3)'
 controller_manager_mock.MockControllerService/ListMockControllers: 'Get list of mock controllers with reserved flag and owner tag (UC-003 A6)'
 controller_manager_mock.MockControllerService/GetColor: Get current LED color of a controller
 controller_manager_mock.MockControllerService/StreamObservability: Stream observable events from mock controllers
   (LED changes, button presses, etc.)
-controller_manager_mock.MockControllerService/AddController: Add a single mock controller dynamically
 controller_manager_mock.MockControllerService/RemoveController: 'Remove (disconnect) a mock controller; a pattern controller returns its replay record (UC-003 A4, UC-046 step 8)'
 controller_manager_mock.MockControllerService/AddControllers: Add multiple mock controllers at once
 joustmania.game_coordinator.GameCoordinatorService/ForceEndGame: Force end current game
