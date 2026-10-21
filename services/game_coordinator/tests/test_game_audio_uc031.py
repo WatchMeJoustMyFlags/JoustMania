@@ -9,15 +9,15 @@
   for the winner; the agent's ``play_audio_cue`` reaches the audio service as a
   ``PlaySound`` of the sound id (``agent_cue``).
 - Post-F-1: audio failures never stop a game: a full FFA ``run()`` against an
-  audio service whose every RPC fails still ends with a winner, and a failing
-  ``ChangeTempo`` leaves the tempo schedule to retry on the next tick.
+  audio service whose every RPC fails still ends with a winner. A failing
+  ``ChangeTempo`` (the intensity continues, the glide is resent) is covered by
+  test_intensity_ramp_uc031.py (#1833).
 
 Step 3 (1.0x / 1.3x alternation, thresholds follow) is asserted by
 test_ffa_uc020.py::test_music_alternates_windows_and_death_threshold_follows_the_window.
 """
 
 import asyncio
-import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -40,6 +40,7 @@ class RecordingAudio:
 
     def __init__(self, log: list):
         self.log = log
+        self.durations: list[float] = []
 
     async def SetVolume(self, request):  # noqa: N802 - gRPC stub name
         self.log.append(("SetVolume", round(request.volume, 3)))
@@ -59,6 +60,7 @@ class RecordingAudio:
 
     async def ChangeTempo(self, request):  # noqa: N802 - gRPC stub name
         self.log.append(("ChangeTempo", round(request.new_tempo, 2)))
+        self.durations.append(round(request.transition_duration, 3))
         return audio_pb2.ChangeTempoResponse(success=True)
 
 
@@ -176,33 +178,47 @@ async def test_explosion_on_each_death_then_congratulations_for_the_winner():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-031", flow="main", steps=[3], br=["BR-001"])
+@pytest.mark.uc("UC-031", flow="main", steps=[3], br=["BR-001", "BR-005"])
 async def test_ffa_run_drives_the_tempo_loop():
-    """UC-031 BR-001: a Free-for-All game's own run() drives the step-3 tempo loop.
+    """UC-031 BR-001 / BR-005: a Free-for-All game's own run() drives the step-3 tempo loop.
 
-    The windows are shortened (0.2 s) so the loop is due several times while the game runs;
-    the audio service sees alternating 1.3x / 1.0x ChangeTempo requests during the game.
+    The windows (0.2 s) and the ramp flags (0.1 s up, 0.15 s down, as the ci variants) are
+    shortened so several segments fit in the game; the audio service sees alternating
+    1.3x / 1.0x ChangeTempo glides, each over the flag of its direction.
     """
     log: list = []
+    audio = RecordingAudio(log)
     game = FFAGame(
         controller_manager_client=MockControllerManagerService(
             num_controllers=3, death_schedule={1.5: 0, 2.5: 1}, max_duration=8.0
         ),
         event_publisher=EventCollector().publish,
-        audio_client=RecordingAudio(log),
+        audio_client=audio,
         game_id="test_uc031_ffa_tempo",
         initial_players=[game_coordinator_pb2.Player(serial=f"mock_controller_{i}") for i in range(3)],
     )
     game.music_windows = base_module.MusicWindows(*([0.2] * 8))
     config = GamePerformanceConfig(countdown_phase_duration_ms=50, winner_rainbow_duration_ms=200)
+    ramp_flags = {"tempo.ramp_up_seconds": 0.1, "tempo.ramp_down_seconds": 0.15}
+    real_read = base_module.read_float_flag
 
-    with patch.object(get_config_manager(), "get_config", return_value=config):
+    def read_flag(domain, key, default, game_id=None):
+        if key in ramp_flags:
+            return ramp_flags[key]
+        return real_read(domain, key, default, game_id=game_id)
+
+    with (
+        patch.object(get_config_manager(), "get_config", return_value=config),
+        patch.object(base_module, "read_float_flag", side_effect=read_flag),
+    ):
         await asyncio.wait_for(game.run(), timeout=15.0)
 
     tempos = [tempo for call, tempo in log if call == "ChangeTempo"]
     assert len(tempos) >= 2
     alternating = [FAST_MUSIC_SPEED if i % 2 == 0 else SLOW_MUSIC_SPEED for i in range(len(tempos))]
     assert tempos == [round(tempo, 2) for tempo in alternating]
+    expected = [0.1 if i % 2 == 0 else 0.15 for i in range(len(tempos))]
+    assert audio.durations == expected
 
 
 @pytest.mark.asyncio
@@ -232,30 +248,3 @@ async def test_audio_service_down_never_stops_the_game():
     assert events.get_events_of_type(GameEvent.GAME_WINNER) == [{"serial": "mock_controller_2"}]
     assert events.count_events_of_type(GameEvent.GAME_ENDED) == 1
     assert events.count_events_of_type(GameEvent.GAME_ERROR) == 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.uc("UC-031", flow="main", steps=[3])  # Post-F-1: a failed ChangeTempo is only logged
-async def test_failed_tempo_change_is_logged_and_retried_on_the_next_tick():
-    """UC-031 Post-F-1: a ChangeTempo failure neither raises nor flips the tempo; the next tick retries."""
-    log: list = []
-    audio = RecordingAudio(log)
-    game = FFAGame(
-        controller_manager_client=MockControllerManagerService(num_controllers=2),
-        event_publisher=EventCollector().publish,
-        audio_client=audio,
-        game_id="test_uc031_tempo_fail",
-    )
-    game.music_track_id = "track-1"
-    game.music_speed = SLOW_MUSIC_SPEED
-    game.speed_up = True
-    game.change_time = time.time() - 1.0  # a change is due
-
-    with patch.object(audio, "ChangeTempo", AsyncMock(side_effect=ConnectionError("audio down"))):
-        await game._check_music_speed()  # must not raise
-    assert game.music_speed == SLOW_MUSIC_SPEED  # thresholds stay with the music actually playing
-    assert game.speed_up is True
-
-    await game._check_music_speed()  # audio back: the due change applies
-    assert game.music_speed == FAST_MUSIC_SPEED
-    assert log == [("ChangeTempo", round(FAST_MUSIC_SPEED, 2))]

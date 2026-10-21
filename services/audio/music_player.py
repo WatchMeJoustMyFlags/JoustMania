@@ -11,10 +11,10 @@ Runs audio playback in a separate process to avoid blocking the gRPC server.
 """
 
 import asyncio
-import contextlib
 import glob
 import io
 import logging
+import math
 import os
 import random
 import time
@@ -458,14 +458,18 @@ class MusicPlayer:
             new_ratio: Target playback speed
             duration: Transition duration in seconds
         """
-        # Cancel any existing transition
+        # Glide contract (services.md §6 audio, UC-031 BR-004): a new request
+        # cancels the running glide and starts from the ratio it reached. Cancel and
+        # create with NO await in between, so two requests in one loop turn can never
+        # leave two glides writing the ratio (#1833). The cancelled task stops at
+        # its next sleep, before it writes again.
         if self._transition_task and not self._transition_task.done():
             self._transition_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._transition_task
 
         async def do_transition():
-            num_steps = 20
+            # At least 20 steps, and steps of at most ~0.1 s for long glides (#1833).
+            long_steps = math.ceil(duration / 0.1) if math.isfinite(duration) and duration > 0 else 0
+            num_steps = max(20, long_steps)
             old_ratio = self._ratio.value
             step_duration = duration / num_steps
 
