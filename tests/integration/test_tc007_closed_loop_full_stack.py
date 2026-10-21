@@ -20,7 +20,7 @@ the wiring that only the full stack has:
 
 The agent and envoy are profile-gated (``docker-compose.ci.yml``), so the
 module starts both into the running session project (``--no-deps``) and
-removes them at teardown, like ``test_experiment_cohort_loop.py``. No browser:
+removes them at teardown. No browser:
 the tab's data source is its Jaeger query, and the feed fold below mirrors
 ``parseDecideTraces`` / ``decideRowFrom``.
 """

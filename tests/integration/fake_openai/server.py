@@ -1,9 +1,8 @@
 """Scriptable fake OpenAI-compatible decision backend for the decide e2e tests (#1230).
 
 TEST-ONLY. Started per stack by the service tier (tests/service/harness/fakes/openai.py,
-the AGENT composition, #1600) and by docker-compose.decide-e2e.yml (never by the
-production compose path). Stdlib only, so it also runs on a stock python image with
-this file bind-mounted.
+the AGENT composition, #1600); never by the production compose path. Stdlib only, so it also runs on a
+stock python image with this file bind-mounted.
 
 It serves ``POST /v1/chat/completions`` the way the agent's ``openai`` decision
 backend (services/agent/decide/backends/openai) expects: a chat-completion
@@ -34,10 +33,6 @@ A prompt this fake cannot parse (no question or no game id, i.e. llmio.Render
 changed shape) is answered HTTP 500, logged as ``parse_failed`` and recorded
 with ``"parse_failed": true``.
 
-``GET /_jaeger/<path>`` relays to the Jaeger query API inside the compose
-network (``JAEGER_QUERY_URL``): the integration stack publishes no Jaeger host
-port, and this container is the test's only foothold inside the network.
-
 The request must carry ``Authorization: Bearer $FAKE_OPENAI_API_KEY``; anything
 else is a 401, which proves the agent read DECISION_OPENAI_API_KEY from the
 test-only compose overlay.
@@ -48,14 +43,11 @@ import os
 import re
 import threading
 import time
-import urllib.error
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LISTEN_HOST = os.environ.get("FAKE_OPENAI_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("FAKE_OPENAI_PORT", "8080"))
 EXPECTED_API_KEY = os.environ.get("FAKE_OPENAI_API_KEY", "")
-JAEGER_QUERY_URL = os.environ.get("JAEGER_QUERY_URL", "http://jaeger:16686").rstrip("/")
 
 DEFAULT_SCRIPT = {
     "mode": "valid",
@@ -208,8 +200,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(
                     200, {"script": dict(_script), "requests": list(_requests)}
                 )
-        elif self.path.startswith("/_jaeger/"):
-            self._relay_jaeger()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -326,22 +316,6 @@ class Handler(BaseHTTPRequestHandler):
             # The agent gave up (its timeout); nothing to answer.
             with _lock:
                 entry["client_gone"] = True
-
-    def _relay_jaeger(self) -> None:
-        url = JAEGER_QUERY_URL + "/jaeger/" + self.path[len("/_jaeger/") :]
-        try:
-            with urllib.request.urlopen(url, timeout=10) as resp:
-                status, body = resp.status, resp.read()
-        except urllib.error.HTTPError as err:
-            status, body = err.code, err.read()
-        except (urllib.error.URLError, OSError) as err:
-            self._send_json(502, {"error": f"jaeger unreachable: {err}"})
-            return
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
 
 
 def main() -> None:

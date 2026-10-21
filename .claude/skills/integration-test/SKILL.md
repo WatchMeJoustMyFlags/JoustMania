@@ -69,8 +69,7 @@ async def test_kill_switch_mid_flight_discards(flag_service, ...):
 - **Agent-involving use cases:** prefer the service tier's `AGENT` composition (`tests/service/harness`,
   `tests/service/agent_flow.py`, #1600): the agent built from HEAD with `go build`, the fake OpenAI backend
   (`stack.fake_openai`, scripted through `tests/integration/fake_openai`'s control API) and the agent's spans
-  and metrics in `stack.otlp_sink`. A full-stack test that must start the agent container copies the
-  `--profile agent` pattern of `test_experiment_cohort_loop.py` and maps the module to the `agent`
+  and metrics in `stack.otlp_sink`. A full-stack test that must start the agent container maps the module to the `agent`
   e2e shard (`E2E_SHARD_BY_MODULE`).
 - **Isolation:** scope every assertion to the test's `game_id` (and serials). Global state cannot be
   game-scoped (`interventions_allowed`, the kill switch, the process-global rate limiter, un-targeted

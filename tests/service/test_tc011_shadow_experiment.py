@@ -4,11 +4,11 @@ AGENT composition: the real agent (built at HEAD), game coordinator and
 controller manager (mock backend) from source, a fresh flag plane, FakeAudio and
 the OtlpSink. The agent runs on the inference-absent path (``stub`` backend,
 ``decision.backend`` = ``rules``) with one env-seeded experiment; the verdict
-minimums and tick are lowered with stack overlays, as the full-stack module
-(``tests/integration/test_experiment_cohort_loop.py``) did with compose overlays.
+minimums and tick are lowered with stack overlays, as the former
+full-stack module did with compose overlays.
 
 The agent shares the stack's one game coordinator: there is no second
-``agent-game-coordinator`` (``docker-compose.agent-coordinator.yml``). The stack
+agent coordinator. The stack
 is the module's, so no other test competes for its session registry.
 
 Per-module split (#1422 S9): what a unit or contract test can prove stays there;
