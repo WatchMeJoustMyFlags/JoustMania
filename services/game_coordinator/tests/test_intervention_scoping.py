@@ -10,7 +10,7 @@ called a force-end that always resolved the PRIMARY game, so a shadow decision
 could end the game humans were playing.
 
 UC-040 A19 / BR-012: per-player grants (``shield_seconds``,
-``partial_shield_seconds``, ``soft_penalty_action``) apply once per decision to
+``toughness_boost_seconds``, ``soft_penalty_action``) apply once per decision to
 the player they target. Before #1313 shielding B re-granted every player still
 in the flag's if-ladder. Grants are game-scoped in the flag service, so a new
 game never sees a grant of an earlier game.
@@ -44,9 +44,9 @@ from services.game_coordinator.tests.event_list_helpers import edge_event, objec
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
 SPEC_BY_KEY = {spec.flag_key: spec for spec in INTERVENTION_SPECS}
-GRANT_FLAGS = ["shield_seconds", "partial_shield_seconds", "soft_penalty_action"]
+GRANT_FLAGS = ["shield_seconds", "toughness_boost_seconds", "soft_penalty_action"]
 # A non-neutral grant value per grant flag.
-GRANT_VALUE = {"shield_seconds": 5.0, "partial_shield_seconds": "5:2.0", "soft_penalty_action": "warn"}
+GRANT_VALUE = {"shield_seconds": 5.0, "toughness_boost_seconds": "5:2.0", "soft_penalty_action": "warn"}
 REAL = "game_real000"
 SHADOW = "game_shadow00"
 
@@ -167,7 +167,7 @@ class FakeGame:
         self.killed: list[str] = []
         self.revived: list[str] = []
         self.shields: list[tuple[str, float]] = []
-        self.partial_shields: list[tuple[str, float, float]] = []
+        self.toughness_boosts: list[tuple[str, float, float]] = []
         self.warned: list[str] = []
         self.tightened: list[str] = []
 
@@ -187,8 +187,8 @@ class FakeGame:
         self.shields.append((serial, seconds))
         return True
 
-    async def grant_partial_shield(self, serial, seconds, boost):
-        self.partial_shields.append((serial, seconds, boost))
+    async def grant_toughness_boost(self, serial, seconds, boost):
+        self.toughness_boosts.append((serial, seconds, boost))
         return True
 
     async def warn_player(self, serial):
@@ -201,8 +201,8 @@ class FakeGame:
         """Serials granted by ``flag_key``, in order."""
         if flag_key == "shield_seconds":
             return [s for s, _ in self.shields]
-        if flag_key == "partial_shield_seconds":
-            return [s for s, _, _ in self.partial_shields]
+        if flag_key == "toughness_boost_seconds":
+            return [s for s, _, _ in self.toughness_boosts]
         return self.warned + self.tightened
 
 

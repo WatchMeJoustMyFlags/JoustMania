@@ -726,7 +726,7 @@ var playerTargetedInterventions = map[string]bool{
 	InterventionAdjustPlayerSensitivity: true,
 	InterventionSetPlayerHandicap:       true,
 	InterventionGrantShield:             true,
-	InterventionPartialShield:           true,
+	InterventionToughnessBoost:          true,
 	InterventionSoftPenalty:             true,
 }
 

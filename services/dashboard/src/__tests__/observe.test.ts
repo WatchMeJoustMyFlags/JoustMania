@@ -135,8 +135,13 @@ describe("UC-035: step 2 game event feed", () => {
   });
 
   it("UC-035/main step 2 player_shielded adds an agent shield line", () => {
+    const { feed } = fold([["player_shielded", { serial: "aa:bb:cc:dd", kind: "toughness_boost", seconds: "2" }]]);
+    expect(feed).toEqual(["Agent: toughness boost for c:dd (2s)"]);
+  });
+
+  it("UC-035/main step 2 player_shielded with the pre-rename kind partial is still a toughness boost line", () => {
     const { feed } = fold([["player_shielded", { serial: "aa:bb:cc:dd", kind: "partial", seconds: "2" }]]);
-    expect(feed).toEqual(["Agent: partial shield for c:dd (2s)"]);
+    expect(feed).toEqual(["Agent: toughness boost for c:dd (2s)"]);
   });
 
   it("UC-035/main step 2 game_error shows the Ended state and an error line", () => {

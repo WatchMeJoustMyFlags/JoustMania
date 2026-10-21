@@ -150,17 +150,17 @@ func dangerNarrative(p PlayerState, ranked int) string {
 }
 
 // ShieldWindow is how long after a dispatched shield a player counts as
-// Shielded: the longest shield variant (grant_shield / partial_shield max,
+// Shielded: the longest shield variant (grant_shield / toughness_boost max,
 // decide.MagnitudeBounds).
 const ShieldWindow = 10 * time.Second
 
-// recentlyShielded returns the serials a grant_shield / partial_shield was
+// recentlyShielded returns the serials a grant_shield / toughness_boost was
 // dispatched to (not blocked) within ShieldWindow before c.UpdatedAt.
 func recentlyShielded(c gamecontext.GameContext) map[string]bool {
 	out := map[string]bool{}
 	for _, e := range c.Timeline {
 		if e.Kind != gamecontext.EventIntervention || e.Blocked || e.Serial == "" ||
-			(e.Detail != "grant_shield" && e.Detail != "partial_shield") {
+			(e.Detail != "grant_shield" && e.Detail != "toughness_boost") {
 			continue
 		}
 		if age := c.UpdatedAt.Sub(e.At); age >= 0 && age <= ShieldWindow {

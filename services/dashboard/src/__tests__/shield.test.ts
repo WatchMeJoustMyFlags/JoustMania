@@ -25,13 +25,22 @@ describe("UC-040: A16 shield badge on the controller tile", () => {
     expect(store.get("MOCK0002", NOW)).toBeNull();
   });
 
-  it("UC-040/A16 BR-009 shows the partial shield as the weaker badge", () => {
+  it("UC-040/A16 BR-009 shows the toughness boost as the weaker badge", () => {
+    const store = new ShieldStore();
+    store.apply(shielded("MOCK0002", "toughness_boost", NOW + 3000));
+
+    const badge = shieldBadge(store.get("MOCK0002", NOW), NOW);
+    expect(badge?.text).toBe("Boost 3.0s");
+    expect(badge?.className).toContain("shield-toughness_boost");
+  });
+
+  it("UC-040/A16 an older coordinator's kind partial still renders as the boost badge, never a full shield", () => {
     const store = new ShieldStore();
     store.apply(shielded("MOCK0002", "partial", NOW + 3000));
 
     const badge = shieldBadge(store.get("MOCK0002", NOW), NOW);
-    expect(badge?.text).toBe("Partial 3.0s");
-    expect(badge?.className).toContain("shield-partial");
+    expect(badge?.text).toBe("Boost 3.0s");
+    expect(badge?.className).toContain("shield-toughness_boost");
   });
 
   it("UC-040/A16 BR-008 marks the last second as ending (the LED blinks)", () => {
@@ -82,7 +91,7 @@ describe("UC-040: A17 shield badge ends early", () => {
   it.each(["game_ended", "game_force_ended"])("UC-040/A17 clears every badge on %s", (eventType) => {
     const store = new ShieldStore();
     store.apply(shielded("MOCK0001", "full", NOW + 5000));
-    store.apply(shielded("MOCK0002", "partial", NOW + 5000));
+    store.apply(shielded("MOCK0002", "toughness_boost", NOW + 5000));
 
     expect(store.apply({ eventType, data: {} })).toBe(true);
     expect(store.get("MOCK0001", NOW)).toBeNull();

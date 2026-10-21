@@ -235,11 +235,11 @@ enum GameEffect {
   // Agent shield (#1301, UC-040 BR-008/BR-010): shield colour (default white) fades 100%->30%
   // over duration_ms minus the last 1000ms, blinks 4 Hz in the last 1000ms, then restores the
   // base color. A persistent layer: short LED effects overlay it, a new base color is shown after it;
-  // death, the winner rainbow and duration_ms=0 end it (duration_ms=0 on PARTIAL_SHIELD: the partial only).
+  // death, the winner rainbow and duration_ms=0 end it (duration_ms=0 on TOUGHNESS_BOOST: the boost layer only).
   GAME_EFFECT_SHIELD = 14;
-  // Partial shield (#1301, UC-040 BR-009): the weaker variant, a slow 0.5 Hz breathing at
+  // Toughness boost (#1301, UC-040 BR-009): the weaker variant, a slow 0.5 Hz breathing at
   // 10-50% brightness, last-second blink at 50%, then restore. duration_ms=0 ends it.
-  GAME_EFFECT_PARTIAL_SHIELD = 15;
+  GAME_EFFECT_TOUGHNESS_BOOST = 15;
   // Identify (UC-004 BR-001, BR-002): white 2 Hz flash for duration_ms (default 3000ms)
   // plus a 500ms rumble, then the base color (or the color shown before, without one).
   // RPC-only: started by IdentifyController; a GameEffectCommand with it is rejected.

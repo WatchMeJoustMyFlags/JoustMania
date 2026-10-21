@@ -229,8 +229,8 @@ func TestMagnitudeLadder(t *testing.T) {
 	if !strings.Contains(ladder[0], "grant_shield 3 seconds (shortest shield)") || !strings.Contains(ladder[4], "grant_shield 10 seconds (longest shield)") {
 		t.Errorf("ends = %q / %q", ladder[0], ladder[4])
 	}
-	if strings.Contains(strings.Join(ladder, " "), "partial_shield") {
-		t.Error("partial_shield is not in the allow-list and must not be listed")
+	if strings.Contains(strings.Join(ladder, " "), "toughness_boost") {
+		t.Error("toughness_boost is not in the allow-list and must not be listed")
 	}
 	if !strings.Contains(ladder[2], "adjust_music_tempo 1.15 tempo") {
 		t.Errorf("middle = %q", ladder[2])
@@ -324,5 +324,27 @@ func TestMostLikelyLevel(t *testing.T) {
 	}
 	if _, err := scoreToRange(4.5, levels(0.2, 0.2, 0.2, 0.2, 0.2), q, ""); err == nil {
 		t.Error("a score outside the ladder is invalid even with probabilities")
+	}
+}
+
+// UC: UC-040 A16
+// TestToughnessBoostCriteria pins the #1838 rename on the Jev criteria tables:
+// the lever is described, protective and has its magnitude ends under the new id
+// only, so a request built from the full allow-list never mentions the old name.
+func TestToughnessBoostCriteria(t *testing.T) {
+	if interventionDescriptions["toughness_boost"] == "" {
+		t.Error("toughness_boost has no Jev description")
+	}
+	if !protectInterventions["toughness_boost"] {
+		t.Error("toughness_boost must be a protective intervention")
+	}
+	ends, ok := magnitudeEnds["toughness_boost"]
+	if !ok || !strings.Contains(ends[0], "toughness boost") || !strings.Contains(ends[1], "toughness boost") {
+		t.Errorf("magnitudeEnds[toughness_boost] = %q (ok=%v)", ends, ok)
+	}
+	for _, text := range interventionDescriptions {
+		if strings.Contains(strings.ToLower(text), "partial") {
+			t.Errorf("description still teaches the old name: %q", text)
+		}
 	}
 }

@@ -44,14 +44,14 @@ ELIMINATE_ACCEL = 0.0
 # Neutral shield value (no shield). Matches shield_seconds none variant.
 SHIELD_NONE = 0.0
 
-# Partial-shield (#1129, #1103 Phase 2) value parsing. Value is a STRING
+# Toughness boost (#1129, #1103 Phase 2) value parsing. Value is a STRING
 # "<seconds>" or "<seconds>:<boost>"; bounds mirror BaseGameMode's clamps so a
 # malformed value degrades to a safe no-op rather than dispatching garbage.
-PARTIAL_SHIELD_NONE_VALUES = frozenset({"", "0", "0.0", "none", "off"})
-PARTIAL_SHIELD_DEFAULT_BOOST = 2.0
-PARTIAL_SHIELD_BOOST_MIN = 1.0
-PARTIAL_SHIELD_BOOST_MAX = 2.0
-PARTIAL_SHIELD_MAX_SECONDS = 30.0
+TOUGHNESS_BOOST_NONE_VALUES = frozenset({"", "0", "0.0", "none", "off"})
+TOUGHNESS_BOOST_DEFAULT_FACTOR = 2.0
+TOUGHNESS_BOOST_FACTOR_MIN = 1.0
+TOUGHNESS_BOOST_FACTOR_MAX = 2.0
+TOUGHNESS_BOOST_MAX_SECONDS = 30.0
 
 
 def _grant_values(ctx: InterventionContext, manager: InterventionManager, default: object, value_kind: str) -> dict:
@@ -74,41 +74,41 @@ def _grant_values(ctx: InterventionContext, manager: InterventionManager, defaul
     )
 
 
-def parse_partial_shield_value(value: object) -> tuple[float, float] | None:
-    """Parse a partial_shield value into ``(seconds, boost)`` or ``None``.
+def parse_toughness_boost_value(value: object) -> tuple[float, float] | None:
+    """Parse a toughness_boost value into ``(seconds, boost)`` or ``None``.
 
     Accepts ``"<seconds>"`` or ``"<seconds>:<boost>"``. Returns ``None`` for the
     neutral / empty / malformed forms (caller treats ``None`` as a safe no-op):
     non-numeric fields, seconds <= 0, or boost outside a sane band. Bounds are
-    clamped (seconds capped at ``PARTIAL_SHIELD_MAX_SECONDS``, boost to
-    [``PARTIAL_SHIELD_BOOST_MIN``, ``PARTIAL_SHIELD_BOOST_MAX``]) so the resolved
-    pair is always safe to pass to ``grant_partial_shield``.
+    clamped (seconds capped at ``TOUGHNESS_BOOST_MAX_SECONDS``, boost to
+    [``TOUGHNESS_BOOST_FACTOR_MIN``, ``TOUGHNESS_BOOST_FACTOR_MAX``]) so the resolved
+    pair is always safe to pass to ``grant_toughness_boost``.
     """
     text = str(value).strip().lower()
-    if text in PARTIAL_SHIELD_NONE_VALUES:
+    if text in TOUGHNESS_BOOST_NONE_VALUES:
         return None
     parts = text.split(":")
     if len(parts) > 2:
         return None
     try:
         seconds = float(parts[0])
-        boost = float(parts[1]) if len(parts) == 2 else PARTIAL_SHIELD_DEFAULT_BOOST
+        boost = float(parts[1]) if len(parts) == 2 else TOUGHNESS_BOOST_DEFAULT_FACTOR
     except ValueError:
         return None
     if seconds <= 0:
         return None
-    seconds = min(seconds, PARTIAL_SHIELD_MAX_SECONDS)
-    boost = max(PARTIAL_SHIELD_BOOST_MIN, min(PARTIAL_SHIELD_BOOST_MAX, boost))
+    seconds = min(seconds, TOUGHNESS_BOOST_MAX_SECONDS)
+    boost = max(TOUGHNESS_BOOST_FACTOR_MIN, min(TOUGHNESS_BOOST_FACTOR_MAX, boost))
     return seconds, boost
 
 
-async def handle_partial_shield(ctx: InterventionContext, manager: InterventionManager) -> None:
-    """Arm per-player TIME-BOXED partial shields via per-serial targeting (#1129).
+async def handle_toughness_boost(ctx: InterventionContext, manager: InterventionManager) -> None:
+    """Arm per-player TIME-BOXED toughness boosts via per-serial targeting (#1129).
 
     Mirrors :func:`handle_shield_seconds`: resolves the STRING flag once per active
     serial via the manager's reusable ``resolve_player_targets`` helper, parses
-    each value with :func:`parse_partial_shield_value` (malformed / neutral -> safe
-    skip), and arms a time-boxed handicap boost via ``game.grant_partial_shield``.
+    each value with :func:`parse_toughness_boost_value` (malformed / neutral -> safe
+    skip), and arms a time-boxed handicap boost via ``game.grant_toughness_boost``.
     Unlike ``grant_shield`` (total grace_until immunity), this only raises the
     player's death threshold for the window — much harder to die, NOT immune.
     Reverting to none requires no action: the boost simply stops applying when its
@@ -116,18 +116,18 @@ async def handle_partial_shield(ctx: InterventionContext, manager: InterventionM
     """
     game = ctx.game
     if game is None:
-        logger.debug("partial_shield: no live game, ignoring")
+        logger.debug("toughness_boost: no live game, ignoring")
         return
 
     values = _grant_values(ctx, manager, "0", "string")
 
-    grant = getattr(game, "grant_partial_shield", None)
+    grant = getattr(game, "grant_toughness_boost", None)
     if not callable(grant):
-        logger.debug("partial_shield: game has no grant_partial_shield, ignoring")
+        logger.debug("toughness_boost: game has no grant_toughness_boost, ignoring")
         return
 
     for serial, raw in values.items():
-        parsed = parse_partial_shield_value(raw)
+        parsed = parse_toughness_boost_value(raw)
         if parsed is None:
             continue  # neutral / malformed: safe no-op for this serial
         seconds, boost = parsed
@@ -202,7 +202,7 @@ async def handle_soft_penalty(ctx: InterventionContext, manager: InterventionMan
     - ``warn`` -> ``game.warn_player`` (visible flash + rumble cue, NO threshold
       change — fully recoverable).
     - ``tighten`` -> ``game.apply_soft_penalty`` (short EXPIRING handicap
-      reduction; the MIRROR of partial_shield — temporarily easier to die, still
+      reduction; the MIRROR of toughness_boost — temporarily easier to die, still
       clamped, never instant-death).
 
     Reverting requires no action: warn leaves no state, and a tighten simply stops
@@ -396,10 +396,10 @@ def register_lifecycle_handlers(manager: InterventionManager) -> None:
         "shield_seconds",
         lambda ctx: handle_shield_seconds(ctx, manager),
     )
-    # partial_shield (#1129) also needs the manager for the targeting helper.
+    # toughness_boost (#1129) also needs the manager for the targeting helper.
     manager.register_handler(
-        "partial_shield_seconds",
-        lambda ctx: handle_partial_shield(ctx, manager),
+        "toughness_boost_seconds",
+        lambda ctx: handle_toughness_boost(ctx, manager),
     )
     # soft_penalty (#1134) also needs the manager for the targeting helper.
     manager.register_handler(

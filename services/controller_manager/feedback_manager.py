@@ -139,7 +139,7 @@ class ShieldLayer:
     start: float
     total_s: float
     color: tuple[int, int, int]
-    partial: bool
+    toughness_boost: bool
     blink_reported: bool = False
 
     def remaining(self, now: float) -> float:
@@ -150,7 +150,7 @@ class ShieldLayer:
 # skip the active-effect placeholder entirely (#1301).
 NON_LED_EFFECTS = frozenset({controller_manager_pb2.GAME_EFFECT_RUMBLE})
 SHIELD_EFFECTS = frozenset(
-    {controller_manager_pb2.GAME_EFFECT_SHIELD, controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD}
+    {controller_manager_pb2.GAME_EFFECT_SHIELD, controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST}
 )
 
 
@@ -189,7 +189,7 @@ class FeedbackManager(ControllerEffectsBase):
             controller_manager_pb2.GAME_EFFECT_FORCE_START_CHARGE,
         }
 
-        # Agent shield layers per controller ("full" / "partial") and the one
+        # Agent shield layers per controller ("full" / "toughness_boost") and the one
         # renderer task per controller that paints the top layer (#1301). The
         # shield is NOT an active_effects entry: other effects overlay it, a new
         # base colour only changes what is restored after it (UC-040 BR-010).
@@ -683,13 +683,13 @@ class FeedbackManager(ControllerEffectsBase):
         return active is not None and not active.task.done()
 
     def _top_shield(self, serial: str, now: float) -> ShieldLayer | None:
-        """The shield layer to paint now: full over partial; expired layers are dropped."""
+        """The shield layer to paint now: full over toughness_boost; expired layers are dropped."""
         layers = self._shield_layers.get(serial)
         if not layers:
             return None
         for kind in [k for k, layer in layers.items() if layer.remaining(now) <= 0]:
             del layers[kind]
-        return layers.get("full") or layers.get("partial")
+        return layers.get("full") or layers.get("toughness_boost")
 
     async def _finish_effect(self, serial: str, restore: bool, fallback: tuple[int, int, int] | None = None) -> None:
         """After an effect: hand the LED back to the shield, else restore the base colour.
@@ -709,17 +709,17 @@ class FeedbackManager(ControllerEffectsBase):
         self,
         serial: str,
         duration_ms: int,
-        partial: bool = False,
+        toughness_boost: bool = False,
         color: tuple[int, int, int] | None = None,
         trace_context: Context | None = None,
     ) -> None:
         """Start or restart (extend) a shield layer; its schedule starts again at t=0."""
-        kind = "partial" if partial else "full"
+        kind = "toughness_boost" if toughness_boost else "full"
         self._shield_layers.setdefault(serial, {})[kind] = ShieldLayer(
             start=self._clock.time(),
             total_s=duration_ms / 1000.0,
             color=color if color else Colors.White.value,
-            partial=partial,
+            toughness_boost=toughness_boost,
         )
         task = self._shield_tasks.get(serial)
         if task is None or task.done():
@@ -749,9 +749,11 @@ class FeedbackManager(ControllerEffectsBase):
                     elapsed = now - layer.start
                     if not layer.blink_reported and elapsed >= max(0.0, layer.total_s - SHIELD_BLINK_WINDOW_S):
                         layer.blink_reported = True
-                        span.add_event("shield_blink", {"shield.kind": "partial" if layer.partial else "full"})
+                        span.add_event(
+                            "shield_blink", {"shield.kind": "toughness_boost" if layer.toughness_boost else "full"}
+                        )
                     if not self._overlay_active(serial):
-                        frame = shield_frame(elapsed, layer.total_s, layer.color, layer.partial)
+                        frame = shield_frame(elapsed, layer.total_s, layer.color, layer.toughness_boost)
                         if frame is not None:
                             await self._set_led_color(serial, frame)
                     await self._clock.sleep(interval)
@@ -765,10 +767,10 @@ class FeedbackManager(ControllerEffectsBase):
         if not self._overlay_active(serial):
             await self._finish_effect(serial, restore=True)
 
-    async def end_shield_effect(self, serial: str, partial_only: bool = False, restore: bool = True) -> bool:
+    async def end_shield_effect(self, serial: str, toughness_boost_only: bool = False, restore: bool = True) -> bool:
         """End shield layers now (#1301, UC-040 A17); other effects are untouched.
 
-        ``partial_only`` ends just the partial layer (a full shield keeps
+        ``toughness_boost_only`` ends just the toughness_boost layer (a full shield keeps
         painting). With no layer left the renderer is cancelled and, if
         ``restore`` and no overlay owns the LED, the base colour is shown.
         Returns True if a layer was ended.
@@ -776,8 +778,8 @@ class FeedbackManager(ControllerEffectsBase):
         layers = self._shield_layers.get(serial)
         if not layers:
             return False
-        if partial_only:
-            if layers.pop("partial", None) is None:
+        if toughness_boost_only:
+            if layers.pop("toughness_boost", None) is None:
                 return False
             if layers:
                 return True  # the full shield keeps painting
@@ -797,12 +799,14 @@ class FeedbackManager(ControllerEffectsBase):
     async def _handle_shield_command(
         self, serial: str, effect: int, duration_ms: int, color: tuple | None, trace_context: Context | None
     ) -> None:
-        partial = effect == controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD
+        toughness_boost = effect == controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST
         if duration_ms <= 0:
-            # SHIELD 0 ends every shield layer (game end); PARTIAL_SHIELD 0 only the partial one.
-            await self.end_shield_effect(serial, partial_only=partial)
+            # SHIELD 0 ends every shield layer (game end); TOUGHNESS_BOOST 0 only the toughness_boost one.
+            await self.end_shield_effect(serial, toughness_boost_only=toughness_boost)
             return
-        await self.start_shield_effect(serial, duration_ms, partial=partial, color=color, trace_context=trace_context)
+        await self.start_shield_effect(
+            serial, duration_ms, toughness_boost=toughness_boost, color=color, trace_context=trace_context
+        )
 
     # =========================================================================
     # Effect dispatch

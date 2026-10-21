@@ -34,7 +34,7 @@ flags:
   - {set: interventions, key: player_sensitivity_factor, kind: level, scope: [game+serial], bounds: {range: [0.5, 2.0]}}
   - {set: interventions, key: player_handicap_factor, kind: level, scope: [game+serial], bounds: {range: [0.5, 2.0]}}
   - {set: interventions, key: shield_seconds, kind: grant, scope: [game+serial], bounds: {range: [1, 10]}}
-  - {set: interventions, key: partial_shield_seconds, kind: grant, scope: [game+serial], bounds: {pattern: [["float 0.1 30"], ["float 0.1 30", "float 1.0 2.0"]]}}
+  - {set: interventions, key: toughness_boost_seconds, kind: grant, scope: [game+serial], bounds: {pattern: [["float 0.1 30"], ["float 0.1 30", "float 1.0 2.0"]]}}
   - {set: interventions, key: soft_penalty_action, kind: grant, scope: [game+serial], bounds: {pattern: [["enum warn|tighten"], ["enum tighten", "float 0.1 30", "float 0.5 1.0"]]}}
   - {set: interventions, key: eliminate_player, kind: event, scope: [game], bounds: {payload: {serial: serial}}}
   - {set: interventions, key: revive_player, kind: event, scope: [game], bounds: {payload: {serial: serial}}}

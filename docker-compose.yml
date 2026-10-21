@@ -71,6 +71,9 @@ services:
     environment:
       - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
+      # The registry comes from the same checkout as the baseline (mounted below):
+      # the image copy would reject a renamed flag (#1838).
+      - FLAG_SERVICE_REGISTRY=/etc/flag-service/registry.yaml
       # Admin settings persisted on request (D10, re-review N4). One state file
       # per stack: the ci, dry-run and decide-e2e stacks override the name.
       - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
@@ -84,6 +87,7 @@ services:
     volumes:
       # Read-only from the start: the service never writes the flag files.
       - ./services/flagd:/etc/flagd:ro
+      - ./services/flag-service/registry.yaml:/etc/flag-service/registry.yaml:ro
       - flag-service-state:/var/lib/flag-service
     healthcheck:
       test: ["CMD", "/flag-service", "healthcheck"]
