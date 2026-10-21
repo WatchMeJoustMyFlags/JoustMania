@@ -121,8 +121,8 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `game_trace_correlation` | gauge | `game_kind`, `game_id`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id` | game-coordinator | yes | agent |  |
 | `games_completed_total` | counter | `mode`, `game_kind`, `outcome` (winner\|tie\|completed\|force_ended\|error) | game-coordinator | yes | grafana | `outcome` = `winner`, `tie`, `completed`, `force_ended`, or `error` when the session published `game_error`; #1427 |
 | `games_started_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana |  |
-| `grpc_client_errors_total` | counter | `service`, `method`, `code` | lib (`lib/grpc_metrics.py`) | yes | grafana |  |
-| `grpc_client_request_duration_seconds` | histogram | `service`, `method` | lib (`lib/grpc_metrics.py`) | yes | grafana |  |
+| `grpc_client_errors_total` | counter | `service`, `method`, `code` | lib (`lib/grpc_metrics.py`) | yes | grafana | #1426; mid-stream errors and the HID adapters counted, a cancel by the caller is not; the Go agent and connect-proxy are not covered (telemetry.md §6) |
+| `grpc_client_request_duration_seconds` | histogram | `service`, `method` | lib (`lib/grpc_metrics.py`) | yes | grafana | #1426; a stream is timed once, at its end |
 | `grpc_request_duration_seconds` | histogram | `method` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in audio, controller-manager, game-coordinator | (none) |  |
 | `grpc_requests_total` | counter | `method`, `status` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in audio, controller-manager, game-coordinator | (none) |  |
 | `menu_button_event_errors_total` | counter | `event_type` | menu | yes | (none) |  |
