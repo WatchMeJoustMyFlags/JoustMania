@@ -2,6 +2,10 @@
 Intervention-smoke driver: deterministically prove EACH ``shadow_experimental``
 agent action APPLIES end-to-end, independent of LLM model choice (#1144).
 
+Service tier (T2, ``GAME`` composition: controller manager + game coordinator
+from source on a fresh flag plane); moved from tests/integration in #1422 S8.
+TC-007 step 6 for hand-written interventions.
+
 WHY THIS EXISTS (#1137 finding 2): verification run #5 could not demo the
 advanced interventions (``set_player_handicap``, ``ramp_tempo``,
 ``partial_shield``, ``soft_penalty``) because the LLM backend was CUDA-down and
@@ -41,8 +45,8 @@ DETERMINISM / GLOBAL GOTCHAS (carried from #893 / #919):
   actions — and poll flagd until it actually serves that string before any
   scenario writes a flag.
 - The coordinator's weighted rate limiter is process-GLOBAL and not reset
-  between tests. The re-exported ``intervention_env`` fixture pins a generous
-  suite-wide budget (``SUITE_RATE_LIMIT_BUDGET``) in BOTH rate-limit flags and
+  between tests. The ``intervention_env`` fixture pins a generous
+  budget (``RATE_LIMIT_BUDGET``) in BOTH rate-limit flags and
   waits a reload cycle before the body runs, so the handful of injections here
   sit far under budget.
 - Every intervention write is game-scoped through the flag service (FR-136): a
@@ -57,16 +61,21 @@ plugs into: add a scenario that writes the action's flag and asserts its
 """
 
 import asyncio
-import os
-import sys
 import time
 
 import pytest
+from openfeature.evaluation_context import EvaluationContext
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-
-from proto import game_coordinator_pb2  # noqa: E402
-from tests.integration.helpers import (  # noqa: E402
+from proto import game_coordinator_pb2
+from tests.integration.flag_service import (
+    default as flag_service_default,
+)
+from tests.integration.flag_service import (
+    set_game_value,
+    set_player_value,
+    variant_value,
+)
+from tests.integration.helpers import (
     GameEventCollector,
     async_poll_until,
     build_start_config,
@@ -75,30 +84,58 @@ from tests.integration.helpers import (  # noqa: E402
     get_game_client,
     get_mock_client,
     list_games,
+    poll_until,
     remove_reserved_controllers,
     setup_mock_controllers,
     start_game_headless,
     verify_controllers_have_color,
 )
-from tests.integration.test_intervention_flow import (  # noqa: E402
-    APPLY_TIMEOUT_SECONDS,
-    intervention_env,  # re-exported: snapshot/restore + suite-wide rate-limit budget pin
-    set_interventions_allowed,
-)
-from tests.integration.flag_service import (  # noqa: E402
-    default as flag_service_default,
-    set_game_value,
-    set_player_value,
-    variant_value,
-)
+from tests.service.harness import GAME
+
+pytestmark = pytest.mark.tier("service")
+
+# Controller manager (mock backend) + game coordinator from source at HEAD on a
+# fresh flag plane: the apply path needs no menu, agent or collector (#1422 S8).
+SERVICE_COMPOSITION = GAME
 
 # The single permission variant that allow-lists every advanced action under
 # test. Resolved from the live agent.json so the test tracks the committed
 # allow-list rather than hard-coding the (long) comma-separated string.
 PERMISSION_VARIANT = "shadow_experimental"
 
-# Keep re-exported fixture referenced so linters don't flag it unused.
-__all__ = ["intervention_env"]
+APPLY_TIMEOUT_SECONDS = 12.0
+
+# Generous budget for BOTH weighted rate-limit layers (#919): the coordinator's
+# limiter is process-global, so the batch's injections need headroom.
+RATE_LIMIT_BUDGET = 50
+
+
+def set_interventions_allowed(variant: str) -> None:
+    """Set the agent-set ``interventions_allowed`` flag to a named variant."""
+    flag_service_default().put("agent", "interventions_allowed", variant=variant)
+
+
+@pytest.fixture
+def intervention_env(stack, flag_service):
+    """Pin the rate-limit budget and wait until flagd serves it.
+
+    Every overlay set here or in the test (the budget, ``interventions_allowed``)
+    is DELETEd by the ``flag_service`` fixture at teardown.
+    """
+    # Both layers (agent per game, coordinator backstop) read different flags.
+    for flag_key in (
+        "policy.max_interventions_per_minute",
+        "policy.coordinator_backstop_per_minute",
+    ):
+        flag_service.put("agent", flag_key, value=RATE_LIMIT_BUDGET)
+    with flagd_probe_client(stack, "agent") as client:
+        assert poll_until(
+            lambda: (
+                client.get_integer_value("policy.max_interventions_per_minute", -1, EvaluationContext())
+                == RATE_LIMIT_BUDGET
+            ),
+        ), "flagd did not serve the pinned rate-limit budget"
+    yield
 
 
 # =============================================================================
@@ -111,32 +148,29 @@ async def _wait_for_intervention(
     type_id: str,
     *,
     blocked=None,
-    timeout: float = APPLY_TIMEOUT_SECONDS,
+    within: float = APPLY_TIMEOUT_SECONDS,
 ):
     """Poll the game's stream for an ``agent_intervention`` of ``type_id``."""
-    deadline = time.time() + timeout
+    deadline = time.time() + within
     while time.time() < deadline:
         hits = [
             e
             for e in collector.get_events("agent_intervention")
-            if e.data.get("type") == type_id
-            and (blocked is None or e.data.get("blocked") == blocked)
+            if e.data.get("type") == type_id and (blocked is None or e.data.get("blocked") == blocked)
         ]
         if hits:
             return hits[-1]
         await asyncio.sleep(0.2)
     raise AssertionError(
-        f"no agent_intervention(type={type_id}, blocked={blocked}) within {timeout}s; "
+        f"no agent_intervention(type={type_id}, blocked={blocked}) within {within}s; "
         f"saw: {[dict(e.data) for e in collector.get_events('agent_intervention')]}"
     )
 
 
-async def _wait_for_game_colors(
-    mock_client, serials: list[str], timeout: float = 10.0
-) -> None:
+async def _wait_for_game_colors(mock_client, serials: list[str], within: float = 10.0) -> None:
     """Poll until every controller shows a non-zero LED (parallel load lags it)."""
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = loop.time() + within
     while True:
         try:
             await verify_controllers_have_color(mock_client, serials)
@@ -147,9 +181,7 @@ async def _wait_for_game_colors(
             await asyncio.sleep(0.5)
 
 
-async def _start_headless_with_retry(
-    game_client, start_config, attempts: int = 4, backoff: float = 2.0
-):
+async def _start_headless_with_retry(game_client, start_config, attempts: int = 4, backoff: float = 2.0):
     """Start headless, retrying brief "Game already in progress" cap windows.
 
     A sibling batch coroutine's force-ended game may still be in its ENDING
@@ -168,19 +200,15 @@ async def _start_headless_with_retry(
     raise last_exc
 
 
-async def _await_running(game_client, game_id: str, timeout: float = 12.0) -> None:
+async def _await_running(game_client, game_id: str, within: float = 12.0) -> None:
     """Poll ListGames until this game is RUNNING (start returns on STARTING)."""
-    deadline = time.time() + timeout
+    deadline = time.time() + within
     while time.time() < deadline:
-        running = {
-            g.game_id
-            for g in await list_games(game_client)
-            if g.state == game_coordinator_pb2.RUNNING
-        }
+        running = {g.game_id for g in await list_games(game_client) if g.state == game_coordinator_pb2.RUNNING}
         if game_id in running:
             return
         await asyncio.sleep(0.3)
-    raise AssertionError(f"game {game_id} never reached RUNNING within {timeout}s")
+    raise AssertionError(f"game {game_id} never reached RUNNING within {within}s")
 
 
 def _shadow_experimental_string() -> str:
@@ -202,9 +230,7 @@ def _set_permission() -> None:
 
 def _set_tempo_schedule_mode_for_game(game_id: str, mode: str) -> None:
     """Scope ``game.tempo_schedule_mode`` to ``mode`` for one game only."""
-    flag_service_default().put(
-        "game", "tempo_schedule_mode", variant=mode, scope={"game_id": game_id}
-    )
+    flag_service_default().put("game", "tempo_schedule_mode", variant=mode, scope={"game_id": game_id})
 
 
 # =============================================================================
@@ -231,13 +257,9 @@ async def _scenario_set_player_handicap(docker_compose, tag: str) -> None:
     collector = None
     game_id = ""
     try:
-        serials = await setup_mock_controllers(
-            docker_compose, count=4, reserved=True, tag=tag
-        )
+        serials = await setup_mock_controllers(docker_compose, count=4, reserved=True, tag=tag)
         target = serials[0]
-        game_id, collector = await _start_headless_with_retry(
-            game_client, build_start_config("JoustFFA", serials)
-        )
+        game_id, collector = await _start_headless_with_retry(game_client, build_start_config("JoustFFA", serials))
         await _await_running(game_client, game_id)
         await _wait_for_game_colors(mock_client, serials)
 
@@ -245,9 +267,7 @@ async def _scenario_set_player_handicap(docker_compose, tag: str) -> None:
         # intervention. Scoped to one gameId + serial.
         set_player_value("player_handicap_factor", game_id, target, 1.25)
 
-        evt = await _wait_for_intervention(
-            collector, "set_player_handicap", blocked="false"
-        )
+        evt = await _wait_for_intervention(collector, "set_player_handicap", blocked="false")
         assert evt.data.get("blocked") == "false"
     finally:
         await _teardown(
@@ -277,13 +297,9 @@ async def _scenario_partial_shield(docker_compose, tag: str) -> None:
     collector = None
     game_id = ""
     try:
-        serials = await setup_mock_controllers(
-            docker_compose, count=4, reserved=True, tag=tag
-        )
+        serials = await setup_mock_controllers(docker_compose, count=4, reserved=True, tag=tag)
         target = serials[0]
-        game_id, collector = await _start_headless_with_retry(
-            game_client, build_start_config("JoustFFA", serials)
-        )
+        game_id, collector = await _start_headless_with_retry(game_client, build_start_config("JoustFFA", serials))
         await _await_running(game_client, game_id)
         await _wait_for_game_colors(mock_client, serials)
 
@@ -319,13 +335,9 @@ async def _scenario_soft_penalty_tighten(docker_compose, tag: str) -> None:
     collector = None
     game_id = ""
     try:
-        serials = await setup_mock_controllers(
-            docker_compose, count=4, reserved=True, tag=tag
-        )
+        serials = await setup_mock_controllers(docker_compose, count=4, reserved=True, tag=tag)
         target = serials[0]
-        game_id, collector = await _start_headless_with_retry(
-            game_client, build_start_config("JoustFFA", serials)
-        )
+        game_id, collector = await _start_headless_with_retry(game_client, build_start_config("JoustFFA", serials))
         await _await_running(game_client, game_id)
         await _wait_for_game_colors(mock_client, serials)
 
@@ -360,13 +372,9 @@ async def _scenario_soft_penalty_warn(docker_compose, tag: str) -> None:
     collector = None
     game_id = ""
     try:
-        serials = await setup_mock_controllers(
-            docker_compose, count=4, reserved=True, tag=tag
-        )
+        serials = await setup_mock_controllers(docker_compose, count=4, reserved=True, tag=tag)
         target = serials[0]
-        game_id, collector = await _start_headless_with_retry(
-            game_client, build_start_config("JoustFFA", serials)
-        )
+        game_id, collector = await _start_headless_with_retry(game_client, build_start_config("JoustFFA", serials))
         await _await_running(game_client, game_id)
         await _wait_for_game_colors(mock_client, serials)
 
@@ -399,12 +407,8 @@ async def _scenario_ramp_tempo(docker_compose, tag: str) -> None:
     collector = None
     game_id = ""
     try:
-        serials = await setup_mock_controllers(
-            docker_compose, count=4, reserved=True, tag=tag
-        )
-        game_id, collector = await _start_headless_with_retry(
-            game_client, build_start_config("JoustFFA", serials)
-        )
+        serials = await setup_mock_controllers(docker_compose, count=4, reserved=True, tag=tag)
+        game_id, collector = await _start_headless_with_retry(game_client, build_start_config("JoustFFA", serials))
         await _await_running(game_client, game_id)
         await _wait_for_game_colors(mock_client, serials)
 
@@ -454,13 +458,9 @@ async def _scenario_grant_shield(docker_compose, tag: str) -> None:
     collector = None
     game_id = ""
     try:
-        serials = await setup_mock_controllers(
-            docker_compose, count=4, reserved=True, tag=tag
-        )
+        serials = await setup_mock_controllers(docker_compose, count=4, reserved=True, tag=tag)
         target = serials[0]
-        game_id, collector = await _start_headless_with_retry(
-            game_client, build_start_config("JoustFFA", serials)
-        )
+        game_id, collector = await _start_headless_with_retry(game_client, build_start_config("JoustFFA", serials))
         await _await_running(game_client, game_id)
         await _wait_for_game_colors(mock_client, serials)
 
@@ -480,15 +480,11 @@ async def _scenario_grant_shield(docker_compose, tag: str) -> None:
         )
 
 
-async def _teardown(
-    collector, game_client, game_id, docker_compose, tag, mock_channel, game_channel
-):
+async def _teardown(collector, game_client, game_id, docker_compose, tag, mock_channel, game_channel):
     if collector is not None:
         await collector.stop()
     if game_id:
-        await force_end_game_by_id(
-            game_client, game_id, reason="intervention_smoke_cleanup"
-        )
+        await force_end_game_by_id(game_client, game_id, reason="intervention_smoke_cleanup")
     await remove_reserved_controllers(docker_compose, tag)
     await mock_channel.close()
     await game_channel.close()
@@ -525,9 +521,9 @@ _BATCHES = [
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenarios", _BATCHES)
-async def test_shadow_experimental_interventions_apply(
-    intervention_env, docker_compose, headless_cleanup, scenarios
-):
+@pytest.mark.usefixtures("intervention_env")
+@pytest.mark.uc("UC-020", flow="A3", tc="TC-007")
+async def test_shadow_experimental_interventions_apply(stack, headless_cleanup, scenarios):
     """Inject each ``shadow_experimental`` action once via flagd targeting (NOT
     the LLM) and assert the coordinator APPLIED it (``blocked="false"`` event).
 
@@ -541,16 +537,10 @@ async def test_shadow_experimental_interventions_apply(
     # scopeable). Poll flagd until it actually serves the variant before writes.
     _set_permission()
     expected = _shadow_experimental_string()
-    from openfeature.evaluation_context import EvaluationContext
 
-    with flagd_probe_client(docker_compose, "agent") as flag_client:
+    with flagd_probe_client(stack, "agent") as flag_client:
         assert await async_poll_until(
-            lambda: (
-                flag_client.get_string_value(
-                    "interventions_allowed", "", EvaluationContext()
-                )
-                == expected
-            ),
+            lambda: (flag_client.get_string_value("interventions_allowed", "", EvaluationContext()) == expected),
             rewrite=_set_permission,
         ), "flagd did not serve interventions_allowed=shadow_experimental"
 
@@ -564,11 +554,9 @@ async def test_shadow_experimental_interventions_apply(
 
     async def _run(name, fn):
         try:
-            await fn(docker_compose, tags[name])
+            await fn(stack, tags[name])
         except Exception as exc:  # noqa: BLE001 - re-raise tagged with scenario
-            raise AssertionError(
-                f"[{name}] shadow_experimental action failed to apply: {exc}"
-            ) from exc
+            raise AssertionError(f"[{name}] shadow_experimental action failed to apply: {exc}") from exc
 
     results = await asyncio.gather(
         *(_run(name, fn) for name, fn in scenarios.items()),
@@ -578,6 +566,4 @@ async def test_shadow_experimental_interventions_apply(
     failures = [r for r in results if isinstance(r, BaseException)]
     if failures:
         messages = "; ".join(str(f) for f in failures)
-        raise AssertionError(
-            f"{len(failures)}/{len(scenarios)} actions failed to apply: {messages}"
-        )
+        raise AssertionError(f"{len(failures)}/{len(scenarios)} actions failed to apply: {messages}")
