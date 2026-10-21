@@ -26,6 +26,7 @@ runs in the lobby only), so the host's controller is one of the four players.
 import pytest
 from openfeature.evaluation_context import EvaluationContext
 
+from lib.colors import Colors
 from proto import controller_manager_mock_pb2, game_coordinator_pb2
 from tests.integration.flag_service import append_event, variant_value
 from tests.integration.flag_service import default as flag_service_default
@@ -35,9 +36,11 @@ from tests.integration.helpers import (
     enter_admin_mode,
     exit_admin_mode,
     flagd_probe_client,
+    get_controller_color,
     get_game_client,
     get_mock_client,
     press_admin_button,
+    select_admin_option,
 )
 from tests.service.agent_flow import (
     AGENT,
@@ -95,8 +98,12 @@ def _gated_count(stack) -> float:
 async def _restrict_from_controller(stack, mock_client, host: str) -> None:
     """TC-006 steps 1 to 4: admin combo, agent_control, Start twice; flagd serves none."""
     await enter_admin_mode(mock_client, host)
-    for _ in range(3):  # Move x3: agent_control (index 0 -> 3)
-        await press_admin_button(mock_client, host, _Button.MOVE)
+    # Move x3 reaches agent_control (index 0 -> 3); the LED colour confirms it (#1845).
+    await select_admin_option(
+        lambda: press_admin_button(mock_client, host, _Button.MOVE),
+        lambda: get_controller_color(mock_client, host),
+        Colors.Purple.value,
+    )
     for level in ("ambient", "none"):
         await press_admin_button(mock_client, host, _Button.START)
         assert await async_poll_until(
