@@ -216,6 +216,10 @@ fi
 
 if [[ ${#explicit[@]} -gt 0 ]]; then
   for k in "${explicit[@]}"; do select_key "$k"; done
+  # service-touched needs the changed test files even when gates are explicit
+  for f in "${files[@]}"; do
+    [[ "$f" == tests/service/* && "${f##*/}" == test_*.py && -f "$f" ]] && touched_service[$f]=1
+  done
 else
   for f in "${files[@]}"; do [[ -n "$f" ]] && classify "$f"; done
 fi
