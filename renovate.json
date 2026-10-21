@@ -44,7 +44,7 @@
       "groupName": "openfeature (python)"
     },
     {
-      "description": "protobuf/gRPC toolchain: generated code is COMMITTED (proto/*_pb2.py, services/agent/gen). Regenerate via `make protos-all` + `make protos-agent` when grpcio-tools/protobuf move; `ci-validate-protos` gates drift.",
+      "description": "protobuf/gRPC toolchain: generated code is COMMITTED (proto/*_pb2.py, services/agent/gen). Regenerate via `make protos-all` + `make protos-agent` when grpcio-tools/protobuf move; `ci-validate-protos` gates Python stub drift and `ci-validate-agent-protos` gates Go stub drift.",
       "matchPackageNames": [
         "protobuf",
         "grpcio",
@@ -54,7 +54,7 @@
       ],
       "groupName": "protobuf/grpc toolchain",
       "prBodyNotes": [
-        "⚠️ Generated proto code is committed. If `grpcio-tools` or `protobuf` changed, run `make protos-all` (and `make protos-agent` for the Go agent stubs) and commit the regenerated output before merging — the `Validate Proto Files` CI job gates drift."
+        "⚠️ Generated proto code is committed. If `grpcio-tools` or `protobuf` changed, run `make protos-all` (and `make protos-agent` for the Go agent stubs) and commit the regenerated output before merging — the `Validate Protos & Packages` CI job gates drift of both."
       ]
     },
     {

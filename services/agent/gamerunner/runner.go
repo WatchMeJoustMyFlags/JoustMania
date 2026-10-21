@@ -11,8 +11,9 @@
 //  2. opens StreamGameEvents with a StartGameConfig to start the game headlessly
 //     (no lobby) and learns the coordinator-assigned game_id from the first
 //     stamped event (#776),
-//  3. drives the game to its win condition via the mock control RPCs
-//     (SimulateMovement holds a ~1.04g resting vector, SimulateDeath per player),
+//  3. lets the archetype's scripted motion run: it is installed when the
+//     controllers are reserved (shadow games are archetype-only, UC-046), and
+//     the runner sends no movement or kill RPCs (BR-004),
 //  4. awaits a terminal event (or force-ends on timeout),
 //  5. ALWAYS removes its reserved controllers on the way out.
 //

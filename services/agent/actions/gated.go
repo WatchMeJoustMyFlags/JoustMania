@@ -34,7 +34,7 @@ type RolloutGate interface {
 // in main.go and so could never react to a flag flip and failed open to whatever
 // sink was chosen at boot). Apply re-evaluates the gate per decision against the
 // live Flags: when on it delegates to the real Writer; when off (or flagd
-// unreachable) it discards the decision exactly like NoopActions, so a fully-gated,
+// unreachable) it discards the decision exactly like the loop's default discarding sink, so a fully-gated,
 // decided intervention is still recorded/spanned by the loop but never applied.
 type GatedActionSink struct {
 	gate   InterventionGate

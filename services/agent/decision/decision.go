@@ -168,10 +168,14 @@ const DefaultThrottleInterval = time.Second
 // trace and metrics Export handlers each invoke OnEvaluate from their own
 // goroutines.
 type Loop struct {
-	Flags   FlagSource
-	Rules   RulesEngine
-	Actions ActionSink
-	Log     *slog.Logger
+	Flags FlagSource
+	Rules RulesEngine
+	// ProbeRules is the demo/verification engine (decision.probe_decisions, #1810).
+	// Built ONCE per loop (it keeps its rate-limit state across flag flips) and
+	// swapped in by rulesFor only while the flag is on. nil: the flag has no effect.
+	ProbeRules RulesEngine
+	Actions    ActionSink
+	Log        *slog.Logger
 	// Tracer produces the audit spans; tests inject a recording tracer.
 	Tracer trace.Tracer
 
@@ -328,8 +332,8 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 	}
 	return &Loop{
 		Flags:                flagSource,
-		Rules:                NoopRules{},
-		Actions:              NoopActions{},
+		Rules:                noRules{},
+		Actions:              discardActions{},
 		Log:                  log,
 		Tracer:               otel.Tracer(instrumentationName),
 		now:                  time.Now,
@@ -554,14 +558,15 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// Objective layer: publish the per-cycle objectives flag into the rules
 	// engine. The engine reads them inside Evaluate; engines that ignore
 	// objectives (Noop/Probe) skip this.
-	if pub, ok := l.Rules.(objectivePublisher); ok {
+	rules := l.rulesFor(snapshot)
+	if pub, ok := rules.(objectivePublisher); ok {
 		pub.SetObjectives(snapshot.Objectives)
 	}
 	// Objective layer (fitness half, #731): publish the per-cycle fitness
 	// thresholds so the engine's fitness functions score against the live flag
 	// values. Per-cycle publication is what makes a mid-session flag change take
 	// effect on the very next decision.
-	if pub, ok := l.Rules.(fitnessPublisher); ok {
+	if pub, ok := rules.(fitnessPublisher); ok {
 		pub.SetFitness(fitnessThresholds(snapshot.Fitness))
 	}
 
@@ -578,14 +583,14 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		)
 	}
 
-	decisions, decideRec := l.decide(ctx, snapshot, c, trig)
+	decisions, decideRec := l.decide(ctx, snapshot, rules, c, trig)
 
 	// Lift the cycle-level fitness evaluation the engine just computed onto the
 	// LayerState so it rides the decision span as fitness.evaluated (#731). Read
 	// after decide so it reflects this cycle's thresholds and live context. This
 	// happens even on an empty-decision cycle so a future cycle-scoped consumer
 	// still sees the evaluation, but it only reaches a span when a decision emits.
-	if rd, ok := l.Rules.(fitnessReader); ok {
+	if rd, ok := rules.(fitnessReader); ok {
 		if vals := rd.LastFitness().Evaluated(); len(vals) > 0 {
 			state.FitnessEvaluated = vals
 		}
@@ -706,17 +711,19 @@ func (l *Loop) startSignalReceivedSpan(ctx context.Context, c gamecontext.GameCo
 	return l.Tracer.Start(ctx, SignalReceived, startOpts...)
 }
 
-// decide runs this cycle's decision path. decision.backend selects it (#1226):
+// decide runs this cycle's decision path with the engine rulesFor resolved once
+// for the cycle (rules), so a pattern registration or flag flip between two
+// look-ups cannot mix engines inside one cycle. decision.backend selects it (#1226):
 // rules (the default) runs the rules engine through rulesDecide, which returns
 // Evaluate's decisions unchanged plus the agent.decide record from the same
 // ranking; any other value hands the decision to that remote backend
 // (decideRemote, see decide_hook.go), which falls back to rules when it cannot
 // decide. The legacy mode=llm path (#739/#741/#847/#917/#1207) was retired in #1234.
-func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger) ([]Decision, *decideRecord) {
+func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, rules RulesEngine, c gamecontext.GameContext, trig EvalTrigger) ([]Decision, *decideRecord) {
 	if !snapshot.Decision.IsRules() {
 		// UC-046 A7: a remote backend may decide in a pattern game, which makes it non-exact.
 		l.markPatternRemote()
-		return l.decideRemote(ctx, snapshot, c, trig)
+		return l.decideRemote(ctx, snapshot, rules, c, trig)
 	}
 	// The remote call gate is not reached on rules: leave the empty-allow-list
 	// state so its "entering" debug line fires again on a later remote cycle (#1298).
@@ -724,7 +731,7 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 	l.noteNoInterventions(c, false)
 	l.noteMisconfigured(c, flags.DecisionBackendRules, "")
 	l.llmGate.Unlock()
-	return l.rulesDecide(ctx, snapshot, c, flags.DecisionBackendRules, "")
+	return l.rulesDecide(ctx, snapshot, rules, c, flags.DecisionBackendRules, "")
 }
 
 // recordGated increments the agent_llm_gated_total counter for one gated remote
@@ -1297,3 +1304,18 @@ func derefFloat(p *float64) float64 {
 	}
 	return *p
 }
+
+// noRules is NewLoop's default rules engine: it never proposes an intervention.
+// main.go replaces it with the real engine; tests rely on it staying inert.
+type noRules struct{}
+
+// Evaluate always returns nil (no decisions).
+func (noRules) Evaluate(context.Context, gamecontext.GameContext) []Decision { return nil }
+
+// discardActions is NewLoop's default action sink: it discards decisions. The
+// real sink (actions.GatedActionSink over actions.Writer) writes game-scoped
+// values to the `interventions` flag set through the flag service (UC-053).
+type discardActions struct{}
+
+// Apply discards the decision and never errors.
+func (discardActions) Apply(context.Context, Decision) error { return nil }

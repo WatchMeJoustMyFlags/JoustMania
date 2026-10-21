@@ -7,7 +7,10 @@ import pytest
 
 from services.menu.utils.audio import GAME_MODE_VOICE, AudioHelper
 from services.menu.utils.led import DEFAULT_COLOR, GAME_MODE_COLORS, LedController
-from services.menu.utils.settings import GAME_MODES, get_next_game_mode, is_valid_game_mode
+from services.menu.utils.settings import GAME_MODES, get_next_game_mode, is_valid_game_mode, validate_mode_keys
+
+# Selectable modes whose voice/colour key does not match the Games name (#1276, backlog).
+KNOWN_MISSING_1276 = {"Zombies", "NonStop"}
 
 
 class TestAudioHelper:
@@ -343,3 +346,35 @@ class TestUC011ModeSelectionRules:
             await audio.play_game_mode_voice(mode)
             assert audio.play_voice.await_args.args[0] == GAME_MODE_VOICE[mode]
             assert led.get_game_color(mode) == GAME_MODE_COLORS[mode]
+
+
+class TestModeMapKeys:
+    """Lobby voice and colour maps are keyed by Games member names (#1815)."""
+
+    @pytest.mark.uc("UC-011", flow="main", steps=[3])
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            pytest.param(m, marks=pytest.mark.xfail(strict=True, reason="#1276: map key spelled differently"))
+            if m in KNOWN_MISSING_1276
+            else m
+            for m in GAME_MODES
+        ],
+    )
+    def test_selectable_mode_has_voice_and_colour(self, mode):
+        """Every selectable mode has a voice and a colour entry; #1276 modes are strict xfail."""
+        assert mode in GAME_MODE_VOICE
+        assert mode in GAME_MODE_COLORS
+
+    def test_ffa_is_not_an_expected_exception(self):
+        assert "JoustFFA" in GAME_MODE_VOICE and "JoustFFA" in GAME_MODE_COLORS
+        assert "JoustFFA" not in KNOWN_MISSING_1276
+
+    def test_expected_exceptions_are_exactly_the_1276_modes(self):
+        """The exception list shrinks only when #1276 renames the keys."""
+        assert {m for m in GAME_MODES if m not in GAME_MODE_VOICE or m not in GAME_MODE_COLORS} == KNOWN_MISSING_1276
+
+    @pytest.mark.parametrize("mapping_name", ["GAME_MODE_VOICE", "GAME_MODE_COLORS"])
+    def test_typo_key_fails_validation(self, mapping_name):
+        with pytest.raises(ValueError, match="JoustFFa"):
+            validate_mode_keys({"JoustFFa": 1}, mapping_name)

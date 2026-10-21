@@ -85,6 +85,7 @@ flags:
   - {set: agent, key: inference.model, kind: overlay, scope: [stack], bounds: {free_string: true}}
   - {set: agent, key: inference.effort, kind: overlay, scope: [stack]}
   - {set: agent, key: inference.timeout_seconds, kind: overlay, scope: [stack], bounds: {range: [30, 120], integer: true}}
+  - {set: agent, key: decision.probe_decisions, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
   - {set: agent, key: effect.window_seconds, kind: overlay, scope: [stack], bounds: {range: [10, 40]}}
   - {set: agent, key: promotion.rewatch_interval_seconds, kind: overlay, scope: [stack], bounds: {range: [30, 120], integer: true}}
   - {set: agent, key: promotion.rewatch_timeout_seconds, kind: overlay, scope: [stack], bounds: {range: [1800, 7200], integer: true}}

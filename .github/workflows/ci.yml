@@ -280,6 +280,8 @@ jobs:
               - '.github/workflows/ci.yml'
             proto_pkg:
               - 'proto/**'
+              # #1801: committed agent Go stubs (Validate agent Go stubs step)
+              - 'services/agent/gen/**'
               - '**/pyproject.toml'
               - 'tools/ci-proto/**'
               - 'scripts/ci/**'
@@ -1020,6 +1022,19 @@ jobs:
 
       - name: Validate protos and packages
         run: make ci-validate-protos ci-validate-packages
+
+      # #1801: the committed agent Go stubs (services/agent/gen) must match a
+      # fresh `make protos-agent` (pinned buf image + BSR plugin revisions).
+      # Needs buf.build and Docker Hub, so in the merge queue it runs only for
+      # an entry whose own diff touches proto_pkg (base_sha is the parent of
+      # the group commit, so the diff is this entry's PR only); safe under the
+      # ALLGREEN grouping strategy, revisit if it changes (e.g. HEADGREEN).
+      # PRs, push to main and dispatch always run it (push catches drift from
+      # outside the repo, e.g. a re-tagged image). Fails closed: a generation
+      # error fails the step (exit 2), drift fails it (exit 1).
+      - name: Validate agent Go stubs
+        if: needs.changes.outputs.proto_pkg == 'true' || github.event_name != 'merge_group'
+        run: make ci-validate-agent-protos
 
   # #1491: dashboard type check + unit tests. Before this, vitest never ran in
   # CI and tsc only ran inside the dashboard image build, which waits for

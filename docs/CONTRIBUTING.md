@@ -360,8 +360,9 @@ make format-check
 # Lint Dockerfiles
 make ci-lint-dockerfiles
 
-# Validate protos
+# Validate protos (Python stubs; agent Go stubs in services/agent/gen, #1801)
 make ci-validate-protos
+make ci-validate-agent-protos
 ```
 
 ### PR gates and merging (`make pr-gates`, `safe-merge.sh`)
@@ -370,7 +371,8 @@ make ci-validate-protos
 `origin/main`, plus uncommitted and untracked files). It always runs `make lint` and the spec lint gate, then
 selects from the diff: per-service pytest (lib or proto changes fan out to every Python service, as in CI),
 `go vet` + `go test -race` for the agent and flag service, the connect-proxy Docker builder stage (the only
-place its generated code exists), dashboard `tsc --noEmit` + vitest (Node 24 from `~/.nvm`), the telemetry
+place its generated code exists), the agent Go stub drift check (`make ci-validate-agent-protos`, on proto or
+`services/agent/gen` changes), dashboard `tsc --noEmit` + vitest (Node 24 from `~/.nvm`), the telemetry
 contract, the flagd contract (flag files or the flag-service registry), Grafana dashboard JSON, compose
 `config -q` on the main file combinations and a YAML duplicate-key check.
 

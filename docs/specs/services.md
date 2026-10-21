@@ -64,7 +64,6 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | victoria-metrics | v1.144.0 | 8428 | no | The only metric store (remote write, 7 d); serves the Prometheus query API to Grafana, the dashboard and the tools. The Prometheus container was removed in #1449 | `docker-compose.yml:516-544` |
 | grafana | 13.0.2 | 3000 | no | Dashboards | `services/grafana/` |
 | loki | 3.7.2 | 3100 | no | Logs | `services/loki/config.yaml` |
-| agent-game-coordinator | Python (game-coordinator image) | 50053 gRPC (`expose` only) | no | **Test-only** (profile `agent`, #1163): a dedicated game coordinator for the agent's experiment cohort-loop soak, so the suite's per-test `coordinator_idle` quiesce never wipes the agent's shadow games. Service name `agent-game-coordinator-service`; the overlay points the agent at it with `GAME_COORDINATOR_ADDR=agent-game-coordinator:50053`; shares flagd and the controller manager | `docker-compose.agent-coordinator.yml` (layered on `docker-compose.dry-run.yml` by `tests/integration/test_experiment_cohort_loop.py`) |
 
 **Listen-port overrides (#1524).** The Python gRPC services read their listen port from the environment, so the
 service tier (`tests/service/`, T2) can run several of them from source on ephemeral ports. Compose sets none of
@@ -94,8 +93,6 @@ service cannot be scaled with `--scale`.
 | `docker-compose.dev.yml` | Hot reload | Volume-mounts Python service source and `lib/`, `pull_policy: build` for flag-service, `pull_policy` for the collector (`COLLECTOR_PULL_POLICY`, default `always`); rust-hid source mounted read-only for reference (no hot reload) | `make dev`; the integration suite with `USE_DEV_MOUNTS=true` (`make test-dev`) |
 | `docker-compose.ci.yml` | No hardware | Audio without devices (`play_audio=off`), CI flag baseline `services/flagd/ci/` (`backend=mock`). Moves pairing-daemon, rust-hid and python-hid to the `hardware` profile, the agent to `agent`, and connect-proxy, dashboard and envoy to `dashboard`, so none of them starts without that profile. Needs Compose 2.24+ (`!reset`) | `make up-mock` (with the base alone, no override), `make dry-run`, the integration suite |
 | `docker-compose.dry-run.yml` | Demo and experiments | On top of ci: the experiment cohort loop on, one seeded experiment, its own flag-service state file, the agent in the `agent` profile | `make dry-run` (also `IMAGE_TAG=latest`, profiles `agent` and `dashboard`) |
-| `docker-compose.decide-e2e.yml` | Test only | `fake-openai` (profile `agent`, host `127.0.0.1:18089`), a dummy `DECISION_OPENAI_API_KEY` and a lifted request budget on the agent, its own flag-service state file. Not a valid project alone | None since #1600 (the decide tests moved to the service tier `AGENT` composition); layered on base + override + ci with `--profile agent`; removal is a follow-up |
-| `docker-compose.agent-coordinator.yml` | Test only | `agent-game-coordinator` (profile `agent`, `expose` 50053 only) and `GAME_COORDINATOR_ADDR` on the agent, for the cohort-loop soak (#1163) | `tests/integration/test_experiment_cohort_loop.py`, layered on the dry-run stack |
 | `docker-compose.lite.yml` | Standalone Pi stack | Its own project file, not an overlay: no observability (no Jaeger, VictoriaMetrics, Loki, Grafana, collector) and no agent, about 768 MB less memory; still flag-service, flagd, controller-manager, rust-hid, pairing-daemon (host network, as in the full stack), game-coordinator, menu, audio, connect-proxy, dashboard, envoy (UC-002 BR-003, #1318, #1402) | `docker compose -f docker-compose.lite.yml up -d` |
 
 Profiles merge across files: an overlay's `profiles` list is added to the base one, never replaced (python-hid keeps `python-hid` and
@@ -112,7 +109,7 @@ pairing daemon (raw HCI, no Docker DNS) reaches them there and nobody on the ven
 | `127.0.0.1:50058` | rust-hid | Pairing daemon reaches it as `RUST_HID_HOST=127.0.0.1`, so a second binding in an overlay would expose it |
 
 Outside the Pi path, `docker-compose.override.yml` adds the dev and test bindings listed above (the gRPC ports and flagd 8013 on all interfaces,
-flag-service 8070 on loopback), and `docker-compose.decide-e2e.yml` binds `127.0.0.1:18089`. Every other service is reachable only on
+flag-service 8070 on loopback). Every other service is reachable only on
 `joustmania-network`, or through envoy's routes. Do not add a host port to the base file without a loopback bind and a reason in this table.
 
 **Traceability:** C-014, C-015, FR-085, NFR-020 / UC-035 / `docker-compose*.yml`, `services/envoy/envoy.yaml`, `services/*/server.py` / `tests/integration/conftest.py`, `tests/service/harness/stack.py`.
@@ -270,7 +267,7 @@ Verified against `lib/colors.py`, `services/menu/utils/led.py`, `services/menu/h
 
 | Mode | Colour |
 |---|---|
-| JoustFFA, SpeedBomb | Orange (255,128,0) |
+| JoustFFA | Orange (255,128,0) |
 | JoustTeams | LightBlue (0,100,255) |
 | JoustRandomTeams | Turquoise (0,255,255) |
 | Swapper | Magenta (255,0,192) |
@@ -324,7 +321,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 
 ### game-coordinator
 
-- Sessions: one primary (menu origin) + shadows; caps `max_concurrent_games` (8), `max_shadow_games` (4), `shadow_policy` (block); real starts preempt shadows (`servicer.py`: `_max_concurrent_games`, `_max_shadow_games`, `_shadow_policy`, `_preempt_shadow_sessions`, `_admit_session_locked`). Game ids `game_<12 hex>`.
+- Sessions: one primary (menu origin) + shadows; caps `max_concurrent_games` (8), `max_shadow_games` (4), `shadow_policy` (block); real starts preempt shadows, and a preemption under way completes (force end, `game_force_ended`, retire) even when the start is cancelled; shutdown waits up to 3 s for such pending preemptions (#1816) (`servicer.py`: `_max_concurrent_games`, `_max_shadow_games`, `_shadow_policy`, `_preempt_shadow_sessions`, `_admit_session_locked`). Game ids `game_<12 hex>`.
 - `StreamGameEvents` with a `start_config` (menu start, agent shadow spawn, test harness) subscribes the starter to the new session's event bus before `game_start` is published and before the game thread starts, so the stream carries every event of its game, beginning with `game_start` (#1783, UC-003 BR-003, UC-010 BR-006). A failed or cancelled start leaves no subscriber on the bus.
 - Registry `_GAME_CLASSES` (`game_factory.py:_GAME_CLASSES`), 10 modes. Death detection in `games/base.py` (UC-030).
 - `InterventionManager` re-evaluates the `interventions` set on every flagd configuration change, evaluates each flag per live session with `{targetingKey=serial, gameId}` (one-shots as the game's event list, applied once per seq, UC-053 BR-006), enforces allow-list → mode matrix → battery → global backstop, applies via difficulty / lifecycle handlers and emits `agent_intervention` + `game_interventions_total`. The `end_game` intervention ends only the session whose event list it is in, through the same path as `ForceEndGame` with that `game_id` (UC-040 BR-011); per-player grant flags apply once per decision, per player (UC-040 BR-012). Threading: change detection, baselines and the enforcement chain run on the servicer's main loop; every handler side effect (apply, revert, agent cue) is handed to the owning session's `GameLoopDispatcher` (`game_loop_dispatch.py`), which runs it on that game's own thread loop (`GameSession.game_loop`, carried as `SessionView.loop`), where its audio / controller-manager clients and gameplay stream live, one at a time in decision order (each starts only after the previous one finished), awaited with a 5 s timeout. A started effect is never cancelled. An effect not started because the game loop is closed or stopping, or not started within 5 s, is not applied (`game_loop_unavailable` / `game_loop_timeout`); a started effect still running at 5 s has an unknown outcome (`game_loop_late`); both are counted in `game_intervention_dispatch_failures_total`. `end_game` stays on the main loop because force-end joins the game thread, and sends no agent cue (UC-040 BR-018, #1250).
@@ -349,7 +346,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 
 ### agent
 
-- Environment: see `docker-compose.yml:667-765`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214), the text-backend tuning, effect window and promotion timers (#1788, [flags.md §15](flags.md#15-env-to-flag-migration-1788); their env vars are deprecated fallbacks). Still env: API keys, `AGENT_INFERENCE_BACKEND` / `_BASE_URL`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (a ceiling), `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
+- Environment: see `docker-compose.yml:667-765`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214), the text-backend tuning, effect window, promotion timers and the probe demo switch `decision.probe_decisions` (#1788, #1810, [flags.md §15](flags.md#15-env-to-flag-migration-1788); their env vars are deprecated fallbacks). Still env: API keys, `AGENT_INFERENCE_BACKEND` / `_BASE_URL`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (a ceiling), rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
 - Writes: `interventions.json` (action sink), `rollout.json` (`current_controller_count`), `game.json` (experiment targeting; autonomous real default when enabled). Never `agent.json` (code guard in `experiment/gate.go`; the mount is read-write).
 - Persistent volume `agent-experiments` for the experiment journal and autonomous-revert snapshots.
 - Pattern games (#1258, UC-046): the one-shot runner reads `SHADOW_GAME_ARCHETYPE` and `SHADOW_GAME_SEED`; for a pattern game the runner sends no `SimulateMovement` / `SimulateDeath` and force-ends the game at the pinned safety cap `experiment.max_game_seconds` (outcome `timeout`).
@@ -375,7 +372,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | yes (empty = default) | deprecated (#1788): fallback for `inference.timeout_seconds` (per-call deadline of the text backend, also the retro deadline) |
 | `AGENT_INFERENCE_BASE_URL` | empty (= `https://api.anthropic.com`) | no | API root of the `claude` text backend, for the service-tier fake Claude (#1422 S10) or a proxy. `ANTHROPIC_API_KEY` is sent to it, so only an `https` URL is accepted (plain `http` only for a loopback host: `localhost` in any case, 127.0.0.0/8, `::1`, and IPv4-mapped 127.0.0.0/8 such as `[::ffff:127.0.0.1]`, which Go's `IsLoopback` counts as loopback; `localhost.`, `0.0.0.0` and DNS names that resolve to loopback are rejected), with a host and no credentials, query or fragment; anything else is rejected with an ERROR log and leaves the proposer and retro on the stub. A non-default host is logged at WARN. The text backend never follows an HTTP redirect (net/http would forward `x-api-key` to the target): a 3xx answer is a failed call. The in-game `claude` decision backend is unaffected |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | unset | yes | operator ceiling: the enforced cap is `min(env, llm.max_requests_per_minute)`; unset = no ceiling (#1788, C-034) |
-| `AGENT_PROBE_DECISIONS` | unset | yes | `true` emits a synthetic `noop` decision about every 5 s (demo and verification only) |
+| `AGENT_PROBE_DECISIONS` | unset | yes | deprecated (#1810): fallback for the `decision.probe_decisions` flag, used only while the flag cannot be resolved; `true` emits a synthetic `noop` decision about every 5 s (demo and verification only) |
 | `AGENT_EFFECT_WINDOW_SECONDS` | `20` | no | deprecated (#1788): fallback for `effect.window_seconds` (float seconds, positive) |
 | `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | no | dwell between rollout expansions |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | yes | re-expansion cooldown after a rollback |
@@ -443,7 +440,7 @@ Proto files: `controller_manager.proto` is `ControllerManagerService`; `controll
 
 | Item | Value |
 |---|---|
-| Compose name | `flag-service` (Go, `services/flag-service/`), in every compose file that runs flagd (base, lite, ci, dry-run, decide-e2e, agent-coordinator) |
+| Compose name | `flag-service` (Go, `services/flag-service/`), in every compose file that runs flagd (base, lite, ci, dry-run) |
 | Ports | `50064` gRPC: `flagd.sync.v1.FlagSyncService` (flagd only). `8070` HTTP/JSON: the write and read API and `/healthz`. 50064 is not published; 8070 is published only on `127.0.0.1` by `docker-compose.override.yml` (tests and host scripts on the same machine, C-015); envoy routes `/flags/` to `flag-service:8070` with the prefix stripped |
 | Inputs | the eight baseline files `services/flagd/{system,controller,observability,game,user,agent,interventions,rollout}.json` (or `ci/`), an explicit list, mounted **read-only** and read once at start (FR-130); refuses to start on a duplicate flag key across sets |
 | State | in memory, except admin settings written with `"persist": true`: the state file `FLAG_SERVICE_STATE_FILE` (default `/var/lib/flag-service/admin.json`) on the stack's own `flag-service-state` volume, loaded over the baseline at start and rewritten atomically (temp file + rename) on each persisted change (C-030, FR-018). A corrupt file is moved aside to `admin.json.corrupt-<ts>` and the service starts from the baseline; stale entries are dropped with a warning ([architecture note §10.1](../architecture/flag-service.md#101-admin-persistence-re-review-n4)). Never `services/flagd/*.json` |
@@ -526,7 +523,7 @@ K; the flag resolves in that game to `{"epoch": "<boot id>", "seq": n, "events":
 **`WriteResult`**: `{"flag_set", "flag", "variant" (opaque, carries the epoch), "seq" (event writes), "epoch",
 "snapshot_version" (monotonic; flagd has it once the stream sent it), "persisted" (admin flags)}`.
 
-**`PUT /games/{gameId}` body**: `{"coordinator_instance": "<stable id: FLAG_SERVICE_INSTANCE, set in every compose stack (game-coordinator; agent-game-coordinator for the second coordinator); the same after a restart or a container recreate, so the new process's reconcile drops the previous process's games (A10). The hostname fallback is only for runs outside compose: a container's hostname is its id and changes on recreate>", "game_kind": "real" | "shadow",
+**`PUT /games/{gameId}` body**: `{"coordinator_instance": "<stable id: FLAG_SERVICE_INSTANCE, set in every compose stack (game-coordinator); the same after a restart or a container recreate, so the new process's reconcile drops the previous process's games (A10). The hostname fallback is only for runs outside compose: a container's hostname is its id and changes on recreate>", "game_kind": "real" | "shadow",
 "serials": ["MOCK0001", ...], "experiment_id": "", "arm": ""}`. An unspecified kind is stored as is and never
 treated as real (FR-041). **`PUT /coordinators/{instance}/games` body**: `{"games": [<same objects>]}`.
 

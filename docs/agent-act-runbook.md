@@ -219,9 +219,18 @@ Tighten a gate and watch a block. Two easy demos:
 
 ## Probe mode — full path without touching the game
 
-`AGENT_PROBE_DECISIONS=true` emits a synthetic `noop` decision every ~5 s, so you
-can verify the trace pipeline without a live game. See the agent README →
-[Probe mode](../services/agent/README.md#probe-mode-agent_probe_decisions).
+The flag `decision.probe_decisions` (`on`; `AGENT_PROBE_DECISIONS=true` is only its
+deprecated fallback) emits a synthetic `noop` decision every ~5 s, so you
+can verify the trace pipeline without a live game. It is read every cycle (no
+restart) and ignored in pattern games. See the agent README →
+[Probe mode](../services/agent/README.md#probe-mode-decisionprobe_decisions).
+
+Turn it on with a flag-service overlay write: `scripts/flags.sh set agent
+decision.probe_decisions on` (undo with `clear agent decision.probe_decisions`).
+**Release note (FR-151, #1810):** the flag's default variant is `off` and flagd
+resolves it, so a deployment that already sets `AGENT_PROBE_DECISIONS=true` no
+longer probes after upgrading: the flag's default off overrides the env (the env
+only applies while flagd cannot resolve the flag). Set the flag instead.
 
 - **Default variant**: `noop` is in no standard allow-list, so probe decisions
   are **blocked by design** (`decision.block_reason=not_allowed`). The

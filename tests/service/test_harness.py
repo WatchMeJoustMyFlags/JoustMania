@@ -242,3 +242,48 @@ def test_start_stack_retries_on_grpc_failed_to_bind_and_warns(monkeypatch, tmp_p
 
     assert fake.started == 2
     assert any("1/3" in r.getMessage() and "game-coordinator exited with 1" in r.getMessage() for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# #1798: a service healthy before its boot work ends is not ready yet
+# --------------------------------------------------------------------------- #
+BOOT_DELAY_SECONDS = 1.0
+_PRINTS_MARKER_LATE = (
+    f"import time; time.sleep({BOOT_DELAY_SECONDS}); print('Menu auto-started', flush=True); time.sleep(120)"
+)
+
+
+def _healthy_early(tmp_path, code: str) -> ManagedProcess:
+    return ManagedProcess(
+        "late-boot",
+        [sys.executable, "-c", code],
+        env={},
+        log_path=tmp_path / "late-boot.log",
+        ready=lambda: True,  # the health probe: SERVING from the first poll
+        ready_log_marker="Menu auto-started",
+    )
+
+
+def test_start_waits_for_the_boot_marker_after_health_is_serving(tmp_path):
+    """Health SERVING is not enough: start() returns only once the boot lobby entry is logged."""
+    proc = _healthy_early(tmp_path, _PRINTS_MARKER_LATE)
+    began = time.monotonic()
+    try:
+        proc.start()
+        assert time.monotonic() - began >= BOOT_DELAY_SECONDS
+        assert "Menu auto-started" in proc.log_path.read_text()
+    finally:
+        proc.stop(grace=2)
+
+
+def test_restart_ignores_the_marker_of_the_previous_start(tmp_path):
+    """The log is appended across restarts: the first start's marker must not satisfy the second."""
+    proc = _healthy_early(tmp_path, _PRINTS_MARKER_LATE)
+    try:
+        proc.start()
+        proc.stop(grace=2)
+        began = time.monotonic()
+        proc.start()
+        assert time.monotonic() - began >= BOOT_DELAY_SECONDS
+    finally:
+        proc.stop(grace=2)

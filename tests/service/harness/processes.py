@@ -151,6 +151,7 @@ class ManagedProcess:
         log_path: Path,
         ready: Callable[[], bool],
         cwd: Path = REPO_ROOT,
+        ready_log_marker: str | None = None,
     ):
         self.name = name
         self.argv = argv
@@ -158,6 +159,10 @@ class ManagedProcess:
         self.log_path = log_path
         self.ready = ready
         self.cwd = cwd
+        # Ready only once this line is in the log written by THIS start (not an earlier
+        # one of a restart): for a service that reports healthy before its boot work ends.
+        self.ready_log_marker = ready_log_marker
+        self._log_offset = 0
         self.proc: subprocess.Popen | None = None
 
     # ------------------------------------------------------------- lifecycle
@@ -168,6 +173,7 @@ class ManagedProcess:
         with open(self.log_path, "ab") as log:
             log.write(f"\n==== start {self.name}: {' '.join(self.argv)}\n".encode())
             log.flush()
+            self._log_offset = log.tell()
             self.proc = _spawn(
                 lambda: subprocess.Popen(
                     self.argv,
@@ -186,12 +192,27 @@ class ManagedProcess:
                 raise ServiceStartError(
                     f"{self.name} exited with {self.proc.returncode} during start\n{self.log_tail()}"
                 )
-            if self.ready():
+            healthy = self.ready()
+            if healthy and self._marker_logged():
                 return
             if time.monotonic() > deadline:
                 self.stop()
-                raise ServiceStartError(f"{self.name} not ready within {timeout}s\n{self.log_tail()}")
+                if healthy:
+                    reason = (
+                        f"health SERVING but log marker {self.ready_log_marker!r} not seen "
+                        "(auto-start off or log level above INFO?)"
+                    )
+                else:
+                    reason = "health not SERVING"
+                raise ServiceStartError(f"{self.name} not ready within {timeout}s: {reason}\n{self.log_tail()}")
             time.sleep(READY_POLL_SECONDS)
+
+    def _marker_logged(self) -> bool:
+        if self.ready_log_marker is None:
+            return True
+        with open(self.log_path, "rb") as log:
+            log.seek(self._log_offset)
+            return self.ready_log_marker.encode() in log.read()
 
     def stop(self, grace: float = STOP_GRACE_SECONDS) -> int | None:
         """SIGTERM the process group, SIGKILL after ``grace``; return the exit code."""
@@ -260,7 +281,16 @@ class PyService(ManagedProcess):
     service's dependencies). Ready when its gRPC health reports SERVING.
     """
 
-    def __init__(self, name: str, source_dir: str, *, grpc_port: int, env: Mapping[str, str], log_path: Path):
+    def __init__(
+        self,
+        name: str,
+        source_dir: str,
+        *,
+        grpc_port: int,
+        env: Mapping[str, str],
+        log_path: Path,
+        ready_log_marker: str | None = None,
+    ):
         full_env = {
             **base_env(),
             "PYTHONPATH": str(REPO_ROOT),
@@ -274,6 +304,7 @@ class PyService(ManagedProcess):
             env=full_env,
             log_path=log_path,
             ready=grpc_health_ready(grpc_port),
+            ready_log_marker=ready_log_marker,
         )
         self.grpc_port = grpc_port
 

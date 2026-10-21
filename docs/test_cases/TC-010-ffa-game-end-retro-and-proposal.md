@@ -50,5 +50,5 @@
   - Step 5: an unblocked `code_improvement.proposed` span for `sensitivity`; the proposer prompt offered the flag.
   - Step 6: `GET /game/sensitivity` holds exactly one experiment id (`exp_<hex>`) with the `experimental` arm only, value `1`.
   - Step 7 and Validations 1, 2: the span start times are ordered retro, summary, proposed; flagd resolves `1` for the experimental arm of that experiment and the shipped `2` for a real game and for the control arm.
-- Validation 3 (stub variant, UC-042 A2) stays with `tests/integration/test_experiment_cohort_loop.py::test_inference_absent_backend_is_stub` (the agent selects the stub backend); `tests/contract/test_flagd_resolution.py::test_experiment_reaches_shadow_never_real` also covers steps 6 and 7 on a real flagd.
+- Validation 3 (stub variant, UC-042 A2) stays with `tests/service/test_tc011_shadow_experiment.py::test_agent_starts_inference_absent_and_decides_with_rules` (the agent selects the stub backend); `tests/contract/test_flagd_resolution.py::test_experiment_reaches_shadow_never_real` also covers steps 6 and 7 on a real flagd.
 - Gaps: no test for the gate rejection (UC-042 A4), the shadow-game capture-only retro (UC-042 A1) or a failing model call (A9, A10).

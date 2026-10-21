@@ -128,8 +128,8 @@ echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-s
 ```
 
 Fixed `container_name`s (`joustmania-<service>`) mean a service cannot be scaled: `--scale
-game-coordinator=3` fails. A second coordinator is a separate service, as in
-`docker-compose.agent-coordinator.yml`.
+game-coordinator=3` fails. A second coordinator is a separate service with its
+own name and instance id.
 
 ## Development workflow
 
