@@ -32,7 +32,6 @@ class AnalyticsConfig:
     enabled: bool = True
 
     # Feature toggles
-    track_gyro: bool = False  # Track rotation data (increases memory/cpu slightly)
 
     # Zone thresholds (in g-force units, ~4096 raw = 1g). Defaults promoted to
     # the agent domain `perception.zone_*` flags (#766 F4); the values here are
