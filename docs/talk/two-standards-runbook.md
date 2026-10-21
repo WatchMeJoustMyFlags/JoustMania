@@ -51,6 +51,12 @@ The helper scripts change flags **only through the flag service** (epic #1407):
 `http://localhost/flags/...` through envoy, the same on both stacks. Every stage
 change is an in-memory overlay (`writer=stage`); no flag file is edited, and a
 restart of the flag service drops the overlays (run `talk-stage.sh reset` again).
+The exception is the decision backend and its model: `agent-backend.sh`
+writes them **persisted** (#1682), as the operator's choice, so they survive a flag-service restart or a reboot. A stage
+overlay over a persisted backend is temporary: a restart brings the persisted
+backend back. `talk-stage.sh reset` clears the persisted backend and model too,
+and `talk-preflight.sh` WARNs while a remote backend (jev / claude / openai) is
+persisted.
 `./scripts/talk-preflight.sh` checks that flagd holds its sync stream to the
 flag service (the "flag service" section).
 Its controller-backend check (1b) reads the `backend` flag the **running** flag
@@ -71,7 +77,8 @@ Notes:
 
 - No helper and no service writes a flag file any more: the baseline files stay
   as checked in. The agent's interventions are per game and die with the game;
-  its rollout moves (infra beat) are in-memory overlays.
+  its rollout moves (infra beat) are in-memory overlays. The backend and model
+  flips are persisted (see above); every other stage change is in memory.
 - `make dry-run` also sets the experiment env vars, but the live gate
   `experiments_enabled` stays `off`, so the experiment loop and the proposer are
   inert. Keep it off.
@@ -599,14 +606,20 @@ through envoy and FAILs below `TALK_MIN_CONTROLLERS` (default 2), or when
 controller-manager does not answer; with the fallback on that is a WARN (see
 [Fallback: Bluetooth down](#fallback-bluetooth-down)).
 
-After the talk, return to the shipped, fail-closed defaults: clear the stage
-overlays, or restart the flag service and flagd together (in-memory overlays are
-gone; the host's persisted admin settings stay):
+After the talk, return to the shipped, fail-closed defaults: clear the
+persisted backend and model, then clear the stage overlays, or restart the flag
+service and flagd together (in-memory overlays are gone; the persisted backend
+is not, so clear it first; the host's other persisted admin settings stay):
 
 ```bash
+./scripts/agent-backend.sh rules   # persisted rules; or ./scripts/talk-stage.sh reset
 ./scripts/flags.sh reset agent stage
 ./scripts/flags.sh restart
 ```
+
+Residual risk (C-018): with `enabled` on in the flag file and a remote backend
+still persisted, the agent makes remote decisions again after a reboot. The
+first step above prevents that; the pre-flight WARN names the persisted backend.
 
 ---
 

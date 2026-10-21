@@ -122,10 +122,14 @@ def test_restart_keeps_admin_settings_and_drops_the_rest(fresh_stack, flag_servi
 
     # Step 1: the host's persisted setting, a stage overlay and a live game.
     flag_service.put("game", "sensitivity", variant="slow", persist=True, writer="menu")
+    # The persisted backend and model: the same PUT body (`"persist": true`) that
+    # agent-backend.sh sends through scripts/flagservice.py; that the script sends
+    # it is asserted in scripts/tests/test-agent-backend.sh (#1682).
     flag_service.put("agent", "decision.claude.model", variant="sonnet", persist=True, writer="stage")
     flag_service.put("agent", "decision.backend", variant="claude", persist=True, writer="stage")
-    # A stage overlay that is not persisted (it must be gone after the restart).
-    flag_service.put("agent", "decision.capture_content", variant="on", writer="stage")
+    # A stage overlay that is not persisted, away from its baseline `on` (it must be
+    # gone after the restart).
+    flag_service.put("agent", "decision.capture_content", variant="off", writer="stage")
     flag_service._ok(
         "PUT",
         f"/games/{game_id}",
@@ -181,7 +185,8 @@ def test_restart_keeps_admin_settings_and_drops_the_rest(fresh_stack, flag_servi
         assert agent.get_string_value("decision.claude.model", "", None) == variant_value(
             "agent", "decision.claude.model", "sonnet"
         )
-        assert not flag_service.get("agent", "decision.capture_content").get("admin_value")
+        capture = flag_service.get("agent", "decision.capture_content")
+        assert capture["effective_default"] == capture["baseline_default"] == "on", capture
         print(f"\nTC-019 recovery: {time.monotonic() - started:.1f} s, outage statuses {sorted(set(outage_statuses))}")
 
 

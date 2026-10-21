@@ -384,6 +384,14 @@ menu admin) is written to the service's own state file and restored at start (FR
 written without it (a stage script, a test) stays in memory. `no` = a write asking to persist is `400 malformed`.
 Every value not persisted lives in memory only (architecture note §10.1).
 
+**Persisted vs overlay (who writes which, #1682):** a persisted value is an **operator choice** (the menu admin,
+`agent-backend.sh` for the decision backend and model); an in-memory overlay is a **stage beat** or a test
+(`talk-stage.sh`, the dry-run scripts, fixtures). A persisted write replaces an in-memory overlay of the same
+flag. An overlay written over a persisted value is temporary: it wins while it lasts, and a flag-service restart or
+a reboot drops it and brings the persisted value back. `talk-stage.sh reset` therefore also deletes the persisted
+decision backend and model (`DELETE …?persist=true`), and `talk-preflight.sh` WARNs while a remote backend is
+persisted.
+
 **Bounds** are the declared variants of the baseline file unless a range, a payload schema or `free string` is
 given. Ranges are inclusive and pinned to the reader's own clamp (`difficulty_handlers.py` factors 0.5 to 2.0, `lifecycle_handlers.py` partial shield and soft penalty, `games/base.py` ramp 60 s), so the registry never rejects a value the game would apply.
 `free string` accepts any string value up to 512 characters (a declared variant name still selects that
