@@ -624,61 +624,123 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 if not is_real or attempt == 1:
                     return False, "Game already in progress"
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
-            # Register the game with the flag service BEFORE it runs, so agent
-            # writes for it are accepted from its first frame (FR-135). Bounded
-            # to 200 ms and outside _sessions_lock; on a timeout or an error the
-            # game starts anyway and the lifecycle reconciles (C-004).
-            if on_admitted is not None:
-                await on_admitted(session)
-
-            await self.flag_service.register(self._game_record(session))
-
-            # Update lifecycle metrics for this session's kind (#775) + experiment
-            # attribution (#975). experiment_id/arm are "" for a non-experiment
-            # game; #976's spawn binding sets them on the session.
-            # Written under the session's metrics lock and skipped once retired:
-            # a retire during the register await above already exported the 0,
-            # and a late 1 would overwrite it (the delayed removal would then
-            # delete a series reading 1, so the agent never sees the end).
-            def write_start_gauges() -> None:
-                labels = {
-                    "game_kind": game_kind,
-                    "game_id": game_id,
-                    "experiment_id": session.experiment_id,
-                    "arm": session.arm,
-                }
-                metrics.active_game.labels(**labels).set(1)
-                metrics.active_players.labels(**labels).set(len(session.players))
-
-            session._set_gauges_unless_retired(write_start_gauges)
-            # games_started_total is a CUMULATIVE counter: it deliberately does
-            # NOT carry experiment_id/arm (a label on a cumulative counter is one
-            # permanent series per experiment, forever). Per-experiment counts
-            # come from the game span's experiment.id/arm attributes (#975).
-            metrics.games_started_total.labels(
-                mode=session.game_name,
-                game_kind=game_kind,
-            ).inc()
-
-            # Publish game_start on this session's bus.
-            await session.event_bus.publish(
-                GameEvent.GAME_START,
-                {
-                    "game_name": session.game_name,
-                    "game_id": game_id,
-                    "player_count": str(len(session.players)),
-                },
-            )
-
-            # Start game in background thread (with async support).
-            session.start_thread()
-
-            logger.info(f"Started {game_kind} game {game_id}: {session.game_name} with {len(session.players)} players")
-            return True, game_id
+            try:
+                return await self._run_admitted_start(session, game_kind, game_id, on_admitted)
+            except asyncio.CancelledError:
+                # UC-010 BR-007 (#1791): a client cancel after admission retires
+                # the session like a normal end; the cancel propagates.
+                self._abort_admitted_session(session, "cancelled")
+                raise
+            except BaseException:
+                # UC-010 BR-007 (#1791): an error after admission retires the
+                # session like a normal end, so it holds no primary slot,
+                # controllers or shadow-cap slot; it becomes the (False, error)
+                # answer below.
+                self._abort_admitted_session(session, "error")
+                raise
 
         except Exception as e:
             logger.error(f"StartGame error: {e}", exc_info=True)
             return False, str(e)
+
+    def _abort_admitted_session(self, session: GameSession, reason: str) -> None:
+        """Retire a session whose start failed or was cancelled after admission.
+
+        ``reason`` is ``"error"`` or ``"cancelled"`` (log only).
+
+        No ``game_ended`` is published: the game never started (UC-010 A7). The
+        flag-service ``end`` queued by ``_retire_session`` waits for an in-flight
+        registration, so a registration that was made is undone.
+        """
+        session.game_running = False
+        with session._state_lock:
+            session.game_state = game_coordinator_pb2.GameState.ENDED
+        with self._sessions_lock:
+            # A force end or preemption during an await may have retired it already.
+            still_registered = self.sessions.get(session.game_id) is session
+        if still_registered:
+            self._retire_session(session.game_id)
+        logger.warning(
+            "Start of %s game %s aborted after admission (reason=%s); session retired",
+            session.game_kind,
+            session.game_id,
+            reason,
+        )
+
+    async def _run_admitted_start(
+        self,
+        session: GameSession,
+        game_kind: str,
+        game_id: str,
+        on_admitted: Callable[[GameSession], Awaitable[None]] | None,
+    ) -> tuple[bool, str]:
+        """Everything after admission: starter hook, flag-service register,
+        start gauges, ``game_start`` publish and the game thread."""
+        # Register the game with the flag service BEFORE it runs, so agent
+        # writes for it are accepted from its first frame (FR-135). Bounded
+        # to 200 ms and outside _sessions_lock; on a timeout or an error the
+        # game starts anyway and the lifecycle reconciles (C-004).
+        if on_admitted is not None:
+            await on_admitted(session)
+
+        await self.flag_service.register(self._game_record(session))
+
+        # Update lifecycle metrics for this session's kind (#775) + experiment
+        # attribution (#975). experiment_id/arm are "" for a non-experiment
+        # game; #976's spawn binding sets them on the session.
+        # Written under the session's metrics lock and skipped once retired:
+        # a retire during the register await above already exported the 0,
+        # and a late 1 would overwrite it (the delayed removal would then
+        # delete a series reading 1, so the agent never sees the end).
+        def write_start_gauges() -> None:
+            labels = {
+                "game_kind": game_kind,
+                "game_id": game_id,
+                "experiment_id": session.experiment_id,
+                "arm": session.arm,
+            }
+            metrics.active_game.labels(**labels).set(1)
+            metrics.active_players.labels(**labels).set(len(session.players))
+
+        session._set_gauges_unless_retired(write_start_gauges)
+
+        # Publish game_start on this session's bus.
+        await session.event_bus.publish(
+            GameEvent.GAME_START,
+            {
+                "game_name": session.game_name,
+                "game_id": game_id,
+                "player_count": str(len(session.players)),
+            },
+        )
+
+        # Start game in background thread (with async support).
+        try:
+            session.start_thread()
+        except Exception as e:
+            # UC-010 A7 (#1791): observers of this bus already saw game_start
+            # (the dashboard shows Running); game_start_error moves them off it.
+            # The caller then retires the session.
+            await session.event_bus.publish(
+                "game_start_error",
+                {"error": str(e), "game_id": game_id},
+            )
+            raise
+
+        # Counted only once the game thread started (telemetry.md): a start that
+        # fails after admission is not a started game. No await since
+        # start_thread(), so a cancel can not land between the two.
+        # games_started_total is a CUMULATIVE counter: it deliberately does
+        # NOT carry experiment_id/arm (a label on a cumulative counter is one
+        # permanent series per experiment, forever). Per-experiment counts
+        # come from the game span's experiment.id/arm attributes (#975).
+        metrics.games_started_total.labels(
+            mode=session.game_name,
+            game_kind=game_kind,
+        ).inc()
+
+        logger.info(f"Started {game_kind} game {game_id}: {session.game_name} with {len(session.players)} players")
+        return True, game_id
 
     # ------------------------------------------------------------------
     # Force-end path

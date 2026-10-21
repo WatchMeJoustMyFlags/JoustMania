@@ -159,3 +159,19 @@ describe("UC-035: step 2 game event feed", () => {
     expect(effect.feedLine).toBe("Game failed to start: not enough players");
   });
 });
+
+describe("UC-010: A7 start fails after admission", () => {
+  it("UC-010/A7 game_start then game_start_error leaves Running for Ended", () => {
+    const started = reduceGameEvent(idle, {
+      eventType: "game_start",
+      data: { game_id: "g1", game_name: "FFA", player_count: "4" },
+    });
+    expect(started.state.gameState).toBe("Running");
+    const failed = reduceGameEvent(started.state, {
+      eventType: "game_start_error",
+      data: { error: "thread start failed", game_id: "g1" },
+    });
+    expect(failed.state.gameState).toBe("Ended");
+    expect(failed.gameRunning).toBe(false);
+  });
+});
