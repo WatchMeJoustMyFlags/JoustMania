@@ -12,8 +12,8 @@ ladder none, ambient, standard, full and back, and presses past both ends to
 assert it does not wrap (the #1340 regression, clamped since #1373).
 
 Stated gap (TC-006 step 5, S7 of #1422): the agent being blocked by the
-permission needs the agent composition. Steps 6 and 7 stay covered by
-tests/integration/test_intervention_flow.py. No LED colour feedback is
+permission needs the agent composition. Steps 6 and 7 are covered in
+test_tc006_agent_blocked_by_host.py. No LED colour feedback is
 asserted (UC-013 step 4 colours, incl. the 800 ms red pulse, too short to read through
 GetColor without a sleep); only the voice is checked.
 

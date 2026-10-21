@@ -35,6 +35,8 @@ from openfeature.evaluation_context import EvaluationContext  # noqa: E402
 from lib.colors import Colors  # noqa: E402
 from proto import game_coordinator_pb2  # noqa: E402
 from tests.integration.helpers import (  # noqa: E402
+    APPLY_TIMEOUT_SECONDS,
+    RELOAD_SETTLE_SECONDS,
     ButtonStreamObserver,
     GameEventCollector,
     async_poll_until,
@@ -44,8 +46,10 @@ from tests.integration.helpers import (  # noqa: E402
     get_controller_color,
     get_game_client,
     get_mock_client,
+    intervention_env,  # binds the flag-service client, pins the rate-limit budget
     kill_players_until_one_remains,
     poll_until,
+    set_interventions_allowed,
     setup_mock_controllers,
     start_game_headless,
     start_game_via_menu,
@@ -56,12 +60,6 @@ from tests.integration.flag_service import (  # noqa: E402
     append_event,
     nudge_sync,
     set_player_value,
-)
-from tests.integration.test_intervention_flow import (  # noqa: E402
-    APPLY_TIMEOUT_SECONDS,
-    RELOAD_SETTLE_SECONDS,
-    intervention_env,  # binds the flag-service client, pins the rate-limit budget
-    set_interventions_allowed,
 )
 
 # Keep the re-exported fixture referenced so linters don't flag it as unused.

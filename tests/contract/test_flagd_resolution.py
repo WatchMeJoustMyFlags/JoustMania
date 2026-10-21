@@ -18,7 +18,7 @@ writes (per-player ladders, the rollout count, experiment arms, propagation)
 go through the flag service and are tested against the real stack in
 tests/service (test_intervention_targeting.py, test_rollout_plumbing.py,
 test_experiment_shadow_isolation.py, test_flag_propagation.py; epic #1407, #1561)
-and tests/integration (test_intervention_flow.py).
+and tests/integration (test_tc013_shadow_alongside_real.py).
 
 Docker is required: a missing docker fails in CI (``CI`` set) and skips locally.
 """

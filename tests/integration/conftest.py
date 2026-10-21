@@ -66,7 +66,6 @@ _COMPOSE_FILES = [
 E2E_SHARDS = ("core", "agent")
 E2E_SHARD_BY_MODULE = {
     "test_experiment_cohort_loop.py": "agent",
-    "test_intervention_flow.py": "core",
     "test_tc002_ffa_game.py": "core",
     "test_tc007_closed_loop_full_stack.py": "agent",
     "test_tc013_shadow_alongside_real.py": "core",
