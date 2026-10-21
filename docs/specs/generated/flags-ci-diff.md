@@ -16,6 +16,7 @@ Part of [flags.md §12](../flags.md#12-ci-differences).
 | game.json | `invincibility_seconds` | `4s` = 4.0 | `2s` = 2.0 |
 | game.json | `max_concurrent_games` | `eight` = 8 | `four` = 4 |
 | game.json | `shadow_policy` | `block` = "block" | `allow` = "allow" |
+| game.json | `shield.activation` | `trigger` = "trigger" | `instant` = "instant" |
 | game.json | `tempo.ramp_down_seconds` | `default` = 1.5 | `ci` = 0.1 |
 | game.json | `tempo.ramp_up_seconds` | `default` = 3.0 | `ci` = 0.1 |
 | game.json | `tournament.match_seconds` | `default` = 22.0 | `ci` = 6.0 |
