@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/joustmania/agent/keysafe"
 )
 
 // github.go is the REAL GitHub API client — the consequential, network-touching
@@ -76,15 +78,27 @@ func NewGitHubClientFromEnv(target Target, log *slog.Logger) (*httpGitHubClient,
 		return nil, fmt.Errorf("AGENT_CODE_IMPROVEMENT_ENABLED is set but GITHUB_REPOSITORY=%q is not owner/repo", os.Getenv("GITHUB_REPOSITORY"))
 	}
 	baseURL := strings.TrimRight(getenvDefault("GITHUB_API_URL", "https://api.github.com"), "/")
+	// GITHUB_TOKEN travels to this URL: https, or plain http only to loopback
+	// (C-016, #1886). The URL is never logged, only the reason.
+	if reason, ok := keysafe.BaseURL(baseURL); !ok {
+		log.Warn("code_improvement github real client NOT built: GITHUB_API_URL is not key-safe (https, or http to a loopback host, no credentials, query or fragment); fail-closed to no-op",
+			"reason", reason)
+		return nil, nil
+	}
 	log.Warn("code_improvement GitHub real client ENABLED (#936): promotions with target=github WILL open real issues/PRs",
-		"repo", owner+"/"+repo, "api", baseURL)
+		"repo", owner+"/"+repo)
 	return &httpGitHubClient{
-		httpClient: &http.Client{Timeout: 15 * time.Second},
-		baseURL:    baseURL,
-		token:      token,
-		owner:      owner,
-		repo:       repo,
-		log:        log,
+		httpClient: &http.Client{
+			Timeout: 15 * time.Second,
+			// A redirect is returned as the response: the token is never
+			// forwarded to another host (C-016, #1886).
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		baseURL: baseURL,
+		token:   token,
+		owner:   owner,
+		repo:    repo,
+		log:     log,
 	}, nil
 }
 

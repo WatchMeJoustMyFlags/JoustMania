@@ -401,7 +401,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_CODE_IMPROVEMENT_ENABLED` | `false` | no | opt-in for real promotion clients (local git, GitHub) |
 | `AGENT_CODE_IMPROVEMENT_TARGET` | `local` | no | env target: `local` or `github` (the live flag must agree at dispatch) |
 | `AGENT_LOCAL_REPO_DIR` | unset | no | repo directory for the local target; unset = no-op |
-| `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_BASE_BRANCH`, `GITHUB_API_URL` | unset, unset, `main`, `https://api.github.com` | no | GitHub target (`owner/repo`); misconfiguration falls back to an inert no-op |
+| `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_BASE_BRANCH`, `GITHUB_API_URL` | unset, unset, `main`, `https://api.github.com` | no | GitHub target (`owner/repo`); misconfiguration, or a `GITHUB_API_URL` that is not key-safe (C-016: https, or http to loopback), falls back to an inert no-op |
 | `AGENT_AUTONOMOUS_ENABLED` | `false` | no | opt-in for the autonomous real-default path (needs `AGENT_CODE_IMPROVEMENT_ENABLED`) |
 | `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS`, `_REWATCH_INTERVAL_SECONDS`, `_REWATCH_TIMEOUT_SECONDS` | `600`, `60`, `3600` | no | deprecated (#1788): fallbacks for `promotion.revert_cooldown_seconds`, `promotion.rewatch_interval_seconds`, `promotion.rewatch_timeout_seconds` |
 

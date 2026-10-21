@@ -37,6 +37,7 @@ import (
 	"github.com/joustmania/agent/gamewindow"
 	"github.com/joustmania/agent/gate"
 	"github.com/joustmania/agent/infracontext"
+	"github.com/joustmania/agent/keysafe"
 	"github.com/joustmania/agent/llm"
 	"github.com/joustmania/agent/patterngame"
 	"github.com/joustmania/agent/promote"
@@ -409,9 +410,9 @@ func inferenceBaseURL(logger *slog.Logger) (string, bool) {
 	if raw == "" {
 		return "", true
 	}
-	switch reason, ok := keySafeBaseURL(raw); {
+	switch reason, ok := keysafe.BaseURL(raw); {
 	case ok:
-	case reason == reasonCleartextRemote:
+	case reason == keysafe.ReasonCleartextRemote:
 		u, _ := url.Parse(raw)
 		logger.Error("AGENT_INFERENCE_BASE_URL rejected: plain http is only allowed for a loopback host (the API key would travel in clear text); proposer/retro stay on the stub",
 			"host", u.Host)
