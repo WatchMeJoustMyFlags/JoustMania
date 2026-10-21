@@ -27,7 +27,7 @@ Service identities (`OTEL_SERVICE_NAME` / namespace): `controller-manager-servic
 `rust-hid`, `python-hid`, `connect-proxy`, `agent` (namespace `infrastructure`); `game-coordinator-service`,
 `menu-service`, `audio-service` (namespace `joustmania`) (`docker-compose.yml`).
 
-**Traceability:** C-001, FR-040, FR-080 to FR-082, NFR-021 to NFR-024 / UC-035, UC-041 / `services/otel-collector/config.yaml`, `lib/telemetry.py`, `lib/otel_metrics.py` / `tests/service/test_otlp_sink.py` (OTLP export to a receiver; the collector-to-Jaeger hop has no end-to-end test since #1600 moved the decide tests to the service tier).
+**Traceability:** C-001, FR-040, FR-080 to FR-082, NFR-021 to NFR-024 / UC-035, UC-041 / `services/otel-collector/config.yaml`, `lib/telemetry.py`, `lib/otel_metrics.py` / `tests/service/test_otlp_sink.py` (OTLP export to a receiver); the collector-to-Jaeger hop is covered end to end by `tests/integration/test_tc002_ffa_game.py` (the game's root span reaches Jaeger, TC-002 validation 3), `tests/integration/test_uc035_a3_backend_down.py` (same, with the agent down) and `tests/integration/test_tc007_closed_loop_full_stack.py` (agent spans).
 
 ## 2. Conventions
 
