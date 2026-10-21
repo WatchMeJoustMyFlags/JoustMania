@@ -168,10 +168,14 @@ const DefaultThrottleInterval = time.Second
 // trace and metrics Export handlers each invoke OnEvaluate from their own
 // goroutines.
 type Loop struct {
-	Flags   FlagSource
-	Rules   RulesEngine
-	Actions ActionSink
-	Log     *slog.Logger
+	Flags FlagSource
+	Rules RulesEngine
+	// ProbeRules is the demo/verification engine (decision.probe_decisions, #1810).
+	// Built ONCE per loop (it keeps its rate-limit state across flag flips) and
+	// swapped in by rulesFor only while the flag is on. nil: the flag has no effect.
+	ProbeRules RulesEngine
+	Actions    ActionSink
+	Log        *slog.Logger
 	// Tracer produces the audit spans; tests inject a recording tracer.
 	Tracer trace.Tracer
 
@@ -554,14 +558,14 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// Objective layer: publish the per-cycle objectives flag into the rules
 	// engine. The engine reads them inside Evaluate; engines that ignore
 	// objectives (Noop/Probe) skip this.
-	if pub, ok := l.Rules.(objectivePublisher); ok {
+	if pub, ok := l.rulesFor(snapshot).(objectivePublisher); ok {
 		pub.SetObjectives(snapshot.Objectives)
 	}
 	// Objective layer (fitness half, #731): publish the per-cycle fitness
 	// thresholds so the engine's fitness functions score against the live flag
 	// values. Per-cycle publication is what makes a mid-session flag change take
 	// effect on the very next decision.
-	if pub, ok := l.Rules.(fitnessPublisher); ok {
+	if pub, ok := l.rulesFor(snapshot).(fitnessPublisher); ok {
 		pub.SetFitness(fitnessThresholds(snapshot.Fitness))
 	}
 
@@ -585,7 +589,7 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// after decide so it reflects this cycle's thresholds and live context. This
 	// happens even on an empty-decision cycle so a future cycle-scoped consumer
 	// still sees the evaluation, but it only reaches a span when a decision emits.
-	if rd, ok := l.Rules.(fitnessReader); ok {
+	if rd, ok := l.rulesFor(snapshot).(fitnessReader); ok {
 		if vals := rd.LastFitness().Evaluated(); len(vals) > 0 {
 			state.FitnessEvaluated = vals
 		}

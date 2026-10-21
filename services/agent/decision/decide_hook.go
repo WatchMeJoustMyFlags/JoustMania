@@ -229,9 +229,10 @@ func requestedBackend(snapshot flags.Snapshot) string {
 // fallbackReason describe why rules decided (requested=rules, reason "" on the
 // default path).
 func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, requested, fallbackReason string) ([]Decision, *decideRecord) {
-	eng, ok := l.Rules.(decideEngine)
+	rules := l.rulesFor(snapshot)
+	eng, ok := rules.(decideEngine)
 	if !ok {
-		return l.Rules.Evaluate(ctx, c), nil
+		return rules.Evaluate(ctx, c), nil
 	}
 	now := l.nowOrDefault()
 	start := now()
@@ -645,7 +646,8 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 		return
 	}
 	var decisions []Decision
-	if eng, isDecide := l.Rules.(decideEngine); isDecide {
+	rules := l.rulesFor(snapshot)
+	if eng, isDecide := rules.(decideEngine); isDecide {
 		out, req, resp, ranked := eng.EvaluateDecide(ctx, current, func() decide.Request {
 			return buildDecideRequest(current, snapshot.InterventionsAllowed, true)
 		})
@@ -657,7 +659,7 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 			}
 		}
 	} else {
-		decisions = l.Rules.Evaluate(ctx, current)
+		decisions = rules.Evaluate(ctx, current)
 	}
 	now := l.nowOrDefault()
 	before := len(state.Outcomes)

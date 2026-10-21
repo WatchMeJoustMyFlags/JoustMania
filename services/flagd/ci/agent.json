@@ -721,6 +721,14 @@
       },
       "defaultVariant": "default"
     },
+    "decision.probe_decisions": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
     "effect.window_seconds": {
       "state": "ENABLED",
       "variants": {
