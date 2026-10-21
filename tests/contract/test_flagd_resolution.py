@@ -790,22 +790,27 @@ def test_every_coordinator_flag_resolves_with_its_typed_getter(flagd, resolver):
 # --------------------------------------------------------------------------- #
 # The agent's charge ledger reads shield.activation and shield.charge_expiry_seconds
 # from the game set (services/agent/flags/game.go:ShieldCharge) with a SUBSET of the
-# coordinator's evaluation context: targetingKey = game mode, game_mode, game_kind=real
-# and gameId. The coordinator adds the API-level service attributes and the rest of
-# its transaction context. flags.md §4 therefore limits targeting on these two flags
-# to gameId, game_mode and game_kind, so both resolve the same value.
+# coordinator's evaluation context on the grant path: game_kind=real and gameId. The
+# coordinator reads both flags inside grant_shield, which the InterventionManager
+# dispatches from the servicer's main loop through GameLoopDispatcher.run
+# (services/game_coordinator/game_loop_dispatch.py, run_coroutine_threadsafe copies the
+# caller's contextvars). The grant therefore runs outside the game's transaction
+# context: no targetingKey, no game_mode, only the API-level attributes plus gameId
+# (pinned by services/game_coordinator/tests/test_shield_charge_flag_context.py).
+# flags.md §4 therefore limits targeting on these two flags to gameId and game_kind,
+# so both resolve the same value.
 SHIELD_LEDGER_FLAGS = {
     "shield.activation": "string",
     "shield.charge_expiry_seconds": "float",
 }
-SHIELD_TARGETING_VARS = {"gameId", "game_mode", "game_kind"}
+SHIELD_TARGETING_VARS = {"gameId", "game_kind"}
 _CONTRACT_GAME_ID = "g-contract-1837"
 
 
 def _coordinator_context() -> "EvaluationContext":
-    """lib/feature_flags: API-level attributes + set_game_transaction_context + gameId."""
+    """lib/feature_flags on the grant path: API-level attributes + gameId (no game
+    transaction context, see the comment above)."""
     return EvaluationContext(
-        targeting_key="FFA",
         attributes={
             "service_name": "game-coordinator",
             "service_namespace": "core",
@@ -813,20 +818,16 @@ def _coordinator_context() -> "EvaluationContext":
             "environment": "production",
             "hostname": "joustmania",
             "game_kind": "real",
-            "game_mode": "FFA",
-            "controller_count": 4,
-            "sensitivity": 2,
             "gameId": _CONTRACT_GAME_ID,
         },
     )
 
 
 def _agent_context() -> "EvaluationContext":
-    """services/agent/flags/game.go shieldChargeContext."""
+    """Keep in sync with shieldChargeContext in services/agent/flags/game.go (its unit
+    test TestShieldCharge_CoordinatorContext pins the Go side)."""
     return EvaluationContext(
-        targeting_key="FFA",
         attributes={
-            "game_mode": "FFA",
             "game_kind": "real",
             "gameId": _CONTRACT_GAME_ID,
         },
@@ -852,8 +853,8 @@ def _json_vars(node) -> set[str]:
 @pytest.mark.uc("UC-040", flow="A31", steps=[1])
 @pytest.mark.parametrize("flag_dir", ["ci", "base"])
 def test_shield_flag_targeting_uses_only_the_agents_context(flag_dir):
-    """Static: targeting on the two shield flags may reference only gameId, game_mode,
-    game_kind (or flagd's own $flagd.* values), so the agent's narrower context resolves
+    """Static: targeting on the two shield flags may reference only gameId and game_kind
+    (or flagd's own $flagd.* values), so the agent's narrower context resolves
     what the coordinator's does (flags.md §4)."""
     root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
     flags = json.loads((root / "game.json").read_text())["flags"]

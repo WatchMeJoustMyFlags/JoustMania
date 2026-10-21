@@ -44,14 +44,19 @@ func (w *gameReadWarn) allow(now time.Time) bool {
 }
 
 // shieldChargeContext is the evaluation context the game coordinator resolves the two
-// shield flags with in a real game (lib/feature_flags.py set_game_transaction_context
-// plus the gameId of read_string_flag / read_float_flag): targetingKey = the game mode,
-// game_mode, game_kind=real and gameId. flags.md §4 restricts targeting on these flags
-// to gameId, game_mode and game_kind, so the agent resolves what the coordinator does
-// (tests/contract/test_flagd_resolution.py).
-func shieldChargeContext(gameID, gameMode string) openfeature.EvaluationContext {
-	return openfeature.NewEvaluationContext(gameMode, map[string]any{
-		"game_mode": gameMode,
+// shield flags with on the agent's grant path: the API-level attributes (game_kind=real
+// and the service identity) plus the gameId of read_string_flag / read_float_flag. The
+// grant reaches grant_shield through the InterventionManager on the servicer's main loop
+// and GameLoopDispatcher.run (run_coroutine_threadsafe copies the caller's contextvars),
+// so the game's transaction context (targetingKey, game_mode) is not visible there
+// (services/game_coordinator/tests/test_shield_charge_flag_context.py). flags.md §4
+// restricts targeting on these flags to gameId and game_kind, so the agent resolves
+// what the coordinator does.
+//
+// Keep in sync with _agent_context() in tests/contract/test_flagd_resolution.py, the
+// live parity test that resolves both contexts against flagd.
+func shieldChargeContext(gameID string) openfeature.EvaluationContext {
+	return openfeature.NewEvaluationContext("", map[string]any{
 		"game_kind": "real",
 		"gameId":    gameID,
 	})
@@ -68,11 +73,11 @@ func shieldChargeContext(gameID, gameMode string) openfeature.EvaluationContext 
 // unreadable activation flag logs a warning at most once per 30 s. Callers read it only
 // for a targeted grant_shield in a real FFA game, so the warning means a trigger-mode
 // check really went without the flag.
-func (f *Flags) ShieldCharge(ctx context.Context, gameID, gameMode string) (trigger bool, expiry time.Duration) {
+func (f *Flags) ShieldCharge(ctx context.Context, gameID string) (trigger bool, expiry time.Duration) {
 	if f == nil || f.game == nil {
 		return false, DefaultShieldChargeExpiry
 	}
-	evalCtx := shieldChargeContext(gameID, gameMode)
+	evalCtx := shieldChargeContext(gameID)
 	mode, err := f.game.StringValue(ctx, "shield.activation", "instant", evalCtx)
 	if err != nil {
 		if f.gameWarn.allow(time.Now()) {

@@ -22,7 +22,7 @@ import (
 // triggerMode is a shield-mode source that reads trigger with the given expiry and
 // counts its calls.
 func triggerMode(expiry time.Duration, calls *atomic.Int32) ShieldChargeMode {
-	return func(context.Context, string, string) (bool, time.Duration) {
+	return func(context.Context, string) (bool, time.Duration) {
 		if calls != nil {
 			calls.Add(1)
 		}
@@ -30,7 +30,7 @@ func triggerMode(expiry time.Duration, calls *atomic.Int32) ShieldChargeMode {
 	}
 }
 
-func instantMode(context.Context, string, string) (bool, time.Duration) {
+func instantMode(context.Context, string) (bool, time.Duration) {
 	return false, 20 * time.Second
 }
 

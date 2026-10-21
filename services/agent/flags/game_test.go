@@ -75,7 +75,7 @@ func TestShieldCharge_Resolution(t *testing.T) {
 			if tc.expiry != nil {
 				stub.floats["shield.charge_expiry_seconds"] = *tc.expiry
 			}
-			trigger, expiry := gameFlags(stub, nil).ShieldCharge(context.Background(), "g-1", "FFA")
+			trigger, expiry := gameFlags(stub, nil).ShieldCharge(context.Background(), "g-1")
 			if trigger != tc.wantTrigger || expiry != tc.wantExpiry {
 				t.Fatalf("ShieldCharge = (%v, %s), want (%v, %s)", trigger, expiry, tc.wantTrigger, tc.wantExpiry)
 			}
@@ -84,11 +84,11 @@ func TestShieldCharge_Resolution(t *testing.T) {
 
 	t.Run("UC-040/A31 a nil game client returns the defaults, never a read through the agent client", func(t *testing.T) {
 		f := gameFlags(nil, nil) // the agent client WOULD answer trigger
-		if trigger, expiry := f.ShieldCharge(context.Background(), "g-1", "FFA"); trigger || expiry != 20*time.Second {
+		if trigger, expiry := f.ShieldCharge(context.Background(), "g-1"); trigger || expiry != 20*time.Second {
 			t.Fatalf("ShieldCharge = (%v, %s), want (false, 20s)", trigger, expiry)
 		}
 		var nilFlags *Flags
-		if trigger, _ := nilFlags.ShieldCharge(context.Background(), "g-1", "FFA"); trigger {
+		if trigger, _ := nilFlags.ShieldCharge(context.Background(), "g-1"); trigger {
 			t.Fatal("a nil *Flags read trigger")
 		}
 	})
@@ -98,15 +98,15 @@ func fp(v float64) *float64 { return &v }
 
 // UC: UC-040 A31
 func TestShieldCharge_CoordinatorContext(t *testing.T) {
-	t.Run("UC-040/A31 both reads use targetingKey=mode, game_mode, game_kind=real and gameId", func(t *testing.T) {
+	t.Run("UC-040/A31 both reads use the coordinator's grant-path context: game_kind=real and gameId, no targetingKey or game_mode", func(t *testing.T) {
 		rec := &ctxRecorder{stubEvaluator: stubEvaluator{strings: map[string]string{"shield.activation": "trigger"}}}
-		_, _ = gameFlags(rec, nil).ShieldCharge(context.Background(), "g-42", "FFA")
+		_, _ = gameFlags(rec, nil).ShieldCharge(context.Background(), "g-42")
 		if len(rec.seen) != 2 {
 			t.Fatalf("evaluations = %d, want 2 (activation, expiry)", len(rec.seen))
 		}
 		for i, ec := range rec.seen {
 			attrs := ec.Attributes()
-			if ec.TargetingKey() != "FFA" || attrs["game_mode"] != "FFA" || attrs["game_kind"] != "real" || attrs["gameId"] != "g-42" {
+			if ec.TargetingKey() != "" || len(attrs) != 2 || attrs["game_kind"] != "real" || attrs["gameId"] != "g-42" {
 				t.Fatalf("evaluation %d context = key %q attrs %v, want the coordinator's", i, ec.TargetingKey(), attrs)
 			}
 		}
@@ -121,7 +121,7 @@ func TestShieldCharge_UnreadableWarnsThrottled(t *testing.T) {
 		down := stubEvaluator{errs: map[string]error{"shield.activation": errors.New("PROVIDER_NOT_READY")}}
 		f := gameFlags(down, log)
 		for i := 0; i < 5; i++ {
-			_, _ = f.ShieldCharge(context.Background(), "g-1", "FFA")
+			_, _ = f.ShieldCharge(context.Background(), "g-1")
 		}
 		if n := strings.Count(buf.String(), "agent.shield_charge_mode_unreadable"); n != 1 {
 			t.Fatalf("unreadable warnings = %d, want 1:\n%s", n, buf.String())
@@ -130,7 +130,7 @@ func TestShieldCharge_UnreadableWarnsThrottled(t *testing.T) {
 			t.Fatalf("the warning is not at WARN level:\n%s", buf.String())
 		}
 		f.gameWarn.last = time.Now().Add(-31 * time.Second) // the window passed
-		_, _ = f.ShieldCharge(context.Background(), "g-1", "FFA")
+		_, _ = f.ShieldCharge(context.Background(), "g-1")
 		if n := strings.Count(buf.String(), "agent.shield_charge_mode_unreadable"); n != 2 {
 			t.Fatalf("unreadable warnings after 30 s = %d, want 2", n)
 		}
@@ -151,7 +151,7 @@ func TestSetupFlagd_GameDomain(t *testing.T) {
 		}
 		t.Cleanup(func() { cancel(); shutdown() })
 		read := func() bool {
-			trigger, _ := f.ShieldCharge(context.Background(), "g-1", "FFA")
+			trigger, _ := f.ShieldCharge(context.Background(), "g-1")
 			return trigger
 		}
 		// The agent domain syncs, the game domain does not yet: the game read fails open.
@@ -161,7 +161,7 @@ func TestSetupFlagd_GameDomain(t *testing.T) {
 		}
 		gameSrc.set(true, "on")
 		waitBool(t, "shield.activation (game domain)", read, true, 5*time.Second)
-		if _, expiry := f.ShieldCharge(context.Background(), "g-1", "FFA"); expiry != 10*time.Second {
+		if _, expiry := f.ShieldCharge(context.Background(), "g-1"); expiry != 10*time.Second {
 			t.Fatalf("expiry = %s, want 10s from the game set", expiry)
 		}
 		gameSrc.set(true, "off")

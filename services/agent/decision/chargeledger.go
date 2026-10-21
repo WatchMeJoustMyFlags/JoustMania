@@ -41,7 +41,7 @@ const chargeLedgerMargin = 2 * time.Second
 // ShieldChargeMode reports, for one game, whether shield.activation resolves to
 // trigger and the charge expiry (0 = never). main.go wires flags.Flags.ShieldCharge,
 // which fails open (false) when the game flag set cannot be read.
-type ShieldChargeMode func(ctx context.Context, gameID, gameMode string) (trigger bool, expiry time.Duration)
+type ShieldChargeMode func(ctx context.Context, gameID string) (trigger bool, expiry time.Duration)
 
 // SetShieldChargeMode injects the shield-mode source of the charge ledger. nil (the
 // construction default, the golden harness and every older test) keeps the ledger
@@ -150,7 +150,7 @@ func (l *Loop) chargeLedgerApplies(ctx context.Context, c gamecontext.GameContex
 	if c.GameKind != gamecontext.GameKindReal || mode != shieldTriggerGameMode {
 		return 0, false
 	}
-	trigger, expiry := l.shieldChargeMode(ctx, c.SessionID, mode)
+	trigger, expiry := l.shieldChargeMode(ctx, c.SessionID)
 	if !trigger {
 		return 0, false
 	}

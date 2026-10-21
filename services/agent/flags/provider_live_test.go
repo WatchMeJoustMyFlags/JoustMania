@@ -100,7 +100,7 @@ func waitGameDomainServes(t *testing.T) {
 	client := openfeature.GetApiInstance().GetNamedClient(GameDomain)
 	deadline := time.Now().Add(liveSetupTimeout)
 	for {
-		d, err := client.StringValueDetails(context.Background(), "shield.activation", "", shieldChargeContext("live-game", "FFA"))
+		d, err := client.StringValueDetails(context.Background(), "shield.activation", "", shieldChargeContext("live-game"))
 		if err == nil && d.ErrorCode == "" {
 			return
 		}
@@ -121,7 +121,7 @@ func TestLiveFlip_GameDomainShieldActivation(t *testing.T) {
 	waitGameDomainServes(t)
 	ctx := context.Background()
 	read := func() bool {
-		trigger, _ := p.flags.ShieldCharge(ctx, "live-game", "FFA")
+		trigger, _ := p.flags.ShieldCharge(ctx, "live-game")
 		return trigger
 	}
 
@@ -344,7 +344,7 @@ func TestLiveFlip_FlagdRestartMidRun(t *testing.T) {
 	ctx := context.Background()
 	read := func() bool { return p.flags.Evaluate(ctx).Enabled }
 	readTrigger := func() bool {
-		trigger, _ := p.flags.ShieldCharge(ctx, "live-game", "FFA")
+		trigger, _ := p.flags.ShieldCharge(ctx, "live-game")
 		return trigger
 	}
 
