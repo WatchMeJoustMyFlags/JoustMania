@@ -121,7 +121,7 @@ const (
 	softPenaltyMaxSeconds    = 30.0
 	softPenaltyFactorMin     = 0.5
 	softPenaltyFactorMax     = 1.0
-	tempoRampMaxSeconds      = 60.0
+	tempoRampMaxSeconds      = 15.0 // games/base.py RAMP_TEMPO_MAX_SECONDS (#1840)
 )
 
 // validTempoRampCurves is the closed curve vocabulary (mirrors base.py).

@@ -17,7 +17,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -33,10 +33,11 @@ from conftest import EventCollector, MockControllerManagerService, async_noop
 from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
+    DEFAULT_RAMP_DOWN_SECONDS,
+    DEFAULT_RAMP_UP_SECONDS,
     FAST_MAX,
     FAST_MUSIC_SPEED,
     FAST_WARNING,
-    MUSIC_TRANSITION_DURATION,
     SLOW_MAX,
     SLOW_MUSIC_SPEED,
     SLOW_WARNING,
@@ -1318,15 +1319,22 @@ class TestHandleStreamReconnection:
 
 
 # ========================================================================
-# _apply_tempo_change
+# _start_intensity_ramp (#1833; was _apply_tempo_change)
 # ========================================================================
 
+TEMPO_T0 = 5_000.0
 
-class TestApplyTempoChange:
-    """Tests for _apply_tempo_change method."""
+
+class TestStartIntensityRamp:
+    """Tests for _start_intensity_ramp (scheduled changes) on a fake clock, flags at their defaults."""
 
     @pytest.fixture
-    def game(self):
+    def clock(self):
+        with patch("services.game_coordinator.games.base.time.time", return_value=TEMPO_T0) as fake:
+            yield fake
+
+    @pytest.fixture
+    def game(self, clock):
         """Create game with mock audio client for tempo tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
         mock_audio = AsyncMock()
@@ -1347,54 +1355,56 @@ class TestApplyTempoChange:
         return game
 
     @pytest.mark.asyncio
-    async def test_updates_music_speed(self, game):
-        """Should update music_speed to target tempo."""
-        await game._apply_tempo_change(FAST_MUSIC_SPEED)
-        assert game.music_speed == FAST_MUSIC_SPEED
+    @pytest.mark.uc("UC-031", flow="main", steps=[3], br=["BR-005"])
+    async def test_ramps_music_speed_to_the_target(self, game, clock):
+        """The tempo reaches the target at the end of the ramp, not at its start."""
+        await game._start_intensity_ramp(1.0, scheduled=True)
+        assert game.music_speed == SLOW_MUSIC_SPEED
+        clock.return_value = TEMPO_T0 + DEFAULT_RAMP_UP_SECONDS
+        assert game.music_speed == pytest.approx(FAST_MUSIC_SPEED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-031", flow="main", steps=[3])
     async def test_toggles_speed_up(self, game):
         """Should toggle speed_up flag."""
         assert game.speed_up is True
-        await game._apply_tempo_change(FAST_MUSIC_SPEED)
+        await game._start_intensity_ramp(1.0, scheduled=True)
         assert game.speed_up is False
 
     @pytest.mark.asyncio
-    async def test_schedules_next_change(self, game):
-        """Should set change_time to a future timestamp."""
-        before = time.time()
-        await game._apply_tempo_change(FAST_MUSIC_SPEED)
-        assert game.change_time > before
+    async def test_schedules_next_change_after_the_ramp_end(self, game):
+        """change_time is a window after the END of the ramp."""
+        await game._start_intensity_ramp(1.0, scheduled=True)
+        assert game.change_time > TEMPO_T0 + DEFAULT_RAMP_UP_SECONDS
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-031", flow="main", steps=[3])
+    @pytest.mark.uc("UC-031", flow="main", steps=[3], br=["BR-005"])
     async def test_calls_audio_client(self, game):
-        """UC-031 step 3: ChangeTempo asks the audio service for a 1.5 s transition to the new tempo."""
-        await game._apply_tempo_change(FAST_MUSIC_SPEED)
+        """UC-031 step 3: one ChangeTempo glide to the new tempo over the whole ramp (default 3 s up)."""
+        await game._start_intensity_ramp(1.0, scheduled=True)
         game.audio_client.ChangeTempo.assert_called_once()
         call_args = game.audio_client.ChangeTempo.call_args[0][0]
         assert call_args.track_id == "track_123"
         assert call_args.new_tempo == pytest.approx(FAST_MUSIC_SPEED, abs=1e-6)
-        assert call_args.transition_duration == pytest.approx(MUSIC_TRANSITION_DURATION, abs=1e-6)
-        assert call_args.transition_duration == pytest.approx(1.5, abs=1e-6)
+        assert call_args.transition_duration == pytest.approx(DEFAULT_RAMP_UP_SECONDS, abs=1e-6)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-031", flow="main", steps=[3])
-    async def test_slow_down_from_fast(self, game):
-        """Should handle slowing down from fast tempo."""
+    @pytest.mark.uc("UC-031", flow="main", steps=[3], br=["BR-005"])
+    async def test_slow_down_from_fast(self, game, clock):
+        """Slowing down glides over the down duration (default 1.5 s) and toggles speed_up back."""
         game.music_speed = FAST_MUSIC_SPEED
         game.speed_up = False
-        await game._apply_tempo_change(SLOW_MUSIC_SPEED)
+        await game._start_intensity_ramp(0.0, scheduled=True)
+        call_args = game.audio_client.ChangeTempo.call_args[0][0]
+        assert call_args.transition_duration == pytest.approx(DEFAULT_RAMP_DOWN_SECONDS, abs=1e-6)
+        clock.return_value = TEMPO_T0 + DEFAULT_RAMP_DOWN_SECONDS
         assert game.music_speed == SLOW_MUSIC_SPEED
         assert game.speed_up is True  # Toggled back
 
     @pytest.mark.asyncio
     async def test_creates_child_span(self, game):
         """Should create a music_tempo_change child span wrapping the gRPC call."""
-        # The span is created by tracer.start_as_current_span inside _apply_tempo_change.
-        # Verify the method completes successfully (span creation is internal).
-        await game._apply_tempo_change(FAST_MUSIC_SPEED)
+        await game._start_intensity_ramp(1.0, scheduled=True)
         game.audio_client.ChangeTempo.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1402,7 +1412,7 @@ class TestApplyTempoChange:
         """Should add timeline marker event on gameplay_span."""
         mock_span = MagicMock()
         game.gameplay_span = mock_span
-        await game._apply_tempo_change(FAST_MUSIC_SPEED)
+        await game._start_intensity_ramp(1.0, scheduled=True)
         mock_span.add_event.assert_called_once_with(
             "music_tempo_change",
             attributes={
@@ -1416,7 +1426,7 @@ class TestApplyTempoChange:
     async def test_no_span_event_when_no_span(self, game):
         """Should not crash when gameplay_span is None."""
         game.gameplay_span = None
-        await game._apply_tempo_change(FAST_MUSIC_SPEED)
+        await game._start_intensity_ramp(1.0, scheduled=True)
         game.audio_client.ChangeTempo.assert_called_once()
 
 

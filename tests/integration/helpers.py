@@ -15,6 +15,7 @@ import sys
 import time
 
 import grpc
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
@@ -28,6 +29,7 @@ from proto import (
     menu_pb2,
     menu_pb2_grpc,
 )
+from tests.integration.flag_service import default as flag_service_default
 
 
 # =============================================================================
@@ -2261,3 +2263,63 @@ async def _eliminate_one_fighter(
         # No death this pass; wait out invincibility/death-hold and re-probe.
         await asyncio.sleep(1.2)
     return None
+
+
+# =============================================================================
+# Intervention fixtures (moved from test_intervention_flow.py, #1422)
+# =============================================================================
+
+# Absence window: how long the flag push + coordinator re-evaluate chain is
+# given to (not) act before asserting that NOTHING happened. Positive waits are
+# condition polls (poll_until); this constant remains ONLY for negative
+# assertions, where the bounded wait IS the test.
+RELOAD_SETTLE_SECONDS = 2.0
+
+# Applying a per-player state flag and observing it can take a couple of reload
+# cycles under load; poll up to this long.
+APPLY_TIMEOUT_SECONDS = 12.0
+
+# Generous rate-limit budget the intervention tests run under. The weighted
+# sliding-window limiter is process-GLOBAL on the game-coordinator and is not
+# reset between tests; pinning a high budget removes cross-test bleed (#824).
+SUITE_RATE_LIMIT_BUDGET = 50
+
+
+def set_interventions_allowed(variant: str) -> None:
+    """Set the agent-set ``interventions_allowed`` flag to a named variant
+    (``none`` / ``ambient`` / ``standard`` / ``full``). An in-memory overlay on
+    the flag service, cleared by the ``flag_service`` fixture at teardown."""
+    flag_service_default().put("agent", "interventions_allowed", variant=variant)
+
+
+def set_policy_budget(per_minute: int) -> None:
+    """Raise BOTH weighted rate-limit budgets for headroom (#919): the agent's
+    per-game budget and the coordinator's process-global backstop (flags.md 13.2)."""
+    for flag_key in (
+        "policy.max_interventions_per_minute",
+        "policy.coordinator_backstop_per_minute",
+    ):
+        flag_service_default().put("agent", flag_key, value=int(per_minute))
+
+
+@pytest.fixture
+def intervention_env(docker_compose, flag_service):
+    """Bind the flag-service client and pin the suite-wide rate-limit budget.
+
+    Every agent-set overlay a test sets is DELETEd by the ``flag_service``
+    fixture at teardown. The budget is served by flagd before the test body
+    runs (condition poll, not a fixed settle, #894).
+    """
+    set_policy_budget(SUITE_RATE_LIMIT_BUDGET)
+    from openfeature.evaluation_context import EvaluationContext
+
+    with flagd_probe_client(docker_compose, "agent") as client:
+        assert poll_until(
+            lambda: (
+                client.get_integer_value(
+                    "policy.max_interventions_per_minute", -1, EvaluationContext()
+                )
+                == SUITE_RATE_LIMIT_BUDGET
+            ),
+        ), "flagd did not serve the pinned suite rate-limit budget"
+    yield

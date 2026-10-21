@@ -402,7 +402,7 @@ class TestEffectCancellation:
 class TestWarningAndDeathEffectTimings:
     """UC-030 steps 7 and 9, controller side: the warning and death effects use fixed timings.
 
-    Warning: 200 ms white flash and 200 ms rumble. Death: 150 ms rumble, 300 ms red, 700 ms fade.
+    Warning: 200 ms white flash and 200 ms rumble. Death: 1000 ms rumble, 300 ms red, 700 ms fade.
     """
 
     @pytest.fixture
@@ -434,13 +434,87 @@ class TestWarningAndDeathEffectTimings:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-030", flow="main", steps=[9])
     async def test_death_is_rumble_red_hold_then_fade_for_the_fixed_times(self, feedback_manager, recorded):
-        """UC-030 step 9: 150 ms rumble, 300 ms red hold, 700 ms fade."""
+        """UC-030 step 9: 1000 ms rumble, 300 ms red hold, 700 ms fade."""
         await feedback_manager._effect_player_death("test_ctrl")
 
-        recorded["vibration"].assert_awaited_once_with("test_ctrl", 255, 150)
+        recorded["vibration"].assert_awaited_once_with("test_ctrl", 255, 1000)
         recorded["led"].assert_awaited_once_with("test_ctrl", Colors.Red.value)
         recorded["sleep"].assert_awaited_once_with(pytest.approx(0.3))
         recorded["effect"].assert_awaited_once_with(
             "test_ctrl", "fade_out", Colors.Red.value, 700, 1, Colors.Black.value
         )
         assert feedback_manager.base_colors["test_ctrl"] == Colors.Black.value
+
+
+class TestDeathRumbleRunsToTheEnd:
+    """UC-030 step 9 (#1832): the ~1 s death rumble is distinct from the warning and is not cut short.
+
+    Deterministic: the rumble stop timer (the one asyncio.sleep of DEATH_RUMBLE_MS) is held on a gate
+    instead of the wall clock; every other sleep passes through.
+    """
+
+    @pytest.fixture
+    def stop_gate(self, monkeypatch):
+        import services.controller_manager.feedback_manager as fm
+
+        real_sleep = asyncio.sleep
+        gate = asyncio.Event()
+        gate.durations = []
+
+        async def fake_sleep(delay, *_args, **_kwargs):
+            if delay == fm.DEATH_RUMBLE_MS / 1000.0:
+                gate.durations.append(delay)
+                await gate.wait()
+            else:
+                await real_sleep(0.001)
+
+        monkeypatch.setattr(fm.asyncio, "sleep", fake_sleep)
+        return gate
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[9])
+    async def test_death_rumble_is_one_second_and_longer_than_warning(self, feedback_manager, mock_backend, stop_gate):
+        import services.controller_manager.feedback_manager as fm
+
+        assert fm.DEATH_RUMBLE_MS >= 1000
+        assert fm.DEATH_RUMBLE_MS > 4 * fm.WARNING_VIBRATION_MS
+
+        await feedback_manager.handle_game_effect("test_ctrl", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        await asyncio.sleep(0)
+
+        assert stop_gate.durations == [1.0]
+        assert mock_backend.rumble["test_ctrl"] == 255
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[9])
+    async def test_rumble_survives_fade_lobby_reset_and_game_end(self, feedback_manager, mock_backend, stop_gate):
+        """A base-colour reset (menu after game end) and cancel_if_cancellable do not stop the rumble.
+
+        The stop timer lives in the feedback manager, not in the gameplay stream, so closing the
+        stream at game end leaves it running until the 1 s are over.
+        """
+        await feedback_manager.handle_game_effect("test_ctrl", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        await feedback_manager.apply_base_color("test_ctrl", (0, 60, 76), label="game end")
+        await feedback_manager.cancel_if_cancellable("test_ctrl")
+        await asyncio.sleep(0)
+        assert mock_backend.rumble["test_ctrl"] == 255, "rumble must still run before the stop timer fires"
+
+        stop_gate.set()
+        await feedback_manager.vibration_tasks["test_ctrl"]
+        assert mock_backend.rumble["test_ctrl"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[9])
+    async def test_clear_controller_cancels_the_rumble_stop_timer(self, feedback_manager, mock_backend, stop_gate):
+        """A disconnect drops the stop timer so it cannot cut a reconnected controller's new rumble."""
+        await feedback_manager.handle_game_effect("test_ctrl", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        timer = feedback_manager.vibration_tasks["test_ctrl"]
+
+        feedback_manager.clear_controller("test_ctrl")
+        await asyncio.sleep(0.01)
+
+        assert timer.cancelled()
+        assert "test_ctrl" not in feedback_manager.vibration_tasks
+        stop_gate.set()
+        await asyncio.sleep(0.01)
+        assert mock_backend.rumble["test_ctrl"] == 255, "cancelled timer must not write a stop"

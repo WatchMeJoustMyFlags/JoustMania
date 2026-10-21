@@ -148,7 +148,7 @@ scratch (§6.3).
 - **Integration:** Python `testcontainers` driving docker-compose
   (`tests/integration/conftest.py`: `docker-compose.yml` + `.override.yml` +
   `.ci.yml`, mock audio/controllers, `flagd` v0.16.0 container, an `agent`
-  service). `flag_files` fixture (`tests/integration/test_intervention_flow.py`)
+  service). `flag_files` fixture (`tests/integration/test_intervention_flow.py`, deleted in #1422)
   writes flag JSON the running flagd hot-reloads. `make test` is the gate.
 - **Microcks:** **not present anywhere.** `grep -ri microcks` over compose, docs,
   Makefile, CI, go.mod, research docs returns nothing. The memory note "Microcks
