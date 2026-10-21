@@ -22,6 +22,9 @@
 #          CI Complete keeps `needs`-ing the required jobs. Allowed: the
 #          informational sonarcloud job, and step-level COE in publish /
 #          collector-image / retag jobs (#1795), which are not gating.
+#   #1801: the validate job checks the committed agent Go stubs (services/agent/gen)
+#          on every proto_pkg change, PR, push and dispatch; in the merge queue
+#          only for an entry whose own diff touches proto_pkg (simulated).
 #
 # Needs python3 + PyYAML (as scripts/ci/check-retag-source.sh).
 #   ./scripts/tests/test-ci-workflow.sh [path/to/ci.yml]
@@ -341,7 +344,7 @@ def run_step(step, ctx, extra_path=None):
 
 
 def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success",
-             integration_deps=False, override=None, collector_outcome="success"):
+             integration_deps=False, override=None, collector_outcome="success", proto_pkg=False):
     """Results of the e2e/build/publish/complete jobs for one event.
 
     `override` replaces `changes` outputs after the force step (e.g. an empty
@@ -373,6 +376,7 @@ def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success",
         "needs.changes.outputs.docker_build_matrix": '["menu"]',
         "needs.changes.outputs.docker_extra_matrix": '[{"service":"agent"}]',
         "needs.changes.outputs.retag_matrix": '["dashboard"]',
+        "needs.changes.outputs.proto_pkg": str(proto_pkg).lower(),
     })
     for key, value in (override or {}).items():
         ctx[f"needs.changes.outputs.{key}"] = value
@@ -410,6 +414,11 @@ def simulate(event, e2e_paths, non_docs, ci_full=False, e2e_outcome="success",
     results["ci-complete"] = "success" if complete_rc == 0 else "failure"
     results["e2e_required"] = ctx.get("needs.changes.outputs.e2e_required")
     results["e2e_steps"] = e2e_steps_run(ctx) if results["integration-test"] != "skipped" else []
+    # (#1801) validate job and its agent Go stub step.
+    results["validate"] = "success" if evaluate(job_if("validate"), ctx) else "skipped"
+    agent = [st for st in jobs["validate"]["steps"] if st.get("name") == AGENT_STUB_STEP]
+    results["agent_stubs"] = (results["validate"] == "success" and bool(agent)
+                              and ("if" not in agent[0] or bool(evaluate(str(agent[0]["if"]), ctx))))
     return results
 
 
@@ -427,6 +436,7 @@ def e2e_steps_run(ctx):
     ]
 
 
+AGENT_STUB_STEP = "Validate agent Go stubs"
 check("e2e_required" in jobs["changes"]["outputs"], "changes: must output e2e_required (#1583)")
 e2e_filter = next(s for s in jobs["changes"]["steps"] if s.get("id") == "f")["with"]["filters"]
 e2e_path_list = yaml.safe_load(e2e_filter).get("e2e_paths") or []
@@ -639,10 +649,50 @@ for name in needs:
         continue
     check("continue-on-error" not in jobs[name],
           f"{name}: job-level continue-on-error makes needs.result 'success'; a failure would pass CI Complete")
-for name in ("ci-complete", "integration-test"):
+for name in ("ci-complete", "integration-test", "validate"):
     for st in jobs[name].get("steps", []):
         check("continue-on-error" not in st,
               f"{name}: step {st.get('name', st.get('uses', '?'))!r} must not use continue-on-error")
+
+# 10. (#1801) Drift check for the committed agent Go stubs (services/agent/gen).
+check(
+    job_if("validate") == "needs.changes.outputs.proto_pkg == 'true' || needs.changes.outputs.run_all_checks == 'true'",
+    f"validate: unexpected if: {job_if('validate')}",
+)
+proto_pkg_paths = yaml.safe_load(e2e_filter).get("proto_pkg") or []
+for path in ("proto/**", "services/agent/gen/**", "scripts/ci/**"):
+    check(path in proto_pkg_paths, f"changes/f: proto_pkg must cover {path}")
+v_steps = jobs["validate"]["steps"]
+v_names = [st.get("name") for st in v_steps]
+agent_steps = [st for st in v_steps if st.get("name") == AGENT_STUB_STEP]
+check(len(agent_steps) == 1, f"validate: needs exactly one {AGENT_STUB_STEP!r} step")
+if agent_steps:
+    st = agent_steps[0]
+    check(str(st.get("run", "")).strip() == "make ci-validate-agent-protos",
+          f"validate/{AGENT_STUB_STEP}: must run exactly `make ci-validate-agent-protos`, got {st.get('run')!r}")
+    check(" ".join(str(st.get("if", "")).split())
+          == "needs.changes.outputs.proto_pkg == 'true' || github.event_name != 'merge_group'",
+          f"validate/{AGENT_STUB_STEP}: unexpected if: {st.get('if')}")
+    check("Validate protos and packages" in v_names
+          and v_names.index("Validate protos and packages") < v_names.index(AGENT_STUB_STEP),
+          f"validate: {AGENT_STUB_STEP!r} must be its own step after the Python check")
+AGENT_SCENARIOS = [
+    # (label, kwargs, expect_step)
+    ("PR touching proto", dict(event="pull_request", e2e_paths=False, non_docs=True, proto_pkg=True), True),
+    ("PR not touching proto", dict(event="pull_request", e2e_paths=False, non_docs=True), False),
+    ("merge_group touching proto", dict(event="merge_group", e2e_paths=False, non_docs=True, proto_pkg=True), True),
+    ("merge_group, code change without proto", dict(event="merge_group", e2e_paths=False, non_docs=True), False),
+    ("merge_group, docs only", dict(event="merge_group", e2e_paths=False, non_docs=False), False),
+    ("push to main", dict(event="push", e2e_paths=False, non_docs=True), True),
+    ("workflow_dispatch", dict(event="workflow_dispatch", e2e_paths=False, non_docs=True), True),
+]
+for label, kwargs, expect in AGENT_SCENARIOS:
+    r = simulate(**kwargs)
+    check(r["agent_stubs"] is expect,
+          f"{label}: {AGENT_STUB_STEP!r} {'should' if expect else 'should not'} run, got {r['agent_stubs']}")
+    if kwargs["event"] == "merge_group":
+        check(r["validate"] == "success", f"{label}: validate (Python stubs) must still run in the queue, got {r['validate']}")
+        check(r["ci-complete"] == "success", f"{label}: CI Complete should pass, got {r['ci-complete']}")
 
 if failures:
     for f in failures:

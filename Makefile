@@ -208,24 +208,9 @@ protos-go:
 
 .PHONY: protos-agent
 protos-agent:
-	@echo "Generating agent-local Go stubs (committed under services/agent/gen)..."
-	# The agent service needs grpc-go clients to drive shadow games (#778). Unlike
-	# the connect-proxy gen (build-time, never committed), these stubs are
-	# committed INTO the agent module so `go test`/the agent Dockerfile build with
-	# no buf step. Uses Docker buf (no local buf required), then relocates the
-	# go_package-pathed output into services/agent/gen and fixes ownership.
-	# buf runs as the host user so the temp dir stays removable (#1628).
-	rm -rf /tmp/joust-agent-gen && mkdir -p /tmp/joust-agent-gen
-	docker run --rm -u "$(shell id -u):$(shell id -g)" -e HOME=/tmp \
-		-v "$(CURDIR)/proto:/workspace/proto" \
-		-v "/tmp/joust-agent-gen:/out" \
-		-w /workspace/proto \
-		bufbuild/buf:1.47.2 generate --template buf.gen.agent.yaml \
-		--path controller_manager_mock.proto --path game_coordinator.proto
-	rm -rf services/agent/gen && mkdir -p services/agent/gen
-	docker run --rm -v /tmp/joust-agent-gen:/in -v "$(CURDIR)/services/agent/gen:/dest" alpine:3.19 \
-		sh -c 'cp -r /in/github.com/joustmania/agent/gen/* /dest/ && chown -R $(shell id -u):$(shell id -g) /dest'
-	@echo "✓ Agent Go stubs generated"
+	@# Committed grpc-go stubs for the agent (#778); recipe and pins live in the
+	@# script so CI's drift check (ci-validate-agent-protos, #1801) runs the same.
+	bash scripts/ci/gen-agent-protos.sh
 
 .PHONY: protos-all
 protos-all: protos protos-go protos-agent
@@ -348,6 +333,11 @@ ci-proto-image:
 .PHONY: ci-validate-protos
 ci-validate-protos: ci-proto-image
 	bash scripts/ci/validate-protos.sh
+
+# Validate the committed agent Go stubs (services/agent/gen) match proto/ (#1801)
+.PHONY: ci-validate-agent-protos
+ci-validate-agent-protos:
+	bash scripts/ci/validate-agent-protos.sh
 
 # Validate Python package dependencies
 .PHONY: ci-validate-packages

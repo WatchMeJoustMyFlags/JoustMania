@@ -32,10 +32,18 @@ managed:
     - file_option: go_package
       value: github.com/joustmania/agent/gen/controller_manager_mock
       path: controller_manager_mock.proto
+#
+# The plugins are pinned by version AND BSR revision: BSR serves the latest
+# revision of a version, and a rebuilt revision can change the output with no
+# change here. CI regenerates and fails on any diff (#1801,
+# scripts/ci/validate-agent-protos.sh); bump a revision only together with the
+# regenerated stubs.
 plugins:
   # Go message types
   - remote: buf.build/protocolbuffers/go:v1.35.1
+    revision: 1
     out: /out
   # Go gRPC client/server stubs (plain gRPC)
   - remote: buf.build/grpc/go:v1.5.1
+    revision: 2
     out: /out
