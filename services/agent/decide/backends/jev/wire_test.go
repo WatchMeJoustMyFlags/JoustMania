@@ -327,7 +327,7 @@ func TestMostLikelyLevel(t *testing.T) {
 	}
 }
 
-// UC: UC-040 A16
+// UC: UC-040 main step 4
 // TestToughnessBoostCriteria pins the #1838 rename on the Jev criteria tables:
 // the lever is described, protective and has its magnitude ends under the new id
 // only, so a request built from the full allow-list never mentions the old name.
