@@ -157,7 +157,7 @@ func TestRulesDecide_NoopNeverReadsAct(t *testing.T) {
 		clock := time.Unix(10_000, 0)
 		l, _ := decideRecordingLoop(t, rulesSnapshot())
 		l.Rules = newTestEngine(fx.cfg, &clock)
-		out, rec := l.rulesDecide(context.Background(), rulesSnapshot(), fx.ctx, flags.DecisionBackendRules, "")
+		out, rec := l.rulesDecide(context.Background(), rulesSnapshot(), l.Rules, fx.ctx, flags.DecisionBackendRules, "")
 		if len(out) != 0 || rec == nil {
 			t.Fatalf("want a ranked cycle without decisions, got %d decisions, rec %v", len(out), rec)
 		}
