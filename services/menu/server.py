@@ -73,9 +73,10 @@ async def serve(port=50054):
     health_servicer = health.aio.HealthServicer()
     health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
 
-    # Mark the Menu service as SERVING
-    await health_servicer.set("menu.MenuService", health_pb2.HealthCheckResponse.SERVING)
-    await health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+    # NOT_SERVING until the boot lobby entry has run (SERVING is set below, #1826). The empty
+    # service name defaults to SERVING in grpc_health, so it is set explicitly.
+    await health_servicer.set("menu.MenuService", health_pb2.HealthCheckResponse.NOT_SERVING)
+    await health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
 
     # Bind to port
     server.add_insecure_port(f"[::]:{port}")
@@ -102,6 +103,12 @@ async def serve(port=50054):
     if auto_start and menu_servicer.state != menu_pb2.MenuState.RUNNING:
         await menu_servicer.enter_lobby()
         logger.info("Menu auto-started (menu_auto_start flag=true)")
+
+    # Ready: the lobby is entered, or menu_auto_start is off (or a StartMenu already entered it).
+    # A client that trusts health can no longer hit "Menu already running" from the boot entry.
+    await health_servicer.set("menu.MenuService", health_pb2.HealthCheckResponse.SERVING)
+    await health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+    logger.info("Menu health SERVING")
 
     # Use asyncio.Event for signal-driven shutdown so both SIGTERM (Docker stop)
     # and SIGINT (Ctrl-C / KeyboardInterrupt) trigger graceful shutdown.

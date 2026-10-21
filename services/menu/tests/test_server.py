@@ -7,6 +7,7 @@ from unittest.mock import create_autospec, patch
 
 import grpc
 import pytest
+from grpc_health.v1 import health, health_pb2
 from openfeature.client import OpenFeatureClient
 
 from lib.types import Games
@@ -190,3 +191,60 @@ class TestMenuAutoStart:
         servicer.shutdown.assert_awaited_once()
         grpc_server.start.assert_awaited_once()
         grpc_server.stop.assert_awaited_once_with(grace=5)
+
+
+class TestMenuHealthReadiness:
+    """UC-010 Pre-1 (#1826): health is SERVING only after the boot lobby entry."""
+
+    @staticmethod
+    def _recording_health(events):
+        class Recording(health.aio.HealthServicer):
+            async def set(self, service, status):
+                events.append(("health", service, status))
+                await super().set(service, status)
+
+        return Recording
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", cond=["Pre-1"])
+    async def test_health_not_serving_until_boot_lobby_entry_completes(self):
+        events = []
+        servicer = _servicer_with_flags()
+
+        async def slow_enter_lobby():
+            await asyncio.sleep(0.2)
+            events.append("lobby_entered")
+
+        servicer.enter_lobby.side_effect = slow_enter_lobby
+
+        with patch.object(server.health.aio, "HealthServicer", self._recording_health(events)):
+            await _boot(servicer)
+
+        serving = health_pb2.HealthCheckResponse.SERVING
+        assert events.index("lobby_entered") < events.index(("health", "", serving))
+        assert events.index("lobby_entered") < events.index(("health", "menu.MenuService", serving))
+        assert not any(e[2] == serving for e in events[: events.index("lobby_entered")] if isinstance(e, tuple))
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", cond=["Pre-1"])
+    async def test_health_serving_without_lobby_entry_when_auto_start_off(self):
+        events = []
+        servicer = _servicer_with_flags(menu_auto_start=False)
+
+        with patch.object(server.health.aio, "HealthServicer", self._recording_health(events)):
+            await _boot(servicer)
+
+        servicer.enter_lobby.assert_not_called()
+        assert ("health", "", health_pb2.HealthCheckResponse.SERVING) in events
+
+    @pytest.mark.asyncio
+    async def test_health_serving_after_provider_timeout(self):
+        events = []
+
+        async def not_ready(_domain, *_a, **_k):
+            return False
+
+        with patch.object(server.health.aio, "HealthServicer", self._recording_health(events)):
+            await _boot(_servicer_with_flags(), provider_wait=not_ready)
+
+        assert ("health", "", health_pb2.HealthCheckResponse.SERVING) in events
