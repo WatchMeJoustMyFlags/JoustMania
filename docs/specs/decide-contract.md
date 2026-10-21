@@ -272,6 +272,7 @@ Order on landing (`decision/decide_hook.go:Loop.runDecideRemote`, `decideRemoteA
 
 1. `interventions_allowed` membership → blocked `not_allowed`
 2. `policy.battery_threshold` (player-targeted only; unknown battery does not block) → `battery_threshold`
+2a. `already_charged` (#1837, planned): a `grant_shield` whose target got a `grant_shield` from this agent in the same game within `min(shield.charge_expiry_seconds, 20 s)` (20 s when the expiry is 0), while the game's `shield.activation` resolves to `trigger`, is blocked before the rate limit and charges no budget. The check reads the agent's own dispatch ledger, not the coordinator's state (v1 has no shield-state gauge); the coordinator stays authoritative (UC-040 A31)
 3. weighted per-game rate limit `policy.max_interventions_per_minute` → `rate_limit` (budget charged only on admit)
 
 Budget-aware admission (#1326, UC-040 A20/A21, BR-014/BR-015; `decision/budget.go`, `decision/ratelimit.go`):
@@ -345,7 +346,7 @@ decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #
 
 `decide.outcome` is the **routing** outcome. What the permission chain then did with the decision the
 answers describe (the first decision of the cycle) is on `decide.blocked` (bool) and, when blocked,
-`decide.block_reason` (`not_allowed`, `battery_threshold`, `rate_limit`), present exactly when that decision
+`decide.block_reason` (`not_allowed`, `battery_threshold`, `already_charged`, `rate_limit`), present exactly when that decision
 reached the permission chain: outcome `act`, or `fallback` when the rules fallback emitted a decision (#1295).
 So a rules decision blocked by the allow-list reads `outcome=act`, `decide.blocked=true`,
 `decide.block_reason=not_allowed`, with answers naming the blocked intervention and target.
@@ -581,7 +582,7 @@ once after 250 ms. The game coordinator applies the result
 | `auto_rubberband` | `auto_rubberband` | state | `gentle` |
 | `adjust_player_sensitivity` | `player_sensitivity_factor` | per serial level | 1.5 |
 | `set_player_handicap` | `player_handicap_factor` | per serial level | 1.25 |
-| `grant_shield` | `shield_seconds` | per serial grant | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16) |
+| `grant_shield` | `shield_seconds` | per serial grant | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16). In trigger mode (`shield.activation`, UC-040 BR-019; Free-for-All only) the grant is a **charge** (`GAME_EFFECT_SHIELD_CHARGE`, UC-040 A30): the seconds are the protection the player gets when they activate it with the trigger (UC-030 A6). The coordinator may block it `already_charged` (A31) |
 | `partial_shield` | `partial_shield_seconds` | per serial grant | `5:2.0` (feedback: `shield_up` at half volume + `GAME_EFFECT_PARTIAL_SHIELD`) |
 | `soft_penalty` | `soft_penalty_action` | per serial grant | `warn` |
 | `noop` | (no write) | | |
@@ -622,7 +623,7 @@ No per-player entry outlives its game, so the agent prunes nothing
 The coordinator re-checks independently before any handler runs
 (`InterventionManager._enforce_and_dispatch` → `_check_chain` in `interventions.py`): allow-list membership → mode capability deny matrix
 (`MODE_CAPABILITY_DENY` in `interventions.py`) → battery guard → global backstop. Its block reasons are
-`not_allowed`, `rate_limited`, `low_battery`, `mode_unsupported`, `no_game`, plus
+`not_allowed`, `rate_limited`, `low_battery`, `mode_unsupported`, `no_game`, `already_charged` (a `grant_shield` to a player who holds a shield charge; the handler applies nothing and the backstop reservation is refunded; UC-040 A31, #1837), plus
 `handler_error`, `game_loop_unavailable` and `game_loop_timeout` (the handler did not run on the game's own
 event loop: not applied), plus `game_loop_late` on a not-blocked outcome (the handler started but had not finished
 after 5 s: outcome unknown; [UC-040 BR-018](../use_cases/UC-040.md#br-018-intervention-side-effects-run-on-the-owning-games-event-loop), #1250). Every outcome emits `game_interventions_total{type,objective,blocked,block_reason}`
