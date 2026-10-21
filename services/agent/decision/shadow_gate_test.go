@@ -254,7 +254,7 @@ func TestAutoRubberbandIsShadowOnly(t *testing.T) {
 // behind in a flag file would otherwise become a live option with no writer
 // case, no description and no game-side implementation (there is deliberately
 // no alias table).
-// UC: UC-040 A16
+// UC: UC-040 main step 11
 func TestAllowListVariantsOnlyNameKnownInterventions(t *testing.T) {
 	known := map[string]bool{}
 	for _, id := range []string{
