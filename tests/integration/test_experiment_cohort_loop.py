@@ -43,10 +43,11 @@ the agent writes the SAME ``services/flagd/ci`` dir flagd serves).
 
 FORCING THE INFERENCE-ABSENT PATH HERMETICALLY
 ----------------------------------------------
-``AGENT_INFERENCE_BACKEND=stub`` (the compose default; pinned explicitly here)
-makes ``selectInferenceBackend`` return no text backend — NO network inference
-client is ever constructed (services/agent/main.go: only ``claude`` with an
-``ANTHROPIC_API_KEY`` builds the direct Claude client). The cohort loop declares
+The ``inference.backend`` flag defaults to ``stub`` and wins over
+``AGENT_INFERENCE_BACKEND`` (#1810, FR-151); the env is pinned to ``stub`` here as
+well, for the fallback case. Either way the agent selects no text backend — NO
+network inference client is used (services/agent/inference_backends.go: only
+``claude`` with an ``ANTHROPIC_API_KEY`` selects the direct Claude client). The cohort loop declares
 from the env seed and drives synthetic mock-controller shadow games against the
 live game-coordinator; it never calls an LLM. There is therefore no dependency on
 an external model endpoint — the test is hermetic in CI.

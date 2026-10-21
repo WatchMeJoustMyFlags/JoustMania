@@ -133,7 +133,7 @@ dry-run:
 	@echo "        ./scripts/agent-dryrun-enable.sh on   # flag service: enabled + experiments_enabled -> on"
 	@echo "        # gate flips take effect LIVE (self-gated per-tick since #1044) -> NO agent restart"
 	@echo "        # in-game decision backend: ./scripts/agent-backend.sh (decision.backend, live)"
-	@echo "        # retro on Claude: AGENT_INFERENCE_BACKEND=claude + ANTHROPIC_API_KEY; proposer also AGENT_EXPERIMENT_PROPOSER_ENABLED=true + flag experiment_proposer_enabled on,"
+	@echo "        # retro on Claude: flag inference.backend=claude + ANTHROPIC_API_KEY; proposer also AGENT_EXPERIMENT_PROPOSER_ENABLED=true + flag experiment_proposer_enabled on,"
 	@echo "        #   then recreate the agent (env read at process start): ... up -d agent"
 	@echo "        # restore defaults afterwards: ./scripts/agent-dryrun-enable.sh off"
 	@echo "    [ ] code_improvement.* promotion gates stay OFF (no real-default promotion)"

@@ -137,7 +137,7 @@ the model, tokens, confidence and rationale. To narrate a fallback, filter
 `decide.fallback_reason` (`timeout`, `llm_not_eligible`, ...).
 
 The post-game analyst is `agent.llm.retro`; with
-`AGENT_INFERENCE_BACKEND=claude` it carries `inference.used=claude` and a `chat`
+the flag `inference.backend=claude` it carries `inference.used=claude` and a `chat`
 child span.
 
 ### (d) All activity for one game — the #1095 join
@@ -223,7 +223,7 @@ Manual: **Operation** `code_improvement.proposed` (also
 live: 5 results** for `code_improvement.proposed`.
 
 Since #1270 a proposer span appears only when `enabled` and `experiments_enabled`
-are both on, and a model-backed proposal (`AGENT_INFERENCE_BACKEND=claude`) only
+are both on, and a model-backed proposal (`inference.backend=claude`) only
 follows a **real** game end within the shared LLM budget. A shadow-only run shows no
 proposals unless `llm.eligible_game_kinds` is `real_and_shadow`, which also widens
 decide and retro calls to shadow games.

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/inference"
 	"github.com/joustmania/agent/llm"
@@ -152,4 +153,28 @@ func TestSelectInferenceBackend_BaseURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// selectInferenceBackend is the env-only selection (no flag source): the fallback path
+// of textBackends, as used while flagd cannot resolve inference.backend.
+func selectInferenceBackend(logger *slog.Logger, tuning *agentTuning) (*inference.Claude, string) {
+	return newTextBackends(logger, tuning, nil).Select(context.Background())
+}
+
+// proposeBackendFor wraps a delegate as the proposer backend (test helper; main.go
+// resolves the backend per cycle through textBackends.ProposerBackend).
+func proposeBackendFor(delegate inferFunc) experiment.Backend {
+	if delegate == nil {
+		return proposeBackend{}
+	}
+	return inferBackend{infer: delegate}
+}
+
+// proposerAdmissionFor returns the admission only for a real delegate (test helper
+// for the pre-#1810 fixed wiring).
+func proposerAdmissionFor(delegate inferFunc, admission *decision.LLMAdmission) experiment.LLMAdmission {
+	if delegate == nil || admission == nil {
+		return nil
+	}
+	return admission
 }

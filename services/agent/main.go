@@ -37,7 +37,6 @@ import (
 	"github.com/joustmania/agent/gamesummary"
 	"github.com/joustmania/agent/gamewindow"
 	"github.com/joustmania/agent/gate"
-	"github.com/joustmania/agent/inference"
 	"github.com/joustmania/agent/infracontext"
 	"github.com/joustmania/agent/llm"
 	"github.com/joustmania/agent/patterngame"
@@ -400,48 +399,6 @@ func runShadowGame(ctx context.Context, logger *slog.Logger, agentFlags *flags.F
 // prompt) → raw text, the method experiment.Backend (the proposer) requires.
 type inferFunc = func(ctx context.Context, prompt llm.Prompt) (string, error)
 
-// selectInferenceBackend reads the AGENT_INFERENCE_* env (#1234) and returns the
-// text backend for the OFFLINE LLM seams: the shadow-experiment proposer and the
-// post-game retro. In-game decisions never use it (they go through the
-// decision.backend registry, see decide_backends.go).
-//
-// AGENT_INFERENCE_BACKEND: "stub" (default) | "claude". Only "claude" (case-
-// insensitive) with ANTHROPIC_API_KEY set builds the direct Anthropic client; any
-// other value, or claude without a key, returns nil = the stub (the proposer
-// proposes nothing, the retro is capture-only), so a typo or a missing key fails
-// safe. AGENT_INFERENCE_MODEL / _EFFORT / _TIMEOUT_SECONDS tune the client.
-// Returns the effective backend name for the startup log.
-//
-// tuning, when non-nil, resolves model / effort / timeout on every Infer call
-// (#1788, FR-150: the inference.* flags, the env vars only as fallback); nil keeps
-// the env values fixed (tests).
-func selectInferenceBackend(logger *slog.Logger, tuning *agentTuning) (*inference.Claude, string) {
-	backend := strings.ToLower(strings.TrimSpace(getEnv("AGENT_INFERENCE_BACKEND", "stub")))
-	if backend != inference.Name {
-		return nil, "stub"
-	}
-	key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
-	if key == "" {
-		logger.Warn("AGENT_INFERENCE_BACKEND=claude but ANTHROPIC_API_KEY is empty; proposer/retro stay on the stub")
-		return nil, "stub"
-	}
-	baseURL, ok := inferenceBaseURL(logger)
-	if !ok {
-		return nil, "stub"
-	}
-	cfg := inference.Config{
-		APIKey:  key,
-		BaseURL: baseURL,
-		Model:   getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
-		Effort:  getEnv("AGENT_INFERENCE_EFFORT", inference.DefaultEffort),
-		Timeout: secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout),
-	}
-	if tuning != nil {
-		cfg.Tuning = tuning.Inference
-	}
-	return inference.NewClaude(cfg), inference.Name
-}
-
 // inferenceBaseURL reads AGENT_INFERENCE_BASE_URL (#1422 S10): the root the Claude text
 // backend sends ANTHROPIC_API_KEY to. Empty = the Anthropic API. The key travels to this
 // host, so a value is accepted only as an https URL (http only for a loopback host) with a host
@@ -586,16 +543,15 @@ func main() {
 	// stub default (the proposer proposes nothing, the retro is capture-only). It is
 	// NOT an in-game decision path: in-game LLM decisions go through the
 	// decision.backend registry below.
-	textBackend, inferBackendName := selectInferenceBackend(logger, tuning)
-	slog.Info("Proposer/retro inference backend selected (#1234)",
+	// The backend choice is the inference.backend flag, resolved per use (#1810,
+	// C-035); AGENT_INFERENCE_BACKEND is only the fallback while flagd cannot resolve it.
+	textBackends := newTextBackends(logger, tuning, agentFlags)
+	_, inferBackendName := textBackends.Select(ctx)
+	slog.Info("Proposer/retro inference backend selected (#1234, #1810)",
 		"backend", inferBackendName,
 		"model", tuning.Inference(ctx).Model,
 		"api_key_set", os.Getenv("ANTHROPIC_API_KEY") != "",
 	)
-	var inferDelegate inferFunc
-	if textBackend != nil {
-		inferDelegate = textBackend.Infer
-	}
 	// Shared rolling cross-game context window (#929, M7-2; #1368). Constructed ONCE
 	// here, in agent-process memory only: the last 20 REAL games as game-level
 	// aggregates (no serials, C-009 / UC-042 BR-004, BR-005) plus the last 20 pattern
@@ -780,9 +736,7 @@ func main() {
 	// #1234: the retro calls the proposer/retro text backend directly (Claude, or
 	// nil = capture-only with used="none"/no_backend_available for the stub default),
 	// bounded by inference.timeout_seconds, resolved per retro call (#1788).
-	if textBackend != nil {
-		retro.SetBackend(textBackend)
-	}
+	retro.SetBackendSource(textBackends.RetroBackend)
 	retro.SetTimeoutSource(tuning.InferenceTimeout)
 	// #1179: bound every async retro inference goroutine to the agent's root context so
 	// shutdown cancellation unblocks a well-behaved in-flight Infer (no leak), the same
@@ -828,12 +782,13 @@ func main() {
 	// shadow games. Without the loop every proposal is refused (no_experiment_loop)
 	// and nothing is written (PR #1417 review B2).
 	proposalSink := &experiment.LateSink{}
-	// Feed the SAME text backend the retro uses (#1234): when
-	// AGENT_INFERENCE_BACKEND=claude, inferDelegate is the Claude client and
-	// proposeBackendFor wraps it as an experiment.Backend; when nil (the stub default)
-	// it stays the inert proposeBackend{} so the propose path proposes nothing.
+	// Feed the SAME text backend the retro uses (#1234): with inference.backend=claude
+	// (#1810) the Claude client wrapped as an experiment.Backend, else the inert
+	// proposeBackend{} so the propose path proposes nothing. The choice is resolved
+	// once per ProposeOnce through the backend source; the fixed backend below is only
+	// the stub the source never overrides.
 	proposer := experiment.NewProposer(
-		proposeBackendFor(inferDelegate),
+		proposeBackend{},
 		proposalSink,
 		gameFlagVocab(gameFlags),
 		nil,
@@ -842,10 +797,11 @@ func main() {
 	// #1270: a REAL proposer model call is one LLM request, so it draws from the SAME
 	// shared global budget (and the same AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling)
 	// as the per-game loops and the retro, and only for a game kind in
-	// llm.eligible_game_kinds. Installed only when a real text backend is wired: the
-	// stub makes no model call and so never charges the budget.
-	proposer.SetLLMAdmission(proposerAdmissionFor(inferDelegate,
-		decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCap, "proposer", logger)))
+	// llm.eligible_game_kinds. Always installed (inference.backend can flip at run
+	// time, #1810); the proposer consults it only when the cycle's backend is real,
+	// so a stub cycle never charges the budget.
+	proposer.SetLLMAdmission(decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCap, "proposer", logger))
+	proposer.SetBackendSource(textBackends.ProposerBackend)
 	// #1270: the kill-switch gate, read at USE time on every game end (never cached
 	// at startup: flagd may be down then). Both `enabled` and `experiments_enabled`
 	// must be on, the same two gates the experiment loop obeys (FR-066), and the
@@ -1134,28 +1090,6 @@ func proposerPermit(src proposerGateFlags, experimentsDefault, proposerCeiling b
 		}
 		return true, ""
 	}
-}
-
-// proposerAdmissionFor returns the shared LLM call gate the proposer consults
-// before a model call (#1270), or nil when delegate is nil (the stub backend). The
-// stub makes no model call, so it must never charge the shared budget. The nil is
-// returned as an untyped interface nil, never a typed nil pointer.
-func proposerAdmissionFor(delegate inferFunc, admission *decision.LLMAdmission) experiment.LLMAdmission {
-	if delegate == nil || admission == nil {
-		return nil
-	}
-	return admission
-}
-
-// proposeBackendFor selects the proposer's inference backend (#1048, #1234): the
-// Claude text client (wrapped as an experiment.Backend) when one was selected,
-// or the inert proposeBackend{} stub when delegate is nil (the default) — so the
-// propose path degrades to no-proposal exactly as before when inference is stubbed.
-func proposeBackendFor(delegate inferFunc) experiment.Backend {
-	if delegate == nil {
-		return proposeBackend{}
-	}
-	return inferBackend{infer: delegate}
 }
 
 // gameFlagVocab returns the experiment catalog's flag keys (R3, #1415): the

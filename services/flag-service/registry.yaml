@@ -82,6 +82,7 @@ flags:
   - {set: agent, key: experiment_completed_grace_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 600], integer: true}}
   - {set: agent, key: experiment_proposer_enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
   # Agent tuning migrated from env (#1788, flags.md §15): operator-written, never by the agent.
+  - {set: agent, key: inference.backend, kind: overlay, scope: [stack], persist: true, bounds: {variants: [stub, claude]}}
   - {set: agent, key: inference.model, kind: overlay, scope: [stack], bounds: {free_string: true}}
   - {set: agent, key: inference.effort, kind: overlay, scope: [stack]}
   - {set: agent, key: inference.timeout_seconds, kind: overlay, scope: [stack], bounds: {range: [30, 120], integer: true}}

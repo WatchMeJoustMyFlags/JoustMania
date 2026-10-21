@@ -18,6 +18,7 @@ import (
 // the agent (C-034), so none fails closed. The typed getters are used (never
 // ObjectValue: the #903 TYPE_MISMATCH class).
 const (
+	keyInferenceBackend        = "inference.backend"
 	keyInferenceModel          = "inference.model"
 	keyInferenceEffort         = "inference.effort"
 	keyInferenceTimeoutSeconds = "inference.timeout_seconds"
@@ -27,6 +28,18 @@ const (
 	keyRewatchTimeoutSeconds   = "promotion.rewatch_timeout_seconds"
 	keyRevertCooldownSeconds   = "promotion.revert_cooldown_seconds"
 )
+
+// InferenceBackend resolves inference.backend (was AGENT_INFERENCE_BACKEND): the
+// text backend of the post-game retro and the shadow-experiment proposer, "stub" or
+// "claude". The value is lower-cased and trimmed; a blank value falls back to def
+// (main.go passes the deprecated env value, else "stub"). Choosing a value that is
+// not usable (claude without a key) is the caller's job to degrade to the stub.
+func (f *Flags) InferenceBackend(ctx context.Context, def string) string {
+	if v := strings.ToLower(strings.TrimSpace(f.stringFlag(ctx, keyInferenceBackend, def))); v != "" {
+		return v
+	}
+	return def
+}
 
 // InferenceModel resolves inference.model (was AGENT_INFERENCE_MODEL). A blank
 // value falls back to def.

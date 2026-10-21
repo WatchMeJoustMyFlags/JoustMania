@@ -706,6 +706,14 @@
       },
       "defaultVariant": "default"
     },
+    "inference.backend": {
+      "state": "ENABLED",
+      "variants": {
+        "stub": "stub",
+        "claude": "claude"
+      },
+      "defaultVariant": "stub"
+    },
     "inference.model": {
       "state": "ENABLED",
       "variants": {

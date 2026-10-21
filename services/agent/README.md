@@ -737,7 +737,7 @@ When a game **ends** (the `GameActive` true→false transition fires the store's
 `OnGameEnd` hook with a pre-reset snapshot), the `decision.RetroCoordinator`
 builds the prompt for an **offline analyst** asking for tuning suggestions for
 the next game and records it on a dedicated **`agent.llm.retro`** span. With
-`AGENT_INFERENCE_BACKEND=claude` (and `ANTHROPIC_API_KEY`) it also calls Claude
+`inference.backend=claude` (the flag; `AGENT_INFERENCE_BACKEND` is its fallback; and `ANTHROPIC_API_KEY`) it also calls Claude
 directly, asynchronously, and stamps the decoded assessment / suggestions on the
 same span (#1179, #1234); with the stub default it is capture-only. It emits
 **exactly once per session** (dedup on `SessionID`) and is
