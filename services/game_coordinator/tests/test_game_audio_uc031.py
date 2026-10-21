@@ -248,3 +248,144 @@ async def test_audio_service_down_never_stops_the_game():
     assert events.get_events_of_type(GameEvent.GAME_WINNER) == [{"serial": "mock_controller_2"}]
     assert events.count_events_of_type(GameEvent.GAME_ENDED) == 1
     assert events.count_events_of_type(GameEvent.GAME_ERROR) == 0
+
+
+def _tempo_loop_game(audio, game_id: str, *, shadow: bool) -> tuple[FFAGame, list[float]]:
+    """A 3-player FFA game with short windows; returns it and the intensity targets its schedule picks."""
+    game = FFAGame(
+        controller_manager_client=MockControllerManagerService(
+            num_controllers=3, death_schedule={1.5: 0, 2.5: 1}, max_duration=8.0
+        ),
+        event_publisher=EventCollector().publish,
+        audio_client=audio,
+        game_id=game_id,
+        initial_players=[game_coordinator_pb2.Player(serial=f"mock_controller_{i}") for i in range(3)],
+    )
+    if shadow:
+        game.game_kind = "shadow"
+    game.music_windows = base_module.MusicWindows(*([0.2] * 8))
+    targets: list[float] = []
+    real_start = game._start_intensity_ramp
+
+    async def recording_start(target, *, scheduled):
+        targets.append(target)
+        await real_start(target, scheduled=scheduled)
+
+    game._start_intensity_ramp = recording_start
+    return game, targets
+
+
+def _fast_ramp_patches():
+    config = GamePerformanceConfig(countdown_phase_duration_ms=50, winner_rainbow_duration_ms=200)
+    ramp_flags = {"tempo.ramp_up_seconds": 0.1, "tempo.ramp_down_seconds": 0.15}
+    real_read = base_module.read_float_flag
+
+    def read_flag(domain, key, default, game_id=None):
+        if key in ramp_flags:
+            return ramp_flags[key]
+        return real_read(domain, key, default, game_id=game_id)
+
+    return (
+        patch.object(get_config_manager(), "get_config", return_value=config),
+        patch.object(base_module, "read_float_flag", side_effect=read_flag),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="main", steps=[2, 3, 4], br=["BR-005", "BR-006"])
+@pytest.mark.uc("UC-043", flow="main", br=["BR-004"])
+async def test_shadow_game_sends_no_audio_rpc_but_keeps_its_schedule():
+    """UC-031 BR-006 / UC-043 BR-004: a shadow game makes no audio RPC, its intensity still alternates."""
+    log: list = []
+    game, targets = _tempo_loop_game(RecordingAudio(log), "test_uc031_shadow_silent", shadow=True)
+    patch_config, patch_flags = _fast_ramp_patches()
+    with patch_config, patch_flags:
+        await asyncio.wait_for(game.run(), timeout=15.0)
+
+    assert log == []
+    assert len(targets) >= 2
+    assert targets == [1.0 if i % 2 == 0 else 0.0 for i in range(len(targets))]
+
+
+class TrackModelAudio:
+    """A shared audio service: PlayMusic replaces the track, ChangeTempo needs the current track id."""
+
+    def __init__(self):
+        self.track = None
+        self.plays = 0
+        self.stops = 0
+        self.tempo_ok = 0
+        self.tempo_refused = 0
+
+    async def SetVolume(self, request):  # noqa: N802 - gRPC stub name
+        return audio_pb2.SetVolumeResponse(success=True)
+
+    async def PlaySound(self, request):  # noqa: N802 - gRPC stub name
+        return audio_pb2.PlaySoundResponse(success=True)
+
+    async def PlayMusic(self, request):  # noqa: N802 - gRPC stub name
+        self.plays += 1
+        self.track = f"track-{self.plays}"
+        return audio_pb2.PlayMusicResponse(track_id=self.track, success=True)
+
+    async def StopMusic(self, request):  # noqa: N802 - gRPC stub name
+        self.stops += 1
+        self.track = None
+        return audio_pb2.StopMusicResponse(success=True)
+
+    async def ChangeTempo(self, request):  # noqa: N802 - gRPC stub name
+        if request.track_id == self.track:
+            self.tempo_ok += 1
+            return audio_pb2.ChangeTempoResponse(success=True)
+        self.tempo_refused += 1
+        return audio_pb2.ChangeTempoResponse(success=False, error="track mismatch")
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="main", br=["BR-006"])
+@pytest.mark.uc("UC-043", flow="main", br=["BR-004"])
+async def test_real_game_keeps_its_track_next_to_a_shadow_game():
+    """UC-031 BR-006 / UC-043 BR-004: a shadow game started during a real game does not replace its track."""
+    audio = TrackModelAudio()
+    real, _ = _tempo_loop_game(audio, "test_uc031_real_next_to_shadow", shadow=False)
+    shadow, _ = _tempo_loop_game(audio, "test_uc031_shadow_next_to_real", shadow=True)
+    patch_config, patch_flags = _fast_ramp_patches()
+    with patch_config, patch_flags:
+        await asyncio.wait_for(asyncio.gather(real.run(), shadow.run()), timeout=20.0)
+
+    assert audio.plays == 1  # the real game's only
+    assert audio.stops == 1  # the real game's teardown only
+    assert audio.tempo_refused == 0
+    assert audio.tempo_ok >= 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="main", br=["BR-006"])
+@pytest.mark.uc("UC-043", flow="main", br=["BR-004"])
+async def test_volume_intervention_and_revert_skip_a_shadow_game():
+    """UC-031 BR-006: adjust_volume and its revert on a shadow game send no SetVolume; the real game's still do."""
+    spec = next(s for s in INTERVENTION_SPECS if s.flag_key == "volume_override")
+    log: list = []
+    shadow_log: list = []
+    real = FFAGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=2),
+        event_publisher=EventCollector().publish,
+        audio_client=RecordingAudio(log),
+        game_id="test_uc031_vol_real",
+    )
+    shadow = FFAGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=2),
+        event_publisher=EventCollector().publish,
+        audio_client=RecordingAudio(shadow_log),
+        game_id="test_uc031_vol_shadow",
+    )
+    shadow.game_kind = "shadow"
+    manager = InterventionManager(event_publisher=EventCollector().publish, get_game=lambda: real)
+
+    for game in (shadow, real):
+        ctx = InterventionContext(spec=spec, value=0.3, payload="", target_serial=None, game=game, objective="balanced")
+        await manager._handle_volume_override(ctx)
+        await manager._handle_volume_revert(ctx)
+
+    assert shadow_log == []
+    assert [call for call, _ in log] == ["SetVolume", "SetVolume"]
