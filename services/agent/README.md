@@ -916,9 +916,11 @@ table to keep in sync with the code. Live gates (`enabled`, `interventions_enabl
 > | `experiments_enabled` | `AGENT_EXPERIMENTS_ENABLED` |
 > | `experiment_dynamic_enabled` | `AGENT_EXPERIMENT_DYNAMIC_ENABLED` |
 > | `experiment_tick_seconds` | `AGENT_EXPERIMENT_TICK_SECONDS` |
-> | `experiment_dynamic_max_concurrent` | `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` |
+> | `experiment_dynamic_max_concurrent` | _none — compiled 3; `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` is a ceiling, effective = min(env, flag) (#1810, C-034)_ |
 > | `experiment_shadow_effective_concurrency` | `AGENT_SHADOW_EFFECTIVE_CONCURRENCY` |
-> | `experiment_max_games` | `AGENT_EXPERIMENT_MAX_GAMES` |
+> | `experiment_max_games` | _none — compiled 50; `AGENT_EXPERIMENT_MAX_GAMES` is a ceiling, effective = min(env, flag), 0 = no limit (#1810, C-034)_ |
+> | `experiment_completed_grace_seconds` (#1810) | `AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS` (0 = off) |
+> | `experiment_proposer_enabled` (#1810) | _none — reads false when unresolved; ANDed with the `AGENT_EXPERIMENT_PROPOSER_ENABLED` ceiling for both proposers (C-034)_ |
 > | `verdict_min_n` | `AGENT_VERDICT_MIN_N` |
 > | `verdict_min_pairs` | `AGENT_VERDICT_MIN_PAIRS` |
 > | `verdict_effect_threshold` (#1214) | _none — `DefaultEffectThreshold` (0.5)_ |

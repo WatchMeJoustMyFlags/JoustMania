@@ -70,8 +70,12 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     # ---- agent: tuning knobs with a built-in fallback ----
     ("agent", "AGENT_EFFECT_WINDOW_SECONDS"): _TUNING
     + " (decision.DefaultEffectWindow)",
-    ("agent", "AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS"): _TUNING,
-    ("agent", "AGENT_EXPERIMENT_MAX_GAMES"): _TUNING,
+    ("agent", "AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS"): _TUNING
+    + " (fallback of the experiment_completed_grace_seconds flag, #1810)",
+    (
+        "agent",
+        "AGENT_EXPERIMENT_MAX_GAMES",
+    ): "operator ceiling (C-034, #1810): unset = no ceiling, the experiment_max_games flag governs",
     ("agent", "AGENT_MAX_SHADOW_GAMES"): _TUNING,
     ("agent", "AGENT_SHADOW_EFFECTIVE_CONCURRENCY"): _TUNING,
     ("agent", "AGENT_VERDICT_MIN_N"): _TUNING,

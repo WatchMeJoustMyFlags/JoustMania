@@ -712,10 +712,10 @@ func main() {
 		}
 		// Action sink (#730/#1213): the shared GatedActionSink applies decisions as
 		// game-scoped writes to the flag service (#1411) ONLY when the
-		// LIVE interventions_enabled flag is on; otherwise it discards them (NoopActions
-		// behavior) — gate read per Apply, fail-closed on a flagd outage. The one sink is
+		// LIVE interventions_enabled flag is on; otherwise it discards them (the loop's
+		// discardActions default behavior) — gate read per Apply, fail-closed on a flagd outage. The one sink is
 		// safe to share across loops (no per-game state). The nil guard is defensive: a
-		// nil sink would leave the loop's default NoopActions in place.
+		// nil sink would leave the loop's default discardActions in place.
 		if sharedSink != nil {
 			loop.Actions = sharedSink
 		}
@@ -816,8 +816,8 @@ func main() {
 	//
 	// The Backend is the inference seam (Backend.Infer): the Claude text backend when
 	// AGENT_INFERENCE_BACKEND=claude (#1234), else the proposeBackend stub, so every
-	// propose cycle degrades to NO proposal, NO error. The engine flag
-	// (agent.code_improvement.engine) is read live and recorded on the span.
+	// propose cycle degrades to NO proposal, NO error. (code_improvement.engine,
+	// once recorded on the span, was retired in #1810, D-A10.)
 	// The vocab provider reads the experiment catalog from the flag service so the
 	// model is constrained to (and the decoder validates against) the flags the
 	// registry lets an experiment write (flags.md §13.3).
@@ -846,8 +846,12 @@ func main() {
 		decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCap, "proposer", logger)))
 	// #1270: the kill-switch gate, read at USE time on every game end (never cached
 	// at startup: flagd may be down then). Both `enabled` and `experiments_enabled`
-	// must be on, the same two gates the experiment loop obeys (FR-066).
-	permitPropose := proposerPermit(agentFlags, experimentsEnabled())
+	// must be on, the same two gates the experiment loop obeys (FR-066), and the
+	// proposer gate (#1810, C-034, FR-152 d): the AGENT_EXPERIMENT_PROPOSER_ENABLED
+	// ceiling AND the live experiment_proposer_enabled flag, the same gate the
+	// retro-seeded thesis proposer obeys. A closed gate skips before any model call,
+	// so it spends no budget.
+	permitPropose := proposerPermit(agentFlags, experimentsEnabled(), proposerEnabled())
 	// Propose on each GAME END, behind the kill switch + experiments_enabled, the
 	// cadence floor (code_improvement.min_interval_seconds, read live) and, for a
 	// real backend, the shared LLM call gate: proposing is an expensive LLM call, so
@@ -865,7 +869,6 @@ func main() {
 				n.GameMode = *c.Session.GameMode
 			}
 			proposer.ProposeOnce(ctx, n, experiment.ProposerConfig{
-				Engine:      cfg.Engine,
 				MinInterval: cfg.MinInterval,
 				Permit:      permitPropose,
 				GameKind:    c.GameKind,
@@ -1103,6 +1106,7 @@ func (b inferBackend) Infer(ctx context.Context, prompt llm.Prompt) (string, err
 type proposerGateFlags interface {
 	AgentEnabled(ctx context.Context) bool
 	ExperimentsEnabled(ctx context.Context, def bool) bool
+	ExperimentProposerEnabled(ctx context.Context) bool
 }
 
 // proposerPermit builds the experiment.ProposerConfig.Permit gate (#1270): a
@@ -1111,8 +1115,10 @@ type proposerGateFlags interface {
 // obeys (allocateIfEnabled). Both are read LIVE on every call. `enabled` fails
 // closed when flagd is unreachable; `experiments_enabled` falls back to
 // experimentsDefault (AGENT_EXPERIMENTS_ENABLED, default false), the same fallback
-// the experiment loop uses, so the two never disagree.
-func proposerPermit(src proposerGateFlags, experimentsDefault bool) func(ctx context.Context) (bool, string) {
+// the experiment loop uses, so the two never disagree. The proposer gate (#1810,
+// C-034, FR-152 d) is proposerCeiling (AGENT_EXPERIMENT_PROPOSER_ENABLED, read once
+// at startup) AND the live experiment_proposer_enabled flag (false when unresolved).
+func proposerPermit(src proposerGateFlags, experimentsDefault, proposerCeiling bool) func(ctx context.Context) (bool, string) {
 	return func(ctx context.Context) (bool, string) {
 		// UC-045 BR-002: with the agent off the proposer makes no model call and writes nothing.
 		if !src.AgentEnabled(ctx) {
@@ -1120,6 +1126,9 @@ func proposerPermit(src proposerGateFlags, experimentsDefault bool) func(ctx con
 		}
 		if !src.ExperimentsEnabled(ctx, experimentsDefault) {
 			return false, experiment.SkipReasonExperimentsDisabled
+		}
+		if !proposerCeiling || !src.ExperimentProposerEnabled(ctx) {
+			return false, experiment.SkipReasonProposerDisabled
 		}
 		return true, ""
 	}

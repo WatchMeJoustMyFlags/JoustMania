@@ -493,17 +493,16 @@ func TestLifecycle_NonPositiveFallsBack(t *testing.T) {
 	}
 }
 
-// TestCodeImprovement covers the M7-4 propose-stage flags (#931): the engine and
-// cadence resolve from configured values, and fall back to safe defaults on an
+// TestCodeImprovement covers the M7-4 propose-stage flag (#931): the cadence
+// resolves from configured values, and fall back to safe defaults on an
 // evaluation error (flagd unreachable / undefined).
 func TestCodeImprovement(t *testing.T) {
 	t.Run("configured values resolve", func(t *testing.T) {
 		ev := stubEvaluator{
-			strings: map[string]string{keyCodeImprovementEngine: "claude"},
-			floats:  map[string]float64{keyCodeImprovementMinInterval: 60},
+			floats: map[string]float64{keyCodeImprovementMinInterval: 60},
 		}
 		got := New(ev, nil).CodeImprovement(context.Background())
-		want := CodeImprovementConfig{Engine: "claude", MinInterval: 60 * time.Second}
+		want := CodeImprovementConfig{MinInterval: 60 * time.Second}
 		if got != want {
 			t.Errorf("CodeImprovement = %+v, want %+v", got, want)
 		}
@@ -511,12 +510,10 @@ func TestCodeImprovement(t *testing.T) {
 
 	t.Run("errors fall back to safe defaults", func(t *testing.T) {
 		ev := stubEvaluator{errs: map[string]error{
-			keyCodeImprovementEngine:      errors.New("flagd down"),
 			keyCodeImprovementMinInterval: errors.New("flagd down"),
 		}}
 		got := New(ev, nil).CodeImprovement(context.Background())
 		want := CodeImprovementConfig{
-			Engine:      DefaultCodeImprovementEngine,
 			MinInterval: time.Duration(DefaultCodeImprovementMinIntervalSeconds * float64(time.Second)),
 		}
 		if got != want {

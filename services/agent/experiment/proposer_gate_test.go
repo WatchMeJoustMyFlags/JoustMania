@@ -66,7 +66,7 @@ func TestProposeOnce_KillSwitchOrExperimentsOffDoesNothing(t *testing.T) {
 			p.SetLLMAdmission(adm)
 
 			res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{
-				Engine: "claude", MinInterval: time.Minute, Permit: tc.permit, GameKind: "real",
+				MinInterval: time.Minute, Permit: tc.permit, GameKind: "real",
 			})
 
 			if res.Outcome != ProposeDisabled || res.Reason != tc.reason {
@@ -94,7 +94,7 @@ func TestProposeOnce_KillSwitchOrExperimentsOffDoesNothing(t *testing.T) {
 func TestProposeOnce_DisabledCycleDoesNotAdvanceCadence(t *testing.T) {
 	backend := &fakeProposerBackend{response: validReply}
 	p, _, _, _ := proposerWithRecorder(t, backend)
-	cfg := ProposerConfig{Engine: "stub", MinInterval: time.Hour, Permit: denyPropose(SkipReasonAgentDisabled)}
+	cfg := ProposerConfig{MinInterval: time.Hour, Permit: denyPropose(SkipReasonAgentDisabled)}
 
 	if got := p.ProposeOnce(context.Background(), Narrative{}, cfg).Outcome; got != ProposeDisabled {
 		t.Fatalf("outcome = %q, want disabled", got)
@@ -117,7 +117,6 @@ func TestProposeOnce_SwitchedOffDuringInferenceDoesNotWrite(t *testing.T) {
 	p, svc, rec, _ := proposerWithRecorder(t, backend)
 
 	res := p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{
-		Engine: "claude",
 		Permit: func(context.Context) (bool, string) {
 			if on.Load() {
 				return true, ""
@@ -162,7 +161,7 @@ func TestProposeOnce_LLMAdmissionRefusedSkipsCall(t *testing.T) {
 	p, svc, rec, _ := proposerWithRecorder(t, backend)
 	adm := &fakeAdmission{ok: false, reason: "llm_budget_exhausted"}
 	p.SetLLMAdmission(adm)
-	cfg := ProposerConfig{Engine: "claude", MinInterval: time.Hour, Permit: allowPropose, GameKind: "real"}
+	cfg := ProposerConfig{MinInterval: time.Hour, Permit: allowPropose, GameKind: "real"}
 
 	res := p.ProposeOnce(context.Background(), Narrative{}, cfg)
 	if res.Outcome != ProposeLLMGated || res.Reason != "llm_budget_exhausted" {
@@ -199,7 +198,7 @@ func TestProposeOnce_CadenceGatedCycleDoesNotChargeBudget(t *testing.T) {
 	p, _, _, clk := proposerWithRecorder(t, backend)
 	adm := &fakeAdmission{ok: true}
 	p.SetLLMAdmission(adm)
-	cfg := ProposerConfig{Engine: "claude", MinInterval: time.Minute, Permit: allowPropose, GameKind: "real"}
+	cfg := ProposerConfig{MinInterval: time.Minute, Permit: allowPropose, GameKind: "real"}
 
 	if got := p.ProposeOnce(context.Background(), Narrative{}, cfg).Outcome; got != ProposeProposed {
 		t.Fatalf("cycle 1 = %q, want proposed", got)
@@ -228,7 +227,7 @@ func TestProposeOnce_ConcurrentGatedCyclesRaceClean(t *testing.T) {
 			if i%2 == 0 {
 				permit = denyPropose(SkipReasonAgentDisabled)
 			}
-			p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Engine: "claude", Permit: permit, GameKind: "real"})
+			p.ProposeOnce(context.Background(), Narrative{}, ProposerConfig{Permit: permit, GameKind: "real"})
 		}(i)
 	}
 	wg.Wait()

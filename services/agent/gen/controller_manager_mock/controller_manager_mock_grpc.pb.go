@@ -22,12 +22,10 @@ const (
 	MockControllerService_SimulateMovement_FullMethodName    = "/controller_manager_mock.MockControllerService/SimulateMovement"
 	MockControllerService_SimulateDeath_FullMethodName       = "/controller_manager_mock.MockControllerService/SimulateDeath"
 	MockControllerService_SimulateButton_FullMethodName      = "/controller_manager_mock.MockControllerService/SimulateButton"
-	MockControllerService_SetColor_FullMethodName            = "/controller_manager_mock.MockControllerService/SetColor"
 	MockControllerService_ResetController_FullMethodName     = "/controller_manager_mock.MockControllerService/ResetController"
 	MockControllerService_ListMockControllers_FullMethodName = "/controller_manager_mock.MockControllerService/ListMockControllers"
 	MockControllerService_GetColor_FullMethodName            = "/controller_manager_mock.MockControllerService/GetColor"
 	MockControllerService_StreamObservability_FullMethodName = "/controller_manager_mock.MockControllerService/StreamObservability"
-	MockControllerService_AddController_FullMethodName       = "/controller_manager_mock.MockControllerService/AddController"
 	MockControllerService_RemoveController_FullMethodName    = "/controller_manager_mock.MockControllerService/RemoveController"
 	MockControllerService_AddControllers_FullMethodName      = "/controller_manager_mock.MockControllerService/AddControllers"
 )
@@ -44,8 +42,6 @@ type MockControllerServiceClient interface {
 	SimulateDeath(ctx context.Context, in *DeathRequest, opts ...grpc.CallOption) (*DeathResponse, error)
 	// Simulate button press
 	SimulateButton(ctx context.Context, in *ButtonRequest, opts ...grpc.CallOption) (*ButtonResponse, error)
-	// Set LED color
-	SetColor(ctx context.Context, in *ColorRequest, opts ...grpc.CallOption) (*ColorResponse, error)
 	// Reset controller to idle
 	ResetController(ctx context.Context, in *ResetRequest, opts ...grpc.CallOption) (*ResetResponse, error)
 	// Get list of mock controllers
@@ -54,8 +50,6 @@ type MockControllerServiceClient interface {
 	GetColor(ctx context.Context, in *GetColorRequest, opts ...grpc.CallOption) (*GetColorResponse, error)
 	// Stream observable events from mock controllers (LED changes, button presses, etc.)
 	StreamObservability(ctx context.Context, in *ObservabilityRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ObservabilityEvent], error)
-	// Add a single mock controller dynamically
-	AddController(ctx context.Context, in *AddControllerRequest, opts ...grpc.CallOption) (*AddControllerResponse, error)
 	// Remove a mock controller
 	RemoveController(ctx context.Context, in *RemoveControllerRequest, opts ...grpc.CallOption) (*RemoveControllerResponse, error)
 	// Add multiple mock controllers at once
@@ -94,16 +88,6 @@ func (c *mockControllerServiceClient) SimulateButton(ctx context.Context, in *Bu
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ButtonResponse)
 	err := c.cc.Invoke(ctx, MockControllerService_SimulateButton_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *mockControllerServiceClient) SetColor(ctx context.Context, in *ColorRequest, opts ...grpc.CallOption) (*ColorResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ColorResponse)
-	err := c.cc.Invoke(ctx, MockControllerService_SetColor_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -159,16 +143,6 @@ func (c *mockControllerServiceClient) StreamObservability(ctx context.Context, i
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type MockControllerService_StreamObservabilityClient = grpc.ServerStreamingClient[ObservabilityEvent]
 
-func (c *mockControllerServiceClient) AddController(ctx context.Context, in *AddControllerRequest, opts ...grpc.CallOption) (*AddControllerResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AddControllerResponse)
-	err := c.cc.Invoke(ctx, MockControllerService_AddController_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *mockControllerServiceClient) RemoveController(ctx context.Context, in *RemoveControllerRequest, opts ...grpc.CallOption) (*RemoveControllerResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RemoveControllerResponse)
@@ -201,8 +175,6 @@ type MockControllerServiceServer interface {
 	SimulateDeath(context.Context, *DeathRequest) (*DeathResponse, error)
 	// Simulate button press
 	SimulateButton(context.Context, *ButtonRequest) (*ButtonResponse, error)
-	// Set LED color
-	SetColor(context.Context, *ColorRequest) (*ColorResponse, error)
 	// Reset controller to idle
 	ResetController(context.Context, *ResetRequest) (*ResetResponse, error)
 	// Get list of mock controllers
@@ -211,8 +183,6 @@ type MockControllerServiceServer interface {
 	GetColor(context.Context, *GetColorRequest) (*GetColorResponse, error)
 	// Stream observable events from mock controllers (LED changes, button presses, etc.)
 	StreamObservability(*ObservabilityRequest, grpc.ServerStreamingServer[ObservabilityEvent]) error
-	// Add a single mock controller dynamically
-	AddController(context.Context, *AddControllerRequest) (*AddControllerResponse, error)
 	// Remove a mock controller
 	RemoveController(context.Context, *RemoveControllerRequest) (*RemoveControllerResponse, error)
 	// Add multiple mock controllers at once
@@ -236,9 +206,6 @@ func (UnimplementedMockControllerServiceServer) SimulateDeath(context.Context, *
 func (UnimplementedMockControllerServiceServer) SimulateButton(context.Context, *ButtonRequest) (*ButtonResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SimulateButton not implemented")
 }
-func (UnimplementedMockControllerServiceServer) SetColor(context.Context, *ColorRequest) (*ColorResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method SetColor not implemented")
-}
 func (UnimplementedMockControllerServiceServer) ResetController(context.Context, *ResetRequest) (*ResetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResetController not implemented")
 }
@@ -250,9 +217,6 @@ func (UnimplementedMockControllerServiceServer) GetColor(context.Context, *GetCo
 }
 func (UnimplementedMockControllerServiceServer) StreamObservability(*ObservabilityRequest, grpc.ServerStreamingServer[ObservabilityEvent]) error {
 	return status.Errorf(codes.Unimplemented, "method StreamObservability not implemented")
-}
-func (UnimplementedMockControllerServiceServer) AddController(context.Context, *AddControllerRequest) (*AddControllerResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method AddController not implemented")
 }
 func (UnimplementedMockControllerServiceServer) RemoveController(context.Context, *RemoveControllerRequest) (*RemoveControllerResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RemoveController not implemented")
@@ -335,24 +299,6 @@ func _MockControllerService_SimulateButton_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
-func _MockControllerService_SetColor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ColorRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(MockControllerServiceServer).SetColor(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: MockControllerService_SetColor_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MockControllerServiceServer).SetColor(ctx, req.(*ColorRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _MockControllerService_ResetController_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ResetRequest)
 	if err := dec(in); err != nil {
@@ -418,24 +364,6 @@ func _MockControllerService_StreamObservability_Handler(srv interface{}, stream 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type MockControllerService_StreamObservabilityServer = grpc.ServerStreamingServer[ObservabilityEvent]
 
-func _MockControllerService_AddController_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AddControllerRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(MockControllerServiceServer).AddController(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: MockControllerService_AddController_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MockControllerServiceServer).AddController(ctx, req.(*AddControllerRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _MockControllerService_RemoveController_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RemoveControllerRequest)
 	if err := dec(in); err != nil {
@@ -492,10 +420,6 @@ var MockControllerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _MockControllerService_SimulateButton_Handler,
 		},
 		{
-			MethodName: "SetColor",
-			Handler:    _MockControllerService_SetColor_Handler,
-		},
-		{
 			MethodName: "ResetController",
 			Handler:    _MockControllerService_ResetController_Handler,
 		},
@@ -506,10 +430,6 @@ var MockControllerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetColor",
 			Handler:    _MockControllerService_GetColor_Handler,
-		},
-		{
-			MethodName: "AddController",
-			Handler:    _MockControllerService_AddController_Handler,
 		},
 		{
 			MethodName: "RemoveController",

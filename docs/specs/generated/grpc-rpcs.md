@@ -2,7 +2,7 @@
 
 # gRPC services (generated)
 
-Part of [services.md §3](../services.md#3-grpc-services). **39 RPCs in 7 services.**
+Part of [services.md §3](../services.md#3-grpc-services). **37 RPCs in 7 services.**
 
 ## `joustmania.audio.AudioService` (`proto/audio.proto`, 6 RPCs)
 
@@ -26,19 +26,17 @@ Part of [services.md §3](../services.md#3-grpc-services). **39 RPCs in 7 servic
 | `IdentifyController` | unary | `IdentifyControllerRequest` → `IdentifyControllerResponse` | Request → response: `IdentifyControllerRequest` (`serial`, `duration_ms`: 0 = 3000 ms, clamped to 500..10000) → `IdentifyControllerResponse` (`success`, `outcome`: `started` / `not_connected` / `in_game` / `reserved` / `invalid`, `error`, `duration_ms`: the duration used). Flash a controller white at 2 Hz and rumble it briefly, then restore its colour, so the operator can find it; refused for controllers that are not connected, reserved, or players of an open game gameplay stream, and cancelled when a game stream claims the controller (UC-004, FR-121) |
 | `WatchGameplayData` | server stream | `GameplayStreamConfig` → `GameplayDataUpdate` | Browser view of `StreamGameplayData` (#1595): one `GameplayStreamConfig` in (the dashboard sends `{updateFrequencyHz: 30}`), the `GameplayDataUpdate`s out. Served by connect-proxy only: it opens an unfiltered (observer) `StreamGameplayData` stream to the controller manager with only the rate (missing or 0 and below = 30 Hz, capped at 30 Hz; never colours), relays every update and closes that stream when the browser goes away; an upstream error ends the browser stream with it. The controller manager itself answers UNIMPLEMENTED (UC-035 MSS) |
 
-## `controller_manager_mock.MockControllerService` (`proto/controller_manager_mock.proto`, 11 RPCs)
+## `controller_manager_mock.MockControllerService` (`proto/controller_manager_mock.proto`, 9 RPCs)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
 | `SimulateMovement` | unary | `MovementRequest` → `MovementResponse` | Simulate controller movement: holds the acceleration vector on that controller (every poll and gameplay frame reports it) until the next call or `ResetController`; a `SimulateDeath` latch overrides it for its frames; a NaN/infinite component returns `INVALID_ARGUMENT` (UC-003 BR-002, #1279) |
 | `SimulateDeath` | unary | `DeathRequest` → `DeathResponse` | Simulate death (high acceleration) |
 | `SimulateButton` | unary | `ButtonRequest` → `ButtonResponse` | Simulate button press |
-| `SetColor` | unary | `ColorRequest` → `ColorResponse` | Set LED color directly; no observability event, the next system LED write replaces it (UC-003 A5) |
 | `ResetController` | unary | `ResetRequest` → `ResetResponse` | Reset controller to idle: buttons released, death latch and held movement cleared, acceleration back to resting noise (UC-003 A3) |
 | `ListMockControllers` | unary | `ListRequest` → `ListResponse` | Get list of mock controllers with reserved flag and owner tag (UC-003 A6) |
 | `GetColor` | unary | `GetColorRequest` → `GetColorResponse` | Get current LED color of a controller |
 | `StreamObservability` | server stream | `ObservabilityRequest` → `ObservabilityEvent` | Stream observable events from mock controllers (LED changes, button presses, etc.) |
-| `AddController` | unary | `AddControllerRequest` → `AddControllerResponse` | Add a single mock controller dynamically |
 | `RemoveController` | unary | `RemoveControllerRequest` → `RemoveControllerResponse` | Remove (disconnect) a mock controller; a pattern controller returns its replay record (UC-003 A4, UC-046 step 8) |
 | `AddControllers` | unary | `AddControllersRequest` → `AddControllersResponse` | Add multiple mock controllers at once |
 

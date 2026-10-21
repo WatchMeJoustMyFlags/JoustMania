@@ -236,22 +236,6 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             logger.error(f"SimulateButton error: {e}")
             return controller_manager_mock_pb2.ButtonResponse(success=False, error=str(e))
 
-    def SetColor(self, request, _context):
-        """Set controller LED color."""
-        try:
-            serial = request.serial
-            if serial not in self.backend.controllers:
-                return controller_manager_mock_pb2.ColorResponse(success=False, error=f"Controller {serial} not found")
-
-            self.backend.controllers[serial]["led"] = {"r": request.r, "g": request.g, "b": request.b}
-
-            logger.info(f"Mock: Set LED for {serial} to RGB({request.r}, {request.g}, {request.b})")
-            return controller_manager_mock_pb2.ColorResponse(success=True, error="")
-
-        except Exception as e:
-            logger.error(f"SetColor error: {e}")
-            return controller_manager_mock_pb2.ColorResponse(success=False, error=str(e))
-
     def ResetController(self, request, _context):
         """Reset controller to idle state."""
         try:
@@ -326,21 +310,6 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
         except Exception as e:
             logger.error(f"GetColor error: {e}")
             return controller_manager_mock_pb2.GetColorResponse(success=False, error=str(e))
-
-    def AddController(self, request, _context):
-        """Add a single mock controller dynamically.
-
-        When request.reserved is set, the controller is hidden from
-        button-stream consumers (the menu); request.tag identifies the owner.
-        """
-        try:
-            serial = request.serial if request.serial else None
-            added_serial = self.backend.add_controller(serial, reserved=request.reserved, tag=request.tag)
-            logger.info(f"Mock: Added controller {added_serial} (reserved={request.reserved}, tag={request.tag!r})")
-            return controller_manager_mock_pb2.AddControllerResponse(success=True, serial=added_serial)
-        except Exception as e:
-            logger.error(f"AddController error: {e}")
-            return controller_manager_mock_pb2.AddControllerResponse(success=False, error=str(e), serial="")
 
     def RemoveController(self, request, _context):
         """Remove a mock controller; a pattern controller returns its replay record (UC-046 step 8)."""

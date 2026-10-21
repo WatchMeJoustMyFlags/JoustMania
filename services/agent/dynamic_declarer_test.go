@@ -371,6 +371,8 @@ func dynCfg(maxConcurrent int) flags.ExperimentConfig {
 		DynamicEnabled:             true,
 		DynamicMaxConcurrent:       maxConcurrent,
 		ShadowEffectiveConcurrency: 4,
+		// The proposer gate's flag half (#1810); the env half is set per test.
+		ProposerEnabled: true,
 	}
 }
 

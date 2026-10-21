@@ -286,14 +286,6 @@
       },
       "defaultVariant": "default"
     },
-    "code_improvement.engine": {
-      "state": "ENABLED",
-      "variants": {
-        "stub": "stub",
-        "claude": "claude"
-      },
-      "defaultVariant": "stub"
-    },
     "code_improvement.min_interval_seconds": {
       "state": "ENABLED",
       "variants": {
@@ -416,6 +408,24 @@
         "unlimited": 0
       },
       "defaultVariant": "default"
+    },
+    "experiment_completed_grace_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "short": 30,
+        "default": 60,
+        "long": 120
+      },
+      "defaultVariant": "default"
+    },
+    "experiment_proposer_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
     },
     "experiment.mock_archetypes": {
       "state": "ENABLED",

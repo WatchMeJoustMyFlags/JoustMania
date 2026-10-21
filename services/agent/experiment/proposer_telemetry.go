@@ -25,10 +25,6 @@ const (
 )
 
 const (
-	// AttrEngine is the resolved agent.code_improvement.engine value (#931 AC).
-	// Attribution only: the propose backend is selected by AGENT_INFERENCE_BACKEND
-	// (stub | claude) in main.go, not by this flag (#1234).
-	AttrEngine = "code_improvement.engine"
 	// AttrProposedDiffSummary records the structured experiment the model proposed
 	// (#931 AC "proposed diff summary + full reasoning visible as a span"). Since
 	// the rescope has no source diff, this is the compact "set flag=value for
