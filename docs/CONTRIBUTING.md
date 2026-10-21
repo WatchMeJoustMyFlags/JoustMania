@@ -53,6 +53,15 @@ JoustMania follows the [AI Unified Process (AIUP)](https://aiup.dev):
 Every change that alters observable behaviour updates the spec *before* the code,
 in the same PR or in a preceding one. Start at the [docs index](README.md).
 
+### Configuration: flags, not environment variables (C-035)
+
+Anything an operator may want to change while the system runs is a **flagd flag** (declared variants, read at use time,
+a row in [flags.md](specs/flags.md) first), never a new environment variable: env vars need a restart and can't be
+changed on stage. Env vars are only for bootstrap values needed before flagd is reachable (hosts, ports, URLs), secrets,
+OTEL/deploy identity, the flag service's own config, startup-only values that cannot be read from flagd (justified in
+flags.md §15.2), and agent safety ceilings, where the env var is the ceiling and a
+flag may only tighten it ([C-034](requirements.md)). Reviewers flag a new env-only tunable.
+
 ### The spec tree
 
 | Layer | File(s) | AIUP skill | Holds |
