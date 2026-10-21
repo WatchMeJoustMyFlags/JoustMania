@@ -21,7 +21,7 @@ import logging
 import sys
 import threading
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, call, patch
 
 import pytest
 
@@ -35,6 +35,7 @@ sys.path.insert(0, str(test_dir))
 from lib.types import GameEvent
 from proto import game_coordinator_pb2
 from services.game_coordinator import game_session as game_session_mod
+from services.game_coordinator import metrics
 from services.game_coordinator.servicer import GameCoordinatorServicer
 
 # Patch target: stops the real game thread from spinning up while still
@@ -879,12 +880,44 @@ class TestGameIdRouting:
         assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
 
 
+class _BlockingGameThread:
+    """Stands in for a shadow session's live game thread (#1816).
+
+    ``GameSession.force_end`` sees it alive and joins it in the executor; the join
+    blocks until the test sets ``release``, so the real force_end is suspended at
+    its join exactly as with a game thread that takes its 2 s to stop.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self._loop = loop
+        self.release = threading.Event()
+        self.entered = asyncio.Event()
+        self.joins = 0
+
+    def is_alive(self) -> bool:
+        return not self.release.is_set()
+
+    def join(self, timeout: float | None = None) -> None:
+        self.joins += 1
+        self._loop.call_soon_threadsafe(self.entered.set)
+        self.release.wait(timeout)
+
+
+def _give_blocking_thread(session) -> _BlockingGameThread:
+    thread = _BlockingGameThread(asyncio.get_running_loop())
+    session.game_thread = thread
+    return thread
+
+
 class TestShadowGameGovernance:
     """Origin marking + resource gate + preemption (#837)."""
 
     @pytest.fixture
     def servicer(self):
-        return GameCoordinatorServicer()
+        servicer = GameCoordinatorServicer()
+        yield servicer
+        # #1816: no preemption task outlives its test.
+        assert not servicer._shadow_preemptions
 
     @pytest.fixture
     def cap_two(self):
@@ -980,6 +1013,221 @@ class TestShadowGameGovernance:
             ok, error = await servicer._start_game_from_config(_shadow_config(serials=("s3", "s4")), _MockSpan())
         assert ok is False
         assert error == "Shadow games blocked while a real game is running"
+
+    # -- Preemption survives a cancelled real start (#1816) ------------------
+
+    @staticmethod
+    def _drain(queue):
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+        return [e for e in events if e.event_type == "game_force_ended"]
+
+    @staticmethod
+    def _record_retires(servicer, game_id):
+        retired = asyncio.Event()
+        real_retire = servicer._retire_session
+
+        def retire(gid):
+            real_retire(gid)
+            if gid == game_id:
+                retired.set()
+
+        servicer._retire_session = retire
+        return retired
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-043", flow="A2")
+    @pytest.mark.uc("UC-046", flow="A8")
+    @pytest.mark.nfr("NFR-018")
+    async def test_cancelled_real_start_still_retires_the_shadow_it_preempted(self, servicer):
+        """#1816: a cancel of the real start while the shadow's force end joins its
+        thread (first pass, before admission) does not stop the preemption: the
+        shadow is force-ended, publishes game_force_ended and frees its cap slot."""
+        with _caps(concurrent=8, shadow=1), patch.object(metrics, "shadow_games_preempted_total") as preempted:
+            gid_s, shadow = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+            thread = _give_blocking_thread(shadow)
+            q = await shadow.event_bus.subscribe("watch")
+            retired = self._record_retires(servicer, gid_s)
+
+            with _NO_THREAD:
+                start = asyncio.create_task(servicer._start_game_from_config(_config(), _MockSpan()))
+                async with asyncio.timeout(2.0):
+                    await thread.entered.wait()
+                assert servicer._primary_game_id is None
+                start.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await start
+            assert gid_s in servicer.sessions  # the join is still blocked
+
+            thread.release.set()
+            async with asyncio.timeout(2.0):
+                await retired.wait()
+
+            assert gid_s not in servicer.sessions
+            force_ended = self._drain(q)
+            assert [e.data["reason"] for e in force_ended] == ["preempted_by_real_game"]
+            preempted.inc.assert_called_once_with()
+            assert servicer._flag_service_live_games() == []
+            # The shadow-cap slot (cap 1) is free again.
+            with _NO_THREAD:
+                ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("s3", "s4")), _MockSpan())
+            assert ok is True, gid
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-043", flow="A2")
+    @pytest.mark.uc("UC-046", flow="A8")
+    @pytest.mark.nfr("NFR-018")
+    async def test_cancelled_real_start_after_admission_still_retires_the_shadow(self, servicer):
+        """#1816 twin: the cancel lands in the pass after admission (#1404); the
+        admitted primary is aborted (UC-010 BR-007) and the shadow is still retired."""
+        real_preempt = servicer._preempt_shadow_sessions
+        late: dict = {}
+        late_started = asyncio.Event()
+
+        async def preempt_while_a_shadow_starts():
+            preempted = await real_preempt()
+            if not late:
+                ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("s1", "s2")), _MockSpan())
+                assert ok is True, gid
+                late["gid"], late["session"] = gid, servicer.sessions[gid]
+                await late["session"].event_bus.publish(GameEvent.GAME_STARTED, {"game_id": gid})
+                late["thread"] = _give_blocking_thread(late["session"])
+                late["queue"] = await late["session"].event_bus.subscribe("watch")
+                late["retired"] = self._record_retires(servicer, late["gid"])
+                late_started.set()
+            return preempted
+
+        servicer._preempt_shadow_sessions = preempt_while_a_shadow_starts
+        with _caps(concurrent=8, shadow=1), _NO_THREAD:
+            start = asyncio.create_task(servicer._start_game_from_config(_config(), _MockSpan()))
+            async with asyncio.timeout(2.0):
+                await late_started.wait()
+                await late["thread"].entered.wait()
+            gid_real = servicer._primary_game_id
+            assert gid_real is not None
+            start.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await start
+            assert gid_real not in servicer.sessions
+            assert late["gid"] in servicer.sessions
+
+            late["thread"].release.set()
+            async with asyncio.timeout(2.0):
+                await late["retired"].wait()
+
+            assert set(servicer.sessions) == set()
+            assert servicer._primary_game_id is None
+            assert [e.data["reason"] for e in self._drain(late["queue"])] == ["preempted_by_real_game"]
+            ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("s3", "s4")), _MockSpan())
+            assert ok is True, gid
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-043", flow="A2")
+    @pytest.mark.uc("UC-046", flow="A8")
+    async def test_second_real_start_reuses_the_preemption_under_way(self, servicer):
+        """#1816: a real start that follows a cancelled one while the shadow's force
+        end still joins waits for that preemption: one force end, one
+        game_force_ended, one count, and the second start is admitted."""
+        with _caps(concurrent=8, shadow=1), patch.object(metrics, "shadow_games_preempted_total") as preempted:
+            gid_s, shadow = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+            thread = _give_blocking_thread(shadow)
+            q = await shadow.event_bus.subscribe("watch")
+
+            with _NO_THREAD:
+                first = asyncio.create_task(servicer._start_game_from_config(_config(), _MockSpan()))
+                async with asyncio.timeout(2.0):
+                    await thread.entered.wait()
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+
+                second_entered = asyncio.Event()
+                real_preempt = servicer._preempt_shadow_sessions
+
+                async def preempt():
+                    second_entered.set()
+                    return await real_preempt()
+
+                servicer._preempt_shadow_sessions = preempt
+                second = asyncio.create_task(servicer._start_game_from_config(_config(), _MockSpan()))
+                async with asyncio.timeout(2.0):
+                    await second_entered.wait()
+                # The second start now waits on the preemption; let the join end.
+                thread.release.set()
+                async with asyncio.timeout(2.0):
+                    ok, gid_real = await second
+
+            assert ok is True, gid_real
+            assert servicer._primary_game_id == gid_real
+            assert gid_s not in servicer.sessions
+            assert thread.joins == 1
+            assert [e.data["reason"] for e in self._drain(q)] == ["preempted_by_real_game"]
+            preempted.inc.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-043", flow="A2")
+    async def test_preemption_does_not_retire_a_shadow_the_ended_sweep_retired(self, servicer):
+        """#1816: the shadow's thread ends the game naturally while its preemption
+        joins it, and the next start's ENDED sweep retires it first; the
+        preemption completing afterwards does not end it at the flag service again."""
+        with _caps(concurrent=8, shadow=1):
+            gid_s, shadow = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+            thread = _give_blocking_thread(shadow)
+
+            with _NO_THREAD, patch.object(servicer.flag_service, "end") as flag_end:
+                start = asyncio.create_task(servicer._start_game_from_config(_config(), _MockSpan()))
+                async with asyncio.timeout(2.0):
+                    await thread.entered.wait()
+                start.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await start
+                _shadow, pending = servicer._shadow_preemptions[gid_s]
+
+                # The game thread ends the game itself (natural end) ...
+                with shadow._state_lock:
+                    shadow.game_state = game_coordinator_pb2.GameState.ENDED
+                # ... and the next start's sweep retires it.
+                ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("s3", "s4")), _MockSpan())
+                assert ok is True, gid
+                assert gid_s not in servicer.sessions
+
+                thread.release.set()
+                async with asyncio.timeout(2.0):
+                    assert await pending is True
+
+            assert [c for c in flag_end.call_args_list if c.args == (gid_s,)] == [call(gid_s)]
+            assert gid in servicer.sessions
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-043", flow="A2")
+    async def test_shutdown_waits_for_a_pending_preemption(self, servicer):
+        """#1816: shutdown lets a preemption whose real start was cancelled finish
+        before it stops the flag-service lifecycle, so the shadow's end is queued
+        while the lifecycle still runs."""
+        gid_s, shadow = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+        thread = _give_blocking_thread(shadow)
+        registered_at_stop = []
+
+        async def stop():
+            registered_at_stop.append(gid_s in servicer.sessions)
+
+        with _NO_THREAD:
+            start = asyncio.create_task(servicer._start_game_from_config(_config(), _MockSpan()))
+            async with asyncio.timeout(2.0):
+                await thread.entered.wait()
+            start.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await start
+
+        with patch.object(servicer.flag_service, "stop", stop):
+            shutdown = asyncio.create_task(servicer.shutdown())
+            await asyncio.sleep(0)  # shutdown runs up to its first await
+            thread.release.set()
+            async with asyncio.timeout(5.0):
+                await shutdown
+
+        assert registered_at_stop == [False]
 
     @pytest.mark.asyncio
     async def test_agent_origin_start_is_shadow_even_when_idle(self, servicer):
