@@ -5,7 +5,7 @@ Tracks player movement patterns, acceleration data, and near-death events
 during games for post-game analysis and real-time dashboards.
 
 Key features:
-- Per-frame sampling of acceleration (and optionally gyroscope)
+- Per-frame sampling of acceleration
 - Movement zone classification (still/active/warning/danger)
 - Near-death event detection (raw > threshold but EMA saved player)
 - Per-game summary statistics

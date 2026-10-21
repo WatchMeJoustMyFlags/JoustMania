@@ -31,8 +31,6 @@ class AnalyticsConfig:
     # Master toggle
     enabled: bool = True
 
-    # Feature toggles
-
     # Zone thresholds (in g-force units, ~4096 raw = 1g). Defaults promoted to
     # the agent domain `perception.zone_*` flags (#766 F4); the values here are
     # the behavior-neutral fallbacks used when flagd is unavailable/malformed.
