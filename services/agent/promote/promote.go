@@ -318,18 +318,24 @@ type Promoter struct {
 	// autonomous write with RevertOnKillSwitch (killswitch.go, #1704).
 	killEpoch uint64
 	killMu    sync.Mutex
+
+	// rewatchJournal receives a re-watch revert's outcome for its experiment
+	// (UC-043 step 7, #1883); nil leaves it logged only. Guarded by mu.
+	rewatchJournal RewatchJournal
 }
 
 // appliedPromotion is one autonomous real default this agent run wrote and has not
 // reverted (#1704). cancel stops its background re-watch (nil when none runs);
 // syncPending is true while its Promote call runs; killed is set when the kill
-// switch took it. Guarded by Promoter.mu.
+// switch took it; rewatchFailReported is set once a failed re-watch revert of it
+// was journaled (journalRewatch only, #1883). Guarded by Promoter.mu.
 type appliedPromotion struct {
-	proposal     experiment.Proposal
-	cancel       context.CancelFunc
-	syncPending  bool
-	killed       bool
-	killReverted bool
+	proposal            experiment.Proposal
+	cancel              context.CancelFunc
+	syncPending         bool
+	killed              bool
+	killReverted        bool
+	rewatchFailReported bool
 }
 
 // DefaultRevertCooldown is the default post-revert cooldown before the same flag may
