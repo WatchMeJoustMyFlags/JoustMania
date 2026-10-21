@@ -484,8 +484,9 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             ]:
                 ended_session = self.sessions.pop(ended_id, None)
                 self.intervention_manager.forget_session(ended_id)
-                # Queued, not sent: no network call under the lock.
-                self.flag_service.end(ended_id)
+                # Queued, not sent: no network call under the lock. Usually the
+                # game thread already queued it at its end (#1847).
+                self._queue_flag_service_end_locked(ended_id, ended_session)
                 if ended_session is not None:
                     # Mirror _retire_session: drop this session's game_id-labeled
                     # gauge series so naturally-ended shadows don't leak series
@@ -598,6 +599,8 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 arm=arm,
                 rng_seed=rng_seed,
             )
+            # The game thread reports the end to the flag service (#1847).
+            session.on_game_ended = self._on_session_game_ended
             # Shadow sessions own their bus; bind its state-sync to the
             # session so the bus updates that session's state directly.
             if game_kind == GAME_KIND_SHADOW:
@@ -852,6 +855,31 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             sessions = list(self.sessions.values())
         return [self._game_record(s) for s in sessions if s.game_state != game_coordinator_pb2.GameState.ENDED]
 
+    def _queue_flag_service_end_locked(self, game_id: str, session: GameSession | None) -> None:
+        """Queue the flag-service end of ``game_id`` once per session (#1847).
+
+        Caller holds ``_sessions_lock``. The game thread's end, the ENDED sweep,
+        a force end and a preemption can each reach a session's end; only the
+        first queues it. Without a session (already popped) the end is queued
+        unconditionally, as before #1847.
+        """
+        if session is not None:
+            if session.flag_service_end_queued:
+                return
+            session.flag_service_end_queued = True
+        self.flag_service.end(game_id)
+
+    def _on_session_game_ended(self, session: GameSession) -> None:
+        """Game-thread hook: the session's game ended (UC-053 step 7, #1847).
+
+        Queues only the flag-service end (thread-safe, no network call here).
+        The session stays registered, so GetGameState keeps answering ENDED until
+        the next start's sweep retires it; a force end or preemption retires it
+        right away. Runs on the game thread, which never holds ``_sessions_lock``.
+        """
+        with self._sessions_lock:
+            self._queue_flag_service_end_locked(session.game_id, session)
+
     def _retire_session(self, game_id: str) -> None:
         """Remove a finished session from the registry and free the primary slot
         if it owned it, so a new primary can start."""
@@ -859,7 +887,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             session = self.sessions.pop(game_id, None)
             self.intervention_manager.forget_session(game_id)
             # Queued, not sent: no network call under the lock (FR-135).
-            self.flag_service.end(game_id)
+            self._queue_flag_service_end_locked(game_id, session)
             if session is not None:
                 # Remove this session's game_id-labeled gauge series so the
                 # zeroed-but-persistent series don't accumulate as shadows churn
