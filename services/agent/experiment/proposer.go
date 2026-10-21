@@ -138,8 +138,8 @@ const (
 // and the retro also draw from. Admit returns ok=false with the gate reason when
 // the call must not be made, and records the gated metric itself. A local
 // interface keeps this package free of the decision package; main.go wires
-// decision.LLMAdmission. It is installed only when a REAL text backend is wired,
-// so a stub propose cycle (no model call) never charges the budget.
+// decision.LLMAdmission. It is always installed and consulted only for a real
+// cycle, so a stub propose cycle (no model call) never charges the budget.
 type LLMAdmission interface {
 	Admit(ctx context.Context, gameKind string) (ok bool, reason string)
 }
@@ -342,8 +342,8 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 
 	// Shared LLM call gate (#1270): eligibility of the triggering game kind and one
 	// slot of the global per-minute budget, AFTER the cadence floor so a
-	// cadence-gated cycle never spends a budget slot. Installed only for a real
-	// backend (nil = the stub, which makes no model call). On refusal the cadence
+	// cadence-gated cycle never spends a budget slot. Always installed;
+	// consulted only for a real cycle (a stub cycle makes no model call). On refusal the cadence
 	// admission is rolled back so the next game end can try again, and nothing is
 	// captured (no span), exactly like a budget-gated retro.
 	if real && p.admission != nil {

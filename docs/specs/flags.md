@@ -190,6 +190,8 @@ Human pre-game intent and game calibration: sensitivity, team counts, per-mode t
 | `max_concurrent_games` | int | four=4, eight=8, twelve=12, sixteen=16 | `eight` = 8 | N | game-coordinator: services/game_coordinator/servicer.py:85 (<- :480 admission) | none at runtime (baseline only, not in the experiment catalog) | live (per admission) |
 | `max_shadow_games` | int | one=1, two=2, four=4, eight=8 | `four` = 4 | N | game-coordinator: services/game_coordinator/servicer.py:114 (<- :475) | none at runtime (baseline only, not in the experiment catalog) | live (per admission) |
 | `tempo_schedule_mode` | string | rule="rule", agent="agent" | `rule` = "rule" | N | game-coordinator: services/game_coordinator/games/base.py:825 (init); services/game_coordinator/tempo_schedule.py:135 (re-read per live session on config change, handler :64) | none at runtime (baseline only, not in the experiment catalog) | live (event-driven per session) |
+| `tempo.ramp_up_seconds` | float | original=1.5, default=3.0, slow=5.0; `ci`=0.1 only in services/flagd/ci/game.json | `default` = 3.0 | N | game-coordinator: services/game_coordinator/games/base.py:3713 (`_read_ramp_seconds` <- `_start_intensity_ramp`, gameId ctx); seconds for a full 0 -> 1 intensity swing (UC-031 BR-005, #1833); a non-number, NaN, infinity or a value <= 0 gives the default, any other value is clamped to 0.1 to 10 s | stage overlay (§13.3); otherwise baseline only, not in the experiment catalog | live (per ramp: read at each ramp start, never per frame; a ramp in flight keeps its duration) |
+| `tempo.ramp_down_seconds` | float | original=1.5, default=1.5, slow=3.0; `ci`=0.1 only in services/flagd/ci/game.json | `default` = 1.5 | N | game-coordinator: services/game_coordinator/games/base.py:3715 (as `tempo.ramp_up_seconds`); seconds for a full 1 -> 0 swing; same validation | stage overlay (§13.3); otherwise baseline only, not in the experiment catalog | live (per ramp, as above) |
 | `sensitivity` | int | ultra_slow=0, slow=1, medium=2, fast=3, ultra_fast=4 | `medium` = 2 | Y(game_mode) | menu: services/menu/servicer.py:919 (_build_game_config :894, ctx game_mode set :911) | menu admin services/menu/handlers/admin.py:969 cycle_variant (lib/flag_service_writer.py, persisted admin value); agent experiment Writer services/agent/experiment/writer.go Apply (experiment-arm value through the flag service; experiment catalog, §13.3); promotion services/agent/promote/realdefault.go (`real` overlay) | per-game (read at game start by menu, sent in StartGameConfig) |
 | `num_teams` | int | two=2, three=3, four=4, five=5, six=6 | `two` = 2 | N | menu: services/menu/servicer.py:939/947/990 | menu admin services/menu/handlers/admin.py:1177/1230 (option_names :144-149) | per-game |
 | `random_assignment` | bool | on=true, off=false | `on` = true | N | menu: services/menu/servicer.py:940 | none at runtime (baseline only, not in the experiment catalog) (no longer cycled on device, services/menu/handlers/admin.py:137-140; unreachable feedback case services/menu/handlers/admin.py:1563) | per-game |
@@ -218,7 +220,7 @@ Human pre-game intent and game calibration: sensitivity, team counts, per-mode t
 | `werewolf.thresholds` | object | default=obj{warning,max} | `default` = object (see variants) | N | game-coordinator: services/game_coordinator/games/werewolf.py:125 | (single-variant: not experimentable) | per-game |
 | `windows` | object | default=obj{min_music_fast_time=4, max_music_fast_time=8, min_music_slow_time=10, max_music_slow_time=23, end_min_music_fast_time=6, end_max_music_fast_time=10, end_min_music_slow_time=8, end_max_music_slow_time=12}; calm=obj{min_music_fast_time=3, max_music_fast_time=6, min_music_slow_time=13, max_music_slow_time=30, end_min_music_fast_time=4, end_max_music_fast_time=7, end_min_music_slow_time=10, end_max_music_slow_time=16}; frantic=obj{min_music_fast_time=6, max_music_fast_time=11, min_music_slow_time=6, max_music_slow_time=14, end_min_music_fast_time=8, end_max_music_fast_time=14, end_min_music_slow_time=5, end_max_music_slow_time=8} (seconds) | `default` = object (see variants) | Y(targetingKey: `calm` → `calm`, `frantic` → `frantic`, else `default`) | game-coordinator: services/game_coordinator/games/base.py:808 (per-game); services/game_coordinator/difficulty_handlers.py:300 (read_object_flag_variant by preset name for pacing_profile intervention) | agent experiment Writer services/agent/experiment/writer.go Apply (experiment-arm value through the flag service; experiment catalog, §13.3); promotion services/agent/promote/realdefault.go (`real` overlay) | per-game (base) + live preset fetch on pacing_profile intervention |
 
-**Traceability:** FR-012, FR-013, FR-017, FR-018, FR-020 to FR-033, FR-062, FR-140 to FR-142 / UC-010, UC-012, UC-020 to UC-027, UC-030, UC-043 / `services/menu/servicer.py`, `services/menu/handlers/admin.py`, `services/game_coordinator/games/`, `services/game_coordinator/servicer.py`, `services/agent/experiment/writer.go` / `tests/service/test_tc005_admin_journey.py`, `tests/service/test_tc020_host_and_stage_flags.py`, `tests/service/test_experiment_shadow_isolation.py`, `tests/integration/test_tc013_shadow_alongside_real.py`.
+**Traceability:** FR-012, FR-013, FR-017, FR-018, FR-020 to FR-033, FR-035, FR-062, FR-140 to FR-142 / UC-010, UC-012, UC-020 to UC-027, UC-030, UC-031, UC-043 / `services/menu/servicer.py`, `services/menu/handlers/admin.py`, `services/game_coordinator/games/`, `services/game_coordinator/servicer.py`, `services/agent/experiment/writer.go` / `tests/service/test_tc005_admin_journey.py`, `tests/service/test_tc020_host_and_stage_flags.py`, `tests/service/test_experiment_shadow_isolation.py`, `tests/integration/test_tc013_shadow_alongside_real.py`.
 
 ## 5. `interventions`
 
@@ -399,7 +401,7 @@ decision backend and model (`DELETE …?persist=true`), and `talk-preflight.sh` 
 persisted.
 
 **Bounds** are the declared variants of the baseline file unless a range, a payload schema or `free string` is
-given. Ranges are inclusive and pinned to the reader's own clamp (`difficulty_handlers.py` factors 0.5 to 2.0, `lifecycle_handlers.py` partial shield and soft penalty, `games/base.py` ramp 60 s), so the registry never rejects a value the game would apply.
+given. Ranges are inclusive and pinned to the reader's own clamp (`difficulty_handlers.py` factors 0.5 to 2.0, `lifecycle_handlers.py` partial shield and soft penalty, `games/base.py` ramp_tempo 15 s and tempo ramp 0.1 to 10 s), so the registry never rejects a value the game would apply.
 `free string` accepts any string value up to 512 characters (a declared variant name still selects that
 variant); it exists for values only a test fixture or an operator knows, such as a fake server's URL (re-review N5).
 A `variant` naming a declared variant is always within bounds (restricted to the listed variants where a list is
@@ -416,7 +418,7 @@ exists in the audio catalog are checked by the game coordinator and the audio se
 | `global_difficulty_factor` | state | game | 0.5 to 2.0 | no | W1 agent |
 | `volume_override` | state | game | 0.3 to 1.0 | no | W1 agent |
 | `pacing_profile` | state | game | `default`, `calm`, `frantic` | no | W1 agent |
-| `tempo_ramp` | state | game | `<target 1.0 to 1.3>:<seconds 0.1 to 60>:<linear\|ease>` | no | W1 agent |
+| `tempo_ramp` | state | game | `<target 1.0 to 1.3>:<seconds 0.1 to 15>:<linear\|ease>` | no | W1 agent |
 | `auto_rubberband` | state | game | `off`, `gentle`, `strong` | no | W1 agent |
 | `player_sensitivity_factor` | level | game+serial | 0.5 to 2.0 | no | W1 agent |
 | `player_handicap_factor` | level | game+serial | 0.5 to 2.0 | no | W1 agent |
@@ -501,6 +503,7 @@ authorization this is a convention the agent's code keeps, not a check.
 | `zombie.respawn_max_seconds` | overlay | experiment+arm or real | 2 to 30 | no | W3 experiment writer; W5 promotion |
 | `windows` | overlay | experiment+arm or real | same shape as the default variant | no | W3 experiment writer; W5 promotion |
 | `tempo_schedule_mode` | state | game | declared variants | no | `test_intervention_smoke.py` |
+| `tempo.ramp_up_seconds`, `tempo.ramp_down_seconds` | overlay | stack | 0.1 to 10 | no | operator on stage (#1833); read at each ramp start, so a write applies from the next tempo change |
 
 The rows with scope `experiment+arm` are the **experiment catalog** (#1092, #1415): the gameplay calibration
 flags an experiment may change. Capacity (`max_concurrent_games`, `max_shadow_games`), lobby and ceremony

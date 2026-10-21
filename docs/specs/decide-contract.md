@@ -579,7 +579,7 @@ once after 250 ms. The game coordinator applies the result
 | `adjust_global_sensitivity` | `global_sensitivity_override` | state | 2 |
 | `adjust_global_difficulty` | `global_difficulty_factor` | state | 1.5 |
 | `set_pacing_profile` | `pacing_profile` | state | `frantic` |
-| `ramp_tempo` | `tempo_ramp` | state | `1.3:8:linear` |
+| `ramp_tempo` | `tempo_ramp` | state | `1.3:8:linear` (`<target 1.0 to 1.3>:<seconds, at most 15>:<linear\|ease>`; the coordinator caps a longer curve at 15 s and the agent writer sends no value above 15 s, #1840) |
 | `auto_rubberband` | `auto_rubberband` | state | `gentle` |
 | `adjust_player_sensitivity` | `player_sensitivity_factor` | per serial level | 1.5 |
 | `set_player_handicap` | `player_handicap_factor` | per serial level | 1.25 |

@@ -3,6 +3,7 @@ Unit tests for music_player module extracted helper functions.
 """
 
 import array
+import asyncio
 import io
 import wave
 from unittest.mock import MagicMock, patch
@@ -555,6 +556,51 @@ class TestTransitionRatio:
         await task2
         assert task1.cancelled()
         assert player._ratio.value == pytest.approx(0.8)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
+    async def test_two_requests_in_one_loop_turn_leave_one_glide(self, player):
+        """BR-004 glide contract (#1833): two ChangeTempo requests at once never leave two glides fighting."""
+        player._ratio.value = 1.0
+        player._stop_proc.value = 0
+        running = await player.transition_ratio(1.3, duration=10.0)
+        await asyncio.sleep(0)  # the first glide is running
+
+        # Two requests in the same loop turn, while a glide runs: the last one wins.
+        await asyncio.gather(
+            player.transition_ratio(2.0, duration=0.4),
+            player.transition_ratio(0.8, duration=0.05),
+        )
+        final = player._transition_task
+        await final
+        await asyncio.sleep(0.1)  # an orphaned 2.0 glide would write again within 0.02 s
+
+        assert running.cancelled()
+        assert player._ratio.value == pytest.approx(0.8)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
+    async def test_a_new_glide_starts_from_the_ratio_reached(self, player):
+        """BR-004: a new request starts from the ratio the cancelled glide reached, not from its target."""
+        player._ratio.value = 1.0
+        player._stop_proc.value = 0
+        await player.transition_ratio(1.3, duration=10.0)
+        await asyncio.sleep(0)
+        reached = player._ratio.value
+        assert 1.0 < reached < 1.3
+
+        seen = []
+        original_sleep = asyncio.sleep
+
+        async def record_sleep(_seconds):
+            seen.append(player._ratio.value)
+            await original_sleep(0)
+
+        with patch("services.audio.music_player.asyncio.sleep", record_sleep):
+            task = await player.transition_ratio(1.0, duration=1.0)
+            await task
+        assert seen[0] == pytest.approx(reached + (1.0 - reached) / 20)
+        assert player._ratio.value == pytest.approx(1.0)
 
 
 class TestDummyMusicPlayer:
