@@ -127,10 +127,12 @@ class TestControllerEventLoopDispatch:
         event.action = controller_manager_pb2.ACTION_PRESS
         event.button = controller_manager_pb2.BUTTON_TRIGGER
         event.battery = 4
+        event.timestamp = 1_700_000_000_400
 
         await event_loop_instance._dispatch_event(event)
 
-        mock_callbacks.on_button.assert_called_once_with("serial1", "trigger", True)
+        # UC-012 BR-007: the controller event timestamp (ms) is passed on as the event time (s)
+        mock_callbacks.on_button.assert_called_once_with("serial1", "trigger", True, 1_700_000_000.4)
 
     @pytest.mark.asyncio
     async def test_dispatch_button_event_menu_stopped(self, event_loop_instance, mock_callbacks):
@@ -397,6 +399,7 @@ def _button_event(serial: str, button: int) -> MagicMock:
     event.action = controller_manager_pb2.ACTION_PRESS
     event.button = button
     event.battery = 0
+    event.timestamp = 0
     event.connected_serials = []
     return event
 

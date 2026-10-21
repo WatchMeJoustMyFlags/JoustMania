@@ -185,7 +185,7 @@ class AdminModeHandler:
         """Set the state manager reference."""
         self._state_manager = manager
 
-    async def handle_button(self, serial: str, button: str) -> None:
+    async def handle_button(self, serial: str, button: str, event_time: float | None = None) -> None:
         """
         Handle a button press event (ControllerHandler protocol).
 
@@ -195,7 +195,7 @@ class AdminModeHandler:
             serial: Controller serial number
             button: Button name
         """
-        await self.handle_button_event(serial, button)
+        await self.handle_button_event(serial, button, event_time)
 
     async def on_enter(self, serial: str) -> None:
         """
@@ -484,13 +484,14 @@ class AdminModeHandler:
             self.session_span = None
             self.session_span_context = None
 
-    async def handle_button_event(self, serial: str, button: str) -> None:
+    async def handle_button_event(self, serial: str, button: str, event_time: float | None = None) -> None:
         """
         Handle button press in admin mode.
 
         Args:
             serial: Controller serial number
             button: Button name (trigger, move, cross, circle, square, triangle, ps)
+            event_time: When the press happened (seconds), debounced on instead of processing time (BR-007)
         """
         # UC-012 BR-004: only the controller that owns the admin session may issue admin commands.
         if self.is_held_by_other(serial):
@@ -504,7 +505,7 @@ class AdminModeHandler:
             await self._exit_to_connected(serial)
             return
 
-        if not self._debouncer.should_process(serial, button):
+        if not self._debouncer.should_process(serial, button, event_time=event_time):
             return
 
         # UC-012 BR-005: the admin button map.
