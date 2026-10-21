@@ -1073,6 +1073,7 @@ class TestShadowGameGovernance:
             with _NO_THREAD:
                 ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("s3", "s4")), _MockSpan())
             assert ok is True, gid
+        await asyncio.sleep(0)  # the preemption task's done callback runs (leak guard)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-043", flow="A2")
@@ -1121,6 +1122,39 @@ class TestShadowGameGovernance:
             assert [e.data["reason"] for e in self._drain(late["queue"])] == ["preempted_by_real_game"]
             ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("s3", "s4")), _MockSpan())
             assert ok is True, gid
+        await asyncio.sleep(0)  # the preemption task's done callback runs (leak guard)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-043", flow="A2")
+    async def test_shadow_force_end_error_does_not_stop_the_real_start(self, servicer, caplog):
+        """#1816: a shadow whose force end raises is logged and counted as not
+        preempted; the real start goes ahead, and the ENDED sweep removes the
+        shadow once its game has ended."""
+        gid_s, shadow = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+
+        async def _force_end_fails(_reason):
+            raise RuntimeError("join failed")
+
+        shadow.force_end = _force_end_fails
+        with (
+            _NO_THREAD,
+            patch.object(metrics, "shadow_games_preempted_total") as preempted,
+            patch("services.game_coordinator.servicer._shadow_policy", lambda: "allow"),
+            caplog.at_level(logging.ERROR, logger="services.game_coordinator.servicer"),
+        ):
+            ok, gid_real = await servicer._start_game_from_config(_config(), _MockSpan())
+            assert ok is True, gid_real
+            assert servicer._primary_game_id == gid_real
+            assert any(f"Failed to preempt shadow game {gid_s}" in r.getMessage() for r in caplog.records)
+            preempted.inc.assert_not_called()
+            assert gid_s in servicer.sessions
+
+            # The shadow's thread ends its game; the next admission sweeps it.
+            with shadow._state_lock:
+                shadow.game_state = game_coordinator_pb2.GameState.ENDED
+            ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("s3", "s4")), _MockSpan())
+            assert ok is True, gid
+        assert gid_s not in servicer.sessions
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-043", flow="A2")
@@ -2085,19 +2119,23 @@ class TestFailedStartRetiresSession:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A7", br=["BR-007"])
     async def test_error_during_post_admission_preemption_retires_primary(self, servicer):
-        """#1813: force_end raising in the real start's post-admission preemption
-        pass retires the session; the next real start is admitted."""
+        """#1813: an error raised by the real start's post-admission preemption pass
+        itself (here its shadow snapshot; a shadow's force_end error is caught per
+        shadow since #1816) retires the session; the next real start is admitted."""
         admitted = []
+        real_snapshot = servicer._live_shadow_sessions
 
-        async def _preempt_fails():
+        def _snapshot_fails_after_admission():
+            if servicer._primary_game_id is None:
+                return real_snapshot()
             admitted.append(servicer._primary_game_id)
-            raise RuntimeError("force_end failed")
+            raise RuntimeError("shadow snapshot failed")
 
-        with _NO_THREAD, self._patch_post_admission_preempt(servicer, _preempt_fails):
+        with _NO_THREAD, patch.object(servicer, "_live_shadow_sessions", _snapshot_fails_after_admission):
             ok, error = await servicer._start_game_from_config(_config(), _MockSpan())
 
         assert ok is False
-        assert "force_end failed" in error
+        assert "shadow snapshot failed" in error
         (game_id,) = admitted
         self._assert_retired(servicer, game_id)
         with _NO_THREAD:
