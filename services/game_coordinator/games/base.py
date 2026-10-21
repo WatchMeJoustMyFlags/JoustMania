@@ -3946,6 +3946,8 @@ class BaseGameMode(ABC):
         """Warn about a failed tempo tick: first, on a new error text, then every interval."""
         text = repr(error)
         now = time.time()
+        if text != self._tick_error_text:
+            self._tick_error_suppressed = 0  # a stale count must not leak into a new error
         if text == self._tick_error_text and now - self._tick_error_logged_at < MUSIC_TICK_LOG_INTERVAL_SECONDS:
             self._tick_error_suppressed += 1
             return
@@ -3977,8 +3979,6 @@ class BaseGameMode(ABC):
                         # A non-audio error (pacing seam, metrics, tracing) must not end
                         # the tempo loop for the rest of the game: log it, retry next tick.
                         self._log_tick_failure(e)
-                    else:
-                        self._tick_error_text = None
                     await asyncio.sleep(0.1)  # Check every 100ms
             finally:
                 if token is not None:
