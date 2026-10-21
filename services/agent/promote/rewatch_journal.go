@@ -15,24 +15,15 @@ func (pr *Promoter) SetRewatchJournal(j RewatchJournal) {
 	pr.rewatchJournal = j
 }
 
-// journalRewatch journals the outcome of a re-watch revert the re-watch owned
-// (UC-043 step 7, #1883): `reverted` with the watch reason, or `applied` with the
-// failure reason when the revert failed or no reverter is wired. A run of failed
-// re-watch reverts of one promotion journals one failure event; the revert that
-// succeeds after it journals `reverted`. The failure marker is the re-watch's own
-// (rewatchFailReported): the kill switch keeps its own failure report (#1753).
-// An empty experiment id has nothing to journal on.
-func (pr *Promoter) journalRewatch(experimentID string, entry *appliedPromotion, res Result) {
+// journalRewatch journals the one outcome of a re-watch revert the re-watch
+// owned (UC-043 step 7 and A9, #1883): `reverted` with the watch reason, or
+// `applied` with the failure reason when the revert failed or no reverter is
+// wired. The re-watch tries the revert once; a retry after a failure, and its
+// `reverted` event, belong to the kill switch (A1, #1753). Without a sink or an
+// experiment id nothing is journaled.
+func (pr *Promoter) journalRewatch(experimentID string, res Result) {
 	pr.mu.Lock()
 	sink := pr.rewatchJournal
-	if res.Outcome == OutcomeApplied && entry != nil {
-		already := entry.rewatchFailReported
-		entry.rewatchFailReported = true
-		if already {
-			pr.mu.Unlock()
-			return
-		}
-	}
 	pr.mu.Unlock()
 	if sink == nil || experimentID == "" {
 		return

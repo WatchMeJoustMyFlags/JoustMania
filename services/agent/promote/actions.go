@@ -217,7 +217,7 @@ func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, 
 		pr.log.Warn("autonomous re-watch confirmed degradation; reverted real default (#1065)",
 			"flag", p.FlagKey, "outcome", string(rres.Outcome), "reason", rres.Reason)
 		if claim == claimOwned {
-			pr.journalRewatch(p.ExperimentID, entry, rres)
+			pr.journalRewatch(p.ExperimentID, rres)
 		}
 	}
 	// The re-watch outlives this call; the kill switch cancels it (#1704).

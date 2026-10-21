@@ -330,17 +330,14 @@ type Promoter struct {
 // switch took it; failReported is set once a failed kill-switch revert of it was
 // reported (only by RevertOnKillSwitch, never by a failed watch revert), so later
 // kill-switch failures of the same promotion are retried without another report
-// (UC-043 A1, #1753); rewatchFailReported is set once a failed re-watch revert of
-// it was journaled (journalRewatch only, #1883). The two markers are independent.
-// Guarded by Promoter.mu.
+// (UC-043 A1, #1753). Guarded by Promoter.mu.
 type appliedPromotion struct {
-	proposal            experiment.Proposal
-	cancel              context.CancelFunc
-	syncPending         bool
-	killed              bool
-	killReverted        bool
-	failReported        bool
-	rewatchFailReported bool
+	proposal     experiment.Proposal
+	cancel       context.CancelFunc
+	syncPending  bool
+	killed       bool
+	killReverted bool
+	failReported bool
 }
 
 // DefaultRevertCooldown is the default post-revert cooldown before the same flag may

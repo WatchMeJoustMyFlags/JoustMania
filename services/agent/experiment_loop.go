@@ -670,9 +670,11 @@ func (e *experimentLoop) revertPromotionsOnKillSwitch(ctx context.Context) {
 }
 
 // journalRewatchRevert journals a re-watch revert of an autonomous promotion on
-// its experiment (UC-043 step 7, #1883). The Promoter calls it from the re-watch
-// goroutine, once per failure run and once for the revert; the registry is
-// read at call time and RecordPromotion takes the registry lock.
+// its experiment (UC-043 step 7 and A9, #1883). The Promoter calls it from the
+// re-watch goroutine at most once per promotion, with the re-watch's one
+// outcome (`reverted`, or `applied` when the revert failed); a later retry is the
+// kill switch's (A1). The registry is read at call time and RecordPromotion takes
+// the registry lock.
 func (e *experimentLoop) journalRewatchRevert(experimentID string, res experiment.PromotionResult) {
 	e.log.Warn("experiment: re-watch journaled an autonomous promotion revert (#1883)",
 		"experiment_id", experimentID, "outcome", res.Outcome, "reason", res.Reason)

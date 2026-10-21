@@ -49,7 +49,7 @@ func (r *switchableReverter) RevertRealDefault(context.Context, string) error {
 // UC: UC-043 main
 // UC: UC-043 A9
 func TestUC043_Step7_RewatchRevertJournaledByLoop(t *testing.T) {
-	t.Run("UC-043/main step 7 a failed then successful re-watch revert lands in the journal", func(t *testing.T) {
+	t.Run("UC-043/main step 7 a failed re-watch revert lands in the journal, the kill switch journals the revert", func(t *testing.T) {
 		seeded, _, lc := loopForConfigTest(t, 8)
 		root := t.TempDir()
 		seeded.registry = experiment.NewRegistry(experiment.RegistryConfig{
@@ -80,23 +80,24 @@ func TestUC043_Step7_RewatchRevertJournaledByLoop(t *testing.T) {
 			t.Fatal("precondition: no re-watch scheduled")
 		}
 
-		rw.revert(context.Background())
+		// The re-watch tries the revert once; the kill switch finishes it (A1).
 		rw.revert(context.Background())
 		rev.err = nil
-		rw.revert(context.Background())
+		loop.revertPromotionsOnKillSwitch(context.Background())
 
 		events := promotionEvents(t, root, live[0])
 		if len(events) != 2 || events[0].Promotion == nil || events[1].Promotion == nil {
-			t.Fatalf("journaled promotion events = %+v, want the failure then the revert", events)
+			t.Fatalf("journaled promotion events = %+v, want the re-watch failure then the kill-switch revert", events)
 		}
-		if events[0].Promotion.Outcome != "applied" || !strings.Contains(events[0].Promotion.Reason, "revert failed") {
-			t.Fatalf("first event = %+v, want applied / revert failed", events[0].Promotion)
+		if events[0].Promotion.Outcome != "applied" || !strings.HasPrefix(events[0].Promotion.Reason, promote.RewatchReasonPrefix) ||
+			!strings.Contains(events[0].Promotion.Reason, "revert failed") {
+			t.Fatalf("first event = %+v, want applied / re-watch revert failed", events[0].Promotion)
 		}
-		if events[1].Promotion.Outcome != "reverted" || !strings.HasPrefix(events[1].Promotion.Reason, promote.RewatchReasonPrefix) {
-			t.Fatalf("second event = %+v, want reverted with the re-watch reason", events[1].Promotion)
+		if events[1].Promotion.Outcome != "reverted" || events[1].Promotion.Reason != promote.KillSwitchReason {
+			t.Fatalf("second event = %+v, want reverted with reason kill_switch", events[1].Promotion)
 		}
-		if rev.calls != 3 {
-			t.Fatalf("revert attempts = %d, want 3", rev.calls)
+		if rev.calls != 2 {
+			t.Fatalf("revert attempts = %d, want 2", rev.calls)
 		}
 	})
 }

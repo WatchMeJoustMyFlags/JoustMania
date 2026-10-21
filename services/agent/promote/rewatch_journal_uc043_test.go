@@ -11,8 +11,9 @@ import (
 
 // rewatch_journal_uc043_test.go covers the journaling of a re-watch revert
 // (UC-043 step 7 and A9, #1883): the re-watch's revert outcome reaches the
-// experiment journal, a run of failures journals one event, and the re-watch's
-// failure report is its own, apart from the kill switch's (#1753).
+// experiment journal once (the re-watch tries the revert once; the kill switch
+// owns any retry, A1), and the re-watch's failure report is its own, apart from
+// the kill switch's (#1753).
 
 // recordingRewatchJournal records every promotion event the Promoter journals.
 type recordingRewatchJournal struct {
@@ -77,27 +78,25 @@ func TestUC043_Step7_RewatchRevertIsJournaled(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-043/A9 a run of failed re-watch reverts journals one failure, then the revert", func(t *testing.T) {
+	t.Run("UC-043/A9 a failed re-watch revert journals one failure and leaves the retry to the kill switch", func(t *testing.T) {
 		rev := &recordingReverter{err: errFlagService}
 		journal := &recordingRewatchJournal{}
-		_, rw := rewatchedPromotion(t, rev, journal)
+		p, rw := rewatchedPromotion(t, rev, journal)
 
 		rw.revert(context.Background())
-		rw.revert(context.Background())
-		_, failed := journal.snapshot()
 		rev.err = nil
-		rw.revert(context.Background())
+		got := p.RevertOnKillSwitch(context.Background())
 
-		if rev.calls != 3 {
-			t.Fatalf("revert attempts = %d, want 3 (journaling must not change the attempts)", rev.calls)
+		if rev.calls != 2 {
+			t.Fatalf("revert attempts = %d, want 2 (one re-watch, one kill switch)", rev.calls)
 		}
-		if len(failed) != 1 || failed[0].Outcome != string(OutcomeApplied) ||
-			!strings.Contains(failed[0].Reason, "revert failed") {
-			t.Fatalf("after two failed re-watch reverts journaled %+v, want one applied / revert failed event", failed)
+		ids, events := journal.snapshot()
+		if len(events) != 1 || ids[0] != "exp-1883" || events[0].Outcome != string(OutcomeApplied) ||
+			!strings.HasPrefix(events[0].Reason, RewatchReasonPrefix) || !strings.Contains(events[0].Reason, "revert failed") {
+			t.Fatalf("re-watch journaled %v %+v, want one applied / revert failed event on exp-1883", ids, events)
 		}
-		_, all := journal.snapshot()
-		if len(all) != 2 || all[1].Outcome != string(OutcomeReverted) {
-			t.Fatalf("journaled %+v, want the failure then one reverted event", all)
+		if len(got) != 1 || got[0].Outcome != OutcomeReverted || got[0].Reason != KillSwitchReason || got[0].ExperimentID != "exp-1883" {
+			t.Fatalf("kill switch returned %+v, want the final reverted event as its own (A1)", got)
 		}
 	})
 
@@ -148,6 +147,26 @@ func TestUC043_Step7_RewatchRevertIsJournaled(t *testing.T) {
 
 		if _, events := journal.snapshot(); len(events) != 0 || rev.calls != 0 {
 			t.Fatalf("journaled %+v reverts=%d, want none and 0", events, rev.calls)
+		}
+	})
+
+	t.Run("UC-043/main step 7 a promotion without an experiment id journals nothing", func(t *testing.T) {
+		rev := &recordingReverter{}
+		journal := &recordingRewatchJournal{}
+		watcher := &stepWatcher{verdicts: []WatchVerdict{VerdictInsufficient}}
+		p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, &recordingRealDefault{}, watcher, rev)
+		rw := &capturingRewatcher{}
+		p.SetRewatcher(rw)
+		p.SetRewatchJournal(journal.record)
+		p.Promote(context.Background(), promoteProposal, promoteVerdict, Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: true}, testEvidence())
+		if rw.revert == nil {
+			t.Fatal("precondition: no re-watch scheduled")
+		}
+
+		rw.revert(context.Background())
+
+		if _, events := journal.snapshot(); len(events) != 0 || rev.calls != 1 {
+			t.Fatalf("journaled %+v reverts=%d, want none and 1", events, rev.calls)
 		}
 	})
 
