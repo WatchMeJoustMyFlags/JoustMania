@@ -3705,11 +3705,12 @@ class BaseGameMode(ABC):
         frame. A flagd failure or a malformed value gives the default; the value is
         clamped to [RAMP_SECONDS_MIN, RAMP_SECONDS_MAX] (:func:`resolve_ramp_seconds`).
         """
+        # Literal flag keys, so the contract scan resolves both reads.
         if rising:
-            key, default = "tempo.ramp_up_seconds", DEFAULT_RAMP_UP_SECONDS
-        else:
-            key, default = "tempo.ramp_down_seconds", DEFAULT_RAMP_DOWN_SECONDS
-        return resolve_ramp_seconds(read_float_flag("game", key, default, game_id=self.game_id), default)
+            value = read_float_flag("game", "tempo.ramp_up_seconds", DEFAULT_RAMP_UP_SECONDS, game_id=self.game_id)
+            return resolve_ramp_seconds(value, DEFAULT_RAMP_UP_SECONDS)
+        value = read_float_flag("game", "tempo.ramp_down_seconds", DEFAULT_RAMP_DOWN_SECONDS, game_id=self.game_id)
+        return resolve_ramp_seconds(value, DEFAULT_RAMP_DOWN_SECONDS)
 
     async def _start_intensity_ramp(self, target: float, *, scheduled: bool) -> None:
         """Start an intensity segment toward ``target`` from the intensity now (#1833, UC-031 BR-005).
