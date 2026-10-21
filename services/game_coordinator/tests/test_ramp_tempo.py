@@ -239,17 +239,19 @@ async def test_check_music_speed_drives_ramp_toward_target_and_holds():
         start_tempo=1.0, target_tempo=1.3, start_time=base, duration=10.0, curve=RAMP_CURVE_LINEAR
     )
 
-    # Midway through the ramp the loop applies the interpolated tempo.
-    with patch("services.game_coordinator.games.base.time.time", return_value=base + 5.0):
+    # The loop adopts the curve at its first tick; midway the tempo is interpolated.
+    with patch("services.game_coordinator.games.base.time.time", return_value=base) as clock:
+        await game._check_music_speed()
+        clock.return_value = base + 5.0
         await game._check_music_speed()
         # music_speed is derived from the intensity at the (fake) clock (#1833).
         assert game.music_speed == pytest.approx(1.15)
     game.audio_client.ChangeTempo.assert_called_once()
 
-    # One glide covers the rest of the linear curve (#1833): to the target over the remaining 5 s.
+    # One glide covers the whole linear curve (#1833): to the target over its 10 s.
     request = game.audio_client.ChangeTempo.call_args[0][0]
     assert request.new_tempo == pytest.approx(1.3)
-    assert request.transition_duration == pytest.approx(5.0)
+    assert request.transition_duration == pytest.approx(10.0)
 
     # Past the end it holds exactly at target, without another glide...
     game.audio_client.ChangeTempo.reset_mock()
@@ -314,7 +316,9 @@ async def test_ramp_drives_pacing_in_agent_mode():
     base = 3000.0
     with patch("services.game_coordinator.difficulty_handlers.time.time", return_value=base):
         await handle_ramp_tempo(make_ctx("1.3:8:linear", game))
-    with patch("services.game_coordinator.games.base.time.time", return_value=base + 4.0):
+    with patch("services.game_coordinator.games.base.time.time", return_value=base) as clock:
+        await game._check_music_speed()  # the loop's next tick adopts the curve
+        clock.return_value = base + 4.0
         await game._check_music_speed()
         assert game.music_speed == pytest.approx(1.15)  # halfway up the 8s linear ramp
 

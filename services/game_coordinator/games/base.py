@@ -965,6 +965,9 @@ class BaseGameMode(ABC):
         # The linear ramp_tempo descriptor already turned into an intensity ramp
         # (identity check, so one descriptor sends exactly one glide).
         self._adopted_tempo_ramp: RampDescriptor | None = None
+        # True while the override or ramp_tempo owns the intensity; when control
+        # returns to the schedule the running segment is held where it is.
+        self._agent_tempo_owned = False
         # True while a ramp ran at the last music tick, so the tick after it ends
         # still emits the final tempo / threshold gauges.
         self._ramp_metrics_open = False
@@ -3839,20 +3842,20 @@ class BaseGameMode(ABC):
     async def _adopt_linear_tempo_ramp(self, ramp: RampDescriptor) -> None:
         """Turn a linear ramp_tempo descriptor into ONE intensity segment and one glide (#1833).
 
-        The segment is the descriptor's own curve: the handler anchored it at the
-        live tempo and clock when it was armed (at most one 100 ms tick ago), so it
-        continues from there; the glide covers the rest of it.
+        The segment starts at the intensity NOW and ends at the descriptor's end
+        time, so a descriptor adopted late (armed under an override that has
+        since cleared) never makes the thresholds or the music jump (BR-005). It
+        never runs faster than the bounded rate of step 3: when the descriptor's
+        end is already near or past, the segment takes |delta i| x the flag for
+        its direction instead.
         """
         now = time.time()
         old_intensity = self._intensity.value_at(now)
         target = intensity_from_tempo(ramp.target_tempo)
-        self._intensity = IntensityRamp(
-            start=intensity_from_tempo(ramp.start_tempo),
-            target=target,
-            start_time=ramp.start_time,
-            duration=ramp.duration,
-        )
-        remaining = max(0.0, self._intensity.end_time - now)
+        delta = target - old_intensity
+        bounded = abs(delta) * self._read_ramp_seconds(rising=delta > 0) if delta else 0.0
+        remaining = max(ramp.start_time + ramp.duration - now, bounded, 0.0)
+        self._intensity = IntensityRamp(start=old_intensity, target=target, start_time=now, duration=remaining)
         with tracer.start_as_current_span("music_tempo_ramp") as span:
             span.set_attribute("old_tempo", tempo_from_intensity(old_intensity))
             span.set_attribute("new_tempo", ramp.target_tempo)
@@ -3860,6 +3863,18 @@ class BaseGameMode(ABC):
             await self._push_audio(target, remaining)
         self._emit_music_tempo_metric()
         self._emit_threshold_metrics()
+
+    async def _hold_intensity_now(self) -> None:
+        """End an agent-owned segment: hold the intensity reached now and stop the glide there."""
+        self._agent_tempo_owned = False
+        now = time.time()
+        held = self._intensity.value_at(now)
+        if not self._intensity.is_complete(now):
+            logger.info(f"Agent tempo control ended mid-ramp: holding intensity {held:.2f}")
+            self._intensity = IntensityRamp.hold(held, now)
+            await self._push_audio(held, MIN_GLIDE_SECONDS)
+            self._emit_music_tempo_metric()
+            self._emit_threshold_metrics()
 
     async def _check_music_speed(self):
         """Drive the tempo intensity and keep the music in sync (Phase 70, #1833).
@@ -3877,6 +3892,7 @@ class BaseGameMode(ABC):
             # rate and hold; the natural schedule is suspended (speed_up and
             # change_time untouched), and resumes from the held intensity when the
             # override clears. A new override value restarts from i(now).
+            self._agent_tempo_owned = True
             self._adopted_tempo_ramp = None
             override_target = intensity_from_tempo(self.tempo_override)
             if abs(self._intensity.target - override_target) >= 1e-6:
@@ -3885,6 +3901,7 @@ class BaseGameMode(ABC):
             # #1117 ramp_tempo CURVE: a linear curve is one intensity segment (one
             # glide per descriptor, detected by identity); an ease curve steps per
             # tick. change_time is left untouched (mirrors the override).
+            self._agent_tempo_owned = True
             ramp = self.tempo_ramp
             if ramp.curve == RAMP_CURVE_LINEAR:
                 if ramp is not self._adopted_tempo_ramp:
@@ -3897,6 +3914,11 @@ class BaseGameMode(ABC):
                     await self._apply_ramp_tempo(desired)
         else:
             self._adopted_tempo_ramp = None
+            if self._agent_tempo_owned:
+                # The override cleared or the ramp was reverted (A3): stop the agent's
+                # segment where it is now, so a reverted action stops acting at once.
+                # The schedule resumes from the held intensity (at once if due).
+                await self._hold_intensity_now()
             # Natural schedule: the next change is due once its window has passed
             # AND the previous segment has finished.
             if now >= self.change_time and self._intensity.is_complete(now):
@@ -3930,7 +3952,12 @@ class BaseGameMode(ABC):
             token = otel_context.attach(self.game_cycle_context) if self.game_cycle_context else None
             try:
                 while self.running:
-                    await self._check_music_speed()
+                    try:
+                        await self._check_music_speed()
+                    except Exception as e:
+                        # A non-audio error (pacing seam, metrics, tracing) must not end
+                        # the tempo loop for the rest of the game: log it, retry next tick.
+                        logger.warning(f"Tempo tick failed, retrying next tick: {e!r}")
                     await asyncio.sleep(0.1)  # Check every 100ms
             finally:
                 if token is not None:

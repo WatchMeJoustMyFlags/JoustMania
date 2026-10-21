@@ -615,3 +615,81 @@ async def test_without_the_tempo_loop_the_intensity_stays_at_zero(clock):
     clock.now = T0 + 100.0
     assert game.tempo_intensity == 0.0
     assert game.music_speed == SLOW_MUSIC_SPEED
+
+
+# --------------------------------------------------------------------------- #
+# A3: control returns to the schedule mid-ramp (review of #1840)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("flags")
+@pytest.mark.uc("UC-031", flow="A3", br=["BR-005"])
+@pytest.mark.parametrize("owner", ["ramp_tempo", "override"])
+async def test_a_revert_mid_ramp_holds_the_intensity_reached(clock, owner):
+    """A3: a reverted ramp_tempo or a cleared override stops where it is; it does not glide on."""
+    audio = TempoAudio()
+    game = make_game(audio)
+    start_held(game, clock, change_due=False)
+    if owner == "ramp_tempo":
+        game.tempo_ramp = RampDescriptor(SLOW_MUSIC_SPEED, FAST_MUSIC_SPEED, T0, 60.0, RAMP_CURVE_LINEAR)
+    else:
+        game.tempo_override = FAST_MUSIC_SPEED  # 3 s ramp at the up flag
+    await game._check_music_speed()
+
+    clock.now = T0 + (6.0 if owner == "ramp_tempo" else 0.3)
+    held = game.tempo_intensity
+    assert 0.0 < held < 1.0
+    game.tempo_ramp = None
+    game.tempo_override = None
+    await game._check_music_speed()
+
+    assert audio.tempo_calls[-1] == (pytest.approx(1.0 + 0.3 * held, abs=1e-4), base_module.MIN_GLIDE_SECONDS)
+    clock.now = T0 + 120.0  # long after the old target time; the window is not due
+    await game._check_music_speed()
+    assert game.tempo_intensity == pytest.approx(held)
+    assert len(audio.tempo_calls) == 2  # the agent's glide and the hold, nothing more
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("flags")
+@pytest.mark.uc("UC-031", flow="A3", br=["BR-005"])
+async def test_a_ramp_adopted_late_starts_from_the_intensity_now(clock):
+    """BR-005: a ramp_tempo armed under an override and adopted after it clears does not jump."""
+    audio = TempoAudio()
+    game = make_game(audio)
+    start_held(game, clock, change_due=False)
+    game.tempo_override = SLOW_MUSIC_SPEED  # holds at i = 0
+    game.tempo_ramp = RampDescriptor(SLOW_MUSIC_SPEED, FAST_MUSIC_SPEED, T0, 2.0, RAMP_CURVE_LINEAR)
+    await game._check_music_speed()
+
+    clock.now = T0 + 10.0  # the descriptor's end has long passed
+    game.tempo_override = None
+    await game._check_music_speed()
+
+    assert game.tempo_intensity == 0.0  # no jump to the descriptor's target
+    assert audio.tempo_calls == [(FAST_MUSIC_SPEED, 3.0)]  # bounded rate: the up flag
+    clock.now = T0 + 11.5
+    assert game.tempo_intensity == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("clock", "flags")
+@pytest.mark.uc("UC-031", flow="main", steps=[3], cond=["Post-F-1"])
+async def test_a_failing_tempo_tick_does_not_end_the_music_loop():
+    """A non-audio error in one tick is logged; the loop runs the next tick."""
+    game = make_game(TempoAudio())
+    game.running = True
+    game.game_cycle_context = None
+    ticks = []
+
+    async def tick():
+        ticks.append(len(ticks))
+        if len(ticks) == 1:
+            raise RuntimeError("pacing seam failed")
+        game.running = False
+
+    with patch.object(game, "_check_music_speed", side_effect=tick):
+        await asyncio.wait_for(game._music_loop(), timeout=5.0)
+
+    assert ticks == [0, 1]
