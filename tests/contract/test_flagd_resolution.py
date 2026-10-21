@@ -793,6 +793,7 @@ _GO_KEY_CONST = re.compile(r'^\s*(key\w+)\s*=\s*"([^"]+)"', re.M)
 # The flags.Flags helper each getter calls -> the typed OpenFeature getter behind it
 # (secondsFlag -> intFlag -> IntValue; durationFlag -> floatFlag -> FloatValue).
 _GO_HELPERS = {
+    "boolFlag": "boolean",
     "stringFlag": "string",
     "intFlag": "integer",
     "secondsFlag": "integer",
