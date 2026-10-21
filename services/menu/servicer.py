@@ -244,7 +244,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """Clear state on stream reconnect so initial events re-populate cleanly (ControllerEventCallbacks)."""
         await self.state_manager.on_stream_reconnected()
 
-    async def on_button(self, serial: str, button: str, is_press: bool) -> None:
+    async def on_button(self, serial: str, button: str, is_press: bool, event_time: float | None = None) -> None:
         """Handle button event (ControllerEventCallbacks)."""
         # Reset idle timer on any button activity
         self.idle_monitor.reset_activity()
@@ -259,7 +259,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                     # UC-012 Pre-1: admin mode only from a RUNNING menu (the button
                     # stream already runs before StartMenu and after StopMenu).
                     logger.info(f"Admin combo from {serial} ignored: menu is not running")
-                    await self.state_manager.handle_button_event(serial, button, is_press)
+                    await self.state_manager.handle_button_event(serial, button, is_press, event_time)
                     return
                 self.admin_handler.release_stale_session()
                 if self.admin_handler.is_held_by_other(serial):
@@ -269,21 +269,21 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                         f"Admin combo from {serial} ignored: admin mode already active on "
                         f"{self.admin_handler.controller_serial}"
                     )
-                    await self.state_manager.handle_button_event(serial, button, is_press)
+                    await self.state_manager.handle_button_event(serial, button, is_press, event_time)
                     return
                 if not self.admin_handler.combo_shown:
                     self.admin_handler.combo_shown = True
                     from services.menu.handlers.base import ControllerState
 
                     await self.state_manager.transition_to(serial, ControllerState.ADMIN)
-                await self.state_manager.handle_button_event(serial, button, is_press)
+                await self.state_manager.handle_button_event(serial, button, is_press, event_time)
                 return
 
         # Reset admin combo flag when any face button released
         if not is_press and button in ["cross", "circle", "square", "triangle"]:
             self.admin_handler.combo_shown = False
 
-        await self.state_manager.handle_button_event(serial, button, is_press)
+        await self.state_manager.handle_button_event(serial, button, is_press, event_time)
 
     # Controller state properties (delegate to state_manager as single source of truth)
 

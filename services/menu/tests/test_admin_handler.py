@@ -1024,6 +1024,28 @@ class TestHandleButtonEventDispatch:
         await handler.handle_button_event("test_serial", ButtonTrackingKey.CROSS)
         assert handler.handle_game_mode.call_count == 1
 
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", br=["BR-007"])
+    async def test_debounce_uses_event_time_not_processing_time(self, handler):
+        """Presses 400 ms apart by event time both apply when processed back to back (stalled loop)."""
+        handler.handle_game_mode = AsyncMock()
+        t0 = 1_700_000_000.0
+
+        await handler.handle_button_event("test_serial", ButtonTrackingKey.CROSS, t0)
+        await handler.handle_button_event("test_serial", ButtonTrackingKey.CROSS, t0 + 0.4)
+        assert handler.handle_game_mode.call_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", br=["BR-007"])
+    async def test_debounce_event_time_still_rejects_bounce(self, handler):
+        """Presses 100 ms apart by event time are one press, even if processed far apart."""
+        handler.handle_game_mode = AsyncMock()
+        t0 = 1_700_000_000.0
+
+        await handler.handle_button_event("test_serial", ButtonTrackingKey.CROSS, t0)
+        await handler.handle_button_event("test_serial", ButtonTrackingKey.CROSS, t0 + 0.1)
+        assert handler.handle_game_mode.call_count == 1
+
 
 class TestResetOnDisconnect:
     """Tests for admin mode reset on controller disconnect."""
@@ -1573,7 +1595,7 @@ class TestControllerHandlerProtocol:
         """handle_button should delegate to handle_button_event."""
         handler.handle_button_event = AsyncMock()
         await handler.handle_button("s1", "cross")
-        handler.handle_button_event.assert_called_once_with("s1", "cross")
+        handler.handle_button_event.assert_called_once_with("s1", "cross", None)
 
     @pytest.mark.asyncio
     async def test_on_enter_delegates(self, inactive_handler):
@@ -2118,7 +2140,7 @@ class TestSingleAdminSession:
             assert not timeout_task.done()
             # BR-004: the rejected combo press is handled as an ordinary button of B.
             connected_handler = state_manager._handlers[ControllerState.CONNECTED]
-            assert call("B", "triangle") in connected_handler.handle_button.await_args_list
+            assert call("B", "triangle", None) in connected_handler.handle_button.await_args_list
         finally:
             await admin_handler.exit()
 
@@ -2308,7 +2330,7 @@ class TestSingleAdminSession:
             assert state_manager.get_controller_state("A") == ControllerState.CONNECTED
             assert admin_handler.active is False
             connected_handler = state_manager._handlers[ControllerState.CONNECTED]
-            assert call("A", "triangle") in connected_handler.handle_button.await_args_list
+            assert call("A", "triangle", None) in connected_handler.handle_button.await_args_list
         finally:
             await admin_handler.exit()
 

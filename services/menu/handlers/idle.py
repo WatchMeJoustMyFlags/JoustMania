@@ -49,7 +49,7 @@ class IdleHandler:
         """Set the wake callback (for deferred wiring)."""
         self._wake_callback = callback
 
-    async def handle_button(self, serial: str, button: str) -> None:
+    async def handle_button(self, serial: str, button: str, event_time: float | None = None) -> None:  # noqa: ARG002 - protocol signature; idle wakes on any press
         """
         Handle a button press event — any button wakes the controller.
 

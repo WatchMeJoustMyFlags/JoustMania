@@ -134,7 +134,9 @@ class StateManager:
         """
         return self.controller_states.get(serial, ControllerState.CONNECTED)
 
-    async def handle_button_event(self, serial: str, button: str, is_press: bool) -> None:
+    async def handle_button_event(
+        self, serial: str, button: str, is_press: bool, event_time: float | None = None
+    ) -> None:
         """
         Handle a button event for a controller.
 
@@ -144,6 +146,7 @@ class StateManager:
             serial: Controller serial number
             button: Button name
             is_press: True if press, False if release
+            event_time: When the press happened (seconds), for debouncing; None = processing time
         """
         # Track controller as connected
         if serial not in self.connected_controllers:
@@ -179,7 +182,7 @@ class StateManager:
         state = self.get_controller_state(serial)
         handler = self._handlers.get(state)
         if handler:
-            await handler.handle_button(serial, button)
+            await handler.handle_button(serial, button, event_time)
         else:
             logger.warning(f"No handler for state {state.value}")
 
