@@ -86,7 +86,7 @@ r="$(new_repo modified)"
 printf '// hand edit\n' >>"${r}/services/agent/gen/game_coordinator/game_coordinator.pb.go"
 commit_all "$r"
 expect 1 "hand-edited stub" "$r"
-grep -q '^ M services/agent/gen/game_coordinator/game_coordinator.pb.go' "${WORK}/out.log" || fail "modified: porcelain line missing"
+grep -q '^Files .*game_coordinator/game_coordinator.pb.go .* differ' "${WORK}/out.log" || fail "modified: differ line missing"
 grep -q "make protos-agent" "${WORK}/out.log" || fail "modified: fix hint missing"
 pass=$((pass + 2))
 
@@ -95,8 +95,7 @@ r="$(new_repo untracked)"
 git -C "$r" rm -q services/agent/gen/controller_manager_mock/controller_manager_mock.pb.go
 commit_all "$r"
 expect 1 "stub missing from the commit" "$r"
-grep -q '^?? services/agent/gen/controller_manager_mock/controller_manager_mock.pb.go' "${WORK}/out.log" \
-  || fail "untracked: porcelain line missing"
+grep -q '^Only in /.*: controller_manager_mock$' "${WORK}/out.log" || fail "untracked: only-in-fresh line missing"
 pass=$((pass + 1))
 
 # 4. D: a committed file the generation no longer produces (stale stub).
@@ -105,7 +104,7 @@ mkdir -p "${r}/services/agent/gen/old"
 printf 'package old\n' >"${r}/services/agent/gen/old/old.pb.go"
 commit_all "$r"
 expect 1 "stale committed stub" "$r"
-grep -q '^ D services/agent/gen/old/old.pb.go' "${WORK}/out.log" || fail "deleted: porcelain line missing"
+grep -q '^Only in services/agent/gen: old$' "${WORK}/out.log" || fail "deleted: only-in-tree line missing"
 pass=$((pass + 1))
 
 # 5. Generation failure is exit 2 (not drift), after 3 attempts, gen dir untouched.
@@ -113,8 +112,21 @@ r="$(new_repo genfail)"
 : >"${WORK}/docker.log"
 expect 2 "generation failure" "$r" FAKE_DOCKER_FAIL=1
 [[ "$(grep -c '^run ' "${WORK}/docker.log")" == 3 ]] || fail "generation failure: want 3 buf runs, got $(grep -c '^run ' "${WORK}/docker.log")"
-grep -q "drift was not checked" "${WORK}/out.log" || fail "generation failure: message must not claim drift"
+grep -q "generation failed (network, image, or proto/template error); see log above" "${WORK}/out.log" || fail "generation failure: neutral message missing"
 [[ -z "$(git -C "$r" status --porcelain)" ]] || fail "generation failure: committed stubs must be left untouched"
+pass=$((pass + 3))
+
+# 5b. Dirty tree: a correct but uncommitted regeneration passes; an uncommitted
+# hand edit fails and is NOT overwritten.
+r="$(new_repo dirty)"
+printf 'package game_coordinator\n// old committed\n' >"${r}/services/agent/gen/game_coordinator/game_coordinator.pb.go"
+commit_all "$r"
+cp -R "${FRESH}/." "${r}/services/agent/gen/"
+expect 0 "uncommitted correct regeneration" "$r"
+r="$(new_repo dirty-edit)"
+printf '// uncommitted hand edit\n' >>"${r}/services/agent/gen/game_coordinator/game_coordinator.pb.go"
+expect 1 "uncommitted hand edit" "$r"
+grep -q 'uncommitted hand edit' "${r}/services/agent/gen/game_coordinator/game_coordinator.pb.go" || fail "dirty tree: uncommitted edit was overwritten"
 pass=$((pass + 3))
 
 # 6. The buf invocation keeps its pins: image tag and template.

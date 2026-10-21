@@ -6,10 +6,11 @@
 #
 # The Python stubs have scripts/ci/validate-protos.sh; nothing checked the Go
 # stubs, so a hand edit (#1790) or a proto change without `make protos-agent`
-# went unnoticed. This regenerates with scripts/ci/gen-agent-protos.sh (pinned
-# buf image and plugin revisions) and compares with `git status --porcelain`,
-# which reports modified, deleted AND untracked files (`git diff` misses the
-# last two, #904).
+# went unnoticed. This generates with scripts/ci/gen-agent-protos.sh (pinned
+# buf image and plugin revisions) into a temp dir and `diff -r`s it against the
+# WORKING TREE, so modified, deleted and extra files all count (#904), a correct
+# but uncommitted `make protos-agent` passes, and uncommitted edits under
+# services/agent/gen are never overwritten.
 #
 # Exit: 0 in sync, 1 drift, 2 generation failed (not drift: network or tooling).
 set -euo pipefail
@@ -19,20 +20,21 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 GEN_DIR="services/agent/gen"
+fresh="$(mktemp -d)"
+trap 'rm -rf "$fresh"' EXIT
 
 echo "Validating agent Go stubs ($GEN_DIR)..."
-if ! bash "$SCRIPT_DIR/gen-agent-protos.sh"; then
-    echo "❌ Could not generate the agent Go stubs, so drift was not checked; see the generation error above (a network error: re-run the job)." >&2
+if ! bash "$SCRIPT_DIR/gen-agent-protos.sh" "$fresh"; then
+    echo "❌ Agent Go stub generation failed (network, image, or proto/template error); see log above. Drift was not checked." >&2
     exit 2
 fi
 
-status="$(git status --porcelain --untracked-files=all -- "$GEN_DIR")"
-if [[ -n "$status" ]]; then
+if ! diff -rq "$fresh" "$GEN_DIR" >/dev/null 2>&1; then
     echo "❌ Agent Go stubs are out of sync with proto/*.proto! Run 'make protos-agent' and commit the changes."
-    echo "Divergent files (M modified, D deleted by regeneration, ?? new from regeneration):"
-    echo "$status"
-    echo "--- diff (tracked files) ---"
-    git --no-pager diff -- "$GEN_DIR" || true
+    echo "Divergent files (left side = fresh generation, right side = $GEN_DIR):"
+    diff -rq "$fresh" "$GEN_DIR" || true
+    echo "--- diff ---"
+    diff -ru "$fresh" "$GEN_DIR" || true
     exit 1
 fi
 

@@ -2,6 +2,8 @@
 # Generate the agent-local Go stubs committed under services/agent/gen (#778).
 #
 #   scripts/ci/gen-agent-protos.sh        # what `make protos-agent` runs
+#   scripts/ci/gen-agent-protos.sh <dir>  # generate into <dir> instead (the drift
+#                                         # check; leaves services/agent/gen alone)
 #
 # The agent needs grpc-go clients to drive shadow games. Unlike the
 # connect-proxy gen (build-time, never committed), these stubs are committed
@@ -28,7 +30,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 BUF_IMAGE="bufbuild/buf:1.47.2"
-GEN_DIR="services/agent/gen"
+GEN_DIR="${1:-services/agent/gen}"
 read -r -a DELAYS <<<"${AGENT_PROTOS_RETRY_DELAYS:-5 15}"
 
 tmp="$(mktemp -d)"
