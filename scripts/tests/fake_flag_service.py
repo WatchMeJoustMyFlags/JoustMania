@@ -6,11 +6,15 @@ which flags are mutable, so a script that writes a read-only flag or an
 undeclared variant fails here exactly as it would against the service:
 
     GET    /state                 epoch, one sync stream, served sets
-    GET    /{set}                 every flag: effective_default, variants, variant_values, stack_overlay
+    GET    /{set}                 every flag: effective_default, variants, variant_values, stack_overlay,
+                                  admin_value
     GET    /{set}/{flag}
-    PUT    /{set}/{flag}          {"variant"|"value", "writer", "persist"}: 422 flag_read_only / out_of_bounds
-    DELETE /{set}/{flag}          clear the stack overlay
-    DELETE /{set}?writer=W        clear that writer's overlays
+    PUT    /{set}/{flag}          {"variant"|"value", "writer", "persist"}: 422 flag_read_only / out_of_bounds;
+                                  "persist": true sets the persisted admin value and drops the stack overlay
+    DELETE /{set}/{flag}          clear the stack overlay (?persist=true: the persisted admin value)
+    DELETE /{set}?writer=W        clear that writer's stack overlays (admin values stay)
+
+The persisted admin value is a layer under the stack overlay, as in the service.
 
 --fail-put N / --fail-delete N answer the Nth PUT / DELETE with 503 (a refused write).
 
@@ -61,7 +65,8 @@ class Fake:
         self.sets = sets  # set -> {flag: flag json}
         self.registry = registry
         self.log_path = log_path
-        self.overlays = {}  # (set, flag) -> {"variant", "value", "writer", "persisted"}
+        self.overlays = {}  # (set, flag) -> stack overlay {"variant", "value", "writer"}
+        self.admin = {}  # (set, flag) -> persisted admin value {"variant", "value", "writer"}
         self.games = games
         self.scope_values = scope_values
         self.fail_put = fail_put  # 1-based index of the PUT answered with 503
@@ -72,19 +77,23 @@ class Fake:
 
     def view(self, flag_set, key):
         flag = self.sets[flag_set][key]
-        ov = self.overlays.get((flag_set, key))
         variants = dict(flag["variants"])
         effective = flag["defaultVariant"]
-        stack = None
-        if ov:
-            effective = ov["variant"]
-            if ov["variant"] not in variants:
-                variants[ov["variant"]] = ov["value"]
-            stack = {
-                "variant": ov["variant"],
-                "value": variants[ov["variant"]],
-                "writer": ov["writer"],
-            }
+        layers = {}
+        # admin first, so a stack overlay over it wins the effective variant
+        for name, ov in (
+            ("admin_value", self.admin.get((flag_set, key))),
+            ("stack_overlay", self.overlays.get((flag_set, key))),
+        ):
+            if ov:
+                effective = ov["variant"]
+                if ov["variant"] not in variants:
+                    variants[ov["variant"]] = ov["value"]
+                layers[name] = {
+                    "variant": ov["variant"],
+                    "value": variants[ov["variant"]],
+                    "writer": ov["writer"],
+                }
         return {
             "flag": key,
             "mutable": (flag_set, key) in self.registry,
@@ -92,7 +101,8 @@ class Fake:
             "effective_default": effective,
             "variants": list(flag["variants"]),
             "variant_values": flag["variants"],
-            "stack_overlay": stack,
+            "stack_overlay": layers.get("stack_overlay"),
+            "admin_value": layers.get("admin_value"),
         }
 
 
@@ -201,13 +211,18 @@ def make_handler(fake):
                     return self._err(
                         422, "out_of_bounds", f"{value!r} is not allowed for {key}"
                     )
+            entry = {
+                "variant": variant,
+                "value": value,
+                "writer": body.get("writer", ""),
+            }
             with fake.lock:
-                fake.overlays[(flag_set, key)] = {
-                    "variant": variant,
-                    "value": value,
-                    "writer": body.get("writer", ""),
-                    "persisted": bool(body.get("persist")),
-                }
+                if body.get("persist"):
+                    # a persisted write replaces the stack overlay (state/write.go)
+                    fake.admin[(flag_set, key)] = entry
+                    fake.overlays.pop((flag_set, key), None)
+                else:
+                    fake.overlays[(flag_set, key)] = entry
             self._send(
                 200,
                 {
@@ -239,7 +254,10 @@ def make_handler(fake):
                         del fake.overlays[k]
                     return self._send(204)
                 if len(parts) == 2 and parts[0] in fake.sets:
-                    fake.overlays.pop(tuple(parts), None)
+                    if (query.get("persist") or [""])[0] == "true":
+                        fake.admin.pop(tuple(parts), None)
+                    else:
+                        fake.overlays.pop(tuple(parts), None)
                     return self._send(204)
             self._err(404, "unknown_flag_set", self.path)
 

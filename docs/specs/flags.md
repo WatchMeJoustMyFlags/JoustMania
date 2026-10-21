@@ -72,7 +72,7 @@ effect only on the next start of the flag service (`scripts/flags.sh restart`).
 |---|---|---|---|
 | `game` | Human admin | menu admin mode (persisted admin values); agent experiment writer (experiment-arm values of the experiment catalog only); autonomous promotion (`real` overlay, gated, off in the stock stack) | per deployment (baseline); experiment arm values until teardown; promotion until the flag service restarts |
 | `user` | Human admin | menu (`current_game`, `game_instructions`) | per deployment |
-| `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays); menu admin writes `interventions_allowed` only (persisted) | per deployment (baseline); overlays until cleared or the flag service restarts |
+| `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays, except the decision backend and model flags that `agent-backend.sh` persists, #1682); menu admin writes `interventions_allowed` only (persisted) | per deployment (baseline); overlays until cleared or the flag service restarts |
 | `interventions` | Agent | agent action sink only, game-scoped (values and event lists) | per game: dropped when the game ends (UC-053 BR-003) |
 | `rollout` | Operator + agent | operator: `target_backend`, `strategy`, `remediation_allowed`; agent: `current_controller_count` | per rollout |
 | `controller` | Operator | baseline edits; connect-proxy `/canary/*` through the flag service | per deployment (baseline); canary overlays until cleared |
@@ -386,6 +386,14 @@ menu admin) is written to the service's own state file and restored at start (FR
 written without it (a stage script, a test) stays in memory. `no` = a write asking to persist is `400 malformed`.
 Every value not persisted lives in memory only (architecture note §10.1).
 
+**Persisted vs overlay (who writes which, #1682):** a persisted value is an **operator choice** (the menu admin,
+`agent-backend.sh` for the decision backend and model); an in-memory overlay is a **stage beat** or a test
+(`talk-stage.sh`, the dry-run scripts, fixtures). A persisted write replaces an in-memory overlay of the same
+flag. An overlay written over a persisted value is temporary: it wins while it lasts, and a flag-service restart or
+a reboot drops it and brings the persisted value back. `talk-stage.sh reset` therefore also deletes the persisted
+decision backend and model (`DELETE …?persist=true`), and `talk-preflight.sh` WARNs while a remote backend is
+persisted.
+
 **Bounds** are the declared variants of the baseline file unless a range, a payload schema or `free string` is
 given. Ranges are inclusive and pinned to the reader's own clamp (`difficulty_handlers.py` factors 0.5 to 2.0, `lifecycle_handlers.py` partial shield and soft penalty, `games/base.py` ramp 60 s), so the registry never rejects a value the game would apply.
 `free string` accepts any string value up to 512 characters (a declared variant name still selects that
@@ -431,11 +439,12 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | `interventions_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh` |
 | `experiments_enabled`, `experiment_dynamic_enabled` | overlay | stack | `on`, `off` | no | `agent-dryrun-enable.sh`, `talk-stage.sh` |
 | `rollout_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh` |
-| `decision.backend` | overlay | stack | `rules`, `claude`, `openai`, `jev` | no | `agent-backend.sh`, `talk-stage.sh` |
+| `decision.backend` | overlay | stack | `rules`, `claude`, `openai`, `jev` | **yes** (the operator's backend choice survives a flag-service restart, C-018, #1682) | `agent-backend.sh` (persisted), `talk-stage.sh` |
 | `decision.act_confidence_threshold`, `decision.jev.act_confidence_threshold` | overlay | stack | declared variants | no | `agent-backend.sh`, `talk-stage.sh` |
 | `decision.capture_content` | overlay | stack | `on`, `off` | no | `agent-backend.sh` |
-| `decision.claude.model`, `decision.openai.reasoning_effort`, `decision.jev.model` | overlay | stack | declared variants | no | `agent-backend.sh` |
-| `decision.openai.model` | overlay | stack | free string | no | `agent-backend.sh`, integration fixtures (`configure_agent`, fake model name) |
+| `decision.claude.model`, `decision.jev.model` | overlay | stack | declared variants | **yes** (selected together with the backend, #1682) | `agent-backend.sh` (persisted) |
+| `decision.openai.reasoning_effort` | overlay | stack | declared variants | no | `agent-backend.sh` |
+| `decision.openai.model` | overlay | stack | free string | **yes** (selected together with the backend, #1682) | `agent-backend.sh` (persisted), integration fixtures (`configure_agent`, fake model name) |
 | `decision.openai.base_url` | overlay | stack | declared variants (credential-bearing URL: never a free string) | no | integration fixtures (`configure_agent`, the `ci/` `fake` variant) |
 | `decision.min_interval_ms`, `decision.openai.timeout_ms` | overlay | stack | int 100 to 60000 | no | integration fixtures (`configure_agent`) |
 | `llm.max_requests_per_minute` | overlay | stack | declared variants (incl. `stage`) | no | `talk-stage.sh` |

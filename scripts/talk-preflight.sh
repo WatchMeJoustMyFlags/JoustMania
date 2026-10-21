@@ -22,7 +22,10 @@
 #      intervention in the resolved allow-list, and how many game-scoped
 #      intervention values are live (they die with their game); WARN
 #      when decision.backend is remote but interventions_allowed resolves to
-#      nothing (none / noop only): the agent then makes no remote call (#1298)
+#      nothing (none / noop only): the agent then makes no remote call (#1298);
+#      WARN when a remote decision.backend (jev, claude, openai) is PERSISTED
+#      (agent-backend.sh, #1682): a stage overlay over it is temporary, and a
+#      flag-service restart or a reboot brings the persisted backend back
 #   4. the agent container env (presence only; key values are never printed):
 #      JEV_API_KEY (Jev, the main in-game backend) and ANTHROPIC_API_KEY (Claude:
 #      in-game backup + post-game summary) present, AGENT_INFERENCE_BACKEND=claude
@@ -221,10 +224,11 @@ fs = FlagService.from_env()
 try:
     # The flags in the shape the checks below read: the variant the flag service
     # serves now (overlays included) as the defaultVariant.
+    views = {view["flag"]: view for view in fs.flag_set("agent")["flags"]}
     flags = {
-        view["flag"]: {"state": "ENABLED", "defaultVariant": view["effective_default"],
-                       "variants": view.get("variant_values", {})}
-        for view in fs.flag_set("agent")["flags"]
+        key: {"state": "ENABLED", "defaultVariant": view["effective_default"],
+              "variants": view.get("variant_values", {})}
+        for key, view in views.items()
     }
     service_state = fs.state()
 except (FlagServiceUnreachable, FlagServiceError) as exc:
@@ -318,6 +322,20 @@ if isinstance(backend_value, str) and backend_value not in ("", "rules") and isi
         print(f"WARN  decision.backend = {backend_value} but interventions_allowed = "
               f"{shown(flags['interventions_allowed'])} allows no intervention: the agent makes no remote "
               "decide call, so nothing triggers (set interventions_allowed to ambient)")
+
+# The persisted layer (#1682): agent-backend.sh writes the backend and model
+# persisted, a stage overlay (talk-stage.sh) sits on top of it in memory only.
+# A persisted remote backend comes back after a flag-service restart or a
+# reboot, whatever the effective value is now.
+persisted_backend = (views.get("decision.backend", {}).get("admin_value") or {}).get("variant")
+if persisted_backend in ("jev", "claude", "openai"):
+    persisted_model = (views.get(f"decision.{persisted_backend}.model", {}).get("admin_value") or {}).get("variant")
+    model_note = f" with decision.{persisted_backend}.model = {persisted_model}" if persisted_model else ""
+    print(f"WARN  decision.backend {persisted_backend} is persisted{model_note}: a flag-service restart or a "
+          f"reboot brings {persisted_backend} back (remote decisions while enabled is on); clear it: "
+          "./scripts/talk-stage.sh reset (or ./scripts/agent-backend.sh rules)")
+elif persisted_backend:
+    print(f"INFO  decision.backend {persisted_backend} is persisted (kept across a restart)")
 
 jev_model = flags.get("decision.jev.model")
 if jev_model is not None:

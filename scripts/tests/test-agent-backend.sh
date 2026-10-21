@@ -183,14 +183,21 @@ else
   not_ok "refused flips leave every flag at its baseline"
 fi
 
-# --- writes: writer label, never persisted (epic #1407, N4) ---------------
+# --- writes: writer label; backend and model persisted (C-018, #1682) -----
 fixture
 "${HELPER}" claude opus >/dev/null
 puts="$(grep '^PUT ' "${FAKE_FLAG_LOG}")"
-if [[ "$(grep -c . <<<"${puts}")" -eq 2 && "${puts}" == *'"writer": "stage"'* && "${puts}" != *persist* ]]; then
-  ok "a backend+model flip is two PUTs, writer=stage, not persisted"
+if [[ "$(grep -c . <<<"${puts}")" -eq 2 && "${puts}" == *'"writer": "stage"'* && "$(grep -c '"persist": true' <<<"${puts}")" -eq 2 ]]; then
+  ok "a backend+model flip is two persisted PUTs, writer=stage"
 else
-  not_ok "a backend+model flip is two PUTs, writer=stage, not persisted (${puts})"
+  not_ok "a backend+model flip is two persisted PUTs, writer=stage (${puts})"
+fi
+fixture
+"${HELPER}" threshold strict >/dev/null
+if ! grep '^PUT ' "${FAKE_FLAG_LOG}" | grep -q persist; then
+  ok "a threshold flip stays in memory (not persisted)"
+else
+  not_ok "a threshold flip stays in memory (not persisted)"
 fi
 
 # --- a failed write never leaves a half switch (#1680) ---------------------

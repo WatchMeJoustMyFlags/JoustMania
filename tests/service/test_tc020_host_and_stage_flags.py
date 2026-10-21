@@ -104,7 +104,8 @@ async def test_host_and_stage_change_flags_at_runtime(fresh_stack, flag_service)
         stage("scripts/agent-backend.sh", "jev")
         view = flag_service.get("agent", "decision.backend")
         assert view["effective_default"] == "jev"
-        assert (view.get("stack_overlay") or {}).get("writer") == "stage", view
+        # agent-backend.sh persists the backend (C-018, #1682): it is an admin value.
+        assert (view.get("admin_value") or {}).get("writer") == "stage", view
 
         # Step 3: flagd serves both changes.
         with flagd_probe_client(stack, "agent") as agent:
@@ -126,4 +127,5 @@ async def test_host_and_stage_change_flags_at_runtime(fresh_stack, flag_service)
         assert _default_variant(GAME, "sensitivity") == host_variant
     finally:
         flag_service_default().request("DELETE", "/agent?writer=stage")
+        flag_service_default().request("DELETE", "/agent/decision.backend?persist=true")
         await mock_channel.close()

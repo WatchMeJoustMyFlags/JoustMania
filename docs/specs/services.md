@@ -512,7 +512,7 @@ Exactly one of `variant` and `value`. The scope must match the registry row's sc
 `game+serial` flag needs `game_id` and `serial`, a `stack` flag takes no scope (or `game_kind: "real"` for a
 promotion), an `experiment+arm` flag needs both ids. `"persist": true` is allowed only on a stack overlay of a
 flag whose registry row says `persist: yes`, and never with `ttl_seconds`; without it a write stays in memory
-(the stage scripts, the harness and the tests never persist; the menu admin does).
+(the stage scripts, the harness and the tests never persist; the menu admin and `agent-backend.sh` for the decision backend and model do, #1682; the persisted-vs-overlay rule is in [flags.md §13](flags.md#13-mutable-flag-registry)).
 
 **`POST /{flagSetId}/{flagName}` body** (event flags: `end_game`, `eliminate_player`, `revive_player`,
 `audio_cue`, `controller_effect`): `{"scope": {"game_id": "..."}, "payload": {"serial": "MOCK0003"}, "writer",
