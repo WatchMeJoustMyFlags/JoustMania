@@ -292,7 +292,7 @@ ok
 # 16. Newest run cancelled before its matrix expanded (runs 39206900261 /
 #     39213800861): infrastructure; --rerun-failed-once reruns the WHOLE run.
 CI_COMPLETE_EXPR="(github.event.action == 'labeled' && github.event.label.name != 'ci-full') && 'Label event (no CI result)' || 'CI Complete'"
-CANCELLED_RUN="$(check 'Detect changes' COMPLETED CANCELLED 400),$(check 'Build ${{ matrix.service }}' COMPLETED CANCELLED 400),$(check 'Publish ${{ matrix.service }}' COMPLETED CANCELLED 400),$(check 'Retag ${{ matrix.image }}' COMPLETED CANCELLED 400),$(check 'Integration Tests (e2e-${{ matrix.shard }})' COMPLETED CANCELLED 400),$(check 'Lint Dockerfiles' COMPLETED SKIPPED 400),$(check "${CI_COMPLETE_EXPR}" COMPLETED CANCELLED 400)"
+CANCELLED_RUN="$(check 'Detect changes' COMPLETED CANCELLED 400),$(check 'Build ${{ matrix.service }}' COMPLETED CANCELLED 400),$(check 'Publish ${{ matrix.service }}' COMPLETED CANCELLED 400),$(check 'Retag ${{ matrix.image }}' COMPLETED CANCELLED 400),$(check 'Integration Tests' COMPLETED CANCELLED 400),$(check 'Lint Dockerfiles' COMPLETED SKIPPED 400),$(check "${CI_COMPLETE_EXPR}" COMPLETED CANCELLED 400)"
 # Template-named jobs that every real run carries as SKIPPED.
 SKIPPED_TEMPLATES="$(check 'Publish ${{ matrix.service }}' COMPLETED SKIPPED 100),$(check 'Retag ${{ matrix.image }}' COMPLETED SKIPPED 100)"
 reset; view "$CANCELLED_RUN"

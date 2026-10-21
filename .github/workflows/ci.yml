@@ -23,7 +23,7 @@ name: CI
 # pushing (as on a PR). SonarCloud and retag-skipped do not run in the queue.
 # "CI Complete" reports on the merge-group head, which is the required check.
 #
-# The full-stack e2e job (#1583) run only where `changes.e2e_required` is true:
+# The full-stack e2e job (#1583) runs only where `changes.e2e_required` is true:
 #   merge_group                       unless the queued group is docs-only
 #                                     (`non_docs` exactly 'false'); an empty or
 #                                     unknown output still runs e2e.
