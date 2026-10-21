@@ -17,7 +17,7 @@
 ## Preconditions
 
 - The integration stack and the agent built at HEAD are up; `enabled` and `experiments_enabled` on; the agent's first game end is always admitted by the proposer cadence floor (`code_improvement.min_interval_seconds` is a read-only baseline flag, so a test cannot set it); `llm.eligible_game_kinds` = `real_only` (the shipped default, value `real`).
-- The retro and proposer reach a model only with `AGENT_INFERENCE_BACKEND=claude` and an Anthropic API key in the agent's environment (value not part of this document); the proposer additionally needs its gate open: `AGENT_EXPERIMENT_PROPOSER_ENABLED=true` AND the `experiment_proposer_enabled` flag on (FR-152 d, #1810). The service tier also sets a candidate list naming no game flag, so the thesis proposer cannot declare a second experiment next to the one this journey asserts on; `AGENT_INFERENCE_BASE_URL` points the backend at a Messages API-compatible server (a fake Claude in the service tier, #1422 S10). The expected model output: a retro with one suggestion and a proposal that changes `sensitivity` for shadow games.
+- The retro and proposer reach a model only with the `inference.backend=claude` flag (the service tier writes the overlay at stack start; the flag wins over the env, FR-151, #1810) and an Anthropic API key in the agent's environment (value not part of this document); the proposer additionally needs its gate open: `AGENT_EXPERIMENT_PROPOSER_ENABLED=true` AND the `experiment_proposer_enabled` flag on (FR-152 d, #1810). The service tier also sets a candidate list naming no game flag, so the thesis proposer cannot declare a second experiment next to the one this journey asserts on; `AGENT_INFERENCE_BASE_URL` points the backend at a Messages API-compatible server (a fake Claude in the service tier, #1422 S10). The expected model output: a retro with one suggestion and a proposal that changes `sensitivity` for shadow games.
 - Mock controllers `MOCK0001` … `MOCK0004` connected; `current_game` is `JoustFFA`.
 
 ## Flow
@@ -36,7 +36,7 @@
 
 1. **Chain order**: the span start times for `G1` are ordered retro, then summary, then `code_improvement.proposed`.
 2. **Shadow-scoped only**: no real-game evaluation context resolves the experiment variant.
-3. **Stub variant** (A2): with `AGENT_INFERENCE_BACKEND=stub` the retro span is capture-only and the proposer proposes nothing; the flag service holds no experiment value.
+3. **Stub variant** (A2): with `inference.backend` at its `stub` default the retro span is capture-only and the proposer proposes nothing; the flag service holds no experiment value.
 
 ## Postconditions
 

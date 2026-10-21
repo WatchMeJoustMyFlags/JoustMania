@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"testing"
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/inference"
-	"github.com/joustmania/agent/llm"
 )
 
 // inference_select_test.go covers the #1234 env-driven backend selection for the
@@ -65,41 +63,6 @@ func TestSelectInferenceBackend_ClaudeSelectsRealClient(t *testing.T) {
 	var _ experiment.Backend = backend
 }
 
-// proposeBackendFor: nil delegate -> the inert stub (returns the not-implemented
-// sentinel); a delegate -> a Backend that forwards to it.
-func TestProposeBackendFor(t *testing.T) {
-	// nil -> stub (degrades to no proposal).
-	stub := proposeBackendFor(nil)
-	if _, err := stub.Infer(context.Background(), llm.Prompt{}); err == nil {
-		t.Error("stub backend Infer returned nil error; want sentinel")
-	}
-
-	// delegate -> forwards.
-	want := "raw model text"
-	real := proposeBackendFor(func(context.Context, llm.Prompt) (string, error) {
-		return want, nil
-	})
-	out, err := real.Infer(context.Background(), llm.Prompt{})
-	if err != nil {
-		t.Fatalf("delegate-backed Infer error: %v", err)
-	}
-	if out != want {
-		t.Errorf("out = %q, want %q", out, want)
-	}
-
-	// Both satisfy experiment.Backend (compile-time + runtime).
-	var _ experiment.Backend = stub
-	var _ experiment.Backend = real
-}
-
-func TestProposeBackendFor_DelegateErrorPropagates(t *testing.T) {
-	sentinel := errors.New("boom")
-	b := proposeBackendFor(func(context.Context, llm.Prompt) (string, error) { return "", sentinel })
-	if _, err := b.Infer(context.Background(), llm.Prompt{}); !errors.Is(err, sentinel) {
-		t.Fatalf("err = %v, want delegate error", err)
-	}
-}
-
 // UC: UC-042 Pre-2
 func TestSelectInferenceBackend_BaseURL(t *testing.T) {
 	// wantBase "" = rejected (stub, the key goes nowhere); otherwise the API root the
@@ -151,5 +114,22 @@ func TestSelectInferenceBackend_BaseURL(t *testing.T) {
 				t.Fatalf("%q: backend base URL = %q, want %q", tc.url, got, tc.wantBase)
 			}
 		})
+	}
+}
+
+// selectInferenceBackend is the env-only selection (no flag source): the fallback path
+// of textBackends, as used while flagd cannot resolve inference.backend.
+func selectInferenceBackend(logger *slog.Logger, tuning *agentTuning) (*inference.Claude, string) {
+	return newTextBackends(logger, tuning, nil).Select(context.Background())
+}
+
+// sourceFor is a proposer backend source over a test delegate: nil = the stub
+// (real=false), else a real backend.
+func sourceFor(delegate inferFunc) experiment.BackendSource {
+	return func(context.Context) (experiment.Backend, bool) {
+		if delegate == nil {
+			return proposeBackend{}, false
+		}
+		return inferBackend{infer: delegate}, true
 	}
 }

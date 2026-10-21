@@ -59,7 +59,11 @@ unexplained deviation as a finding.
    review worktree only). No failing test = a blocking finding.
 4. **Gates.** `make pr-gates` in the review worktree (`BASE=origin/main`), run through `gate-runner`
    (`<review worktree>` + `gates BASE=origin/main`) so only its summary enters your context.
-5. **CI.** `gh pr checks <PR>` once (no watching). SonarCloud is non-blocking. Collector `exited (1)` /
+   A mutation of a service-tier test runs `make test-service SERVICE_TESTS=<file>`.
+5. **CI.** `gh pr checks <PR>` once (no watching). Local `make pr-gates` no longer runs the service tier for product
+   paths: when the diff touches the CI `service_tests` paths (lib, proto, coordinator, menu, controller_manager,
+   flagd, flag-service, `tests/service`, ...), "Service Tests" must be `pass`, not skipped or pending, before
+   "ready". A Service Tests failure that passes on rerun is a finding (flake or race), not infrastructure. SonarCloud is non-blocking. Collector `exited (1)` /
    `unknown type: "span_metrics"`, the fast-path stale-prebuilt-images guard and `blob not found` are
    infrastructure: name them as such (advice: `ci-full` label or rerun), not as PR defects.
 6. **Conflicts.** `git merge-tree --write-tree origin/main refs/review/<PR>` for conflicts with main; skim

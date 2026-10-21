@@ -209,8 +209,7 @@ func TestM74Proposer_GateClosedNoCallNoSpend(t *testing.T) {
 			gate := realOnlyGate(1)
 			calls := 0
 			delegate := func(context.Context, llm.Prompt) (string, error) { calls++; return "not json", nil }
-			p := experiment.NewProposer(proposeBackendFor(delegate), nil, nil, nil, nil)
-			p.SetLLMAdmission(proposerAdmissionFor(delegate, decision.NewLLMAdmission(gate, budget, 0, "proposer", nil)))
+			p := newWiredProposer(sourceFor(delegate), nil, nil, decision.NewLLMAdmission(gate, budget, 0, "proposer", nil), nil)
 			src := &liveGateFlags{enabled: true, experiments: true, proposer: tc.flagOn}
 			cfg := experiment.ProposerConfig{Permit: proposerPermit(src, false, tc.ceiling), GameKind: "real"}
 
@@ -230,7 +229,7 @@ func TestM74Proposer_GateClosedNoCallNoSpend(t *testing.T) {
 	t.Run("UC-042/BR-002 flag flip opens the next cycle", func(t *testing.T) {
 		calls := 0
 		delegate := func(context.Context, llm.Prompt) (string, error) { calls++; return "not json", nil }
-		p := experiment.NewProposer(proposeBackendFor(delegate), nil, nil, nil, nil)
+		p := newWiredProposer(sourceFor(delegate), nil, nil, nil, nil)
 		src := &liveGateFlags{enabled: true, experiments: true, proposer: false}
 		cfg := experiment.ProposerConfig{Permit: proposerPermit(src, false, true), GameKind: "real"}
 		p.ProposeOnce(context.Background(), experiment.Narrative{}, cfg)

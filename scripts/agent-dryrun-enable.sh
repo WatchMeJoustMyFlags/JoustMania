@@ -15,7 +15,8 @@
 #   ./scripts/agent-dryrun-enable.sh status
 #
 # The flips take effect LIVE (no agent restart). A restart is only needed for the
-# AGENT_INFERENCE_* env vars (the proposer/retro text backend, read at start).
+# AGENT_INFERENCE_BASE_URL / _MODEL env values and the ANTHROPIC_API_KEY (read at
+# start); the text backend itself is the inference.backend flag (live, #1810).
 #
 # Env: FLAG_SERVICE_URL (default http://localhost/flags, the envoy route).
 set -euo pipefail
