@@ -152,6 +152,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         self._sessions_lock = threading.Lock()
         # game_id of the active primary session, or None when no primary is live.
         self._primary_game_id: str | None = None
+        # Shadow preemptions under way, game_id -> (session, task) (#1816). Each
+        # runs as its own task so a cancelled real start cannot stop it halfway;
+        # the dict holds the strong reference and lets a second real start reuse
+        # the task instead of force-ending the shadow again.
+        self._shadow_preemptions: dict[str, tuple[GameSession, asyncio.Task[bool]]] = {}
 
         # Persistent PRIMARY EventBus — created once, NEVER destroyed. Zero-arg
         # StreamGameEvents subscribers (the menu) attach here even before any
@@ -384,6 +389,14 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         retires the session to free its concurrency slot. Returns the count of
         shadows preempted. Logged loudly. Applies regardless of ``shadow_policy``
         — the real game always wins resources (#837).
+
+        Each shadow's preemption runs as its own task, awaited through
+        ``asyncio.shield`` (#1816): a cancel of the real start propagates from
+        here, but a preemption that has begun still completes (force end,
+        ``game_force_ended``, retire, count). Shadows this pass has not reached
+        keep running. A later pass reuses a preemption already under way. A
+        preemption task cancelled itself (only by event-loop teardown) raises
+        ``CancelledError`` here even though this caller was not cancelled.
         """
         shadows = self._live_shadow_sessions()
         if not shadows:
@@ -396,15 +409,51 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         )
         preempted = 0
         for shadow in shadows:
-            success, error = await shadow.force_end("preempted_by_real_game")
-            if success:
-                self._retire_session(shadow.game_id)
-                metrics.shadow_games_preempted_total.inc()
+            if await asyncio.shield(self._shadow_preemption_task(shadow)):
                 preempted += 1
-                logger.warning("Preempted shadow game %s for real game", shadow.game_id)
-            else:
-                logger.error("Failed to preempt shadow game %s: %s", shadow.game_id, error)
         return preempted
+
+    def _shadow_preemption_task(self, shadow: GameSession) -> "asyncio.Task[bool]":
+        """The preemption task of ``shadow``: the one under way, or a new one."""
+        game_id = shadow.game_id
+        pending = self._shadow_preemptions.get(game_id)
+        if pending is not None and pending[0] is shadow:
+            return pending[1]
+
+        task = asyncio.ensure_future(self._preempt_shadow(shadow))
+        self._shadow_preemptions[game_id] = (shadow, task)
+
+        def _forget(done: "asyncio.Task[bool]") -> None:
+            current = self._shadow_preemptions.get(game_id)
+            if current is not None and current[1] is done:
+                del self._shadow_preemptions[game_id]
+
+        task.add_done_callback(_forget)
+        return task
+
+    async def _preempt_shadow(self, shadow: GameSession) -> bool:
+        """Force-end and retire one shadow session; True when it was preempted.
+
+        Runs as its own task (#1816), so it never raises: an error is logged and
+        answers False, which keeps an orphaned task (its real start cancelled)
+        from leaving an unretrieved exception.
+        """
+        try:
+            success, error = await shadow.force_end("preempted_by_real_game")
+        except Exception:
+            logger.error("Failed to preempt shadow game %s", shadow.game_id, exc_info=True)
+            return False
+        if not success:
+            logger.error("Failed to preempt shadow game %s: %s", shadow.game_id, error)
+            return False
+        with self._sessions_lock:
+            # The ENDED sweep or a force end may have retired it during the join.
+            still_registered = self.sessions.get(shadow.game_id) is shadow
+        if still_registered:
+            self._retire_session(shadow.game_id)
+        metrics.shadow_games_preempted_total.inc()
+        logger.warning("Preempted shadow game %s for real game", shadow.game_id)
+        return True
 
     def _admit_session_locked(self, config, is_real: bool, parent_span):
         """Sweep + classify + cap-check + register a session under the lock.
@@ -1082,6 +1131,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
     async def shutdown(self):
         """Shutdown the game coordinator: join all session threads."""
         logger.info("Shutting down GameCoordinator...")
+
+        # Let preemptions whose real start was cancelled finish first (#1816), so
+        # their flag-service end is queued before the lifecycle stops.
+        pending_preemptions = [task for _shadow, task in self._shadow_preemptions.values()]
+        if pending_preemptions:
+            await asyncio.wait(pending_preemptions, timeout=3)
 
         try:
             await self.flag_service.stop()

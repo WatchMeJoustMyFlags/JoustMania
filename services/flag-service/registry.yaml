@@ -29,7 +29,7 @@ flags:
   - {set: interventions, key: global_difficulty_factor, kind: state, scope: [game], bounds: {range: [0.5, 2.0]}}
   - {set: interventions, key: volume_override, kind: state, scope: [game], bounds: {range: [0.3, 1.0]}}
   - {set: interventions, key: pacing_profile, kind: state, scope: [game], bounds: {variants: [default, calm, frantic]}}
-  - {set: interventions, key: tempo_ramp, kind: state, scope: [game], bounds: {pattern: [["float 1.0 1.3", "float 0.1 60", "enum linear|ease"]]}}
+  - {set: interventions, key: tempo_ramp, kind: state, scope: [game], bounds: {pattern: [["float 1.0 1.3", "float 0.1 15", "enum linear|ease"]]}}
   - {set: interventions, key: auto_rubberband, kind: state, scope: [game], bounds: {variants: ["off", gentle, strong]}}
   - {set: interventions, key: player_sensitivity_factor, kind: level, scope: [game+serial], bounds: {range: [0.5, 2.0]}}
   - {set: interventions, key: player_handicap_factor, kind: level, scope: [game+serial], bounds: {range: [0.5, 2.0]}}
@@ -85,6 +85,7 @@ flags:
   - {set: agent, key: inference.model, kind: overlay, scope: [stack], bounds: {free_string: true}}
   - {set: agent, key: inference.effort, kind: overlay, scope: [stack]}
   - {set: agent, key: inference.timeout_seconds, kind: overlay, scope: [stack], bounds: {range: [30, 120], integer: true}}
+  - {set: agent, key: decision.probe_decisions, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
   - {set: agent, key: effect.window_seconds, kind: overlay, scope: [stack], bounds: {range: [10, 40]}}
   - {set: agent, key: promotion.rewatch_interval_seconds, kind: overlay, scope: [stack], bounds: {range: [30, 120], integer: true}}
   - {set: agent, key: promotion.rewatch_timeout_seconds, kind: overlay, scope: [stack], bounds: {range: [1800, 7200], integer: true}}
@@ -116,6 +117,10 @@ flags:
   # "allow" stays a reviewed baseline edit (C-033). Clearing it restores the baseline.
   - {set: game, key: shadow_policy, kind: overlay, scope: [stack], bounds: {variants: [block]}}
   - {set: game, key: tempo_schedule_mode, kind: state, scope: [game]}
+  # Tempo intensity ramp (#1833, UC-031 BR-005): changeable on stage; the bounds
+  # are the coordinator's own clamp (games/base.py RAMP_SECONDS_MIN/MAX).
+  - {set: game, key: tempo.ramp_up_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 10]}}
+  - {set: game, key: tempo.ramp_down_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 10]}}
 
   # --- user, controller, rollout (flags.md §13.4) ------------------------------
   - {set: user, key: current_game, kind: overlay, scope: [stack], persist: true}

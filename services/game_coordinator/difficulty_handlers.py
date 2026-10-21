@@ -45,7 +45,13 @@ from dataclasses import replace
 from lib.feature_flags import read_object_flag_variant
 from lib.types import Sensitivity
 
-from .games.base import parse_ramp_tempo_value, player_identity_attributes, resolve_music_windows
+from .games.base import (
+    FAST_MUSIC_SPEED,
+    SLOW_MUSIC_SPEED,
+    parse_ramp_tempo_value,
+    player_identity_attributes,
+    resolve_music_windows,
+)
 from .interventions import InterventionContext, InterventionManager
 
 logger = logging.getLogger(__name__)
@@ -78,8 +84,9 @@ async def handle_music_tempo_override(ctx: InterventionContext) -> None:
     A value > 0 sets ``game.tempo_override`` so the music loop adopts the
     override tempo and suspends its own schedule. A value of 0 (none) clears the
     override so the natural speed-up/slow-down schedule resumes from the current
-    music state. The override is applied by the game's own music loop via
-    ``_apply_tempo_change`` (single tempo owner — no race with the schedule).
+    music state. The value is clamped to [1.0, 1.3]. The override is applied by the
+    game's own music loop, which ramps the intensity to it at the bounded rate
+    (``_start_intensity_ramp``, single tempo owner, #1833).
     """
     game = ctx.game
     if game is None:
@@ -88,6 +95,8 @@ async def handle_music_tempo_override(ctx: InterventionContext) -> None:
 
     tempo = float(ctx.value)
     if tempo > 0.0:
+        # Clamp to the music range the intensity maps onto (UC-031 BR-005, #1833).
+        tempo = max(SLOW_MUSIC_SPEED, min(FAST_MUSIC_SPEED, tempo))
         game.tempo_override = tempo
         logger.info(f"music_tempo_override: override active at {tempo:.2f}x (schedule suspended)")
     else:

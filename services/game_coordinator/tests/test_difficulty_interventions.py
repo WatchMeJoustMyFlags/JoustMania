@@ -165,36 +165,45 @@ class TestMusicTempoOverride:
 
     @pytest.mark.asyncio
     async def test_override_beats_and_suspends_schedule(self):
-        """While override holds, the music loop adopts it and skips its schedule."""
+        """While override holds, the music loop ramps to it (#1833) and skips its schedule."""
         game = make_game()
         # Make the natural schedule "due" so without an override it would fire.
         game.change_time = 0.0
         game.tempo_override = 1.15
-        await game._check_music_speed()
-        # Override tempo applied via _apply_tempo_change path.
-        assert game.music_speed == pytest.approx(1.15)
-        # A second check holds the override (no further transition since already at tempo).
-        game.audio_client.ChangeTempo.reset_mock()
-        await game._check_music_speed()
-        game.audio_client.ChangeTempo.assert_not_called()
+        with patch("services.game_coordinator.games.base.time.time", return_value=1_000.0) as clock:
+            game.music_speed = 1.0
+            await game._check_music_speed()
+            game.audio_client.ChangeTempo.assert_called_once()
+            assert game.audio_client.ChangeTempo.call_args[0][0].new_tempo == pytest.approx(1.15)
+            # The intensity reaches the override at the end of the bounded ramp.
+            clock.return_value = 1_100.0
+            assert game.music_speed == pytest.approx(1.15)
+            # A second check holds the override (no further transition since already at tempo).
+            game.audio_client.ChangeTempo.reset_mock()
+            await game._check_music_speed()
+            game.audio_client.ChangeTempo.assert_not_called()
+            assert game.change_time == 0.0  # the schedule was left alone
 
     @pytest.mark.asyncio
     async def test_revert_resumes_schedule(self):
         """Clearing the override (value 0) lets the natural schedule run again."""
         game = make_game()
         game.tempo_override = 1.3
-        await game._check_music_speed()
-        assert game.music_speed == pytest.approx(1.3)
+        with patch("services.game_coordinator.games.base.time.time", return_value=1_000.0) as clock:
+            game.music_speed = 1.0
+            await game._check_music_speed()
+            clock.return_value = 1_100.0
+            assert game.music_speed == pytest.approx(1.3)
 
-        # Revert via handler.
-        await handle_music_tempo_override(make_ctx("music_tempo_override", 0, game))
-        assert game.tempo_override is None
+            # Revert via handler.
+            await handle_music_tempo_override(make_ctx("music_tempo_override", 0, game))
+            assert game.tempo_override is None
 
-        # Now the schedule resumes: force it due and confirm a scheduled change fires.
-        game.audio_client.ChangeTempo.reset_mock()
-        game.change_time = 0.0
-        await game._check_music_speed()
-        game.audio_client.ChangeTempo.assert_called_once()
+            # Now the schedule resumes: force it due and confirm a scheduled change fires.
+            game.audio_client.ChangeTempo.reset_mock()
+            game.change_time = 0.0
+            await game._check_music_speed()
+            game.audio_client.ChangeTempo.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_revert_handler_clears_override(self):

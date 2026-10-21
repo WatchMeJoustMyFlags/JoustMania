@@ -648,6 +648,10 @@ type Snapshot struct {
 	// the decide contract, the act-confidence threshold, content capture, and
 	// each remote backend's model / base URL / timeout. Read every cycle.
 	Decision DecisionBackend
+	// ProbeDecisions is decision.probe_decisions (#1810, C-035): when true the
+	// loop swaps the rules engine for the probe engine (synthetic noop only),
+	// except in pattern games. Read every cycle.
+	ProbeDecisions bool
 }
 
 // Permits reports whether the named intervention is in the allow-list.
@@ -667,6 +671,8 @@ type Flags struct {
 	// provider and selector (#1713). nil: client serves it too (tests).
 	rollout Evaluator
 	log     *slog.Logger
+	// probeDefault is the decision.probe_decisions fallback (deprecated env).
+	probeDefault bool
 }
 
 // New builds a Flags wrapper over the given evaluator. log may be nil, in which
@@ -699,6 +705,7 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 		},
 		BluetoothFitness: f.BluetoothFitness(ctx),
 		Decision:         f.DecisionBackend(ctx),
+		ProbeDecisions:   f.probeDecisions(ctx),
 	}
 }
 

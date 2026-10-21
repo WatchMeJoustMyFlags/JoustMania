@@ -22,6 +22,7 @@ const (
 	keyInferenceEffort         = "inference.effort"
 	keyInferenceTimeoutSeconds = "inference.timeout_seconds"
 	keyEffectWindowSeconds     = "effect.window_seconds"
+	keyProbeDecisions          = "decision.probe_decisions"
 	keyRewatchIntervalSeconds  = "promotion.rewatch_interval_seconds"
 	keyRewatchTimeoutSeconds   = "promotion.rewatch_timeout_seconds"
 	keyRevertCooldownSeconds   = "promotion.revert_cooldown_seconds"
@@ -84,4 +85,17 @@ func (f *Flags) secondsFlag(ctx context.Context, key string, def time.Duration) 
 		return def
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// SetProbeDefault sets the fallback for decision.probe_decisions when flagd cannot
+// resolve it (flagd down, flag missing, no first sync): main.go passes the
+// deprecated AGENT_PROBE_DECISIONS env value (FR-151, C-035). The compiled default
+// is false. Call once at startup, before the first Evaluate.
+func (f *Flags) SetProbeDefault(def bool) { f.probeDefault = def }
+
+// probeDecisions resolves decision.probe_decisions (was AGENT_PROBE_DECISIONS).
+// Read per Evaluate (per decision cycle), so a flip changes the NEXT cycle. The
+// probe only narrows the agent (noop only), so it is tuning and never fails closed.
+func (f *Flags) probeDecisions(ctx context.Context) bool {
+	return f.boolFlag(ctx, keyProbeDecisions, f.probeDefault)
 }

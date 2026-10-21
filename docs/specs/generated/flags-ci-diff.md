@@ -16,6 +16,8 @@ Part of [flags.md §12](../flags.md#12-ci-differences).
 | game.json | `invincibility_seconds` | `4s` = 4.0 | `2s` = 2.0 |
 | game.json | `max_concurrent_games` | `eight` = 8 | `four` = 4 |
 | game.json | `shadow_policy` | `block` = "block" | `allow` = "allow" |
+| game.json | `tempo.ramp_down_seconds` | `default` = 1.5 | `ci` = 0.1 |
+| game.json | `tempo.ramp_up_seconds` | `default` = 3.0 | `ci` = 0.1 |
 | game.json | `tournament.match_seconds` | `default` = 22.0 | `ci` = 6.0 |
 | game.json | `tournament.time_between_matches_seconds` | `default` = 5.0 | `ci` = 1.0 |
 | game.json | `werewolf.reveal_time_seconds` | `35s` = 35.0 | `20s` = 20.0 |
@@ -31,6 +33,8 @@ Part of [flags.md §12](../flags.md#12-ci-differences).
 | agent.json | `decision.openai.base_url` | `fake` = "http://fake-openai:8080/v1" |
 | agent.json | `llm.max_requests_per_minute` | `journey` = 600 |
 | game.json | `force_all_start_seconds` | `ci` = 0.6 |
+| game.json | `tempo.ramp_down_seconds` | `ci` = 0.1 |
+| game.json | `tempo.ramp_up_seconds` | `ci` = 0.1 |
 | game.json | `tournament.match_seconds` | `ci` = 6.0 |
 | game.json | `tournament.time_between_matches_seconds` | `ci` = 1.0 |
 

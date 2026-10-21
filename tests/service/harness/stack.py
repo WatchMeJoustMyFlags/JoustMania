@@ -56,7 +56,7 @@ AUDIO_PORT = 50056
 OTLP_GRPC_PORT = 4317  # otel-collector's OTLP/gRPC port in compose
 FLAG_SERVICE_HTTP_PORT = 8070
 AGENT_OTLP_PORT = 4317  # the agent's OTLP/gRPC receiver in compose
-FAKE_OPENAI_PORT = 8080  # fake-openai in docker-compose.decide-e2e.yml
+FAKE_OPENAI_PORT = 8080  # the fake OpenAI server (tests/integration/fake_openai)
 # The ci/agent.json variant of decision.openai.base_url the agent is pointed at the fake with.
 FAKE_OPENAI_VARIANT = ("agent", "decision.openai.base_url", "fake")
 # Same for the Jev decide backend (#1404): the ci/agent.json `fake` variant of decision.jev.base_url.
@@ -101,6 +101,11 @@ class Composition:
         if self.agent and not (self.otlp and "game-coordinator" in self.services):
             raise ValueError("agent=True needs otlp=True (the agent observes through OTLP) and the game coordinator")
 
+
+# The menu reports healthy before its boot lobby entry (menu_auto_start, services/menu/server.py);
+# a StopMenu/StartMenu restart that lands in that window sees STOPPED, then the boot flips the menu to
+# RUNNING and StartMenu fails "Menu already running" (#1798). The stack is ready after the entry.
+READY_LOG_MARKERS = {"menu": "Menu auto-started"}
 
 # Coordinator on mock controllers: headless games, interventions, flag service lifecycle.
 GAME = Composition(("controller-manager", "game-coordinator"))
@@ -220,6 +225,7 @@ class ServiceStack:
                 grpc_port=ports[name],
                 env=envs[name],
                 log_path=self.workdir / "logs" / f"{name}.log",
+                ready_log_marker=READY_LOG_MARKERS.get(name),
             )
             self.services[name] = service
             service.start()

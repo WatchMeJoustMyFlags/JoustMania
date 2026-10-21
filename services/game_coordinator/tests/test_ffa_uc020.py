@@ -461,10 +461,12 @@ class TestUC020FreeForAll:
     @pytest.mark.uc("UC-020", flow="main", steps=[4])
     @pytest.mark.uc("UC-031", flow="main", steps=[3])
     async def test_music_alternates_windows_and_death_threshold_follows_the_window(self):
-        """UC-020 step 4: the FFA game's music loop alternates 1.0x and 1.3x windows; the death threshold follows.
+        """UC-020 step 4: the FFA game's tempo intensity alternates 1.0x and 1.3x windows; the death threshold follows.
 
         Drives the game's own tempo owner (``_check_music_speed``, called every 100 ms by the music loop)
-        on a fake clock for two simulated minutes.
+        on a fake clock for two simulated minutes. Since #1833 the intensity ramps between the windows
+        (UC-031 BR-005): each change is one glide over the ramp, and the next window counts from the
+        ramp end. The death threshold always equals the lerp of the two tables by the music's position.
         """
         audio = RecordingAudio()
         game, _events = _ffa_with_players(3, audio=audio)
@@ -473,32 +475,38 @@ class TestUC020FreeForAll:
         assert slow_death < fast_death  # the faster window is more forgiving
         windows = game.music_windows
         clock = FakeClock(time.time())
+        between_seen = False
 
         with patch.object(base_module, "time", clock):
             await game._start_game_music()
             assert game.music_speed == SLOW_MUSIC_SPEED
-            changes: list[tuple[float, float]] = [(clock.now, SLOW_MUSIC_SPEED)]  # (when, new tempo)
+            # (when, new tempo, glide seconds)
+            changes: list[tuple[float, float, float]] = [(clock.now, SLOW_MUSIC_SPEED, 0.0)]
             for _tick in range(1200):
                 clock.now += 0.1
                 await game._check_music_speed()
                 tempo_calls = [req for name, req in audio.calls if name == "ChangeTempo"]
                 if len(tempo_calls) > len(changes) - 1:
-                    changes.append((clock.now, tempo_calls[-1].new_tempo))
-                # The death threshold always matches the window the music is in.
-                expected = fast_death if game.music_speed == FAST_MUSIC_SPEED else slow_death
+                    changes.append((clock.now, tempo_calls[-1].new_tempo, tempo_calls[-1].transition_duration))
+                # The death threshold follows the music's position between 1.0x and 1.3x.
+                position = (game.music_speed - SLOW_MUSIC_SPEED) / (FAST_MUSIC_SPEED - SLOW_MUSIC_SPEED)
+                expected = slow_death + (fast_death - slow_death) * position
+                between_seen = between_seen or 0.05 < position < 0.95
                 assert game._compute_effective_thresholds(game.players["p0"])[1] == pytest.approx(expected)
 
-        tempos = [tempo for _when, tempo in changes]
+        assert between_seen  # the thresholds ramp, they do not jump
+        tempos = [tempo for _when, tempo, _glide in changes]
         assert len(tempos) >= 5
         # ChangeTempoRequest.new_tempo is a proto float, hence approx.
         assert tempos == pytest.approx(
             [SLOW_MUSIC_SPEED if i % 2 == 0 else FAST_MUSIC_SPEED for i in range(len(tempos))], abs=1e-6
         )
-        # Each window lasts as long as the (no-one-dead-yet) slow / fast windows allow, give or take one tick.
-        for (start, tempo), (end, _next) in zip(changes, changes[1:], strict=False):
+        # Each window, counted from the end of the previous ramp, lasts as long as the
+        # (no-one-dead-yet) slow / fast windows allow, give or take one tick.
+        for (start, tempo, glide), (end, _next, _next_glide) in zip(changes, changes[1:], strict=False):
             is_slow = tempo == pytest.approx(SLOW_MUSIC_SPEED)
             low, high = (windows.slow_min, windows.slow_max) if is_slow else (windows.fast_min, windows.fast_max)
-            assert low - 0.11 <= end - start <= high + 0.11
+            assert low - 0.11 <= end - start - glide <= high + 0.11
 
         # A move between the two death thresholds is survived in the 1.3x window and kills in the 1.0x window.
         between = (slow_death + fast_death) / 2

@@ -15,7 +15,7 @@
 #
 # Services / gate keys accepted by SERVICE:
 #   lib game_coordinator menu controller_manager audio pairing_daemon python_hid
-#   agent flag-service connect-proxy dashboard rust-hid
+#   agent flag-service connect-proxy agent-protos dashboard rust-hid
 #   contract contract-flagd service grafana compose
 #   (hyphens and underscores are interchangeable)
 #
@@ -51,7 +51,7 @@ PY_SERVICES=(game_coordinator menu controller_manager audio pairing_daemon pytho
 # Gate order in the summary.
 ALL_GATES=(lint spec-lint spec-touched
   py:lib py:game_coordinator py:menu py:controller_manager py:audio py:pairing_daemon py:python_hid
-  go:agent go:flag-service connect-proxy dashboard rust-hid
+  go:agent go:flag-service connect-proxy agent-protos dashboard rust-hid
   contract contract-flagd service grafana-json compose yaml-dupkeys)
 
 plan_only=false
@@ -79,6 +79,7 @@ select_key() {  # map a SERVICE key to gates
     agent) selected[go:agent]=1 ;;
     flag_service) selected[go:flag-service]=1 ;;
     connect_proxy) selected[connect-proxy]=1 ;;
+    agent_protos) selected[agent-protos]=1 ;;
     dashboard) selected[dashboard]=1 ;;
     rust_hid|rust) selected[rust-hid]=1 ;;
     contract) selected[contract]=1 ;;
@@ -122,6 +123,11 @@ classify() {  # map one changed path to gates; each case mirrors a ci.yml filter
   # connect_proxy (image build buf-generates from proto/)
   case "$f" in
     services/connect-proxy/*|proto/*) selected[connect-proxy]=1 ;;
+  esac
+  # proto_pkg, agent Go stub step only (#1801; the Python stub check has no local gate)
+  case "$f" in
+    proto/*|services/agent/gen/*|scripts/ci/gen-agent-protos.sh|scripts/ci/validate-agent-protos.sh)
+      selected[agent-protos]=1 ;;
   esac
   # dashboard
   case "$f" in
@@ -205,6 +211,8 @@ gate_cmd() {  # print the shell command for a gate
     # Generated code exists only inside the image build: the builder stage runs
     # buf generate, go vet and go test (services/connect-proxy/Dockerfile).
     connect-proxy) echo "docker build -q --target builder -f services/connect-proxy/Dockerfile -t joustmania/connect-proxy-gates:local ." ;;
+    # Regenerates services/agent/gen (docker + buf.build) and fails on drift (#1801).
+    agent-protos) echo "make ci-validate-agent-protos" ;;
     dashboard)
       local node
       if ! node="$(find_node24)"; then
@@ -225,7 +233,7 @@ gate_cmd() {  # print the shell command for a gate
       echo "set -e; for c in 'docker-compose.yml' 'docker-compose.yml docker-compose.override.yml' \
 'docker-compose.yml docker-compose.ci.yml' 'docker-compose.yml docker-compose.override.yml docker-compose.dev.yml' \
 'docker-compose.yml docker-compose.override.yml docker-compose.ci.yml docker-compose.dry-run.yml' \
-'docker-compose.yml docker-compose.ci.yml docker-compose.decide-e2e.yml' 'docker-compose.lite.yml'; do \
+'docker-compose.lite.yml'; do \
 a=(); for f in \$c; do a+=(-f \"\$f\"); done; echo \"compose: \$c\"; \
 docker compose \"\${a[@]}\" --profile agent --profile dashboard config -q; done" ;;
     yaml-dupkeys)
