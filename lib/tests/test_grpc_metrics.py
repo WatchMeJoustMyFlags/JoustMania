@@ -249,7 +249,10 @@ class TestAioClientErrors:
         assert metrics.observed() == [{"service": "Probe", "method": "UnaryOk"}]
 
     async def test_unary_local_cancel_is_not_counted(self, aio_channel, metrics):
-        task = asyncio.create_task(aio_channel.unary_unary(_PATH + "UnarySlow")(b"x"))
+        async def slow_call():
+            return await aio_channel.unary_unary(_PATH + "UnarySlow")(b"x")
+
+        task = asyncio.create_task(slow_call())
         await asyncio.sleep(0.1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
