@@ -240,6 +240,34 @@ fixture interventions_allowed=none
 STUB_BUDGET=30 run_preflight
 if has "allows no intervention"; then not_ok "rules backend + none does not warn"; else ok "rules backend + none does not warn"; fi
 
+# --- a persisted remote backend comes back after a restart (#1682) ---------
+# persist_put <flag> <variant> [persist]: a write to the fake (curl is stubbed).
+persist_put() {
+  python3 - "${FLAG_SERVICE_URL}/agent/$1" "$2" "${3:-true}" <<'PY2'
+import json, sys, urllib.request
+body = {"variant": sys.argv[2], "writer": "stage"}
+if sys.argv[3] == "true":
+    body["persist"] = True
+req = urllib.request.Request(sys.argv[1], json.dumps(body).encode(), {"Content-Type": "application/json"}, method="PUT")
+urllib.request.urlopen(req).read()
+PY2
+}
+fixture
+persist_put decision.backend claude
+persist_put decision.claude.model sonnet
+persist_put decision.backend rules false
+STUB_BUDGET=30 run_preflight
+check "stage overlay rules over a persisted claude still passes the effective check" "PASS  decision.backend = rules"
+check "persisted remote backend warns" "WARN  decision.backend claude is persisted with decision.claude.model = sonnet: a flag-service restart or a reboot brings claude back"
+fixture
+persist_put decision.backend rules
+STUB_BUDGET=30 run_preflight
+if has "is persisted with\|brings rules back"; then not_ok "persisted rules does not warn"; else ok "persisted rules does not warn"; fi
+check "persisted rules is reported" "INFO  decision.backend rules is persisted"
+fixture
+STUB_BUDGET=30 run_preflight
+if has "is persisted"; then not_ok "no persisted backend, no persisted line"; else ok "no persisted backend, no persisted line"; fi
+
 # --- clock skew ----------------------------------------------------------------
 fixture
 STUB_SKEW=300 run_preflight

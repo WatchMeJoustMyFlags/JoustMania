@@ -89,6 +89,29 @@ before="$(snapshot)"
 "${HELPER}" reset >/dev/null
 [[ "$(snapshot)" == "${before}" ]] && ok "reset is idempotent" || not_ok "reset is idempotent"
 
+# --- reset clears the persisted backend and model (#1682, C-018) -----------
+# agent-backend.sh persists decision.backend and the model: a stage overlay over
+# them would not survive a flag-service restart, so reset deletes them; the
+# host's other persisted settings (the menu's interventions_allowed) stay.
+persisted() { # persisted <flag>: the persisted admin variant, or "none"
+  curl -sS "${FLAG_SERVICE_URL}/agent/$1" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("admin_value") or {}).get("variant", "none"))'
+}
+persist() { # persist <flag> <variant>: an operator's persisted write
+  curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
+    --data "{\"variant\": \"$2\", \"writer\": \"stage\", \"persist\": true}" "${FLAG_SERVICE_URL}/agent/$1"
+}
+fresh
+persist decision.backend jev
+persist decision.claude.model opus
+persist interventions_allowed ambient
+out="$("${HELPER}" reset)"
+[[ "$(persisted decision.backend)" == "none" ]] && ok "reset clears the persisted backend" || not_ok "reset clears the persisted backend ($(persisted decision.backend))"
+[[ "$(persisted decision.claude.model)" == "none" ]] && ok "reset clears the persisted model" || not_ok "reset clears the persisted model ($(persisted decision.claude.model))"
+[[ "$(persisted interventions_allowed)" == "ambient" ]] && ok "reset keeps the host's other persisted settings" || not_ok "reset keeps the host's other persisted settings ($(persisted interventions_allowed))"
+expect "reset after a persisted jev: backend rules" decision.backend rules
+[[ "${out}" == *"reset  decision.backend: persisted jev cleared"* ]] && ok "reset reports the cleared persisted backend" || not_ok "reset reports the cleared persisted backend: ${out}"
+if grep -q '^DELETE /agent/decision.backend?persist=true' "${FAKE_FLAG_LOG}"; then ok "reset deletes the persisted backend (persist=true)"; else not_ok "reset deletes the persisted backend (persist=true)"; fi
+
 # --- the reset baseline passes the pre-flight's flag section ---------------
 # docker and curl stubbed to "unavailable": only the flag section runs (it reads
 # the flag service in Python), and no real container is inspected.

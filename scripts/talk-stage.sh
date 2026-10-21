@@ -9,7 +9,9 @@
 # Usage:
 #   ./scripts/talk-stage.sh reset
 #       Clear every stage overlay in the flag service (whatever a beat left
-#       behind) and set every baseline flag to its stage variant again.
+#       behind), clear the persisted decision backend and model (an operator's
+#       agent-backend.sh choice, #1682) so a restart cannot bring a remote
+#       backend back, and set every baseline flag to its stage variant again.
 #       Interventions are per game and need no reset (UC-053 BR-003).
 #       Idempotent; run it between rehearsals and after any interrupted beat,
 #       then ./scripts/talk-preflight.sh.
@@ -38,9 +40,14 @@
 #   TALK_BASELINE_FILE  baseline (default scripts/talk-baseline.json)
 #
 # Every change is an in-memory stack overlay with writer=stage (epic #1407): the
-# flag files never change, nothing is persisted, and the flag service pushes the
-# change to flagd at once. A flag-service restart drops the stage overlays: run
-# `reset` again.
+# flag files never change, the stage never writes a persisted value, and the
+# flag service pushes the change to flagd at once. A flag-service restart drops
+# the stage overlays: run `reset` again. The decision backend and model are the
+# exception on the operator side: ./scripts/agent-backend.sh persists them
+# (C-018, #1682), so a stage overlay over a persisted remote backend is
+# temporary and a restart or reboot brings the persisted backend back. `reset`
+# therefore also deletes those persisted values (DELETE ...?persist=true): the
+# flags return to the flag-file baseline (rules in the shipped files).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,12 +76,14 @@ with open(baseline_path) as fh:
     baseline = json.load(fh)
 
 SET, WRITER = "agent", "stage"
+# The flags agent-backend.sh writes persisted (#1682); reset clears them.
+PERSISTED_BACKEND_KEYS = ("decision.backend", "decision.claude.model", "decision.jev.model", "decision.openai.model")
 fs = FlagService.from_env()
 fallback = baseline.get("fallback", {})
 
 
 def set_variant(key, variant, effective, changes, problems):
-    """Stage overlay (in memory, writer=stage, never persisted: re-review N4)."""
+    """Stage overlay (in memory, writer=stage, never a persisted write: re-review N4)."""
     current = effective.get(key, (None, None))[0]
     try:
         fs.set_variant(SET, key, variant, writer=WRITER)
@@ -140,10 +149,18 @@ try:
         sys.exit(0)
 
     if mode == "reset":
-        # Drop whatever a beat left behind (every stage overlay), then apply the
-        # stage baseline again. The host's persisted admin settings are not
-        # touched: a stage overlay sits on top of them.
+        # Drop whatever a beat left behind (every stage overlay) and the persisted
+        # decision backend and model (#1682: a stage overlay over a persisted
+        # remote backend would not survive a restart), then apply the stage
+        # baseline again. The host's other persisted admin settings (e.g.
+        # interventions_allowed from the menu) are not touched: a stage overlay
+        # sits on top of them.
         fs.clear_writer(SET, WRITER)
+        for view in fs.flag_set(SET)["flags"]:
+            persisted = view.get("admin_value") or {}
+            if view["flag"] in PERSISTED_BACKEND_KEYS and persisted:
+                fs.clear(SET, view["flag"], persist=True)
+                print(f"reset  {view['flag']}: persisted {persisted.get('variant')} cleared")
         effective = fs.effective(SET)
         changes, problems = [], []
         for section in ("checked", "reset_also"):
