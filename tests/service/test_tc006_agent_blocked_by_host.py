@@ -168,6 +168,7 @@ async def test_agent_makes_no_remote_call_after_host_restricts_it(fresh_stack):
             # Step 6: an intervention that does reach the coordinator (appended to its
             # source like the agent would) ...
             victim = serials[1]
+            assert await _victim_alive(game_client, game_id, victim), "the victim was not alive before the event"
             append_event("eliminate_player", game_id, {"serial": victim})
             # Step 7: ... is rejected by the coordinator's own check and the victim stays alive.
             assert await async_poll_until(lambda: _blocked_not_allowed(collector, victim), timeout=15.0), (
