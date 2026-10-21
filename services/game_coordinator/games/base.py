@@ -56,7 +56,26 @@ COUNTDOWN_BEEP_COUNT = 3  # Number of beeps (Red/Yellow/Green)
 # Phase 70: Music tempo constants (from original JoustMania)
 SLOW_MUSIC_SPEED = 1.0  # Normal playback
 FAST_MUSIC_SPEED = 1.3  # 30% faster
-MUSIC_TRANSITION_DURATION = 1.5  # Seconds to smoothly transition
+
+# #1833: the tempo INTENSITY ramp (UC-031 step 3, BR-005). Each game owns one
+# intensity i in [0, 1] (0 = slow table / 1.0x, 1 = fast table / 1.3x) that moves
+# toward its target at a bounded rate: a full swing takes ``tempo.ramp_up_seconds``
+# going up and ``tempo.ramp_down_seconds`` going down (game flags, read at each
+# ramp start, never per frame). Thresholds read i every frame; the music is
+# derived from it (one ChangeTempo glide per segment), so it can only trail.
+DEFAULT_RAMP_UP_SECONDS = 3.0  # The maintainer's "slow increase"
+DEFAULT_RAMP_DOWN_SECONDS = 1.5  # The original JoustMania glide, until measured on a Pi
+RAMP_SECONDS_MIN = 0.1  # Flag clamp, matches the registry bounds (flags.md §13.3)
+RAMP_SECONDS_MAX = 10.0
+# Shortest glide sent to the audio service: a transition_duration of 0 means 1.0 s there.
+MIN_GLIDE_SECONDS = 0.05
+# Deadline for one ChangeTempo, so a wedged audio service never stalls the music loop.
+AUDIO_TEMPO_RPC_TIMEOUT_SECONDS = 0.5
+# Back-off between resends after a ChangeTempo error (doubles per failure).
+AUDIO_TEMPO_RETRY_MIN_SECONDS = 0.5
+AUDIO_TEMPO_RETRY_MAX_SECONDS = 5.0
+# Track id the audio service returns for PlayMusic while play_audio is off (UC-031 A1).
+MUTED_TRACK_ID = "muted"
 
 # #1109: tempo-schedule SOURCE selector (``game.tempo_schedule_mode`` flag).
 # The tempo-change decision ALWAYS flows through the single pacing-policy seam
@@ -112,12 +131,90 @@ _VALID_RAMP_CURVES = (RAMP_CURVE_LINEAR, RAMP_CURVE_EASE)
 # schedule for an entire game.
 RAMP_TEMPO_MAX_SECONDS = 60.0
 
-# Per-step audio transition for a ramp (#1122 review): the ramp applies a small
-# tempo step every ~100ms loop tick, so each step's ChangeTempo must glide over
-# roughly one tick rather than MUSIC_TRANSITION_DURATION (1.5s) — otherwise every
-# tick stacks an overlapping 1.5s transition chasing a stale target. The loop's
-# interpolation owns the overall smoothness; the audio just tracks each step.
+# Per-step audio transition for an ``ease`` ramp (#1122 review): the ease curve
+# applies a small tempo step every ~100ms loop tick, so each step's ChangeTempo
+# glides over roughly one tick rather than a full ramp — otherwise every tick
+# stacks an overlapping long transition chasing a stale target. A ``linear`` ramp
+# is one intensity segment with one glide instead (#1833).
 RAMP_TEMPO_STEP_TRANSITION = 0.12
+
+
+def _shape_progress(progress: float, curve: str) -> float:
+    """Map linear progress in (0, 1) through the ramp curve (linear or smoothstep ease)."""
+    if curve == RAMP_CURVE_EASE:
+        return progress * progress * (3.0 - 2.0 * progress)
+    return progress
+
+
+def tempo_from_intensity(intensity: float) -> float:
+    """Music ratio for an intensity (UC-031 BR-005): 1.0 + 0.3 * i, i clamped to [0, 1]."""
+    clamped = max(0.0, min(1.0, intensity))
+    return SLOW_MUSIC_SPEED + (FAST_MUSIC_SPEED - SLOW_MUSIC_SPEED) * clamped
+
+
+def intensity_from_tempo(tempo: float) -> float:
+    """Inverse of :func:`tempo_from_intensity`, clamped to [0, 1]."""
+    speed_range = FAST_MUSIC_SPEED - SLOW_MUSIC_SPEED
+    if speed_range <= 0:
+        return 0.0
+    return max(0.0, min(1.0, (tempo - SLOW_MUSIC_SPEED) / speed_range))
+
+
+def resolve_ramp_seconds(value: object, default: float) -> float:
+    """Validate a ``tempo.ramp_*_seconds`` flag value (#1833).
+
+    A non-number, a bool, NaN / infinity or a value <= 0 is malformed and gives
+    ``default``; any other value is clamped to [RAMP_SECONDS_MIN, RAMP_SECONDS_MAX].
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return default
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0.0:
+        return default
+    return max(RAMP_SECONDS_MIN, min(RAMP_SECONDS_MAX, seconds))
+
+
+@dataclass(frozen=True)
+class IntensityRamp:
+    """One segment of the tempo intensity (#1833, UC-031 BR-005). Immutable; replaced per segment.
+
+    ``value_at`` is a pure function of the clock, so thresholds read it every frame
+    without awaiting anything, and a stalled music loop can never stall them.
+    """
+
+    start: float
+    target: float
+    start_time: float
+    duration: float
+    curve: str = RAMP_CURVE_LINEAR
+
+    @classmethod
+    def hold(cls, intensity: float, now: float = 0.0) -> "IntensityRamp":
+        """A finished ramp that holds ``intensity`` (clamped to [0, 1])."""
+        clamped = max(0.0, min(1.0, intensity))
+        return cls(start=clamped, target=clamped, start_time=now, duration=0.0)
+
+    @property
+    def end_time(self) -> float:
+        return self.start_time + self.duration
+
+    def value_at(self, now: float) -> float:
+        """Intensity at ``now``: start before the segment, target after it, clamped to [0, 1]."""
+        if self.duration <= 0:
+            value = self.target
+        else:
+            progress = (now - self.start_time) / self.duration
+            if progress <= 0.0:
+                value = self.start
+            elif progress >= 1.0:
+                value = self.target
+            else:
+                value = self.start + (self.target - self.start) * _shape_progress(progress, self.curve)
+        return max(0.0, min(1.0, value))
+
+    def is_complete(self, now: float) -> bool:
+        """True once the segment has reached (and holds) its target."""
+        return self.duration <= 0 or now >= self.end_time
 
 
 @dataclass(frozen=True)
@@ -147,10 +244,8 @@ class RampDescriptor:
             return self.start_tempo
         if progress >= 1.0:
             return self.target_tempo
-        if self.curve == RAMP_CURVE_EASE:
-            # Smoothstep: ease in and out, monotone, hits 0/1 at the endpoints.
-            progress = progress * progress * (3.0 - 2.0 * progress)
-        return self.start_tempo + (self.target_tempo - self.start_tempo) * progress
+        # ease = smoothstep: ease in and out, monotone, hits 0/1 at the endpoints.
+        return self.start_tempo + (self.target_tempo - self.start_tempo) * _shape_progress(progress, self.curve)
 
     def is_complete(self, now: float) -> bool:
         """True once the ramp has reached (and should hold at) its target."""
@@ -215,8 +310,9 @@ _MSG_COUNTDOWN_INTERRUPTED = "Countdown interrupted - game no longer running"
 # Uses linear interpolation between slow/fast threshold arrays based on music speed.
 # This allows fine-tuned per-sensitivity-level behavior as music tempo changes.
 #
-# Formula: threshold = lerp(SLOW[sens], FAST[sens], music_speed_percent)
-# Where music_speed_percent = (current_speed - SLOW_SPEED) / (FAST_SPEED - SLOW_SPEED)
+# Formula: threshold = lerp(SLOW[sens], FAST[sens], intensity)
+# Where intensity is the game's tempo intensity in [0, 1] (#1833, UC-031 BR-005);
+# the music ratio is derived from it: 1.0 + 0.3 * intensity.
 #
 # Example at MEDIUM (sens=2), music at 1.15x (50% between slow/fast):
 #   warning = lerp(1.6, 1.9, 0.5) = 1.75g
@@ -858,7 +954,20 @@ class BaseGameMode(ABC):
 
         # Phase 70: Music tempo control state
         self.music_track_id = None
-        self.music_speed = SLOW_MUSIC_SPEED
+        # #1833: the tempo intensity (UC-031 BR-005) is the source; music_speed is
+        # derived from it (property below). Starts held at 0 (1.0x, slow table).
+        self._intensity = IntensityRamp.hold(0.0)
+        # False while the audio service has not accepted the current glide; the
+        # music loop resends the remaining glide at _audio_retry_at.
+        self._audio_synced = True
+        self._audio_retry_at = 0.0
+        self._audio_retry_backoff = AUDIO_TEMPO_RETRY_MIN_SECONDS
+        # The linear ramp_tempo descriptor already turned into an intensity ramp
+        # (identity check, so one descriptor sends exactly one glide).
+        self._adopted_tempo_ramp: RampDescriptor | None = None
+        # True while a ramp ran at the last music tick, so the tick after it ends
+        # still emits the final tempo / threshold gauges.
+        self._ramp_metrics_open = False
         self.speed_up = True  # True = next change will speed up, False = slow down
         self.change_time = 0.0  # Time of next tempo change
         self.music_loop_task = None
@@ -945,6 +1054,21 @@ class BaseGameMode(ABC):
     def configured_sensitivity(self) -> Sensitivity:
         """Game-start sensitivity snapshot (telemetry only; not the restore target)."""
         return self._configured_sensitivity
+
+    @property
+    def music_speed(self) -> float:
+        """Music ratio derived from the tempo intensity now (#1833, UC-031 BR-005)."""
+        return tempo_from_intensity(self._intensity.value_at(time.time()))
+
+    @music_speed.setter
+    def music_speed(self, tempo: float) -> None:
+        """Pin the intensity at the given tempo's value (no ramp); used by fixtures and resets."""
+        self._intensity = IntensityRamp.hold(intensity_from_tempo(tempo), time.time())
+
+    @property
+    def tempo_intensity(self) -> float:
+        """The tempo intensity in [0, 1] now (0 = slow table, 1 = fast table)."""
+        return self._intensity.value_at(time.time())
 
     def set_baseline_sensitivity(self, value: Sensitivity) -> None:
         """Update the admin baseline; invalidate any active agent override (#816).
@@ -1709,8 +1833,10 @@ class BaseGameMode(ABC):
         """
         Compute effective warning and death thresholds for a player.
 
-        Uses LERP between slow/fast threshold arrays based on music speed,
-        then applies per-player sensitivity factor.
+        Uses LERP between slow/fast threshold arrays by the tempo intensity
+        (UC-030 step 5, UC-031 BR-005), then applies per-player sensitivity factor.
+
+        Hot path (every frame, per player): no flag reads, no awaits, no locks.
 
         Args:
             player: Player to compute thresholds for
@@ -1719,11 +1845,10 @@ class BaseGameMode(ABC):
             Tuple of (effective_warning_threshold, effective_death_threshold)
         """
         sens_idx = self.sensitivity.value
+        now = time.time()
 
-        # Calculate music speed as percentage (0.0 = slow, 1.0 = fast)
-        speed_range = FAST_MUSIC_SPEED - SLOW_MUSIC_SPEED
-        speed_percent = (self.music_speed - SLOW_MUSIC_SPEED) / speed_range if speed_range > 0 else 0.0
-        speed_percent = max(0.0, min(1.0, speed_percent))  # Clamp to [0, 1]
+        # Tempo intensity now (0.0 = slow table, 1.0 = fast table), clamped to [0, 1].
+        speed_percent = self._intensity.value_at(now)
 
         # LERP between slow and fast thresholds (instance tables, #766 F1)
         base_warn = self._lerp(self.slow_warning[sens_idx], self.fast_warning[sens_idx], speed_percent)
@@ -1767,7 +1892,6 @@ class BaseGameMode(ABC):
         # which could never weaken a standing handicap). The final clamp [0.5, 2.0]
         # keeps even a fully-tightened threshold finite — never instant-death — and
         # caps even a maxed boost at 2x — "harder to die", never immune.
-        now = time.time()
         effective_handicap = player.handicap_factor
         if now < player.partial_shield_until:
             effective_handicap = max(effective_handicap, player.partial_shield_boost)
@@ -3387,11 +3511,9 @@ class BaseGameMode(ABC):
         return a * (1 - t) + b * t
 
     def _emit_threshold_metrics(self):
-        """Emit effective threshold metrics for the current music speed (Phase 80)."""
+        """Emit effective threshold metrics for the current tempo intensity (Phase 80, #1833)."""
         sens_idx = self.sensitivity.value
-        speed_range = FAST_MUSIC_SPEED - SLOW_MUSIC_SPEED
-        speed_percent = (self.music_speed - SLOW_MUSIC_SPEED) / speed_range if speed_range > 0 else 0.0
-        speed_percent = max(0.0, min(1.0, speed_percent))
+        speed_percent = self._intensity.value_at(time.time())
 
         effective_warn = self._lerp(self.slow_warning[sens_idx], self.fast_warning[sens_idx], speed_percent)
         effective_death = self._lerp(self.slow_max[sens_idx], self.fast_max[sens_idx], speed_percent)
@@ -3419,8 +3541,23 @@ class BaseGameMode(ABC):
         Sets volume and starts music at normal speed. When ``volume`` is None,
         uses the per-game configured game volume (F7, #766).
         Note: play_audio setting is checked centrally in audio service.
+
+        #1833 (UC-031 BR-005, D1): the tempo schedule starts here whether or not
+        music plays (no audio client, muted, PlayMusic failed): the intensity and
+        the thresholds move without a music track.
         """
+        self.music_speed = SLOW_MUSIC_SPEED
+        self.speed_up = True
+        self._audio_synced = True
+        self._audio_retry_backoff = AUDIO_TEMPO_RETRY_MIN_SECONDS
+        self.change_time = self._get_music_change_time()
+        self._emit_music_tempo_metric()
+        self._emit_threshold_metrics()
+
         if not self.audio_client:
+            logger.info(
+                f"No audio client: tempo schedule runs without music, next change at +{self._next_change_in():.1f}s"
+            )
             return
 
         if volume is None:
@@ -3444,19 +3581,16 @@ class BaseGameMode(ABC):
 
             if response.success:
                 self.music_track_id = response.track_id
-                self.music_speed = SLOW_MUSIC_SPEED
-                self.speed_up = True
-                self.change_time = self._get_music_change_time()
-                next_change = self.change_time - time.time()
-                # Update metrics for dashboard (Phase 80)
-                self._emit_music_tempo_metric()
-                self._emit_threshold_metrics()
-                logger.info(f"Game music started: {response.track_id}, next change at +{next_change:.1f}s")
+                logger.info(f"Game music started: {response.track_id}, next change at +{self._next_change_in():.1f}s")
             else:
-                logger.warning(f"Failed to start game music: {response.error}")
+                logger.warning(f"Failed to start game music (tempo schedule runs without it): {response.error}")
 
         except Exception as e:
-            logger.warning(f"Failed to start game music: {e}")
+            logger.warning(f"Failed to start game music (tempo schedule runs without it): {e}")
+
+    def _next_change_in(self) -> float:
+        """Seconds until the next scheduled tempo change (for logs)."""
+        return self.change_time - time.time()
 
     async def _stop_game_music(self):
         """Stop game music (Phase 70)."""
@@ -3563,38 +3697,64 @@ class BaseGameMode(ABC):
             logger.info(f"tempo_schedule_mode: {self.tempo_schedule_mode} -> {new_mode}")
         self.tempo_schedule_mode = new_mode  # atomic single-store swap
 
-    async def _apply_tempo_change(self, target_tempo: float) -> None:
+    def _read_ramp_seconds(self, rising: bool) -> float:
+        """Seconds for a full 0 -> 1 (``rising``) or 1 -> 0 swing (#1833).
+
+        Read at each ramp start from ``game.tempo.ramp_up_seconds`` /
+        ``game.tempo.ramp_down_seconds`` ("live per ramp", flags.md §4), never per
+        frame. A flagd failure or a malformed value gives the default; the value is
+        clamped to [RAMP_SECONDS_MIN, RAMP_SECONDS_MAX] (:func:`resolve_ramp_seconds`).
         """
-        Apply a tempo change to the music track.
+        if rising:
+            key, default = "tempo.ramp_up_seconds", DEFAULT_RAMP_UP_SECONDS
+        else:
+            key, default = "tempo.ramp_down_seconds", DEFAULT_RAMP_DOWN_SECONDS
+        return resolve_ramp_seconds(read_float_flag("game", key, default, game_id=self.game_id), default)
 
-        Creates a child span of music_tempo_control, sends gRPC request,
-        logs the change, and updates internal state and metrics.
+    async def _start_intensity_ramp(self, target: float, *, scheduled: bool) -> None:
+        """Start an intensity segment toward ``target`` from the intensity now (#1833, UC-031 BR-005).
 
-        Args:
-            target_tempo: The target tempo to transition to
+        The segment lasts ``|target - i(now)|`` times the flag for its direction, so
+        a half swing takes half the time and a change of target mid-ramp restarts
+        from where the intensity is (no jump). The intensity is updated BEFORE the
+        audio send, so thresholds never wait for the audio service.
+
+        ``scheduled`` (the natural slow/fast schedule) flips ``speed_up`` and sets
+        the next change ``window`` after the ramp END (as the original JoustMania
+        did); an override leaves the schedule state alone.
         """
-        from proto import audio_pb2
+        now = time.time()
+        old_intensity = self._intensity.value_at(now)
+        target = max(0.0, min(1.0, target))
+        delta = target - old_intensity
+        duration = abs(delta) * self._read_ramp_seconds(rising=delta > 0) if delta else 0.0
+        self._intensity = IntensityRamp(start=old_intensity, target=target, start_time=now, duration=duration)
 
-        old_tempo = self.music_speed
-        direction = "speed_up" if self.speed_up else "slow_down"
+        if scheduled:
+            # Flip first: the default rule's window depends on the NEXT direction.
+            self.speed_up = not self.speed_up
+            self.change_time = now + duration + self._decide_next_change_delay()
 
-        # Create a child span — the gRPC ChangeTempo call inherits this context
-        # naturally, so the audio service span links back to the game trace.
+        old_tempo = tempo_from_intensity(old_intensity)
+        new_tempo = tempo_from_intensity(target)
+        if delta > 0:
+            direction = "speed_up"
+        elif delta < 0:
+            direction = "slow_down"
+        else:
+            direction = "hold"
+
+        # Child span of game_cycle; the ChangeTempo call inherits it, so the audio
+        # service span links back to the game trace.
         with tracer.start_as_current_span("music_tempo_change") as span:
             span.set_attribute("old_tempo", old_tempo)
-            span.set_attribute("new_tempo", target_tempo)
+            span.set_attribute("new_tempo", new_tempo)
             span.set_attribute("dead_count", self.dead_count)
             span.set_attribute("direction", direction)
+            span.set_attribute("transition_seconds", duration)
+            await self._push_audio(target, duration)
 
-            await self.audio_client.ChangeTempo(
-                audio_pb2.ChangeTempoRequest(
-                    track_id=self.music_track_id,
-                    new_tempo=target_tempo,
-                    transition_duration=MUSIC_TRANSITION_DURATION,
-                )
-            )
-
-        logger.info(f"Music tempo changing: {old_tempo:.2f} -> {target_tempo:.2f}")
+        logger.info(f"Tempo intensity {old_intensity:.2f} -> {target:.2f} over {duration:.2f}s ({direction})")
 
         # Add timeline marker event on gameplay_span (visible in trace overview)
         if self.gameplay_span:
@@ -3602,103 +3762,156 @@ class BaseGameMode(ABC):
                 "music_tempo_change",
                 attributes={
                     "old_tempo": old_tempo,
-                    "new_tempo": target_tempo,
+                    "new_tempo": new_tempo,
                     "direction": direction,
                 },
             )
 
-        # Update state
-        self.music_speed = target_tempo
-        self.speed_up = not self.speed_up
-        self.change_time = self._get_music_change_time()
-        # Update metrics for dashboard (Phase 80)
         self._emit_music_tempo_metric()
         self._emit_threshold_metrics()
+        if scheduled:
+            logger.debug(f"Next tempo change at +{self._next_change_in():.1f}s")
 
-        logger.debug(f"Next tempo change at +{self.change_time - time.time():.1f}s")
+    async def _push_audio(self, target: float, remaining: float) -> None:
+        """Send one ChangeTempo glide toward ``target`` over ``remaining`` seconds (#1833).
 
-    async def _apply_ramp_tempo(self, target_tempo: float) -> None:
-        """Apply one interpolated step of a ramp_tempo curve (#1117).
-
-        Like :meth:`_apply_tempo_change` this sends the audio ``ChangeTempo`` RPC
-        and updates ``music_speed`` + metrics, so the ramp goes through the SAME
-        single tempo owner (no second writer / no race). It deliberately does NOT
-        flip ``speed_up`` or reset ``change_time``: a ramp applies many small steps
-        toward a target, and leaving the schedule bookkeeping untouched lets the
-        natural slow/fast schedule resume from the held tempo once the ramp is
-        reverted — exactly like the override path.
+        Skipped (nothing to keep in sync) without an audio client or a playing track
+        (none, failed PlayMusic, or ``muted``): the intensity moves anyway (D1).
+        An error or a timeout marks the audio unsynced, so the music loop resends
+        the remaining glide after a back-off (0.5 s doubling to 5 s). A refusal
+        (``success=False``: the track was replaced or stopped) stops the resends
+        for this track: the audio service no longer plays it.
         """
+        if not self.audio_client or self.music_track_id in (None, MUTED_TRACK_ID):
+            self._audio_synced = True
+            return
+
         from proto import audio_pb2
 
+        request = audio_pb2.ChangeTempoRequest(
+            track_id=self.music_track_id,
+            new_tempo=tempo_from_intensity(target),
+            transition_duration=max(remaining, MIN_GLIDE_SECONDS),
+        )
+        try:
+            response = await asyncio.wait_for(
+                self.audio_client.ChangeTempo(request), timeout=AUDIO_TEMPO_RPC_TIMEOUT_SECONDS
+            )
+        except Exception as e:
+            if self._audio_synced or self._audio_retry_backoff >= AUDIO_TEMPO_RETRY_MAX_SECONDS:
+                # First failure of a streak, then once per maximum back-off: no log flood.
+                logger.warning(f"Failed to change music tempo (intensity continues, resending): {e!r}")
+            self._audio_synced = False
+            self._audio_retry_at = time.time() + self._audio_retry_backoff
+            self._audio_retry_backoff = min(self._audio_retry_backoff * 2, AUDIO_TEMPO_RETRY_MAX_SECONDS)
+            return
+
+        self._audio_retry_backoff = AUDIO_TEMPO_RETRY_MIN_SECONDS
+        self._audio_synced = True
+        if response is not None and not response.success:
+            logger.warning(
+                f"Audio refused tempo change for track {self.music_track_id} ({response.error}); "
+                "no further tempo changes are sent for it"
+            )
+            self.music_track_id = None
+
+    async def _apply_ramp_tempo(self, target_tempo: float) -> None:
+        """Apply one interpolated step of an ``ease`` ramp_tempo curve (#1117).
+
+        The ease curve keeps its per-tick staircase: each 100 ms tick pins the
+        intensity at the curve's value and sends a short glide over about one tick
+        (RAMP_TEMPO_STEP_TRANSITION), not a full ramp per step. It does NOT flip
+        ``speed_up`` or reset ``change_time``, so the natural schedule resumes from
+        the held intensity once the ramp is reverted.
+        """
         old_tempo = self.music_speed
+        self._intensity = IntensityRamp.hold(intensity_from_tempo(target_tempo), time.time())
         with tracer.start_as_current_span("music_tempo_ramp") as span:
             span.set_attribute("old_tempo", old_tempo)
             span.set_attribute("new_tempo", target_tempo)
             span.set_attribute("dead_count", self.dead_count)
-            await self.audio_client.ChangeTempo(
-                audio_pb2.ChangeTempoRequest(
-                    track_id=self.music_track_id,
-                    new_tempo=target_tempo,
-                    # Short per-step transition (#1122 review): the ramp applies
-                    # a small step every ~100ms tick, so each step must glide over
-                    # roughly one tick — NOT the 1.5s MUSIC_TRANSITION_DURATION,
-                    # which would stack ~N overlapping 1.5s transitions all chasing
-                    # a stale target. The loop's own interpolation provides the
-                    # overall smoothness; the audio just needs to track each step.
-                    transition_duration=RAMP_TEMPO_STEP_TRANSITION,
-                )
-            )
+            await self._push_audio(self._intensity.target, RAMP_TEMPO_STEP_TRANSITION)
 
-        self.music_speed = target_tempo
+        self._emit_music_tempo_metric()
+        self._emit_threshold_metrics()
+
+    async def _adopt_linear_tempo_ramp(self, ramp: RampDescriptor) -> None:
+        """Turn a linear ramp_tempo descriptor into ONE intensity segment and one glide (#1833).
+
+        The segment is the descriptor's own curve: the handler anchored it at the
+        live tempo and clock when it was armed (at most one 100 ms tick ago), so it
+        continues from there; the glide covers the rest of it.
+        """
+        now = time.time()
+        old_intensity = self._intensity.value_at(now)
+        target = intensity_from_tempo(ramp.target_tempo)
+        self._intensity = IntensityRamp(
+            start=intensity_from_tempo(ramp.start_tempo),
+            target=target,
+            start_time=ramp.start_time,
+            duration=ramp.duration,
+        )
+        remaining = max(0.0, self._intensity.end_time - now)
+        with tracer.start_as_current_span("music_tempo_ramp") as span:
+            span.set_attribute("old_tempo", tempo_from_intensity(old_intensity))
+            span.set_attribute("new_tempo", ramp.target_tempo)
+            span.set_attribute("dead_count", self.dead_count)
+            await self._push_audio(target, remaining)
         self._emit_music_tempo_metric()
         self._emit_threshold_metrics()
 
     async def _check_music_speed(self):
-        """
-        Check and update music tempo (Phase 70).
+        """Drive the tempo intensity and keep the music in sync (Phase 70, #1833).
 
-        Called periodically from music loop. Handles smooth transitions
-        between slow and fast tempos.
+        Called every 100 ms from the music loop; the single tempo owner. Order:
+        agent override, then ramp_tempo, then the natural schedule. Runs without a
+        music track too (UC-031 BR-005, D1): only the audio send is skipped.
+        Every audio failure is handled in :meth:`_push_audio`; this never raises
+        for an audio error.
         """
-        if not self.audio_client or not self.music_track_id:
-            return
+        now = time.time()
 
-        # Agent tempo override (#730 PR C): while an override is active the music
-        # loop adopts that tempo and suspends its own schedule. Apply once when
-        # the override differs from the current speed, then hold — no scheduled
-        # transitions fire (self.change_time is left untouched so the natural
-        # schedule resumes from the current state when the override clears).
         if self.tempo_override is not None:
-            if abs(self.music_speed - self.tempo_override) > 1e-9:
-                try:
-                    await self._apply_tempo_change(self.tempo_override)
-                except Exception as e:
-                    logger.warning(f"Failed to apply tempo override: {e}")
-            return
-
-        # #1117 ramp_tempo CURVE (#1103 MVP action 2): while a ramp descriptor is
-        # active the music loop interpolates the live tempo toward the target each
-        # 100ms tick and holds at target when complete — the SAME single tempo
-        # owner the override uses, so there is no second tempo writer / no race.
-        # This drives the schedule when ``tempo_schedule_mode == agent``: the agent
-        # primitive replaces the schedule's discrete slow/fast hops with this
-        # curve. ``change_time`` is left untouched so the natural slow/fast schedule
-        # resumes from the held tempo once the ramp is reverted (mirrors override).
-        if self.tempo_ramp is not None:
-            desired = self.tempo_ramp.tempo_at(time.time())
-            if abs(self.music_speed - desired) > 1e-3:
-                try:
+            # Agent tempo override (#730 PR C): ramp to the override at the bounded
+            # rate and hold; the natural schedule is suspended (speed_up and
+            # change_time untouched), and resumes from the held intensity when the
+            # override clears. A new override value restarts from i(now).
+            self._adopted_tempo_ramp = None
+            override_target = intensity_from_tempo(self.tempo_override)
+            if abs(self._intensity.target - override_target) >= 1e-6:
+                await self._start_intensity_ramp(override_target, scheduled=False)
+        elif self.tempo_ramp is not None:
+            # #1117 ramp_tempo CURVE: a linear curve is one intensity segment (one
+            # glide per descriptor, detected by identity); an ease curve steps per
+            # tick. change_time is left untouched (mirrors the override).
+            ramp = self.tempo_ramp
+            if ramp.curve == RAMP_CURVE_LINEAR:
+                if ramp is not self._adopted_tempo_ramp:
+                    self._adopted_tempo_ramp = ramp
+                    await self._adopt_linear_tempo_ramp(ramp)
+            else:
+                self._adopted_tempo_ramp = None
+                desired = ramp.tempo_at(now)
+                if abs(self.music_speed - desired) > 1e-3:
                     await self._apply_ramp_tempo(desired)
-                except Exception as e:
-                    logger.warning(f"Failed to apply ramp tempo: {e}")
-            return
+        else:
+            self._adopted_tempo_ramp = None
+            # Natural schedule: the next change is due once its window has passed
+            # AND the previous segment has finished.
+            if now >= self.change_time and self._intensity.is_complete(now):
+                await self._start_intensity_ramp(1.0 if self.speed_up else 0.0, scheduled=True)
 
-        if time.time() >= self.change_time:
-            try:
-                target_tempo = FAST_MUSIC_SPEED if self.speed_up else SLOW_MUSIC_SPEED
-                await self._apply_tempo_change(target_tempo)
-            except Exception as e:
-                logger.warning(f"Failed to change music tempo: {e}")
+        # Resend the remaining glide after a failed send (back-off in _push_audio).
+        now = time.time()
+        if not self._audio_synced and now >= self._audio_retry_at:
+            await self._push_audio(self._intensity.target, self._intensity.end_time - now)
+
+        # Gauges follow the intensity while a ramp runs, plus once after it ends.
+        ramp_running = not self._intensity.is_complete(now)
+        if ramp_running or self._ramp_metrics_open:
+            self._emit_music_tempo_metric()
+            self._emit_threshold_metrics()
+        self._ramp_metrics_open = ramp_running
 
     async def _music_loop(self):
         """

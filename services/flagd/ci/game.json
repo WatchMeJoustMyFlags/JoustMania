@@ -39,6 +39,26 @@
       },
       "defaultVariant": "rule"
     },
+    "tempo.ramp_up_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "ci": 0.1,
+        "original": 1.5,
+        "default": 3.0,
+        "slow": 5.0
+      },
+      "defaultVariant": "ci"
+    },
+    "tempo.ramp_down_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "ci": 0.1,
+        "original": 1.5,
+        "default": 1.5,
+        "slow": 3.0
+      },
+      "defaultVariant": "ci"
+    },
     "sensitivity": {
       "state": "ENABLED",
       "variants": {
