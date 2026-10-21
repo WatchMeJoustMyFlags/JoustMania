@@ -536,8 +536,10 @@ decisions fall back to rules (§7). Keep keys out of the tracked `.env`: export 
   With `claude`, a proposal that passes the cadence floor (`code_improvement.min_interval_seconds`) calls the
   model only for eligible game kinds and only when a budget slot is free; otherwise it records
   `agent_llm_gated_total{reason=llm_not_eligible|llm_budget_exhausted}` and retries at the next game end (#1270).
-  The stub never draws from the budget. The `code_improvement.engine` flag is recorded on the propose span only;
-  `AGENT_INFERENCE_BACKEND` selects the backend.
+  The stub never draws from the budget. `AGENT_INFERENCE_BACKEND` selects the backend (`code_improvement.engine`
+  was retired in #1810). The proposer runs at all only while the proposer gate is open:
+  `AGENT_EXPERIMENT_PROPOSER_ENABLED=true` AND `experiment_proposer_enabled` (FR-152 d, C-034); closed, it makes no
+  model call and draws no budget slot.
 - **The budget is tight during a remote-decide session.** The window is a sliding 60 s shared by decisions, the
   retro and the proposer. With a remote `decision.backend` and `decision.min_interval_ms` 3000 one game wants
   about 20 calls a minute against the default cap of 6, so at game end the retro and proposer usually find it

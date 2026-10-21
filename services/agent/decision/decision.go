@@ -558,14 +558,15 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// Objective layer: publish the per-cycle objectives flag into the rules
 	// engine. The engine reads them inside Evaluate; engines that ignore
 	// objectives (Noop/Probe) skip this.
-	if pub, ok := l.rulesFor(snapshot).(objectivePublisher); ok {
+	rules := l.rulesFor(snapshot)
+	if pub, ok := rules.(objectivePublisher); ok {
 		pub.SetObjectives(snapshot.Objectives)
 	}
 	// Objective layer (fitness half, #731): publish the per-cycle fitness
 	// thresholds so the engine's fitness functions score against the live flag
 	// values. Per-cycle publication is what makes a mid-session flag change take
 	// effect on the very next decision.
-	if pub, ok := l.rulesFor(snapshot).(fitnessPublisher); ok {
+	if pub, ok := rules.(fitnessPublisher); ok {
 		pub.SetFitness(fitnessThresholds(snapshot.Fitness))
 	}
 
@@ -582,14 +583,14 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		)
 	}
 
-	decisions, decideRec := l.decide(ctx, snapshot, c, trig)
+	decisions, decideRec := l.decide(ctx, snapshot, rules, c, trig)
 
 	// Lift the cycle-level fitness evaluation the engine just computed onto the
 	// LayerState so it rides the decision span as fitness.evaluated (#731). Read
 	// after decide so it reflects this cycle's thresholds and live context. This
 	// happens even on an empty-decision cycle so a future cycle-scoped consumer
 	// still sees the evaluation, but it only reaches a span when a decision emits.
-	if rd, ok := l.rulesFor(snapshot).(fitnessReader); ok {
+	if rd, ok := rules.(fitnessReader); ok {
 		if vals := rd.LastFitness().Evaluated(); len(vals) > 0 {
 			state.FitnessEvaluated = vals
 		}
@@ -710,17 +711,19 @@ func (l *Loop) startSignalReceivedSpan(ctx context.Context, c gamecontext.GameCo
 	return l.Tracer.Start(ctx, SignalReceived, startOpts...)
 }
 
-// decide runs this cycle's decision path. decision.backend selects it (#1226):
+// decide runs this cycle's decision path with the engine rulesFor resolved once
+// for the cycle (rules), so a pattern registration or flag flip between two
+// look-ups cannot mix engines inside one cycle. decision.backend selects it (#1226):
 // rules (the default) runs the rules engine through rulesDecide, which returns
 // Evaluate's decisions unchanged plus the agent.decide record from the same
 // ranking; any other value hands the decision to that remote backend
 // (decideRemote, see decide_hook.go), which falls back to rules when it cannot
 // decide. The legacy mode=llm path (#739/#741/#847/#917/#1207) was retired in #1234.
-func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger) ([]Decision, *decideRecord) {
+func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, rules RulesEngine, c gamecontext.GameContext, trig EvalTrigger) ([]Decision, *decideRecord) {
 	if !snapshot.Decision.IsRules() {
 		// UC-046 A7: a remote backend may decide in a pattern game, which makes it non-exact.
 		l.markPatternRemote()
-		return l.decideRemote(ctx, snapshot, c, trig)
+		return l.decideRemote(ctx, snapshot, rules, c, trig)
 	}
 	// The remote call gate is not reached on rules: leave the empty-allow-list
 	// state so its "entering" debug line fires again on a later remote cycle (#1298).
@@ -728,7 +731,7 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 	l.noteNoInterventions(c, false)
 	l.noteMisconfigured(c, flags.DecisionBackendRules, "")
 	l.llmGate.Unlock()
-	return l.rulesDecide(ctx, snapshot, c, flags.DecisionBackendRules, "")
+	return l.rulesDecide(ctx, snapshot, rules, c, flags.DecisionBackendRules, "")
 }
 
 // recordGated increments the agent_llm_gated_total counter for one gated remote

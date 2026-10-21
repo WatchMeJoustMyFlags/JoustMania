@@ -228,8 +228,7 @@ func requestedBackend(snapshot flags.Snapshot) string {
 // span-less evaluation) carries the answers from the same ranking. requested and
 // fallbackReason describe why rules decided (requested=rules, reason "" on the
 // default path).
-func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, requested, fallbackReason string) ([]Decision, *decideRecord) {
-	rules := l.rulesFor(snapshot)
+func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, rules RulesEngine, c gamecontext.GameContext, requested, fallbackReason string) ([]Decision, *decideRecord) {
 	eng, ok := rules.(decideEngine)
 	if !ok {
 		return rules.Evaluate(ctx, c), nil
@@ -278,7 +277,7 @@ func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, c gamec
 // could act, #1298), or falls back to rules synchronously
 // when the backend cannot be called at all (unknown/unavailable backend, async not
 // wired, game kind not eligible, global budget exhausted).
-func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger) ([]Decision, *decideRecord) {
+func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, rules RulesEngine, c gamecontext.GameContext, trig EvalTrigger) ([]Decision, *decideRecord) {
 	// Claim the per-game inflight slot FIRST: a cycle that loses the claim (a call
 	// is in flight) builds no backend and charges neither cadence nor budget.
 	if !l.inflight.CompareAndSwap(false, true) {
@@ -305,11 +304,11 @@ func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c game
 		// misconfigured backend (e.g. JEV_API_KEY missing) shows up in metrics
 		// even while the rules engine is quiet.
 		l.recordGated(ctx, reason)
-		return l.rulesDecide(ctx, snapshot, c, requested, reason)
+		return l.rulesDecide(ctx, snapshot, rules, c, requested, reason)
 	}
 	if !l.asyncEnabled() {
 		l.recordGated(ctx, DecideFallbackNotWired)
-		return l.rulesDecide(ctx, snapshot, c, requested, DecideFallbackNotWired)
+		return l.rulesDecide(ctx, snapshot, rules, c, requested, DecideFallbackNotWired)
 	}
 	switch gate := l.gateRemoteDecide(ctx, snapshot, c); gate {
 	case "":
@@ -325,7 +324,7 @@ func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c game
 		// no rules run, not a fallback (#1298). The gated counter says why.
 		return nil, nil
 	default:
-		return l.rulesDecide(ctx, snapshot, c, requested, gate)
+		return l.rulesDecide(ctx, snapshot, rules, c, requested, gate)
 	}
 	fired = true
 	l.launchDecideAsync(ctx, snapshot, backend, requested, c, trig)
@@ -623,15 +622,16 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		}
 	}
 	if rec.fallbackReason != "" {
-		l.decideRemoteFallback(spanCtx, live, current, ok, rec, &state)
+		l.decideRemoteFallback(spanCtx, live, l.rulesFor(live), current, ok, rec, &state)
 		return
 	}
 	l.decideRemoteApply(spanCtx, live, current, ok, rec, &state)
 }
 
-// decideRemoteFallback runs the rules engine for the current context after the
+// decideRemoteFallback runs the given rules engine (rulesFor of the live flags,
+// so the probe flag applies here too) for the current context after the
 // remote backend could not decide, recording rules as the backend that answered.
-func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot, current gamecontext.GameContext, ok bool, rec *decideRecord, state *LayerState) {
+func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot, rules RulesEngine, current gamecontext.GameContext, ok bool, rec *decideRecord, state *LayerState) {
 	rec.used = RulesBackendName
 	rec.outcome = DecideOutcomeFallback
 	rec.hasResp = false
@@ -646,7 +646,6 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 		return
 	}
 	var decisions []Decision
-	rules := l.rulesFor(snapshot)
 	if eng, isDecide := rules.(decideEngine); isDecide {
 		out, req, resp, ranked := eng.EvaluateDecide(ctx, current, func() decide.Request {
 			return buildDecideRequest(current, snapshot.InterventionsAllowed, true)

@@ -42,11 +42,11 @@ import (
 // client (inference.Claude) when AGENT_INFERENCE_BACKEND=claude, else an inert stub.
 // A backend error (the stub, a transport failure, a timeout) is recorded and
 // produces NO proposal and NO error to the caller — the agent simply does not
-// propose this cycle. agent.code_improvement.engine is read live and recorded on
-// the span (#931 AC).
+// propose this cycle. (agent.code_improvement.engine, once recorded on the span,
+// was retired in #1810.)
 //
 // GATED LIKE EVERY OTHER AGENT LLM PATH (#1270): a cycle runs only while the
-// `enabled` kill switch and `experiments_enabled` are both on (ProposerConfig.Permit,
+// `enabled` kill switch, `experiments_enabled` and the proposer gate (#1810) are on (ProposerConfig.Permit,
 // read at use time and re-checked before the Gate write), and a real model call
 // first passes the shared LLM call gate (SetLLMAdmission: llm.eligible_game_kinds +
 // the global llm.max_requests_per_minute budget the decide calls and the retro use).
@@ -93,10 +93,6 @@ type Narrative struct {
 // an OpenFeature dependency: the caller resolves these and passes the value in.
 // (Named ProposerConfig, not Config — the validate stage already owns Config.)
 type ProposerConfig struct {
-	// Engine is agent.code_improvement.engine (#931 AC). It is RECORDED ON THE
-	// SPAN ONLY: nothing branches on it. The propose backend is selected by the
-	// AGENT_INFERENCE_BACKEND env (stub | claude) in main.go (#1234).
-	Engine string
 	// MinInterval is agent.code_improvement.min_interval_seconds — the per-Proposer
 	// cadence floor (#847 gating concept). Proposing is expensive (an LLM call), so
 	// at most one proposal attempt per this interval; cycles inside the window are
@@ -129,6 +125,10 @@ const (
 	SkipReasonExperimentsDisabled = "experiments_disabled"
 	// SkipReasonNoPermit: ProposerConfig.Permit was nil (fail-closed wiring guard).
 	SkipReasonNoPermit = "no_permit"
+	// SkipReasonProposerDisabled: the proposer gate is closed (#1810, C-034, FR-152
+	// d): AGENT_EXPERIMENT_PROPOSER_ENABLED is not true, or experiment_proposer_enabled
+	// is off or cannot be resolved.
+	SkipReasonProposerDisabled = "proposer_disabled"
 )
 
 // LLMAdmission is the shared LLM call gate the Proposer consults before a model
@@ -323,9 +323,7 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 		}
 	}
 
-	ctx, span := p.tracer.Start(ctx, SpanProposeAttempt, trace.WithAttributes(
-		attribute.String(AttrEngine, cfg.Engine),
-	))
+	ctx, span := p.tracer.Start(ctx, SpanProposeAttempt)
 	defer span.End()
 
 	// Build the constrained prompt: ask for ONE {flag, value, rationale} over the
@@ -339,7 +337,7 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 		// DEGRADES TO NOTHING: the sentinel stub (no real backend yet), a transport
 		// error, or a timeout. Record and no-op — no proposal, no error to caller.
 		span.SetAttributes(attribute.String(AttrOutcome, string(ProposeNoBackend)))
-		p.log.Debug("code_improvement: backend unavailable, no proposal", "error", err, "engine", cfg.Engine)
+		p.log.Debug("code_improvement: backend unavailable, no proposal", "error", err)
 		return Result{Outcome: ProposeNoBackend, Err: err}
 	}
 

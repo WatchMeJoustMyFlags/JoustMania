@@ -2,10 +2,12 @@ package decision
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -100,6 +102,25 @@ func TestRulesFor_ProbeFlagPerCycle(t *testing.T) {
 		l.OnEvaluate(ctx, gamecontext.GameContext{}, testTrigger())
 		if len(sink.got) != before {
 			t.Fatalf("probe fired again inside its interval after a flip: %v", sink.got)
+		}
+	})
+
+	t.Run("UC-040/A23 a failed remote backend falls back to the probe engine while the flag is on", func(t *testing.T) {
+		be := newFakeDecideBackend(func(decide.Request) (decide.Response, error) {
+			return decide.Response{}, errors.New("boom")
+		})
+		snap := remoteSnapshot(time.Second)
+		snap.ProbeDecisions = true
+		h := newRemoteHarness(t, snap, be)
+		clock := time.Unix(1000, 0)
+		h.loop.ProbeRules = NewProbeRules(time.Second, func() time.Time { clock = clock.Add(time.Hour); return clock })
+		span := h.run(t)
+		if g := strAttr(t, span, AttrDecideOutcome); g != DecideOutcomeFallback {
+			t.Fatalf("outcome = %q, want fallback", g)
+		}
+		got := h.sink.decisions()
+		if len(got) != 1 || got[0].Intervention != InterventionNoop {
+			t.Fatalf("fallback applied %+v, want the probe's single noop, not the real engine's decision", got)
 		}
 	})
 }

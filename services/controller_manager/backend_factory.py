@@ -15,7 +15,7 @@ Runtime changes to these flags require a service restart to take effect.
 
 Creates ControllerIOAdapter instances wrapped in MultiplexerBackend.
   - Mock adapter is always auto-injected (starts with 0 controllers).
-  - Controllers are added dynamically via AddController / AddControllers RPCs.
+  - Controllers are added dynamically via AddControllers RPC.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
     """Create a ControllerIOAdapter instance by name.
 
     Mock adapters always start with 0 controllers — controllers are added
-    dynamically via the AddController / AddControllers RPCs.
+    dynamically via the AddControllers RPC.
     """
     match name:
         case "mock":
@@ -124,7 +124,7 @@ def create_backend() -> ControllerBackend:
     names = [n.strip() for n in backend_name.split(",")]
 
     # Always include mock adapter for dynamic controller management via RPC.
-    # Mock starts with 0 controllers; tests/demos add them via AddController.
+    # Mock starts with 0 controllers; tests/demos add them via AddControllers.
     if "mock" not in names:
         names.append("mock")
 

@@ -173,7 +173,7 @@ func TestDecideLoop_ActuationGateOff(t *testing.T) {
 	})
 }
 
-// TestDecideLoop_ProbeMode: AGENT_PROBE_DECISIONS swaps the rules engine for
+// TestDecideLoop_ProbeMode: the decision.probe_decisions flag swaps the rules engine for
 // ProbeRules; with the `probe` allow-list (noop only) its synthetic noop passes the
 // permission chain and the real Writer treats it as a successful write that
 // changes no flag, so the whole decide-and-act path runs without a game effect.

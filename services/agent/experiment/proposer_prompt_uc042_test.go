@@ -31,7 +31,7 @@ func TestProposeOnce_PriorGamesBlockReachesPrompt(t *testing.T) {
 		"  1. joust, 4 players, outcome=tie"
 
 	p.ProposeOnce(context.Background(), Narrative{GameMode: "joust", ContextBlock: block},
-		ProposerConfig{Permit: allowPropose, Engine: "stub"})
+		ProposerConfig{Permit: allowPropose})
 
 	if len(backend.prompts) != 1 {
 		t.Fatalf("model calls = %d, want 1", len(backend.prompts))

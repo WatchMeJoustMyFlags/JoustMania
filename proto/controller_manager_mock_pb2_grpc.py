@@ -50,11 +50,6 @@ class MockControllerServiceStub:
                 request_serializer=controller__manager__mock__pb2.ButtonRequest.SerializeToString,
                 response_deserializer=controller__manager__mock__pb2.ButtonResponse.FromString,
                 _registered_method=True)
-        self.SetColor = channel.unary_unary(
-                '/controller_manager_mock.MockControllerService/SetColor',
-                request_serializer=controller__manager__mock__pb2.ColorRequest.SerializeToString,
-                response_deserializer=controller__manager__mock__pb2.ColorResponse.FromString,
-                _registered_method=True)
         self.ResetController = channel.unary_unary(
                 '/controller_manager_mock.MockControllerService/ResetController',
                 request_serializer=controller__manager__mock__pb2.ResetRequest.SerializeToString,
@@ -74,11 +69,6 @@ class MockControllerServiceStub:
                 '/controller_manager_mock.MockControllerService/StreamObservability',
                 request_serializer=controller__manager__mock__pb2.ObservabilityRequest.SerializeToString,
                 response_deserializer=controller__manager__mock__pb2.ObservabilityEvent.FromString,
-                _registered_method=True)
-        self.AddController = channel.unary_unary(
-                '/controller_manager_mock.MockControllerService/AddController',
-                request_serializer=controller__manager__mock__pb2.AddControllerRequest.SerializeToString,
-                response_deserializer=controller__manager__mock__pb2.AddControllerResponse.FromString,
                 _registered_method=True)
         self.RemoveController = channel.unary_unary(
                 '/controller_manager_mock.MockControllerService/RemoveController',
@@ -117,13 +107,6 @@ class MockControllerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def SetColor(self, request, context):
-        """Set LED color
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def ResetController(self, request, context):
         """Reset controller to idle
         """
@@ -147,13 +130,6 @@ class MockControllerServiceServicer:
 
     def StreamObservability(self, request, context):
         """Stream observable events from mock controllers (LED changes, button presses, etc.)
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def AddController(self, request, context):
-        """Add a single mock controller dynamically
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -191,11 +167,6 @@ def add_MockControllerServiceServicer_to_server(servicer, server):
                     request_deserializer=controller__manager__mock__pb2.ButtonRequest.FromString,
                     response_serializer=controller__manager__mock__pb2.ButtonResponse.SerializeToString,
             ),
-            'SetColor': grpc.unary_unary_rpc_method_handler(
-                    servicer.SetColor,
-                    request_deserializer=controller__manager__mock__pb2.ColorRequest.FromString,
-                    response_serializer=controller__manager__mock__pb2.ColorResponse.SerializeToString,
-            ),
             'ResetController': grpc.unary_unary_rpc_method_handler(
                     servicer.ResetController,
                     request_deserializer=controller__manager__mock__pb2.ResetRequest.FromString,
@@ -215,11 +186,6 @@ def add_MockControllerServiceServicer_to_server(servicer, server):
                     servicer.StreamObservability,
                     request_deserializer=controller__manager__mock__pb2.ObservabilityRequest.FromString,
                     response_serializer=controller__manager__mock__pb2.ObservabilityEvent.SerializeToString,
-            ),
-            'AddController': grpc.unary_unary_rpc_method_handler(
-                    servicer.AddController,
-                    request_deserializer=controller__manager__mock__pb2.AddControllerRequest.FromString,
-                    response_serializer=controller__manager__mock__pb2.AddControllerResponse.SerializeToString,
             ),
             'RemoveController': grpc.unary_unary_rpc_method_handler(
                     servicer.RemoveController,
@@ -314,33 +280,6 @@ class MockControllerService:
             '/controller_manager_mock.MockControllerService/SimulateButton',
             controller__manager__mock__pb2.ButtonRequest.SerializeToString,
             controller__manager__mock__pb2.ButtonResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def SetColor(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/controller_manager_mock.MockControllerService/SetColor',
-            controller__manager__mock__pb2.ColorRequest.SerializeToString,
-            controller__manager__mock__pb2.ColorResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -449,33 +388,6 @@ class MockControllerService:
             '/controller_manager_mock.MockControllerService/StreamObservability',
             controller__manager__mock__pb2.ObservabilityRequest.SerializeToString,
             controller__manager__mock__pb2.ObservabilityEvent.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def AddController(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/controller_manager_mock.MockControllerService/AddController',
-            controller__manager__mock__pb2.AddControllerRequest.SerializeToString,
-            controller__manager__mock__pb2.AddControllerResponse.FromString,
             options,
             channel_credentials,
             insecure,

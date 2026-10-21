@@ -1823,6 +1823,14 @@ func (r *Registry) Capacity() int { return r.maxCap }
 // 1) and clamped to Capacity.
 func (r *Registry) EffectiveCapacity() int { return r.effectiveCap }
 
+// MaxGames returns the live per-experiment games budget (0 = no limit), as last
+// set by Reconfigure (#1044) — the effective min(env ceiling, flag) since #1810.
+func (r *Registry) MaxGames() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.maxGames
+}
+
 // Reconfigure live-updates the registry's runtime caps (#1044) so a hot-reload of
 // experiment_shadow_effective_concurrency / experiment_max_games / verdict_min_n
 // takes effect with NO restart. The experiment loop calls it each tick from the
