@@ -503,7 +503,8 @@ def clear_session_player_analytics(
 #   objective:    active session objective ('endurance'/'balanced'/'accelerate'/'chaos')
 #   blocked:      'true' if rejected by policy/permission enforcement, else 'false'
 #   block_reason: why a blocked attempt was rejected ('not_allowed', 'rate_limited',
-#                 'low_battery', 'mode_unsupported', 'no_game', 'handler_error'); empty
+#                 'low_battery', 'mode_unsupported', 'no_game', 'handler_error',
+#                 'already_charged' (#1837, UC-040 A31)); empty
 #                 string for applied (blocked='false') attempts. Cardinality is bounded
 #                 to this fixed reason set, so it is safe as a label.
 interventions_total = Counter(

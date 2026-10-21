@@ -66,6 +66,7 @@ from services.game_coordinator.game_loop_dispatch import (
     GameLoopDispatcher,
     GameLoopUnavailableError,
 )
+from services.game_coordinator.intervention_errors import InterventionNotApplied
 
 logger = logging.getLogger(__name__)
 
@@ -559,6 +560,14 @@ class _RateLimiter:
             self._events.append((now, cost))
             return True
 
+    def refund(self, cost: float) -> None:
+        """Give back the latest reservation of ``cost`` (an intervention that applied nothing, UC-040 A31)."""
+        with self._lock:
+            for i in range(len(self._events) - 1, -1, -1):
+                if self._events[i][1] == cost:
+                    del self._events[i]
+                    return
+
 
 # Reason codes for blocked interventions (event payload ``block_reason``).
 BLOCK_NOT_ALLOWED = "not_allowed"
@@ -566,6 +575,9 @@ BLOCK_RATE_LIMITED = "rate_limited"
 BLOCK_LOW_BATTERY = "low_battery"
 BLOCK_MODE_UNSUPPORTED = "mode_unsupported"
 BLOCK_NO_GAME = "no_game"
+# The handler applied nothing on purpose (InterventionNotApplied): a grant_shield to
+# a player who already holds a shield charge (#1837, UC-040 A31, BR-020).
+BLOCK_ALREADY_CHARGED = "already_charged"
 
 # Sentinel game_id for the synthesized primary-only session when the manager is
 # wired with the legacy ``get_game`` callback (no session registry). An empty
@@ -1498,6 +1510,12 @@ class InterventionManager:
             # started and may still apply, so it is not reported as blocked;
             # otherwise it was never applied (fail closed). No cue either way.
             await self._record(spec, target, objective, session, blocked=not e.applied_unknown, block_reason=e.reason)
+            return
+        except InterventionNotApplied as e:
+            # UC-040 A31: nothing applied, so the backstop reservation is refunded.
+            self._rate_limiter.refund(spec.weight)
+            logger.info(f"InterventionManager: {spec.flag_key} for {target or '<game>'} not applied: {e.reason}")
+            await self._record(spec, target, objective, session, blocked=True, block_reason=e.reason)
             return
         except Exception as e:
             logger.error(f"InterventionManager: handler for {spec.flag_key} raised: {e}")

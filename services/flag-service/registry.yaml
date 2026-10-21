@@ -122,6 +122,10 @@ flags:
   # are the coordinator's own clamp (games/base.py RAMP_SECONDS_MIN/MAX).
   - {set: game, key: tempo.ramp_up_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 10]}}
   - {set: game, key: tempo.ramp_down_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 10]}}
+  # Shield charge (#1837, UC-040 BR-019): human flags, changeable on stage; never
+  # experiment+arm or real, so no agent writer can reach them (C-034).
+  - {set: game, key: shield.activation, kind: overlay, scope: [stack], bounds: {variants: [instant, trigger]}}
+  - {set: game, key: shield.charge_expiry_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 120]}}
 
   # --- user, controller, rollout (flags.md §13.4) ------------------------------
   - {set: user, key: current_game, kind: overlay, scope: [stack], persist: true}

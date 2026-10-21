@@ -176,6 +176,47 @@ def resolve_ramp_seconds(value: object, default: float) -> float:
     return max(RAMP_SECONDS_MIN, min(RAMP_SECONDS_MAX, seconds))
 
 
+# Player-activated shield charge (#1837, FR-160; UC-040 A30-A32, BR-019-BR-021;
+# UC-030 A6, BR-005). The game flag ``shield.activation`` picks how a grant_shield
+# lands: ``instant`` (today's shield) or ``trigger`` (a charge the player activates
+# with the trigger). Both flags are read per grant, never per frame.
+SHIELD_ACTIVATION_INSTANT = "instant"
+SHIELD_ACTIVATION_TRIGGER = "trigger"
+DEFAULT_SHIELD_ACTIVATION = SHIELD_ACTIVATION_INSTANT
+DEFAULT_CHARGE_EXPIRY_SECONDS = 20.0
+CHARGE_EXPIRY_MAX_SECONDS = 120.0
+# The controller manager caps a charge layer at 120 s (CHARGE_MAX_DURATION_MS);
+# the coordinator re-sends the layer this long before it runs out (BR-021).
+SHIELD_CHARGE_LAYER_MAX_SECONDS = 120.0
+SHIELD_CHARGE_RESEND_MARGIN_SECONDS = 10.0
+# shield.charge_outcome values (telemetry.md §3.2) and player_shield_charge_ended reasons.
+CHARGE_OUTCOME_ACTIVATED = "activated"
+CHARGE_OUTCOME_EXPIRED = "expired"
+CHARGE_OUTCOME_DEATH = "death"
+CHARGE_OUTCOME_GAME_END = "game_end"
+
+
+def resolve_shield_activation(value: object) -> str:
+    """Validate a ``shield.activation`` flag value: ``trigger`` or else ``instant`` (UC-040 BR-019)."""
+    if isinstance(value, str) and value.strip().lower() == SHIELD_ACTIVATION_TRIGGER:
+        return SHIELD_ACTIVATION_TRIGGER
+    return SHIELD_ACTIVATION_INSTANT
+
+
+def resolve_charge_expiry(value: object) -> float:
+    """Validate a ``shield.charge_expiry_seconds`` flag value (flags.md §4).
+
+    A non-number, a bool, NaN or a negative value gives the default (20 s); any
+    other value is clamped to [0, CHARGE_EXPIRY_MAX_SECONDS]. 0 means never.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return DEFAULT_CHARGE_EXPIRY_SECONDS
+    seconds = float(value)
+    if math.isnan(seconds) or seconds < 0.0:
+        return DEFAULT_CHARGE_EXPIRY_SECONDS
+    return min(CHARGE_EXPIRY_MAX_SECONDS, seconds)
+
+
 @dataclass(frozen=True)
 class IntensityRamp:
     """One segment of the tempo intensity (#1833, UC-031 BR-005). Immutable; replaced per segment.
@@ -700,6 +741,21 @@ class Player:
     # inactive. Shadow-game-only via the allow-list gate.
     rubberband_until: float = 0.0
     rubberband_boost: float = 1.0
+    # Shield charge (#1837, UC-040 A30-A32, BR-020): at most one per player.
+    # ``shield_charge_seconds`` > 0 means a charge is held; it becomes the shield
+    # duration on activation. The expiry is fixed at grant time (0 = never).
+    # ``shield_charge_layer_until`` is when the last SHIELD_CHARGE LED command runs
+    # out on the controller, so the frame path re-sends it in time (BR-021).
+    shield_charge_seconds: float = 0.0
+    shield_charge_granted_at: float = 0.0
+    shield_charge_expires_at: float = 0.0
+    shield_charge_layer_until: float = 0.0
+    _shield_charge_span: trace.Span | None = None
+    # Trigger edge detection (UC-030 BR-005): the trigger of the previous frame,
+    # and whether the trigger read released once in the game loop (so a press held
+    # or latched from the lobby is never a press).
+    trigger_prev: bool = False
+    trigger_armed: bool = False
     # Per-player countdown span (created before countdown, ended after)
     _countdown_span: trace.Span | None = None
     # Health tracking (#571: controller health on player_lifecycle spans)
@@ -760,6 +816,11 @@ class BaseGameMode(ABC):
     - _get_additional_phases() - return extra phases (e.g., team_formation)
     - _end_game_impl() - cleanup and declare winner
     """
+
+    # UC-040 BR-019: ``shield.activation = trigger`` is an allow-list. Only a mode
+    # that sets this (Free-for-All) turns a grant_shield into a charge; every other
+    # mode, and every shadow game, always takes the instant path.
+    SHIELD_TRIGGER_ALLOWED: bool = False
 
     def __init__(
         self,
@@ -1464,6 +1525,10 @@ class BaseGameMode(ABC):
 
         logger.info(f"Gameplay stream created with {len(player_colors)} players ({len(current_alive)} alive)")
 
+        # UC-040 BR-021: after a reconnect, re-send every held charge and running
+        # shield with the time left, so the new stream owns the layers again.
+        await self._resend_shield_layers()
+
     async def _start_gameplay_stream(self):
         """
         Create and configure the gameplay stream.
@@ -2093,12 +2158,38 @@ class BaseGameMode(ABC):
 
         accel = controller_state.accel
         accel_mag = self._compute_accel_magnitude(accel)
+        current_time = time.time()
+
+        # UC-030 BR-005: the trigger is evaluated BEFORE the grace and death checks,
+        # so an activation in this frame makes this frame a grace frame (A6 step 3).
+        # Hot path: a bool read and a few compares; no flag read, no allocation.
+        if self.SHIELD_TRIGGER_ALLOWED:
+            pressed = controller_state.trigger_pressed
+            edge = pressed and player.trigger_armed and not player.trigger_prev
+            player.trigger_prev = pressed
+            if not pressed:
+                player.trigger_armed = True
+            # Await only when work is due (an edge, the expiry or the re-send),
+            # so a held charge costs a few compares per frame, not a coroutine.
+            if edge or (
+                player.shield_charge_seconds > 0
+                and (
+                    (player.shield_charge_expires_at and current_time >= player.shield_charge_expires_at)
+                    or (
+                        current_time >= player.shield_charge_layer_until - SHIELD_CHARGE_RESEND_MARGIN_SECONDS
+                        and (
+                            not player.shield_charge_expires_at
+                            or player.shield_charge_expires_at > player.shield_charge_layer_until
+                        )
+                    )
+                )
+            ):
+                await self._process_shield_charge(player, edge, current_time)
 
         # Check grace period first - no death or warning during grace period
         # Matches original JoustMania: if time.time() > no_rumble. Uses the unified
         # effective-grace rule (#817): max(agent shield grace_until, admin
         # invincible_until) so the agent shield and admin baseline compose here too.
-        current_time = time.time()
         if current_time < self.effective_grace_until(player):
             # During grace, reset the EMA so it re-primes from the first
             # post-grace frame. Invincibility must *forget* the death spike:
@@ -2272,6 +2363,11 @@ class BaseGameMode(ABC):
         if not player or not player.alive:
             return False
 
+        # UC-040 BR-019: in trigger mode the grant is a charge the player activates
+        # (A30). Read per grant, so a flip applies to the next grant only.
+        if self._shield_activation_mode() == SHIELD_ACTIVATION_TRIGGER:
+            return await self._grant_shield_charge(player, seconds)
+
         new_grace = time.time() + seconds
         # Extend-not-shorten (#817): the agent only ever writes its own
         # grace_until field — never invincible_until (the admin baseline). If the
@@ -2393,7 +2489,13 @@ class BaseGameMode(ABC):
         return now < self.effective_grace_until(player) or now < player.toughness_boost_until
 
     async def _send_shield_feedback(
-        self, player: "Player", remaining_s: float, *, kind: str, sound: bool = True
+        self,
+        player: "Player",
+        remaining_s: float,
+        *,
+        kind: str,
+        sound: bool = True,
+        charge_delay_ms: int | None = None,
     ) -> None:
         """Shield LED effect + shield sound + ``player_shielded`` event (#1301).
 
@@ -2403,6 +2505,10 @@ class BaseGameMode(ABC):
         protected player (the LED restarts silently). Each channel is tried on
         its own, so one failing channel never skips the others; feedback never
         fails the intervention.
+
+        ``charge_delay_ms`` marks the activation of a shield charge (UC-030 A6,
+        #1837): the swell rumble follows the shield LED, and the span event and
+        ``player_shielded`` carry ``activation=trigger`` and the grant-to-use delay.
         """
         if remaining_s <= 0:
             return
@@ -2412,16 +2518,17 @@ class BaseGameMode(ABC):
         # Keep the latest end of any running shield: a shorter toughness boost after
         # a longer full one must not hide the full one from _end_shield_feedback.
         self._shield_feedback_until[serial] = max(self._shield_feedback_until.get(serial, 0.0), until)
+        activated = charge_delay_ms is not None
         if player.span:
             with contextlib.suppress(Exception):
-                player.span.add_event(
-                    "shield_feedback",
-                    attributes={
-                        "shield.kind": kind,
-                        "shield.duration_ms": duration_ms,
-                        "shield.sound": Sound.SFX_SHIELD_UP.value if sound else "none",
-                    },
-                )
+                attributes = {
+                    "shield.kind": kind,
+                    "shield.duration_ms": duration_ms,
+                    "shield.sound": Sound.SFX_SHIELD_UP.value if sound else "none",
+                }
+                if activated:
+                    attributes["shield.activation"] = SHIELD_ACTIVATION_TRIGGER
+                player.span.add_event("shield_feedback", attributes=attributes)
         if self.gameplay_stream:
             try:
                 from proto import controller_manager_pb2
@@ -2444,6 +2551,10 @@ class BaseGameMode(ABC):
                 )
             except Exception as e:
                 logger.warning(f"Shield LED feedback for {serial} failed (protection unaffected): {e}")
+        if activated:
+            # UC-030 A6 step 2 / BR-021: the activation swell (rumble only) right
+            # after the shield LED, before the slower sound RPC.
+            await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_SWELL", 0)
         if sound:
             try:
                 await self._play_sound(
@@ -2459,6 +2570,11 @@ class BaseGameMode(ABC):
                     "kind": kind,
                     "seconds": f"{remaining_s:.1f}",
                     "until_ms": str(int(until * 1000)),
+                    **(
+                        {"activation": SHIELD_ACTIVATION_TRIGGER, "charge_delay_ms": str(charge_delay_ms)}
+                        if activated
+                        else {}
+                    ),
                 },
             )
         except Exception as e:
@@ -2470,7 +2586,12 @@ class BaseGameMode(ABC):
         A zero-duration SHIELD ends only a running shield on the controller (the
         controller manager never cancels another effect for it) and restores the
         base colour. Best-effort; clears the record either way.
+
+        A held shield charge ends here too, with ``game_end`` (UC-040 A32, #1837).
         """
+        for player in self.players.values():
+            if player.shield_charge_seconds > 0:
+                await self._discard_shield_charge(player, CHARGE_OUTCOME_GAME_END)
         now = time.time()
         running = [serial for serial, until in self._shield_feedback_until.items() if until > now]
         self._shield_feedback_until.clear()
@@ -2491,6 +2612,243 @@ class BaseGameMode(ABC):
                 )
         except Exception as e:
             logger.warning(f"Ending shield feedback failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Shield charge (#1837, FR-160; UC-040 A30-A32, BR-019-BR-021; UC-030 A6)
+    # ------------------------------------------------------------------
+
+    def _shield_activation_mode(self) -> str:
+        """``instant`` or ``trigger`` for the next grant_shield (UC-040 BR-019).
+
+        Only an allow-listed mode (``SHIELD_TRIGGER_ALLOWED``, Free-for-All) and
+        only a real game reads the flag; every other game is instant. Read per
+        grant, never per frame.
+        """
+        if not self.SHIELD_TRIGGER_ALLOWED or self.game_kind == GAME_KIND_SHADOW:
+            return SHIELD_ACTIVATION_INSTANT
+        # Literal flag key, so the contract scan resolves the read.
+        value = read_string_flag("game", "shield.activation", DEFAULT_SHIELD_ACTIVATION, game_id=self.game_id)
+        return resolve_shield_activation(value)
+
+    def _read_charge_expiry(self) -> float:
+        """Seconds a new charge is held before it expires, 0 = never (flags.md §4, read per grant)."""
+        value = read_float_flag(
+            "game", "shield.charge_expiry_seconds", DEFAULT_CHARGE_EXPIRY_SECONDS, game_id=self.game_id
+        )
+        return resolve_charge_expiry(value)
+
+    async def _write_shield_effect(self, player: "Player", effect_name: str, duration_ms: int) -> None:
+        """Best-effort ``GameEffectCommand`` for a shield-charge effect on the player's controller."""
+        if not self.gameplay_stream:
+            return
+        try:
+            from proto import controller_manager_pb2
+
+            trace_parent, trace_state = inject_trace_context(player.span)
+            await self.gameplay_stream.write(
+                controller_manager_pb2.GameplayStreamControl(
+                    game_effect=controller_manager_pb2.GameEffectCommand(
+                        serial=player.serial,
+                        effect=getattr(controller_manager_pb2, effect_name),
+                        duration_ms=duration_ms,
+                        trace_parent=trace_parent,
+                        trace_state=trace_state,
+                    )
+                )
+            )
+        except Exception as e:
+            logger.warning(f"{effect_name} for {player.serial} failed (charge state unaffected): {e}")
+
+    async def _grant_shield_charge(self, player: "Player", seconds: float) -> bool:
+        """Store one shield charge for the player (UC-040 A30, BR-020).
+
+        ``grace_until`` is left alone: the player is not protected until they
+        activate the charge with the trigger (UC-030 A6). A grant while a charge
+        is held applies nothing and raises ``InterventionNotApplied`` with
+        ``already_charged`` (A31); the intervention manager records it as blocked
+        and refunds the backstop reservation.
+        """
+        from services.game_coordinator.intervention_errors import InterventionNotApplied
+
+        if player.shield_charge_seconds > 0:
+            logger.info(f"Shield charge for {player.serial} refused: a charge is already held")
+            raise InterventionNotApplied("already_charged")
+
+        now = time.time()
+        expiry = self._read_charge_expiry()
+        player.shield_charge_seconds = seconds
+        player.shield_charge_granted_at = now
+        player.shield_charge_expires_at = now + expiry if expiry > 0 else 0.0
+        identity = player_identity_attributes(player.serial, player.name)
+        logger.info(f"Shield charge granted to {player.serial}: {seconds:.1f}s, expiry {expiry:.0f}s (0 = never)")
+
+        if player.span:
+            with contextlib.suppress(Exception):
+                player.span.add_event(
+                    "shield_charge_granted",
+                    attributes={"shield.seconds": seconds, "shield.charge_expiry_s": expiry, **identity},
+                )
+            with contextlib.suppress(Exception):
+                player._shield_charge_span = tracer.start_span(
+                    "game.shield_charge",
+                    context=trace.set_span_in_context(player.span),
+                    attributes={
+                        **identity,
+                        "game.id": self.game_id,
+                        "shield.seconds": seconds,
+                        "shield.charge_expiry_s": expiry,
+                    },
+                )
+
+        await self._send_shield_charge_layer(player, now)
+        try:
+            await self.event_publisher(
+                GameEvent.PLAYER_SHIELD_CHARGED,
+                {
+                    "serial": player.serial,
+                    "seconds": f"{seconds:.1f}",
+                    "expires_ms": str(int(player.shield_charge_expires_at * 1000)),
+                },
+            )
+        except Exception as e:
+            logger.warning(f"player_shield_charged event for {player.serial} failed (charge unaffected): {e}")
+        return True
+
+    async def _send_shield_charge_layer(self, player: "Player", now: float) -> None:
+        """Send (or re-send) the charge LED layer for the time left, capped at 120 s (BR-021)."""
+        if player.shield_charge_expires_at:
+            layer_s = min(player.shield_charge_expires_at - now, SHIELD_CHARGE_LAYER_MAX_SECONDS)
+        else:
+            layer_s = SHIELD_CHARGE_LAYER_MAX_SECONDS
+        if layer_s <= 0:
+            return
+        # Recorded before the write, so a failing stream never re-sends every frame.
+        player.shield_charge_layer_until = now + layer_s
+        await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_CHARGE", int(round(layer_s * 1000)))
+
+    async def _process_shield_charge(self, player: "Player", edge: bool, now: float) -> None:
+        """Frame-path work for a player who holds a charge or pressed the trigger (UC-030 BR-005).
+
+        Lazy expiry (no timer, BR-020), the re-send before the 120 s layer cap
+        (BR-021), then the activation when the press is valid: a charge is held
+        and no grace, shield or invincibility window is open. An invalid press does
+        nothing and is not remembered.
+        """
+        if player.shield_charge_seconds > 0:
+            expires_at = player.shield_charge_expires_at
+            if expires_at and now >= expires_at:
+                await self._discard_shield_charge(player, CHARGE_OUTCOME_EXPIRED)
+            elif now >= player.shield_charge_layer_until - SHIELD_CHARGE_RESEND_MARGIN_SECONDS and (
+                not expires_at or expires_at > player.shield_charge_layer_until
+            ):
+                await self._send_shield_charge_layer(player, now)
+        if not edge or player.shield_charge_seconds <= 0:
+            return
+        if now < self.effective_grace_until(player):
+            return
+        await self._activate_shield_charge(player, now)
+
+    def _clear_shield_charge(self, player: "Player") -> None:
+        player.shield_charge_seconds = 0.0
+        player.shield_charge_granted_at = 0.0
+        player.shield_charge_expires_at = 0.0
+        player.shield_charge_layer_until = 0.0
+
+    @staticmethod
+    def _end_shield_charge_span(player: "Player", outcome: str, delay_ms: int | None = None) -> None:
+        span, player._shield_charge_span = player._shield_charge_span, None
+        if span is None:
+            return
+        with contextlib.suppress(Exception):
+            span.set_attribute("shield.charge_outcome", outcome)
+            if delay_ms is not None:
+                span.set_attribute("shield.charge_delay_ms", delay_ms)
+            span.end()
+
+    async def _activate_shield_charge(self, player: "Player", now: float) -> None:
+        """The player activates the charge (UC-030 A6): today's shield plus the swell."""
+        seconds = player.shield_charge_seconds
+        delay_ms = int(round((now - player.shield_charge_granted_at) * 1000))
+        self._clear_shield_charge(player)
+        player.grace_until = max(player.grace_until, now + seconds)
+        logger.info(f"Shield charge activated by {player.serial}: {seconds:.1f}s after {delay_ms} ms")
+
+        # A6 step 2: SHIELD_CHARGE 0, then SHIELD and SWELL (in _send_shield_feedback).
+        await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_CHARGE", 0)
+        if player.span:
+            with contextlib.suppress(Exception):
+                player.span.add_event(
+                    "shield_activated",
+                    attributes={
+                        "shield.seconds": seconds,
+                        "shield.charge_delay_ms": delay_ms,
+                        **player_identity_attributes(player.serial, player.name),
+                    },
+                )
+        self._end_shield_charge_span(player, CHARGE_OUTCOME_ACTIVATED, delay_ms)
+        await self._publish_charge_ended(player, CHARGE_OUTCOME_ACTIVATED)
+        # The player acted, so the sound always plays (UC-040 A16 / UC-030 A6).
+        await self._send_shield_feedback(
+            player, player.grace_until - now, kind="full", sound=True, charge_delay_ms=delay_ms
+        )
+
+    async def _discard_shield_charge(self, player: "Player", reason: str) -> None:
+        """Drop a held charge unused: expired, death or game end (UC-040 A32)."""
+        if player.shield_charge_seconds <= 0:
+            return
+        self._clear_shield_charge(player)
+        logger.info(f"Shield charge of {player.serial} ended unused: {reason}")
+        await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_CHARGE", 0)
+        if player.span:
+            with contextlib.suppress(Exception):
+                player.span.add_event(
+                    "shield_charge_ended",
+                    attributes={
+                        "shield.charge_outcome": reason,
+                        **player_identity_attributes(player.serial, player.name),
+                    },
+                )
+        self._end_shield_charge_span(player, reason)
+        await self._publish_charge_ended(player, reason)
+
+    async def _publish_charge_ended(self, player: "Player", reason: str) -> None:
+        try:
+            await self.event_publisher(
+                GameEvent.PLAYER_SHIELD_CHARGE_ENDED, {"serial": player.serial, "reason": reason}
+            )
+        except Exception as e:
+            logger.warning(f"player_shield_charge_ended event for {player.serial} failed: {e}")
+
+    async def _resend_shield_layers(self) -> None:
+        """Re-send held charges and running shields on a (re)created stream (UC-040 BR-021).
+
+        Nothing is held when the stream is first created, so this only sends
+        after a mid-game reconnect, on every attempt. A running full shield or
+        toughness boost is re-sent with the time left; a charge with its layer.
+        """
+        now = time.time()
+        for serial, player in self.players.items():
+            if not player.alive:
+                continue
+            if player.shield_charge_seconds > 0:
+                await self._send_shield_charge_layer(player, now)
+            if self._shield_feedback_until.get(serial, 0.0) <= now:
+                continue
+            if player.grace_until > now:
+                await self._write_shield_effect(
+                    player, "GAME_EFFECT_SHIELD", int(round((player.grace_until - now) * 1000))
+                )
+            if player.toughness_boost_until > now:
+                await self._write_shield_effect(
+                    player, "GAME_EFFECT_TOUGHNESS_BOOST", int(round((player.toughness_boost_until - now) * 1000))
+                )
+
+    def _close_shield_charge_spans(self) -> None:
+        """End every open ``game.shield_charge`` span (error teardown path); no I/O."""
+        for player in self.players.values():
+            if player._shield_charge_span is not None:
+                self._clear_shield_charge(player)
+                self._end_shield_charge_span(player, CHARGE_OUTCOME_GAME_END)
 
     # Soft-penalty defaults (#1134, #1103 Phase 3). The tighten factor is the
     # MIRROR of the toughness boost: a factor BELOW 1.0 weakens the player's
@@ -2858,6 +3216,10 @@ class BaseGameMode(ABC):
 
     async def _run_kill(self, serial: str, player: Player, accel_mag: float, reason: str) -> None:
         """Body of _kill_player; runs at most once at a time per serial."""
+        # A held shield charge ends with the death, before the player span closes
+        # (UC-040 A32; a disconnect and eliminate_player come through here too).
+        if player.shield_charge_seconds > 0:
+            await self._discard_shield_charge(player, CHARGE_OUTCOME_DEATH)
         alive_count_before = len([p for p in self.players.values() if p.alive])
         logger.info(f"Player died: {serial}, {alive_count_before - 1} players remaining")
 
@@ -3344,6 +3706,9 @@ class BaseGameMode(ABC):
             # Call force-end hook if game was externally stopped
             if force_ended:
                 await self.on_force_end()
+            # An error teardown skips _end_shield_feedback: end open charge spans (#1837).
+            # Before cleanup, so a raising cleanup leaves no span open.
+            self._close_shield_charge_spans()
             # Always call cleanup to cancel tracked tasks
             await self.cleanup()
             # Ensure this session's analytics are always cleared, even on error

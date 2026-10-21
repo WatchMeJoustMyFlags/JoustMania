@@ -59,6 +59,24 @@
       },
       "defaultVariant": "ci"
     },
+    "shield.activation": {
+      "state": "ENABLED",
+      "variants": {
+        "instant": "instant",
+        "trigger": "trigger"
+      },
+      "defaultVariant": "instant"
+    },
+    "shield.charge_expiry_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "never": 0,
+        "short": 10,
+        "default": 20,
+        "long": 45
+      },
+      "defaultVariant": "default"
+    },
     "sensitivity": {
       "state": "ENABLED",
       "variants": {
