@@ -56,14 +56,14 @@ From the caller:
 
 What the script accepts (anything else is `REFUSED`, exit 2): `make` with targets `pr-gates`, `lint`,
 `format-check`, `check`, `specs-check`, `test`, `test-dev`, `test-pulled`, `test-contract`,
-`test-contract-flagd`, `test-integration-shard-check`, `test-service*`, `test-integration*` and only the
-variables `TEST SERVICE BASE PR_LABELS E2E_SHARD IMAGE_TAG PYTEST_EXTRA SERVICE_TESTS` (`SERVICE_TESTS` only with `test-service*`: paths under `tests/service`); `uv run --package <member>
+`test-contract-flagd`, `test-service*`, `test-integration` and only the
+variables `TEST SERVICE BASE PR_LABELS IMAGE_TAG PYTEST_EXTRA SERVICE_TESTS` (`SERVICE_TESTS` only with `test-service*`: paths under `tests/service`); `uv run --package <member>
 [--extra <x>] pytest ...`; `go test|vet` and `cargo test|clippy` with `--dir`; `scripts/tests/test-*.sh`.
 The dashboard runs only through `make pr-gates SERVICE=dashboard`. The full rules are in the script header.
 Threat model: the script guards against agent and prompt mistakes, not untrusted PR code; every allowed form
 runs the worktree's own code, so use it only on PRs you would run locally.
 
-`make test`, `test-integration*`, `test-pulled`, `test-dev` and `test-integration-shard-check` depend on
+`make test`, `test-integration`, `test-pulled` and `test-dev` depend on
 `clean-test-venv`, which runs `sudo rm -rf .venv-test` when that venv is not writable. The script refuses
 those targets in that case (`REFUSED: .venv-test is not writable`), so sudo is never reached; report it.
 
@@ -73,8 +73,8 @@ those targets in that case (`REFUSED: .venv-test is not writable`), so sudo is n
    x N (a `--repeat N` is one call, so `x5` of a 3 min suite is 15 min).
    - FOREGROUND, Bash `timeout: 600000`, only when the total is under ~8 min (unit tests, a single
      SERVICE's `pr-gates` or tests, short repeats). The call returns the verdict.
-   - BACKGROUND (`run_in_background: true`) for: `make test`, `test-dev`, `test-pulled`, `test-integration*`,
-     any `E2E_SHARD=` run, a full `pr-gates` without `SERVICE=`, and any total over ~8 min. Unsure means
+   - BACKGROUND (`run_in_background: true`) for: `make test`, `test-dev`, `test-pulled`, `test-integration`,
+     a full `pr-gates` without `SERVICE=`, and any total over ~8 min. Unsure means
      background. Then wait for the completion notification (no polling, no sleep) before handing back.
    Never hand back while a run is in flight: an interim "still running" is not a result. Jobs run one after
    another, never in parallel.
