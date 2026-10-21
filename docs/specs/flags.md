@@ -462,7 +462,7 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | `verdict_min_n`, `verdict_min_pairs`, `experiment_tick_seconds`, `experiment_max_games` | overlay | stack | int 1 to 1000 | no | `test_experiment_cohort_loop.py` |
 | `experiment_completed_grace_seconds` | overlay | stack | int 0 to 600 | no | operator (§15, #1810) |
 | `experiment_proposer_enabled` | overlay | stack | `on`, `off` | no | operator (§15.2, #1810; capped by `AGENT_EXPERIMENT_PROPOSER_ENABLED`, C-034) |
-| `inference.backend` | overlay | stack | `stub`, `claude` | yes (like `decision.backend`, #1682) | operator (§15, #1810) |
+| `inference.backend` | overlay | stack | `stub`, `claude` | **yes** (like `decision.backend`, #1682) | operator (§15, #1810) |
 | `inference.model` | overlay | stack | free string | no | operator (§15, #1788) |
 | `inference.effort` | overlay | stack | declared variants | no | operator (§15, #1788) |
 | `inference.timeout_seconds` | overlay | stack | int 30 to 120 | no | operator (§15, #1788) |
