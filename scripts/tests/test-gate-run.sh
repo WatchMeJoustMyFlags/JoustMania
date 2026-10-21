@@ -166,6 +166,11 @@ refused -- make pr-gates BASE=--output=x
 refused -- make pr-gates 'BASE=a;b'
 refused -- make test-service 'TEST=a$b'
 refused -- make test-service SERVICE_TESTS=../x
+refused -- make test-service SERVICE_TESTS=lib/x.py
+refused -- make test-service 'SERVICE_TESTS=tests/service /etc/x'
+refused -- make test-service SERVICE_TESTS=tests/servicefoo
+refused -- make test-service 'SERVICE_TESTS=tests/service --pdb'
+refused -- make test-service SERVICE_TESTS=
 refused -- make test-service SERVICE_TESTS=tests/service/../../x
 refused -- make test-service SERVICE_TESTS=/etc/passwd
 

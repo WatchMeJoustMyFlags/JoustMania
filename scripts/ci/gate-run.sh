@@ -151,8 +151,13 @@ validate_make() {
     case "$name" in
       SERVICE) [[ "$value" =~ ^[a-z_,:-]+$ ]] || refuse "bad SERVICE: $value" ;;
       SERVICE_TESTS)
-        [[ "$value" =~ ^(tests/service[A-Za-z0-9_./\ -]*)$ && "$value" != *..* ]] \
-          || refuse "bad SERVICE_TESTS: $value" ;;
+        local tok toks
+        read -r -a toks <<<"$value"
+        ((${#toks[@]} > 0)) || refuse "empty SERVICE_TESTS"
+        for tok in "${toks[@]}"; do
+          [[ "$tok" =~ ^tests/service(/[A-Za-z0-9_.-]+)*$ && "$tok" != *..* ]] \
+            || refuse "bad SERVICE_TESTS token: $tok"
+        done ;;
       BASE) [[ "$value" =~ ^[A-Za-z0-9._/-]+$ && "$value" != -* ]] || refuse "bad BASE: $value" ;;
     esac
   done

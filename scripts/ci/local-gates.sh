@@ -220,16 +220,23 @@ else
   for f in "${files[@]}"; do [[ -n "$f" ]] && classify "$f"; done
 fi
 # The full tier subsumes the targeted lane.
-if [[ -n "${selected[service]:-}" ]]; then
-  touched_service=()
-elif [[ ${#touched_service[@]} -gt 0 ]]; then
+if [[ -z "${selected[service]:-}" && ${#touched_service[@]} -gt 0 ]]; then
   selected[service-touched]=1
 fi
+# explicit SERVICE=service-touched with no changed test file: nothing to run
+[[ ${#touched_service[@]} -eq 0 ]] && unset 'selected[service-touched]'
 # spec-touched needs a changed-file list; only meaningful in auto mode.
 [[ ${#explicit[@]} -eq 0 && ${#files[@]} -gt 0 ]] && selected[spec-touched]=1
 
+service_note() {  # the CI service filter matched but the full tier is not run here
+  if [[ $ci_service -eq 1 && -z "${selected[service]:-}" ]]; then
+    echo 'note: service tier not run locally; PR CI runs the full tier'
+  fi
+}
+
 if $plan_only; then
   for g in "${ALL_GATES[@]}"; do [[ -n "${selected[$g]:-}" ]] && echo "$g"; done
+  service_note >&2
   exit 0
 fi
 
@@ -274,6 +281,9 @@ gate_cmd() {  # print the shell command for a gate
     contract-flagd) echo "make test-contract-flagd" ;;
     service) echo "make test-service" ;;
     service-touched)
+      if [[ ${#touched_service[@]} -eq 0 ]]; then
+        echo "local-gates: service-touched: no changed tests/service test files" >&2; return 1
+      fi
       local sorted
       sorted="$(printf '%s\n' "${!touched_service[@]}" | sort | tr '\n' ' ')"
       echo "make test-service SERVICE_TESTS='${sorted% }'" ;;
@@ -294,7 +304,12 @@ docker compose \"\${a[@]}\" --profile agent --profile dashboard config -q; done"
   esac
 }
 
-if [[ -n "$print_cmd" ]]; then gate_cmd "$print_cmd"; exit 0; fi
+if [[ "$print_cmd" == next ]]; then echo "local-gates: --print-cmd needs a gate name" >&2; exit 2; fi
+if [[ -n "$print_cmd" ]]; then
+  [[ " ${ALL_GATES[*]} " == *" $print_cmd "* ]] || { echo "local-gates: unknown gate '$print_cmd'" >&2; exit 2; }
+  gate_cmd "$print_cmd" || exit 1
+  exit 0
+fi
 
 fmt_dur() { local s=$1; if (( s >= 60 )); then printf '%dm%02ds' $((s/60)) $((s%60)); else printf '%ds' "$s"; fi; }
 
@@ -321,9 +336,7 @@ echo "== pr-gates summary (base $BASE, ${#files[@]} changed file(s)) =="
 for g in "${ALL_GATES[@]}"; do
   printf '%-22s %-4s %s\n' "$g" "${status[$g]}" "${duration[$g]:-}"
 done
-if [[ $ci_service -eq 1 && -z "${selected[service]:-}" && -z "${selected[service-touched]:-}" ]]; then
-  echo 'note: service tier not run locally; PR CI "Service Tests" runs the full tier'
-fi
+service_note
 for g in "${ALL_GATES[@]}"; do
   [[ "${status[$g]}" == FAIL ]] || continue
   echo

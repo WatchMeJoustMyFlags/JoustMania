@@ -18,7 +18,7 @@ pass=0
 expect() {
   tr ' ' '\n' <<<"$1" >"${WORK}/files"
   local got
-  got="$(PR_GATES_FILES="${WORK}/files" "${GATES}" --plan | tr '\n' ' ' | sed 's/ $//')"
+  got="$(PR_GATES_FILES="${WORK}/files" "${GATES}" --plan 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
   if [[ "$got" != "$2" ]]; then
     echo "FAIL: files [$1]" >&2
     echo "  want: $2" >&2
@@ -87,15 +87,43 @@ expect "services/agent/main.go" "$ALWAYS go:agent contract contract-flagd"
 expect "tests/integration/fake_openai/server.py" "$ALWAYS service"
 
 # Explicit SERVICE keys replace auto-detection (hyphen/underscore agnostic).
-got="$(SERVICE="flag_service,game-coordinator" PR_GATES_FILES=/dev/null "${GATES}" --plan | tr '\n' ' ')"
+got="$(SERVICE="flag_service,game-coordinator" PR_GATES_FILES=/dev/null "${GATES}" --plan 2>/dev/null | tr '\n' ' ')"
 [[ "$got" == "lint spec-lint py:game_coordinator go:flag-service " ]] || { echo "FAIL: SERVICE keys: $got" >&2; exit 1; }
 got="$(PR_GATES_FILES=/dev/null "${GATES}" --plan menu agent | tr '\n' ' ')"
 [[ "$got" == "lint spec-lint py:menu go:agent " ]] || { echo "FAIL: positional keys: $got" >&2; exit 1; }
 if PR_GATES_FILES=/dev/null "${GATES}" --plan nonsense 2>/dev/null; then
   echo "FAIL: unknown SERVICE key must exit non-zero" >&2; exit 1
 fi
-got="$(SERVICE=service-touched PR_GATES_FILES=/dev/null "${GATES}" --plan | tr '\n' ' ')"
+echo tests/service/test_harness.py >"${WORK}/files"
+got="$(SERVICE=service-touched PR_GATES_FILES="${WORK}/files" "${GATES}" --plan 2>/dev/null | tr '\n' ' ')"
 [[ "$got" == "lint spec-lint service-touched " ]] || { echo "FAIL: SERVICE=service-touched: $got" >&2; exit 1; }
+pass=$((pass + 4))
+
+# Note: printed whenever the CI service filter matched and the full tier did not run.
+note='note: service tier not run locally; PR CI runs the full tier'
+check_note() {  # <files> <want: yes|no>
+  tr ' ' '\n' <<<"$1" >"${WORK}/files"
+  local err
+  err="$(PR_GATES_FILES="${WORK}/files" "${GATES}" --plan 2>&1 >/dev/null)"
+  if [[ ("$2" == yes && "$err" != "$note") || ("$2" == no && -n "$err") ]]; then
+    echo "FAIL: note for [$1] (want $2): $err" >&2; exit 1
+  fi
+  pass=$((pass + 1))
+}
+check_note "lib/feature_flags.py" yes
+check_note "lib/feature_flags.py tests/service/test_tc009_kill_switch.py" yes
+check_note "tests/service/test_tc009_kill_switch.py" yes
+check_note "tests/service/harness/stack.py" no
+check_note "docs/README.md" no
+
+# service-touched without changed test files: skipped, never an empty SERVICE_TESTS.
+if PR_GATES_FILES=/dev/null "${GATES}" --print-cmd service-touched 2>/dev/null; then
+  echo "FAIL: service-touched with no files must not print a command" >&2; exit 1
+fi
+got="$(SERVICE=service-touched PR_GATES_FILES=/dev/null "${GATES}" --plan 2>/dev/null | tr '\n' ' ')"
+[[ "$got" == "lint spec-lint " ]] || { echo "FAIL: empty service-touched must be skipped: $got" >&2; exit 1; }
+if "${GATES}" --print-cmd 2>/dev/null; then echo "FAIL: --print-cmd without argument" >&2; exit 1; fi
+if PR_GATES_FILES=/dev/null "${GATES}" --print-cmd nonsense 2>/dev/null; then echo "FAIL: --print-cmd unknown gate" >&2; exit 1; fi
 pass=$((pass + 4))
 
 # Command level: the targeted lane passes the files through SERVICE_TESTS.
