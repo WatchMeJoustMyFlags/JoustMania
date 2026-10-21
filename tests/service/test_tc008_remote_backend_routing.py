@@ -31,6 +31,7 @@ from tests.service.agent_flow import (
     CHAT_SPAN,
     EXPECTED_VALUE,
     FAKE_MODEL,
+    FIRST_CALL_TIMEOUT,
     HIGH_CONFIDENCE,
     LOW_CONFIDENCE,
     RULES_DECIDE_TIMEOUT,
@@ -60,8 +61,11 @@ SERVICE_COMPOSITION = AGENT
 
 def _configure(stack, backend: str, **kwargs) -> None:
     configure_agent(backend=backend, **kwargs)
+    served = {"openai_model": kwargs["openai_model"]} if kwargs.get("openai_model") is not None else {}
+    if "openai_model" in kwargs and kwargs["openai_model"] is None:
+        served = {"openai_model": ""}  # the shipped empty default
     wait_agent_flags_served(
-        stack, backend=backend, enabled=True, rewrite=lambda: configure_agent(backend=backend, **kwargs)
+        stack, backend=backend, enabled=True, rewrite=lambda: configure_agent(backend=backend, **kwargs), **served
     )
 
 
@@ -268,5 +272,64 @@ async def test_openai_garbage_falls_back_to_rules(fresh_stack):
             chats = children(stack, span, CHAT_SPAN)
             assert chats, "the failed call still records its chat span"
             assert chats[0].attributes.get("error.type") == "invalid_output", chats[0].attributes
+    finally:
+        await channel.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-044", flow="A1", tc="TC-008")
+@pytest.mark.uc("UC-040", flow="A3", tc="TC-008")
+@pytest.mark.parametrize(
+    ("backend", "kwargs"),
+    [
+        # No key in the agent's environment (the AGENT composition has neither
+        # ANTHROPIC_API_KEY nor JEV_API_KEY).
+        pytest.param("claude", {}, id="claude-no-key"),
+        pytest.param("jev", {}, id="jev-no-key"),
+        # openai has its dummy key but no model (the shipped decision.openai.model is empty).
+        pytest.param("openai", {"openai_model": None}, id="openai-no-model"),
+    ],
+)
+@pytest.mark.usefixtures("flag_service")
+async def test_selected_backend_missing_key_or_model_is_unavailable(fresh_stack, backend, kwargs):
+    """A remote backend selected without its key or model (UC-044 A1, TC-008 step 1 variant):
+    the agent never calls out; the cycle's agent.decide span is a rules fallback with
+    decide.fallback_reason=backend_unavailable (decide.backend=rules, requested=<backend>),
+    counted in agent_llm_gated_total{reason=backend_unavailable}, and nothing is applied
+    from a remote answer (no chat span, no unblocked agent_intervention)."""
+    stack = fresh_stack
+    stack.fake_openai.script("valid", intervention=SCRIPTED_INTERVENTION, confidence=HIGH_CONFIDENCE)
+    _configure(stack, backend, **kwargs)
+
+    game_client, channel = await get_game_client(stack)
+    try:
+        collector = GameEventCollector(game_client)
+        async with collector:
+            game_id, _ = await start_ffa(stack, collector)
+            span = await wait_decide_span(
+                stack,
+                game_id,
+                lambda t: t.get("decide.fallback_reason") == "backend_unavailable",
+                "decide.fallback_reason=backend_unavailable",
+            )
+            tags = span.attributes
+            assert tags.get("decide.outcome") == "fallback", tags
+            assert tags.get("decide.backend") == "rules", tags
+            assert tags.get("decide.backend.requested") == backend, tags
+            assert not children(stack, span, CHAT_SPAN), "an unavailable backend must not be called"
+            await stack.otlp_sink.wait_metric_async(
+                "agent_llm_gated_total",
+                {"reason": "backend_unavailable"},
+                service="agent",
+                timeout=FIRST_CALL_TIMEOUT,
+            )
+            assert stack.fake_openai.all_requests() == [], (
+                "the agent called the fake although the backend is unavailable"
+            )
+            # No remote answer was ever routed: every decide span of the game is a rules span.
+            assert {s.attributes.get("decide.backend") for s in decide_spans(stack, game_id)} == {"rules"}
+            assert not [e for e in intervention_events(collector) if e.get("blocked") == "false"], (
+                "an unblocked intervention from a backend that cannot answer"
+            )
     finally:
         await channel.close()
