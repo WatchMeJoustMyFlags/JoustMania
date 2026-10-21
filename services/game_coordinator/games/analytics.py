@@ -5,7 +5,7 @@ Tracks player movement patterns, acceleration data, and near-death events
 during games for post-game analysis and real-time dashboards.
 
 Key features:
-- Per-frame sampling of acceleration (and optionally gyroscope)
+- Per-frame sampling of acceleration
 - Movement zone classification (still/active/warning/danger)
 - Near-death event detection (raw > threshold but EMA saved player)
 - Per-game summary statistics
@@ -69,10 +69,6 @@ class PlayerAnalytics:
     peak_accel: float = 0.0
     peak_accel_time: float = 0.0  # Seconds since game start
 
-    # Gyro tracking (optional, enabled via config)
-    total_gyro_magnitude: float = 0.0
-    peak_gyro: float = 0.0
-
     # Zone tracking (milliseconds in each zone) - fixed thresholds
     time_still_ms: int = 0  # < 1.1g
     time_active_ms: int = 0  # 1.1-1.5g
@@ -125,9 +121,6 @@ class PlayerAnalytics:
         smoothed_accel: float,
         death_threshold: float,
         config: "AnalyticsConfig",
-        gyro_x: float = 0.0,
-        gyro_y: float = 0.0,
-        gyro_z: float = 0.0,
         frame_duration_ms: float = 16.67,  # ~60Hz
     ) -> MovementZone:
         """
@@ -138,7 +131,6 @@ class PlayerAnalytics:
             smoothed_accel: EMA-smoothed acceleration magnitude
             death_threshold: Current death threshold (for near-death detection)
             config: Analytics configuration
-            gyro_x, gyro_y, gyro_z: Raw gyroscope values (optional)
             frame_duration_ms: Duration of this frame in milliseconds
 
         Returns:
@@ -160,13 +152,6 @@ class PlayerAnalytics:
 
         # Rolling window for windowed variance (deque auto-evicts oldest sample)
         self._accel_window.append(raw_accel_mag)
-
-        # Gyro tracking (optional)
-        if config.track_gyro:
-            gyro_mag = math.sqrt(gyro_x**2 + gyro_y**2 + gyro_z**2)
-            self.total_gyro_magnitude += gyro_mag
-            if gyro_mag > self.peak_gyro:
-                self.peak_gyro = gyro_mag
 
         # Zone classification using fixed thresholds
         zone = self._classify_zone(raw_accel_mag, config)
@@ -356,9 +341,6 @@ class PlayerAnalytics:
             "avg_accel": round(self.average_accel, 3),
             "std_accel": round(self.std_deviation, 3),
             "total_accel": round(self.total_accel_magnitude, 2),
-            # Gyro stats (if tracked)
-            "peak_gyro": round(self.peak_gyro, 3),
-            "avg_gyro": round(self.total_gyro_magnitude / max(1, self.sample_count), 3),
             # Zone distribution
             "zone_still_pct": round(zones["still"], 1),
             "zone_active_pct": round(zones["active"], 1),

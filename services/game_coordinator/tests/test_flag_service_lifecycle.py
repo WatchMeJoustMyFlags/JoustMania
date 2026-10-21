@@ -122,7 +122,7 @@ async def test_register_then_end(service):
 
 @pytest.mark.uc("UC-053", flow="main", steps=[1], cond=["Post-F-2"])
 @pytest.mark.asyncio
-async def test_slow_registration_is_bounded_at_200ms_and_the_game_starts(service):
+async def test_slow_registration_is_bounded_at_200ms(service):
     service.delay = 1.0
     lc = FlagServiceLifecycle(FlagServiceClient(service.url, timeout=2.0), lambda: [GAME], instance="h/1")
     started = time.monotonic()
@@ -229,6 +229,54 @@ async def test_servicer_registers_before_the_game_runs_and_ends_at_retire():
     servicer._retire_session(game_id)
     assert rec.ended == [game_id]
     assert servicer._flag_service_live_games() == []
+
+
+@pytest.mark.uc("UC-053", flow="main", steps=[1], cond=["Post-F-2"])
+@pytest.mark.parametrize("failure", ["unreachable", "timeout"])
+@pytest.mark.asyncio
+async def test_game_starts_and_runs_when_flag_service_registration_fails(service, failure):
+    """Post-F-2 end to end: a failed or timed-out registration never blocks the
+    start; the game thread still launches (RUNNING) and the lifecycle will reconcile."""
+    from proto import game_coordinator_pb2
+    from services.game_coordinator import game_session as game_session_mod
+    from services.game_coordinator.servicer import GameCoordinatorServicer
+
+    if failure == "unreachable":
+        service.fail = True
+    else:
+        service.delay = 1.0
+    servicer = GameCoordinatorServicer()
+    servicer.flag_service = FlagServiceLifecycle(
+        FlagServiceClient(service.url, timeout=2.0), servicer._flag_service_live_games, instance="h/1"
+    )
+    # The lifecycle sets the reconcile flag at construction; clear it so the assertion below
+    # proves the failed registration re-set it.
+    servicer.flag_service._needs_reconcile.clear()
+    config = game_coordinator_pb2.StartGameConfig(
+        game_name="FFA",
+        players=[game_coordinator_pb2.Player(serial=s) for s in ("MOCK0001", "MOCK0002")],
+        origin=game_coordinator_pb2.GAME_ORIGIN_MENU,
+    )
+
+    class _Span:
+        def get_span_context(self):
+            return None
+
+    thread_started: list[str] = []
+
+    def fake_start_thread(self):
+        self.game_running = True
+        thread_started.append(self.game_id)
+
+    started = time.monotonic()
+    with patch.object(game_session_mod.GameSession, "start_thread", fake_start_thread):
+        ok, game_id = await servicer._start_game_from_config(config, _Span())
+    assert ok, game_id
+    assert time.monotonic() - started < 0.9  # bounded, did not wait out the 1.0 s delay
+    assert thread_started == [game_id]
+    assert servicer.sessions[game_id].game_running is True
+    assert servicer.flag_service._needs_reconcile.is_set()  # the reconcile will catch up
+    servicer._retire_session(game_id)
 
 
 @pytest.mark.uc("UC-053", flow="A10")

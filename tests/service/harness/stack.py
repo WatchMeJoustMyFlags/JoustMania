@@ -34,6 +34,7 @@ from .fake_audio import FakeAudio
 from .fakes.claude import API_KEY as FAKE_CLAUDE_API_KEY
 from .fakes.claude import MODEL as FAKE_CLAUDE_MODEL
 from .fakes.claude import FakeClaude
+from .fakes.github import FakeGitHub
 from .fakes.jev import API_KEY as FAKE_JEV_API_KEY
 from .fakes.jev import FakeJev
 from .fakes.openai import API_KEY as FAKE_OPENAI_API_KEY
@@ -81,6 +82,9 @@ class Composition:
     # Also a fake Jev (``stack.fake_jev``) behind the ``fake`` variant of ``decision.jev.base_url``;
     # the agent gets the fake's dummy ``JEV_API_KEY`` (without this flag it has none: UC-044 A1).
     fake_jev: bool = False
+    # Also a fake GitHub REST API (``stack.fake_github``) the agent's promoter opens issues and
+    # PRs on (the promotion env gate + GITHUB_API_URL; needs ``agent``). Never github.com.
+    fake_github: bool = False
     # Extra env for the agent process, applied last (e.g. the experiment seed of TC-011).
     agent_env: Mapping[str, str] = field(default_factory=dict)
 
@@ -89,6 +93,8 @@ class Composition:
             raise ValueError("fake_claude=True needs agent=True")
         if self.fake_jev and not self.agent:
             raise ValueError("fake_jev=True needs agent=True")
+        if self.fake_github and not self.agent:
+            raise ValueError("fake_github=True needs agent=True")
         unknown = set(self.services) - set(SERVICES)
         if unknown:
             raise ValueError(f"unknown services {sorted(unknown)}; known: {sorted(SERVICES)}")
@@ -115,6 +121,7 @@ class ServiceStack:
         self.fake_openai: FakeOpenAI | None = FakeOpenAI(workdir) if composition.agent else None
         self.fake_claude: FakeClaude | None = FakeClaude() if composition.fake_claude else None
         self.fake_jev: FakeJev | None = FakeJev() if composition.fake_jev else None
+        self.fake_github: FakeGitHub | None = FakeGitHub() if composition.fake_github else None
         # Picked up front: the sink tees to it, and the agent must not be found by a stale address.
         self.agent_port: int | None = free_port() if composition.agent else None
         self.agent: AgentProcess | None = None
@@ -161,6 +168,8 @@ class ServiceStack:
             self.fake_claude.start()
         if self.fake_jev is not None:
             self.fake_jev.start()
+        if self.fake_github is not None:
+            self.fake_github.start()
         plane = self.flag_plane
         plane.start()
         self._ports[("flag-service", FLAG_SERVICE_HTTP_PORT)] = plane.http_port
@@ -193,7 +202,12 @@ class ServiceStack:
                 coordinator_port=ports["game-coordinator"],
                 mock_control_port=mock_port,
                 openai_api_key=FAKE_OPENAI_API_KEY,
-                extra_env={**self._inference_env(), **self._jev_env(), **self.composition.agent_env},
+                extra_env={
+                    **self._inference_env(),
+                    **self._jev_env(),
+                    **(self.fake_github.agent_env() if self.fake_github else {}),
+                    **self.composition.agent_env,
+                },
             )
             self._ports[("agent", AGENT_OTLP_PORT)] = self.agent_port
             self.agent.start()
@@ -314,6 +328,8 @@ class ServiceStack:
             self.fake_claude.stop()
         if self.fake_jev is not None:
             self.fake_jev.stop()
+        if self.fake_github is not None:
+            self.fake_github.stop()
 
     # ------------------------------------------------------------- debugging
     def log_tail(self) -> str:
@@ -326,6 +342,8 @@ class ServiceStack:
             parts.append(self.fake_claude.log_tail())
         if self.fake_jev is not None:
             parts.append(self.fake_jev.log_tail())
+        if self.fake_github is not None:
+            parts.append(self.fake_github.log_tail())
         parts.append(self.flag_plane.log_tail())
         return "\n".join(parts)
 

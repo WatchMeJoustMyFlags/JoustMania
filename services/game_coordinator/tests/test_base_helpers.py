@@ -1538,20 +1538,16 @@ class TestRecordPlayerAnalytics:
     def test_skips_when_analytics_none(self, game):
         """Should return early when player.analytics is None."""
         player = Player(serial="test", analytics=None)
-        accel = controller_manager_pb2.Vector3(x=1.0, y=0.0, z=0.0)
-        controller_state = controller_manager_pb2.GameplayData(serial="test", accel=accel)
         # Should not raise
-        game._record_player_analytics(player, "test", 1.0, 1.0, 2.0, controller_state)
+        game._record_player_analytics(player, "test", 1.0, 1.0, 2.0)
 
     def test_skips_when_analytics_disabled(self, game):
         """Should return early when analytics config is disabled."""
         mock_analytics = MagicMock()
         player = Player(serial="test", analytics=mock_analytics)
-        accel = controller_manager_pb2.Vector3(x=1.0, y=0.0, z=0.0)
-        controller_state = controller_manager_pb2.GameplayData(serial="test", accel=accel)
 
         # The method checks config.analytics.enabled internally via get_config_manager
         # With disabled metrics in tests, analytics is disabled by default
-        game._record_player_analytics(player, "test", 1.0, 1.0, 2.0, controller_state)
+        game._record_player_analytics(player, "test", 1.0, 1.0, 2.0)
         # If analytics was disabled, record_sample should not have been called
         # (This depends on runtime_config default - the test verifies no crash)
