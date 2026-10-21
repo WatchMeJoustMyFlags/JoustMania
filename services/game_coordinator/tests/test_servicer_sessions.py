@@ -1141,6 +1141,7 @@ class TestShadowGameGovernance:
                 first.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await first
+                _shadow, first_preemption = servicer._shadow_preemptions[gid_s]
 
                 second_entered = asyncio.Event()
                 real_preempt = servicer._preempt_shadow_sessions
@@ -1157,6 +1158,8 @@ class TestShadowGameGovernance:
                 thread.release.set()
                 async with asyncio.timeout(2.0):
                     ok, gid_real = await second
+                    # Every preemption of the shadow has finished.
+                    assert await first_preemption is True
 
             assert ok is True, gid_real
             assert servicer._primary_game_id == gid_real
