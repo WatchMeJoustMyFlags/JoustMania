@@ -126,10 +126,10 @@ def resolve_tempo_schedule_mode(value: object) -> str:
 RAMP_CURVE_LINEAR = "linear"
 RAMP_CURVE_EASE = "ease"
 _VALID_RAMP_CURVES = (RAMP_CURVE_LINEAR, RAMP_CURVE_EASE)
-# Upper bound on a single ramp's duration (seconds). Generous enough for a slow
-# pacing curve, small enough that a malformed huge value can't suspend the natural
-# schedule for an entire game.
-RAMP_TEMPO_MAX_SECONDS = 60.0
+# Upper bound on a single ramp's duration (seconds, #1840). A Free-for-All game lasts
+# 2 to 3 minutes, so a longer curve would hold the pacing for too much of it; a
+# malformed huge value is capped here too.
+RAMP_TEMPO_MAX_SECONDS = 15.0
 
 # Per-step audio transition for an ``ease`` ramp (#1122 review): the ease curve
 # applies a small tempo step every ~100ms loop tick, so each step's ChangeTempo

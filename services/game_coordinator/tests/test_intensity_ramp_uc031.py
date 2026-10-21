@@ -632,7 +632,7 @@ async def test_a_revert_mid_ramp_holds_the_intensity_reached(clock, owner):
     game = make_game(audio)
     start_held(game, clock, change_due=False)
     if owner == "ramp_tempo":
-        game.tempo_ramp = RampDescriptor(SLOW_MUSIC_SPEED, FAST_MUSIC_SPEED, T0, 60.0, RAMP_CURVE_LINEAR)
+        game.tempo_ramp = RampDescriptor(SLOW_MUSIC_SPEED, FAST_MUSIC_SPEED, T0, 12.0, RAMP_CURVE_LINEAR)
     else:
         game.tempo_override = FAST_MUSIC_SPEED  # 3 s ramp at the up flag
     await game._check_music_speed()

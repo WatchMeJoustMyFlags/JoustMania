@@ -132,6 +132,15 @@ def test_parse_caps_duration():
     assert parse_ramp_tempo_value("1.2:9999:linear").duration == pytest.approx(RAMP_TEMPO_MAX_SECONDS)
 
 
+@pytest.mark.uc("UC-031", flow="A3")
+def test_a_30_second_ramp_is_capped_to_15_seconds():
+    """UC-031 A3 (#1840): an FFA game lasts 2 to 3 minutes, so a ramp_tempo curve lasts at most 15 s."""
+    assert RAMP_TEMPO_MAX_SECONDS == 15.0
+    assert parse_ramp_tempo_value("1.3:30:linear").duration == 15.0
+    assert parse_ramp_tempo_value("1.3:15:ease").duration == 15.0
+    assert parse_ramp_tempo_value("1.3:14.5:ease").duration == 14.5
+
+
 @pytest.mark.parametrize(
     "bad",
     [
