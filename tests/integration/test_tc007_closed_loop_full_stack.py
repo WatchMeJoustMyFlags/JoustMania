@@ -12,8 +12,11 @@ the wiring that only the full stack has:
   dashboard's Agent tab reads it (``GET /jaeger/api/traces?service=agent
   &operation=agent.decide&limit=5``, ``services/dashboard/src/agent.ts``
   ``decideQueryParams``; UC-035 step 3, decision feed only);
-- the agent's in-game spans are remote children of the coordinator's
-  ``game_cycle`` span in that trace (UC-040 BR-013, UC-035 step 5).
+- the game's trace in Jaeger: the root span named after the mode, its phases,
+  one span per player, and the agent's rules-path spans as remote children of
+  the coordinator's ``game_cycle`` span, each ``agent.decision`` keeping its
+  Link to the game root (UC-035 step 5, UC-040 BR-013 first and third clause);
+  every agent span of the trace names G1 and game kind ``real`` (validation 1).
 
 The agent and envoy are profile-gated (``docker-compose.ci.yml``), so the
 module starts both into the running session project (``--no-deps``) and
@@ -25,6 +28,7 @@ the tab's data source is its Jaeger query, and the feed fold below mirrors
 import json
 import os
 import subprocess
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -56,11 +60,21 @@ COORDINATOR_SERVICE_NAME = "game-coordinator-service"  # its OTEL_SERVICE_NAME
 
 ENVOY_CONTAINER = "joustmania-envoy"  # container_name in docker-compose.yml
 COMPOSE_NETWORK = "joustmania-network"
+ENVOY_PORT = 80
 # The dashboard reaches Jaeger through envoy on port 80 (UC-035 BR-001). The test
-# dials envoy's address on the compose network, not the host's port 80: another
-# local listener may own host port 80 (seen under WSL), and the published port is
-# the docker proxy, not part of the journey. Set once envoy is up.
+# uses envoy's PUBLISHED port, like the other modules (Jaeger 16686, Loki 3100).
+# Fallback: when something that is not envoy answers there with a 404 (another
+# listener owns host port 80, seen under WSL), or when TC007_ENVOY_VIA_CONTAINER_IP=1
+# opts in, it dials envoy's address on the compose network instead (Linux docker
+# only; Docker Desktop does not route to container IPs). Set once envoy is up.
+ENVOY_VIA_CONTAINER_IP_ENV = "TC007_ENVOY_VIA_CONTAINER_IP"
 _envoy_jaeger_api = ""
+# UC-035 step 5 / telemetry.md §3: the coordinator's spans of one game.
+GAME_ROOT_SPAN = "Joust Free-for-All"  # the mode's display name
+GAME_PHASES = ("initialization_phase", "gameplay_phase", "game_cycle", "teardown_phase")
+# Agent spans that must name the game (validation 1); game.kind where the spec puts it.
+AGENT_SPANS_WITH_GAME_ID = ("agent.signal_received", "agent.decide", "agent.decision")
+AGENT_SPANS_WITH_GAME_KIND = ("agent.decide", "agent.decision")
 # The Agent tab's decide query (agent.ts DECIDE_OPERATION, DECIDE_TRACE_LIMIT).
 DECIDE_QUERY = {"service": "agent", "operation": "agent.decide", "limit": "5"}
 
@@ -174,6 +188,24 @@ def _bring_up(docker_compose, prefix, cwd, env, no_build: bool) -> None:
         cwd=cwd,
         env=env,
     )
+    _envoy_jaeger_api = _envoy_base(prefix, cwd, env) + "/jaeger/api"
+    assert poll_until(_jaeger_reachable, timeout=30.0), (
+        f"envoy never answered {_envoy_jaeger_api}/services"
+    )
+
+
+def _probe(url: str) -> tuple[int, str]:
+    """(HTTP status, Server header) of ``url``; (0, "") when nothing answers."""
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310 - loopback test URL
+            return response.status, response.headers.get("server", "")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.headers.get("server", "")
+    except OSError:
+        return 0, ""
+
+
+def _container_base() -> str:
     address = subprocess.run(
         ["docker", "inspect", "-f"]
         + [f'{{{{(index .NetworkSettings.Networks "{COMPOSE_NETWORK}").IPAddress}}}}']
@@ -184,10 +216,36 @@ def _bring_up(docker_compose, prefix, cwd, env, no_build: bool) -> None:
         check=True,
     ).stdout.strip()
     assert address, f"{ENVOY_CONTAINER} has no address on {COMPOSE_NETWORK}"
-    _envoy_jaeger_api = f"http://{address}:80/jaeger/api"
-    assert poll_until(_jaeger_reachable, timeout=30.0), (
-        f"envoy never answered {_envoy_jaeger_api}/services"
-    )
+    return f"http://{address}:{ENVOY_PORT}"
+
+
+def _envoy_base(prefix, cwd, env) -> str:
+    """Envoy's published host:port; the container address only on opt-in or a foreign 404."""
+    if os.getenv(ENVOY_VIA_CONTAINER_IP_ENV) == "1":
+        return _container_base()
+    published = subprocess.run(
+        [*prefix, "--profile", "dashboard", "port", ENVOY_SERVICE, str(ENVOY_PORT)],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    ).stdout.strip()
+    host, _, port = published.rpartition(":")
+    host = "127.0.0.1" if host in ("0.0.0.0", "[::]", "") else host
+    base = f"http://{host}:{port}"
+    last = [(0, "")]
+
+    def _answered() -> bool:
+        last[0] = _probe(f"{base}/jaeger/api/services")
+        return last[0][0] != 0
+
+    poll_until(_answered, timeout=15.0)
+    code, server = last[0]
+    if code == 404 and server != "envoy":
+        return _container_base()  # host port 80 belongs to another listener
+    return base
 
 
 # --------------------------------------------------------------------------- #
@@ -285,9 +343,88 @@ def _decide_rows(traces: list[dict], game_id: str) -> list[dict]:
                         )
                         for d in siblings
                     ],
+                    "decision_ids": [d["spanID"] for d in siblings],
                 }
             )
     return rows
+
+
+def _game_trace_problems(
+    trace: dict, row: dict, game_id: str, serials: list[str]
+) -> list[str]:
+    """What G1's trace in Jaeger lacks (UC-035 step 5, UC-040 BR-013, validation 1); [] when complete."""
+    spans = trace.get("spans", [])
+    by_id = {s["spanID"]: s for s in spans}
+    coordinator = [s for s in spans if _service(trace, s) == COORDINATOR_SERVICE_NAME]
+    agent = [s for s in spans if _service(trace, s) == AGENT_SERVICE]
+    problems: list[str] = []
+
+    # UC-035 step 5: the root span named after the mode, its phases, one span per player.
+    roots = [
+        s
+        for s in coordinator
+        if s["operationName"] == GAME_ROOT_SPAN and _tags(s).get("game.id") == game_id
+    ]
+    if len(roots) != 1:
+        problems.append(f"{len(roots)} root spans {GAME_ROOT_SPAN!r} for {game_id}")
+    root_id = roots[0]["spanID"] if roots else ""
+    names = {s["operationName"] for s in coordinator}
+    missing = [phase for phase in GAME_PHASES if phase not in names]
+    if missing:
+        problems.append(
+            f"missing phases {missing} (coordinator spans: {sorted(names)})"
+        )
+    player_serials = sorted(
+        _tags(s).get("player.serial", "")
+        for s in coordinator
+        if s["operationName"] == "player_lifecycle"
+        or s["operationName"].startswith("player: ")
+    )
+    if player_serials != sorted(serials):
+        problems.append(
+            f"player spans for {player_serials}, expected one each for {sorted(serials)}"
+        )
+
+    # UC-040 BR-013: the rules-path agent.decide sits under agent.signal_received,
+    # a remote child of the coordinator's game_cycle ...
+    decide = by_id.get(row["span_id"])
+    signal = by_id.get(_parent_id(decide)) if decide else None
+    cycle = by_id.get(_parent_id(signal)) if signal else None
+    chain = [
+        f"{s['operationName']}@{_service(trace, s)}" if s else "missing"
+        for s in (decide, signal, cycle)
+    ]
+    if chain[1:] != [
+        "agent.signal_received@agent",
+        f"game_cycle@{COORDINATOR_SERVICE_NAME}",
+    ]:
+        problems.append(f"decide chain {chain}")
+    # ... and each of its agent.decision spans keeps its Link to the game root.
+    for decision_id in row["decision_ids"]:
+        refs = by_id.get(decision_id, {}).get("references", [])
+        if not any(
+            r.get("refType") == "FOLLOWS_FROM" and r.get("spanID") == root_id
+            for r in refs
+        ):
+            problems.append(
+                f"agent.decision {decision_id} has no Link to the game root {root_id}: {refs}"
+            )
+
+    # Validation 1: one game, one context; every agent span names G1 and kind real.
+    for s in agent:
+        tags = _tags(s)
+        name = s["operationName"]
+        if ("game.id" in tags or name in AGENT_SPANS_WITH_GAME_ID) and tags.get(
+            "game.id"
+        ) != game_id:
+            problems.append(f"{name} {s['spanID']} game.id={tags.get('game.id')!r}")
+        if ("game.kind" in tags or name in AGENT_SPANS_WITH_GAME_KIND) and tags.get(
+            "game.kind"
+        ) != "real":
+            problems.append(f"{name} {s['spanID']} game.kind={tags.get('game.kind')!r}")
+    if not agent:
+        problems.append("no agent spans in the game trace")
+    return problems
 
 
 # --------------------------------------------------------------------------- #
@@ -305,6 +442,8 @@ def _applied_types(collector: GameEventCollector, game_id: str) -> list[str]:
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-041", flow="main", steps=[1, 2, 5, 6], tc="TC-007")
 @pytest.mark.uc("UC-040", flow="main", steps=[13], tc="TC-007")
+# BR-013: the rules-path clause (signal_received under game_cycle) and the
+# decision's Link to the game root; the remote path and the effect span are not run.
 @pytest.mark.uc("UC-040", br=["BR-013"], tc="TC-007")
 @pytest.mark.uc("UC-035", flow="main", steps=[3, 5], tc="TC-007")
 async def test_tc007_closed_loop_through_collector_and_jaeger(
@@ -403,31 +542,20 @@ async def test_tc007_closed_loop_through_collector_and_jaeger(
             f"Step 5 / validation 1: decide row {row}"
         )
 
-        # Step 8 (Jaeger): agent.decide -> agent.signal_received -> (remote) game_cycle
-        # of the coordinator, all in G1's trace (UC-040 BR-013, UC-035 step 5).
-        chain: list[str] = []
+        # Step 8 (Jaeger): G1's whole trace: root span, phases and player spans
+        # (UC-035 step 5); agent.decide -> agent.signal_received -> remote game_cycle,
+        # and the decisions' Link to the game root (UC-040 BR-013); every agent span
+        # names G1 and kind real (validation 1).
+        problems: list[str] = []
 
-        def _under_game_cycle() -> bool:
-            trace = _trace(row["trace_id"])
-            by_id = {s["spanID"]: s for s in trace.get("spans", [])}
-            decide = by_id.get(row["span_id"])
-            signal = by_id.get(_parent_id(decide)) if decide else None
-            cycle = by_id.get(_parent_id(signal)) if signal else None
-            chain[:] = [
-                f"{s['operationName']}@{_service(trace, s)}" if s else "missing"
-                for s in (decide, signal, cycle)
-            ]
-            return (
-                cycle is not None
-                and signal["operationName"] == "agent.signal_received"
-                and _service(trace, signal) == AGENT_SERVICE
-                and cycle["operationName"] == "game_cycle"
-                and _service(trace, cycle) == COORDINATOR_SERVICE_NAME
+        def _trace_complete() -> bool:
+            problems[:] = _game_trace_problems(
+                _trace(row["trace_id"]), row, game_id_done, serials
             )
+            return not problems
 
-        assert await async_poll_until(_under_game_cycle, JAEGER_TIMEOUT), (
-            f"Step 8: in trace {row['trace_id']} the decide chain is {chain}, expected "
-            f"agent.decide@agent -> agent.signal_received@agent -> game_cycle@{COORDINATOR_SERVICE_NAME}"
+        assert await async_poll_until(_trace_complete, JAEGER_TIMEOUT), (
+            f"Step 8 / validation 1: trace {row['trace_id']} of {game_id_done}: {problems}"
         )
     finally:
         await collector.stop()
