@@ -298,7 +298,7 @@ DISCONNECTED controllers show nothing. There is no dedicated "connection flash":
 |---|---|---|---|
 | `COUNTDOWN` | FFA-style games (`feedback_manager.py`): Red, then Yellow, then Green, each phase `countdown_phase_duration_ms` (game flag, default 750 ms; 0 skips the countdown). Team games (`teams_base.py`): the player's team colour, then a White flash, then Green, each phase `countdown_phase_duration_ms` with a loud beep, plus a start sound at the end | none | base colour |
 | `PLAYER_WARNING` | White flash, 200 ms (`WARNING_FLASH_MS`) | 100 intensity, 200 ms (`WARNING_VIBRATION_MS`) | base colour |
-| `PLAYER_DEATH` | Red held 300 ms (`DEATH_RED_HOLD_MS`), then fade to black over 700 ms (`DEATH_FADE_MS`); also ends the agent shield | 255 intensity, 150 ms (`DEATH_RUMBLE_MS`) | base colour becomes Black |
+| `PLAYER_DEATH` | Red held 300 ms (`DEATH_RED_HOLD_MS`), then fade to black over 700 ms (`DEATH_FADE_MS`); also ends the agent shield | 255 intensity, 1000 ms (`DEATH_RUMBLE_MS`; the warning rumbles 100 for 200 ms) | base colour becomes Black |
 | `PLAYER_RESPAWN` | White (spawn protection) | none | base colour becomes White |
 | `WINNER_RAINBOW` | Rainbow for the `game` flag winner duration (default 3000 ms); ends the agent shield | none | base colour |
 | `ADMIN_ENTER` | White flash 600 ms, then solid White | none | base colour White |

@@ -402,7 +402,7 @@ class TestEffectCancellation:
 class TestWarningAndDeathEffectTimings:
     """UC-030 steps 7 and 9, controller side: the warning and death effects use fixed timings.
 
-    Warning: 200 ms white flash and 200 ms rumble. Death: 150 ms rumble, 300 ms red, 700 ms fade.
+    Warning: 200 ms white flash and 200 ms rumble. Death: 1000 ms rumble, 300 ms red, 700 ms fade.
     """
 
     @pytest.fixture
@@ -434,13 +434,75 @@ class TestWarningAndDeathEffectTimings:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-030", flow="main", steps=[9])
     async def test_death_is_rumble_red_hold_then_fade_for_the_fixed_times(self, feedback_manager, recorded):
-        """UC-030 step 9: 150 ms rumble, 300 ms red hold, 700 ms fade."""
+        """UC-030 step 9: 1000 ms rumble, 300 ms red hold, 700 ms fade."""
         await feedback_manager._effect_player_death("test_ctrl")
 
-        recorded["vibration"].assert_awaited_once_with("test_ctrl", 255, 150)
+        recorded["vibration"].assert_awaited_once_with("test_ctrl", 255, 1000)
         recorded["led"].assert_awaited_once_with("test_ctrl", Colors.Red.value)
         recorded["sleep"].assert_awaited_once_with(pytest.approx(0.3))
         recorded["effect"].assert_awaited_once_with(
             "test_ctrl", "fade_out", Colors.Red.value, 700, 1, Colors.Black.value
         )
         assert feedback_manager.base_colors["test_ctrl"] == Colors.Black.value
+
+
+class TestDeathRumbleRunsToTheEnd:
+    """UC-030 step 9 (#1832): the ~1 s death rumble is distinct from the warning and is not cut short.
+
+    Real timers on purpose: the claim is about wall-clock duration of the backend rumble.
+    """
+
+    @pytest.fixture
+    def rumble_log(self, mock_backend):
+        """Record (monotonic time, intensity) for every backend rumble write."""
+        import time
+
+        log: list[tuple[float, int]] = []
+        original = mock_backend.set_rumble
+
+        async def recording(serial, intensity):
+            log.append((time.monotonic(), intensity))
+            return await original(serial, intensity)
+
+        mock_backend.set_rumble = recording
+        return log
+
+    @staticmethod
+    def _rumble_span(log):
+        start = next(t for t, i in log if i > 0)
+        stop = next(t for t, i in log if i == 0)
+        return stop - start
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[9])
+    async def test_death_rumble_is_about_one_second_and_longer_than_warning(self, feedback_manager, rumble_log):
+        import services.controller_manager.feedback_manager as fm
+
+        assert fm.DEATH_RUMBLE_MS >= 1000
+        assert fm.DEATH_RUMBLE_MS > 4 * fm.WARNING_VIBRATION_MS
+
+        await feedback_manager.handle_game_effect("test_ctrl", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        await asyncio.sleep(1.2)
+
+        assert self._rumble_span(rumble_log) == pytest.approx(1.0, abs=0.15)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[9])
+    async def test_rumble_survives_fade_lobby_reset_and_game_end(self, feedback_manager, mock_backend, rumble_log):
+        """The red hold, the fade, a base-colour reset and the end of the game do not stop the rumble.
+
+        Game end: the game coordinator closes the gameplay stream and the menu resets the LED
+        (apply_base_color). The rumble stop timer lives in the feedback manager, not in the
+        stream, so the dead controller keeps rumbling until its 1 s are over.
+        """
+        await feedback_manager.handle_game_effect("test_ctrl", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        # The handler returns after the 300 ms red hold; the 700 ms fade is then running.
+        await asyncio.sleep(0.2)
+        await feedback_manager.apply_base_color("test_ctrl", (0, 60, 76), label="game end")
+        await feedback_manager.cancel_if_cancellable("test_ctrl")
+        await asyncio.sleep(0.2)
+        assert mock_backend.rumble["test_ctrl"] == 255, "rumble must still run at ~0.7 s"
+
+        await asyncio.sleep(0.5)
+        assert mock_backend.rumble["test_ctrl"] == 0
+        assert self._rumble_span(rumble_log) == pytest.approx(1.0, abs=0.15)

@@ -60,7 +60,7 @@ _winner_rainbow_duration_ms: int | None = None
 # Warning and death effect timings (milliseconds), UC-030 steps 7 and 9.
 WARNING_FLASH_MS = 200
 WARNING_VIBRATION_MS = 200
-DEATH_RUMBLE_MS = 150
+DEATH_RUMBLE_MS = 1000  # ~1 s, distinct from the 200 ms warning: with the LED off the rumble is the signal (#1832)
 DEATH_RED_HOLD_MS = 300
 DEATH_FADE_MS = 700
 
@@ -451,7 +451,7 @@ class FeedbackManager(ControllerEffectsBase):
     async def _effect_player_death(self, serial: str, trace_context: Context | None = None, **_kwargs) -> None:
         """Red + vibrate, then fade to off to signal player is out.
 
-        Improved transition: short sharp rumble + solid red briefly + fade to black.
+        Transition: ~1 s rumble + solid red briefly + fade to black (LED stays off afterwards).
         This feels more immediate and satisfying than slow blinking.
         """
         rumble_ms = DEATH_RUMBLE_MS
@@ -466,7 +466,8 @@ class FeedbackManager(ControllerEffectsBase):
             await self.end_shield_effect(serial, restore=False)
             await self.cancel_effect(serial)
 
-            # Short, sharp rumble (default 150ms feels snappier than 250ms)
+            # Long rumble (~1 s, UC-030 step 9): clearly different from the 200 ms warning. It runs on its
+            # own stop timer, so the red hold, the fade and the end of the game do not cut it short.
             span.add_event("vibration", {"intensity": 255, "duration_ms": rumble_ms})
             await self.set_vibration(serial, 255, rumble_ms)
 
