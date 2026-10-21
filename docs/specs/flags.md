@@ -508,7 +508,8 @@ authorization this is a convention the agent's code keeps, not a check.
 | `windows` | overlay | experiment+arm or real | same shape as the default variant | no | W3 experiment writer; W5 promotion |
 | `tempo_schedule_mode` | state | game | declared variants | no | `test_intervention_smoke.py` |
 | `tempo.ramp_up_seconds`, `tempo.ramp_down_seconds` | overlay | stack | 0.1 to 10 | no | operator on stage (#1833); read at each ramp start, so a write applies from the next tempo change |
-| `shield.activation`, `shield.charge_expiry_seconds` | overlay | stack | declared variants / 0 to 120 | no | operator on stage (#1837); read at each grant, so a write applies from the next `grant_shield` and never changes a held charge; never written by the agent (C-034, `services/agent/agent_set_never_written_c034_test.go`) |
+| `shield.activation` | overlay | stack | `instant`, `trigger` | no | operator on stage (#1837); read at each grant, so a write applies from the next `grant_shield` and never changes a held charge; never written by the agent (C-034, `services/agent/agent_set_never_written_c034_test.go`) |
+| `shield.charge_expiry_seconds` | overlay | stack | 0 to 120 | no | operator on stage (#1837); read at each grant, fixed per charge; never written by the agent (C-034) |
 
 The rows with scope `experiment+arm` are the **experiment catalog** (#1092, #1415): the gameplay calibration
 flags an experiment may change. Capacity (`max_concurrent_games`, `max_shadow_games`), lobby and ceremony
