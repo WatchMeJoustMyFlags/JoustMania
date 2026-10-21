@@ -708,7 +708,13 @@ func TestExperimentLoop_CompletedGrace_NoReleaseWhenConcluded(t *testing.T) {
 	ctx := context.Background()
 
 	fake := newFakeAfter()
-	loop.afterFunc = fake.schedule
+	// Keep each scheduled callback too, so the test can fire the grace even after
+	// the fold cancelled it (a Stop that lost the race against the timer).
+	var lateGrace []func()
+	loop.afterFunc = func(d time.Duration, fn func()) func() bool {
+		lateGrace = append(lateGrace, fn)
+		return fake.schedule(d, fn)
+	}
 	loop.expDefaults.CompletedGrace = 60 * time.Second
 
 	id, err := loop.registry.Declare(experiment.Intent{
@@ -740,9 +746,16 @@ func TestExperimentLoop_CompletedGrace_NoReleaseWhenConcluded(t *testing.T) {
 	}
 	folded := cv.Arms[rec.arm].Count
 
-	// The grace timer fires LATE (after the legitimate conclude already won the
-	// race). It must be a pure no-op: no extra release, the sample stays counted.
-	fake.fireAll()
+	// The fold cancels the pending grace (#1405), so no timer is left to fire.
+	if fired := fake.fireAll(); fired != 0 {
+		t.Fatalf("grace timers fired after the fold = %d, want 0 (the fold cancels it)", fired)
+	}
+	// The grace timer fires LATE anyway (its Stop lost the race against the timer
+	// goroutine). It must be a pure no-op: no extra release, the sample stays counted.
+	if len(lateGrace) != 1 {
+		t.Fatalf("scheduled grace timers = %d, want 1", len(lateGrace))
+	}
+	lateGrace[0]()
 	cv2, _ := loop.registry.CompactView(id)
 	if cv2.Arms[rec.arm].Count != folded {
 		t.Fatalf("late grace timer changed the folded sample count (%d → %d): it must be a no-op",
