@@ -287,7 +287,7 @@ func (d *dossierReader) dossier(id string) (*dossierView, error) {
 		Notes:      notesFromEvents(events),
 		EventCount: summary.EventCount,
 	}
-	view.Decision = decisionLabel(summary.Verdict, summary.Status)
+	view.Decision = decisionLabel(summary.Verdict, summary.Status, events)
 	view.ConcludedAt = concludedAt(events)
 	view.TraceHints = traceHints{
 		ExperimentID: intent.ExperimentID,
@@ -423,14 +423,23 @@ func gameIDs(games []gameView) []string {
 // promotion was applied or reverted); one whose promotion could not act ends
 // `discarded` and reads "discarded", and an aborted experiment reads "aborted"
 // whatever its verdict. "inconclusive" maps to "refined": the experiment did not
-// clear the bar and feeds the next thesis. Other terminal statuses (a journal left
-// in `concluded` / `promoting`) keep the verdict-derived label.
-func decisionLabel(v *journal.Verdict, status string) string {
-	if !isTerminalStatus(status) {
+// clear the bar and feeds the next thesis. A `done` experiment whose journal holds a
+// promotion event with outcome `reverted` (the kill switch or the watch undid the
+// real default) reads "reverted"; its status stays `done` (#1869). `promoting` is
+// the live step while a promotion runs (the registry journals it right after
+// `concluded`, UC-043 step 8), so it reads empty until a terminal status lands
+// (#1869). `concluded` keeps the verdict label: it is journaled and left behind
+// only for an instant before `promoting`, and the journal cannot tell a legacy
+// journal stuck there from a live one.
+func decisionLabel(v *journal.Verdict, status string, events []journal.Event) string {
+	if !isTerminalStatus(status) || status == string(experiment.StatusPromoting) {
 		return ""
 	}
 	switch status {
 	case string(experiment.StatusDone):
+		if promotionReverted(events) {
+			return "reverted"
+		}
 		return "promoted"
 	case string(experiment.StatusAborted):
 		return "aborted"
@@ -451,6 +460,18 @@ func decisionLabel(v *journal.Verdict, status string) string {
 	default:
 		return "refined"
 	}
+}
+
+// promotionReverted reports whether the journal records a promotion that was
+// applied and then reverted (kill switch, watch): any promotion event whose outcome
+// is `reverted`.
+func promotionReverted(events []journal.Event) bool {
+	for _, e := range events {
+		if e.Kind == journal.KindPromotion && e.Promotion != nil && e.Promotion.Outcome == experiment.PromotionReverted {
+			return true
+		}
+	}
+	return false
 }
 
 // isTerminalStatus reports whether a journal status string is a terminal lifecycle
