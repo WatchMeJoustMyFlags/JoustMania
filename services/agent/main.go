@@ -953,7 +953,12 @@ func main() {
 		// game's finalized fitness into the #965 FitnessStore BEFORE the retro reads it
 		// back by game_id (SetFitnessLookup) — making experiment.fitness available on the
 		// agent.llm.retro span at retro time for an experiment arm. The chain is one
-		// synchronous call on this goroutine, so "record-then-read" is guaranteed. The
+		// synchronous call on this goroutine, so "record-then-read" holds only when the
+		// runner's terminal outcome is already in. Since #1405 a bound experiment game
+		// folds when BOTH its telemetry end and the runner outcome are in (UC-046
+		// BR-016): when the telemetry end comes first, the hook parks it and the fold
+		// (and the finalized fitness) lands later, from onGameTerminal, AFTER the retro
+		// has read; that retro then carries no experiment.fitness. The
 		// experiment hook is nil when the loop is disabled (chainGameEnd skips it — zero
 		// overhead in the default path); for an experiment-bound shadow game it folds the
 		// fitness into the cohort journal via Registry.ConcludeGame, and for every
