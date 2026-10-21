@@ -61,6 +61,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         # Phase 57: Initialize backend (platform-agnostic)
         self.backend = create_backend()
+        self._backend_closed = False
         logger.info(f"Using controller backend: {self.backend.__class__.__name__}")
 
         self.tracked_controllers: dict[str, dict] = {}  # serial -> controller info
@@ -853,6 +854,17 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 proc.join(timeout=2.0)
 
         await self.discovery_loop.wait_stopped(timeout_seconds=5.0)
+
+    async def close_backend(self):
+        """Release the HID backend (handles, routes, info series). Idempotent.
+
+        Call after the gRPC server stopped: streams still use the backend until
+        then (#1726).
+        """
+        if self._backend_closed:
+            return
+        self._backend_closed = True
+        await self.backend.shutdown()
 
 
 # ---------------------------------------------------------------------------

@@ -222,6 +222,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 - Pattern games (#1258, FR-103): a stream whose explicit filter names pattern controllers runs at the archetype's pinned `stream_rate_hz` and ignores the flag override; a controller's frame index advances once per frame delivered on its owning stream (the first explicit stream that names it), in `_build_gameplay_update` next to the hook that drains the #926 death latch.
 - `UnstableAdapter` (≈ 8.3 Hz, 10 % drops) is registered alongside python for the rollout demo; real adapters are used directly (the ChaosAdapter wrapper, D-C2, was removed in #1322).
 - Mock serials `MOCK%04d`; reserved mock controllers are hidden from the roster.
+- Shutdown (SIGTERM / SIGINT, `server.py` `shutdown_services`): the discovery loop stops, the gRPC servers drain (5 s grace), then `MultiplexerBackend.shutdown()` runs exactly once: adapter handles closed, routes and LED / rumble state dropped, `controller_backend_info` / `controller_adapter_info` series removed (#1726; the other per-controller series end with the process). The real HID adapters' `close_all()` joins the stream thread and calls `CloseAll` synchronously, so the stop may block the loop for about 2 s; a failed `CloseAll` is only logged. LEDs are not switched off by the backend; the controllers time out on their own.
 
 #### Backend layering
 

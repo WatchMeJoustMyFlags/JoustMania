@@ -119,11 +119,9 @@ class ControllerBackend(ABC):
         """
         Cleanup resources and shutdown backend.
 
-        This should:
-        - Turn off controller LEDs
-        - Stop rumble
-        - Close connections
-        - Release hardware resources
+        This should close connections and release hardware resources. It does
+        not switch the controller LEDs off or send a rumble stop; the controllers
+        time out on their own (docs/specs/services.md, controller-manager shutdown).
         """
         pass
 

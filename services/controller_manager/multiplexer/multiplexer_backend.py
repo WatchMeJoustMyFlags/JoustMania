@@ -160,7 +160,14 @@ class MultiplexerBackend(ControllerBackend):
             self._last_led_update.clear()
             self._led_failures.clear()
             self._effect_active.clear()
+        # Remove the controller_*_info series too, so a stopped service does not
+        # leave its controllers counted (#1726). Under the lock: a worker set(1)
+        # is skipped by _update_controller_metrics once the table is empty.
         with self._info_series_lock:
+            for serial, backend_name in self._last_backend.items():
+                metrics.controller_backend_info.remove(serial, backend_name)
+            for serial, hci in self._last_adapter.items():
+                metrics.controller_adapter_info.remove(serial, hci)
             self._last_backend.clear()
             self._last_adapter.clear()
 
