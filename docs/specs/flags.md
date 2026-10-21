@@ -72,7 +72,7 @@ effect only on the next start of the flag service (`scripts/flags.sh restart`).
 |---|---|---|---|
 | `game` | Human admin | menu admin mode (persisted admin values); agent experiment writer (experiment-arm values of the experiment catalog only); autonomous promotion (`real` overlay, gated, off in the stock stack) | per deployment (baseline); experiment arm values until teardown; promotion until the flag service restarts |
 | `user` | Human admin | menu (`current_game`, `game_instructions`) | per deployment |
-| `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays); menu admin writes `interventions_allowed` only (persisted) | per deployment (baseline); overlays until cleared or the flag service restarts |
+| `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays, except the decision backend and model flags that `agent-backend.sh` persists, #1682); menu admin writes `interventions_allowed` only (persisted) | per deployment (baseline); overlays until cleared or the flag service restarts |
 | `interventions` | Agent | agent action sink only, game-scoped (values and event lists) | per game: dropped when the game ends (UC-053 BR-003) |
 | `rollout` | Operator + agent | operator: `target_backend`, `strategy`, `remediation_allowed`; agent: `current_controller_count` | per rollout |
 | `controller` | Operator | baseline edits; connect-proxy `/canary/*` through the flag service | per deployment (baseline); canary overlays until cleared |
@@ -333,8 +333,10 @@ Telemetry export knobs for the Python services and rust-hid. Targeting keys on t
 | `grpc_rpc_spans` | bool | enabled=true, disabled=false | `enabled` = true | N | all Python gRPC services: lib/grpc_tracing.py:95 (<- :203,:262,...); rust-hid: services/rust-hid/src/feature_flags.rs:62 (<- services/rust-hid/src/grpc_tracing.rs:105) | manual edit only | live (per RPC) |
 | `otel_bsp_schedule_delay_millis` | int | fast=500, default=5000 | `default` = 5000 | Y(service) | all Python services: lib/telemetry.py:125 (<- :147) | manual edit only | startup |
 | `flagservice.propagation_probe` | string | none="" | `none` = "" | N | no service; the flag-service integration tests (`tests/service/test_flag_service_sync.py`) and the NFR-050 measurement (#1413) | the flag service (`PUT /observability/flagservice.propagation_probe`, registry §13.5) | live |
+| `log_level` | string | debug="debug", info="info", warning="warning", error="error" | `info` = "info" | N (the `service` context variable is passed, so a stack overlay or a future rule can target one service) | all Python services: lib/log_level.py `flag_level` (<- lib/otel_logging.py `init_logging`); agent: services/agent/flags/loglevel.go `LogLevelFollower` | the flag service (stack overlay, registry §13.5) | live: re-applied on provider ready, on every configuration change and by a 5 s safety-net poll (#1788); the flag service itself keeps `LOG_LEVEL` (§15.2) |
+| `debug` | bool | on=true, off=false | `off` = false | N | pairing daemon: services/pairing_daemon/psmove_pairing/config.py `is_debug` (tracebacks on logged errors; while on, the daemon's log level is DEBUG) | the flag service (stack overlay, registry §13.5) | live (per use) |
 
-**Traceability:** FR-080 to FR-082, NFR-022 / UC-035 / `lib/otel_metrics.py`, `lib/telemetry.py`, `lib/grpc_tracing.py`, `services/rust-hid/src/feature_flags.rs` / `lib/tests/`.
+**Traceability:** FR-080 to FR-082, NFR-022, FR-150, FR-151 / UC-035 / `lib/otel_metrics.py`, `lib/telemetry.py`, `lib/grpc_tracing.py`, `lib/log_level.py`, `services/agent/flags/loglevel.go`, `services/rust-hid/src/feature_flags.rs` / `lib/tests/`, `services/agent/flags/loglevel_test.go`.
 
 ## 11. Flags without an effective reader
 
@@ -384,6 +386,14 @@ menu admin) is written to the service's own state file and restored at start (FR
 written without it (a stage script, a test) stays in memory. `no` = a write asking to persist is `400 malformed`.
 Every value not persisted lives in memory only (architecture note §10.1).
 
+**Persisted vs overlay (who writes which, #1682):** a persisted value is an **operator choice** (the menu admin,
+`agent-backend.sh` for the decision backend and model); an in-memory overlay is a **stage beat** or a test
+(`talk-stage.sh`, the dry-run scripts, fixtures). A persisted write replaces an in-memory overlay of the same
+flag. An overlay written over a persisted value is temporary: it wins while it lasts, and a flag-service restart or
+a reboot drops it and brings the persisted value back. `talk-stage.sh reset` therefore also deletes the persisted
+decision backend and model (`DELETE …?persist=true`), and `talk-preflight.sh` WARNs while a remote backend is
+persisted.
+
 **Bounds** are the declared variants of the baseline file unless a range, a payload schema or `free string` is
 given. Ranges are inclusive and pinned to the reader's own clamp (`difficulty_handlers.py` factors 0.5 to 2.0, `lifecycle_handlers.py` partial shield and soft penalty, `games/base.py` ramp 60 s), so the registry never rejects a value the game would apply.
 `free string` accepts any string value up to 512 characters (a declared variant name still selects that
@@ -429,11 +439,12 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | `interventions_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh` |
 | `experiments_enabled`, `experiment_dynamic_enabled` | overlay | stack | `on`, `off` | no | `agent-dryrun-enable.sh`, `talk-stage.sh` |
 | `rollout_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh` |
-| `decision.backend` | overlay | stack | `rules`, `claude`, `openai`, `jev` | no | `agent-backend.sh`, `talk-stage.sh` |
+| `decision.backend` | overlay | stack | `rules`, `claude`, `openai`, `jev` | **yes** (the operator's backend choice survives a flag-service restart, C-018, #1682) | `agent-backend.sh` (persisted), `talk-stage.sh` |
 | `decision.act_confidence_threshold`, `decision.jev.act_confidence_threshold` | overlay | stack | declared variants | no | `agent-backend.sh`, `talk-stage.sh` |
 | `decision.capture_content` | overlay | stack | `on`, `off` | no | `agent-backend.sh` |
-| `decision.claude.model`, `decision.openai.reasoning_effort`, `decision.jev.model` | overlay | stack | declared variants | no | `agent-backend.sh` |
-| `decision.openai.model` | overlay | stack | free string | no | `agent-backend.sh`, integration fixtures (`configure_agent`, fake model name) |
+| `decision.claude.model`, `decision.jev.model` | overlay | stack | declared variants | **yes** (selected together with the backend, #1682) | `agent-backend.sh` (persisted) |
+| `decision.openai.reasoning_effort` | overlay | stack | declared variants | no | `agent-backend.sh` |
+| `decision.openai.model` | overlay | stack | free string | **yes** (selected together with the backend, #1682) | `agent-backend.sh` (persisted), integration fixtures (`configure_agent`, fake model name) |
 | `decision.openai.base_url` | overlay | stack | declared variants (credential-bearing URL: never a free string) | no | integration fixtures (`configure_agent`, the `ci/` `fake` variant) |
 | `decision.min_interval_ms`, `decision.openai.timeout_ms` | overlay | stack | int 100 to 60000 | no | integration fixtures (`configure_agent`) |
 | `llm.max_requests_per_minute` | overlay | stack | declared variants (incl. `stage`) | no | `talk-stage.sh` |
@@ -508,12 +519,14 @@ the flag service restarts; the durable change is the promotion PR (FR-064, C-007
 
 ### 13.5 Read-only sets
 
-`system` has no runtime-mutable flag, and `observability` only the propagation probe below: everything else changes
+`system` has no runtime-mutable flag, and `observability` only the propagation probe and the two logging flags below: everything else changes
 by a file edit and a restart. Several of their flags are read only at process start anyway (§1.3).
 
 | Set | Key | Kind | Scope | Bounds | Persist | Today's writer |
 |---|---|---|---|---|---|---|
 | observability | `flagservice.propagation_probe` | overlay | stack | free string | no | flag-service integration tests (#1408; NFR-050 measurement #1413); read by no service |
+| observability | `log_level` | overlay | stack | declared variants | no | operator scripts and the integration fixtures (#1788); read by every Python service and the agent |
+| observability | `debug` | overlay | stack | declared variants | no | operator scripts and the integration fixtures (#1788); read by the pairing daemon |
 
 **Traceability:** FR-018, FR-132, FR-133, FR-134, FR-136, FR-137, FR-138, C-008, C-030, C-032, C-033 / UC-053 /
 planned `services/flag-service/registry.yaml` / planned tests in #1409.
@@ -584,9 +597,9 @@ Surfaces (#818):
 **Traceability:** C-008 / UC-012, UC-040 / `services/menu/handlers/admin.py`,
 `services/game_coordinator/interventions.py`.
 
-## 15. Planned: env-to-flag migration (#1788)
+## 15. Env-to-flag migration (#1788)
 
-Rows of the env-to-flag migration (#1788, FR-150 to FR-152, C-034). Each row replaces one environment variable that was read once at startup. The `agent` rows are implemented (in `services/flagd/agent.json`, §3 and §13.2); the `observability` rows are still planned (status Open, not in the flag files yet). Rules for every row:
+Rows of the env-to-flag migration (#1788, FR-150 to FR-152, C-034). Each row replaces one environment variable that was read once at startup. The `agent` rows are implemented (in `services/flagd/agent.json`, §3 and §13.2); the `observability` rows `log_level` and `debug` are implemented too (in `services/flagd/observability.json`, §10 and §13.5). Rules for every row:
 
 - **Read at use time** (each call, tick or log record), not at startup.
 - **Flag first, env fallback for one release** (FR-151): the flag always wins when flagd resolves it. Only when the flag cannot be resolved (flagd unreachable, flag missing, no first sync yet) the deprecated env var is used when set, else the compiled default. The flag default equals today's default, so an unset env and an unreachable flagd behave as before.
@@ -602,13 +615,12 @@ Rows of the env-to-flag migration (#1788, FR-150 to FR-152, C-034). Each row rep
 | `promotion.rewatch_interval_seconds` (`agent`) | `AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS` | int | `short`=30, `default`=60 (`promote.DefaultRewatchInterval`), `long`=120 | `default` = 60 | operator | flag, env, default | Implemented (#1788) |
 | `promotion.rewatch_timeout_seconds` (`agent`) | `AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS` | int | `short`=1800, `default`=3600 (`promote.DefaultRewatchTimeout`), `long`=7200 | `default` = 3600 | operator | flag, env, default | Implemented (#1788) |
 | `promotion.revert_cooldown_seconds` (`agent`) | `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS` | int | `short`=300, `default`=600 (`promote.DefaultRevertCooldown`), `long`=1200 | `default` = 600 | operator | flag, env, default | Implemented (#1788) |
-| `log_level` (`observability`, targeting on `service`) | `LOG_LEVEL` (Python services, flag service, agent) | string | `debug`, `info`, `warning`, `error` | `info` (Python and Go both default to INFO) | operator | flag, env, `info` | Open (#1788) |
-| `flag_eval_startup_grace_seconds` (`observability`) | `FLAG_EVAL_STARTUP_GRACE_SECONDS` (`lib/flag_eval_visibility.py:56`) | int | `default`=15 | `default` = 15 | operator | flag, env, default | Open (#1788) |
-| `debug` (`observability`) | `DEBUG` (`services/pairing_daemon/psmove_pairing/config.py:9`, `"1"` = on) | bool | `on`, `off` | `off` | operator | flag, env, `off` | Open (#1788); see "Open points" |
+| `log_level` (`observability`, `service` passed as context) | `LOG_LEVEL` (Python services, agent) | string | `debug`, `info`, `warning`, `error` | `info` (Python and Go both default to INFO) | operator | flag, env, `info` | Implemented (#1788) |
+| ~~`flag_eval_startup_grace_seconds`~~ | `FLAG_EVAL_STARTUP_GRACE_SECONDS` (`lib/flag_eval_visibility.py:56`) | - | - | env, default 15 | - | - | Not migrated: it only exists to silence flag-provider-not-ready noise while flagd has not synced yet, so it cannot be read from flagd (see §15.2) |
 
-### 15.1 Planned registry entries (extends §13.2 and §13.5)
+### 15.1 Registry entries (extends §13.2 and §13.5)
 
-Each key above is added to the mutable-flag registry as a stack-scoped `overlay`, `Persist` no, with the bounds of its variants (seconds: int within the variants' declared range; `inference.model` a free string like `decision.openai.model`), writer: operator scripts and the integration fixtures. The agent writes none of them. The `agent` rows are in the registry (§13.2: `inference.timeout_seconds` int 30 to 120, `effect.window_seconds` 10 to 40, `promotion.rewatch_interval_seconds` int 30 to 120, `promotion.rewatch_timeout_seconds` int 1800 to 7200, `promotion.revert_cooldown_seconds` int 300 to 1200, `inference.model` free string, `inference.effort` its declared variants); the `observability` rows are read-only baseline until their registry rows exist.
+Each key above is added to the mutable-flag registry as a stack-scoped `overlay`, `Persist` no, with the bounds of its variants (seconds: int within the variants' declared range; `inference.model` a free string like `decision.openai.model`), writer: operator scripts and the integration fixtures. The agent writes none of them. The `agent` rows are in the registry (§13.2: `inference.timeout_seconds` int 30 to 120, `effect.window_seconds` 10 to 40, `promotion.rewatch_interval_seconds` int 30 to 120, `promotion.rewatch_timeout_seconds` int 1800 to 7200, `promotion.revert_cooldown_seconds` int 300 to 1200, `inference.model` free string, `inference.effort` its declared variants); the `observability` rows (`log_level`, `debug`) are in the registry too (§13.5).
 
 ### 15.2 Not migrated, and why (inventory 2026-10-20)
 
@@ -618,15 +630,19 @@ Each key above is added to the mutable-flag registry as a stack-scoped `overlay`
 | Secrets (`ANTHROPIC_API_KEY`, `JEV_API_KEY`, `DECISION_OPENAI_API_KEY`, `GITHUB_TOKEN`) | Flags are not secret (C-016). |
 | `OTEL_*`, deploy identity (`HOSTNAME`, `SERVICE_VERSION`, `ENVIRONMENT`) | SDK convention and identity. |
 | `FLAG_SERVICE_*` | The flag service cannot depend on itself. |
+| `LOG_LEVEL` of the flag service | The flag service serves the flag files to flagd and starts before it; it has no flag client, and reading its own store would make the log level depend on the component whose startup it must log. Stays env-only (not migrated, #1788). |
+| `FLAG_EVAL_STARTUP_GRACE_SECONDS` | Not migrated (#1788). The grace window suppresses the provider-not-ready fallback warnings and `flag_eval_errors_total` while flagd has not delivered its first sync; reading it from a flag would evaluate a flag inside the very failure path it silences (recursion through `record_flag_fallback`) and always be unresolved during the window. Stays env-only, default 15 s (`lib/flag_eval_visibility.py`). |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS`, `AGENT_ROLLOUT_DWELL_SECONDS` | Parked rollout (UC-050 / UC-051); revisit when un-parked. |
 | `AGENT_INFERENCE_BACKEND` | Selects the text backend at startup (builds clients); not in the #1788 candidate list. |
 | `AGENT_PROBE_DECISIONS` | Startup-read demo override, not migrated: it swaps the rules engine for `decision.NewProbeRules`, which emits at most one synthetic `noop` decision per probe interval for the demo/audit trace (`services/agent/main.go:590`, `:688`). It narrows what the agent does, so it is not an agent-limiting setting (C-034); env-only, unset = off. |
 | `AGENT_AUTONOMOUS_ENABLED`, `AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_CODE_IMPROVEMENT_TARGET` | Limit the agent: stay env ceilings (C-034, FR-152). Combination with the existing human-owned flags: autonomous promotion = env AND `code_improvement.mode`=`autonomous` AND `enabled`; code changes = env AND `enabled`; target = `local` unless env and `code_improvement.target` both say `github`. Unset env = closed. A missing flag or lost sync resolves to its code default (`enabled` off, mode `issue`, target `local`), so they fail closed. No new flag. |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | Stays an env ceiling; the existing `llm.max_requests_per_minute` (§3) can only lower it: effective = `min(env, flag)`, unset env = no ceiling (FR-152, NFR-011). A lost sync resolves the flag to its default 6 (not the lowest variant 3). The flag is operator-written (§13.2), never agent-written. |
 
-### 15.3 Open points
+### 15.3 Resolved points
 
-- `debug` and `log_level` for the pairing daemon: it runs host-networked and may have no flagd client; if so it stays env-only and its rows are dropped at implementation.
-- The Python log level is applied by `logging.basicConfig` at import; use-time reads need a periodic or per-record level refresh. Implementation detail for the logging PR.
+- Resolved (#1788): the pairing daemon is host-networked but reaches flagd on `127.0.0.1:8015` and already evaluates the `system` and `controller` sets, so `debug` and `log_level` are migrated for it. While `debug` is on, the daemon's root log level is DEBUG (the former `DEBUG` env behaviour), lowered below the `log_level` flag value.
+- Resolved (#1788), floor and OTLP: when `debug` is on, the pairing daemon's floor lowers the OTLP log handler to DEBUG too, so DEBUG records now also go out over OTLP (before, the handler stayed at `LOG_LEVEL`, default INFO).
+- Resolved (#1788), sync loss asymmetry: when the observability sync is lost, Python keeps the last resolved level while the provider is STALE, but the agent re-resolves on every refresh and drops to the `LOG_LEVEL` env level (default info) until the flag resolves again, logging "log level changed" at each flip.
+- Resolved (#1788): the Python log level is applied at import by `logging.basicConfig` from the deprecated `LOG_LEVEL` (flagd is not reachable yet). `lib/log_level.py` re-applies the resolved level (flag, else env, else INFO) to the root logger and the OTLP handler when the observability provider turns ready, on every configuration change and every 5 s; the agent does the same through a `slog.LevelVar` (`services/agent/flags/loglevel.go`).
 
-**Traceability:** FR-150 to FR-152, C-034, NFR-011 / UC-045 (planned note) / `services/agent/main.go`, `lib/otel_logging.py` (OTLP handler level), `lib/flag_eval_visibility.py`; the Python services read `LOG_LEVEL` themselves in `services/game_coordinator/server.py:21`, `services/menu/server.py:22`, `services/audio/server.py:33`, `services/python_hid/server.py:31`, `services/controller_manager/server.py:39`.
+**Traceability:** FR-150 to FR-152, C-034, NFR-011 / UC-045 (planned note) / `services/agent/main.go`, `lib/otel_logging.py` (OTLP handler level), `lib/flag_eval_visibility.py`; the Python services read `LOG_LEVEL` themselves in `services/game_coordinator/server.py:22`, `services/menu/server.py:23`, `services/audio/server.py:34`, `services/python_hid/server.py:32`, `services/controller_manager/server.py:40`.

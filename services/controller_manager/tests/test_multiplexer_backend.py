@@ -242,6 +242,22 @@ class TestControllerInfoSeriesRemoval:
         assert "AA:AA" not in mux._last_backend
         assert "AA:AA" not in mux._last_adapter
 
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_shutdown_removes_info_series(self, mock_metrics):
+        """shutdown() removes the backend / adapter info series of every tracked serial (#1726)."""
+        a1 = _make_adapter("mock", serials=["AA:AA"])
+        a1.get_adapter_for_serial.return_value = "hci0"
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+        mux._update_controller_metrics(dict(mux._serial_to_adapter))
+
+        await mux.shutdown()
+
+        mock_metrics.controller_backend_info.remove.assert_called_once_with("AA:AA", "mock")
+        mock_metrics.controller_adapter_info.remove.assert_called_once_with("AA:AA", "hci0")
+
 
 class TestMultiplexerRouting:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")

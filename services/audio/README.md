@@ -20,7 +20,7 @@ The Audio Service handles all sound and music playback for JoustMania. It manage
 Plays a one-shot sound effect.
 
 ```bash
-grpcurl -plaintext -d '{"file_path": "sounds/death.wav", "volume": 1.0, "priority": "HIGH"}' \
+grpcurl -plaintext -d '{"file_path": "sounds/death.ogg", "volume": 1.0, "priority": "HIGH"}' \
   localhost:50056 joustmania.audio.AudioService/PlaySound
 ```
 
@@ -28,7 +28,7 @@ grpcurl -plaintext -d '{"file_path": "sounds/death.wav", "volume": 1.0, "priorit
 Plays background music with optional looping and tempo control.
 
 ```bash
-grpcurl -plaintext -d '{"file_pattern": "music/game_*.wav", "loop": true, "tempo": 1.0}' \
+grpcurl -plaintext -d '{"file_pattern": "music/game_*.ogg", "loop": true, "tempo": 1.0}' \
   localhost:50056 joustmania.audio.AudioService/PlayMusic
 ```
 

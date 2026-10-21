@@ -35,7 +35,8 @@ The brief gives you the issue, scope and decisions. Everything else is here: do 
    git fetch origin && git worktree add .worktrees/<slug> -b <type>/<slug> origin/main
    ```
    Work with absolute paths inside it; confirm with `git -C <wt> branch --show-current`.
-3. **Spec first (AIUP, CLAUDE.md).** When observable behaviour changes:
+3. **Spec first (AIUP, CLAUDE.md).** If the brief names a plan file (`<scratchpad>/<N>-plan.md`), read it first
+   (`.claude/agents/implementer.md`, "Plan first"). When observable behaviour changes:
    - update the UC / FR / NFR text and `docs/specs/*` (flags, telemetry, services, decide contract) in the same PR;
    - new IDs take the next free number: `grep` docs AND `gh pr list --state open --search "UC-0xx"` / the open
      PR diffs for collisions; when agents run in parallel on one UC, reserve A-/BR- ranges in the brief;

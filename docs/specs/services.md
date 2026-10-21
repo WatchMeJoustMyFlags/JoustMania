@@ -36,8 +36,8 @@ flowchart LR
 ```
 
 Dependencies (start-up, from `depends_on` and code): audio, python-hid, rust-hid and flagd have no application
-dependencies; the controller manager waits for flagd and for rust-hid and python-hid to be healthy (compose
-`depends_on`) and talks to both HID adapters over gRPC; the game coordinator calls the controller manager and
+dependencies; the controller manager waits for flagd and rust-hid to be healthy and for python-hid only when the `python-hid` profile is active (compose
+`depends_on`, `required: false`, #1371) and talks to both HID adapters over gRPC; the game coordinator calls the controller manager and
 audio, and the menu calls the controller manager, the game coordinator and audio (code only: in compose the
 coordinator and the menu wait only for flagd); flagd waits for the flag service to be healthy and restarts with it; the agent depends only on flagd, and it and rust-hid wait in the background for flagd's first sync rather than at start ([flags.md §1.1](flags.md#11-clients), #1713)
 (and calls the game coordinator and the mock control API to run shadow games, the named exception in C-005).
@@ -217,11 +217,12 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 - Backend set from the `backend` flag at **startup** (default `rust`, also the fallback when the flag is unavailable; `mock` in the CI flag set; variants naming `python` are opt-in and need the `python-hid` profile, UC-002 BR-003); `mock` is always added with zero controllers. Per controller, one adapter wins: per-serial `bluetooth_backend` targeting, then the rollout router, then the flag default (`multiplexer/multiplexer_backend.py:235-291`).
 - Loops: state 100 Hz, discovery 1 Hz (full enumeration at most every 0.5 s, forced every 10 s), LED batch 20 Hz (send on change or 2 s keep-alive), battery metrics every 30 s, `controller.bluetooth_health` span ~1 Hz (`discovery_loop.py`).
-- Gameplay stream rate: client-requested, overridden by `game_loop.update_frequency_hz` (clamp 1..100), fallback 30 Hz. An observer stream (one that never sent colours) runs at its requested rate capped at the flag rate (UC-035 BR-006).
+- Gameplay stream rate: client-requested, overridden by `game_loop.update_frequency_hz` (clamp 1..100), fallback 60 Hz (`runtime_config.py` default). An observer stream (one that never sent colours) runs at its requested rate capped at the flag rate (UC-035 BR-006).
 - Observer streams never consume game signals (UC-035 BR-006): `_build_gameplay_update` drains disconnects (#580), health counters and the mock death latch (#926) only for game streams (those that sent colours, tracked in `_game_stream_serials`), also while their alive filter is empty; an observer stream (one that never sent colours) gets frames with no `disconnects` and no `health`.
 - Pattern games (#1258, FR-103): a stream whose explicit filter names pattern controllers runs at the archetype's pinned `stream_rate_hz` and ignores the flag override; a controller's frame index advances once per frame delivered on its owning stream (the first explicit stream that names it), in `_build_gameplay_update` next to the hook that drains the #926 death latch.
 - `UnstableAdapter` (≈ 8.3 Hz, 10 % drops) is registered alongside python for the rollout demo; real adapters are used directly (the ChaosAdapter wrapper, D-C2, was removed in #1322).
 - Mock serials `MOCK%04d`; reserved mock controllers are hidden from the roster.
+- Shutdown (SIGTERM / SIGINT, `server.py` `shutdown_services`): the discovery loop stops, the gRPC servers drain (5 s grace), then `MultiplexerBackend.shutdown()` runs exactly once: adapter handles closed, routes and LED / rumble state dropped, `controller_backend_info` / `controller_adapter_info` series removed (#1726; the other per-controller series end with the process). The real HID adapters' `close_all()` joins the stream thread and calls `CloseAll` synchronously, so the stop may block the loop for about 2 s; a failed `CloseAll` is only logged. LEDs are not switched off by the backend; the controllers time out on their own.
 
 #### Backend layering
 
@@ -339,12 +340,12 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 - Voices are `aaron` and `ivy` (flag `menu_voice`, default `ivy`, event-refreshed). A bare id resolves to `<mode>/vox/<voice>/<id>.ogg` (or `<mode>/sounds/`), a `/vox/` path without a voice gets the current voice.
 - Volume: one master volume (`SetVolume`, 0.0 to 1.0, clamped) scales music and effects; the music player starts at 0.7. `PlayMusic.tempo` is clamped to 0.5 to 2.0 (`MusicPlayer.set_ratio`); `ChangeTempo` transitions over the requested duration without clamping (`transition_ratio`), and during playback a ratio of 0.5 or less, or above 2.0, plays at 1.0 (`_clamp_ratio`, `music_player.py:110-114`); the game uses 1.0 and 1.3 (UC-031 step 3). Tempo needs Linux with ALSA (`sys.platform`); elsewhere music plays at fixed speed.
 - Not supported: layered music, crossfades, ducking, text-to-speech, input, device selection through RPC (the card is chosen by `ALSA_CARD`).
-- Environment: `ALSA_CARD` (`auto` or a number), `AUDIO_PORT` (50056), `AUDIO_ASSETS_DIR` (default `services/audio/assets`; used for the music glob and sound path resolution, while the effect/voice registry always reads the packaged assets), `LOG_LEVEL`; `play_audio` and `menu_voice` are flags ([flags.md](flags.md)). The compose service maps `/dev/snd` and the host `audio` group (GID 29).
+- Environment: `ALSA_CARD` (`auto` or a number), `AUDIO_PORT` (50056), `AUDIO_ASSETS_DIR` (default `services/audio/assets`; used for the music glob and sound path resolution, while the effect/voice registry always reads the packaged assets), `LOG_LEVEL` (deprecated fallback of the `log_level` flag, #1788); `play_audio` and `menu_voice` are flags ([flags.md](flags.md)). The compose service maps `/dev/snd` and the host `audio` group (GID 29).
 - Sound ids resolve through the registry built from the asset directories plus aliases (`services/audio/sound_catalog.py`): `agent_cue` → `Joust/sounds/beep_loud.ogg` (the lobby ready ping), `shield_up` → `Commander/sounds/power_ready.ogg` (an alias names an exact, voice-independent asset path). An id not in the registry logs a WARNING and falls back to the Joust vox path (UC-040 BR-007). `python -m services.audio.sound_catalog <id>` exits 0 when the id resolves to a file (used by `scripts/talk-preflight.sh`).
 
 ### agent
 
-- Environment: see `docker-compose.yml:667-765`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214), the text-backend tuning, effect window and promotion timers (#1788, [flags.md §15](flags.md#15-planned-env-to-flag-migration-1788); their env vars are deprecated fallbacks). Still env: API keys, `AGENT_INFERENCE_BACKEND` / `_BASE_URL`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (a ceiling), `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
+- Environment: see `docker-compose.yml:667-765`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214), the text-backend tuning, effect window and promotion timers (#1788, [flags.md §15](flags.md#15-env-to-flag-migration-1788); their env vars are deprecated fallbacks). Still env: API keys, `AGENT_INFERENCE_BACKEND` / `_BASE_URL`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (a ceiling), `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
 - Writes: `interventions.json` (action sink), `rollout.json` (`current_controller_count`), `game.json` (experiment targeting; autonomous real default when enabled). Never `agent.json` (code guard in `experiment/gate.go`; the mount is read-write).
 - Persistent volume `agent-experiments` for the experiment journal and autonomous-revert snapshots.
 - Pattern games (#1258, UC-046): the one-shot runner reads `SHADOW_GAME_ARCHETYPE` and `SHADOW_GAME_SEED`; for a pattern game the runner sends no `SimulateMovement` / `SimulateDeath` and force-ends the game at the pinned safety cap `experiment.max_game_seconds` (outcome `timeout`).
@@ -356,10 +357,10 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 |---|---|---|---|
 | `AGENT_LISTEN_ADDR` | `:4317` | yes | OTLP gRPC receiver listen address |
 | `AGENT_HEALTH_ADDR` | `:13134` | yes | HTTP health listen address |
-| `FLAGD_HOST` / `FLAGD_PORT` | `flagd` / `8015` | `FLAGD_HOST` only | flagd sync endpoint (in-process resolver, selectors `flagSetId=agent` and `flagSetId=rollout`, #1713). Compose leaves `FLAGD_PORT` unset so an image pinned before #1713 keeps its own default (8013, RPC) |
+| `FLAGD_HOST` / `FLAGD_PORT` | `flagd` / `8015` | `FLAGD_HOST` only | flagd sync endpoint (in-process resolver, selectors `flagSetId=agent`, `flagSetId=rollout` and `flagSetId=observability` for the `log_level` follower, #1713, #1788). Compose leaves `FLAGD_PORT` unset so an image pinned before #1713 keeps its own default (8013, RPC) |
 | `FLAGD_OFREP_URL` | `http://$FLAGD_HOST:8016` | no | flagd OFREP endpoint for the pattern-game flag digest |
 | `FLAG_SERVICE_URL` | `http://flag-service:8070` | yes | flag service every agent writer calls (interventions, rollout, experiment arms, promotion) |
-| `LOG_LEVEL` | `info` | yes | log verbosity |
+| `LOG_LEVEL` | `info` | yes | deprecated fallback of the `log_level` flag (flags.md §15, FR-151, #1788): the flag wins once flagd resolves it, the env level applies at startup and while the flag is unresolved |
 | `OTEL_SERVICE_NAME` / `OTEL_SERVICE_NAMESPACE` | `agent` / `infrastructure` | yes | self-telemetry identity; the name also drives the self-ingestion skip |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_RESOURCE_ATTRIBUTES`, `SERVICE_VERSION`, `DEPLOYMENT_ENVIRONMENT` | unset / unset / `0.0.0-dev` / `development` | first, second, third | self-telemetry export (no-op without an endpoint) and resource attributes |
 | `AGENT_INFERENCE_BACKEND` | `stub` | yes | text backend for the retro and proposer: `claude` or the stub; not used for in-game decisions ([decide-contract.md](decide-contract.md) 10.1) |
@@ -511,7 +512,7 @@ Exactly one of `variant` and `value`. The scope must match the registry row's sc
 `game+serial` flag needs `game_id` and `serial`, a `stack` flag takes no scope (or `game_kind: "real"` for a
 promotion), an `experiment+arm` flag needs both ids. `"persist": true` is allowed only on a stack overlay of a
 flag whose registry row says `persist: yes`, and never with `ttl_seconds`; without it a write stays in memory
-(the stage scripts, the harness and the tests never persist; the menu admin does).
+(the stage scripts, the harness and the tests never persist; the menu admin and `agent-backend.sh` for the decision backend and model do, #1682; the persisted-vs-overlay rule is in [flags.md §13](flags.md#13-mutable-flag-registry)).
 
 **`POST /{flagSetId}/{flagName}` body** (event flags: `end_game`, `eliminate_player`, `revive_player`,
 `audio_cue`, `controller_effect`): `{"scope": {"game_id": "..."}, "payload": {"serial": "MOCK0003"}, "writer",

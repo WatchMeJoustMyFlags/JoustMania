@@ -33,9 +33,26 @@ def _find_mock_backend(backend):
     return None
 
 
+async def shutdown_services(controller_servicer, server, mock_server=None):
+    """Stop discovery, drain the gRPC servers, then release the HID backend.
+
+    The backend closes last, and even when a stop raises: streams use it until
+    the server is down (#1726).
+    """
+    logger.info("Shutting down ControllerManager server...")
+    try:
+        await controller_servicer.shutdown()
+        await server.stop(grace=5)
+        if mock_server:
+            await mock_server.stop(grace=5)
+    finally:
+        await controller_servicer.close_backend()
+
+
 async def serve(port=50052):
     """Start the ControllerManager async gRPC server."""
     # Configure logging with environment variable support
+    # Bootstrap level only; the log_level flag takes over once synced (lib/log_level.py, #1788)
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),
@@ -164,13 +181,7 @@ async def serve(port=50052):
 
     await shutdown_event.wait()
 
-    logger.info("Shutting down ControllerManager server...")
-    await controller_servicer.shutdown()
-    await server.stop(grace=5)
-
-    # Stop mock server if running
-    if mock_server:
-        await mock_server.stop(grace=5)
+    await shutdown_services(controller_servicer, server, mock_server)
 
 
 if __name__ == "__main__":

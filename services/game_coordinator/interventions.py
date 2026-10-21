@@ -655,8 +655,8 @@ class InterventionManager:
                 every intervention flag against each session with a per-session
                 ``{gameId, targetingKey=serial}`` context and applies/publishes
                 on THAT session. A flag with no ``gameId`` targeting rule (the
-                agent writes none) resolves to the same value for every live
-                session; one-shot flags are per-game event lists, so each
+                baseline default, or a flag nothing has targeted) resolves to the
+                same value for every live session; one-shot flags are per-game event lists, so each
                 session reads only its own events (FR-137, BR-011).
         """
         self._publish = event_publisher
@@ -1097,8 +1097,8 @@ class InterventionManager:
         every flag with that session's ``{gameId, targetingKey}`` context and
         applying/publishing on that session.
 
-        A flag with no ``gameId`` targeting rule (the agent writes none) resolves
-        to the same value for every live session, primary and shadow alike.
+        A flag with no ``gameId`` targeting rule (the baseline default; agent
+        writes are game-scoped, FR-136) resolves to the same value for every live session, primary and shadow alike.
         """
         self._refresh_budget()
         self._pass_allow_snapshot = None

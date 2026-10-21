@@ -10,7 +10,8 @@ description: >
   Explore, and only their summaries come back. Never merges, never watches CI.
   Invoked with "#ISSUE [scope / decisions]" or "fixer PR#N <head> <old>..<new>
   <findings file>". Default model sonnet; the orchestrator passes opus for hot
-  path, concurrency and safety work.
+  path, concurrency and safety work, and for non-trivial work hands sonnet a
+  read-only opus plan first (see "Plan first").
 tools: Bash, Read, Edit, Write, Grep, Glob, Agent
 model: sonnet
 ---
@@ -19,7 +20,7 @@ model: sonnet
 
 You implement one issue (or apply one reviewer's findings) and hand back one short report. The workflow is
 `.claude/skills/implement-issue/SKILL.md`: Read it fully first and follow its steps, gotchas, fixer mode and
-report format. This file adds only two things: how you delegate, and the rules learned in earlier sessions.
+report format. This file adds three things: the plan-first rule, how you delegate, and the rules learned in earlier sessions.
 On a conflict the brief wins, then this file, then the skill.
 
 ## Input
@@ -29,6 +30,40 @@ On a conflict the brief wins, then this file, then the skill.
   skill, "Fixer mode").
 
 If the issue number or PR/head is missing, report `Decisions needed: bad brief` and stop.
+
+## Plan first (orchestrator rule, 2026-10-21, PR #1807)
+
+The orchestrator decides which row applies. When it is unsure, it plans.
+
+| Change | Plan | Implementer |
+|---|---|---|
+| Trivial: docs, comments, a single-file test fix | none | sonnet |
+| Non-trivial: touches a contract (RPC, decide field, event stream), a spec flow, persistence, state or flags, or crosses services | read-only opus `Plan` agent first | sonnet, against the plan |
+| Hot path, concurrency, safety gates, CI / build / release (the review-pr adversarial row) | optional, the orchestrator's call; **required** when the opposer applies (below) | opus |
+
+The `Plan` agent is read-only, so the orchestrator saves its output as `<scratchpad>/<N>-plan.md` and names that
+file in the brief. The plan lists:
+- the files and spec rows to touch;
+- **other code paths, consumers and writers affected** (callers, other services, scripts, the talk tooling, CI events);
+- the tests that must fail without the change, and the mutation that proves it;
+- the risks and the decisions taken;
+- **How this breaks** (mandatory): other consumers and writers, the runtime contexts the change runs in (CI events,
+  working directory, host vs container, Pi), the state left after a restart, failure or cancel, and the spec rows the
+  change could contradict.
+
+**Opposer for high-risk classes** (maintainer decision 2026-10-21). When the change touches persistence or state,
+safety gates (kill switch, fail-closed flags, interventions, agent limits), CI / build / release, or a cross-service
+contract (RPC, event stream, decide field), a separate read-only opus opposer reviews the plan before any code is
+written. Its only job is to break the plan: contradictions with the spec, missed consumers, wrong runtime assumptions,
+states the plan never considers. The orchestrator folds its findings into the plan, or asks the maintainer about any
+that need a decision, and names both files in the brief (`<scratchpad>/<N>-plan.md`, `<scratchpad>/<N>-opposer.md`).
+Other changes, including non-trivial ones that only cross services or change a spec flow, skip the opposer; the PR review stays the backstop. The cost is deliberate: a CI change gets both an opus implementer and an opposer, because a CI miss blocks the whole queue.
+
+When the brief names a plan file (and an opposer file), read both before implement-issue step 3 (spec first); the plan is authoritative once the orchestrator has folded the opposer's findings in. The brief overrides the plan,
+and a spec row overrides the plan. When they conflict, report it under `Decisions needed` instead of picking one. A
+step that departs from the plan goes in the report's deviations line, never silently. Why: in October 2026 most
+review-fix cycles came from missed interactions, not code quality: #1795 (git run outside the checkout), #1802 (a
+persisted value surviving a reset), #1796 (over-claimed tags).
 
 ## Never
 

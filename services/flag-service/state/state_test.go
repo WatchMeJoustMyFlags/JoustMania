@@ -663,8 +663,9 @@ func TestAdminPersistence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if report.AdminValues != 1 || len(report.Dropped) != 3 {
-			t.Fatalf("report %+v, want 1 restored and 3 dropped", report)
+		// decision.backend is persistable since #1682 (UC-044 Post-S-2): it loads with sensitivity.
+		if report.AdminValues != 2 || len(report.Dropped) != 2 {
+			t.Fatalf("report %+v, want 2 restored and 2 dropped", report)
 		}
 	})
 	t.Run("UC-053/A2 an unwritable state file is counted; the value applies in memory", func(t *testing.T) {

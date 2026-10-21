@@ -122,7 +122,14 @@ def test_restart_keeps_admin_settings_and_drops_the_rest(fresh_stack, flag_servi
 
     # Step 1: the host's persisted setting, a stage overlay and a live game.
     flag_service.put("game", "sensitivity", variant="slow", persist=True, writer="menu")
-    flag_service.put("agent", "decision.backend", variant="claude", writer="stage")
+    # The persisted backend and model: the same PUT body (`"persist": true`) that
+    # agent-backend.sh sends through scripts/flagservice.py; that the script sends
+    # it is asserted in scripts/tests/test-agent-backend.sh (#1682).
+    flag_service.put("agent", "decision.claude.model", variant="sonnet", persist=True, writer="stage")
+    flag_service.put("agent", "decision.backend", variant="claude", persist=True, writer="stage")
+    # A stage overlay that is not persisted, away from its baseline `on` (it must be
+    # gone after the restart).
+    flag_service.put("agent", "decision.capture_content", variant="off", writer="stage")
     flag_service._ok(
         "PUT",
         f"/games/{game_id}",
@@ -161,7 +168,7 @@ def test_restart_keeps_admin_settings_and_drops_the_rest(fresh_stack, flag_servi
         state = flag_service.state()
         assert state["epoch"] and state["epoch"] != epoch_before, state
         assert (flag_service.get("game", "sensitivity").get("admin_value") or {}).get("variant") == "slow"
-        assert not flag_service.get("agent", "decision.backend").get("stack_overlay")
+        assert not flag_service.get("agent", "decision.capture_content").get("stack_overlay")
         assert not any(g["game_id"] == game_id for g in flag_service.games())
 
         # Step 6: flagd serves the baseline plus the admin value again (NFR-052: 5 s target,
@@ -170,11 +177,16 @@ def test_restart_keeps_admin_settings_and_drops_the_rest(fresh_stack, flag_servi
             "flagd did not serve the persisted value after the restart"
         )
         assert game.get_integer_value("sensitivity", -1, werewolf) == 3
-        # UC-044 Post-S-2: the switch is not persisted; flagd serves the shipped baseline
-        # decision.backend=rules again.
-        assert poll_until(lambda: agent.get_string_value("decision.backend", "", None) == "rules", RECOVERY_SECONDS), (
-            "flagd did not serve the baseline decision.backend=rules after the restart"
+        # UC-044 Post-S-2 (#1682): the persisted backend and model are served again,
+        # the non-persisted capture_content overlay is gone (checked on the flag service).
+        assert poll_until(lambda: agent.get_string_value("decision.backend", "", None) == "claude", RECOVERY_SECONDS), (
+            "flagd did not serve the persisted decision.backend=claude after the restart"
         )
+        assert agent.get_string_value("decision.claude.model", "", None) == variant_value(
+            "agent", "decision.claude.model", "sonnet"
+        )
+        capture = flag_service.get("agent", "decision.capture_content")
+        assert capture["effective_default"] == capture["baseline_default"] == "on", capture
         print(f"\nTC-019 recovery: {time.monotonic() - started:.1f} s, outage statuses {sorted(set(outage_statuses))}")
 
 

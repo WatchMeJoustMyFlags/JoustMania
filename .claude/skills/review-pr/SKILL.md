@@ -28,6 +28,10 @@ Review, do not fix. Never push to the PR branch.
 
 The orchestrator picks the model from this table; when you are the wrong depth for the PR, say so in one line.
 
+**Plan check.** When the brief names a plan file (`<scratchpad>/<N>-plan.md`, see `.claude/agents/implementer.md` "Plan first"),
+also check the PR against it (the plan as folded after the opposer, `<scratchpad>/<N>-opposer.md`, when one exists). Report a listed affected path the PR ignores, a listed test that is missing, or an
+unexplained deviation as a finding.
+
 ## Hard rules
 
 - Use a detached worktree and remove it at the end. Fetch into a per-PR ref, never `FETCH_HEAD`: parallel reviewers share it, and one review then checks out another PR's head.

@@ -182,6 +182,7 @@ class FlagPlane:
     def start(self) -> None:
         fh.copy_ci_flag_dir(self.flag_dir)
         self._rewrite_variants()
+        self._agent_debug_logs()
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         binary = build_flag_service()
         self.flag_service = ManagedProcess(
@@ -203,6 +204,14 @@ class FlagPlane:
         )
         self.flag_service.start()
         self._start_flagd()
+
+    def _agent_debug_logs(self) -> None:
+        """The agent logs at debug in this tier (the shadow-experiment tests read its debug
+        lines): the ``log_level`` flag wins over LOG_LEVEL since #1788, so target it here."""
+        path = self.flag_dir / "observability.json"
+        doc = json.loads(path.read_text())
+        doc["flags"]["log_level"]["targeting"] = {"if": [{"==": [{"var": "service"}, "agent"]}, "debug", "info"]}
+        path.write_text(json.dumps(doc, indent=2) + "\n")
 
     def _rewrite_variants(self) -> None:
         for (flag_set, flag, variant), value in self.variant_values.items():

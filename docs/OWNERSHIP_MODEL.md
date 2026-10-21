@@ -92,7 +92,7 @@ periods). Sections 4–5 define those compositions precisely.
 | `user` | Human admin | Menu admin mode → `FlagServiceWriter` (persisted admin values) | Menu / audio (volumes, voice, instructions) | Per-deployment |
 | `interventions` | Agent | Agent ActionSink → `writer.go` (game-scoped values and events) | Coordinator `InterventionManager`, live | One game: dropped when the game ends |
 | `rollout` | Operator (human) for the ladder; agent for `current_controller_count` | Agent `actions/rollout_writer.go` (gated by `rollout_enabled`, `remediation_allowed`); operator via `scripts/flags.sh` | Controller manager rollout router, agent infra loop | In memory until the flag service restarts |
-| `agent` | Operator (human) | Operator / stage scripts (`scripts/flags.sh`, `agent-killswitch.sh`, `agent-backend.sh`, `talk-stage.sh`: in-memory overlays) **and** menu admin mode → `FlagServiceWriter` (`interventions_allowed` only, persisted, #819) | Agent + coordinator policy gates | Baseline per deployment; overlays until restart |
+| `agent` | Operator (human) | Operator / stage scripts (`scripts/flags.sh`, `agent-killswitch.sh`, `talk-stage.sh`: in-memory overlays; `agent-backend.sh`: backend and model persisted, #1682) **and** menu admin mode → `FlagServiceWriter` (`interventions_allowed` only, persisted, #819) | Agent + coordinator policy gates | Baseline per deployment; overlays until restart |
 
 The `agent` set holds the agent's own governor — `enabled`, `decision.backend`, `objectives`,
 `interventions_allowed`, and the `policy.*` budgets. As of #819, **menu admin mode

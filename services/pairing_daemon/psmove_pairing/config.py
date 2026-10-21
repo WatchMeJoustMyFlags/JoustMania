@@ -6,7 +6,6 @@ import os
 logger = logging.getLogger("psmove-pairing")
 
 # Static configuration from environment
-DEBUG = os.getenv("DEBUG", "0") == "1"
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
 OTEL_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 
@@ -24,6 +23,8 @@ _DEFAULT_BLUEZ_RESTART_MODE = "never"
 # system: pairing.* intervals; controller: bluetooth_backend routing
 _system_client = None
 _controller_client = None
+# observability: the `debug` flag (#1788)
+_observability_client = None
 
 
 def init_performance_flags() -> None:
@@ -34,7 +35,7 @@ def init_performance_flags() -> None:
     startup. If flagd is unreachable, flag evaluation silently falls back
     to defaults.
     """
-    global _system_client, _controller_client
+    global _system_client, _controller_client, _observability_client
     try:
         from lib.feature_flags import get_flag_client, init_flag_domain
 
@@ -42,11 +43,37 @@ def init_performance_flags() -> None:
         _system_client = get_flag_client("system")
         init_flag_domain("controller")
         _controller_client = get_flag_client("controller")
-        logger.info("Flag domains (system, controller) initialized for pairing daemon")
+        init_flag_domain("observability")
+        _observability_client = get_flag_client("observability")
+        logger.info("Flag domains (system, controller, observability) initialized for pairing daemon")
     except Exception as e:
         _system_client = None
         _controller_client = None
+        _observability_client = None
         logger.warning(f"Could not initialize feature flags, using defaults: {e}")
+
+
+def env_debug() -> bool:
+    """The deprecated DEBUG env var ("1" = on); the fallback of the `debug` flag."""
+    return os.getenv("DEBUG", "0") == "1"
+
+
+def is_debug() -> bool:
+    """Whether to attach tracebacks to logged errors (#1788, flags.md §15).
+
+    Read at use time. The `debug` flag wins when flagd resolves it; only when it
+    cannot be resolved (no client, flagd unreachable, flag missing) the deprecated
+    DEBUG env var is used (unset = off).
+    """
+    env_value = env_debug()
+    if _observability_client is None:
+        return env_value
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        return _observability_client.get_boolean_value("debug", env_value, EvaluationContext())
+    except Exception:
+        return env_value
 
 
 def get_poll_interval() -> int:
