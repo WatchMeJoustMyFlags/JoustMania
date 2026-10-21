@@ -278,7 +278,7 @@ maximum game age (1 h). In-memory, lost on restart.
 | registered_at | Registration time | DateTime | | Not Null |
 
 **Constraints:** at most 64 KiB of values per scope (NFR-051); a write naming a game without a scope is rejected
-(`game_not_live`).
+(`game_not_live`). A second registration of the same game id updates the record and keeps `registered_at`; per-player values of serials it no longer lists are dropped (UC-053 A13).
 
 ### FLAG_OVERLAY
 
