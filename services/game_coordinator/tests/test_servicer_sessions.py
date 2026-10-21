@@ -1267,6 +1267,35 @@ class TestShadowGameGovernance:
         assert registered_at_stop == [False]
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-053", flow="main", steps=[7])
+    async def test_shutdown_sends_end_queued_while_joining_before_stop(self, servicer):
+        """#1849: a game that ends while shutdown joins its thread queues its
+        flag-service end; the lifecycle flushes it before it stops."""
+        gid, session = await _start_running(servicer, _config())
+        order = []
+
+        async def join_thread(*_args, **_kwargs):
+            servicer._on_session_game_ended(session)  # the game thread's end hook
+            order.append("joined")
+
+        async def flush(*_args, **_kwargs):
+            order.append("flush")
+
+        async def stop():
+            order.append("stop")
+
+        with (
+            patch.object(session, "join_thread", join_thread),
+            patch.object(servicer.flag_service, "end", lambda game_id: order.append(f"end:{game_id}")),
+            patch.object(servicer.flag_service, "flush", flush),
+            patch.object(servicer.flag_service, "stop", stop),
+        ):
+            async with asyncio.timeout(5.0):
+                await servicer.shutdown()
+
+        assert order == [f"end:{gid}", "joined", "flush", "stop"]
+
+    @pytest.mark.asyncio
     async def test_agent_origin_start_is_shadow_even_when_idle(self, servicer):
         """An AGENT start is ALWAYS shadow, even with NO primary live (idle)."""
         with _NO_THREAD:

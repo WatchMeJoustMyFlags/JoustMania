@@ -441,3 +441,31 @@ async def test_another_calls_success_does_not_reset_the_failure_throttle(caplog)
             assert await lc._call("end", "DELETE", "/games/g") is True
             clock["now"] += 2.0
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+@pytest.mark.uc("UC-053", flow="main", steps=[7])
+@pytest.mark.asyncio
+async def test_flush_sends_queued_end_before_stop(service):
+    """#1849: flush() returns once the queued end reached the service."""
+    service.delay = 0.2
+    lc = FlagServiceLifecycle(FlagServiceClient(service.url, timeout=2.0), lambda: [], instance="h/1")
+    lc.start()
+    await wait_for(lambda: service.paths("PUT") == ["/coordinators/h%2F1/games"])
+    lc.end(GAME.game_id)
+    assert await lc.flush(limit_s=3.0) is True
+    assert service.completed[-1] == ("DELETE", "/games/game_0a1b2c3d4e5f")
+    await lc.stop()
+
+
+@pytest.mark.uc("UC-053", flow="A8")
+@pytest.mark.asyncio
+async def test_flush_is_bounded_when_the_service_is_unreachable():
+    """#1849: an unreachable flag service costs shutdown at most the flush timeout."""
+    lc = FlagServiceLifecycle(FlagServiceClient("http://127.0.0.1:9"), lambda: [], instance="h/1")
+    lc._call = lambda *_a, **_k: asyncio.sleep(30)  # every request hangs
+    lc.start()
+    lc.end(GAME.game_id)
+    started = time.monotonic()
+    assert await lc.flush(limit_s=0.3) is False
+    assert time.monotonic() - started < 1.0
+    await lc.stop()

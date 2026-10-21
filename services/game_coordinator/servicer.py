@@ -1157,7 +1157,8 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
     # ------------------------------------------------------------------
 
     async def shutdown(self):
-        """Shutdown the game coordinator: join all session threads."""
+        """Shutdown the game coordinator: join all session threads, then flush and
+        stop the flag-service lifecycle (so ends queued while joining are sent)."""
         logger.info("Shutting down GameCoordinator...")
 
         # Let preemptions whose real start was cancelled finish first (#1816), so
@@ -1165,11 +1166,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         pending_preemptions = [task for _shadow, task in self._shadow_preemptions.values()]
         if pending_preemptions:
             await asyncio.wait(pending_preemptions, timeout=3)
-
-        try:
-            await self.flag_service.stop()
-        except Exception as e:
-            logger.debug(f"Flag service lifecycle stop failed: {e}")
 
         # Stop intervention flag subscription (#730)
         try:
@@ -1192,3 +1188,14 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 await session.join_thread()
             except Exception as e:
                 logger.debug(f"Session {session.game_id} join failed: {e}")
+
+        # Last: the joined sessions' end hooks have queued their flag-service
+        # ends; give them a bounded chance to be sent, then stop (#1849).
+        try:
+            await self.flag_service.flush()
+        except Exception as e:
+            logger.debug(f"Flag service lifecycle flush failed: {e}")
+        try:
+            await self.flag_service.stop()
+        except Exception as e:
+            logger.debug(f"Flag service lifecycle stop failed: {e}")
