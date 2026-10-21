@@ -31,7 +31,7 @@ var boundsSource = map[string]struct {
 	decision.InterventionAdjustGlobalDifficulty:  {flagGlobalDifficultyFactor, neutralDefault, defaultGlobalDifficulty, false},
 	decision.InterventionSetPlayerHandicap:       {flagPlayerHandicapFactor, neutralDefault, defaultPlayerHandicap, false},
 	decision.InterventionGrantShield:             {flagShieldSeconds, neutralNone, defaultShieldSeconds, false},
-	decision.InterventionPartialShield:           {flagPartialShieldSeconds, neutralNone, partialShieldDefaultSeconds(defaultPartialShield), false},
+	decision.InterventionToughnessBoost:          {flagToughnessBoostSeconds, neutralNone, toughnessBoostDefaultSeconds(defaultToughnessBoost), false},
 }
 
 // TestDecideBounds_IntegerFlags: int-valued flags round in ResolveMagnitude.
@@ -47,7 +47,7 @@ func TestDecideBounds_IntegerFlags(t *testing.T) {
 	}
 }
 
-func partialShieldDefaultSeconds(directive string) float64 {
+func toughnessBoostDefaultSeconds(directive string) float64 {
 	v, _ := strconv.ParseFloat(strings.SplitN(directive, ":", 2)[0], 64)
 	return v
 }
@@ -116,7 +116,7 @@ func TestDecideBounds_MatchWriterDefaultsAndFlagVariants(t *testing.T) {
 }
 
 // variantNumber reads a numeric variant, or the seconds of a "<seconds>:<boost>"
-// partial_shield directive.
+// toughness_boost directive.
 func variantNumber(v any) (float64, bool) {
 	switch x := v.(type) {
 	case float64:

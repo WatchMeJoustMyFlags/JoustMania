@@ -741,7 +741,7 @@ async def test_player_targeted_state_revert_to_neutral_does_not_fire():
 # --------------------------------------------------------------------------- #
 # STRING-valued player-targeted state-flag change detection (#1150)
 #
-# soft_penalty_action ("warn"/"tighten:5:0.5"/"none") and partial_shield_seconds
+# soft_penalty_action ("warn"/"tighten:5:0.5"/"none") and toughness_boost_seconds
 # ("5:2.0"/"0") are STRING-valued targeted flags. Change detection must read them
 # with the STRING getter (per spec.value_kind), not a float getter: a float read
 # TYPE_MISMATCHes and silently resolves to the default (the flagd typed-getter
@@ -779,18 +779,18 @@ async def test_string_targeted_state_dispatches_and_reverts():
 
 
 @pytest.mark.asyncio
-async def test_partial_shield_string_value_change_detected():
-    """partial_shield_seconds ("5:2.0") is also string-valued: its real value is
+async def test_toughness_boost_string_value_change_detected():
+    """toughness_boost_seconds ("5:2.0") is also string-valued: its real value is
     seen by change detection (not coerce-failed to the default)."""
     game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
-    mgr, events = make_manager(interventions={"partial_shield_seconds": "0"}, game=game, backstop=10)
+    mgr, events = make_manager(interventions={"toughness_boost_seconds": "0"}, game=game, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # neutral "0" -> no dispatch
-        mgr._interventions_client.set("partial_shield_seconds", "5:2.0")
+        mgr._interventions_client.set("toughness_boost_seconds", "5:2.0")
         await mgr.evaluate_all()  # real value -> dispatch
-    assert len(_applied(events, "partial_shield")) == 1
+    assert len(_applied(events, "toughness_boost")) == 1
     # The per-serial grant baseline holds the REAL string, not a coerced default.
-    assert mgr._state_bucket("").get("partial_shield_seconds") == {"p1": (None, "5:2.0")}
+    assert mgr._state_bucket("").get("toughness_boost_seconds") == {"p1": (None, "5:2.0")}
 
 
 @pytest.mark.asyncio

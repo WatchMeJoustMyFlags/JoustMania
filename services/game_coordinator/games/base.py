@@ -657,8 +657,8 @@ class Player:
     # _compute_effective_thresholds. 1.0 = neutral (no effect). Shadow-game-only
     # initially via the interventions_allowed allow-list gate.
     handicap_factor: float = 1.0
-    # Time-boxed partial shield (#1129, #1103 Phase 2). When ``partial_shield_until``
-    # is in the future, ``partial_shield_boost`` acts as a TEMPORARY handicap
+    # Time-boxed toughness boost (#1129, #1103 Phase 2). When ``toughness_boost_until``
+    # is in the future, ``toughness_boost_factor`` acts as a TEMPORARY handicap
     # override that COMPOSES with ``handicap_factor`` by taking the MAX of the two
     # (so a standing set_player_handicap is never weakened, only strengthened for
     # the window) — see ``_compute_effective_thresholds``. A large boost (~2.0)
@@ -667,15 +667,15 @@ class Player:
     # On expiry the boost simply stops applying (no reset task needed) and the
     # effective handicap falls back to the standing ``handicap_factor``. 0.0 / past
     # deadline = inactive (no effect). Shadow-game-only via the allow-list gate.
-    partial_shield_until: float = 0.0
-    partial_shield_boost: float = 1.0
+    toughness_boost_until: float = 0.0
+    toughness_boost_factor: float = 1.0
     # Time-boxed SOFT-PENALTY tighten (#1134, #1103 Phase 3). The deliberate
-    # MIRROR of partial_shield: where partial_shield STRENGTHENS protection (max,
+    # MIRROR of toughness_boost: where toughness_boost STRENGTHENS protection (max,
     # factor >= 1.0), a tighten WEAKENS it for a short window (factor < 1.0),
     # making the player TEMPORARILY EASIER to eliminate — graduated pressure, not
     # guaranteed elimination. While ``soft_penalty_until`` is in the future,
     # ``soft_penalty_factor`` composes into the effective handicap by taking the
-    # MIN (so it can cut through even a partial_shield boost — pressure overrides
+    # MIN (so it can cut through even a toughness boost — pressure overrides
     # protection), then the existing [0.5, 2.0] clamp keeps the threshold finite
     # (never instant-death). On expiry the factor simply stops applying (no reset
     # task needed) and the effective handicap falls back to the standing/shielded
@@ -687,12 +687,12 @@ class Player:
     # decision (auto_rubberband=gentle|strong) is expanded by the coordinator
     # across players based on the LIVE skill gap: the trailing player(s) — those
     # closest to their death threshold — receive a temporary handicap BOOST that
-    # COMPRESSES the gap to the leader. Like partial_shield it STRENGTHENS (boost
+    # COMPRESSES the gap to the leader. Like toughness_boost it STRENGTHENS (boost
     # >= 1.0, composed by MAX), but unlike it the boost is computed per-player
     # from the gap and is CAPPED so the boosted laggard can never overtake the
     # current leader (never inverts standings). While ``rubberband_until`` is in
     # the future, ``rubberband_boost`` composes into the effective handicap by the
-    # MAX (alongside partial_shield), still clamped [0.5, 2.0] so even a maxed
+    # MAX (alongside toughness_boost), still clamped [0.5, 2.0] so even a maxed
     # boost is "harder to die", never immune / never instant-death. On expiry the
     # boost silently stops applying (no reset task needed). 1.0 / past deadline =
     # inactive. Shadow-game-only via the allow-list gate.
@@ -1874,30 +1874,30 @@ class BaseGameMode(ABC):
         # >1.0 raises the threshold (harder to die / "help"); <1.0 lowers it
         # (easier / "rein in"). At the neutral 1.0 this is a no-op, preserving the
         # prior behavior exactly.
-        # A time-boxed partial shield (#1129) takes the MAX with the standing
+        # A time-boxed toughness boost (#1129) takes the MAX with the standing
         # handicap (it can only ever STRENGTHEN protection for its window, never
         # weaken a standing set_player_handicap delta). Precedence: while the
         # deadline is in the future the effective handicap is
-        # max(handicap_factor, partial_shield_boost); once it expires the boost
+        # max(handicap_factor, toughness_boost_factor); once it expires the boost
         # silently drops out and the standing handicap_factor resumes. Still
         # clamped [0.5, 2.0] below, so even a ~2.0 boost is "much harder to die",
         # never truly immune (the deliberate distinction from grant_shield).
         #
         # Composition precedence (last-applied wins by intent):
         #   1. standing handicap_factor (set_player_handicap, #1107)
-        #   2. partial_shield boost (#1129) — STRENGTHENS via max (protection)
+        #   2. toughness boost (#1129) — STRENGTHENS via max (protection)
         #   2b. auto_rubberband boost (#1143) — STRENGTHENS via max (gap-compression)
         #   3. soft_penalty tighten (#1134) — WEAKENS via min (pressure)
-        # The two STRENGTHENING boosts (partial_shield, auto_rubberband) both
+        # The two STRENGTHENING boosts (toughness_boost, auto_rubberband) both
         # compose by MAX so the strongest active protection wins; the soft_penalty
         # MIN is applied AFTER, so an active tighten can cut through either boost:
-        # pressure deliberately overrides protection (the mirror of partial_shield,
+        # pressure deliberately overrides protection (the mirror of toughness_boost,
         # which could never weaken a standing handicap). The final clamp [0.5, 2.0]
         # keeps even a fully-tightened threshold finite — never instant-death — and
         # caps even a maxed boost at 2x — "harder to die", never immune.
         effective_handicap = player.handicap_factor
-        if now < player.partial_shield_until:
-            effective_handicap = max(effective_handicap, player.partial_shield_boost)
+        if now < player.toughness_boost_until:
+            effective_handicap = max(effective_handicap, player.toughness_boost_factor)
         if now < player.rubberband_until:
             effective_handicap = max(effective_handicap, player.rubberband_boost)
         if now < player.soft_penalty_until:
@@ -2293,30 +2293,30 @@ class BaseGameMode(ABC):
             )
 
         # Perceptible feedback for the remaining protection (#1301, UC-040 A16).
-        await self._send_shield_feedback(player, new_grace - time.time(), partial=False, sound=not was_protected)
+        await self._send_shield_feedback(player, new_grace - time.time(), kind="full", sound=not was_protected)
 
         return True
 
-    # Partial-shield defaults (#1129, #1103 Phase 2). Boost is clamped to the same
-    # upper bound as handicap_factor so a partial shield is "much harder to die"
+    # Toughness boost defaults (#1129, #1103 Phase 2). Boost is clamped to the same
+    # upper bound as handicap_factor so a toughness boost is "much harder to die"
     # but never immune; seconds are capped so a single arming can't last forever.
-    PARTIAL_SHIELD_DEFAULT_BOOST = 2.0
-    PARTIAL_SHIELD_BOOST_MIN = 1.0
-    PARTIAL_SHIELD_BOOST_MAX = 2.0
-    PARTIAL_SHIELD_MAX_SECONDS = 30.0
+    TOUGHNESS_BOOST_DEFAULT_FACTOR = 2.0
+    TOUGHNESS_BOOST_FACTOR_MIN = 1.0
+    TOUGHNESS_BOOST_FACTOR_MAX = 2.0
+    TOUGHNESS_BOOST_MAX_SECONDS = 30.0
 
-    async def grant_partial_shield(self, serial: str, seconds: float, boost: float | None = None) -> bool:
+    async def grant_toughness_boost(self, serial: str, seconds: float, boost: float | None = None) -> bool:
         """
-        Grant a time-boxed PARTIAL shield to a player (#1129, #1103 Phase 2).
+        Grant a time-boxed toughness boost to a player (#1129, #1103 Phase 2).
 
         Unlike :meth:`grant_shield` (total immunity via ``grace_until`` that skips
-        the death check entirely), a partial shield only raises the player's
+        the death check entirely), a toughness boost only raises the player's
         effective death/warning threshold for ``seconds`` by applying a temporary
         ``handicap`` boost — making them MUCH harder to eliminate but NOT immune: a
         genuinely huge spike can still exceed the (still-finite) boosted threshold.
         It reuses the #1107 per-player handicap mechanism: while the deadline is in
         the future, ``_compute_effective_thresholds`` takes ``max(handicap_factor,
-        partial_shield_boost)`` (so it never weakens a standing set_player_handicap
+        toughness_boost_factor)`` (so it never weakens a standing set_player_handicap
         delta, only strengthens it for the window), still clamped [0.5, 2.0].
 
         Time-box semantics mirror ``grant_shield``: extend-not-shorten on the
@@ -2328,13 +2328,13 @@ class BaseGameMode(ABC):
         Args:
             serial: Controller serial number.
             seconds: Shield duration in seconds. Non-positive is a no-op (False);
-                capped at ``PARTIAL_SHIELD_MAX_SECONDS``.
+                capped at ``TOUGHNESS_BOOST_MAX_SECONDS``.
             boost: Handicap boost while active; clamped
-                [``PARTIAL_SHIELD_BOOST_MIN``, ``PARTIAL_SHIELD_BOOST_MAX``].
-                Defaults to ``PARTIAL_SHIELD_DEFAULT_BOOST`` (~2.0).
+                [``TOUGHNESS_BOOST_FACTOR_MIN``, ``TOUGHNESS_BOOST_FACTOR_MAX``].
+                Defaults to ``TOUGHNESS_BOOST_DEFAULT_FACTOR`` (~2.0).
 
         Returns:
-            True if a partial shield was armed/extended, False if the player is
+            True if a toughness boost was armed/extended, False if the player is
             unknown/dead or the duration was non-positive.
         """
         if seconds <= 0:
@@ -2344,10 +2344,10 @@ class BaseGameMode(ABC):
         if not player or not player.alive:
             return False
 
-        seconds = min(seconds, self.PARTIAL_SHIELD_MAX_SECONDS)
+        seconds = min(seconds, self.TOUGHNESS_BOOST_MAX_SECONDS)
         if boost is None:
-            boost = self.PARTIAL_SHIELD_DEFAULT_BOOST
-        boost = max(self.PARTIAL_SHIELD_BOOST_MIN, min(self.PARTIAL_SHIELD_BOOST_MAX, boost))
+            boost = self.TOUGHNESS_BOOST_DEFAULT_FACTOR
+        boost = max(self.TOUGHNESS_BOOST_FACTOR_MIN, min(self.TOUGHNESS_BOOST_FACTOR_MAX, boost))
 
         new_until = time.time() + seconds
         # Extend-not-shorten / strengthen-not-weaken: keep whichever active window
@@ -2355,20 +2355,20 @@ class BaseGameMode(ABC):
         # reduces in-flight protection.
         changed = True
         was_protected = self._shield_protected(player, time.time())
-        if time.time() < player.partial_shield_until:
-            changed = new_until > player.partial_shield_until or boost > player.partial_shield_boost
-            new_until = max(new_until, player.partial_shield_until)
-            boost = max(boost, player.partial_shield_boost)
-        player.partial_shield_until = new_until
-        player.partial_shield_boost = boost
-        logger.info(f"Partial shield armed for {serial}: boost={boost:.2f} for {seconds:.1f}s (until={new_until:.2f})")
+        if time.time() < player.toughness_boost_until:
+            changed = new_until > player.toughness_boost_until or boost > player.toughness_boost_factor
+            new_until = max(new_until, player.toughness_boost_until)
+            boost = max(boost, player.toughness_boost_factor)
+        player.toughness_boost_until = new_until
+        player.toughness_boost_factor = boost
+        logger.info(f"Toughness boost armed for {serial}: boost={boost:.2f} for {seconds:.1f}s (until={new_until:.2f})")
 
         if player.span:
             player.span.add_event(
-                "partial_shield_armed",
+                "toughness_boost_armed",
                 attributes={
-                    "partial_shield_seconds": seconds,
-                    "partial_shield_boost": boost,
+                    "toughness_boost_seconds": seconds,
+                    "toughness_boost_factor": boost,
                     **player_identity_attributes(serial, player.name),
                 },
             )
@@ -2376,16 +2376,18 @@ class BaseGameMode(ABC):
         # Weaker perceptible feedback, only when the arming changed the window or
         # the boost (#1301, UC-040 A16, BR-009/BR-010).
         if changed:
-            await self._send_shield_feedback(player, new_until - time.time(), partial=True, sound=not was_protected)
+            await self._send_shield_feedback(
+                player, new_until - time.time(), kind="toughness_boost", sound=not was_protected
+            )
 
         return True
 
     def _shield_protected(self, player: "Player", now: float) -> bool:
-        """Whether any shield protection (grace / invincibility / partial shield) is active."""
-        return now < self.effective_grace_until(player) or now < player.partial_shield_until
+        """Whether any shield protection (grace / invincibility / toughness boost) is active."""
+        return now < self.effective_grace_until(player) or now < player.toughness_boost_until
 
     async def _send_shield_feedback(
-        self, player: "Player", remaining_s: float, *, partial: bool, sound: bool = True
+        self, player: "Player", remaining_s: float, *, kind: str, sound: bool = True
     ) -> None:
         """Shield LED effect + shield sound + ``player_shielded`` event (#1301).
 
@@ -2401,8 +2403,7 @@ class BaseGameMode(ABC):
         serial = player.serial
         duration_ms = int(round(remaining_s * 1000))
         until = time.time() + remaining_s
-        kind = "partial" if partial else "full"
-        # Keep the latest end of any running shield: a shorter partial grant after
+        # Keep the latest end of any running shield: a shorter toughness boost after
         # a longer full one must not hide the full one from _end_shield_feedback.
         self._shield_feedback_until[serial] = max(self._shield_feedback_until.get(serial, 0.0), until)
         if player.span:
@@ -2425,8 +2426,8 @@ class BaseGameMode(ABC):
                         game_effect=controller_manager_pb2.GameEffectCommand(
                             serial=serial,
                             effect=(
-                                controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD
-                                if partial
+                                controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST
+                                if kind == "toughness_boost"
                                 else controller_manager_pb2.GAME_EFFECT_SHIELD
                             ),
                             duration_ms=duration_ms,
@@ -2439,7 +2440,9 @@ class BaseGameMode(ABC):
                 logger.warning(f"Shield LED feedback for {serial} failed (protection unaffected): {e}")
         if sound:
             try:
-                await self._play_sound(Sound.SFX_SHIELD_UP, priority=2, volume=0.5 if partial else 1.0)
+                await self._play_sound(
+                    Sound.SFX_SHIELD_UP, priority=2, volume=0.5 if kind == "toughness_boost" else 1.0
+                )
             except Exception as e:
                 logger.warning(f"Shield sound for {serial} failed (protection unaffected): {e}")
         try:
@@ -2484,7 +2487,7 @@ class BaseGameMode(ABC):
             logger.warning(f"Ending shield feedback failed: {e}")
 
     # Soft-penalty defaults (#1134, #1103 Phase 3). The tighten factor is the
-    # MIRROR of the partial_shield boost: a factor BELOW 1.0 weakens the player's
+    # MIRROR of the toughness boost: a factor BELOW 1.0 weakens the player's
     # threshold for a short window (easier to die). It is clamped to the same
     # lower handicap bound (0.5) so even a fully-tightened threshold stays finite
     # — never instant-death. Seconds are capped so a single arming can't last
@@ -2518,20 +2521,20 @@ class BaseGameMode(ABC):
     async def apply_soft_penalty(self, serial: str, seconds: float, factor: float | None = None) -> bool:
         """Apply a time-boxed soft-penalty TIGHTEN to a player (#1134, Phase 3).
 
-        The deliberate MIRROR of :meth:`grant_partial_shield`: where a partial
-        shield STRENGTHENS protection (boost >= 1.0, composed by ``max``), a
+        The deliberate MIRROR of :meth:`grant_toughness_boost`: where a toughness boost
+        STRENGTHENS protection (boost >= 1.0, composed by ``max``), a
         tighten WEAKENS it for ``seconds`` (``factor`` < 1.0, composed by ``min``
         in :meth:`_compute_effective_thresholds`) — making the player TEMPORARILY
         EASIER to eliminate. It is graduated PRESSURE, not guaranteed elimination:
         the effective handicap is still clamped [0.5, 2.0], so even a maxed
         tighten only lowers the threshold to half — never instant-death.
 
-        Because the tighten composes by ``min`` AFTER the partial_shield ``max``,
-        it can cut through an active partial_shield boost (pressure overrides
+        Because the tighten composes by ``min`` AFTER the toughness_boost ``max``,
+        it can cut through an active toughness boost (pressure overrides
         protection). On expiry the factor silently stops applying — no reset task
         — and the standing/shielded handicap resumes.
 
-        Time-box semantics mirror :meth:`grant_partial_shield`: extend-not-shorten
+        Time-box semantics mirror :meth:`grant_toughness_boost`: extend-not-shorten
         on the deadline and tighten-not-loosen on the factor, so repeated arming
         never reduces in-flight pressure (keeps the LOWER, stronger factor).
 
@@ -2606,7 +2609,7 @@ class BaseGameMode(ABC):
     async def apply_auto_rubberband(self, strength: str, seconds: float | None = None) -> int:
         """Auto-compress the live skill gap by boosting the trailing player(s) (#1143).
 
-        Unlike :meth:`set_player_handicap` / :meth:`grant_partial_shield` (the
+        Unlike :meth:`set_player_handicap` / :meth:`grant_toughness_boost` (the
         agent hand-picks one serial + factor), ``auto_rubberband`` is a SINGLE
         decision (``"gentle"`` | ``"strong"``) that the COORDINATOR expands across
         players from the live skill gap. The standing proxy is each alive player's
@@ -2630,7 +2633,7 @@ class BaseGameMode(ABC):
 
         Needs at least two alive players to have a gap to compress; with fewer it
         is a no-op. Time-box / strengthen semantics mirror
-        :meth:`grant_partial_shield` (extend-not-shorten, strengthen-not-weaken).
+        :meth:`grant_toughness_boost` (extend-not-shorten, strengthen-not-weaken).
 
         Args:
             strength: ``"gentle"`` or ``"strong"``. Any other value is a no-op.
@@ -2699,7 +2702,7 @@ class BaseGameMode(ABC):
                 continue  # nothing to add for this player (e.g. the leader)
 
             new_until = now + seconds
-            # Extend-not-shorten / strengthen-not-weaken (mirror partial_shield).
+            # Extend-not-shorten / strengthen-not-weaken (mirror toughness_boost).
             boost = target_boost
             if now < p.rubberband_until:
                 new_until = max(new_until, p.rubberband_until)

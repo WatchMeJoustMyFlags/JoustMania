@@ -592,7 +592,7 @@ checks the budget (the flag's value ≥ 30, i.e. `stage`, and that a set env cei
 that `JEV_API_KEY` and `ANTHROPIC_API_KEY` are present (presence only) and that
 the stage baseline `inference.backend = claude` (FAIL otherwise: beat 8 shows a capture-only
 retro; the `AGENT_INFERENCE_BACKEND=claude` env is only a WARN fallback check). It FAILs when the resolved allow-list holds no perceptible
-intervention (`play_audio_cue`, `grant_shield`, `partial_shield`,
+intervention (`play_audio_cue`, `grant_shield`, `toughness_boost`,
 `adjust_music_tempo`, `ramp_tempo`, `eliminate_player`, `revive_player`,
 `end_game`) and when the agent's audio cue (`defaultAudioCue` in
 `services/agent/actions/writer.go`, `agent_cue`) does not resolve to a file in

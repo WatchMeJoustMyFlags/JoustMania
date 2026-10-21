@@ -54,18 +54,18 @@ const (
 	// never the real-facing ambient/standard/full variants.
 	InterventionSetPlayerHandicap = "set_player_handicap"
 	InterventionGrantShield       = "grant_shield"
-	// InterventionPartialShield (#1129, #1103 Phase 2) is a per-player TIME-BOXED
+	// InterventionToughnessBoost (#1129, #1103 Phase 2) is a per-player TIME-BOXED
 	// handicap boost ("<seconds>" or "<seconds>:<boost>") — much harder to die for
 	// N seconds but NOT immune (vs grant_shield's total grace_until immunity). It
 	// reuses the #1107 handicap mechanism. SHADOW-game-only initially: allow-listed
 	// only via the `shadow_experimental` interventions_allowed variant
 	// (services/flagd/agent.json), never the real-facing ambient/standard/full.
-	InterventionPartialShield = "partial_shield"
+	InterventionToughnessBoost = "toughness_boost"
 	// InterventionSoftPenalty (#1134, #1103 Phase 3) is a per-player graduated,
 	// RECOVERABLE alternative to the permanent eliminate_player. Value "warn"
 	// (default; fires visible warning feedback, no threshold change) | "tighten" |
 	// "tighten:<seconds>:<factor>" (a short EXPIRING handicap REDUCTION, the MIRROR
-	// of partial_shield — temporarily easier to die but still clamped, never
+	// of toughness_boost — temporarily easier to die but still clamped, never
 	// instant-death). SHADOW-game-only initially: allow-listed only via the
 	// `shadow_experimental` interventions_allowed variant (services/flagd/agent.json),
 	// never the real-facing ambient/standard/full.
@@ -87,7 +87,7 @@ const (
 	// time-boxed handicap BOOST to the trailing player(s) — compressing the gap
 	// without ever inverting standings or causing instant death (bounded game-side
 	// + the [0.5,2.0] clamp). Reuses the #1107 handicap mechanism, composes by MAX
-	// with partial_shield. SHADOW-game-only initially: allow-listed only via the
+	// with toughness_boost. SHADOW-game-only initially: allow-listed only via the
 	// `shadow_experimental` interventions_allowed variant (services/flagd/agent.json),
 	// never the real-facing ambient/standard/full.
 	InterventionAutoRubberband  = "auto_rubberband"
@@ -123,7 +123,7 @@ var interventionWeights = map[string]float64{
 	InterventionAdjustPlayerSensitivity: 1,
 	InterventionSetPlayerHandicap:       1, // #1107 (#1103 MVP action 1)
 	InterventionGrantShield:             1,
-	InterventionPartialShield:           1, // #1129 (#1103 Phase 2) — MEDIUM
+	InterventionToughnessBoost:          1, // #1129 (#1103 Phase 2) — MEDIUM
 	InterventionSoftPenalty:             1, // #1134 (#1103 Phase 3) — MEDIUM
 	InterventionAdjustGlobalDifficulty:  1, // #766 F6
 	InterventionSetPacingProfile:        1, // #766 F6

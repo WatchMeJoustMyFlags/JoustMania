@@ -80,7 +80,7 @@ export function reduceGameEvent(prev: GameFeedState, event: GameEventInput): Gam
       break;
 
     case "player_shielded": {
-      const kind = data["kind"] === "partial" ? "partial shield" : "shield";
+      const kind = data["kind"] === "toughness_boost" || data["kind"] === "partial" ? "toughness boost" : "shield";
       feedLine = `Agent: ${kind} for ${shortSerial(data["serial"])} (${data["seconds"] ?? "?"}s)`;
       break;
     }

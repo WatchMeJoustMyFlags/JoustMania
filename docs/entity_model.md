@@ -159,7 +159,7 @@ A controller's participation in one game (`proto/game_coordinator.proto` `Player
 | invincible_until | No-death deadline from match / round start (Tournament, Fight Club) | DateTime | - | Optional |
 | smoothed_accel | EMA of acceleration magnitude in g | Decimal | 6,3 | Not Null, Min: 0 |
 
-**Constraints:** the player cannot die while `now < max(grace_until, invincible_until)`. In the base path (`games/base.py` `_compute_effective_thresholds`), effective thresholds are divided by `clamp(sensitivity_factor × global_difficulty_factor, 0.5, 2.0)` and multiplied by `clamp(min(max(handicap_factor, active partial_shield boost, rubberband_boost), soft_penalty_factor), 0.5, 2.0)`. Exception: Werewolf werewolves and Zombies zombies use a fixed role threshold table per sensitivity (`game.werewolf.thresholds`, `game.zombie.thresholds`; `werewolf.py` / `zombie.py` `_compute_effective_thresholds`), so tempo and the per-player and global factors do not apply to them. Fight Club runs its own death detection (D-G9, #1347).
+**Constraints:** the player cannot die while `now < max(grace_until, invincible_until)`. In the base path (`games/base.py` `_compute_effective_thresholds`), effective thresholds are divided by `clamp(sensitivity_factor × global_difficulty_factor, 0.5, 2.0)` and multiplied by `clamp(min(max(handicap_factor, active toughness boost, rubberband_boost), soft_penalty_factor), 0.5, 2.0)`. Exception: Werewolf werewolves and Zombies zombies use a fixed role threshold table per sensitivity (`game.werewolf.thresholds`, `game.zombie.thresholds`; `werewolf.py` / `zombie.py` `_compute_effective_thresholds`), so tempo and the per-player and global factors do not apply to them. Fight Club runs its own death detection (D-G9, #1347).
 
 ### DECIDE_PLAYER_STATE
 
@@ -177,7 +177,7 @@ A player as the decision backends see it (`decide.PlayerState`, `services/agent/
 | intensity_rank | 1 = highest intensity among alive players with an observed intensity; 0 unranked | Integer | 3 | Not Null, Min: 0 |
 | threshold_margin | Session death threshold − intensity (g, 2 decimals); negative when over | Decimal | 4,2 | Optional |
 | danger | Intensity / session death threshold: `safe` < 0.60 ≤ `elevated` < 0.85 ≤ `near_threshold`; empty when unknown | String | 14 | Optional, Values: safe, elevated, near_threshold |
-| shielded | A grant_shield / partial_shield was dispatched to the player in the last 10 s | Boolean | 1 | Not Null |
+| shielded | A grant_shield / toughness_boost was dispatched to the player in the last 10 s | Boolean | 1 | Not Null |
 
 **Constraints:** danger reads the **session** death threshold, so per-player factors and shields are not reflected (`shielded` flags shields separately). Session-level fields on the state: `most_headroom` (alive player with the strictly lowest intensity) and `struggling` (strictly highest intensity when elevated or near_threshold); ties leave them empty.
 
@@ -377,7 +377,7 @@ A bounded in-game change written for one game to the `interventions` flag set th
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| type | Intervention type | String | 30 | Primary Key, Values: play_audio_cue, send_controller_effect, adjust_volume, adjust_music_tempo, set_pacing_profile, adjust_player_sensitivity, grant_shield, adjust_global_sensitivity, adjust_global_difficulty, eliminate_player, revive_player, end_game, set_player_handicap, ramp_tempo, partial_shield, soft_penalty, auto_rubberband, noop |
+| type | Intervention type | String | 30 | Primary Key, Values: play_audio_cue, send_controller_effect, adjust_volume, adjust_music_tempo, set_pacing_profile, adjust_player_sensitivity, grant_shield, adjust_global_sensitivity, adjust_global_difficulty, eliminate_player, revive_player, end_game, set_player_handicap, ramp_tempo, toughness_boost, soft_penalty, auto_rubberband, noop |
 | flag_key | Flag written; none for `noop`, which writes nothing | String | 30 | Optional, Foreign Key (FLAG.key) |
 | shape | How it is written and rendered: the `kind` of the flag's MUTABLE_FLAG_POLICY (`state` = a game-scoped value, `level` = a per-player value that stays, `grant` = a per-player one-time grant, `event` = an entry appended to the game's event list); `overlay` is not used by interventions | String | 5 | Optional, Values: state, level, grant, event; = MUTABLE_FLAG_POLICY.kind of flag_key |
 | weight | Rate-limit weight class | String | 6 | Not Null, Values: soft, medium, hard |

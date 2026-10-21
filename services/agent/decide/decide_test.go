@@ -381,6 +381,26 @@ func TestMagnitude_IntegerRounds(t *testing.T) {
 	}
 }
 
+// TestValidate_RetiredInterventionIDIsInvalid pins the #1838 decision that there
+// is no answer-side alias: a backend that still answers with the retired id
+// partial_shield (renamed toughness_boost) gets invalid_answer, not a silent remap.
+// UC: UC-040 A12
+func TestValidate_RetiredInterventionIDIsInvalid(t *testing.T) {
+	req := Request{Questions: []Question{
+		{ID: "iv", Kind: KindChoice, Options: []string{"noop", "toughness_boost"}},
+	}}
+	ok := Response{Answers: []Answer{{QuestionID: "iv", Choice: "toughness_boost",
+		Probabilities: map[string]float64{"noop": 0.2, "toughness_boost": 0.8}, Confidence: 0.5}}}
+	if err := Validate(req, ok); err != nil {
+		t.Fatalf("the new id must validate: %v", err)
+	}
+	old := Response{Answers: []Answer{{QuestionID: "iv", Choice: "partial_shield",
+		Probabilities: map[string]float64{"noop": 0.2, "partial_shield": 0.8}, Confidence: 0.5}}}
+	if err := Validate(req, old); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("retired id answer: err = %v, want ErrInvalid", err)
+	}
+}
+
 func TestValidate_EmptyRequest(t *testing.T) {
 	if err := Validate(Request{}, Response{}); err != nil {
 		t.Fatalf("no questions, no answers: %v", err)

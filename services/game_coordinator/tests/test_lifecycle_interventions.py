@@ -51,13 +51,13 @@ from services.game_coordinator.lifecycle_handlers import (
     ELIMINATE_REASON,
     handle_auto_rubberband,
     handle_eliminate_player,
-    handle_partial_shield,
     handle_revive_player,
     handle_shield_seconds,
     handle_soft_penalty,
+    handle_toughness_boost,
     parse_auto_rubberband_value,
-    parse_partial_shield_value,
     parse_soft_penalty_value,
+    parse_toughness_boost_value,
     register_lifecycle_handlers,
 )
 
@@ -258,35 +258,35 @@ class TestShieldSecondsHandler:
 
 
 # --------------------------------------------------------------------------- #
-# partial_shield: value parser (#1129)
+# toughness_boost: value parser (#1129)
 # --------------------------------------------------------------------------- #
-class TestParsePartialShieldValue:
+class TestParseToughnessBoostValue:
     def test_seconds_only_defaults_boost(self):
-        assert parse_partial_shield_value("5") == (5.0, 2.0)
+        assert parse_toughness_boost_value("5") == (5.0, 2.0)
 
     def test_seconds_and_boost(self):
-        assert parse_partial_shield_value("8:1.8") == (8.0, 1.8)
+        assert parse_toughness_boost_value("8:1.8") == (8.0, 1.8)
 
     def test_seconds_capped(self):
-        secs, _ = parse_partial_shield_value("9999")
+        secs, _ = parse_toughness_boost_value("9999")
         assert secs == 30.0
 
     def test_boost_clamped(self):
-        assert parse_partial_shield_value("5:9")[1] == 2.0
-        assert parse_partial_shield_value("5:0.1")[1] == 1.0
+        assert parse_toughness_boost_value("5:9")[1] == 2.0
+        assert parse_toughness_boost_value("5:0.1")[1] == 1.0
 
     @pytest.mark.parametrize(
         "bad",
         ["", "0", "none", "off", "-3", "abc", "5:abc", "5:2:1", "  ", "x:y"],
     )
     def test_malformed_or_neutral_is_none(self, bad):
-        assert parse_partial_shield_value(bad) is None
+        assert parse_toughness_boost_value(bad) is None
 
 
 # --------------------------------------------------------------------------- #
-# partial_shield handler (#1129)
+# toughness_boost handler (#1129)
 # --------------------------------------------------------------------------- #
-class TestPartialShieldHandler:
+class TestToughnessBoostHandler:
     @pytest.mark.asyncio
     async def test_arms_only_targeted_serials(self):
         game = make_ffa_game(num_players=3)
@@ -294,12 +294,12 @@ class TestPartialShieldHandler:
         # p1 gets an 8s/1.8 boost; p2/p3 resolve to neutral "0".
         mgr._interventions_client = TargetingFlagClient(default="0", per_serial={"p1": "8:1.8"})
 
-        await handle_partial_shield(make_ctx("partial_shield_seconds", "8:1.8", game), mgr)
+        await handle_toughness_boost(make_ctx("toughness_boost_seconds", "8:1.8", game), mgr)
 
-        assert game.players["p1"].partial_shield_until > time.time()
-        assert game.players["p1"].partial_shield_boost == pytest.approx(1.8)
-        assert game.players["p2"].partial_shield_until == 0.0
-        assert game.players["p3"].partial_shield_until == 0.0
+        assert game.players["p1"].toughness_boost_until > time.time()
+        assert game.players["p1"].toughness_boost_factor == pytest.approx(1.8)
+        assert game.players["p2"].toughness_boost_until == 0.0
+        assert game.players["p3"].toughness_boost_until == 0.0
 
     @pytest.mark.asyncio
     async def test_malformed_value_is_safe_noop(self):
@@ -307,8 +307,8 @@ class TestPartialShieldHandler:
         mgr, _ = make_manager(game=game)
         mgr._interventions_client = TargetingFlagClient(default="0", per_serial={"p1": "garbage"})
 
-        await handle_partial_shield(make_ctx("partial_shield_seconds", "garbage", game), mgr)
-        assert game.players["p1"].partial_shield_until == 0.0
+        await handle_toughness_boost(make_ctx("toughness_boost_seconds", "garbage", game), mgr)
+        assert game.players["p1"].toughness_boost_until == 0.0
 
     @pytest.mark.asyncio
     async def test_battery_gated_serial_skipped(self):
@@ -316,15 +316,15 @@ class TestPartialShieldHandler:
         mgr, _ = make_manager(game=game, battery={"p1": 90, "p2": 5}, threshold=20)
         mgr._interventions_client = TargetingFlagClient(default="0", per_serial={"p1": "5", "p2": "5"})
 
-        await handle_partial_shield(make_ctx("partial_shield_seconds", "5", game), mgr)
-        assert game.players["p1"].partial_shield_until > 0.0
-        assert game.players["p2"].partial_shield_until == 0.0
+        await handle_toughness_boost(make_ctx("toughness_boost_seconds", "5", game), mgr)
+        assert game.players["p1"].toughness_boost_until > 0.0
+        assert game.players["p2"].toughness_boost_until == 0.0
 
     @pytest.mark.asyncio
     async def test_no_live_game_is_noop(self):
         mgr, _ = make_manager(game=None)
         mgr._interventions_client = TargetingFlagClient(default="0")
-        await handle_partial_shield(make_ctx("partial_shield_seconds", "5", None), mgr)  # no raise
+        await handle_toughness_boost(make_ctx("toughness_boost_seconds", "5", None), mgr)  # no raise
 
 
 # --------------------------------------------------------------------------- #
@@ -649,7 +649,7 @@ class TestRegistration:
         register_lifecycle_handlers(mgr)
         for flag in (
             "shield_seconds",
-            "partial_shield_seconds",
+            "toughness_boost_seconds",
             "soft_penalty_action",
             "auto_rubberband",
             "eliminate_player",
@@ -710,12 +710,12 @@ class TestAppliedInterventionEventsNamePlayer:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="main", steps=[13])
-    async def test_partial_shield_and_soft_penalty_carry_identity(self):
-        """UC-040 main: partial_shield_armed / soft_penalty_tighten name the player."""
+    async def test_toughness_boost_and_soft_penalty_carry_identity(self):
+        """UC-040 main: toughness_boost_armed / soft_penalty_tighten name the player."""
         game = _named_game_with_spans()
-        assert await game.grant_partial_shield("p1", 5.0, 1.5) is True
+        assert await game.grant_toughness_boost("p1", 5.0, 1.5) is True
         assert await game.apply_soft_penalty("p2", 5.0, 0.6) is True
-        shield = _event_attrs(game.players["p1"], "partial_shield_armed")
+        shield = _event_attrs(game.players["p1"], "toughness_boost_armed")
         penalty = _event_attrs(game.players["p2"], "soft_penalty_tighten")
         assert (shield["player.serial"], shield["player.name"]) == ("p1", "Calm Lion")
         assert (penalty["player.serial"], penalty["player.name"]) == ("p2", "Swift Fox")

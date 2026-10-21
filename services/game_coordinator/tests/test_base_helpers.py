@@ -352,10 +352,10 @@ class TestComputeEffectiveThresholds:
         assert warn_c == pytest.approx(warn_n)
         assert death_c == pytest.approx(death_n)
 
-    # --- #1129: time-boxed partial_shield boost in the threshold path ---- #
+    # --- #1129: time-boxed toughness boost in the threshold path ---- #
 
-    def test_partial_shield_active_boosts_threshold(self, game):
-        """An active partial shield raises the threshold via its boost."""
+    def test_toughness_boost_active_boosts_threshold(self, game):
+        """An active toughness boost raises the threshold via its boost."""
         from lib.types import Sensitivity
 
         game.sensitivity = Sensitivity.MEDIUM
@@ -365,15 +365,15 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            partial_shield_until=time.time() + 5.0,
-            partial_shield_boost=2.0,
+            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_factor=2.0,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
         _, death_s = game._compute_effective_thresholds(shielded)
         assert death_s == pytest.approx(death_n * 2.0)
 
-    def test_partial_shield_expired_is_noop(self, game):
-        """A partial shield whose deadline has passed leaves thresholds at the
+    def test_toughness_boost_expired_is_noop(self, game):
+        """A toughness boost whose deadline has passed leaves thresholds at the
         standing handicap (no reset task needed — it simply stops applying)."""
         from lib.types import Sensitivity
 
@@ -384,15 +384,15 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            partial_shield_until=time.time() - 1.0,  # already past
-            partial_shield_boost=2.0,
+            toughness_boost_until=time.time() - 1.0,  # already past
+            toughness_boost_factor=2.0,
         )
         assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
 
     @pytest.mark.uc("UC-030", flow="main", steps=[5])
-    def test_partial_shield_takes_max_with_standing_handicap(self, game):
+    def test_toughness_boost_takes_max_with_standing_handicap(self, game):
         """While active, the effective handicap is max(handicap_factor, boost):
-        a partial shield never WEAKENS a standing set_player_handicap delta."""
+        a toughness boost never WEAKENS a standing set_player_handicap delta."""
         from lib.types import Sensitivity
 
         game.sensitivity = Sensitivity.MEDIUM
@@ -402,13 +402,13 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.8,
-            partial_shield_until=time.time() + 5.0,
-            partial_shield_boost=1.2,
+            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_factor=1.2,
         )
         ref = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.8)
         assert game._compute_effective_thresholds(p) == pytest.approx(game._compute_effective_thresholds(ref))
 
-    def test_partial_shield_clamped_not_immune(self, game):
+    def test_toughness_boost_clamped_not_immune(self, game):
         """Even a maxed boost is clamped to 2.0 — never immune (the point vs
         grant_shield): the boosted death threshold stays finite."""
         from lib.types import Sensitivity
@@ -419,8 +419,8 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            partial_shield_until=time.time() + 5.0,
-            partial_shield_boost=2.0,
+            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_factor=2.0,
         )
         _, death = game._compute_effective_thresholds(p)
         assert death > 0 and death != float("inf")
@@ -484,9 +484,9 @@ class TestComputeEffectiveThresholds:
         assert death > 0
 
     @pytest.mark.uc("UC-030", flow="main", steps=[5])
-    def test_soft_penalty_min_overrides_partial_shield(self, game):
-        """Precedence: tighten composes by MIN AFTER partial_shield's MAX, so an
-        active tighten cuts through an active partial_shield boost (pressure
+    def test_soft_penalty_min_overrides_toughness_boost(self, game):
+        """Precedence: tighten composes by MIN AFTER toughness_boost's MAX, so an
+        active tighten cuts through an active toughness boost (pressure
         overrides protection). Effective = min(max(1.0, 2.0), 0.6) = 0.6."""
         from lib.types import Sensitivity
 
@@ -497,8 +497,8 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            partial_shield_until=time.time() + 5.0,
-            partial_shield_boost=2.0,
+            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_factor=2.0,
             soft_penalty_until=time.time() + 5.0,
             soft_penalty_factor=0.6,
         )
@@ -563,8 +563,8 @@ class TestComputeEffectiveThresholds:
         )
         assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
 
-    def test_rubberband_takes_max_with_partial_shield(self, game):
-        """Both strengthening boosts compose by MAX: a stronger partial_shield
+    def test_rubberband_takes_max_with_toughness_boost(self, game):
+        """Both strengthening boosts compose by MAX: a stronger toughness_boost
         boost wins over a weaker rubberband boost (and vice versa)."""
         from lib.types import Sensitivity
 
@@ -575,8 +575,8 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            partial_shield_until=time.time() + 5.0,
-            partial_shield_boost=1.2,
+            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_factor=1.2,
             rubberband_until=time.time() + 5.0,
             rubberband_boost=1.4,
         )
@@ -624,12 +624,12 @@ class TestComputeEffectiveThresholds:
 
 
 # ========================================================================
-# grant_partial_shield primitive (#1129)
+# grant_toughness_boost primitive (#1129)
 # ========================================================================
 
 
-class TestGrantPartialShield:
-    """Tests for the BaseGameMode.grant_partial_shield time-boxed primitive."""
+class TestGrantToughnessBoost:
+    """Tests for the BaseGameMode.grant_toughness_boost time-boxed primitive."""
 
     @pytest.fixture
     def game(self):
@@ -638,76 +638,76 @@ class TestGrantPartialShield:
             controller_manager_client=mock_cm,
             event_publisher=async_noop,
             audio_client=None,
-            game_id="test_partial_shield",
+            game_id="test_toughness_boost",
         )
         game.players["AA"] = Player(serial="AA", alive=True)
         return game
 
     @pytest.mark.asyncio
     async def test_arms_boost_and_deadline(self, game):
-        ok = await game.grant_partial_shield("AA", 5.0, 1.8)
+        ok = await game.grant_toughness_boost("AA", 5.0, 1.8)
         assert ok is True
         p = game.players["AA"]
-        assert p.partial_shield_boost == pytest.approx(1.8)
-        assert p.partial_shield_until > time.time()
+        assert p.toughness_boost_factor == pytest.approx(1.8)
+        assert p.toughness_boost_until > time.time()
 
     @pytest.mark.asyncio
     async def test_default_boost_when_omitted(self, game):
-        await game.grant_partial_shield("AA", 5.0)
-        assert game.players["AA"].partial_shield_boost == pytest.approx(game.PARTIAL_SHIELD_DEFAULT_BOOST)
+        await game.grant_toughness_boost("AA", 5.0)
+        assert game.players["AA"].toughness_boost_factor == pytest.approx(game.TOUGHNESS_BOOST_DEFAULT_FACTOR)
 
     @pytest.mark.asyncio
     async def test_boost_clamped_to_band(self, game):
-        await game.grant_partial_shield("AA", 5.0, 9.0)
-        assert game.players["AA"].partial_shield_boost == pytest.approx(game.PARTIAL_SHIELD_BOOST_MAX)
-        await game.grant_partial_shield("AA", 5.0, 0.1)
+        await game.grant_toughness_boost("AA", 5.0, 9.0)
+        assert game.players["AA"].toughness_boost_factor == pytest.approx(game.TOUGHNESS_BOOST_FACTOR_MAX)
+        await game.grant_toughness_boost("AA", 5.0, 0.1)
         # extend-not-shorten / strengthen-not-weaken keeps the higher (max) boost.
-        assert game.players["AA"].partial_shield_boost == pytest.approx(game.PARTIAL_SHIELD_BOOST_MAX)
+        assert game.players["AA"].toughness_boost_factor == pytest.approx(game.TOUGHNESS_BOOST_FACTOR_MAX)
 
     @pytest.mark.asyncio
     async def test_seconds_capped(self, game):
-        await game.grant_partial_shield("AA", 9999.0)
-        assert game.players["AA"].partial_shield_until <= time.time() + game.PARTIAL_SHIELD_MAX_SECONDS + 1.0
+        await game.grant_toughness_boost("AA", 9999.0)
+        assert game.players["AA"].toughness_boost_until <= time.time() + game.TOUGHNESS_BOOST_MAX_SECONDS + 1.0
 
     @pytest.mark.uc("UC-040", flow="main", steps=[13])
     @pytest.mark.asyncio
     async def test_uc040_step13_boost_clamped_to_1_0_and_2_0(self, game):
-        """UC-040 step 13: a partial shield's boost is clamped to 1.0 to 2.0 (both bounds)."""
+        """UC-040 step 13: a toughness boost's boost is clamped to 1.0 to 2.0 (both bounds)."""
         game.players["BB"] = Player(serial="BB", alive=True)
-        await game.grant_partial_shield("AA", 5.0, 0.1)
-        assert game.players["AA"].partial_shield_boost == pytest.approx(1.0)
-        await game.grant_partial_shield("BB", 5.0, 9.0)
-        assert game.players["BB"].partial_shield_boost == pytest.approx(2.0)
+        await game.grant_toughness_boost("AA", 5.0, 0.1)
+        assert game.players["AA"].toughness_boost_factor == pytest.approx(1.0)
+        await game.grant_toughness_boost("BB", 5.0, 9.0)
+        assert game.players["BB"].toughness_boost_factor == pytest.approx(2.0)
 
     @pytest.mark.uc("UC-040", flow="main", steps=[13])
     @pytest.mark.asyncio
-    async def test_uc040_step13_partial_shield_lasts_at_most_30_s(self, game):
-        """UC-040 step 13: a partial shield lasts at most 30 s, however long the grant asks."""
+    async def test_uc040_step13_toughness_boost_lasts_at_most_30_s(self, game):
+        """UC-040 step 13: a toughness boost lasts at most 30 s, however long the grant asks."""
         before = time.time()
-        await game.grant_partial_shield("AA", 9999.0, 1.5)
-        until = game.players["AA"].partial_shield_until
+        await game.grant_toughness_boost("AA", 9999.0, 1.5)
+        until = game.players["AA"].toughness_boost_until
         assert before + 29.0 <= until <= time.time() + 30.0
 
     @pytest.mark.asyncio
     async def test_nonpositive_seconds_noop(self, game):
-        assert await game.grant_partial_shield("AA", 0.0) is False
-        assert await game.grant_partial_shield("AA", -3.0) is False
-        assert game.players["AA"].partial_shield_until == 0.0
+        assert await game.grant_toughness_boost("AA", 0.0) is False
+        assert await game.grant_toughness_boost("AA", -3.0) is False
+        assert game.players["AA"].toughness_boost_until == 0.0
 
     @pytest.mark.asyncio
     async def test_unknown_or_dead_player_noop(self, game):
-        assert await game.grant_partial_shield("ZZ", 5.0) is False
+        assert await game.grant_toughness_boost("ZZ", 5.0) is False
         game.players["AA"].alive = False
-        assert await game.grant_partial_shield("AA", 5.0) is False
+        assert await game.grant_toughness_boost("AA", 5.0) is False
 
     @pytest.mark.asyncio
     async def test_extend_not_shorten(self, game):
-        await game.grant_partial_shield("AA", 30.0, 2.0)
-        far = game.players["AA"].partial_shield_until
+        await game.grant_toughness_boost("AA", 30.0, 2.0)
+        far = game.players["AA"].toughness_boost_until
         # A shorter, weaker re-arming must not reduce the active window/boost.
-        await game.grant_partial_shield("AA", 1.0, 1.1)
-        assert game.players["AA"].partial_shield_until == pytest.approx(far)
-        assert game.players["AA"].partial_shield_boost == pytest.approx(2.0)
+        await game.grant_toughness_boost("AA", 1.0, 1.1)
+        assert game.players["AA"].toughness_boost_until == pytest.approx(far)
+        assert game.players["AA"].toughness_boost_factor == pytest.approx(2.0)
 
 
 # ========================================================================

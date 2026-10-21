@@ -38,7 +38,7 @@
   "perceptible_interventions": [
     "play_audio_cue",
     "grant_shield",
-    "partial_shield",
+    "toughness_boost",
     "adjust_music_tempo",
     "ramp_tempo",
     "eliminate_player",

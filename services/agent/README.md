@@ -1161,7 +1161,7 @@ the baseline `services/flagd/interventions.json` holds only the neutral values.
   /interventions/<flag>?game_id=<id>`, and the game resolves the neutral
   baseline again.
 - **Per-player levels and grants** (`player_sensitivity_factor`,
-  `player_handicap_factor`; `shield_seconds`, `partial_shield_seconds`,
+  `player_handicap_factor`; `shield_seconds`, `toughness_boost_seconds`,
   `soft_penalty_action`): `PUT` with `scope.game_id` + `scope.serial`; the flag
   service renders a rung on `gameId` + `targetingKey`. Every write gets a fresh
   variant, so a re-grant is a change the coordinator applies once (UC-040 BR-012).

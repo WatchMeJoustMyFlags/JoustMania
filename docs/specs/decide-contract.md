@@ -97,7 +97,7 @@ bounds ignore the magnitude and the writer uses its default.
 | `adjust_global_difficulty` | 0.5 | 2.0 | 1.5 | 1.0 | |
 | `set_player_handicap` | 0.75 | 1.75 | 1.25 | 1.0 | |
 | `grant_shield` (s) | 3 | 10 | 5 | 0 | |
-| `partial_shield` (s) | 3 | 10 | 5 | 0 | |
+| `toughness_boost` (s) | 3 | 10 | 5 | 0 | |
 
 Source: `ffa.go:magnitudeBounds`.
 
@@ -234,6 +234,8 @@ and rules decide on the **current** context.
 - `Confidence` finite in [0,1]. Confidence is deliberately not tied to p(choice).
 - Choice: in options; probabilities non-empty, known options only, each finite ≥ 0,
   sum within 1e-3 of 1; p(choice) > 0 and ≥ max(p) − tolerance; score 0.
+- There is no answer-side alias: an answer naming a retired intervention id (`partial_shield`, renamed to
+  `toughness_boost` in #1838) is not among the options and is `invalid_answer`; the round falls back to the rules.
 - Score: finite, within the inclusive range, no choice / probabilities.
 
 ### 4.3 Cross-question consistency, `decision/decide_hook.go:mapAnswers`
@@ -250,7 +252,7 @@ rules fallback**.
 
 Player-scoped interventions: `send_controller_effect`, `eliminate_player`,
 `revive_player`, `adjust_player_sensitivity`, `set_player_handicap`, `grant_shield`,
-`partial_shield`, `soft_penalty` (`decide_hook.go:playerTargetedInterventions`).
+`toughness_boost`, `soft_penalty` (`decide_hook.go:playerTargetedInterventions`).
 
 ### 4.4 Re-validation when a remote answer lands
 
@@ -283,7 +285,7 @@ Budget-aware admission (#1326, UC-040 A20/A21, BR-014/BR-015; `decision/budget.g
   admission. When the budget covers every decision, admission is unchanged.
 - `send_controller_effect` is admitted only if one medium cost (1.0) stays free after it, unless `chaos` is
   the strictly dominant objective weight or the allow-list permits no protective intervention
-  (`grant_shield`, `partial_shield`, `adjust_player_sensitivity`, `set_player_handicap`). `play_audio_cue`
+  (`grant_shield`, `toughness_boost`, `adjust_player_sensitivity`, `set_player_handicap`). `play_audio_cue`
   and `adjust_volume` (also 0.5) keep no reserve (accepted, UC-040 BR-015).
 - A `rate_limit` refusal is emitted in full (`agent.decision` + `agent.action`, warning, timeline) once per
   budget state per (intervention, target); the state changes when an intervention is admitted or one leaves
@@ -584,8 +586,8 @@ once after 250 ms. The game coordinator applies the result
 | `auto_rubberband` | `auto_rubberband` | state | `gentle` |
 | `adjust_player_sensitivity` | `player_sensitivity_factor` | per serial level | 1.5 |
 | `set_player_handicap` | `player_handicap_factor` | per serial level | 1.25 |
-| `grant_shield` | `shield_seconds` | per serial grant | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16). In trigger mode (`shield.activation`, UC-040 BR-019; Free-for-All only) the grant is a **charge** (`GAME_EFFECT_SHIELD_CHARGE`, UC-040 A30): the seconds are the protection the player gets when they activate it with the trigger (UC-030 A6). The coordinator may block it `already_charged` (A31) |
-| `partial_shield` | `partial_shield_seconds` | per serial grant | `5:2.0` (feedback: `shield_up` at half volume + `GAME_EFFECT_PARTIAL_SHIELD`) |
+| `grant_shield` | `shield_seconds` | per serial grant | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16). Planned #1837: in trigger mode (`shield.activation`, UC-040 BR-019; Free-for-All only) the grant is a **charge** (`GAME_EFFECT_SHIELD_CHARGE`, UC-040 A30): the seconds are the protection the player gets when they activate it with the trigger (UC-030 A6). The coordinator may block it `already_charged` (A31) |
+| `toughness_boost` | `toughness_boost_seconds` | per serial grant | `5:2.0` (feedback: `shield_up` at half volume + `GAME_EFFECT_TOUGHNESS_BOOST`) |
 | `soft_penalty` | `soft_penalty_action` | per serial grant | `warn` |
 | `noop` | (no write) | | |
 
@@ -606,7 +608,7 @@ reads is logged and counted (`game_intervention_event_gaps_total`)
 `end_game_fn(game_id, reason)` = `GameCoordinatorServicer._force_end_session`, the same path as
 `ForceEndGame` with a `game_id`) ([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for), #1310).
 
-Per-serial **grant** flags (`shield_seconds`, `partial_shield_seconds`,
+Per-serial **grant** flags (`shield_seconds`, `toughness_boost_seconds`,
 `soft_penalty_action`) are one-shot per decision: every write gets a fresh variant from the
 flag service. The coordinator (`InterventionManager._evaluate_targeted_grant`) reads each
 player's variant and value with evaluation details and dispatches one intervention per player

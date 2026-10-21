@@ -34,9 +34,9 @@ class ActiveEffect:
 SHIELD_BLINK_WINDOW_S = 1.0  # last second blinks
 SHIELD_BLINK_HZ = 4.0
 SHIELD_FADE_FLOOR = 0.30  # full shield fades 100% -> 30% before the blink window
-PARTIAL_SHIELD_BREATH_HZ = 0.5
-PARTIAL_SHIELD_MIN = 0.10
-PARTIAL_SHIELD_MAX = 0.50
+TOUGHNESS_BOOST_BREATH_HZ = 0.5
+TOUGHNESS_BOOST_MIN = 0.10
+TOUGHNESS_BOOST_MAX = 0.50
 
 
 def _scale(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
@@ -44,7 +44,7 @@ def _scale(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
 
 
 def shield_frame(
-    elapsed_s: float, total_s: float, color: tuple[int, int, int], partial: bool = False
+    elapsed_s: float, total_s: float, color: tuple[int, int, int], toughness_boost: bool = False
 ) -> tuple[int, int, int] | None:
     """LED colour of a shield effect ``elapsed_s`` into a ``total_s`` shield.
 
@@ -54,7 +54,7 @@ def shield_frame(
     - Full shield (BR-008): brightness falls linearly 100% -> 30% over the first
       ``total_s - 1`` seconds, then the last second blinks at 4 Hz between full
       colour and off. A shield of 1 s or less blinks for its whole duration.
-    - Partial shield (BR-009): breathes at 0.5 Hz between 10% and 50% until the
+    - Toughness boost (BR-009): breathes at 0.5 Hz between 10% and 50% until the
       last second, which blinks at 4 Hz between 50% and off.
     """
     if elapsed_s >= total_s:
@@ -66,11 +66,11 @@ def shield_frame(
         phase = ((elapsed_s - blink_start) * SHIELD_BLINK_HZ) % 1.0
         if phase >= 0.5:
             return (0, 0, 0)
-        return _scale(color, PARTIAL_SHIELD_MAX if partial else 1.0)
-    if partial:
+        return _scale(color, TOUGHNESS_BOOST_MAX if toughness_boost else 1.0)
+    if toughness_boost:
         # Sine breathing that starts at the bottom of the range: 10% -> 50% -> 10%.
-        wave = (1 - math.cos(2 * math.pi * PARTIAL_SHIELD_BREATH_HZ * elapsed_s)) / 2
-        return _scale(color, PARTIAL_SHIELD_MIN + (PARTIAL_SHIELD_MAX - PARTIAL_SHIELD_MIN) * wave)
+        wave = (1 - math.cos(2 * math.pi * TOUGHNESS_BOOST_BREATH_HZ * elapsed_s)) / 2
+        return _scale(color, TOUGHNESS_BOOST_MIN + (TOUGHNESS_BOOST_MAX - TOUGHNESS_BOOST_MIN) * wave)
     fraction = elapsed_s / blink_start  # blink_start > 0 here
     return _scale(color, 1.0 - (1.0 - SHIELD_FADE_FLOOR) * fraction)
 

@@ -784,6 +784,48 @@ async def press_admin_button(
     await asyncio.sleep(gap)
 
 
+async def select_admin_option(
+    press_move,
+    read_color,
+    target_color: tuple[int, int, int],
+    *,
+    max_presses: int = 8,
+    settle_seconds: float = 1.0,
+) -> int:
+    """Press Move until the admin option colour ``target_color`` shows (#1845).
+
+    The menu debounces admin buttons by their PROCESSING time (300 ms), so a
+    stalled menu loop can compress two presses into one and drop the second;
+    a fixed number of Move presses then leaves a different option selected and
+    the next Start/Select edits that option. Each press shows the option's
+    colour for ~1 s, so the colour is the observable selection. Wrapping past
+    the last option is harmless: the colour comes round again.
+
+    Args:
+        press_move: async callable that presses and releases Move (with its gap).
+        read_color: async callable returning the host LED colour.
+        target_color: the LED colour of the option to select.
+
+    Returns:
+        The number of presses it took.
+
+    Raises:
+        AssertionError: if the colour never showed within ``max_presses``.
+    """
+    last = None
+
+    async def shown() -> bool:
+        nonlocal last
+        last = await read_color()
+        return last == target_color
+
+    for presses in range(1, max_presses + 1):
+        await press_move()
+        if await async_poll_until(shown, timeout=settle_seconds, interval=0.1):
+            return presses
+    raise AssertionError(f"admin option colour {target_color} never showed in {max_presses} Move presses (last={last})")
+
+
 async def exit_admin_mode(mock_client, serial: str):
     """Exit admin mode via the PS button (press + release)."""
     await press_admin_button(
