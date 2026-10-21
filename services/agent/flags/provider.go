@@ -24,6 +24,9 @@ const Domain = "agent"
 // only remediation_allowed (services/flagd/rollout.json).
 const RolloutDomain = "rollout"
 
+// The game set's domain (GameDomain) is declared in game.go: the agent reads only the
+// two shield flags of the charge ledger from it (UC-040 A31, #1837).
+
 // Sync-stream reconnect backoff after a lost stream (flags.md §1.1): the provider's
 // default caps it at 12 s, which would hold the agent fail-closed that long after a
 // flagd restart.
@@ -119,7 +122,7 @@ func flagdProviderOptions(cfg ProviderConfig, flagSet string, initDeadline time.
 }
 
 // SetupFlagd registers the agent's flagd providers (in-process resolver, #1713) for the
-// `agent` and `rollout` domains and returns a Flags wrapper, a hot-reloadable
+// `agent`, `rollout` and `game` (read-only, UC-040 A31) domains and returns a Flags wrapper, a hot-reloadable
 // LifecycleHolder (#927), and a shutdown func.
 //
 // Setup never blocks startup: each provider waits for its first sync in the background
@@ -134,7 +137,7 @@ func flagdProviderOptions(cfg ProviderConfig, flagSet string, initDeadline time.
 // event path from freezing it (#1709), every LifecycleReloadInterval until ctx ends.
 func SetupFlagd(ctx context.Context, cfg ProviderConfig, log *slog.Logger) (*Flags, *LifecycleHolder, func(), error) {
 	probe := tcpProbe(net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))))
-	return setupFlagd(ctx, flagdFactory(cfg, Domain), flagdFactory(cfg, RolloutDomain), probe, defaultSyncTiming, log)
+	return setupFlagd(ctx, flagdFactory(cfg, Domain), flagdFactory(cfg, RolloutDomain), flagdFactory(cfg, GameDomain), probe, defaultSyncTiming, log)
 }
 
 // tcpProbe reports whether addr accepts a TCP connection within 1 s.
@@ -149,7 +152,7 @@ func tcpProbe(addr string) func() bool {
 	}
 }
 
-func setupFlagd(ctx context.Context, agentSet, rolloutSet innerFactory, probe func() bool, timing syncTiming, log *slog.Logger) (*Flags, *LifecycleHolder, func(), error) {
+func setupFlagd(ctx context.Context, agentSet, rolloutSet, gameSet innerFactory, probe func() bool, timing syncTiming, log *slog.Logger) (*Flags, *LifecycleHolder, func(), error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -161,8 +164,13 @@ func setupFlagd(ctx context.Context, agentSet, rolloutSet innerFactory, probe fu
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	game, err := registerDomain(GameDomain, gameSet, probe, timing, log)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	f := New(client, log)
 	f.rollout = rollout
+	f.game = game
 
 	// Prime the holder before wiring the handler so consumers see correct values from
 	// the first cycle even if no event ever fires.

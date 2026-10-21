@@ -22,6 +22,12 @@ const (
 	spanAttrExperimentID = "experiment.id"
 	spanAttrArm          = "experiment.arm"
 	spanEventDeath       = "player_death"
+	// spanNameShieldCharge is the coordinator's per-charge span (UC-040 A30 to A32,
+	// #1837). It ends live at activation, expiry, death or game end, often AFTER the
+	// player died; the agent takes nothing from it (A8 of the #1837 PR-4 plan): its
+	// player.serial must not re-create or refresh a dead or evicted player, and its
+	// game.id must not re-create an evicted partition.
+	spanNameShieldCharge = "game.shield_charge"
 
 	// resourceAttrServiceName mirrors semconv service.name, used for the
 	// own-telemetry skip.
@@ -99,7 +105,16 @@ func (s *Store) ApplySpans(td ptrace.Traces) bool {
 	return updated
 }
 
+// ignoredSpan reports whether a span carries nothing the agent takes in.
+func ignoredSpan(span ptrace.Span) bool {
+	return span.Name() == spanNameShieldCharge
+}
+
 func (s *Store) applySpan(span ptrace.Span) bool {
+	// Before the identity block below: ensurePlayer would resurrect a dead player.
+	if ignoredSpan(span) {
+		return false
+	}
 	attrs := span.Attributes()
 	updated := false
 

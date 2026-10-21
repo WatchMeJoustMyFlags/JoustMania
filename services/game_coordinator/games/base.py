@@ -1258,6 +1258,10 @@ class BaseGameMode(ABC):
             logger.warning(f"Failed to read game_instructions, treating as off: {e}")
             return False
 
+    def _is_shadow_game(self) -> bool:
+        """True for a shadow game: it sends no audio RPC (UC-031 BR-006, #1835)."""
+        return self.game_kind == GAME_KIND_SHADOW
+
     async def _play_instructions(self, span: trace.Span) -> None:
         """Play the mode's instruction clip and wait for it to finish (UC-020 A5).
 
@@ -3532,8 +3536,8 @@ class BaseGameMode(ABC):
                     player._countdown_span.end()
                     player._countdown_span = None
 
-            # Ramp music volume up to game level after countdown
-            if self.audio_client:
+            # Ramp music volume up to game level after countdown (a shadow game is silent, #1835)
+            if self.audio_client and not self._is_shadow_game():
                 try:
                     from proto import audio_pb2
 
@@ -3710,7 +3714,11 @@ class BaseGameMode(ABC):
             # Before cleanup, so a raising cleanup leaves no span open.
             self._close_shield_charge_spans()
             # Always call cleanup to cancel tracked tasks
-            await self.cleanup()
+            try:
+                await self.cleanup()
+            finally:
+                # A grant arriving while cleanup awaits can open a span after the first close (#1868).
+                self._close_shield_charge_spans()
             # Ensure this session's analytics are always cleared, even on error
             # (#775) — per-session targeted cleanup, never a global wipe.
             metrics.clear_session_player_analytics(
@@ -3854,8 +3862,10 @@ class BaseGameMode(ABC):
                 game_cycle_context so the sound span is parented to a specific
                 span (e.g., a player lifecycle span for death explosions).
             volume: Playback volume 0.0-1.0 (default 1.0).
+
+        A shadow game plays nothing: it has no audience and the audio service is shared (#1835).
         """
-        if not self.audio_client:
+        if not self.audio_client or self._is_shadow_game():
             return
 
         try:
@@ -3931,6 +3941,13 @@ class BaseGameMode(ABC):
         self._emit_music_tempo_metric()
         self._emit_threshold_metrics()
 
+        if self._is_shadow_game():
+            # Shadow games are silent (#1835, UC-031 BR-006): PlayMusic on the shared audio
+            # service would replace the real game's track. The schedule above still runs (D1).
+            trace.get_current_span().set_attribute("game.music", "shadow")
+            logger.info(f"Shadow game {self.game_id}: no music, tempo schedule runs silently")
+            return
+
         if not self.audio_client:
             logger.info(
                 f"No audio client: tempo schedule runs without music, next change at +{self._next_change_in():.1f}s"
@@ -3970,8 +3987,8 @@ class BaseGameMode(ABC):
         return self.change_time - time.time()
 
     async def _stop_game_music(self):
-        """Stop game music (Phase 70)."""
-        if not self.audio_client:
+        """Stop game music (Phase 70). A shadow game never started any (#1835)."""
+        if not self.audio_client or self._is_shadow_game():
             return
 
         try:
