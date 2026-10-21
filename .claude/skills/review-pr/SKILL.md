@@ -49,7 +49,7 @@ unexplained deviation as a finding.
 1. **Context.** `gh pr view <PR> --json title,body,headRefOid,files,labels`; read the linked issue ("Part of #N")
    and the UC / FR / spec rows the PR names. Check the head SHA matches what you were told.
 2. **Correctness and safety first.** Does the diff do what the spec says, nothing more? Fail-closed where it
-   must? Async/await propagated? Flags read at use time? Proto RPC has its connect-proxy forwarding method?
+   must? Async/await propagated? Flags read at use time? A new env-only tunable is a finding (C-035: runtime flexibility is a flag)? Proto RPC has its connect-proxy forwarding method?
    Spec IDs collide with open PRs? `Part of #N`, no closing keywords? Labels (`ci-full`, `no-spec-change`) right?
 3. **Mutation check.** In the review worktree, revert or weaken the core fix (`git show <fix> -- <file> | git apply -R`
    or a one-line edit), run the new tests: at least one must FAIL (hand the run to the Haiku `gate-runner` agent with
