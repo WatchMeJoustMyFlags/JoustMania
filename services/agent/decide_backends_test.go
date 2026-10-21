@@ -634,6 +634,7 @@ func TestDecideHTTPClient_FollowsNoRedirect(t *testing.T) {
 	var (
 		mu       sync.Mutex
 		received []string
+		hits     int
 	)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -643,17 +644,27 @@ func TestDecideHTTPClient_FollowsNoRedirect(t *testing.T) {
 	}))
 	defer target.Close()
 	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
 		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
 	}))
 	defer redirector.Close()
 
 	client := newDecideHTTPClient()
 	reg := newDecideRegistry(allKeys, client)
-	req := decide.Request{Questions: []decide.Question{{ID: decide.QuestionFFAIntervention}}}
+	// A question every backend encodes and sends: a backend that errors before
+	// the network would otherwise pass this test vacuously (the hit count below).
+	req := decide.Request{Questions: []decide.Question{{
+		ID: decide.QuestionFFAIntervention, Kind: decide.KindChoice, Text: "Intervene?",
+		Options: []string{"none", "boost"},
+	}}}
 
 	backends := map[string]func() decide.Backend{
-		// The claude factory sets no base URL from a flag; build it on the same
-		// client the factory gets, pointed at the redirector.
+		// The claude factory sets no base URL from a flag, so the test builds
+		// claude.New by hand with the shared client, pointed at the redirector.
+		// That equals the factory, which passes the same client and no other
+		// transport setting (decide_backends.go).
 		flags.DecisionBackendClaude: func() decide.Backend {
 			return claude.New(claude.Config{APIKey: allKeys.AnthropicAPIKey, Model: "claude-haiku-4-5-20251001",
 				Timeout: 2 * time.Second, HTTPClient: client, BaseURL: redirector.URL})
@@ -675,6 +686,7 @@ func TestDecideHTTPClient_FollowsNoRedirect(t *testing.T) {
 		t.Run("UC-044/BR-003 "+name+" does not follow a redirect", func(t *testing.T) {
 			mu.Lock()
 			received = nil
+			hits = 0
 			mu.Unlock()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -683,6 +695,9 @@ func TestDecideHTTPClient_FollowsNoRedirect(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
+			if hits != 1 {
+				t.Errorf("redirector got %d requests, want exactly 1 (backend must reach the wire)", hits)
+			}
 			if len(received) != 0 {
 				t.Errorf("redirect target received %v, want no request", received)
 			}
