@@ -714,10 +714,10 @@ func main() {
 		loop.ProbeRules = decision.NewProbeRules(probeInterval, nil)
 		// Action sink (#730/#1213): the shared GatedActionSink applies decisions as
 		// game-scoped writes to the flag service (#1411) ONLY when the
-		// LIVE interventions_enabled flag is on; otherwise it discards them (NoopActions
-		// behavior) — gate read per Apply, fail-closed on a flagd outage. The one sink is
+		// LIVE interventions_enabled flag is on; otherwise it discards them (the loop's
+		// discardActions default behavior) — gate read per Apply, fail-closed on a flagd outage. The one sink is
 		// safe to share across loops (no per-game state). The nil guard is defensive: a
-		// nil sink would leave the loop's default NoopActions in place.
+		// nil sink would leave the loop's default discardActions in place.
 		if sharedSink != nil {
 			loop.Actions = sharedSink
 		}
