@@ -17,7 +17,7 @@ game's values when it ends (UC-053 BR-003):
   the service's boot epoch changes (a restarted flag service lost every game
   scope, UC-053 A9 step 3; the worker reads the epoch from ``GET /healthz``
   every 2 s and from every response), and every 15 s regardless. It only
-  touches this instance's games; a second coordinator (agent-coordinator stack)
+  touches this instance's games; a second coordinator
   has its own instance id (review C3). The id is stable across restarts, so a
   restarted coordinator's first reconcile drops its previous process's games.
 
@@ -108,9 +108,8 @@ BOOT_ID = uuid.uuid4().hex[:8]
 
 def coordinator_instance_id() -> str:
     """A STABLE id per coordinator: ``FLAG_SERVICE_INSTANCE``, which every compose
-    stack sets (``game-coordinator``; ``agent-game-coordinator`` for the second
-    coordinator, review C3). It survives a restart and a container recreate on
-    purpose: the new process's reconcile then drops the games its predecessor
+    stack sets (``game-coordinator``; a second coordinator needs its own id, review C3). It survives a restart and a
+    container recreate on purpose: the new process's reconcile then drops the games its predecessor
     registered (UC-053 A10), instead of leaving them for the 1 h expiry. The
     hostname fallback is for runs outside compose only: in a container it is the
     container id, which changes when the container is recreated."""

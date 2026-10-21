@@ -47,9 +47,7 @@ COMPOSE_CI = REPO_ROOT / "docker-compose.ci.yml"
 COMPOSE_LITE = (
     REPO_ROOT / "docker-compose.lite.yml"
 )  # standalone Pi stack, not an overlay
-COMPOSE_AGENT_COORDINATOR = REPO_ROOT / "docker-compose.agent-coordinator.yml"
 COMPOSE_DRY_RUN = REPO_ROOT / "docker-compose.dry-run.yml"
-COMPOSE_DECIDE_E2E = REPO_ROOT / "docker-compose.decide-e2e.yml"
 
 # compose service -> (language, code roots). Python services also load lib/.
 CODE_ROOTS: dict[str, tuple[str, tuple[Path, ...]]] = {

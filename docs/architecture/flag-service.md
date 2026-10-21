@@ -116,7 +116,7 @@ EBUSY on the bind mount). Locks are per process or per writer instance; there is
 | W7 | connect-proxy | `canary.go` (`setCanaryRouting` :103) | `controller.json` | `bluetooth_backend` (`defaultVariant` or `fractional`) | typed remarshal (drops unknown keys), `os.WriteFile`; in CI it writes the base dir while flagd serves `ci/` | operator HTTP POST | no |
 | W8 | Stage and operator scripts | `scripts/talk-stage.sh` (`set`, `reset`, `permissions`), `scripts/agent-backend.sh`, `scripts/agent-dryrun-enable.sh`, `scripts/agent-killswitch.sh` | `ci/agent.json` (default), `talk-stage.sh reset` also `interventions.json` | `decision.*`, `enabled`, `experiments_enabled`, `interventions_allowed`, the stage baseline (`scripts/talk-baseline.json`) | Python heredoc, in place | presenter / operator | no |
 | W9 | Demo validation harness | removed in #1322 (`tools/demo/validation_harness.py` deleted; nothing ran it) | none | none | n/a | n/a | n/a |
-| W10 | Integration fixtures | `tests/integration/test_intervention_flow.py` (`flag_files` :229, `write_*`, `rewrite_edge_value` with `_reload_marker`), `test_parallel_intervention_flow.py` (`_branches` side registry, uuid5 variant names, `_FILE_LOCK`), `test_intervention_smoke.py`, `test_gameid_intervention_isolation.py`, `tests/service/test_experiment_shadow_isolation.py`, `test_experiment_cohort_loop.py`, `tests/service/agent_flow.py` (agent journeys, #1600), `tests/service/test_tc005_admin_journey.py`, `tests/service/test_tc020_host_and_stage_flags.py`, `tests/service/test_rollout_plumbing.py`, `helpers.py` (`wait_flag_file_restored`) | `services/flagd/ci/*.json` | every intervention, `policy.*` budgets, agent switches, `game.json`, `user.json`, `rollout.json` | in place; snapshot and byte-for-byte restore | per test | `_branches` ladders (tests only) |
+| W10 | Integration fixtures | `tests/integration/test_intervention_flow.py` (`flag_files` :229, `write_*`, `rewrite_edge_value` with `_reload_marker`), `test_parallel_intervention_flow.py` (`_branches` side registry, uuid5 variant names, `_FILE_LOCK`), `test_intervention_smoke.py`, `test_gameid_intervention_isolation.py`, `tests/service/test_experiment_shadow_isolation.py`, `tests/service/agent_flow.py` (agent journeys, #1600), `tests/service/test_tc005_admin_journey.py`, `tests/service/test_tc020_host_and_stage_flags.py`, `tests/service/test_rollout_plumbing.py`, `helpers.py` (`wait_flag_file_restored`) | `services/flagd/ci/*.json` | every intervention, `policy.*` budgets, agent switches, `game.json`, `user.json`, `rollout.json` | in place; snapshot and byte-for-byte restore | per test | `_branches` ladders (tests only) |
 | W11 | Script tests | `scripts/tests/test-talk-stage.sh`, `test-talk-preflight.sh`, `test-agent-backend.sh` | copies of `ci/agent.json`, `ci/interventions.json` in a temp dir | the flags W8 writes | file fixtures | CI "Script Tests" job | no |
 | W12 | `flag-dir-init` | busybox one-shot in `docker-compose.yml:65`, `docker-compose.ci.yml:75`, `docker-compose.lite.yml:40` | the flag directory | none: `chgrp 65532` + `g+w` so the nonroot menu can write | permissions only | stack start | n/a |
 
@@ -356,8 +356,8 @@ bounds carry the per-flag knowledge, and new mutable flags need a registry row, 
 - **Instance scoping (review C3).** `PUT /games/{gameId}` carries `coordinator_instance` (`FLAG_SERVICE_INSTANCE`, set per
   coordinator in compose and stable across a restart or recreate; the boot id is only logged). `PUT /coordinators/{instance}/games` (the reconcile call, at coordinator start and when its
   connection to the service recovers) drops only that instance's other games:
-  `docker-compose.agent-coordinator.yml` runs a second coordinator for the agent's cohort soak, and one
-  must never drop the other's games.
+  a second coordinator (a separate compose service with its own instance id) must never drop the
+  other's games.
 - **Registration race (review Important 7).** The coordinator awaits `PUT /games/{id}` for at most
   200 ms **before the game is RUNNING**, outside `_sessions_lock` (no network call under the lock). On
   timeout or error the game still starts (C-004), the coordinator retries in the background, and agent
@@ -425,8 +425,8 @@ write it re-renders the merged configuration and pushes it to every open stream.
   `"persist": true`; the stage scripts, the validation harness and the tests never do, so their overlays stay
   in memory and die with a restart. `ttl_seconds` together with `"persist": true` is `400 malformed`.
 - **One state file per stack.** `FLAG_SERVICE_STATE_FILE` names it; each compose stack that runs the service
-  gets its own named volume (`flag-service-state`, project-scoped by compose), so the CI, dry-run and
-  decide-e2e stacks never read the production stack's admin settings.
+  gets its own named volume (`flag-service-state`, project-scoped by compose), so the CI and dry-run
+  stacks never read the production stack's admin settings.
 - **Atomic write.** The service writes a temporary file in the same directory and renames it over the state
   file (the state file is on a named volume, not a single-file bind mount, so rename is safe). A failed write
   is logged and counted in `flagservice_admin_persist_errors_total`; the value still applies in memory.

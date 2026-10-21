@@ -225,7 +225,7 @@ gate_cmd() {  # print the shell command for a gate
       echo "set -e; for c in 'docker-compose.yml' 'docker-compose.yml docker-compose.override.yml' \
 'docker-compose.yml docker-compose.ci.yml' 'docker-compose.yml docker-compose.override.yml docker-compose.dev.yml' \
 'docker-compose.yml docker-compose.override.yml docker-compose.ci.yml docker-compose.dry-run.yml' \
-'docker-compose.yml docker-compose.ci.yml docker-compose.decide-e2e.yml' 'docker-compose.lite.yml'; do \
+'docker-compose.lite.yml'; do \
 a=(); for f in \$c; do a+=(-f \"\$f\"); done; echo \"compose: \$c\"; \
 docker compose \"\${a[@]}\" --profile agent --profile dashboard config -q; done" ;;
     yaml-dupkeys)
