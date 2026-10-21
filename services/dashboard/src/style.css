@@ -419,6 +419,21 @@ body {
   animation: shield-blink 0.25s steps(2, start) infinite;
 }
 
+/* Shield charge held, not yet activated (#1837, UC-040 A30): a slow pulse, not the blink. */
+.controller-card.charged {
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
+.shield-badge.shield-charged {
+  animation: shield-charge-pulse 2s ease-in-out infinite;
+}
+
+@keyframes shield-charge-pulse {
+  50% {
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.35);
+  }
+}
+
 @keyframes shield-blink {
   to {
     visibility: hidden;
@@ -426,6 +441,10 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .shield-badge.shield-charged {
+    animation: none;
+  }
+
   .shield-badge.shield-ending {
     animation: none;
     outline: 2px dashed currentColor;

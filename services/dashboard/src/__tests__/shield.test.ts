@@ -3,7 +3,7 @@
  * game events, and the live LED colour (shield fade included) rendered as CSS.
  */
 import { describe, expect, it } from "vitest";
-import { ShieldStore, shieldBadge } from "../shield.js";
+import { ShieldStore, shieldBadge, type GameEventLike } from "../shield.js";
 import { ledColorCss } from "../components/ControllerCard.js";
 
 const NOW = 1_760_000_000_000;
@@ -123,5 +123,104 @@ describe("UC-035: main step 2, controller tile LED colour", () => {
 
   it("UC-035 main step 2 an unlit tile has a grey dot and no glow", () => {
     expect(ledColorCss(undefined)).toEqual({ background: "#333", glow: "transparent" });
+  });
+});
+
+function charged(serial: string, expiresMs: number) {
+  return {
+    eventType: "player_shield_charged",
+    data: { serial, seconds: "5.0", expires_ms: String(expiresMs) },
+  };
+}
+
+describe("UC-035: main step 2, shield charge badge (FR-084, #1837)", () => {
+  it("UC-035/main shows Charged with the seconds to expiry, or none when it never expires", () => {
+    const store = new ShieldStore();
+    store.apply(charged("MOCK0001", NOW + 12_000), NOW);
+    store.apply(charged("MOCK0002", 0), NOW);
+
+    expect(shieldBadge(store.get("MOCK0001", NOW), NOW)).toEqual({
+      text: "Charged 12s",
+      className: "shield-badge shield-charged",
+    });
+    expect(shieldBadge(store.get("MOCK0002", NOW + 600_000), NOW + 600_000)?.text).toBe("Charged");
+  });
+
+  it("UC-035/main the countdown ends with the expiry", () => {
+    const store = new ShieldStore();
+    store.apply(charged("MOCK0001", NOW + 3000), NOW);
+    expect(store.get("MOCK0001", NOW + 3000)).toBeNull();
+  });
+
+  it("UC-035/main shows Charged without a countdown when the clocks disagree (A11 of #1837)", () => {
+    const store = new ShieldStore();
+    store.apply(charged("MOCK0001", NOW - 60_000), NOW); // expiry already in the past
+    store.apply(charged("MOCK0002", NOW + 131_000), NOW); // beyond the largest allowed window
+    store.apply(charged("MOCK0003", NOW + 130_000), NOW); // at the limit: trusted
+
+    expect(shieldBadge(store.get("MOCK0001", NOW), NOW)?.text).toBe("Charged");
+    expect(shieldBadge(store.get("MOCK0002", NOW + 500_000), NOW + 500_000)?.text).toBe("Charged");
+    expect(shieldBadge(store.get("MOCK0003", NOW), NOW)?.text).toBe("Charged 130s");
+  });
+
+  it("UC-035/main a charge under a running shield shows both", () => {
+    const store = new ShieldStore();
+    store.apply(charged("MOCK0001", 0), NOW);
+    store.apply(shielded("MOCK0001", "full", NOW + 4200), NOW);
+    const badge = shieldBadge(store.get("MOCK0001", NOW), NOW);
+    expect(badge?.text).toBe("Shield 4.2s · Charged");
+    expect(badge?.className).toContain("shield-full");
+    expect(badge?.className).toContain("shield-charged");
+  });
+
+  it("UC-035/main the existing shield badge output is unchanged without a charge", () => {
+    const store = new ShieldStore();
+    store.apply(shielded("MOCK0001", "full", NOW + 5000), NOW);
+    expect(shieldBadge(store.get("MOCK0001", NOW), NOW)).toEqual({
+      text: "Shield 5.0s",
+      className: "shield-badge shield-full",
+    });
+  });
+});
+
+describe("UC-040: A30 step 4 / A32 step 3 the dashboard badge follows the charge", () => {
+  it("UC-040/A32 player_shield_charge_ended clears the badge for every reason", () => {
+    for (const reason of ["expired", "death", "game_end", "activated"]) {
+      const store = new ShieldStore();
+      store.apply(charged("MOCK0001", 0), NOW);
+      expect(store.apply({ eventType: "player_shield_charge_ended", data: { serial: "MOCK0001", reason } })).toBe(true);
+      expect(store.get("MOCK0001", NOW)).toBeNull();
+    }
+  });
+
+  it("UC-040/A30 activation by the trigger turns the charge into the running shield", () => {
+    const store = new ShieldStore();
+    store.apply(charged("MOCK0001", 0), NOW);
+    store.apply({
+      eventType: "player_shielded",
+      data: {
+        serial: "MOCK0001",
+        kind: "full",
+        seconds: "5.0",
+        until_ms: String(NOW + 5000),
+        activation: "trigger",
+        charge_delay_ms: "3200",
+      },
+    }, NOW);
+    expect(shieldBadge(store.get("MOCK0001", NOW), NOW)?.text).toBe("Shield 5.0s");
+  });
+
+  it("UC-040/A32 a death, a game start and a game end clear the charge", () => {
+    for (const clearing of <GameEventLike[]>[
+      { eventType: "player_death", data: { serial: "MOCK0001" } },
+      { eventType: "game_start", data: {} },
+      { eventType: "game_ended", data: {} },
+      { eventType: "game_force_ended", data: {} },
+    ]) {
+      const store = new ShieldStore();
+      store.apply(charged("MOCK0001", 0), NOW);
+      store.apply(clearing, NOW);
+      expect(store.get("MOCK0001", NOW)).toBeNull();
+    }
   });
 });

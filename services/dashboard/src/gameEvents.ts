@@ -80,10 +80,24 @@ export function reduceGameEvent(prev: GameFeedState, event: GameEventInput): Gam
       break;
 
     case "player_shielded": {
+      if (data["activation"] === "trigger") {
+        const delayS = Number(data["charge_delay_ms"]) / 1000;
+        feedLine = `${shortSerial(data["serial"])} activated the shield${Number.isFinite(delayS) ? ` (after ${delayS.toFixed(1)}s)` : ""}`;
+        break;
+      }
       const kind = data["kind"] === "toughness_boost" || data["kind"] === "partial" ? "toughness boost" : "shield";
       feedLine = `Agent: ${kind} for ${shortSerial(data["serial"])} (${data["seconds"] ?? "?"}s)`;
       break;
     }
+
+    case "player_shield_charged":
+      feedLine = `Agent: shield charge for ${shortSerial(data["serial"])} (${data["seconds"] ?? "?"}s)`;
+      break;
+
+    case "player_shield_charge_ended":
+      // Only an expiry is news: activation and death have their own lines.
+      if (data["reason"] === "expired") feedLine = `${shortSerial(data["serial"])}'s shield charge expired`;
+      break;
 
     case "countdown_start":
       state.gameState = "Starting";

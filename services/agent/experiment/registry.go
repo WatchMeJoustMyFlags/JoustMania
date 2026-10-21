@@ -561,6 +561,17 @@ func (r *Registry) Declare(in Intent) (string, error) {
 		arms = DefaultArms()
 	}
 	id := MintExperimentID()
+
+	// #1731: hold r.mu from before the journal file exists until the entry is in
+	// r.entries. Rehydrate loads under r.mu and skips an id already registered, so
+	// a declare racing the first enable's Rehydrate (proposer goroutine vs the
+	// experiment tick) is either fully registered when Rehydrate sees its journal,
+	// or not on disk yet. Otherwise Rehydrate would read the fresh PROPOSED journal
+	// as a leftover of a crash and abort it with start_failed (UC-043 A8).
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Keep this call inside the lock: TestDeclareCreatesJournalUnderRegistryLock_1731
+	// probes r.mu through r.clock().
 	now := r.clock()
 
 	// Reconcile target_n vs the verdict min-N (#1001). A target_n below the verdict
@@ -592,8 +603,6 @@ func (r *Registry) Declare(in Intent) (string, error) {
 		return "", fmt.Errorf("registry: declare experiment: %w", err)
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.entries[id] = &entry{
 		id:        id,
 		journal:   jrnl,
@@ -1739,6 +1748,12 @@ func (r *Registry) Rehydrate(ids []string) error {
 		}
 	}()
 	for _, id := range ids {
+		// #1731: an id this registry already holds was declared by this process
+		// (Declare registers it under r.mu together with its journal), never a
+		// leftover of a restart: leave it to its declarer.
+		if _, known := r.entries[id]; known {
+			continue
+		}
 		jrnl, err := journal.Load(r.root, id)
 		if err != nil {
 			return fmt.Errorf("registry: rehydrate %q: %w", id, err)
