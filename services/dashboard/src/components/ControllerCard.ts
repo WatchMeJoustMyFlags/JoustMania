@@ -8,7 +8,7 @@ import { accelDotOffset, batteryView, normalizeGameplay, statusView } from "../m
 import type { StatusView } from "../motion.js";
 import { qualityBadge } from "../quality.js";
 import { shieldBadge } from "../shield.js";
-import type { ShieldState } from "../shield.js";
+import type { ShieldView } from "../shield.js";
 import { controllerClient } from "../client.js";
 import { identifyController } from "../identify.js";
 import { UNPAIR_NOTICE_EVENT, canUnpair, requestUnpair } from "../unpair.js";
@@ -127,7 +127,7 @@ export class ControllerCard {
 
   update(
     frame: GameplayData,
-    shield: ShieldState | null = null,
+    shield: ShieldView | null = null,
     nowMs: number = Date.now(),
     alive: boolean | undefined = undefined,
   ) {
@@ -160,9 +160,10 @@ export class ControllerCard {
     this.ledElement.style.boxShadow = css.glow === "transparent" ? "" : `0 0 20px ${css.glow}`;
   }
 
-  private updateShield(shield: ShieldState | null, nowMs: number) {
+  private updateShield(shield: ShieldView | null, nowMs: number) {
     const badge = shieldBadge(shield, nowMs);
-    this.element.classList.toggle("shielded", badge !== null);
+    this.element.classList.toggle("shielded", shield?.active != null && badge !== null);
+    this.element.classList.toggle("charged", shield?.active == null && badge !== null);
     if (!badge) {
       this.shieldElement.hidden = true;
       return;
