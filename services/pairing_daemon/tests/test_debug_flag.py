@@ -1,12 +1,14 @@
 """debug flag: flag wins, env fallback, default off (#1788, FR-150, FR-151)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
+
+from openfeature.client import OpenFeatureClient
 
 from psmove_pairing.config import is_debug
 
 
 def _client(value):
-    client = MagicMock()
+    client = create_autospec(OpenFeatureClient, instance=True)
     client.get_boolean_value.side_effect = lambda _key, default, _ctx: default if value is None else value
     return client
 

@@ -329,7 +329,7 @@ Telemetry export knobs for the Python services and rust-hid. Targeting keys on t
 | `log_level` | string | debug="debug", info="info", warning="warning", error="error" | `info` = "info" | N (the `service` context variable is passed, so a stack overlay or a future rule can target one service) | all Python services: lib/log_level.py `flag_level` (<- lib/otel_logging.py `init_logging`); agent: services/agent/flags/loglevel.go `LogLevelFollower` | the flag service (stack overlay, registry §13.5) | live: re-applied on provider ready, on every configuration change and by a 5 s safety-net poll (#1788); the flag service itself keeps `LOG_LEVEL` (§15.2) |
 | `debug` | bool | on=true, off=false | `off` = false | N | pairing daemon: services/pairing_daemon/psmove_pairing/config.py `is_debug` (tracebacks on logged errors; while on, the daemon's log level is DEBUG) | the flag service (stack overlay, registry §13.5) | live (per use) |
 
-**Traceability:** FR-080 to FR-082, NFR-022 / UC-035 / `lib/otel_metrics.py`, `lib/telemetry.py`, `lib/grpc_tracing.py`, `services/rust-hid/src/feature_flags.rs` / `lib/tests/`.
+**Traceability:** FR-080 to FR-082, NFR-022, FR-150, FR-151 / UC-035 / `lib/otel_metrics.py`, `lib/telemetry.py`, `lib/grpc_tracing.py`, `lib/log_level.py`, `services/agent/flags/loglevel.go`, `services/rust-hid/src/feature_flags.rs` / `lib/tests/`, `services/agent/flags/loglevel_test.go`.
 
 ## 11. Flags without an effective reader
 
@@ -576,7 +576,7 @@ Surfaces (#818):
 
 ## 15. Planned: env-to-flag migration (#1788)
 
-Planned rows, **not in the flag files yet** (status Open, #1788, FR-150 to FR-152, C-034). Each row replaces one environment variable that is read once at startup today. Rules for every row:
+Rows marked Implemented are in the flag files; the others are planned (status Open, #1788, FR-150 to FR-152, C-034). Each row replaces one environment variable that is read once at startup today. Rules for every row:
 
 - **Read at use time** (each call, tick or log record), not at startup.
 - **Flag first, env fallback for one release** (FR-151): the flag always wins when flagd resolves it. Only when the flag cannot be resolved (flagd unreachable, flag missing, no first sync yet) the deprecated env var is used when set, else the compiled default. The flag default equals today's default, so an unset env and an unreachable flagd behave as before.
@@ -619,6 +619,8 @@ Each key above is added to the mutable-flag registry as a stack-scoped `overlay`
 ### 15.3 Open points
 
 - Resolved (#1788): the pairing daemon is host-networked but reaches flagd on `127.0.0.1:8015` and already evaluates the `system` and `controller` sets, so `debug` and `log_level` are migrated for it. While `debug` is on, the daemon's root log level is DEBUG (the former `DEBUG` env behaviour), lowered below the `log_level` flag value.
+- Resolved (#1788), floor and OTLP: when `debug` is on, the pairing daemon's floor lowers the OTLP log handler to DEBUG too, so DEBUG records now also go out over OTLP (before, the handler stayed at `LOG_LEVEL`, default INFO).
+- Resolved (#1788), sync loss asymmetry: when the observability sync is lost, Python keeps the last resolved level while the provider is STALE, but the agent re-resolves on every refresh and drops to the `LOG_LEVEL` env level (default info) until the flag resolves again, logging "log level changed" at each flip.
 - Resolved (#1788): the Python log level is applied at import by `logging.basicConfig` from the deprecated `LOG_LEVEL` (flagd is not reachable yet). `lib/log_level.py` re-applies the resolved level (flag, else env, else INFO) to the root logger and the OTLP handler when the observability provider turns ready, on every configuration change and every 5 s; the agent does the same through a `slog.LevelVar` (`services/agent/flags/loglevel.go`).
 
-**Traceability:** FR-150 to FR-152, C-034, NFR-011 / UC-045 (planned note) / `services/agent/main.go`, `lib/otel_logging.py` (OTLP handler level), `lib/flag_eval_visibility.py`; the Python services read `LOG_LEVEL` themselves in `services/game_coordinator/server.py:21`, `services/menu/server.py:22`, `services/audio/server.py:33`, `services/python_hid/server.py:31`, `services/controller_manager/server.py:39`.
+**Traceability:** FR-150 to FR-152, C-034, NFR-011 / UC-045 (planned note) / `services/agent/main.go`, `lib/otel_logging.py` (OTLP handler level), `lib/flag_eval_visibility.py`; the Python services read `LOG_LEVEL` themselves in `services/game_coordinator/server.py:22`, `services/menu/server.py:23`, `services/audio/server.py:34`, `services/python_hid/server.py:32`, `services/controller_manager/server.py:40`.

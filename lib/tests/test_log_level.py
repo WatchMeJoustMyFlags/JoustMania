@@ -1,9 +1,10 @@
 """log_level flag: flag wins, env fallback, default, runtime change (#1788, FR-150, FR-151)."""
 
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
+from openfeature.client import OpenFeatureClient
 from openfeature.flag_evaluation import FlagEvaluationDetails, Reason
 
 from lib import log_level
@@ -16,7 +17,7 @@ def _details(value: str, reason: Reason = Reason.STATIC) -> FlagEvaluationDetail
 @pytest.fixture
 def flagd():
     """A fake flagd client; set .return_value of get_string_details per test."""
-    client = MagicMock()
+    client = create_autospec(OpenFeatureClient, instance=True)
     with (
         patch("lib.feature_flags.init_flag_domain"),
         patch("lib.feature_flags.get_flag_client", return_value=client),

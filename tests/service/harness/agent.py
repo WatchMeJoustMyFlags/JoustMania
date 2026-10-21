@@ -141,7 +141,6 @@ class AgentProcess(ManagedProcess):
             "AGENT_EXPERIMENTS_ENABLED": "false",
             "DECISION_OPENAI_API_KEY": openai_api_key,
             "AGENT_LLM_MAX_REQUESTS_PER_MINUTE": LLM_MAX_REQUESTS_PER_MINUTE,
-            "LOG_LEVEL": "debug",
             "OTEL_SERVICE_NAME": OTEL_SERVICE_NAME,
             "OTEL_SERVICE_NAMESPACE": "infrastructure",
             "OTEL_EXPORTER_OTLP_ENDPOINT": otlp_endpoint,

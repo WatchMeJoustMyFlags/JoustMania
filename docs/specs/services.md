@@ -338,7 +338,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 - Voices are `aaron` and `ivy` (flag `menu_voice`, default `ivy`, event-refreshed). A bare id resolves to `<mode>/vox/<voice>/<id>.ogg` (or `<mode>/sounds/`), a `/vox/` path without a voice gets the current voice.
 - Volume: one master volume (`SetVolume`, 0.0 to 1.0, clamped) scales music and effects; the music player starts at 0.7. `PlayMusic.tempo` is clamped to 0.5 to 2.0 (`MusicPlayer.set_ratio`); `ChangeTempo` transitions over the requested duration without clamping (`transition_ratio`), and during playback a ratio of 0.5 or less, or above 2.0, plays at 1.0 (`_clamp_ratio`, `music_player.py:110-114`); the game uses 1.0 and 1.3 (UC-031 step 3). Tempo needs Linux with ALSA (`sys.platform`); elsewhere music plays at fixed speed.
 - Not supported: layered music, crossfades, ducking, text-to-speech, input, device selection through RPC (the card is chosen by `ALSA_CARD`).
-- Environment: `ALSA_CARD` (`auto` or a number), `AUDIO_PORT` (50056), `AUDIO_ASSETS_DIR` (default `services/audio/assets`; used for the music glob and sound path resolution, while the effect/voice registry always reads the packaged assets), `LOG_LEVEL`; `play_audio` and `menu_voice` are flags ([flags.md](flags.md)). The compose service maps `/dev/snd` and the host `audio` group (GID 29).
+- Environment: `ALSA_CARD` (`auto` or a number), `AUDIO_PORT` (50056), `AUDIO_ASSETS_DIR` (default `services/audio/assets`; used for the music glob and sound path resolution, while the effect/voice registry always reads the packaged assets), `LOG_LEVEL` (deprecated fallback of the `log_level` flag, #1788); `play_audio` and `menu_voice` are flags ([flags.md](flags.md)). The compose service maps `/dev/snd` and the host `audio` group (GID 29).
 - Sound ids resolve through the registry built from the asset directories plus aliases (`services/audio/sound_catalog.py`): `agent_cue` → `Joust/sounds/beep_loud.ogg` (the lobby ready ping), `shield_up` → `Commander/sounds/power_ready.ogg` (an alias names an exact, voice-independent asset path). An id not in the registry logs a WARNING and falls back to the Joust vox path (UC-040 BR-007). `python -m services.audio.sound_catalog <id>` exits 0 when the id resolves to a file (used by `scripts/talk-preflight.sh`).
 
 ### agent
@@ -355,10 +355,10 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 |---|---|---|---|
 | `AGENT_LISTEN_ADDR` | `:4317` | yes | OTLP gRPC receiver listen address |
 | `AGENT_HEALTH_ADDR` | `:13134` | yes | HTTP health listen address |
-| `FLAGD_HOST` / `FLAGD_PORT` | `flagd` / `8015` | `FLAGD_HOST` only | flagd sync endpoint (in-process resolver, selectors `flagSetId=agent` and `flagSetId=rollout`, #1713). Compose leaves `FLAGD_PORT` unset so an image pinned before #1713 keeps its own default (8013, RPC) |
+| `FLAGD_HOST` / `FLAGD_PORT` | `flagd` / `8015` | `FLAGD_HOST` only | flagd sync endpoint (in-process resolver, selectors `flagSetId=agent`, `flagSetId=rollout` and `flagSetId=observability` for the `log_level` follower, #1713, #1788). Compose leaves `FLAGD_PORT` unset so an image pinned before #1713 keeps its own default (8013, RPC) |
 | `FLAGD_OFREP_URL` | `http://$FLAGD_HOST:8016` | no | flagd OFREP endpoint for the pattern-game flag digest |
 | `FLAG_SERVICE_URL` | `http://flag-service:8070` | yes | flag service every agent writer calls (interventions, rollout, experiment arms, promotion) |
-| `LOG_LEVEL` | `info` | yes | log verbosity |
+| `LOG_LEVEL` | `info` | yes | deprecated fallback of the `log_level` flag (flags.md §15, FR-151, #1788): the flag wins once flagd resolves it, the env level applies at startup and while the flag is unresolved |
 | `OTEL_SERVICE_NAME` / `OTEL_SERVICE_NAMESPACE` | `agent` / `infrastructure` | yes | self-telemetry identity; the name also drives the self-ingestion skip |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_RESOURCE_ATTRIBUTES`, `SERVICE_VERSION`, `DEPLOYMENT_ENVIRONMENT` | unset / unset / `0.0.0-dev` / `development` | first, second, third | self-telemetry export (no-op without an endpoint) and resource attributes |
 | `AGENT_INFERENCE_BACKEND` | `stub` | yes | text backend for the retro and proposer: `claude` or the stub; not used for in-game decisions ([decide-contract.md](decide-contract.md) 10.1) |

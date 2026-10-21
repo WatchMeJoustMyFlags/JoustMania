@@ -44,7 +44,7 @@ def parse_level(name: object) -> int | None:
 
 
 def env_level() -> int | None:
-    """The deprecated ``LOG_LEVEL`` env var as a level, None when unset or unknown."""
+    """The deprecated ``LOG_LEVEL`` env var as a level (INFO when unset), None when unknown."""
     return parse_level(os.environ.get("LOG_LEVEL", "info"))
 
 
