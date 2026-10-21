@@ -24,7 +24,6 @@ GAME_MODE_COLORS: dict[str, tuple[int, int, int]] = {
     "FightClub": Colors.Yellow.value,
     "Tournament": Colors.Purple.value,
     "NonstopJoust": Colors.Pink.value,
-    "SpeedBomb": Colors.Orange.value,
 }
 validate_mode_keys(GAME_MODE_COLORS, "GAME_MODE_COLORS")
 

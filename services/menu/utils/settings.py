@@ -15,7 +15,7 @@ GAME_MODES: list[str] = [g.name for g in Games if g not in _UNIMPLEMENTED_MODES]
 # Map keys the menu still spells differently from the Games member name; the
 # lobby voice and colour lookups miss them and fall back silently (#1276,
 # backlog, not FFA). Remove an entry when its key is renamed.
-LEGACY_MISKEYED_MODES: frozenset[str] = frozenset({"Zombie", "NonstopJoust", "SpeedBomb"})
+LEGACY_MISKEYED_MODES: frozenset[str] = frozenset({"Zombie", "NonstopJoust"})
 
 
 def validate_mode_keys(mapping: dict[str, object], map_name: str) -> None:

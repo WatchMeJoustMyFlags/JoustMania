@@ -48,7 +48,6 @@ GAME_MODE_VOICE: dict[str, Sound] = {
     "FightClub": Sound.MENU_VOX_FIGHT_CLUB,
     "Tournament": Sound.MENU_VOX_TOURNAMENT,
     "NonstopJoust": Sound.MENU_VOX_NONSTOP_JOUST,
-    "SpeedBomb": Sound.MENU_VOX_NINJABOMB,
 }
 validate_mode_keys(GAME_MODE_VOICE, "GAME_MODE_VOICE")
 

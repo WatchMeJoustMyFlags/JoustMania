@@ -352,11 +352,17 @@ class TestModeMapKeys:
     """Lobby voice and colour maps are keyed by Games member names (#1815)."""
 
     @pytest.mark.uc("UC-011", flow="main", steps=[3])
-    @pytest.mark.parametrize("mode", GAME_MODES)
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            pytest.param(m, marks=pytest.mark.xfail(strict=True, reason="#1276: map key spelled differently"))
+            if m in KNOWN_MISSING_1276
+            else m
+            for m in GAME_MODES
+        ],
+    )
     def test_selectable_mode_has_voice_and_colour(self, mode):
-        """Every selectable mode has a voice and a colour entry, except the #1276 backlog modes."""
-        if mode in KNOWN_MISSING_1276:
-            pytest.xfail(f"{mode}: map key spelled differently, tracked in #1276")
+        """Every selectable mode has a voice and a colour entry; #1276 modes are strict xfail."""
         assert mode in GAME_MODE_VOICE
         assert mode in GAME_MODE_COLORS
 
