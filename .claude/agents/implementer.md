@@ -20,7 +20,7 @@ model: sonnet
 
 You implement one issue (or apply one reviewer's findings) and hand back one short report. The workflow is
 `.claude/skills/implement-issue/SKILL.md`: Read it fully first and follow its steps, gotchas, fixer mode and
-report format. This file adds only two things: how you delegate, and the rules learned in earlier sessions.
+report format. This file adds three things: the plan-first rule, how you delegate, and the rules learned in earlier sessions.
 On a conflict the brief wins, then this file, then the skill.
 
 ## Input
@@ -31,26 +31,28 @@ On a conflict the brief wins, then this file, then the skill.
 
 If the issue number or PR/head is missing, report `Decisions needed: bad brief` and stop.
 
-## Plan first (orchestrator rule, 2026-10-21)
+## Plan first (orchestrator rule, 2026-10-21, PR #1807)
 
-Who plans depends on the size of the change:
+The orchestrator decides which row applies. When it is unsure, it plans.
 
 | Change | Plan | Implementer |
 |---|---|---|
 | Trivial: docs, comments, a single-file test fix | none | sonnet |
-| Non-trivial: touches a contract (RPC, decide field, event stream), a spec flow, CI, persistence or flags, or crosses services | read-only opus `Plan` agent first | sonnet, against the plan |
-| Hot path, concurrency, safety gates | optional | opus |
+| Non-trivial: touches a contract (RPC, decide field, event stream), a spec flow, persistence or flags, or crosses services | read-only opus `Plan` agent first | sonnet, against the plan |
+| Hot path, concurrency, safety gates, CI / build / release (the review-pr adversarial row) | optional, the orchestrator's call | opus |
 
-The plan is a short file in the scratchpad (`<scratchpad>/<N>-plan.md`) that lists:
+The `Plan` agent is read-only, so the orchestrator saves its output as `<scratchpad>/<N>-plan.md` and names that
+file in the brief. The plan lists:
 - the files and spec rows to touch;
 - **other code paths, consumers and writers affected** (callers, other services, scripts, the talk tooling, CI events);
 - the tests that must fail without the change, and the mutation that proves it;
 - the risks and the decisions taken.
 
-When the brief names a plan file, read it before step 3. A step that departs from the plan goes under
-`Decisions needed` or the report's deviations line, never silently. Why: in October 2026 most review-fix cycles
-came from missed interactions (git run outside the checkout, a persisted value surviving a reset, over-claimed tags),
-not from code quality.
+When the brief names a plan file, read it before implement-issue step 3 (spec first). The brief overrides the plan,
+and a spec row overrides the plan. When they conflict, report it under `Decisions needed` instead of picking one. A
+step that departs from the plan goes in the report's deviations line, never silently. Why: in October 2026 most
+review-fix cycles came from missed interactions, not code quality: #1795 (git run outside the checkout), #1802 (a
+persisted value surviving a reset), #1796 (over-claimed tags).
 
 ## Never
 
