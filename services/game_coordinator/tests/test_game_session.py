@@ -10,9 +10,10 @@ new coverage for the primary/shadow distinction.
 
 import asyncio
 import sys
+import threading
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -26,6 +27,7 @@ sys.path.insert(0, str(test_dir))
 from lib.types import GameEvent
 from proto import game_coordinator_pb2
 from services.game_coordinator.game_session import GAME_KIND_PRIMARY, GAME_KIND_SHADOW, GameSession
+from services.game_coordinator.games.base import BaseGameMode
 
 
 class MockSpanContext:
@@ -783,6 +785,24 @@ class TestGameDurationGaugeTickerFailure:
         mock_metrics.game_duration_seconds.labels.return_value.set.assert_called()
 
 
+class _JoinBlockingThread:
+    """A live game thread whose join blocks until ``release`` is set (#1827)."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self._loop = loop
+        self.release = threading.Event()
+        self.entered = asyncio.Event()
+        self.joins = 0
+
+    def is_alive(self) -> bool:
+        return not self.release.is_set()
+
+    def join(self, timeout: float | None = None) -> None:
+        self.joins += 1
+        self._loop.call_soon_threadsafe(self.entered.set)
+        self.release.wait(timeout)
+
+
 class TestGameSessionForceEnd:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-027", flow="A2")
@@ -813,6 +833,76 @@ class TestGameSessionForceEnd:
         mock_game.force_end.assert_called_once_with("user requested")
         assert session.game_state == game_coordinator_pb2.GameState.ENDED
         session.event_bus.publish.assert_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="A4", br=["BR-003"])
+    async def test_session_force_end_while_ending_is_a_noop(self):
+        """#1827: a second force end during the join answers at once and neither
+        joins nor publishes again."""
+        session = _make_session()
+        session.game_state = game_coordinator_pb2.GameState.RUNNING
+        mock_game = create_autospec(BaseGameMode, instance=True)
+        session.current_game = mock_game
+        thread = _JoinBlockingThread(asyncio.get_running_loop())
+        session.game_thread = thread
+
+        first = asyncio.create_task(session.force_end("operator"))
+        async with asyncio.timeout(2.0):
+            await thread.entered.wait()
+
+        assert await session.force_end("retry") == (False, "Game is already ending")
+        assert thread.joins == 1
+
+        thread.release.set()
+        async with asyncio.timeout(2.0):
+            assert await first == (True, "")
+        mock_game.force_end.assert_called_once_with("operator")
+        session.event_bus.publish.assert_awaited_once_with(
+            "game_force_ended", {"reason": "operator", "game_id": session.game_id}
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="A4", br=["BR-003"])
+    async def test_session_force_end_cancelled_during_join_stays_ending(self):
+        """#1827: a force end cancelled during the join keeps the guard; the game
+        thread's own end sets ENDED, so no second force end starts meanwhile."""
+        session = _make_session()
+        session.game_state = game_coordinator_pb2.GameState.RUNNING
+        session.current_game = create_autospec(BaseGameMode, instance=True)
+        thread = _JoinBlockingThread(asyncio.get_running_loop())
+        session.game_thread = thread
+
+        first = asyncio.create_task(session.force_end("operator"))
+        async with asyncio.timeout(2.0):
+            await thread.entered.wait()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        assert await session.force_end("retry") == (False, "Game is already ending")
+        thread.release.set()
+        session.event_bus.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="A4", br=["BR-003"])
+    async def test_session_force_end_can_retry_after_it_raised(self):
+        """#1827: when the mode's force_end raises, a later force end retries and
+        publishes once."""
+        session = _make_session()
+        session.game_state = game_coordinator_pb2.GameState.RUNNING
+        mock_game = create_autospec(BaseGameMode, instance=True)
+        mock_game.force_end.side_effect = [RuntimeError("mode failed"), None]
+        session.current_game = mock_game
+
+        with pytest.raises(RuntimeError, match="mode failed"):
+            await session.force_end("operator")
+        assert await session.force_end("operator") == (True, "")
+
+        assert mock_game.force_end.call_count == 2
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
+        session.event_bus.publish.assert_awaited_once_with(
+            "game_force_ended", {"reason": "operator", "game_id": session.game_id}
+        )
 
     @pytest.mark.asyncio
     async def test_state_sync_updates_own_state(self):
