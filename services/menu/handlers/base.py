@@ -50,7 +50,8 @@ class ButtonDebouncer:
             self._last_press[serial] = {}
 
         last_press = self._last_press[serial].get(button, 0)
-        if current_time - last_press < interval:
+        # A negative delta (clock stepped back, events out of order) is a new press, not a lockout.
+        if 0 <= current_time - last_press < interval:
             return False
 
         self._last_press[serial][button] = current_time

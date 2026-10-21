@@ -42,6 +42,16 @@ class TestButtonDebouncer:
         assert debouncer.should_process("serial1", "trigger", event_time=t0 + 0.4) is True
         assert debouncer.should_process("serial1", "trigger", event_time=t0 + 0.5) is False
 
+    @pytest.mark.uc("UC-012", flow="main", br=["BR-007"])
+    def test_press_before_last_press_is_a_new_press(self):
+        """A clock step back / out-of-order event must not lock the button out."""
+        debouncer = ButtonDebouncer(default_interval=0.3)
+        t0 = 1_700_000_000.0
+
+        assert debouncer.should_process("serial1", "trigger", event_time=t0 + 60) is True
+        assert debouncer.should_process("serial1", "trigger", event_time=t0) is True
+        assert debouncer.should_process("serial1", "trigger", event_time=t0 + 0.1) is False
+
     def test_press_after_interval_processed(self):
         """Press after interval should be processed."""
         debouncer = ButtonDebouncer(default_interval=0.01)  # 10ms for fast test
