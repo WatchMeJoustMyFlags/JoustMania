@@ -126,7 +126,7 @@ func TestOnGameEnd_StaleEndExcludedFromExperiments(t *testing.T) {
 		// Control: the sibling, ended normally, is scored and folded.
 		normal := gcFor(rec[1].gameID, rec[1].experimentID, rec[1].arm)
 		normal.EndReason = gamecontext.EndReasonZero
-		loop.onGameEnd(normal)
+		endBoundGame(loop, normal)
 		if scored != 1 {
 			t.Fatalf("normally ended game scored %d times, want 1", scored)
 		}

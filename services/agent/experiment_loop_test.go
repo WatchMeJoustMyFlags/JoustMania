@@ -230,6 +230,15 @@ func buildLoopForTestWithTracer(
 	}
 }
 
+// endBoundGame delivers both end signals of a bound experiment game in the
+// telemetry-first order (UC-046 BR-016, #1405): the telemetry end parks, and the
+// runner's completed outcome folds it. Tests that expect an immediate fold from
+// a telemetry end use it, since a telemetry end alone no longer folds.
+func endBoundGame(loop *experimentLoop, gc gamecontext.GameContext) {
+	loop.onGameEnd(gc)
+	loop.onGameTerminal(gc.SessionID, gamerunner.OutcomeCompleted)
+}
+
 // gcFor builds a game-end GameContext for an experiment arm with a known SessionID.
 func gcFor(gameID, experimentID, arm string) gamecontext.GameContext {
 	dur := 120.0
@@ -277,7 +286,7 @@ func concludeCohort(t *testing.T, loop *experimentLoop, spawner *recordingSpawne
 			// Cap reached for this round; conclude what we have to free slots.
 		}
 		for _, c := range spawner.drain() {
-			loop.onGameEnd(gcFor(c.gameID, c.experimentID, c.arm))
+			endBoundGame(loop, gcFor(c.gameID, c.experimentID, c.arm))
 		}
 	}
 }
@@ -699,7 +708,13 @@ func TestExperimentLoop_CompletedGrace_NoReleaseWhenConcluded(t *testing.T) {
 	ctx := context.Background()
 
 	fake := newFakeAfter()
-	loop.afterFunc = fake.schedule
+	// Keep each scheduled callback too, so the test can fire the grace even after
+	// the fold cancelled it (a Stop that lost the race against the timer).
+	var lateGrace []func()
+	loop.afterFunc = func(d time.Duration, fn func()) func() bool {
+		lateGrace = append(lateGrace, fn)
+		return fake.schedule(d, fn)
+	}
 	loop.expDefaults.CompletedGrace = 60 * time.Second
 
 	id, err := loop.registry.Declare(experiment.Intent{
@@ -731,9 +746,16 @@ func TestExperimentLoop_CompletedGrace_NoReleaseWhenConcluded(t *testing.T) {
 	}
 	folded := cv.Arms[rec.arm].Count
 
-	// The grace timer fires LATE (after the legitimate conclude already won the
-	// race). It must be a pure no-op: no extra release, the sample stays counted.
-	fake.fireAll()
+	// The fold cancels the pending grace (#1405), so no timer is left to fire.
+	if fired := fake.fireAll(); fired != 0 {
+		t.Fatalf("grace timers fired after the fold = %d, want 0 (the fold cancels it)", fired)
+	}
+	// The grace timer fires LATE anyway (its Stop lost the race against the timer
+	// goroutine). It must be a pure no-op: no extra release, the sample stays counted.
+	if len(lateGrace) != 1 {
+		t.Fatalf("scheduled grace timers = %d, want 1", len(lateGrace))
+	}
+	lateGrace[0]()
 	cv2, _ := loop.registry.CompactView(id)
 	if cv2.Arms[rec.arm].Count != folded {
 		t.Fatalf("late grace timer changed the folded sample count (%d → %d): it must be a no-op",
