@@ -28,7 +28,7 @@ func TestProposer_EngineIsInformationalBackendFollowsEnv(t *testing.T) {
 		t.Run("UC-042/BR-003 "+tc.name, func(t *testing.T) {
 			t.Setenv("AGENT_INFERENCE_BACKEND", tc.envBack)
 			t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-			selected, _ := selectInferenceBackend(quietLogger())
+			selected, _ := selectInferenceBackend(quietLogger(), nil)
 
 			calls := 0
 			var delegate inferFunc

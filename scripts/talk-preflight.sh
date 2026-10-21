@@ -27,7 +27,7 @@
 #      JEV_API_KEY (Jev, the main in-game backend) and ANTHROPIC_API_KEY (Claude:
 #      in-game backup + post-game summary) present, AGENT_INFERENCE_BACKEND=claude
 #      (the closing summary beat), and the shared LLM budget >= 30/min (the
-#      AGENT_LLM_MAX_REQUESTS_PER_MINUTE override, else the flag's value)
+#      flag's value, capped by the AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling, #1788)
 #   4b. the agent's audio cue (defaultAudioCue in services/agent/actions/writer.go)
 #      resolves to a file in the RUNNING audio container (UC-070 BR-004)
 #   5. Jaeger reachable and holding agent.decide spans from the last N minutes
@@ -349,7 +349,7 @@ print(f"INFO  decision.openai.base_url = {shown(base_url)}; variants: {', '.join
 budget = flags.get("llm.max_requests_per_minute")
 if budget is not None:
     print(f"INFO  llm.max_requests_per_minute = {shown(budget)} "
-          "(global remote-call budget; replaced by AGENT_LLM_MAX_REQUESTS_PER_MINUTE when set)")
+          "(global remote-call budget; capped by AGENT_LLM_MAX_REQUESTS_PER_MINUTE when set)")
 
 # Interventions are game-scoped (UC-053 BR-003): what the agent applied lives in
 # its game's scope and is dropped when that game ends, so nothing needs a reset.
@@ -386,14 +386,10 @@ if [[ "${docker_ok}" -eq 1 ]]; then
     else
       warn "AGENT_INFERENCE_BACKEND=${inference_backend:-unset} (not claude): the closing summary beat shows a capture-only retro; set it in .env.local, recreate the agent"
     fi
-    # Not a secret: the per-minute budget override, read at agent start.
-    budget_override="$(grep -E '^AGENT_LLM_MAX_REQUESTS_PER_MINUTE=' <<<"${agent_env}" | head -1 | cut -d= -f2-)"
-    if [[ "${budget_override}" =~ ^[0-9]+$ && "${budget_override}" -ge 30 ]]; then
-      pass "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_override} (one remote-decide game + the post-game summary; replaces the flag)"
-    elif [[ "${budget_override}" =~ ^[0-9]+$ && "${budget_override}" -gt 0 ]]; then
-      warn "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_override} replaces the flag but is below the stage 30/min; only decision.min_interval_ms can relieve it live"
-    else
-      flag_budget="$(PYTHONPATH="${SCRIPT_DIR}" python3 -c '
+    # Not a secret: the per-minute budget ceiling, read at agent start. The cap is
+    # min(env, flag) (#1788, C-034): the env can only lower the flag, never raise it.
+    budget_ceiling="$(grep -E '^AGENT_LLM_MAX_REQUESTS_PER_MINUTE=' <<<"${agent_env}" | head -1 | cut -d= -f2-)"
+    flag_budget="$(PYTHONPATH="${SCRIPT_DIR}" python3 -c '
 from flagservice import FlagService
 try:
     variant, value = FlagService.from_env().effective("agent")["llm.max_requests_per_minute"]
@@ -401,12 +397,17 @@ try:
 except Exception:
     print("? ?")
 ' 2>/dev/null)"
-      read -r budget_variant budget_value <<<"${flag_budget}"
-      if [[ "${budget_value}" =~ ^[0-9]+$ && "${budget_value}" -ge 30 ]]; then
-        pass "LLM budget: llm.max_requests_per_minute = ${budget_variant} (${budget_value}/min; no env override)"
+    read -r budget_variant budget_value <<<"${flag_budget}"
+    if [[ "${budget_ceiling}" =~ ^[0-9]+$ && "${budget_ceiling}" -gt 0 && "${budget_ceiling}" -lt 30 ]]; then
+      warn "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_ceiling} caps the flag below the stage 30/min; only decision.min_interval_ms can relieve it live"
+    elif [[ "${budget_value}" =~ ^[0-9]+$ && "${budget_value}" -ge 30 ]]; then
+      if [[ "${budget_ceiling}" =~ ^[0-9]+$ && "${budget_ceiling}" -gt 0 ]]; then
+        pass "LLM budget: llm.max_requests_per_minute = ${budget_variant} (${budget_value}/min) under the AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_ceiling} ceiling"
       else
-        warn "LLM budget: llm.max_requests_per_minute = ${budget_variant:-?} (${budget_value:-?}/min) and no env override: a remote-decide game wants 15-20/min plus the summary; set the flag to stage (30)"
+        pass "LLM budget: llm.max_requests_per_minute = ${budget_variant} (${budget_value}/min; no env ceiling)"
       fi
+    else
+      warn "LLM budget: llm.max_requests_per_minute = ${budget_variant:-?} (${budget_value:-?}/min): a remote-decide game wants 15-20/min plus the summary; set the flag to stage (30) (AGENT_LLM_MAX_REQUESTS_PER_MINUTE can only lower it)"
     fi
   fi
 fi

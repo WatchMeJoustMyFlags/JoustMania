@@ -32,9 +32,9 @@ OTEL_SERVICE_NAME = "agent"  # compose OTEL_SERVICE_NAME: the agent's span and m
 # The agent's own batch span processor: flush every 200 ms instead of the SDK's 5 s,
 # so a test waits on spans, not on the exporter (standard OTel SDK env var).
 BSP_SCHEDULE_DELAY_MS = "200"
-# The shared per-minute remote-call budget (llm.max_requests_per_minute, 6/min by
-# default) is lifted as in docker-compose.decide-e2e.yml: back-to-back decide
-# cycles would otherwise turn into llm_budget_exhausted rules fallbacks.
+# The env ceiling on the shared per-minute remote-call budget. Since #1788 the cap is
+# min(env, llm.max_requests_per_minute), so this high value only keeps the ceiling
+# out of the way; configure_agent lifts the flag itself to the CI-only `journey` variant (600).
 LLM_MAX_REQUESTS_PER_MINUTE = "600"
 # TCP port 1 (tcpmux) is never served here: a dial fails at once.
 UNREACHABLE = "127.0.0.1:1"

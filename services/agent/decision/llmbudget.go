@@ -19,6 +19,17 @@ import (
 // simpler: each admitted LLM attempt is ONE request (unit weight), not a weighted
 // intervention. The budget is therefore a plain per-minute count, not a weight sum.
 
+// ceilBudget is the effective per-minute cap (#1788, NFR-011, FR-152, C-034): the
+// llm.max_requests_per_minute flag value, never above the operator's env ceiling
+// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE). ceiling <= 0 means no ceiling. The flag can
+// therefore only tighten the cap; a flag write can never loosen it.
+func ceilBudget(ceiling, flagValue int) int {
+	if ceiling > 0 && ceiling < flagValue {
+		return ceiling
+	}
+	return flagValue
+}
+
 // llmBudgetWindow is the trailing window over which the global request cap
 // applies, mirroring rateWindow. One minute, matching llm.max_requests_per_minute.
 const llmBudgetWindow = time.Minute

@@ -1575,6 +1575,38 @@ class TestConsumeGameEvents:
         servicer._restart_lobby.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[5], br=["BR-006"])
+    async def test_game_start_first_confirms_the_start_once(self, servicer):
+        """game_start is the first event of a menu start stream (#1783): it confirms the start.
+
+        The coordinator yields it only after the game thread was started, so the
+        menu clears the ready state and marks the game started on it, exactly once;
+        the following game_starting is an ordinary event.
+        """
+        from services.menu.servicer import MenuServicer
+
+        types = ["game_start", "game_starting", "game_started", "game_ended"]
+        events = []
+        for event_type in types:
+            event = MagicMock()
+            event.event_type = event_type
+            event.data = {"game_id": "game_abc"}
+            events.append(event)
+
+        async def fake_stream():
+            for event in events:
+                yield event
+
+        span = MagicMock()
+        result = await MenuServicer._consume_game_events(servicer, fake_stream(), False, span)
+
+        assert result.game_started is True
+        assert result.should_return is True
+        servicer._clear_ready_state.assert_called_once()
+        span.set_attribute.assert_called_once_with("game.started", True)
+        servicer._restart_lobby.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_empty_stream_returns_not_should_return(self, servicer):
         """An empty stream should return should_return=False."""
         from services.menu.servicer import MenuServicer, _GameEventResult

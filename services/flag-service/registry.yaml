@@ -76,6 +76,14 @@ flags:
   - {set: agent, key: verdict_min_pairs, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
   - {set: agent, key: experiment_tick_seconds, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
   - {set: agent, key: experiment_max_games, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
+  # Agent tuning migrated from env (#1788, flags.md §15): operator-written, never by the agent.
+  - {set: agent, key: inference.model, kind: overlay, scope: [stack], bounds: {free_string: true}}
+  - {set: agent, key: inference.effort, kind: overlay, scope: [stack]}
+  - {set: agent, key: inference.timeout_seconds, kind: overlay, scope: [stack], bounds: {range: [30, 120], integer: true}}
+  - {set: agent, key: effect.window_seconds, kind: overlay, scope: [stack], bounds: {range: [10, 40]}}
+  - {set: agent, key: promotion.rewatch_interval_seconds, kind: overlay, scope: [stack], bounds: {range: [30, 120], integer: true}}
+  - {set: agent, key: promotion.rewatch_timeout_seconds, kind: overlay, scope: [stack], bounds: {range: [1800, 7200], integer: true}}
+  - {set: agent, key: promotion.revert_cooldown_seconds, kind: overlay, scope: [stack], bounds: {range: [300, 1200], integer: true}}
 
   # --- game (flags.md §13.3) ----------------------------------------------------
   # The experiment catalog (#1415): gameplay calibration flags an experiment arm

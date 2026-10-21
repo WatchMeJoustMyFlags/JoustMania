@@ -210,7 +210,7 @@ func rolloutActuator(rootCtx context.Context, gate actions.RolloutGate, logger *
 //   - Rewatcher: a background poller that re-observes an insufficient-games apply as
 //     more real games complete (#1065 item 4).
 //   - Cooldown: a post-revert cooldown suppresses re-promotion thrash (#1065 item 3).
-func buildPromoter(rootCtx context.Context, store *experiment.FitnessStore, objResolver *promote.LateObjectiveResolver, logger *slog.Logger) *promote.Promoter {
+func buildPromoter(rootCtx context.Context, store *experiment.FitnessStore, objResolver *promote.LateObjectiveResolver, tuning *agentTuning, logger *slog.Logger) *promote.Promoter {
 	// Resolve the target for client construction from the ENV (AGENT_CODE_IMPROVEMENT_TARGET),
 	// distinct from the LIVE flag (code_improvement.target) that Promote dispatches on.
 	// This is a deliberate DOUBLE gate and is STRICTER than a single switch: opening a
@@ -273,14 +273,16 @@ func buildPromoter(rootCtx context.Context, store *experiment.FitnessStore, objR
 		fitnessSource := promote.NewStoreRealGameFitness(store, objResolver.Resolve)
 		watcher := promote.NewFitnessWatcher(fitnessSource, promote.DefaultWatchPolicy(), logger)
 		watcherIface = watcher
-		rewatcher = promote.NewPollingRewatcher(rootCtx, rewatchInterval(), rewatchTimeout(), logger)
+		// Interval and timeout resolve at use time, per scheduled re-watch (#1788).
+		rewatcher = promote.NewPollingRewatcherFunc(rootCtx, tuning.RewatchInterval, tuning.RewatchTimeout, logger)
 		logger.Warn("code_improvement AUTONOMOUS watch+revert LIVE-WIRED (#1057/#1065): autonomous promotions are now a closed apply→watch→keep-or-revert loop")
 	} else {
 		logger.Info("code_improvement autonomous watch NOT wired (autonomous env gate off or no fitness store); autonomous fails closed (#1016)")
 	}
 
 	p := promote.NewPromoter(ghIface, gitIface, realDefIface, watcherIface, reverterIface, repo, nil, logger)
-	p.SetCooldown(revertCooldown())
+	// The post-revert cooldown resolves at use time, per cooldown check (#1788).
+	p.SetCooldownSource(tuning.RevertCooldown)
 	// Seed the post-revert cooldown from the durable snapshot store (#1076 item 3) so
 	// thrash protection survives an agent restart. realDef carries the persisted revert
 	// timestamps; a nil writer (autonomous off) yields nothing to seed.
@@ -332,45 +334,6 @@ func rolloutDwell() time.Duration {
 // AGENT_ROLLOUT_COOLDOWN_SECONDS, falling back to decision.DefaultRolloutCooldown.
 func rolloutCooldown() time.Duration {
 	return secondsEnv("AGENT_ROLLOUT_COOLDOWN_SECONDS", decision.DefaultRolloutCooldown)
-}
-
-// llmBudgetOverride reads the LIVE LLM per-minute request cap override from
-// AGENT_LLM_MAX_REQUESTS_PER_MINUTE (#964). The remote decide gate normally reads the
-// cap from the llm.max_requests_per_minute flag (default 6), which a busy demo can
-// exhaust, gating remote decisions with llm_budget_exhausted even when a backend is
-// reachable. This env override lets an operator raise the cap for a live run without
-// editing flagd. An
-// unset/empty/invalid/non-positive value returns 0 = "no override" (the flag
-// governs), so the default-off path is unchanged.
-func llmBudgetOverride() int {
-	s := strings.TrimSpace(os.Getenv("AGENT_LLM_MAX_REQUESTS_PER_MINUTE"))
-	if s == "" {
-		return 0
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n <= 0 {
-		slog.Warn("AGENT_LLM_MAX_REQUESTS_PER_MINUTE invalid; ignoring (flag governs) (#964)", "value", s)
-		return 0
-	}
-	return n
-}
-
-// revertCooldown reads the autonomous post-revert re-promotion cooldown (#1065
-// item 3) from AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS, else the package default.
-func revertCooldown() time.Duration {
-	return secondsEnv("AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS", promote.DefaultRevertCooldown)
-}
-
-// rewatchInterval reads the background re-watch poll interval (#1065 item 4) from
-// AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS, else the package default.
-func rewatchInterval() time.Duration {
-	return secondsEnv("AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS", promote.DefaultRewatchInterval)
-}
-
-// rewatchTimeout reads how long a background re-watch waits for enough real games
-// (#1065 item 4) from AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS, else the default.
-func rewatchTimeout() time.Duration {
-	return secondsEnv("AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS", promote.DefaultRewatchTimeout)
 }
 
 // secondsEnv parses a positive integer "seconds" env var into a Duration,
@@ -448,7 +411,11 @@ type inferFunc = func(ctx context.Context, prompt llm.Prompt) (string, error)
 // proposes nothing, the retro is capture-only), so a typo or a missing key fails
 // safe. AGENT_INFERENCE_MODEL / _EFFORT / _TIMEOUT_SECONDS tune the client.
 // Returns the effective backend name for the startup log.
-func selectInferenceBackend(logger *slog.Logger) (*inference.Claude, string) {
+//
+// tuning, when non-nil, resolves model / effort / timeout on every Infer call
+// (#1788, FR-150: the inference.* flags, the env vars only as fallback); nil keeps
+// the env values fixed (tests).
+func selectInferenceBackend(logger *slog.Logger, tuning *agentTuning) (*inference.Claude, string) {
 	backend := strings.ToLower(strings.TrimSpace(getEnv("AGENT_INFERENCE_BACKEND", "stub")))
 	if backend != inference.Name {
 		return nil, "stub"
@@ -462,13 +429,17 @@ func selectInferenceBackend(logger *slog.Logger) (*inference.Claude, string) {
 	if !ok {
 		return nil, "stub"
 	}
-	return inference.NewClaude(inference.Config{
+	cfg := inference.Config{
 		APIKey:  key,
 		BaseURL: baseURL,
 		Model:   getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
 		Effort:  getEnv("AGENT_INFERENCE_EFFORT", inference.DefaultEffort),
 		Timeout: secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout),
-	}), inference.Name
+	}
+	if tuning != nil {
+		cfg.Tuning = tuning.Inference
+	}
+	return inference.NewClaude(cfg), inference.Name
 }
 
 // inferenceBaseURL reads AGENT_INFERENCE_BASE_URL (#1422 S10): the root the Claude text
@@ -599,22 +570,26 @@ func main() {
 	// The per-game cadence (decision.min_interval_ms) and eligibility
 	// (llm.eligible_game_kinds) live on each Loop; only the budget is shared.
 	sharedLLMBudget := decision.NewLLMBudget()
-	// LIVE LLM budget override (#964): AGENT_LLM_MAX_REQUESTS_PER_MINUTE raises the
-	// per-minute cap the remote decide gate enforces above the
-	// llm.max_requests_per_minute flag default (6/min). 0 = no override (the flag
-	// governs). Read once at startup and applied to every per-game loop below.
-	llmBudgetCapOverride := llmBudgetOverride()
-	if llmBudgetCapOverride > 0 {
-		slog.Info("LLM request budget override enabled (#964)", "max_per_minute", llmBudgetCapOverride)
+	// LLM budget ceiling (#1788, NFR-011, FR-152, C-034): AGENT_LLM_MAX_REQUESTS_PER_MINUTE
+	// is the operator's env ceiling; the enforced cap is min(ceiling, the live
+	// llm.max_requests_per_minute flag), so a flag write can only tighten it. 0 = no
+	// ceiling (the flag governs). Read once at startup, applied to every loop below.
+	llmBudgetCap := llmBudgetCeiling()
+	if llmBudgetCap > 0 {
+		slog.Info("LLM request budget ceiling set (#1788)", "max_per_minute", llmBudgetCap)
 	}
+	// Agent tuning (#1788, FR-150, FR-151): model, effort, timeout, effect window and
+	// promotion timers resolve at use time from the agent flags; the deprecated env
+	// vars are only the fallback when a flag cannot be resolved.
+	tuning := newAgentTuning(agentFlags, tuningDefaultsFromEnv(logger))
 	// Proposer/retro text backend (#1234): the direct Claude client, or nil for the
 	// stub default (the proposer proposes nothing, the retro is capture-only). It is
 	// NOT an in-game decision path: in-game LLM decisions go through the
 	// decision.backend registry below.
-	textBackend, inferBackendName := selectInferenceBackend(logger)
+	textBackend, inferBackendName := selectInferenceBackend(logger, tuning)
 	slog.Info("Proposer/retro inference backend selected (#1234)",
 		"backend", inferBackendName,
-		"model", getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
+		"model", tuning.Inference(ctx).Model,
 		"api_key_set", os.Getenv("ANTHROPIC_API_KEY") != "",
 	)
 	var inferDelegate inferFunc
@@ -630,12 +605,8 @@ func main() {
 	sharedContextWindow := gamewindow.NewStore()
 	// Intervention-effect follow-up window (#918): how long after a dispatched
 	// intervention the loop re-samples the game's fitness signals to measure the
-	// effect. Read ONCE at startup from AGENT_EFFECT_WINDOW_SECONDS (a float of
-	// seconds); a non-positive/unparseable/unset value keeps decision.DefaultEffectWindow.
-	effectWindow := effectWindowFromEnv()
-	if effectWindow != decision.DefaultEffectWindow {
-		slog.Info("Intervention-effect follow-up window overridden (#918)", "window", effectWindow)
-	}
+	// effect. Resolved at use time, per dispatched intervention, from the
+	// effect.window_seconds flag (#1788; AGENT_EFFECT_WINDOW_SECONDS only as fallback).
 	probeDecisions := strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true")
 	if probeDecisions {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
@@ -674,10 +645,9 @@ func main() {
 		// references the same instance: eligibility + cadence are per-loop, the
 		// budget is one global cap across all games and the retro.
 		loop.SetLLMBudget(sharedLLMBudget)
-		// Apply the LIVE budget override (#964): when AGENT_LLM_MAX_REQUESTS_PER_MINUTE is
-		// set it replaces the llm.max_requests_per_minute flag value as the per-minute
-		// cap for remote decide calls. 0 (unset) is ignored — the flag governs.
-		loop.SetLLMBudgetOverride(llmBudgetCapOverride)
+		// Apply the env ceiling (#1788): the cap is min(AGENT_LLM_MAX_REQUESTS_PER_MINUTE,
+		// llm.max_requests_per_minute). 0 (unset) = no ceiling, the flag governs.
+		loop.SetLLMBudgetCeiling(llmBudgetCap)
 		// Async wiring for the remote decide path (#1226) and the effect sampler
 		// (#918): a remote decide call runs in its own goroutine and, when the answer
 		// lands, re-validates against this game's CURRENT context (fetched from the
@@ -692,9 +662,9 @@ func main() {
 		// and emits the before/after delta (agent.intervention.effect span +
 		// agent_intervention_effect_delta metric), reusing the SetContextProvider source
 		// above to re-read the game's CURRENT signals. The follow-up goroutine is bounded
-		// by SetRootContext so shutdown cancels it cleanly (no leak). Tunable at startup
-		// via AGENT_EFFECT_WINDOW_SECONDS; a non-positive/unset value keeps the default.
-		loop.SetEffectWindow(effectWindow)
+		// by SetRootContext so shutdown cancels it cleanly (no leak). Resolved per
+		// intervention from effect.window_seconds (#1788); non-positive = the default.
+		loop.SetEffectWindowSource(tuning.EffectWindow)
 		// Intervention timeline wiring (#945): feed each decision's dispatched/blocked
 		// outcome into the #916 rolling narrative of the SAME game this loop serves.
 		// The closure captures THIS partition's game_id and routes through the
@@ -802,16 +772,16 @@ func main() {
 	// budget the in-game gate uses (#847 acceptance #7): inject the one instance the
 	// per-game loops also hold, so a retro at game end cannot blow the per-minute cap.
 	retro.SetLLMBudget(sharedLLMBudget)
-	// The AGENT_LLM_MAX_REQUESTS_PER_MINUTE override applies to the retro's budget
+	// The AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling applies to the retro's budget
 	// check too, so the shared cap is the same number on both paths.
-	retro.SetLLMBudgetOverride(llmBudgetCapOverride)
+	retro.SetLLMBudgetCeiling(llmBudgetCap)
 	// #1234: the retro calls the proposer/retro text backend directly (Claude, or
 	// nil = capture-only with used="none"/no_backend_available for the stub default),
-	// bounded by AGENT_INFERENCE_TIMEOUT_SECONDS.
+	// bounded by inference.timeout_seconds, resolved per retro call (#1788).
 	if textBackend != nil {
 		retro.SetBackend(textBackend)
 	}
-	retro.SetTimeout(secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout))
+	retro.SetTimeoutSource(tuning.InferenceTimeout)
 	// #1179: bound every async retro inference goroutine to the agent's root context so
 	// shutdown cancellation unblocks a well-behaved in-flight Infer (no leak), the same
 	// SetRootContext pattern the per-game loops use. The retro now actually CALLS the
@@ -868,12 +838,12 @@ func main() {
 		logger,
 	)
 	// #1270: a REAL proposer model call is one LLM request, so it draws from the SAME
-	// shared global budget (and the same AGENT_LLM_MAX_REQUESTS_PER_MINUTE override)
+	// shared global budget (and the same AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling)
 	// as the per-game loops and the retro, and only for a game kind in
 	// llm.eligible_game_kinds. Installed only when a real text backend is wired: the
 	// stub makes no model call and so never charges the budget.
 	proposer.SetLLMAdmission(proposerAdmissionFor(inferDelegate,
-		decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCapOverride, "proposer", logger)))
+		decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCap, "proposer", logger)))
 	// #1270: the kill-switch gate, read at USE time on every game end (never cached
 	// at startup: flagd may be down then). Both `enabled` and `experiments_enabled`
 	// must be on, the same two gates the experiment loop obeys (FR-066).
@@ -939,7 +909,7 @@ func main() {
 	// Until then it resolves to "" (any-objective) — safe, just unfiltered.
 	objResolver := &promote.LateObjectiveResolver{}
 
-	promoter := buildPromoter(ctx, fitnessStore, objResolver, logger)
+	promoter := buildPromoter(ctx, fitnessStore, objResolver, tuning, logger)
 	slog.Info("Code-improvement promotion surface enabled (#936, M7-8)",
 		"code_improvement_enabled", getEnv("AGENT_CODE_IMPROVEMENT_ENABLED", "false"),
 		"target", getEnv("AGENT_CODE_IMPROVEMENT_TARGET", string(promote.TargetLocal)),

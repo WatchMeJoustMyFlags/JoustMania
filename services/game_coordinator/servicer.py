@@ -43,6 +43,7 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 
 from opentelemetry import trace
 
@@ -564,9 +565,19 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
             return (session, game_kind, game_id), False
 
-    async def _start_game_from_config(self, config, parent_span) -> tuple[bool, str]:
+    async def _start_game_from_config(
+        self,
+        config,
+        parent_span,
+        on_admitted: Callable[[GameSession], Awaitable[None]] | None = None,
+    ) -> tuple[bool, str]:
         """
         Start a game from StartGameConfig (internal helper).
+
+        ``on_admitted`` (#1783) runs once the session exists and BEFORE its
+        ``game_start`` publish and ``start_thread()``: StreamGameEvents uses it
+        to subscribe a headless starter to the new session's bus, so the starter
+        receives every event of its game, beginning with ``game_start``.
 
         Origin governs classification (#837): a ``GAME_ORIGIN_MENU`` start is the
         REAL game and claims the primary slot + persistent primary bus when no
@@ -617,6 +628,9 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # writes for it are accepted from its first frame (FR-135). Bounded
             # to 200 ms and outside _sessions_lock; on a timeout or an error the
             # game starts anyway and the lifecycle reconciles (C-004).
+            if on_admitted is not None:
+                await on_admitted(session)
+
             await self.flag_service.register(self._game_record(session))
 
             # Update lifecycle metrics for this session's kind (#775) + experiment
@@ -784,6 +798,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
         # Default subscription target is the persistent primary bus.
         event_bus = self.primary_event_bus
+        event_queue: asyncio.Queue | None = None
 
         # Check if this is a game start request
         if request.HasField("start_config"):
@@ -792,10 +807,34 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             span.set_attribute("player.count", len(config.players))
             span.set_attribute("game.start_via_stream", True)
 
-            # Start the game
-            success, result = await self._start_game_from_config(config, span)
+            # Subscribe to the new session's bus BEFORE game_start is published
+            # and the game thread starts (#1783): the starter receives every
+            # event of its own game, beginning with game_start (which carries
+            # the game_id). Subscribing after start_thread() lost the events the
+            # thread published first (EventBus has no replay).
+            subscribed_bus: list[EventBus] = []
+
+            async def _subscribe_starter(session: GameSession) -> None:
+                nonlocal event_queue
+                event_queue = await session.event_bus.subscribe(subscriber_id)
+                subscribed_bus.append(session.event_bus)
+
+            async def _unsubscribe_starter() -> None:
+                for bus in subscribed_bus:
+                    await bus.unsubscribe(subscriber_id)
+
+            try:
+                success, result = await self._start_game_from_config(config, span, on_admitted=_subscribe_starter)
+            except BaseException:
+                # A client cancel mid-start (CancelledError, e.g. during the
+                # flag-service register) skips the paths below: drop the
+                # starter's subscriber here so it does not leak (#1783).
+                await _unsubscribe_starter()
+                raise
 
             if not success:
+                # No leaked subscriber on a failed start (#1783).
+                await _unsubscribe_starter()
                 # Yield error event and close stream
                 logger.error(f"Failed to start game via stream: {result}")
                 span.set_attribute("error", result)
@@ -809,11 +848,8 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             span.set_attribute("game.id", result)
             logger.info(f"Game {result} started via stream")
 
-            # Subscribe to the bus of the session we just created so a headless
-            # starter receives its own game's events.
-            started = self.sessions.get(result)
-            if started is not None:
-                event_bus = started.event_bus
+            if subscribed_bus:
+                event_bus = subscribed_bus[0]
 
         elif request.game_id:
             # Subscribe-by-game_id (#776): route to that session's bus.
@@ -831,8 +867,9 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 return
             event_bus = session.event_bus
 
-        # Subscribe to event bus
-        event_queue = await event_bus.subscribe(subscriber_id)
+        # Subscribe to event bus (a start_config stream already subscribed above).
+        if event_queue is None:
+            event_queue = await event_bus.subscribe(subscriber_id)
 
         try:
             # Headers now = "subscriber registered" (#1613); inside the try so a client that leaves

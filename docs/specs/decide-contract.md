@@ -440,7 +440,7 @@ the kill switch `enabled` and the shared LLM budget (NFR-011).
 | `decision.openai.timeout_ms` / `decision.jev.timeout_ms` | 2500 ms (variants 1500 / 2500 / 5000) | per call | `flags/decision_backend.go:33,37,219,226` |
 | `decision.min_interval_ms` | 3000 ms (1500 / 10000; 0 disables) | per game, from admission | `decision_backend.go:28,70-86,279-286` |
 | `llm.max_requests_per_minute` | 6 (conservative 3 / aggressive 12 / `stage` 30, PR #1257) | **global**, shared by in-game decisions, the retro and the proposer (PR #1284) | `flags/flags.go:43`; `decision/llmbudget.go:22-67` |
-| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (env) | unset | read once at startup; a positive value replaces the flag | `main.go:llmBudgetOverride` |
+| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (env) | unset | read once at startup; a positive value is a ceiling: the cap is `min(env, flag)`, so a flag can only tighten it (#1788, C-034) | `tuning.go:llmBudgetCeiling`, `decision/llmbudget.go:ceilBudget` |
 | `llm.eligible_game_kinds` | `real` | which game kinds may call a remote backend; read by in-game decisions, the retro and the proposer | `flags/flags.go:llmGate` |
 | `policy.max_interventions_per_minute` | 2, weighted (soft 0.5, medium 1, hard 2, unknown 1); admitted in rank order with a 1.0 reserve against nudges (§4.5, #1326); talk stage `aggressive` 4 | per game | `decision/ratelimit.go`, `decision/budget.go` |
 | `policy.coordinator_backstop_per_minute` | 60 | global, enforced in the game coordinator | `services/game_coordinator/interventions.py:DEFAULT_COORDINATOR_BACKSTOP_BUDGET`, `_refresh_budget` |

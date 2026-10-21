@@ -34,8 +34,12 @@ type GameCoordinatorServiceClient interface {
 	// Force end current game
 	ForceEndGame(ctx context.Context, in *ForceEndGameRequest, opts ...grpc.CallOption) (*ForceEndGameResponse, error)
 	// Stream game events (deaths, scoring, etc.)
-	// If start_config is provided, starts a new game before streaming events.
-	// If start_config is empty, subscribes to current/upcoming game events.
+	// If start_config is provided, starts a new game and streams every event of
+	// that game, beginning with game_start (which carries the game_id), then
+	// game_starting, game_started, ... (#1783). On a failed start: one
+	// game_start_error event, then the stream closes.
+	// If start_config is empty, subscribes to current/upcoming game events; with
+	// game_id set, to that game's events from the moment of attaching.
 	StreamGameEvents(ctx context.Context, in *StreamEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GameEvent], error)
 	// Get current game state (for testing/observability)
 	GetGameState(ctx context.Context, in *GetGameStateRequest, opts ...grpc.CallOption) (*GetGameStateResponse, error)
@@ -110,8 +114,12 @@ type GameCoordinatorServiceServer interface {
 	// Force end current game
 	ForceEndGame(context.Context, *ForceEndGameRequest) (*ForceEndGameResponse, error)
 	// Stream game events (deaths, scoring, etc.)
-	// If start_config is provided, starts a new game before streaming events.
-	// If start_config is empty, subscribes to current/upcoming game events.
+	// If start_config is provided, starts a new game and streams every event of
+	// that game, beginning with game_start (which carries the game_id), then
+	// game_starting, game_started, ... (#1783). On a failed start: one
+	// game_start_error event, then the stream closes.
+	// If start_config is empty, subscribes to current/upcoming game events; with
+	// game_id set, to that game's events from the moment of attaching.
 	StreamGameEvents(*StreamEventsRequest, grpc.ServerStreamingServer[GameEvent]) error
 	// Get current game state (for testing/observability)
 	GetGameState(context.Context, *GetGameStateRequest) (*GetGameStateResponse, error)

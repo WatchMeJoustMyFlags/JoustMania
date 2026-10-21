@@ -156,7 +156,7 @@ check "jev key present" "PASS  jev: JEV_API_KEY present"
 check "claude key present" "PASS  claude: ANTHROPIC_API_KEY present"
 check "empty openai key is only info" "INFO  openai: DECISION_OPENAI_API_KEY absent"
 check "inference backend claude passes" "PASS  AGENT_INFERENCE_BACKEND=claude"
-check "budget override passes" "PASS  AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30"
+check "stage flag under the env ceiling passes" "PASS  LLM budget: llm.max_requests_per_minute = stage (30/min) under the AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30 ceiling"
 check "claude timeout baseline" "PASS  decision.claude.timeout_ms = default (5000)"
 check "jev threshold baseline" "PASS  decision.jev.act_confidence_threshold = gate (0.6)"
 check "jev blackhole variant present" "PASS  decision.jev.base_url = default"
@@ -200,7 +200,10 @@ check "jev blackhole left on fails" "FAIL  decision.jev.base_url = blackhole"
 check "missing jev key fails" "FAIL  jev: JEV_API_KEY missing"
 check "stub summary backend warns" "WARN  AGENT_INFERENCE_BACKEND=stub (not claude)"
 STUB_BUDGET=10 run_preflight
-check "low env budget warns" "WARN  AGENT_LLM_MAX_REQUESTS_PER_MINUTE=10 replaces the flag"
+check "low env budget warns" "WARN  AGENT_LLM_MAX_REQUESTS_PER_MINUTE=10 caps the flag"
+# #1788: the env is a ceiling, so 30 in the env cannot raise the default flag (6).
+STUB_BUDGET=30 run_preflight
+check "env ceiling cannot raise the default flag" "WARN  LLM budget: llm.max_requests_per_minute = default (6/min)"
 
 # --- missing claude key; secret still never printed ------------------------
 fixture
