@@ -588,7 +588,7 @@ Surfaces (#818):
 **Traceability:** C-008 / UC-012, UC-040 / `services/menu/handlers/admin.py`,
 `services/game_coordinator/interventions.py`.
 
-## 15. Planned: env-to-flag migration (#1788)
+## 15. Env-to-flag migration (#1788)
 
 Rows of the env-to-flag migration (#1788, FR-150 to FR-152, C-034). Each row replaces one environment variable that was read once at startup. The `agent` rows are implemented (in `services/flagd/agent.json`, §3 and §13.2); the `observability` rows `log_level` and `debug` are implemented too (in `services/flagd/observability.json`, §10 and §13.5). Rules for every row:
 
@@ -605,13 +605,13 @@ Rows of the env-to-flag migration (#1788, FR-150 to FR-152, C-034). Each row rep
 | `effect.window_seconds` (`agent`) | `AGENT_EFFECT_WINDOW_SECONDS` | float (the code parses a float, `services/agent/main.go` `effectWindowFromEnv`; non-positive falls to the default) | `default`=20 (`decision.DefaultEffectWindow`), `short`=10, `long`=40 | `default` = 20 | operator | flag, env, default | Implemented (#1788) |
 | `promotion.rewatch_interval_seconds` (`agent`) | `AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS` | int | `short`=30, `default`=60 (`promote.DefaultRewatchInterval`), `long`=120 | `default` = 60 | operator | flag, env, default | Implemented (#1788) |
 | `promotion.rewatch_timeout_seconds` (`agent`) | `AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS` | int | `short`=1800, `default`=3600 (`promote.DefaultRewatchTimeout`), `long`=7200 | `default` = 3600 | operator | flag, env, default | Implemented (#1788) |
-| `promotion.revert_cooldown_seconds` (`agent`) | `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS` | int | `default`=600 (`promote.DefaultRevertCooldown`) | `default` = 600 | operator | flag, env, default | Open (#1788) |
+| `promotion.revert_cooldown_seconds` (`agent`) | `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS` | int | `short`=300, `default`=600 (`promote.DefaultRevertCooldown`), `long`=1200 | `default` = 600 | operator | flag, env, default | Implemented (#1788) |
 | `log_level` (`observability`, `service` passed as context) | `LOG_LEVEL` (Python services, agent) | string | `debug`, `info`, `warning`, `error` | `info` (Python and Go both default to INFO) | operator | flag, env, `info` | Implemented (#1788) |
 | ~~`flag_eval_startup_grace_seconds`~~ | `FLAG_EVAL_STARTUP_GRACE_SECONDS` (`lib/flag_eval_visibility.py:56`) | - | - | env, default 15 | - | - | Not migrated: it only exists to silence flag-provider-not-ready noise while flagd has not synced yet, so it cannot be read from flagd (see §15.2) |
 
-### 15.1 Planned registry entries (extends §13.2 and §13.5)
+### 15.1 Registry entries (extends §13.2 and §13.5)
 
-Each key above is added to the mutable-flag registry as a stack-scoped `overlay`, `Persist` no, with the bounds of its variants (seconds: int within the variants' declared range; `inference.model` a free string like `decision.openai.model`), writer: operator scripts and the integration fixtures. The agent writes none of them. The `agent` rows are in the registry (§13.2: `inference.timeout_seconds` int 30 to 120, `effect.window_seconds` 10 to 40, `promotion.rewatch_interval_seconds` int 30 to 120, `promotion.rewatch_timeout_seconds` int 1800 to 7200, `promotion.revert_cooldown_seconds` int 300 to 1200, `inference.model` free string, `inference.effort` its declared variants); the `observability` rows are read-only baseline until their registry rows exist.
+Each key above is added to the mutable-flag registry as a stack-scoped `overlay`, `Persist` no, with the bounds of its variants (seconds: int within the variants' declared range; `inference.model` a free string like `decision.openai.model`), writer: operator scripts and the integration fixtures. The agent writes none of them. The `agent` rows are in the registry (§13.2: `inference.timeout_seconds` int 30 to 120, `effect.window_seconds` 10 to 40, `promotion.rewatch_interval_seconds` int 30 to 120, `promotion.rewatch_timeout_seconds` int 1800 to 7200, `promotion.revert_cooldown_seconds` int 300 to 1200, `inference.model` free string, `inference.effort` its declared variants); the `observability` rows (`log_level`, `debug`) are in the registry too (§13.5).
 
 ### 15.2 Not migrated, and why (inventory 2026-10-20)
 
@@ -629,7 +629,7 @@ Each key above is added to the mutable-flag registry as a stack-scoped `overlay`
 | `AGENT_AUTONOMOUS_ENABLED`, `AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_CODE_IMPROVEMENT_TARGET` | Limit the agent: stay env ceilings (C-034, FR-152). Combination with the existing human-owned flags: autonomous promotion = env AND `code_improvement.mode`=`autonomous` AND `enabled`; code changes = env AND `enabled`; target = `local` unless env and `code_improvement.target` both say `github`. Unset env = closed. A missing flag or lost sync resolves to its code default (`enabled` off, mode `issue`, target `local`), so they fail closed. No new flag. |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | Stays an env ceiling; the existing `llm.max_requests_per_minute` (§3) can only lower it: effective = `min(env, flag)`, unset env = no ceiling (FR-152, NFR-011). A lost sync resolves the flag to its default 6 (not the lowest variant 3). The flag is operator-written (§13.2), never agent-written. |
 
-### 15.3 Open points
+### 15.3 Resolved points
 
 - Resolved (#1788): the pairing daemon is host-networked but reaches flagd on `127.0.0.1:8015` and already evaluates the `system` and `controller` sets, so `debug` and `log_level` are migrated for it. While `debug` is on, the daemon's root log level is DEBUG (the former `DEBUG` env behaviour), lowered below the `log_level` flag value.
 - Resolved (#1788), floor and OTLP: when `debug` is on, the pairing daemon's floor lowers the OTLP log handler to DEBUG too, so DEBUG records now also go out over OTLP (before, the handler stayed at `LOG_LEVEL`, default INFO).
