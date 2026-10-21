@@ -249,6 +249,9 @@ async def test_game_starts_and_runs_when_flag_service_registration_fails(service
     servicer.flag_service = FlagServiceLifecycle(
         FlagServiceClient(service.url, timeout=2.0), servicer._flag_service_live_games, instance="h/1"
     )
+    # The lifecycle sets the reconcile flag at construction; clear it so the assertion below
+    # proves the failed registration re-set it.
+    servicer.flag_service._needs_reconcile.clear()
     config = game_coordinator_pb2.StartGameConfig(
         game_name="FFA",
         players=[game_coordinator_pb2.Player(serial=s) for s in ("MOCK0001", "MOCK0002")],
