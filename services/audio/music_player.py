@@ -39,7 +39,7 @@ if platform == "linux" or platform == "linux2":
         logger.warning("alsaaudio not available, music playback disabled")
 else:
     HAS_ALSA = False
-    logger.info("Non-Linux platform, using pygame for music")
+    logger.info("Non-Linux platform, ALSA music playback unavailable")
 
 
 def lerp(a: float, b: float, t: float) -> float:
@@ -370,7 +370,7 @@ class MusicPlayer:
             self._spawn_audio_process()
             logger.info(f"MusicPlayer '{name}' initialized with ALSA backend")
         else:
-            logger.info(f"MusicPlayer '{name}' initialized (no tempo control - using pygame fallback)")
+            logger.info(f"MusicPlayer '{name}' initialized (no ALSA backend: music playback disabled)")
 
     def _spawn_audio_process(self):
         """Spawn (or respawn) the audio playback subprocess."""
