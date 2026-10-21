@@ -248,3 +248,34 @@ class TestMenuHealthReadiness:
             await _boot(_servicer_with_flags(), provider_wait=not_ready)
 
         assert ("health", "", health_pb2.HealthCheckResponse.SERVING) in events
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", cond=["Pre-1"])
+    async def test_hung_boot_lobby_entry_still_reports_serving_after_the_timeout(self):
+        events = []
+        servicer = _servicer_with_flags()
+
+        async def hung_enter_lobby():
+            await asyncio.sleep(3600)
+
+        servicer.enter_lobby.side_effect = hung_enter_lobby
+
+        with (
+            patch.object(server, "BOOT_LOBBY_ENTRY_TIMEOUT_SECONDS", 0.05),
+            patch.object(server.health.aio, "HealthServicer", self._recording_health(events)),
+        ):
+            await _boot(servicer)
+
+        assert ("health", "", health_pb2.HealthCheckResponse.SERVING) in events
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", cond=["Pre-1"])
+    async def test_raising_boot_lobby_entry_still_reports_serving(self):
+        events = []
+        servicer = _servicer_with_flags()
+        servicer.enter_lobby.side_effect = RuntimeError("audio down")
+
+        with patch.object(server.health.aio, "HealthServicer", self._recording_health(events)):
+            await _boot(servicer)
+
+        assert ("health", "", health_pb2.HealthCheckResponse.SERVING) in events
