@@ -1785,7 +1785,6 @@ class BaseGameMode(ABC):
         accel_mag: float,
         smoothed: float,
         effective_death: float,
-        controller_state,
     ) -> None:
         """
         Record analytics sample and emit periodic Prometheus metrics.
@@ -1796,17 +1795,10 @@ class BaseGameMode(ABC):
             accel_mag: Raw acceleration magnitude
             smoothed: Smoothed acceleration value
             effective_death: Current effective death threshold
-            controller_state: Full controller state protobuf (for gyro data)
         """
         config = get_config_manager().get_config()
         if not config.analytics.enabled or player.analytics is None:
             return
-
-        # Get gyro data if available
-        gyro = controller_state.gyro if hasattr(controller_state, "gyro") else None
-        gyro_x = gyro.x if gyro else 0.0
-        gyro_y = gyro.y if gyro else 0.0
-        gyro_z = gyro.z if gyro else 0.0
 
         # Record sample (returns current movement zone)
         zone = player.analytics.record_sample(
@@ -1814,9 +1806,6 @@ class BaseGameMode(ABC):
             smoothed_accel=smoothed,
             death_threshold=effective_death,
             config=config.analytics,
-            gyro_x=gyro_x,
-            gyro_y=gyro_y,
-            gyro_z=gyro_z,
             frame_duration_ms=1000.0 / config.update_frequency_hz,
         )
 
@@ -1991,7 +1980,6 @@ class BaseGameMode(ABC):
                 accel_mag,
                 accel_mag,
                 self._compute_effective_thresholds(player)[1],
-                controller_state,
             )
             return  # In grace period, skip death/warning checks
 
@@ -2001,7 +1989,7 @@ class BaseGameMode(ABC):
         smoothed = player.smoothed_accel
 
         # Record analytics (handles enabled check internally)
-        self._record_player_analytics(player, serial, accel_mag, smoothed, effective_death, controller_state)
+        self._record_player_analytics(player, serial, accel_mag, smoothed, effective_death)
 
         # Death and warning checks (matches original JoustMania logic)
         # Key: warning is just feedback, NOT protection - player can die during warning!
