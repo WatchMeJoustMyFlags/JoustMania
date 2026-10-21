@@ -1,0 +1,70 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/joustmania/agent/experiment/journal"
+)
+
+// The dossier decision follows how the experiment ended, not only its verdict
+// (#1731): a promote verdict whose promotion could not act ends `discarded`, and
+// an aborted experiment is never shown as promoted.
+// UC: UC-035 A1
+func TestDossierDecisionFollowsTerminalStatus_1731(t *testing.T) {
+	cases := []struct {
+		name     string
+		verdict  string // "" = no verdict was reached
+		terminal string
+		want     string
+	}{
+		{"promote verdict, promotion acted (done)", "promote", "done", "promoted"},
+		{"promote verdict, inert promotion (discarded)", "promote", "discarded", "discarded"},
+		{"promote verdict, aborted during promotion", "promote", "aborted", "aborted"},
+		{"discard verdict, discarded", "discard", "discarded", "discarded"},
+		{"inconclusive verdict, discarded", "inconclusive", "discarded", "refined"},
+		{"no verdict, aborted", "", "aborted", "aborted"},
+		{"no verdict, discarded", "", "discarded", "discarded"},
+	}
+	for _, c := range cases {
+		t.Run("UC-035/A1 "+c.name+" reads "+c.want, func(t *testing.T) {
+			root := t.TempDir()
+			id := seedJournal(t, root, "exp_end00001", false)
+			j, err := journal.Load(root, id)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			at := time.Date(2026, 6, 16, 12, 10, 0, 0, time.UTC)
+			if c.verdict != "" {
+				if err := j.AppendEvent(journal.Event{
+					At: at, Kind: journal.KindOutcome, Status: "concluded",
+					Verdict: &journal.Verdict{Outcome: c.verdict},
+				}); err != nil {
+					t.Fatalf("outcome: %v", err)
+				}
+			}
+			if err := j.AppendEvent(journal.Event{
+				At: at.Add(time.Minute), Kind: journal.KindDecision, Status: c.terminal,
+			}); err != nil {
+				t.Fatalf("decision: %v", err)
+			}
+
+			reader := &dossierReader{root: root}
+			rec := httptest.NewRecorder()
+			reader.handleDossier(rec, httptest.NewRequest(http.MethodGet, "/experiments/"+id, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+			}
+			var d dossierView
+			if err := json.Unmarshal(rec.Body.Bytes(), &d); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if d.Decision != c.want {
+				t.Errorf("decision = %q, want %q (status %q)", d.Decision, c.want, d.Status)
+			}
+		})
+	}
+}
