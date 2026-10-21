@@ -210,6 +210,14 @@ describe("UC-040: A30 step 4 / A32 step 3 the dashboard badge follows the charge
     expect(shieldBadge(store.get("MOCK0001", NOW), NOW)?.text).toBe("Shield 5.0s");
   });
 
+  it("UC-040/A30 step 4 shows the Charged badge text, with the seconds to expiry when there is one", () => {
+    const store = new ShieldStore();
+    store.apply(charged("MOCK0001", NOW + 12_000), NOW);
+    store.apply(charged("MOCK0002", 0), NOW);
+    expect(shieldBadge(store.get("MOCK0001", NOW), NOW)?.text).toBe("Charged 12s");
+    expect(shieldBadge(store.get("MOCK0002", NOW), NOW)?.text).toBe("Charged");
+  });
+
   it("UC-040/A32 a death, a game start and a game end clear the charge", () => {
     for (const clearing of <GameEventLike[]>[
       { eventType: "player_death", data: { serial: "MOCK0001" } },

@@ -30,6 +30,13 @@ import (
 //     is only a backstop.
 //   - A backend without its key returns nil (backend_unavailable -> rules)
 //     without building anything.
+//   - An openai or jev base URL that is not key-safe (keySafeBaseURL: https, or
+//     plain http only to a loopback host) returns nil the same way, so nothing is
+//     sent and the key never travels in clear text. It is a url.Parse, no I/O.
+//     UC: UC-044 BR-003, C-016 (#1814).
+//   - The shared client follows no redirect (the 3xx is returned as the
+//     response, which the backends turn into an error -> rules fallback), so an
+//     endpoint cannot forward the key to another host or downgrade it to http.
 //   - claude.New builds an Anthropic SDK client (~16 allocs / 3.5 KB per call,
 //     vs 3 allocs for openai.New / jev.New), so claude backends are cached per
 //     claude.Config (model, timeout, capture, base URL; the key and client are
@@ -58,8 +65,15 @@ func decideBackendEnvFromOS() decideBackendEnv {
 const decideHTTPTimeout = 30 * time.Second
 
 // newDecideHTTPClient is the one HTTP client every remote backend shares.
+// It never follows a redirect: the key-bearing request goes only to the
+// key-safe base URL (UC-044 BR-003).
 func newDecideHTTPClient() *http.Client {
-	return &http.Client{Timeout: decideHTTPTimeout}
+	return &http.Client{
+		Timeout: decideHTTPTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // newDecideRegistry builds the decision-backend registry main.go hands to every
@@ -85,6 +99,9 @@ func newDecideRegistry(env decideBackendEnv, client *http.Client) *decision.Deci
 		if env.OpenAIAPIKey == "" {
 			return nil
 		}
+		if _, ok := keySafeBaseURL(d.OpenAI.BaseURL); !ok {
+			return nil
+		}
 		return openai.New(openai.Config{
 			APIKey:          env.OpenAIAPIKey,
 			BaseURL:         d.OpenAI.BaseURL,
@@ -96,10 +113,15 @@ func newDecideRegistry(env decideBackendEnv, client *http.Client) *decision.Deci
 		})
 	})
 	// Jev needs only JEV_API_KEY: an empty base URL or model falls back to the jev
-	// package defaults (UC-044 BR-002).
+	// package defaults (UC-044 BR-002); a set base URL must be key-safe (BR-003).
 	reg.Register(flags.DecisionBackendJev, func(d flags.DecisionBackend) decide.Backend {
 		if env.JevAPIKey == "" {
 			return nil
+		}
+		if u := strings.TrimSpace(d.Jev.BaseURL); u != "" {
+			if _, ok := keySafeBaseURL(u); !ok {
+				return nil
+			}
 		}
 		return jev.New(jev.Config{
 			APIKey:         env.JevAPIKey,

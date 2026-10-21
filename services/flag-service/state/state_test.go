@@ -414,6 +414,39 @@ func TestEndGame_DropsScopeAndValues(t *testing.T) {
 	})
 }
 
+// UC: UC-053 A13
+func TestReregistration_DropsLeftPlayersValues(t *testing.T) {
+	t.Run("UC-053/A13 a registration without a serial drops that player's values, keeps the rest", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.register("game_a", "c/1", "MOCK0001", "MOCK0002")
+		f.put(WriteRequest{Set: "interventions", Flag: "shield_seconds", Value: raw("5"), Scope: Scope{GameID: "game_a", Serial: "MOCK0001"}})
+		kept := f.put(WriteRequest{Set: "interventions", Flag: "shield_seconds", Value: raw("7"), Scope: Scope{GameID: "game_a", Serial: "MOCK0002"}})
+		f.put(WriteRequest{Set: "interventions", Flag: "volume_override", Value: raw("0.5"), Scope: Scope{GameID: "game_a"}})
+		registeredAt := f.state.Game("game_a").RegisteredAt
+		f.clock.Advance(10 * time.Second)
+
+		already, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1", Serials: []string{"MOCK0002"}})
+		if err != nil || !already {
+			t.Fatalf("already %v err %v", already, err)
+		}
+		if got := f.state.Stats().ScopeValues; got != 2 {
+			t.Fatalf("%d scope values, want 2 (MOCK0002's and the game-wide one)", got)
+		}
+		ctx := func(serial string) map[string]any {
+			return map[string]any{"gameId": "game_a", "targetingKey": serial}
+		}
+		if v, _ := f.resolve("shield_seconds", ctx("MOCK0001")); v != "none" {
+			t.Fatalf("MOCK0001 still resolves its dropped value (variant %s)", v)
+		}
+		if v, _ := f.resolve("shield_seconds", ctx("MOCK0002")); v != kept.Variant {
+			t.Fatalf("MOCK0002 resolves %s, want its kept %s", v, kept.Variant)
+		}
+		if !f.state.Game("game_a").RegisteredAt.Equal(registeredAt) {
+			t.Fatal("re-registration restarted the game's age")
+		}
+	})
+}
+
 // UC: UC-053 A10
 func TestReconcile_OnlyThatInstance(t *testing.T) {
 	t.Run("UC-053/A10 a reconcile from instance A leaves instance B's games intact", func(t *testing.T) {

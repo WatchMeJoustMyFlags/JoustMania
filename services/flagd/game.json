@@ -63,7 +63,7 @@
         "instant": "instant",
         "trigger": "trigger"
       },
-      "defaultVariant": "instant"
+      "defaultVariant": "trigger"
     },
     "shield.charge_expiry_seconds": {
       "state": "ENABLED",

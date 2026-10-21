@@ -11,5 +11,5 @@ section there instead of relying on memory; this file only holds the orientation
 - Menu controller states: CONNECTED (dim LED) → READY (bright LED), plus ADMIN and IDLE; disconnected
   controllers are removed. Game: IDLE → STARTING → RUNNING → ENDING → ENDED.
 - Motion: HID ≈ 1 kHz → controller-manager state loop fixed at 100 Hz → gameplay stream 60 Hz by flag
-  (`game_loop.update_frequency_hz`, fallback 30 Hz); no idle stream. EMA filtering and death thresholds
+  (`game_loop.update_frequency_hz`, default 60, variants 15/30/60; 30 Hz only when a client requests no rate); no idle stream. EMA filtering and death thresholds
   (sensitivity 0-4) live in the game coordinator.

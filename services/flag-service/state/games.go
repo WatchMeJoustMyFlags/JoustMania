@@ -73,7 +73,9 @@ func (s *State) registerLocked(g Game) {
 	sort.Strings(serials)
 	g.Serials = serials
 	s.games[g.ID] = &g
-	// Registration changes no flag value; the snapshot is unchanged.
+	// A first registration changes no flag value. A re-registration that
+	// drops serials removes their per-player values and re-pushes the snapshot
+	// (dropRemovedSerialsLocked, UC-053 A13).
 }
 
 // EndGame drops a game scope and every value written for it (DELETE
