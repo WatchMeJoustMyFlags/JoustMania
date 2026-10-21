@@ -570,6 +570,8 @@ func (r *Registry) Declare(in Intent) (string, error) {
 	// as a leftover of a crash and abort it with start_failed (UC-043 A8).
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Keep this call inside the lock: TestDeclareCreatesJournalUnderRegistryLock_1731
+	// probes r.mu through r.clock().
 	now := r.clock()
 
 	// Reconcile target_n vs the verdict min-N (#1001). A target_n below the verdict
