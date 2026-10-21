@@ -783,6 +783,13 @@ class InterventionManager:
           the handler call; the handler does not.
         - raising propagates as a blocked-with-error outcome; handlers should be
           defensive.
+        - a flag the handler reads (directly or through the game) sees only the
+          API-level evaluation context plus what the read passes itself, NOT the
+          game's transaction context (game_mode, controller_count, sensitivity,
+          experiment; ``game_kind`` is always ``real``): the effect runs in a copy
+          of the main loop's contextvars (``game_loop_dispatch``, #1872). Declare
+          the flag in ``handler_flag_reads.py``; ``tests/test_handler_flag_reads.py``
+          fails for an undeclared read.
         """
         if flag_key not in self._handlers:
             raise KeyError(f"Unknown intervention flag key: {flag_key}")

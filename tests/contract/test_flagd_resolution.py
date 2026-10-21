@@ -875,6 +875,170 @@ def test_shield_flag_targeting_uses_only_the_agents_context(flag_dir):
     assert not failures, "\n".join(failures)
 
 
+# Every flag an intervention handler reads (#1872, flags.md section 1.2). The handler runs in
+# a copy of the servicer main loop's contextvars, so the game's transaction context
+# (targetingKey, game_mode, controller_count, sensitivity, experiment_id, arm) is absent
+# and game_kind is always "real". The registry names the targeting variables each flag may
+# use; services/game_coordinator/tests/test_handler_flag_reads.py keeps it complete.
+HANDLER_FLAG_READS_FILE = COORDINATOR_DIR / "handler_flag_reads.py"
+FLAG_SERVICE_REGISTRY = ic.REPO_ROOT / "services" / "flag-service" / "registry.yaml"
+# Always present in a handler read: the API-level attributes (lib/feature_flags.py).
+HANDLER_API_VARS = {
+    "service_name",
+    "service_namespace",
+    "language",
+    "environment",
+    "hostname",
+    "game_kind",
+}
+
+
+def handler_flag_reads() -> dict[tuple[str, str], dict]:
+    """The registry, read without importing the coordinator (this venv has none of its deps)."""
+    tree = ast.parse(HANDLER_FLAG_READS_FILE.read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "HANDLER_FLAG_READS"
+            for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{HANDLER_FLAG_READS_FILE} has no HANDLER_FLAG_READS")
+
+
+def handler_read_targeting_failures(
+    registry: dict[tuple[str, str], dict], flags_by_domain: dict[str, dict], where: str
+) -> list[str]:
+    """Targeting variables a handler-read flag uses beyond its declared ones."""
+    failures = []
+    for (domain, key), entry in sorted(registry.items()):
+        flags = flags_by_domain.get(domain, {})
+        if key not in flags:
+            failures.append(f"{where}/{domain}.json has no {key}")
+            continue
+        allowed = set(entry["targeting"]) | HANDLER_API_VARS
+        extra = {
+            v
+            for v in _json_vars(flags[key].get("targeting", {}))
+            if v not in allowed and not v.startswith("$flagd.")
+        }
+        if extra:
+            failures.append(
+                f"{where}/{domain}.json {key} targeting references {sorted(extra)}, "
+                f"a handler read has only {sorted(allowed)}"
+            )
+    return failures
+
+
+def handler_read_scope_failures(
+    registry: dict[tuple[str, str], dict], writer_flags: list[dict]
+) -> list[str]:
+    """Flag-service writer scopes that would put a rung in front of a handler read."""
+    scopes = {(f["set"], f["key"]): set(f.get("scope", [])) for f in writer_flags}
+    failures = []
+    for (domain, key), entry in sorted(registry.items()):
+        scope = scopes.get((domain, key), set())
+        targeting = set(entry["targeting"])
+        if "experiment+arm" in scope and not entry.get("experiment_rung_inert"):
+            failures.append(
+                f"{domain}.{key} has the experiment+arm scope but is not declared experiment_rung_inert"
+            )
+        if entry.get("experiment_rung_inert") and "experiment+arm" not in scope:
+            failures.append(
+                f"{domain}.{key} is declared experiment_rung_inert but has no experiment+arm scope"
+            )
+        if scope & {"game", "game+serial"} and "gameId" not in targeting:
+            failures.append(
+                f"{domain}.{key} has a game rung but its handler read does not pass gameId"
+            )
+        if "game+serial" in scope and "targetingKey" not in targeting:
+            failures.append(
+                f"{domain}.{key} has a game+serial rung but its handler read passes no targetingKey"
+            )
+    return failures
+
+
+def _flag_files(flag_dir: str) -> dict[str, dict]:
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    return {
+        path.stem: json.loads(path.read_text())["flags"]
+        for path in sorted(root.glob("*.json"))
+    }
+
+
+@pytest.mark.uc("UC-040", flow="A31", br=["BR-018"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_handler_read_flag_targeting_uses_only_the_handler_context(flag_dir):
+    """Static: targeting on a flag an intervention handler reads may use only the variables
+    the registry declares (plus the API-level attributes and $flagd.*)."""
+    registry = handler_flag_reads()
+    assert registry, "the handler flag registry is empty"
+    failures = handler_read_targeting_failures(
+        registry, _flag_files(flag_dir), flag_dir
+    )
+    assert not failures, "\n".join(failures)
+
+
+@pytest.mark.uc("UC-040", flow="A31", br=["BR-018"])
+def test_handler_read_flags_writer_scope():
+    """Static: the flag service never renders a rung a handler read cannot match."""
+    registry = handler_flag_reads()
+    writer_flags = ic.load_yaml(FLAG_SERVICE_REGISTRY)["flags"]
+    failures = handler_read_scope_failures(registry, writer_flags)
+    assert not failures, "\n".join(failures)
+    # The scope check sees the flags it is meant to guard.
+    assert any(f["set"] == "game" and f["key"] == "windows" for f in writer_flags)
+
+
+@pytest.mark.uc("UC-040", flow="A31", br=["BR-018"])
+def test_handler_read_checks_report_a_violation():
+    """Negative fixture: a game_mode rung, a missing flag and an undeclared scope are reported."""
+    registry = {
+        ("game", "shield.activation"): {"targeting": ["gameId"]},
+        ("game", "windows"): {
+            "targeting": ["targetingKey"],
+            "experiment_rung_inert": True,
+        },
+        ("game", "ghost"): {"targeting": []},
+    }
+    flags = {
+        "game": {
+            "shield.activation": {
+                "targeting": {
+                    "if": [{"==": [{"var": "game_mode"}, "FFA"]}, "trigger", "instant"]
+                }
+            },
+            "windows": {
+                "targeting": {
+                    "if": [{"==": [{"var": "targetingKey"}, "calm"]}, "calm", "default"]
+                }
+            },
+        }
+    }
+    failures = handler_read_targeting_failures(registry, flags, "fixture")
+    assert len(failures) == 2
+    assert "ghost" in failures[0]
+    assert "shield.activation" in failures[1] and "game_mode" in failures[1]
+
+    scope_failures = handler_read_scope_failures(
+        registry,
+        [
+            {"set": "game", "key": "shield.activation", "scope": ["experiment+arm"]},
+            {"set": "game", "key": "windows", "scope": ["stack"]},
+            {"set": "game", "key": "ghost", "scope": ["game"]},
+        ],
+    )
+    assert len(scope_failures) == 3
+    assert "ghost" in scope_failures[0] and "does not pass gameId" in scope_failures[0]
+    assert (
+        "shield.activation" in scope_failures[1]
+        and "not declared experiment_rung_inert" in scope_failures[1]
+    )
+    assert (
+        "windows" in scope_failures[2]
+        and "no experiment+arm scope" in scope_failures[2]
+    )
+
+
 @pytest.mark.uc("UC-040", flow="A31", steps=[1])
 @pytest.mark.parametrize("resolver", ["rpc", "in_process"])
 def test_agent_reads_the_shield_flags_like_the_coordinator(flagd, resolver):
