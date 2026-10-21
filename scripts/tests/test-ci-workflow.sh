@@ -631,6 +631,9 @@ needs = jobs["ci-complete"].get("needs", [])
 needs = [needs] if isinstance(needs, str) else list(needs)
 missing = sorted(REQUIRED_NEEDS - set(needs))
 check(not missing, f"ci-complete: must keep needing {missing}")
+unlisted = sorted(set(needs) - REQUIRED_NEEDS - INFORMATIONAL_JOBS)
+check(not unlisted, f"ci-complete: new needs {unlisted} must be added to REQUIRED_NEEDS or INFORMATIONAL_JOBS")
+# Step-level continue-on-error in other jobs (e.g. service-checks' ty step, publish/retag #1795) is deliberate.
 for name in needs:
     if name in INFORMATIONAL_JOBS or name not in jobs:
         continue
