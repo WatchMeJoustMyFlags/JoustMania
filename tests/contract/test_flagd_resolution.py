@@ -786,6 +786,122 @@ def test_every_coordinator_flag_resolves_with_its_typed_getter(flagd, resolver):
 
 
 # --------------------------------------------------------------------------- #
+# 2a. The agent reads the shield flags like the coordinator (#1837, UC-040 A31)
+# --------------------------------------------------------------------------- #
+# The agent's charge ledger reads shield.activation and shield.charge_expiry_seconds
+# from the game set (services/agent/flags/game.go:ShieldCharge) with a SUBSET of the
+# coordinator's evaluation context: targetingKey = game mode, game_mode, game_kind=real
+# and gameId. The coordinator adds the API-level service attributes and the rest of
+# its transaction context. flags.md §4 therefore limits targeting on these two flags
+# to gameId, game_mode and game_kind, so both resolve the same value.
+SHIELD_LEDGER_FLAGS = {
+    "shield.activation": "string",
+    "shield.charge_expiry_seconds": "float",
+}
+SHIELD_TARGETING_VARS = {"gameId", "game_mode", "game_kind"}
+_CONTRACT_GAME_ID = "g-contract-1837"
+
+
+def _coordinator_context() -> "EvaluationContext":
+    """lib/feature_flags: API-level attributes + set_game_transaction_context + gameId."""
+    return EvaluationContext(
+        targeting_key="FFA",
+        attributes={
+            "service_name": "game-coordinator",
+            "service_namespace": "core",
+            "language": "python",
+            "environment": "production",
+            "hostname": "joustmania",
+            "game_kind": "real",
+            "game_mode": "FFA",
+            "controller_count": 4,
+            "sensitivity": 2,
+            "gameId": _CONTRACT_GAME_ID,
+        },
+    )
+
+
+def _agent_context() -> "EvaluationContext":
+    """services/agent/flags/game.go shieldChargeContext."""
+    return EvaluationContext(
+        targeting_key="FFA",
+        attributes={
+            "game_mode": "FFA",
+            "game_kind": "real",
+            "gameId": _CONTRACT_GAME_ID,
+        },
+    )
+
+
+def _json_vars(node) -> set[str]:
+    found: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "var":
+                name = value[0] if isinstance(value, list) and value else value
+                if isinstance(name, str):
+                    found.add(name)
+            else:
+                found |= _json_vars(value)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _json_vars(item)
+    return found
+
+
+@pytest.mark.uc("UC-040", flow="A31", steps=[1])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_shield_flag_targeting_uses_only_the_agents_context(flag_dir):
+    """Static: targeting on the two shield flags may reference only gameId, game_mode,
+    game_kind (or flagd's own $flagd.* values), so the agent's narrower context resolves
+    what the coordinator's does (flags.md §4)."""
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    flags = json.loads((root / "game.json").read_text())["flags"]
+    failures = []
+    for key in SHIELD_LEDGER_FLAGS:
+        if key not in flags:
+            failures.append(f"{flag_dir}/game.json has no {key}")
+            continue
+        extra = {
+            v
+            for v in _json_vars(flags[key].get("targeting", {}))
+            if v not in SHIELD_TARGETING_VARS and not v.startswith("$flagd.")
+        }
+        if extra:
+            failures.append(
+                f"{flag_dir}/game.json {key} targeting references {sorted(extra)}"
+            )
+    assert not failures, "\n".join(failures)
+
+
+@pytest.mark.uc("UC-040", flow="A31", steps=[1])
+@pytest.mark.parametrize("resolver", ["rpc", "in_process"])
+def test_agent_reads_the_shield_flags_like_the_coordinator(flagd, resolver):
+    """Live: each shield flag resolves, with the coordinator's getter, to the same value
+    under the coordinator's context and the agent's context (amendment A1 of #1837 PR-4)."""
+    failures = []
+    with _ready_client(flagd, "game", resolver) as client:
+        for key, getter in SHIELD_LEDGER_FLAGS.items():
+            read = getattr(client, f"get_{getter}_details")
+            coordinator = read(key, _SENTINEL_DEFAULTS[getter], _coordinator_context())
+            agent = read(key, _SENTINEL_DEFAULTS[getter], _agent_context())
+            for who, details in (("coordinator", coordinator), ("agent", agent)):
+                if details.error_code is not None or details.reason == Reason.ERROR:
+                    failures.append(
+                        f"{key} ({who}): {details.error_code} {details.error_message}"
+                    )
+            if (
+                not _same_value(coordinator.value, agent.value)
+                or coordinator.variant != agent.variant
+            ):
+                failures.append(
+                    f"{key}: coordinator {coordinator.value!r} ({coordinator.variant}) != "
+                    f"agent {agent.value!r} ({agent.variant})"
+                )
+    assert not failures, f"on {resolver}:\n" + "\n".join(failures)
+
+
+# --------------------------------------------------------------------------- #
 # 2b. Agent tuning flags migrated from env (#1788, flags.md §15)
 # --------------------------------------------------------------------------- #
 AGENT_TUNING_GO = ic.REPO_ROOT / "services" / "agent" / "flags" / "tuning.go"
