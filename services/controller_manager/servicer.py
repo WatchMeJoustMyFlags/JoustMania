@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 # A closed game stream's shield layers end after this delay unless a new game stream
 # claims the controller first (the coordinator reconnects and re-sends, #1837).
-STREAM_CLOSE_SHIELD_CLEANUP_DELAY_S = 2.0
+STREAM_CLOSE_SHIELD_CLEANUP_DELAY_S = 7.0
 
 tracer = get_tracer(__name__)
 

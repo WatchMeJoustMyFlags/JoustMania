@@ -112,3 +112,33 @@ class TestUC040StreamCloseCleanup:
         await _wait_cleanups(stream_servicer)
         stream_servicer.feedback_manager.end_shield_effect.assert_not_called()
         assert not stream_servicer._shield_cleanup_tasks
+
+
+class TestUC040CleanupOutlastsReconnectBackoff:
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    def test_delay_covers_the_coordinator_reconnect_backoff(self):
+        """The coordinator retries after 1, 2, 3 s (cumulative 6 s): the delay must outlast that."""
+        assert servicer_module.STREAM_CLOSE_SHIELD_CLEANUP_DELAY_S >= 7.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    async def test_reconnect_claim_after_5_seconds_keeps_the_layers(self, stream_servicer, monkeypatch):
+        """UC-040 A32: a second reconnect attempt (claim at 5 s) finds the layers intact."""
+        sleeps = []
+        release = asyncio.Event()
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+            await release.wait()
+
+        monkeypatch.setattr(servicer_module.asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(servicer_module, "STREAM_CLOSE_SHIELD_CLEANUP_DELAY_S", 7.0)
+        await _run_stream(stream_servicer)
+        await asyncio.sleep(0)
+        assert 7.0 in sleeps  # the cleanup waits the full 7 s, past the 5 s claim
+
+        await stream_servicer._process_gameplay_config(_game_config(SERIAL), "game_stream_2", MagicMock())
+        release.set()
+        await _wait_cleanups(stream_servicer)
+
+        stream_servicer.feedback_manager.end_shield_effect.assert_not_called()

@@ -373,3 +373,26 @@ class TestUC040SwellRumble:
 
         assert backend.rumble[-1][1] == 0
         await manager.end_shield_effect(SERIAL, restore=False)
+
+
+class TestUC040DeathRumbleIsNeverShortened:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-021"])
+    async def test_swell_and_charge_tick_skip_a_running_death_rumble(self, manager, backend, clock, monkeypatch):
+        """UC-040 BR-021: while the death rumble runs, a swell or a new charge tick leaves its timer alone."""
+        monkeypatch.setattr(fm_module, "DEATH_RUMBLE_MS", 300)
+        monkeypatch.setattr(fm_module, "DEATH_RED_HOLD_MS", 1)
+        monkeypatch.setattr(fm_module, "DEATH_FADE_MS", 1)
+        await _effect(manager, controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        death_stop = manager.vibration_tasks[SERIAL]
+        mark = len(backend.rumble)
+
+        await _effect(manager, SWELL)
+        await _effect(manager, CHARGE, 60_000)
+        await _spin(40)
+
+        assert manager.vibration_tasks[SERIAL] is death_stop and not death_stop.done()
+        assert len(backend.rumble) == mark  # no swell step, no 120 tick
+        await asyncio.sleep(0.35)
+        assert backend.rumble[-1][1] == 0  # the death rumble ran its full length
+        await manager.end_shield_effect(SERIAL, restore=False)

@@ -177,6 +177,8 @@ _SHIELD_KIND_BY_EFFECT = {
 }
 # The activation swell lives in the rumble slot (vibration_tasks), so any later rumble replaces it (#1837).
 SWELL_TASK_NAME = "shield_swell"
+# The death rumble owns the slot for its full duration; the swell and the charge tick never replace it.
+DEATH_RUMBLE_TASK_NAME = "death_rumble"
 
 
 class FeedbackManager(ControllerEffectsBase):
@@ -307,7 +309,7 @@ class FeedbackManager(ControllerEffectsBase):
             logger.error(f"Error setting color on {serial}: {e}", exc_info=True)
             return False
 
-    async def set_vibration(self, serial: str, intensity: int, duration_ms: int) -> bool:
+    async def set_vibration(self, serial: str, intensity: int, duration_ms: int, task_name: str | None = None) -> bool:
         """
         Set controller vibration (internal method).
 
@@ -341,7 +343,7 @@ class FeedbackManager(ControllerEffectsBase):
                 if will_schedule:
                     # Store task reference to prevent garbage collection
                     self.vibration_tasks[serial] = asyncio.create_task(
-                        self._delayed_stop_vibration(serial, duration_ms)
+                        self._delayed_stop_vibration(serial, duration_ms), name=task_name
                     )
             else:
                 logger.warning(f"Failed to set vibration on {serial}")
@@ -498,7 +500,7 @@ class FeedbackManager(ControllerEffectsBase):
             # Long rumble (~1 s, UC-030 step 9): clearly different from the 200 ms warning. It runs on its
             # own stop timer, so the red hold, the fade and the end of the game do not cut it short.
             span.add_event("vibration", {"intensity": 255, "duration_ms": rumble_ms})
-            await self.set_vibration(serial, 255, rumble_ms)
+            await self.set_vibration(serial, 255, rumble_ms, task_name=DEATH_RUMBLE_TASK_NAME)
 
             # Solid red briefly (default 300ms) then fade to black (default 700ms)
             # This replaces the awkward slow blink (1Hz over 1500ms)
@@ -774,7 +776,7 @@ class FeedbackManager(ControllerEffectsBase):
         else:
             # The running renderer picks the new layer up on its next tick.
             logger.debug(f"Shield layer {kind} (re)started on {serial} for {duration_ms}ms")
-        if newly_charged:
+        if newly_charged and not self._death_rumble_running(serial):
             # One soft tick when the charge starts, not when it is re-sent (UC-040 BR-021).
             await self.set_vibration(serial, CHARGE_TICK_INTENSITY, CHARGE_TICK_MS)
 
@@ -880,12 +882,18 @@ class FeedbackManager(ControllerEffectsBase):
             charge=kind == "charge",
         )
 
+    def _death_rumble_running(self, serial: str) -> bool:
+        task = self.vibration_tasks.get(serial)
+        return task is not None and not task.done() and task.get_name() == DEATH_RUMBLE_TASK_NAME
+
     async def _effect_shield_swell(self, serial: str, **_kwargs) -> None:
         """Activation swell (#1837, UC-040 BR-021): rumble 0 -> 180 -> 0 over 600 ms, no LED.
 
         It owns the rumble slot (``vibration_tasks``), so a later rumble (warning, death)
         cancels it and runs on its own timer.
         """
+        if self._death_rumble_running(serial):
+            return  # the death rumble is never shortened (UC-040 BR-021)
         previous = self.vibration_tasks.pop(serial, None)
         if previous is not None:
             previous.cancel()
