@@ -272,8 +272,8 @@ Order on landing (`decision/decide_hook.go:Loop.runDecideRemote`, `decideRemoteA
 
 1. `interventions_allowed` membership → blocked `not_allowed`
 2. `policy.battery_threshold` (player-targeted only; unknown battery does not block) → `battery_threshold`
-2a. `already_charged` (#1837, planned): a `grant_shield` whose target got a `grant_shield` from this agent in the same game within `min(shield.charge_expiry_seconds, 20 s)` (20 s when the expiry is 0), while the game's `shield.activation` resolves to `trigger`, is blocked before the rate limit and charges no budget. The check reads the agent's own dispatch ledger, not the coordinator's state (v1 has no shield-state gauge); the coordinator stays authoritative (UC-040 A31)
-3. weighted per-game rate limit `policy.max_interventions_per_minute` → `rate_limit` (budget charged only on admit)
+3. `already_charged` (#1837, planned): in trigger mode only (`shield.activation` resolves to `trigger` for the game), a `grant_shield` whose target got a `grant_shield` from this agent in the same game within `min(shield.charge_expiry_seconds, 20 s)` (20 s when the expiry is 0) is blocked before the rate limit and charges no budget. It reads the agent's own dispatch ledger, not the coordinator's state (v1 has no shield-state gauge), so it is a heuristic: it also refuses a grant after the player activated, which the coordinator would accept (UC-040 A31, BR-020). The coordinator stays authoritative
+4. weighted per-game rate limit `policy.max_interventions_per_minute` → `rate_limit` (budget charged only on admit)
 
 Budget-aware admission (#1326, UC-040 A20/A21, BR-014/BR-015; `decision/budget.go`, `decision/ratelimit.go`):
 

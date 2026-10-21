@@ -188,7 +188,7 @@ confidence.min, act_confidence_threshold, act_confidence_threshold.source (#1287
 response_format, blocked, block_reason (#1295)) are specified in [decide-contract.md §12](decide-contract.md#12-telemetry).
 `decide.backend` and `decide.outcome` are also the dimensions of the collector's `span_metrics` connector (§1, §6), so
 renaming either attribute breaks the decide panels (`tests/contract/test_collector_spanmetrics.py`).
-`decision.*`: `decision.action`, `.reason`, `.objective_served`, `.blocked`, `.block_reason`,
+`decision.*`: `decision.action`, `.reason`, `.objective_served`, `.blocked`, `.block_reason` (`not_allowed`, `battery_threshold`, `rate_limit`, and since #1837 (planned) `already_charged`; decide-contract §4.5),
 `.intervention_id`. Targeted player (#1295), on `agent.decision` and `agent.action` only when
 `Decision.TargetSerial` is set: `player.serial` (the coordinator's key, verbatim) and `player.name` (the display
 name from `controller_info{serial,name}`, §4.4; absent when no name was seen for the serial, and never set for a `shadow` game, whose mock serials collide with real mock games' serials). `intervention.*`: `id`, `type`, `objective`, `signal`, `fitness_baseline`,
