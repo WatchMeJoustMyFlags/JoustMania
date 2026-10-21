@@ -177,7 +177,7 @@ Runtime writes go through the flag service (epic #1407), so their server-side
 shapes that need only the flag plane (per-player targeting, the rollout ladder,
 shadow-only experiments, write propagation) are tested in the service tier
 (`tests/service/`, #1561); the intervention journeys that apply them to a live
-game stay here (`test_intervention_flow.py`).
+game stay here (`test_tc013_shadow_alongside_real.py`; the shared fixtures are in `helpers.py`).
 
 Write integration tests here only for what needs the services themselves.
 
