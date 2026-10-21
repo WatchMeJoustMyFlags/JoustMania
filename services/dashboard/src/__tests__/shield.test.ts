@@ -3,7 +3,7 @@
  * game events, and the live LED colour (shield fade included) rendered as CSS.
  */
 import { describe, expect, it } from "vitest";
-import { ShieldStore, shieldBadge } from "../shield.js";
+import { ShieldStore, shieldBadge, type GameEventLike } from "../shield.js";
 import { ledColorCss } from "../components/ControllerCard.js";
 
 const NOW = 1_760_000_000_000;
@@ -211,7 +211,7 @@ describe("UC-040: A30 step 4 / A32 step 3 the dashboard badge follows the charge
   });
 
   it("UC-040/A32 a death, a game start and a game end clear the charge", () => {
-    for (const clearing of [
+    for (const clearing of <GameEventLike[]>[
       { eventType: "player_death", data: { serial: "MOCK0001" } },
       { eventType: "game_start", data: {} },
       { eventType: "game_ended", data: {} },
