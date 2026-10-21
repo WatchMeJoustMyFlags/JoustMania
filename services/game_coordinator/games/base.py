@@ -74,6 +74,8 @@ AUDIO_TEMPO_RPC_TIMEOUT_SECONDS = 0.5
 # Back-off between resends after a ChangeTempo error (doubles per failure).
 AUDIO_TEMPO_RETRY_MIN_SECONDS = 0.5
 AUDIO_TEMPO_RETRY_MAX_SECONDS = 5.0
+# A persistent failing music-loop tick logs once, then at most this often (#1841).
+MUSIC_TICK_LOG_INTERVAL_SECONDS = 5.0
 # Track id the audio service returns for PlayMusic while play_audio is off (UC-031 A1).
 MUTED_TRACK_ID = "muted"
 
@@ -962,6 +964,10 @@ class BaseGameMode(ABC):
         self._audio_synced = True
         self._audio_retry_at = 0.0
         self._audio_retry_backoff = AUDIO_TEMPO_RETRY_MIN_SECONDS
+        # Rate limit for the failing-tick warning of _music_loop (#1841).
+        self._tick_error_text: str | None = None
+        self._tick_error_logged_at = 0.0
+        self._tick_error_suppressed = 0
         # The linear ramp_tempo descriptor already turned into an intensity ramp
         # (identity check, so one descriptor sends exactly one glide).
         self._adopted_tempo_ramp: RampDescriptor | None = None
@@ -3939,6 +3945,21 @@ class BaseGameMode(ABC):
             self._emit_threshold_metrics()
         self._ramp_metrics_open = ramp_running
 
+    def _log_tick_failure(self, error: Exception) -> None:
+        """Warn about a failed tempo tick: first, on a new error text, then every interval."""
+        text = repr(error)
+        now = time.time()
+        if text != self._tick_error_text:
+            self._tick_error_suppressed = 0  # a stale count must not leak into a new error
+        if text == self._tick_error_text and now - self._tick_error_logged_at < MUSIC_TICK_LOG_INTERVAL_SECONDS:
+            self._tick_error_suppressed += 1
+            return
+        suffix = f" ({self._tick_error_suppressed} similar suppressed)" if self._tick_error_suppressed else ""
+        logger.warning(f"Tempo tick failed, retrying next tick: {text}{suffix}")
+        self._tick_error_text = text
+        self._tick_error_logged_at = now
+        self._tick_error_suppressed = 0
+
     async def _music_loop(self):
         """
         Background task to manage music tempo changes (Phase 70).
@@ -3960,7 +3981,7 @@ class BaseGameMode(ABC):
                     except Exception as e:
                         # A non-audio error (pacing seam, metrics, tracing) must not end
                         # the tempo loop for the rest of the game: log it, retry next tick.
-                        logger.warning(f"Tempo tick failed, retrying next tick: {e!r}")
+                        self._log_tick_failure(e)
                     await asyncio.sleep(0.1)  # Check every 100ms
             finally:
                 if token is not None:
