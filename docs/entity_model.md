@@ -157,6 +157,8 @@ A controller's participation in one game (`proto/game_coordinator.proto` `Player
 | handicap_factor | Agent handicap (multiplies thresholds) | Decimal | 4,2 | Not Null, Min: 0.5, Max: 2.0 |
 | grace_until | No-death deadline from respawn, conversion or agent shield | DateTime | - | Optional |
 | invincible_until | No-death deadline from match / round start (Tournament, Fight Club) | DateTime | - | Optional |
+| shield_charge_seconds | Seconds of a held shield charge, the shield the player gets on activation (#1837, UC-040 A30, UC-030 A6); 0 = no charge, at most one charge | Decimal | 5,2 | Not Null, Min: 0 |
+| shield_charge_expires_at | When a held charge expires, fixed at grant time from `shield.charge_expiry_seconds` (UC-040 BR-020) | DateTime | - | Optional (none = never) |
 | smoothed_accel | EMA of acceleration magnitude in g | Decimal | 6,3 | Not Null, Min: 0 |
 
 **Constraints:** the player cannot die while `now < max(grace_until, invincible_until)`. In the base path (`games/base.py` `_compute_effective_thresholds`), effective thresholds are divided by `clamp(sensitivity_factor × global_difficulty_factor, 0.5, 2.0)` and multiplied by `clamp(min(max(handicap_factor, active toughness boost, rubberband_boost), soft_penalty_factor), 0.5, 2.0)`. Exception: Werewolf werewolves and Zombies zombies use a fixed role threshold table per sensitivity (`game.werewolf.thresholds`, `game.zombie.thresholds`; `werewolf.py` / `zombie.py` `_compute_effective_thresholds`), so tempo and the per-player and global factors do not apply to them. Fight Club runs its own death detection (D-G9, #1347).
@@ -610,7 +612,7 @@ One finished game as the cross-game window keeps it: game-level numbers only, no
 | outcome | Outcome type derived from the survivor count (the agent sees no end reason): one survivor `winner`, none `tie`, several `multiple_survivors` (a force-end or a team win); a force-end that leaves one survivor reads as `winner` | String | 18 | Not Null, Values: winner, tie, multiple_survivors, unknown |
 | death_rate | Eliminations divided by players | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | near_death_rate | Share of players with an observed closest call who survived with a closest call of at least 0.8 times the death threshold | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
-| interventions | Per type: dispatched and blocked counts and the mean measured intensity and active-player deltas, no target | String | 2000 | Optional |
+| interventions | Per type: applied and blocked counts (the GAME_SUMMARY split: applied = written, blocked = refused by the permission chain plus actuation-gate no-ops; a dispatched decision that was a no-op or whose write failed is in neither) and the mean measured intensity and active-player deltas, no target. Without the whole-game tally (a summary built from the timeline only) applied reads 0, as in GAME_SUMMARY (#1778) | String | 2000 | Optional |
 | arm | Arm, for a game in a linked set | String | 12 | Optional, Values: experimental, control |
 
 **Constraints:** real games feed one real-game ring of at most 20 games, oldest evicted. A shadow game is stored only in the LINKED_SET of its experiment (UC-042 BR-005).

@@ -2,9 +2,9 @@
 
 CI runs the integration suite with ``--reruns 1``. pytest-rerunfailures clears
 the cached result of a FAILED session- or module-scoped fixture before each
-rerun, so a broken stack bring-up ran again for every test of the shard, twice
+rerun, so a broken stack bring-up ran again for every test, twice
 per test, each time a full ``docker compose up --build --wait`` with no time
-bound. One broken setup ate the whole 30 min e2e-agent budget (merge_group run
+bound. One broken setup ate the whole 30 min e2e job budget (merge_group run
 39317658385), and the error text never reached the log: testcontainers logs the
 compose stderr through ``logging`` and the run was cancelled before pytest
 printed its summary.

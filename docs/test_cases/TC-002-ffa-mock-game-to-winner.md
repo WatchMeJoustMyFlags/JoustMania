@@ -35,6 +35,7 @@
 
 1. **One terminal event**: exactly one of `game_ended`, `game_force_ended`, `game_error` arrives for the game, and it is `game_ended`.
 2. **Lobby colours restored**: the LED colour stream shows each controller going from its game colour back to the FFA lobby colour, never stuck at black.
+3. **Trace delivered**: within 60 s of step 9, Jaeger (query API on `127.0.0.1:16686`) holds the root span `Joust Free-for-All` tagged with the first game's `game.id`, i.e. the collector's traces pipeline delivers (UC-035 step 5).
 
 ## Postconditions
 
@@ -43,7 +44,9 @@
 
 ## Automation
 
-- **Automated**: `tests/integration/test_tc002_ffa_game.py::test_tc002_ffa_game_to_winner_then_restart` drives steps 1 to 9 and checks both validations, with one `uc` marker per use-case flow (`tc="TC-002"`) and a `# Step n` comment per row. It uses the four menu-visible mock controllers it finds or adds (`MOCK0001` … `MOCK0004` on a fresh stack) and asserts, per step:
+**Tier:** T3 full stack (`tests/integration/`, shipped images under docker compose): the journey needs the real menu, controller manager (mock controllers) and game coordinator, and Validation 3 the real otel-collector and Jaeger.
+
+- **Automated**: `tests/integration/test_tc002_ffa_game.py::test_tc002_ffa_game_to_winner_then_restart` drives steps 1 to 9 and checks all three validations, with one `uc` marker per use-case flow (`tc="TC-002"`) and a `# Step n` comment per row. It uses the four menu-visible mock controllers it finds or adds (`MOCK0001` … `MOCK0004` on a fresh stack) and asserts, per step:
   - Step 1: exactly these four unreserved controllers are menu-visible.
   - Step 2: every controller shows a dimmed (≤ 30 %) non-black lobby colour after a menu restart.
   - Step 3: `select_game` succeeds and the menu publishes `selection_changed` and `game_selection_changed` naming `JoustFFA`.
@@ -51,6 +54,7 @@
   - Steps 6 and 7: the first terminal event for the game is `game_ended` with `outcome=winner` and a positive duration; one `player_death` per eliminated player in order with the players left (3, 2, 1), each followed by the death effect on that controller (rumble 255, red LED, then black; UC-030 step 9); `game_winner` names the last controller and no `game_tie`; one `player_analytics` per player, `winner=True` only for the winner; the winner's LED cycles through at least five colours between `game_winner` and `game_ended` (rainbow).
   - Step 8: every LED matches orange at 30 % (`Colors.Orange` × 0.3) within rounding; the menu lights only CONNECTED (un-readied) controllers at 30 %, READY is full brightness.
   - Validation 1: after the lobby is restored, the game's terminal events are exactly `["game_ended"]`. Validation 2: each LED stream shows the controller's game colour followed by the lobby colour, and the last colour is not black.
+  - Validation 3: after step 9 the test polls Jaeger for up to 60 s for the root span `Joust Free-for-All` carrying `game.id` of the first game (`tests/integration/helpers.py::jaeger_root_spans`; UC-035 A3 uses the same helper).
   - Step 9: a new `game_started` with a different game id, RUNNING (the #793 regression: an ended session must not pin the primary slot).
 - Not covered: the elimination uses simulated deaths, so the warning effect (UC-030 step 7) is not observed; the countdown phases and audio (UC-010 step 6, UC-020 step 2 music) are unit-tested only (`services/game_coordinator/tests/test_ffa_uc020.py`, #1396). FFA unit coverage (UC-020 main, A1, A2, A4): `services/game_coordinator/tests/test_ffa.py`, `services/game_coordinator/tests/test_ffa_uc020.py`.
 - JoustTeams, which shared the old menu-flow test, runs headless in `tests/service/test_tc017_parallel_mode_lifecycle.py::test_parallel_mode_lifecycle[teams-batch]` (TC-017).

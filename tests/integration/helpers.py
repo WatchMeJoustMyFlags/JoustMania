@@ -11,8 +11,11 @@ These helpers provide:
 import asyncio
 import contextlib
 import os
+import json
 import sys
 import time
+import urllib.parse
+import urllib.request
 
 import grpc
 import pytest
@@ -49,6 +52,44 @@ FLAGD_RESOLVE_TIMEOUT_SECONDS = 30.0
 # repeated flag-service write is harmless and covers a provider that reconnected
 # between the write and the first poll.
 FLAGD_REWRITE_INTERVAL_SECONDS = 2.0
+
+
+# Jaeger query API on the loopback port docker-compose.override.yml publishes
+# for tests (C-015); the collector's traces pipeline feeds it.
+JAEGER_API = "http://127.0.0.1:16686/jaeger/api"
+COORDINATOR_SERVICE = "game-coordinator-service"
+
+
+def jaeger_root_spans(game_id: str) -> list:
+    """Root spans of the coordinator's traces tagged ``game.id``.
+
+    A root has no CHILD_OF reference: the game root carries an OTel Link to the
+    inbound stream span, which Jaeger lists as a FOLLOWS_FROM reference.
+    """
+    tags = urllib.parse.quote(json.dumps({"game.id": game_id}))
+    url = f"{JAEGER_API}/traces?service={COORDINATOR_SERVICE}&tags={tags}&limit=20"
+    with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310 - loopback test URL
+        traces = json.load(response)["data"]
+    return [
+        span
+        for trace in traces
+        for span in trace["spans"]
+        if not any(
+            ref.get("refType", "CHILD_OF") == "CHILD_OF"
+            for ref in span.get("references", [])
+        )
+        and any(t["key"] == "game.id" and t["value"] == game_id for t in span["tags"])
+    ]
+
+
+def jaeger_has_root_span(game_id: str, operation: str) -> bool:
+    """True when Jaeger holds the root span ``operation`` of ``game_id``; an unreachable backend counts as no."""
+    try:
+        return any(
+            span["operationName"] == operation for span in jaeger_root_spans(game_id)
+        )
+    except OSError:
+        return False
 
 
 def poll_until(
@@ -994,7 +1035,8 @@ async def describe_headless_start(game_client, start_config) -> str:
             return "none live"
         prefix = "" if matching else "no session lists them; all live: "
         return prefix + ", ".join(
-            f"{g.game_id} {g.game_mode} {game_coordinator_pb2.GameState.Name(g.state)}" for g in shown
+            f"{g.game_id} {g.game_mode} {game_coordinator_pb2.GameState.Name(g.state)}"
+            for g in shown
         )
     except Exception as exc:  # noqa: BLE001 - diagnostics are best-effort
         return f"unavailable ({exc})"
@@ -1098,7 +1140,9 @@ async def start_game_headless(
         # its start events were published before the stream subscribed; none =
         # session never registered or already retired.
         sessions = await describe_headless_start(game_client, start_config)
-        raise TimeoutError(f"{exc} (sessions for these controllers: {sessions})") from exc
+        raise TimeoutError(
+            f"{exc} (sessions for these controllers: {sessions})"
+        ) from exc
 
     errors = collector.get_events("game_start_error")
     if errors:

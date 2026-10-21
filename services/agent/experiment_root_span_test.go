@@ -71,7 +71,7 @@ func TestRootSpan_FitnessAndEvaluateReparentedUnderExperiment(t *testing.T) {
 	}
 	c := rec[0]
 	// A game trace is in scope too (the Link is retained); re-parenting is independent.
-	loop.onGameEnd(gcWithTrace(c.gameID, c.experimentID, c.arm,
+	endBoundGame(loop, gcWithTrace(c.gameID, c.experimentID, c.arm,
 		"4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7"))
 
 	for _, name := range []string{decision.SpanExperimentFitness, decision.SpanExperimentEvaluate} {
@@ -131,7 +131,7 @@ func TestRootSpan_ReparentDoesNotChangeFitness(t *testing.T) {
 	c := rec[0]
 	gc := gcFor(c.gameID, c.experimentID, c.arm)
 	want := armFitness()(gc, "balanced")
-	loop.onGameEnd(gc)
+	endBoundGame(loop, gc)
 
 	fit := expSpan_findByName(sr.Ended(), decision.SpanExperimentFitness)
 	if len(fit) != 1 {

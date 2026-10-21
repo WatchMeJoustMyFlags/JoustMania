@@ -42,6 +42,8 @@
 
 ## Automation
 
+**Tier:** T3 full stack (`tests/integration/`, shipped images under docker compose) for the real and shadow games side by side with the flag service writes (steps 1 to 8); T2 service (`tests/service/`) for step 6 and 7 with a second shadow game and for step 8 with the agent (below).
+
 - **Automated**: `tests/integration/test_tc013_shadow_alongside_real.py::test_tc013_shadow_game_alongside_real_game` drives steps 1 to 8 and both validations in one game pair (`R1`, `S1`), with one `uc` marker per use-case flow (`tc="TC-013"`) and a `# Step n` comment per row. The flag writes go through the flag service's HTTP API like the agent's writer (the agent does not run); the `shadow_policy` overlay is deleted by the `flag_service` fixture. Per step it asserts:
   - Steps 1 to 3: both games RUNNING with different ids; no reserved serial on the button stream the menu reads, and its latest roster is exactly the four lobby controllers; `GetGameState` rosters are the lobby set for `R1` and the reserved set for `S1`; no `S1` event on `R1`'s stream.
   - Steps 4 and 5: the scoped `eliminate_player` gives one unblocked `agent_intervention` and exactly one `player_death` on `S1`, and a later sync of the same event list adds none (the test then moves the targeted factor to 0.7 and waits until it applies, so the coordinator provably re-read the list before the absence window); the gameId + serial scoped `player_sensitivity_factor` sets 1.5 on the targeted shadow player only (another shadow player stays at 1.0); `R1` gets no `agent_intervention`, and all its players stay alive at factor 1.0. An `eliminate_player` appended to the event list of `R1` then kills a player of `R1` (UC-020 A3).

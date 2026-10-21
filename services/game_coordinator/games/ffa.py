@@ -40,6 +40,9 @@ class FFAGame(BaseGameMode):
     - Players stay dead permanently (spans end on death)
     """
 
+    # UC-040 BR-019: the only mode where shield.activation=trigger applies (#1837).
+    SHIELD_TRIGGER_ALLOWED = True
+
     def get_game_name(self) -> str:
         """Return game mode identifier."""
         return "FFA"

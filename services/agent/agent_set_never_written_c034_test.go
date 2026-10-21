@@ -42,6 +42,7 @@ import (
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flagservice"
+	"github.com/joustmania/agent/flagservice/fake"
 	"github.com/joustmania/agent/promote"
 )
 
@@ -492,5 +493,54 @@ var c034InterventionKeys = func() map[string]bool {
 func TestC034_InterventionKeysReadFromSpec(t *testing.T) {
 	if len(c034InterventionKeys) < 10 {
 		t.Fatalf("flags.md §13.1 gave %d keys; the spec table moved or the path is wrong", len(c034InterventionKeys))
+	}
+}
+
+// c034HumanOnlyGameKeys are game-set flags only a human may change (stage
+// overlay): the shield-charge switches of #1837 (UC-040 BR-019). The agent
+// writes the game set only as experiment+arm or game_kind=real overlays, so
+// these keys are out of its reach exactly when their registry rows allow
+// neither scope; the dynamic declarer then never offers them either.
+var c034HumanOnlyGameKeys = []string{"shield.activation", "shield.charge_expiry_seconds"}
+
+// UC: UC-040 BR-019
+func TestC034_ShieldChargeFlagsAreNeverWrittenByTheAgent(t *testing.T) {
+	policies, err := fake.RegistryPolicies(filepath.Join("..", "flag-service", "registry.yaml"), experiment.GameFlagSet)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	for _, shipped := range []string{"../flagd/game.json", "../flagd/ci/game.json"} {
+		svc := fake.New()
+		if err := svc.LoadSetWithPolicies(experiment.GameFlagSet, shipped, policies); err != nil {
+			t.Fatalf("load %s: %v", shipped, err)
+		}
+		d := &dynamicDeclarer{gameFlags: svc, defaultObjective: decision.ObjectiveBalanced}
+		candidates := d.readCandidateFlags()
+		for _, key := range c034HumanOnlyGameKeys {
+			t.Run("UC-040/BR-019 "+shipped+" "+key, func(t *testing.T) {
+				view, err := svc.GetFlag(context.Background(), experiment.GameFlagSet, key)
+				if err != nil {
+					t.Fatalf("%s missing from %s: %v", key, shipped, err)
+				}
+				if view.Policy == nil || !view.Policy.AllowsScope("stack") {
+					t.Fatalf("%s is not a stack overlay: %+v", key, view.Policy)
+				}
+				for _, scope := range []string{"experiment+arm", "real", "game"} {
+					if view.Policy.AllowsScope(scope) {
+						t.Errorf("C-034 VIOLATION: %s allows scope %s, which an agent writer can use", key, scope)
+					}
+				}
+				if _, ok := candidates[key]; ok {
+					t.Errorf("C-034 VIOLATION: %s is in the agent's experiment catalog", key)
+				}
+				experimentWrite := flagservice.Write{Variant: "trigger", Scope: flagservice.Scope{ExperimentID: "exp_c034", Arm: experiment.ArmExperimental}}
+				realWrite := flagservice.Write{Variant: "trigger", Scope: flagservice.Scope{GameKind: "real"}}
+				for _, w := range []flagservice.Write{experimentWrite, realWrite} {
+					if _, err := svc.Put(context.Background(), experiment.GameFlagSet, key, w); err == nil {
+						t.Errorf("C-034 VIOLATION: the flag service accepted an agent-shaped write to %s: %+v", key, w.Scope)
+					}
+				}
+			})
+		}
 	}
 }

@@ -2,10 +2,9 @@
 
 The collector fans traces and metrics out to Jaeger, VictoriaMetrics and the
 agent (``otlp/agent``, best effort: 2 s timeout, no retries, bounded queue).
-The agent is profile-gated and not started in the core shard, so the
-collector's ``otlp/agent`` exporter points at an unreachable backend there:
-exactly A3, and cheaper than the agent shard (no agent image build). That is why
-this module is in the "core" shard. If an earlier module left the agent running,
+The agent is profile-gated and not started by default (only tc007 starts it,
+and removes it at teardown), so the collector's ``otlp/agent`` exporter points
+at an unreachable backend: exactly A3. If an earlier module left the agent running,
 the ``agent_down`` fixture stops it and restarts it at teardown, so the test
 holds either way. A headless mock game then runs and ends, and what the
 collector delivered is read back from the backends' own query APIs:
@@ -35,14 +34,13 @@ from tests.integration.helpers import (
     async_poll_until,
     build_start_config,
     get_game_client,
+    jaeger_root_spans,
     setup_mock_controllers,
     start_game_headless,
 )
 
-JAEGER_API = "http://127.0.0.1:16686/jaeger/api"
 VICTORIA_METRICS_API = "http://127.0.0.1:8428/api/v1"
 LOKI_API = "http://127.0.0.1:3100/loki/api/v1"
-COORDINATOR = "game-coordinator-service"
 GAME_MODE = "JoustFFA"
 TAG = "uc035-a3"
 BACKEND_TIMEOUT_SECONDS = 60.0
@@ -103,20 +101,6 @@ def _loop_rate_ratio(game_id: str) -> float:
     except OSError:
         return 0.0
     return actual / configured if configured else 0.0
-
-
-def _jaeger_root_spans(game_id: str) -> list:
-    tags = urllib.parse.quote(json.dumps({"game.id": game_id}))
-    traces = _get_json(
-        f"{JAEGER_API}/traces?service={COORDINATOR}&tags={tags}&limit=20"
-    )["data"]
-    return [
-        span
-        for trace in traces
-        for span in trace["spans"]
-        if not span.get("references")
-        and any(t["key"] == "game.id" and t["value"] == game_id for t in span["tags"])
-    ]
 
 
 def _loki_lines(query: str, start_s: float) -> list[str]:
@@ -205,7 +189,7 @@ async def test_agent_down_collector_still_delivers_to_jaeger_and_victoria_metric
 
     # Traces: the finished game's root span reaches Jaeger.
     assert await async_poll_until(
-        lambda: _nonempty(_jaeger_root_spans, game_id),
+        lambda: _nonempty(jaeger_root_spans, game_id),
         timeout=BACKEND_TIMEOUT_SECONDS,
         interval=1.0,
     ), f"Jaeger has no root span for game {game_id} while the agent is down"
@@ -215,7 +199,7 @@ async def test_agent_down_collector_still_delivers_to_jaeger_and_victoria_metric
     )
 
     # Post-S-1: the game's log lines are found in Loki by the root span's trace id.
-    trace_id = _jaeger_root_spans(game_id)[0]["traceID"]
+    trace_id = jaeger_root_spans(game_id)[0]["traceID"]
     assert await async_poll_until(
         lambda: _nonempty(lambda t: _trace_log_lines(t, started), trace_id),
         timeout=BACKEND_TIMEOUT_SECONDS,

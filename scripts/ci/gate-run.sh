@@ -21,9 +21,9 @@
 # Allowed commands (anything else is REFUSED):
 #   make <target> [VAR=value ...]
 #       targets: pr-gates, lint, format-check, check, specs-check, test, test-dev, test-pulled,
-#                test-contract, test-contract-flagd, test-integration-shard-check,
-#                test-service[-*], test-integration[-*]
-#       VAR in: TEST SERVICE BASE PR_LABELS E2E_SHARD IMAGE_TAG PYTEST_EXTRA
+#                test-contract, test-contract-flagd,
+#                test-service[-*], test-integration
+#       VAR in: TEST SERVICE BASE PR_LABELS IMAGE_TAG PYTEST_EXTRA
 #                SERVICE_TESTS (test-service only: paths under tests/service, no "..")
 #   uv run --package <workspace member> [--extra <name>]... pytest [args]
 #   go test|vet [args]          (--dir with go.mod)
@@ -135,8 +135,8 @@ for w in "${CMD[@]}"; do
   esac
 done
 
-MAKE_TARGET_RE='^(pr-gates|lint|format-check|check|specs-check|test|test-dev|test-pulled|test-contract|test-contract-flagd|test-integration-shard-check|test-service(-[a-z0-9]+)*|test-integration(-[a-z0-9]+)*)$'
-MAKE_VAR_RE='^(TEST|SERVICE|BASE|PR_LABELS|E2E_SHARD|IMAGE_TAG|PYTEST_EXTRA|SERVICE_TESTS)=(.*)$'
+MAKE_TARGET_RE='^(pr-gates|lint|format-check|check|specs-check|test|test-dev|test-pulled|test-contract|test-contract-flagd|test-service(-[a-z0-9]+)*|test-integration)$'
+MAKE_VAR_RE='^(TEST|SERVICE|BASE|PR_LABELS|IMAGE_TAG|PYTEST_EXTRA|SERVICE_TESTS)=(.*)$'
 MAKE_VALUE_RE="^[A-Za-z0-9_.,/:=' -]*$"
 
 validate_make() {

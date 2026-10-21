@@ -78,6 +78,13 @@ func runTerminal(t *testing.T, coord *fakeCoord, maxGameSeconds int, setup func(
 	}
 	run.outcome = <-outcomes
 	run.elapsed = time.Since(start)
+	// The runner reports one terminal outcome per game (UC-046 BR-016): the agent's
+	// end join (#1405) folds or releases on it exactly once.
+	select {
+	case again := <-outcomes:
+		t.Fatalf("second terminal callback %s after %s", again, run.outcome)
+	case <-time.After(20 * time.Millisecond):
+	}
 	run.forceEnd = coord.forceEndGameIDs()
 	run.reasons = coord.forceEndReasons()
 	return run

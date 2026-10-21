@@ -217,6 +217,11 @@ class GameSession:
 
         # Protects game_state, current_game, players for this session.
         self._state_lock = threading.Lock()
+        # True once a force end has begun (UC-027 BR-003, #1827); guarded by
+        # _state_lock. A second force end during the join is refused instead of
+        # joining and publishing again. Reset only when the mode's force_end
+        # raised, so a later caller can retry.
+        self._force_ending = False
 
         # Retire guard for this session's per-game series (#1311). clear_metrics
         # sets _metrics_retired under _metrics_lock, and every per-game gauge
@@ -780,6 +785,12 @@ class GameSession:
         Stops the loop, calls ``force_end()`` on the live game, joins the thread,
         transitions to ENDED, and publishes ``game_force_ended``. No-ops safely
         when this session is not in a startable/running state.
+
+        Runs at most once per session (UC-027 BR-003, #1827): a call while a
+        force end is under way answers ``Game is already ending``. When the
+        mode's ``force_end`` raises, the guard is reset so a later call can
+        retry; a cancel during the join keeps it (the game thread's own end
+        sets ENDED).
         """
         with self._state_lock:
             if self.game_state not in [
@@ -787,13 +798,21 @@ class GameSession:
                 game_coordinator_pb2.GameState.RUNNING,
             ]:
                 return False, "No game in progress"
+            if self._force_ending:
+                return False, "Game is already ending"
 
+            self._force_ending = True
             self.game_running = False
             current_game = self.current_game
             game_thread = self.game_thread
 
         if current_game and hasattr(current_game, "force_end"):
-            current_game.force_end(reason)
+            try:
+                current_game.force_end(reason)
+            except Exception:
+                with self._state_lock:
+                    self._force_ending = False
+                raise
 
         # Join in executor to avoid blocking the gRPC server.
         if game_thread and game_thread.is_alive():

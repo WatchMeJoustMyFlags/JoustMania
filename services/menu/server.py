@@ -39,6 +39,11 @@ from services.menu.servicer import MenuServicer
 
 logger = logging.getLogger(__name__)
 
+# Bound on the boot lobby entry (its audio gRPC calls have no timeout of their own). Health goes
+# SERVING after it even on a timeout or error, so a hung audio service cannot hold the menu
+# NOT_SERVING (#1826). Inside the image healthcheck's 10 s start period plus retries.
+BOOT_LOBBY_ENTRY_TIMEOUT_SECONDS = 10.0
+
 
 async def serve(port=50054):
     """Start the Menu gRPC server."""
@@ -73,9 +78,10 @@ async def serve(port=50054):
     health_servicer = health.aio.HealthServicer()
     health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
 
-    # Mark the Menu service as SERVING
-    await health_servicer.set("menu.MenuService", health_pb2.HealthCheckResponse.SERVING)
-    await health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+    # NOT_SERVING until the boot lobby entry has run (SERVING is set below, #1826). The empty
+    # service name defaults to SERVING in grpc_health, so it is set explicitly.
+    await health_servicer.set("menu.MenuService", health_pb2.HealthCheckResponse.NOT_SERVING)
+    await health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
 
     # Bind to port
     server.add_insecure_port(f"[::]:{port}")
@@ -100,8 +106,21 @@ async def serve(port=50054):
     # A StartMenu RPC during the wait above already entered the lobby: entering again would
     # restart the music, republish menu_started and overwrite the user's selection.
     if auto_start and menu_servicer.state != menu_pb2.MenuState.RUNNING:
-        await menu_servicer.enter_lobby()
-        logger.info("Menu auto-started (menu_auto_start flag=true)")
+        try:
+            await asyncio.wait_for(menu_servicer.enter_lobby(), timeout=BOOT_LOBBY_ENTRY_TIMEOUT_SECONDS)
+            logger.info("Menu auto-started (menu_auto_start flag=true)")
+        except TimeoutError:
+            logger.warning(
+                "boot lobby entry not done after %ss; reporting SERVING anyway", BOOT_LOBBY_ENTRY_TIMEOUT_SECONDS
+            )
+        except Exception:
+            logger.warning("boot lobby entry failed; reporting SERVING anyway", exc_info=True)
+
+    # Ready: the lobby is entered, or menu_auto_start is off (or a StartMenu already entered it).
+    # A client that trusts health can no longer hit "Menu already running" from the boot entry.
+    await health_servicer.set("menu.MenuService", health_pb2.HealthCheckResponse.SERVING)
+    await health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+    logger.info("Menu health SERVING")
 
     # Use asyncio.Event for signal-driven shutdown so both SIGTERM (Docker stop)
     # and SIGINT (Ctrl-C / KeyboardInterrupt) trigger graceful shutdown.

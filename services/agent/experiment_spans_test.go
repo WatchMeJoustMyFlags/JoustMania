@@ -98,7 +98,7 @@ func TestExperimentSpans_FitnessAndEvaluateEmitted(t *testing.T) {
 		t.Fatal("expected the registry to allocate one shadow game")
 	}
 	c := rec[0]
-	loop.onGameEnd(gcWithTrace(c.gameID, c.experimentID, c.arm, gameTrace, gameSpan))
+	endBoundGame(loop, gcWithTrace(c.gameID, c.experimentID, c.arm, gameTrace, gameSpan))
 
 	ended := sr.Ended()
 
@@ -195,7 +195,7 @@ func TestExperimentSpans_NoLinkWhenTraceAbsent(t *testing.T) {
 		t.Fatal("expected the registry to allocate one shadow game")
 	}
 	c := rec[0]
-	loop.onGameEnd(gcFor(c.gameID, c.experimentID, c.arm)) // no GameTraceID
+	endBoundGame(loop, gcFor(c.gameID, c.experimentID, c.arm)) // no GameTraceID
 
 	ended := sr.Ended()
 	for _, name := range []string{decision.SpanExperimentFitness, decision.SpanExperimentEvaluate} {
@@ -224,7 +224,7 @@ func TestExperimentSpans_FitnessValueUnchanged(t *testing.T) {
 	gc := gcFor(c.gameID, c.experimentID, c.arm)
 
 	want := armFitness()(gc, "balanced")
-	loop.onGameEnd(gc)
+	endBoundGame(loop, gc)
 
 	fit := expSpan_findByName(sr.Ended(), decision.SpanExperimentFitness)
 	if len(fit) != 1 {

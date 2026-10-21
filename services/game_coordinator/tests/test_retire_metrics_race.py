@@ -18,6 +18,7 @@ retire removes them with the other game-state gauges.
 
 import contextlib
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import create_autospec, patch
@@ -207,6 +208,11 @@ def delayed_removal():
     """Retire with a real (short) removal delay, as when metrics are exported."""
     with patch.object(game_session, "retire_removal_delay_s", autospec=True, return_value=REMOVAL_DELAY_S):
         yield
+    # A removal timer still pending would fire inside a later test and call
+    # clear_game_state_gauges there (flaked TestMultiSession, #1827): wait for it.
+    for thread in threading.enumerate():
+        if thread.name.startswith("retire-metrics-"):
+            thread.join(timeout=2 * REMOVAL_DELAY_S + 1.0)
 
 
 class TestRetireExportsTheEnd:

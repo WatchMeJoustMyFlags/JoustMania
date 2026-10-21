@@ -191,13 +191,14 @@ accepted -- make check
 accepted -- make specs-check
 accepted -- make test-contract
 accepted -- make test-contract-flagd
-accepted -- make test-integration-shard-check
+refused -- make test-integration-shard-check
 accepted -- make test-service SERVICE_TESTS=tests/service/test_x.py
 accepted -- make test-service 'SERVICE_TESTS=tests/service/test_a.py tests/service/test_b.py'
 accepted -- make test-service TEST=tc018 'PYTEST_EXTRA=--count 3'
-accepted -- make test-integration TEST=test_ffa E2E_SHARD=core 'PYTEST_EXTRA=--reruns 1'
-accepted -- make test-integration-core
-accepted -- make test-integration-agent
+accepted -- make test-integration TEST=test_ffa 'PYTEST_EXTRA=--reruns 1'
+refused -- make test-integration-core
+refused -- make test-integration-agent
+refused -- make test-integration E2E_SHARD=core
 accepted -- make test-pulled IMAGE_TAG=latest
 accepted -- make test PR_LABELS=ci-full
 accepted -- uv run --package joustmania-menu --extra test pytest -q --tb=short 'services/menu/tests/test_x.py::test_y[a-1]' -k 'a and not b'

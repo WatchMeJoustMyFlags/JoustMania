@@ -173,8 +173,6 @@ Run the narrowest test that proves your change; the full suites are for CI and f
 | Unit, one service | `cd services/<service> && uv run pytest -v` | uv |
 | Unit and integration | `make test` (`TEST=name` filters with `-k`) | uv, docker |
 | Integration only (CI) | `make test-integration` | docker |
-| Integration shards (CI runs them as two jobs) | `make test-integration-core`, `make test-integration-agent` | docker |
-| Shard assignment check | `make test-integration-shard-check` | uv |
 | Service tier (T2): services from source, fake audio, real flag plane | `make test-service` | uv, go, docker |
 | Contract tier: telemetry and infra static checks, flagd contract | `make test-contract`, `make test-contract-flagd` | uv, docker |
 | Integration against pulled images | `make test-pulled` (`IMAGE_TAG=main`) | docker, GHCR |

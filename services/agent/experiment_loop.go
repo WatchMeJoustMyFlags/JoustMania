@@ -138,6 +138,21 @@ const defaultExperimentTick = 30 * time.Second
 // which is the failure this backstop removes. Tunable via envCompletedGrace.
 const defaultCompletedGrace = 60 * time.Second
 
+// parkFloor is the shortest time a shadow game's telemetry end waits for the
+// runner's terminal outcome (UC-046 BR-016, #1405). The runner reports an
+// outcome-less game_ended only after DefaultEndedGrace, and it reports every
+// outcome after one controller-removal RPC (RPCTimeout), so a shorter wait would
+// release a natural game as unclassified. The park window is
+// max(experiment_completed_grace_seconds, parkFloor), so grace 0 (off) never
+// parks forever and never drops a natural sample.
+const parkFloor = gamerunner.DefaultEndedGrace + gamerunner.DefaultRPCTimeout + 5*time.Second
+
+// releaseReasonNoOutcome is the ReleaseGame reason of a parked telemetry end
+// whose runner outcome never arrived (#1405). It fails closed: no sample. It is
+// neither the preemption nor the stale reason, so it counts against the pair's
+// 3-rerun budget (BR-015) like any other release.
+const releaseReasonNoOutcome = "game ended without usable fitness sample: no terminal outcome"
+
 // experimentsEnabled reports whether the experiment LOOP opt-in is on. This is the
 // distinct, default-off gate (#991) — separate from the code-improvement gate.
 func experimentsEnabled() bool {
@@ -257,6 +272,15 @@ type experimentLoop struct {
 	// without ReleaseGame/allocate) so no shadow game is spawned during/after
 	// shutdown — honoring run()'s "no goroutine outlives run()" contract (#1020).
 	graceShutdown bool
+
+	// parked and outcomes join the two end signals of a bound experiment game
+	// (UC-046 BR-016, #1405), both guarded by graceMu. parked holds a telemetry end
+	// (its GameContext snapshot) that arrived before the runner's terminal outcome;
+	// outcomes holds a terminal outcome that arrived before the telemetry end. A
+	// sample is folded only when both are in and the outcome is a sample outcome.
+	// Each entry has one timer in graceTimers that bounds it.
+	parked   map[string]gamecontext.GameContext
+	outcomes map[string]gamerunner.Outcome
 }
 
 // gameFitnessFunc scores a finished game (its pre-reset GameContext) into one
@@ -866,18 +890,26 @@ func (e *experimentLoop) declareAndStart(ctx context.Context, in experiment.Inte
 
 // onGameEnd is the conclusion hook chained onto the Store's OnGameEnd (#928): when
 // a shadow game that belongs to an experiment ends, fold its fitness sample into
-// the matching arm via ConcludeGame. A game not bound to any experiment (no
-// ExperimentID, or an id the registry does not own) is ignored by ConcludeGame, so
-// this hook is a safe no-op for every NON-experiment game — it never changes the
-// existing per-game retro/summary path. After a conclusion it nudges
-// AllocateAndSpawn so the freed slot is refilled promptly (capacity churn).
+// the matching arm via ConcludeGame. A game bound to one of the registry's
+// experiments folds only once the runner has classified its terminal outcome as a
+// sample (UC-046 BR-016, #1405): the telemetry end carries no outcome, so it is
+// joined with onGameTerminal (joinTelemetryEnd). A game not bound to any
+// experiment (no ExperimentID, or an id the registry does not own) is ignored by
+// ConcludeGame, so this hook is a safe no-op for every NON-experiment game — it
+// never changes the existing per-game retro/summary path. After a conclusion it
+// nudges AllocateAndSpawn so the freed slot is refilled promptly (capacity churn).
 func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 	// A stale end (UC-041 A4, #1494) means the game's telemetry stopped mid-game:
 	// its snapshot is truncated, so it is never scored. An experiment game's slot is
 	// released without a sample (ReleaseGame, as for an errored game, #1014) and a
 	// real game never seeds the recent-real baseline.
 	if gc.EndReason == gamecontext.EndReasonStale {
-		e.releaseStaleGame(gc)
+		reason := experiment.ReleaseReasonStale
+		// A preemption the runner already reported keeps its reason (BR-015).
+		if outcome, ok := e.forgetGameEnd(gc.SessionID); ok && outcome == gamerunner.OutcomePreempted {
+			reason = experiment.ReleaseReasonPreempted
+		}
+		e.releaseStaleGame(gc, reason)
 		return
 	}
 	// The coordinator sets the FINAL game_duration_seconds in the session teardown,
@@ -907,6 +939,60 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 		// a non-experiment game still does nothing else (no cohort fold, no allocate).
 		e.recordFinalizedRealFitness(gc, duration)
 		return
+	}
+
+	e.joinTelemetryEnd(gc)
+}
+
+// joinTelemetryEnd is the telemetry half of the end join (UC-046 BR-016, #1405).
+// With the runner's outcome already in, it folds a sample outcome and drops any
+// other (that game was already released). Without one, a game bound to this
+// registry is parked until onGameTerminal reports, bounded by parkWindow; an
+// unbound or foreign id takes the direct path (ConcludeGame ignores it). The fold
+// decision and the map change happen under graceMu; the fold runs outside it.
+func (e *experimentLoop) joinTelemetryEnd(gc gamecontext.GameContext) {
+	gameID := gc.SessionID
+	// Read before graceMu: IsBound takes the registry lock and the window reads
+	// the live config. An outcome recorded in between is still seen below.
+	bound := e.registry.IsBound(gameID)
+	window := e.parkWindow()
+
+	e.graceMu.Lock()
+	if outcome, ok := e.outcomes[gameID]; ok {
+		delete(e.outcomes, gameID)
+		e.stopTimerLocked(gameID)
+		e.graceMu.Unlock()
+		if isSampleOutcome(outcome) {
+			e.concludeExperimentGame(gc)
+		}
+		return
+	}
+	if !bound {
+		e.graceMu.Unlock()
+		e.concludeExperimentGame(gc)
+		return
+	}
+	if e.graceShutdown {
+		// The loop is shutting down: neither park (no timer may outlive run())
+		// nor fold a game whose outcome is unknown.
+		e.graceMu.Unlock()
+		return
+	}
+	if e.parked == nil {
+		e.parked = make(map[string]gamecontext.GameContext)
+	}
+	e.parked[gameID] = gc
+	e.armTimerLocked(gameID, window, func() { e.fireParkedEnd(gameID) })
+	e.graceMu.Unlock()
+}
+
+// concludeExperimentGame scores one experiment game and folds its sample into its
+// arm (the pre-#1405 onGameEnd body, unchanged): fitness span, finalized fitness,
+// ConcludeGame inside experiment.evaluate, then the refill.
+func (e *experimentLoop) concludeExperimentGame(gc gamecontext.GameContext) {
+	duration := 0.0
+	if gc.Session.DurationSeconds != nil {
+		duration = *gc.Session.DurationSeconds
 	}
 
 	objective := ""
@@ -944,9 +1030,11 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 }
 
 // releaseStaleGame frees a stale-ended experiment game's in-flight slot without
-// folding a fitness sample (#1494) and refills the freed slot. A non-experiment
-// game, or a loop without a registry, needs nothing.
-func (e *experimentLoop) releaseStaleGame(gc gamecontext.GameContext) {
+// folding a fitness sample (#1494), under reason (ReleaseReasonStale, or
+// ReleaseReasonPreempted when the runner already reported a preemption), and
+// refills the freed slot. A non-experiment game, or a loop without a registry,
+// needs nothing.
+func (e *experimentLoop) releaseStaleGame(gc gamecontext.GameContext, reason string) {
 	if e.log != nil {
 		e.log.Warn("experiment: stale-ended game excluded from fitness (telemetry lost)",
 			"game_id", gc.SessionID, "experiment_id", gc.ExperimentID, "arm", gc.Arm)
@@ -954,7 +1042,7 @@ func (e *experimentLoop) releaseStaleGame(gc gamecontext.GameContext) {
 	if gc.ExperimentID == "" || e.registry == nil {
 		return
 	}
-	if e.registry.ReleaseGame(gc.SessionID, experiment.ReleaseReasonStale) {
+	if e.registry.ReleaseGame(gc.SessionID, reason) {
 		e.allocateIfEnabled(context.Background())
 	}
 }
@@ -1174,46 +1262,56 @@ func normalizedGameKind(gc gamecontext.GameContext) string {
 	return gamecontext.NormalizeGameKind(gc.GameKind)
 }
 
-// onGameTerminal is the #1014 terminal-outcome backstop, invoked by a spawned
-// game's drive goroutine the instant the game ends. For a game that ended WITHOUT
-// a usable fitness sample — game_error or force-end (timeout) — it RELEASES the
-// in-flight slot directly via the registry (a NON-COUNTING release: no fitness
-// sample, no budget increment), so the effective_concurrency=1 loop can never
-// deadlock waiting on a telemetry game_active=0 datapoint that may never arrive
-// for a failed game. A naturally COMPLETED game is left to the telemetry-driven
-// onGameEnd → ConcludeGame path, which folds its real fitness sample; releasing
-// it here would drop that sample. ReleaseGame is idempotent, so even if the
-// telemetry path raced ahead this is a safe no-op. After a release it nudges
-// AllocateAndSpawn so the freed slot is refilled promptly.
+// isSampleOutcome reports whether a runner terminal outcome gives a fitness
+// sample (UC-046 BR-016): a natural end (completed: winner, tie), the safety cap
+// (timeout, BR-013) or the agent's own end_game (agent_ended, A14). Every other
+// outcome (preempted, force_ended, error) is released without a sample.
+func isSampleOutcome(outcome gamerunner.Outcome) bool {
+	return outcome == gamerunner.OutcomeCompleted || outcome == gamerunner.OutcomeTimeout ||
+		outcome == gamerunner.OutcomeAgentEnded
+}
+
+// onGameTerminal is the runner half of the end join (UC-046 BR-016, #1405),
+// invoked by a spawned game's drive goroutine once the runner has classified the
+// game's terminal outcome.
+//
+// When the telemetry end is already parked, a sample outcome folds it and any
+// other outcome drops it. Otherwise the outcome is recorded for the telemetry end
+// still to come: a sample outcome arms the #1020 completed grace (a dropped
+// telemetry end must not leak the slot), and every recorded outcome is bounded by
+// a timer so the map cannot grow.
+//
+// A non-sample outcome (error, preemption, foreign force-end, #1014) releases the
+// in-flight slot without a sample, so an effective_concurrency=1 loop never waits
+// on a telemetry end that may never arrive; a preemption keeps its reason so the
+// pair's rerun does not use up its 3-rerun budget (BR-015).
 func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcome) {
-	// UC-046 BR-013, A14: a pattern game that reached its safety cap (timeout) or that
-	// the agent's own end_game ended (agent_ended) is a valid, right-censored result;
-	// its fitness sample counts like a completed game's.
-	if outcome == gamerunner.OutcomeCompleted || outcome == gamerunner.OutcomeTimeout ||
-		outcome == gamerunner.OutcomeAgentEnded {
-		// Natural completion: the telemetry path (onGameEnd → ConcludeGame) concludes
-		// it WITH its fitness sample. We deliberately do NOT release here on the
-		// HAPPY path because that would drop the sample (ReleaseGame is non-counting).
-		//
-		// BOUNDED-GRACE BACKSTOP (#1020): the completed-game path trusts the telemetry
-		// game_active=0 datapoint to arrive — the same signal #1014 treats as
-		// unreliable for ERRORED games. If telemetry DROPS a completed game's
-		// datapoint, its in-flight slot would leak forever and the
-		// effective_concurrency=1 loop deadlocks (#998). So arm a generous grace
-		// timer: if ConcludeGame has NOT folded this game by the time it fires, release
-		// the slot non-counting. The grace COMFORTABLY exceeds worst-case telemetry lag
-		// (defaultCompletedGrace), so a game that concludes slightly late still folds
-		// its sample first — and because ReleaseGame/ConcludeGame are idempotent (both
-		// findGameLocked → delete; whoever runs second no-ops), the timer firing AFTER
-		// a legitimate conclude is a harmless no-op. The only sacrifice is a real-but-
-		// very-late conclude arriving AFTER the grace, which the issue accepts.
-		e.armCompletedGrace(gameID)
+	sample := isSampleOutcome(outcome)
+	grace := e.config(context.Background()).CompletedGrace
+	window := parkWindowFor(grace)
+
+	e.graceMu.Lock()
+	parked, wasParked := e.parked[gameID]
+	if wasParked {
+		delete(e.parked, gameID)
+		e.stopTimerLocked(gameID)
+	} else if !e.graceShutdown {
+		if e.outcomes == nil {
+			e.outcomes = make(map[string]gamerunner.Outcome)
+		}
+		e.outcomes[gameID] = outcome
+		if !sample || !e.armCompletedGraceLocked(gameID, grace) {
+			e.armTimerLocked(gameID, window, func() { e.expireOutcome(gameID) })
+		}
+	}
+	e.graceMu.Unlock()
+
+	if sample {
+		if wasParked {
+			e.concludeExperimentGame(parked)
+		}
 		return
 	}
-	// A non-completed terminal outcome supersedes any pending completed-grace timer
-	// for this id (defensive: the runner reports one terminal outcome per game, but
-	// stop the timer so it can never double-release a since-reused id).
-	e.stopCompletedGrace(gameID)
 	reason := "game ended without usable fitness sample: " + string(outcome)
 	if outcome == gamerunner.OutcomePreempted {
 		// UC-046 BR-015: carry the coordinator's preempted_by_real_game so the pair's
@@ -1231,19 +1329,98 @@ func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcom
 	}
 }
 
+// parkWindow is how long a parked telemetry end waits for the runner's outcome:
+// the live experiment_completed_grace_seconds, never below parkFloor.
+func (e *experimentLoop) parkWindow() time.Duration {
+	return parkWindowFor(e.config(context.Background()).CompletedGrace)
+}
+
+// parkWindowFor returns max(grace, parkFloor): grace 0 (off) still bounds a park.
+func parkWindowFor(grace time.Duration) time.Duration {
+	if grace < parkFloor {
+		return parkFloor
+	}
+	return grace
+}
+
+// fireParkedEnd is the park backstop (#1405): a telemetry end whose runner
+// outcome never arrived within the park window is released WITHOUT a sample
+// (fail closed). That covers a game this process did not drive to its end (the
+// runner never reported) and keeps the parked map bounded.
+func (e *experimentLoop) fireParkedEnd(gameID string) {
+	e.graceMu.Lock()
+	if _, ok := e.parked[gameID]; !ok {
+		// The outcome arrived first and resolved the park.
+		e.graceMu.Unlock()
+		return
+	}
+	delete(e.parked, gameID)
+	delete(e.graceTimers, gameID)
+	if e.graceShutdown {
+		e.graceMu.Unlock()
+		return
+	}
+	e.graceMu.Unlock()
+
+	if e.registry.ReleaseGame(gameID, releaseReasonNoOutcome) {
+		e.log.Warn("experiment: telemetry end got no terminal outcome — released without a sample (#1405)",
+			"game_id", gameID)
+		e.allocateIfEnabled(context.Background())
+	}
+}
+
+// expireOutcome drops a recorded terminal outcome whose telemetry end never
+// arrived (#1405): the slot was already released (non-sample outcome) or is left
+// to the completed grace, so only the map entry goes.
+func (e *experimentLoop) expireOutcome(gameID string) {
+	e.graceMu.Lock()
+	delete(e.outcomes, gameID)
+	delete(e.graceTimers, gameID)
+	e.graceMu.Unlock()
+}
+
+// forgetGameEnd drops any join state of gameID (a recorded outcome, a parked end
+// and its timer) and returns the recorded outcome, if any. The stale path uses it
+// (UC-041 A4): a stale end resolves the game on its own.
+func (e *experimentLoop) forgetGameEnd(gameID string) (gamerunner.Outcome, bool) {
+	e.graceMu.Lock()
+	defer e.graceMu.Unlock()
+	outcome, ok := e.outcomes[gameID]
+	delete(e.outcomes, gameID)
+	delete(e.parked, gameID)
+	e.stopTimerLocked(gameID)
+	return outcome, ok
+}
+
 // armCompletedGrace schedules the #1020 bounded-grace backstop for a COMPLETED
-// game: after the live grace window, if ConcludeGame has not folded the game, release
-// its in-flight slot non-counting (no fabricated fitness sample) so the
-// effective_concurrency=1 loop cannot deadlock on a dropped game_active=0
-// datapoint. The timer is tracked so run() can stop it on shutdown, and is
-// self-removing once it fires.
-func (e *experimentLoop) armCompletedGrace(gameID string) {
+// game with the live grace window and reports whether it armed one (grace 0, off,
+// arms nothing).
+func (e *experimentLoop) armCompletedGrace(gameID string) bool {
 	// #1810: the window is read at use time (experiment_completed_grace_seconds, else
 	// the env fallback, else 60 s), so a flag write reaches the next completed game.
 	grace := e.config(context.Background()).CompletedGrace
+	e.graceMu.Lock()
+	defer e.graceMu.Unlock()
+	return e.armCompletedGraceLocked(gameID, grace)
+}
+
+// armCompletedGraceLocked arms the #1020 grace for gameID: after grace, if the
+// game is still in flight (its telemetry end never arrived), release its slot
+// non-counting (no fabricated fitness sample) so the effective_concurrency=1 loop
+// cannot deadlock on a dropped game_active=0 datapoint. Returns false for grace
+// 0 (off: the pre-#1020 trust-telemetry behaviour). Caller holds graceMu.
+func (e *experimentLoop) armCompletedGraceLocked(gameID string, grace time.Duration) bool {
 	if grace <= 0 {
-		return // grace off (0) — preserve the pre-#1020 trust-telemetry behavior.
+		return false
 	}
+	e.armTimerLocked(gameID, grace, func() { e.fireCompletedGrace(gameID) })
+	return true
+}
+
+// armTimerLocked schedules f after d as gameID's single join timer, replacing
+// (and stopping) any prior one so only one timer fires per id. Timers are tracked
+// so run() can stop them on shutdown. Caller holds graceMu.
+func (e *experimentLoop) armTimerLocked(gameID string, d time.Duration, f func()) {
 	after := e.afterFunc
 	if after == nil {
 		after = func(d time.Duration, f func()) func() bool {
@@ -1251,30 +1428,32 @@ func (e *experimentLoop) armCompletedGrace(gameID string) {
 			return t.Stop
 		}
 	}
-	e.graceMu.Lock()
 	if e.graceTimers == nil {
 		e.graceTimers = make(map[string]func() bool)
 	}
-	// Replace any prior timer for this id (a reused/duplicate signal): stop the old
-	// one first so only one grace fires per live binding.
-	if stop, ok := e.graceTimers[gameID]; ok {
-		stop()
-	}
-	stop := after(grace, func() { e.fireCompletedGrace(gameID) })
-	e.graceTimers[gameID] = stop
-	e.graceMu.Unlock()
+	e.stopTimerLocked(gameID)
+	e.graceTimers[gameID] = after(d, f)
 }
 
-// fireCompletedGrace is the grace-timer callback: it forgets the timer and, if the
-// game is still in-flight (ConcludeGame never folded it — a dropped telemetry
-// datapoint), releases its slot non-counting and refills. If ConcludeGame already
-// ran, ReleaseGame finds nothing and no-ops (slot freed, sample folded already), so
-// a legitimate late conclude is never clobbered — the idempotency the #1019 review
-// verified. A fired backstop is logged distinctly so a real telemetry drop is
-// OBSERVABLE rather than silent.
+// stopTimerLocked cancels and forgets gameID's join timer, if any. Caller holds
+// graceMu.
+func (e *experimentLoop) stopTimerLocked(gameID string) {
+	if stop, ok := e.graceTimers[gameID]; ok {
+		stop()
+		delete(e.graceTimers, gameID)
+	}
+}
+
+// fireCompletedGrace is the grace-timer callback: it forgets the timer and the
+// recorded outcome and, if the game is still in-flight (its telemetry end never
+// arrived — a dropped datapoint), releases its slot non-counting and refills. If
+// the telemetry end already folded the game, ReleaseGame finds nothing and no-ops.
+// A fired backstop is logged distinctly so a real telemetry drop is OBSERVABLE
+// rather than silent.
 func (e *experimentLoop) fireCompletedGrace(gameID string) {
 	e.graceMu.Lock()
 	delete(e.graceTimers, gameID)
+	delete(e.outcomes, gameID)
 	// Shutdown race guard (#1020): if stopAllCompletedGrace already ran, this timer
 	// was firing while run() tore down (its Stop() returned false — too late). Drop
 	// the entry and bail WITHOUT ReleaseGame/allocate so we never spawn a shadow game
@@ -1297,33 +1476,23 @@ func (e *experimentLoop) fireCompletedGrace(gameID string) {
 		// a runtime timer goroutine with no request/tick context to thread.
 		e.allocateIfEnabled(context.Background())
 	}
-	// else: ConcludeGame already folded the game — the happy path won the race and the
-	// backstop is a silent no-op (no slot freed, sample already counted).
 }
 
-// stopCompletedGrace cancels and forgets a pending completed-grace timer for
-// gameID, if any. It is idempotent (a missing entry is a no-op).
-func (e *experimentLoop) stopCompletedGrace(gameID string) {
-	e.graceMu.Lock()
-	if stop, ok := e.graceTimers[gameID]; ok {
-		stop()
-		delete(e.graceTimers, gameID)
-	}
-	e.graceMu.Unlock()
-}
-
-// stopAllCompletedGrace cancels every pending completed-grace timer (shutdown
-// teardown), so no timer fires after the loop returns. Called from run() on ctx
-// cancellation alongside AbortAll.
+// stopAllCompletedGrace cancels every pending join timer and drops the join state
+// (shutdown teardown), so no timer fires and nothing is folded after the loop
+// returns. Called from run() on ctx cancellation alongside AbortAll.
 func (e *experimentLoop) stopAllCompletedGrace() {
 	e.graceMu.Lock()
 	// Latch shutdown FIRST: any callback already firing (whose Stop() returns false)
-	// will observe this under graceMu in fireCompletedGrace and bail without spawning.
+	// will observe this under graceMu and bail without spawning, and a telemetry end
+	// arriving later is neither parked nor folded (joinTelemetryEnd).
 	e.graceShutdown = true
 	for id, stop := range e.graceTimers {
 		stop()
 		delete(e.graceTimers, id)
 	}
+	clear(e.parked)
+	clear(e.outcomes)
 	e.graceMu.Unlock()
 }
 

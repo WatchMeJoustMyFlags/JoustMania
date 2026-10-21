@@ -2015,6 +2015,17 @@ func (r *Registry) liveIDsLocked() []string {
 	return ids
 }
 
+// IsBound reports whether gameID is an in-flight game bound to one of this
+// registry's experiments (UC-046 BR-016, #1405). It is read-only: the experiment
+// loop uses it to tell its own shadow games, whose telemetry end waits for the
+// runner's terminal outcome, from foreign or already-released ids.
+func (r *Registry) IsBound(gameID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, _, e := r.findGameLocked(gameID)
+	return e != nil
+}
+
 // findGameLocked looks up the experiment + arm owning a coordinator game_id.
 // Assumes r.mu held.
 func (r *Registry) findGameLocked(gameID string) (id, arm string, e *entry) {
