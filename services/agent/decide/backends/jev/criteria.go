@@ -373,6 +373,11 @@ func suitability(iv string, p decide.PlayerState, st decide.State) string {
 	calmest, struggling := p.Serial == st.MostHeadroom, p.Serial == st.Struggling
 	switch {
 	case protectInterventions[iv]:
+		// An unused charge is no protection, so only another grant_shield is
+		// refused; a toughness_boost keeps the danger-based text (#1870).
+		if iv == "grant_shield" && p.ShieldCharged {
+			return "Already holds an agent shield charge, or has just used it: another shield is refused."
+		}
 		if p.Shielded {
 			return "Already shielded a moment ago: another shield would be wasted."
 		}
@@ -431,6 +436,9 @@ func describeCandidates(st decide.State, iv string) map[string]string {
 		}
 		if p.Shielded {
 			b.WriteString(" Shielded a moment ago.")
+		}
+		if p.ShieldCharged {
+			b.WriteString(" Holds an agent shield charge, or has just used it.")
 		}
 		if v := finiteOrNil(p.Skill); v != nil {
 			b.WriteString(" Skill " + strconv.FormatFloat(*v, 'f', 2, 64) + ".")

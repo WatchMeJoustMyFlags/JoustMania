@@ -18,10 +18,26 @@ import (
 // use) with ages relative to c.UpdatedAt rather than the wall clock, and the
 // Digest hashes a fixed-order canonical encoding that never ranges over a map.
 func BuildState(c gamecontext.GameContext) State {
+	return BuildStateWith(c, Annotations{})
+}
+
+// Annotations is what the decision loop knows about a game beyond its
+// GameContext snapshot. The zero value adds nothing, so BuildStateWith(c,
+// Annotations{}) equals BuildState(c).
+type Annotations struct {
+	// Charged holds the serials the agent's shield-charge ledger holds a live
+	// entry for at the moment the state is built (UC-040 A31; #1870).
+	Charged map[string]bool
+}
+
+// BuildStateWith is BuildState plus the decision loop's annotations: an alive
+// player in ann.Charged is marked ShieldCharged, and a grant_shield to them no
+// longer counts as Shielded.
+func BuildStateWith(c gamecontext.GameContext, ann Annotations) State {
 	st := State{
 		GameID:         c.SessionID,
 		GameKind:       c.GameKind,
-		Players:        buildPlayers(c),
+		Players:        buildPlayers(c, ann),
 		ElapsedSeconds: elapsedSeconds(c),
 	}
 	st.MostHeadroom, st.Struggling = applyDangerSignals(st.Players, c.Session.DeathThreshold)
@@ -41,14 +57,14 @@ func (s State) AliveSerials() []string {
 	return out
 }
 
-func buildPlayers(c gamecontext.GameContext) []PlayerState {
+func buildPlayers(c gamecontext.GameContext, ann Annotations) []PlayerState {
 	elimOrder := make(map[string]int, len(c.Session.EliminationSequence))
 	for i, serial := range c.Session.EliminationSequence {
 		if _, seen := elimOrder[serial]; !seen {
 			elimOrder[serial] = i + 1
 		}
 	}
-	shielded := recentlyShielded(c)
+	shielded := recentlyShielded(c, ann.Charged)
 	out := make([]PlayerState, 0, len(c.Players))
 	for key, p := range c.Players {
 		if p == nil {
@@ -58,15 +74,17 @@ func buildPlayers(c gamecontext.GameContext) []PlayerState {
 		if serial == "" {
 			serial = key
 		}
+		alive := p.Active != nil && *p.Active
 		out = append(out, PlayerState{
 			Serial:           serial,
-			Alive:            p.Active != nil && *p.Active,
+			Alive:            alive,
 			Intensity:        p.MovementIntensity,
 			Variance:         p.MovementVariance,
 			Skill:            p.SkillLevel,
 			BatteryPct:       p.BatteryPct,
 			EliminationOrder: elimOrder[serial],
 			Shielded:         shielded[serial],
+			ShieldCharged:    alive && ann.Charged[serial],
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Serial < out[j].Serial })
@@ -153,7 +171,12 @@ func digest(st State) string {
 			" intensity_rank=" + strconv.Itoa(p.IntensityRank) +
 			" threshold_margin=" + exact(p.ThresholdMargin) +
 			" danger=" + strconv.Quote(p.Danger) +
-			" shielded=" + strconv.FormatBool(p.Shielded) + "\n")
+			" shielded=" + strconv.FormatBool(p.Shielded))
+		// Written only when set, so a state without a charge keeps its digest.
+		if p.ShieldCharged {
+			b.WriteString(" shield_charged=true")
+		}
+		b.WriteString("\n")
 	}
 	b.WriteString("most_headroom=" + strconv.Quote(st.MostHeadroom) + " struggling=" + strconv.Quote(st.Struggling) + "\n")
 	b.WriteString("narrative=" + strconv.Quote(st.Narrative) + "\n")

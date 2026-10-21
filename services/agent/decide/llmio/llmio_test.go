@@ -337,3 +337,23 @@ func TestRender_DangerSignals(t *testing.T) {
 		}
 	}
 }
+
+// TestRender_ShieldChargedToken: the shield_charged marker (#1870) reaches the
+// user message through the narrative, and the system prompt explains it.
+//
+// UC: UC-040 main step 4
+func TestRender_ShieldChargedToken(t *testing.T) {
+	t.Run("UC-040/step 4 shield_charged is rendered and explained", func(t *testing.T) {
+		req := decide.Request{State: decide.State{
+			Players:   []decide.PlayerState{{Serial: "P1", Alive: true, ShieldCharged: true}},
+			Narrative: "players:\n  P1 alive danger=near_threshold intensity_rank=1/2 shield_charged\n",
+		}}
+		p := Render(req)
+		if !strings.Contains(p.User, " shield_charged") {
+			t.Errorf("user message missing the shield_charged token:\n%s", p.User)
+		}
+		if !strings.Contains(p.System, `"shield_charged" marks a player the agent recently gave a shield charge`) {
+			t.Error("system prompt does not explain shield_charged")
+		}
+	})
+}

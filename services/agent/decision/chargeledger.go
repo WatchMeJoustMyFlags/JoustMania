@@ -107,6 +107,33 @@ func (cl *chargeLedger) release(serial string, gen uint64) {
 	}
 }
 
+// live returns the serials whose entry, reserved or committed, is live at now: exactly
+// the serials reserve would refuse at now. nil when there are none. It takes only the
+// ledger's own mutex and calls nothing else, so a caller may hold another lock.
+func (cl *chargeLedger) live(now time.Time) map[string]bool {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	var out map[string]bool
+	for serial, e := range cl.entries {
+		if now.Before(e.until) {
+			if out == nil {
+				out = make(map[string]bool, len(cl.entries))
+			}
+			out[serial] = true
+		}
+	}
+	return out
+}
+
+// ChargedSerials is the ledger view the decide state and the rules engine read
+// (#1870): the players the ledger would refuse a grant_shield to right now, on the loop
+// clock (the clock of every entry's until). Empty outside trigger mode: the ledger then
+// holds no entries, apart from entries written before a trigger -> instant flip, which
+// end with their window (at most 22 s).
+func (l *Loop) ChargedSerials() map[string]bool {
+	return l.charges.live(l.nowOrDefault()())
+}
+
 // chargeReservation is the handle of one reserved entry. runDecision defers finish
 // right after the permission chain, so every path out of it commits or releases.
 type chargeReservation struct {

@@ -123,8 +123,14 @@ type PlayerState struct {
 	Danger string `json:"danger,omitempty"`
 	// Shielded is true when a grant_shield / toughness_boost was dispatched to
 	// this player within the last ShieldWindow (the longest shield), read from
-	// the timeline. Danger ignores shields (see danger.go).
+	// the timeline, except a grant_shield to a ShieldCharged player (in trigger
+	// mode a charge is not protection). Danger ignores shields (see danger.go).
 	Shielded bool `json:"shielded,omitempty"`
+	// ShieldCharged is true while the agent's charge ledger holds a live entry
+	// for this alive player at the moment the state is built (trigger mode,
+	// UC-040 A31; #1870): the player holds an agent shield charge or has just
+	// used it, and another grant_shield is refused.
+	ShieldCharged bool `json:"shield_charged,omitempty"`
 }
 
 // State is the game state a backend decides on, built from a

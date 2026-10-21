@@ -191,7 +191,16 @@ read them, and the system prompt explains them) and in the digest.
 
 `shielded` marks a player a `grant_shield` / `toughness_boost` was dispatched to
 within the last 10 s (the longest shield, read from the timeline); the
-details-stage target description then says another shield would be wasted.
+details-stage target description then says another shield would be wasted. A
+`grant_shield` to a `shield_charged` player does not count: in trigger mode the
+charge is not protection until the player activates it.
+
+`shield_charged` (wire key `shield_charged`, #1870) marks an alive player the
+agent's charge ledger holds a live entry for (trigger mode, UC-040 A31): the
+player holds an agent shield charge or has just used it, and another
+`grant_shield` is refused. The candidate description then says "Holds an agent
+shield charge, or has just used it." and, for `grant_shield`, that another
+shield is refused; a `toughness_boost` keeps the danger-based sentence.
 
 **Limits.** `danger` reads the SESSION's effective death threshold
 (`game_effective_death_threshold`). Per-player sensitivity, handicap factors and

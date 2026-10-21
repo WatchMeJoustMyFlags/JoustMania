@@ -658,6 +658,9 @@ func main() {
 		loop.SetPatternObserver(patternObs)
 		rules.SetChaosSeedSource(patternObs.SeedSource())
 		rules.SetLateSeedHook(patternObs.LateSeed)
+		// The rules engine reads the loop's shield-charge ledger once per ranking and
+		// skips a grant_shield to a charged player (UC-040 A31, #1870).
+		rules.SetChargedSource(loop.ChargedSerials)
 		loop.Rules = rules
 		// Demo/verification probe (decision.probe_decisions): built once per loop so
 		// its rate-limit clock survives flag flips; Loop.rulesFor swaps it in per
