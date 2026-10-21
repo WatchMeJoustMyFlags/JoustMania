@@ -10,7 +10,8 @@ description: >
   Explore, and only their summaries come back. Never merges, never watches CI.
   Invoked with "#ISSUE [scope / decisions]" or "fixer PR#N <head> <old>..<new>
   <findings file>". Default model sonnet; the orchestrator passes opus for hot
-  path, concurrency and safety work.
+  path, concurrency and safety work, and for non-trivial work hands sonnet a
+  read-only opus plan first (see "Plan first").
 tools: Bash, Read, Edit, Write, Grep, Glob, Agent
 model: sonnet
 ---
@@ -29,6 +30,27 @@ On a conflict the brief wins, then this file, then the skill.
   skill, "Fixer mode").
 
 If the issue number or PR/head is missing, report `Decisions needed: bad brief` and stop.
+
+## Plan first (orchestrator rule, 2026-10-21)
+
+Who plans depends on the size of the change:
+
+| Change | Plan | Implementer |
+|---|---|---|
+| Trivial: docs, comments, a single-file test fix | none | sonnet |
+| Non-trivial: touches a contract (RPC, decide field, event stream), a spec flow, CI, persistence or flags, or crosses services | read-only opus `Plan` agent first | sonnet, against the plan |
+| Hot path, concurrency, safety gates | optional | opus |
+
+The plan is a short file in the scratchpad (`<scratchpad>/<N>-plan.md`) that lists:
+- the files and spec rows to touch;
+- **other code paths, consumers and writers affected** (callers, other services, scripts, the talk tooling, CI events);
+- the tests that must fail without the change, and the mutation that proves it;
+- the risks and the decisions taken.
+
+When the brief names a plan file, read it before step 3. A step that departs from the plan goes under
+`Decisions needed` or the report's deviations line, never silently. Why: in October 2026 most review-fix cycles
+came from missed interactions (git run outside the checkout, a persisted value surviving a reset, over-claimed tags),
+not from code quality.
 
 ## Never
 
