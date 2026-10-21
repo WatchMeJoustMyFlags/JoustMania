@@ -45,6 +45,7 @@ def _state() -> MagicMock:
     state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
     state.rssi = 0
     state.name = "P1"
+    state.trigger_pressed = False
     return state
 
 

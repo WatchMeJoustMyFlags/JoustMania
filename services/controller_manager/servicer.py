@@ -39,6 +39,10 @@ from services.controller_manager.state_builder import StateBuilder
 
 logger = logging.getLogger(__name__)
 
+# A closed game stream's shield layers end after this delay unless a new game stream
+# claims the controller first (the coordinator reconnects and re-sends, #1837).
+STREAM_CLOSE_SHIELD_CLEANUP_DELAY_S = 2.0
+
 tracer = get_tracer(__name__)
 
 
@@ -91,6 +95,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         self._pending_disconnects: dict[str, list[str]] = {}
         # Serials reported as disconnected; pruned once they are tracked again.
         self._dropped_serials: set[str] = set()
+        # Delayed shield cleanups of closed game streams (#1837); kept so shutdown can cancel them.
+        self._shield_cleanup_tasks: set[asyncio.Task] = set()
 
         # Delta update tracking (Phase 26 - Part 3)
         # Store last sent state per subscriber per controller
@@ -407,6 +413,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # real hardware backends do not need it) and call it for each streamed
         # controller below.
         consume_death = getattr(self.backend, "consume_death_frame", None)
+        # Trigger latch (#1837): a press since the previous delivered frame, drained per
+        # game frame like the death latch so observer streams never steal it.
+        consume_trigger = getattr(self.backend, "consume_trigger_press", None)
         # Motion patterns (UC-046, #1258): a pattern controller's DELIVERED frame k
         # carries f(k / r), evaluated here (once per delivered frame) rather than in
         # the 100 Hz poll, so game time follows delivered frames, not polls.
@@ -447,6 +456,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             if consume_death is not None and game_stream:
                 consume_death(serial)
 
+            # The trigger is the level OR a press latched since the last game frame.
+            trigger_pressed = full_state.trigger_pressed
+            if consume_trigger is not None and game_stream and consume_trigger(serial) is True:
+                trigger_pressed = True
+
             # Drain health counters accumulated since last frame (game streams only)
             health = None
             drops, errors, led_fails = self.discovery_loop.drain_health_counters(serial) if game_stream else (0, 0, 0)
@@ -469,6 +483,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 name=full_state.name,
                 health=health,
                 connection_quality=self._connection_quality_msg(serial) if current_filter is None else None,
+                trigger_pressed=trigger_pressed,
             )
             gameplay_data.append(gd)
 
@@ -663,7 +678,10 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             with contextlib.suppress(asyncio.CancelledError):
                 await update_task
 
+            # Snapshot BEFORE the release: it forgets the roster (#1837).
+            closed_roster = set(self._game_stream_serials.get(subscriber_id, ()))
             self._release_game_stream(subscriber_id)
+            self._schedule_shield_cleanup(closed_roster)
 
             # A reconnecting game stream may claim this stream's pattern controllers.
             release_patterns = getattr(self.backend, "release_pattern_stream", None)
@@ -754,6 +772,28 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         self._game_stream_serials.pop(subscriber_id, None)
         self._pending_disconnects.pop(subscriber_id, None)
 
+    def _schedule_shield_cleanup(self, serials: set[str]) -> None:
+        """End the shield and charge layers of a closed game stream's players after a short delay.
+
+        A coordinator crash must not leave a breathing controller in the lobby (#1837), but a
+        coordinator reconnect re-claims the controllers within the delay and keeps its layers.
+        """
+        if not serials:
+            return
+        task = asyncio.create_task(self._shield_cleanup_after_delay(frozenset(serials)))
+        self._shield_cleanup_tasks.add(task)
+        task.add_done_callback(self._shield_cleanup_tasks.discard)
+
+    async def _shield_cleanup_after_delay(self, serials: frozenset[str]) -> None:
+        await asyncio.sleep(STREAM_CLOSE_SHIELD_CLEANUP_DELAY_S)
+        for serial in serials:
+            if self._in_game(serial):
+                continue  # a new game stream claimed it: the layers are its to end
+            try:
+                await self.feedback_manager.end_shield_effect(serial, restore=True)
+            except Exception as e:
+                logger.warning(f"Shield cleanup after stream close failed for {serial}: {e}")
+
     def _is_game_stream(self, subscriber_id: str) -> bool:
         """A gameplay stream that sent colours is a game stream; any other is an observer (UC-035 BR-006)."""
         return subscriber_id in self._game_stream_serials
@@ -843,6 +883,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
     async def shutdown(self):
         """Shutdown the controller manager."""
         logger.info("Shutting down ControllerManager...")
+
+        for cleanup in list(self._shield_cleanup_tasks):
+            cleanup.cancel()
 
         # Stop discovery loop
         self.discovery_loop.stop()

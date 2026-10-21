@@ -90,6 +90,10 @@ def _create_controller_state(serial: str, reserved: bool = False, tag: str = "")
         "connected_at": time.time(),
         "last_update": time.time(),
         "death_accel": None,
+        # A trigger press since the last delivered game frame (#1837): set by
+        # SimulateButton, cleared by consume_trigger_press, so a press shorter than
+        # the frame interval still reaches the game once.
+        "trigger_latched": False,
         # Number of gameplay-stream frames the death-level acceleration must
         # still be DELIVERED in. Decremented by the gameplay send path
         # (consume_death_frame), NOT by a wall-clock timer — see #926. A
@@ -405,6 +409,22 @@ class MockAdapter(ControllerIOAdapter):
             return
         if controller["death_frames_remaining"] > 0:
             controller["death_frames_remaining"] -= 1
+
+    def latch_trigger_press(self, serial: str) -> bool:
+        """Remember a trigger press until the next delivered game frame (#1837)."""
+        controller = self.controllers.get(serial)
+        if not controller:
+            return False
+        controller["trigger_latched"] = True
+        return True
+
+    def consume_trigger_press(self, serial: str) -> bool:
+        """True when the trigger was pressed since the last call, then clear (#1837)."""
+        controller = self.controllers.get(serial)
+        if not controller or not controller["trigger_latched"]:
+            return False
+        controller["trigger_latched"] = False
+        return True
 
     def set_output(self, serial: str, r: int, g: int, b: int, rumble: int) -> bool:
         """Store LED/rumble state and publish to observers."""
