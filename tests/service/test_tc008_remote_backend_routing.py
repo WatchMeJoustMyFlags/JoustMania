@@ -316,7 +316,8 @@ async def test_selected_backend_missing_key_or_model_is_unavailable(fresh_stack,
             assert tags.get("decide.outcome") == "fallback", tags
             assert tags.get("decide.backend") == "rules", tags
             assert tags.get("decide.backend.requested") == backend, tags
-            assert not children(stack, span, CHAT_SPAN), "an unavailable backend must not be called"
+            chats = [s for s in children(stack, span) if s.name.startswith("chat ")]
+            assert not chats, f"an unavailable backend must not be called: {[s.name for s in chats]}"
             await stack.otlp_sink.wait_metric_async(
                 "agent_llm_gated_total",
                 {"reason": "backend_unavailable"},

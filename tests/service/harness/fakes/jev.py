@@ -123,7 +123,10 @@ class FakeJev:
         if path != "/v1/systemone":
             return 404, {"error": f"no route {path}"}
         questions = body.get("questions") or {}
-        stage = "intervention" if GATE_ID in questions else "details" if MAGNITUDE_ID in questions else "single"
+        # The details stage is the one that carries the chosen intervention; its magnitude
+        # questions may be ffa.magnitude.help / .rein_in, so key on the state and ffa.target.
+        details = bool((body.get("state") or {}).get("chosen_intervention")) or "ffa.target" in questions
+        stage = "intervention" if GATE_ID in questions else "details" if details else "single"
         key_ok = bearer == f"Bearer {API_KEY}"
         with self._lock:
             script = dict(self._script)

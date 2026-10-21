@@ -39,6 +39,9 @@ pytestmark = pytest.mark.tier("service")
 SERVICE_COMPOSITION = AGENT_JEV
 
 JEV_HELD_CONFIDENCE = 0.55  # a valid intervention answer below jev's act threshold (0.6)
+JEV_ACT_CONFIDENCE = 0.7  # acts only under jev's own threshold (0.6), would be held under the global one (0.8)
+JEV_THRESHOLD = 0.6
+JEV_MODEL = "jev-latest"  # the shipped decision.jev.model default
 JEV_CHAT_SPAN_PREFIX = "chat "
 
 
@@ -60,16 +63,11 @@ def _jev_chats(stack, span):
     return [s for s in children(stack, span) if s.name.startswith(JEV_CHAT_SPAN_PREFIX)]
 
 
-@pytest.mark.asyncio
-@pytest.mark.uc("UC-040", flow="main", cond=["Post-S-1"], tc="TC-008")
-@pytest.mark.uc("UC-044", flow="main", steps=[3, 4, 5], tc="TC-008")
-@pytest.mark.usefixtures("flag_service")
-async def test_jev_high_confidence_acts(fresh_stack):
-    """Jev, gate p_yes 0.95 -> decide.outcome=act: the two-stage round reaches the fake with the
-    agent's key, the intervention is written and applied by the coordinator, and the
-    agent.decide span names jev as the backend that decided."""
-    stack = fresh_stack
-    stack.fake_jev.script("valid", intervention=SCRIPTED_INTERVENTION, confidence=HIGH_CONFIDENCE)
+async def _act_round(stack, confidence: float) -> None:
+    """Script the fake at ``confidence`` and assert the whole act journey: the key and model on the
+    wire, the two-stage round, the applied intervention and the agent.decide span (backend jev,
+    jev's own act threshold)."""
+    stack.fake_jev.script("valid", intervention=SCRIPTED_INTERVENTION, confidence=confidence)
     _configure(stack)
 
     game_client, channel = await get_game_client(stack)
@@ -80,6 +78,7 @@ async def test_jev_high_confidence_acts(fresh_stack):
             calls = await _wait_first_call(stack)
             assert all(c["key_ok"] for c in calls), f"the agent did not send JEV_API_KEY as a bearer token: {calls}"
             assert calls[0]["stage"] == "intervention", calls[0]
+            assert calls[0]["model"] == JEV_MODEL, calls[0]
             assert SCRIPTED_INTERVENTION in calls[0]["options"]["ffa.intervention"], calls[0]
 
             assert await async_poll_until(
@@ -94,13 +93,39 @@ async def test_jev_high_confidence_acts(fresh_stack):
             assert tags.get("decide.backend") == "jev", tags
             assert tags.get("decide.backend.requested") == "jev", tags
             assert tags.get("decide.fallback_reason", "") == "", tags
-            assert abs(float(tags.get("decide.confidence")) - HIGH_CONFIDENCE) < 1e-9, tags
+            assert abs(float(tags.get("decide.confidence")) - confidence) < 1e-9, tags
+            # jev's own threshold decided, not the global 0.8 (decision.jev.act_confidence_threshold).
+            assert abs(float(tags.get("decide.act_confidence_threshold")) - JEV_THRESHOLD) < 1e-9, tags
+            assert tags.get("decide.act_confidence_threshold.source") == "jev", tags
             assert _jev_chats(stack, span), (
                 f"no jev chat span under agent.decide: {[s.name for s in children(stack, span)]}"
             )
             assert children(stack, span, "agent.decision"), "the act must route through agent.decision"
     finally:
         await channel.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="main", cond=["Post-S-1"], tc="TC-008")
+@pytest.mark.uc("UC-040", flow="A13", tc="TC-008")
+@pytest.mark.uc("UC-044", flow="main", steps=[3, 4, 5], tc="TC-008")
+@pytest.mark.usefixtures("flag_service")
+async def test_jev_high_confidence_acts(fresh_stack):
+    """Jev, gate p_yes 0.95 -> decide.outcome=act: the two-stage round reaches the fake with the
+    agent's key and the jev model, the intervention is written and applied by the coordinator,
+    and the agent.decide span names jev as the backend that decided."""
+    await _act_round(fresh_stack, HIGH_CONFIDENCE)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A13", tc="TC-008")
+@pytest.mark.uc("UC-044", flow="main", steps=[4], tc="TC-008")
+@pytest.mark.usefixtures("flag_service")
+async def test_jev_acts_under_its_own_threshold(fresh_stack):
+    """Jev, gate p_yes 0.7: above jev's act threshold (0.6) but below the global one (0.8) ->
+    decide.outcome=act with decide.act_confidence_threshold=0.6, source jev. Fails if the agent
+    ignores decision.jev.act_confidence_threshold and uses the global threshold."""
+    await _act_round(fresh_stack, JEV_ACT_CONFIDENCE)
 
 
 @pytest.mark.asyncio
