@@ -33,7 +33,8 @@ const KillSwitchReason = "kill_switch"
 // KillSwitchRevert is what RevertOnKillSwitch did for one promoted flag: the
 // experiment (empty when this agent run did not write it, e.g. before a restart),
 // the flag, and the outcome (reverted, or applied when the revert failed) with its
-// reason.
+// reason. A tracked promotion's failed revert is returned once; later failures of
+// it are retried without being returned (#1753).
 type KillSwitchRevert struct {
 	ExperimentID string
 	FlagKey      string
@@ -110,8 +111,12 @@ func (pr *Promoter) endSync(entry *appliedPromotion) bool {
 // `enabled` is off (or fails closed). It returns one KillSwitchRevert per flag it
 // handled that the caller must journal; a promotion still inside its Promote call
 // is left out, because that call's own result carries the revert (one promotion
-// event per revert). A failed revert is returned with outcome applied and is tried
-// again on the next tick.
+// event per revert). A failed revert is tried again on every tick (fail closed),
+// but a tracked promotion's failure is returned only once, with outcome applied:
+// the next item returned for it is the reverted outcome of the retry that succeeds
+// (UC-043 A1, #1753). The dedup filters only the report, after the attempt and
+// the retrack. An untracked flag (no experiment id, nothing to journal) has its
+// failure returned on every tick.
 func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
 	pr.killMu.Lock()
 	defer pr.killMu.Unlock()
@@ -151,6 +156,7 @@ func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
 	for _, flag := range ordered {
 		entry := tracked[flag]
 		rv := KillSwitchRevert{FlagKey: flag, Outcome: OutcomeApplied}
+		report := true
 		if entry != nil {
 			rv.ExperimentID = entry.proposal.ExperimentID
 		}
@@ -161,7 +167,7 @@ func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
 			if err := pr.reverter.RevertRealDefault(ctx, flag); err != nil {
 				rv.Reason = fmt.Sprintf("%s; revert failed: %v", KillSwitchReason, err)
 				if entry != nil {
-					pr.retrack(entry)
+					report = !pr.retrack(entry)
 				}
 			} else {
 				pr.markReverted(flag)
@@ -173,6 +179,9 @@ func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
 			"experiment_id", rv.ExperimentID, "outcome", string(rv.Outcome), "reason", rv.Reason)
 		if entry != nil && rv.Outcome == OutcomeReverted && pr.handOverToSync(entry) {
 			continue // its Promote call reports the revert
+		}
+		if !report {
+			continue // this promotion's failure was reported already (#1753)
 		}
 		out = append(out, rv)
 	}
@@ -194,15 +203,19 @@ func (pr *Promoter) handOverToSync(entry *appliedPromotion) bool {
 
 // retrack puts back an entry whose kill-switch revert failed, unless a newer
 // promotion of the flag took its place meanwhile, so the next tick retries it
-// with its experiment id.
-func (pr *Promoter) retrack(entry *appliedPromotion) {
+// with its experiment id. It marks the entry's failure as reported and returns
+// whether an earlier tick reported it already (#1753).
+func (pr *Promoter) retrack(entry *appliedPromotion) (alreadyReported bool) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
+	alreadyReported = entry.failReported
+	entry.failReported = true
 	if _, ok := pr.applied[entry.proposal.FlagKey]; !ok {
 		entry.cancel = nil
 		entry.killed = false
 		pr.applied[entry.proposal.FlagKey] = entry
 	}
+	return alreadyReported
 }
 
 // claimApplied lets a watch or re-watch take ownership of entry's revert: it

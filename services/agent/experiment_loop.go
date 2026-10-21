@@ -647,6 +647,8 @@ type promotionKillSwitch interface {
 
 // revertPromotionsOnKillSwitch reverts the applied autonomous promotions and
 // journals each revert on its experiment (outcome reverted, reason kill_switch).
+// The Promoter returns a promotion's failed revert only once (#1753), so each
+// returned item is journaled as it is: retries add no event.
 func (e *experimentLoop) revertPromotionsOnKillSwitch(ctx context.Context) {
 	if e.promotions == nil {
 		return
