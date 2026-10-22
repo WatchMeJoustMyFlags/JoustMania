@@ -227,7 +227,7 @@ def test_inventory_classifies_defaults():
     assert {
         "ANTHROPIC_API_KEY",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "AGENT_EXPERIMENT_SEED_FLAG",
+        "AGENT_EXPERIMENT_PROPOSER_ENABLED",
     } <= set(agent)  # raw + const key
     assert "FLAGD_HOST" not in agent  # getEnv("FLAGD_HOST", "flagd")
     assert (

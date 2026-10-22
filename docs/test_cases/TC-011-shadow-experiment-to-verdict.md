@@ -16,14 +16,14 @@
 ## Preconditions
 
 - The service-tier `AGENT` composition (see Automation): the agent and the one game coordinator of the stack, which the experiment has to itself. The former full-stack module `test_experiment_cohort_loop.py` and its dedicated-coordinator overlay were removed (#1422 S13); this module covers steps 1 to 8.
-- `inference.backend` at its `stub` default (the env is `stub` too), `decision.backend` = `rules`, `enabled` and `experiments_enabled` on; verdict minimums lowered to 1 pair and a short experiment tick through `agent` overlays on the flag service (and the same values as agent env, for the first tick); an env-seeded experiment.
+- `inference.backend` at its `stub` default (the env is `stub` too), `decision.backend` = `rules`, `enabled` and `experiments_enabled` on; verdict minimums lowered to 1 pair and a short experiment tick through `agent` overlays on the flag service served before the agent starts; the experiment seed is the `experiment_seed` flag's `windows_frantic` variant, rewritten by the harness (`Composition.flag_variant_values`) to `target_n` 2 and served before `enabled`.
 
 ## Flow
 
 | Step | Name                    | Description                                                                                      | Test Data                                   | Use Case                            |
 |------|-------------------------|--------------------------------------------------------------------------------------------------|---------------------------------------------|-------------------------------------|
 | 1    | Start the agent         | The agent comes up on the inference-absent path and decides with rules                          | `backend=stub`, `decision_backend=rules`    | [UC-040](../use_cases/UC-040.md)    |
-| 2    | Declare the experiment  | The agent writes the experiment variant and logs `experiment.declared`                           | env-seeded experiment                       | [UC-043](../use_cases/UC-043.md)    |
+| 2    | Declare the experiment  | The agent writes the experiment variant and logs `experiment.declared`                           | `experiment_seed` variant                   | [UC-043](../use_cases/UC-043.md)    |
 | 3    | Spawn paired games      | The agent reserves mock controllers per archetype and spawns an experimental and a control game with the same seed | archetype `quick_cascade` (`experiment.mock_archetypes`) | [UC-046](../use_cases/UC-046.md) |
 | 4    | Run as shadow games     | The coordinator runs both as shadow games with their own game ids; the reserved controllers stay out of the lobby | -                         | [UC-003](../use_cases/UC-003.md)    |
 | 5    | Observe and score       | The agent observes each game and scores its fitness at game end                                  | -                                           | [UC-041](../use_cases/UC-041.md)    |
@@ -44,7 +44,7 @@
 
 ## Automation
 
-**Tier:** T2 service (`tests/service/`, `make test-service`): menu, game coordinator and controller manager (mock controllers) from source at HEAD, the agent built at HEAD (`AGENT` composition, with `agent_env` carrying the experiment seed and `AGENT_EXPERIMENT_DIR` in the stack's temp dir), one flagd and flag service, fake audio, the harness `OtlpSink`. The agent has no state API, so its `slog` lines are the observable, as in the full-stack module.
+**Tier:** T2 service (`tests/service/`, `make test-service`): menu, game coordinator and controller manager (mock controllers) from source at HEAD, the agent built at HEAD (`AGENT` composition, with the `experiment_seed` variant rewrite and overlay (#1907) and `AGENT_EXPERIMENT_DIR` in the stack's temp dir), one flagd and flag service, fake audio, the harness `OtlpSink`. The agent has no state API, so its `slog` lines are the observable, as in the full-stack module.
 
 Per module (#1422 S9): the units below prove each module's rules, the T2 module proves they work together.
 

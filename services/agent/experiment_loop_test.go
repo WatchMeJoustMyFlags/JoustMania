@@ -973,10 +973,6 @@ func TestExperimentLoop_RunShutdownNoLeak(t *testing.T) {
 	// stops on ctx cancel rather than merely never having started. #1044: the tick is
 	// resolved live from expDefaults.Tick (nil flags client), so set it there.
 	loop.expDefaults.Tick = 5 * time.Millisecond
-	// Seed an experiment so the loop has live work each tick.
-	loop.seed = &experiment.Intent{
-		FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 100,
-	}
 	// The loop reads e.flags.Evaluate for the kill-switch; a nil flags client is
 	// treated as "enabled" (test wiring only, see allocateIfEnabled), so the leak
 	// test needs no flagd dependency.

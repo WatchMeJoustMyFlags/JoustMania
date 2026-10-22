@@ -372,5 +372,16 @@ func TestCompiledDefaultsMatchFlagDefaults(t *testing.T) {
 				t.Errorf("%s: %s default variant = %v, compiled default = %v", path, key, got, w)
 			}
 		}
+		// #1907 PR 4c: the experiment seed. With flagd down there is no seed (Seed
+		// nil); the flag's default must be `off` = {}, which is no seed too.
+		seed, ok := doc.Flags["experiment_seed"]
+		if !ok {
+			t.Errorf("%s: flag %q missing", path, "experiment_seed")
+			continue
+		}
+		if _, kind, _ := parseExperimentSeed(seed.Variants[seed.DefaultVariant]); seed.DefaultVariant != "off" || kind != seedOff || exp.Seed != nil {
+			t.Errorf("%s: experiment_seed default %q = %v (unresolved %v), want off = {} and no compiled seed",
+				path, seed.DefaultVariant, seed.Variants[seed.DefaultVariant], exp.Seed)
+		}
 	}
 }

@@ -20,7 +20,7 @@ import (
 //   - it picks a valid, Gate-passing Intent from game.json flags (existing flag,
 //     type-compatible value, experimentable objective);
 //   - default-off: with experiment_dynamic_enabled off or unresolved, NO dynamic
-//     declaration happens (env-seed behavior byte-identical) — the regression guard;
+//     declaration happens (seed-only behavior byte-identical) — the regression guard;
 //   - capacity/dedup: it won't declare a second experiment on a flag that already
 //     has an active one, nor beyond the concurrent-experiment backstop;
 //   - rotation: successive declarations cover DIFFERENT flags (deterministic cursor);
@@ -134,7 +134,7 @@ func TestDynamicDeclarer_GatePassesObjectFlag(t *testing.T) {
 // TestDynamicDeclarer_DisabledByDefault is the regression guard (#1044 update):
 // the declarer is ALWAYS constructed now, but with experiment_dynamic_enabled OFF
 // (the default, here via a zero-value ExperimentConfig) declareDynamicIfEnabled is
-// a no-op — the env-seed path is byte-identical. It also asserts a nil declarer is
+// a no-op — the seed-only path is byte-identical. It also asserts a nil declarer is
 // safe (the test/degraded wiring).
 func TestDynamicDeclarer_DisabledByDefault(t *testing.T) {
 	// The declarer is built regardless of the opt-in now (gating moved to the LIVE
@@ -371,6 +371,26 @@ func dynCfg(maxConcurrent int) flags.ExperimentConfig {
 	}
 }
 
+// withSeed makes the loop's live config carry the resolved experiment_seed
+// object (#1907); nil = the flag could not be resolved.
+func withSeed(loop *experimentLoop, seed any) {
+	base := loop.configOverride
+	loop.configOverride = func(ctx context.Context) flags.ExperimentConfig {
+		cfg := base(ctx)
+		cfg.Seed = seed
+		return cfg
+	}
+}
+
+// testSeed is a valid experiment_seed object as flagd resolves it (numbers as
+// float64, objective balanced).
+func testSeed(flagKey string, value any, targetN int) map[string]any {
+	return map[string]any{
+		"flag": flagKey, "value": value, "objective": decision.ObjectiveBalanced,
+		"target_n": float64(targetN), "hypothesis": "h",
+	}
+}
+
 // withCandidates makes the loop's live config (the configOverride seam) carry the
 // experiment_dynamic_candidates value keys (#1907: the declarer takes its settings
 // from the per-tick config, never from its struct fields).
@@ -506,7 +526,8 @@ func TestDeclareDynamic_KillSwitchOffDeclaresNothing(t *testing.T) {
 // TestDeclareDynamic_TalkFallbackKeepsAGameInProgress: in the talk's screen-only
 // fallback a game must always be in progress. The dynamic declarer keeps declaring
 // after the kill-switch beat or a `fallback off` aborted every experiment, while
-// the AGENT_EXPERIMENT_SEED_* env seed is declared only once per agent start.
+// the experiment seed (the experiment_seed flag) left set is not declared again
+// (the latch keeps the last value until `off` is read).
 // UC: UC-070 A9 BR-007
 func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 	ctx := context.Background()
@@ -559,21 +580,18 @@ func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-070/BR-007 the env seed is declared once per agent start", func(t *testing.T) {
+	t.Run("UC-070/BR-007 the experiment seed is declared once per agent process", func(t *testing.T) {
 		loop, svc := loopWithRealRegistry(t, 8)
 		loop.dynamic = declarer(svc)
 		withCandidates(loop, "sensitivity")
-		loop.seed = &experiment.Intent{
-			Hypothesis: "h", FlagKey: "invincibility_seconds",
-			ExperimentalValue: 6.0, Objective: decision.ObjectiveBalanced, TargetNPerArm: 50,
-		}
+		withSeed(loop, testSeed("invincibility_seconds", 6.0, 50))
 		enabled := true
 		loop.enabledOverride = func(context.Context) bool { return enabled }
 
 		loop.allocateIfEnabled(ctx)
 		active := loop.registry.ActiveFlags()
 		if _, ok := active["invincibility_seconds"]; !ok {
-			t.Fatalf("first tick did not declare the env seed: %v", active)
+			t.Fatalf("first tick did not declare the experiment seed: %v", active)
 		}
 		if _, ok := active["sensitivity"]; !ok {
 			t.Fatalf("first tick did not declare the dynamic experiment: %v", active)
@@ -584,7 +602,7 @@ func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 		loop.allocateIfEnabled(ctx)
 		active = loop.registry.ActiveFlags()
 		if _, ok := active["invincibility_seconds"]; ok {
-			t.Fatalf("the env seed was declared again after the kill switch: %v", active)
+			t.Fatalf("the experiment seed was declared again after the kill switch: %v", active)
 		}
 		if _, ok := active["sensitivity"]; !ok {
 			t.Fatalf("the dynamic declarer did not re-declare: %v", active)

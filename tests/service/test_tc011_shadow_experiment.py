@@ -3,7 +3,7 @@
 AGENT composition: the real agent (built at HEAD), game coordinator and
 controller manager (mock backend) from source, a fresh flag plane, FakeAudio and
 the OtlpSink. The agent runs on the inference-absent path (``stub`` backend,
-``decision.backend`` = ``rules``) with one env-seeded experiment; the verdict
+``decision.backend`` = ``rules``) with one seeded experiment (the ``experiment_seed`` flag); the verdict
 minimums and tick are lowered with stack overlays, as the former
 full-stack module did with compose overlays.
 
@@ -37,20 +37,24 @@ from tests.service.harness import AGENT
 pytestmark = pytest.mark.tier("service")
 
 SEED_FLAG = "windows"
-SEED_VALUE = (
-    '{"min_music_fast_time":6,"max_music_fast_time":11,'
-    '"min_music_slow_time":6,"max_music_slow_time":14,'
-    '"end_min_music_fast_time":8,"end_max_music_fast_time":14,'
-    '"end_min_music_slow_time":5,"end_max_music_slow_time":8}'
-)
+SEED_VALUE = {
+    "min_music_fast_time": 6,
+    "max_music_fast_time": 11,
+    "min_music_slow_time": 6,
+    "max_music_slow_time": 14,
+    "end_min_music_fast_time": 8,
+    "end_max_music_fast_time": 14,
+    "end_min_music_slow_time": 5,
+    "end_max_music_slow_time": 8,
+}
+# The experiment seed is the experiment_seed flag (#1907): its declared variant
+# windows_frantic is rewritten in the stack's baseline to this test's seed and served
+# before ``enabled`` (the registry takes declared variants only).
+SEED_VARIANT = "windows_frantic"
+SEED = {"flag": SEED_FLAG, "value": SEED_VALUE, "objective": "balanced", "target_n": 2}
 SERVICE_COMPOSITION = replace(
     AGENT,
-    agent_env={
-        "AGENT_EXPERIMENT_SEED_FLAG": SEED_FLAG,
-        "AGENT_EXPERIMENT_SEED_VALUE": SEED_VALUE,
-        "AGENT_EXPERIMENT_SEED_OBJECTIVE": "balanced",
-        "AGENT_EXPERIMENT_SEED_TARGET_N": "2",
-    },
+    flag_variant_values={("agent", "experiment_seed", SEED_VARIANT): SEED},
 )
 
 # Agent overlays (flags.md section 13.2): bounded so the loop ends in about a minute.
@@ -66,6 +70,7 @@ TUNING = {
 SERVICE_COMPOSITION = replace(
     SERVICE_COMPOSITION,
     agent_flags={
+        "experiment_seed": {"variant": SEED_VARIANT},  # before the gates
         "enabled": {"variant": "on"},
         "experiments_enabled": {"variant": "on"},
         "decision.backend": {"variant": "rules"},
@@ -130,7 +135,7 @@ def test_agent_starts_inference_absent_and_decides_with_rules(experiment_stack):
 
 @pytest.mark.uc("UC-043", flow="main", steps=[1], tc="TC-011")
 def test_experiment_is_declared(experiment_stack):
-    """Step 2: the env-seeded experiment is declared on the seeded flag, then started."""
+    """Step 2: the seeded experiment is declared on the seeded flag, then started."""
     stack = experiment_stack
     assert _wait_log(stack, "experiment.declared", DECLARE_TIMEOUT), _agent_log(stack)[-3000:]
     declared = _lines(stack, "experiment.declared")

@@ -1,9 +1,8 @@
 """``make dry-run`` starts the demo stack as FR-090 says (UC-070 Pre-1).
 
-FR-090: one command starts the latest images with mock controllers, the agent and a
-seeded experiment. "Seeded" means the seed env is set; the experiment loop itself stays
-gated by the fail-closed ``enabled`` / ``experiments_enabled`` flags until
-``scripts/agent-dryrun-enable.sh on``. Static checks over the Makefile recipe, the compose layers and the
+FR-090: one command starts the latest images with mock controllers and the agent;
+``scripts/agent-dryrun-enable.sh on`` then sets the ``experiment_seed`` flag and the
+fail-closed ``enabled`` / ``experiments_enabled`` flags (#1907: no seed env any more). Static checks over the Makefile recipe, the compose layers and the
 flagd CI baseline; ``make -n`` prints the recipe without running docker.
 """
 
@@ -56,11 +55,6 @@ def _dry_run_recipe(env_image_tag: str | None = None) -> str:
         check=True,
     )
     return result.stdout
-
-
-def _agent_env() -> dict[str, str]:
-    entries = _load_layer(DRY_RUN_FILE)["services"]["agent"]["environment"]
-    return dict(entry.split("=", 1) for entry in entries)
 
 
 @pytest.mark.uc("UC-070", cond=["Pre-1"])
@@ -126,41 +120,52 @@ def test_dry_run_uses_mock_controllers_from_the_ci_flag_baseline():
     assert backend["variants"][backend["defaultVariant"]] == "mock"
 
 
-def test_dry_run_agent_starts_with_a_seeded_experiment():
-    env = _agent_env()
-    # #1907: the loop is gated only by the experiments_enabled flag; the dry-run sets
-    # no env gate or tick (the enable step flips the flag through the flag service).
-    for removed in (
-        "AGENT_EXPERIMENTS_ENABLED",
-        "AGENT_EXPERIMENT_TICK_SECONDS",
-        "AGENT_EXPERIMENT_DYNAMIC_ENABLED",
-    ):
-        assert removed not in env, f"dry-run still sets the removed {removed}"
-    seed_flag = env["AGENT_EXPERIMENT_SEED_FLAG"]
-    default = re.fullmatch(r"\$\{AGENT_EXPERIMENT_SEED_FLAG:-(\w+)\}", seed_flag)
-    assert default, f"seed flag has no default: {seed_flag}"
-    assert (
-        default.group(1)
-        in json.loads((CI_FLAGD_DIR / "game.json").read_text())["flags"]
-    )
-    for name in ("VALUE", "OBJECTIVE", "TARGET_N", "HYPOTHESIS"):
-        assert re.search(
-            rf"\$\{{AGENT_EXPERIMENT_SEED_{name}:-.+\}}",
-            env[f"AGENT_EXPERIMENT_SEED_{name}"],
-        ), f"AGENT_EXPERIMENT_SEED_{name} has no default"
-    # The base compose passes the same names through, empty by default (seed off).
+@pytest.mark.uc("UC-070", br=["BR-007"])
+def test_dry_run_seeds_the_experiment_through_the_flag_not_the_env():
+    """#1907: the seed is the experiment_seed flag; no compose layer sets a seed or gate env."""
+    entries = _load_layer(DRY_RUN_FILE)["services"]["agent"].get("environment") or []
     base_env = ic.compose_services()["agent"]["environment"]
-    assert "AGENT_EXPERIMENT_SEED_FLAG=${AGENT_EXPERIMENT_SEED_FLAG:-}" in base_env
+    for env in (entries, base_env):
+        names = {str(entry).split("=", 1)[0] for entry in env}
+        removed = {
+            "AGENT_EXPERIMENTS_ENABLED",
+            "AGENT_EXPERIMENT_TICK_SECONDS",
+            "AGENT_EXPERIMENT_DYNAMIC_ENABLED",
+            *(
+                f"AGENT_EXPERIMENT_SEED_{n}"
+                for n in ("FLAG", "VALUE", "OBJECTIVE", "TARGET_N", "HYPOTHESIS")
+            ),
+        }
+        assert not names & removed, (
+            f"a compose layer still sets {sorted(names & removed)}"
+        )
+    # The agent reads no seed env: no Go string literal names one (comments may).
+    literal = re.compile(r'"AGENT_EXPERIMENT_SEED_\w*"')
+    readers = [
+        path.name
+        for path in (REPO_ROOT / "services" / "agent").glob("*.go")
+        if not path.name.endswith("_test.go") and literal.search(path.read_text())
+    ]
+    assert not readers, f"the agent still names a seed env var in {readers}"
 
 
-def test_agent_reads_the_seed_env_names_the_dry_run_sets():
-    source = (REPO_ROOT / "services" / "agent" / "experiment_loop.go").read_text()
-    for name in _agent_env():
-        if name.startswith("AGENT_EXPERIMENT_SEED_"):
-            # Resolve the Go const holding the name, then require a real Getenv call
-            # on it (a comment or a bare string mention does not count).
-            const = re.search(rf'^\s*(\w+)\s*=\s*"{name}"', source, re.M)
-            assert const, f"agent declares no const for {name}"
-            assert re.search(rf"os\.Getenv\(\s*{const.group(1)}\s*\)", source), (
-                f"agent never reads {name}"
-            )
+@pytest.mark.uc("UC-070", br=["BR-007"])
+def test_dryrun_enable_sets_a_declared_seed_variant_before_the_gates():
+    """FR-090: `agent-dryrun-enable.sh on` seeds the experiment, then opens the gates."""
+    script = (REPO_ROOT / "scripts" / "agent-dryrun-enable.sh").read_text()
+    variant = re.search(r'^SEED_VARIANT="(\w+)"', script, re.M)
+    assert variant, "agent-dryrun-enable.sh names no SEED_VARIANT"
+    seed = json.loads((CI_FLAGD_DIR / "agent.json").read_text())["flags"][
+        "experiment_seed"
+    ]
+    value = seed["variants"].get(variant.group(1))
+    assert value, f"{variant.group(1)} is not a variant of experiment_seed"
+    assert (
+        value["flag"] in json.loads((CI_FLAGD_DIR / "game.json").read_text())["flags"]
+    )
+    on = script[script.index("  on)") : script.index("  off)")]
+    assert on.index("experiment_seed") < on.index(
+        "for flag in enabled experiments_enabled"
+    ), "on must write the seed before the gates"
+    off = script[script.index("  off)") : script.index("  status)")]
+    assert "experiment_seed" in off, "off must clear the seed"

@@ -14,7 +14,7 @@ import (
 )
 
 // dynamic_declarer.go is the HEURISTIC (no-LLM) dynamic experiment declarer
-// (#995): instead of only the static AGENT_EXPERIMENT_SEED_FLAG env seed (one
+// (#995): instead of only the experiment seed (the experiment_seed flag, one
 // operator-named flag), the agent CHOOSES which existing game.json flag to
 // experiment on by itself, using observed signals — so the parameterized surface
 // gets explored autonomously. It is the unblocked autonomy increment: the LLM
@@ -31,7 +31,7 @@ import (
 //     chosen and is rejected at Registry.Declare anyway).
 //
 // Every Intent it builds therefore flows through the SAME #977 Gate + #978
-// Registry caps as the env seed; the declarer is a SELECTION heuristic in front
+// Registry caps as the experiment seed; the declarer is a SELECTION heuristic in front
 // of the unchanged declare path, not a new privilege.
 //
 // GATING — default-off, byte-identical for everyone who does not opt in. The
@@ -411,7 +411,7 @@ func perturbValue(f candidateFlag) (any, bool) {
 }
 
 // hypothesis builds the human-readable hypothesis string stamped on a dynamically
-// declared Intent (mirrors seedIntentFromEnv's shape). It records that this was
+// declared Intent (mirrors the experiment seed's shape). It records that this was
 // the agent's own heuristic choice and what it is trying.
 func (d *dynamicDeclarer) hypothesis(flagKey string, value any, objective string) string {
 	vb, err := json.Marshal(value)

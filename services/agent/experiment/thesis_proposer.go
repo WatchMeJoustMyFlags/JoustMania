@@ -30,7 +30,7 @@ import (
 // SAFETY / SCOPE — adds NO new write surface. It does NOT choose a flag/value
 // itself; it DELEGATES that to an injected FlagSelector (the #995 dynamic
 // declarer's Declare in production), so every Intent it emits flows through the
-// SAME #977 Gate + #978 Registry caps as the env seed and the dynamic declarer.
+// SAME #977 Gate + #978 Registry caps as the experiment seed and the dynamic declarer.
 // Its ONLY distinct contribution is the THESIS provenance: it stamps the retro's
 // intervention_type / emphasis / reason onto the Intent.Hypothesis so the
 // experiment records WHY it was run (the retro that motivated it), and biases the
