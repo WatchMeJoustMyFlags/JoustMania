@@ -388,7 +388,7 @@ class TestZombieThresholds:
 
         return game, mock_controller_manager
 
-    @pytest.mark.uc("UC-023", br=["BR-002"])
+    @pytest.mark.uc("UC-023", flow="main", steps=[4], br=["BR-002"])
     @pytest.mark.asyncio
     async def test_zombie_returns_zombie_thresholds(self, zombie_game):
         """Zombies should get thresholds from ZOMBIE_THRESHOLDS dict."""
@@ -445,7 +445,7 @@ class TestZombieThresholds:
             f"Zombie death threshold {zombie_thresh[1]} should be > human {human_thresh[1]}"
         )
 
-    @pytest.mark.uc("UC-023", br=["BR-002"])
+    @pytest.mark.uc("UC-023", flow="main", steps=[4], br=["BR-002"])
     @pytest.mark.asyncio
     async def test_zombie_survives_accel_that_kills_human(self, zombie_game):
         """Integration test: acceleration between human and zombie death thresholds kills human but not zombie."""
@@ -486,7 +486,7 @@ class TestZombieThresholds:
         assert game.players[human_serial].is_zombie, "Human should have been converted to zombie"
         assert game.players[zombie_serial].alive, "Zombie should survive mid-range acceleration"
 
-    @pytest.mark.uc("UC-023", br=["BR-002"])
+    @pytest.mark.uc("UC-023", flow="main", steps=[4], br=["BR-002"])
     @pytest.mark.asyncio
     async def test_zombie_thresholds_all_sensitivities(self, zombie_game):
         """All 5 sensitivity levels should return valid tuples from ZOMBIE_THRESHOLDS."""
@@ -505,7 +505,7 @@ class TestZombieThresholds:
             expected = ZOMBIE_THRESHOLDS[sensitivity]
             assert thresh == expected, f"Sensitivity {sensitivity}: got {thresh}, expected {expected}"
 
-    @pytest.mark.uc("UC-023", br=["BR-002"])
+    @pytest.mark.uc("UC-023", flow="main", steps=[4], br=["BR-002"])
     @pytest.mark.asyncio
     async def test_zombie_thresholds_static_across_music_speed(self, zombie_game):
         """Zombie thresholds should not change with music tempo (intentionally static)."""
@@ -1324,7 +1324,7 @@ class TestZombieLedAfterKill:
         assert await game.revive_player(human) is False
         assert _writes_for(game.gameplay_stream, human) == []
 
-    @pytest.mark.uc("UC-023", br=["BR-003", "BR-004"])
+    @pytest.mark.uc("UC-023", flow="main", steps=[4], br=["BR-003", "BR-004"])
     @pytest.mark.parametrize("decided", ["winner_latched", "not_running"])
     @pytest.mark.asyncio
     async def test_respawn_and_revive_refused_once_decided(self, game, decided):
@@ -1477,3 +1477,186 @@ class TestZombieSpecUnits:
         denied = MODE_CAPABILITY_DENY[game.get_game_name()]
         assert {"adjust_global_sensitivity", "adjust_global_difficulty"} <= denied
         assert "revive_player" not in denied
+
+
+class TestZombieRespawnSpanAndGrace:
+    """BR-004: the ``zombie_respawned`` span event cause and the revive grace rule."""
+
+    @pytest_asyncio.fixture
+    async def game(self, monkeypatch):
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        # conftest disables the SDK via OTEL_SDK_DISABLED, which a TracerProvider reads at construction.
+        monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+        self.exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(self.exporter))
+        tracer = provider.get_tracer("test_zombie_respawn")
+
+        mock_cm = MockControllerManagerService(num_controllers=4, death_schedule={}, max_duration=10.0)
+        g = ZombieGame(
+            controller_manager_client=mock_cm,
+            event_publisher=EventCollector().publish,
+            audio_client=None,
+            game_id="test_zombie_respawn_span",
+        )
+        await g._initialize_players_impl(mock_cm.controllers)
+        for serial, player in g.players.items():
+            player.span = tracer.start_span(f"player_{serial}")
+        g.gameplay_stream = RecordingGameplayStream()
+        g.running = True
+        g._play_sound = async_noop
+        g.zombie_respawn_min = g.zombie_respawn_max = 60.0
+        yield g
+        await g.cleanup()
+
+    def _respawn_causes(self, game, serial):
+        game.players[serial].span.end()
+        (span,) = [s for s in self.exporter.get_finished_spans() if s.name == f"player_{serial}"]
+        return [e.attributes["respawn.cause"] for e in span.events if e.name == "zombie_respawned"]
+
+    @pytest.mark.uc("UC-023", flow="main", steps=[4], br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_timer_respawn_records_cause_timer(self, game, monkeypatch):
+        real_sleep = asyncio.sleep
+
+        async def fast(_delay, *_a, **_k):
+            await real_sleep(0)
+
+        monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", fast)
+        zombie = game.zombie_serials[0]
+        await game._kill_player(zombie, 5.0)
+        await game._respawn_tasks[zombie]
+
+        assert self._respawn_causes(game, zombie) == ["timer"]
+
+    @pytest.mark.uc("UC-023", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_revive_records_cause_revive(self, game):
+        zombie = game.zombie_serials[0]
+        await game._kill_player(zombie, 5.0)
+        assert await game.revive_player(zombie) is True
+
+        assert self._respawn_causes(game, zombie) == ["revive"]
+
+    @pytest.mark.uc("UC-023", br=["BR-004"])
+    @pytest.mark.parametrize(
+        ("death_grace", "expected_grace"),
+        [(1.0, 2.0), (3.5, 3.5)],
+        ids=["revive_grace_larger", "death_grace_larger"],
+    )
+    @pytest.mark.asyncio
+    async def test_revive_grace_is_the_larger_of_death_grace_and_revive_spawn_grace(
+        self, game, monkeypatch, death_grace, expected_grace
+    ):
+        game.death_grace_period = death_grace
+        assert game.REVIVE_SPAWN_GRACE == 2.0
+        zombie = game.zombie_serials[0]
+        await game._kill_player(zombie, 5.0)
+        monkeypatch.setattr(time, "time", lambda: 1000.0)
+
+        assert await game.revive_player(zombie) is True
+
+        assert game.players[zombie].grace_until == 1000.0 + expected_grace
+
+
+class TestZombieLoopWinCheckAndDisconnect:
+    """BR-005 (win check after every sample and disconnect) and main step 3 (disconnects mid-loop)."""
+
+    @pytest_asyncio.fixture
+    async def setup(self, monkeypatch):
+        mock_cm = MockControllerManagerService(num_controllers=4, death_schedule={}, max_duration=10.0)
+        events = EventCollector()
+        g = ZombieGame(
+            controller_manager_client=mock_cm,
+            event_publisher=events.publish,
+            audio_client=None,
+            game_id="test_zombie_loop_disconnect",
+        )
+        await g._initialize_players_impl(mock_cm.controllers)
+        g.gameplay_stream = RecordingGameplayStream()
+        g.running = True
+        g._play_sound = async_noop
+        g.time_remaining = 100.0
+        real_sleep = asyncio.sleep
+
+        async def fast(_delay, *_a, **_k):
+            await real_sleep(0)
+
+        monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", fast)
+        yield g, events
+        await g.cleanup()
+
+    @staticmethod
+    def _update(disconnects=(), controllers=()):
+        return controller_manager_pb2.GameplayDataUpdate(
+            controllers=[
+                controller_manager_pb2.GameplayData(serial=s, accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0))
+                for s in controllers
+            ],
+            disconnects=[controller_manager_pb2.DisconnectEvent(serial=s) for s in disconnects],
+            timestamp=1,
+        )
+
+    @pytest.mark.uc("UC-023", flow="main", steps=[3], br=["BR-005"])
+    @pytest.mark.asyncio
+    async def test_human_disconnect_mid_loop_converts_and_the_game_goes_on(self, setup):
+        game, events = setup
+        human = game.human_serials[0]
+
+        assert await game._process_gameplay_update(self._update(disconnects=[human])) is False
+
+        assert game.players[human].is_zombie and human in game.zombie_serials
+        assert human not in game.human_serials
+        assert events.get_events_of_type("zombie_winner") == []
+
+    @pytest.mark.uc("UC-023", flow="A1", br=["BR-005"])
+    @pytest.mark.asyncio
+    async def test_last_human_disconnecting_mid_loop_gives_the_zombies_the_win(self, setup):
+        game, events = setup
+        # One human left: the other converted already.
+        await game._kill_player(game.human_serials[0], 5.0)
+        (last_human,) = game.human_serials
+
+        assert await game._process_gameplay_update(self._update(disconnects=[last_human])) is True
+
+        (winner,) = events.get_events_of_type("zombie_winner")
+        assert winner["winner"] == "zombies"
+        assert game._winner_side == "zombies"
+
+    @pytest.mark.uc("UC-023", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_disconnected_zombie_dies_stays_in_the_game_and_respawns_after_its_delay(self, setup):
+        game, _ = setup
+        zombie = game.zombie_serials[0]
+
+        assert await game._process_gameplay_update(self._update(disconnects=[zombie])) is False
+
+        player = game.players[zombie]
+        assert player.alive is False and zombie in game.players
+        assert zombie in game.zombie_serials and player.is_zombie
+        task = game._respawn_tasks[zombie]
+        await task
+        assert game.players[zombie].alive is True
+        assert game.players[zombie].is_zombie is True
+
+    @pytest.mark.uc("UC-023", flow="main", steps=[5], br=["BR-005"])
+    @pytest.mark.asyncio
+    async def test_time_up_takes_effect_at_the_next_check_not_instantly(self, setup):
+        game, events = setup
+        game.time_remaining = 2.0
+        humans = list(game.human_serials)
+
+        await game._game_timer()
+
+        # The timer only decrements: it reached 0 but decided nothing.
+        assert game.time_remaining <= 0
+        assert events.get_events_of_type("zombie_winner") == []
+        assert game._winner_side is None
+
+        # The first win check after that (here a motion sample) latches the humans' win.
+        assert await game._process_gameplay_update(self._update(controllers=humans[:1])) is True
+        (winner,) = events.get_events_of_type("zombie_winner")
+        assert winner["winner"] == "humans"
