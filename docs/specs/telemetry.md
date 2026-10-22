@@ -69,6 +69,8 @@ Service identities (`OTEL_SERVICE_NAME` / namespace): `controller-manager-servic
 
 Audio span attributes: `PlaySound:{sound}` carries `audio.file`; `PlaySound` and `PlayMusic` carry `audio.muted=true` when `play_audio` is off (read at use time); `PlaySound` carries `audio.silent=true` when `play_audio` is on but the audio hardware is not open yet, so nothing is heard (#1387). `PlaySound` carries `audio.duration_seconds`, the clip length it returns in `PlaySoundResponse.duration_seconds` (0 when nothing is heard; UC-020 A5, #1550). `StopSound` (server span, unrenamed) carries `audio.stopped`, the number of channels it stopped (UC-020 A5, #1586).
 
+Python `{Service}/{Method}` CLIENT spans cover the whole call: a unary call ends at its status, a server-, client- or bidi-stream when the RPC terminates (completed, failed, or cancelled by `call.cancel()` or a cancelled read task; a stream the caller drops ends when it is garbage collected; closing the channel alone does not end an open stream, its reader keeps waiting), with no work per message. A unary call in flight does end when its channel closes. `rpc.grpc.status_code` is the final code; a non-OK status sets the span status ERROR, except a cancel by the caller (cancelled call or task, garbage collection, a unary call ended by closing its channel), which leaves it unset; a `CANCELLED` sent by the server is ERROR. Covers the async channels from `lib/grpc_utils.create_channel` and the HID adapters' sync unary calls; the sync `StreamIO` stream has no span (#1879).
+
 connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` client spans only.
 
 ### 3.2 game-coordinator

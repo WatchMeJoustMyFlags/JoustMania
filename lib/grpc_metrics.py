@@ -212,14 +212,22 @@ def get_metrics_interceptors() -> list:
     ]
 
 
-# grpc's own details for a call ended by closing the channel on this side (``grpc/_channel.py``).
-# The text varies by path (e.g. "Channel closed!", "Channel closed due to fork", "Channel deallocated!"),
-# so match substrings.
-_LOCAL_CHANNEL_CLOSE_MARKERS = ("Channel closed", "Channel deallocated")
+# grpc's own details for a call the caller ended itself: ``call.cancel()`` or a cancelled task (aio),
+# garbage collection, or closing the channel on this side (``grpc/_channel.py``; the text varies by
+# path, e.g. "Channel closed!", "Channel closed due to fork", "Channel deallocated!"), so match
+# substrings. The single definition: lib/grpc_tracing.py imports it, so metrics and spans agree on
+# what a cancel by the caller is (#1879).
+CALLER_CANCEL_MARKERS = (
+    "Locally cancelled by application",
+    "Cancelled upon garbage collection",
+    "Channel closed",
+    "Channel deallocated",
+)
 
 
-def _is_local_channel_close(details: str | None) -> bool:
-    return any(marker in (details or "") for marker in _LOCAL_CHANNEL_CLOSE_MARKERS)
+def is_caller_cancel_details(details: str | None) -> bool:
+    """True when a ``CANCELLED`` status's details say the caller ended the call itself."""
+    return any(marker in (details or "") for marker in CALLER_CANCEL_MARKERS)
 
 
 def _meter_sync_call(call: Any, service: str, method: str, start: float) -> Any:
@@ -232,7 +240,7 @@ def _meter_sync_call(call: Any, service: str, method: str, start: float) -> Any:
     def _on_done(finished: Any) -> None:
         code = finished.code()
         local_cancel = finished.cancelled() or (
-            code == grpc.StatusCode.CANCELLED and _is_local_channel_close(finished.details())
+            code == grpc.StatusCode.CANCELLED and is_caller_cancel_details(finished.details())
         )
         if code is not None and code != grpc.StatusCode.OK and not local_cancel:
             _count_error(service, method, code)
