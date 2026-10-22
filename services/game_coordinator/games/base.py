@@ -1551,8 +1551,10 @@ class BaseGameMode(ABC):
         """Whether run() opens the gameplay stream before the additional phases.
 
         A mode whose phases send effects over the stream (Random Teams formation
-        pulse, UC-021 A1) returns True. Its player colours must be final before the
-        phases, because the stream config carries them. Default False: the stream
+        pulse, UC-021 A1; Traitor signal, UC-022 BR-003) returns True. The stream
+        config carries the player colours as they are before the phases; a mode
+        that sets them later (Traitor) writes them as base colours over the
+        stream, and a reopen after the phases carries the final ones. Default False: the stream
         opens after the phases and the instructions, as for FFA, Teams and Swapper,
         whose colour_assignment phase sets the colours the config sends.
         """
