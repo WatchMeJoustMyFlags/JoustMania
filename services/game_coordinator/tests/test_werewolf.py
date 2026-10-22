@@ -1112,6 +1112,8 @@ class TestWerewolfForceEndWinner:
         assert Sound.VOX_WEREWOLF_WIN in self._sounds(game)
         (ended,) = events.get_events_of_type("game_ended")
         assert ended["winner"] == "werewolves"
+        assert ended["outcome"] == "force_ended"
+        assert ended["reason"] == "race"
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
