@@ -68,8 +68,8 @@ type serverComponents struct {
 
 	// experiments, when non-nil, runs the #991 experiment cohort loop in its own
 	// ctx-bounded goroutine: declare → spawn shadow games into arms → conclude →
-	// (gated) promote. Nil = the experiment loop opt-in (AGENT_EXPERIMENTS_ENABLED)
-	// is OFF, the DEFAULT, in which case the agent has zero experiment surface and
+	// (gated) promote. Nil = no experiment loop (test wiring; production always
+	// builds it and gates it on the live experiments_enabled flag), in which case the agent has zero experiment surface and
 	// behaves exactly as before. run() joins this goroutine on shutdown so it is
 	// leak-safe (the loop's own AbortAll tears experiments down on ctx cancel).
 	experiments func(context.Context)

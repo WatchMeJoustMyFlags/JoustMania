@@ -15,7 +15,7 @@ import (
 // experiment_tuning_1810_test.go covers #1810 PR A: the widening experiment
 // settings are capped by the operator's env ceilings (C-034, FR-152 d-f), the
 // proposer gate is env AND flag for both proposers, and the completed-game grace
-// is a tuning flag read at use time (FR-150, FR-151).
+// is a tuning flag read at use time (FR-150, C-035).
 
 // The concurrent-experiment budget is min(env ceiling, flag), a non-positive flag
 // falls back to the compiled 3 (capped by the env), an env value <= 0 or invalid
@@ -68,7 +68,7 @@ func TestConcurrentBudget_UnresolvedFlagUsesCompiledDefaultCappedByEnv(t *testin
 	}{{"6", 3}, {"2", 2}, {"", 3}} {
 		t.Run("UC-042/A11 env="+tc.env, func(t *testing.T) {
 			t.Setenv(envDynamicMaxConcurrent, tc.env)
-			def := experimentDefaultsFromEnv()
+			def := experimentDefaults()
 			if def.DynamicMaxConcurrent != defaultDynamicMaxConcurrent {
 				t.Fatalf("fallback = %d, want the compiled %d (the env is a ceiling, not the fallback)", def.DynamicMaxConcurrent, defaultDynamicMaxConcurrent)
 			}
@@ -211,7 +211,7 @@ func TestM74Proposer_GateClosedNoCallNoSpend(t *testing.T) {
 			delegate := func(context.Context, llm.Prompt) (string, error) { calls++; return "not json", nil }
 			p := newWiredProposer(sourceFor(delegate), nil, nil, decision.NewLLMAdmission(gate, budget, 0, "proposer", nil), nil)
 			src := &liveGateFlags{enabled: true, experiments: true, proposer: tc.flagOn}
-			cfg := experiment.ProposerConfig{Permit: proposerPermit(src, false, tc.ceiling), GameKind: "real"}
+			cfg := experiment.ProposerConfig{Permit: proposerPermit(src, tc.ceiling), GameKind: "real"}
 
 			res := p.ProposeOnce(context.Background(), experiment.Narrative{}, cfg)
 			if res.Outcome != experiment.ProposeDisabled || res.Reason != experiment.SkipReasonProposerDisabled {
@@ -231,7 +231,7 @@ func TestM74Proposer_GateClosedNoCallNoSpend(t *testing.T) {
 		delegate := func(context.Context, llm.Prompt) (string, error) { calls++; return "not json", nil }
 		p := newWiredProposer(sourceFor(delegate), nil, nil, nil, nil)
 		src := &liveGateFlags{enabled: true, experiments: true, proposer: false}
-		cfg := experiment.ProposerConfig{Permit: proposerPermit(src, false, true), GameKind: "real"}
+		cfg := experiment.ProposerConfig{Permit: proposerPermit(src, true), GameKind: "real"}
 		p.ProposeOnce(context.Background(), experiment.Narrative{}, cfg)
 		src.proposer = true
 		if got := p.ProposeOnce(context.Background(), experiment.Narrative{}, cfg).Outcome; got != experiment.ProposeUndecodable {
@@ -257,7 +257,7 @@ func (g *graceCapture) schedule(d time.Duration, _ func()) func() bool {
 }
 
 // experiment_completed_grace_seconds is read when a completed game arms its grace
-// (FR-150, FR-151, #1810): the `off` variant 0 arms nothing, and a flag write
+// (FR-150, C-035, #1810): the `off` variant 0 arms nothing, and a flag write
 // reaches the next completed game with no restart.
 func TestCompletedGrace_ReadAtUseTime(t *testing.T) {
 	capture := &graceCapture{}
@@ -281,13 +281,14 @@ func TestCompletedGrace_ReadAtUseTime(t *testing.T) {
 	}
 }
 
-// With no flag client the grace falls back to the env-derived default (FR-151).
-func TestCompletedGrace_FallsBackToEnv(t *testing.T) {
-	t.Setenv(envCompletedGrace, "45")
+// With no flag client the grace falls back to the compiled 60 s; the removed
+// AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS env var is ignored (#1907, FR-150).
+func TestCompletedGrace_UnresolvedUsesCompiledDefault(t *testing.T) {
+	t.Setenv("AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS", "45")
 	capture := &graceCapture{}
-	loop := &experimentLoop{log: testLogger(), afterFunc: capture.schedule, expDefaults: experimentDefaultsFromEnv()}
+	loop := &experimentLoop{log: testLogger(), afterFunc: capture.schedule, expDefaults: experimentDefaults()}
 	loop.armCompletedGrace("g1")
-	if len(capture.waits) != 1 || capture.waits[0] != 45*time.Second {
-		t.Fatalf("armed grace windows = %v, want [45s] (env fallback)", capture.waits)
+	if len(capture.waits) != 1 || capture.waits[0] != defaultCompletedGrace {
+		t.Fatalf("armed grace windows = %v, want [%s] (compiled default, env ignored)", capture.waits, defaultCompletedGrace)
 	}
 }

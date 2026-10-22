@@ -751,14 +751,10 @@ services:
       # matching the Go "non-positive = ignore" semantics. Declared here so a host
       # `export` or `.env` value actually reaches the container (#1078).
       - AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${AGENT_LLM_MAX_REQUESTS_PER_MINUTE:-}
-      # Experiment cohort loop (#982/#991). Opt-in master switch + the optional
-      # env-seeded single experiment. Declared here (with default-off / empty
-      # defaults) so a host `export` or `.env` value reaches the container — a
-      # plain `up` keeps the framework inert (the M8 dry-run finding, #999). The
-      # promotion path stays gated by the `code_improvement` flags + kill-switch.
-      - AGENT_EXPERIMENTS_ENABLED=${AGENT_EXPERIMENTS_ENABLED:-false}
-      # Deprecated fallback of the experiment_tick_seconds flag (FR-151, #1810).
-      - AGENT_EXPERIMENT_TICK_SECONDS=${AGENT_EXPERIMENT_TICK_SECONDS:-30}
+      # Experiment cohort loop (#982/#991): the optional env-seeded single
+      # experiment. The loop itself is gated only by the experiments_enabled and
+      # `enabled` flags (fail closed, #1907); the promotion path stays gated by the
+      # `code_improvement` flags + kill-switch.
       - AGENT_EXPERIMENT_SEED_FLAG=${AGENT_EXPERIMENT_SEED_FLAG:-}
       - AGENT_EXPERIMENT_SEED_VALUE=${AGENT_EXPERIMENT_SEED_VALUE:-}
       - AGENT_EXPERIMENT_SEED_OBJECTIVE=${AGENT_EXPERIMENT_SEED_OBJECTIVE:-}
@@ -769,10 +765,9 @@ services:
       # experiment_proposer_enabled flag is on (#1810, C-034).
       - AGENT_EXPERIMENT_PROPOSER_ENABLED=${AGENT_EXPERIMENT_PROPOSER_ENABLED:-}
       # Heuristic dynamic declarer (#995): the agent autonomously picks which
-      # game.json flag to experiment on. Default-OFF; subordinate to
-      # AGENT_EXPERIMENTS_ENABLED + the agent.json kill-switch. Passthrough so the
-      # feature is reachable in the deployed stack (#1041).
-      - AGENT_EXPERIMENT_DYNAMIC_ENABLED=${AGENT_EXPERIMENT_DYNAMIC_ENABLED:-false}
+      # game.json flag to experiment on. Gated by the experiment_dynamic_enabled flag
+      # (default off), under experiments_enabled + the kill-switch (#1907). The
+      # knobs below pass through so they reach the deployed stack (#1041).
       # Operator ceiling on experiment_dynamic_max_concurrent (#1810, C-034): empty = no ceiling.
       - AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT=${AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT:-}
       - AGENT_EXPERIMENT_DYNAMIC_CANDIDATES=${AGENT_EXPERIMENT_DYNAMIC_CANDIDATES:-}

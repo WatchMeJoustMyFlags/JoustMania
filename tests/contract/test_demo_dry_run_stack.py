@@ -128,9 +128,14 @@ def test_dry_run_uses_mock_controllers_from_the_ci_flag_baseline():
 
 def test_dry_run_agent_starts_with_a_seeded_experiment():
     env = _agent_env()
-    assert env["AGENT_EXPERIMENTS_ENABLED"].startswith(
-        "${AGENT_EXPERIMENTS_ENABLED:-true}"
-    )
+    # #1907: the loop is gated only by the experiments_enabled flag; the dry-run sets
+    # no env gate or tick (the enable step flips the flag through the flag service).
+    for removed in (
+        "AGENT_EXPERIMENTS_ENABLED",
+        "AGENT_EXPERIMENT_TICK_SECONDS",
+        "AGENT_EXPERIMENT_DYNAMIC_ENABLED",
+    ):
+        assert removed not in env, f"dry-run still sets the removed {removed}"
     seed_flag = env["AGENT_EXPERIMENT_SEED_FLAG"]
     default = re.fullmatch(r"\$\{AGENT_EXPERIMENT_SEED_FLAG:-(\w+)\}", seed_flag)
     assert default, f"seed flag has no default: {seed_flag}"

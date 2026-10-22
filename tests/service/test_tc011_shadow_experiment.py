@@ -46,17 +46,10 @@ SEED_VALUE = (
 SERVICE_COMPOSITION = replace(
     AGENT,
     agent_env={
-        "AGENT_EXPERIMENTS_ENABLED": "true",
         "AGENT_EXPERIMENT_SEED_FLAG": SEED_FLAG,
         "AGENT_EXPERIMENT_SEED_VALUE": SEED_VALUE,
         "AGENT_EXPERIMENT_SEED_OBJECTIVE": "balanced",
         "AGENT_EXPERIMENT_SEED_TARGET_N": "2",
-        "AGENT_EXPERIMENT_DYNAMIC_ENABLED": "false",
-        # Env defaults for the first tick, which can come before the overlays below are served
-        # (the agent starts before the fixture sets them); the live flags take over after it.
-        "AGENT_EXPERIMENT_TICK_SECONDS": "5",
-        "AGENT_VERDICT_MIN_N": "1",
-        "AGENT_VERDICT_MIN_PAIRS": "1",
     },
 )
 
@@ -79,7 +72,7 @@ SERVICE_COMPOSITION = replace(
         **{key: {"value": value} for key, value in TUNING.items()},
     },
 )
-# 90 s leaves room for one compiled 30 s first experiment tick before the live cadence.
+# The second experiment tick comes within 5 s of start (first-tick cap, #1907); 90 s is margin.
 DECLARE_TIMEOUT = 90.0
 CONCLUDE_TIMEOUT = 300.0
 # Absence window after teardown: several experiment ticks (3 s each).

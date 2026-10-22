@@ -1,4 +1,4 @@
-"""debug flag: flag only, default off (#1788, FR-150, FR-151)."""
+"""debug flag: flag only, default off (#1788, FR-150, C-035)."""
 
 from unittest.mock import create_autospec, patch
 

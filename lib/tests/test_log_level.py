@@ -1,4 +1,4 @@
-"""log_level flag: flag wins, env fallback, default, runtime change (#1788, FR-150, FR-151)."""
+"""log_level flag: flag wins, env fallback, default, runtime change (#1788, FR-150, C-035)."""
 
 import logging
 from unittest.mock import create_autospec, patch

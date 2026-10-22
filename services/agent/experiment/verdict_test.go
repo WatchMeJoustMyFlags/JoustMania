@@ -254,44 +254,21 @@ func TestVerdict_DefaultsOnNonPositiveConfig(t *testing.T) {
 	}
 }
 
-func TestVerdictFromEnv(t *testing.T) {
-	// minN / minPairs stay env-derived (the registry's bootstrap default the live
-	// verdict_min_n / verdict_min_pairs flags fall back to).
-	t.Setenv(minNEnv, "5")
-	v := NewVerdictFromEnv()
-	if v.minN != 5 {
-		t.Fatalf("env minN = %d, want 5", v.minN)
-	}
-	// The four migrated float knobs (#1214) are NO LONGER read from env — they are LIVE
-	// agent.json flags. NewVerdictFromEnv seeds them from the Default* constants (the
-	// fail-open fallback); the live flag value arrives later via SetFloatThresholds.
-	if v.effectThreshold != DefaultEffectThreshold {
-		t.Fatalf("effectThreshold = %v, want default %v (no longer env-read)", v.effectThreshold, DefaultEffectThreshold)
-	}
-
-	// Invalid / empty values fall back to defaults.
-	t.Setenv(minNEnv, "not-a-number")
-	v2 := NewVerdictFromEnv()
-	if v2.minN != DefaultMinNPerArm || v2.effectThreshold != DefaultEffectThreshold {
-		t.Fatalf("invalid env should fall back to defaults, got minN=%d threshold=%v", v2.minN, v2.effectThreshold)
-	}
-}
-
-// TestVerdictFromEnv_Floors (#1214) — the practical-significance floor, SD floor,
-// effect threshold and anchor margin are NO LONGER env-read: NewVerdictFromEnv seeds
-// them from the Default* constants (the flags' fail-open fallback). This asserts the
-// construction defaults; the live-flag override is covered by TestVerdict_SetFloatThresholds.
-func TestVerdictFromEnv_Floors(t *testing.T) {
-	// Even with the legacy env vars set, the four floats default to the code constants
-	// (env is ignored now — the values come from flags via SetFloatThresholds).
+// TestNewDefaultVerdict_IgnoresEnv (#1907): every verdict gate is seeded from its
+// compiled Default* constant (equal to the flag default); the removed
+// AGENT_VERDICT_MIN_N / _MIN_PAIRS env vars and the #1214 float env vars are
+// ignored. The live flag values arrive via SetThresholds / SetFloatThresholds.
+func TestNewDefaultVerdict_IgnoresEnv(t *testing.T) {
+	t.Setenv("AGENT_VERDICT_MIN_N", "1")
+	t.Setenv("AGENT_VERDICT_MIN_PAIRS", "1")
 	t.Setenv("AGENT_VERDICT_MIN_RAW_EFFECT", "0.05")
 	t.Setenv("AGENT_VERDICT_SD_FLOOR", "0.001")
-	v := NewVerdictFromEnv()
-	if v.minRawEffect != DefaultMinRawEffect {
-		t.Fatalf("minRawEffect = %v, want default %v (env no longer read, #1214)", v.minRawEffect, DefaultMinRawEffect)
+	v := NewDefaultVerdict()
+	if v.minN != DefaultMinNPerArm || v.minPairs != DefaultMinPairs {
+		t.Fatalf("minN/minPairs = %d/%d, want defaults %d/%d (env ignored)", v.minN, v.minPairs, DefaultMinNPerArm, DefaultMinPairs)
 	}
-	if v.sdFloor != DefaultSDFloor {
-		t.Fatalf("sdFloor = %v, want default %v (env no longer read, #1214)", v.sdFloor, DefaultSDFloor)
+	if v.effectThreshold != DefaultEffectThreshold || v.minRawEffect != DefaultMinRawEffect || v.sdFloor != DefaultSDFloor {
+		t.Fatalf("float gates = %v/%v/%v, want the Default* constants", v.effectThreshold, v.minRawEffect, v.sdFloor)
 	}
 	// The default gate is built WITH the default sdFloor so the two-arm path is floored.
 	g, ok := v.stat.(effectSizeGate)
@@ -309,7 +286,7 @@ func TestVerdictFromEnv_Floors(t *testing.T) {
 // while a non-positive value per knob is IGNORED (keeps the current value) — the same
 // fail-safe floor SetThresholds uses for min_n/min_pairs.
 func TestVerdict_SetFloatThresholds(t *testing.T) {
-	v := NewVerdictFromEnv()
+	v := NewDefaultVerdict()
 
 	v.SetFloatThresholds(0.8, 0.05, 0.001, 0.03)
 	if v.effectThreshold != 0.8 {

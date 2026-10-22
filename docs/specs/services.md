@@ -353,7 +353,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 
 ### agent
 
-- Environment: see `docker-compose.yml:667-765`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214), the text-backend choice `inference.backend` and its tuning, effect window, promotion timers and the probe demo switch `decision.probe_decisions` (#1788, #1810, [flags.md §15](flags.md#15-env-to-flag-migration-1788); their env vars are deprecated fallbacks). Still env: API keys, `AGENT_INFERENCE_BASE_URL` (the key's destination, validated), `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (a ceiling), rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
+- Environment: see `docker-compose.yml:692-783`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214), the text-backend choice `inference.backend` and its tuning, effect window, promotion timers and the probe demo switch `decision.probe_decisions` (#1788, #1810, [flags.md §15](flags.md#15-env-to-flag-migration-1788); their env vars were removed in #1907). Still env: API keys, `AGENT_INFERENCE_BASE_URL` (the key's destination, validated), `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (a ceiling), rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
 - Writes: `interventions.json` (action sink), `rollout.json` (`current_controller_count`), `game.json` (experiment targeting; autonomous real default when enabled). Never `agent.json` (code guard in `experiment/gate.go`; the mount is read-write).
 - Persistent volume `agent-experiments` for the experiment journal and autonomous-revert snapshots.
 - Pattern games (#1258, UC-046): the one-shot runner reads `SHADOW_GAME_ARCHETYPE` and `SHADOW_GAME_SEED`; for a pattern game the runner sends no `SimulateMovement` / `SimulateDeath` and force-ends the game at the pinned safety cap `experiment.max_game_seconds` (outcome `timeout`).
@@ -368,7 +368,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `FLAGD_HOST` / `FLAGD_PORT` | `flagd` / `8015` | `FLAGD_HOST` only | flagd sync endpoint (in-process resolver, selectors `flagSetId=agent`, `flagSetId=rollout` and `flagSetId=observability` for the `log_level` follower, #1713, #1788). Compose leaves `FLAGD_PORT` unset so an image pinned before #1713 keeps its own default (8013, RPC) |
 | `FLAGD_OFREP_URL` | `http://$FLAGD_HOST:8016` | no | flagd OFREP endpoint for the pattern-game flag digest |
 | `FLAG_SERVICE_URL` | `http://flag-service:8070` | yes | flag service every agent writer calls (interventions, rollout, experiment arms, promotion) |
-| `LOG_LEVEL` | `info` | yes | deprecated fallback of the `log_level` flag (flags.md §15, FR-151, #1788): the flag wins once flagd resolves it, the env level applies at startup and while the flag is unresolved |
+| `LOG_LEVEL` | `info` | yes | bootstrap level of the `log_level` flag (flags.md §15, FR-150, #1788): the flag wins once flagd resolves it, the env level applies at startup and while the flag is unresolved |
 | `OTEL_SERVICE_NAME` / `OTEL_SERVICE_NAMESPACE` | `agent` / `infrastructure` | yes | self-telemetry identity; the name also drives the self-ingestion skip |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_RESOURCE_ATTRIBUTES`, `SERVICE_VERSION`, `DEPLOYMENT_ENVIRONMENT` | unset / unset / `0.0.0-dev` / `development` | first, second, third | self-telemetry export (no-op without an endpoint) and resource attributes |
 | `ANTHROPIC_API_KEY` | empty | yes | Claude key: text backend and the `claude` decision backend; without it that backend is unavailable |
@@ -379,18 +379,12 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | yes | re-expansion cooldown after a rollback |
 | `AGENT_SHADOW_GAME` | unset | no | `true` runs one one-shot shadow game at startup; `SHADOW_GAME_MODE` (`JoustFFA`), `SHADOW_GAME_SENSITIVITY` (`2`, 0 to 4), `SHADOW_GAME_ARCHETYPE`, `SHADOW_GAME_SEED` tune it |
 | `GAME_COORDINATOR_ADDR`, `MOCK_CONTROLLER_ADDR` | `game-coordinator:50053`, `controller-manager:50062` | no | shadow-game runner endpoints |
-| `AGENT_EXPERIMENTS_ENABLED` | `false` | yes | bootstrap default of the live `experiments_enabled` flag, not a gate: the flag decides each tick |
 | `AGENT_EXPERIMENT_PROPOSER_ENABLED` | `false` | yes (empty = closed) | operator ceiling of the proposer gate (#1810, C-034): the retro-seeded thesis proposer and the M7-4 proposer run only when this is `true` AND the `experiment_proposer_enabled` flag is on |
-| `AGENT_EXPERIMENT_TICK_SECONDS` | `30` | yes | deprecated (#1810): fallback for `experiment_tick_seconds` (registry allocate-and-spawn cadence) |
-| `AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS` | `60` | no | deprecated (#1810): fallback for `experiment_completed_grace_seconds` (grace before a completed shadow game with no end datapoint releases its slot; 0 or less disables; also the wait of a telemetry end for the runner outcome, floored at 18 s, UC-046 BR-016, #1405) |
 | `AGENT_EXPERIMENT_SEED_FLAG`, `_VALUE`, `_OBJECTIVE`, `_TARGET_N`, `_HYPOTHESIS` | unset (objective `balanced`) | yes | declare one env-seeded experiment at startup |
-| `AGENT_EXPERIMENT_DYNAMIC_ENABLED` | `false` | yes | bootstrap default of the live `experiment_dynamic_enabled` flag, not a gate (the declarer also needs `experiments_enabled`) |
 | `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` | unset | yes (empty = no ceiling) | operator ceiling (#1810, C-034): the concurrent-experiment budget is `min(env, experiment_dynamic_max_concurrent)`, clamped to the shadow capacity; unset, invalid or non-positive = no ceiling |
 | `AGENT_EXPERIMENT_DYNAMIC_CANDIDATES`, `_DENYLIST`, `_OBJECTIVE`, `_TARGET_N` | unset (built-in denylist, objective `balanced`, target 0); `_DENYLIST` empty or blank = unset (built-in list; there is no "no exclusions" form, #1908) | first, second, fourth | candidate flag list, excluded flags, default objective, games per arm of dynamic experiments |
 | `AGENT_MAX_SHADOW_GAMES` | `20` | no | registry shadow-capacity cap |
-| `AGENT_SHADOW_EFFECTIVE_CONCURRENCY` | `4` | no | in-flight shadow spawns, clamped to the cap above |
 | `AGENT_EXPERIMENT_MAX_GAMES` | unset | no | operator ceiling (#1810, C-034): the per-experiment games budget is `min(env, experiment_max_games)`, 0 or less = no limit on either side; unset, 0 or invalid = no ceiling |
-| `AGENT_VERDICT_MIN_N` / `AGENT_VERDICT_MIN_PAIRS` | `8` / `5` | no | bootstrap defaults of the `verdict_min_n` / `verdict_min_pairs` flags |
 | `AGENT_FITNESS_STORE_CAPACITY` | `512` | no | finalized-fitness ring size |
 | `AGENT_EXPERIMENT_DIR` | `/var/lib/joustmania/agent/experiments` | no (volume `agent-experiments` mounted there) | experiment journal and autonomous-revert snapshot root |
 | `AGENT_CODE_IMPROVEMENT_ENABLED` | `false` | no | opt-in for real promotion clients (local git, GitHub) |

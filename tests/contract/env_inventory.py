@@ -247,10 +247,14 @@ def _go_param_names(params: str) -> list[str]:
     return [piece.split()[0] for piece in params.split(",") if piece.strip()]
 
 
-def _go_helpers(files: list[Path]) -> dict[str, bool]:
-    """Env helper name -> takes a fallback argument. A helper is a func whose
-    first string parameter is passed straight to os.Getenv / os.LookupEnv."""
-    helpers: dict[str, bool] = {}
+def _go_helpers(files: list[Path]) -> dict[str, tuple[int, bool]]:
+    """Env helper name -> (index of its key parameter, takes another argument).
+
+    A helper is a func with a parameter passed straight to os.Getenv /
+    os.LookupEnv; that parameter may sit at any position (``ceilingEnv(logger,
+    key, warnZero)``). Any other parameter counts as a fallback: the helper
+    decides what an unset var means, so a call site has a code default."""
+    helpers: dict[str, tuple[int, bool]] = {}
     for path in files:
         text = _go_source(path)
         matches = list(_GO_FUNC.finditer(text))
@@ -258,13 +262,15 @@ def _go_helpers(files: list[Path]) -> dict[str, bool]:
             end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
             body = text[m.end() : end]
             params = _go_param_names(m.group(2))
-            if params and re.search(rf"os\.(?:Getenv|LookupEnv)\({params[0]}\)", body):
-                name, has_fallback = m.group(1), len(params) > 1
-                if helpers.get(name, has_fallback) != has_fallback:
-                    raise ValueError(
-                        f"env helper {name} has inconsistent arity across packages"
-                    )
-                helpers[name] = has_fallback
+            for index, param in enumerate(params):
+                if re.search(rf"os\.(?:Getenv|LookupEnv)\({param}\)", body):
+                    name, shape = m.group(1), (index, len(params) > 1)
+                    if helpers.get(name, shape) != shape:
+                        raise ValueError(
+                            f"env helper {name} has inconsistent arity across packages"
+                        )
+                    helpers[name] = shape
+                    break
     return helpers
 
 
@@ -292,38 +298,52 @@ def go_reads(root: Path) -> list[EnvRead]:
         values = shared.get(name, set())
         return next(iter(values)) if len(values) == 1 else None
 
+    # Only a helper's own key parameter may stay unresolved (its inner
+    # os.Getenv(key)); any other unresolvable key is a loud error. A call whose
+    # earlier argument contains parentheses or commas is not matched by the
+    # per-index pattern below; that fails safe (test_agent_compose_env_is_read).
     helper_params = {
-        n
+        _go_param_names(m.group(2))[helpers[m.group(1)][0]]
         for p in files
         for m in _GO_FUNC.finditer(_go_source(p))
-        for n in _go_param_names(m.group(2))[:1]
+        if m.group(1) in helpers
     }
-    names = ["os\\.Getenv", "os\\.LookupEnv", *(rf"\b{re.escape(h)}" for h in helpers)]
-    call = re.compile(
-        r"("
-        + "|".join(names)
-        + r")\(\s*(\"[A-Z0-9_]+\"|[A-Za-z_][\w.]*)\s*(\)|,\s*(\"\"\s*\))?)"
-    )
+    # One call pattern per key position: the key is the (index+1)-th argument.
+    by_index: dict[int, list[str]] = {0: ["os\\.Getenv", "os\\.LookupEnv"]}
+    for h, (index, _) in helpers.items():
+        by_index.setdefault(index, []).append(rf"\b{re.escape(h)}")
+    calls = [
+        re.compile(
+            r"("
+            + "|".join(names)
+            + r")\(\s*"
+            + r"[^,()]+,\s*" * index
+            + r"(\"[A-Z0-9_]+\"|[A-Za-z_][\w.]*)\s*(\)|,\s*(\"\"\s*\))?)"
+        )
+        for index, names in by_index.items()
+    ]
     reads: list[EnvRead] = []
     for path in files:
         text = _go_source(path)
-        for m in call.finditer(text):
-            fn, key, tail, empty_fallback = m.groups()
-            line = text.count("\n", 0, m.start()) + 1
-            var = resolve(key, path)
-            if var is None:
-                if key in helper_params:
-                    continue  # the helper's own os.Getenv(key)
-                raise ValueError(
-                    f"{path.relative_to(REPO_ROOT)}:{line}: cannot resolve env key {key!r}"
+        for call in calls:
+            for m in call.finditer(text):
+                fn, key, tail, empty_fallback = m.groups()
+                line = text.count("\n", 0, m.start()) + 1
+                var = resolve(key, path)
+                if var is None:
+                    if key in helper_params:
+                        continue  # the helper's own os.Getenv(key)
+                    raise ValueError(
+                        f"{path if not path.is_relative_to(REPO_ROOT) else path.relative_to(REPO_ROOT)}"
+                        f":{line}: cannot resolve env key {key!r}"
+                    )
+                has_default = (
+                    fn in helpers
+                    and helpers[fn][1]
+                    and tail.startswith(",")
+                    and not empty_fallback
                 )
-            has_default = (
-                fn in helpers
-                and helpers[fn]
-                and tail.startswith(",")
-                and not empty_fallback
-            )
-            reads.append(EnvRead(var, path, line, has_default))
+                reads.append(EnvRead(var, path, line, has_default))
     return reads
 
 

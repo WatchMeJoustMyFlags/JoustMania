@@ -899,30 +899,30 @@ table to keep in sync with the code. Live gates (`enabled`, `interventions_enabl
 [decide-contract.md 10.1](../../docs/specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer).
 
 > **#1044 — runtime-tunable experiment knobs are now LIVE `agent.json` flags.**
-> The experiment loop reads these on **every tick** from the `agent` flagd domain,
-> with the env var (services.md table) as the **bootstrap default** the flag falls back to when
-> absent/unreadable (the kill-switch pattern: flag overrides, env is the floor). So
+> The experiment loop reads these on **every tick** from the `agent` flagd domain.
+> When a flag is absent or unreadable it falls back to its compiled default (equal
+> to the flag default); the two gates fall back to **off**. The env fallbacks were
+> removed in #1907 (FR-151 Obsolete): a host `.env` entry for them is ignored. So
 > a change takes effect with **no container restart**: through the flag service
 > (`scripts/flags.sh set agent <flag> <variant>`) for the flags in its mutable
 > registry (`experiments_enabled`, `experiment_dynamic_enabled`,
 > `experiment_tick_seconds`, `experiment_max_games`, `verdict_min_n`,
 > `verdict_min_pairs`), or by a baseline edit plus `scripts/flags.sh restart` for
-> the rest. A baseline `agent.json` without these flags reproduces byte-identical
-> env behavior. The
+> the rest. The
 > migrated flags (see [`services/flagd/agent.json`](../flagd/agent.json)):
 >
-> | flag (`agent.json`) | env bootstrap default |
+> | flag (`agent.json`) | fallback when unresolved |
 > |---|---|
-> | `experiments_enabled` | `AGENT_EXPERIMENTS_ENABLED` |
-> | `experiment_dynamic_enabled` | `AGENT_EXPERIMENT_DYNAMIC_ENABLED` |
-> | `experiment_tick_seconds` | `AGENT_EXPERIMENT_TICK_SECONDS` |
+> | `experiments_enabled` | off (fails closed) |
+> | `experiment_dynamic_enabled` | off (fails closed) |
+> | `experiment_tick_seconds` | 30 s (first refill within 5 s after start, `firstTickCap`) |
 > | `experiment_dynamic_max_concurrent` | _none — compiled 3; `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` is a ceiling, effective = min(env, flag) (#1810, C-034)_ |
-> | `experiment_shadow_effective_concurrency` | `AGENT_SHADOW_EFFECTIVE_CONCURRENCY` |
+> | `experiment_shadow_effective_concurrency` | 4 (`DefaultEffectiveConcurrency`) |
 > | `experiment_max_games` | _none — compiled 50; `AGENT_EXPERIMENT_MAX_GAMES` is a ceiling, effective = min(env, flag), 0 = no limit (#1810, C-034)_ |
-> | `experiment_completed_grace_seconds` (#1810) | `AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS` (0 = off) |
+> | `experiment_completed_grace_seconds` (#1810) | 60 s (flag 0 = off) |
 > | `experiment_proposer_enabled` (#1810) | _none — reads false when unresolved; ANDed with the `AGENT_EXPERIMENT_PROPOSER_ENABLED` ceiling for both proposers (C-034)_ |
-> | `verdict_min_n` | `AGENT_VERDICT_MIN_N` |
-> | `verdict_min_pairs` | `AGENT_VERDICT_MIN_PAIRS` |
+> | `verdict_min_n` | 8 (`DefaultMinNPerArm`) |
+> | `verdict_min_pairs` | 5 (`DefaultMinPairs`) |
 > | `verdict_effect_threshold` (#1214) | _none — `DefaultEffectThreshold` (0.5)_ |
 > | `verdict_min_raw_effect` (#1214) | _none — `DefaultMinRawEffect` (0.02)_ |
 > | `verdict_sd_floor` (#1214) | _none — `DefaultSDFloor` (1e-4)_ |
@@ -1031,10 +1031,10 @@ The loop ACTS only when **three independent gates** are all satisfied — kept
 separate so a dry run can spawn shadow games without ever risking a real-default
 change:
 
-1. **Experiments opt-in** — `AGENT_EXPERIMENTS_ENABLED=true`. Builds the
-   `experiment.Registry` and runs declare → spawn → conclude → verdict →
-   (gated) promote. Default `false` ⇒ no Registry, no shadow spawns, no
-   experiment-arm writes, no promotions.
+1. **Experiments opt-in** — the `agent` flag `experiments_enabled` = `on`
+   (read live each tick; `off` and an unresolved flag are closed, #1907). The
+   loop is always built; while the gate is closed it runs no declare, spawn,
+   experiment-arm write or promotion.
 2. **Master kill-switch** — `agent` set `enabled` = `on` (read live each
    cycle; `off` is the fail-closed default). When `off` the decision loop
    short-circuits with a throttled `agent.disabled` span (`decision/telemetry.go`

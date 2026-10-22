@@ -14,7 +14,7 @@ import (
 
 // inference_backends.go selects the text backend of the OFFLINE LLM seams (the
 // post-game retro and the shadow-experiment proposer) at USE time (#1810, C-035,
-// FR-150, FR-151). In-game decisions never use it (decision.backend, decide_backends.go).
+// FR-150, C-035). In-game decisions never use it (decision.backend, decide_backends.go).
 //
 // The choice is the inference.backend flag ("stub" | "claude", tuning: the egress
 // ceilings below stay). The flag always wins; only when flagd cannot resolve it the

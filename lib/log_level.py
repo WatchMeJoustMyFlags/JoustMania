@@ -1,4 +1,4 @@
-"""Runtime log level from the ``log_level`` flag (#1788, FR-150, FR-151, flags.md §15).
+"""Runtime log level from the ``log_level`` flag (#1788, FR-150, C-035, flags.md §15).
 
 Resolution order, the flag always wins: the ``observability/log_level`` flag when flagd
 resolves it; only when it cannot be resolved (flagd unreachable, flag missing, no first

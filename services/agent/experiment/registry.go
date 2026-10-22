@@ -109,13 +109,10 @@ const maxShadowGamesEnv = "AGENT_MAX_SHADOW_GAMES"
 // in one tick → tighter CRN pairing). 4 is a deliberately conservative >1 value
 // for a single-interpreter coordinator on Pi 5-class hardware; it is well under
 // the AGENT_MAX_SHADOW_GAMES=20 registry ceiling and is clamped to it. An
-// operator raises/lowers it via AGENT_SHADOW_EFFECTIVE_CONCURRENCY. Backpressure
+// operator raises/lowers it via the experiment_shadow_effective_concurrency flag
+// (this constant equals its flag default; the env fallback is gone, #1907). Backpressure
 // still applies: a coordinator-at-capacity rejection is release+retry next tick.
 const DefaultEffectiveConcurrency = 4
-
-// effectiveConcurrencyEnv overrides DefaultEffectiveConcurrency. A non-positive
-// value is treated as misconfiguration and falls back to the default.
-const effectiveConcurrencyEnv = "AGENT_SHADOW_EFFECTIVE_CONCURRENCY"
 
 // DefaultMaxGamesPerExperiment is the per-experiment TERMINATION BUDGET (#1001):
 // the absolute upper bound on games a single experiment may accrue before the
@@ -184,19 +181,6 @@ func MaxShadowGamesFromEnv() int {
 		}
 	}
 	return DefaultMaxShadowGames
-}
-
-// EffectiveConcurrencyFromEnv resolves the effective in-flight concurrency cap
-// from AGENT_SHADOW_EFFECTIVE_CONCURRENCY, falling back to
-// DefaultEffectiveConcurrency on an unset, empty, or non-positive value (a
-// zero/negative cap would stall every experiment, so it is misconfiguration).
-func EffectiveConcurrencyFromEnv() int {
-	if v := strings.TrimSpace(os.Getenv(effectiveConcurrencyEnv)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return DefaultEffectiveConcurrency
 }
 
 // MaxGamesPerExperimentFromEnv resolves the per-experiment termination budget
@@ -335,9 +319,10 @@ type Registry struct {
 	// minN is the verdict min-N-per-arm gate, mirrored here ONLY for two
 	// registry-side concerns: reconciling a too-small Intent.TargetNPerArm up to it
 	// (so target_n < min-N cannot cause a perpetual under-powered loop), and the
-	// "inconclusive past target N" termination guard. It is read from the same
-	// AGENT_VERDICT_MIN_N the verdict reads, so the two stay coherent without
-	// widening the CohortVerdict seam.
+	// "inconclusive past target N" termination guard. It starts at the same
+	// compiled default the verdict starts at and both follow the live verdict_min_n
+	// via Reconfigure, so the two stay coherent without widening the CohortVerdict
+	// seam.
 	minN int
 
 	mu      sync.Mutex
@@ -412,7 +397,7 @@ type RegistryConfig struct {
 	// to the coordinator's REAL concurrency (#998). The game-coordinator runs one
 	// game at a time, so allocating more than this many concurrent starts just
 	// produces doomed "Game already in progress" rejections. Non-positive ⇒
-	// EffectiveConcurrencyFromEnv() (default 1). It is clamped to <= MaxShadowGames.
+	// DefaultEffectiveConcurrency. It is clamped to <= MaxShadowGames.
 	EffectiveConcurrency int
 	// MaxGamesPerExperiment is the per-experiment termination budget (#1001): the
 	// upper bound on concluded games before the registry gives up and concludes the
@@ -423,7 +408,8 @@ type RegistryConfig struct {
 	MaxGamesPerExperiment int
 	// VerdictMinN is the verdict's min-N-per-arm gate, mirrored into the registry
 	// for target_n reconciliation and the inconclusive-past-target guard. Zero ⇒
-	// MinNFromEnv() (the same AGENT_VERDICT_MIN_N the verdict reads). Negative ⇒
+	// DefaultMinNPerArm (the verdict_min_n flag default; the live value arrives via
+	// Reconfigure on each enabled tick). Negative ⇒
 	// disabled (no min-N reconciliation; the inconclusive-past-target guard then
 	// keys off target_n alone).
 	VerdictMinN int
@@ -465,7 +451,7 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 	}
 	effectiveCap := cfg.EffectiveConcurrency
 	if effectiveCap <= 0 {
-		effectiveCap = EffectiveConcurrencyFromEnv()
+		effectiveCap = DefaultEffectiveConcurrency
 	}
 	// The registry can never hold more in-flight than its capacity bookkeeping
 	// allows, so clamp the effective cap to maxCap (a misconfigured higher value
@@ -487,13 +473,13 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 	if maxGames < 0 {
 		maxGames = 0
 	}
-	// Min-N mirror (#1001): zero means "read the env default"; negative disables
+	// Min-N mirror (#1001): zero means the compiled default; negative disables
 	// min-N reconciliation (normalized to 0, so the inconclusive-past-target guard
 	// then keys off target_n alone).
 	minN := cfg.VerdictMinN
 	switch {
 	case minN == 0:
-		minN = MinNFromEnv()
+		minN = DefaultMinNPerArm
 	case minN < 0:
 		minN = 0
 	}
@@ -1834,8 +1820,8 @@ func (r *Registry) Capacity() int { return r.maxCap }
 
 // EffectiveCapacity returns the effective in-flight concurrency cap (#998) — the
 // number of concurrent shadow spawns the registry will actually hold, bounded to
-// the coordinator's real concurrency (AGENT_SHADOW_EFFECTIVE_CONCURRENCY, default
-// 1) and clamped to Capacity.
+// the coordinator's real concurrency (the experiment_shadow_effective_concurrency
+// flag, default 4) and clamped to Capacity.
 func (r *Registry) EffectiveCapacity() int { return r.effectiveCap }
 
 // MaxGames returns the live per-experiment games budget (0 = no limit), as last
@@ -1849,8 +1835,8 @@ func (r *Registry) MaxGames() int {
 // Reconfigure live-updates the registry's runtime caps (#1044) so a hot-reload of
 // experiment_shadow_effective_concurrency / experiment_max_games / verdict_min_n
 // takes effect with NO restart. The experiment loop calls it each tick from the
-// live agent.json flags; the env-derived value is the bootstrap default the flag
-// falls back to, so a fresh agent.json reproduces byte-identical behavior.
+// live agent.json flags; the compiled default (equal to the flag default, #1907) is what the
+// flag falls back to, so a fresh agent.json reproduces byte-identical behavior.
 //
 // SAFETY (the #1044 hard-part-2 requirement): every field is updated UNDER r.mu,
 // the same lock that guards all capacity/lifecycle bookkeeping (spawnsInFlight,
@@ -1911,7 +1897,7 @@ func (r *Registry) Reconfigure(effectiveConcurrency, maxGames, minN, minPairs in
 // / verdict_sd_floor / verdict_anchor_margin takes effect on the NEXT verdict with no
 // restart — the float analog of the minN/minPairs mirroring in Reconfigure. The
 // experiment loop calls it each tick from the live agent.json flags, alongside
-// Reconfigure; the env-derived value is the bootstrap default the flag falls back to.
+// Reconfigure; the compiled default (equal to the flag default, #1907) is what the flag falls back to.
 // These knobs are verdict-only (the registry itself reads none of them), so unlike
 // minN this method only forwards to the verdict — it touches no registry state and
 // takes no registry lock. SetFloatThresholds ignores a non-positive value per knob, so
