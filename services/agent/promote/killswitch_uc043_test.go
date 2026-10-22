@@ -194,3 +194,186 @@ func TestUC043_A1_LostClaimJournalsOnce(t *testing.T) {
 		}
 	})
 }
+
+// blockingListingReverter is a RealDefaultReverter and PromotionOverlayLister whose
+// first revert blocks until release is closed (#1893). It lists the promoted flag
+// while its overlay stands; every successful revert removes the overlay. It never
+// holds its own mutex while it blocks, so a second caller waits on the Promoter's
+// locks only, never on the fake.
+type blockingListingReverter struct {
+	mu       sync.Mutex
+	reverts  int
+	overlay  bool
+	firstErr error
+
+	entered     chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
+func newBlockingListingReverter(t *testing.T, firstErr error) *blockingListingReverter {
+	t.Helper()
+	r := &blockingListingReverter{
+		overlay:  true,
+		firstErr: firstErr,
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	// Never leave the blocked revert hanging, whatever path the test takes.
+	t.Cleanup(r.releaseNow)
+	return r
+}
+
+func (r *blockingListingReverter) releaseNow() {
+	r.releaseOnce.Do(func() { close(r.release) })
+}
+
+func (r *blockingListingReverter) RevertRealDefault(context.Context, string) error {
+	r.mu.Lock()
+	r.reverts++
+	first := r.reverts == 1
+	r.mu.Unlock()
+	if first {
+		close(r.entered)
+		<-r.release
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if first && r.firstErr != nil {
+		return r.firstErr
+	}
+	r.overlay = false
+	return nil
+}
+
+func (r *blockingListingReverter) PromotedFlags(context.Context) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.overlay {
+		return []string{promoteProposal.FlagKey}, nil
+	}
+	return nil, nil
+}
+
+func (r *blockingListingReverter) revertCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reverts
+}
+
+// killSwitchDuringRevert runs revert in the background, starts a kill-switch tick
+// once the revert is inside the flag-service call, lets the revert finish only once
+// the tick has either finished (no serialisation: the bug) or had time to block on
+// it, and returns what the tick reported.
+func killSwitchDuringRevert(p *Promoter, rev *blockingListingReverter, revert func()) []KillSwitchRevert {
+	revertDone := make(chan struct{})
+	go func() {
+		defer close(revertDone)
+		revert()
+	}()
+	<-rev.entered
+	var reported []KillSwitchRevert
+	killDone := make(chan struct{})
+	go func() {
+		defer close(killDone)
+		reported = p.RevertOnKillSwitch(context.Background())
+	}()
+	select {
+	case <-killDone:
+	case <-time.After(200 * time.Millisecond):
+	}
+	rev.releaseNow()
+	<-revertDone
+	<-killDone
+	return reported
+}
+
+// assertKillMuHeldWhileReverting fails when the kill switch's lock is free while a
+// watch or re-watch revert is inside the flag-service call.
+func assertKillMuHeldWhileReverting(t *testing.T, p *Promoter, rev *blockingListingReverter, revert func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		revert()
+	}()
+	<-rev.entered
+	held := !p.killMu.TryLock()
+	if !held {
+		p.killMu.Unlock()
+	}
+	rev.releaseNow()
+	<-done
+	if !held {
+		t.Fatal("killMu is free while a revert is in flight: a kill-switch tick can revert the overlay a second time")
+	}
+}
+
+// UC: UC-043 A1
+// UC: UC-043 A9
+func TestUC043_A1_RewatchRevertSerialisedWithKillSwitch(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("UC-043/A1 a re-watch revert in flight holds the kill switch", func(t *testing.T) {
+		rev := newBlockingListingReverter(t, nil)
+		p, rw := rewatchedPromotion(t, rev, &recordingRewatchJournal{})
+
+		assertKillMuHeldWhileReverting(t, p, rev, func() { rw.revert(ctx) })
+	})
+
+	t.Run("UC-043/A1 a sync watch revert in flight holds the kill switch", func(t *testing.T) {
+		rev := newBlockingListingReverter(t, nil)
+		p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, &recordingRealDefault{}, fakeWatcher{degraded: true}, rev)
+		on := Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: true}
+		var res Result
+
+		assertKillMuHeldWhileReverting(t, p, rev, func() {
+			res = p.Promote(ctx, promoteProposal, promoteVerdict, on, testEvidence())
+		})
+
+		if res.Outcome != OutcomeReverted {
+			t.Fatalf("watch outcome = %q, want reverted", res.Outcome)
+		}
+	})
+
+	t.Run("UC-043/A1 a kill-switch tick during a re-watch revert reverts and reports nothing again", func(t *testing.T) {
+		rev := newBlockingListingReverter(t, nil)
+		journal := &recordingRewatchJournal{}
+		p, rw := rewatchedPromotion(t, rev, journal)
+
+		reported := killSwitchDuringRevert(p, rev, func() { rw.revert(ctx) })
+
+		if n := rev.revertCount(); n != 1 {
+			t.Fatalf("revert writes = %d, want 1 (the re-watch's only)", n)
+		}
+		if len(reported) != 0 {
+			t.Fatalf("kill switch reported %+v, want nothing: the re-watch reverted the overlay", reported)
+		}
+		ids, events := journal.snapshot()
+		if len(events) != 1 || ids[0] != "exp-1883" || events[0].Outcome != string(OutcomeReverted) ||
+			!strings.HasPrefix(events[0].Reason, RewatchReasonPrefix) {
+			t.Fatalf("journaled %v %+v, want one re-watch reverted event on exp-1883", ids, events)
+		}
+	})
+
+	t.Run("UC-043/A9 a failed re-watch revert during a tick keeps its experiment for the kill switch", func(t *testing.T) {
+		rev := newBlockingListingReverter(t, errFlagService)
+		journal := &recordingRewatchJournal{}
+		p, rw := rewatchedPromotion(t, rev, journal)
+
+		reported := killSwitchDuringRevert(p, rev, func() { rw.revert(ctx) })
+
+		if n := rev.revertCount(); n != 2 {
+			t.Fatalf("revert attempts = %d, want 2 (one re-watch, one kill switch)", n)
+		}
+		if len(reported) != 1 || reported[0].ExperimentID != "exp-1883" ||
+			reported[0].Outcome != OutcomeReverted || reported[0].Reason != KillSwitchReason {
+			t.Fatalf("kill switch reported %+v, want one reverted / kill_switch on exp-1883", reported)
+		}
+		ids, events := journal.snapshot()
+		if len(events) != 1 || ids[0] != "exp-1883" || events[0].Outcome != string(OutcomeApplied) ||
+			!strings.HasPrefix(events[0].Reason, RewatchReasonPrefix) {
+			t.Fatalf("journaled %v %+v, want one re-watch applied event on exp-1883", ids, events)
+		}
+	})
+}

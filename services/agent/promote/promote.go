@@ -310,12 +310,13 @@ type Promoter struct {
 	// --- kill-switch revert (#1704) ---
 	// applied holds every autonomous promotion this agent run wrote and has not
 	// reverted, by flag (the newest write wins). RevertOnKillSwitch reverts them all;
-	// a watch or re-watch revert claims its entry first, so each applied default is
-	// reverted at most once and nothing writes after the kill-switch revert. Guarded
-	// by mu.
+	// a watch or re-watch revert claims its entry first, under killMu (#1893), so
+	// each applied default is reverted at most once and nothing writes after the
+	// kill-switch revert. Guarded by mu.
 	applied map[string]*appliedPromotion
 	// killEpoch counts kill-switch ticks (guarded by mu); killMu serialises the
-	// autonomous write with RevertOnKillSwitch (killswitch.go, #1704).
+	// autonomous write and the watch / re-watch revert with RevertOnKillSwitch
+	// (killswitch.go, #1704, #1893). Lock order: killMu before mu.
 	killEpoch uint64
 	killMu    sync.Mutex
 
