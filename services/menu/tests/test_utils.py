@@ -322,7 +322,10 @@ class TestUC011ModeSelectionRules:
                 "Zombies", Sound.MENU_VOX_ZOMBIES, Colors.White40.value, marks=pytest.mark.uc("UC-023", flow="main")
             ),
             pytest.param(
-                "NonStop", Sound.MENU_VOX_NONSTOP_JOUST, Colors.Pink.value, marks=pytest.mark.uc("UC-026", flow="main")
+                "NonStop",
+                Sound.MENU_VOX_NONSTOP_JOUST,
+                Colors.Pink.value,
+                marks=pytest.mark.uc("UC-026", cond=["Pre-2"]),
             ),
         ],
     )
