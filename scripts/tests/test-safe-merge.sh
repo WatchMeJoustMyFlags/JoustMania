@@ -212,20 +212,45 @@ run 42 abcdef1
 calls | grep -q 'pr merge' && fail "CI Complete SKIPPED must not merge: $(calls)"
 ok
 
-# 10. Label-event run (newest, every job SKIPPED) never hides the real run.
+# 10. #1523: GitHub takes required checks from the NEWEST run of a workflow, so a
+# newer all-SKIPPED run must not be hidden behind an older green one.
+# (a) newest run 300 is all SKIPPED incl. CI Complete: not green, never merges.
 reset
-view "$(check 'Integration Tests' COMPLETED FAILURE 200)" "$(check 'CI Complete' COMPLETED FAILURE 200)" \
+view "$(check 'Integration Tests' COMPLETED SUCCESS 200)" "$(check 'CI Complete' COMPLETED SUCCESS 200)" \
   "$(check 'Lint' COMPLETED SUCCESS 200)" \
   "$(check 'Integration Tests' COMPLETED SKIPPED 300)" "$(check 'CI Complete' COMPLETED SKIPPED 300)" \
   "$(check 'Lint' COMPLETED NEUTRAL 300)"
 run 42 abcdef1 --close 7 --comment-file "${WORK}/comment.md"
-[[ $RC -eq 1 && "$OUT" == *"CI RED"*"Integration Tests"* ]] || fail "skipped label run: rc=$RC $OUT"
-calls | grep -qE 'pr merge|issue' && fail "skipped label run must not merge: $(calls)"
-# ... and when the real run is green, it still merges.
+[[ $RC -eq 1 && "$OUT" == *"CI Complete is SKIPPED"* ]] || fail "10a newest skipped run: rc=$RC $OUT"
+calls | grep -qE 'pr merge|issue' && fail "10a newest skipped run must not merge: $(calls)"
+# (b) newest run 300 has no "CI Complete" (old label-event run): waits, times out.
 reset
-view "$GREEN" "$(check 'Lint' COMPLETED SKIPPED 300)" "$(check 'CI Complete' COMPLETED SKIPPED 300)"
+view "$(check 'Integration Tests' COMPLETED SUCCESS 200)" "$(check 'CI Complete' COMPLETED SUCCESS 200)" \
+  "$(check 'Lint' COMPLETED SUCCESS 200)" \
+  "$(check 'Label event (no CI result)' COMPLETED SKIPPED 300)" "$(check 'Lint' COMPLETED SKIPPED 300)"
 run 42 abcdef1
-[[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "green under skipped label run: rc=$RC $OUT"
+[[ $RC -eq 4 ]] || fail "10b no CI Complete in newest run: rc=$RC $OUT"
+calls | grep -q 'pr merge' && fail "10b must not merge: $(calls)"
+# (c) other workflows group by name: a newer skipped "ci-full label" run is fine
+# while CI is green; a FAILURE as its newest run blocks; IN_PROGRESS merges (accepted gap).
+FULL='Re-run CI in full mode'
+for variant in success inprogress; do
+  reset
+  case "$variant" in
+    success) full="$(check "$FULL" COMPLETED SUCCESS 250 'ci-full label')" ;;
+    inprogress) full="$(check "$FULL" IN_PROGRESS '' 250 'ci-full label')" ;;
+  esac
+  view "$GREEN" "$full" "$(check "$FULL" COMPLETED SKIPPED 260 'ci-full label')"
+  run 42 abcdef1
+  case "$variant" in
+    success|inprogress) [[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "10c $variant: rc=$RC $OUT" ;;
+  esac
+done
+reset
+view "$GREEN" "$(check "$FULL" COMPLETED FAILURE 250 'ci-full label')"
+run 42 abcdef1
+[[ $RC -eq 1 && "$OUT" == *"CI RED"* ]] || fail "10c failure as newest: rc=$RC $OUT"
+calls | grep -q 'pr merge' && fail "10c failure must not merge: $(calls)"
 ok
 
 # 11. Already MERGED: report and stop; never merge again or touch issues.

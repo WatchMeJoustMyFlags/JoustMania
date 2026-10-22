@@ -39,35 +39,33 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          # Newest first; skip runs whose Spec Gate was skipped (label-event runs from before #1527).
-          for run_id in $(gh run list --workflow ci.yml --commit "$HEAD_SHA" --event pull_request \
-                            --limit 20 --json databaseId --jq '.[].databaseId'); do
-            job=$(gh run view "$run_id" --json jobs \
-                    --jq '.jobs[] | select(.name == "Spec Gate" and .conclusion != "skipped") | .databaseId' | head -n1)
-            status=$(gh run view "$run_id" --json status --jq .status)
-            if [ -z "$job" ] && [ "$status" = "completed" ]; then
-              continue
-            fi
-            if [ "$status" != "completed" ]; then
-              # A job can only be re-run once its run has finished. If the Spec Gate
-              # has not started yet it reads the new label itself; re-running after
-              # the run finishes is harmless either way.
-              echo "CI run $run_id is $status; waiting for it to finish"
-              gh run watch "$run_id" --interval 30 > /dev/null || true
-              job=$(gh run view "$run_id" --json jobs \
-                      --jq '.jobs[] | select(.name == "Spec Gate" and .conclusion != "skipped") | .databaseId' | head -n1)
-              [ -z "$job" ] && continue
-            fi
-            # A push while waiting gives the new head its own run, which reads the
-            # labels itself. Re-running the old head's run would cancel that run
-            # (same ci.yml concurrency group).
-            head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha)
-            if [ "$head" != "$HEAD_SHA" ]; then
-              echo "PR head moved to $head; its own CI run reads the labels."
-              exit 0
-            fi
-            echo "Re-running Spec Gate job $job of CI run $run_id"
-            gh run rerun --job "$job"
+          run_id=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --event pull_request \
+                     --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$run_id" ]; then
+            echo "No CI run for $HEAD_SHA; nothing to re-run."
             exit 0
-          done
-          echo "No CI run with a Spec Gate job for $HEAD_SHA; nothing to re-run."
+          fi
+          status=$(gh run view "$run_id" --json status --jq .status)
+          if [ "$status" != "completed" ]; then
+            # A job can only be re-run once its run has finished. If the Spec Gate
+            # has not started yet it reads the new label itself; re-running after
+            # the run finishes is harmless either way.
+            echo "CI run $run_id is $status; waiting for it to finish"
+            gh run watch "$run_id" --interval 30 > /dev/null || true
+          fi
+          job=$(gh run view "$run_id" --json jobs \
+                  --jq '.jobs[] | select(.name == "Spec Gate" and .conclusion != "skipped") | .databaseId' | head -n1)
+          if [ -z "$job" ]; then
+            echo "CI run $run_id has no Spec Gate job that ran (no spec/code change); nothing to re-run."
+            exit 0
+          fi
+          # A push while waiting gives the new head its own run, which reads the
+          # labels itself. Re-running the old head's run would cancel that run
+          # (same ci.yml concurrency group).
+          head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha)
+          if [ "$head" != "$HEAD_SHA" ]; then
+            echo "PR head moved to $head; its own CI run reads the labels."
+            exit 0
+          fi
+          echo "Re-running Spec Gate job $job of CI run $run_id"
+          gh run rerun --job "$job"
