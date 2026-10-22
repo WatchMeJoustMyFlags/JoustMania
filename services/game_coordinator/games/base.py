@@ -895,6 +895,11 @@ class BaseGameMode(ABC):
         # Disconnects seen by _warmup_ema(); _game_loop() runs them through the
         # death path before its first frame (UC-020 A2, #1582).
         self._warmup_disconnects: list[str] = []
+        # Early stream drain (UC-021 A1, D-G10): a mode that opens its stream before
+        # its additional phases reads and discards frames until the start.
+        self._early_drain_task: asyncio.Task | None = None
+        self._early_drain_stop = asyncio.Event()
+        self._early_drain_disconnects: dict[str, None] = {}
         # Set by force_end(): the reason the game was stopped from outside, or
         # None for a game that ended on its own win condition (#1328).
         self.force_end_reason: str | None = None
@@ -1541,6 +1546,96 @@ class BaseGameMode(ABC):
         The stream is stored in self.gameplay_stream for use by _game_loop().
         """
         await self._create_gameplay_stream()
+
+    def _opens_stream_before_additional_phases(self) -> bool:
+        """Whether run() opens the gameplay stream before the additional phases.
+
+        A mode whose phases send effects over the stream (Random Teams formation
+        pulse, UC-021 A1) returns True. Its player colours must be final before the
+        phases, because the stream config carries them. Default False: the stream
+        opens after the phases and the instructions, as for FFA, Teams and Swapper,
+        whose colour_assignment phase sets the colours the config sends.
+        """
+        return False
+
+    def _start_early_stream_drain(self) -> None:
+        """Read and discard frames of the early-opened stream (UC-021 A1).
+
+        Without a reader the server fills the HTTP/2 window with formation motion,
+        which the 100 ms EMA warmup would not clear before death detection.
+        """
+        self._early_drain_stop.clear()
+        self._early_drain_disconnects = {}
+        self._early_drain_task = self._track_task(asyncio.create_task(self._drain_early_stream()))
+
+    async def _drain_early_stream(self) -> bool:
+        """Discard frames until told to stop, keeping disconnects (UC-020 A2).
+
+        A controller whose frames come back after its disconnect is dropped from
+        the pending list, as the controller manager does for a drop and reconnect
+        before a stream opens (UC-002 BR-004, #1607). It stops with ``break`` after
+        the next frame: cancelling a grpc.aio read cancels the whole call, which
+        would end the game at the start.
+
+        Returns True only when it stopped on request with the call still usable.
+        """
+        frames = 0
+        stopped = False
+        try:
+            async for gameplay_update in self.gameplay_stream:
+                frames += 1
+                for disconnect in gameplay_update.disconnects:
+                    self._early_drain_disconnects.pop(disconnect.serial, None)
+                    self._early_drain_disconnects[disconnect.serial] = None
+                for controller_data in gameplay_update.controllers:
+                    self._early_drain_disconnects.pop(controller_data.serial, None)
+                if self._early_drain_stop.is_set():
+                    stopped = True
+                    break
+        except Exception as e:
+            # grpc.aio keeps one reader per call: after an error it yields nothing
+            # more, so _stop_early_stream_drain() opens a new call.
+            logger.warning(f"Early stream drain interrupted: {e}")
+        logger.info(f"Early stream drain stopped: discarded {frames} frames")
+        return stopped
+
+    _EARLY_DRAIN_STOP_TIMEOUT_S = 0.5
+
+    async def _stop_early_stream_drain(self, reopen: bool = True) -> None:
+        """Stop the drain where the stream used to open, and keep its disconnects.
+
+        Waits for the drain's next frame; only a drain that gets none within
+        ``_EARLY_DRAIN_STOP_TIMEOUT_S`` is cancelled. The drain has finished when this returns, so it
+        never reads alongside ``_warmup_ema()``.
+
+        A drain that ended by a stream error, by the stream ending, or by the
+        timeout (which cancels the call) leaves a call that yields no more frames.
+        When ``reopen`` is set and the game still runs, the stream is then opened
+        once more, as it would open here without the early stream; a failure of
+        that open raises. The collected disconnects are kept either way.
+        """
+        task, self._early_drain_task = self._early_drain_task, None
+        if task is None:
+            return
+        self._early_drain_stop.set()
+        stopped = False
+        try:
+            stopped = await asyncio.wait_for(task, timeout=self._EARLY_DRAIN_STOP_TIMEOUT_S)
+        except TimeoutError:
+            logger.warning(f"Early stream drain got no frame in {self._EARLY_DRAIN_STOP_TIMEOUT_S}s: cancelled")
+        pending, self._early_drain_disconnects = self._early_drain_disconnects, {}
+        self._warmup_disconnects.extend(pending)
+        if reopen and self.running and (not stopped or self._gameplay_call_done()):
+            logger.warning("Early gameplay stream ended during the formation: reopening it")
+            cancel = getattr(self.gameplay_stream, "cancel", None)
+            if callable(cancel):
+                cancel()
+            await self._create_gameplay_stream()
+
+    def _gameplay_call_done(self) -> bool:
+        """Whether the gameplay call has finished (test fakes without ``done()`` never do)."""
+        done = getattr(self.gameplay_stream, "done", None)
+        return bool(done()) if callable(done) else False
 
     async def _warmup_ema(self):
         """
@@ -3631,22 +3726,35 @@ class BaseGameMode(ABC):
                     arm=self.arm or None,
                 )
 
-                # Additional phases (e.g., color_assignment, team_formation)
-                # These are children of initialization_phase
-                for phase in self._get_additional_phases():
-                    with tracer.start_as_current_span(phase.name):
-                        await phase.execute()
+                # A mode whose phases send effects over the stream opens it first
+                # (UC-021 A1, D-G10); a drain discards frames until the start.
+                early_stream = self._opens_stream_before_additional_phases()
+                if early_stream:
+                    await self._start_gameplay_stream()
+                    self._start_early_stream_drain()
+                phases_completed = False
+                try:
+                    # Additional phases (e.g., color_assignment, team_formation)
+                    # These are children of initialization_phase
+                    for phase in self._get_additional_phases():
+                        with tracer.start_as_current_span(phase.name):
+                            await phase.execute()
 
-                # Spoken instructions, when the host switched them on (UC-020 A5):
-                # the clip finishes before the music and the countdown start.
-                await self._play_instructions(init_span)
+                    # Spoken instructions, when the host switched them on (UC-020 A5):
+                    # the clip finishes before the music and the countdown start.
+                    await self._play_instructions(init_span)
+                    phases_completed = True
+                finally:
+                    if early_stream:
+                        await self._stop_early_stream_drain(reopen=phases_completed)
 
                 # A force-end during the instructions skips the start: no stream,
                 # music, game_started or countdown; teardown records force_ended.
                 force_ended_before_start = not self.running
                 if not force_ended_before_start:
                     # Start gameplay stream before countdown (needed for countdown effects)
-                    await self._start_gameplay_stream()
+                    if not early_stream:
+                        await self._start_gameplay_stream()
 
                     # Start game music BEFORE countdown at low volume.
                     # OGG decode happens during countdown, so music is ready instantly after.

@@ -216,6 +216,13 @@ class RandomTeamsGame(TeamsGameBase):
         await self.event_publisher("team_formation_end", {})
         logger.info("Team formation complete")
 
+    def _opens_stream_before_additional_phases(self) -> bool:
+        """The formation pulse goes over the gameplay stream (UC-021 A1, D-G10).
+
+        Team colours are set at initialisation, so the stream config carries them.
+        """
+        return True
+
     def _get_additional_phases(self) -> list:
         """
         Return team_formation phase to execute before countdown.
