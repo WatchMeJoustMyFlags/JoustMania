@@ -296,7 +296,6 @@ func TestSeedsAndDigest(t *testing.T) {
 	})
 }
 
-// UC: UC-046 A7 A8 A10 A12 BR-008 BR-013 BR-014
 // UC: UC-046 BR-008 BR-011
 func TestTrackerFlagDigestUnavailableIsNonExact(t *testing.T) {
 	arch, _ := NewArchetype("x", params(nil))
@@ -324,6 +323,7 @@ func TestTrackerFlagDigestUnavailableIsNonExact(t *testing.T) {
 	})
 }
 
+// UC: UC-046 A7 A8 A10 A12 BR-008 BR-013 BR-014
 func TestTracker(t *testing.T) {
 	arch, _ := NewArchetype("x", params(nil))
 	info := func(id string) Info {
