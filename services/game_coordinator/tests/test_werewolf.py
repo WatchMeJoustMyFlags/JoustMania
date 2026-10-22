@@ -76,7 +76,6 @@ class TestWerewolfGameMode:
         assert total == 4
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-022", flow="A1", steps=[1])
     async def test_werewolf_percentage(self, werewolf_game):
         """Test that approximately 44% are werewolves."""
         game, mock_controller_manager, _ = werewolf_game
@@ -435,6 +434,7 @@ class TestWerewolfEdgeCases:
     """Tests for edge cases in werewolf game."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="A1", steps=[1])
     async def test_larger_player_count_werewolf_ratio(self):
         """Test werewolf ratio with more players."""
         mock_controller_manager = MockControllerManagerService(num_controllers=9)
@@ -902,6 +902,9 @@ class TestWerewolfEndGame:
         ended_events = event_collector.get_events_of_type("game_ended")
         assert len(ended_events) == 1
         assert ended_events[0]["winner"] == "werewolves"
+        from services.game_coordinator.games.base import GameState
+
+        assert game.state == GameState.ENDED
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-022", cond=["Post-S-1"])

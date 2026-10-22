@@ -101,7 +101,7 @@ class TestTraitorGameMode:
         assert len(game.traitor_serials) == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-022", flow="main", steps=[1])
+    @pytest.mark.uc("UC-022", flow="main", steps=[2])
     async def test_traitor_has_different_secret_team(self, traitor_game):
         """Test that traitors have different secret team than visible team."""
         game, mock_controller_manager, _ = traitor_game
@@ -813,7 +813,7 @@ def _uc022_fast_config():
 
 class TestUC022Step4EndToEnd:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-022", flow="main", steps=[4])
+    @pytest.mark.uc("UC-022", flow="main", steps=[4], cond=["Post-S-1"])
     async def test_run_ends_with_traitor_winner_then_game_ended(self):
         """UC-022 step 4: run() with deaths leaving one secret team publishes traitor_winner, then game_ended."""
         seed = 5
@@ -862,6 +862,7 @@ class TestUC022Step4EndToEnd:
         assert types.index("traitor_winner") < types.index(GameEvent.GAME_ENDED)
         assert types.count(GameEvent.GAME_ENDED) == 1
         assert GameEvent.GAME_FORCE_ENDED not in types
+        assert game.state == GameState.ENDED
 
 
 class TestUC022PostF1:
