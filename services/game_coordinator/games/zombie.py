@@ -23,6 +23,7 @@ from lib.colors import Colors
 from lib.feature_flags import read_float_flag, read_int_flag, read_object_flag
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import metrics
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
     BaseGameMode,
@@ -129,6 +130,10 @@ class ZombieGame(BaseGameMode):
         # The side that won, latched once in _check_win_condition (UC-023 BR-003, #1343).
         # None = no winner (force-ended before a win, or the stream ended without one).
         self._winner_side: str | None = None
+
+        # Pending zombie respawn timers by serial (#1342): a revive cancels the
+        # timer, a new death replaces it. Also tracked via _track_task for cleanup.
+        self._respawn_tasks: dict[str, asyncio.Task] = {}
 
         # #766 F1: zombie threshold overrides promoted to ``game.zombie.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to ZOMBIE_THRESHOLDS.
@@ -412,7 +417,9 @@ class ZombieGame(BaseGameMode):
             logger.info(f"Zombie {serial} killed, respawning in {respawn_delay:.1f}s")
 
             # Start respawn task (tracked for automatic cleanup)
-            self._track_task(asyncio.create_task(self._respawn_zombie(serial, respawn_delay)))
+            self._respawn_tasks[serial] = self._track_task(
+                asyncio.create_task(self._respawn_zombie(serial, respawn_delay))
+            )
 
             if player.span:
                 player.span.add_event(
@@ -461,6 +468,10 @@ class ZombieGame(BaseGameMode):
             )
             await self.gameplay_stream.write(base_color_cmd)
 
+            # The base kill path set the per-player gauge to 0; the converted
+            # zombie is still in the game (#1342).
+            self._mark_alive_in_metrics(serial)
+
             # Play conversion sound (use zombie death sound for conversion)
             await self._play_sound(Sound.VOX_ZOMBIE_DEATH, priority=2)
 
@@ -482,6 +493,19 @@ class ZombieGame(BaseGameMode):
                 },
             )
 
+    def _sends_death_effect(self, serial: str) -> bool:
+        """No base death effect for a converted human, which stays in the game (#1342).
+
+        A converted human is still alive after ``_kill_player_impl`` and already got
+        its own death flash and the zombie colour; a killed zombie is dead and gets
+        the base death effect (LED off until it respawns).
+        """
+        return not self.players[serial].alive
+
+    def _mark_alive_in_metrics(self, serial: str) -> None:
+        metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
+        self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
+
     async def _respawn_zombie(self, serial: str, delay: float):
         """
         Respawn a zombie after the delay.
@@ -491,33 +515,69 @@ class ZombieGame(BaseGameMode):
             delay: Respawn delay in seconds
         """
         await asyncio.sleep(delay)
+        await self._respawn_player(serial, cause="timer")
 
-        if not self.running:
-            return
+    async def _respawn_player(self, serial: str, cause: str = "revive") -> bool:
+        """
+        Respawn a dead zombie now: the timer path and the native revive path (#1342).
 
+        Refused (returns False) once the winner is latched or the game stopped
+        running (UC-023 BR-003/BR-004), for an unknown serial, a human, or a zombie
+        that is already alive. All state changes happen BEFORE the first await, so
+        a racing revive or timer sees ``alive`` and refuses (exactly one respawn).
+
+        Args:
+            serial: Controller serial number
+            cause: ``timer`` (respawn delay) or ``revive`` (revive_player)
+
+        Returns:
+            True if the zombie respawned.
+        """
+        if not self.running or self._winner_side is not None:
+            return False
         player = self.players.get(serial)
-        if player and player.is_zombie:
-            zombie_player = player
-            zombie_player.alive = True
-            zombie_player.respawn_until = 0.0
-            # Grace period after respawn, sourced from ``game.death_grace_period_seconds``
-            # (#766 F2 / #1090), frozen per game at init in BaseGameMode.
-            zombie_player.grace_until = time.time() + self.death_grace_period
+        if player is None or not player.is_zombie or player.alive:
+            return False
 
-            logger.info(f"Zombie {serial} respawned!")
+        # Cancel a pending timer, unless this IS the timer task.
+        pending = self._respawn_tasks.pop(serial, None)
+        if pending is not None and pending is not asyncio.current_task():
+            pending.cancel()
 
-            # Flash to indicate respawn
-            if self.gameplay_stream:
-                flash_cmd = controller_manager_pb2.GameplayStreamControl(
+        player.alive = True
+        player.respawn_until = 0.0
+        player.warning_until = 0.0
+        player.smoothed_accel = 0.0
+        # Grace period after respawn, sourced from ``game.death_grace_period_seconds``
+        # (#766 F2 / #1090), frozen per game at init in BaseGameMode.
+        player.grace_until = time.time() + self.death_grace_period
+        self._mark_alive_in_metrics(serial)
+
+        logger.info(f"Zombie {serial} respawned ({cause})")
+
+        if player.span:
+            player.span.add_event("zombie_respawned", {"respawn.cause": cause})
+
+        # Zombie colour FIRST, then the flash: the flash restores to the current
+        # base colour, which the death effect left black (#1342).
+        if self.gameplay_stream:
+            await self.gameplay_stream.write(
+                controller_manager_pb2.GameplayStreamControl(
+                    base_color=controller_manager_pb2.ControllerColorConfig(
+                        serial=serial,
+                        color=controller_manager_pb2.RGB(r=ZOMBIE_COLOR[0], g=ZOMBIE_COLOR[1], b=ZOMBIE_COLOR[2]),
+                    )
+                )
+            )
+            await self.gameplay_stream.write(
+                controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
                         serial=serial,
                         effect=controller_manager_pb2.GAME_EFFECT_FLASH,
                     )
                 )
-                await self.gameplay_stream.write(flash_cmd)
-
-            if player.span:
-                player.span.add_event("zombie_respawned", {})
+            )
+        return True
 
     async def _end_game_impl(self):
         """Handle game ending."""

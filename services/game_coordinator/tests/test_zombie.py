@@ -8,9 +8,11 @@ Tests the core Zombie mechanics:
 - Win conditions (all converted vs time expired)
 """
 
+import asyncio
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -663,6 +665,8 @@ class TestZombieRespawn:
         ]
         assert len(flash_messages) == 1
         assert flash_messages[0].game_effect.serial == zombie_serial
+        # #1342: the zombie colour is written before the flash, which restores to it.
+        assert _writes_for(stream, zombie_serial) == [GREY, FLASH]
 
     @pytest.mark.asyncio
     async def test_respawn_zombie_skips_if_player_not_found(self, zombie_game):
@@ -1160,3 +1164,196 @@ class TestZombieGameTimer:
         time_events = event_collector.get_events_of_type("time_announcement")
         found_60s = any(e["seconds_remaining"] == 60 for e in time_events)
         assert found_60s, f"Expected 60s announcement, got events: {time_events}"
+
+
+# ---------------------------------------------------------------------------
+# #1342: the zombie LED after conversion, respawn and revive (UC-023 steps 3/4, BR-004)
+# ---------------------------------------------------------------------------
+
+
+def _writes_for(stream, serial):
+    """The stream writes for one serial, as ("effect", enum) or ("base", rgb) tuples."""
+    out = []
+    for m in stream.messages:
+        if m.HasField("game_effect") and m.game_effect.serial == serial:
+            out.append(("effect", m.game_effect.effect))
+        elif m.HasField("base_color") and m.base_color.serial == serial:
+            c = m.base_color.color
+            out.append(("base", (c.r, c.g, c.b)))
+    return out
+
+
+DEATH = ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+FLASH = ("effect", controller_manager_pb2.GAME_EFFECT_FLASH)
+RESPAWN = ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_RESPAWN)
+GREY = ("base", tuple(ZOMBIE_COLOR))
+
+
+class BlockingGameplayStream(RecordingGameplayStream):
+    """Records writes; a write of the zombie colour waits on ``gate`` (O2 race test)."""
+
+    def __init__(self):
+        super().__init__()
+        self.gate = asyncio.Event()
+        self.blocked = asyncio.Event()
+
+    async def write(self, message):
+        self.messages.append(message)
+        if message.HasField("base_color"):
+            self.blocked.set()
+            await self.gate.wait()
+
+
+class TestZombieLedAfterKill:
+    """#1342: a converted or respawned zombie keeps the zombie colour; revive stays a zombie."""
+
+    @pytest_asyncio.fixture
+    async def game(self):
+        mock_cm = MockControllerManagerService(num_controllers=4, death_schedule={}, max_duration=10.0)
+        g = ZombieGame(
+            controller_manager_client=mock_cm,
+            event_publisher=EventCollector().publish,
+            audio_client=None,
+            game_id="test_zombie_led",
+        )
+        await g._initialize_players_impl(mock_cm.controllers)
+        g.gameplay_stream = RecordingGameplayStream()
+        g.running = True
+        g._play_sound = async_noop
+        yield g
+        await g.cleanup()
+
+    @staticmethod
+    def _fast_sleep(monkeypatch):
+        real_sleep = asyncio.sleep
+
+        async def fast(_delay, *_args, **_kwargs):
+            await real_sleep(0)
+
+        monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", fast)
+
+    @pytest.mark.uc("UC-023", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_conversion_sends_one_death_then_the_zombie_colour(self, game, monkeypatch):
+        self._fast_sleep(monkeypatch)
+        human = game.human_serials[0]
+        with patch("services.game_coordinator.games.zombie.metrics") as zm:
+            await game._kill_player(human, 3.0)
+
+        writes = _writes_for(game.gameplay_stream, human)
+        assert writes.count(DEATH) == 1
+        assert writes[-1] == GREY
+        assert game.players[human].alive is True
+        zm.player_alive.labels.assert_called_with(serial=human, game_id=game.game_id)
+        zm.player_alive.labels.return_value.set.assert_called_with(1)
+
+    @pytest.mark.uc("UC-023", flow="main", steps=[4])
+    @pytest.mark.asyncio
+    async def test_zombie_death_then_timer_respawn_ends_grey(self, game, monkeypatch):
+        self._fast_sleep(monkeypatch)
+        zombie = game.zombie_serials[0]
+        with patch("services.game_coordinator.games.zombie.metrics") as zm:
+            await game._kill_player(zombie, 5.0)
+            assert game.players[zombie].alive is False
+            task = game._respawn_tasks[zombie]
+            await task
+
+        assert _writes_for(game.gameplay_stream, zombie) == [DEATH, GREY, FLASH]
+        assert game.players[zombie].alive is True
+        assert zombie not in game._respawn_tasks
+        zm.player_alive.labels.return_value.set.assert_called_with(1)
+
+    @pytest.mark.uc("UC-023", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_revive_dead_zombie_respawns_grey_and_cancels_timer(self, game):
+        game.zombie_respawn_min = game.zombie_respawn_max = 60.0
+        zombie = game.zombie_serials[0]
+        await game._kill_player(zombie, 5.0)
+        task = game._respawn_tasks[zombie]
+
+        before = time.time()
+        assert await game.revive_player(zombie) is True
+        await asyncio.gather(task, return_exceptions=True)
+
+        writes = _writes_for(game.gameplay_stream, zombie)
+        assert RESPAWN not in writes
+        assert writes[-2:] == [GREY, FLASH]
+        assert task.cancelled()
+        assert game._respawn_tasks == {}
+        player = game.players[zombie]
+        assert player.alive is True and player.is_zombie is True
+        assert player.grace_until >= before + 1.5
+
+    @pytest.mark.uc("UC-023", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_revive_on_human_is_a_noop(self, game):
+        human = game.human_serials[0]
+        assert await game.revive_player(human) is False
+        assert _writes_for(game.gameplay_stream, human) == []
+
+    @pytest.mark.uc("UC-023", br=["BR-003", "BR-004"])
+    @pytest.mark.parametrize("decided", ["winner_latched", "not_running"])
+    @pytest.mark.asyncio
+    async def test_respawn_and_revive_refused_once_decided(self, game, decided):
+        game.zombie_respawn_min = game.zombie_respawn_max = 60.0
+        zombie = game.zombie_serials[0]
+        await game._kill_player(zombie, 5.0)
+        before = list(game.gameplay_stream.messages)
+        if decided == "winner_latched":
+            game._winner_side = "humans"
+        else:
+            game.running = False
+        player = game.players[zombie]
+        grace_before = player.grace_until
+
+        assert await game._respawn_player(zombie) is False
+        assert await game.revive_player(zombie) is False
+
+        assert game.gameplay_stream.messages == before
+        assert player.alive is False
+        assert player.grace_until == grace_before
+
+    @pytest.mark.uc("UC-023", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_racing_revive_and_timer_respawn_once(self, game):
+        """O2: the state flips before the first write, so a racing revive or timer is a no-op."""
+        game.zombie_respawn_min = game.zombie_respawn_max = 60.0
+        zombie = game.zombie_serials[0]
+        await game._kill_player(zombie, 5.0)
+        stream = BlockingGameplayStream()
+        game.gameplay_stream = stream
+
+        first = asyncio.create_task(game.revive_player(zombie))
+        await asyncio.wait_for(stream.blocked.wait(), timeout=1.0)
+        # First revive is suspended on its grey write: a second revive and the timer path refuse.
+        assert await game.revive_player(zombie) is False
+        assert await game._respawn_player(zombie) is False
+        stream.gate.set()
+        assert await first is True
+
+        assert _writes_for(stream, zombie) == [GREY, FLASH]
+
+    @pytest.mark.uc("UC-023", flow="main", steps=[3], br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_eliminate_during_conversion_sleep_with_win_latched_sends_no_death_after_grey(
+        self, game, monkeypatch
+    ):
+        """O3: eliminate_player runs off the game loop; the loop may latch the win meanwhile."""
+        gate = asyncio.Event()
+        sleeping = asyncio.Event()
+
+        async def gated_sleep(_delay, *_args, **_kwargs):
+            sleeping.set()
+            await gate.wait()
+
+        monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", gated_sleep)
+        human = game.human_serials[0]
+        kill = asyncio.create_task(game._kill_player(human, 0.0, reason="agent_intervention"))
+        await asyncio.wait_for(sleeping.wait(), timeout=1.0)
+        game._winner_side = "zombies"
+        gate.set()
+        await kill
+
+        writes = _writes_for(game.gameplay_stream, human)
+        assert writes[-1] == GREY
+        assert DEATH not in writes[writes.index(GREY) :]

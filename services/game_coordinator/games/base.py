@@ -3217,7 +3217,8 @@ class BaseGameMode(ABC):
                 ``REVIVE_SPAWN_GRACE``.
 
         Returns:
-            True if the player was revived, False if unknown / already alive.
+            True if the player was revived, False if unknown / already alive or
+            the mode's native respawn refused (returned False).
         """
         player = self.players.get(serial)
         if player is None:
@@ -3232,7 +3233,10 @@ class BaseGameMode(ABC):
         # Prefer a mode-native respawn path so mode-specific state stays correct.
         native = getattr(self, "_respawn_player", None)
         if callable(native):
-            await native(serial)
+            # A native path may refuse (returns False, e.g. Zombies once decided);
+            # None (NonStop) keeps the old "always revived" behaviour.
+            if await native(serial) is False:
+                return False
             # Ensure spawn grace even if the native path uses its own scheme.
             player.grace_until = max(player.grace_until, time.time() + grace)
             logger.info(f"revive_player: {serial} revived via native respawn")
@@ -3290,6 +3294,16 @@ class BaseGameMode(ABC):
         clash. Default: no extra attributes (#1327).
         """
         return {}
+
+    def _sends_death_effect(self, serial: str) -> bool:  # noqa: ARG002
+        """Whether the base kill path sends ``GAME_EFFECT_PLAYER_DEATH`` for this kill.
+
+        Called by ``_kill_player`` AFTER ``_kill_player_impl``, synchronously (no
+        await between the impl and the write). Default: always (#1342). Zombies
+        overrides it so a converted human, still in the game, keeps its zombie
+        colour instead of a trailing death effect.
+        """
+        return True
 
     async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion"):
         """
@@ -3382,7 +3396,7 @@ class BaseGameMode(ABC):
         # in traces, even though _kill_player_impl may have closed the span. (#456)
         from proto import controller_manager_pb2
 
-        if self.gameplay_stream:
+        if self.gameplay_stream and self._sends_death_effect(serial):
             effect_cmd = controller_manager_pb2.GameplayStreamControl(
                 game_effect=controller_manager_pb2.GameEffectCommand(
                     serial=serial,
