@@ -637,6 +637,15 @@ def _context_code(context: Any) -> grpc.StatusCode | None:
     return code if isinstance(code, grpc.StatusCode) else None
 
 
+def _status_description(context: Any, code: grpc.StatusCode) -> str:
+    """Span status description: the details text of the handler (abort / set_details), else the code name."""
+    try:
+        details = context.details()
+    except Exception:  # noqa: BLE001 - a context without details() must not break the RPC
+        details = None
+    return details if isinstance(details, str) and details else str(code)
+
+
 def _record_server_return(span: trace.Span, context: Any) -> None:
     """Record the status of a handler that returned normally (telemetry.md §3.1, #1896).
 
@@ -647,28 +656,28 @@ def _record_server_return(span: trace.Span, context: Any) -> None:
     if code == grpc.StatusCode.OK:
         span.set_status(Status(StatusCode.OK))
     else:
-        span.set_status(Status(StatusCode.ERROR, str(code)))
+        span.set_status(Status(StatusCode.ERROR, _status_description(context, code)))
 
 
 def _record_server_exception(span: trace.Span, context: Any, exc: BaseException) -> None:
     """Record how a handler ended with an exception; the caller re-raises it.
 
     ``context.abort(code)`` raises ``AbortError`` after setting the code on the context, so the real
-    code is read from there (UNKNOWN when it is missing). A cancelled handler is a cancel by the client
+    code is read from there (UNKNOWN when it is missing). Any other exception, including a downstream
+    ``AioRpcError`` the handler let escape, ends the RPC as the context code or UNKNOWN, with the exception
+    recorded. A cancelled handler is a cancel by the client
     (or the server shutting down): code CANCELLED, span status left unset, like a client-side caller cancel.
     """
     if isinstance(exc, asyncio.CancelledError):
         span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.CANCELLED.value[0])
         return
-    if isinstance(exc, grpc.aio.AioRpcError):
-        code = exc.code()
-    elif isinstance(exc, grpc.aio.AbortError):
+    if isinstance(exc, grpc.aio.AbortError):
         code = _context_code(context) or grpc.StatusCode.UNKNOWN
     else:
         span.record_exception(exc)
         code = _context_code(context) or grpc.StatusCode.UNKNOWN
     span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, code.value[0])
-    span.set_status(Status(StatusCode.ERROR, str(code)))
+    span.set_status(Status(StatusCode.ERROR, _status_description(context, code)))
 
 
 class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):

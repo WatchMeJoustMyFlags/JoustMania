@@ -1121,6 +1121,19 @@ async def _srv_bidi_abort(request_iterator, context):
         await context.abort(grpc.StatusCode.INTERNAL, "bidi broke")
 
 
+async def _srv_unary_downstream(_request, _context):
+    channel = grpc.aio.insecure_channel("127.0.0.1:1")  # nothing listens here
+    try:
+        await channel.unary_unary("/x.Y/Z")(b"", timeout=0.5)
+    finally:
+        await channel.close()
+
+
+async def _srv_client_stream_abort(request_iterator, context):
+    async for _ in request_iterator:
+        await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "not now")
+
+
 @pytest_asyncio.fixture
 async def server_traced(span_exporter):
     """A loopback aio server behind ``ServerUnaryUnaryInterceptor``; a plain client channel (no client spans)."""
@@ -1138,6 +1151,8 @@ async def server_traced(span_exporter):
                     "UnarySetCode": grpc.unary_unary_rpc_method_handler(_srv_unary_set_code),
                     "UnaryOk": grpc.unary_unary_rpc_method_handler(_srv_unary_ok),
                     "UnarySlow": grpc.unary_unary_rpc_method_handler(_srv_unary_slow),
+                    "UnaryDownstream": grpc.unary_unary_rpc_method_handler(_srv_unary_downstream),
+                    "ClientStreamAbort": grpc.stream_unary_rpc_method_handler(_srv_client_stream_abort),
                     "StreamAbort": grpc.unary_stream_rpc_method_handler(_srv_stream_abort),
                     "StreamSetCode": grpc.unary_stream_rpc_method_handler(_srv_stream_set_code),
                     "StreamOk": grpc.unary_stream_rpc_method_handler(_srv_stream_ok),
@@ -1184,6 +1199,67 @@ class TestServerSpanStatus:
         span = await self._one(exporter)
         assert span.status.status_code == StatusCode.ERROR
         assert _code(span) == grpc.StatusCode.NOT_FOUND.value[0]
+
+    async def test_unary_abort_status_description_is_the_details_text(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        with pytest.raises(grpc.aio.AioRpcError):
+            await server_traced.unary_unary(_PROBE + "UnaryAbort")(b"x")
+        span = await self._one(exporter)
+        assert span.status.description == "down"
+
+    async def test_unary_downstream_error_is_unknown_with_one_exception_event(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        with pytest.raises(grpc.aio.AioRpcError) as err:
+            await server_traced.unary_unary(_PROBE + "UnaryDownstream")(b"x")
+        assert err.value.code() == grpc.StatusCode.UNKNOWN  # grpc does not forward the downstream code
+        span = await self._one(exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.UNKNOWN.value[0]
+        assert [event.name for event in span.events] == ["exception"]
+
+    async def test_client_stream_abort_records_the_abort_code(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        call = server_traced.stream_unary(_PROBE + "ClientStreamAbort")()
+        await call.write(b"a")
+        with pytest.raises(grpc.aio.AioRpcError) as err:
+            await call
+        assert err.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+        span = await self._one(exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.FAILED_PRECONDITION.value[0]
+
+    @pytest.mark.parametrize("kind", ["unary_unary", "stream_unary"])
+    async def test_handler_cancel_is_reraised_not_swallowed(self, span_exporter, kind):
+        exporter, provider = span_exporter
+        interceptor = grpc_tracing.ServerUnaryUnaryInterceptor()
+        interceptor._tracer = provider.get_tracer("server")
+
+        async def slow(_request, _context):
+            await asyncio.sleep(30)
+
+        factory = getattr(grpc, f"{kind}_rpc_method_handler")
+        inner = factory(slow)
+
+        async def continuation(_details):
+            return inner
+
+        details = MagicMock(spec=grpc.HandlerCallDetails)
+        details.method = _PROBE + "Slow"
+        context = MagicMock()
+        context.invocation_metadata.return_value = ()
+        context.code.return_value = None
+        context.details.return_value = None
+        with patch("lib.grpc_tracing._rpc_spans_enabled", autospec=True, return_value=True):
+            handler = await interceptor.intercept_service(continuation, details)
+        wrapped = getattr(handler, kind)
+        task = asyncio.ensure_future(wrapped(b"x", context))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        span = await self._one(exporter)
+        assert _code(span) == grpc.StatusCode.CANCELLED.value[0]
+        assert span.status.status_code == StatusCode.UNSET
 
     async def test_unary_ok_is_ok(self, server_traced, span_exporter):
         exporter, _ = span_exporter
