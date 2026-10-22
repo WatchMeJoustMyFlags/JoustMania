@@ -1645,3 +1645,231 @@ class TestNonstopRespawnClock:
         assert [c.args[4] for c in frame_metrics.call_args_list] == list(range(1, 21))
         assert all(c.args[1] == pytest.approx(1000 / 30) for c in frame_metrics.call_args_list)
         assert actual_hz.labels.return_value.set.call_count == 2  # every 10th frame
+
+
+# ---------------------------------------------------------------------------
+# UC-026 A2 and UC-030 BR-003 (#1591, #1971): controller disconnects and the startup grace.
+# Maintainer decision (2026-10-22): a disconnect is one death, the player does not
+# respawn, and it stays in the winner ranking with its final score.
+# ---------------------------------------------------------------------------
+
+
+def _disconnect_frame(serial: str) -> controller_manager_pb2.GameplayDataUpdate:
+    frame = controller_manager_pb2.GameplayDataUpdate()
+    frame.disconnects.add(serial=serial)
+    return frame
+
+
+class TestNonstopDisconnects:
+    """UC-026 A2: a disconnect is a death without respawn; UC-030 BR-003: the 0.3 s startup grace."""
+
+    async def _game(self, respawn_seconds: float = 0.0):
+        log = RecordingLog()
+        client = MockControllerManagerService(num_controllers=3, death_schedule={})
+        game = NonstopJoustGame(
+            controller_manager_client=client,
+            event_publisher=log.publish,
+            audio_client=None,
+            game_id="test_nonstop_disconnects",
+        )
+        # 0 s: a player who could respawn does so on the next frame
+        game.respawn_duration = respawn_seconds
+        await game._initialize_players_impl(client.controllers)
+        game.state = GameState.RUNNING
+        game.running = True
+        game._clock = _FakeClock()
+        return game, log
+
+    async def _run_loop(self, game, call):
+        game.controller_client = SimpleNamespace(StreamGameplayData=lambda: call)
+        await asyncio.wait_for(game._game_loop(), timeout=5)
+
+    def _assert_disconnect_death(self, game, log, serial):
+        player = game.players[serial]
+        assert player.alive is False
+        assert player.deaths == 1
+        assert player.respawn_deadline is None
+        deaths = log.events.get_events_of_type("player_death")
+        assert [d["serial"] for d in deaths] == [serial]
+        assert log.events.get_events_of_type("player_respawned") == []
+
+    @pytest.mark.uc("UC-026", flow="A2")
+    @pytest.mark.asyncio
+    async def test_a_warm_up_disconnect_is_a_death_at_loop_start_without_respawn(self):
+        game, log = await self._game()
+        serial = next(iter(game.players))
+        game._warmup_disconnects = [serial]
+        call = _FiniteFrameCall(frames=5)
+        alive_at_first_frame = []
+        real_update = game._update_respawn_timers
+
+        async def record_then_update():
+            if not alive_at_first_frame:
+                alive_at_first_frame.append(game.players[serial].alive)
+            game._clock.now += 10  # well past any respawn deadline
+            await real_update()
+
+        game._update_respawn_timers = record_then_update
+        await self._run_loop(game, call)
+
+        assert alive_at_first_frame == [False], "handled before the first gameplay frame"
+        assert game._warmup_disconnects == []
+        self._assert_disconnect_death(game, log, serial)
+        # The alive filter drops the disconnected player
+        filters = [m.filter_update.serials for m in call.messages if m.HasField("filter_update")]
+        assert filters and serial not in filters[-1]
+
+    @pytest.mark.uc("UC-026", flow="A2")
+    @pytest.mark.asyncio
+    async def test_an_in_game_disconnect_is_a_death_without_respawn(self):
+        game, log = await self._game()
+        serial = next(iter(game.players))
+        call = _FiniteFrameCall(frames=5, frame=_disconnect_frame(serial))
+        real_update = game._update_respawn_timers
+
+        async def advance_then_update():
+            game._clock.now += 10
+            await real_update()
+
+        game._update_respawn_timers = advance_then_update
+        with patch.object(game, "_set_players_alive_aggregate", wraps=game._set_players_alive_aggregate) as aggregate:
+            await self._run_loop(game, call)
+
+        self._assert_disconnect_death(game, log, serial)
+        assert aggregate.call_args_list[-1].args[0] == len(game.players) - 1
+
+    @pytest.mark.uc("UC-026", flow="A2")
+    @pytest.mark.asyncio
+    async def test_a_disconnect_while_waiting_to_respawn_cancels_the_respawn_without_a_second_death(self):
+        game, log = await self._game(respawn_seconds=3.0)
+        game.gameplay_stream = MockGameplayStream()
+        serial = next(iter(game.players))
+        await game._kill_player_impl(serial, accel_mag=5.0)
+
+        await game._handle_disconnect(serial)
+        game._clock.now += 10
+        await game._update_respawn_timers()
+
+        self._assert_disconnect_death(game, log, serial)
+
+    @pytest.mark.uc("UC-026", flow="A2", br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_an_agent_revive_of_a_disconnected_player_is_refused(self):
+        game, log = await self._game()
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        serial = next(iter(game.players))
+        await game._handle_disconnect(serial)
+        stream.messages.clear()
+        grace_before = game.players[serial].grace_until
+
+        assert await game.revive_player(serial) is False
+
+        player = game.players[serial]
+        assert player.alive is False
+        assert player.spawn_protected is False
+        assert player.grace_until == grace_before
+        assert stream.messages == []
+        assert log.events.get_events_of_type("player_respawned") == []
+
+    @pytest.mark.uc("UC-026", flow="A2", br=["BR-001"])
+    @pytest.mark.asyncio
+    async def test_a_disconnected_player_stays_in_the_winner_ranking_with_its_score(self):
+        game, events, call = await _loop_game(time_limit=0.05)
+        serials = list(game.players)
+        gone = serials[0]
+        await game._handle_disconnect(gone)
+        for serial in serials[1:]:
+            game.players[serial].deaths = 3
+
+        with patch.object(nonstop_mod, "WINNER_HOLD_SECONDS", 0.0):
+            await asyncio.wait_for(game._game_loop(), timeout=5)
+            assert game._time_limit_reached
+            game._latch_game_outcome()
+            await game._end_game_impl()
+
+        winners = events.get_events_of_type(GameEvent.GAME_WINNER)
+        assert [w["serial"] for w in winners] == [gone]
+        assert winners[0]["score"] == 90
+        assert game.players[gone].alive is False
+
+    @pytest.mark.uc("UC-026", flow="A2")
+    @pytest.mark.asyncio
+    async def test_a_disconnect_in_the_frame_where_the_respawn_deadline_passed_wins_over_the_respawn(self):
+        game, log = await self._game(respawn_seconds=3.0)
+        serial = next(iter(game.players))
+        game.gameplay_stream = MockGameplayStream()
+        await game._kill_player_impl(serial, accel_mag=5.0)
+        game._clock.now += 10  # the deadline has passed when the frame arrives
+        call = _FiniteFrameCall(frames=1, frame=_disconnect_frame(serial))
+
+        await self._run_loop(game, call)
+
+        self._assert_disconnect_death(game, log, serial)
+
+    @pytest.mark.uc("UC-026", flow="A2")
+    @pytest.mark.asyncio
+    async def test_a_warm_up_disconnect_is_not_handled_when_the_game_already_stopped(self):
+        game, log = await self._game()
+        serial = next(iter(game.players))
+        game._warmup_disconnects = [serial]
+        game.running = False  # force-ended during the countdown or the warm-up
+
+        await self._run_loop(game, _FiniteFrameCall(frames=1))
+
+        assert game.players[serial].alive is True
+        assert game.players[serial].deaths == 0
+        assert log.events.get_events_of_type("player_death") == []
+
+    @pytest.mark.uc("UC-026", flow="A2")
+    @pytest.mark.asyncio
+    async def test_a_disconnect_under_spawn_protection_writes_no_base_colour_at_expiry(self):
+        game, log = await self._game()
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        serial = next(iter(game.players))
+        player = game.players[serial]
+        player.spawn_protected = True
+        player.spawn_protection_end = time.time() - 1  # protection would expire now
+
+        await game._handle_disconnect(serial)
+        stream.messages.clear()
+        await game._update_respawn_timers()
+
+        assert player.spawn_protected is False
+        assert [m for m in stream.messages if m.HasField("base_color")] == []
+
+    @pytest.mark.uc("UC-030", br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_the_startup_grace_never_shortens_a_longer_grace(self):
+        game, log = await self._game()
+        serial = next(iter(game.players))
+        shield_until = time.time() + 60  # an agent shield granted during the countdown
+        game.players[serial].grace_until = shield_until
+
+        await self._run_loop(game, _FiniteFrameCall(frames=1))
+
+        assert game.players[serial].grace_until == shield_until
+
+    @pytest.mark.uc("UC-030", br=["BR-003"])
+    @pytest.mark.uc("UC-026", flow="main", steps=[1])
+    @pytest.mark.asyncio
+    async def test_a_spike_in_the_first_frame_inside_the_startup_grace_does_not_kill(self):
+        game, log = await self._game()
+        serial = next(iter(game.players))
+        frame = controller_manager_pb2.GameplayDataUpdate()
+        for s in game.players:
+            frame.controllers.add(
+                serial=s, accel=controller_manager_pb2.Vector3(x=50.0 if s == serial else 0.0, y=0.0, z=1.0)
+            )
+        call = _FiniteFrameCall(frames=1, frame=frame)
+
+        await self._run_loop(game, call)
+
+        assert game.players[serial].alive is True
+        assert log.events.get_events_of_type("player_death") == []
+
+        # Control: the same spike after the grace kills
+        game.players[serial].grace_until = 0.0
+        await game._process_controller_state(frame.controllers[0])
+        assert game.players[serial].alive is False

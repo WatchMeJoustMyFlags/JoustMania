@@ -262,3 +262,16 @@ class TestUC030DeathDetection:
         assert game.players["p0"].alive is True
         assert game.players["p0"].smoothed_accel == 0.0  # A1: the EMA is reset during grace
         assert events.get_events_of_type(GameEvent.PLAYER_DEATH) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A1", br=["BR-003"])
+    async def test_game_loop_startup_grace_never_shortens_a_longer_grace(self):
+        """UC-030 BR-003: a shield granted before the loop (longer than 0.3 s) is kept."""
+        game, _events = _game(2)
+        shield_until = time.time() + 60
+        game.players["p0"].grace_until = shield_until
+        game.gameplay_stream = RecordingStream([_frame(("p0", STILL), ("p1", STILL))])
+
+        await game._game_loop()
+
+        assert game.players["p0"].grace_until == shield_until
