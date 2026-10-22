@@ -859,6 +859,20 @@ async def test_mode_matrix_blocks_effect_and_revive_in_traitor(type_id, flag_key
     assert sent[0]["block_reason"] == BLOCK_MODE_UNSUPPORTED
 
 
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-022", br=["BR-002"])
+@pytest.mark.parametrize("mode_name", ["Traitor", "Werewolf"])
+async def test_mode_matrix_blocks_global_sensitivity_in_hidden_role_modes(mode_name):
+    """BR-002: adjust_global_sensitivity is denied in both hidden-role modes (it fights the role thresholds)."""
+    mgr, events = make_manager(interventions={"global_sensitivity_override": 3}, game=FakeGame(mode_name))
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()
+    sent = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "adjust_global_sensitivity"]
+    assert sent, "the intervention must be reported, not silently dropped"
+    assert sent[0]["blocked"] == "true"
+    assert sent[0]["block_reason"] == BLOCK_MODE_UNSUPPORTED
+
+
 @pytest.mark.uc("UC-022", br=["BR-002"])
 def test_mode_matrix_keys_are_the_hidden_role_game_names():
     """A mode rename would silently allow everything: the matrix keys must equal get_game_name()."""
