@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -171,6 +173,7 @@ def test_grace_malformed_falls_back():
 # ========================================================================
 
 
+@pytest.mark.uc("UC-026", flow="main", steps=[2])
 def test_nonstop_defaults_reproduce_constants():
     game = _make_nonstop()
     assert game.respawn_duration == RESPAWN_DURATION
@@ -179,6 +182,7 @@ def test_nonstop_defaults_reproduce_constants():
     assert game.score_death_penalty == SCORE_DEATH_PENALTY
 
 
+@pytest.mark.uc("UC-026", br=["BR-001"])
 def test_nonstop_scoring_resolver_characterization():
     # The game.json default object must reproduce the 100 - deaths*10 formula.
     base, penalty = resolve_scoring({"base": 100, "death_penalty": 10}, SCORE_BASE, SCORE_DEATH_PENALTY)
@@ -188,6 +192,7 @@ def test_nonstop_scoring_resolver_characterization():
         assert max(0, base - deaths * penalty) == max(0, 100 - deaths * 10)
 
 
+@pytest.mark.uc("UC-026", br=["BR-001"])
 def test_nonstop_scoring_resolver_fallbacks():
     # non-dict, negative, non-int, bool, missing keys -> default
     assert resolve_scoring(None, 100, 10) == (100, 10)
