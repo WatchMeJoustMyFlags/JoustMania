@@ -36,6 +36,8 @@ class SwapperGame(TeamsGameBase):
     Extends TeamsGameBase for team management and hierarchical spans.
     """
 
+    SWAP_FLASH_SECONDS = 0.5
+
     def __init__(
         self,
         controller_manager_client,
@@ -237,7 +239,7 @@ class SwapperGame(TeamsGameBase):
         await self.gameplay_stream.write(effect_cmd)
 
         # After flash, set new team color
-        await asyncio.sleep(0.5)
+        await self._swap_pause()
         await self._set_player_color(serial, player.color)
 
         # Respawn the player on their new team
@@ -265,6 +267,13 @@ class SwapperGame(TeamsGameBase):
 
         # Play swap sound
         await self._play_sound(Sound.SFX_BEEP, priority=1)
+
+    async def _swap_pause(self) -> None:
+        """Let the swap flash play before the new team colour is written.
+
+        A seam: tests replace it on the instance instead of patching ``asyncio.sleep``.
+        """
+        await asyncio.sleep(self.SWAP_FLASH_SECONDS)
 
     def _sends_death_effect(self, serial: str) -> bool:
         """No base death effect for a swapped player, who stays in the game (#1342).

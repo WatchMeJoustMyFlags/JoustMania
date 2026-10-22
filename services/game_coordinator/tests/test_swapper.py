@@ -7,7 +7,6 @@ Tests the core swapper mechanics:
 - Win condition detection (all players on same team)
 """
 
-import asyncio
 import sys
 import time
 from pathlib import Path
@@ -630,13 +629,11 @@ class TestSwapperLedAfterSwap:
         await g.cleanup()
 
     @staticmethod
-    def _fast_sleep(monkeypatch):
-        real_sleep = asyncio.sleep
+    def _fast_pause(game):
+        async def instant():
+            return None
 
-        async def fast(_delay, *_args, **_kwargs):
-            await real_sleep(0)
-
-        monkeypatch.setattr("services.game_coordinator.games.swapper.asyncio.sleep", fast)
+        game._swap_pause = instant
 
     @staticmethod
     def _writes_for(stream, serial):
@@ -651,8 +648,8 @@ class TestSwapperLedAfterSwap:
 
     @pytest.mark.uc("UC-024", flow="main", steps=[2])
     @pytest.mark.asyncio
-    async def test_swap_sends_one_flash_no_death_and_ends_on_new_team_colour(self, game, monkeypatch):
-        self._fast_sleep(monkeypatch)
+    async def test_swap_sends_one_flash_no_death_and_ends_on_new_team_colour(self, game):
+        self._fast_pause(game)
         serial = "mock_controller_0"
         with patch("services.game_coordinator.games.swapper.metrics") as sm:
             await game._kill_player(serial, 3.0)
@@ -668,11 +665,11 @@ class TestSwapperLedAfterSwap:
 
     @pytest.mark.uc("UC-024", flow="main", steps=[2])
     @pytest.mark.asyncio
-    async def test_swap_after_force_end_does_not_recreate_the_gauge(self, game, monkeypatch):
-        async def end_game_during_sleep(_delay, *_args, **_kwargs):
+    async def test_swap_after_force_end_does_not_recreate_the_gauge(self, game):
+        async def end_game_during_pause():
             game.running = False
 
-        monkeypatch.setattr("services.game_coordinator.games.swapper.asyncio.sleep", end_game_during_sleep)
+        game._swap_pause = end_game_during_pause
         with patch("services.game_coordinator.games.swapper.metrics") as sm:
             await game._kill_player("mock_controller_0", 3.0)
 
