@@ -344,12 +344,21 @@ class NonstopJoustGame(BaseGameMode):
             logger.info(f"Starting Nonstop game loop at {update_frequency_hz}Hz")
 
             # Create bidirectional stream (Phase 45 - dynamic filtering, Phase 46 - feedback commands)
+            countdown_stream = self.gameplay_stream
             self.gameplay_stream = self.controller_client.StreamGameplayData()
 
-            # Send initial configuration (see _build_initial_stream_control —
-            # extracted so the message construction is unit-testable after the
-            # ``serials`` proto-field regression crashed every NonStop game).
-            await self.gameplay_stream.write(self._build_initial_stream_control(update_frequency_hz))
+            try:
+                # Send initial configuration (see _build_initial_stream_control —
+                # extracted so the message construction is unit-testable after the
+                # ``serials`` proto-field regression crashed every NonStop game).
+                await self.gameplay_stream.write(self._build_initial_stream_control(update_frequency_hz))
+            finally:
+                # This stream replaces the one run() opened for the countdown and
+                # warm-up: close that one, after the new one claimed the players
+                # (UC-030 BR-006).
+                cancel = getattr(countdown_stream, "cancel", None)
+                if callable(cancel):
+                    cancel()
 
             # Track current alive set for detecting changes (Phase 45)
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
@@ -406,8 +415,8 @@ class NonstopJoustGame(BaseGameMode):
             logger.error(f"Game loop error: {e}", exc_info=True)
             raise
         finally:
-            # Cleanup stream reference (Phase 46)
-            self.gameplay_stream = None
+            # Close the stream (UC-030 BR-006)
+            self._release_gameplay_stream()
 
     async def _update_respawn_timers(self):
         """Update respawn timers and respawn players (Nonstop-specific)."""

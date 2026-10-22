@@ -1629,15 +1629,28 @@ class BaseGameMode(ABC):
         self._warmup_disconnects.extend(pending)
         if reopen and self.running and (not stopped or self._gameplay_call_done()):
             logger.warning("Early gameplay stream ended during the formation: reopening it")
-            cancel = getattr(self.gameplay_stream, "cancel", None)
-            if callable(cancel):
-                cancel()
+            self._cancel_gameplay_call()
             await self._create_gameplay_stream()
 
     def _gameplay_call_done(self) -> bool:
         """Whether the gameplay call has finished (test fakes without ``done()`` never do)."""
         done = getattr(self.gameplay_stream, "done", None)
         return bool(done()) if callable(done) else False
+
+    def _cancel_gameplay_call(self) -> None:
+        """Cancel the gameplay call, if it has a ``cancel()`` (a no-op on a finished call)."""
+        cancel = getattr(self.gameplay_stream, "cancel", None)
+        if callable(cancel):
+            cancel()
+
+    def _release_gameplay_stream(self) -> None:
+        """Close the gameplay call and drop it (UC-030 BR-006, #1914). Idempotent.
+
+        Without the cancel the call stays open until the garbage collector finds
+        it, and the controller manager keeps the game's roster until then (UC-004).
+        """
+        self._cancel_gameplay_call()
+        self.gameplay_stream = None
 
     async def _warmup_ema(self):
         """
@@ -3523,20 +3536,26 @@ class BaseGameMode(ABC):
         """
         Clean up game resources. Called in finally block after game ends.
 
-        Cancels any tracked async tasks registered via _track_task().
-        Subclasses should override to add mode-specific cleanup
-        (e.g., cancel timers, close connections) and call super().cleanup().
+        Cancels any tracked async tasks registered via _track_task(), then closes
+        the gameplay stream (UC-030 BR-006). Subclasses should override to add
+        mode-specific cleanup (e.g., cancel timers, close connections) and call
+        super().cleanup().
         """
-        if self._tasks:
-            # Snapshot tasks before cancelling (done callbacks remove from set)
-            tasks_to_cancel = list(self._tasks)
-            logger.info(f"Cleaning up {len(tasks_to_cancel)} tracked tasks")
-            for task in tasks_to_cancel:
-                if not task.done():
-                    task.cancel()
-            # Wait for all tasks to complete cancellation
-            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
-            self._tasks.clear()
+        try:
+            if self._tasks:
+                # Snapshot tasks before cancelling (done callbacks remove from set)
+                tasks_to_cancel = list(self._tasks)
+                logger.info(f"Cleaning up {len(tasks_to_cancel)} tracked tasks")
+                for task in tasks_to_cancel:
+                    if not task.done():
+                        task.cancel()
+                # Wait for all tasks to complete cancellation
+                await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+                self._tasks.clear()
+        finally:
+            # Every mode's run() reaches here on every end (natural, force-end,
+            # error): close the stream once no tracked task can use it.
+            self._release_gameplay_stream()
         logger.info(f"{self.get_game_name()} cleanup complete")
 
     async def on_force_end(self) -> None:
@@ -3813,8 +3832,8 @@ class BaseGameMode(ABC):
                 await self._end_game_impl()
                 self._record_game_outcome(teardown_span)
 
-                # Cleanup stream reference after winner effects are sent
-                self.gameplay_stream = None
+                # Winner effects are sent: close the stream (UC-030 BR-006)
+                self._release_gameplay_stream()
 
                 # Clear THIS session's analytics so dashboards show no data when
                 # the game is over, without clobbering other concurrent sessions

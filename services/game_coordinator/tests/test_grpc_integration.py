@@ -26,9 +26,10 @@ service_dir = test_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
-from lib.types import GameEvent
+from lib.types import GameEvent, Games
 from proto import controller_manager_pb2, controller_manager_pb2_grpc, game_coordinator_pb2, game_coordinator_pb2_grpc
 from services.game_coordinator import game_session as game_session_mod
+from services.game_coordinator.game_factory import _GAME_CLASSES
 from services.game_coordinator.servicer import GameCoordinatorServicer
 
 # #775: the game-loop thread moved onto GameSession. Patch its start_thread to
@@ -546,27 +547,42 @@ class _FrameServer(controller_manager_pb2_grpc.ControllerManagerServiceServicer)
     """Real gRPC gameplay stream: numbered frames every 10 ms (timestamp = sequence).
 
     ``first_call_fault`` breaks only the first call after 5 frames: "abort" ends it
-    with UNAVAILABLE (a controller-manager restart), "stall" sends nothing more.
+    with UNAVAILABLE (a controller-manager restart), "stall" sends nothing more;
+    ``faulted`` is set when it fires. ``active`` counts the calls whose handler still
+    runs (the controller manager holds its roster until then); ``received`` keeps the
+    game's messages, and ``received_at_release`` how many had arrived when each call ended;
+    ``opened`` holds the client calls of a recording stub (TestGameplayStreamRelease).
     """
 
     def __init__(self, serials, first_call_fault=None):
         self.serials = serials
         self.first_call_fault = first_call_fault
         self.calls = 0
+        self.active = 0
+        self.faulted = asyncio.Event()
+        self.received = []
+        self.received_at_release = []
+        self.opened = []
+
+    def all_closed(self):
+        """Every call the game opened has ended, on both sides."""
+        return all(call.done() for call in self.opened) and self.active == 0
 
     async def StreamGameplayData(self, request_iterator, context):  # noqa: N802 - gRPC method name
         self.calls += 1
+        self.active += 1
         faulty = self.calls == 1 and self.first_call_fault is not None
 
         async def read_client():
-            async for _ in request_iterator:
-                pass
+            async for message in request_iterator:
+                self.received.append(message)
 
         reader = asyncio.create_task(read_client())
         try:
             seq = 0
             while True:
                 if faulty and seq == 5:
+                    self.faulted.set()
                     if self.first_call_fault == "abort":
                         await context.abort(grpc.StatusCode.UNAVAILABLE, "controller manager restart")
                     await asyncio.Event().wait()
@@ -583,6 +599,8 @@ class _FrameServer(controller_manager_pb2_grpc.ControllerManagerServiceServicer)
                 await asyncio.sleep(0.01)
         finally:
             reader.cancel()
+            self.received_at_release.append(len(self.received))
+            self.active -= 1
 
 
 class TestEarlyStreamDrain:
@@ -694,3 +712,239 @@ class TestEarlyStreamDrain:
         finally:
             await channel.close()
             await server.stop(grace=0)
+
+
+class _Phase:
+    """An additional phase whose ``execute`` is the given coroutine function."""
+
+    def __init__(self, name, execute):
+        self.name = name
+        self.execute = execute
+
+
+async def _wait_until(predicate, max_wait=2.0):
+    """True once ``predicate()`` holds, False when it still fails after ``max_wait`` seconds."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max_wait
+    while True:
+        if predicate():
+            return True
+        if loop.time() > deadline:
+            return False
+        await asyncio.sleep(0.01)
+
+
+class TestGameplayStreamRelease:
+    """UC-030 BR-006 (#1914): the game closes its gameplay call on every end.
+
+    The stub keeps every call it opened (``opened``), so only a cancel, not the
+    garbage collector, can end one: every opened call done and no server handler
+    left running means the game closed its stream.
+    """
+
+    SERIALS = ["p0", "p1", "p2", "p3"]
+
+    @pytest_asyncio.fixture
+    async def frame_server(self, request):
+        server_impl = _FrameServer(self.SERIALS, first_call_fault=getattr(request, "param", None))
+        server = grpc.aio.server()
+        controller_manager_pb2_grpc.add_ControllerManagerServiceServicer_to_server(server_impl, server)
+        port = server.add_insecure_port("[::]:0")
+        await server.start()
+        channel = grpc.aio.insecure_channel(f"localhost:{port}")
+        stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(channel)
+        opened = server_impl.opened
+        open_call = stub.StreamGameplayData
+
+        def recording_open(*args, **kwargs):
+            call = open_call(*args, **kwargs)
+            opened.append(call)
+            return call
+
+        stub.StreamGameplayData = recording_open
+        server_impl.stub = stub
+        try:
+            yield server_impl
+        finally:
+            await channel.close()
+            await server.stop(grace=0)
+
+    def _random_teams(self, frame_server, publish, phase):
+        from services.game_coordinator.games.random_teams import RandomTeamsGame
+
+        game = RandomTeamsGame(
+            controller_manager_client=frame_server.stub,
+            event_publisher=publish,
+            game_id="test_stream_release",
+            num_teams=2,
+            initial_players=[game_coordinator_pb2.Player(serial=s) for s in self.SERIALS],
+            rng_seed=7,
+        )
+        game._get_additional_phases = lambda: [_Phase("team_formation_phase", phase)]
+        return game
+
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    async def test_phase_exception_releases_the_stream(self, frame_server):
+        events = []
+
+        async def publish(event_type, _data=None, *_args, **_kwargs):
+            events.append(str(event_type))
+
+        async def failing_formation():
+            await asyncio.sleep(0.05)
+            raise RuntimeError("formation failed")
+
+        game = self._random_teams(frame_server, publish, failing_formation)
+        with pytest.raises(RuntimeError, match="formation failed"):
+            await asyncio.wait_for(game.run(), timeout=10)
+
+        assert GameEvent.GAME_ERROR.value in events
+        assert len(frame_server.opened) == 1
+        assert await _wait_until(frame_server.all_closed), "the gameplay call stayed open after the error"
+        assert game.gameplay_stream is None
+
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    async def test_natural_end_releases_the_stream_after_the_winner_effect(self, frame_server):
+        from services.game_coordinator.games.ffa import FFAGame
+
+        game = FFAGame(
+            controller_manager_client=frame_server.stub,
+            event_publisher=_async_noop,
+            game_id="test_stream_release_ffa",
+            initial_players=[game_coordinator_pb2.Player(serial=s) for s in self.SERIALS],
+        )
+        game._countdown = _async_noop
+
+        async def short_rainbow():
+            await asyncio.sleep(0.2)
+            return True
+
+        game._wait_for_rainbow_effect = short_rainbow
+        frames = []
+        real_process = game._process_gameplay_update
+
+        async def process(update):
+            frames.append(update.timestamp)
+            if len(frames) == 3:
+                for serial in self.SERIALS[1:]:
+                    game.players[serial].alive = False
+            return await real_process(update)
+
+        game._process_gameplay_update = process
+        await asyncio.wait_for(game.run(), timeout=10)
+
+        assert game.game_outcome() == "winner"
+        assert len(frame_server.opened) == 1, "a natural end opened a second gameplay call"
+        assert await _wait_until(frame_server.all_closed), "the gameplay call stayed open after the game"
+        rainbow = controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        delivered = frame_server.received[: frame_server.received_at_release[0]]
+        assert any(m.HasField("game_effect") and m.game_effect.effect == rainbow for m in delivered), (
+            "the stream closed before the winner effect arrived"
+        )
+
+    @pytest.mark.uc("UC-021", flow="A1")
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("frame_server", ["abort"], indirect=True)
+    async def test_phase_exception_after_a_broken_stream_opens_no_second_call(self, frame_server):
+        """The formation error propagates; the dead early call is not reopened (#1912)."""
+        game = None
+
+        async def failing_formation():
+            # The drain ends once it has read the abort: the call is done from here on.
+            assert await _wait_until(lambda: game._early_drain_task.done())
+            raise RuntimeError("formation failed")
+
+        game = self._random_teams(frame_server, _async_noop, failing_formation)
+        with pytest.raises(RuntimeError, match="formation failed"):
+            await asyncio.wait_for(game.run(), timeout=10)
+
+        assert frame_server.faulted.is_set()
+        assert len(frame_server.opened) == 1, "a phase exception reopened the gameplay stream"
+        assert await _wait_until(frame_server.all_closed)
+
+    @pytest.mark.uc("UC-021", flow="A1")
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("frame_server", ["abort"], indirect=True)
+    async def test_force_end_after_a_broken_stream_opens_no_second_call(self, frame_server):
+        """A force-end during the formation does not reopen a dead early call (#1912)."""
+        events = []
+        game = None
+
+        async def publish(event_type, _data=None, *_args, **_kwargs):
+            events.append(str(event_type))
+
+        async def force_ended_formation():
+            assert await _wait_until(lambda: game._early_drain_task.done())
+            game.force_end("test")
+
+        game = self._random_teams(frame_server, publish, force_ended_formation)
+        await asyncio.wait_for(game.run(), timeout=10)
+
+        assert frame_server.faulted.is_set()
+        assert len(frame_server.opened) == 1, "a force-ended game reopened the gameplay stream"
+        assert GameEvent.COUNTDOWN_START.value not in events
+        assert game.game_outcome() == "force_ended"
+        assert await _wait_until(frame_server.all_closed), "the gameplay call stayed open after the force-end"
+
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", list(_GAME_CLASSES), ids=lambda m: m.name)
+    async def test_every_mode_releases_the_stream_on_an_error(self, frame_server, mode):
+        """Each mode's run() (base or its own) closes the call when the countdown fails."""
+        game = _GAME_CLASSES[mode](
+            controller_manager_client=frame_server.stub,
+            event_publisher=_async_noop,
+            game_id=f"test_stream_release_{mode.name}",
+            initial_players=[game_coordinator_pb2.Player(serial=s) for s in self.SERIALS],
+        )
+        game._get_additional_phases = list
+
+        async def failing_countdown():
+            raise RuntimeError("countdown failed")
+
+        game._countdown = failing_countdown
+        with pytest.raises(RuntimeError, match="countdown failed"):
+            await asyncio.wait_for(game.run(), timeout=10)
+
+        assert len(frame_server.opened) == 1, "the stream did not open before the countdown"
+        assert await _wait_until(frame_server.all_closed), f"{mode.name} left its gameplay call open"
+
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", list(_GAME_CLASSES), ids=lambda m: m.name)
+    async def test_every_mode_releases_the_stream_on_a_force_end_in_the_game(self, frame_server, mode):
+        """A force-end while the game runs ends through the mode's teardown: the call closes."""
+        from services.game_coordinator.games.base import GameState
+
+        game = _GAME_CLASSES[mode](
+            controller_manager_client=frame_server.stub,
+            event_publisher=_async_noop,
+            game_id=f"test_stream_release_end_{mode.name}",
+            initial_players=[game_coordinator_pb2.Player(serial=s) for s in self.SERIALS],
+        )
+        game._get_additional_phases = list
+        game._countdown = _async_noop
+
+        async def short_wait(*_args, **_kwargs):
+            await asyncio.sleep(0.05)
+            return True
+
+        game._wait_for_rainbow_effect = short_wait
+
+        async def force_end_when_running():
+            assert await _wait_until(lambda: game.state == GameState.RUNNING, max_wait=5)
+            await asyncio.sleep(0.2)
+            game.force_end("test")
+
+        ender = asyncio.create_task(force_end_when_running())
+        await asyncio.wait_for(game.run(), timeout=15)
+        await ender
+
+        assert game.game_outcome() == "force_ended"
+        # NonStop's own loop opens a second stream after the warm-up and closes the first.
+        assert len(frame_server.opened) == (2 if mode is Games.NonStop else 1)
+        assert await _wait_until(frame_server.all_closed), f"{mode.name} left its gameplay call open"
