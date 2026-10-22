@@ -1014,7 +1014,7 @@ class TestGameplayStreamReopen:
     async def serve(self, request):
         from lib.grpc_utils import create_channel
 
-        servers, channels, stubs = [], [], []
+        servers, channels, stubs, opened = [], [], [], []
 
         async def start(fault, fault_trigger=None):
             frame_server = _FrameServer(self.SERIALS, first_call_fault=fault, fault_trigger=fault_trigger)
@@ -1027,6 +1027,14 @@ class TestGameplayStreamReopen:
             channel = create_channel(address) if request.param == "interceptors" else grpc.aio.insecure_channel(address)
             channels.append(channel)
             stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(channel)
+            open_call = stub.StreamGameplayData
+
+            def recording_open(*args, **kwargs):
+                call = open_call(*args, **kwargs)
+                opened.append(call)
+                return call
+
+            stub.StreamGameplayData = recording_open
             stub.games = []
             stubs.append(stub)
             return frame_server, stub
@@ -1034,16 +1042,23 @@ class TestGameplayStreamReopen:
         try:
             yield start
         finally:
-            # Close the games' calls first, as cleanup() does: grpc.aio's channel.close()
-            # fails on a live intercepted stream call ("Unrecognized call object").
+            # A failing test can leave any call it opened live (also one the game no
+            # longer holds), and grpc.aio's channel.close() fails on a live intercepted
+            # call ("Unrecognized call object"), which left the session hanging at exit.
+            # So: cancel every call, stop the servers, then close the channels.
             for stub in stubs:
                 for game in stub.games:
+                    game.running = False
                     game._release_gameplay_stream()
+            for call in opened:
+                call.cancel()
             await asyncio.sleep(0.05)
-            for channel in channels:
-                await channel.close()
             for server in servers:
-                await server.stop(grace=0)
+                with contextlib.suppress(Exception):
+                    await server.stop(grace=0)
+            for channel in channels:
+                with contextlib.suppress(Exception):
+                    await channel.close()
 
     def _ffa(self, stub, publish=_async_noop):
         from services.game_coordinator.games.ffa import FFAGame
