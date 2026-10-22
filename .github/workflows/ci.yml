@@ -694,6 +694,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: services/agent/go.mod
+          check-latest: true
           cache-dependency-path: services/agent/go.sum
 
       - name: Run tests

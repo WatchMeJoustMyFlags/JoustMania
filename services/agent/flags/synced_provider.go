@@ -69,8 +69,8 @@ var errProviderShutDown = errors.New("flagd provider shut down before its first 
 // Residual leak: v0.8.0's service Init blocks in waitForInitialization, which ignores
 // its context, so every FAILED build keeps ~1 goroutine and ~300 KB for good. The probe
 // keeps a down flagd from causing builds; a flagd that accepts TCP but refuses the
-// stream (e.g. a bad selector) costs at most one build per domain per 5 min (~7 MB/h
-// for the two domains).
+// stream (e.g. a bad selector) costs at most one build per domain per 5 min (~10 MB/h
+// for the three domains).
 //
 // Reads fail closed while the domain is not READY: before the first sync (the SDK keeps
 // the domain NOT_READY while Init runs) and while the sync stream is lost (STALE / ERROR
