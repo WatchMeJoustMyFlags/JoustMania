@@ -251,7 +251,7 @@ WIN_CASES = [
 
 class TestMainSteps3To5:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-021", flow="main", steps=[3, 4, 5])
+    @pytest.mark.uc("UC-021", flow="main", steps=[3, 4, 5], cond=["Post-S-1"])
     @pytest.mark.parametrize(
         ("num_teams", "players", "dead", "winner_team", "winners", "team_name", "sound"), WIN_CASES
     )
