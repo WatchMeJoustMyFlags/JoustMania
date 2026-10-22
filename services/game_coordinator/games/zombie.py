@@ -21,7 +21,7 @@ from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
 from lib.feature_flags import read_float_flag, read_int_flag, read_object_flag
-from lib.types import Sound
+from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
@@ -40,6 +40,7 @@ tracer = trace.get_tracer(__name__)
 INITIAL_ZOMBIES = 2  # Number of starting zombies
 ZOMBIE_RESPAWN_MIN = 2.0  # Minimum respawn delay for zombies
 ZOMBIE_RESPAWN_MAX = 10.0  # Maximum respawn delay for zombies
+ZOMBIE_INTRO_DURATION_S = 3.0  # Intro length; the stream is drained meanwhile (UC-023 step 1)
 
 # Colors
 HUMAN_COLOR = Colors.White.value  # White for humans
@@ -273,24 +274,29 @@ class ZombieGame(BaseGameMode):
             },
         )
 
-        # Set initial colors
-        for serial, player in self.players.items():
-            zombie_player = player
-            color = ZOMBIE_COLOR if zombie_player.is_zombie else HUMAN_COLOR
+        # A write error (the early stream already broke) is logged, not raised:
+        # the drain stop at the end of the intro reopens the stream (UC-023 step 1).
+        try:
+            # Set initial colors
+            for serial, player in self.players.items():
+                zombie_player = player
+                color = ZOMBIE_COLOR if zombie_player.is_zombie else HUMAN_COLOR
 
-            base_color_cmd = controller_manager_pb2.GameplayStreamControl(
-                base_color=controller_manager_pb2.ControllerColorConfig(
-                    serial=serial,
-                    color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
+                base_color_cmd = controller_manager_pb2.GameplayStreamControl(
+                    base_color=controller_manager_pb2.ControllerColorConfig(
+                        serial=serial,
+                        color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
+                    )
                 )
-            )
-            await self.gameplay_stream.write(base_color_cmd)
+                await self.gameplay_stream.write(base_color_cmd)
+        except Exception as e:
+            logger.error(f"Failed to set the zombie intro colours: {e}", exc_info=True)
 
         # Play intro sound (use start sound - no dedicated zombie intro exists)
         await self._play_sound(Sound.SFX_START3, priority=2)
 
-        # Wait for intro
-        for _ in range(30):  # 3 seconds
+        # Wait for intro (interruptible, checked every 0.1 s)
+        for _ in range(round(ZOMBIE_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
             await asyncio.sleep(0.1)
@@ -610,21 +616,31 @@ class ZombieGame(BaseGameMode):
 
             try:
                 self.running = True
+                await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
                     await self._initialize_players()
+                    if len(self.players) < 2:
+                        raise ValueError(f"Need at least 2 players, got {len(self.players)}")
+                    # Before any task is created: tasks copy the context (#1273).
+                    self._set_flag_eval_context()
                     self._create_player_spans(None)
 
-                # Start gameplay stream before intro (needed for LED effects)
+                # The intro colours go over the stream, so it opens first; a drain
+                # discards the intro's frames and keeps disconnects (UC-023 step 1).
                 await self._start_gameplay_stream()
-
-                # Additional phases (zombie intro)
-                for phase in self._get_additional_phases():
-                    if not self.running:
-                        break
-                    with tracer.start_as_current_span(phase.name):
-                        await phase.execute()
+                self._start_early_stream_drain()
+                phases_completed = False
+                try:
+                    for phase in self._get_additional_phases():
+                        if not self.running:
+                            break
+                        with tracer.start_as_current_span(phase.name):
+                            await phase.execute()
+                    phases_completed = True
+                finally:
+                    await self._stop_early_stream_drain(reopen=phases_completed)
 
                 if not self.running:
                     return
@@ -640,17 +656,18 @@ class ZombieGame(BaseGameMode):
                 self.state = GameState.RUNNING
                 self.start_time = time.time()
 
-                # Emit game_started event (required for integration tests)
-                from lib.types import GameEvent
-
+                # Zombies publishes game_started after the countdown (UC-023 step 1).
                 await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
                 )
 
-                # Start music
+                # Start music (no tempo loop by design, UC-023 BR-002)
                 await self._start_game_music()
 
-                # Start game timer as background task
+                # Prime the EMA filters before death detection (UC-030 BR-003)
+                await self._warmup_ema()
+
+                # The game timer counts from gameplay start, after the warm-up
                 self.timer_task = self._track_task(asyncio.create_task(self._game_timer()))
 
                 # Game loop (gameplay stream already started before intro)
