@@ -334,7 +334,8 @@ def go_reads(root: Path) -> list[EnvRead]:
                     if key in helper_params:
                         continue  # the helper's own os.Getenv(key)
                     raise ValueError(
-                        f"{path.relative_to(REPO_ROOT)}:{line}: cannot resolve env key {key!r}"
+                        f"{path if not path.is_relative_to(REPO_ROOT) else path.relative_to(REPO_ROOT)}"
+                        f":{line}: cannot resolve env key {key!r}"
                     )
                 has_default = (
                     fn in helpers
