@@ -1064,3 +1064,194 @@ class TestSyncClientSpanStatus:
             time.sleep(0.01)
         (span,) = exporter.get_finished_spans()
         assert span.status.status_code == StatusCode.ERROR
+
+
+# --- Server span status (#1896) -------------------------------------------------------------
+
+_server_handler_cancelled = asyncio.Event()
+
+
+async def _srv_unary_abort(_request, context):
+    await context.abort(grpc.StatusCode.UNAVAILABLE, "down")
+
+
+async def _srv_unary_set_code(_request, context):
+    context.set_code(grpc.StatusCode.NOT_FOUND)
+    context.set_details("no such thing")
+    return b""
+
+
+async def _srv_unary_ok(_request, _context):
+    return b"ok"
+
+
+async def _srv_unary_slow(_request, _context):
+    try:
+        await asyncio.sleep(30)
+    finally:
+        _server_handler_cancelled.set()
+
+
+async def _srv_stream_abort(_request, context):
+    yield b"m"
+    await context.abort(grpc.StatusCode.UNAVAILABLE, "dropped mid-stream")
+
+
+async def _srv_stream_set_code(_request, context):
+    yield b"m"
+    context.set_code(grpc.StatusCode.NOT_FOUND)
+
+
+async def _srv_stream_ok(_request, _context):
+    yield b"m"
+
+
+async def _srv_stream_forever(_request, _context):
+    try:
+        while True:
+            yield b"m"
+            await asyncio.sleep(0.01)
+    finally:
+        _server_handler_cancelled.set()
+
+
+async def _srv_bidi_abort(request_iterator, context):
+    async for request in request_iterator:
+        yield request
+        await context.abort(grpc.StatusCode.INTERNAL, "bidi broke")
+
+
+@pytest_asyncio.fixture
+async def server_traced(span_exporter):
+    """A loopback aio server behind ``ServerUnaryUnaryInterceptor``; a plain client channel (no client spans)."""
+    _exporter, provider = span_exporter
+    _server_handler_cancelled.clear()
+    interceptor = grpc_tracing.ServerUnaryUnaryInterceptor()
+    interceptor._tracer = provider.get_tracer("server")
+    server = grpc.aio.server(interceptors=[interceptor])
+    server.add_generic_rpc_handlers(
+        (
+            grpc.method_handlers_generic_handler(
+                _PROBE_SVC,
+                {
+                    "UnaryAbort": grpc.unary_unary_rpc_method_handler(_srv_unary_abort),
+                    "UnarySetCode": grpc.unary_unary_rpc_method_handler(_srv_unary_set_code),
+                    "UnaryOk": grpc.unary_unary_rpc_method_handler(_srv_unary_ok),
+                    "UnarySlow": grpc.unary_unary_rpc_method_handler(_srv_unary_slow),
+                    "StreamAbort": grpc.unary_stream_rpc_method_handler(_srv_stream_abort),
+                    "StreamSetCode": grpc.unary_stream_rpc_method_handler(_srv_stream_set_code),
+                    "StreamOk": grpc.unary_stream_rpc_method_handler(_srv_stream_ok),
+                    "StreamForever": grpc.unary_stream_rpc_method_handler(_srv_stream_forever),
+                    "BidiAbort": grpc.stream_stream_rpc_method_handler(_srv_bidi_abort),
+                },
+            ),
+        )
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    with patch("lib.grpc_tracing._rpc_spans_enabled", autospec=True, return_value=True):
+        yield channel
+    await channel.close()
+    await server.stop(None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-035", flow="main", steps=[5])
+class TestServerSpanStatus:
+    """SERVER spans record the real gRPC code (telemetry.md §3.1, #1896)."""
+
+    async def _one(self, exporter):
+        spans = await _finished_spans(exporter)
+        assert len(spans) == 1
+        assert spans[0].kind == trace.SpanKind.SERVER
+        return spans[0]
+
+    async def test_unary_abort_records_the_abort_code(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        with pytest.raises(grpc.aio.AioRpcError) as err:
+            await server_traced.unary_unary(_PROBE + "UnaryAbort")(b"x")
+        assert err.value.code() == grpc.StatusCode.UNAVAILABLE  # the abort is not swallowed
+        span = await self._one(exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.UNAVAILABLE.value[0]
+
+    async def test_unary_set_code_and_return_is_error(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        with pytest.raises(grpc.aio.AioRpcError) as err:
+            await server_traced.unary_unary(_PROBE + "UnarySetCode")(b"x")
+        assert err.value.code() == grpc.StatusCode.NOT_FOUND
+        span = await self._one(exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.NOT_FOUND.value[0]
+
+    async def test_unary_ok_is_ok(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        assert await server_traced.unary_unary(_PROBE + "UnaryOk")(b"x") == b"ok"
+        span = await self._one(exporter)
+        assert span.status.status_code == StatusCode.OK
+        assert _code(span) == 0
+
+    async def test_unary_client_cancel_sets_cancelled_and_leaves_status_unset(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        call = server_traced.unary_unary(_PROBE + "UnarySlow")(b"x")
+        await asyncio.sleep(0.1)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        span = await self._one(exporter)
+        assert _code(span) == grpc.StatusCode.CANCELLED.value[0]
+        assert span.status.status_code == StatusCode.UNSET
+        assert _server_handler_cancelled.is_set()
+
+    async def test_stream_abort_mid_stream_records_the_abort_code(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        call = server_traced.unary_stream(_PROBE + "StreamAbort")(b"x")
+        assert await call.read() == b"m"
+        with pytest.raises(grpc.aio.AioRpcError):
+            await call.read()
+        span = await self._one(exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.UNAVAILABLE.value[0]
+
+    async def test_stream_set_code_then_end_is_error(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        call = server_traced.unary_stream(_PROBE + "StreamSetCode")(b"x")
+        with pytest.raises(grpc.aio.AioRpcError):
+            async for _ in call:
+                pass
+        span = await self._one(exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.NOT_FOUND.value[0]
+
+    async def test_stream_ok_is_ok(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        async for _ in server_traced.unary_stream(_PROBE + "StreamOk")(b"x"):
+            pass
+        span = await self._one(exporter)
+        assert span.status.status_code == StatusCode.OK
+        assert _code(span) == 0
+
+    async def test_stream_client_cancel_sets_cancelled_and_leaves_status_unset(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        call = server_traced.unary_stream(_PROBE + "StreamForever")(b"x")
+        await call.read()
+        call.cancel()
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while not _server_handler_cancelled.is_set():
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.01)
+        span = await self._one(exporter)
+        assert span.status.status_code == StatusCode.UNSET
+        assert _code(span) == grpc.StatusCode.CANCELLED.value[0]
+
+    async def test_bidi_abort_records_the_abort_code(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        call = server_traced.stream_stream(_PROBE + "BidiAbort")()
+        await call.write(b"a")
+        assert await call.read() == b"a"
+        with pytest.raises(grpc.aio.AioRpcError):
+            await call.read()
+        span = await self._one(exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.INTERNAL.value[0]
