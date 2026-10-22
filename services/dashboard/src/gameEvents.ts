@@ -27,6 +27,23 @@ export interface GameEventEffect {
   gameRunning: boolean | null;
 }
 
+const SERIAL_RE = /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i;
+
+/** Why a game ended without a winner: the explicit reason, else a non-result outcome (#1935). */
+function noWinnerDetail(data: Record<string, string>): string {
+  const detail = data["reason"] || (["winner", "completed", "tie"].includes(data["outcome"] ?? "winner") ? "" : data["outcome"]);
+  return detail ? ` (${detail.replace(/_/g, "-")})` : "";
+}
+
+/** `game_ended` winner: a serial is a controller, `none` is no winner, anything else a team name (#1935). */
+function endedLine(data: Record<string, string>, fallbackSerial: string | null): string {
+  const raw = data["winner"];
+  if (raw === "none") return `Game ended! No winner${noWinnerDetail(data)}`;
+  if (raw && !SERIAL_RE.test(raw)) return `Game ended! Winner: team ${raw}`;
+  const winner = raw ? shortSerial(raw) : fallbackSerial;
+  return winner ? `Game ended! Winner: ${winner}` : "Game ended!";
+}
+
 const shortSerial = (serial: string | undefined): string => serial?.slice(-4) || "???";
 
 export function reduceGameEvent(prev: GameFeedState, event: GameEventInput): GameEventEffect {
@@ -51,8 +68,8 @@ export function reduceGameEvent(prev: GameFeedState, event: GameEventInput): Gam
     case "game_ended": {
       state.gameState = "Ended";
       gameRunning = false;
-      const winner = data["winner"] ? shortSerial(data["winner"]) : state.winner;
-      feedLine = winner ? `Game ended! Winner: ${winner}` : "Game ended!";
+      feedLine = endedLine(data, state.winner);
+      state.winner = null;
       break;
     }
 

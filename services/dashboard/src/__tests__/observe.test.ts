@@ -93,6 +93,21 @@ describe("UC-035: step 2 game event feed", () => {
     expect(feed.at(-1)).toBe("Game ended!");
   });
 
+  it("UC-035/main step 2 game_ended with winner none shows No winner and the reason (#1935)", () => {
+    const { feed } = fold([["game_start", {}], ["game_ended", { winner: "none", outcome: "force_ended", reason: "preempted" }]]);
+    expect(feed.at(-1)).toBe("Game ended! No winner (preempted)");
+    expect(fold([["game_ended", { winner: "none", outcome: "force_ended" }]]).feed).toEqual(["Game ended! No winner (force-ended)"]);
+    expect(fold([["game_ended", { winner: "none" }]]).feed).toEqual(["Game ended! No winner"]);
+  });
+
+  it("UC-035/main step 2 game_ended with a team winner shows the team, not a serial tail (#1935)", () => {
+    expect(fold([["game_ended", { winner: "werewolves", outcome: "winner" }]]).feed).toEqual(["Game ended! Winner: team werewolves"]);
+  });
+
+  it("UC-035/main step 2 game_ended with a serial winner shows the controller (#1935)", () => {
+    expect(fold([["game_ended", { winner: "00:06:f7:aa:bb:cc", outcome: "winner" }]]).feed).toEqual(["Game ended! Winner: b:cc"]);
+  });
+
   it("UC-035/main step 2 game_force_ended shows the Ended state", () => {
     const effect = reduceGameEvent(
       { ...idle, gameState: "Running" },
