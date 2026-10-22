@@ -8,6 +8,7 @@ to the shared force-end path, no-ops without a game). Telemetry is disabled via
 conftest; the intervention metric is patched per the repo convention.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -293,6 +294,54 @@ async def test_controller_effect_no_stream_is_noop():
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # no stream -> defensive no-op (no crash)
+
+
+def _effect_ctx(game, payload):
+    return InterventionContext(
+        spec=next(s for s in INTERVENTION_SPECS if s.flag_key == "controller_effect"),
+        value=payload,
+        payload=payload,
+        target_serial=None,
+        game=game,
+        objective="balanced",
+    )
+
+
+@pytest.mark.uc("UC-030", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_controller_effect_stops_when_the_game_end_closes_the_stream():
+    """The game end cancels the call under the write (#1914): stop, do not raise."""
+    players = {"ctrl_a": FakePlayer("ctrl_a"), "ctrl_b": FakePlayer("ctrl_b")}
+    game = FakeGame(players=players)
+    game.gameplay_stream.write.side_effect = asyncio.CancelledError()
+    mgr, _ = make_manager(game=game)
+    try:
+        await mgr._handle_controller_effect(_effect_ctx(game, ":flash"))
+    except asyncio.CancelledError:
+        pytest.fail("a write on a closed gameplay stream raised CancelledError out of the handler")
+    game.gameplay_stream.write.assert_awaited_once()
+
+
+@pytest.mark.uc("UC-030", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_controller_effect_propagates_a_cancel_of_its_own_task():
+    """A cancel of the dispatching task itself is not swallowed."""
+    players = {"ctrl_a": FakePlayer("ctrl_a")}
+    game = FakeGame(players=players)
+    writing = asyncio.Event()
+
+    async def blocked_write(_cmd):
+        writing.set()
+        await asyncio.Event().wait()
+
+    game.gameplay_stream.write.side_effect = blocked_write
+    mgr, _ = make_manager(game=game)
+    task = asyncio.create_task(mgr._handle_controller_effect(_effect_ctx(game, "ctrl_a:pulse")))
+    await asyncio.wait_for(writing.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
 
 
 # --------------------------------------------------------------------------- #

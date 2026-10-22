@@ -621,8 +621,8 @@ class WerewolfGame(BaseGameMode):
                     await self._end_shield_feedback()
                     await self._end_game_impl()
                     self._record_game_outcome(teardown_span)
-                    # Winner effects are sent: drop the stream reference (as base run()).
-                    self.gameplay_stream = None
+                    # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
+                    self._release_gameplay_stream()
 
                 game_span.set_status(Status(StatusCode.OK))
 
@@ -639,4 +639,3 @@ class WerewolfGame(BaseGameMode):
                 if force_ended:
                     await self.on_force_end()
                 await self._cleanup_after_run()
-                self.gameplay_stream = None
