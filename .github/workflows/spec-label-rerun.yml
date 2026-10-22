@@ -45,16 +45,27 @@ jobs:
             echo "No CI run for $HEAD_SHA; nothing to re-run."
             exit 0
           fi
-          status=$(gh run view "$run_id" --json status --jq .status)
+          status=$(gh run view "$run_id" --json status --jq .status) || {
+            echo "::warning::Could not read CI run $run_id; re-add the label to retry."
+            exit 0
+          }
           if [ "$status" != "completed" ]; then
             # A job can only be re-run once its run has finished. If the Spec Gate
             # has not started yet it reads the new label itself; re-running after
             # the run finishes is harmless either way.
             echo "CI run $run_id is $status; waiting for it to finish"
-            gh run watch "$run_id" --interval 30 > /dev/null || true
+            # Bounded below the job's timeout-minutes (60): a timed-out job is a red
+            # check that safe-merge reads as CI RED. 50 min leaves room for the steps after.
+            if ! timeout 50m gh run watch "$run_id" --interval 30 > /dev/null; then
+              echo "::warning::CI run $run_id not finished after 50 min (or watch failed); re-add the label to retry."
+              exit 0
+            fi
           fi
           job=$(gh run view "$run_id" --json jobs \
-                  --jq '.jobs[] | select(.name == "Spec Gate" and .conclusion != "skipped") | .databaseId' | head -n1)
+                  --jq '.jobs[] | select(.name == "Spec Gate" and .conclusion != "skipped") | .databaseId' | head -n1) || {
+            echo "::warning::Could not read the jobs of CI run $run_id; re-add the label to retry."
+            exit 0
+          }
           if [ -z "$job" ]; then
             echo "CI run $run_id has no Spec Gate job that ran (no spec/code change); nothing to re-run."
             exit 0
@@ -62,7 +73,10 @@ jobs:
           # A push while waiting gives the new head its own run, which reads the
           # labels itself. Re-running the old head's run would cancel that run
           # (same ci.yml concurrency group).
-          head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha)
+          head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha) || {
+            echo "::warning::Could not read the PR head; re-add the label to retry."
+            exit 0
+          }
           if [ "$head" != "$HEAD_SHA" ]; then
             echo "PR head moved to $head; its own CI run reads the labels."
             exit 0

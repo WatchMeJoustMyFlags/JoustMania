@@ -242,9 +242,9 @@ for variant in success inprogress; do
   esac
   view "$GREEN" "$full" "$(check "$FULL" COMPLETED SKIPPED 260 'ci-full label')"
   run 42 abcdef1
-  case "$variant" in
-    success|inprogress) [[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "10c $variant: rc=$RC $OUT" ;;
-  esac
+  # The inprogress variant pins the accepted gap (an IN_PROGRESS run of another workflow
+  # does not block the merge). Flip its expectation if that gap is closed.
+  [[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "10c $variant: rc=$RC $OUT"
 done
 reset
 view "$GREEN" "$(check "$FULL" COMPLETED FAILURE 250 'ci-full label')"
