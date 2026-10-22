@@ -139,12 +139,14 @@ def test_dry_run_seeds_the_experiment_through_the_flag_not_the_env():
         assert not names & removed, (
             f"a compose layer still sets {sorted(names & removed)}"
         )
-    source = (REPO_ROOT / "services" / "agent").glob("*.go")
-    assert not any(
-        "AGENT_EXPERIMENT_SEED_" in path.read_text()
-        for path in source
-        if not path.name.endswith("_test.go")
-    )
+    # The agent reads no seed env: no Go string literal names one (comments may).
+    literal = re.compile(r'"AGENT_EXPERIMENT_SEED_\w*"')
+    readers = [
+        path.name
+        for path in (REPO_ROOT / "services" / "agent").glob("*.go")
+        if not path.name.endswith("_test.go") and literal.search(path.read_text())
+    ]
+    assert not readers, f"the agent still names a seed env var in {readers}"
 
 
 @pytest.mark.uc("UC-070", br=["BR-007"])
