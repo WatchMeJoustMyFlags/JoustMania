@@ -298,10 +298,30 @@ async def test_force_end_during_formation_ends_the_drain():
     await _stop(game, task, client)
 
     assert time.monotonic() - started < 2.0
-    assert drain.done()
+    # The stop in run()'s finally ended it; a cancel from cleanup() would cancel the call.
+    assert drain.done() and not drain.cancelled()
     assert game._tasks == set()
     assert log.events.count_events_of_type(GameEvent.COUNTDOWN_START) == 0
     assert game.force_ended
+
+
+@pytest.mark.uc("UC-021", flow="A1")
+@pytest.mark.asyncio
+async def test_cancelling_the_drain_is_not_swallowed():
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _random_teams(log, client)
+    await game._initialize_players()
+    await game._start_gameplay_stream()
+    game._start_early_stream_drain()
+    drain = game._early_drain_task
+    await asyncio.sleep(0.05)
+
+    drain.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await drain
+    assert drain.cancelled()
+    client.streams[0].producer.cancel()
 
 
 @pytest.mark.uc("UC-020", flow="main", steps=[1])

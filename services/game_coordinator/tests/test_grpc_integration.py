@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import grpc
 import grpc.aio
 import pytest
 import pytest_asyncio
@@ -542,12 +543,21 @@ async def _async_noop(*_args, **_kwargs):
 
 
 class _FrameServer(controller_manager_pb2_grpc.ControllerManagerServiceServicer):
-    """Real gRPC gameplay stream: numbered frames every 10 ms (timestamp = sequence)."""
+    """Real gRPC gameplay stream: numbered frames every 10 ms (timestamp = sequence).
 
-    def __init__(self, serials):
+    ``first_call_fault`` breaks only the first call after 5 frames: "abort" ends it
+    with UNAVAILABLE (a controller-manager restart), "stall" sends nothing more.
+    """
+
+    def __init__(self, serials, first_call_fault=None):
         self.serials = serials
+        self.first_call_fault = first_call_fault
+        self.calls = 0
 
     async def StreamGameplayData(self, request_iterator, context):  # noqa: N802 - gRPC method name
+        self.calls += 1
+        faulty = self.calls == 1 and self.first_call_fault is not None
+
         async def read_client():
             async for _ in request_iterator:
                 pass
@@ -556,6 +566,10 @@ class _FrameServer(controller_manager_pb2_grpc.ControllerManagerServiceServicer)
         try:
             seq = 0
             while True:
+                if faulty and seq == 5:
+                    if self.first_call_fault == "abort":
+                        await context.abort(grpc.StatusCode.UNAVAILABLE, "controller manager restart")
+                    await asyncio.Event().wait()
                 yield controller_manager_pb2.GameplayDataUpdate(
                     controllers=[
                         controller_manager_pb2.GameplayData(
@@ -628,6 +642,55 @@ class TestEarlyStreamDrain:
             await asyncio.wait_for(game._game_loop(), timeout=5)
             assert len(processed) >= 3, "the game loop got no frame after the drain stopped"
             assert processed == sorted(processed)
+        finally:
+            await channel.close()
+            await server.stop(grace=0)
+
+    @pytest.mark.uc("UC-021", flow="A1")
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fault", ["abort", "stall"])
+    async def test_stream_broken_during_formation_is_reopened_and_the_game_runs(self, fault):
+        """An error, or no frame at the drain stop, finished the call: it is opened once more."""
+        from services.game_coordinator.games import random_teams
+
+        serials = ["p0", "p1", "p2", "p3"]
+        frame_server = _FrameServer(serials, first_call_fault=fault)
+        server = grpc.aio.server()
+        controller_manager_pb2_grpc.add_ControllerManagerServiceServicer_to_server(frame_server, server)
+        port = server.add_insecure_port("[::]:0")
+        await server.start()
+        channel = grpc.aio.insecure_channel(f"localhost:{port}")
+        events = []
+
+        async def publish(event_type, _data=None, *_args, **_kwargs):
+            events.append(str(event_type))
+
+        try:
+            with patch.object(random_teams, "TEAM_FORMATION_DURATION", 1):
+                game = random_teams.RandomTeamsGame(
+                    controller_manager_client=controller_manager_pb2_grpc.ControllerManagerServiceStub(channel),
+                    event_publisher=publish,
+                    game_id=f"test_early_drain_{fault}",
+                    num_teams=2,
+                    initial_players=[game_coordinator_pb2.Player(serial=s) for s in serials],
+                    rng_seed=7,
+                )
+                processed = []
+                real_process = game._process_gameplay_update
+
+                async def process(update):
+                    processed.append(update.timestamp)
+                    if len(processed) >= 3:
+                        game.force_end("test_done")
+                    return await real_process(update)
+
+                game._process_gameplay_update = process
+                await asyncio.wait_for(game.run(), timeout=20)
+
+            assert GameEvent.GAME_ERROR.value not in events
+            assert GameEvent.COUNTDOWN_START.value in events
+            assert len(processed) >= 3, "the game loop got no frame after the stream broke in the formation"
+            assert frame_server.calls == 2, "the broken formation stream was not reopened exactly once"
         finally:
             await channel.close()
             await server.stop(grace=0)
