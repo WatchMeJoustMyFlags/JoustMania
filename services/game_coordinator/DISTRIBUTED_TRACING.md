@@ -82,26 +82,35 @@ StartGame (incoming RPC to GameCoordinator)
 │   ├── countdown_phase
 │   ├── gameplay_phase
 │   │   ├── StreamGameplayData → ControllerManager
-│   │   ├── player_mock_controller_0_lifecycle (stays open)
-│   │   │   ├── player_death (event)
-│   │   │   ├── player_respawn (event)
-│   │   │   └── player_death (event)
-│   │   ├── player_mock_controller_1_lifecycle (stays open)
-│   │   │   ├── player_death (event)
-│   │   │   └── player_respawn (event)
-│   │   └── player_mock_controller_2_lifecycle (stays open)
-│   │       └── player_death (event)
+│   │   └── players
+│   │       ├── player_mock_controller_0_lifecycle (open until gameplay_phase ends)
+│   │       │   ├── countdown_phase
+│   │       │   ├── player_death (event)
+│   │       │   ├── player_respawned (event)
+│   │       │   ├── player_death (event)
+│   │       │   └── final_score (event)
+│   │       ├── player_mock_controller_1_lifecycle
+│   │       │   ├── player_death (event)
+│   │       │   ├── player_respawned (event)
+│   │       │   └── final_score (event)
+│   │       └── player_mock_controller_2_lifecycle
+│   │           ├── player_death (event)
+│   │           └── final_score (event)
 │   └── teardown_phase
-│       ├── final_scores (event)
-│       └── winner_determined (event)
+│       └── game.outcome (event)
 └── game_ended (event)
 ```
+
+NonStop opens one lifecycle span per player, under `players` like the other modes (#1955, #1338;
+before that its game loop opened a second set directly under `gameplay_phase` and the first set,
+with the `countdown_phase` children, never ended). The `final_score` event is added when the
+spans close at the end of `gameplay_phase` (`_close_all_player_spans`), before the winner is known.
 
 **Key Differences:**
 - **FFA**: Flat player hierarchy, players die permanently (spans end)
 - **Teams**: Hierarchical (team → player), team-based win condition
 - **Random Teams**: Same as Teams + `team_formation_phase` before countdown
-- **Nonstop Joust**: Player spans stay open, death events only, scoring-based winner
+- **Nonstop Joust**: Player spans stay open while the player respawns (death and respawn events), close with a `final_score` event; scoring-based winner only on a time-limit end (UC-026 BR-003)
 
 ## Context Propagation
 

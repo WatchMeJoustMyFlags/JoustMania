@@ -850,6 +850,36 @@ class TestGameplayStreamRelease:
             "the stream closed before the winner effect arrived"
         )
 
+    @pytest.mark.uc("UC-026", flow="main", steps=[3])
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    async def test_nonstop_natural_end_releases_the_stream_after_the_winner_effect(self, frame_server):
+        """[NonStop] its own loop's call stays open for the winner rainbow; teardown closes it (#1932)."""
+        from services.game_coordinator.games import nonstop_joust
+        from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
+
+        game = NonstopJoustGame(
+            controller_manager_client=frame_server.stub,
+            event_publisher=_async_noop,
+            game_id="test_stream_release_nonstop",
+            initial_players=[game_coordinator_pb2.Player(serial=s) for s in self.SERIALS],
+            time_limit_seconds=0.3,
+        )
+        game._countdown = _async_noop
+        with patch.object(nonstop_joust, "WINNER_HOLD_SECONDS", 0.2):
+            await asyncio.wait_for(game.run(), timeout=10)
+
+        assert game._time_limit_reached
+        assert game.game_outcome() == "completed"
+        # The countdown call and NonStop's own game call, both closed
+        assert len(frame_server.opened) == 2
+        assert await _wait_until(frame_server.all_closed), "the gameplay call stayed open after the game"
+        rainbow = controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        delivered = frame_server.received[: max(frame_server.received_at_release)]
+        assert any(m.HasField("game_effect") and m.game_effect.effect == rainbow for m in delivered), (
+            "the stream closed before the winner effect arrived"
+        )
+
     @pytest.mark.uc("UC-030", br=["BR-006"])
     @pytest.mark.asyncio
     async def test_werewolf_natural_end_releases_the_stream_after_the_winner_effect(self, frame_server):

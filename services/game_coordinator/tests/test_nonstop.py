@@ -8,12 +8,15 @@ Tests the core Nonstop mechanics:
 - Time-based win condition
 """
 
+import asyncio
 import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import create_autospec, patch
 
 import pytest
+from opentelemetry import trace
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -23,13 +26,18 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService, async_noop
+from test_random_teams_formation import SERIALS, QueueControllerManager, QueueStream, RecordingLog, _players, _wait_for
 
+from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator.games import nonstop_joust as nonstop_mod
+from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.nonstop_joust import (
     RESPAWN_DURATION,
     NonstopJoustGame,
     NonstopPlayer,
 )
+from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
 
 
 class MockGameplayStream:
@@ -268,6 +276,7 @@ class TestNonstopRespawn:
             audio_client=None,
             game_id="test_nonstop_respawn",
         )
+        game.state = GameState.RUNNING  # a respawn is refused outside RUNNING (UC-026 BR-003)
 
         return game, mock_controller_manager, event_collector
 
@@ -701,6 +710,7 @@ class TestNonstopUpdateRespawnTimers:
             audio_client=None,
             game_id="test_nonstop_respawn_timers",
         )
+        game.state = GameState.RUNNING  # a respawn is refused outside RUNNING (UC-026 BR-003)
 
         return game, mock_controller_manager, event_collector
 
@@ -800,6 +810,7 @@ class TestNonstopEndGameImpl:
         game.gameplay_stream = RecordingGameplayStream()
         game.start_time = time.time()
         game.state = GameState.RUNNING
+        game._time_limit_reached = True  # only a time-limit end has a winner (UC-026 BR-003)
         game.running = False  # Skip celebration sleep
 
         await game._end_game_impl()
@@ -853,6 +864,7 @@ class TestNonstopEndGameImpl:
         game.gameplay_stream = stream
         game.start_time = time.time()
         game.state = GameState.RUNNING
+        game._time_limit_reached = True  # only a time-limit end has a winner (UC-026 BR-003)
         game.running = False
 
         await game._end_game_impl()
@@ -1042,6 +1054,375 @@ class TestNonstopStreamSwap:
         await game._game_loop()
 
         # The new call claims the players with its config first; only then the
-        # countdown call closes; the game's own call closes when the loop ends.
-        assert order == ["game.write", "countdown.cancel", "game.cancel"]
+        # countdown call closes. The game's own call stays open for the end-game
+        # step: run()'s teardown or cleanup() closes it (UC-026 step 3, #1932).
+        assert order == ["game.write", "countdown.cancel"]
+        assert game.gameplay_stream is game_call
+
+
+# ---------------------------------------------------------------------------
+# UC-026 step 3, A1, BR-003 (#1338, #1932, #1343, #1585, #1954): end of game.
+# The run tests go through the real run() with #1912's queue stream, returned by
+# the StreamGameplayData stub (NonStop opens its own stream in _game_loop). They
+# patch the 2 s winner hold through its module constant, never the global clock.
+# ---------------------------------------------------------------------------
+
+RAINBOW = controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+
+
+class _ClosableQueueStream(QueueStream):
+    """A queue stream that logs its cancel and can end like a server-side close.
+
+    A write after the call ended or was cancelled raises, like a finished
+    grpc.aio call. ``end_after`` ends the stream after that many frames.
+    """
+
+    def __init__(self, log, end_after=None):
+        super().__init__(log)
+        self.end_after = end_after
+        self.read = 0
+        self.finished = False
+
+    def cancel(self):
+        self.finished = True
+        self.log.entries.append(("cancel", self))
+        if self.producer:
+            self.producer.cancel()
+        return True
+
+    async def write(self, message):
+        if self.finished:
+            raise RuntimeError("write on a finished gameplay call")
+        await super().write(message)
+
+    async def __anext__(self):
+        if self.end_after is not None and self.read >= self.end_after:
+            self.finished = True
+            raise StopAsyncIteration
+        self.read += 1
+        return await super().__anext__()
+
+
+class _NonstopControllerManager(QueueControllerManager):
+    """The first call is run()'s countdown stream, the second NonStop's own game stream."""
+
+    def __init__(self, log, end_game_stream_after=None):
+        super().__init__(log)
+        self.end_game_stream_after = end_game_stream_after
+
+    def StreamGameplayData(self):  # noqa: N802 - gRPC stub method name
+        end_after = self.end_game_stream_after if self.streams else None
+        stream = _ClosableQueueStream(self.log, end_after=end_after)
+        self.streams.append(stream)
+        return stream
+
+
+@pytest.fixture
+def fast_nonstop():
+    """No countdown and a short winner hold."""
+    config = GamePerformanceConfig(countdown_phase_duration_ms=0)
+    with (
+        patch.object(get_config_manager(), "get_config", return_value=config),
+        patch.object(nonstop_mod, "WINNER_HOLD_SECONDS", 0.2),
+    ):
+        yield config
+
+
+def _nonstop_run_game(log, client, time_limit):
+    return NonstopJoustGame(
+        controller_manager_client=client,
+        event_publisher=log.publish,
+        audio_client=None,
+        game_id="test_nonstop_end",
+        initial_players=_players(),
+        time_limit_seconds=time_limit,
+    )
+
+
+def _record_sounds(game) -> list:
+    sounds = []
+
+    async def play(sound, *_args, **_kwargs):
+        sounds.append(sound)
+
+    game._play_sound = play
+    return sounds
+
+
+def _stop_producers(client):
+    for stream in client.streams:
+        if stream.producer:
+            stream.producer.cancel()
+
+
+def _rainbow_writes(log) -> list[int]:
+    return [i for i, e in log.writes("game_effect") if e.effect == RAINBOW]
+
+
+def _assert_no_winner(log, sounds):
+    assert log.events.get_events_of_type(GameEvent.GAME_WINNER) == []
+    assert _rainbow_writes(log) == []
+    assert Sound.VOX_CONGRATULATIONS not in sounds
+    for summary in log.events.get_events_of_type(GameEvent.PLAYER_ANALYTICS):
+        assert summary["winner"] is False
+
+
+class _FrameCall:
+    """Endless gameplay call (empty frames every 5 ms) that records writes."""
+
+    def __init__(self):
+        self.messages = []
+        self.cancelled = False
+
+    async def write(self, message):
+        self.messages.append(message)
+
+    def cancel(self):
+        self.cancelled = True
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(0.005)
+        return controller_manager_pb2.GameplayDataUpdate()
+
+
+async def _loop_game(time_limit=0.05):
+    events = EventCollector()
+    client = MockControllerManagerService(num_controllers=4, death_schedule={})
+    game = NonstopJoustGame(
+        controller_manager_client=client,
+        event_publisher=events.publish,
+        audio_client=None,
+        game_id="test_nonstop_latch",
+        time_limit_seconds=time_limit,
+    )
+    await game._initialize_players_impl(client.controllers)
+    call = _FrameCall()
+    game.controller_client = SimpleNamespace(StreamGameplayData=lambda: call)
+    game.state = GameState.RUNNING
+    game.running = True
+    return game, events, call
+
+
+class TestNonstopEndOfGame:
+    """UC-026 step 3, A1 and BR-003: the time limit, the winner and the stream at the end."""
+
+    @pytest.mark.uc("UC-026", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_time_limit_ends_the_game_and_the_rainbow_goes_out_before_the_stream_closes(self, fast_nonstop):
+        log = RecordingLog()
+        client = _NonstopControllerManager(log)
+        game = _nonstop_run_game(log, client, time_limit=0.3)
+        sounds = _record_sounds(game)
+        span_serials = []
+        create_span = game._create_player_lifecycle_span
+
+        def spy(serial, context=None):
+            span_serials.append(serial)
+            return create_span(serial, context)
+
+        game._create_player_lifecycle_span = spy
+        try:
+            # Ends by itself: the clock starts at the first frame (#1338)
+            await asyncio.wait_for(game.run(), timeout=5)
+        finally:
+            _stop_producers(client)
+
+        assert len(client.streams) == 2, "the countdown stream and NonStop's own game stream"
+        game_stream = client.streams[1]
+        winners = log.events.get_events_of_type(GameEvent.GAME_WINNER)
+        assert len(winners) == 1
+        ended = log.events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert len(ended) == 1
+        assert ended[0]["duration"] > 0
+        assert ended[0]["outcome"] == "completed"
+        assert ended[0]["winner"] == winners[0]["serial"]
+        assert "reason" not in ended[0]
+        assert Sound.VOX_CONGRATULATIONS in sounds
+
+        # The rainbow goes over the game stream, which closes only afterwards (#1932)
+        rainbow_at = _rainbow_writes(log)
+        cancel_at = [i for i, (kind, value) in enumerate(log.entries) if kind == "cancel" and value is game_stream]
+        assert rainbow_at, "no winner rainbow"
+        assert cancel_at, "the game stream was never closed"
+        assert rainbow_at[0] < cancel_at[0]
         assert game.gameplay_stream is None
+
+        # One lifecycle span per player (the loop no longer opens a second set)
+        assert sorted(span_serials) == sorted(SERIALS)
+
+    @pytest.mark.uc("UC-026", flow="A1", br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_force_end_of_an_unlimited_game_declares_no_winner(self, fast_nonstop):
+        log = RecordingLog()
+        client = _NonstopControllerManager(log)
+        game = _nonstop_run_game(log, client, time_limit=0)
+        sounds = _record_sounds(game)
+        task = asyncio.create_task(game.run())
+        try:
+            await _wait_for(lambda: len(client.streams) == 2 and client.streams[1].read >= 5)
+            game.force_end("operator")
+            await asyncio.wait_for(task, timeout=5)
+        finally:
+            _stop_producers(client)
+
+        _assert_no_winner(log, sounds)
+        ended = log.events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert len(ended) == 1
+        assert ended[0]["outcome"] == "force_ended"
+        assert ended[0]["reason"] == "operator"
+        assert ended[0]["winner"] == "none"
+        assert ended[0]["duration"] > 0
+
+    @pytest.mark.uc("UC-026", br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_a_stream_the_server_ends_declares_no_winner_without_error_or_hold(self, fast_nonstop):
+        log = RecordingLog()
+        client = _NonstopControllerManager(log, end_game_stream_after=5)
+        game = _nonstop_run_game(log, client, time_limit=0)
+        sounds = _record_sounds(game)
+        try:
+            # A 30 s winner hold would time this out: no winner, so no hold
+            with patch.object(nonstop_mod, "WINNER_HOLD_SECONDS", 30.0):
+                await asyncio.wait_for(game.run(), timeout=5)
+        finally:
+            _stop_producers(client)
+
+        assert client.streams[1].finished
+        assert log.events.get_events_of_type(GameEvent.GAME_ERROR) == []
+        _assert_no_winner(log, sounds)
+        ended = log.events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert len(ended) == 1
+        assert ended[0]["outcome"] == "completed"
+        assert ended[0]["winner"] == "none"
+
+    @pytest.mark.uc("UC-026", br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_force_end_earlier_in_the_time_limit_frame_declares_no_winner(self):
+        game, events, call = await _loop_game()
+        real_update = game._update_respawn_timers
+        forced = []
+
+        async def force_end_then_update():
+            if not forced:
+                await asyncio.sleep(0.06)  # past the time limit
+                game.force_end("operator")
+                forced.append(True)
+            await real_update()
+
+        game._update_respawn_timers = force_end_then_update
+        await asyncio.wait_for(game._game_loop(), timeout=5)
+        assert game._time_limit_reached, "the time limit was detected in the same frame"
+        game._latch_game_outcome()  # what _run_gameplay_phase does next
+        await game._end_game_impl()
+
+        assert events.get_events_of_type(GameEvent.GAME_WINNER) == []
+        assert not [m for m in call.messages if m.HasField("game_effect")]
+        ended = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert ended[0]["outcome"] == "force_ended"
+        assert ended[0]["winner"] == "none"
+
+    @pytest.mark.uc("UC-026", br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_server_ending_the_stream_after_the_time_limit_latch_keeps_the_winner(self):
+        game, events, call = await _loop_game()
+        finished = []
+
+        async def write(message):
+            if finished:
+                raise RuntimeError("write on a finished gameplay call")
+            call.messages.append(message)
+
+        call.write = write
+        call.done = lambda: bool(finished)
+        await asyncio.wait_for(game._game_loop(), timeout=5)
+        assert game._time_limit_reached
+        game._latch_game_outcome()
+        finished.append(True)  # the controller manager ends the stream here
+        await game._end_game_impl()
+
+        assert events.get_events_of_type(GameEvent.GAME_ERROR) == []
+        winners = events.get_events_of_type(GameEvent.GAME_WINNER)
+        assert len(winners) == 1
+        assert not [m for m in call.messages if m.HasField("game_effect")]
+        ended = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert ended[0]["outcome"] == "completed"
+        assert ended[0]["winner"] == winners[0]["serial"]
+
+    @pytest.mark.uc("UC-026", br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_force_end_after_the_time_limit_latch_keeps_the_winner(self):
+        game, events, call = await _loop_game()
+        await asyncio.wait_for(game._game_loop(), timeout=5)
+        game.force_end("late")  # during the winner hold
+        game._latch_game_outcome()
+        await game._end_game_impl()
+
+        winners = events.get_events_of_type(GameEvent.GAME_WINNER)
+        assert len(winners) == 1
+        assert [m for m in call.messages if m.HasField("game_effect") and m.game_effect.effect == RAINBOW]
+        ended = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert ended[0]["outcome"] == "completed"
+        assert ended[0]["winner"] == winners[0]["serial"]
+
+    @pytest.mark.uc("UC-026", br=["BR-003"])
+    @pytest.mark.parametrize("case", ["stream_closed", "outcome_latched", "not_running"])
+    @pytest.mark.asyncio
+    async def test_revive_after_the_game_is_over_is_refused_without_a_write(self, case):
+        events = EventCollector()
+        client = MockControllerManagerService(num_controllers=2, death_schedule={})
+        game = NonstopJoustGame(
+            controller_manager_client=client,
+            event_publisher=events.publish,
+            audio_client=None,
+            game_id="test_nonstop_revive_refused",
+        )
+        await game._initialize_players_impl(client.controllers)
+        game.state = GameState.RUNNING
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        serial = next(iter(game.players))
+        player = game.players[serial]
+        player.alive = False
+        grace_before = player.grace_until
+        if case == "stream_closed":
+            game._release_gameplay_stream()
+        elif case == "outcome_latched":
+            game._latch_game_outcome()
+        else:
+            game.state = GameState.ENDING
+
+        assert await game.revive_player(serial) is False
+        assert player.alive is False
+        assert player.spawn_protected is False
+        assert player.grace_until == grace_before
+        assert stream.messages == []
+        assert events.get_events_of_type("player_respawned") == []
+
+    @pytest.mark.uc("UC-026", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_player_spans_close_with_the_final_score(self):
+        client = MockControllerManagerService(num_controllers=2, death_schedule={})
+        game = NonstopJoustGame(
+            controller_manager_client=client,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_nonstop_final_score",
+        )
+        await game._initialize_players_impl(client.controllers)
+        spans = {}
+        for deaths, (serial, player) in enumerate(game.players.items()):
+            player.deaths = deaths * 3
+            player.span = spans[serial] = create_autospec(trace.Span, instance=True)
+
+        game._close_all_player_spans()
+
+        for deaths, (serial, span) in enumerate(spans.items()):
+            final = [c for c in span.add_event.call_args_list if c.args[0] == "final_score"]
+            assert len(final) == 1
+            assert final[0].args[1]["score"] == max(0, 100 - deaths * 3 * 10)
+            assert final[0].args[1]["deaths"] == deaths * 3
+            span.end.assert_called_once()
+            assert game.players[serial].span is None

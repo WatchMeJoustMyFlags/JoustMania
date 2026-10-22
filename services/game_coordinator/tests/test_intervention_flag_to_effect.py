@@ -37,7 +37,7 @@ from openfeature.flag_evaluation import FlagEvaluationDetails
 from lib.types import GameEvent
 from services.game_coordinator import difficulty_handlers as dh
 from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
-from services.game_coordinator.games.base import Player, resolve_music_windows
+from services.game_coordinator.games.base import GameState, Player, resolve_music_windows
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
 from services.game_coordinator.interventions import (
@@ -257,6 +257,7 @@ async def test_revive_applies_in_respawn_mode():
         game_id="test_flag_to_effect_nonstop",
     )
     game.gameplay_stream = RecordingGameplayStream()
+    game.state = GameState.RUNNING  # NonStop refuses a revive outside RUNNING (UC-026 BR-003)
     await game._initialize_players_impl(mock_cm.controllers)
     victim = next(iter(game.players))
     game.players[victim].alive = False
