@@ -209,16 +209,16 @@ class TestMotionThroughput:
                 samples.append((time.process_time() - start) * 1000.0)
             return statistics.median(samples)
 
-        mean_4 = await median_cpu_frame_ms(4)
-        mean_8 = await median_cpu_frame_ms(8)
+        median_4 = await median_cpu_frame_ms(4)
+        median_8 = await median_cpu_frame_ms(8)
 
         # Doubling controllers should increase time by at most 3x
         # (allows for overhead; perfect scaling would be 2x)
-        scaling_factor = mean_8 / mean_4 if mean_4 > 0 else float("inf")
+        scaling_factor = median_8 / median_4 if median_4 > 0 else float("inf")
 
         print("\n--- Scaling test ---")
-        print(f"  4 controllers median CPU: {mean_4:.3f}ms")
-        print(f"  8 controllers median CPU: {mean_8:.3f}ms")
+        print(f"  4 controllers median CPU: {median_4:.3f}ms")
+        print(f"  8 controllers median CPU: {median_8:.3f}ms")
         print(f"  Scaling factor:     {scaling_factor:.2f}x (ideal=2.0x)")
 
         assert scaling_factor < 3.0, (
