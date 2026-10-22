@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import grpc
 import pytest
 from openfeature import api
 from openfeature import transaction_context as tc
@@ -26,10 +25,12 @@ test_dir = Path(__file__).parent
 sys.path.insert(0, str(test_dir.parent.parent.parent))
 sys.path.insert(0, str(test_dir))
 
+from run_fakes import FirstStreamDeadControllerManager
+from run_fakes import event_order as _event_order
+from run_fakes import name as _name
 from test_random_teams_formation import (
     SERIALS,
     QueueControllerManager,
-    QueueStream,
     RecordingLog,
     _players,
     _stop,
@@ -69,14 +70,6 @@ def _werewolf(log, client, *, players=None, reveal_time=30.0) -> WerewolfGame:
         reveal_time_seconds=reveal_time,
         rng_seed=7,
     )
-
-
-def _name(event) -> str:
-    return getattr(event, "value", event)
-
-
-def _event_order(log: RecordingLog) -> list[str]:
-    return [_name(value) for kind, value in log.entries if kind == "event"]
 
 
 @pytest.mark.uc("UC-022", flow="A1", steps=[2])
@@ -251,40 +244,6 @@ async def test_disconnect_read_by_the_warmup_eliminates_the_player():
     assert len(client.streams) == 1
 
 
-class StreamDeadAfterConfig:
-    """A gameplay call that breaks right after its config write: later writes and reads raise."""
-
-    producer = None
-
-    def __init__(self, log: RecordingLog):
-        self.log = log
-        self.configured = False
-
-    def _error(self) -> grpc.aio.AioRpcError:
-        return grpc.aio.AioRpcError(grpc.StatusCode.UNAVAILABLE, None, None, "stream broke")
-
-    async def write(self, message):
-        if self.configured:
-            raise self._error()
-        self.log.entries.append(("write", message))
-        self.configured = message.HasField("config")
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        raise self._error()
-
-
-class FirstStreamDeadControllerManager(QueueControllerManager):
-    """The first gameplay call dies after its config write; every reopened call is healthy."""
-
-    def StreamGameplayData(self):  # noqa: N802 - gRPC stub method name
-        stream = StreamDeadAfterConfig(self.log) if not self.streams else QueueStream(self.log, **self.stream_kwargs)
-        self.streams.append(stream)
-        return stream
-
-
 @pytest.mark.uc("UC-022", flow="A1", steps=[2])
 @pytest.mark.asyncio
 async def test_stream_dead_before_the_intro_writes_reopens_instead_of_ending_the_game():
@@ -300,6 +259,30 @@ async def test_stream_dead_before_the_intro_writes_reopens_instead_of_ending_the
     assert log.events.count_events_of_type(GameEvent.COUNTDOWN_START) == 1
     assert log.events.count_events_of_type(GameEvent.GAME_ERROR) == 0
     assert len(log.writes("config")) == 2
+
+
+@pytest.mark.uc("UC-022", flow="A1", steps=[2])
+@pytest.mark.asyncio
+async def test_early_stream_is_not_reopened_when_the_intro_raises():
+    """``reopen=phases_completed``: a failed intro leaves the dead stream closed (one stream only)."""
+    log = RecordingLog()
+    client = FirstStreamDeadControllerManager(log)
+    game = _werewolf(log, client)
+
+    class FailingIntro:
+        name = "failing_intro"
+
+        async def execute(self):
+            await asyncio.sleep(0.1)  # the drain meets the dead stream first
+            raise RuntimeError("intro failed")
+
+    game._get_additional_phases = lambda: [FailingIntro()]
+
+    with pytest.raises(RuntimeError, match="intro failed"):
+        await asyncio.wait_for(game.run(), timeout=10)
+
+    assert len(client.streams) == 1, "no reopen after a failed phase"
+    assert log.events.count_events_of_type(GameEvent.COUNTDOWN_START) == 0
 
 
 @pytest.mark.uc("UC-022", br=["BR-001"], cond=["Pre-1"])

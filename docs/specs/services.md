@@ -194,7 +194,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 `tournament_champion`, `tournament_no_winner`, `player_death` (NonStop and JoustFFA), `player_respawned`,
 `agent_intervention`, `player_shielded`, `player_shield_charged`, `player_shield_charge_ended` (#1837). Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `score_update`, `team_eliminated`.
 
-**Traceability:** FR-020 to FR-029 / UC-010, UC-020 to UC-027, UC-043 / `proto/game_coordinator.proto`, `services/game_coordinator/` / `tests/integration/test_tc002_ffa_game.py`, `tests/integration/test_parallel_lifecycle.py`.
+**Traceability:** FR-020 to FR-029 / UC-010, UC-020 to UC-027, UC-043 / `proto/game_coordinator.proto`, `services/game_coordinator/` / `tests/integration/test_tc002_ffa_game.py`, `tests/service/test_tc017_parallel_mode_lifecycle.py`.
 
 ## 5. HTTP endpoints
 

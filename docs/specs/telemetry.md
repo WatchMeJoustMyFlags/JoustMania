@@ -249,7 +249,7 @@ Published on each game's event bus (`StreamGameEvents`) and recorded as span eve
 Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `score_update`,
 `team_eliminated`. Game-ending events for the menu: `game_ended`, `game_force_ended`, `game_error`.
 
-**Traceability:** FR-020 to FR-028 / UC-020 to UC-027 / `services/game_coordinator/` / `tests/integration/test_tc002_ffa_game.py`, `tests/integration/test_parallel_lifecycle.py`.
+**Traceability:** FR-020 to FR-028 / UC-020 to UC-027 / `services/game_coordinator/` / `tests/integration/test_tc002_ffa_game.py`, `tests/service/test_tc017_parallel_mode_lifecycle.py`.
 
 **Cutover note (#1838):** the `partial_shield` intervention was renamed `toughness_boost`. Until the deploy the value of `game_interventions_total{type}`, `intervention.type` and `intervention_type` was `partial_shield`, the span event was `partial_shield_armed` (attributes `partial_shield_seconds`, `partial_shield_boost`) and `shield.kind` / `player_shielded.kind` was `partial`. Metric names and the `intervention.type` / `shield.kind` attribute keys are unchanged; the `toughness_boost_armed` event attributes were renamed (`partial_shield_seconds` to `toughness_boost_seconds`, `partial_shield_boost` to `toughness_boost_factor`); history stays queryable under the old values. Panels that span the deploy show two legend entries.
 
