@@ -374,8 +374,6 @@ class NonstopJoustGame(BaseGameMode):
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
             logger.info(f"Initial alive players: {len(last_alive_serials)}")
 
-            self._current_update_frequency = update_frequency_hz
-
             # Frame metrics as in the base loop (#1963): game_loop_frames_dropped_total,
             # actual Hz, consistency, jitter
             loop_start_time = time.time()
@@ -542,6 +540,7 @@ class NonstopJoustGame(BaseGameMode):
         player.alive = True
         player.respawn_deadline = None  # an agent revive also ends a pending countdown
         player.respawn_timer = 0.0
+        player._last_respawn_color = None  # the next death shows its countdown colour again
         player.spawn_protected = True
         player.spawn_protection_end = time.time() + self.spawn_protection_duration
         # Reset warning state for clean respawn
