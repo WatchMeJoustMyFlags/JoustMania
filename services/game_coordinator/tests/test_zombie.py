@@ -79,6 +79,7 @@ class TestZombieGameMode:
         # 12 players: (12 * 3 / 16) * 60 = 135 seconds
         assert calculate_game_duration(12) == 135.0
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[1])
     @pytest.mark.asyncio
     async def test_player_initialization(self, zombie_game):
         """Test that players are initialized correctly."""
@@ -96,6 +97,7 @@ class TestZombieGameMode:
         assert zombie_count == min(INITIAL_ZOMBIES, 3)  # min(2, 4-1)
         assert human_count == 4 - zombie_count
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[1])
     @pytest.mark.asyncio
     async def test_initial_zombies_marked_correctly(self, zombie_game):
         """Test that initial zombies have correct attributes."""
@@ -109,6 +111,7 @@ class TestZombieGameMode:
             assert player.team == 1
             assert player.color == ZOMBIE_COLOR
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[1])
     @pytest.mark.asyncio
     async def test_initial_humans_marked_correctly(self, zombie_game):
         """Test that initial humans have correct attributes."""
@@ -122,6 +125,7 @@ class TestZombieGameMode:
             assert player.team == 0
             assert player.color == HUMAN_COLOR
 
+    @pytest.mark.uc("UC-023", flow="A1")
     @pytest.mark.asyncio
     async def test_win_condition_all_humans_converted(self, zombie_game):
         """Test that zombies win when all humans are converted."""
@@ -148,6 +152,7 @@ class TestZombieGameMode:
         assert len(winner_events) == 1
         assert winner_events[0]["winner"] == "zombies"
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[5])
     @pytest.mark.asyncio
     async def test_win_condition_time_expired_humans_survive(self, zombie_game):
         """Test that humans win when time expires with survivors."""
@@ -218,6 +223,7 @@ class TestZombieGameMode:
             assert hasattr(player, "is_zombie")
             assert hasattr(player, "respawn_until")
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[2])
     @pytest.mark.asyncio
     async def test_game_duration_set_on_init(self, zombie_game):
         """Test that game duration is calculated on player init."""
@@ -253,6 +259,7 @@ class TestZombieKillMechanics:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[3])
     @pytest.mark.asyncio
     async def test_human_killed_becomes_zombie(self, zombie_game):
         """When a human is killed, they should become a zombie."""
@@ -278,6 +285,7 @@ class TestZombieKillMechanics:
         assert player.color == ZOMBIE_COLOR
         assert player.alive is True  # Zombies stay alive after conversion
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[3])
     @pytest.mark.asyncio
     async def test_human_conversion_publishes_event(self, zombie_game):
         """Human conversion should publish human_converted event."""
@@ -298,6 +306,7 @@ class TestZombieKillMechanics:
         assert conversion_events[0]["serial"] == human_serial
         assert conversion_events[0]["remaining_humans"] == initial_human_count - 1
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[3])
     @pytest.mark.asyncio
     async def test_human_conversion_sets_grace_period(self, zombie_game):
         """Conversion must grant grace so the death spike that converted the
@@ -319,6 +328,7 @@ class TestZombieKillMechanics:
         assert player.grace_until >= before + 1.9
         assert player.grace_until <= time.time() + 2.1
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[4])
     @pytest.mark.asyncio
     async def test_zombie_killed_sets_respawn(self, zombie_game):
         """When a zombie is killed, they should be set to respawn."""
@@ -378,6 +388,7 @@ class TestZombieThresholds:
 
         return game, mock_controller_manager
 
+    @pytest.mark.uc("UC-023", br=["BR-002"])
     @pytest.mark.asyncio
     async def test_zombie_returns_zombie_thresholds(self, zombie_game):
         """Zombies should get thresholds from ZOMBIE_THRESHOLDS dict."""
@@ -400,6 +411,7 @@ class TestZombieThresholds:
         expected = ZOMBIE_THRESHOLDS.get(game.sensitivity, (2.1, 2.6))
         assert zombie_thresholds == expected
 
+    @pytest.mark.uc("UC-023", br=["BR-002"])
     @pytest.mark.asyncio
     async def test_human_returns_base_thresholds(self, zombie_game):
         """Humans should return base class thresholds (tuple of warn, death)."""
@@ -433,6 +445,7 @@ class TestZombieThresholds:
             f"Zombie death threshold {zombie_thresh[1]} should be > human {human_thresh[1]}"
         )
 
+    @pytest.mark.uc("UC-023", br=["BR-002"])
     @pytest.mark.asyncio
     async def test_zombie_survives_accel_that_kills_human(self, zombie_game):
         """Integration test: acceleration between human and zombie death thresholds kills human but not zombie."""
@@ -473,6 +486,7 @@ class TestZombieThresholds:
         assert game.players[human_serial].is_zombie, "Human should have been converted to zombie"
         assert game.players[zombie_serial].alive, "Zombie should survive mid-range acceleration"
 
+    @pytest.mark.uc("UC-023", br=["BR-002"])
     @pytest.mark.asyncio
     async def test_zombie_thresholds_all_sensitivities(self, zombie_game):
         """All 5 sensitivity levels should return valid tuples from ZOMBIE_THRESHOLDS."""
@@ -491,6 +505,7 @@ class TestZombieThresholds:
             expected = ZOMBIE_THRESHOLDS[sensitivity]
             assert thresh == expected, f"Sensitivity {sensitivity}: got {thresh}, expected {expected}"
 
+    @pytest.mark.uc("UC-023", br=["BR-002"])
     @pytest.mark.asyncio
     async def test_zombie_thresholds_static_across_music_speed(self, zombie_game):
         """Zombie thresholds should not change with music tempo (intentionally static)."""
@@ -602,6 +617,7 @@ class TestZombieRespawn:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[4])
     @pytest.mark.asyncio
     async def test_respawn_zombie_revives_player(self, zombie_game):
         """After respawn delay, a dead zombie should be revived with grace period."""
@@ -640,6 +656,7 @@ class TestZombieRespawn:
 
         assert player.alive is False
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[4])
     @pytest.mark.asyncio
     async def test_respawn_zombie_sends_flash_effect(self, zombie_game):
         """Respawn should send a GAME_EFFECT_FLASH via the gameplay stream."""
@@ -811,6 +828,7 @@ class TestZombieEndGame:
         game._play_sound = AsyncMock()
         game._wait_for_rainbow_effect = AsyncMock()
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[5], cond=["Post-S-1"])
     @pytest.mark.asyncio
     async def test_end_game_humans_win_time_expired(self, zombie_game):
         """When time_remaining=0 and humans are alive, humans should win."""
@@ -825,7 +843,9 @@ class TestZombieEndGame:
         ended_events = event_collector.get_events_of_type("game_ended")
         assert len(ended_events) == 1
         assert ended_events[0]["winner"] == "humans"
+        assert game.state.value == "ended"
 
+    @pytest.mark.uc("UC-023", flow="A1")
     @pytest.mark.asyncio
     async def test_end_game_zombies_win_all_converted(self, zombie_game):
         """When all humans are converted (none alive as humans), zombies win."""
@@ -1000,7 +1020,7 @@ class TestZombieForceEndWinner:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
-    @pytest.mark.uc("UC-023", br=["BR-003"])
+    @pytest.mark.uc("UC-023", br=["BR-003", "BR-005"])
     async def test_win_is_latched_and_published_once(self, setup):
         game, events = setup
         self._convert_all_humans(game)
@@ -1370,3 +1390,90 @@ class TestZombieLedAfterKill:
         writes = _writes_for(game.gameplay_stream, human)
         assert writes[-1] == GREY
         assert DEATH not in writes[writes.index(GREY) :]
+
+
+class TestZombieSpecUnits:
+    """UC-023 steps 1 and 4, BR-002 and BR-004 (capability matrix): values the spec states."""
+
+    @staticmethod
+    def _game(num_controllers=4, seed=0, **kwargs):
+        mock_cm = MockControllerManagerService(num_controllers=num_controllers, death_schedule={}, max_duration=10.0)
+        game = ZombieGame(
+            controller_manager_client=mock_cm,
+            event_publisher=EventCollector().publish,
+            audio_client=None,
+            game_id="test_zombie_units",
+            rng_seed=seed,
+            **kwargs,
+        )
+        return game, mock_cm
+
+    @pytest.mark.uc("UC-023", flow="main", steps=[1])
+    @pytest.mark.asyncio
+    async def test_initial_count_is_capped_at_players_minus_one(self):
+        with patch("services.game_coordinator.games.zombie.read_int_flag", return_value=5):
+            game, mock_cm = self._game(num_controllers=3)
+        assert game.initial_zombies == 5
+        await game._initialize_players_impl(mock_cm.controllers)
+        assert len(game.zombie_serials) == 2
+        assert len(game.human_serials) == 1
+
+    @pytest.mark.uc("UC-023", flow="main", steps=[4])
+    @pytest.mark.asyncio
+    async def test_respawn_delay_is_drawn_from_the_seeded_rng_inside_the_window(self):
+        import random
+
+        with (
+            patch(
+                "services.game_coordinator.games.zombie.read_float_flag",
+                side_effect=lambda _n, key, d, **_: {
+                    "zombie.respawn_min_seconds": 3.0,
+                    "zombie.respawn_max_seconds": 7.0,
+                }.get(key, d),
+            ),
+        ):
+            game, mock_cm = self._game(num_controllers=4, seed=42)
+        await game._initialize_players_impl(mock_cm.controllers)
+        game.running = True
+        game.gameplay_stream = MockGameplayStream()
+        game._play_sound = async_noop
+
+        serials = sorted(c.serial for c in mock_cm.controllers)
+        expected_rng = random.Random(42)
+        expected_rng.sample(serials, len(game.zombie_serials))
+        expected_delay = expected_rng.uniform(3.0, 7.0)
+
+        zombie = game.zombie_serials[0]
+        before = time.time()
+        await game._kill_player_impl(zombie, 5.0)
+        delay = game.players[zombie].respawn_until - before
+
+        assert 3.0 <= delay <= 7.0 + 0.5
+        assert delay == pytest.approx(expected_delay, abs=0.5)
+        assert not game.players[zombie].alive
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-023", br=["BR-002"])
+    @pytest.mark.asyncio
+    async def test_zombie_thresholds_ignore_sensitivity_and_difficulty_factors(self):
+        game, mock_cm = self._game()
+        await game._initialize_players_impl(mock_cm.controllers)
+        zombie = game.players[game.zombie_serials[0]]
+        baseline = game._compute_effective_thresholds(zombie)
+
+        zombie.sensitivity_factor = 2.0
+        game.global_difficulty_factor = 2.0
+
+        assert game._compute_effective_thresholds(zombie) == baseline
+        human = game.players[game.human_serials[0]]
+        assert game._compute_effective_thresholds(human) != game.zombie_thresholds[game.sensitivity]
+
+    @pytest.mark.uc("UC-023", br=["BR-004"])
+    def test_capability_matrix_key_is_the_game_name_and_blocks_global_tuning(self):
+        from services.game_coordinator.interventions import MODE_CAPABILITY_DENY
+
+        game, _ = self._game()
+        assert game.get_game_name() == "Zombie"
+        denied = MODE_CAPABILITY_DENY[game.get_game_name()]
+        assert {"adjust_global_sensitivity", "adjust_global_difficulty"} <= denied
+        assert "revive_player" not in denied

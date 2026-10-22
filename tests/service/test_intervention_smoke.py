@@ -186,7 +186,7 @@ async def _start_headless_with_retry(game_client, start_config, attempts: int = 
 
     A sibling batch coroutine's force-ended game may still be in its ENDING
     window when this start hits the concurrency cap; the slot frees moments
-    later, so a short retry is correct (mirrors test_parallel_lifecycle).
+    later, so a short retry is correct (mirrors test_tc017_parallel_mode_lifecycle).
     """
     last_exc: Exception | None = None
     for _ in range(attempts):
