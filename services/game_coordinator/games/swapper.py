@@ -492,7 +492,7 @@ class SwapperGame(TeamsGameBase):
                             effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
                         )
                     )
-                    await self.gameplay_stream.write(effect_cmd)
+                    await self._write_end_effect(effect_cmd)
 
         # Show loser effect on excluded player (dim gray color)
         if excluded and self.gameplay_stream:
@@ -502,7 +502,7 @@ class SwapperGame(TeamsGameBase):
                     color=controller_manager_pb2.RGB(r=50, g=50, b=50),  # Dim gray
                 )
             )
-            await self.gameplay_stream.write(color_cmd)
+            await self._write_end_effect(color_cmd)
 
         # Play team victory sound (audio service handles voice selection)
         winning_team_obj = self.teams.get(winning_team) if winning_team is not None else None

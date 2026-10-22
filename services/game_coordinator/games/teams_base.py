@@ -449,7 +449,7 @@ class TeamsGameBase(BaseGameMode):
                         effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
                     )
                 )
-                await self.gameplay_stream.write(effect_cmd)
+                await self._write_end_effect(effect_cmd)
 
     async def _play_team_victory_sound(self, winning_team_num: int):
         """

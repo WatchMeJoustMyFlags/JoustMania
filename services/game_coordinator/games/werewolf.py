@@ -482,7 +482,7 @@ class WerewolfGame(BaseGameMode):
                         effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
                     )
                 )
-                await self.gameplay_stream.write(effect_cmd)
+                await self._write_end_effect(effect_cmd)
 
         # Play appropriate victory sound (Joust/vox/)
         if winner == "werewolves":

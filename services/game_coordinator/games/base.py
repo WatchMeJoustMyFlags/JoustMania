@@ -1647,6 +1647,29 @@ class BaseGameMode(ABC):
         if callable(cancel):
             cancel()
 
+    async def _write_end_effect(self, message) -> bool:
+        """Write an end-of-game effect (winner rainbow, loser colour) while the gameplay call is open.
+
+        The controller manager can end the call after the win, before teardown
+        (UC-030 BR-006): the effect is skipped with a warning and the game keeps
+        its outcome, never ``game_error`` (UC-020 BR-003, #1956). grpc.aio rejects
+        a write on a finished call with ``InvalidStateError`` and raises
+        ``AioRpcError`` when the call fails under the write. A cancel of this
+        task still propagates. Returns whether the effect was written.
+        """
+        stream = self.gameplay_stream
+        if stream is None:
+            return False
+        if self._gameplay_call_done():
+            logger.warning("End-of-game effect skipped: the gameplay stream has already ended")
+            return False
+        try:
+            await stream.write(message)
+        except (asyncio.InvalidStateError, grpc.aio.AioRpcError) as e:
+            logger.warning(f"End-of-game effect skipped: the gameplay stream ended during the write ({e!r})")
+            return False
+        return True
+
     async def _gameplay_call_failed(self) -> bool:
         """Whether the gameplay call has finished with a non-OK gRPC status (UC-030 BR-006).
 

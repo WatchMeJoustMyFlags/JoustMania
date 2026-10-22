@@ -720,15 +720,15 @@ class NonstopJoustGame(BaseGameMode):
             logger.info(f"Winner: {winner.serial} with score {winner.score} (K:{winner.kills} D:{winner.deaths})")
 
             # Show rainbow effect on winner's controller (the stream is open until teardown).
-            # Skipped when the server already ended it: the winner stays, the game is not an error.
-            if self.gameplay_stream and not self._gameplay_call_done():
+            # Skipped when the server already ended it: the winner stays, the game is not an error (#1956).
+            if self.gameplay_stream:
                 effect_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
                         serial=winner.serial,
                         effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
                     )
                 )
-                await self.gameplay_stream.write(effect_cmd)
+                await self._write_end_effect(effect_cmd)
 
             # Play victory sound (Phase 29)
             await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)
