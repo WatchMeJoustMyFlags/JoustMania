@@ -43,15 +43,17 @@ func (w *gameReadWarn) allow(now time.Time) bool {
 	return true
 }
 
-// shieldChargeContext is the evaluation context the game coordinator resolves the two
-// shield flags with on the agent's grant path: the API-level attributes (game_kind=real
-// and the service identity) plus the gameId of read_string_flag / read_float_flag. The
-// grant reaches grant_shield through the InterventionManager on the servicer's main loop
-// and GameLoopDispatcher.run (run_coroutine_threadsafe copies the caller's contextvars),
-// so the game's transaction context (targetingKey, game_mode) is not visible there
-// (services/game_coordinator/tests/test_shield_charge_flag_context.py). flags.md §4
-// restricts targeting on these flags to gameId and game_kind, so the agent resolves
-// what the coordinator does.
+// shieldChargeContext is the agent's evaluation context for the two shield flags: gameId
+// and game_kind=real. The coordinator reads them inside grant_shield with more: the
+// InterventionManager runs the grant in the game's flag transaction context (#1970), so
+// its read also carries targetingKey and game_mode (the mode), controller_count,
+// sensitivity and the game's game_kind
+// (services/game_coordinator/tests/test_shield_charge_flag_context.py). The agent still
+// resolves what the coordinator does: it reads these flags only for a real FFA game
+// (game_kind=real on both sides), and flags.md §4 restricts their targeting to gameId
+// and game_kind (tests/contract/test_flagd_resolution.py and HANDLER_FLAG_READS in
+// services/game_coordinator/handler_flag_reads.py), so the extra attributes never
+// change the result.
 //
 // Keep in sync with _agent_context() in tests/contract/test_flagd_resolution.py, the
 // live parity test that resolves both contexts against flagd.

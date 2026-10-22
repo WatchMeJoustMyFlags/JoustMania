@@ -790,15 +790,15 @@ def test_every_coordinator_flag_resolves_with_its_typed_getter(flagd, resolver):
 # --------------------------------------------------------------------------- #
 # The agent's charge ledger reads shield.activation and shield.charge_expiry_seconds
 # from the game set (services/agent/flags/game.go:ShieldCharge) with a SUBSET of the
-# coordinator's evaluation context on the grant path: game_kind=real and gameId. The
-# coordinator reads both flags inside grant_shield, which the InterventionManager
-# dispatches from the servicer's main loop through GameLoopDispatcher.run
-# (services/game_coordinator/game_loop_dispatch.py, run_coroutine_threadsafe copies the
-# caller's contextvars). The grant therefore runs outside the game's transaction
-# context: no targetingKey, no game_mode, only the API-level attributes plus gameId
-# (pinned by services/game_coordinator/tests/test_shield_charge_flag_context.py).
-# flags.md §4 therefore limits targeting on these two flags to gameId and game_kind,
-# so both resolve the same value.
+# coordinator's evaluation context on the grant path: game_kind=real and gameId, for a
+# real game only. The coordinator reads both flags inside grant_shield, which the
+# InterventionManager dispatches through GameLoopDispatcher.run in the game's flag
+# transaction context (interventions.py run_in_game_flag_context, #1970): the API-level
+# attributes, the game's context (targetingKey = game_mode, controller_count,
+# sensitivity, game_kind) and gameId (pinned by
+# services/game_coordinator/tests/test_shield_charge_flag_context.py). flags.md §4
+# limits targeting on these two flags to gameId and game_kind, so both resolve the same
+# value.
 SHIELD_LEDGER_FLAGS = {
     "shield.activation": "string",
     "shield.charge_expiry_seconds": "float",
@@ -808,10 +808,14 @@ _CONTRACT_GAME_ID = "g-contract-1837"
 
 
 def _coordinator_context() -> "EvaluationContext":
-    """lib/feature_flags on the grant path: API-level attributes + gameId (no game
-    transaction context, see the comment above)."""
+    """lib/feature_flags on the grant path of a real FFA game: API-level attributes, the
+    game's transaction context and gameId (see the comment above)."""
     return EvaluationContext(
+        targeting_key="FFA",
         attributes={
+            "game_mode": "FFA",
+            "controller_count": 2,
+            "sensitivity": 2,
             "service_name": "game-coordinator",
             "service_namespace": "core",
             "language": "python",
@@ -875,11 +879,12 @@ def test_shield_flag_targeting_uses_only_the_agents_context(flag_dir):
     assert not failures, "\n".join(failures)
 
 
-# Every flag an intervention handler reads (#1872, flags.md section 1.2). The handler runs in
-# a copy of the servicer main loop's contextvars, so the game's transaction context
-# (targetingKey, game_mode, controller_count, sensitivity, experiment_id, arm) is absent
-# and game_kind is always "real". The registry names the targeting variables each flag may
-# use; services/game_coordinator/tests/test_handler_flag_reads.py keeps it complete.
+# Every flag an intervention handler reads (#1872, flags.md section 1.2). Since #1970 the
+# handler runs in the game's flag transaction context (targetingKey = game_mode, game_mode,
+# controller_count, sensitivity, game_kind, experiment_id, arm), with the read's own keys
+# winning. The registry names the targeting variables each flag may use (narrower where
+# another reader, the agent, resolves the flag with less);
+# services/game_coordinator/tests/test_handler_flag_reads.py keeps it complete.
 HANDLER_FLAG_READS_FILE = COORDINATOR_DIR / "handler_flag_reads.py"
 FLAG_SERVICE_REGISTRY = ic.REPO_ROOT / "services" / "flag-service" / "registry.yaml"
 # Always present in a handler read: the API-level attributes (lib/feature_flags.py).
@@ -938,13 +943,18 @@ def handler_read_scope_failures(
     for (domain, key), entry in sorted(registry.items()):
         scope = scopes.get((domain, key), set())
         targeting = set(entry["targeting"])
-        if "experiment+arm" in scope and not entry.get("experiment_rung_inert"):
+        applies = entry.get("experiment_rung") == "applies"
+        if "experiment+arm" in scope and not applies:
             failures.append(
-                f"{domain}.{key} has the experiment+arm scope but is not declared experiment_rung_inert"
+                f"{domain}.{key} has the experiment+arm scope but is not declared experiment_rung applies"
             )
-        if entry.get("experiment_rung_inert") and "experiment+arm" not in scope:
+        if "experiment+arm" in scope and not {"experiment_id", "arm"} <= targeting:
             failures.append(
-                f"{domain}.{key} is declared experiment_rung_inert but has no experiment+arm scope"
+                f"{domain}.{key} has the experiment+arm scope but its targeting does not declare experiment_id and arm"
+            )
+        if applies and "experiment+arm" not in scope:
+            failures.append(
+                f"{domain}.{key} is declared experiment_rung applies but has no experiment+arm scope"
             )
         if scope & {"game", "game+serial"} and "gameId" not in targeting:
             failures.append(
@@ -995,8 +1005,8 @@ def test_handler_read_checks_report_a_violation():
     registry = {
         ("game", "shield.activation"): {"targeting": ["gameId"]},
         ("game", "windows"): {
-            "targeting": ["targetingKey"],
-            "experiment_rung_inert": True,
+            "targeting": ["targetingKey", "experiment_id", "arm"],
+            "experiment_rung": "applies",
         },
         ("game", "ghost"): {"targeting": []},
     }
@@ -1027,15 +1037,19 @@ def test_handler_read_checks_report_a_violation():
             {"set": "game", "key": "ghost", "scope": ["game"]},
         ],
     )
-    assert len(scope_failures) == 3
+    assert len(scope_failures) == 4
     assert "ghost" in scope_failures[0] and "does not pass gameId" in scope_failures[0]
     assert (
         "shield.activation" in scope_failures[1]
-        and "not declared experiment_rung_inert" in scope_failures[1]
+        and "not declared experiment_rung applies" in scope_failures[1]
     )
     assert (
-        "windows" in scope_failures[2]
-        and "no experiment+arm scope" in scope_failures[2]
+        "shield.activation" in scope_failures[2]
+        and "does not declare experiment_id and arm" in scope_failures[2]
+    )
+    assert (
+        "windows" in scope_failures[3]
+        and "no experiment+arm scope" in scope_failures[3]
     )
 
 
@@ -1182,6 +1196,181 @@ def test_windows_preset_ladder_resolves_against_live_flagd(flagd):
         assert unknown.get("min_music_fast_time") == 4, (
             f"default variant has unexpected values: {unknown}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# 3a. Handler reads in the game's context (#1970, UC-040 BR-018, UC-043 BR-005)
+# --------------------------------------------------------------------------- #
+_EXPERIMENT_ID = "exp_contract_1970"
+# The flag service inlines an experiment value under a generated variant name (write.go).
+_EXPERIMENT_VARIANT = "r1970"
+_EXPERIMENT_WINDOWS = {
+    "min_music_fast_time": 5,
+    "max_music_fast_time": 9,
+    "min_music_slow_time": 17,
+    "max_music_slow_time": 40,
+    "end_min_music_fast_time": 6,
+    "end_max_music_fast_time": 10,
+    "end_min_music_slow_time": 8,
+    "end_max_music_slow_time": 12,
+}
+# The API-level attributes every coordinator read carries (lib/feature_flags.py).
+_API_CONTEXT = {
+    "service_name": "game-coordinator",
+    "service_namespace": "core",
+    "language": "python",
+    "environment": "production",
+    "hostname": "joustmania",
+    "game_kind": "real",
+}
+
+
+def _experiment_rung(experiment_id: str, arm: str) -> dict:
+    """Same shape as the experiment rung in services/flag-service/state/render.go."""
+    return {
+        "and": [
+            {"!=": [{"var": "game_kind"}, "real"]},
+            _eq("experiment_id", experiment_id),
+            _eq("arm", arm),
+        ]
+    }
+
+
+def _game_context(
+    game_kind: str, experiment_id: str | None = None, arm: str | None = None
+):
+    """API level merged with set_game_transaction_context (lib/feature_flags.py) for FFA."""
+    attributes = {
+        "game_mode": "FFA",
+        "controller_count": 2,
+        "sensitivity": 2,
+        "game_kind": game_kind,
+    }
+    if experiment_id:
+        attributes["experiment_id"] = experiment_id
+    if arm:
+        attributes["arm"] = arm
+    return EvaluationContext(attributes=_API_CONTEXT).merge(
+        EvaluationContext(targeting_key="FFA", attributes=attributes)
+    )
+
+
+def _handler_read(game_ctx, invocation):
+    """The SDK merge order: API, transaction, then the read's invocation context (wins)."""
+    return game_ctx.merge(invocation)
+
+
+_GAMES = {
+    "real": _game_context("real"),
+    "shadow-no-experiment": _game_context("shadow"),
+    "control-arm": _game_context("shadow", _EXPERIMENT_ID, "control"),
+    "experimental-arm": _game_context("shadow", _EXPERIMENT_ID, "experimental"),
+}
+
+
+@pytest.mark.uc("UC-043", br=["BR-005"])
+@pytest.mark.uc("UC-040", br=["BR-018"])
+@pytest.mark.parametrize("flag_source", ["ci", "base"])
+@pytest.mark.parametrize("resolver", ["rpc", "in_process"])
+def test_windows_experiment_rung_reaches_only_the_experimental_arm(
+    flagd, resolver, flag_source
+):
+    """A render.go-shaped experiment rung (generated variant, inline value) in front of the
+    windows preset ladder, read as handle_pacing_profile does (game context + targetingKey =
+    profile): only the experimental arm resolves the experiment's value; the real game, a
+    non-experiment shadow game and the control arm resolve the preset; the baseline read
+    (invocation game_kind=real) resolves the preset in the experimental arm too."""
+    root = fh.CI_FLAG_DIR if flag_source == "ci" else fh.CI_FLAG_DIR.parent
+    source = json.loads((root / "game.json").read_text())["flags"]["windows"]
+    path = flagd.file("game")
+    original = fh.load(path)
+    doc = json.loads(json.dumps(original))
+    windows = json.loads(json.dumps(source))
+    windows["variants"][_EXPERIMENT_VARIANT] = _EXPERIMENT_WINDOWS
+    windows["targeting"] = {
+        "if": [
+            _experiment_rung(_EXPERIMENT_ID, "experimental"),
+            _EXPERIMENT_VARIANT,
+            source["targeting"],
+        ]
+    }
+    doc["flags"]["windows"] = windows
+    fh.dump_in_place(path, doc)
+    calm = source["variants"]["calm"]
+
+    try:
+        with _ready_client(flagd, "game", resolver=resolver) as client:
+
+            def read(game: str, profile: str = "calm", **extra) -> dict:
+                invocation = EvaluationContext(targeting_key=profile, attributes=extra)
+                details = client.get_object_details(
+                    "windows", {}, _handler_read(_GAMES[game], invocation)
+                )
+                assert details.error_code is None, (
+                    f"{resolver} {game}: {details.error_code}"
+                )
+                return details.value
+
+            assert fh.poll_until(
+                lambda: read("experimental-arm") == _EXPERIMENT_WINDOWS
+            ), (
+                f"{resolver}: the experiment rung never served: {read('experimental-arm')}"
+            )
+            for game in ("real", "shadow-no-experiment", "control-arm"):
+                assert read(game) == calm, f"{resolver} {game}: {read(game)}"
+            assert read(game="experimental-arm", game_kind="real") == calm
+            assert read("experimental-arm", profile="frantic") == _EXPERIMENT_WINDOWS
+    finally:
+        fh.dump_in_place(path, original)
+
+
+def _getter_for(value) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, (int, float)):
+        return "float"
+    return "object"
+
+
+@pytest.mark.uc("UC-040", br=["BR-018"])
+@pytest.mark.parametrize("resolver", ["rpc", "in_process"])
+def test_handler_read_flags_resolve_the_same_with_the_game_context(flagd, resolver):
+    """#1970 changes nothing for a real or non-experiment shadow game: every handler-read
+    flag resolves the same value and variant with the game context as with the API-level
+    context alone (the pre-#1970 handler context), for the read's own invocation keys."""
+    registry = handler_flag_reads()
+    files = _flag_files("ci")
+    failures = []
+    for (domain, key), _entry in sorted(registry.items()):
+        flag = files[domain][key]
+        getter = _getter_for(flag["variants"][flag["defaultVariant"]])
+        default = _SENTINEL_DEFAULTS[getter]
+        # What each handler passes itself (handler_flag_reads.py "readers").
+        targeting_key = "calm" if key == "windows" else None
+        invocation = EvaluationContext(
+            targeting_key=targeting_key, attributes={"gameId": _CONTRACT_GAME_ID}
+        )
+        with _ready_client(flagd, domain, resolver=resolver) as client:
+            read = getattr(client, f"get_{getter}_details")
+            before = read(
+                key,
+                default,
+                EvaluationContext(attributes=_API_CONTEXT).merge(invocation),
+            )
+            for game in ("real", "shadow-no-experiment"):
+                after = read(key, default, _handler_read(_GAMES[game], invocation))
+                if (
+                    after.error_code is not None
+                    or not _same_value(after.value, before.value)
+                    or after.variant != before.variant
+                ):
+                    failures.append(
+                        f"{domain}.{key} ({game}): {after.value!r} ({after.variant}) "
+                        f"!= {before.value!r} ({before.variant})"
+                    )
+    assert not failures, f"on {resolver}:\n" + "\n".join(failures)
 
 
 # --------------------------------------------------------------------------- #

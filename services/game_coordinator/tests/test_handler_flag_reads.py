@@ -1,24 +1,26 @@
 """
 Census of the flags an intervention handler reads (#1872, UC-040 BR-018).
 
-A handler runs on the game's loop through ``GameLoopDispatcher.run``, which copies
-the contextvars of the servicer's MAIN loop. The game's own transaction context
-(``set_game_transaction_context``: targetingKey, game_mode, controller_count,
-sensitivity, game_kind, experiment_id, arm) is therefore not visible to a flag read
-in a handler (flags.md §1.2). That is deliberate and documented, not a bug; what
-must not happen is a handler-read flag whose flagd targeting depends on that
-missing context. ``handler_flag_reads.py`` declares every flag a handler reads and
-the targeting variables it may use; ``tests/contract/test_flagd_resolution.py``
-checks the flagd files against it. These tests keep the declaration complete:
+A handler runs on the game's loop through ``GameLoopDispatcher.run``, and the
+InterventionManager sets the game's own flag transaction context around it
+(``run_in_game_flag_context``, #1970): a flag read in a handler resolves in the
+game's context (``set_game_transaction_context``: targetingKey, game_mode,
+controller_count, sensitivity, game_kind, experiment_id, arm; flags.md §1.2).
+``handler_flag_reads.py`` declares every flag a handler reads and the targeting
+variables it may use; ``tests/contract/test_flagd_resolution.py`` checks the flagd
+files against it. These tests keep the declaration complete and pin the context:
 
 (i)   every flag read while a handler runs is declared;
 (ii)  every registered handler and revert handler has a case here, so a new handler
       cannot slip past the census;
-(iii) none of those reads sees the game's transaction context.
+(iii) every one of those reads sees the game's transaction context: an experimental
+      arm's experiment and game_kind=shadow, a real game's game_kind=real and no
+      experiment, and before the run starts the session kind and experiment.
 
-Each case drives the real handler with a representative value through the real
-``GameLoopDispatcher`` on a separate game-loop thread. Reads are recorded by a
-provider registered on every domain a coordinator read can use.
+Each case drives the real handler with a representative value through the manager's
+real dispatch path (``_run_on_game_loop`` and ``GameLoopDispatcher``) on a separate
+game-loop thread. Reads are recorded by a provider registered on every domain a
+coordinator read can use.
 """
 
 import asyncio
@@ -34,6 +36,7 @@ from openfeature.evaluation_context import EvaluationContext
 from openfeature.flag_evaluation import FlagResolutionDetails, Reason
 from openfeature.provider import AbstractProvider
 from openfeature.provider.metadata import Metadata
+from openfeature.transaction_context import ContextVarsTransactionContextPropagator
 
 test_dir = Path(__file__).parent
 sys.path.insert(0, str(test_dir.parent.parent.parent))
@@ -43,7 +46,6 @@ from conftest import EventCollector, MockControllerManagerService
 
 import lib.feature_flags as ff
 from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
-from services.game_coordinator.game_loop_dispatch import GameLoopDispatcher
 from services.game_coordinator.games.base import Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.handler_flag_reads import HANDLER_FLAG_READS
@@ -51,6 +53,7 @@ from services.game_coordinator.interventions import (
     INTERVENTION_SPECS,
     InterventionContext,
     InterventionManager,
+    SessionView,
 )
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
 
@@ -115,6 +118,8 @@ def seen():
     ff._propagator_registered = False
     with patch.object(ff, "init_flag_domain"):  # no flagd provider; the recorders serve every domain
         ff._init_global_context()
+        # Explicit: an earlier api.shutdown() resets the propagator to a no-op (#1970).
+        api.set_transaction_context_propagator(ContextVarsTransactionContextPropagator())
         api.set_provider(_RecordingProvider("<default>", reads))
         for domain in DOMAINS:
             api.set_provider(_RecordingProvider(domain, reads), domain=domain)
@@ -192,8 +197,12 @@ def _registered(mgr):
 
 
 def _drive(mgr, game, game_loop):
-    """Run every case through its real handler and the real dispatcher, then the agent cue."""
-    dispatcher = GameLoopDispatcher(game_loop.loop)
+    """Run every case through its real handler and the manager's dispatch path, then the agent cue."""
+
+    async def _noop_publish(_event_type, _data):
+        return None
+
+    session = SessionView(game_id=GAME_ID, game=game, publish=_noop_publish, loop=game_loop.loop)
 
     async def run_all():
         # The main loop carries no game transaction context (the servicer never sets one).
@@ -214,11 +223,14 @@ def _drive(mgr, game, game_loop):
                 if key in mgr._main_loop_flags:
                     await handler(ctx)
                 else:
-                    await dispatcher.run(handler, ctx)
+                    await mgr._run_on_game_loop(session, spec, handler, ctx)
             except Exception:  # a handler that refuses still read what it read
                 pass
         # The agent's on-device cue is dispatched after a HARD-class action (#818).
-        await dispatcher.run(mgr._emit_agent_cue, _SPECS["eliminate_player"], "p1", game)
+        spec = _SPECS["eliminate_player"]
+        await mgr._run_on_game_loop(session, spec, mgr._emit_agent_cue, spec, "p1", game)
+        # The main loop's own transaction context is untouched by the dispatched effects.
+        assert api.get_transaction_context() == EvaluationContext()
 
     return run_all()
 
@@ -262,30 +274,91 @@ async def test_census_covers_every_registered_handler():
     assert {k for k, _ in CASES} | {k for k, _ in MAIN_LOOP_CASES} == set(_SPECS)
 
 
-@pytest.mark.asyncio
-@pytest.mark.uc("UC-040", flow="A31", br=["BR-018"])
-async def test_handler_reads_carry_no_game_transaction_context(seen):
-    """(iii) A handler read has no targetingKey, game_mode, controller_count, sensitivity,
-    experiment or arm, and game_kind is real, even when the game itself is a shadow game
-    in an experiment (its context lives in the game's own task only)."""
-    game = _make_ffa()
+EXPERIMENT = {"experiment_id": "exp_abc", "arm": "experimental"}
+GAME_ATTRS = ("game_mode", "controller_count", "sensitivity")
+
+
+def _bind(game, game_kind, experiment=None):
+    """What GameSession does after create_game: the session kind and experiment on the game."""
+    game.game_kind = game_kind
+    game.experiment_id = (experiment or {}).get("experiment_id", "")
+    game.arm = (experiment or {}).get("arm", "")
+
+
+def _running(game):
+    """The game's run(): its own task sets its transaction context (games/base.py)."""
 
     async def game_task():
-        ff.set_game_transaction_context(
-            game_mode="FFA",
-            controller_count=2,
-            sensitivity=2,
-            game_kind="shadow",
-            experiment_id="exp_abc",
-            arm="experimental",
-        )
+        game._set_flag_eval_context()
 
-    reads = await _run(game, seen, game_task=game_task)
+    return game_task
+
+
+def _is_windows_baseline_read(domain, key, ctx):
+    """handle_pacing_profile's second read pins game_kind=real on purpose (UC-043 BR-005)."""
+    return (domain, key) == ("game", "windows") and ctx.attributes.get("game_kind") == "real"
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A31", br=["BR-018"])
+@pytest.mark.uc("UC-043", br=["BR-005"])
+async def test_handler_reads_carry_the_experiment_arm_game_context(seen):
+    """(iii) A shadow game in an experiment's experimental arm: every handler read sees
+    game_kind=shadow, the experiment and arm and the game's mode, count and sensitivity;
+    windows keeps the profile as its targetingKey, the other reads get the game mode."""
+    game = _make_ffa()
+    _bind(game, "shadow", EXPERIMENT)
+    reads = await _run(game, seen, game_task=_running(game))
+    assert reads
+    keys = set()
+    for domain, key, ctx in reads:
+        where = f"{domain}.{key}"
+        keys.add((domain, key))
+        assert ctx.attributes.get("experiment_id") == "exp_abc", where
+        assert ctx.attributes.get("arm") == "experimental", where
+        assert ctx.attributes.get("game_mode") == "FFA", where
+        for name in GAME_ATTRS:
+            assert name in ctx.attributes, f"{where} misses {name}"
+        if _is_windows_baseline_read(domain, key, ctx):
+            continue
+        assert ctx.attributes.get("game_kind") == "shadow", where
+        if (domain, key) == ("game", "windows"):
+            assert ctx.targeting_key == "calm", where  # the read's own key wins
+        else:
+            assert ctx.targeting_key == "FFA", where
+    assert ("game", "windows") in keys
+    windows = [ctx for d, k, ctx in reads if (d, k) == ("game", "windows")]
+    assert any(ctx.attributes.get("game_kind") == "shadow" for ctx in windows)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A31", br=["BR-018"])
+async def test_handler_reads_of_a_real_game_resolve_as_real(seen):
+    """(iii) A real (primary) game: game_kind=real, no experiment or arm, its game context."""
+    game = _make_ffa()
+    _bind(game, "primary")
+    reads = await _run(game, seen, game_task=_running(game))
     assert reads
     for domain, key, ctx in reads:
         where = f"{domain}.{key}"
         assert ctx.attributes.get("game_kind") == "real", where
-        for name in ("game_mode", "controller_count", "sensitivity", "experiment_id", "arm"):
-            assert name not in ctx.attributes, f"{where} sees {name}"
-        # A key a read passes itself is allowed; the game's own targetingKey ("FFA") is not.
-        assert ctx.targeting_key != "FFA", where
+        assert "experiment_id" not in ctx.attributes and "arm" not in ctx.attributes, where
+        assert ctx.attributes.get("game_mode") == "FFA", where
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A31", br=["BR-018"])
+async def test_handler_reads_before_the_run_see_the_session_kind(seen):
+    """(iii) Init phase (the run has not set the game's context yet): the reads see the
+    session-kind context the game's init reads saw, game_kind and the experiment."""
+    game = _make_ffa()
+    _bind(game, "shadow", EXPERIMENT)
+    reads = await _run(game, seen)
+    assert reads
+    for domain, key, ctx in reads:
+        where = f"{domain}.{key}"
+        assert ctx.attributes.get("experiment_id") == "exp_abc", where
+        assert ctx.attributes.get("arm") == "experimental", where
+        assert "game_mode" not in ctx.attributes, where
+        if not _is_windows_baseline_read(domain, key, ctx):
+            assert ctx.attributes.get("game_kind") == "shadow", where

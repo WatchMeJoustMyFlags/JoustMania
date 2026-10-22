@@ -98,7 +98,9 @@ func fp(v float64) *float64 { return &v }
 
 // UC: UC-040 A31
 func TestShieldCharge_CoordinatorContext(t *testing.T) {
-	t.Run("UC-040/A31 both reads use the coordinator's grant-path context: game_kind=real and gameId, no targetingKey or game_mode", func(t *testing.T) {
+	// The coordinator's grant read carries the game's context too (#1970); the shield
+	// flags' targeting may use only gameId and game_kind, so this subset resolves the same.
+	t.Run("UC-040/A31 both reads use game_kind=real and gameId, no targetingKey or game_mode", func(t *testing.T) {
 		rec := &ctxRecorder{stubEvaluator: stubEvaluator{strings: map[string]string{"shield.activation": "trigger"}}}
 		_, _ = gameFlags(rec, nil).ShieldCharge(context.Background(), "g-42")
 		if len(rec.seen) != 2 {
@@ -107,7 +109,7 @@ func TestShieldCharge_CoordinatorContext(t *testing.T) {
 		for i, ec := range rec.seen {
 			attrs := ec.Attributes()
 			if ec.TargetingKey() != "" || len(attrs) != 2 || attrs["game_kind"] != "real" || attrs["gameId"] != "g-42" {
-				t.Fatalf("evaluation %d context = key %q attrs %v, want the coordinator's", i, ec.TargetingKey(), attrs)
+				t.Fatalf("evaluation %d context = key %q attrs %v, want game_kind=real and gameId only", i, ec.TargetingKey(), attrs)
 			}
 		}
 	})

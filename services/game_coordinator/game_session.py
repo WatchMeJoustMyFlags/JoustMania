@@ -33,15 +33,7 @@ from contextlib import suppress
 from opentelemetry import trace
 from opentelemetry.context import Context
 
-from lib.feature_flags import (
-    GAME_KIND_REAL as EVAL_GAME_KIND_REAL,
-)
-from lib.feature_flags import (
-    GAME_KIND_SHADOW as EVAL_GAME_KIND_SHADOW,
-)
-from lib.feature_flags import (
-    set_game_session_kind_context,
-)
+from lib.feature_flags import eval_game_kind, set_game_session_kind_context
 from lib.otel_metrics import get_export_interval_ms
 from lib.telemetry import get_tracer
 from lib.types import get_game_display_name
@@ -511,7 +503,7 @@ class GameSession:
         (targeting.go). Only a SHADOW session resolves experiments; a primary
         (menu-driven, player-facing) game is the protected "real" baseline.
         """
-        return EVAL_GAME_KIND_SHADOW if self.game_kind == GAME_KIND_SHADOW else EVAL_GAME_KIND_REAL
+        return eval_game_kind(self.game_kind)
 
     async def _run_game_loop_async(self) -> None:
         """Run the async game loop for this session."""

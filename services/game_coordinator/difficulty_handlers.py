@@ -42,7 +42,7 @@ import logging
 import time
 from dataclasses import replace
 
-from lib.feature_flags import read_object_flag_variant
+from lib.feature_flags import GAME_KIND_REAL, GAME_KIND_VAR, read_object_flag_variant
 from lib.types import Sensitivity
 
 from .games.base import (
@@ -52,7 +52,11 @@ from .games.base import (
     player_identity_attributes,
     resolve_music_windows,
 )
+from .intervention_errors import InterventionNotApplied
 from .interventions import InterventionContext, InterventionManager
+
+# UC-043 BR-005 (#1970): the game's experiment sets other windows than the preset.
+BLOCK_EXPERIMENT_OVERRIDE = "experiment_override"
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +340,14 @@ async def handle_pacing_profile(ctx: InterventionContext) -> None:
     ``handle_pacing_profile_revert``. An unknown/malformed preset falls back to
     the game's init windows (``resolve_music_windows`` validates; the flag's
     targeting ``else`` resolves unknown names to ``default``).
+
+    The read runs in the game's flag context (UC-040 BR-018, #1970), so in an
+    experimental-arm game the experiment's ``windows`` rung wins over the preset.
+    When that value differs from the preset's (a second read with
+    ``game_kind=real``, which no experiment rung matches), the experiment
+    overrides the lever: the windows stay as they are and the handler raises
+    ``InterventionNotApplied("experiment_override")`` (UC-043 BR-005). Equal
+    values are applied.
     """
     game = ctx.game
     if game is None:
@@ -348,8 +360,13 @@ async def handle_pacing_profile(ctx: InterventionContext) -> None:
         return
 
     init_windows = getattr(game, "init_music_windows", game.music_windows)
-    variant = read_object_flag_variant("game", "windows", profile, {})
+    # A read that fails returns the supplied default object itself, so identity tells a
+    # flag error from a real (possibly empty) value.
+    read_failed: dict = {}
+    variant = read_object_flag_variant("game", "windows", profile, read_failed)
     new_windows = resolve_music_windows(variant)
+    if variant is not read_failed:
+        _refuse_experiment_override(game, profile, new_windows)
     # resolve_music_windows falls back to module defaults (not the game's init
     # windows) on malformed values; an unknown profile resolves to the flag's
     # "default" variant. Either way the windows are well-formed; assign atomically.
@@ -360,6 +377,36 @@ async def handle_pacing_profile(ctx: InterventionContext) -> None:
         # was started with custom windows, prefer its init windows over defaults.
         game.music_windows = init_windows
         logger.info("pacing_profile: unknown preset, restored init windows")
+
+
+def _refuse_experiment_override(game: object, profile: str, resolved: object) -> None:
+    """Raise ``experiment_override`` when the game's experiment changed the preset's windows (#1970).
+
+    Only a game bound to an experiment can resolve an experiment rung, so any
+    other game never pays the second read. A failed baseline read is a flag error, not
+    an override: it is logged and the first read's windows apply, as before #1970.
+    """
+    experiment_id = getattr(game, "experiment_id", "")
+    if not (isinstance(experiment_id, str) and experiment_id):
+        return
+    read_failed: dict = {}
+    baseline_variant = read_object_flag_variant(
+        "game", "windows", profile, read_failed, attributes={GAME_KIND_VAR: GAME_KIND_REAL}
+    )
+    if baseline_variant is read_failed:
+        logger.warning(f"pacing_profile: baseline windows read failed for '{profile}'; not treated as an override")
+        return
+    baseline = resolve_music_windows(baseline_variant)
+    if resolved == baseline:
+        return
+    arm = getattr(game, "arm", "")
+    logger.info(
+        f"pacing_profile: experiment {experiment_id} (arm {arm}) sets other windows than preset "
+        f"'{profile}'; the experiment's windows stay (experiment_override)"
+    )
+    raise InterventionNotApplied(
+        BLOCK_EXPERIMENT_OVERRIDE, f"experiment {experiment_id} overrides pacing_profile '{profile}'"
+    )
 
 
 async def handle_pacing_profile_revert(ctx: InterventionContext) -> None:
