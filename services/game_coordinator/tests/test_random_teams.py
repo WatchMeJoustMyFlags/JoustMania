@@ -78,6 +78,7 @@ class TestRandomTeamsGameMode:
             assert player.alive is True
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="A1")
     async def test_random_team_colors_generated(self, random_teams_game):
         """Test that random team colors are generated."""
         game, mock_controller_manager, _ = random_teams_game
@@ -187,6 +188,7 @@ class TestRandomTeamsGameMode:
         assert player.alive is False
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="A1")
     async def test_players_get_team_colors(self, random_teams_game):
         """Test that players are assigned their team's color."""
         game, mock_controller_manager, _ = random_teams_game
