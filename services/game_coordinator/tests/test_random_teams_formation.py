@@ -237,9 +237,9 @@ async def test_frames_from_the_formation_never_reach_warmup_or_game_loop():
     assert min(seen) >= marks["formation_end_seq"], "a formation frame reached warmup or the game loop"
 
 
-async def _run_with_formation_disconnect(gaps):
+async def _run_with_formation_disconnect(gaps, disconnect_seq=5):
     log = RecordingLog()
-    client = QueueControllerManager(log, gaps=gaps, disconnect_at={5: SERIALS[0]})
+    client = QueueControllerManager(log, gaps=gaps, disconnect_at={disconnect_seq: SERIALS[0]})
     calls: list[tuple[str, bool]] = []
     with patch.object(random_teams_mod, "TEAM_FORMATION_DURATION", 1):
         game = _random_teams(log, client)
@@ -281,6 +281,16 @@ async def test_drop_and_reconnect_during_formation_is_not_eliminated():
 
     assert calls == []
     assert game.players[SERIALS[0]].alive
+
+
+@pytest.mark.uc("UC-021", flow="A1")
+@pytest.mark.asyncio
+async def test_drop_and_reconnect_during_the_countdown_is_still_eliminated():
+    # 1 s formation is ~100 frames; seq 150 lies in the countdown, after the drain stopped.
+    game, calls = await _run_with_formation_disconnect(gaps={SERIALS[0]: (150, 160)}, disconnect_seq=150)
+
+    assert calls == [(SERIALS[0], True)]
+    assert not game.players[SERIALS[0]].alive
 
 
 @pytest.mark.uc("UC-021", flow="A1")
