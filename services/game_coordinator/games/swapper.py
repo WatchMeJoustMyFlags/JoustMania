@@ -75,6 +75,13 @@ class SwapperGame(TeamsGameBase):
         # Track the last player to die (excluded from winners)
         self.last_death_serial: str | None = None
 
+        # Players eliminated by a controller disconnect (UC-024 A1, #1344). They stay
+        # in ``players`` but no longer count for a team, convergence or the winners.
+        # Marked before the base kill path runs, so a swap still in flight sees it.
+        # revive_player is denied for Swapper (interventions.py capability matrix); if
+        # that ever changes, a revive must refuse these serials.
+        self._eliminated: set[str] = set()
+
     def get_game_name(self) -> str:
         """Return game mode identifier."""
         return "Swapper"
@@ -152,6 +159,11 @@ class SwapperGame(TeamsGameBase):
             accel_mag: Acceleration magnitude that caused death
         """
         player = self.players[serial]
+        if serial in self._eliminated:
+            # UC-024 A1: a disconnected player is eliminated, not swapped.
+            self._eliminate(serial)
+            return
+
         old_team = player.team
         old_team_obj = self.teams[old_team]
 
@@ -240,18 +252,23 @@ class SwapperGame(TeamsGameBase):
 
         # After flash, set new team color
         await self._swap_pause()
+        if serial in self._eliminated:
+            # The controller disconnected during the swap (UC-024 A1 step 3): the swap
+            # does not finish (no colour, no gauge reset, no player_swapped, no beep).
+            self._eliminate(serial)
+            return
         await self._set_player_color(serial, player.color)
 
         # Respawn the player on their new team
         # This re-enables base class processing for this player
         player.alive = True
 
-        # The base kill path zeroed the per-player gauge and the aggregate before the
-        # swap; the swapped player is still in the game (#1342). Skipped after a force
-        # end, which cleared the player analytics (no gauge series recreated).
+        # The base kill path zeroed the per-player gauge before the swap; the swapped
+        # player is still in the game (#1342). The base recounts the aggregate after
+        # this impl. Skipped after a force end, which cleared the player analytics (no
+        # gauge series recreated).
         if self.running:
             metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
-            self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
         logger.debug(f"Player {serial} respawned on team {new_team}")
 
         # Publish swap event
@@ -267,6 +284,68 @@ class SwapperGame(TeamsGameBase):
 
         # Play swap sound
         await self._play_sound(Sound.SFX_BEEP, priority=1)
+
+    def _eliminate(self, serial: str) -> None:
+        """Take a disconnected player out of the game (UC-024 A1).
+
+        ``alive`` stays False, so the base kill path sends the death effect and the
+        aggregate drops the player. The last swap is cleared at the mark
+        (``_handle_disconnect``), not here (BR-001).
+        """
+        player = self.players[serial]
+        player.alive = False
+        if player.span:
+            player.span.add_event("player_eliminated", attributes={"reason": "controller_disconnect"})
+            player.span.set_status(Status(StatusCode.OK))
+            player.span.end()
+            player.span = None
+        logger.info(f"Player {serial} eliminated (controller disconnect)")
+
+    async def _handle_disconnect(self, serial: str) -> None:
+        """Eliminate a disconnected player instead of swapping it (UC-024 A1, #1344).
+
+        The serial is marked BEFORE the base call: the base returns early for a player
+        that is not alive, which is the case while its own swap sleeps, and drops the
+        kill while another kill of the same player is in flight. The mark makes that
+        swap, or that kill, eliminate the player.
+
+        The last swap is cleared only when this elimination removes the last swapped
+        player or completes the convergence itself (BR-001, D2). When the teams had
+        already converged by the last swap (an agent swap whose win check has not run
+        yet), that swap completed the convergence and its player stays excluded.
+        """
+        if serial in self.players and serial not in self._eliminated:
+            converged_before = len(self._get_alive_teams()) <= 1
+            self._eliminated.add(serial)
+            if serial == self.last_death_serial or not converged_before:
+                self.last_death_serial = None
+        await super()._handle_disconnect(serial)
+
+    def _excluded_serial(self) -> str | None:
+        """The last swapped player, excluded from the winners (BR-001).
+
+        Never an eliminated player, and never the only player left on its team: the
+        winners list is never empty (D2).
+        """
+        last = self.last_death_serial
+        if last is None or last in self._eliminated or last not in self.players:
+            return None
+        team = self.players[last].team
+        if not any(
+            player.team == team and serial not in self._eliminated and serial != last
+            for serial, player in self.players.items()
+        ):
+            return None
+        return last
+
+    def _team_winners(self, team: int) -> list[str]:
+        """Members of ``team`` who win: not eliminated, not the last swapped player."""
+        excluded = self._excluded_serial()
+        return [
+            serial
+            for serial, player in self.players.items()
+            if player.team == team and serial not in self._eliminated and serial != excluded
+        ]
 
     async def _swap_pause(self) -> None:
         """Let the swap flash play before the new team colour is written.
@@ -297,7 +376,9 @@ class SwapperGame(TeamsGameBase):
     def _get_team_counts(self) -> dict[int, int]:
         """Get count of players on each team."""
         counts = {0: 0, 1: 0}
-        for player in self.players.values():
+        for serial, player in self.players.items():
+            if serial in self._eliminated:
+                continue
             counts[player.team] = counts.get(player.team, 0) + 1
         return counts
 
@@ -310,20 +391,19 @@ class SwapperGame(TeamsGameBase):
         """
         teams = self._get_alive_teams()
 
-        if len(teams) <= 1:
-            # All players on one team
-            winning_team = list(teams)[0] if teams else 0
+        if not teams:
+            # Every player was eliminated (UC-024 A1 step 4): nobody wins, never team 0.
+            logger.info("Swapper ended with no player left: no winner")
+            return True
 
-            # Get winners (excluding last player to swap)
-            winners = []
-            for serial, player in self.players.items():
-                if player.team == winning_team and serial != self.last_death_serial:
-                    winners.append(serial)
+        if len(teams) == 1:
+            # All remaining players on one team
+            winning_team = next(iter(teams))
+            winners = self._team_winners(winning_team)
+            excluded = self._excluded_serial()
 
             team_name = self.team_colors[winning_team]["name"]
-            logger.info(
-                f"Team {winning_team} ({team_name}) wins! Winners: {len(winners)}, Excluded: {self.last_death_serial}"
-            )
+            logger.info(f"Team {winning_team} ({team_name}) wins! Winners: {len(winners)}, Excluded: {excluded}")
 
             await self.event_publisher(
                 "swapper_winner",
@@ -331,7 +411,7 @@ class SwapperGame(TeamsGameBase):
                     "team": winning_team,
                     "team_name": team_name,
                     "winners": winners,
-                    "excluded_serial": self.last_death_serial or "",
+                    "excluded_serial": excluded or "",
                 },
             )
 
@@ -343,16 +423,14 @@ class SwapperGame(TeamsGameBase):
         """
         Get set of teams with players.
 
-        In Swapper, all players are always "alive" - they just switch teams.
-        We check which teams have players.
+        In Swapper, players are not killed - they just switch teams, so this does
+        not filter on ``alive`` (a swapping player is briefly not alive). Only
+        players eliminated by a disconnect (UC-024 A1) are left out.
 
         Returns:
-            Set of team numbers that have at least one player
+            Set of team numbers that have at least one remaining player
         """
-        teams = set()
-        for player in self.players.values():
-            teams.add(player.team)
-        return teams
+        return {player.team for serial, player in self.players.items() if serial not in self._eliminated}
 
     async def _end_game_impl(self):
         """Handle game ending for Swapper."""
@@ -360,13 +438,17 @@ class SwapperGame(TeamsGameBase):
         self.state = self.state.__class__.ENDING
 
         # Determine winning team
+        # Eliminated players are never winners (UC-024 A1); no team left = no winner.
+        # Two teams left (a force end) still picks one: the force-end rule is #1343.
         teams = self._get_alive_teams()
-        winning_team = list(teams)[0] if teams else 0
+        winning_team = next(iter(teams)) if teams else None
+        winners = set(self._team_winners(winning_team)) if winning_team is not None else set()
+        excluded = self._excluded_serial()
 
         # Show rainbow effect on winners (excluding last swapper)
         if self.gameplay_stream:
-            for serial, player in self.players.items():
-                if player.team == winning_team and serial != self.last_death_serial:
+            for serial in self.players:
+                if serial in winners:
                     effect_cmd = controller_manager_pb2.GameplayStreamControl(
                         game_effect=controller_manager_pb2.GameEffectCommand(
                             serial=serial,
@@ -376,17 +458,17 @@ class SwapperGame(TeamsGameBase):
                     await self.gameplay_stream.write(effect_cmd)
 
         # Show loser effect on excluded player (dim gray color)
-        if self.last_death_serial and self.gameplay_stream:
+        if excluded and self.gameplay_stream:
             color_cmd = controller_manager_pb2.GameplayStreamControl(
                 base_color=controller_manager_pb2.ControllerColorConfig(
-                    serial=self.last_death_serial,
+                    serial=excluded,
                     color=controller_manager_pb2.RGB(r=50, g=50, b=50),  # Dim gray
                 )
             )
             await self.gameplay_stream.write(color_cmd)
 
         # Play team victory sound (audio service handles voice selection)
-        winning_team_obj = self.teams.get(winning_team)
+        winning_team_obj = self.teams.get(winning_team) if winning_team is not None else None
         if winning_team_obj:
             sound = TEAM_WIN_SOUNDS.get(winning_team_obj.name, Sound.VOX_CONGRATULATIONS)
             await self._play_sound(sound, priority=2)
@@ -400,13 +482,12 @@ class SwapperGame(TeamsGameBase):
         # End all player spans
         for serial, player in self.players.items():
             if player.span:
-                is_winner = player.team == winning_team and serial != self.last_death_serial
                 player.span.add_event(
                     "game_ended",
                     attributes={
-                        "winner": is_winner,
+                        "winner": serial in winners,
                         "team": player.team,
-                        "excluded": serial == self.last_death_serial,
+                        "excluded": serial == excluded,
                     },
                 )
                 player.span.set_status(Status(StatusCode.OK))
@@ -429,7 +510,7 @@ class SwapperGame(TeamsGameBase):
             {
                 "game_id": self.game_id,
                 "duration": time.time() - self.start_time if self.start_time else 0,
-                "winning_team": winning_team,
+                "winning_team": winning_team if winning_team is not None else "none",
             },
         )
 
