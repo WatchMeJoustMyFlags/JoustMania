@@ -391,7 +391,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_EXPERIMENT_SEED_FLAG`, `_VALUE`, `_OBJECTIVE`, `_TARGET_N`, `_HYPOTHESIS` | unset (objective `balanced`) | yes | declare one env-seeded experiment at startup |
 | `AGENT_EXPERIMENT_DYNAMIC_ENABLED` | `false` | yes | bootstrap default of the live `experiment_dynamic_enabled` flag, not a gate (the declarer also needs `experiments_enabled`) |
 | `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` | unset | yes (empty = no ceiling) | operator ceiling (#1810, C-034): the concurrent-experiment budget is `min(env, experiment_dynamic_max_concurrent)`, clamped to the shadow capacity; unset, invalid or non-positive = no ceiling |
-| `AGENT_EXPERIMENT_DYNAMIC_CANDIDATES`, `_DENYLIST`, `_OBJECTIVE`, `_TARGET_N` | unset (built-in denylist, objective `balanced`, target 0); `_DENYLIST` set but empty = no exclusions | first, second, fourth | candidate flag list, excluded flags, default objective, games per arm of dynamic experiments |
+| `AGENT_EXPERIMENT_DYNAMIC_CANDIDATES`, `_DENYLIST`, `_OBJECTIVE`, `_TARGET_N` | unset (built-in denylist, objective `balanced`, target 0); `_DENYLIST` empty or blank = unset (built-in list; there is no "no exclusions" form, #1908) | first, second, fourth | candidate flag list, excluded flags, default objective, games per arm of dynamic experiments |
 | `AGENT_MAX_SHADOW_GAMES` | `20` | no | registry shadow-capacity cap |
 | `AGENT_SHADOW_EFFECTIVE_CONCURRENCY` | `4` | no | in-flight shadow spawns, clamped to the cap above |
 | `AGENT_EXPERIMENT_MAX_GAMES` | unset | no | operator ceiling (#1810, C-034): the per-experiment games budget is `min(env, experiment_max_games)`, 0 or less = no limit on either side; unset, 0 or invalid = no ceiling |

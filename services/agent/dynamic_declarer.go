@@ -76,7 +76,7 @@ const (
 // knobs that are the declarer's OWN plumbing, not game-tuning parameters. The
 // declarer must never experiment on its own machinery (e.g. shadow_policy=block
 // would block the very shadow games the experiment needs to accrue samples).
-// Overridable via AGENT_EXPERIMENT_DYNAMIC_DENYLIST; bypassed entirely when an
+// Overridable via AGENT_EXPERIMENT_DYNAMIC_DENYLIST (empty = this default); bypassed entirely when an
 // explicit candidate list is configured.
 //
 // #1316 widened it to the platform plumbing, lobby/admin and ceremony timing flags:
@@ -455,20 +455,24 @@ func parseCandidates(raw string) []string {
 }
 
 // denylistFromEnv resolves the default-rotation denylist from
-// AGENT_EXPERIMENT_DYNAMIC_DENYLIST: UNSET ⇒ nil (caller falls back to
-// defaultDynamicDenylist); SET (even to empty) ⇒ exactly the parsed key set, so an
-// operator can shrink it or disable it entirely (empty value ⇒ empty set ⇒ no
-// exclusions). Always overridable.
+// AGENT_EXPERIMENT_DYNAMIC_DENYLIST: UNSET, empty or whitespace/comma-only ⇒ nil
+// (caller falls back to defaultDynamicDenylist, #1908: a compose passthrough always
+// defines the var as empty); a non-empty value ⇒ exactly the parsed key set, so an
+// operator can shrink or replace the built-in list. There is no "no exclusions" form.
 func denylistFromEnv() map[string]struct{} {
 	raw, ok := os.LookupEnv(envDynamicDenylist)
 	if !ok {
 		return nil // unset ⇒ use defaultDynamicDenylist.
 	}
-	set := make(map[string]struct{})
-	for _, k := range parseCandidates(raw) {
+	keys := parseCandidates(raw)
+	if len(keys) == 0 {
+		return nil // empty ⇒ same as unset.
+	}
+	set := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
 		set[k] = struct{}{}
 	}
-	return set // possibly empty (explicit opt-out of all exclusions).
+	return set
 }
 
 // parseDynamicTargetN parses the dynamic target-N override; non-positive/invalid ⇒
