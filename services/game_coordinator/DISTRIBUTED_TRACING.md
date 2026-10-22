@@ -101,7 +101,7 @@ StartGame (incoming RPC to GameCoordinator)
 └── game_ended (event)
 ```
 
-NonStop opens one lifecycle span per player, under `players` like the other modes (UC-026 N1;
+NonStop opens one lifecycle span per player, under `players` like the other modes (#1955, #1338;
 before that its game loop opened a second set directly under `gameplay_phase` and the first set,
 with the `countdown_phase` children, never ended). The `final_score` event is added when the
 spans close at the end of `gameplay_phase` (`_close_all_player_spans`), before the winner is known.

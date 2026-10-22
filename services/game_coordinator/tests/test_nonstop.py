@@ -1326,6 +1326,33 @@ class TestNonstopEndOfGame:
 
     @pytest.mark.uc("UC-026", br=["BR-003"])
     @pytest.mark.asyncio
+    async def test_server_ending_the_stream_after_the_time_limit_latch_keeps_the_winner(self):
+        game, events, call = await _loop_game()
+        finished = []
+
+        async def write(message):
+            if finished:
+                raise RuntimeError("write on a finished gameplay call")
+            call.messages.append(message)
+
+        call.write = write
+        call.done = lambda: bool(finished)
+        await asyncio.wait_for(game._game_loop(), timeout=5)
+        assert game._time_limit_reached
+        game._latch_game_outcome()
+        finished.append(True)  # the controller manager ends the stream here
+        await game._end_game_impl()
+
+        assert events.get_events_of_type(GameEvent.GAME_ERROR) == []
+        winners = events.get_events_of_type(GameEvent.GAME_WINNER)
+        assert len(winners) == 1
+        assert not [m for m in call.messages if m.HasField("game_effect")]
+        ended = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert ended[0]["outcome"] == "completed"
+        assert ended[0]["winner"] == winners[0]["serial"]
+
+    @pytest.mark.uc("UC-026", br=["BR-003"])
+    @pytest.mark.asyncio
     async def test_force_end_after_the_time_limit_latch_keeps_the_winner(self):
         game, events, call = await _loop_game()
         await asyncio.wait_for(game._game_loop(), timeout=5)

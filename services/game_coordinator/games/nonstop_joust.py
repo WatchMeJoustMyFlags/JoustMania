@@ -640,8 +640,9 @@ class NonstopJoustGame(BaseGameMode):
         if winner:
             logger.info(f"Winner: {winner.serial} with score {winner.score} (K:{winner.kills} D:{winner.deaths})")
 
-            # Show rainbow effect on winner's controller (the stream is open until teardown)
-            if self.gameplay_stream:
+            # Show rainbow effect on winner's controller (the stream is open until teardown).
+            # Skipped when the server already ended it: the winner stays, the game is not an error.
+            if self.gameplay_stream and not self._gameplay_call_done():
                 effect_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
                         serial=winner.serial,
