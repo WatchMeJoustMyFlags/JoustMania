@@ -92,11 +92,16 @@ class Composition:
     # Also a fake GitHub REST API (``stack.fake_github``) the agent's promoter opens issues and
     # PRs on (the promotion env gate + GITHUB_API_URL; needs ``agent``). Never github.com.
     fake_github: bool = False
-    # Extra env for the agent process, applied last (e.g. the experiment seed of TC-011).
+    # Extra env for the agent process, applied last (e.g. a test-only ceiling).
     agent_env: Mapping[str, str] = field(default_factory=dict)
     # Agent-set flag overlays served before the agent starts, so its first tick already reads
     # them: ``{flag: {"variant": "on"}}`` or ``{flag: {"value": 3}}`` (kwargs of ``FlagService.put``).
     agent_flags: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    # Declared variants rewritten in the stack's baseline copy before the flag service starts:
+    # ``{(flag_set, flag, variant): value}`` (FlagPlane ``variant_values``). The variant must
+    # exist; e.g. TC-011's ``experiment_seed`` ``windows_frantic`` with a smaller ``target_n``
+    # (the registry takes declared variants only, so a test seed is a rewritten variant, #1907).
+    flag_variant_values: Mapping[tuple[str, str, str], object] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.fake_claude and not self.agent:
@@ -155,6 +160,7 @@ class ServiceStack:
             variant_values[FAKE_CLAUDE_DECIDE_VARIANT] = self.fake_claude.base_url
         if self.fake_jev is not None:
             variant_values[FAKE_JEV_VARIANT] = self.fake_jev.base_url
+        variant_values.update(composition.flag_variant_values)
         self.flag_plane = FlagPlane(workdir, variant_values=variant_values or None)
         self.fake_audio = FakeAudio()
         forward_to = f"127.0.0.1:{self.agent_port}" if self.agent_port else None

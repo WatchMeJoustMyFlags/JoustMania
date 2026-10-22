@@ -751,15 +751,6 @@ services:
       # matching the Go "non-positive = ignore" semantics. Declared here so a host
       # `export` or `.env` value actually reaches the container (#1078).
       - AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${AGENT_LLM_MAX_REQUESTS_PER_MINUTE:-}
-      # Experiment cohort loop (#982/#991): the optional env-seeded single
-      # experiment. The loop itself is gated only by the experiments_enabled and
-      # `enabled` flags (fail closed, #1907); the promotion path stays gated by the
-      # `code_improvement` flags + kill-switch.
-      - AGENT_EXPERIMENT_SEED_FLAG=${AGENT_EXPERIMENT_SEED_FLAG:-}
-      - AGENT_EXPERIMENT_SEED_VALUE=${AGENT_EXPERIMENT_SEED_VALUE:-}
-      - AGENT_EXPERIMENT_SEED_OBJECTIVE=${AGENT_EXPERIMENT_SEED_OBJECTIVE:-}
-      - AGENT_EXPERIMENT_SEED_TARGET_N=${AGENT_EXPERIMENT_SEED_TARGET_N:-}
-      - AGENT_EXPERIMENT_SEED_HYPOTHESIS=${AGENT_EXPERIMENT_SEED_HYPOTHESIS:-}
       # UC-042 / FR-058: operator ceiling of the proposer gate (unset = closed). Both
       # proposers (retro-seeded theses and M7-4) run only when this is true AND the
       # experiment_proposer_enabled flag is on (#1810, C-034).

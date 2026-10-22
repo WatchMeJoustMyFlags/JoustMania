@@ -5,13 +5,14 @@ import (
 	"testing"
 
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/promote"
 )
 
 // TestExperimentLoop_StartFailed_AbortsExperiment: a declared experiment whose start
 // fails (here the flag is not in the experiment catalog, so the invariant gate
 // refuses the write) is aborted with start_failed on every declarer path that goes
-// through declareAndStart (env seed, dynamic declarer, retro thesis). It never stays
+// through declareAndStart (experiment seed, dynamic declarer, retro thesis). It never stays
 // proposed, so it holds neither its flag under test nor a slot of the
 // concurrent-experiment budget (D-A21, #1700).
 //
@@ -46,11 +47,12 @@ func TestExperimentLoop_StartFailed_AbortsExperiment(t *testing.T) {
 		assertFreed(t, loop)
 	})
 
-	t.Run("UC-043/A8 env seed", func(t *testing.T) {
+	t.Run("UC-043/A8 experiment seed", func(t *testing.T) {
 		loop := buildLoopForTest(t, &recordingSpawner{}, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
-		seed := refused
-		loop.seed = &seed
-		loop.ensureStarted(context.Background())
+		loop.maybeDeclareSeed(context.Background(), flags.ExperimentConfig{
+			Enabled: true,
+			Seed:    testSeed(refused.FlagKey, refused.ExperimentalValue, refused.TargetNPerArm),
+		})
 		assertFreed(t, loop)
 	})
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"strconv"
@@ -44,15 +43,6 @@ import (
 // concluded experiment to that already-gated Promoter; it adds no new privilege.
 
 const (
-	// Seed-experiment env vars (the simplest env-gated declaration trigger; see
-	// the declaration-trigger note below). When envSeedFlag is set the loop
-	// Declares ONE experiment at startup so the cohort loop has something to run.
-	envSeedFlag       = "AGENT_EXPERIMENT_SEED_FLAG"       // game.json flag key to experiment on
-	envSeedValue      = "AGENT_EXPERIMENT_SEED_VALUE"      // experimental value (number/bool/JSON object|array/string)
-	envSeedObjective  = "AGENT_EXPERIMENT_SEED_OBJECTIVE"  // fitness objective (default balanced)
-	envSeedTargetN    = "AGENT_EXPERIMENT_SEED_TARGET_N"   // target games per arm
-	envSeedHypothesis = "AGENT_EXPERIMENT_SEED_HYPOTHESIS" // free-text hypothesis
-
 	// envDynamicMaxConcurrent is the operator's CEILING on the number of LIVE
 	// experiments the declarers keep going at once (#1810, C-034, FR-152 e): the
 	// effective budget is min(env, experiment_dynamic_max_concurrent), clamped to
@@ -99,7 +89,7 @@ func proposerGateOpen(flagOn bool) bool {
 // defaultDynamicMaxConcurrent is the default ceiling on simultaneously-live
 // dynamically-declared experiments (#995). A small value keeps the autonomous
 // declarer from flooding the registry; it is further clamped to the shadow-game
-// capacity. The static env seed (if any) counts toward this ceiling too — the
+// capacity. The experiment seed (if any) counts toward this ceiling too — the
 // declarer reads the registry's LIVE count, which includes the seed.
 const defaultDynamicMaxConcurrent = 3
 
@@ -185,10 +175,12 @@ type experimentLoop struct {
 	// have no default here (they fall back to false).
 	expDefaults flags.ExperimentDefaults
 
-	// seed, when set, is the one experiment Declared+Started when the loop FIRST
-	// becomes enabled (the env-gated declaration trigger). Nil ⇒ no seed (the
-	// registry rehydrates prior experiments and runs them, but declares nothing new).
-	seed *experiment.Intent
+	// seedLatched holds the canonical JSON of every experiment_seed value this
+	// process has acted on (declared, skipped as satisfied, refused or malformed;
+	// experiment_seed.go, #1907). Guarded by declarerLock().
+	seedLatched map[string]struct{}
+	// seedMu is declarerLock() when no dynamic declarer is wired (test wiring).
+	seedMu sync.Mutex
 
 	// dynamic is the heuristic dynamic declarer (#995). #1044: it is ALWAYS built
 	// now; whether it actually declares each tick is gated by the LIVE
@@ -217,11 +209,12 @@ type experimentLoop struct {
 	// though allocateIfEnabled is called concurrently from several goroutines (tick,
 	// immediate allocate, per-partition onGameEnd, onGameTerminal, grace timer).
 	startMu sync.Mutex
-	// startedOnce guards the one-time rehydrate+seed that runs the FIRST time the
-	// loop observes experiments_enabled=true (the startup-gate inversion, #1044): the
-	// loop is always running, but its declaration bootstrap is deferred until the
-	// flag turns on, so an agent that starts with experiments off and is flipped on
-	// later still rehydrates prior experiments and declares its seed.
+	// startedOnce guards the one-time rehydrate that runs the FIRST time the loop
+	// observes experiments_enabled=true (the startup-gate inversion, #1044): the
+	// loop is always running, but its bootstrap is deferred until the flag turns
+	// on, so an agent that starts with experiments off and is flipped on later
+	// still rehydrates prior experiments. The seed is not part of it any more: it
+	// is read every enabled tick (maybeDeclareSeed, #1907).
 	startedOnce bool
 
 	// enabledOverride, when non-nil, supplies the kill-switch state instead of
@@ -344,8 +337,7 @@ func buildExperimentLoop(
 		"tick_default", expDefaults.Tick,
 		"completed_grace_default", expDefaults.CompletedGrace,
 		"max_shadow_games", experiment.DefaultMaxShadowGames,
-		"effective_concurrency_default", expDefaults.ShadowEffectiveConcurrency,
-		"seed_flag", os.Getenv(envSeedFlag))
+		"effective_concurrency_default", expDefaults.ShadowEffectiveConcurrency)
 
 	// TargetingWriter (#977): a Gate over a Writer pinned to the game flagset. The
 	// Gate validates THE INVARIANT on every Apply; Strip un-nests a branch on
@@ -421,7 +413,6 @@ func buildExperimentLoop(
 		tracer:       otel.Tracer(experimentInstrumentationName),
 		fitnessStore: fitnessStore,
 		expDefaults:  expDefaults,
-		seed:         seedIntentFromEnv(),
 		fitness:      gameFitnessWith(thresholds),
 		thresholds:   thresholds,
 		ceilings:     experimentCeilingsFromEnv(logger),
@@ -476,9 +467,10 @@ func promotionConfigResolver(f *flags.Flags) promote.ConfigResolver {
 //     behaviorally inert (the only residual work is one no-op tick), and it subsumes
 //     the kill-switch teardown (a disabled agent and a disabled-experiments flag both
 //     tear the experiment surface down).
-//   - ENABLED ⇒ on the FIRST enabled tick run the one-time rehydrate (#831 durable
-//     resume) + seed declaration (startedOnce); then apply the live caps
-//     (Reconfigure) and refill shadow capacity (allocate + dynamic declare). An
+//   - ENABLED ⇒ apply the live caps (Reconfigure); on the FIRST enabled tick run
+//     the one-time rehydrate (#831 durable resume, startedOnce); declare the
+//     experiment seed if its value is new (#1907); then refill shadow capacity
+//     (dynamic declare + allocate). An
 //     off→on flip therefore STARTS the loop (rehydrate+seed+allocate) and an on→off
 //     flip STOPS it cleanly (AbortAll strips targeting + releases capacity; in-flight
 //     shadow games conclude/release normally — no corruption).
@@ -487,8 +479,9 @@ func promotionConfigResolver(f *flags.Flags) promote.ConfigResolver {
 // whenever the resolved interval moves, mirroring the #927 eviction-ticker pattern,
 // so retuning the cadence takes effect with no restart.
 //
-// SEED + DYNAMIC COMPOSITION (#995): unchanged. The seed (if set) is declared ONCE
-// on the first enabled tick; the dynamic declarer then fills the rest each tick,
+// SEED + DYNAMIC COMPOSITION (#995, #1907): the experiment_seed flag is read every
+// enabled tick and each distinct value is acted on at most once per process
+// (maybeDeclareSeed); the dynamic declarer then fills the rest each tick,
 // bounded by the live concurrent-experiment backstop. The kill-switch (agent.json
 // `enabled`) is ALSO honored each tick (agentEnabled), independent of
 // experiments_enabled — either being off tears the surface down.
@@ -589,7 +582,7 @@ func (e *experimentLoop) tickInterval(ctx context.Context) time.Duration {
 // experiments_enabled flag (#1044) AND the agent kill-switch (agent.json `enabled`)
 // are on. When either is off it AbortAll's every live experiment instead — the
 // mid-run teardown that keeps the experiment loop subordinate to the same gates the
-// decision loop obeys. When enabled, it lazily runs the one-time rehydrate+seed
+// decision loop obeys. When enabled, it lazily runs the one-time rehydrate, the seed
 // (startup-gate inversion), applies the live caps, then allocates.
 func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	// UC-043 A1 / UC-045 step 5 (#1704): with the kill switch off (or failed closed)
@@ -614,7 +607,7 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	}
 	// Apply the live runtime caps (#1044) before the bootstrap and the allocation so
 	// a hot-reloaded concurrency / games-budget / min-N takes effect on THIS tick. It
-	// runs BEFORE ensureStarted (#1907): the first-tick seed Declare reconciles
+	// runs BEFORE the seed (#1907): the seed Declare reconciles
 	// target_n against the registry's min-N, so the live verdict_min_n must be in
 	// place first, not the compiled default the registry was built with. The games
 	// budget is capped by the operator's env ceiling (#1810, C-034, FR-152 f).
@@ -625,9 +618,13 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	// evaluations. Verdict-only (the registry reads none of them), so it is a separate
 	// forward to the verdict alongside Reconfigure.
 	e.registry.ReconfigureVerdictFloats(cfg.VerdictEffectThreshold, cfg.VerdictMinRawEffect, cfg.VerdictSDFloor, cfg.VerdictAnchorMargin)
-	// First enabled tick: run the deferred one-time rehydrate + seed declaration (the
-	// startup-gate inversion bootstrap, #1044).
-	e.ensureStarted(ctx)
+	// First enabled tick: run the deferred one-time rehydrate (the startup-gate
+	// inversion bootstrap, #1044).
+	e.ensureStarted()
+	// The experiment seed (#1907): after Reconfigure (so its target_n meets the live
+	// min-N) and the rehydrate (so a resumed experiment on its flag satisfies it),
+	// and BEFORE the dynamic declarer, so the seed takes the budget slot first.
+	e.maybeDeclareSeed(ctx, cfg)
 	// Heuristic dynamic declaration (#995): both gates are on (checked above) and the
 	// declarer is opted-in (live experiment_dynamic_enabled, #1044), so let the agent
 	// CHOOSE a fresh experiment to declare — bounded by the LIVE concurrent-experiment
@@ -715,7 +712,7 @@ func (e *experimentLoop) agentEnabled(ctx context.Context) bool {
 //     and a distinct alternate value (the per-flag dedup).
 //
 // It is a NO-OP when the declarer is not wired (dynamic == nil) OR the LIVE
-// experiment_dynamic_enabled flag is off (#1044), so the env-seed path is
+// experiment_dynamic_enabled flag is off (#1044), so the seed-only path is
 // byte-identical for everyone who has not opted in — and an off→on flip of the flag
 // starts dynamic declaration on the next tick with no restart. It is only ever
 // reached from allocateIfEnabled, which has already confirmed BOTH experiments_enabled
@@ -739,10 +736,10 @@ func (e *experimentLoop) agentEnabled(ctx context.Context) bool {
 // no lock-ordering deadlock with registry.mu.
 func (e *experimentLoop) declareDynamicIfEnabled(ctx context.Context, cfg flags.ExperimentConfig) {
 	if e.dynamic == nil {
-		return // declarer not wired (test path): env-seed behavior unchanged.
+		return // declarer not wired (test path): seed-only behavior unchanged.
 	}
 	if !cfg.DynamicEnabled {
-		return // LIVE experiment_dynamic_enabled off (#1044): env-seed behavior only.
+		return // LIVE experiment_dynamic_enabled off (#1044): seed-only behavior.
 	}
 	// Serialize the entire select→budget-check→dedup→declare sequence so only one
 	// dynamic declare is ever in flight (closes the TOCTOU over-declaration window)
@@ -839,21 +836,14 @@ func (e *experimentLoop) declareFromRetroIfEnabled(ctx context.Context, cfg flag
 
 // ensureStarted runs the deferred ONE-TIME bootstrap the FIRST time the loop
 // observes experiments_enabled=true (the startup-gate inversion, #1044): rehydrate
-// the durable journal (#831 resume) and declare+start the env seed. It is
-// idempotent + concurrency-safe (startMu + startedOnce), so the many concurrent
-// callers of allocateIfEnabled run it exactly once. A rehydrate error is logged and
-// the bootstrap is STILL marked done (we do not want to re-rehydrate every tick); a
-// seed declare error is logged and tolerated (the loop proceeds without the seed).
-//
-// ONE-SHOT ENV SEED (#1051): startedOnce latches for the lifetime of the loop, so on
-// an off→on→off→on cycle the env seed is declared EXACTLY ONCE — on the first enable
-// — and is NOT re-declared on any later re-enable. This is intentional: the env seed
-// is a one-shot STARTUP trigger, not a per-enable action. After a teardown
-// (on→off AbortAll) the seed experiment is terminal, so a re-enable resumes work via
-// rehydrate (any non-terminal experiment in the durable journal) + the dynamic
-// declarer (if experiment_dynamic_enabled is on) — never by re-running the env seed.
-// (TestExperimentsEnabled_OffOnOff pins this re-enable behavior.)
-func (e *experimentLoop) ensureStarted(ctx context.Context) {
+// the durable journal (#831 resume). It is idempotent + concurrency-safe (startMu +
+// startedOnce), so the many concurrent callers of allocateIfEnabled run it exactly
+// once. A rehydrate error is logged and the bootstrap is STILL marked done (we do
+// not want to re-rehydrate every tick). After a teardown (on→off AbortAll) a
+// re-enable resumes work via the dynamic declarer (if experiment_dynamic_enabled is
+// on) and a seed value not acted on yet; a seed value already acted on is never
+// declared again (maybeDeclareSeed, #1051, #1907; TestExperimentsEnabled_OffOnOff).
+func (e *experimentLoop) ensureStarted() {
 	e.startMu.Lock()
 	defer e.startMu.Unlock()
 	if e.startedOnce {
@@ -862,11 +852,6 @@ func (e *experimentLoop) ensureStarted(ctx context.Context) {
 	e.startedOnce = true
 	if err := e.rehydrate(); err != nil {
 		e.log.Error("experiment: rehydrate from journal failed (continuing without prior experiments)", "error", err)
-	}
-	if e.seed != nil {
-		if _, err := e.declareAndStart(ctx, *e.seed); err != nil {
-			e.log.Error("experiment: seed declare/start failed", "error", err)
-		}
 	}
 }
 
@@ -1821,69 +1806,4 @@ func recentRealBaselineAccessor(store *experiment.FitnessStore, recentN, minSamp
 		}
 		return sum / float64(len(samples)), true
 	}
-}
-
-// seedIntentFromEnv builds the single seed experiment Intent from the
-// AGENT_EXPERIMENT_SEED_* env vars, or returns nil when no seed flag is set. This
-// is the SIMPLEST env-gated declaration trigger (#991 investigation): rather than
-// wiring the LLM Proposer (#960) — which produces single-flag Proposals, not
-// experiment-shaped Intents with arms/target-N, and is itself inert until a real
-// inference backend lands — a config-seeded experiment lets the cohort loop run
-// end-to-end for the demo behind the same opt-in. Promoting the Proposer to emit
-// Intents is a documented follow-up.
-func seedIntentFromEnv() *experiment.Intent {
-	flagKey := strings.TrimSpace(os.Getenv(envSeedFlag))
-	if flagKey == "" {
-		return nil
-	}
-	objective := strings.TrimSpace(os.Getenv(envSeedObjective))
-	if objective == "" {
-		objective = decision.ObjectiveBalanced
-	}
-	targetN := 0
-	if v := strings.TrimSpace(os.Getenv(envSeedTargetN)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			targetN = n
-		}
-	}
-	hypothesis := strings.TrimSpace(os.Getenv(envSeedHypothesis))
-	if hypothesis == "" {
-		hypothesis = "env-seeded experiment (#991 demo trigger)"
-	}
-	return &experiment.Intent{
-		Hypothesis:        hypothesis,
-		FlagKey:           flagKey,
-		ExperimentalValue: parseSeedValue(os.Getenv(envSeedValue)),
-		Objective:         objective,
-		TargetNPerArm:     targetN,
-	}
-}
-
-// parseSeedValue parses the seed experimental value: a number when it parses as a
-// float, a bool for "true"/"false", a JSON object/array when the raw text begins
-// with '{' or '[' and parses as valid JSON (so an OBJECT-valued game flag — e.g.
-// the FFA difficulty/pacing levers “game.thresholds“ / “game.windows“ — can be
-// seeded, #1090), else the raw string. The Gate's type guard rejects a value whose
-// JSON kind does not match the flag's existing variants, so a mistyped seed fails
-// closed at Start (the targeting write) — never reaching a shadow game.
-func parseSeedValue(raw string) any {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	if f, err := strconv.ParseFloat(raw, 64); err == nil {
-		return f
-	}
-	if b, err := strconv.ParseBool(raw); err == nil {
-		return b
-	}
-	// Structured (object/array) seed: only attempt JSON when the text is clearly
-	// a JSON composite, so a bare string seed is never accidentally reinterpreted.
-	if len(raw) > 0 && (raw[0] == '{' || raw[0] == '[') {
-		var v any
-		if err := json.Unmarshal([]byte(raw), &v); err == nil {
-			return v
-		}
-	}
-	return raw
 }

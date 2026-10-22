@@ -80,11 +80,8 @@ func TestPatternGames_NoSpawnWhileExperimentsOff(t *testing.T) {
 		expDefaults:     flags.ExperimentDefaults{Tick: 0, DynamicMaxConcurrent: defaultDynamicMaxConcurrent},
 		configOverride:  lc.get,
 		enabledOverride: func(context.Context) bool { return true },
-		seed: &experiment.Intent{
-			Hypothesis: "h", FlagKey: "invincibility_seconds",
-			ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 50,
-		},
 	}
+	lc.setSeed(testSeed("invincibility_seconds", 6.0, 50))
 	ctx := context.Background()
 
 	t.Run("UC-046/Pre-1 experiments off: no pattern is pinned and no game spawns", func(t *testing.T) {

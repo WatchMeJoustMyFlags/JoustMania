@@ -394,7 +394,7 @@ A bounded in-game change written for one game to the `interventions` flag set th
 
 ### EXPERIMENT
 
-A hypothesis about one `game.json` flag value, tested in shadow games (`services/agent/experiment/registry.go:48-66`, journal `services/agent/experiment/journal/`). Declared from the env seed, the M7-4 proposer, retro-seeded theses or the dynamic declarer. The dossier (`/experiments`, `/experiments/<id>`, FR-059, UC-035 A1) is a read-only JSON / HTML view of EXPERIMENT, ARM, VERDICT and per-game rows from the journal (game id, arm, pair index, outcome, fitness, duration, note, trace hint); it has no entity of its own.
+A hypothesis about one `game.json` flag value, tested in shadow games (`services/agent/experiment/registry.go:48-66`, journal `services/agent/experiment/journal/`). Declared from the experiment seed (`experiment_seed` flag), the M7-4 proposer, retro-seeded theses or the dynamic declarer. The dossier (`/experiments`, `/experiments/<id>`, FR-059, UC-035 A1) is a read-only JSON / HTML view of EXPERIMENT, ARM, VERDICT and per-game rows from the journal (game id, arm, pair index, outcome, fitness, duration, note, trace hint); it has no entity of its own.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|

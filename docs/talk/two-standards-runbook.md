@@ -674,9 +674,9 @@ like on a real game, so every beat from 2 to 7 still shows.
 loop; `experiment_dynamic_enabled=on` lets the agent declare experiments
 itself (on game-tuning flags of the `game` set only, the experiment catalog: plumbing, lobby and ceremony
 flags are excluded, UC-070 BR-008; shadow games only, promotion stays gated), so no
-env change or agent restart is needed. An `AGENT_EXPERIMENT_SEED_*` seed in
-`.env.local` (what `make dry-run` sets) also works, but it is declared only
-once per agent start: after the kill-switch beat (`enabled=off` aborts every
+env change or agent restart is needed. An `experiment_seed` variant (what
+`agent-dryrun-enable.sh on` sets) also works, but each seed value is declared at
+most once per agent process: after the kill-switch beat (`enabled=off` aborts every
 experiment) or a `fallback off`, only the dynamic declarer brings games back.
 The loop refills on each experiment tick: `fallback on` selects the `fast`
 variant of `experiment_tick_seconds` (10 s instead of 30 s); `fallback off`

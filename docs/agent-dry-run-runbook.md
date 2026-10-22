@@ -15,14 +15,16 @@ make dry-run
                                       # (flag-service overlay, live — no restart)
 ```
 
-`./scripts/agent-dryrun-enable.sh on` flips **both** live gates in one step,
-as in-memory `operator` overlays through the flag service (`scripts/flags.sh`) — the master `enabled` kill-switch **and** the
-`experiments_enabled` flag (the LIVE experiment gate post-#1044). The in-game
+`./scripts/agent-dryrun-enable.sh on` sets the experiment seed and flips **both** live gates in one step,
+as in-memory `operator` overlays through the flag service (`scripts/flags.sh`): first the
+`experiment_seed` flag (variant `windows_frantic`, #1907), then the master `enabled` kill-switch **and** the
+`experiments_enabled` flag (the LIVE experiment gate post-#1044). The seed goes first so the first enabled
+tick already sees it. The in-game
 decision backend is a separate flag (`decision.backend`, default `rules`); flip
 it with `./scripts/agent-backend.sh` (see [decide-contract.md 10.1](specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer)).
 
 Restore the fail-closed defaults afterwards with
-`./scripts/agent-dryrun-enable.sh off` (clears both overlays). A flag-service
+`./scripts/agent-dryrun-enable.sh off` (clears all three overlays). A flag-service
 restart or `down` also drops them; nothing is persisted.
 
 `make dry-run` prints the same steps and the observability URLs on completion.
@@ -51,7 +53,7 @@ findings):
 |---|---------|---------|-------------------------|
 | 1 | `.env` pins `IMAGE_TAG=0.7.0` (release-please) | A plain `up` runs the last RELEASE images — they predate the experiment framework, so the loop never constructs (no `Experiment cohort loop` log) | `make dry-run` pins `IMAGE_TAG=latest` (override with `IMAGE_TAG=... make dry-run`, or add `BUILD=1` to build locally) |
 | 2 | Agent master kill-switch `agent.json` `enabled` = `off` (fail-closed) | Loop declares + writes targeting then self-aborts: `experiment.torn_down ... reason="kill-switch: agent disabled"` | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` (in-memory overlay in the running stack only; the baseline stays `off`) |
-| 3 | The agent compose env did not declare `AGENT_EXPERIMENT_SEED_*` | A host `export` never reached the container (needed a custom override) | These vars are now declared (empty by default) on the `agent` service in `docker-compose.yml`; the dry-run override sets the seed. (The `AGENT_EXPERIMENTS_ENABLED` env gate was removed in #1907.) |
+| 3 | No experiment seed | The loop runs but has nothing to test | The seed is the `experiment_seed` flag (#1907; the `AGENT_EXPERIMENT_SEED_*` env vars are gone and a host `.env` entry for them is ignored): `./scripts/agent-dryrun-enable.sh on` sets its `windows_frantic` variant. (The `AGENT_EXPERIMENTS_ENABLED` env gate was removed in #1907 too.) |
 | 5 | **(#1044/#1077)** flagd `experiments_enabled` flag = `off` (fail-closed) | The loop is constructed but `gated LIVE by agent.json experiments_enabled`; **zero** `experiment.*` activity | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` flips `experiments_enabled` (and `enabled`, row 2) as in-memory overlays; the baseline stays `off` |
 | 6 | **(#1225/#1234)** flagd `decision.backend` flag = `rules` | Decisions come from the rules engine; no model is called. Shadow games stay on rules even with a remote backend (`llm.eligible_game_kinds` defaults to `real`) | `./scripts/agent-backend.sh claude` (needs `ANTHROPIC_API_KEY` in the agent env); `rules` is the correct floor without a key |
 
@@ -134,23 +136,27 @@ docker compose \
 - `IMAGE_TAG=latest` — current code, not the `.env` release pin.
 - `docker-compose.ci.yml` — mock controllers (`backend=mock`), the `agent` /
   `dashboard` profiles gated behind `--profile`.
-- `docker-compose.dry-run.yml` — one seeded
-  experiment (`windows` = the `frantic` pacing object, objective `balanced`,
-  `N=8`/arm), and the flag service's own admin state file
-  (`admin-dry-run.json`). The flag service loads the `services/flagd/ci/`
+- `docker-compose.dry-run.yml` — the flag service's own admin state file
+  (`admin-dry-run.json`) and the agent profile. The seed is not in compose any
+  more (#1907): `agent-dryrun-enable.sh on` sets the `experiment_seed` variant
+  `windows_frantic` (`windows` = the `frantic` pacing object, objective
+  `balanced`, `N=8`/arm). The flag service loads the `services/flagd/ci/`
   baseline; no service mounts a writable flag dir.
 - `--profile dashboard` — dashboard + connect-proxy + envoy for the full
   observability surface at `http://localhost/`.
 
-Seed another flag instead:
+Seed another flag instead: select another reviewed variant of `experiment_seed`
+(live, no restart; each distinct seed value is declared at most once per agent
+process):
 
 ```bash
-AGENT_EXPERIMENT_SEED_FLAG=invincibility_seconds \
-AGENT_EXPERIMENT_SEED_VALUE=4.5 \
-make dry-run
+./scripts/flags.sh set agent experiment_seed invincibility_4_5   # invincibility_seconds = 4.5
 ```
 
-The seed flag must **exist in `services/flagd/ci/game.json`**, be in the
+The flag service takes declared variants only, so a new seed is a new variant
+of `experiment_seed` in both `services/flagd/agent.json` and
+`services/flagd/ci/agent.json` (a reviewed change; `TestExperimentSeedVariants`
+and `TestExperimentSeedFlagVariantsParse` check it). The seed flag must **exist in `services/flagd/ci/game.json`**, be in the
 experiment catalog (a registry row with `experiment+arm` scope,
 [flags.md §13.3](specs/flags.md#13-mutable-flag-registry)), and the value must
 be in its bounds; the flag service rejects anything else with HTTP 422
@@ -180,11 +186,11 @@ be in its bounds; the flag service rejects anything else with HTTP 422
   experiment runs. Dynamic generation is the live flag
   `experiment_dynamic_enabled` (default off): run
   `scripts/flags.sh set agent experiment_dynamic_enabled on` (no restart), or
-  re-seed with another flag as in "Seed another flag" above. The
+  select another seed variant as in "Seed another flag" above. The
   `AGENT_EXPERIMENT_*` env vars: `_DYNAMIC_MAX_CONCURRENT`, `_MAX_GAMES` and
-  `_PROPOSER_ENABLED` are ceilings (#1810, C-034); the seed and dynamic list
-  vars are startup config (until #1907 4b/4c); no env var is a fallback for a
-  flag any more (#1907).
+  `_PROPOSER_ENABLED` are ceilings (#1810, C-034); the seed and the dynamic
+  lists are flags (`experiment_seed`, `experiment_dynamic_*`); no env var is a
+  fallback for a flag any more (#1907).
 - **Verdicts read `inconclusive`.** Expected on mock controllers: the
   scripted movement is not a real effect, so arms rarely separate. Do not treat
   `inconclusive` as a failure; the loop is working when declare, start,

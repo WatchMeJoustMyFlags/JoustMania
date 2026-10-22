@@ -37,6 +37,7 @@ import (
 type switchableEvaluator struct {
 	mu          sync.Mutex
 	booleans    map[string]bool
+	objects     map[string]any
 	unreachable bool
 }
 
@@ -87,9 +88,14 @@ func (s *switchableEvaluator) FloatValue(_ context.Context, _ string, d float64,
 	return d, nil
 }
 
-func (s *switchableEvaluator) ObjectValue(_ context.Context, _ string, d any, _ openfeature.EvaluationContext, _ ...openfeature.Option) (any, error) {
-	if s.down() {
+func (s *switchableEvaluator) ObjectValue(_ context.Context, k string, d any, _ openfeature.EvaluationContext, _ ...openfeature.Option) (any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unreachable {
 		return d, errFlagdUnreachable
+	}
+	if v, ok := s.objects[k]; ok {
+		return v, nil
 	}
 	return d, nil
 }
@@ -167,6 +173,7 @@ func TestKillSwitch_ForceEndsPatternGames(t *testing.T) {
 		})
 		lc := &liveConfig{}
 		lc.set(flags.ExperimentConfig{Enabled: true, ShadowEffectiveConcurrency: 2})
+		lc.setSeed(testSeed("invincibility_seconds", 6.0, 50))
 		var mu sync.Mutex
 		agentEnabled := true
 		loop := &experimentLoop{
@@ -178,10 +185,6 @@ func TestKillSwitch_ForceEndsPatternGames(t *testing.T) {
 				mu.Lock()
 				defer mu.Unlock()
 				return agentEnabled
-			},
-			seed: &experiment.Intent{
-				Hypothesis: "h", FlagKey: "invincibility_seconds",
-				ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 50,
 			},
 		}
 
@@ -233,7 +236,10 @@ func TestKillSwitch_ForceEndsPatternGames(t *testing.T) {
 func TestKillSwitch_FlagdUnreachableStopsExperimentLoop(t *testing.T) {
 	t.Setenv("AGENT_EXPERIMENTS_ENABLED", "true") // ignored since #1907
 	loop, spawner, _ := loopForConfigTest(t, 8)
-	ev := &switchableEvaluator{booleans: map[string]bool{"enabled": true, "experiments_enabled": true}}
+	ev := &switchableEvaluator{
+		booleans: map[string]bool{"enabled": true, "experiments_enabled": true},
+		objects:  map[string]any{"experiment_seed": testSeed("invincibility_seconds", 6.0, 50)},
+	}
 	loop.flags = flags.New(ev, nil)
 	loop.configOverride = nil
 	loop.enabledOverride = nil

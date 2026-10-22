@@ -20,10 +20,11 @@
 #
 # 2. Experiment framework. The loop is gated only by the experiments_enabled and
 #    `enabled` flags (the enable step `scripts/agent-dryrun-enable.sh on` flips
-#    both; #1907 removed the env gates). This file seeds ONE experiment so the
-#    declare->spawn->conclude->verdict loop has work once enabled. Override values
-#    still win, e.g.:
-#      AGENT_EXPERIMENT_SEED_FLAG=move_threshold make dry-run
+#    both; #1907 removed the env gates). The same step seeds ONE experiment (the
+#    experiment_seed flag, variant windows_frantic; #1907 removed the
+#    AGENT_EXPERIMENT_SEED_* env vars) so the declare->spawn->conclude->verdict
+#    loop has work once enabled. Another seed is another reviewed variant:
+#      ./scripts/flags.sh set agent experiment_seed invincibility_4_5
 #    The refill tick is the experiment_tick_seconds flag (default 30 s; the former
 #    15 s env override is gone, #1907).
 #
@@ -41,27 +42,10 @@ services:
   agent:
     profiles:
       - agent
-    environment:
-      # Seed ONE experiment at startup (simplest declaration trigger). The flag
-      # key must EXIST in services/flagd/ci/game.json and the value's JSON kind
-      # must match its existing variants (the Gate's type guard rejects a mistyped
-      # seed).
-      #
-      # #1090: seed on a REAL FFA lever. ``game.windows`` is the music-tempo pacing
-      # table that drives how fast the music cycles fast<->slow; the game-coordinator
-      # reads it per game (base.py _get_music_change_time) and the resulting
-      # music_speed LERPs the per-frame death threshold in _compute_effective_thresholds
-      # (base.py:1319) consumed by the FFA death check (base.py:1556). The seed value
-      # is the pre-vetted, in-bounds ``frantic`` variant object (faster tempo cycling
-      # => shorter, more intense FFA games) — a genuinely measurable game-length /
-      # difficulty effect, unlike the former death_grace_period_seconds seed which FFA
-      # ignores entirely (it is a respawn-mode-only knob; see #1090). The seed VALUE is
-      # parsed as JSON when it begins with '{' (parseSeedValue, #1090).
-      - AGENT_EXPERIMENT_SEED_FLAG=${AGENT_EXPERIMENT_SEED_FLAG:-windows}
-      - "AGENT_EXPERIMENT_SEED_VALUE=${AGENT_EXPERIMENT_SEED_VALUE:-{\"min_music_fast_time\":6,\"max_music_fast_time\":11,\"min_music_slow_time\":6,\"max_music_slow_time\":14,\"end_min_music_fast_time\":8,\"end_max_music_fast_time\":14,\"end_min_music_slow_time\":5,\"end_max_music_slow_time\":8}}"
-      - AGENT_EXPERIMENT_SEED_OBJECTIVE=${AGENT_EXPERIMENT_SEED_OBJECTIVE:-balanced}
-      - AGENT_EXPERIMENT_SEED_TARGET_N=${AGENT_EXPERIMENT_SEED_TARGET_N:-8}
-      - "AGENT_EXPERIMENT_SEED_HYPOTHESIS=${AGENT_EXPERIMENT_SEED_HYPOTHESIS:-M8 dry-run seed - frantic music pacing windows shorten and intensify FFA games}"
+    # The experiment seed is the experiment_seed flag since #1907 (the
+    # AGENT_EXPERIMENT_SEED_* env vars are gone): `scripts/agent-dryrun-enable.sh on`
+    # sets its `windows_frantic` variant (game.windows = the frantic pacing object,
+    # objective balanced, N=8/arm) before it turns the gates on.
 
   # #1167: experiment-heavy collector envelope. The dry-run cohort loop runs ~4
   # paired shadow games/tick (~20 in flight), each emitting decision/action/effect

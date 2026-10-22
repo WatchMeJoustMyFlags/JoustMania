@@ -89,6 +89,9 @@ flags:
   - {set: agent, key: experiment_dynamic_denylist, kind: overlay, scope: [stack], bounds: {free_string: true}}
   - {set: agent, key: experiment_dynamic_objective, kind: overlay, scope: [stack], bounds: {variants: [balanced, endurance, accelerate]}}
   - {set: agent, key: experiment_dynamic_target_n, kind: overlay, scope: [stack], bounds: {range: [0, 1000], integer: true}}
+  # The experiment seed (#1907): declared variants only, so every seed is a reviewed variant
+  # (TestExperimentSeedVariants checks each against its game key's bounds).
+  - {set: agent, key: experiment_seed, kind: overlay, scope: [stack], bounds: {variants: ["off", windows_frantic, invincibility_4_5]}}
   # Agent tuning migrated from env (#1788, flags.md §15): operator-written, never by the agent.
   - {set: agent, key: inference.backend, kind: overlay, scope: [stack], persist: true, bounds: {variants: [stub, claude]}}
   - {set: agent, key: inference.model, kind: overlay, scope: [stack], bounds: {free_string: true}}

@@ -946,8 +946,10 @@ table to keep in sync with the code. Live gates (`enabled`, `interventions_enabl
 > intervention and rollout writers use fixed sets. The agent mounts no flag file;
 > only the flag service mounts the baseline directory, read-only.
 >
-> **Stays env (NOT migrated):** `AGENT_EXPERIMENT_DIR` (filesystem concern) and the
-> one-shot `AGENT_EXPERIMENT_SEED_*` (startup seed).
+> **Stays env (NOT migrated):** `AGENT_EXPERIMENT_DIR` (filesystem concern). The
+> experiment seed is the object flag `experiment_seed` since #1907 (the
+> `AGENT_EXPERIMENT_SEED_*` env vars are gone): read on every enabled tick and
+> declared at most once per distinct value per process (flags.md §3).
 >
 > **#1907 — dynamic declarer settings are flags.** `experiment_dynamic_candidates`,
 > `experiment_dynamic_denylist`, `experiment_dynamic_objective` and

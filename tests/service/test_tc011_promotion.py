@@ -8,7 +8,7 @@ fresh flag plane and the OtlpSink. The agent's promoter has its GitHub env gate 
 issue there and never on github.com.
 
 Synthetic shadow games carry no product signal, so the test makes the verdict
-deterministic: the env-seeded experiment scores the ``endurance`` objective (session
+deterministic: the seeded experiment (the ``experiment_seed`` flag) scores the ``endurance`` objective (session
 length over the baseline ``fitness.endurance.min_session_seconds``), conclusive from two
 seed-matched pairs (``verdict_min_pairs`` = 2, two archetypes), and the test, acting like the agent's
 ``eliminate_player`` writer, ends each control game as soon as it runs and each
@@ -58,15 +58,15 @@ SEED_VALUE = {
     "end_min_music_slow_time": 5,
     "end_max_music_slow_time": 8,
 }
+# The experiment seed is the experiment_seed flag (#1907): its declared variant
+# windows_frantic is rewritten in the stack's baseline to this test's seed and served
+# before ``enabled`` (the registry takes declared variants only).
+SEED_VARIANT = "windows_frantic"
+SEED = {"flag": SEED_FLAG, "value": SEED_VALUE, "objective": "endurance", "target_n": 2}
 SERVICE_COMPOSITION = replace(
     AGENT,
     fake_github=True,
-    agent_env={
-        "AGENT_EXPERIMENT_SEED_FLAG": SEED_FLAG,
-        "AGENT_EXPERIMENT_SEED_VALUE": json.dumps(SEED_VALUE),
-        "AGENT_EXPERIMENT_SEED_OBJECTIVE": "endurance",
-        "AGENT_EXPERIMENT_SEED_TARGET_N": "2",
-    },
+    flag_variant_values={("agent", "experiment_seed", SEED_VARIANT): SEED},
 )
 
 # Agent overlays (flags.md section 13.2). experiment.mock_archetypes stays on its
@@ -85,6 +85,7 @@ TUNING = {
 SERVICE_COMPOSITION = replace(
     SERVICE_COMPOSITION,
     agent_flags={
+        "experiment_seed": {"variant": SEED_VARIANT},  # before the gates
         "enabled": {"variant": "on"},
         "experiments_enabled": {"variant": "on"},
         "decision.backend": {"variant": "rules"},

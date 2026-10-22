@@ -2,7 +2,7 @@
 
 AGENT composition: the real agent (built at HEAD), menu, game coordinator and
 controller manager (mock backend) from source, a fresh flag plane and the OtlpSink.
-The agent runs one env-seeded experiment on the ``calm_long`` archetype (a game that
+The agent runs one seeded experiment (the ``experiment_seed`` flag) on the ``calm_long`` archetype (a game that
 does not end on its own before the test acts, the first of the baseline ``all``), and ``shadow_policy`` = ``block`` is
 served as a stack overlay.
 
@@ -42,20 +42,24 @@ from tests.service.lobby_flow import ready_up_until_started, start_lobby, wait_r
 pytestmark = pytest.mark.tier("service")
 
 SEED_FLAG = "windows"
-SEED_VALUE = (
-    '{"min_music_fast_time":6,"max_music_fast_time":11,'
-    '"min_music_slow_time":6,"max_music_slow_time":14,'
-    '"end_min_music_fast_time":8,"end_max_music_fast_time":14,'
-    '"end_min_music_slow_time":5,"end_max_music_slow_time":8}'
-)
+SEED_VALUE = {
+    "min_music_fast_time": 6,
+    "max_music_fast_time": 11,
+    "min_music_slow_time": 6,
+    "max_music_slow_time": 14,
+    "end_min_music_fast_time": 8,
+    "end_max_music_fast_time": 14,
+    "end_min_music_slow_time": 5,
+    "end_max_music_slow_time": 8,
+}
+# The experiment seed is the experiment_seed flag (#1907): its declared variant
+# windows_frantic is rewritten in the stack's baseline to this test's seed and served
+# before ``enabled`` (the registry takes declared variants only).
+SEED_VARIANT = "windows_frantic"
+SEED = {"flag": SEED_FLAG, "value": SEED_VALUE, "objective": "balanced", "target_n": 2}
 SERVICE_COMPOSITION = replace(
     AGENT,
-    agent_env={
-        "AGENT_EXPERIMENT_SEED_FLAG": SEED_FLAG,
-        "AGENT_EXPERIMENT_SEED_VALUE": SEED_VALUE,
-        "AGENT_EXPERIMENT_SEED_OBJECTIVE": "balanced",
-        "AGENT_EXPERIMENT_SEED_TARGET_N": "2",
-    },
+    flag_variant_values={("agent", "experiment_seed", SEED_VARIANT): SEED},
 )
 TUNING = {
     "verdict_min_n": 1,
@@ -68,6 +72,7 @@ TUNING = {
 SERVICE_COMPOSITION = replace(
     SERVICE_COMPOSITION,
     agent_flags={
+        "experiment_seed": {"variant": SEED_VARIANT},  # before the gates
         "enabled": {"variant": "on"},
         "experiments_enabled": {"variant": "on"},
         "decision.backend": {"variant": "rules"},
