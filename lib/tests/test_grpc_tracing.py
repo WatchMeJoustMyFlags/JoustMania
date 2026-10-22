@@ -1,12 +1,18 @@
 """Tests for lib/grpc_tracing.py"""
 
 import asyncio
+import gc
 import logging
 import sys
+import time
+from concurrent import futures
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import grpc
+import grpc.aio
 import pytest
+import pytest_asyncio
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -16,6 +22,8 @@ from opentelemetry.trace import StatusCode
 # Add lib to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from lib import grpc_tracing
+from lib.grpc_metrics import get_metrics_interceptors
 from lib.grpc_tracing import (
     _build_rpc_attributes,
     _extract_method_name,
@@ -25,6 +33,7 @@ from lib.grpc_tracing import (
     _safe_detach,
     get_context_propagation_interceptors,
     get_server_interceptors,
+    get_sync_context_propagation_interceptors,
 )
 
 
@@ -571,3 +580,340 @@ class TestStreamSpanScoping:
         assert len(spans) == 1
         assert spans[0].status.status_code == StatusCode.UNSET
         assert inner_saw_rpc_span == [True]
+
+
+# --- Client spans end at the call's final status (#1879) -----------------------------------------
+# A loopback server with generic raw-bytes handlers behind the real create_channel interceptor order
+# (metrics, then tracing): a mock continuation hides that grpc returns the call before the RPC ends.
+
+_PROBE_SVC = "test.Probe"
+_PROBE = f"/{_PROBE_SVC}/"
+_STREAM_FAIL_DELAY_S = 0.2
+
+
+async def _probe_unary_ok(_request, context):
+    _seen_metadata.append(dict(context.invocation_metadata()))
+    return b"ok"
+
+
+async def _probe_unary_fail(_request, context):
+    await context.abort(grpc.StatusCode.UNAVAILABLE, "down")
+
+
+async def _probe_unary_slow(_request, _context):
+    await asyncio.sleep(30)
+    return b"late"
+
+
+async def _probe_stream_ok(_request, _context):
+    for _ in range(3):
+        yield b"m"
+
+
+async def _probe_stream_fail(_request, context):
+    yield b"m"
+    await asyncio.sleep(_STREAM_FAIL_DELAY_S)
+    await context.abort(grpc.StatusCode.UNAVAILABLE, "dropped mid-stream")
+
+
+async def _probe_stream_server_cancel(_request, context):
+    yield b"m"
+    await context.abort(grpc.StatusCode.CANCELLED, "server cancelled")
+
+
+async def _probe_stream_forever(_request, _context):
+    while True:
+        yield b"m"
+        await asyncio.sleep(0.01)
+
+
+async def _probe_stream_many(_request, _context):
+    for _ in range(1000):
+        yield b"m"
+
+
+async def _probe_bidi_fail(request_iterator, context):
+    async for request in request_iterator:
+        yield request
+        await context.abort(grpc.StatusCode.INTERNAL, "bidi broke")
+
+
+_seen_metadata: list[dict] = []
+
+
+@pytest.fixture
+def span_exporter():
+    """A local provider (no global one) and the in-memory exporter behind it."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    yield exporter, provider
+    provider.shutdown()
+
+
+@pytest_asyncio.fixture
+async def traced_channel(span_exporter):
+    _exporter, provider = span_exporter
+    _seen_metadata.clear()
+    server = grpc.aio.server()
+    server.add_generic_rpc_handlers(
+        (
+            grpc.method_handlers_generic_handler(
+                _PROBE_SVC,
+                {
+                    "UnaryOk": grpc.unary_unary_rpc_method_handler(_probe_unary_ok),
+                    "UnaryFail": grpc.unary_unary_rpc_method_handler(_probe_unary_fail),
+                    "UnarySlow": grpc.unary_unary_rpc_method_handler(_probe_unary_slow),
+                    "StreamOk": grpc.unary_stream_rpc_method_handler(_probe_stream_ok),
+                    "StreamFail": grpc.unary_stream_rpc_method_handler(_probe_stream_fail),
+                    "StreamServerCancel": grpc.unary_stream_rpc_method_handler(_probe_stream_server_cancel),
+                    "StreamForever": grpc.unary_stream_rpc_method_handler(_probe_stream_forever),
+                    "StreamMany": grpc.unary_stream_rpc_method_handler(_probe_stream_many),
+                    "BidiFail": grpc.stream_stream_rpc_method_handler(_probe_bidi_fail),
+                },
+            ),
+        )
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    tracing = get_context_propagation_interceptors("127.0.0.1", port)
+    for interceptor in tracing:
+        interceptor._tracer = provider.get_tracer("client")
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}", interceptors=get_metrics_interceptors() + tracing)
+    with patch("lib.grpc_tracing._rpc_spans_enabled", autospec=True, return_value=True):
+        yield channel
+    await channel.close()
+    await server.stop(None)
+
+
+async def _finished_spans(exporter: InMemorySpanExporter, count: int = 1):
+    """Wait until ``count`` spans ended, then give a second end a chance to show up."""
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while len(exporter.get_finished_spans()) < count:
+        assert asyncio.get_running_loop().time() < deadline, "client span never ended"
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    return exporter.get_finished_spans()
+
+
+def _code(span) -> int:
+    return span.attributes["rpc.grpc.status_code"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-035", flow="main", steps=[5])
+class TestClientSpanStatusAtCallEnd:
+    """CLIENT spans record the final status when the call ends (telemetry.md §3.1, #1879)."""
+
+    async def test_unary_error_status_is_error(self, traced_channel, span_exporter):
+        exporter, _ = span_exporter
+        with pytest.raises(grpc.aio.AioRpcError):
+            await traced_channel.unary_unary(_PROBE + "UnaryFail")(b"x")
+
+        (span,) = await _finished_spans(exporter)
+        assert span.name == "Probe/UnaryFail"
+        assert span.kind == trace.SpanKind.CLIENT
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.UNAVAILABLE.value[0]
+
+    async def test_unary_ok_is_ok(self, traced_channel, span_exporter):
+        exporter, _ = span_exporter
+        assert await traced_channel.unary_unary(_PROBE + "UnaryOk")(b"x") == b"ok"
+
+        (span,) = await _finished_spans(exporter)
+        assert span.status.status_code == StatusCode.OK
+        assert _code(span) == 0
+
+    async def test_unary_task_cancel_propagates_and_leaves_status_unset(self, traced_channel, span_exporter):
+        exporter, _ = span_exporter
+
+        async def slow_call():
+            return await traced_channel.unary_unary(_PROBE + "UnarySlow")(b"x")
+
+        task = asyncio.create_task(slow_call())
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        (span,) = await _finished_spans(exporter)
+        assert span.status.status_code == StatusCode.UNSET
+
+    async def test_stream_failing_mid_way_is_error_and_lasts_the_stream(self, traced_channel, span_exporter):
+        exporter, _ = span_exporter
+        received = []
+        with pytest.raises(grpc.aio.AioRpcError):
+            async for message in traced_channel.unary_stream(_PROBE + "StreamFail")(b"x"):
+                received.append(message)
+
+        assert received == [b"m"]
+        (span,) = await _finished_spans(exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.UNAVAILABLE.value[0]
+        assert (span.end_time - span.start_time) / 1e9 >= _STREAM_FAIL_DELAY_S * 0.9
+
+    async def test_stream_ok_is_ok(self, traced_channel, span_exporter):
+        exporter, _ = span_exporter
+        assert [m async for m in traced_channel.unary_stream(_PROBE + "StreamOk")(b"x")] == [b"m"] * 3
+
+        (span,) = await _finished_spans(exporter)
+        assert span.status.status_code == StatusCode.OK
+        assert _code(span) == 0
+
+    async def test_server_sent_cancelled_is_error(self, traced_channel, span_exporter):
+        exporter, _ = span_exporter
+        with pytest.raises(grpc.aio.AioRpcError):
+            async for _ in traced_channel.unary_stream(_PROBE + "StreamServerCancel")(b"x"):
+                pass
+
+        (span,) = await _finished_spans(exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.CANCELLED.value[0]
+
+    async def test_bidi_failure_is_error(self, traced_channel, span_exporter):
+        exporter, _ = span_exporter
+
+        async def requests():
+            yield b"a"
+            yield b"b"
+
+        with pytest.raises(grpc.aio.AioRpcError):
+            async for _ in traced_channel.stream_stream(_PROBE + "BidiFail")(requests()):
+                pass
+
+        (span,) = await _finished_spans(exporter)
+        assert span.name == "Probe/BidiFail"
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.INTERNAL.value[0]
+
+    async def test_caller_cancel_ends_span_once_unset(self, traced_channel, span_exporter, caplog):
+        exporter, _ = span_exporter
+        call = traced_channel.unary_stream(_PROBE + "StreamForever")(b"x")
+        await call.read()
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call.read()
+
+        spans = await _finished_spans(exporter)
+        assert len(spans) == 1
+        assert spans[0].status.status_code == StatusCode.UNSET
+        assert _code(spans[0]) == grpc.StatusCode.CANCELLED.value[0]
+        assert "ended span" not in caplog.text
+
+    async def test_stream_never_read_ends_when_dropped(self, traced_channel, span_exporter):
+        exporter, _ = span_exporter
+        call = traced_channel.unary_stream(_PROBE + "StreamForever")(b"x")
+        await call.initial_metadata()
+        del call
+        gc.collect()
+
+        spans = await _finished_spans(exporter)
+        assert len(spans) == 1
+        assert spans[0].status.status_code == StatusCode.UNSET
+        assert _code(spans[0]) == grpc.StatusCode.CANCELLED.value[0]
+
+    async def test_long_stream_finishes_span_once_not_per_message(self, traced_channel, span_exporter):
+        from lib.grpc_tracing import _ClientSpanFinisher
+
+        exporter, _ = span_exporter
+        with patch.object(
+            _ClientSpanFinisher, "finish", autospec=True, side_effect=_ClientSpanFinisher.finish
+        ) as finish:
+            count = 0
+            async for _ in traced_channel.unary_stream(_PROBE + "StreamMany")(b"x"):
+                count += 1
+            await _finished_spans(exporter)
+
+        assert count == 1000
+        assert finish.call_count == 1
+
+    async def test_client_span_parents_to_caller_and_traceparent_keeps_caller(self, traced_channel, span_exporter):
+        exporter, provider = span_exporter
+        with provider.get_tracer("caller").start_as_current_span("caller") as outer:
+            await traced_channel.unary_unary(_PROBE + "UnaryOk")(b"x")
+
+        spans = {s.name: s for s in await _finished_spans(exporter, 2)}
+        outer_id = outer.get_span_context().span_id
+        assert spans["Probe/UnaryOk"].parent.span_id == outer_id
+        assert f"{outer_id:016x}" in _seen_metadata[0]["traceparent"]
+
+    async def test_no_span_when_flag_off(self, traced_channel, span_exporter):
+        exporter, _ = span_exporter
+        with patch.object(grpc_tracing._rpc_spans_enabled, "return_value", False):
+            await traced_channel.unary_unary(_PROBE + "UnaryOk")(b"x")
+            [_ async for _ in traced_channel.unary_stream(_PROBE + "StreamOk")(b"x")]
+
+        await asyncio.sleep(0.05)
+        assert exporter.get_finished_spans() == ()
+
+
+def _sync_probe_ok(_request, _context):
+    return b"ok"
+
+
+def _sync_probe_fail(_request, context):
+    context.abort(grpc.StatusCode.UNAVAILABLE, "down")
+
+
+@pytest.fixture
+def traced_sync_channel(span_exporter):
+    _exporter, provider = span_exporter
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    server.add_generic_rpc_handlers(
+        (
+            grpc.method_handlers_generic_handler(
+                _PROBE_SVC,
+                {
+                    "UnaryOk": grpc.unary_unary_rpc_method_handler(_sync_probe_ok),
+                    "UnaryFail": grpc.unary_unary_rpc_method_handler(_sync_probe_fail),
+                },
+            ),
+        )
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.intercept_channel(
+        grpc.insecure_channel(f"127.0.0.1:{port}"), *get_sync_context_propagation_interceptors("127.0.0.1", port)
+    )
+    with (
+        patch("lib.grpc_tracing._rpc_spans_enabled", autospec=True, return_value=True),
+        patch("lib.grpc_tracing.trace.get_tracer", autospec=True, return_value=provider.get_tracer("sync")),
+    ):
+        yield channel
+    channel.close()
+    server.stop(None)
+
+
+@pytest.mark.uc("UC-035", flow="main", steps=[5])
+class TestSyncClientSpanStatus:
+    """The HID adapters' sync unary calls: grpc's continuation never raises, the outcome carries the status."""
+
+    def test_blocking_unary_error_is_error(self, traced_sync_channel, span_exporter):
+        exporter, _ = span_exporter
+        with pytest.raises(grpc.RpcError):
+            traced_sync_channel.unary_unary(_PROBE + "UnaryFail")(b"x")
+
+        (span,) = exporter.get_finished_spans()
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.UNAVAILABLE.value[0]
+
+    def test_blocking_unary_ok_is_ok(self, traced_sync_channel, span_exporter):
+        exporter, _ = span_exporter
+        assert traced_sync_channel.unary_unary(_PROBE + "UnaryOk")(b"x") == b"ok"
+
+        (span,) = exporter.get_finished_spans()
+        assert span.status.status_code == StatusCode.OK
+        assert _code(span) == 0
+
+    def test_future_unary_error_is_error(self, traced_sync_channel, span_exporter):
+        exporter, _ = span_exporter
+        future = traced_sync_channel.unary_unary(_PROBE + "UnaryFail").future(b"x")
+        with pytest.raises(grpc.RpcError):
+            future.result(timeout=5)
+
+        deadline = time.monotonic() + 5
+        while not exporter.get_finished_spans():
+            assert time.monotonic() < deadline, "sync client span never ended"
+            time.sleep(0.01)
+        (span,) = exporter.get_finished_spans()
+        assert span.status.status_code == StatusCode.ERROR
