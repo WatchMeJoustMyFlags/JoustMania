@@ -605,8 +605,12 @@ class WerewolfGame(BaseGameMode):
 
                 # End game
                 with tracer.start_as_current_span("teardown_phase") as teardown_span:
+                    # Shield LEDs end with the game, before the winner effects (#1301).
+                    await self._end_shield_feedback()
                     await self._end_game_impl()
                     self._record_game_outcome(teardown_span)
+                    # Winner effects are sent: drop the stream reference (as base run()).
+                    self.gameplay_stream = None
 
                 game_span.set_status(Status(StatusCode.OK))
 
@@ -622,4 +626,5 @@ class WerewolfGame(BaseGameMode):
                 await self._stop_game_music()
                 if force_ended:
                     await self.on_force_end()
-                await self.cleanup()
+                await self._cleanup_after_run()
+                self.gameplay_stream = None

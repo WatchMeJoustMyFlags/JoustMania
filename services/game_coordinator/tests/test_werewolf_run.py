@@ -12,6 +12,7 @@ skipped through the runtime config.
 """
 
 import asyncio
+import inspect
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -338,6 +339,8 @@ async def test_force_end_during_the_intro_stops_the_drain_without_a_reopen():
     assert log.events.count_events_of_type(GameEvent.COUNTDOWN_START) == 0
     assert game.force_ended
     assert game._game_outcome_attributes()["game.outcome"] == "force_ended"
+    # run() returns early here (before teardown_phase): its finally drops the stream.
+    assert game.gameplay_stream is None, "the early-return path keeps the stream reference"
 
 
 @pytest.mark.uc("UC-022", flow="A1", steps=[2])
@@ -356,6 +359,115 @@ async def test_force_end_during_the_reveal_flash_writes_nothing_after_game_ended
     ended = log.index_of_event("game_ended")
     assert [kind for kind, _ in log.entries[ended + 1 :]] == [], "a write after game_ended"
     assert game.reveal_task.done()
+
+
+def _spy_teardown(game, calls):
+    """Record the teardown steps run() must reach, calling through to the real ones."""
+    real_clear = base_mod.metrics.clear_session_player_analytics
+
+    def clear(*args, **kwargs):
+        calls.append("clear_analytics")
+        return real_clear(*args, **kwargs)
+
+    patches = [patch.object(base_mod.metrics, "clear_session_player_analytics", side_effect=clear)]
+    for name in ("_end_shield_feedback", "_close_shield_charge_spans", "_end_game_impl"):
+        original = getattr(game, name)
+
+        async def awaiting(*a, _n=name, _o=original, **k):
+            calls.append(_n)
+            return await _o(*a, **k)
+
+        def plain(*a, _n=name, _o=original, **k):
+            calls.append(_n)
+            return _o(*a, **k)
+
+        patches.append(
+            patch.object(game, name, side_effect=awaiting if inspect.iscoroutinefunction(original) else plain)
+        )
+    return patches
+
+
+def _assert_teardown_reached(game, calls):
+    assert "clear_analytics" in calls, calls
+    assert "_close_shield_charge_spans" in calls, calls
+    assert game.gameplay_stream is None, "the stream reference is dropped"
+
+
+@pytest.mark.uc("UC-022", flow="A1")
+@pytest.mark.asyncio
+async def test_natural_end_runs_the_base_teardown_steps():
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _werewolf(log, client, reveal_time=0.01)
+    calls: list[str] = []
+
+    async def instant_loop():
+        await asyncio.sleep(0.05)
+
+    patches = _spy_teardown(game, calls)
+    with patch.object(game, "_game_loop", side_effect=instant_loop):
+        for p in patches:
+            p.start()
+        try:
+            await asyncio.wait_for(game.run(), timeout=10)
+        finally:
+            for p in patches:
+                p.stop()
+            for stream in client.streams:
+                if stream.producer:
+                    stream.producer.cancel()
+
+    _assert_teardown_reached(game, calls)
+    assert calls.index("_end_shield_feedback") < calls.index("_end_game_impl"), calls
+    assert calls.index("_end_game_impl") < calls.index("clear_analytics"), calls
+    # The winner rainbow must go out before the stream reference is dropped.
+    rainbow_serials = {
+        e.serial for _, e in log.writes("game_effect") if e.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+    }
+    assert rainbow_serials == set(game.werewolf_serials), rainbow_serials
+    assert game._game_outcome_attributes()["game.outcome"] == "completed"
+
+
+@pytest.mark.uc("UC-022", flow="A1")
+@pytest.mark.asyncio
+async def test_force_end_runs_the_base_teardown_steps():
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _werewolf(log, client, reveal_time=0.01)
+    calls: list[str] = []
+    patches = _spy_teardown(game, calls)
+    for p in patches:
+        p.start()
+    try:
+        task = asyncio.create_task(game.run())
+        await _wait_for(lambda: log.events.count_events_of_type(GameEvent.GAME_STARTED) == 1)
+        await _stop(game, task, client)
+    finally:
+        for p in patches:
+            p.stop()
+
+    _assert_teardown_reached(game, calls)
+    assert game.force_ended
+
+
+@pytest.mark.uc("UC-022", cond=["Pre-1"])
+@pytest.mark.asyncio
+async def test_error_exit_runs_the_base_teardown_steps():
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _werewolf(log, client, players=_players()[:1])
+    calls: list[str] = []
+    patches = _spy_teardown(game, calls)
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(ValueError, match="at least 2 players"):
+            await asyncio.wait_for(game.run(), timeout=10)
+    finally:
+        for p in patches:
+            p.stop()
+
+    _assert_teardown_reached(game, calls)
 
 
 @pytest.mark.uc("UC-022", br=["BR-001"])
