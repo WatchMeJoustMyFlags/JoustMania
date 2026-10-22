@@ -10,6 +10,7 @@ Tests the core Traitor mechanics:
 
 import asyncio
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import create_autospec, patch
@@ -271,12 +272,66 @@ class TestTraitorCount:
 
         return game, mock_controller_manager
 
+    @pytest.mark.uc("UC-022", flow="main", steps=[1])
     def test_traitor_count_2_players(self, traitor_game):
-        """Test traitor count for 2 players."""
+        """A 2-player game has no traitor; from 3 players there is one."""
         game, _ = traitor_game
-        # 2-3 players: 1 traitor
-        assert game._get_traitor_count(2) == 1
+        assert game._get_traitor_count(2) == 0
         assert game._get_traitor_count(3) == 1
+
+    @staticmethod
+    def _make_game(num_players, tiers=None):
+        manager = MockControllerManagerService(num_controllers=num_players)
+        game = TraitorGame(
+            controller_manager_client=manager,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id=f"test_traitor_cap_{num_players}",
+        )
+        game.random_teams = False
+        if tiers is not None:
+            game._count_tiers = tiers
+        return game, manager
+
+    @pytest.mark.uc("UC-022", flow="main", steps=[1])
+    def test_tier_count_not_below_players_does_not_hang(self):
+        """A tier asking for >= players traitors finishes with 1 traitor (the loop has no await)."""
+        game, manager = self._make_game(4, tiers=[{"max_players": 10, "count": 10}])
+        errors = []
+
+        def run_init():
+            try:
+                asyncio.run(game._initialize_players_impl(manager.controllers))
+            except Exception as exc:  # pragma: no cover - surfaced by assertion below
+                errors.append(exc)
+
+        worker = threading.Thread(target=run_init, daemon=True)
+        worker.start()
+        worker.join(2.0)
+        assert not worker.is_alive(), "traitor selection loop did not terminate"
+        assert not errors
+        assert len(game.traitor_serials) == 1
+
+    @pytest.mark.uc("UC-022", flow="main", steps=[1])
+    @pytest.mark.asyncio
+    async def test_two_players_no_traitor_no_instant_win(self):
+        """With 2 players nobody is a traitor and the first sample does not end the game."""
+        game, manager = self._make_game(2)
+        await game._initialize_players_impl(manager.controllers)
+        assert game.traitor_serials == []
+        assert not await game._check_win_condition()
+
+    @pytest.mark.uc("UC-022", flow="main", steps=[1])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("num_players", range(2, 17))
+    async def test_default_tiers_loyal_outnumber_traitors(self, num_players):
+        """Default tiers: traitors < loyal players and at least 2 non-empty secret teams."""
+        game, manager = self._make_game(num_players)
+        await game._initialize_players_impl(manager.controllers)
+        traitors = len(game.traitor_serials)
+        assert traitors < num_players - traitors
+        secret_teams = {p.secret_team for p in game.players.values()}
+        assert len(secret_teams) >= 2
 
     def test_traitor_count_scales_with_players(self, traitor_game):
         """Test traitor count scales appropriately."""
