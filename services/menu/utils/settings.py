@@ -12,15 +12,10 @@ logger = logging.getLogger(__name__)
 _UNIMPLEMENTED_MODES = {Games.Commander, Games.Ninja, Games.Random}
 GAME_MODES: list[str] = [g.name for g in Games if g not in _UNIMPLEMENTED_MODES]
 
-# Map keys the menu still spells differently from the Games member name; the
-# lobby voice and colour lookups miss them and fall back silently (#1276,
-# backlog, not FFA). Remove an entry when its key is renamed.
-LEGACY_MISKEYED_MODES: frozenset[str] = frozenset({"Zombie", "NonstopJoust"})
-
 
 def validate_mode_keys(mapping: dict[str, object], map_name: str) -> None:
     """Fail at import when a per-mode map has a key that is not a Games member name (#1815)."""
-    unknown = set(mapping) - {g.name for g in Games} - LEGACY_MISKEYED_MODES
+    unknown = set(mapping) - {g.name for g in Games}
     if unknown:
         raise ValueError(f"{map_name} has keys that are not Games members: {sorted(unknown)}")
 

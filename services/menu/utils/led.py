@@ -19,11 +19,11 @@ GAME_MODE_COLORS: dict[str, tuple[int, int, int]] = {
     "Swapper": Colors.Magenta.value,
     "Werewolf": Colors.Green.value,
     "Traitor": Colors.Purple.value,
-    "Zombie": Colors.White40.value,
+    "Zombies": Colors.White40.value,
     "Commander": Colors.Red.value,
     "FightClub": Colors.Yellow.value,
     "Tournament": Colors.Purple.value,
-    "NonstopJoust": Colors.Pink.value,
+    "NonStop": Colors.Pink.value,
 }
 validate_mode_keys(GAME_MODE_COLORS, "GAME_MODE_COLORS")
 
