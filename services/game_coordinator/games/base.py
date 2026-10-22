@@ -27,13 +27,14 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 import grpc
+from openfeature.evaluation_context import EvaluationContext
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from lib.controller_constants import battery_to_pct
 from lib.feature_flags import (
-    GAME_KIND_REAL,
     GAME_KIND_SHADOW,
+    build_session_kind_context,
     read_float_flag,
     read_object_flag,
     read_string_flag,
@@ -878,6 +879,9 @@ class BaseGameMode(ABC):
         self.game_kind = "primary"
         self.experiment_id = ""
         self.arm = ""
+        # The flag transaction context _set_flag_eval_context set for this game's
+        # run; intervention handlers resolve flags in it (flag_eval_context, #1970).
+        self._flag_eval_context: EvaluationContext | None = None
         # Callback the owning GameSession sets so the game can publish its
         # gameplay_phase span_id to the trace-correlation gauge (#1195) when that
         # span opens — letting the agent re-parent its in-game decision chain under
@@ -3773,8 +3777,26 @@ class BaseGameMode(ABC):
                 self._close_all_player_spans()
                 self._close_grouping_spans()
 
+    @property
+    def flag_eval_context(self) -> EvaluationContext:
+        """The flag evaluation context of this game, for reads made outside its task (#1970).
+
+        Intervention handlers run on the game's loop but not in the game's task, so
+        the manager sets this context around each one (UC-040 BR-018). After the
+        run started it is exactly what :meth:`_set_flag_eval_context` set; before
+        that (init phase) it is the session-kind context the game's own init reads
+        saw (``game_kind`` plus the experiment identity).
+        """
+        if self._flag_eval_context is not None:
+            return self._flag_eval_context
+        return build_session_kind_context(self.game_kind, self.experiment_id or None, self.arm or None)
+
     def _set_flag_eval_context(self) -> None:
-        """Set the per-game flag evaluation context (transaction context) for this game."""
+        """Set the per-game flag evaluation context (transaction context) for this game.
+
+        The only setter: it also keeps the context as ``flag_eval_context`` so
+        intervention handlers resolve flags in the same context (#1970).
+        """
         # Set transaction context for flag evaluations during this game.
         # Map the session kind ("primary"/"shadow", #775) to the eval-context
         # game_kind the agent's experiment writer scopes on ("real"/"shadow",
@@ -3787,12 +3809,12 @@ class BaseGameMode(ABC):
         # this session. Pass them only when set (a non-experiment game
         # leaves them absent, so its experiment targeting is false by
         # construction — real-by-default).
-        eval_game_kind = GAME_KIND_SHADOW if self.game_kind == GAME_KIND_SHADOW else GAME_KIND_REAL
-        set_game_transaction_context(
+        # set_game_transaction_context maps the session kind (eval_game_kind).
+        self._flag_eval_context = set_game_transaction_context(
             game_mode=self.get_game_name(),
             controller_count=len(self.players),
             sensitivity=self.sensitivity.value,
-            game_kind=eval_game_kind,
+            game_kind=self.game_kind,
             experiment_id=self.experiment_id or None,
             arm=self.arm or None,
         )

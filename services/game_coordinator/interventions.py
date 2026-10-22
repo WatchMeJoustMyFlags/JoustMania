@@ -55,7 +55,9 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
+from openfeature import api as openfeature_api
 from openfeature.evaluation_context import EvaluationContext
 from openfeature.flag_evaluation import Reason
 from openfeature.provider import ProviderEvent
@@ -599,6 +601,27 @@ BLOCK_REVIVE_REFUSED = "revive_refused"
 # game_id adds NO ``gameId`` attribute to the EvaluationContext, so un-targeted
 # flags resolve exactly as before (today's primary-only semantics, #838).
 _PRIMARY_SENTINEL_GAME_ID = ""
+
+
+async def run_in_game_flag_context(game: object, fn: Callable[..., Awaitable[Any]], *args: Any) -> Any:
+    """Run ``await fn(*args)`` with ``game``'s flag transaction context (#1970, UC-040 BR-018).
+
+    Called on the game's loop by ``GameLoopDispatcher.run``, so a dispatched
+    handler's flag reads resolve as the game's own reads do (an experiment arm's
+    value included). The context is read from the game here, on the game loop,
+    and the previous transaction context is restored afterwards, so on the
+    inline path it never leaks into the caller's task. A game without a
+    ``flag_eval_context`` (a test fake, no game) runs ``fn`` unchanged.
+    """
+    eval_context = getattr(game, "flag_eval_context", None)
+    if not isinstance(eval_context, EvaluationContext):
+        return await fn(*args)
+    previous = openfeature_api.get_transaction_context()
+    openfeature_api.set_transaction_context(eval_context)
+    try:
+        return await fn(*args)
+    finally:
+        openfeature_api.set_transaction_context(previous)
 
 
 @dataclass(frozen=True)
@@ -1611,7 +1634,7 @@ class InterventionManager:
         and does not count. Errors raised by ``fn`` itself propagate unchanged.
         """
         try:
-            await self._dispatcher_for(session).run(fn, *args)
+            await self._dispatcher_for(session).run(run_in_game_flag_context, session.game, fn, *args)
         except GameLoopUnavailableError as e:
             if quiet:
                 game_label = session.game_id or "<primary>"

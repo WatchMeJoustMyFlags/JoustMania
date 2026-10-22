@@ -332,7 +332,9 @@ def read_object_flag(domain: str, flag_key: str, default: dict, game_id: str | N
         return default
 
 
-def read_object_flag_variant(domain: str, flag_key: str, targeting_key: str, default: dict) -> dict:
+def read_object_flag_variant(
+    domain: str, flag_key: str, targeting_key: str, default: dict, attributes: dict | None = None
+) -> dict:
     """
     Read an object-typed flag selecting a named variant via flagd targeting.
 
@@ -348,6 +350,9 @@ def read_object_flag_variant(domain: str, flag_key: str, targeting_key: str, def
         flag_key: Object flag key (e.g. "windows")
         targeting_key: Preset/variant selector (e.g. "calm" / "frantic")
         default: Fallback value returned on any error or missing flag
+        attributes: Extra invocation attributes. They win over the transaction
+            context's (e.g. ``game_kind=real`` to read the baseline preset
+            outside an experiment rung, #1970).
 
     Returns:
         The selected variant's object value, or ``default`` on failure.
@@ -355,7 +360,8 @@ def read_object_flag_variant(domain: str, flag_key: str, targeting_key: str, def
     try:
         init_flag_domain(domain)
         client = get_flag_client(domain)
-        details = client.get_object_details(flag_key, default, EvaluationContext(targeting_key=targeting_key))
+        invocation = EvaluationContext(targeting_key=targeting_key, attributes=dict(attributes or {}))
+        details = client.get_object_details(flag_key, default, invocation)
         if _report_details_error(flag_key, details):
             return default
         value = details.value
@@ -484,11 +490,44 @@ def read_int_flag(domain: str, flag_key: str, default: int, game_id: str | None 
         return default
 
 
+def eval_game_kind(session_kind: str | None) -> str:
+    """Map a session kind to the flag ``game_kind`` vocabulary (#932).
+
+    Sessions say ``"primary"`` / ``"shadow"`` (metric labels, #775); flag targeting
+    says ``"real"`` / ``"shadow"`` (targeting.go). Only ``"shadow"`` resolves
+    experiments; anything else, ``"primary"`` and an unknown kind included, is the
+    protected ``"real"``. Idempotent on the flag vocabulary. The one place this
+    mapping lives (GameSession, the game's eval context and the handler context
+    all use it).
+    """
+    return GAME_KIND_SHADOW if session_kind == GAME_KIND_SHADOW else GAME_KIND_REAL
+
+
+def build_session_kind_context(
+    session_kind: str | None = GAME_KIND_REAL,
+    experiment_id: str | None = None,
+    arm: str | None = None,
+) -> EvaluationContext:
+    """The session-kind EvaluationContext: ``game_kind`` plus the experiment identity.
+
+    What a game's flag reads see before its run sets the full transaction context
+    (:func:`set_game_session_kind_context`), and the fallback an intervention
+    handler runs in for a game that has not started its run yet (#1970).
+    ``experiment_id`` / ``arm`` are added only when set (falsy means absent).
+    """
+    attributes: dict = {GAME_KIND_VAR: eval_game_kind(session_kind)}
+    if experiment_id:
+        attributes[EXPERIMENT_ID_VAR] = experiment_id
+    if arm:
+        attributes[ARM_VAR] = arm
+    return EvaluationContext(attributes=attributes)
+
+
 def set_game_session_kind_context(
     game_kind: str = GAME_KIND_REAL,
     experiment_id: str | None = None,
     arm: str | None = None,
-) -> None:
+) -> EvaluationContext:
     """Set the game_kind (and optional experiment identity) on the current async
     context's transaction context.
 
@@ -509,22 +548,23 @@ def set_game_session_kind_context(
     construction (real-by-default).
 
     Args:
-        game_kind: ``"shadow"`` for a shadow session, ``"real"`` (default) for a
-            protected real/primary game. MUST match targeting.go's GameKindReal.
+        game_kind: The session kind (``"shadow"`` / ``"primary"``) or the flag
+            vocabulary (``"shadow"`` / ``"real"``); mapped by :func:`eval_game_kind`.
         experiment_id: Experiment this shadow game belongs to (#975), e.g.
             ``"exp_<id>"``; omitted for a non-experiment game.
         arm: ``"experimental"`` | ``"control"`` (#975); omitted for a
             non-experiment game.
+
+    Returns:
+        The EvaluationContext it set.
     """
-    attributes: dict = {GAME_KIND_VAR: game_kind}
-    if experiment_id is not None:
-        attributes[EXPERIMENT_ID_VAR] = experiment_id
-    if arm is not None:
-        attributes[ARM_VAR] = arm
-    api.set_transaction_context(EvaluationContext(attributes=attributes))
+    context = build_session_kind_context(game_kind, experiment_id, arm)
+    api.set_transaction_context(context)
     logger.debug(
-        f"Session-kind transaction context set: game_kind={game_kind}, experiment_id={experiment_id}, arm={arm}"
+        f"Session-kind transaction context set: game_kind={eval_game_kind(game_kind)}, "
+        f"experiment_id={experiment_id}, arm={arm}"
     )
+    return context
 
 
 def set_game_transaction_context(
@@ -534,7 +574,7 @@ def set_game_transaction_context(
     game_kind: str = GAME_KIND_REAL,
     experiment_id: str | None = None,
     arm: str | None = None,
-) -> None:
+) -> EvaluationContext:
     """
     Set transaction-level evaluation context for the current game session.
 
@@ -546,7 +586,8 @@ def set_game_transaction_context(
         game_mode: Game mode name (e.g., "FFA", "Werewolf")
         controller_count: Number of controllers/players in the session
         sensitivity: Optional sensitivity level (0-4)
-        game_kind: Shadow/real marker for the agent experiment split (#932).
+        game_kind: Shadow/real marker for the agent experiment split (#932),
+            mapped by :func:`eval_game_kind` (a session kind is accepted too).
             Defaults to ``"real"`` (the protected baseline) so an unlabeled game
             never resolves an experiment; ONLY a shadow session passes
             ``"shadow"``. The transaction context overrides the API-level default
@@ -562,7 +603,12 @@ def set_game_transaction_context(
         arm: ``"experimental"`` | ``"control"`` (#975); the treatment this game
             is in within ``experiment_id``. Omitted for a non-experiment game.
             MUST match targeting.go's ARM constants (see ARM_* above).
+
+    Returns:
+        The EvaluationContext it set (the game keeps it as ``flag_eval_context``
+        so intervention handlers resolve flags in it too, #1970).
     """
+    game_kind = eval_game_kind(game_kind)
     attributes: dict = {
         "game_mode": game_mode,
         "controller_count": controller_count,
@@ -575,14 +621,11 @@ def set_game_transaction_context(
     if arm is not None:
         attributes[ARM_VAR] = arm
 
-    api.set_transaction_context(
-        EvaluationContext(
-            targeting_key=game_mode,
-            attributes=attributes,
-        )
-    )
+    context = EvaluationContext(targeting_key=game_mode, attributes=attributes)
+    api.set_transaction_context(context)
     logger.debug(
         f"Transaction context set: game_mode={game_mode}, "
         f"controller_count={controller_count}, sensitivity={sensitivity}, "
         f"game_kind={game_kind}, experiment_id={experiment_id}, arm={arm}"
     )
+    return context

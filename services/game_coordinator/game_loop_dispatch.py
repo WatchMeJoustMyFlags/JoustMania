@@ -20,12 +20,13 @@ the game's dispatcher, which:
   ``timeout_s``.
 
 The effect runs in a copy of the CALLER's contextvars (``run_coroutine_threadsafe``
-captures the context of the main loop's thread), not in the game's own. That is
-deliberate (#1872): the game's flag transaction context (game_mode, controller_count,
-sensitivity, experiment, and ``game_kind`` for a shadow game) is not visible to a flag
-read inside a handler, so such a read sees the API-level attributes plus what it passes
-itself. The flags handlers read are declared in ``handler_flag_reads.py``
-(flags.md section 1.2).
+captures the context of the main loop's thread), not in the game's task, so the
+game's OTel span and other contextvars stay out of it. Only the game's flag
+transaction context is carried over: the InterventionManager dispatches
+``run_in_game_flag_context`` (interventions.py), which sets the game's
+``flag_eval_context`` around the effect on the game loop and restores the previous
+one afterwards (#1970). The flags handlers read are declared in
+``handler_flag_reads.py`` (flags.md section 1.2).
 
 An effect is never cancelled once it has started: a handler cancelled midway
 could leave the game half-changed (e.g. a death counted but the player still

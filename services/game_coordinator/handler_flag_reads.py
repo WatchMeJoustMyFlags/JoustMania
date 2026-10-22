@@ -4,18 +4,23 @@
 # coordinator's dependencies) reads it with ast.literal_eval.
 #
 # A handler (and a revert handler and the agent cue) runs on the game's loop through
-# GameLoopDispatcher.run, which copies the contextvars of the servicer's MAIN loop. A
-# flag read there therefore sees the API-level attributes (service_name,
-# service_namespace, language, hostname, game_kind=real) plus whatever the
-# read passes itself, and NOT the game's transaction context (targetingKey, game_mode,
-# controller_count, sensitivity, experiment_id, arm; flags.md section 1.2). Hence:
+# GameLoopDispatcher.run, and the InterventionManager sets the game's own flag transaction
+# context around it (interventions.py run_in_game_flag_context, #1970). A flag read there
+# therefore sees the API-level attributes (service_name, service_namespace, language,
+# hostname, game_kind), the game's context (targetingKey=game_mode, game_mode,
+# controller_count, sensitivity, game_kind, experiment_id, arm; flags.md section 1.2) and
+# whatever the read passes itself, which wins. Hence:
 #
 # - "targeting": the only variables the flagd targeting of that flag may reference
 #   (always allowed on top: the API-level attributes above and $flagd.*). The contract
-#   test fails the build when game.json or ci/game.json uses any other variable.
-# - "experiment_rung_inert": the flag is in the experiment catalog (registry.yaml scope
-#   experiment+arm), but the rung needs game_kind != real, which a handler read never
-#   has, so an experiment value never reaches this read.
+#   test fails the build when game.json or ci/game.json uses any other variable. The
+#   game's context is available, but a flag keeps its list narrow on purpose when
+#   another reader resolves it with less: the agent reads the shield flags with only
+#   gameId and game_kind=real (services/agent/flags/game.go ShieldCharge), so their
+#   targeting must not use targetingKey (now the game mode there) or game_mode.
+# - "experiment_rung": "applies" when the flag is in the experiment catalog (registry.yaml
+#   scope experiment+arm): the handler read sees the game's game_kind, experiment_id and
+#   arm, so in an experimental-arm game the experiment's value wins (UC-043 BR-005).
 # - "readers": where the read is made.
 #
 # tests/test_handler_flag_reads.py drives every registered handler and fails when one
@@ -32,8 +37,8 @@ HANDLER_FLAG_READS = {
         "readers": "games/base.py _read_charge_expiry <- grant_shield <- handle_shield_seconds",
     },
     ("game", "windows"): {
-        "targeting": ["targetingKey"],
-        "experiment_rung_inert": True,
+        "targeting": ["targetingKey", "experiment_id", "arm"],
+        "experiment_rung": "applies",
         "readers": "difficulty_handlers.py handle_pacing_profile (targetingKey = the profile name)",
     },
     ("user", "agent_intervention_cue"): {
