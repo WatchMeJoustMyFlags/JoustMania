@@ -8,7 +8,7 @@ import (
 )
 
 // keysafe.go holds the one rule for a base URL an API key is sent to (#1774
-// AGENT_INFERENCE_BASE_URL, #1814 decision.openai.base_url / decision.jev.base_url,
+// AGENT_INFERENCE_BASE_URL, #1814 decision.openai.base_url / decision.jev.base_url, #1900 decision.claude.base_url,
 // #1886 GITHUB_API_URL):
 // https, or plain http only to a loopback host, with a host and without
 // credentials, query or fragment. A URL that breaks it makes its backend

@@ -18,7 +18,7 @@ func defaultDecisionBackend() DecisionBackend {
 		ActConfidenceThreshold: DefaultDecisionActConfidenceThreshold,
 		CaptureContent:         DefaultDecisionCaptureContent,
 		MinInterval:            DefaultDecisionMinIntervalMs * time.Millisecond,
-		Claude: RemoteBackendConfig{Model: DefaultDecisionClaudeModel,
+		Claude: RemoteBackendConfig{BaseURL: DefaultDecisionClaudeBaseURL, Model: DefaultDecisionClaudeModel,
 			Timeout: DefaultDecisionClaudeTimeoutMs * time.Millisecond},
 		OpenAI: RemoteBackendConfig{BaseURL: DefaultDecisionOpenAIBaseURL, Timeout: timeout,
 			ReasoningEffort: DefaultDecisionOpenAIReasoningEffort},
@@ -66,6 +66,7 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 		strings: map[string]string{
 			keyDecisionBackend:               " Claude ",
 			keyDecisionClaudeModel:           "claude-sonnet-5-5",
+			keyDecisionClaudeBaseURL:         "http://127.0.0.1:1",
 			keyDecisionOpenAIBaseURL:         "https://example.test/v1",
 			keyDecisionOpenAIModel:           "gpt-x",
 			keyDecisionOpenAIReasoningEffort: " Minimal ",
@@ -86,7 +87,7 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 		ActConfidenceThreshold: 0.95,
 		CaptureContent:         true,
 		MinInterval:            1500 * time.Millisecond,
-		Claude:                 RemoteBackendConfig{Model: "claude-sonnet-5-5", Timeout: 1500 * time.Millisecond},
+		Claude:                 RemoteBackendConfig{BaseURL: "http://127.0.0.1:1", Model: "claude-sonnet-5-5", Timeout: 1500 * time.Millisecond},
 		OpenAI: RemoteBackendConfig{BaseURL: "https://example.test/v1", Model: "gpt-x", Timeout: 5 * time.Second,
 			ReasoningEffort: "minimal"},
 		Jev: RemoteBackendConfig{BaseURL: "https://jev.test", Model: "jev-1", Timeout: 2 * time.Second,
@@ -103,6 +104,22 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 	}
 	if _, ok := got.Remote(DecisionBackendRules); ok {
 		t.Fatal("rules is not a remote backend")
+	}
+}
+
+// TestDecisionBackend_ClaudeBaseURLReadPerCall: decision.claude.base_url is read
+// on every DecisionBackend call (use time, not startup), so a flag flip applies
+// to the next cycle without a restart (#1900).
+// UC: UC-044 A3
+func TestDecisionBackend_ClaudeBaseURLReadPerCall(t *testing.T) {
+	stub := stubEvaluator{strings: map[string]string{keyDecisionClaudeBaseURL: "http://127.0.0.1:1"}}
+	f := New(stub, nil)
+	if got := f.DecisionBackend(context.Background()).Claude.BaseURL; got != "http://127.0.0.1:1" {
+		t.Fatalf("first read = %q", got)
+	}
+	stub.strings[keyDecisionClaudeBaseURL] = "https://proxy.example.test"
+	if got := f.DecisionBackend(context.Background()).Claude.BaseURL; got != "https://proxy.example.test" {
+		t.Fatalf("second read = %q, want the flipped value", got)
 	}
 }
 
@@ -173,7 +190,7 @@ func TestDecisionBackend_DefaultsOnError(t *testing.T) {
 	stub := stubEvaluator{errs: map[string]error{}}
 	for _, k := range []string{
 		keyDecisionBackend, keyDecisionActConfidenceThreshold, keyDecisionCaptureContent,
-		keyDecisionClaudeModel, keyDecisionClaudeTimeoutMs, keyDecisionOpenAIBaseURL,
+		keyDecisionClaudeModel, keyDecisionClaudeTimeoutMs, keyDecisionClaudeBaseURL, keyDecisionOpenAIBaseURL,
 		keyDecisionOpenAIModel, keyDecisionOpenAITimeoutMs, keyDecisionJevBaseURL,
 		keyDecisionJevModel, keyDecisionJevTimeoutMs, keyDecisionMinIntervalMs,
 		keyDecisionOpenAIReasoningEffort, keyDecisionJevActConfidenceThreshold,
@@ -207,6 +224,7 @@ func TestDecisionBackend_FlagFilesMatchDefaults(t *testing.T) {
 		keyDecisionActConfidenceThreshold:    DefaultDecisionActConfidenceThreshold,
 		keyDecisionClaudeModel:               DefaultDecisionClaudeModel,
 		keyDecisionClaudeTimeoutMs:           float64(DefaultDecisionClaudeTimeoutMs),
+		keyDecisionClaudeBaseURL:             DefaultDecisionClaudeBaseURL,
 		keyDecisionOpenAIBaseURL:             DefaultDecisionOpenAIBaseURL,
 		keyDecisionOpenAIModel:               DefaultDecisionOpenAIModel,
 		keyDecisionOpenAITimeoutMs:           float64(DefaultDecisionTimeoutMs),

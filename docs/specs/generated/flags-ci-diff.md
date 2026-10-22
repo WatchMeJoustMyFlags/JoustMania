@@ -30,6 +30,7 @@ Part of [flags.md §12](../flags.md#12-ci-differences).
 
 | File | Key | Variant |
 |---|---|---|
+| agent.json | `decision.claude.base_url` | `fake` = "http://127.0.0.1:1" |
 | agent.json | `decision.jev.base_url` | `fake` = "http://127.0.0.1:1/v1" |
 | agent.json | `decision.openai.base_url` | `fake` = "http://127.0.0.1:1/v1" |
 | agent.json | `llm.max_requests_per_minute` | `journey` = 600 |

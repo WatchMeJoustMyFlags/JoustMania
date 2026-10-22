@@ -626,6 +626,14 @@
       },
       "defaultVariant": "default"
     },
+    "decision.claude.base_url": {
+      "state": "ENABLED",
+      "variants": {
+        "default": "https://api.anthropic.com",
+        "fake": "http://127.0.0.1:1"
+      },
+      "defaultVariant": "default"
+    },
     "decision.openai.base_url": {
       "state": "ENABLED",
       "variants": {

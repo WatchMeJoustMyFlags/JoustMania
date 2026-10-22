@@ -59,6 +59,7 @@ flags:
   - {set: agent, key: decision.openai.model, kind: overlay, scope: [stack], persist: true, bounds: {free_string: true}}
   # Credential-bearing URL: declared variants only, so no runtime write can send
   # the API key to an arbitrary host (the API is unauthenticated, D11).
+  - {set: agent, key: decision.claude.base_url, kind: overlay, scope: [stack]}
   - {set: agent, key: decision.openai.base_url, kind: overlay, scope: [stack]}
   - {set: agent, key: decision.min_interval_ms, kind: overlay, scope: [stack], bounds: {range: [100, 60000], integer: true}}
   - {set: agent, key: decision.openai.timeout_ms, kind: overlay, scope: [stack], bounds: {range: [100, 60000], integer: true}}

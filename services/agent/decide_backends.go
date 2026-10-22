@@ -31,7 +31,7 @@ import (
 //     is only a backstop.
 //   - A backend without its key returns nil (backend_unavailable -> rules)
 //     without building anything.
-//   - An openai or jev base URL that is not key-safe (keysafe.BaseURL: https, or
+//   - An openai, jev or claude base URL that is not key-safe (keysafe.BaseURL: https, or
 //     plain http only to a loopback host) returns nil the same way, so nothing is
 //     sent and the key never travels in clear text. It is a url.Parse, no I/O.
 //     UC: UC-044 BR-003, C-016 (#1814).
@@ -41,7 +41,7 @@ import (
 //   - claude.New builds an Anthropic SDK client (~16 allocs / 3.5 KB per call,
 //     vs 3 allocs for openai.New / jev.New), so claude backends are cached per
 //     claude.Config (model, timeout, capture, base URL; the key and client are
-//     fixed). A flag flip is a new Config, hence a new backend on the next cycle;
+//     fixed). The base URL is the decision.claude.base_url flag (#1900). A flag flip is a new Config, hence a new backend on the next cycle;
 //     the cache is bounded so flag churn cannot grow it. openai/jev are cheap
 //     enough to build per cycle (openai carries its json_schema downgrade across
 //     instances in a package-level map).
@@ -88,8 +88,16 @@ func newDecideRegistry(env decideBackendEnv, client *http.Client) *decision.Deci
 		if env.AnthropicAPIKey == "" {
 			return nil
 		}
+		// Key-safety BEFORE the cache get: a rejected URL must never build or
+		// cache a backend (UC-044 BR-003, C-016).
+		if u := strings.TrimSpace(d.Claude.BaseURL); u != "" {
+			if _, ok := keysafe.BaseURL(u); !ok {
+				return nil
+			}
+		}
 		return claudeBackends.get(claude.Config{
 			APIKey:         env.AnthropicAPIKey,
+			BaseURL:        d.Claude.BaseURL,
 			Model:          d.Claude.Model,
 			Timeout:        d.Claude.Timeout,
 			HTTPClient:     client,

@@ -61,6 +61,8 @@ FAKE_OPENAI_PORT = 8080  # the fake OpenAI server (tests/integration/fake_openai
 FAKE_OPENAI_VARIANT = ("agent", "decision.openai.base_url", "fake")
 # Same for the Jev decide backend (#1404): the ci/agent.json `fake` variant of decision.jev.base_url.
 FAKE_JEV_VARIANT = ("agent", "decision.jev.base_url", "fake")
+# And the Claude decide backend (#1900): the `fake` variant of decision.claude.base_url (no /v1).
+FAKE_CLAUDE_DECIDE_VARIANT = ("agent", "decision.claude.base_url", "fake")
 # TCP port 1 (tcpmux) is never served here: a dial fails at once.
 UNREACHABLE_PORT = 1
 
@@ -79,6 +81,10 @@ class Composition:
     # Also a fake Claude (``stack.fake_claude``) the agent's retro and proposer text backend is
     # pointed at (AGENT_INFERENCE_BACKEND=claude + AGENT_INFERENCE_BASE_URL; needs ``agent``).
     fake_claude: bool = False
+    # Also a fake Claude behind the ``fake`` variant of ``decision.claude.base_url`` (the in-game
+    # decide backend, #1900); the agent gets the fake's dummy ``ANTHROPIC_API_KEY`` and nothing
+    # else: no text-backend env, so retro and proposer stay on the stub (needs ``agent``).
+    fake_claude_decide: bool = False
     # Also a fake Jev (``stack.fake_jev``) behind the ``fake`` variant of ``decision.jev.base_url``;
     # the agent gets the fake's dummy ``JEV_API_KEY`` (without this flag it has none: UC-044 A1).
     fake_jev: bool = False
@@ -91,6 +97,10 @@ class Composition:
     def __post_init__(self):
         if self.fake_claude and not self.agent:
             raise ValueError("fake_claude=True needs agent=True")
+        if self.fake_claude_decide and not self.agent:
+            raise ValueError("fake_claude_decide=True needs agent=True")
+        if self.fake_claude_decide and self.fake_claude:
+            raise ValueError("fake_claude_decide=True and fake_claude=True are separate compositions")
         if self.fake_jev and not self.agent:
             raise ValueError("fake_jev=True needs agent=True")
         if self.fake_github and not self.agent:
@@ -115,6 +125,10 @@ LOBBY = Composition(("controller-manager", "game-coordinator", "menu"))
 AGENT = Composition(("controller-manager", "game-coordinator", "menu"), otlp=True, agent=True)
 # Plus a fake Claude behind the agent's retro and proposer text backend (TC-010).
 AGENT_CLAUDE = Composition(("controller-manager", "game-coordinator", "menu"), otlp=True, agent=True, fake_claude=True)
+# Plus a fake Claude behind the agent's `claude` DECIDE backend, with its dummy key (TC-008, #1900).
+AGENT_CLAUDE_DECIDE = Composition(
+    ("controller-manager", "game-coordinator", "menu"), otlp=True, agent=True, fake_claude_decide=True
+)
 # Plus a fake Jev behind the agent's `jev` decide backend, with its dummy key (TC-008).
 AGENT_JEV = Composition(("controller-manager", "game-coordinator", "menu"), otlp=True, agent=True, fake_jev=True)
 
@@ -124,13 +138,17 @@ class ServiceStack:
         self.composition = composition
         self.workdir = workdir
         self.fake_openai: FakeOpenAI | None = FakeOpenAI(workdir) if composition.agent else None
-        self.fake_claude: FakeClaude | None = FakeClaude() if composition.fake_claude else None
+        self.fake_claude: FakeClaude | None = (
+            FakeClaude() if composition.fake_claude or composition.fake_claude_decide else None
+        )
         self.fake_jev: FakeJev | None = FakeJev() if composition.fake_jev else None
         self.fake_github: FakeGitHub | None = FakeGitHub() if composition.fake_github else None
         # Picked up front: the sink tees to it, and the agent must not be found by a stale address.
         self.agent_port: int | None = free_port() if composition.agent else None
         self.agent: AgentProcess | None = None
         variant_values = {FAKE_OPENAI_VARIANT: self.fake_openai.base_url} if self.fake_openai else {}
+        if composition.fake_claude_decide:
+            variant_values[FAKE_CLAUDE_DECIDE_VARIANT] = self.fake_claude.base_url
         if self.fake_jev is not None:
             variant_values[FAKE_JEV_VARIANT] = self.fake_jev.base_url
         self.flag_plane = FlagPlane(workdir, variant_values=variant_values or None)
@@ -210,6 +228,7 @@ class ServiceStack:
                 openai_api_key=FAKE_OPENAI_API_KEY,
                 extra_env={
                     **self._inference_env(),
+                    **self._claude_decide_env(),
                     **self._jev_env(),
                     **(self.fake_github.agent_env() if self.fake_github else {}),
                     **self.composition.agent_env,
@@ -231,6 +250,14 @@ class ServiceStack:
             self.services[name] = service
             service.start()
 
+    def _claude_decide_env(self) -> dict[str, str]:
+        """The Claude decide backend's key: the fake's dummy key, or none (UC-044 A1).
+
+        Deliberately no ``AGENT_INFERENCE_*``: the text backend (retro, proposer) is a different
+        feature with its own URL ceiling and stays on the stub.
+        """
+        return {"ANTHROPIC_API_KEY": FAKE_CLAUDE_API_KEY} if self.composition.fake_claude_decide else {}
+
     def _jev_env(self) -> dict[str, str]:
         """The Jev decide backend's key: the fake's dummy key, or none (UC-044 A1)."""
         return {"JEV_API_KEY": FAKE_JEV_API_KEY} if self.fake_jev is not None else {}
@@ -242,7 +269,7 @@ class ServiceStack:
         leave the agent on the flag's ``stub`` default. Written before the agent starts, so the
         first game end already sees it. The key and base URL (the env ceilings) stay in the env.
         """
-        if self.fake_claude is None:
+        if not self.composition.fake_claude:  # not AGENT_CLAUDE_DECIDE: its text backend stays the stub
             return
         from tests.integration.flag_service import FlagService
 
@@ -256,7 +283,7 @@ class ServiceStack:
         The backend itself is the ``inference.backend`` overlay (``_seed_inference_overlay``);
         ``AGENT_INFERENCE_BACKEND`` is kept as the deprecated fallback only.
         """
-        if self.fake_claude is None:
+        if not self.composition.fake_claude:
             return {}
         return {
             "AGENT_INFERENCE_BACKEND": "claude",

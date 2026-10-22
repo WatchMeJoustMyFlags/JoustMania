@@ -21,6 +21,7 @@
   "reset_also": {
     "decision.jev.base_url": "default",
     "decision.openai.base_url": "default",
+    "decision.claude.base_url": "default",
     "decision.openai.model": "unset",
     "decision.openai.reasoning_effort": "auto",
     "llm.max_requests_per_minute": "stage",
