@@ -320,6 +320,7 @@ class TestTraitorLargeGame:
 class TestTraitorEdgeCases:
     """Tests for edge cases."""
 
+    @pytest.mark.uc("UC-022", flow="A2")
     @pytest.mark.asyncio
     async def test_all_dead_triggers_win_condition(self):
         """Test that all players dead triggers win condition."""
@@ -344,6 +345,8 @@ class TestTraitorEdgeCases:
         # Note: Traitor checks alive teams, if none alive, might return True
         result = await game._check_win_condition()
         assert result is True  # Game ends when no alive teams
+        assert len(event_collector.get_events_of_type("game_tie")) == 1
+        assert event_collector.get_events_of_type("traitor_winner") == []
 
     @pytest.mark.asyncio
     async def test_traitors_distributed_across_visible_teams(self):

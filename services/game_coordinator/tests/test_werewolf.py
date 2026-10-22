@@ -464,6 +464,7 @@ class TestWerewolfEdgeCases:
         # 2 players * 0.44 = 0.88, but min(1, ...) ensures at least 1
         assert len(game.werewolf_serials) >= 1
 
+    @pytest.mark.uc("UC-022", flow="A2")
     @pytest.mark.asyncio
     async def test_win_condition_all_dead(self):
         """Test when all players are dead (draw condition)."""
@@ -483,12 +484,11 @@ class TestWerewolfEdgeCases:
         for player in game.players.values():
             player.alive = False
 
-        # Should trigger win condition (with winner="none")
+        # Should trigger win condition as a tie
         assert await game._check_win_condition()
 
-        winner_events = event_collector.get_events_of_type("werewolf_winner")
-        assert len(winner_events) == 1
-        assert winner_events[0]["winner"] == "none"
+        assert len(event_collector.get_events_of_type("game_tie")) == 1
+        assert event_collector.get_events_of_type("werewolf_winner") == []
 
     @pytest.mark.asyncio
     async def test_reveal_state_tracks_correctly(self):
