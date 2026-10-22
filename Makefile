@@ -43,6 +43,8 @@ help:
 	@echo "Specs:"
 	@echo "  make specs           - Regenerate docs/specs/generated/ from the code"
 	@echo "  make specs-check     - Fail if docs/specs/generated/ is stale (CI)"
+	@echo "  make spec-refs-check - Fail on a broken path:line / path:Symbol ref in docs/specs (CI)"
+	@echo "  make spec-refs       - Rewrite the undocumented-attribute baseline (growth needs a label)"
 	@echo ""
 	@echo "Direct docker compose commands:"
 	@echo "  docker compose up -d              # Start services"
@@ -189,6 +191,21 @@ specs:
 .PHONY: specs-check
 specs-check:
 	@$(SPECS_GEN) --check
+
+# Spec references (#1280): every `path:line` / `path:Symbol` in docs/specs/*.md
+# must name a full repo path that exists (line in range, symbol present); Go
+# Span*/Attr* values must appear in telemetry.md. `make spec-refs` rewrites the
+# ATTR baseline (growth needs the spec-baseline-growth label).
+# `scripts/spec_refs.py --suggest` prints path:Symbol for every path:line ref.
+SPEC_REFS = python3 scripts/spec_refs.py
+
+.PHONY: spec-refs
+spec-refs:
+	@$(SPEC_REFS) --update-baseline
+
+.PHONY: spec-refs-check
+spec-refs-check:
+	@$(SPEC_REFS) --check $(SPEC_REFS_ARGS)
 
 # ============================================================================
 # Protobuf Generation

@@ -189,6 +189,7 @@ accepted -- make pr-gates SERVICE=game_coordinator BASE=refs/review/1570
 accepted -- make lint
 accepted -- make check
 accepted -- make specs-check
+accepted -- make spec-refs-check
 accepted -- make test-contract
 accepted -- make test-contract-flagd
 refused -- make test-integration-shard-check

@@ -31,12 +31,13 @@ jobs:
       group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      - name: Re-run the Spec Gate job of the latest CI run
+      - name: Re-run the Spec Gate (and Telemetry Contract) job of the latest CI run
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABEL: ${{ github.event.label.name }}
         run: |
           set -euo pipefail
           run_id=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --event pull_request \
@@ -64,13 +65,15 @@ jobs:
               exit 0
             fi
           fi
-          job=$(gh run view "$run_id" --json jobs \
-                  --jq '.jobs[] | select(.name == "Spec Gate" and .conclusion != "skipped") | .databaseId' | head -n1) || {
+          # spec-baseline-growth also gates the spec-refs baseline (#1280), checked
+          # in the Telemetry Contract job.
+          jobs=$(gh run view "$run_id" --json jobs \
+                  --jq '.jobs[] | select((.name == "Spec Gate" or (.name == "Telemetry Contract" and env.LABEL == "spec-baseline-growth")) and .conclusion != "skipped") | .databaseId') || {
             echo "::warning::Could not read the jobs of CI run $run_id; re-add the label to retry."
             exit 0
           }
-          if [ -z "$job" ]; then
-            echo "CI run $run_id has no Spec Gate job that ran (no spec/code change); nothing to re-run."
+          if [ -z "$jobs" ]; then
+            echo "CI run $run_id has no Spec Gate / Telemetry Contract job that ran (no spec/code change); nothing to re-run."
             exit 0
           fi
           # A push while waiting gives the new head its own run, which reads the
@@ -84,5 +87,24 @@ jobs:
             echo "PR head moved to $head; its own CI run reads the labels."
             exit 0
           fi
-          echo "Re-running Spec Gate job $job of CI run $run_id"
-          gh run rerun --job "$job"
+          # GitHub refuses to re-run a job of a run that is in progress, so the
+          # jobs go one at a time: wait for the run to finish again before each
+          # re-run after the first. Every failure is a warning, never a red check.
+          first=1
+          for job in $jobs; do
+            if [ "$first" -eq 0 ]; then
+              sleep 15  # let the run leave "completed" after the previous re-run
+              # One shared budget with the first wait, below the job's 60 min limit.
+              left=$((50 * 60 - SECONDS))
+              if [ "$left" -le 0 ] || ! timeout "${left}s" gh run watch "$run_id" --interval 30 > /dev/null; then
+                echo "::warning::CI run $run_id did not finish after the previous re-run; re-add the label to retry."
+                exit 0
+              fi
+            fi
+            first=0
+            echo "Re-running job $job of CI run $run_id"
+            if ! gh run rerun "$run_id" --job "$job"; then
+              echo "::warning::Could not re-run job $job of CI run $run_id; re-add the label to retry."
+              exit 0
+            fi
+          done

@@ -773,6 +773,9 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.telemetry == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read  # spec-refs-gate.sh reads the PR labels live
     steps:
       - uses: actions/checkout@v6
 
@@ -782,6 +785,18 @@ jobs:
         # docs/specs/generated/ must equal what scripts/gen_specs.py renders from
         # the code; on failure: run `make specs` and commit (#1280).
         run: make specs-check
+
+      - name: Spec references resolve (spec-refs-gate.sh)
+        # Every path:line / path:Symbol in docs/specs names a full repo path that
+        # exists; Go Span*/Attr* values appear in telemetry.md (#1280). Line-ref
+        # growth warns; baseline growth needs the spec-baseline-growth label.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: scripts/ci/spec-refs-gate.sh
 
       - name: Run telemetry contract tests
         # test_flagd_resolution.py runs in the Flagd Contract job below.
