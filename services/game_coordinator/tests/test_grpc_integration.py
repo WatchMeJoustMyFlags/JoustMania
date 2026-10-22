@@ -547,7 +547,8 @@ async def _async_noop(*_args, **_kwargs):
 class _FrameServer(controller_manager_pb2_grpc.ControllerManagerServiceServicer):
     """Real gRPC gameplay stream: numbered frames every 10 ms (timestamp = sequence).
 
-    ``first_call_fault`` breaks the first ``faulty_calls`` calls (default 1) after 5 frames, or at the next
+    ``first_call_fault`` breaks the first ``faulty_calls`` calls (default 1) after ``frames_before_fault`` frames
+    (default 5), or at the next
     frame once ``fault_trigger`` is set when one is given: "abort" ends it with
     UNAVAILABLE (a controller-manager restart), "stall" sends nothing more, "end"
     returns (status OK); ``faulted`` is set when it fires. ``active`` counts the calls whose handler still
@@ -556,10 +557,11 @@ class _FrameServer(controller_manager_pb2_grpc.ControllerManagerServiceServicer)
     ``opened`` holds the client calls of a recording stub (TestGameplayStreamRelease).
     """
 
-    def __init__(self, serials, first_call_fault=None, fault_trigger=None, faulty_calls=1):
+    def __init__(self, serials, first_call_fault=None, fault_trigger=None, faulty_calls=1, frames_before_fault=5):
         self.serials = serials
         self.first_call_fault = first_call_fault
         self.faulty_calls = faulty_calls
+        self.frames_before_fault = frames_before_fault
         self.fault_trigger = fault_trigger
         self.calls = 0
         self.active = 0
@@ -585,7 +587,7 @@ class _FrameServer(controller_manager_pb2_grpc.ControllerManagerServiceServicer)
         try:
             seq = 0
             while True:
-                if faulty and (self.fault_trigger.is_set() if self.fault_trigger else seq == 5):
+                if faulty and (self.fault_trigger.is_set() if self.fault_trigger else seq == self.frames_before_fault):
                     self.faulted.set()
                     if self.first_call_fault == "abort":
                         await context.abort(grpc.StatusCode.UNAVAILABLE, "controller manager restart")
@@ -1047,9 +1049,13 @@ class TestGameplayStreamReopen:
 
         servers, channels, stubs, opened = [], [], [], []
 
-        async def start(fault, fault_trigger=None, faulty_calls=1):
+        async def start(fault, fault_trigger=None, faulty_calls=1, frames_before_fault=5):
             frame_server = _FrameServer(
-                self.SERIALS, first_call_fault=fault, fault_trigger=fault_trigger, faulty_calls=faulty_calls
+                self.SERIALS,
+                first_call_fault=fault,
+                fault_trigger=fault_trigger,
+                faulty_calls=faulty_calls,
+                frames_before_fault=frames_before_fault,
             )
             server = grpc.aio.server()
             controller_manager_pb2_grpc.add_ControllerManagerServiceServicer_to_server(frame_server, server)
@@ -1112,6 +1118,15 @@ class TestGameplayStreamReopen:
             async for _update in game.gameplay_stream:
                 pass
         assert game.gameplay_stream.done()
+
+    @staticmethod
+    async def _run_loop(game):
+        """Run the game loop; return the error it ended with (the type depends on the channel), or None."""
+        try:
+            await asyncio.wait_for(game._game_loop(), timeout=10)
+        except Exception as error:  # noqa: BLE001 - grpc.aio or interceptor error
+            return error
+        return None
 
     @staticmethod
     def _stop_after_frames(game, count=3):
@@ -1337,6 +1352,46 @@ class TestGameplayStreamReopen:
         assert len(attempts) == 2, "the game loop did not retry the failed warm-up reopen"
         assert frame_server.calls == 2
         assert len(processed) >= 3, "the game loop got no frame after the failed warm-up reopen"
+
+    @pytest.mark.uc("UC-030", br=["BR-003", "BR-006"])
+    @pytest.mark.asyncio
+    async def test_game_loop_stream_failing_after_one_frame_ends_the_game(self, serve):
+        """#1931: a frame between failures does not reset the count; the fourth failure ends the game."""
+        frame_server, stub = await serve("abort", faulty_calls=10, frames_before_fault=1)
+        game = self._ffa(stub)
+        await game._initialize_players()
+        game.running = True
+        await game._start_gameplay_stream()
+        game._RECONNECT_BACKOFF_S = 0.01
+        game._RECONNECT_HEALTHY_FRAMES = 3
+        processed = self._stop_after_frames(game, count=20)
+
+        loop_error = await self._run_loop(game)
+
+        assert loop_error is not None, "the game loop never gave up on a stream that fails after one frame"
+        assert frame_server.calls == 4, "the game loop did not stop after three reconnects without a healthy stream"
+        assert len(processed) == 4
+
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    async def test_game_loop_healthy_stream_between_failures_resets_the_count(self, serve):
+        """#1931: a reopened stream that delivers the healthy-frame quota starts the count again."""
+        frame_server, stub = await serve("abort", faulty_calls=5, frames_before_fault=4)
+        game = self._ffa(stub)
+        await game._initialize_players()
+        game.running = True
+        await game._start_gameplay_stream()
+        game._RECONNECT_BACKOFF_S = 0.01
+        game._RECONNECT_HEALTHY_FRAMES = 3
+        processed = self._stop_after_frames(game, count=5 * 4 + 3)
+
+        with patch("services.game_coordinator.games.base.metrics.gameplay_stream_reconnects_total") as reconnects:
+            loop_error = await self._run_loop(game)
+
+        assert loop_error is None, f"the game ended although each failure followed a healthy stream: {loop_error!r}"
+        assert frame_server.calls == 6, "five failures with healthy streams in between ended the game"
+        assert reconnects.labels.return_value.inc.call_count == 5
+        assert len(processed) == 5 * 4 + 3, "the game loop did not play the healthy call after the fifth reconnect"
 
     @pytest.mark.uc("UC-030", br=["BR-006"])
     @pytest.mark.asyncio

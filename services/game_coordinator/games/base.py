@@ -1936,6 +1936,9 @@ class BaseGameMode(ABC):
         return attempt
 
     _RECONNECT_BACKOFF_S = 1.0
+    # A reopened stream counts as healthy, and the reconnect count starts again, after
+    # this many frames (about 1 s at the default 60 Hz; UC-030 BR-006, #1931).
+    _RECONNECT_HEALTHY_FRAMES = 60
 
     async def _game_loop(self):
         """Main game loop - processes controller states and checks for deaths."""
@@ -1985,6 +1988,7 @@ class BaseGameMode(ABC):
             # Stream gameplay data and process game logic with reconnection
             max_reconnect_attempts = 3
             reconnect_attempt = 0
+            frames_since_reconnect = 0
 
             logger.info("Starting gameplay data stream loop, waiting for first update...")
             while self.running:
@@ -1994,8 +1998,13 @@ class BaseGameMode(ABC):
                             logger.info("Received first gameplay update from stream!")
                             self.start_time = time.time()
 
-                        # Reset reconnect counter on successful data
-                        reconnect_attempt = 0
+                        # The count starts again only after a healthy run, not after
+                        # one frame (UC-030 BR-006, #1931).
+                        if reconnect_attempt:
+                            frames_since_reconnect += 1
+                            if frames_since_reconnect >= self._RECONNECT_HEALTHY_FRAMES:
+                                logger.info("Gameplay stream healthy again, reconnect count reset")
+                                reconnect_attempt = 0
 
                         if not self.running:
                             logger.info("Game running=False, breaking loop")
@@ -2043,6 +2052,7 @@ class BaseGameMode(ABC):
                         break
 
                     reconnect_attempt += 1
+                    frames_since_reconnect = 0
                     reconnect_attempt = await self._handle_stream_reconnection(
                         e, reconnect_attempt, max_reconnect_attempts
                     )
