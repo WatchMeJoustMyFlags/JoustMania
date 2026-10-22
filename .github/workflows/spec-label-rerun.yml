@@ -40,7 +40,10 @@ jobs:
         run: |
           set -euo pipefail
           run_id=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --event pull_request \
-                     --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+                     --limit 1 --json databaseId --jq '.[0].databaseId // empty') || {
+            echo '::warning::Could not list CI runs; re-add the label to retry.'
+            exit 0
+          }
           if [ -z "$run_id" ]; then
             echo "No CI run for $HEAD_SHA; nothing to re-run."
             exit 0
