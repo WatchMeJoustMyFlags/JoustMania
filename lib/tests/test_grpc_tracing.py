@@ -28,7 +28,6 @@ from lib import grpc_tracing
 from lib.grpc_metrics import get_metrics_interceptors
 from lib.grpc_tracing import (
     _build_rpc_attributes,
-    _extract_method_name,
     _parse_method,
     _prepare_metadata,
     _rpc_spans_enabled,
@@ -37,26 +36,6 @@ from lib.grpc_tracing import (
     get_server_interceptors,
     get_sync_context_propagation_interceptors,
 )
-
-
-class TestExtractMethodName:
-    """Tests for _extract_method_name helper."""
-
-    def test_string_with_slash(self):
-        result = _extract_method_name("/package.Service/Method")
-        assert result == "package.Service/Method"
-
-    def test_string_without_slash(self):
-        result = _extract_method_name("Method")
-        assert result == "Method"
-
-    def test_bytes_input(self):
-        result = _extract_method_name(b"/pkg.Svc/Method")
-        assert result == "pkg.Svc/Method"
-
-    def test_bytes_without_slash(self):
-        result = _extract_method_name(b"Method")
-        assert result == "Method"
 
 
 class TestParseMethod:

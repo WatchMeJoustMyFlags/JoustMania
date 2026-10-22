@@ -182,13 +182,6 @@ def _prepare_metadata(existing_metadata: Any, context: otel_context.Context | No
     return tuple(metadata.items())
 
 
-def _extract_method_name(method: str | bytes) -> str:
-    """Extract clean method name from gRPC method path."""
-    if isinstance(method, bytes):
-        method = method.decode("utf-8")
-    return method[1:] if method.startswith("/") else method
-
-
 def _build_rpc_attributes(
     service: str,
     method: str,
@@ -224,13 +217,12 @@ def _record_client_status(
     span: trace.Span,
     code: grpc.StatusCode | None,
     details: str | None,
-    error: BaseException | None = None,
 ) -> None:
     """Record a client call's final gRPC status on its span (telemetry.md §3.1, #1879).
 
     OK sets status OK; a cancel by the caller sets only the code, the span status stays unset;
-    any other code (a ``CANCELLED`` sent by the server included) sets ERROR. ``error`` is added as
-    an exception event when given. ``code=None`` (status unknown) records nothing.
+    any other code (a ``CANCELLED`` sent by the server included) sets ERROR.
+    ``code=None`` (status unknown) records nothing.
     """
     if code is None:
         return
@@ -238,8 +230,6 @@ def _record_client_status(
     if code == grpc.StatusCode.OK:
         span.set_status(Status(StatusCode.OK))
     elif not _is_caller_cancel(code, details):
-        if error is not None:
-            span.record_exception(error)
         span.set_status(Status(StatusCode.ERROR, str(code)))
 
 
@@ -260,14 +250,12 @@ class _ClientSpanFinisher:
         # (a to_thread worker, a grpc or HID thread) hands the status read back to it.
         self._loop = loop
 
-    def finish(
-        self, code: grpc.StatusCode | None, details: str | None = None, error: BaseException | None = None
-    ) -> None:
+    def finish(self, code: grpc.StatusCode | None, details: str | None = None) -> None:
         if self._done:
             return
         self._done = True
         try:
-            _record_client_status(self._span, code, details, error)
+            _record_client_status(self._span, code, details)
         finally:
             self._span.end()
 

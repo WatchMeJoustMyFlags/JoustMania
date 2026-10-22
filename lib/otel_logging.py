@@ -71,7 +71,7 @@ def init_logging() -> None:
         OTEL_EXPORTER_OTLP_ENDPOINT: OTLP collector endpoint (default: http://otel-collector:4317)
         OTEL_SERVICE_NAME: Service name (required in docker-compose.yml)
         OTEL_SERVICE_NAMESPACE: Service namespace (default: "joustmania")
-        LOG_LEVEL: deprecated fallback for the OTLP handler level (default: INFO); the
+        LOG_LEVEL: bootstrap-only (the startup level until the flag resolves; default: INFO); the
             ``observability/log_level`` flag wins and is followed at runtime (lib/log_level.py)
     """
     global _initialized
