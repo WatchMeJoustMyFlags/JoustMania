@@ -61,7 +61,8 @@ def calculate_game_duration(num_players: int) -> float:
     """
     Calculate game duration based on player count.
 
-    Scales from ~3 minutes for 4 players to ~6.75 minutes for 12 players.
+    Linear in the player count: 11.25 s per player (22.5 s for 2, 45 s for 4,
+    90 s for 8, 135 s for 12, 180 s for 16).
 
     Args:
         num_players: Total number of players
@@ -327,25 +328,28 @@ class ZombieGame(BaseGameMode):
 
         Runs as a background task during gameplay.
         """
-        announcements = [180, 60, 30, 10]  # Seconds remaining to announce
+        announcements = {
+            60: Sound.VOX_ZOMBIE_ONE_MINUTE,
+            30: Sound.VOX_ZOMBIE_THIRTY_SECONDS,
+            10: Sound.VOX_ZOMBIE_TEN_SECONDS,
+        }
 
         while self.running and self.time_remaining > 0:
             await asyncio.sleep(1.0)
+            previous_remaining = self.time_remaining
             self.time_remaining -= 1.0
 
-            # Check for time announcements
-            for seconds in announcements:
-                if abs(self.time_remaining - seconds) < 0.5:
+            # Once the win is latched (the 1 s hold) the timer announces nothing.
+            if self._winner_side is not None:
+                continue
+
+            # A mark fires when the timer crosses it, so durations with a .5
+            # fraction (22.5 s, 67.5 s, ...) still announce 60, 30 and 10 s once.
+            for seconds, sound in announcements.items():
+                if previous_remaining > seconds >= self.time_remaining:
                     logger.info(f"Time announcement: {seconds} seconds remaining")
                     await self.event_publisher("time_announcement", {"seconds_remaining": seconds})
-                    # Play time announcement sound (Zombie/vox/ directory)
-                    if seconds == 60:
-                        await self._play_sound(Sound.VOX_ZOMBIE_ONE_MINUTE, priority=2)
-                    elif seconds == 30:
-                        await self._play_sound(Sound.VOX_ZOMBIE_THIRTY_SECONDS, priority=2)
-                    elif seconds == 10:
-                        await self._play_sound(Sound.VOX_ZOMBIE_TEN_SECONDS, priority=2)
-                    break
+                    await self._play_sound(sound, priority=2)
 
         # Time's up - humans win if any survive
         if self.running and self.time_remaining <= 0:
