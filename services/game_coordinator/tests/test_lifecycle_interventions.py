@@ -40,6 +40,8 @@ from proto import controller_manager_pb2
 from services.game_coordinator.games.base import GameState, Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
+from services.game_coordinator.games.zombie import ZombieGame
+from services.game_coordinator.intervention_errors import InterventionNotApplied
 from services.game_coordinator.interventions import (
     BLOCK_MODE_UNSUPPORTED,
     INTERVENTION_SPECS,
@@ -536,6 +538,48 @@ class TestRevivePlayer:
         await handle_revive_player(make_ctx("revive_player", "", None, payload="p1"))  # no raise
         # Handler no-ops with empty serial.
         await handle_revive_player(make_ctx("revive_player", "", game, payload=""))  # no raise
+
+    @pytest.mark.uc("UC-040", flow="A22")
+    @pytest.mark.asyncio
+    async def test_refused_nonstop_revive_after_game_end_is_not_applied(self):
+        """#1948: NonStop refuses a revive once the game ended; the handler reports not applied."""
+        game, mock_cm = make_nonstop_game(num_players=2)
+        await game._initialize_players_impl(mock_cm.controllers)
+        serial = next(iter(game.players))
+        game.players[serial].alive = False
+        game.state = GameState.ENDED
+
+        with pytest.raises(InterventionNotApplied) as exc:
+            await handle_revive_player(make_ctx("revive_player", "", game, payload=serial))
+        assert exc.value.reason == "revive_refused"
+        assert game.players[serial].alive is False
+
+    @pytest.mark.uc("UC-040", flow="A22")
+    @pytest.mark.asyncio
+    async def test_refused_zombie_revive_after_the_win_is_not_applied(self):
+        """#1948: Zombies refuses a revive once the win is latched; the handler reports not applied."""
+        mock_cm = MockControllerManagerService(num_controllers=4)
+        game = ZombieGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_lifecycle_zombie",
+        )
+        await game._initialize_players_impl(mock_cm.controllers)
+        game.gameplay_stream = RecordingGameplayStream()
+        game.running = True
+        game._play_sound = async_noop
+        game.zombie_respawn_min = game.zombie_respawn_max = 60.0
+        zombie = game.zombie_serials[0]
+        await game._kill_player(zombie, 5.0)
+        game._winner_side = "humans"
+        try:
+            with pytest.raises(InterventionNotApplied) as exc:
+                await handle_revive_player(make_ctx("revive_player", "", game, payload=zombie))
+            assert exc.value.reason == "revive_refused"
+            assert game.players[zombie].alive is False
+        finally:
+            await game.cleanup()
 
 
 # --------------------------------------------------------------------------- #

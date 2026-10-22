@@ -375,8 +375,10 @@ async def handle_revive_player(ctx: InterventionContext) -> None:
     The payload is the target serial. Routes through ``game.revive_player`` which
     prefers a mode-native respawn path and grants brief spawn grace. Mode
     eligibility is already enforced by the §9 capability matrix before this
-    handler runs. Defensive: no live game / unknown serial / already-alive → the
-    primitive logs + no-ops.
+    handler runs. Defensive: no live game / empty serial → log + no-op. When the
+    mode refuses (decided game, unknown or already-alive player) nothing was
+    applied, so it raises ``InterventionNotApplied`` and the intervention is
+    recorded as ``blocked=true`` / ``revive_refused`` (UC-040 A22, #1948).
     """
     game = ctx.game
     if game is None:
@@ -394,7 +396,8 @@ async def handle_revive_player(ctx: InterventionContext) -> None:
         return
 
     logger.info(f"revive_player: reviving {serial}")
-    await revive(serial)
+    if not await revive(serial):
+        raise InterventionNotApplied("revive_refused", f"revive_player: mode refused revive of {serial}")
 
 
 def register_lifecycle_handlers(manager: InterventionManager) -> None:
