@@ -34,6 +34,7 @@ tracer = trace.get_tracer(__name__)
 # Game constants (defaults, can be overridden via settings)
 DEFAULT_REVEAL_TIME = 35.0  # Seconds until werewolves are revealed
 WEREWOLF_FRACTION = 0.44  # ~44% of players become werewolves (minimum 1)
+WEREWOLF_INTRO_DURATION_S = 3.0  # Intro length; the stream is drained meanwhile (UC-022 A1)
 
 
 def resolve_fraction(value, default: float) -> float:
@@ -266,8 +267,8 @@ class WerewolfGame(BaseGameMode):
 
         logger.info(f"Signaled {len(self.werewolf_serials)} werewolves with rumble")
 
-        # Wait for intro (interruptible)
-        for _ in range(30):  # 3 seconds
+        # Wait for intro (interruptible, checked every 0.1 s)
+        for _ in range(round(WEREWOLF_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
             await asyncio.sleep(0.1)
@@ -533,23 +534,33 @@ class WerewolfGame(BaseGameMode):
 
             try:
                 self.running = True
+                await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
                     # reveal_time is now set in __init__ from StartGameConfig
                     logger.info(f"Werewolf reveal time: {self._reveal_time}s")
                     await self._initialize_players()
+                    if len(self.players) < 2:
+                        raise ValueError(f"Need at least 2 players, got {len(self.players)}")
+                    # Before any task is created: tasks copy the context (#1273).
+                    self._set_flag_eval_context()
                     self._create_player_spans(None)
 
-                # Start gameplay stream before intro (needed for LED effects)
+                # The intro rumble goes over the stream, so it opens first; a drain
+                # discards the intro's frames and keeps disconnects (UC-022 A1).
                 await self._start_gameplay_stream()
-
-                # Additional phases (werewolf intro)
-                for phase in self._get_additional_phases():
-                    if not self.running:
-                        break
-                    with tracer.start_as_current_span(phase.name):
-                        await phase.execute()
+                self._start_early_stream_drain()
+                phases_completed = False
+                try:
+                    for phase in self._get_additional_phases():
+                        if not self.running:
+                            break
+                        with tracer.start_as_current_span(phase.name):
+                            await phase.execute()
+                    phases_completed = True
+                finally:
+                    await self._stop_early_stream_drain(reopen=phases_completed)
 
                 if not self.running:
                     return
@@ -565,16 +576,18 @@ class WerewolfGame(BaseGameMode):
                 self.state = GameState.RUNNING
                 self.start_time = time.time()
 
-                # Emit game_started event (required for integration tests)
-
+                # Werewolf publishes game_started after the countdown (UC-022 A1).
                 await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
                 )
 
-                # Start music
+                # Start music (no tempo loop by design, UC-022 BR-001)
                 await self._start_game_music()
 
-                # Start reveal timer as background task
+                # Prime the EMA filters before death detection (UC-030 BR-003)
+                await self._warmup_ema()
+
+                # Reveal timer counts from gameplay start
                 self.reveal_task = self._track_task(asyncio.create_task(self._reveal_werewolves()))
 
                 # Game loop (gameplay stream already started before intro)
