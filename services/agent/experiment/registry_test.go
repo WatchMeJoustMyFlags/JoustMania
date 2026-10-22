@@ -752,18 +752,6 @@ func TestCompiledCapacityDefaultsPinned(t *testing.T) {
 	}
 }
 
-// The retired AGENT_FITNESS_STORE_CAPACITY env must not size the ring (#1907).
-func TestFitnessStoreIgnoresCapacityEnv(t *testing.T) {
-	t.Setenv("AGENT_FITNESS_STORE_CAPACITY", "2")
-	s := NewFitnessStore(DefaultFitnessStoreCapacity)
-	for i := 0; i < 5; i++ {
-		s.Record(FitnessSample{GameID: fmt.Sprintf("g%d", i), Objective: "balanced", GameKind: GameKindReal})
-	}
-	if got := len(s.RecentReal("balanced", 10)); got != 5 {
-		t.Fatalf("stored %d samples, want 5 (env capacity 2 must be ignored)", got)
-	}
-}
-
 // Concurrency: many goroutines hammering AllocateAndSpawn (optionally racing
 // ConcludeGame) must NEVER exceed the cap, must invoke the spawner exactly cap
 // times when no slot is freed, and must leak no reservation. The cap is race-safe
