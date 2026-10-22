@@ -3432,8 +3432,6 @@ class BaseGameMode(ABC):
         # on game_player_alive==1 so dead players naturally disappear from panels.
         # Metric removal happens at game end via clear_session_player_analytics().
         metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(0)
-        alive_count = len([p for p in self.players.values() if p.alive])
-        self._set_players_alive_aggregate(alive_count)
 
         # Record elimination order (1 = first out) for #730 / #722 §7.
         # Makes session.elimination_sequence queryable per game.
@@ -3477,6 +3475,12 @@ class BaseGameMode(ABC):
 
         # Call subclass-specific death handling
         await self._kill_player_impl(serial, accel_mag)
+
+        # The aggregate counts the state AFTER the mode's handler: it flips alive to
+        # False for a death, keeps it True for a Zombies conversion (#1943).
+        # A kill finishing after the game stopped must not overwrite the end-of-game 0.
+        if self.running:
+            self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
 
         # Send death effect via stream (red + vibrate, no restore)
         # Use pre-extracted trace context so effect appears under player_lifecycle

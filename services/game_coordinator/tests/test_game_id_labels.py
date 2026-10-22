@@ -94,6 +94,7 @@ class TestPlayersAliveAggregateIsPrimaryOnly:
     @pytest.mark.asyncio
     async def test_primary_kill_writes_players_alive(self, ffa_game):
         game = ffa_game  # default game_kind == "primary"
+        game.running = True  # the aggregate is only written while the game runs (#1943)
         serial = next(iter(game.players))
 
         with patch("services.game_coordinator.metrics.players_alive") as mock_agg:
@@ -105,6 +106,7 @@ class TestPlayersAliveAggregateIsPrimaryOnly:
     async def test_shadow_kill_does_not_write_players_alive(self, ffa_game):
         game = ffa_game
         game.game_kind = "shadow"
+        game.running = True
         serial = next(iter(game.players))
 
         with patch("services.game_coordinator.metrics.players_alive") as mock_agg:
