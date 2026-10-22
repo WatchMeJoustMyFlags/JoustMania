@@ -1793,6 +1793,64 @@ class TestNonstopDisconnects:
         assert winners[0]["score"] == 90
         assert game.players[gone].alive is False
 
+    @pytest.mark.uc("UC-026", flow="A2")
+    @pytest.mark.asyncio
+    async def test_a_disconnect_in_the_frame_where_the_respawn_deadline_passed_wins_over_the_respawn(self):
+        game, log = await self._game(respawn_seconds=3.0)
+        serial = next(iter(game.players))
+        game.gameplay_stream = MockGameplayStream()
+        await game._kill_player_impl(serial, accel_mag=5.0)
+        game._clock.now += 10  # the deadline has passed when the frame arrives
+        call = _FiniteFrameCall(frames=1, frame=_disconnect_frame(serial))
+
+        await self._run_loop(game, call)
+
+        self._assert_disconnect_death(game, log, serial)
+
+    @pytest.mark.uc("UC-026", flow="A2")
+    @pytest.mark.asyncio
+    async def test_a_warm_up_disconnect_is_not_handled_when_the_game_already_stopped(self):
+        game, log = await self._game()
+        serial = next(iter(game.players))
+        game._warmup_disconnects = [serial]
+        game.running = False  # force-ended during the countdown or the warm-up
+
+        await self._run_loop(game, _FiniteFrameCall(frames=1))
+
+        assert game.players[serial].alive is True
+        assert game.players[serial].deaths == 0
+        assert log.events.get_events_of_type("player_death") == []
+
+    @pytest.mark.uc("UC-026", flow="A2")
+    @pytest.mark.asyncio
+    async def test_a_disconnect_under_spawn_protection_writes_no_base_colour_at_expiry(self):
+        game, log = await self._game()
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        serial = next(iter(game.players))
+        player = game.players[serial]
+        player.spawn_protected = True
+        player.spawn_protection_end = time.time() - 1  # protection would expire now
+
+        await game._handle_disconnect(serial)
+        stream.messages.clear()
+        await game._update_respawn_timers()
+
+        assert player.spawn_protected is False
+        assert [m for m in stream.messages if m.HasField("base_color")] == []
+
+    @pytest.mark.uc("UC-030", br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_the_startup_grace_never_shortens_a_longer_grace(self):
+        game, log = await self._game()
+        serial = next(iter(game.players))
+        shield_until = time.time() + 60  # an agent shield granted during the countdown
+        game.players[serial].grace_until = shield_until
+
+        await self._run_loop(game, _FiniteFrameCall(frames=1))
+
+        assert game.players[serial].grace_until == shield_until
+
     @pytest.mark.uc("UC-030", br=["BR-003"])
     @pytest.mark.uc("UC-026", flow="main", steps=[1])
     @pytest.mark.asyncio

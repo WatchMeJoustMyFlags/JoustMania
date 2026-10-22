@@ -1949,10 +1949,11 @@ class BaseGameMode(ABC):
             # Stream was already created in _start_gameplay_stream() before countdown.
             # EMA filters were primed and buffered data drained by _warmup_ema().
             # Apply startup grace period so any residual spikes can't cause instant death.
+            # It never shortens a longer grace (an agent shield) granted before the loop.
             grace_until = time.time() + 0.3
             for player in self.players.values():
                 if player.alive:
-                    player.grace_until = grace_until
+                    player.grace_until = max(player.grace_until, grace_until)
 
             # Track current alive set for detecting changes
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}

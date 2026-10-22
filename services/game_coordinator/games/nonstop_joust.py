@@ -324,6 +324,8 @@ class NonstopJoustGame(BaseGameMode):
         if player is None or player.disconnected:
             return
         player.disconnected = True
+        # No spawn-protection expiry (white LED write) for a player who is gone
+        player.spawn_protected = False
         if player.alive:
             await super()._handle_disconnect(serial)
             return
@@ -400,10 +402,11 @@ class NonstopJoustGame(BaseGameMode):
                     cancel()
 
             # Startup grace: residual spikes in the first frames cannot kill (UC-030 BR-003, #1591)
+            # It never shortens a longer grace (an agent shield) granted before the loop.
             grace_until = time.time() + 0.3
             for player in self.players.values():
                 if player.alive:
-                    player.grace_until = grace_until
+                    player.grace_until = max(player.grace_until, grace_until)
 
             # Track current alive set for detecting changes (Phase 45)
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
@@ -435,14 +438,17 @@ class NonstopJoustGame(BaseGameMode):
                 if not self.running:
                     break
 
+                # Disconnects first: they were detected before this frame, so a player
+                # whose respawn deadline also passed does not respawn and die twice
+                # (UC-026 A2, #1971)
+                for disconnect in gameplay_update.disconnects:
+                    await self._handle_disconnect(disconnect.serial)
+
                 # Respawns whose deadline passed, before this frame's motion: a death in
                 # this frame respawns on the next one at the earliest (UC-026 step 2)
                 await self._update_respawn_timers()
 
-                # Disconnects first, then motion, as in the base loop (UC-026 A2, #1971); the
-                # time limit is checked once per frame below
-                for disconnect in gameplay_update.disconnects:
-                    await self._handle_disconnect(disconnect.serial)
+                # Motion; the time limit is checked once per frame below
                 for gameplay_data in gameplay_update.controllers:
                     await self._process_controller_state(gameplay_data)
 
