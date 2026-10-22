@@ -80,6 +80,7 @@ class TestNonstopJoustGameMode:
         # All 4 players should be created
         assert len(game.players) == 4
 
+    @pytest.mark.uc("UC-026", flow="main", steps=[1])
     @pytest.mark.asyncio
     async def test_players_start_with_zero_scores(self, nonstop_game):
         """Test that all players start with zero scores."""
@@ -94,6 +95,7 @@ class TestNonstopJoustGameMode:
             assert player.current_streak == 0
             assert player.best_streak == 0
 
+    @pytest.mark.uc("UC-026", flow="main", steps=[1])
     @pytest.mark.asyncio
     async def test_kill_player_increments_deaths(self, nonstop_game):
         """Test that _kill_player_impl increments death count."""
@@ -129,6 +131,7 @@ class TestNonstopJoustGameMode:
 
         assert player.current_streak == 0
 
+    @pytest.mark.uc("UC-026", flow="main", steps=[2])
     @pytest.mark.asyncio
     async def test_kill_player_sets_respawn_timer(self, nonstop_game):
         """Test that _kill_player_impl sets respawn timer."""
@@ -144,6 +147,7 @@ class TestNonstopJoustGameMode:
 
         assert player.respawn_timer == RESPAWN_DURATION
 
+    @pytest.mark.uc("UC-026", flow="main", steps=[2])
     @pytest.mark.asyncio
     async def test_kill_player_marks_dead(self, nonstop_game):
         """Test that _kill_player_impl marks player as dead."""
@@ -160,6 +164,7 @@ class TestNonstopJoustGameMode:
 
         assert player.alive is False
 
+    @pytest.mark.uc("UC-026", flow="main", steps=[2])
     @pytest.mark.asyncio
     async def test_kill_player_publishes_event(self, nonstop_game):
         """Test that _kill_player_impl publishes death event."""
@@ -237,6 +242,7 @@ class TestNonstopJoustGameMode:
             assert hasattr(player, "spawn_protected")
             assert hasattr(player, "spawn_protection_end")
 
+    @pytest.mark.uc("UC-026", flow="main", steps=[1])
     @pytest.mark.asyncio
     async def test_multiple_deaths_accumulate(self, nonstop_game):
         """Test that multiple deaths accumulate."""
@@ -261,6 +267,7 @@ class TestNonstopJoustGameMode:
         assert game.get_game_name() == "Nonstop Joust"
 
 
+@pytest.mark.uc("UC-026", flow="main", steps=[2])
 class TestNonstopRespawn:
     """Tests for respawn mechanics."""
 
@@ -356,6 +363,7 @@ class TestNonstopRespawn:
         assert respawn_events[0]["serial"] == serial
 
 
+@pytest.mark.uc("UC-026", flow="main", steps=[2])
 class TestNonstopSpawnProtection:
     """Tests for spawn protection mechanics."""
 
@@ -397,6 +405,7 @@ class TestNonstopSpawnProtection:
         assert player.alive is True
 
 
+@pytest.mark.uc("UC-026", br=["BR-001"])
 class TestNonstopScoring:
     """Tests for scoring mechanics."""
 
@@ -553,6 +562,7 @@ class TestNonstopSettings:
         assert game.time_limit == 120
 
 
+@pytest.mark.uc("UC-026", flow="main", steps=[2])
 class TestNonstopRespawnCountdown:
     """Tests for respawn countdown colors."""
 
@@ -599,6 +609,7 @@ class RecordingGameplayStream:
         self.messages.append(message)
 
 
+@pytest.mark.uc("UC-026", flow="main", steps=[2])
 class TestNonstopShowRespawnCountdown:
     """Tests for _show_respawn_countdown color transitions via stream."""
 
@@ -695,6 +706,7 @@ class TestNonstopShowRespawnCountdown:
         assert len(stream.messages) == count_after_first
 
 
+@pytest.mark.uc("UC-026", flow="main", steps=[2])
 class TestNonstopUpdateRespawnTimers:
     """Tests for _update_respawn_timers including respawn trigger and spawn protection expiry."""
 
@@ -789,6 +801,7 @@ class TestNonstopEndGameImpl:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-026", flow="main", steps=[3])
     @pytest.mark.asyncio
     async def test_end_game_determines_winner_by_fewest_deaths(self, nonstop_game):
         """Test winner is the player with fewest deaths (highest score)."""
@@ -1207,7 +1220,7 @@ async def _loop_game(time_limit=0.05):
 class TestNonstopEndOfGame:
     """UC-026 step 3, A1 and BR-003: the time limit, the winner and the stream at the end."""
 
-    @pytest.mark.uc("UC-026", flow="main", steps=[3])
+    @pytest.mark.uc("UC-026", flow="main", steps=[3], cond=["Post-S-1"])
     @pytest.mark.asyncio
     async def test_time_limit_ends_the_game_and_the_rainbow_goes_out_before_the_stream_closes(self, fast_nonstop):
         log = RecordingLog()
@@ -1247,6 +1260,7 @@ class TestNonstopEndOfGame:
         assert cancel_at, "the game stream was never closed"
         assert rainbow_at[0] < cancel_at[0]
         assert game.gameplay_stream is None
+        assert game.state == GameState.ENDED, "Post-S-1: the session ends"
 
         # One lifecycle span per player (the loop no longer opens a second set)
         assert sorted(span_serials) == sorted(SERIALS)
@@ -1273,6 +1287,26 @@ class TestNonstopEndOfGame:
         assert ended[0]["reason"] == "operator"
         assert ended[0]["winner"] == "none"
         assert ended[0]["duration"] > 0
+
+    @pytest.mark.uc("UC-026", cond=["Pre-1"])
+    @pytest.mark.asyncio
+    async def test_one_player_raises_before_the_stream_opens(self, fast_nonstop):
+        log = RecordingLog()
+        client = _NonstopControllerManager(log)
+        game = NonstopJoustGame(
+            controller_manager_client=client,
+            event_publisher=log.publish,
+            audio_client=None,
+            game_id="test_nonstop_one_player",
+            initial_players=_players()[:1],
+            time_limit_seconds=0,
+        )
+
+        with pytest.raises(ValueError, match="at least 2 players"):
+            await asyncio.wait_for(game.run(), timeout=5)
+
+        assert client.streams == []
+        assert log.events.get_events_of_type(GameEvent.GAME_STARTED) == []
 
     @pytest.mark.uc("UC-026", br=["BR-003"])
     @pytest.mark.asyncio
