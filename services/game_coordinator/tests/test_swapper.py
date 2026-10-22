@@ -11,10 +11,11 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 import pytest_asyncio
+from opentelemetry import trace
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -25,6 +26,7 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService
 
+from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.swapper import SwapperGame
@@ -49,6 +51,7 @@ class TestSwapperTeamSwapping:
             audio_client=None,
             game_id="test_swapper_001",
         )
+        game.running = True
 
         return game, mock_controller_manager, event_collector
 
@@ -319,6 +322,7 @@ class TestSwapperWinConditionExclusion:
             audio_client=None,
             game_id="test_swapper_exclusion",
         )
+        game.running = True
 
         return game, mock_controller_manager, event_collector
 
@@ -447,6 +451,7 @@ class TestSwapperEndGameImpl:
             audio_client=None,
             game_id="test_swapper_endgame",
         )
+        game.running = True
 
         return game, mock_controller_manager, event_collector
 
@@ -469,6 +474,7 @@ class TestSwapperEndGameImpl:
         game.gameplay_stream = stream
         game.start_time = time.time()
         game.state = GameState.RUNNING
+        assert await game._check_win_condition()  # latches the win (UC-024 BR-004)
         game.running = False
 
         await game._end_game_impl()
@@ -500,6 +506,7 @@ class TestSwapperEndGameImpl:
         game.gameplay_stream = stream
         game.start_time = time.time()
         game.state = GameState.RUNNING
+        assert await game._check_win_condition()  # latches the win (UC-024 BR-004)
         game.running = False
 
         await game._end_game_impl()
@@ -528,6 +535,7 @@ class TestSwapperEndGameImpl:
         game.gameplay_stream = RecordingGameplayStream()
         game.start_time = time.time() - 30
         game.state = GameState.RUNNING
+        assert await game._check_win_condition()  # latches the win (UC-024 BR-004)
         game.running = False
 
         await game._end_game_impl()
@@ -552,6 +560,7 @@ class TestSwapperEndGameImpl:
         game.gameplay_stream = RecordingGameplayStream()
         game.start_time = time.time()
         game.state = GameState.RUNNING
+        assert await game._check_win_condition()  # latches the win (UC-024 BR-004)
         game.running = False
 
         await game._end_game_impl()
@@ -832,7 +841,7 @@ class TestSwapperDisconnect:
 
         player = game.players[target]
         assert player.alive is False and player.span is None
-        assert game.last_death_serial is None
+        assert game._excluded_serial() is None
         assert events.count_events_of_type("player_swapped") == 0
         writes = self._writes_for(game.gameplay_stream, target)
         assert not any(kind == "base" for kind, _ in writes)  # no new team colour
@@ -986,4 +995,202 @@ class TestSwapperDisconnect:
         assert len(winner) == 1 and winner[0]["team"] == 0
         assert winner[0]["winners"] == ["mock_controller_1"]
         assert winner[0]["excluded_serial"] == ""
+        await game.cleanup()
+
+
+class TestSwapperForceEndWinner:
+    """UC-024 BR-003 / BR-004 (#1343): a force-end declares no winner; the first win is latched."""
+
+    @staticmethod
+    async def _game(num_players: int):
+        game, events = await TestSwapperDisconnect._game(num_players)
+        game.sounds = []
+
+        async def record_sound(sound, *_args, **_kwargs):
+            game.sounds.append(sound)
+
+        game._play_sound = record_sound
+        return game, events
+
+    @staticmethod
+    def _effects(stream, effect):
+        return [
+            m.game_effect.serial
+            for m in stream.messages
+            if m.HasField("game_effect") and m.game_effect.effect == effect
+        ]
+
+    @staticmethod
+    def _greys(stream):
+        return [
+            m.base_color.serial
+            for m in stream.messages
+            if m.HasField("base_color")
+            and (m.base_color.color.r, m.base_color.color.g, m.base_color.color.b) == (50, 50, 50)
+        ]
+
+    @staticmethod
+    def _spans(game):
+        spans = {}
+        for serial, player in game.players.items():
+            span = create_autospec(trace.Span, instance=True)
+            player.span = span
+            spans[serial] = span
+        return spans
+
+    @staticmethod
+    def _span_winner_flags(spans):
+        return {
+            serial: [
+                c.kwargs["attributes"]["winner"] for c in span.add_event.call_args_list if c.args[0] == "game_ended"
+            ]
+            for serial, span in spans.items()
+        }
+
+    @pytest.mark.uc("UC-024", br=["BR-003"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_with_two_teams_declares_no_winner(self):
+        game, events = await self._game(4)
+        spans = self._spans(game)
+        game.last_death_serial = "mock_controller_3"
+        game.force_end("operator")
+
+        await game._end_game_impl()
+
+        stream = game.gameplay_stream
+        assert self._effects(stream, controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW) == []
+        assert self._greys(stream) == []
+        assert game.sounds == []
+        assert all(flags == [False] for flags in self._span_winner_flags(spans).values())
+        assert events.get_events_of_type("swapper_winner") == []
+        ended = events.get_events_of_type("game_ended")
+        assert len(ended) == 1
+        assert ended[0]["winning_team"] == "none"
+        assert ended[0]["outcome"] == "force_ended"
+        assert ended[0]["reason"] == "operator"
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", br=["BR-003"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_stream_end_without_a_win_declares_no_winner(self):
+        game, events = await self._game(4)
+        game.running = False  # the stream ended; not force-ended, nothing latched
+
+        await game._end_game_impl()
+
+        assert self._effects(game.gameplay_stream, controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW) == []
+        assert game.sounds == []
+        assert events.get_events_of_type("game_ended")[0]["winning_team"] == "none"
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", br=["BR-003"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_during_swap_pause_publishes_no_winner_and_no_swap(self):
+        game, events = await self._game(2)
+        target = "mock_controller_0"
+        paused, release = asyncio.Event(), asyncio.Event()
+
+        async def gated_pause():
+            paused.set()
+            await release.wait()
+
+        game._swap_pause = gated_pause
+        kill = asyncio.create_task(game._kill_player(target, 0.0, reason="agent_intervention"))
+        await asyncio.wait_for(paused.wait(), 2.0)
+        assert game.players[target].team == 1  # both players on team 1 now: converged
+
+        game.force_end("operator")
+        assert await game._check_win_condition() is False
+        assert events.get_events_of_type("swapper_winner") == []
+
+        release.set()
+        await asyncio.wait_for(kill, 2.0)
+
+        assert events.count_events_of_type("player_swapped") == 0
+        assert Sound.SFX_BEEP not in game.sounds  # no swap beep (the base kill sound is not ours)
+        writes = TestSwapperLedAfterSwap._writes_for(game.gameplay_stream, target)
+        assert not any(kind == "base" for kind, _ in writes)  # no colour over the end
+        assert ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH) not in writes
+
+        await game._end_game_impl()
+        assert self._effects(game.gameplay_stream, controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW) == []
+        assert events.get_events_of_type("game_ended")[0]["winning_team"] == "none"
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", br=["BR-003", "BR-004"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_during_the_hold_keeps_the_winner(self):
+        game, events = await self._game(4)
+        spans = self._spans(game)
+        for player in game.players.values():
+            player.team = 0
+        game.last_death_serial = "mock_controller_3"
+
+        assert await game._check_win_condition()
+        assert await game._check_win_condition()  # latched: not published again
+        assert events.count_events_of_type("swapper_winner") == 1
+        game._latch_game_outcome()  # what run() does when the loop returns
+        game.force_end("operator")
+
+        # The hold: an agent kill and a disconnect no longer change the winners (BR-004).
+        await game._kill_player("mock_controller_1", 0.0, reason="agent_intervention")
+        await game._handle_disconnect("mock_controller_2")
+        assert game.players["mock_controller_1"].team == 0 and game._eliminated == set()
+        assert events.count_events_of_type("player_swapped") == 0
+
+        await game._end_game_impl()
+
+        stream = game.gameplay_stream
+        assert sorted(self._effects(stream, controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW)) == [
+            "mock_controller_0",
+            "mock_controller_1",
+            "mock_controller_2",
+        ]
+        assert self._greys(stream) == ["mock_controller_3"]
+        assert len(game.sounds) == 1
+        flags = self._span_winner_flags(spans)
+        assert flags["mock_controller_0"] == [True] and flags["mock_controller_3"] == [False]
+        ended = events.get_events_of_type("game_ended")[0]
+        assert ended["winning_team"] == 0 and ended["outcome"] == "completed"
+        assert "reason" not in ended
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_late_wake_up_after_the_latch_keeps_the_end_effects(self):
+        # Teams: c0, c2 on team 0; c1 on team 1. The agent swaps c1 to team 0.
+        game, events = await self._game(3)
+        target = "mock_controller_1"
+        paused, release = asyncio.Event(), asyncio.Event()
+
+        async def gated_pause():
+            paused.set()
+            await release.wait()
+
+        game._swap_pause = gated_pause
+        kill = asyncio.create_task(game._kill_player(target, 0.0, reason="agent_intervention"))
+        await asyncio.wait_for(paused.wait(), 2.0)
+
+        # The gameplay loop sees the convergence while the swap sleeps and latches it.
+        assert await game._process_gameplay_update(_frame("mock_controller_0"))
+        winner = events.get_events_of_type("swapper_winner")
+        assert len(winner) == 1 and winner[0]["excluded_serial"] == target
+        game._latch_game_outcome()
+
+        release.set()
+        await asyncio.wait_for(kill, 2.0)
+
+        writes = TestSwapperLedAfterSwap._writes_for(game.gameplay_stream, target)
+        assert not any(kind == "base" for kind, _ in writes)  # the swap did not finish
+        assert ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH) not in writes
+        assert events.count_events_of_type("player_swapped") == 0
+        assert Sound.SFX_BEEP not in game.sounds
+
+        game.running = False  # the celebration wait ends at once
+        await game._end_game_impl()
+        assert self._greys(game.gameplay_stream) == [target]
         await game.cleanup()

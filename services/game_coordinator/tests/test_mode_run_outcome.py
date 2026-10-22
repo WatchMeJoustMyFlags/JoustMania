@@ -1,7 +1,7 @@
 """Root-span outcome of the non-FFA modes (#1328, telemetry.md §3.2).
 
-Each mode UC owns a rule (UC-021 BR-002, UC-022 BR-004, UC-023 BR-003, UC-025 BR-003,
-UC-026 BR-002): the root span records ``completed`` for a natural end, ``force_ended``
+Each mode UC owns a rule (UC-021 BR-002, UC-022 BR-004, UC-023 BR-003, UC-024 BR-003,
+UC-025 BR-003, UC-026 BR-002): the root span records ``completed`` for a natural end, ``force_ended``
 (with the reason) when force-ended. FightClub, Werewolf, Zombies and Tournament run their
 own ``run()``; the team modes and NonStop use the base ``run()``. One test per UC so each
 carries its own UC tag; the helpers are shared.
@@ -164,6 +164,21 @@ async def test_nonstop_force_ended_records_reason(mode):
 @pytest.mark.uc("UC-026", br=["BR-002"])
 def test_nonstop_natural_end_is_completed_and_survives_late_force_end(mode):
     """UC-026 BR-002: a natural end latches completed; a later force-end does not rewrite it."""
+    _assert_natural_end_is_completed_and_survives_late_force_end(mode)
+
+
+@pytest.mark.parametrize("mode", [Games.Swapper], ids=[m.name for m in [Games.Swapper]])
+@pytest.mark.uc("UC-024", br=["BR-003"])
+@pytest.mark.asyncio
+async def test_swapper_force_ended_records_reason(mode):
+    """UC-024 BR-003: a force-ended Swapper game records force_ended + reason on the root span."""
+    await _assert_force_ended_records_reason(mode)
+
+
+@pytest.mark.parametrize("mode", [Games.Swapper], ids=[m.name for m in [Games.Swapper]])
+@pytest.mark.uc("UC-024", br=["BR-003"])
+def test_swapper_natural_end_is_completed_and_survives_late_force_end(mode):
+    """UC-024 BR-003: a natural end latches completed; a later force-end does not rewrite it."""
     _assert_natural_end_is_completed_and_survives_late_force_end(mode)
 
 
