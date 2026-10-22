@@ -18,6 +18,7 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService, async_noop
 
+from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
 from services.game_coordinator.games.teams import SimpleTeamsGame
@@ -83,4 +84,48 @@ async def test_zombie_death_lowers_aggregate_conversion_does_not():
         await game._kill_player(zombie, accel_mag=5.0)  # zombie death
         assert not game.players[zombie].alive
         agg.set.assert_called_with(3)
+    await game.cleanup()
+
+
+@pytest.mark.uc("UC-030", flow="main", steps=[9])
+@pytest.mark.asyncio
+async def test_nonstop_respawn_restores_aggregate_and_gauge():
+    game = await _make_game(NonstopJoustGame)
+    serial = next(iter(game.players))
+    game.state = GameState.RUNNING
+
+    with patch(AGG) as agg, patch("services.game_coordinator.metrics.player_alive") as gauge:
+        await game._kill_player(serial, accel_mag=5.0)
+        assert agg.set.call_args_list[-1].args == (3,)
+        assert await game._respawn_player(serial)
+        assert [c.args for c in agg.set.call_args_list] == [(3,), (4,)]
+        gauge.labels.assert_called_with(serial=serial, game_id=game.game_id)
+        assert gauge.labels.return_value.set.call_args_list[-1].args == (1,)
+    await game.cleanup()
+
+
+@pytest.mark.uc("UC-030", flow="main", steps=[9])
+@pytest.mark.asyncio
+async def test_generic_revive_restores_aggregate():
+    game = await _make_game(FFAGame)
+    serial = next(iter(game.players))
+    game.state = GameState.RUNNING
+
+    with patch(AGG) as agg:
+        await game._kill_player(serial, accel_mag=5.0)
+        await game.revive_player(serial)
+        assert [c.args for c in agg.set.call_args_list] == [(3,), (4,)]
+    await game.cleanup()
+
+
+@pytest.mark.uc("UC-030", flow="main", steps=[9])
+@pytest.mark.asyncio
+async def test_kill_finishing_after_stop_leaves_end_of_game_aggregate():
+    game = await _make_game(FFAGame)
+    serial = next(iter(game.players))
+    game.running = False
+
+    with patch(AGG) as agg:
+        await game._kill_player(serial, accel_mag=5.0)
+    agg.set.assert_not_called()
     await game.cleanup()

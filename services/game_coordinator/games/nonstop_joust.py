@@ -20,6 +20,7 @@ from opentelemetry import trace
 
 from lib.feature_flags import read_float_flag, read_object_flag
 from lib.types import GameEvent, Sound
+from services.game_coordinator import metrics
 from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import (
     BaseGameMode,
@@ -538,6 +539,8 @@ class NonstopJoustGame(BaseGameMode):
 
         player = self.players[serial]
         player.alive = True
+        metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
+        self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
         player.respawn_deadline = None  # an agent revive also ends a pending countdown
         player.respawn_timer = 0.0
         player._last_respawn_color = None  # the next death shows its countdown colour again

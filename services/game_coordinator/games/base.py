@@ -3478,7 +3478,9 @@ class BaseGameMode(ABC):
 
         # The aggregate counts the state AFTER the mode's handler: it flips alive to
         # False for a death, keeps it True for a Zombies conversion (#1943).
-        self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
+        # A kill finishing after the game stopped must not overwrite the end-of-game 0.
+        if self.running:
+            self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
 
         # Send death effect via stream (red + vibrate, no restore)
         # Use pre-extracted trace context so effect appears under player_lifecycle
