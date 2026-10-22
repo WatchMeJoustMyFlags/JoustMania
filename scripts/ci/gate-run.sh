@@ -20,7 +20,7 @@
 #
 # Allowed commands (anything else is REFUSED):
 #   make <target> [VAR=value ...]
-#       targets: pr-gates, lint, format-check, check, specs-check, test, test-dev, test-pulled,
+#       targets: pr-gates, lint, format-check, check, specs-check, spec-refs-check, test, test-dev, test-pulled,
 #                test-contract, test-contract-flagd,
 #                test-service[-*], test-integration
 #       VAR in: TEST SERVICE BASE PR_LABELS IMAGE_TAG PYTEST_EXTRA
@@ -135,7 +135,7 @@ for w in "${CMD[@]}"; do
   esac
 done
 
-MAKE_TARGET_RE='^(pr-gates|lint|format-check|check|specs-check|test|test-dev|test-pulled|test-contract|test-contract-flagd|test-service(-[a-z0-9]+)*|test-integration)$'
+MAKE_TARGET_RE='^(pr-gates|lint|format-check|check|specs-check|spec-refs-check|test|test-dev|test-pulled|test-contract|test-contract-flagd|test-service(-[a-z0-9]+)*|test-integration)$'
 MAKE_VAR_RE='^(TEST|SERVICE|BASE|PR_LABELS|IMAGE_TAG|PYTEST_EXTRA|SERVICE_TESTS)=(.*)$'
 MAKE_VALUE_RE="^[A-Za-z0-9_.,/:=' -]*$"
 

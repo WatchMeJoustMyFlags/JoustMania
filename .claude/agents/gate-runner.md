@@ -55,7 +55,7 @@ From the caller:
   job; report `<slug>: REFUSED: shell metacharacter`.
 
 What the script accepts (anything else is `REFUSED`, exit 2): `make` with targets `pr-gates`, `lint`,
-`format-check`, `check`, `specs-check`, `test`, `test-dev`, `test-pulled`, `test-contract`,
+`format-check`, `check`, `specs-check`, `spec-refs-check`, `test`, `test-dev`, `test-pulled`, `test-contract`,
 `test-contract-flagd`, `test-service*`, `test-integration` and only the
 variables `TEST SERVICE BASE PR_LABELS IMAGE_TAG PYTEST_EXTRA SERVICE_TESTS` (`SERVICE_TESTS` only with `test-service*`: paths under `tests/service`); `uv run --package <member>
 [--extra <x>] pytest ...`; `go test|vet` and `cargo test|clippy` with `--dir`; `scripts/tests/test-*.sh`.

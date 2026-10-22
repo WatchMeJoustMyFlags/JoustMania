@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "findings": [
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/infra_telemetry.go",
+      "value": "bluetooth.active_controllers",
+      "fingerprint": "19a0f33810cc"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/infra_telemetry.go",
+      "value": "fitness.passing",
+      "fingerprint": "44ddfa77ad70"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/infra_telemetry.go",
+      "value": "fitness.violations",
+      "fingerprint": "045a0cba2098"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/infra_telemetry.go",
+      "value": "remediation.action",
+      "fingerprint": "6f9479fd29fe"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/infra_telemetry.go",
+      "value": "rollout.dry_run",
+      "fingerprint": "aee1d7ad4a60"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/infra_telemetry.go",
+      "value": "rollout.target",
+      "fingerprint": "405ec4f01d8b"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/retro_capture.go",
+      "value": "game.elimination_count",
+      "fingerprint": "0293cee19560"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/retro_capture.go",
+      "value": "game.final_active_players",
+      "fingerprint": "61eea5044390"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/retro_capture.go",
+      "value": "llm.retro.bytes",
+      "fingerprint": "8643e80e55bd"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/retro_capture.go",
+      "value": "llm.retro.system_sha256",
+      "fingerprint": "f9b42326caa5"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "emphasis",
+      "fingerprint": "c499b93cdf28"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "experiment.arms",
+      "fingerprint": "3f838f986571"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "experiment.status",
+      "fingerprint": "c2f26488c0b7"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "fitness.evaluated",
+      "fingerprint": "ec58b7dc530f"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "inference.configured",
+      "fingerprint": "ebc31d04b338"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "llm.retro.latency_ms",
+      "fingerprint": "80bd85ab9f30"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "llm.retro.parse_ok",
+      "fingerprint": "bd2904173b71"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "llm.retro.response_sha256",
+      "fingerprint": "b83e3ad60637"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "llm.retro.session_assessment",
+      "fingerprint": "1ac20c3bb6f6"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "llm.retro.session_focus",
+      "fingerprint": "47902501654d"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/decision/telemetry.go",
+      "value": "llm.retro.suggestion_count",
+      "fingerprint": "0abbcb0fff34"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/experiment/proposer_telemetry.go",
+      "value": "code_improvement.proposed_diff_summary",
+      "fingerprint": "4fa610f3f26b"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/experiment/telemetry.go",
+      "value": "code_improvement.blocked",
+      "fingerprint": "1b65809775b8"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/experiment/telemetry.go",
+      "value": "code_improvement.flag_key",
+      "fingerprint": "6a5b8e92a53a"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/experiment/telemetry.go",
+      "value": "code_improvement.rationale",
+      "fingerprint": "7c692408c3ab"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/infracontext/extract_spans.go",
+      "value": "bluetooth.active_controllers",
+      "fingerprint": "0c45be8316a2"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/promote/telemetry.go",
+      "value": "code_improvement.fitness_after",
+      "fingerprint": "05c32fa0fd88"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/promote/telemetry.go",
+      "value": "code_improvement.fitness_before",
+      "fingerprint": "0b50df0044a1"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/promote/telemetry.go",
+      "value": "code_improvement.fitness_delta",
+      "fingerprint": "73eec90f5b2d"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/promote/telemetry.go",
+      "value": "code_improvement.flag_key",
+      "fingerprint": "59ad71a7af23"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/promote/telemetry.go",
+      "value": "code_improvement.gate",
+      "fingerprint": "dbc305e6802b"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/promote/telemetry.go",
+      "value": "code_improvement.target",
+      "fingerprint": "1b16ef77f13a"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/promote/telemetry.go",
+      "value": "code_improvement.url",
+      "fingerprint": "9b62d1431470"
+    }
+  ]
+}

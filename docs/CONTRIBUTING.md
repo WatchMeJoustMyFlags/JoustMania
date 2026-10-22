@@ -216,7 +216,18 @@ The `Spec Gate` job in `ci.yml` (#1263, required through `CI Complete`) has two 
    `agent/experiment-*` in this repository, title `Flag experiment: ...`).
 
 Adding or removing `no-spec-change` or `spec-baseline-growth` re-runs the Spec Gate
-automatically (`spec-label-rerun.yml`).
+(and, for `spec-baseline-growth`, the Telemetry Contract job) automatically (`spec-label-rerun.yml`).
+
+### Spec references
+
+`make spec-refs-check` (Telemetry Contract job, #1280) checks every `path:line` and `path:Symbol` in `docs/specs/*.md` (not `generated/`, not `notes/`, not fenced code blocks):
+
+- the path must be a full repo path (`services/agent/decide/state.go:digest`, never `state.go:digest`) to an existing file; the line must be within the file; the symbol must occur in it. These fail every PR, including code-only ones that delete or rename what a spec cites. Fix the spec line; `scripts/spec_refs.py --suggest` prints a ready `path:Symbol` for every line ref, and the error for an out-of-range line names one.
+- prefer `path:Symbol`: it survives edits. New `path:line` refs are allowed but a growth in their total versus the base branch raises a `::warning` with suggestions.
+- every Go `Span*` / `Attr*` constant value must appear in `telemetry.md` as its exact key. Undocumented ones sit in `docs/specs/notes/spec-refs-baseline.json`; the baseline may only grow with the `spec-baseline-growth` label, and a stale entry (now documented or gone) fails: run `make spec-refs` to prune it.
+- an example that is not a real reference: put `<!-- spec-refs: ignore -->` on its line.
+
+A reference fix is not a spec change: it satisfies the "spec touched" check mechanically, but does not replace the `no-spec-change` reasoning for a behaviour change.
 
 **Labels and CI (#1527).** Adding or removing a label never starts a `CI` run.
 GitHub takes the required `CI Complete` check from the newest run of the `CI`
@@ -307,7 +318,8 @@ All pull requests must pass CI checks before merging:
 5. **Docker Builds** - All services must build successfully
 6. **Package Validation** - All workspace packages must install correctly
 7. **Spec Gate** - Spec lint over `docs/` and the spec-touched check (see [CI spec gate](#ci-spec-gate))
-8. **Generated specs** - `docs/specs/generated/` (metric catalog, RPC tables, flag counts, `ci/` flag diffs) must match the code: run `make specs` and commit (checked by `make specs-check` in the Telemetry Contract job). After a rebase that conflicts in a generated file, take either side and run `make specs`
+8. **Spec references** - `make spec-refs-check` in the same job (see [Spec references](#spec-references))
+9. **Generated specs** - `docs/specs/generated/` (metric catalog, RPC tables, flag counts, `ci/` flag diffs) must match the code: run `make specs` and commit (checked by `make specs-check` in the Telemetry Contract job). After a rebase that conflicts in a generated file, take either side and run `make specs`
 
 **When the full-stack e2e job runs (#1583).** `Integration Tests` (one job, one
 compose stack, about 5-8 minutes) starts the whole docker-compose stack, so it

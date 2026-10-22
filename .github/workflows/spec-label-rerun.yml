@@ -37,6 +37,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABEL: ${{ github.event.label.name }}
         run: |
           set -euo pipefail
           run_id=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --event pull_request \
@@ -64,12 +65,14 @@ jobs:
               exit 0
             fi
           fi
-          job=$(gh run view "$run_id" --json jobs \
-                  --jq '.jobs[] | select(.name == "Spec Gate" and .conclusion != "skipped") | .databaseId' | head -n1) || {
+          # spec-baseline-growth also gates the spec-refs baseline (#1280), checked
+          # in the Telemetry Contract job.
+          jobs=$(gh run view "$run_id" --json jobs \
+                  --jq '.jobs[] | select((.name == "Spec Gate" or (.name == "Telemetry Contract" and env.LABEL == "spec-baseline-growth")) and .conclusion != "skipped") | .databaseId') || {
             echo "::warning::Could not read the jobs of CI run $run_id; re-add the label to retry."
             exit 0
           }
-          if [ -z "$job" ]; then
+          if [ -z "$jobs" ]; then
             echo "CI run $run_id has no Spec Gate job that ran (no spec/code change); nothing to re-run."
             exit 0
           fi
@@ -84,5 +87,7 @@ jobs:
             echo "PR head moved to $head; its own CI run reads the labels."
             exit 0
           fi
-          echo "Re-running Spec Gate job $job of CI run $run_id"
-          gh run rerun --job "$job"
+          for job in $jobs; do
+            echo "Re-running job $job of CI run $run_id"
+            gh run rerun --job "$job"
+          done
