@@ -97,6 +97,22 @@ func TestDynamicDeclarer_FlagdDownMeansBuiltinDefaults(t *testing.T) {
 	}
 }
 
+// TestDynamicDeclarer_ConfigureResetsDenylist: a denylist flag value applies to one
+// configure() only; the next configure with no denylist drops it again, while the
+// built-in floor stays (#1907, C-034).
+// UC: UC-070 BR-008
+func TestDynamicDeclarer_ConfigureResetsDenylist(t *testing.T) {
+	d := newDynamicDeclarer(protectedCatalog{}, nil)
+	d.configure(flags.ExperimentConfig{DynamicDenylist: "foo"})
+	if got := d.candidateOrder(d.readCandidateFlags()); !reflect.DeepEqual(got, []string{"sensitivity"}) {
+		t.Fatalf("with denylist foo: rotation = %v, want [sensitivity]", got)
+	}
+	d.configure(flags.ExperimentConfig{})
+	if got := d.candidateOrder(d.readCandidateFlags()); !reflect.DeepEqual(got, []string{"foo", "sensitivity"}) {
+		t.Fatalf("after an empty config: rotation = %v, want [foo sensitivity] (foo allowed again, built-in keys still denied)", got)
+	}
+}
+
 // TestParseCandidates_Rules pins the comma-list parse rules of
 // experiment_dynamic_candidates and experiment_dynamic_denylist (#1907).
 func TestParseCandidates_Rules(t *testing.T) {
@@ -123,7 +139,7 @@ func TestParseCandidates_Rules(t *testing.T) {
 // TestDeclareDynamic_SettingsAreReadPerTick: the tick path applies this tick's
 // experiment_dynamic_* settings before Declare, so an operator overlay takes
 // effect on the next tick with no restart (#1907, C-035).
-// UC: UC-070 BR-008
+// UC: UC-070 BR-007
 func TestDeclareDynamic_SettingsAreReadPerTick(t *testing.T) {
 	loop, svc := loopWithRealRegistry(t, 8)
 	loop.dynamic = newDynamicDeclarer(svc, nil)

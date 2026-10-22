@@ -132,7 +132,7 @@ func budgetCfg(maxConcurrent int) flags.ExperimentConfig {
 // through the dynamic declarer, so it applies the same per-tick
 // experiment_dynamic_* settings (#1907): a candidate list read from this tick's
 // config decides the flag, with no restart.
-// UC: UC-070 BR-008
+// UC: UC-042 A3
 func TestRetroProposer_UsesTheTicksDynamicSettings(t *testing.T) {
 	t.Setenv(envProposerEnabled, "true")
 	loop := proposerLoop(t)

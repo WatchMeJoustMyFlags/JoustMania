@@ -480,7 +480,7 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | `verdict_min_n`, `verdict_min_pairs`, `experiment_tick_seconds`, `experiment_max_games` | overlay | stack | int 1 to 1000 | no | `tests/service/test_tc011_shadow_experiment.py` |
 | `experiment_completed_grace_seconds` | overlay | stack | int 0 to 600 | no | operator (§15, #1810); also the telemetry-end wait for the runner outcome, floored at 18 s (UC-046 BR-016, #1405) |
 | `experiment_proposer_enabled` | overlay | stack | `on`, `off` | no | operator (§15.2, #1810; capped by `AGENT_EXPERIMENT_PROPOSER_ENABLED`, C-034) |
-| `experiment_dynamic_candidates`, `experiment_dynamic_denylist` | overlay | stack | free string (comma-separated `game` keys; the denylist only adds to the built-in list, UC-070 BR-008) | no | operator (§15, #1907); `tc010_no_such_flag` candidates in the service tier's TC-010 composition |
+| `experiment_dynamic_candidates`, `experiment_dynamic_denylist` | overlay | stack | free string | no | operator (§15, #1907): comma-separated `game` keys, and the denylist only adds to the built-in list (UC-070 BR-008); `tc010_no_such_flag` candidates in the service tier's TC-010 composition |
 | `experiment_dynamic_objective` | overlay | stack | `balanced`, `endurance`, `accelerate` | no | operator (§15, #1907) |
 | `experiment_dynamic_target_n` | overlay | stack | int 0 to 1000 | no | operator (§15, #1907) |
 | `inference.backend` | overlay | stack | `stub`, `claude` | **yes** (like `decision.backend`, #1682) | operator (§15, #1810) |
