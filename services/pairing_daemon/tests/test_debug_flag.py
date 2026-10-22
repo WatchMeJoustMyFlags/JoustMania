@@ -1,4 +1,4 @@
-"""debug flag: flag wins, env fallback, default off (#1788, FR-150, FR-151)."""
+"""debug flag: flag only, default off (#1788, FR-150, FR-151)."""
 
 from unittest.mock import create_autospec, patch
 
@@ -13,24 +13,25 @@ def _client(value):
     return client
 
 
-def test_flag_on_wins_over_env_off(monkeypatch):
-    monkeypatch.setenv("DEBUG", "0")
+def test_flag_on_wins(monkeypatch):
+    monkeypatch.delenv("DEBUG", raising=False)
     with patch("psmove_pairing.config._observability_client", _client(True)):
         assert is_debug() is True
 
 
-def test_flag_off_wins_over_env_on(monkeypatch):
-    monkeypatch.setenv("DEBUG", "1")
+def test_flag_off_means_off(monkeypatch):
+    monkeypatch.delenv("DEBUG", raising=False)
     with patch("psmove_pairing.config._observability_client", _client(False)):
         assert is_debug() is False
 
 
-def test_env_used_when_flag_unresolved(monkeypatch):
+def test_removed_debug_env_is_ignored(monkeypatch):
+    """DEBUG=1 no longer turns debug on (#1907): no client or an unresolved flag is off."""
     monkeypatch.setenv("DEBUG", "1")
-    with patch("psmove_pairing.config._observability_client", _client(None)):
-        assert is_debug() is True
     with patch("psmove_pairing.config._observability_client", None):
-        assert is_debug() is True
+        assert is_debug() is False
+    with patch("psmove_pairing.config._observability_client", _client(None)):
+        assert is_debug() is False
 
 
 def test_default_off(monkeypatch):

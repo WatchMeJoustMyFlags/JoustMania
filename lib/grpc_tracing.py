@@ -7,7 +7,6 @@ This module provides manual interceptors for both client and server:
 CLIENT INTERCEPTORS:
 - Inject W3C Trace Context (traceparent, tracestate) into outgoing gRPC metadata: the CLIENT span
   when the call has one, so the server's span is its child, else the caller's current span (#1897)
-- Optionally create client spans (disabled by default, enable with OTEL_GRPC_CLIENT_SPANS=true)
 - When grpc_rpc_spans flag is enabled, create CLIENT spans with full RPC semantic convention
   attributes for service topology in the trace backend. A CLIENT span covers the whole call:
   a unary call ends at its status, a stream when the RPC terminates (from the call's done
@@ -36,7 +35,6 @@ Usage (Server):
 import asyncio
 import inspect
 import logging
-import os
 from collections.abc import Callable
 from typing import Any
 
@@ -50,9 +48,6 @@ from opentelemetry.trace import SpanKind, Status, StatusCode
 from lib.grpc_metrics import is_caller_cancel_details
 
 logger = logging.getLogger(__name__)
-
-# Configuration: Set OTEL_GRPC_CLIENT_SPANS=true to enable client spans
-_CREATE_CLIENT_SPANS = os.getenv("OTEL_GRPC_CLIENT_SPANS", "false").lower() == "true"
 
 # Span attribute keys (S1192 - avoid duplicate string literals)
 RPC_SYSTEM_ATTR = "rpc.system"
@@ -344,21 +339,17 @@ class _ClientSpanInterceptorBase:
     """
 
     def __init__(self, server_address: str | None = None, server_port: int | None = None):
-        self._tracer = trace.get_tracer(__name__) if _CREATE_CLIENT_SPANS else None
+        self._tracer = None  # tests inject a tracer; None = the global one
         self._server_address = server_address
         self._server_port = server_port
 
-    def _span_spec(self, rpc_method: str | bytes) -> tuple[Any, str, dict[str, Any], bool] | None:
-        """Return (tracer, name, attributes, legacy) for the call's span, or None for no span."""
+    def _span_spec(self, rpc_method: str | bytes) -> tuple[Any, str, dict[str, Any]] | None:
+        """Return (tracer, name, attributes) for the call's span, or None for no span."""
         if _rpc_spans_enabled():
             service, method = _parse_method(rpc_method)
             tracer = self._tracer or trace.get_tracer(__name__)
             attrs = _build_rpc_attributes(service, method, self._server_address, self._server_port)
-            return tracer, f"{service}/{method}", attrs, False
-        if _CREATE_CLIENT_SPANS:
-            # Legacy OTEL_GRPC_CLIENT_SPANS path
-            clean_method = _extract_method_name(rpc_method)
-            return self._tracer, clean_method, {RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: clean_method}, True
+            return tracer, f"{service}/{method}", attrs
         return None
 
     async def _intercept_unary_response(self, continuation: Callable, details: Any, request: Any) -> Any:
@@ -366,14 +357,14 @@ class _ClientSpanInterceptorBase:
         spec = self._span_spec(details.method)
         if spec is None:
             return await continuation(_with_trace_metadata(details), request)
-        tracer, name, attrs, legacy = spec
+        tracer, name, attrs = spec
         with tracer.start_as_current_span(name, kind=SpanKind.CLIENT, attributes=attrs) as span:
             try:
                 # Explicit context although the span is current: same code as the stream path.
                 call = await continuation(_with_trace_metadata(details, trace.set_span_in_context(span)), request)
                 await call
             except grpc.aio.AioRpcError as e:
-                _record_client_status(span, e.code(), e.details(), e if legacy else None)
+                _record_client_status(span, e.code(), e.details())
                 raise
             except asyncio.CancelledError:
                 _record_client_status(span, grpc.StatusCode.CANCELLED, _LOCAL_CANCEL_DETAILS)
@@ -391,7 +382,7 @@ class _ClientSpanInterceptorBase:
         spec = self._span_spec(details.method)
         if spec is None:
             return await continuation(_with_trace_metadata(details), request)
-        tracer, name, attrs, legacy = spec
+        tracer, name, attrs = spec
         span = tracer.start_span(name, kind=SpanKind.CLIENT, attributes=attrs)
         finisher = _ClientSpanFinisher(span, asyncio.get_running_loop())
         # The span goes into the metadata only, never attach(): it must not become current (#1769).
@@ -399,7 +390,7 @@ class _ClientSpanInterceptorBase:
         try:
             call = await continuation(_with_trace_metadata(details, span_ctx), request)
         except grpc.aio.AioRpcError as e:
-            finisher.finish(e.code(), e.details(), e if legacy else None)
+            finisher.finish(e.code(), e.details())
             raise
         except asyncio.CancelledError:
             finisher.finish(grpc.StatusCode.CANCELLED, _LOCAL_CANCEL_DETAILS)
@@ -436,8 +427,8 @@ class ContextPropagationInterceptor(_ClientSpanInterceptorBase, grpc.aio.UnaryUn
     Async unary-unary client interceptor for trace context propagation.
 
     Injects trace context into gRPC metadata (the CLIENT span when there is one, else the
-    caller's span) so server-side spans are linked to the parent trace. Optionally creates client spans when
-    OTEL_GRPC_CLIENT_SPANS=true or when the grpc_rpc_spans flag is enabled.
+    caller's span) so server-side spans are linked to the parent trace. Creates client spans only
+    when the grpc_rpc_spans flag is enabled.
     ``continuation`` returns the call before the RPC finishes, so the call is awaited here: the
     span ends at the final status (#1879).
     """

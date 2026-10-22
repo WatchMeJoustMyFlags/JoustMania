@@ -13,7 +13,6 @@ LED Feedback: none. The daemon gives no LED feedback while pairing; progress
 and failures are visible in the logs and metrics only (UC-001 BR-002, D-C4).
 
 Environment:
-  DEBUG         - deprecated fallback of the `debug` flag (observability set); 1 = tracebacks on errors
   METRICS_PORT  - port for the health check and control API (default: 8002)
   CONTROL_BIND  - comma-separated addresses that port binds to (default: 127.0.0.1).
                   Full stack: 127.0.0.1 plus the docker0 gateway (172.17.0.1), so
@@ -48,7 +47,7 @@ from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector_thread
 from psmove_pairing import PairingDaemon, init_telemetry, metrics
-from psmove_pairing.config import METRICS_PORT, env_debug, init_performance_flags, is_debug
+from psmove_pairing.config import METRICS_PORT, init_performance_flags, is_debug
 from psmove_pairing.control_api import handle_post
 
 # Global daemon reference for health checks
@@ -56,8 +55,8 @@ _daemon: PairingDaemon | None = None
 
 # Logging setup
 logging.basicConfig(
-    # DEBUG env is the bootstrap level only: flagd is not read yet; the `debug` flag takes over (#1788)
-    level=logging.DEBUG if env_debug() else logging.INFO,
+    # Bootstrap level only: flagd is not read yet; the `debug` flag takes over (#1788)
+    level=logging.INFO,
     format="[%(asctime)s] %(levelname)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
