@@ -886,3 +886,36 @@ class TestSwapperDisconnect:
             for m in game.gameplay_stream.messages
         )
         await game.cleanup()
+
+    @pytest.mark.uc("UC-024", flow="main", steps=[3])
+    @pytest.mark.uc("UC-024", flow="A1")
+    @pytest.mark.asyncio
+    async def test_win_check_during_swap_pauses_counts_the_swapping_players(self):
+        """Team counts leave out eliminated players only, not players whose swap is still pausing."""
+        # Teams: c0, c2 on team 0; c1 on team 1.
+        game, events = await self._game(3)
+        paused, release = asyncio.Event(), asyncio.Event()
+        pausing = 0
+
+        async def gated_pause():
+            nonlocal pausing
+            pausing += 1
+            if pausing == 2:
+                paused.set()
+            await release.wait()
+
+        game._swap_pause = gated_pause
+        swaps = [
+            asyncio.create_task(game._kill_player("mock_controller_0", 3.0)),
+            asyncio.create_task(game._kill_player("mock_controller_1", 3.0)),
+        ]
+        await asyncio.wait_for(paused.wait(), 2.0)
+
+        # c0 now on team 1, c1 on team 0, both not alive during the pause: still two teams.
+        assert game._get_alive_teams() == {0, 1}
+        assert not await game._check_win_condition()
+        assert events.get_events_of_type("swapper_winner") == []
+
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*swaps), 2.0)
+        await game.cleanup()
