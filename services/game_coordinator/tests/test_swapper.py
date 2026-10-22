@@ -7,6 +7,7 @@ Tests the core swapper mechanics:
 - Win condition detection (all players on same team)
 """
 
+import asyncio
 import sys
 import time
 from pathlib import Path
@@ -25,6 +26,7 @@ sys.path.insert(0, str(test_dir))
 from conftest import EventCollector, MockControllerManagerService
 
 from proto import controller_manager_pb2
+from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.swapper import SwapperGame
 
 
@@ -674,3 +676,213 @@ class TestSwapperLedAfterSwap:
             await game._kill_player("mock_controller_0", 3.0)
 
         sm.player_alive.labels.return_value.set.assert_not_called()
+
+
+STILL = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
+
+
+def _frame(*serials: str, disconnects: tuple[str, ...] = ()):
+    """A gameplay update: still samples for ``serials`` plus disconnect events."""
+    return controller_manager_pb2.GameplayDataUpdate(
+        controllers=[controller_manager_pb2.GameplayData(serial=s, accel=STILL) for s in serials],
+        disconnects=[controller_manager_pb2.DisconnectEvent(serial=s) for s in disconnects],
+        timestamp=int(time.time() * 1000),
+    )
+
+
+class TestSwapperDisconnect:
+    """UC-024 A1 (#1344): a disconnected player is eliminated, never swapped, never a winner."""
+
+    @staticmethod
+    async def _game(num_players: int):
+        events = EventCollector()
+        mock_cm = MockControllerManagerService(num_controllers=num_players, death_schedule={}, max_duration=10.0)
+        g = SwapperGame(
+            controller_manager_client=mock_cm,
+            event_publisher=events.publish,
+            audio_client=None,
+            game_id="test_swapper_disconnect",
+        )
+        await g._initialize_players_impl(mock_cm.controllers)
+        await g._assign_team_colors()
+        g.gameplay_stream = RecordingGameplayStream()
+        g.running = True
+        g.state = GameState.RUNNING
+        g.start_time = time.time() - 5.0
+        events.clear()
+
+        async def no_sound(*_args, **_kwargs):
+            return None
+
+        async def instant():
+            return None
+
+        g._play_sound = no_sound
+        g._swap_pause = instant
+        return g, events
+
+    @staticmethod
+    def _writes_for(stream, serial):
+        return TestSwapperLedAfterSwap._writes_for(stream, serial)
+
+    @pytest.mark.uc("UC-024", flow="A1", br=["BR-001"])
+    @pytest.mark.asyncio
+    async def test_mid_loop_disconnect_is_not_swapped_and_never_wins(self):
+        # Teams: c0, c2 on team 0; c1, c3 on team 1.
+        game, events = await self._game(4)
+        gone = "mock_controller_1"
+
+        assert not await game._process_gameplay_update(
+            _frame("mock_controller_0", "mock_controller_2", "mock_controller_3", disconnects=(gone,))
+        )
+
+        player = game.players[gone]
+        assert gone in game.players  # stays in the session's player list
+        assert player.team == 1 and player.alive is False and player.span is None
+        assert events.count_events_of_type("player_swapped") == 0
+        writes = self._writes_for(game.gameplay_stream, gone)
+        assert ("effect", controller_manager_pb2.GAME_EFFECT_FLASH) not in writes
+        assert writes[-1] == ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        assert game._get_team_counts() == {0: 2, 1: 1}
+
+        # c3 swaps to team 0: team 1 has only the eliminated c1 left, so team 0 wins.
+        await game._kill_player("mock_controller_3", 3.0)
+        assert await game._process_gameplay_update(_frame("mock_controller_0"))
+
+        winner = events.get_events_of_type("swapper_winner")
+        assert len(winner) == 1
+        assert winner[0]["team"] == 0
+        assert sorted(winner[0]["winners"]) == ["mock_controller_0", "mock_controller_2"]
+        assert winner[0]["excluded_serial"] == "mock_controller_3"
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", flow="A1")
+    @pytest.mark.asyncio
+    async def test_warmup_disconnect_eliminates(self):
+        game, events = await self._game(4)
+        gone = "mock_controller_0"
+        game._warmup_disconnects = [gone]
+
+        assert not await game._handle_warmup_disconnects()
+
+        assert game.players[gone].team == 0 and game.players[gone].alive is False
+        assert events.count_events_of_type("player_swapped") == 0
+        assert game._get_alive_teams() == {0, 1}
+        assert game._get_team_counts() == {0: 1, 1: 2}
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", flow="A1", br=["BR-001"])
+    @pytest.mark.asyncio
+    async def test_two_players_one_disconnects_the_other_wins_nobody_excluded(self):
+        game, events = await self._game(2)
+        # c0 swapped once and came back (team 0 -> 1 -> 0): it is the last swapped player.
+        await game._kill_player("mock_controller_0", 3.0)
+        await game._kill_player("mock_controller_0", 3.0)
+        assert game.last_death_serial == "mock_controller_0"
+
+        assert await game._process_gameplay_update(_frame(disconnects=("mock_controller_1",)))
+
+        winner = events.get_events_of_type("swapper_winner")
+        assert winner == [
+            {
+                "team": 0,
+                "team_name": game.team_colors[0]["name"],
+                "winners": ["mock_controller_0"],
+                "excluded_serial": "",
+            }
+        ]
+
+        game.gameplay_stream = RecordingGameplayStream()
+        with patch("services.game_coordinator.games.swapper.asyncio.sleep"):
+            await game._end_game_impl()
+        rainbow = [
+            m.game_effect.serial
+            for m in game.gameplay_stream.messages
+            if m.HasField("game_effect") and m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        ]
+        assert rainbow == ["mock_controller_0"]
+        assert not any(m.HasField("base_color") for m in game.gameplay_stream.messages)  # nobody greyed
+        assert events.get_events_of_type("game_ended")[0]["winning_team"] == 0
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", flow="A1", br=["BR-001", "BR-004"])
+    @pytest.mark.asyncio
+    async def test_disconnect_during_eliminate_swap_pause_keeps_player_out(self):
+        game, events = await self._game(2)
+        target = "mock_controller_0"
+        paused, release = asyncio.Event(), asyncio.Event()
+
+        async def gated_pause():
+            paused.set()
+            await release.wait()
+
+        game._swap_pause = gated_pause
+        kill = asyncio.create_task(game._kill_player(target, 0.0, reason="agent_intervention"))
+        await asyncio.wait_for(paused.wait(), 2.0)
+        assert game.players[target].team == 1  # mid-swap
+
+        # The disconnect lands while the swap sleeps; the win check runs at once.
+        assert await game._process_gameplay_update(_frame(disconnects=(target,)))
+        winner = events.get_events_of_type("swapper_winner")
+        assert winner[0]["winners"] == ["mock_controller_1"]
+        assert winner[0]["excluded_serial"] == ""
+
+        release.set()
+        await asyncio.wait_for(kill, 2.0)
+
+        player = game.players[target]
+        assert player.alive is False and player.span is None
+        assert game.last_death_serial is None
+        assert events.count_events_of_type("player_swapped") == 0
+        writes = self._writes_for(game.gameplay_stream, target)
+        assert not any(kind == "base" for kind, _ in writes)  # no new team colour
+        assert writes[-1] == ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", flow="A1", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_disconnect_during_eliminate_kill_sound_eliminates_instead_of_swapping(self):
+        game, events = await self._game(2)
+        target = "mock_controller_0"
+        in_sound, release = asyncio.Event(), asyncio.Event()
+
+        async def gated_sound(*_args, **_kwargs):
+            if not in_sound.is_set():
+                in_sound.set()
+                await release.wait()
+
+        game._play_sound = gated_sound
+        kill = asyncio.create_task(game._kill_player(target, 0.0, reason="agent_intervention"))
+        await asyncio.wait_for(in_sound.wait(), 2.0)
+
+        assert await game._process_gameplay_update(_frame(disconnects=(target,)))
+        assert events.get_events_of_type("swapper_winner")[0]["winners"] == ["mock_controller_1"]
+
+        release.set()
+        await asyncio.wait_for(kill, 2.0)
+
+        player = game.players[target]
+        assert player.team == 0 and player.alive is False
+        assert events.count_events_of_type("player_swapped") == 0
+        writes = self._writes_for(game.gameplay_stream, target)
+        assert ("effect", controller_manager_pb2.GAME_EFFECT_FLASH) not in writes
+        assert writes[-1] == ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", flow="A1")
+    @pytest.mark.asyncio
+    async def test_every_player_eliminated_gives_no_winner(self):
+        game, events = await self._game(2)
+        game._eliminated.update(game.players)
+
+        assert await game._check_win_condition()
+        assert events.get_events_of_type("swapper_winner") == []
+
+        with patch("services.game_coordinator.games.swapper.asyncio.sleep"):
+            await game._end_game_impl()
+        assert events.get_events_of_type("game_ended")[0]["winning_team"] == "none"
+        assert not any(
+            m.HasField("game_effect") and m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+            for m in game.gameplay_stream.messages
+        )
+        await game.cleanup()
