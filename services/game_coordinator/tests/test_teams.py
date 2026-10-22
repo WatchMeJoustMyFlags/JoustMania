@@ -57,6 +57,7 @@ class TestTeamsGameMode:
         return game, mock_controller_manager, event_collector
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="main", steps=[1])
     async def test_player_initialization_round_robin(self, teams_game):
         """Test that players are assigned to teams round-robin (0, 1, 0, 1)."""
         game, mock_controller_manager, _ = teams_game
@@ -175,6 +176,7 @@ class TestTeamsGameMode:
         assert 1 not in teams
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="main", steps=[4])
     async def test_team_winner_event_published(self, teams_game):
         """Test that team_winner event is published when team wins."""
         game, mock_controller_manager, event_collector = teams_game

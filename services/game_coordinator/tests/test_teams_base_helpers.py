@@ -118,6 +118,7 @@ class TestSendWinnerRainbowEffects:
     """Test _send_winner_rainbow_effects helper."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="main", steps=[4])
     async def test_sends_effects_to_alive_winning_players(self, game):
         """Should send rainbow effect to alive players on the winning team."""
         mock_stream = AsyncMock()
@@ -187,6 +188,7 @@ class TestPlayTeamVictorySound:
     """Test _play_team_victory_sound helper."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="main", steps=[4])
     async def test_plays_specific_team_sound(self, game):
         """Should play the team-specific victory sound when one exists."""
         game._play_sound = AsyncMock()
@@ -199,6 +201,7 @@ class TestPlayTeamVictorySound:
         game._play_sound.assert_awaited_once_with(TEAM_WIN_SOUNDS["Blue"], priority=2)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="main", steps=[4])
     async def test_falls_back_to_congratulations(self, game):
         """Should fall back to congratulations for teams without specific sounds."""
         from lib.types import Sound
@@ -554,6 +557,7 @@ class TestCheckWinCondition:
     """Test _check_win_condition method."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="main", steps=[4])
     async def test_one_team_remaining_returns_true(self, game, mock_event_publisher):
         """Should return True and publish team_winner when one team remains."""
         _add_players(
@@ -580,6 +584,7 @@ class TestCheckWinCondition:
         assert event_data["winner_count"] == 2
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="A2")
     async def test_no_teams_remaining_tie(self, game, mock_event_publisher):
         """Should return True and publish game_tie when no teams remain."""
         from lib.types import GameEvent
@@ -674,6 +679,7 @@ class TestEndGameImpl:
         game_with_mocks._publish_player_analytics.assert_awaited_once_with(0)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="A2")
     async def test_end_game_tie(self, game_with_mocks, mock_event_publisher):
         """Should skip rainbow and victory sound when there is no winner (tie)."""
         _add_players(
@@ -693,6 +699,7 @@ class TestEndGameImpl:
         game_with_mocks._publish_player_analytics.assert_awaited_once_with(None)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="main", steps=[5], cond=["Post-S-1"])
     async def test_end_game_publishes_game_ended(self, game_with_mocks, mock_event_publisher):
         """Should publish GAME_ENDED event with game_id and duration."""
         from lib.types import GameEvent

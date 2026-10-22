@@ -145,6 +145,7 @@ class TestGameFactoryCreateGame:
 class TestGameFactoryTeamGames:
     """Tests for team game creation."""
 
+    @pytest.mark.uc("UC-021", cond=["Pre-1"])
     def test_create_teams_game_default_teams(self):
         """create_game should create Teams game with default 2 teams."""
         game = GameFactory.create_game(
@@ -158,6 +159,7 @@ class TestGameFactoryTeamGames:
 
         assert game.num_teams == 2
 
+    @pytest.mark.uc("UC-021", cond=["Pre-1"])
     def test_create_teams_game_custom_teams(self):
         """create_game should create Teams game with custom team count."""
         # Build typed config with teams_config
@@ -181,6 +183,7 @@ class TestGameFactoryTeamGames:
 
         assert game.num_teams == 4
 
+    @pytest.mark.uc("UC-021", cond=["Pre-1"])
     def test_create_random_teams_game(self):
         """create_game should create Random Teams game."""
         # Build typed config with random_teams_config
@@ -203,6 +206,39 @@ class TestGameFactoryTeamGames:
         )
 
         assert game.num_teams == 3
+
+    @pytest.mark.parametrize(
+        ("game_name", "config_field", "config_cls", "requested", "expected"),
+        [
+            ("JoustTeams", "teams_config", "TeamsConfig", 0, 2),
+            ("JoustRandomTeams", "random_teams_config", "RandomTeamsConfig", 0, 2),
+            ("JoustTeams", "teams_config", "TeamsConfig", 6, 6),
+            ("JoustRandomTeams", "random_teams_config", "RandomTeamsConfig", 6, 6),
+        ],
+    )
+    @pytest.mark.uc("UC-021", cond=["Pre-1"])
+    def test_num_teams_bounds_from_config(self, game_name, config_field, config_cls, requested, expected):
+        """UC-021 Pre-1: num_teams 0 (unset) falls back to 2; 6 is passed through to the game."""
+        from proto import game_coordinator_pb2
+
+        config = game_coordinator_pb2.StartGameConfig(
+            game_name=game_name,
+            sensitivity=2,
+            **{config_field: getattr(game_coordinator_pb2, config_cls)(num_teams=requested)},
+        )
+        game = GameFactory.create_game(
+            game_name=game_name,
+            controller_manager_client=MockControllerManagerClient(),
+            event_publisher=async_noop,
+            audio_client=MockAudioClient(),
+            game_id="test_num_teams_bounds",
+            initial_players=[],
+            sensitivity=2,
+            game_config=config,
+        )
+
+        assert game.num_teams == expected
+        assert len(game.team_colors) == expected
 
 
 class TestGameFactoryCaseInsensitive:
