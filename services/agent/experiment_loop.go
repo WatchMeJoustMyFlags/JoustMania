@@ -425,7 +425,7 @@ func buildExperimentLoop(
 		fitness:      gameFitnessWith(thresholds),
 		thresholds:   thresholds,
 		ceilings:     experimentCeilingsFromEnv(logger),
-		dynamic:      newDynamicDeclarerFromEnv(gameFlags, nil),
+		dynamic:      newDynamicDeclarer(gameFlags, nil),
 		// #1184: the retro-seeded thesis proposer is ALWAYS built (like the #995
 		// declarer) so the retro coordinator can Record into it unconditionally; whether
 		// it actually DECLARES is gated by the proposer gate (env AND flag, #1810) in
@@ -437,8 +437,7 @@ func buildExperimentLoop(
 		// A re-watch revert journals on its experiment (UC-043 step 7, #1883).
 		promoter.SetRewatchJournal(loop.journalRewatchRevert)
 	}
-	logger.Info("Dynamic experiment declarer constructed (#995/#1044) — gated LIVE by agent.json experiment_dynamic_enabled",
-		"candidates", os.Getenv(envDynamicCandidates))
+	logger.Info("Dynamic experiment declarer constructed (#995/#1044) — gated LIVE by agent.json experiment_dynamic_enabled; settings are the experiment_dynamic_* flags, read per tick (#1907)")
 	// Wire the #1014 terminal-outcome backstop: each spawned game signals its
 	// terminal outcome here, and a non-concluding game releases its in-flight slot
 	// directly (independent of the telemetry game_active=0 path), so the
@@ -750,6 +749,9 @@ func (e *experimentLoop) declareDynamicIfEnabled(ctx context.Context, cfg flags.
 	// and d.cursor is mutated under the lock (closes the data race).
 	e.dynamic.mu.Lock()
 	defer e.dynamic.mu.Unlock()
+	// #1907: this tick's experiment_dynamic_* settings, applied under mu so a
+	// concurrent Declare never sees a half-updated declarer.
+	e.dynamic.configure(cfg)
 
 	// Over-declaration backstop: stop once the LIVE experiment set fills the
 	// concurrent-experiment budget (concurrentBudget: the live flag capped by the env
@@ -808,6 +810,9 @@ func (e *experimentLoop) declareFromRetroIfEnabled(ctx context.Context, cfg flag
 	// budget window) — see declareDynamicIfEnabled's CONCURRENCY note.
 	e.dynamic.mu.Lock()
 	defer e.dynamic.mu.Unlock()
+	// #1907: the proposer selects through the same declarer, so it gets the same
+	// per-tick experiment_dynamic_* settings (built-in denylist included).
+	e.dynamic.configure(cfg)
 
 	if e.registry.LiveCount() >= e.concurrentBudget(cfg) {
 		return

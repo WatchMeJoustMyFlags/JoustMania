@@ -64,6 +64,8 @@ FAKE_JEV_VARIANT = ("agent", "decision.jev.base_url", "fake")
 FAKE_CLAUDE_DECIDE_VARIANT = ("agent", "decision.claude.base_url", "fake")
 # TCP port 1 (tcpmux) is never served here: a dial fails at once.
 UNREACHABLE_PORT = 1
+# experiment_dynamic_candidates of a fake-Claude stack (TC-010): a key that names no game flag.
+TC010_NO_CANDIDATES = "tc010_no_such_flag"
 
 
 @dataclass(frozen=True)
@@ -265,7 +267,8 @@ class ServiceStack:
         return {"JEV_API_KEY": FAKE_JEV_API_KEY} if self.fake_jev is not None else {}
 
     def _seed_agent_overlays(self) -> None:
-        """Write the agent flag overlays: the fake Claude's ``inference.backend=claude`` plus ``agent_flags``.
+        """Write the agent flag overlays: the fake Claude's ``inference.backend=claude`` and
+        ``experiment_dynamic_candidates``, plus ``agent_flags``.
 
         The backend is only the flag (the ``AGENT_INFERENCE_BACKEND`` env was removed, #1907),
         so without the overlay the agent stays on the flag's ``stub`` default. Written after the flag plane is up and
@@ -275,6 +278,11 @@ class ServiceStack:
         overlays: dict[str, Mapping[str, object]] = {}
         if self.composition.fake_claude:  # not AGENT_CLAUDE_DECIDE: its text backend stays the stub
             overlays["inference.backend"] = {"variant": "claude"}
+            # The proposer gate also opens the retro-seeded thesis proposer; a candidate
+            # list naming no game flag keeps it (and the dynamic declarer) from declaring
+            # a second experiment next to the M7-4 one TC-010 asserts on. A flag since
+            # #1907 (the AGENT_EXPERIMENT_DYNAMIC_CANDIDATES env was removed).
+            overlays["experiment_dynamic_candidates"] = {"value": TC010_NO_CANDIDATES}
         overlays.update(self.composition.agent_flags)
         if not overlays:
             return
@@ -298,10 +306,6 @@ class ServiceStack:
             # The proposer gate's operator ceiling (#1810, C-034): the M7-4 proposer runs
             # only when it is true AND experiment_proposer_enabled is on (ci default on).
             "AGENT_EXPERIMENT_PROPOSER_ENABLED": "true",
-            # The same gate opens the retro-seeded thesis proposer; a candidate list
-            # naming no game flag keeps it (and the dynamic declarer) from declaring a
-            # second experiment next to the M7-4 one TC-010 asserts on.
-            "AGENT_EXPERIMENT_DYNAMIC_CANDIDATES": "tc010_no_such_flag",
             # The experiment journal (default /var/lib/joustmania/...) lives in the stack's workdir.
             "AGENT_EXPERIMENT_DIR": str(self.workdir / "experiments"),
         }

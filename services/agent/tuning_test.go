@@ -330,15 +330,20 @@ func TestCompiledDefaultsMatchFlagDefaults(t *testing.T) {
 		"verdict_min_n":                           float64(exp.VerdictMinN),
 		"verdict_min_pairs":                       float64(exp.VerdictMinPairs),
 		"experiment_shadow_effective_concurrency": float64(exp.ShadowEffectiveConcurrency),
-		"inference.backend":                       envFallback,
-		"inference.model":                         d.InferenceModel,
-		"inference.effort":                        d.InferenceEffort,
-		"inference.timeout_seconds":               d.InferenceTimeout.Seconds(),
-		"effect.window_seconds":                   d.EffectWindow.Seconds(),
-		"promotion.rewatch_interval_seconds":      d.RewatchInterval.Seconds(),
-		"promotion.rewatch_timeout_seconds":       d.RewatchTimeout.Seconds(),
-		"promotion.revert_cooldown_seconds":       d.RevertCooldown.Seconds(),
-		"decision.probe_decisions":                false, // probeDecisions compiled fallback
+		// #1907 PR 4b: the dynamic declarer settings.
+		"experiment_dynamic_candidates":      exp.DynamicCandidates,
+		"experiment_dynamic_denylist":        exp.DynamicDenylist,
+		"experiment_dynamic_objective":       exp.DynamicObjective,
+		"experiment_dynamic_target_n":        float64(exp.DynamicTargetN),
+		"inference.backend":                  envFallback,
+		"inference.model":                    d.InferenceModel,
+		"inference.effort":                   d.InferenceEffort,
+		"inference.timeout_seconds":          d.InferenceTimeout.Seconds(),
+		"effect.window_seconds":              d.EffectWindow.Seconds(),
+		"promotion.rewatch_interval_seconds": d.RewatchInterval.Seconds(),
+		"promotion.rewatch_timeout_seconds":  d.RewatchTimeout.Seconds(),
+		"promotion.revert_cooldown_seconds":  d.RevertCooldown.Seconds(),
+		"decision.probe_decisions":           false, // probeDecisions compiled fallback
 	}
 	for _, path := range []string{
 		filepath.Join("..", "flagd", "agent.json"),

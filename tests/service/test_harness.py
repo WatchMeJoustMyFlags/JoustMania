@@ -217,6 +217,27 @@ def test_agent_flags_are_written_as_overlays_before_the_agent_starts(tmp_path, m
     assert source.index("_seed_agent_overlays()") < source.index("self.agent.start()")
 
 
+def test_fake_claude_stack_keeps_the_dynamic_declarer_off_game_flags_by_flag(tmp_path, monkeypatch):
+    """TC-010's candidate list is the ``experiment_dynamic_candidates`` overlay, not an env var (#1907)."""
+    from tests.integration import flag_service
+
+    puts = []
+
+    class RecordingFlagService:
+        def __init__(self, url):
+            pass
+
+        def put(self, flag_set, flag, **kwargs):
+            puts.append((flag_set, flag, kwargs))
+
+    monkeypatch.setattr(flag_service, "FlagService", RecordingFlagService)
+    stack = ServiceStack(AGENT_CLAUDE, tmp_path)
+    stack._seed_agent_overlays()
+    overlay = {"writer": "service-harness", "value": "tc010_no_such_flag"}
+    assert ("agent", "experiment_dynamic_candidates", overlay) in puts
+    assert not any(key.startswith("AGENT_EXPERIMENT_DYNAMIC_") for key in stack._inference_env())
+
+
 def test_flag_plane_rewrites_only_declared_variants(tmp_path):
     variant = ("agent", "decision.openai.base_url", "fake")
     plane = FlagPlane(tmp_path / "a", variant_values={variant: "http://127.0.0.1:9/v1"})

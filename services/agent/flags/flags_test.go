@@ -599,6 +599,12 @@ func TestExperiment_FlagOverridesCompiledDefault(t *testing.T) {
 				keyVerdictMinPairs:             10,
 				keyExperimentMaxGames:          100,
 				keyExperimentShadowConcurrency: 8,
+				keyExperimentDynamicTargetN:    12,
+			},
+			strings: map[string]string{
+				keyExperimentDynamicCandidates: "sensitivity,num_teams",
+				keyExperimentDynamicDenylist:   "foo",
+				keyExperimentDynamicObjective:  "endurance",
 			},
 		}
 		got := New(stub, nil).Experiment(context.Background(), def)
@@ -615,6 +621,10 @@ func TestExperiment_FlagOverridesCompiledDefault(t *testing.T) {
 			VerdictMinRawEffect:        0.05,
 			VerdictSDFloor:             0.001,
 			VerdictAnchorMargin:        0.03,
+			DynamicCandidates:          "sensitivity,num_teams",
+			DynamicDenylist:            "foo",
+			DynamicObjective:           "endurance",
+			DynamicTargetN:             12,
 		}
 		if got != want {
 			t.Fatalf("Experiment with flags present = %+v, want %+v", got, want)
@@ -637,6 +647,7 @@ func TestExperiment_FlagOverridesCompiledDefault(t *testing.T) {
 			VerdictMinRawEffect:        def.VerdictMinRawEffect,
 			VerdictSDFloor:             def.VerdictSDFloor,
 			VerdictAnchorMargin:        def.VerdictAnchorMargin,
+			DynamicObjective:           DefaultDynamicObjective,
 		}
 		if got != want {
 			t.Fatalf("Experiment with flags absent = %+v, want compiled defaults %+v", got, want)
@@ -669,10 +680,16 @@ func TestExperiment_FlagOverridesCompiledDefault(t *testing.T) {
 			keyVerdictMinPairs:             errors.New("down"),
 			keyExperimentMaxGames:          errors.New("down"),
 			keyExperimentShadowConcurrency: errors.New("down"),
+			keyExperimentDynamicCandidates: errors.New("down"),
+			keyExperimentDynamicDenylist:   errors.New("down"),
+			keyExperimentDynamicObjective:  errors.New("down"),
+			keyExperimentDynamicTargetN:    errors.New("down"),
 		}
 		got := New(stubEvaluator{errs: errAll}, nil).Experiment(context.Background(), def)
 		if got.Enabled || got.DynamicEnabled || got.Tick != def.Tick || got.VerdictMinN != def.VerdictMinN ||
-			got.MaxGames != def.MaxGames || got.ShadowEffectiveConcurrency != def.ShadowEffectiveConcurrency {
+			got.MaxGames != def.MaxGames || got.ShadowEffectiveConcurrency != def.ShadowEffectiveConcurrency ||
+			got.DynamicCandidates != "" || got.DynamicDenylist != "" ||
+			got.DynamicObjective != DefaultDynamicObjective || got.DynamicTargetN != 0 {
 			t.Fatalf("Experiment under flagd error did not fall back to compiled defaults with gates closed: %+v", got)
 		}
 	})

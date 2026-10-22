@@ -30,6 +30,7 @@ from tests.integration.helpers import (
 from tests.service.agent_flow import AGENT_SERVICE, start_ffa
 from tests.service.harness import AGENT_CLAUDE
 from tests.service.harness.fakes.claude import MODEL as FAKE_CLAUDE_MODEL
+from tests.service.harness.stack import TC010_NO_CANDIDATES
 
 pytestmark = pytest.mark.tier("service")
 
@@ -67,6 +68,8 @@ def _configure_agent() -> None:
     # The text-backend model is the inference.model flag (the env var was removed, #1907),
     # so the fake's model is set here.
     fs.put(AGENT, "inference.model", value=FAKE_CLAUDE_MODEL)
+    # The harness's candidate list naming no game flag (#1907: a flag, not an env var).
+    fs.put(AGENT, "experiment_dynamic_candidates", value=TC010_NO_CANDIDATES)
 
 
 def _wait_flags_served(stack) -> None:
@@ -78,6 +81,7 @@ def _wait_flags_served(stack) -> None:
                 and client.get_string_value("llm.eligible_game_kinds", "", ctx) == "real"
                 and client.get_string_value("inference.model", "", ctx) == FAKE_CLAUDE_MODEL
                 and client.get_string_value("inference.backend", "", ctx) == "claude"
+                and client.get_string_value("experiment_dynamic_candidates", "", ctx) == TC010_NO_CANDIDATES
             ),
             rewrite=_configure_agent,
         )

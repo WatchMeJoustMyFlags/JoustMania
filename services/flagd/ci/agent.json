@@ -347,6 +347,36 @@
       },
       "defaultVariant": "default"
     },
+    "experiment_dynamic_candidates": {
+      "state": "ENABLED",
+      "variants": {
+        "all": ""
+      },
+      "defaultVariant": "all"
+    },
+    "experiment_dynamic_denylist": {
+      "state": "ENABLED",
+      "variants": {
+        "builtin": ""
+      },
+      "defaultVariant": "builtin"
+    },
+    "experiment_dynamic_objective": {
+      "state": "ENABLED",
+      "variants": {
+        "balanced": "balanced",
+        "endurance": "endurance",
+        "accelerate": "accelerate"
+      },
+      "defaultVariant": "balanced"
+    },
+    "experiment_dynamic_target_n": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0
+      },
+      "defaultVariant": "default"
+    },
     "verdict_min_n": {
       "state": "ENABLED",
       "variants": {
