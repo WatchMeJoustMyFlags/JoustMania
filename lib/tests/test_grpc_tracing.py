@@ -1136,6 +1136,23 @@ async def _srv_bidi_context_rw(_request_iterator, context):
         await context.write(request + b"!")
 
 
+_handler_tracer: list = []  # the test's tracer, for handlers that open their own child span
+
+
+async def _srv_stream_context_write_child_span(_request, context):
+    await context.write(b"w1")
+    with _handler_tracer[0].start_as_current_span("handler.child"):
+        pass
+    await context.write(b"w2")
+
+
+async def _srv_bidi_context_read_blocks(_request_iterator, context):
+    try:
+        await context.read()  # the client never writes
+    finally:
+        _server_handler_cancelled.set()
+
+
 async def _srv_unary_downstream(_request, _context):
     channel = grpc.aio.insecure_channel("127.0.0.1:1")  # nothing listens here
     try:
@@ -1176,6 +1193,10 @@ async def server_traced(span_exporter):
                     "StreamContextWrite": grpc.unary_stream_rpc_method_handler(_srv_stream_context_write),
                     "StreamContextWriteAbort": grpc.unary_stream_rpc_method_handler(_srv_stream_context_write_abort),
                     "BidiContextRw": grpc.stream_stream_rpc_method_handler(_srv_bidi_context_rw),
+                    "StreamContextWriteChild": grpc.unary_stream_rpc_method_handler(
+                        _srv_stream_context_write_child_span
+                    ),
+                    "BidiContextReadBlocks": grpc.stream_stream_rpc_method_handler(_srv_bidi_context_read_blocks),
                 },
             ),
         )
@@ -1226,6 +1247,42 @@ class TestServerContextWriteHandlers:
         spans = await _finished_spans(exporter)
         assert spans[0].status.status_code == StatusCode.OK
         assert _code(spans[0]) == 0
+
+    async def test_context_write_handler_child_span_parents_to_the_rpc_span(self, server_traced, span_exporter):
+        exporter, provider = span_exporter
+        _handler_tracer[:] = [provider.get_tracer("handler")]
+        received = [m async for m in server_traced.unary_stream(_PROBE + "StreamContextWriteChild")(b"x")]
+        assert received == [b"w1", b"w2"]
+        spans = await _finished_spans(exporter, count=2)
+        child = next(s for s in spans if s.name == "handler.child")
+        rpc = next(s for s in spans if s.kind == trace.SpanKind.SERVER)
+        assert child.parent is not None
+        assert child.parent.span_id == rpc.context.span_id
+        assert child.context.trace_id == rpc.context.trace_id
+
+    async def test_context_write_handler_with_rpc_spans_disabled_delivers_without_a_span(
+        self, server_traced, span_exporter
+    ):
+        exporter, _ = span_exporter
+        with patch("lib.grpc_tracing._rpc_spans_enabled", return_value=False):
+            received = [m async for m in server_traced.unary_stream(_PROBE + "StreamContextWrite")(b"x")]
+        assert received == [b"w1", b"w2"]
+        await asyncio.sleep(0.1)
+        assert exporter.get_finished_spans() == ()
+
+    async def test_context_read_handler_client_cancel_unblocks_the_handler_and_ends_the_span(
+        self, server_traced, span_exporter
+    ):
+        exporter, _ = span_exporter
+        call = server_traced.stream_stream(_PROBE + "BidiContextReadBlocks")()
+        await asyncio.sleep(0.1)  # let the handler block in context.read()
+        call.cancel()
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while not _server_handler_cancelled.is_set():
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.01)
+        # grpc ends a cancelled ``context.read()`` without raising, so the span closes with the handler.
+        assert len(await _finished_spans(exporter)) == 1
 
 
 @pytest.mark.asyncio
