@@ -48,6 +48,8 @@ const (
 	ReasonConcurrentGame = "concurrent_game"
 	ReasonKillSwitch     = "kill_switch"
 	ReasonUnseededDraws  = "unseeded_draws"
+	// ReasonFlagDigestUnavailable: flagd could not be read at spawn (BR-011).
+	ReasonFlagDigestUnavailable = "flag_digest_unavailable"
 )
 
 // Game outcomes on the replay record (telemetry.md §9 pattern.outcome).

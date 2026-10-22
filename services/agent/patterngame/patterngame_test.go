@@ -296,6 +296,33 @@ func TestSeedsAndDigest(t *testing.T) {
 	})
 }
 
+// UC: UC-046 BR-008 BR-011
+func TestTrackerFlagDigestUnavailableIsNonExact(t *testing.T) {
+	arch, _ := NewArchetype("x", params(nil))
+	finish := func(digest string) Record {
+		tr := NewTracker()
+		tr.Register(Info{GameID: "g", Archetype: arch, Seed: 9, Serials: []string{"S0", "S1"}, PairIndex: -1, FlagDigest: digest})
+		rec, ok := tr.Finish("g", OutcomeTie, GameEvents{}, []SlotRecord{{Slot: 0, FramesDelivered: 10}, {Slot: 1, FramesDelivered: 10}})
+		if !ok {
+			t.Fatal("game not finished")
+		}
+		return rec
+	}
+	t.Run("UC-046/BR-011 unavailable digest marks the game non-exact", func(t *testing.T) {
+		rec := finish(DigestUnavailable)
+		if fmt.Sprint(rec.NonExactReasons) != "[flag_digest_unavailable]" || rec.Exact() {
+			t.Errorf("reasons = %v, exact = %v", rec.NonExactReasons, rec.Exact())
+		}
+	})
+	t.Run("UC-046/BR-008 an available or absent digest stays exact", func(t *testing.T) {
+		for _, d := range []string{strings.Repeat("a", 64), ""} {
+			if rec := finish(d); !rec.Exact() {
+				t.Errorf("digest %q: non-exact %v", d, rec.NonExactReasons)
+			}
+		}
+	})
+}
+
 // UC: UC-046 A7 A8 A10 A12 BR-008 BR-013 BR-014
 func TestTracker(t *testing.T) {
 	arch, _ := NewArchetype("x", params(nil))

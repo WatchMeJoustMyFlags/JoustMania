@@ -188,7 +188,7 @@ class TestUC046GameplayStream:
         assert adapter.pattern_info(serials[0]).frame_index == 270
 
     @pytest.mark.uc("UC-046", flow="main", steps=[4], br=["BR-001"])
-    def test_stream_rate_pinned_to_the_set(self, servicer, adapter, archetype):
+    def test_stream_rate_pinned_to_the_archetype(self, servicer, adapter, archetype):
         """UC-046 step 4 / FR-103: a stream naming pattern controllers runs at the archetype's rate."""
         serials = [adapter.add_controller(reserved=True) for _ in range(4)]
         adapter.install_pattern(serials, archetype)
