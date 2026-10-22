@@ -191,6 +191,10 @@ func (t *Tracker) Register(info Info) {
 		other.reasons[ReasonConcurrentGame] = struct{}{}
 		g.reasons[ReasonConcurrentGame] = struct{}{}
 	}
+	// Only the exact sentinel: an empty digest (tests, hooks without flagd) is not marked.
+	if info.FlagDigest == DigestUnavailable {
+		g.reasons[ReasonFlagDigestUnavailable] = struct{}{}
+	}
 	t.games[info.GameID] = g
 }
 

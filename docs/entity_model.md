@@ -127,7 +127,7 @@ One running or finished game in the game coordinator (`services/game_coordinator
 | pattern_archetype | Archetype that drives the game's controllers (pattern game) | String | 40 | Optional, Foreign Key (MOTION_ARCHETYPE.archetype_id) |
 | pattern_outcome | How the pattern game ended (UC-046 A3, A9, A14, BR-013); `agent_ended` = the agent's own `end_game` ended it | String | 11 | Optional, Values: winner, tie, timeout, agent_ended, aborted, error |
 | replay_exact | Whether the pattern game qualifies for replay comparison (UC-046 BR-008) | Boolean | 1 | Optional |
-| non_exact_reasons | Why a pattern game is not exact | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, kill_switch, unseeded_draws |
+| non_exact_reasons | Why a pattern game is not exact | String | 120 | Optional, Values: remote_backend, frame_overrun, concurrent_game, kill_switch, unseeded_draws, flag_digest_unavailable |
 | flag_digest | SHA-256 of the canonical resolved values of the flags that shape a pattern game, read when the agent spawned it (UC-046 BR-011), or `unavailable` | String | 64 | Optional |
 | censored | Whether the pattern game's length is right-censored: at the safety cap (outcome `timeout`) or by the agent's own `end_game` (outcome `agent_ended`) (UC-046 BR-013, A14) | Boolean | 1 | Optional, true exactly for outcomes timeout and agent_ended |
 | force_end_reason | Reason a force end named (`game.end_reason`, JoustFFA publishes it as `reason` on `game_ended`; e.g. `shadow_game_timeout`, `pattern_kill_switch`, `preempted_by_real_game`, `unspecified`); absent for a natural end. In-memory on the game mode, lost with the session | String | 40 | Optional |
@@ -652,7 +652,7 @@ The replay record of one finished pattern game (`services/agent/patterngame/trac
 | elimination_order | Slots in elimination order, first out first; the winner is not listed | String | 40 | Not Null |
 | winner_slot | Slot of the winner from the `game_winner` event; -1 when none | Integer | 2 | Not Null, Min: -1 |
 | decisions | The game's decisions in order as `intervention:slot` (slot -1 when the target is not a player), with the backend | String | 1000 | Optional |
-| non_exact_reasons | Why the game is not exact (UC-046 BR-008); empty means exact | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, kill_switch, unseeded_draws |
+| non_exact_reasons | Why the game is not exact (UC-046 BR-008); empty means exact | String | 120 | Optional, Values: remote_backend, frame_overrun, concurrent_game, kill_switch, unseeded_draws, flag_digest_unavailable |
 
 **Constraints:** lists pattern controllers only. Slots, hashes and frame counts are in PATTERN_SLOT_RECORD; the live record is held in agent memory and the serials of the mock controllers are kept only for the telemetry of that one game (UC-046 BR-006).
 

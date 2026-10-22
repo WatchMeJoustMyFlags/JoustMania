@@ -348,3 +348,31 @@ func TestRunShadowGame_LivenessCheckedEverySecond(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-046 BR-011
+func TestRunShadowGame_PatternUnavailableFlagDigestIsNonExact(t *testing.T) {
+	t.Run("UC-046/BR-011 unavailable flag digest reaches the replay record", func(t *testing.T) {
+		a := testArchetype(t)
+		mock := patternMock(a, map[int]uint64{0: 900, 1: 900, 2: 300}, -1)
+		winnerEv := ev("game_winner")
+		winnerEv.Data = map[string]string{"serial": "MOCK0000"}
+		coord := &fakeCoord{gameID: "game_pat_u", events: []*gcpb.GameEvent{
+			ev("game_starting"), death("MOCK0002"), death("MOCK0001"), winnerEv, ev("game_ended"),
+		}}
+		h := newHarness(t, mock, coord)
+		defer h.stop()
+		h.runner.SetTracker(patterngame.NewTracker())
+		spec := patternSpec(a)
+		spec.FlagDigest = patterngame.DigestUnavailable
+		res, err := h.runner.RunShadowGame(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("RunShadowGame: %v", err)
+		}
+		if res.Pattern == nil {
+			t.Fatal("no replay record")
+		}
+		if fmt.Sprint(res.Pattern.NonExactReasons) != "[flag_digest_unavailable]" || res.Pattern.Exact() {
+			t.Errorf("reasons = %v, want [flag_digest_unavailable]", res.Pattern.NonExactReasons)
+		}
+	})
+}
