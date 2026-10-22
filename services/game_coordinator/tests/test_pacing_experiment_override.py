@@ -194,3 +194,28 @@ async def test_games_without_the_experiment_rung_apply_the_preset(game_kind, exp
     _, event = await _apply(game, "calm")
     assert event["blocked"] == "false"
     assert game.music_windows == resolve_music_windows(CALM)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-043", br=["BR-005"])
+@pytest.mark.uc("UC-040", flow="A22")
+@pytest.mark.parametrize("failing_call", ["game_context", "baseline"])
+@pytest.mark.usefixtures("game_flags")
+async def test_a_failed_windows_read_is_not_an_experiment_override(failing_call):
+    """A flagd error on either read returns the supplied default; it is not an experiment value,
+    so the lever is not blocked as experiment_override (it applies as it did before #1970)."""
+    real_read = ff.read_object_flag_variant
+    calls = []
+
+    def read(domain, key, targeting_key, default, attributes=None):
+        calls.append(attributes)
+        is_baseline = bool(attributes)
+        if is_baseline == (failing_call == "baseline"):
+            return default  # what the reader returns on any flag error
+        return real_read(domain, key, targeting_key, default, attributes)
+
+    game = await _game("shadow", EXPERIMENT_ID, "experimental")
+    with patch("services.game_coordinator.difficulty_handlers.read_object_flag_variant", side_effect=read):
+        _, event = await _apply(game, "calm")
+    assert event["block_reason"] != BLOCK_EXPERIMENT_OVERRIDE
+    assert event["blocked"] == "false"

@@ -360,9 +360,13 @@ async def handle_pacing_profile(ctx: InterventionContext) -> None:
         return
 
     init_windows = getattr(game, "init_music_windows", game.music_windows)
-    variant = read_object_flag_variant("game", "windows", profile, {})
+    # A read that fails returns the supplied default object itself, so identity tells a
+    # flag error from a real (possibly empty) value.
+    read_failed: dict = {}
+    variant = read_object_flag_variant("game", "windows", profile, read_failed)
     new_windows = resolve_music_windows(variant)
-    _refuse_experiment_override(game, profile, new_windows)
+    if variant is not read_failed:
+        _refuse_experiment_override(game, profile, new_windows)
     # resolve_music_windows falls back to module defaults (not the game's init
     # windows) on malformed values; an unknown profile resolves to the flag's
     # "default" variant. Either way the windows are well-formed; assign atomically.
@@ -379,14 +383,20 @@ def _refuse_experiment_override(game: object, profile: str, resolved: object) ->
     """Raise ``experiment_override`` when the game's experiment changed the preset's windows (#1970).
 
     Only a game bound to an experiment can resolve an experiment rung, so any
-    other game never pays the second read.
+    other game never pays the second read. A failed baseline read is a flag error, not
+    an override: it is logged and the first read's windows apply, as before #1970.
     """
     experiment_id = getattr(game, "experiment_id", "")
     if not (isinstance(experiment_id, str) and experiment_id):
         return
-    baseline = resolve_music_windows(
-        read_object_flag_variant("game", "windows", profile, {}, attributes={GAME_KIND_VAR: GAME_KIND_REAL})
+    read_failed: dict = {}
+    baseline_variant = read_object_flag_variant(
+        "game", "windows", profile, read_failed, attributes={GAME_KIND_VAR: GAME_KIND_REAL}
     )
+    if baseline_variant is read_failed:
+        logger.warning(f"pacing_profile: baseline windows read failed for '{profile}'; not treated as an override")
+        return
+    baseline = resolve_music_windows(baseline_variant)
     if resolved == baseline:
         return
     arm = getattr(game, "arm", "")
