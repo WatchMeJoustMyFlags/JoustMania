@@ -402,7 +402,11 @@ async def test_natural_end_runs_the_base_teardown_steps():
     calls: list[str] = []
 
     async def instant_loop():
+        # A real natural end: every human dies and the win condition latches the result.
         await asyncio.sleep(0.05)
+        for serial in game.human_serials:
+            game.players[serial].alive = False
+        assert await game._check_win_condition()
 
     patches = _spy_teardown(game, calls)
     with patch.object(game, "_game_loop", side_effect=instant_loop):
@@ -425,6 +429,7 @@ async def test_natural_end_runs_the_base_teardown_steps():
         e.serial for _, e in log.writes("game_effect") if e.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
     }
     assert rainbow_serials == set(game.werewolf_serials), rainbow_serials
+    assert game._winner_side == "werewolves"
     assert game._game_outcome_attributes()["game.outcome"] == "completed"
 
 
