@@ -37,7 +37,7 @@ from conftest import MockControllerManagerService, async_noop
 
 from lib.types import GameEvent
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import Player
+from services.game_coordinator.games.base import GameState, Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
 from services.game_coordinator.interventions import (
@@ -493,6 +493,7 @@ class TestRevivePlayer:
     @pytest.mark.asyncio
     async def test_revive_in_respawn_mode_uses_native_path(self):
         game, mock_cm = make_nonstop_game(num_players=2)
+        game.state = GameState.RUNNING  # NonStop refuses a revive outside RUNNING (UC-026 BR-003)
         await game._initialize_players_impl(mock_cm.controllers)
         serial = next(iter(game.players))
         game.players[serial].alive = False

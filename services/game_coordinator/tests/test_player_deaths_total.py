@@ -23,6 +23,7 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService
 
+from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
 
@@ -147,6 +148,7 @@ async def test_each_player_death_counted(ffa_game):
 async def test_respawn_mode_counts_every_death():
     """Nonstop Joust: kill -> respawn -> kill is two deaths."""
     game = await _make_game(NonstopJoustGame)
+    game.state = GameState.RUNNING  # NonStop refuses a respawn outside RUNNING (UC-026 BR-003)
     serial = next(iter(game.players))
 
     with patch(DEATHS_METRIC) as mock_metric:
