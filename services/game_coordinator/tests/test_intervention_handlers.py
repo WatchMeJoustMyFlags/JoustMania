@@ -344,6 +344,39 @@ async def test_controller_effect_propagates_a_cancel_of_its_own_task():
     assert task.cancelled()
 
 
+@pytest.mark.uc("UC-030", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_controller_effect_stops_on_a_stream_that_finished_before_the_write():
+    """grpc.aio rejects a write on a finished call with InvalidStateError (#1913): stop, do not raise."""
+    players = {"ctrl_a": FakePlayer("ctrl_a"), "ctrl_b": FakePlayer("ctrl_b")}
+    game = FakeGame(players=players)
+    game.gameplay_stream.write.side_effect = asyncio.InvalidStateError("RPC already finished")
+    mgr, _ = make_manager(game=game)
+    try:
+        await mgr._handle_controller_effect(_effect_ctx(game, ":flash"))
+    except asyncio.InvalidStateError:
+        pytest.fail("a write on a finished gameplay call raised out of the handler")
+    game.gameplay_stream.write.assert_awaited_once()
+
+
+@pytest.mark.uc("UC-030", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_controller_effect_writes_to_the_stream_a_reopen_swapped_in():
+    """A reopen during a broadcast: the remaining writes go to the new call (#1913)."""
+    players = {"ctrl_a": FakePlayer("ctrl_a"), "ctrl_b": FakePlayer("ctrl_b")}
+    game = FakeGame(players=players)
+    old_stream, new_stream = game.gameplay_stream, AsyncMock()
+
+    async def write_then_reopen(_cmd):
+        game.gameplay_stream = new_stream
+
+    old_stream.write.side_effect = write_then_reopen
+    mgr, _ = make_manager(game=game)
+    await mgr._handle_controller_effect(_effect_ctx(game, ":flash"))
+    old_stream.write.assert_awaited_once()
+    new_stream.write.assert_awaited_once()
+
+
 # --------------------------------------------------------------------------- #
 # end_game
 # --------------------------------------------------------------------------- #
