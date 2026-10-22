@@ -10,8 +10,10 @@ Tests the core swapper mechanics:
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+import pytest_asyncio
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -22,6 +24,7 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService
 
+from proto import controller_manager_pb2
 from services.game_coordinator.games.swapper import SwapperGame
 
 
@@ -599,3 +602,75 @@ class TestSwapperSpanManagement:
         """Test get_game_name returns 'Swapper'."""
         game, _, _ = swapper_game
         assert game.get_game_name() == "Swapper"
+
+
+class TestSwapperLedAfterSwap:
+    """#1342: a swapped player's LED ends on the new team colour, never on the death effect."""
+
+    @pytest_asyncio.fixture
+    async def game(self):
+        mock_cm = MockControllerManagerService(num_controllers=4, death_schedule={}, max_duration=10.0)
+        g = SwapperGame(
+            controller_manager_client=mock_cm,
+            event_publisher=EventCollector().publish,
+            audio_client=None,
+            game_id="test_swapper_led",
+        )
+        await g._initialize_players_impl(mock_cm.controllers)
+        await g._assign_team_colors()
+        g.gameplay_stream = RecordingGameplayStream()
+        g.running = True
+
+        async def no_sound(*_args, **_kwargs):
+            return None
+
+        g._play_sound = no_sound
+        yield g
+        await g.cleanup()
+
+    @staticmethod
+    def _fast_pause(game):
+        async def instant():
+            return None
+
+        game._swap_pause = instant
+
+    @staticmethod
+    def _writes_for(stream, serial):
+        out = []
+        for m in stream.messages:
+            if m.HasField("game_effect") and m.game_effect.serial == serial:
+                out.append(("effect", m.game_effect.effect))
+            elif m.HasField("base_color") and m.base_color.serial == serial:
+                c = m.base_color.color
+                out.append(("base", (c.r, c.g, c.b)))
+        return out
+
+    @pytest.mark.uc("UC-024", flow="main", steps=[2])
+    @pytest.mark.asyncio
+    async def test_swap_sends_one_flash_no_death_and_ends_on_new_team_colour(self, game):
+        self._fast_pause(game)
+        serial = "mock_controller_0"
+        with patch("services.game_coordinator.games.swapper.metrics") as sm:
+            await game._kill_player(serial, 3.0)
+
+        writes = self._writes_for(game.gameplay_stream, serial)
+        new_rgb = tuple(game.team_colors[1]["rgb"])
+        assert ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH) not in writes
+        assert writes.count(("effect", controller_manager_pb2.GAME_EFFECT_FLASH)) == 1
+        assert writes[-1] == ("base", new_rgb)
+        assert game.players[serial].alive is True
+        sm.player_alive.labels.assert_called_with(serial=serial, game_id=game.game_id)
+        sm.player_alive.labels.return_value.set.assert_called_with(1)
+
+    @pytest.mark.uc("UC-024", flow="main", steps=[2])
+    @pytest.mark.asyncio
+    async def test_swap_after_force_end_does_not_recreate_the_gauge(self, game):
+        async def end_game_during_pause():
+            game.running = False
+
+        game._swap_pause = end_game_during_pause
+        with patch("services.game_coordinator.games.swapper.metrics") as sm:
+            await game._kill_player("mock_controller_0", 3.0)
+
+        sm.player_alive.labels.return_value.set.assert_not_called()
