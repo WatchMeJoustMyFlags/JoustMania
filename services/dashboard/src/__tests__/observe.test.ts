@@ -104,6 +104,21 @@ describe("UC-035: step 2 game event feed", () => {
     expect(fold([["game_ended", { winner: "werewolves", outcome: "winner" }]]).feed).toEqual(["Game ended! Winner: team werewolves"]);
   });
 
+  it("UC-035/main step 2 game_ended with a numeric winning_team shows Team N, -1 or none no winner (#1977)", () => {
+    expect(fold([["game_ended", { winning_team: "1" }]]).feed).toEqual(["Game ended! Winner: Team 1"]);
+    expect(fold([["game_ended", { winning_team: "0" }]]).feed).toEqual(["Game ended! Winner: Team 0"]);
+    expect(fold([["game_ended", { winning_team: "-1" }]]).feed).toEqual(["Game ended! No winner"]);
+    expect(fold([["game_ended", { winning_team: "none" }]]).feed).toEqual(["Game ended! No winner"]);
+  });
+
+  it("UC-035/main step 2 game_ended with a Tournament champion shows the controller (#1977)", () => {
+    expect(fold([["game_ended", { champion: "00:06:f7:aa:bb:cc", total_matches: "3" }]]).feed).toEqual(["Game ended! Winner: b:cc"]);
+  });
+
+  it("UC-035/main step 2 game_ended with a winner field ignores winning_team (#1977)", () => {
+    expect(fold([["game_ended", { winner: "werewolves", winning_team: "werewolves" }]]).feed).toEqual(["Game ended! Winner: team werewolves"]);
+  });
+
   it("UC-035/main step 2 game_ended with a serial winner shows the controller (#1935)", () => {
     expect(fold([["game_ended", { winner: "00:06:f7:aa:bb:cc", outcome: "winner" }]]).feed).toEqual(["Game ended! Winner: b:cc"]);
   });
