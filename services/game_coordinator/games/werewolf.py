@@ -246,24 +246,32 @@ class WerewolfGame(BaseGameMode):
             {"werewolf_count": len(self.werewolf_serials)},
         )
 
+        # A write error (the early stream already broke) is logged, not raised:
+        # the drain stop at the end of the intro reopens the stream (UC-022 A1).
         # Set all controllers to human color (yellow)
-        await self._set_all_colors(HUMAN_COLOR)
+        try:
+            await self._set_all_colors(HUMAN_COLOR)
+        except Exception as e:
+            logger.error(f"Failed to set the werewolf intro colour: {e}", exc_info=True)
 
         # Play intro sound (Joust/vox/)
         await self._play_sound(Sound.VOX_WEREWOLF_INTRO, priority=2)
 
         # Rumble werewolves to signal their role
         if self.gameplay_stream:
-            for serial in self.werewolf_serials:
-                rumble_cmd = controller_manager_pb2.GameplayStreamControl(
-                    game_effect=controller_manager_pb2.GameEffectCommand(
-                        serial=serial,
-                        effect=controller_manager_pb2.GAME_EFFECT_RUMBLE,
-                        duration_ms=2000,
-                        speed=5,
+            try:
+                for serial in self.werewolf_serials:
+                    rumble_cmd = controller_manager_pb2.GameplayStreamControl(
+                        game_effect=controller_manager_pb2.GameEffectCommand(
+                            serial=serial,
+                            effect=controller_manager_pb2.GAME_EFFECT_RUMBLE,
+                            duration_ms=2000,
+                            speed=5,
+                        )
                     )
-                )
-                await self.gameplay_stream.write(rumble_cmd)
+                    await self.gameplay_stream.write(rumble_cmd)
+            except Exception as e:
+                logger.error(f"Failed to rumble werewolves: {e}", exc_info=True)
 
         logger.info(f"Signaled {len(self.werewolf_serials)} werewolves with rumble")
 

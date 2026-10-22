@@ -16,9 +16,10 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import grpc
 import pytest
 from openfeature import api
-from openfeature.transaction_context import ContextVarsTransactionContextPropagator
+from openfeature import transaction_context as tc
 
 test_dir = Path(__file__).parent
 sys.path.insert(0, str(test_dir.parent.parent.parent))
@@ -27,6 +28,7 @@ sys.path.insert(0, str(test_dir))
 from test_random_teams_formation import (
     SERIALS,
     QueueControllerManager,
+    QueueStream,
     RecordingLog,
     _players,
     _stop,
@@ -165,12 +167,12 @@ async def test_frames_from_the_intro_never_reach_warmup_or_game_loop():
     assert all(p.alive for p in game.players.values())
 
 
-@pytest.mark.uc("UC-022", flow="A1", steps=[3])
+@pytest.mark.uc("UC-022", flow="A1", steps=[2])
 @pytest.mark.asyncio
 async def test_warmup_runs_after_the_countdown_and_before_the_game_loop():
     log = RecordingLog()
     client = QueueControllerManager(log)
-    game = _werewolf(log, client)
+    game = _werewolf(log, client, reveal_time=0.01)
     calls: list[str] = []
     real_warmup = game._warmup_ema
 
@@ -178,8 +180,16 @@ async def test_warmup_runs_after_the_countdown_and_before_the_game_loop():
         assert log.events.count_events_of_type(GameEvent.COUNTDOWN_END) == 1, "warmup before the countdown end"
         calls.append("warmup")
         await real_warmup()
+        calls.append("warmup_done")
 
     game._warmup_ema = warmup
+    real_reveal = game._reveal_werewolves
+
+    async def reveal():
+        calls.append("reveal")
+        await real_reveal()
+
+    game._reveal_werewolves = reveal
     real_process = game._process_gameplay_update
 
     async def process(update):
@@ -189,13 +199,17 @@ async def test_warmup_runs_after_the_countdown_and_before_the_game_loop():
     game._process_gameplay_update = process
     task = asyncio.create_task(game.run())
     await _wait_for(lambda: calls.count("process") >= 5)
+    await _wait_for(lambda: log.events.count_events_of_type("werewolf_reveal") == 1)
     await _stop(game, task, client)
 
     assert len(client.streams) == 1
     assert calls[0] == "warmup" and calls.count("warmup") == 1, calls[:5]
+    # The reveal timer counts from gameplay start, after the warm-up (A1 step 2).
+    assert calls.count("reveal") == 1
+    assert calls.index("warmup_done") < calls.index("reveal"), calls[:5]
 
 
-@pytest.mark.uc("UC-022", flow="A1", steps=[3])
+@pytest.mark.uc("UC-022", flow="A1", steps=[2])
 @pytest.mark.asyncio
 async def test_disconnect_read_by_the_warmup_eliminates_the_player():
     log = RecordingLog()
@@ -234,6 +248,57 @@ async def test_disconnect_read_by_the_warmup_eliminates_the_player():
 
     assert not game.players[victim[0]].alive
     assert len(client.streams) == 1
+
+
+class StreamDeadAfterConfig:
+    """A gameplay call that breaks right after its config write: later writes and reads raise."""
+
+    producer = None
+
+    def __init__(self, log: RecordingLog):
+        self.log = log
+        self.configured = False
+
+    def _error(self) -> grpc.aio.AioRpcError:
+        return grpc.aio.AioRpcError(grpc.StatusCode.UNAVAILABLE, None, None, "stream broke")
+
+    async def write(self, message):
+        if self.configured:
+            raise self._error()
+        self.log.entries.append(("write", message))
+        self.configured = message.HasField("config")
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise self._error()
+
+
+class FirstStreamDeadControllerManager(QueueControllerManager):
+    """The first gameplay call dies after its config write; every reopened call is healthy."""
+
+    def StreamGameplayData(self):  # noqa: N802 - gRPC stub method name
+        stream = StreamDeadAfterConfig(self.log) if not self.streams else QueueStream(self.log, **self.stream_kwargs)
+        self.streams.append(stream)
+        return stream
+
+
+@pytest.mark.uc("UC-022", flow="A1", steps=[2])
+@pytest.mark.asyncio
+async def test_stream_dead_before_the_intro_writes_reopens_instead_of_ending_the_game():
+    """The intro colour and rumble write errors are logged; the drain stop reopens the stream."""
+    log = RecordingLog()
+    client = FirstStreamDeadControllerManager(log)
+    game = _werewolf(log, client)
+    task = asyncio.create_task(game.run())
+    await _wait_for(lambda: log.events.count_events_of_type(GameEvent.COUNTDOWN_START) == 1 or task.done())
+    await _stop(game, task, client)
+
+    assert len(client.streams) == 2, "the broken stream is reopened once"
+    assert log.events.count_events_of_type(GameEvent.COUNTDOWN_START) == 1
+    assert log.events.count_events_of_type(GameEvent.GAME_ERROR) == 0
+    assert len(log.writes("config")) == 2
 
 
 @pytest.mark.uc("UC-022", cond=["Pre-1"])
@@ -314,7 +379,15 @@ async def test_no_tempo_loop_and_the_slow_table_holds_during_play():
 @pytest.mark.asyncio
 async def test_shadow_werewolf_adds_the_game_attributes_to_the_session_context():
     """The session set game_kind / experiment already; the start adds game_mode and the rest."""
-    api.set_transaction_context_propagator(ContextVarsTransactionContextPropagator())
+    previous_propagator = tc._evaluation_transaction_context_propagator
+    api.set_transaction_context_propagator(tc.ContextVarsTransactionContextPropagator())
+    try:
+        await _run_shadow_werewolf_context_check()
+    finally:
+        api.set_transaction_context_propagator(previous_propagator)
+
+
+async def _run_shadow_werewolf_context_check():
     log = RecordingLog()
     client = QueueControllerManager(log)
     contexts: dict[str, object] = {}
