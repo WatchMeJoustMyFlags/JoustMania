@@ -635,3 +635,24 @@ func TestDynamicDeclarer_DefaultRotationSkipsPlumbingFlags(t *testing.T) {
 		})
 	}
 }
+
+// TestDenylistFromEnv_EmptyMeansBuiltIn asserts an empty/blank value falls back to
+// the built-in denylist (a compose passthrough defines the var as empty, #1908).
+// UC: UC-070 BR-008
+func TestDenylistFromEnv_EmptyMeansBuiltIn(t *testing.T) {
+	for name, raw := range map[string]string{"empty": "", "whitespace": "  ", "commas": " , ,"} {
+		t.Run("UC-070/BR-008 "+name, func(t *testing.T) {
+			t.Setenv(envDynamicDenylist, raw)
+			if got := denylistFromEnv(); got != nil {
+				t.Fatalf("denylistFromEnv() = %v, want nil (built-in denylist)", got)
+			}
+		})
+	}
+	t.Run("UC-070/BR-008 explicit list replaces built-in", func(t *testing.T) {
+		t.Setenv(envDynamicDenylist, "a, b")
+		got := denylistFromEnv()
+		if _, ok := got["a"]; !ok || len(got) != 2 {
+			t.Fatalf("denylistFromEnv() = %v, want {a,b}", got)
+		}
+	})
+}

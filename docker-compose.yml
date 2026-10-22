@@ -786,7 +786,8 @@ services:
       # Operator ceiling on experiment_dynamic_max_concurrent (#1810, C-034): empty = no ceiling.
       - AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT=${AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT:-}
       - AGENT_EXPERIMENT_DYNAMIC_CANDIDATES=${AGENT_EXPERIMENT_DYNAMIC_CANDIDATES:-}
-      - AGENT_EXPERIMENT_DYNAMIC_DENYLIST=${AGENT_EXPERIMENT_DYNAMIC_DENYLIST:-}
+      # Bare name: forwarded only when set on the host; an empty value would mean the built-in list anyway (#1908).
+      - AGENT_EXPERIMENT_DYNAMIC_DENYLIST
       - AGENT_EXPERIMENT_DYNAMIC_TARGET_N=${AGENT_EXPERIMENT_DYNAMIC_TARGET_N:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - OTEL_SERVICE_NAME=agent
