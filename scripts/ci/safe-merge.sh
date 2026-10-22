@@ -20,10 +20,8 @@
 #     limits back off (doubling, capped at 600 s). Never uses `gh run watch`
 #     (its 3 s polling tripped GitHub's secondary rate limit).
 #   - SonarCloud checks are ignored (informational, not merge-blocking).
-#   - Per workflow, only checks of the NEWEST run on the head count: a cancelled
-#     duplicate run (the opened+labeled double trigger) whose "CI Complete" job
-#     reports FAILURE is superseded and ignored. Runs whose checks are all
-#     SKIPPED/NEUTRAL (a label-event run) never supersede a real run.
+#   - Per workflow, only checks of the NEWEST run on the head count (what GitHub
+#     applies too, #1523): a cancelled run superseded by a newer push is ignored.
 #   - Green means: nothing pending, nothing failing, at least one counted check,
 #     and "CI Complete" SUCCESS in the chosen CI run. An empty rollup is waited on.
 #   - Merges only when the PR head starts with HEAD_PREFIX, with
@@ -110,18 +108,13 @@ done_line() { echo "#$PR $1"; exit "$2"; }
 # jq: reduce the rollup to the checks that count, then classify them.
 # Each CheckRun's run id comes from its detailsUrl (/actions/runs/<id>/job/...).
 read -r -d '' JQ_CLASSIFY <<'JQ'
-def skipped_like: .__typename == "CheckRun" and .status == "COMPLETED"
-  and ((.conclusion // "") | IN("SKIPPED","NEUTRAL"));
 [ .statusCheckRollup[]
   | select(((.name // .context // "") | test("sonar"; "i")) | not)
   | . + { run: ((.detailsUrl // "") | (capture("/runs/(?<id>[0-9]+)").id // "0") | tonumber),
           wf: (.workflowName // .context // "status") } ]
 | (group_by(.wf)
    | map(
-       # A run whose checks are all SKIPPED/NEUTRAL (label-event run) never
-       # supersedes a real run; fall back to it only if nothing else exists.
-       ([ .[] | select(skipped_like | not) | .run ] | unique) as $real
-       | (if ($real | length) > 0 then ($real | max) else (map(.run) | max) end) as $newest
+       (map(.run) | max) as $newest
        | map(select(.run == $newest)))
    | add // []) as $live
 | {

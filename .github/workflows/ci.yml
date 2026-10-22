@@ -1821,20 +1821,9 @@ jobs:
       - docker-build-merge
       - docker-build-extra-merge
       - retag-skipped
-    # #1086: was `always()`. Creating a PR with a label (`gh pr create --label
-    # ci-full`) fires BOTH the `opened` and `labeled` pull_request events, so two
-    # runs start on the same SHA; the `concurrency` group below cancels the
-    # older one. Under `always()` that CANCELLED run still ran ci-complete, and
-    # the step concluded FAILURE (cancelled `needs`) — posting a stale
-    # `CI Complete: FAILURE` status that blocked auto-merge even though the
-    # surviving run was green. `!cancelled()` makes a concurrency-superseded run
-    # SKIP ci-complete entirely (posts no blocking status), so only the
-    # surviving run's status counts. Genuine job failures are NOT cancellations,
-    # so `!cancelled()` is still true on failure and the step below still
-    # exit-1's — real failures keep blocking. Per-job `cancelled` results (e.g. a
-    # single timed-out job in an otherwise-live run) are still caught below.
-    # (Since #1527 ci.yml no longer triggers on `labeled`, so the opened+labeled
-    # double fire no longer happens; the guard stays for push-superseded runs.)
+    # `!cancelled()` (was `always()`, #1086) skips CI Complete in a run cancelled
+    # by the concurrency group (a newer push), so it posts no stale FAILURE.
+    # Real failures and per-job cancellations still fail the step below.
     # Merge queue (#1555): runs on merge_group too; its result on the
     # merge-group head is what the queue waits for.
     if: ${{ !cancelled() }}

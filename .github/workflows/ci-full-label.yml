@@ -38,10 +38,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABEL_TIME: ${{ github.event.pull_request.updated_at }}
         run: |
           set -euo pipefail
-          # This run was created after the label was added.
-          label_time=$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID" --jq .created_at)
+          # updated_at of the payload is a snapshot taken at the label event: never
+          # earlier than the label, so the worst case is a double run, never a missed one.
+          label_time="$LABEL_TIME"
           run_id=""
           # The PR's own CI run may still be being created (PR opened with the label).
           for _ in $(seq 1 12); do
@@ -54,24 +56,61 @@ jobs:
             echo "::warning::No CI run for $HEAD_SHA; the next push runs CI with ci-full."
             exit 0
           fi
-          status=$(gh run view "$run_id" --json status --jq .status)
+          # A run whose `changes` job started after the label read it live: already full
+          # (also true for a run that has already finished).
+          started=$(gh run view "$run_id" --json jobs \
+                      --jq '.jobs[] | select(.name == "Detect changes") | .startedAt // empty' | head -n1) || started=""
+          if [ -n "$started" ] && [[ ! "$started" < "$label_time" ]]; then
+            echo "CI run $run_id started its change detection after the label: already full."
+            exit 0
+          fi
+          # A failed read leaves status empty: the guarded loop below retries it.
+          status=$(gh run view "$run_id" --json status --jq .status) || status=""
           if [ "$status" != "completed" ]; then
-            # A run whose `changes` job started after the label read it live: already full.
-            started=$(gh run view "$run_id" --json jobs \
-                        --jq '.jobs[] | select(.name == "Detect changes") | .startedAt // empty' | head -n1)
-            if [ -n "$started" ] && [[ ! "$started" < "$label_time" ]]; then
-              echo "CI run $run_id started its change detection after the label: already full."
-              exit 0
-            fi
-            # A run can only be re-run once it has finished.
+            # A run can only be re-run once it has finished. Stuck-state guard (#1569):
+            # give up with a warning (exit 0, not a red check) instead of looping forever.
             echo "CI run $run_id is $status and predates the label; waiting for it to finish"
-            while [ "$(gh run view "$run_id" --json status --jq .status)" != "completed" ]; do
+            # The 30-min "never started" limit below counts from here, not from when
+            # the run entered queued/waiting; a run that re-enters waiting late gets less.
+            start_epoch=$(date +%s)
+            errs=0
+            while true; do
+              if s=$(gh run view "$run_id" --json status --jq .status); then
+                errs=0
+                status="$s"
+              else
+                errs=$((errs + 1))
+              fi
+              [ "$status" = "completed" ] && break
+              if [ "$errs" -ge 5 ]; then
+                echo "::warning::5 failed reads of CI run $run_id in a row; push or re-add ci-full."
+                exit 0
+              fi
+              # A newer push has its own run, which reads the label itself.
+              cur=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha) || cur="$HEAD_SHA"
+              if [ "$cur" != "$HEAD_SHA" ]; then
+                echo "PR head moved to $cur; its own CI run reads the ci-full label."
+                exit 0
+              fi
+              waited=$(( $(date +%s) - start_epoch ))
+              case "$status" in
+                queued|waiting|requested|pending) limit=1800 ;;
+                *) limit=6600 ;;
+              esac
+              if [ "$waited" -ge "$limit" ] || [ "$waited" -ge 6600 ]; then
+                echo "::warning::CI run $run_id still $status after ${waited}s; push or re-add ci-full."
+                exit 0
+              fi
               sleep 30
             done
           fi
           # A newer push has its own run, which reads the label itself. Re-running
           # the old head's run would cancel it (same concurrency group).
-          head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha)
+          # Never fall back to HEAD_SHA here: that would re-run CI on a head that may have moved.
+          head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha) || {
+            echo "::warning::Could not read the PR head; push or re-add ci-full."
+            exit 0
+          }
           if [ "$head" != "$HEAD_SHA" ]; then
             echo "PR head moved to $head; its own CI run reads the ci-full label."
             exit 0
