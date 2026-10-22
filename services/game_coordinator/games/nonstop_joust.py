@@ -80,7 +80,8 @@ class NonstopPlayer(Player):
     score: int = 0
 
     # Respawn state (Phase 22)
-    respawn_timer: float = 0.0  # Time until respawn (seconds)
+    respawn_timer: float = 0.0  # Seconds left until respawn (refreshed each frame from respawn_deadline)
+    respawn_deadline: float | None = None  # Game clock time of the respawn; None = no respawn pending
     spawn_protected: bool = False
     spawn_protection_end: float = 0.0
 
@@ -144,6 +145,8 @@ class NonstopJoustGame(BaseGameMode):
         # Set when the game loop detects the time limit (UC-026 BR-003): the only
         # end that declares a winner.
         self._time_limit_reached = False
+        # Monotonic clock for the respawn deadline (UC-026 step 2, #1963); tests inject a fake.
+        self._clock = time.monotonic
 
         # #766 F2: respawn/spawn-protection durations and scoring weights promoted
         # to game flags. Read ONCE here (init-frozen); malformed values fall back
@@ -281,6 +284,8 @@ class NonstopJoustGame(BaseGameMode):
         player.deaths += 1
         player.current_streak = 0
         player.respawn_timer = self.respawn_duration
+        # Wall-clock deadline, not a frame count (UC-026 step 2, #1963); 0 respawns on the next frame
+        player.respawn_deadline = self._clock() + self.respawn_duration
 
         logger.info(f"Player died: {serial} (kills: {player.kills}, deaths: {player.deaths}, score: {player.score})")
 
@@ -369,10 +374,18 @@ class NonstopJoustGame(BaseGameMode):
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
             logger.info(f"Initial alive players: {len(last_alive_serials)}")
 
-            # Store Hz for respawn timer calculations
-            self._current_update_frequency = update_frequency_hz
+            # Frame metrics as in the base loop (#1963): game_loop_frames_dropped_total,
+            # actual Hz, consistency, jitter
+            loop_start_time = time.time()
+            last_iteration_time = loop_start_time
+            loop_iterations = 0
+            target_frame_time_ms = 1000.0 / update_frequency_hz
+            recent_frame_times: list[float] = []
+            frames_on_target = 0
 
-            # Stream gameplay data and process game logic
+            # The controller manager paces the stream: each frame is processed as it
+            # arrives, with no sleep in between (a sleep made the loop fall behind and
+            # act on stale frames, NFR-004, #1963)
             async for gameplay_update in self.gameplay_stream:
                 # The time limit runs from the first frame after the warm-up (UC-026 step 3)
                 if self.start_time is None:
@@ -381,12 +394,13 @@ class NonstopJoustGame(BaseGameMode):
                 if not self.running:
                     break
 
+                # Respawns whose deadline passed, before this frame's motion: a death in
+                # this frame respawns on the next one at the earliest (UC-026 step 2)
+                await self._update_respawn_timers()
+
                 # Process each controller's gameplay data
                 for gameplay_data in gameplay_update.controllers:
                     await self._process_controller_state(gameplay_data)
-
-                # Update respawn timers (Nonstop-specific)
-                await self._update_respawn_timers()
 
                 # Check if alive players changed (Phase 45 - dynamic filtering)
                 # Note: Nonstop has frequent changes due to respawns
@@ -413,15 +427,24 @@ class NonstopJoustGame(BaseGameMode):
 
                     last_alive_serials = current_alive_serials
 
+                loop_iterations += 1
+                iteration_end = time.time()
+                frames_on_target = self._update_frame_metrics(
+                    (iteration_end - last_iteration_time) * 1000,
+                    target_frame_time_ms,
+                    recent_frame_times,
+                    frames_on_target,
+                    loop_iterations,
+                    loop_start_time,
+                )
+                last_iteration_time = iteration_end
+
                 # Time limit: latch the outcome now, so a force-end after this point
                 # keeps the winner (UC-026 BR-003)
                 if await self._check_win_condition():
                     self._time_limit_reached = True
                     self._latch_game_outcome()
                     break
-
-                # Small sleep to maintain tick rate
-                await asyncio.sleep(1.0 / update_frequency_hz)
 
         except Exception as e:
             logger.error(f"Game loop error: {e}", exc_info=True)
@@ -434,20 +457,16 @@ class NonstopJoustGame(BaseGameMode):
         from proto import controller_manager_pb2
 
         current_time = time.time()
-
-        # Use current update frequency (Phase 43: dynamic from runtime config)
-        update_frequency = getattr(self, "_current_update_frequency", 30)
+        now = self._clock()
 
         for serial, player in self.players.items():
-            # Handle respawn countdown
-            if not player.alive and player.respawn_timer > 0:
-                player.respawn_timer -= 1.0 / update_frequency
-
-                # Show respawn countdown colors
-                await self._show_respawn_countdown(serial, player.respawn_timer)
-
-                # Respawn when timer reaches 0
-                if player.respawn_timer <= 0:
+            # Respawn on the clock, not on the frame count (UC-026 step 2, #1963)
+            if not player.alive and player.respawn_deadline is not None:
+                player.respawn_timer = max(0.0, player.respawn_deadline - now)
+                if player.respawn_timer > 0:
+                    # Countdown colours from the time left
+                    await self._show_respawn_countdown(serial, player.respawn_timer)
+                else:
                     await self._respawn_player(serial)
 
             # Check spawn protection expiration
@@ -519,6 +538,9 @@ class NonstopJoustGame(BaseGameMode):
 
         player = self.players[serial]
         player.alive = True
+        player.respawn_deadline = None  # an agent revive also ends a pending countdown
+        player.respawn_timer = 0.0
+        player._last_respawn_color = None  # the next death shows its countdown colour again
         player.spawn_protected = True
         player.spawn_protection_end = time.time() + self.spawn_protection_duration
         # Reset warning state for clean respawn

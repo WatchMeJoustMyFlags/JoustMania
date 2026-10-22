@@ -507,8 +507,8 @@ class TestNonstopScoring:
         player = game.players[serial]
         initial_timer = player.respawn_timer
 
-        # Set update frequency
-        game._current_update_frequency = 30
+        # Half a second later on the game clock
+        game._clock = lambda: player.respawn_deadline - initial_timer + 0.5
 
         # Update respawn timers
         await game._update_respawn_timers()
@@ -720,16 +720,15 @@ class TestNonstopUpdateRespawnTimers:
         game, mock_controller_manager, event_collector = nonstop_game
         stream = RecordingGameplayStream()
         game.gameplay_stream = stream
-        game._current_update_frequency = 30
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         serial = list(game.players.keys())[0]
         player = game.players[serial]
 
-        # Set player as dead with timer about to expire
+        # Set player as dead with the respawn deadline just passed
         player.alive = False
-        player.respawn_timer = 0.01  # Very small, one tick will go to 0
+        player.respawn_deadline = game._clock() - 0.01
 
         await game._update_respawn_timers()
 
@@ -747,7 +746,6 @@ class TestNonstopUpdateRespawnTimers:
         game, mock_controller_manager, _ = nonstop_game
         stream = RecordingGameplayStream()
         game.gameplay_stream = stream
-        game._current_update_frequency = 30
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
@@ -1426,3 +1424,224 @@ class TestNonstopEndOfGame:
             assert final[0].args[1]["deaths"] == deaths * 3
             span.end.assert_called_once()
             assert game.players[serial].span is None
+
+
+class _FiniteFrameCall:
+    """Gameplay call that yields ``frames`` empty frames without delay, then ends."""
+
+    def __init__(self, frames: int, frame=None):
+        self.frames = frames
+        self.frame = frame or controller_manager_pb2.GameplayDataUpdate()
+        self.messages = []
+
+    async def write(self, message):
+        self.messages.append(message)
+
+    def cancel(self):
+        pass
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.frames <= 0:
+            raise StopAsyncIteration
+        self.frames -= 1
+        return self.frame
+
+
+class _FakeClock:
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.mark.uc("UC-026", flow="main", steps=[2])
+class TestNonstopRespawnClock:
+    """UC-026 step 2 (#1963): respawn after respawn_seconds of wall-clock time, no per-frame sleep."""
+
+    async def _game(self, respawn_seconds: float = 3.0):
+        log = RecordingLog()
+        client = MockControllerManagerService(num_controllers=4, death_schedule={})
+        game = NonstopJoustGame(
+            controller_manager_client=client,
+            event_publisher=log.publish,
+            audio_client=None,
+            game_id="test_nonstop_respawn_clock",
+        )
+        game.respawn_duration = respawn_seconds
+        await game._initialize_players_impl(client.controllers)
+        game.gameplay_stream = MockGameplayStream()
+        game.state = GameState.RUNNING
+        game.running = True
+        game._clock = _FakeClock()
+        return game, log
+
+    @pytest.mark.asyncio
+    async def test_half_the_frame_rate_still_respawns_after_respawn_seconds(self):
+        game, log = await self._game(respawn_seconds=3.0)
+        serial = next(iter(game.players))
+        await game._kill_player_impl(serial, accel_mag=5.0)
+        player = game.players[serial]
+
+        # Frames arrive at 30 Hz, half the configured rate
+        respawned_at = None
+        for tick in range(1, 200):
+            game._clock.now += 1 / 30
+            await game._update_respawn_timers()
+            if player.alive:
+                respawned_at = tick / 30
+                break
+
+        assert respawned_at is not None, "the player never respawned"
+        assert 3.0 <= respawned_at < 3.0 + 2 / 30, respawned_at
+        assert len(log.events.get_events_of_type("player_respawned")) == 1
+
+    @pytest.mark.asyncio
+    async def test_countdown_colour_follows_the_time_left(self):
+        game, _ = await self._game(respawn_seconds=3.0)
+        serial = next(iter(game.players))
+        await game._kill_player_impl(serial, accel_mag=5.0)
+        player = game.players[serial]
+
+        colours = []
+        for elapsed in (0.5, 1.5, 2.5):
+            game._clock.now = player.respawn_deadline - 3.0 + elapsed
+            await game._update_respawn_timers()
+            colours.append(player._last_respawn_color)
+
+        assert colours == [(128, 128, 128), (255, 255, 0), (0, 255, 0)]
+        assert player.alive is False
+
+    @pytest.mark.asyncio
+    async def test_zero_respawn_seconds_respawns_on_the_next_frame(self):
+        game, log = await self._game(respawn_seconds=0.0)
+        serial = next(iter(game.players))
+        await game._kill_player_impl(serial, accel_mag=5.0)
+
+        await game._update_respawn_timers()
+
+        assert game.players[serial].alive is True
+        assert game.players[serial].spawn_protected is True
+        assert len(log.events.get_events_of_type("player_respawned")) == 1
+
+    @pytest.mark.asyncio
+    async def test_agent_revive_ends_the_pending_countdown(self):
+        game, log = await self._game(respawn_seconds=3.0)
+        serial = next(iter(game.players))
+        await game._kill_player_impl(serial, accel_mag=5.0)
+
+        assert await game.revive_player(serial) is True
+        game._clock.now += 10
+        await game._update_respawn_timers()
+
+        assert game.players[serial].alive is True
+        assert game.players[serial].respawn_deadline is None
+        assert len(log.events.get_events_of_type("player_respawned")) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_death_respawns_on_a_later_frame_than_the_one_it_happened_in(self):
+        game, log = await self._game(respawn_seconds=0.0)
+        serial = next(iter(game.players))
+        killed = []
+
+        async def kill_in_first_frame(_state):
+            if not killed:
+                killed.append(True)
+                await game._kill_player_impl(serial, accel_mag=5.0)
+
+        game._process_controller_state = kill_in_first_frame
+        frame = controller_manager_pb2.GameplayDataUpdate()
+        frame.controllers.add(serial=serial)
+        call = _FiniteFrameCall(frames=2, frame=frame)
+        game.controller_client = SimpleNamespace(StreamGameplayData=lambda: call)
+        alive_at_frame_end = []
+        real_check = game._check_win_condition
+
+        async def check_and_record():
+            alive_at_frame_end.append(game.players[serial].alive)
+            return await real_check()
+
+        game._check_win_condition = check_and_record
+        await asyncio.wait_for(game._game_loop(), timeout=5)
+
+        # frame 1: killed, and the respawn check ran before the motion step, so still dead
+        # at the end of the frame; frame 2: the 0 s deadline has passed
+        assert alive_at_frame_end == [False, True]
+        assert len(log.events.get_events_of_type("player_death")) == 1
+        assert len(log.events.get_events_of_type("player_respawned")) == 1
+
+    @pytest.mark.asyncio
+    async def test_every_death_shows_the_countdown_with_a_one_second_respawn(self):
+        game, _ = await self._game(respawn_seconds=1.0)
+        serial = next(iter(game.players))
+        player = game.players[serial]
+        led_writes = []
+        beeps = []
+        real_write = game.gameplay_stream.write
+
+        async def record_write(message):
+            if message.HasField("base_color"):
+                led_writes.append(message.base_color.color.g)
+            await real_write(message)
+
+        async def record_sound(sound, *_args, **_kwargs):
+            beeps.append(sound)
+
+        game.gameplay_stream.write = record_write
+        game._play_sound = record_sound
+
+        for _ in range(2):
+            await game._kill_player_impl(serial, accel_mag=5.0)
+            led_writes.clear()
+            beeps.clear()
+            await game._update_respawn_timers()  # countdown frame, 1 s left: green
+            assert player.alive is False
+            assert led_writes == [255], "the death shows the green countdown LED"
+            assert len(beeps) == 1, "the death beeps"
+            game._clock.now += 1.0
+            await game._update_respawn_timers()
+            assert player.alive is True
+
+    @pytest.mark.asyncio
+    async def test_the_loop_does_not_sleep_between_frames(self):
+        game, _ = await self._game()
+        call = _FiniteFrameCall(frames=20)
+        game.controller_client = SimpleNamespace(StreamGameplayData=lambda: call)
+        real_sleep = asyncio.sleep
+        sleeps = []
+
+        async def recording_sleep(delay, *_args, **_kwargs):
+            sleeps.append(delay)
+            await real_sleep(0)
+
+        config = GamePerformanceConfig(update_frequency_hz=30)
+        with (
+            patch.object(get_config_manager(), "get_config", return_value=config),
+            patch.object(nonstop_mod.asyncio, "sleep", recording_sleep),
+        ):
+            await asyncio.wait_for(game._game_loop(), timeout=5)
+
+        assert call.frames == 0, "every frame was processed"
+        assert sleeps == [], f"the game loop slept between frames: {sleeps[:3]}"
+
+    @pytest.mark.asyncio
+    async def test_the_loop_records_the_frame_metrics(self):
+        game, _ = await self._game()
+        call = _FiniteFrameCall(frames=20)
+        game.controller_client = SimpleNamespace(StreamGameplayData=lambda: call)
+        config = GamePerformanceConfig(update_frequency_hz=30)
+
+        with (
+            patch.object(get_config_manager(), "get_config", return_value=config),
+            patch.object(game, "_update_frame_metrics", wraps=game._update_frame_metrics) as frame_metrics,
+            patch("services.game_coordinator.games.base.metrics.actual_update_frequency_hz") as actual_hz,
+        ):
+            await asyncio.wait_for(game._game_loop(), timeout=5)
+
+        assert frame_metrics.call_count == 20
+        assert [c.args[4] for c in frame_metrics.call_args_list] == list(range(1, 21))
+        assert all(c.args[1] == pytest.approx(1000 / 30) for c in frame_metrics.call_args_list)
+        assert actual_hz.labels.return_value.set.call_count == 2  # every 10th frame
