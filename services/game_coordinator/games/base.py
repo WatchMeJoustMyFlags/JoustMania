@@ -1700,13 +1700,17 @@ class BaseGameMode(ABC):
         handle instead of being dropped with the frame (UC-020 A2, #1582).
 
         A stream that ends, fails or stalls here is opened once more and the
-        warm-up repeats once (UC-030 BR-006, #1913); a second failure is left to
-        the game loop's reconnect.
+        warm-up repeats once (UC-030 BR-006, #1913); a second failure, and a
+        reopen that fails to open, are left to the game loop's reconnect.
         """
         if await self._read_warmup_frames():
             return
         if self.running and self._gameplay_call_done():
-            await self._reopen_gameplay_stream("the stream ended during the countdown or the EMA warm-up")
+            try:
+                await self._reopen_gameplay_stream("the stream ended during the countdown or the EMA warm-up")
+            except Exception as e:
+                logger.warning(f"EMA warmup could not reopen the stream, left to the game loop: {e}")
+                return
             await self._read_warmup_frames()
 
     _WARMUP_DURATION_S = 0.1  # enough to drain the buffer and get ~6 frames at 60 Hz
@@ -1719,7 +1723,7 @@ class BaseGameMode(ABC):
         no frame for ``_WARMUP_STALL_TIMEOUT_S`` is cancelled, which cancels the
         gRPC call (the call is done afterwards).
         """
-        warmup_start = time.time()
+        warmup_start = time.monotonic()
         frames_consumed = 0
         completed = False
 
@@ -1734,7 +1738,7 @@ class BaseGameMode(ABC):
                         self._update_ema(self.players[serial], accel_mag, self._ema_weight)
                 frames_consumed += 1
 
-                if time.time() - warmup_start >= self._WARMUP_DURATION_S:
+                if time.monotonic() - warmup_start >= self._WARMUP_DURATION_S:
                     return True
             return False
 
@@ -1920,6 +1924,9 @@ class BaseGameMode(ABC):
             f"Gameplay stream error (attempt {attempt}/{max_attempts}): {error}. Reconnecting in {backoff}s..."
         )
         await asyncio.sleep(backoff)
+        if not self.running:
+            # Force-ended during the backoff: the outer loop ends, no reopen (UC-030 BR-006).
+            return attempt
 
         await self._reopen_gameplay_stream(f"game loop reconnect {attempt}/{max_attempts}")
         return attempt
