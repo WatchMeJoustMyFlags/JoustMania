@@ -343,7 +343,7 @@ func buildExperimentLoop(
 	logger.Info("Experiment cohort loop constructed (#991/#1044) — gated LIVE by agent.json experiments_enabled",
 		"tick_default", expDefaults.Tick,
 		"completed_grace_default", expDefaults.CompletedGrace,
-		"max_shadow_games", experiment.MaxShadowGamesFromEnv(),
+		"max_shadow_games", experiment.DefaultMaxShadowGames,
 		"effective_concurrency_default", expDefaults.ShadowEffectiveConcurrency,
 		"seed_flag", os.Getenv(envSeedFlag))
 
@@ -368,7 +368,7 @@ func buildExperimentLoop(
 	// Watcher's real-game fitness source (#1057). A nil store (a test or a caller that
 	// did not build one) falls back to a fresh local store so the loop is still valid.
 	if fitnessStore == nil {
-		fitnessStore = experiment.NewFitnessStore(fitnessStoreCapacity())
+		fitnessStore = experiment.NewFitnessStore(experiment.DefaultFitnessStoreCapacity)
 	}
 
 	// CohortVerdict (#979) + recent-real SECONDARY anchor (#992): the within-experiment
@@ -1774,9 +1774,6 @@ func (e *experimentLoop) maxGamesBudget(cfg flags.ExperimentConfig) int {
 	return games
 }
 
-// envFitnessStoreCapacity overrides the finalized-fitness ring size (#965).
-const envFitnessStoreCapacity = "AGENT_FITNESS_STORE_CAPACITY"
-
 // anchorBaselineRecentN is how many recent real games the #992 recent-real anchor
 // averages. It mirrors the verdict's DefaultMinNPerArm (8) so the anchor rests on
 // a comparable sample to what the cohort verdict already trusts (#1017 §2).
@@ -1786,13 +1783,6 @@ const anchorBaselineRecentN = 8
 // trusted; below it the anchor is skipped (fails open). A floor of 3 means the
 // anchor is never a single-game fluke.
 const anchorBaselineMinSamples = 3
-
-// fitnessStoreCapacity resolves the finalized-fitness ring size from
-// AGENT_FITNESS_STORE_CAPACITY, falling back to the package default on an
-// unset/invalid/non-positive value.
-func fitnessStoreCapacity() int {
-	return positiveIntEnv(envFitnessStoreCapacity, experiment.DefaultFitnessStoreCapacity)
-}
 
 // recentRealBaselineAccessor adapts the #965 FitnessStore into the verdict's #992
 // RecentRealBaseline seam: given an objective it returns the mean finalized fitness
@@ -1820,17 +1810,6 @@ func recentRealBaselineAccessor(store *experiment.FitnessStore, recentN, minSamp
 		}
 		return sum / float64(len(samples)), true
 	}
-}
-
-// positiveIntEnv parses a positive integer env var, returning fallback on an
-// unset/invalid/non-positive value.
-func positiveIntEnv(key string, fallback int) int {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return fallback
 }
 
 // seedIntentFromEnv builds the single seed experiment Intent from the

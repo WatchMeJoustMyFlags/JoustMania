@@ -732,19 +732,35 @@ func TestStatusPredicates(t *testing.T) {
 	}
 }
 
-// MaxShadowGamesFromEnv honors the env override and falls back safely.
-func TestMaxShadowGamesFromEnv(t *testing.T) {
-	t.Setenv(maxShadowGamesEnv, "7")
-	if got := MaxShadowGamesFromEnv(); got != 7 {
-		t.Fatalf("MaxShadowGamesFromEnv = %d, want 7", got)
+// The retired AGENT_MAX_SHADOW_GAMES env must not change the registry cap (#1907).
+// UC: UC-046
+func TestRegistryIgnoresMaxShadowGamesEnv(t *testing.T) {
+	t.Setenv("AGENT_MAX_SHADOW_GAMES", "7")
+	r := NewRegistry(RegistryConfig{Root: t.TempDir()})
+	if got := r.Capacity(); got != DefaultMaxShadowGames {
+		t.Fatalf("Capacity = %d, want compiled default %d (env must be ignored)", got, DefaultMaxShadowGames)
 	}
-	t.Setenv(maxShadowGamesEnv, "0") // non-positive → default
-	if got := MaxShadowGamesFromEnv(); got != DefaultMaxShadowGames {
-		t.Fatalf("MaxShadowGamesFromEnv(0) = %d, want default %d", got, DefaultMaxShadowGames)
+}
+
+// The compiled defaults are the documented values (pin, #1907).
+func TestCompiledCapacityDefaultsPinned(t *testing.T) {
+	if DefaultMaxShadowGames != 20 {
+		t.Fatalf("DefaultMaxShadowGames = %d, want 20", DefaultMaxShadowGames)
 	}
-	t.Setenv(maxShadowGamesEnv, "garbage")
-	if got := MaxShadowGamesFromEnv(); got != DefaultMaxShadowGames {
-		t.Fatalf("MaxShadowGamesFromEnv(garbage) = %d, want default", got)
+	if DefaultFitnessStoreCapacity != 512 {
+		t.Fatalf("DefaultFitnessStoreCapacity = %d, want 512", DefaultFitnessStoreCapacity)
+	}
+}
+
+// The retired AGENT_FITNESS_STORE_CAPACITY env must not size the ring (#1907).
+func TestFitnessStoreIgnoresCapacityEnv(t *testing.T) {
+	t.Setenv("AGENT_FITNESS_STORE_CAPACITY", "2")
+	s := NewFitnessStore(DefaultFitnessStoreCapacity)
+	for i := 0; i < 5; i++ {
+		s.Record(FitnessSample{GameID: fmt.Sprintf("g%d", i), Objective: "balanced", GameKind: GameKindReal})
+	}
+	if got := len(s.RecentReal("balanced", 10)); got != 5 {
+		t.Fatalf("stored %d samples, want 5 (env capacity 2 must be ignored)", got)
 	}
 }
 

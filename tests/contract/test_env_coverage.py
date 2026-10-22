@@ -72,7 +72,6 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "agent",
         "AGENT_EXPERIMENT_MAX_GAMES",
     ): "operator ceiling (C-034, #1810): unset = no ceiling, the experiment_max_games flag governs",
-    ("agent", "AGENT_MAX_SHADOW_GAMES"): _TUNING,
     (
         "agent",
         "AGENT_EXPERIMENT_DYNAMIC_OBJECTIVE",

@@ -815,7 +815,7 @@ func main() {
 	// validation/anchor seams AND the autonomous Watcher's real-game fitness source
 	// (#1057). The experiment loop's onGameEnd Records into it; the Watcher reads
 	// recent REAL samples out of it.
-	fitnessStore := experiment.NewFitnessStore(fitnessStoreCapacity())
+	fitnessStore := experiment.NewFitnessStore(experiment.DefaultFitnessStoreCapacity)
 	// #1100: give the retro span access to a finished experiment game's RECORDED
 	// fitness, keyed by game_id, so an agent.llm.retro span carries experiment.fitness
 	// alongside experiment.id / experiment.arm — making a retro joinable to the fitness
