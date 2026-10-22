@@ -58,7 +58,7 @@ Players are divided into teams and compete against other teams. Last team standi
 - `game_ended` - Game finished
 
 **Configuration:**
-- `num_teams` - Number of teams (default: 2, supports 2-8 teams)
+- `num_teams` - Number of teams (default: 2, supports 2 to 6 teams)
 
 ### ✅ Random Teams - `random_teams.py`
 **Status:** Complete (Phase 13.2)
@@ -66,7 +66,7 @@ Players are divided into teams and compete against other teams. Last team standi
 Players are randomly assigned to teams and compete against other teams. Team colors are shown before the game starts so players can identify their teammates. Last team standing wins.
 
 **Features:**
-- **Random team assignment** (shuffled, not round-robin)
+- **Random team assignment** (players shuffled with the game RNG, then dealt round-robin: team sizes differ by at most one; with fewer players than teams the extra teams stay empty)
 - **Random team colors** (shuffled from predefined palette)
 - **Team formation phase** (5 seconds showing team colors before game starts)
 - Streams controller states at 60Hz from ControllerManager
@@ -86,7 +86,7 @@ Players are randomly assigned to teams and compete against other teams. Team col
 - `game_ended` - Game finished
 
 **Configuration:**
-- `random_team_size` - Number of teams (default: 2, supports 2-8 teams)
+- `random_team_size` - Number of teams (default: 2, supports 2 to 6 teams)
 
 **Differences from Teams:**
 - Random assignment instead of round-robin or pre-selected teams

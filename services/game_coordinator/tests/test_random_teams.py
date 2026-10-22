@@ -197,3 +197,39 @@ class TestRandomTeamsGameMode:
         for serial, player in game.players.items():
             expected_color = game.team_colors[player.team]["rgb"]
             assert player.color == expected_color, f"Player {serial} has wrong color"
+
+
+def _make_random_teams_game(num_players: int, num_teams: int, seed: int) -> RandomTeamsGame:
+    manager = MockControllerManagerService(num_controllers=num_players, death_schedule={}, max_duration=10.0)
+    return RandomTeamsGame(
+        controller_manager_client=manager,
+        event_publisher=EventCollector().publish,
+        audio_client=None,
+        game_id="test_random_teams_a1",
+        num_teams=num_teams,
+        rng_seed=seed,
+    )
+
+
+@pytest.mark.uc("UC-021", flow="A1")
+@pytest.mark.parametrize("seed", range(1, 51))
+def test_two_players_two_teams_never_share_a_team(seed):
+    game = _make_random_teams_game(2, 2, seed)
+    assignments = game._assign_random_teams(["S1", "S2"])
+    assert sorted(assignments.values()) == [0, 1]
+
+
+@pytest.mark.uc("UC-021", flow="A1")
+@pytest.mark.parametrize("num_players", range(2, 9))
+@pytest.mark.parametrize("num_teams", range(2, 7))
+def test_assignment_balanced_for_all_sizes(num_players, num_teams):
+    serials = [f"S{i}" for i in range(num_players)]
+    for seed in range(1, 31):
+        game = _make_random_teams_game(num_players, num_teams, seed)
+        assignments = game._assign_random_teams(serials)
+        assert set(assignments) == set(serials)
+        counts = [list(assignments.values()).count(t) for t in range(num_teams)]
+        if num_players >= num_teams:
+            assert min(counts) >= 1 and max(counts) - min(counts) <= 1
+        else:
+            assert max(counts) == 1
