@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -23,6 +24,7 @@ sys.path.insert(0, str(test_dir))
 from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from lib.types import Sound
+from proto import controller_manager_pb2
 from services.game_coordinator.games.werewolf import (
     HUMAN_COLOR,
     WEREWOLF_COLOR,
@@ -897,6 +899,8 @@ class TestWerewolfEndGame:
         for serial in game.human_serials:
             game.players[serial].alive = False
 
+        assert await game._check_win_condition()
+
         await game._end_game_impl()
 
         ended_events = event_collector.get_events_of_type("game_ended")
@@ -916,6 +920,8 @@ class TestWerewolfEndGame:
         for serial in game.werewolf_serials:
             game.players[serial].alive = False
 
+        assert await game._check_win_condition()
+
         await game._end_game_impl()
 
         ended_events = event_collector.get_events_of_type("game_ended")
@@ -930,6 +936,8 @@ class TestWerewolfEndGame:
 
         for player in game.players.values():
             player.alive = False
+
+        assert await game._check_win_condition()
 
         await game._end_game_impl()
 
@@ -963,6 +971,8 @@ class TestWerewolfEndGame:
         for serial in game.human_serials:
             game.players[serial].alive = False
 
+        assert await game._check_win_condition()
+
         await game._end_game_impl()
 
         calls = game._play_sound.call_args_list
@@ -977,6 +987,8 @@ class TestWerewolfEndGame:
 
         for serial in game.werewolf_serials:
             game.players[serial].alive = False
+
+        assert await game._check_win_condition()
 
         await game._end_game_impl()
 
@@ -993,11 +1005,165 @@ class TestWerewolfEndGame:
         for player in game.players.values():
             player.alive = False
 
+        assert await game._check_win_condition()
+
         await game._end_game_impl()
 
         calls = game._play_sound.call_args_list
         sound_args = [c[0][0] for c in calls]
         assert Sound.SFX_WOLFDOWN in sound_args
+
+
+class TestWerewolfForceEndWinner:
+    """A force-end declares no winner; a result latched earlier is kept (UC-022 BR-004, #1343)."""
+
+    @pytest_asyncio.fixture
+    async def setup(self):
+        from unittest.mock import AsyncMock
+
+        from services.game_coordinator.games.base import GameState
+
+        manager = MockControllerManagerService(num_controllers=4, death_schedule={}, max_duration=10.0)
+        events = EventCollector()
+        game = WerewolfGame(
+            controller_manager_client=manager,
+            event_publisher=events.publish,
+            audio_client=None,
+            game_id="test_werewolf_force_end",
+        )
+        await game._initialize_players_impl(manager.controllers)
+        game.state = GameState.RUNNING
+        game.start_time = 100.0
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+        game._wait_for_rainbow_effect = AsyncMock()
+        return game, events
+
+    @staticmethod
+    def _rainbow_writes(game):
+        return [
+            m
+            for m in game.gameplay_stream.messages
+            if m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        ]
+
+    @staticmethod
+    def _sounds(game):
+        return [c[0][0] for c in game._play_sound.call_args_list]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-022", br=["BR-004"])
+    async def test_force_end_while_running_declares_no_winner(self, setup):
+        game, events = setup
+        game.force_end("operator")
+        game._latch_game_outcome()  # the run() latches when the loop exits
+
+        await game._end_game_impl()
+
+        assert events.get_events_of_type("werewolf_winner") == []
+        assert self._rainbow_writes(game) == []
+        assert self._sounds(game) == []
+        game._wait_for_rainbow_effect.assert_not_called()
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == "none"
+        assert ended["outcome"] == "force_ended"
+        assert ended["reason"] == "operator"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-022", br=["BR-004"])
+    @pytest.mark.parametrize("side", ["humans", "werewolves"])
+    async def test_force_end_after_win_keeps_the_winner(self, setup, side):
+        game, events = setup
+        losers = game.human_serials if side == "werewolves" else game.werewolf_serials
+        for serial in losers:
+            game.players[serial].alive = False
+        assert await game._check_win_condition()
+        game._latch_game_outcome()  # the loop returned
+        game.force_end("late")
+
+        await game._end_game_impl()
+
+        (winner_event,) = events.get_events_of_type("werewolf_winner")
+        assert winner_event["winner"] == side
+        assert self._rainbow_writes(game)
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == side
+        assert ended["outcome"] == "completed"
+        assert "reason" not in ended
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-022", br=["BR-004"])
+    async def test_force_end_between_latch_and_end_keeps_the_winner(self, setup):
+        game, events = setup
+        for serial in game.human_serials:
+            game.players[serial].alive = False
+        assert await game._check_win_condition()
+        game.force_end("race")  # lands before the loop latched its outcome
+        for serial in game.werewolf_serials:  # a recompute would now see a tie
+            game.players[serial].alive = False
+        game._latch_game_outcome()
+
+        await game._end_game_impl()
+
+        assert self._rainbow_writes(game) == []  # no werewolf is alive to wear it
+        assert Sound.VOX_WEREWOLF_WIN in self._sounds(game)
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == "werewolves"
+        assert ended["outcome"] == "force_ended"
+        assert ended["reason"] == "race"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-022", br=["BR-004"])
+    async def test_force_end_after_tie_keeps_the_tie(self, setup):
+        game, events = setup
+        for player in game.players.values():
+            player.alive = False
+        assert await game._check_win_condition()
+        game._latch_game_outcome()
+        game.force_end("late")
+
+        await game._end_game_impl()
+
+        assert len(events.get_events_of_type("game_tie")) == 1
+        assert Sound.SFX_WOLFDOWN in self._sounds(game)
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == "none"
+        assert ended["outcome"] == "completed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-022", br=["BR-004"])
+    async def test_win_is_latched_and_published_once(self, setup):
+        game, events = setup
+        for serial in game.human_serials:
+            game.players[serial].alive = False
+        assert await game._check_win_condition()
+        for serial in game.werewolf_serials:  # a later change must not repeat or flip the win
+            game.players[serial].alive = False
+        assert await game._check_win_condition()
+
+        (winner_event,) = events.get_events_of_type("werewolf_winner")
+        assert winner_event["winner"] == "werewolves"
+        assert events.get_events_of_type("game_tie") == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-022", br=["BR-004"])
+    async def test_stream_end_without_a_win_declares_no_winner(self, setup):
+        game, events = setup
+        game._latch_game_outcome()  # the loop returned (stream closed), no win
+
+        await game._end_game_impl()
+
+        assert self._rainbow_writes(game) == []
+        assert self._sounds(game) == []
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == "none"
+        assert ended["outcome"] == "completed"
 
 
 class TestWerewolfCleanup:

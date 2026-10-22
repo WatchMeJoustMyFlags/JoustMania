@@ -133,6 +133,11 @@ class WerewolfGame(BaseGameMode):
             WEREWOLF_FRACTION,
         )
 
+        # The result, latched once in _check_win_condition (UC-022 BR-004, #1343):
+        # "humans" / "werewolves" / "tie". None = no result (force-ended before a
+        # win, or the stream ended without one).
+        self._winner_side: str | None = None
+
         self.werewolf_serials: list[str] = []
         self.human_serials: list[str] = []
         self.revealed = False
@@ -376,6 +381,10 @@ class WerewolfGame(BaseGameMode):
         Returns:
             True if all humans or all werewolves are dead
         """
+        # The result is latched once: later calls (the loop's hold) do not republish it.
+        if self._winner_side is not None:
+            return True
+
         alive_humans = [s for s in self.human_serials if self.players[s].alive]
         alive_werewolves = [s for s in self.werewolf_serials if self.players[s].alive]
 
@@ -390,11 +399,13 @@ class WerewolfGame(BaseGameMode):
             else:
                 # Both sides eliminated at once: a tie, not a werewolf_winner (UC-022 A2, #1354)
                 logger.info("Tie: no humans and no werewolves survive")
+                self._winner_side = "tie"
                 await self.event_publisher(GameEvent.GAME_TIE, {})
                 return True
 
             logger.info(f"{winner.capitalize()} win! {len(winners)} survivors")
 
+            self._winner_side = winner
             await self.event_publisher(
                 "werewolf_winner",
                 {
@@ -449,18 +460,17 @@ class WerewolfGame(BaseGameMode):
         if self.reveal_task and not self.reveal_task.done():
             self.reveal_task.cancel()
 
-        # Determine winner
-        alive_humans = [s for s in self.human_serials if self.players[s].alive]
-        alive_werewolves = [s for s in self.werewolf_serials if self.players[s].alive]
-
-        if len(alive_werewolves) > 0:
-            winner = "werewolves"
-            winner_serials = alive_werewolves
-        elif len(alive_humans) > 0:
-            winner = "humans"
-            winner_serials = alive_humans
+        # The result was latched when the win condition fired. A force-end declares
+        # no winner (UC-022 BR-004, #1343) unless one was already latched; a stream end
+        # without a win has none either.
+        force_ended = self.game_outcome() == "force_ended"
+        winner_side = self._winner_side  # latched before its event, so a force-end racing the publish keeps it
+        winner = winner_side if winner_side in ("humans", "werewolves") else "none"
+        if winner == "werewolves":
+            winner_serials = [s for s in self.werewolf_serials if self.players[s].alive]
+        elif winner == "humans":
+            winner_serials = [s for s in self.human_serials if self.players[s].alive]
         else:
-            winner = "none"
             winner_serials = []
 
         # Show rainbow effect on winners
@@ -479,11 +489,12 @@ class WerewolfGame(BaseGameMode):
             await self._play_sound(Sound.VOX_WEREWOLF_WIN, priority=2)
         elif winner == "humans":
             await self._play_sound(Sound.VOX_HUMAN_WIN, priority=2)
-        else:
+        elif winner_side == "tie":
             await self._play_sound(Sound.SFX_WOLFDOWN, priority=2)
 
         # Wait for rainbow effect to complete
-        await self._wait_for_rainbow_effect()
+        if winner_side is not None:
+            await self._wait_for_rainbow_effect()
 
         # End surviving player spans
         for serial, player in self.players.items():
@@ -502,15 +513,16 @@ class WerewolfGame(BaseGameMode):
                 player.span.end()
 
         self.state = self.state.__class__.ENDED
-        await self.event_publisher(
-            "game_ended",
-            {
-                "game_id": self.game_id,
-                "duration": time.time() - self.start_time if self.start_time else 0,
-                "winner": winner,
-                "revealed": self.revealed,
-            },
-        )
+        ended_payload = {
+            "game_id": self.game_id,
+            "duration": time.time() - self.start_time if self.start_time else 0,
+            "winner": winner,
+            "revealed": self.revealed,
+            "outcome": self.game_outcome(),
+        }
+        if force_ended:
+            ended_payload["reason"] = self.force_end_reason
+        await self.event_publisher("game_ended", ended_payload)
 
         logger.info("Werewolf game ended")
 
@@ -605,8 +617,12 @@ class WerewolfGame(BaseGameMode):
 
                 # End game
                 with tracer.start_as_current_span("teardown_phase") as teardown_span:
+                    # Shield LEDs end with the game, before the winner effects (#1301).
+                    await self._end_shield_feedback()
                     await self._end_game_impl()
                     self._record_game_outcome(teardown_span)
+                    # Winner effects are sent: drop the stream reference (as base run()).
+                    self.gameplay_stream = None
 
                 game_span.set_status(Status(StatusCode.OK))
 
@@ -622,4 +638,5 @@ class WerewolfGame(BaseGameMode):
                 await self._stop_game_music()
                 if force_ended:
                     await self.on_force_end()
-                await self.cleanup()
+                await self._cleanup_after_run()
+                self.gameplay_stream = None
