@@ -380,9 +380,10 @@ class TestWerewolfThresholds:
             expected = WEREWOLF_THRESHOLDS[sensitivity]
             assert thresh == expected, f"Sensitivity {sensitivity}: got {thresh}, expected {expected}"
 
+    @pytest.mark.uc("UC-022", flow="A1", steps=[3])
     @pytest.mark.asyncio
     async def test_werewolf_thresholds_static_across_music_speed(self, werewolf_game):
-        """Werewolf thresholds should not change with music tempo (intentionally static)."""
+        """Werewolf thresholds ignore tempo and agent factors (UC-022 A1 step 3)."""
         game, mock_controller_manager = werewolf_game
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
@@ -400,6 +401,14 @@ class TestWerewolfThresholds:
         # Werewolf thresholds come from static dict, not affected by music
         assert thresh_slow == thresh_fast, (
             f"Werewolf thresholds should be static: slow={thresh_slow}, fast={thresh_fast}"
+        )
+
+        # Agent factors: a player sensitivity factor must not move the werewolf either.
+        werewolf_player.sensitivity_factor = 2.0
+        werewolf_player.handicap_factor = 1.5
+        game.global_difficulty_factor = 2.0
+        assert game._compute_effective_thresholds(werewolf_player) == thresh_slow, (
+            "Werewolf thresholds should ignore agent sensitivity factors"
         )
 
 

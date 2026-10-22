@@ -361,3 +361,28 @@ async def test_force_end_during_the_signal_stops_without_reopen_or_countdown():
     assert GameEvent.GAME_ERROR not in types
     assert GameEvent.COUNTDOWN_START not in types
     assert game._early_drain_task is None
+
+
+@pytest.mark.uc("UC-022", cond=["Pre-1"])
+@pytest.mark.asyncio
+async def test_one_player_raises_before_the_stream_opens():
+    """Pre-1: fewer than two players raises before the stream opens or the signal phase starts."""
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = TraitorGame(
+        controller_manager_client=client,
+        event_publisher=log.publish,
+        audio_client=None,
+        game_id="test_traitor_pre1",
+        num_teams=2,
+        initial_players=_players()[:1],
+        rng_seed=7,
+    )
+
+    with pytest.raises(ValueError, match="at least 2 players"):
+        await asyncio.wait_for(game.run(), timeout=10)
+
+    assert client.streams == []
+    types = _event_types(log)
+    assert GameEvent.GAME_STARTED not in types
+    assert GameEvent.COUNTDOWN_START not in types
