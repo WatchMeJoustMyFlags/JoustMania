@@ -586,6 +586,7 @@ async def test_mode_matrix_blocks_revive_in_ffa():
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-022", br=["BR-002"])
 async def test_mode_matrix_blocks_led_effect_in_werewolf():
     mgr, events = make_manager(
         interventions={"controller_effect": edge_event("controller_effect", "ctrl_a:pulse")},
@@ -838,3 +839,35 @@ async def test_float_targeted_state_still_works_with_string_fix():
     assert len(_applied(events, "set_player_handicap")) == 1
     # Per-serial baseline (UC-040 BR-017) holds the coerced float value, not a string.
     assert mgr._state_bucket("").get("player_handicap_factor") == {"p1": 1.5}
+
+
+# --------------------------------------------------------------------------- #
+# UC-022 BR-002: hidden-role modes (#1361)
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-022", br=["BR-002"])
+@pytest.mark.parametrize(
+    ("type_id", "flag_key", "value"),
+    [("send_controller_effect", "controller_effect", "ctrl_a:pulse"), ("revive_player", "revive_player", "ctrl_a")],
+)
+async def test_mode_matrix_blocks_effect_and_revive_in_traitor(type_id, flag_key, value):
+    mgr, events = make_manager(interventions={flag_key: edge_event(flag_key, value)}, game=FakeGame("Traitor"))
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()
+    sent = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == type_id]
+    assert sent[0]["blocked"] == "true"
+    assert sent[0]["block_reason"] == BLOCK_MODE_UNSUPPORTED
+
+
+@pytest.mark.uc("UC-022", br=["BR-002"])
+def test_mode_matrix_keys_are_the_hidden_role_game_names():
+    """A mode rename would silently allow everything: the matrix keys must equal get_game_name()."""
+    from services.game_coordinator.games.traitor import TraitorGame
+    from services.game_coordinator.games.werewolf import WerewolfGame
+    from services.game_coordinator.interventions import MODE_CAPABILITY_DENY
+
+    for game_cls in (TraitorGame, WerewolfGame):
+        game = game_cls(controller_manager_client=None, event_publisher=None, game_id="uc022_br2")
+        name = game.get_game_name()
+        assert name in MODE_CAPABILITY_DENY
+        assert {"send_controller_effect", "revive_player"} <= MODE_CAPABILITY_DENY[name]
