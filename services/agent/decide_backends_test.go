@@ -368,7 +368,7 @@ func TestDecideRegistry_EmptyBaseURL(t *testing.T) {
 // appends /v1/messages; a /v1 would post to /v1/v1/messages and 404 every call).
 // The `fake` variant exists only in ci/: a prod overlay must not be able to
 // select a dead loopback URL.
-// UC: UC-044 BR-002
+// UC: UC-044 BR-003
 func TestClaudeFlagDefaultsMatchBackend(t *testing.T) {
 	if flags.DefaultDecisionClaudeBaseURL != claude.DefaultBaseURL {
 		t.Fatalf("flags default %q != claude.DefaultBaseURL %q", flags.DefaultDecisionClaudeBaseURL, claude.DefaultBaseURL)
