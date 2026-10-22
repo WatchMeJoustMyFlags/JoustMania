@@ -607,7 +607,8 @@ async def _probe_unary_slow(_request, _context):
     return b"late"
 
 
-async def _probe_stream_ok(_request, _context):
+async def _probe_stream_ok(_request, context):
+    _seen_metadata.append(dict(context.invocation_metadata()))
     for _ in range(3):
         yield b"m"
 
@@ -640,7 +641,22 @@ async def _probe_bidi_fail(request_iterator, context):
         await context.abort(grpc.StatusCode.INTERNAL, "bidi broke")
 
 
+async def _probe_bidi_echo(request_iterator, context):
+    _seen_metadata.append(dict(context.invocation_metadata()))
+    async for request in request_iterator:
+        yield request
+
+
 _seen_metadata: list[dict] = []
+
+
+def _sent_parent_id(metadata: dict) -> int:
+    """The span id in the ``traceparent`` the server received."""
+    return int(metadata["traceparent"].split("-")[2], 16)
+
+
+def _sent_trace_id(metadata: dict) -> int:
+    return int(metadata["traceparent"].split("-")[1], 16)
 
 
 @pytest.fixture
@@ -672,6 +688,7 @@ async def traced_channel(span_exporter):
                     "StreamForever": grpc.unary_stream_rpc_method_handler(_probe_stream_forever),
                     "StreamMany": grpc.unary_stream_rpc_method_handler(_probe_stream_many),
                     "BidiFail": grpc.stream_stream_rpc_method_handler(_probe_bidi_fail),
+                    "BidiEcho": grpc.stream_stream_rpc_method_handler(_probe_bidi_echo),
                 },
             ),
         )
@@ -865,24 +882,81 @@ class TestClientSpanStatusAtCallEnd:
         assert count == 1000
         assert finish.call_count == 1
 
-    async def test_client_span_parents_to_caller_and_traceparent_keeps_caller(self, traced_channel, span_exporter):
+    async def test_client_span_parents_to_caller_and_traceparent_carries_client_span(
+        self, traced_channel, span_exporter
+    ):
+        """The CLIENT span is the caller's child, and the server receives the CLIENT span (#1897)."""
         exporter, provider = span_exporter
         with provider.get_tracer("caller").start_as_current_span("caller") as outer:
             await traced_channel.unary_unary(_PROBE + "UnaryOk")(b"x")
 
         spans = {s.name: s for s in await _finished_spans(exporter, 2)}
         outer_id = outer.get_span_context().span_id
-        assert spans["Probe/UnaryOk"].parent.span_id == outer_id
-        assert f"{outer_id:016x}" in _seen_metadata[0]["traceparent"]
+        client = spans["Probe/UnaryOk"]
+        assert client.parent.span_id == outer_id
+        assert _sent_parent_id(_seen_metadata[0]) == client.context.span_id != outer_id
+        assert _sent_trace_id(_seen_metadata[0]) == outer.get_span_context().trace_id
+
+    async def _assert_stream_sends_client_span(self, exporter, provider, open_stream) -> None:
+        with provider.get_tracer("caller").start_as_current_span("caller") as outer:
+            await open_stream()
+
+        spans = {s.name: s for s in await _finished_spans(exporter, 2)}
+        client = next(s for s in spans.values() if s.kind == trace.SpanKind.CLIENT)
+        assert client.parent.span_id == outer.get_span_context().span_id
+        assert _sent_parent_id(_seen_metadata[0]) == client.context.span_id
+        assert _sent_trace_id(_seen_metadata[0]) == outer.get_span_context().trace_id
+
+    async def test_server_stream_traceparent_carries_client_span(self, traced_channel, span_exporter):
+        exporter, provider = span_exporter
+
+        async def open_stream():
+            assert [m async for m in traced_channel.unary_stream(_PROBE + "StreamOk")(b"x")] == [b"m"] * 3
+
+        await self._assert_stream_sends_client_span(exporter, provider, open_stream)
+
+    async def test_bidi_traceparent_carries_client_span(self, traced_channel, span_exporter):
+        exporter, provider = span_exporter
+
+        async def requests():
+            yield b"a"
+            yield b"b"
+
+        async def open_stream():
+            assert [m async for m in traced_channel.stream_stream(_PROBE + "BidiEcho")(requests())] == [b"a", b"b"]
+
+        await self._assert_stream_sends_client_span(exporter, provider, open_stream)
+
+    async def test_legacy_unary_traceparent_carries_client_span(self, traced_channel, span_exporter):
+        """Legacy OTEL_GRPC_CLIENT_SPANS spans nest the server span the same way (#1897)."""
+        exporter, provider = span_exporter
+        with (
+            patch("lib.grpc_tracing._CREATE_CLIENT_SPANS", True),
+            patch.object(grpc_tracing._rpc_spans_enabled, "return_value", False),
+            provider.get_tracer("caller").start_as_current_span("caller") as outer,
+        ):
+            await traced_channel.unary_unary(_PROBE + "UnaryOk")(b"x")
+
+        spans = {s.name: s for s in await _finished_spans(exporter, 2)}
+        client = spans[_PROBE[1:] + "UnaryOk"]
+        assert client.parent.span_id == outer.get_span_context().span_id
+        assert _sent_parent_id(_seen_metadata[0]) == client.context.span_id
+        assert _sent_trace_id(_seen_metadata[0]) == outer.get_span_context().trace_id
 
     async def test_no_span_when_flag_off(self, traced_channel, span_exporter):
-        exporter, _ = span_exporter
-        with patch.object(grpc_tracing._rpc_spans_enabled, "return_value", False):
+        """Flag off: no CLIENT span, and the caller's span is sent as before (#1897)."""
+        exporter, provider = span_exporter
+        with (
+            patch.object(grpc_tracing._rpc_spans_enabled, "return_value", False),
+            provider.get_tracer("caller").start_as_current_span("caller") as outer,
+        ):
             await traced_channel.unary_unary(_PROBE + "UnaryOk")(b"x")
             [_ async for _ in traced_channel.unary_stream(_PROBE + "StreamOk")(b"x")]
 
         await asyncio.sleep(0.05)
-        assert exporter.get_finished_spans() == ()
+        assert [s.name for s in exporter.get_finished_spans()] == ["caller"]
+        outer_id = outer.get_span_context().span_id
+        assert [_sent_parent_id(md) for md in _seen_metadata] == [outer_id, outer_id]
 
 
 @pytest.mark.uc("UC-035", flow="main", steps=[5])
@@ -931,7 +1005,8 @@ class TestAioDoneCallbackOffLoop:
         assert _code(span) == grpc.StatusCode.CANCELLED.value[0]
 
 
-def _sync_probe_ok(_request, _context):
+def _sync_probe_ok(_request, context):
+    _seen_metadata.append(dict(context.invocation_metadata()))
     return b"ok"
 
 
@@ -939,9 +1014,15 @@ def _sync_probe_fail(_request, context):
     context.abort(grpc.StatusCode.UNAVAILABLE, "down")
 
 
+def _sync_probe_bidi_echo(request_iterator, context):
+    _seen_metadata.append(dict(context.invocation_metadata()))
+    yield from request_iterator
+
+
 @pytest.fixture
 def traced_sync_channel(span_exporter):
     _exporter, provider = span_exporter
+    _seen_metadata.clear()
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     server.add_generic_rpc_handlers(
         (
@@ -950,6 +1031,7 @@ def traced_sync_channel(span_exporter):
                 {
                     "UnaryOk": grpc.unary_unary_rpc_method_handler(_sync_probe_ok),
                     "UnaryFail": grpc.unary_unary_rpc_method_handler(_sync_probe_fail),
+                    "BidiEcho": grpc.stream_stream_rpc_method_handler(_sync_probe_bidi_echo),
                 },
             ),
         )
@@ -988,6 +1070,39 @@ class TestSyncClientSpanStatus:
         (span,) = exporter.get_finished_spans()
         assert span.status.status_code == StatusCode.OK
         assert _code(span) == 0
+
+    def test_blocking_unary_traceparent_carries_client_span(self, traced_sync_channel, span_exporter):
+        """rust-hid / python-hid server spans nest under the adapter's CLIENT span (#1897)."""
+        exporter, provider = span_exporter
+        with provider.get_tracer("caller").start_as_current_span("caller") as outer:
+            traced_sync_channel.unary_unary(_PROBE + "UnaryOk")(b"x")
+
+        client = next(s for s in exporter.get_finished_spans() if s.kind == trace.SpanKind.CLIENT)
+        assert client.parent.span_id == outer.get_span_context().span_id
+        assert _sent_parent_id(_seen_metadata[0]) == client.context.span_id
+        assert _sent_trace_id(_seen_metadata[0]) == outer.get_span_context().trace_id
+
+    def test_sync_stream_sends_caller_span_without_client_span(self, traced_sync_channel, span_exporter):
+        """The sync StreamIO stream has no CLIENT span but still sends the caller's span (#1897)."""
+        exporter, provider = span_exporter
+        with provider.get_tracer("caller").start_as_current_span("caller") as outer:
+            replies = list(traced_sync_channel.stream_stream(_PROBE + "BidiEcho")(iter([b"a", b"b"])))
+
+        assert replies == [b"a", b"b"]
+        assert [s.name for s in exporter.get_finished_spans()] == ["caller"]
+        assert _sent_parent_id(_seen_metadata[0]) == outer.get_span_context().span_id
+        assert _sent_trace_id(_seen_metadata[0]) == outer.get_span_context().trace_id
+
+    def test_blocking_unary_flag_off_sends_caller_span(self, traced_sync_channel, span_exporter):
+        exporter, provider = span_exporter
+        with (
+            patch.object(grpc_tracing._rpc_spans_enabled, "return_value", False),
+            provider.get_tracer("caller").start_as_current_span("caller") as outer,
+        ):
+            traced_sync_channel.unary_unary(_PROBE + "UnaryOk")(b"x")
+
+        assert [s.name for s in exporter.get_finished_spans()] == ["caller"]
+        assert _sent_parent_id(_seen_metadata[0]) == outer.get_span_context().span_id
 
     def test_future_unary_error_is_error(self, traced_sync_channel, span_exporter):
         exporter, _ = span_exporter
