@@ -476,6 +476,7 @@ class TestTraitorInitializationRotation:
         traitor_teams = [game.players[s].team for s in game.traitor_serials]
         assert set(traitor_teams) == {0, 1}
 
+    @pytest.mark.uc("UC-022", flow="main", steps=[1])
     @pytest.mark.asyncio
     async def test_initialization_publishes_event_with_traitor_count(self):
         """Test that player initialization publishes event with traitor count."""
@@ -498,6 +499,7 @@ class TestTraitorInitializationRotation:
         assert init_events[0]["player_count"] == 4
         assert init_events[0]["num_teams"] == 2
 
+    @pytest.mark.uc("UC-022", flow="main", steps=[1])
     @pytest.mark.asyncio
     async def test_three_teams_traitor_gets_different_secret_team(self):
         """Test that with 3 teams, traitor's secret team differs from visible team."""

@@ -301,7 +301,7 @@ async def test_stream_dead_before_the_intro_writes_reopens_instead_of_ending_the
     assert len(log.writes("config")) == 2
 
 
-@pytest.mark.uc("UC-022", cond=["Pre-1"])
+@pytest.mark.uc("UC-022", br=["BR-001"], cond=["Pre-1"])
 @pytest.mark.asyncio
 async def test_one_player_raises_before_the_stream_opens():
     log = RecordingLog()
