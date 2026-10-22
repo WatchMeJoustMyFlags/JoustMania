@@ -3686,6 +3686,29 @@ class BaseGameMode(ABC):
             arm=self.arm or None,
         )
 
+    async def _cleanup_after_run(self) -> None:
+        """Run-end cleanup shared by every mode's run() finally block.
+
+        Closes open shield charge spans, runs cleanup() and clears this
+        session's analytics, on every exit path (natural end, force-end, error).
+        """
+        # An error teardown skips _end_shield_feedback: end open charge spans (#1837).
+        # Before cleanup, so a raising cleanup leaves no span open.
+        self._close_shield_charge_spans()
+        # Always call cleanup to cancel tracked tasks
+        try:
+            await self.cleanup()
+        finally:
+            # A grant arriving while cleanup awaits can open a span after the first close (#1868).
+            self._close_shield_charge_spans()
+        # Ensure this session's analytics are always cleared, even on error
+        # (#775) — per-session targeted cleanup, never a global wipe.
+        metrics.clear_session_player_analytics(
+            list(self.players.keys()),
+            self.game_id,
+            game_kind=self.game_kind,
+        )
+
     async def run(self):
         """
         Main entry point to run the game (Template Method).
@@ -3824,22 +3847,7 @@ class BaseGameMode(ABC):
             # Call force-end hook if game was externally stopped
             if force_ended:
                 await self.on_force_end()
-            # An error teardown skips _end_shield_feedback: end open charge spans (#1837).
-            # Before cleanup, so a raising cleanup leaves no span open.
-            self._close_shield_charge_spans()
-            # Always call cleanup to cancel tracked tasks
-            try:
-                await self.cleanup()
-            finally:
-                # A grant arriving while cleanup awaits can open a span after the first close (#1868).
-                self._close_shield_charge_spans()
-            # Ensure this session's analytics are always cleared, even on error
-            # (#775) — per-session targeted cleanup, never a global wipe.
-            metrics.clear_session_player_analytics(
-                list(self.players.keys()),
-                self.game_id,
-                game_kind=self.game_kind,
-            )
+            await self._cleanup_after_run()
             logger.info(f"{self.get_game_name()} game finished: {self.game_id}")
 
     # ========================================================================
