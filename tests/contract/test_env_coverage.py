@@ -74,10 +74,6 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ): "operator ceiling (C-034, #1810): unset = no ceiling, the experiment_max_games flag governs",
     (
         "agent",
-        "AGENT_EXPERIMENT_DYNAMIC_OBJECTIVE",
-    ): "a non-experimentable or empty value falls back to the balanced objective",
-    (
-        "agent",
         "AGENT_EXPERIMENT_DIR",
     ): "falls back to /var/lib/joustmania/agent/experiments, the agent-experiments volume mount",
     (

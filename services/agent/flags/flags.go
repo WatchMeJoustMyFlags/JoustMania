@@ -91,15 +91,18 @@ const (
 	//
 	// The flagd numeric-flag gotcha applies: every numeric one MUST use the typed
 	// getter (a numeric flag read via ObjectValue silently TYPE_MISMATCHes to its
-	// default — see llmGate). The two LIST-valued declarer knobs
-	// (AGENT_EXPERIMENT_DYNAMIC_CANDIDATES / _DENYLIST) deliberately STAY as env:
-	// top-level LIST flags hit the same get_object_value TYPE_MISMATCH and only the
-	// in-process resolver (port 8015) reads them, so a list flag here would be
-	// silently broken (the issue permits keeping those two as env).
+	// default — see llmGate). The dynamic declarer's candidate list and denylist
+	// (#1907) are comma-separated STRING flags read with StringValue, not list flags,
+	// so the flagd list-flag trap (a top-level JSON list read via get_object_value
+	// TYPE_MISMATCHes) does not apply; the declarer parses the string.
 	keyExperimentsEnabled          = "experiments_enabled"
 	keyExperimentDynamicEnabled    = "experiment_dynamic_enabled"
 	keyExperimentTickSeconds       = "experiment_tick_seconds"
 	keyExperimentDynamicMaxConcur  = "experiment_dynamic_max_concurrent"
+	keyExperimentDynamicCandidates = "experiment_dynamic_candidates"
+	keyExperimentDynamicDenylist   = "experiment_dynamic_denylist"
+	keyExperimentDynamicObjective  = "experiment_dynamic_objective"
+	keyExperimentDynamicTargetN    = "experiment_dynamic_target_n"
 	keyVerdictMinN                 = "verdict_min_n"
 	keyVerdictMinPairs             = "verdict_min_pairs"
 	keyExperimentMaxGames          = "experiment_max_games"
@@ -510,6 +513,11 @@ type ExperimentDefaults struct {
 	VerdictAnchorMargin float64
 }
 
+// DefaultDynamicObjective is the compiled default of experiment_dynamic_objective
+// (#1907), equal to the flag's default variant. The declarer maps any value that is
+// not an experimentable objective (empty, unknown, chaos) to balanced as well.
+const DefaultDynamicObjective = "balanced"
+
 // ExperimentConfig is the LIVE-resolved experiment runtime configuration (#1044),
 // re-read each experiment tick so a flag flip takes effect with no restart. Every
 // field is the agent.json flag when it resolves; otherwise the matching
@@ -553,6 +561,22 @@ type ExperimentConfig struct {
 	// CompletedGrace is the #1020 bounded-grace window for a completed shadow game
 	// (experiment_completed_grace_seconds, #1810). 0 or less = off.
 	CompletedGrace time.Duration
+	// DynamicCandidates is the raw comma-separated candidate list of the dynamic
+	// declarer (experiment_dynamic_candidates, #1907); "" = every tunable flag. The
+	// declarer parses it and always filters it through the built-in denylist.
+	DynamicCandidates string
+	// DynamicDenylist is the raw comma-separated list of keys the dynamic declarer
+	// ADDS to its built-in denylist (experiment_dynamic_denylist, #1907); it can
+	// never remove a built-in key (UC-070 BR-008, C-034). "" or unresolved = only
+	// the built-in list.
+	DynamicDenylist string
+	// DynamicObjective is the declarer's default objective
+	// (experiment_dynamic_objective, #1907); unresolved = DefaultDynamicObjective.
+	DynamicObjective string
+	// DynamicTargetN is the games-per-arm of a dynamically declared experiment
+	// (experiment_dynamic_target_n, #1907); unresolved = 0 (the registry
+	// reconciles it up to the verdict min-N).
+	DynamicTargetN int
 	// ProposerEnabled is the flag half of the proposer gate
 	// (experiment_proposer_enabled, #1810). The caller ANDs it with the
 	// AGENT_EXPERIMENT_PROPOSER_ENABLED ceiling (C-034, FR-152 d). It never falls
@@ -591,6 +615,13 @@ func (f *Flags) Experiment(ctx context.Context, def ExperimentDefaults) Experime
 		// lost sync closes it (C-034).
 		CompletedGrace:  time.Duration(f.intFlag(ctx, keyExperimentCompletedGrace, int(def.CompletedGrace/time.Second))) * time.Second,
 		ProposerEnabled: f.boolFlag(ctx, keyExperimentProposerEnabled, false),
+		// #1907: the dynamic declarer settings. Unresolved = the compiled defaults
+		// (the flag defaults); an empty denylist still means the built-in list,
+		// which the declarer applies whatever this resolves to (UC-070 BR-008).
+		DynamicCandidates: f.stringFlag(ctx, keyExperimentDynamicCandidates, ""),
+		DynamicDenylist:   f.stringFlag(ctx, keyExperimentDynamicDenylist, ""),
+		DynamicObjective:  f.stringFlag(ctx, keyExperimentDynamicObjective, DefaultDynamicObjective),
+		DynamicTargetN:    f.intFlag(ctx, keyExperimentDynamicTargetN, 0),
 	}
 }
 

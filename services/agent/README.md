@@ -946,12 +946,17 @@ table to keep in sync with the code. Live gates (`enabled`, `interventions_enabl
 > intervention and rollout writers use fixed sets. The agent mounts no flag file;
 > only the flag service mounts the baseline directory, read-only.
 >
-> **Stays env (NOT migrated):** `AGENT_EXPERIMENT_DIR` (filesystem concern), the
-> one-shot `AGENT_EXPERIMENT_SEED_*` (startup seed), and the two **list-valued**
-> declarer knobs `AGENT_EXPERIMENT_DYNAMIC_CANDIDATES` / `_DENYLIST` — a top-level
-> flagd **LIST** flag hits a `get_object_value` `TYPE_MISMATCH` (only the in-process
-> resolver reads list flags; the agent uses the RPC resolver), so a list flag here
-> would be silently broken.
+> **Stays env (NOT migrated):** `AGENT_EXPERIMENT_DIR` (filesystem concern) and the
+> one-shot `AGENT_EXPERIMENT_SEED_*` (startup seed).
+>
+> **#1907 — dynamic declarer settings are flags.** `experiment_dynamic_candidates`,
+> `experiment_dynamic_denylist`, `experiment_dynamic_objective` and
+> `experiment_dynamic_target_n` replace the `AGENT_EXPERIMENT_DYNAMIC_*` env vars
+> (only `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` stays, a C-034 ceiling). The two
+> lists are comma-separated **strings** read with `StringValue`, so the flagd
+> list-flag trap does not apply. They are read every experiment tick. The compiled
+> `defaultDynamicDenylist` is a floor: the denylist flag only adds keys, and the
+> floor also filters an explicit candidate list (UC-070 BR-008).
 >
 > **#1214 — verdict-tuning cluster completed.** The four remaining verdict knobs
 > (`verdict_effect_threshold`, `verdict_min_raw_effect`, `verdict_sd_floor`,

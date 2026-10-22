@@ -139,7 +139,7 @@ func TestDynamicDeclarer_GatePassesObjectFlag(t *testing.T) {
 func TestDynamicDeclarer_DisabledByDefault(t *testing.T) {
 	// The declarer is built regardless of the opt-in now (gating moved to the LIVE
 	// flag, checked per tick).
-	if d := newDynamicDeclarerFromEnv(nil, nil); d == nil {
+	if d := newDynamicDeclarer(nil, nil); d == nil {
 		t.Fatal("declarer must always be constructed (#1044) — gating is per-tick via the live flag")
 	}
 	// A nil declarer is a no-op (test/degraded wiring): no panic, no work.
@@ -151,16 +151,16 @@ func TestDynamicDeclarer_DisabledByDefault(t *testing.T) {
 	loop.declareDynamicIfEnabled(context.Background(), flags.ExperimentConfig{DynamicEnabled: false})
 }
 
-// TestDynamicDeclarer_ConfigFromEnv asserts the declarer honors the candidate /
-// objective / target-N env overrides (the on/off gate is the live flag only, #1907).
-func TestDynamicDeclarer_ConfigFromEnv(t *testing.T) {
-	t.Setenv(envDynamicCandidates, "sensitivity, num_teams ,")
-	t.Setenv(envDynamicObjective, "endurance")
-	t.Setenv(envDynamicTargetN, "5")
-	d := newDynamicDeclarerFromEnv(nil, nil)
-	if d == nil {
-		t.Fatal("declarer nil")
-	}
+// TestDynamicDeclarer_ConfigureFromFlags asserts configure applies the per-tick
+// experiment_dynamic_* settings (#1907): the candidate list, the default objective
+// (a non-experimentable one falls back to balanced) and the target N (negative = 0).
+func TestDynamicDeclarer_ConfigureFromFlags(t *testing.T) {
+	d := newDynamicDeclarer(nil, nil)
+	d.configure(flags.ExperimentConfig{
+		DynamicCandidates: "sensitivity, num_teams ,",
+		DynamicObjective:  " endurance ",
+		DynamicTargetN:    5,
+	})
 	if got := d.candidates; len(got) != 2 || got[0] != "sensitivity" || got[1] != "num_teams" {
 		t.Fatalf("candidates = %v, want [sensitivity num_teams]", got)
 	}
@@ -170,15 +170,15 @@ func TestDynamicDeclarer_ConfigFromEnv(t *testing.T) {
 	if d.targetN != 5 {
 		t.Fatalf("targetN = %d, want 5", d.targetN)
 	}
-}
-
-// TestDynamicDeclarer_NonExperimentableObjectiveFallsBack: a chaos default
-// objective is non-experimentable, so it is replaced with balanced.
-func TestDynamicDeclarer_NonExperimentableObjectiveFallsBack(t *testing.T) {
-	t.Setenv(envDynamicObjective, decision.ObjectiveChaos)
-	d := newDynamicDeclarerFromEnv(nil, nil)
-	if d.defaultObjective != decision.ObjectiveBalanced {
-		t.Fatalf("chaos objective did not fall back to balanced, got %q", d.defaultObjective)
+	for _, objective := range []string{decision.ObjectiveChaos, "", "bogus"} {
+		d.configure(flags.ExperimentConfig{DynamicObjective: objective, DynamicTargetN: -3})
+		if d.defaultObjective != decision.ObjectiveBalanced || d.targetN != 0 {
+			t.Fatalf("objective %q / target -3 gave %q / %d, want balanced / 0", objective, d.defaultObjective, d.targetN)
+		}
+	}
+	// A later tick with the flags back at their defaults clears the earlier settings.
+	if d.candidates != nil {
+		t.Fatalf("candidates = %v after an empty flag, want nil (every tunable flag)", d.candidates)
 	}
 }
 
@@ -371,17 +371,26 @@ func dynCfg(maxConcurrent int) flags.ExperimentConfig {
 	}
 }
 
+// withCandidates makes the loop's live config (the configOverride seam) carry the
+// experiment_dynamic_candidates value keys (#1907: the declarer takes its settings
+// from the per-tick config, never from its struct fields).
+func withCandidates(loop *experimentLoop, keys string) {
+	base := loop.configOverride
+	loop.configOverride = func(ctx context.Context) flags.ExperimentConfig {
+		cfg := base(ctx)
+		cfg.DynamicCandidates = keys
+		return cfg
+	}
+}
+
 // TestDeclareDynamic_DeclaresAndStarts asserts the loop's hook declares a fresh
 // experiment AND Starts it (writes shadow targeting → RUNNING), and that a second
 // call dedups the now-active flag onto a different one.
 func TestDeclareDynamic_DeclaresAndStarts(t *testing.T) {
 	loop, svc := loopWithRealRegistry(t, 8)
-	loop.dynamic = &dynamicDeclarer{
-		gameFlags:        svc,
-		candidates:       []string{"sensitivity", "invincibility_seconds"},
-		defaultObjective: decision.ObjectiveBalanced,
-	}
+	loop.dynamic = newDynamicDeclarer(svc, nil)
 	cfg := dynCfg(5)
+	cfg.DynamicCandidates = "sensitivity,invincibility_seconds"
 
 	loop.declareDynamicIfEnabled(context.Background(), cfg)
 	if got := loop.registry.LiveCount(); got != 1 {
@@ -407,12 +416,9 @@ func TestDeclareDynamic_DeclaresAndStarts(t *testing.T) {
 // live set reaches the concurrent-experiment budget.
 func TestDeclareDynamic_RespectsConcurrentBackstop(t *testing.T) {
 	loop, svc := loopWithRealRegistry(t, 8)
-	loop.dynamic = &dynamicDeclarer{
-		gameFlags:        svc,
-		candidates:       []string{"sensitivity", "invincibility_seconds", "fight_club.min_rounds"},
-		defaultObjective: decision.ObjectiveBalanced,
-	}
+	loop.dynamic = newDynamicDeclarer(svc, nil)
 	cfg := dynCfg(2) // budget of 2 (well under capacity 8)
+	cfg.DynamicCandidates = "sensitivity,invincibility_seconds,fight_club.min_rounds"
 
 	for i := 0; i < 5; i++ {
 		loop.declareDynamicIfEnabled(context.Background(), cfg)
@@ -427,12 +433,9 @@ func TestDeclareDynamic_RespectsConcurrentBackstop(t *testing.T) {
 // shadow slots for.
 func TestDeclareDynamic_BackstopClampedToCapacity(t *testing.T) {
 	loop, svc := loopWithRealRegistry(t, 1) // capacity 1
-	loop.dynamic = &dynamicDeclarer{
-		gameFlags:        svc,
-		candidates:       []string{"sensitivity", "invincibility_seconds", "fight_club.min_rounds"},
-		defaultObjective: decision.ObjectiveBalanced,
-	}
+	loop.dynamic = newDynamicDeclarer(svc, nil)
 	cfg := dynCfg(99) // huge — but capacity clamps it to 1
+	cfg.DynamicCandidates = "sensitivity,invincibility_seconds,fight_club.min_rounds"
 
 	for i := 0; i < 5; i++ {
 		loop.declareDynamicIfEnabled(context.Background(), cfg)
@@ -452,13 +455,10 @@ func TestDeclareDynamic_BackstopClampedToCapacity(t *testing.T) {
 // also catch the cursor race. (Reverting the mutex makes this fail: LiveCount > budget.)
 func TestDeclareDynamic_ConcurrentCallersRespectBudget(t *testing.T) {
 	loop, svc := loopWithRealRegistry(t, 16) // ample capacity so the BUDGET is the bound
-	loop.dynamic = &dynamicDeclarer{
-		gameFlags:        svc,
-		candidates:       []string{"sensitivity", "invincibility_seconds", "fight_club.min_rounds"},
-		defaultObjective: decision.ObjectiveBalanced,
-	}
+	loop.dynamic = newDynamicDeclarer(svc, nil)
 	const budget = 2
 	cfg := dynCfg(budget) // well under capacity 16
+	cfg.DynamicCandidates = "sensitivity,invincibility_seconds,fight_club.min_rounds"
 
 	const goroutines = 8
 	var wg sync.WaitGroup
@@ -486,11 +486,8 @@ func TestDeclareDynamic_ConcurrentCallersRespectBudget(t *testing.T) {
 // every other declaration (it is only called AFTER the enabled check).
 func TestDeclareDynamic_KillSwitchOffDeclaresNothing(t *testing.T) {
 	loop, svc := loopWithRealRegistry(t, 8)
-	loop.dynamic = &dynamicDeclarer{
-		gameFlags:        svc,
-		candidates:       []string{"sensitivity"},
-		defaultObjective: decision.ObjectiveBalanced,
-	}
+	loop.dynamic = newDynamicDeclarer(svc, nil)
+	withCandidates(loop, "sensitivity")
 	loop.enabledOverride = func(context.Context) bool { return false } // kill-switch OFF
 
 	loop.allocateIfEnabled(context.Background())
@@ -513,17 +510,12 @@ func TestDeclareDynamic_KillSwitchOffDeclaresNothing(t *testing.T) {
 // UC: UC-070 A9 BR-007
 func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 	ctx := context.Background()
-	declarer := func(svc *fake.Service) *dynamicDeclarer {
-		return &dynamicDeclarer{
-			gameFlags:        svc,
-			candidates:       []string{"sensitivity"},
-			defaultObjective: decision.ObjectiveBalanced,
-		}
-	}
+	declarer := func(svc *fake.Service) *dynamicDeclarer { return newDynamicDeclarer(svc, nil) }
 
 	t.Run("UC-070/BR-007 the declarer re-declares after the kill switch aborted the experiments", func(t *testing.T) {
 		loop, svc := loopWithRealRegistry(t, 8)
 		loop.dynamic = declarer(svc)
+		withCandidates(loop, "sensitivity")
 		enabled := true
 		loop.enabledOverride = func(context.Context) bool { return enabled }
 
@@ -550,6 +542,7 @@ func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 		loop, svc := loopWithRealRegistry(t, 8)
 		loop.dynamic = declarer(svc)
 		on := dynCfg(defaultDynamicMaxConcurrent)
+		on.DynamicCandidates = "sensitivity"
 		cfg := on
 		loop.configOverride = func(context.Context) flags.ExperimentConfig { return cfg }
 
@@ -569,6 +562,7 @@ func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 	t.Run("UC-070/BR-007 the env seed is declared once per agent start", func(t *testing.T) {
 		loop, svc := loopWithRealRegistry(t, 8)
 		loop.dynamic = declarer(svc)
+		withCandidates(loop, "sensitivity")
 		loop.seed = &experiment.Intent{
 			Hypothesis: "h", FlagKey: "invincibility_seconds",
 			ExperimentalValue: 6.0, Objective: decision.ObjectiveBalanced, TargetNPerArm: 50,
@@ -629,25 +623,4 @@ func TestDynamicDeclarer_DefaultRotationSkipsPlumbingFlags(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestDenylistFromEnv_EmptyMeansBuiltIn asserts an empty/blank value falls back to
-// the built-in denylist (a compose passthrough defines the var as empty, #1908).
-// UC: UC-070 BR-008
-func TestDenylistFromEnv_EmptyMeansBuiltIn(t *testing.T) {
-	for name, raw := range map[string]string{"empty": "", "whitespace": "  ", "commas": " , ,"} {
-		t.Run("UC-070/BR-008 "+name, func(t *testing.T) {
-			t.Setenv(envDynamicDenylist, raw)
-			if got := denylistFromEnv(); got != nil {
-				t.Fatalf("denylistFromEnv() = %v, want nil (built-in denylist)", got)
-			}
-		})
-	}
-	t.Run("UC-070/BR-008 explicit list replaces built-in", func(t *testing.T) {
-		t.Setenv(envDynamicDenylist, "a, b")
-		got := denylistFromEnv()
-		if _, ok := got["a"]; !ok || len(got) != 2 {
-			t.Fatalf("denylistFromEnv() = %v, want {a,b}", got)
-		}
-	})
 }

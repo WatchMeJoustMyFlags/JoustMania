@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flags"
 )
@@ -19,11 +18,7 @@ import (
 func proposerLoop(t *testing.T) *experimentLoop {
 	t.Helper()
 	loop, svc := loopWithRealRegistry(t, 8)
-	loop.dynamic = &dynamicDeclarer{
-		gameFlags:        svc,
-		candidates:       []string{"sensitivity", "invincibility_seconds"},
-		defaultObjective: decision.ObjectiveBalanced,
-	}
+	loop.dynamic = newDynamicDeclarer(svc, nil)
 	loop.proposer = experiment.NewThesisProposer(0)
 	return loop
 }
@@ -130,5 +125,24 @@ func budgetCfg(maxConcurrent int) flags.ExperimentConfig {
 		ShadowEffectiveConcurrency: 4,
 		// The proposer gate's flag half (#1810); the env half is set per test.
 		ProposerEnabled: true,
+	}
+}
+
+// TestRetroProposer_UsesTheTicksDynamicSettings: the retro-seeded proposer selects
+// through the dynamic declarer, so it applies the same per-tick
+// experiment_dynamic_* settings (#1907): a candidate list read from this tick's
+// config decides the flag, with no restart.
+// UC: UC-042 A3
+func TestRetroProposer_UsesTheTicksDynamicSettings(t *testing.T) {
+	t.Setenv(envProposerEnabled, "true")
+	loop := proposerLoop(t)
+	loop.proposer.Record(experiment.RetroSuggestion{Reason: "room faded"})
+	cfg := dynCfg(5)
+	cfg.DynamicCandidates = "fight_club.min_rounds"
+
+	loop.declareFromRetroIfEnabled(context.Background(), cfg)
+
+	if _, ok := loop.registry.ActiveFlags()["fight_club.min_rounds"]; !ok || loop.registry.LiveCount() != 1 {
+		t.Fatalf("active = %v, want exactly fight_club.min_rounds (the tick's candidate list)", loop.registry.ActiveFlags())
 	}
 }

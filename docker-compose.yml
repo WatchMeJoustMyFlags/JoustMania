@@ -766,14 +766,11 @@ services:
       - AGENT_EXPERIMENT_PROPOSER_ENABLED=${AGENT_EXPERIMENT_PROPOSER_ENABLED:-}
       # Heuristic dynamic declarer (#995): the agent autonomously picks which
       # game.json flag to experiment on. Gated by the experiment_dynamic_enabled flag
-      # (default off), under experiments_enabled + the kill-switch (#1907). The
-      # knobs below pass through so they reach the deployed stack (#1041).
+      # (default off), under experiments_enabled + the kill-switch (#1907). Its
+      # candidates, denylist additions, objective and target N are the
+      # experiment_dynamic_* flags (#1907, flags.md §15).
       # Operator ceiling on experiment_dynamic_max_concurrent (#1810, C-034): empty = no ceiling.
       - AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT=${AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT:-}
-      - AGENT_EXPERIMENT_DYNAMIC_CANDIDATES=${AGENT_EXPERIMENT_DYNAMIC_CANDIDATES:-}
-      # Bare name: forwarded only when set on the host; an empty value would mean the built-in list anyway (#1908).
-      - AGENT_EXPERIMENT_DYNAMIC_DENYLIST
-      - AGENT_EXPERIMENT_DYNAMIC_TARGET_N=${AGENT_EXPERIMENT_DYNAMIC_TARGET_N:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - OTEL_SERVICE_NAME=agent
       - OTEL_SERVICE_NAMESPACE=infrastructure
