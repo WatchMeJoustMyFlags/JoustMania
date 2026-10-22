@@ -46,6 +46,8 @@ from opentelemetry import trace
 from opentelemetry.propagate import extract, inject
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
+from lib.grpc_metrics import is_caller_cancel_details
+
 logger = logging.getLogger(__name__)
 
 # Configuration: Set OTEL_GRPC_CLIENT_SPANS=true to enable client spans
@@ -208,23 +210,16 @@ def _build_rpc_attributes(
     return attrs
 
 
-# grpc's details for a call the caller ended itself: ``call.cancel()`` or a cancelled task (aio),
-# garbage collection, or closing the channel on this side (aio cancels its calls; the sync channel
-# uses "Channel closed!" / "Channel deallocated!"). Matched as substrings, as in lib/grpc_metrics.py.
-_CALLER_CANCEL_MARKERS = (
-    "Locally cancelled by application",
-    "Cancelled upon garbage collection",
-    "Channel closed",
-    "Channel deallocated",
-)
+# The caller-cancel markers live in lib/grpc_metrics.py (CALLER_CANCEL_MARKERS), shared with the metrics.
 _LOCAL_CANCEL_DETAILS = "Locally cancelled by application!"
+_GC_CANCEL_DETAILS = "Cancelled upon garbage collection!"
 
 # Pending end-of-stream tasks; held here so the loop does not drop them before they run.
 _pending_span_finishes: set[asyncio.Task] = set()
 
 
 def _is_caller_cancel(code: grpc.StatusCode, details: str | None) -> bool:
-    return code == grpc.StatusCode.CANCELLED and any(marker in (details or "") for marker in _CALLER_CANCEL_MARKERS)
+    return code == grpc.StatusCode.CANCELLED and is_caller_cancel_details(details)
 
 
 def _record_client_status(
@@ -258,11 +253,14 @@ class _ClientSpanFinisher:
     (completed, failed, cancelled or garbage collected).
     """
 
-    __slots__ = ("_done", "_span")
+    __slots__ = ("_done", "_loop", "_span")
 
-    def __init__(self, span: trace.Span):
+    def __init__(self, span: trace.Span, loop: asyncio.AbstractEventLoop | None = None):
         self._span = span
         self._done = False
+        # The aio call's loop, captured at setup: a done callback fired by GC on another thread
+        # (a to_thread worker, a grpc or HID thread) hands the status read back to it.
+        self._loop = loop
 
     def finish(
         self, code: grpc.StatusCode | None, details: str | None = None, error: BaseException | None = None
@@ -286,6 +284,25 @@ class _ClientSpanFinisher:
     def on_aio_call_done(self, call: Any) -> None:
         # Runs inside grpc's cython layer: it must never raise. The final status is read through
         # coroutines that resolve at once on a finished call, so one task finishes the span.
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        try:
+            if running is not None and (self._loop is None or running is self._loop):
+                self._schedule_aio_finish(call)
+            elif self._loop is not None and not self._loop.is_closed():
+                # Off the loop thread (GC on another thread): schedule the read on the call's loop.
+                self._loop.call_soon_threadsafe(self._schedule_aio_finish, call)
+            else:
+                # No loop to read the status on: the call can only have been dropped (GC).
+                self.finish(grpc.StatusCode.CANCELLED, _GC_CANCEL_DETAILS)
+        except Exception:
+            # e.g. the loop closed between the check and call_soon_threadsafe.
+            logger.debug("Could not schedule the end of a gRPC client span; ending it as cancelled")
+            self.finish(grpc.StatusCode.CANCELLED, _GC_CANCEL_DETAILS)
+
+    def _schedule_aio_finish(self, call: Any) -> None:
         try:
             task = asyncio.get_running_loop().create_task(self._finish_from_aio_call(call))
         except Exception:
@@ -370,7 +387,9 @@ class _ClientSpanInterceptorBase:
         if spec is None:
             return await continuation(details, request)
         tracer, name, attrs, legacy = spec
-        finisher = _ClientSpanFinisher(tracer.start_span(name, kind=SpanKind.CLIENT, attributes=attrs))
+        finisher = _ClientSpanFinisher(
+            tracer.start_span(name, kind=SpanKind.CLIENT, attributes=attrs), asyncio.get_running_loop()
+        )
         try:
             call = await continuation(details, request)
         except grpc.aio.AioRpcError as e:

@@ -1,9 +1,11 @@
 """Tests for lib/grpc_tracing.py"""
 
 import asyncio
+import contextlib
 import gc
 import logging
 import sys
+import threading
 import time
 from concurrent import futures
 from pathlib import Path
@@ -812,6 +814,42 @@ class TestClientSpanStatusAtCallEnd:
         assert spans[0].status.status_code == StatusCode.UNSET
         assert _code(spans[0]) == grpc.StatusCode.CANCELLED.value[0]
 
+    @pytest.mark.parametrize(
+        ("method", "expected_status", "expected_code"),
+        [
+            ("StreamFail", StatusCode.ERROR, grpc.StatusCode.UNAVAILABLE),
+            ("StreamOk", StatusCode.OK, grpc.StatusCode.OK),
+            ("StreamForever", StatusCode.UNSET, grpc.StatusCode.CANCELLED),
+        ],
+    )
+    async def test_legacy_client_spans_stream_ends_at_rpc_end_with_status_code(
+        self, traced_channel, span_exporter, method, expected_status, expected_code
+    ):
+        """Legacy OTEL_GRPC_CLIENT_SPANS path: a stream span lasts the RPC and carries the final code;
+        a cancel by the caller leaves the status unset (#1879)."""
+        exporter, _ = span_exporter
+        with (
+            patch("lib.grpc_tracing._CREATE_CLIENT_SPANS", True),
+            patch.object(grpc_tracing._rpc_spans_enabled, "return_value", False),
+        ):
+            call = traced_channel.unary_stream(_PROBE + method)(b"x")
+            await call.read()
+            assert exporter.get_finished_spans() == (), "a stream span must not end at setup"
+            if method == "StreamForever":
+                call.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await call.read()
+            else:
+                with contextlib.suppress(grpc.aio.AioRpcError):
+                    async for _ in call:
+                        pass
+
+            (span,) = await _finished_spans(exporter)
+
+        assert span.name == _PROBE[1:] + method
+        assert span.status.status_code == expected_status
+        assert _code(span) == expected_code.value[0]
+
     async def test_long_stream_finishes_span_once_not_per_message(self, traced_channel, span_exporter):
         from lib.grpc_tracing import _ClientSpanFinisher
 
@@ -845,6 +883,49 @@ class TestClientSpanStatusAtCallEnd:
 
         await asyncio.sleep(0.05)
         assert exporter.get_finished_spans() == ()
+
+
+@pytest.mark.uc("UC-035", flow="main", steps=[5])
+class TestAioDoneCallbackOffLoop:
+    """The aio done callback fired by GC off the loop thread still ends the span once (#1899 review)."""
+
+    def _finished_call(self):
+        call = MagicMock()
+        call.code = AsyncMock(return_value=grpc.StatusCode.CANCELLED)
+        call.details = AsyncMock(return_value="Cancelled upon garbage collection!")
+        return call
+
+    def test_off_loop_callback_schedules_status_read_on_the_calls_loop(self, span_exporter):
+        from lib.grpc_tracing import _ClientSpanFinisher
+
+        exporter, provider = span_exporter
+        loop = asyncio.new_event_loop()
+        try:
+            finisher = _ClientSpanFinisher(provider.get_tracer("t").start_span("P/F"), loop)
+            worker = threading.Thread(target=finisher.on_aio_call_done, args=(self._finished_call(),))
+            worker.start()
+            worker.join()
+            loop.run_until_complete(asyncio.sleep(0.05))
+        finally:
+            loop.close()
+
+        (span,) = exporter.get_finished_spans()
+        assert span.status.status_code == StatusCode.UNSET
+        assert _code(span) == grpc.StatusCode.CANCELLED.value[0]
+
+    def test_closed_loop_records_cancelled_and_ends_once(self, span_exporter):
+        from lib.grpc_tracing import _ClientSpanFinisher
+
+        exporter, provider = span_exporter
+        loop = asyncio.new_event_loop()
+        loop.close()
+        finisher = _ClientSpanFinisher(provider.get_tracer("t").start_span("P/F"), loop)
+        finisher.on_aio_call_done(self._finished_call())
+        finisher.on_aio_call_done(self._finished_call())
+
+        (span,) = exporter.get_finished_spans()
+        assert span.status.status_code == StatusCode.UNSET
+        assert _code(span) == grpc.StatusCode.CANCELLED.value[0]
 
 
 def _sync_probe_ok(_request, _context):
