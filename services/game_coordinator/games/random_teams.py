@@ -110,18 +110,12 @@ class RandomTeamsGame(TeamsGameBase):
         Returns:
             Dictionary mapping serial to team number
         """
-        # Create a pool of team numbers
-        num_players = len(player_serials)
-        teams_per_player = (num_players // self.num_teams) + 1
-        team_pool = list(range(self.num_teams)) * teams_per_player
+        # Shuffle the players (a copy), then deal round-robin: sizes differ by
+        # at most one and no team is empty while players >= teams (#1354).
+        shuffled = list(player_serials)
+        self._rng.shuffle(shuffled)
 
-        # Shuffle the pool
-        self._rng.shuffle(team_pool)
-
-        # Assign teams
-        assignments = {}
-        for idx, serial in enumerate(player_serials):
-            assignments[serial] = team_pool[idx]
+        assignments = {serial: idx % self.num_teams for idx, serial in enumerate(shuffled)}
 
         logger.info(f"Random team assignments: {assignments}")
         return assignments
