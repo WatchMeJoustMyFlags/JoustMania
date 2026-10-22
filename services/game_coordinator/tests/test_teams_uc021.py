@@ -232,6 +232,9 @@ def _winner_case(name, num_teams, players, dead, winner_team, winners, team_name
     return pytest.param(num_teams, players, dead, winner_team, winners, team_name, sound, id=name)
 
 
+# Blue is the 7th colour, so only a 7-team game (outside Pre-1: 2..6 teams) reaches its voice line.
+BLUE_VOICE_CASE = ("blue-voice", 7, 7, [0, 1, 2, 3, 4, 5], 6, ["mock_controller_6"], "Blue", Sound.VOX_BLUE_TEAM_WIN)
+
 WIN_CASES = [
     # a team-mate of the winners dies first, so the winning team is announced with the alive players only
     _winner_case("pink-falls-back", 2, 6, [2, 1, 3, 5], 0, ["mock_controller_0", "mock_controller_4"], "Pink", None),
@@ -245,7 +248,6 @@ WIN_CASES = [
         "Magenta",
         Sound.VOX_MAGENTA_TEAM_WIN,
     ),
-    _winner_case("blue-voice", 7, 7, [0, 1, 2, 3, 4, 5], 6, ["mock_controller_6"], "Blue", Sound.VOX_BLUE_TEAM_WIN),
 ]
 
 
@@ -259,6 +261,16 @@ class TestMainSteps3To5:
         self, fast_config, num_teams, players, dead, winner_team, winners, team_name, sound
     ):
         """UC-021 steps 3 to 5: the last team standing is announced, rainbowed and voiced, then game_ended."""
+        await self._assert_team_wins(num_teams, players, dead, winner_team, winners, team_name, sound)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", flow="main", steps=[4])
+    async def test_blue_team_win_uses_the_blue_voice_line(self, fast_config):
+        """UC-021 step 4: Blue (7th colour, beyond the 2..6 team precondition) maps to the Blue voice line."""
+        _, *case = BLUE_VOICE_CASE
+        await self._assert_team_wins(*case)
+
+    async def _assert_team_wins(self, num_teams, players, dead, winner_team, winners, team_name, sound):
         schedule = {1.0 + 0.1 * i: idx for i, idx in enumerate(dead)}
         cm = RecordingControllerManager(num_controllers=players, death_schedule=schedule, max_duration=10.0)
         audio = create_autospec(RecordingAudio, instance=True)
