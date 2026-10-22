@@ -17,6 +17,7 @@ from opentelemetry.trace import Status, StatusCode
 
 from lib.types import Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import metrics
 from services.game_coordinator.games.base import Phase, Player
 from services.game_coordinator.games.teams_base import TEAM_WIN_SOUNDS, TeamsGameBase
 
@@ -242,6 +243,13 @@ class SwapperGame(TeamsGameBase):
         # Respawn the player on their new team
         # This re-enables base class processing for this player
         player.alive = True
+
+        # The base kill path zeroed the per-player gauge and the aggregate before the
+        # swap; the swapped player is still in the game (#1342). Skipped after a force
+        # end, which cleared the player analytics (no gauge series recreated).
+        if self.running:
+            metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
+            self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
         logger.debug(f"Player {serial} respawned on team {new_team}")
 
         # Publish swap event
@@ -257,6 +265,15 @@ class SwapperGame(TeamsGameBase):
 
         # Play swap sound
         await self._play_sound(Sound.SFX_BEEP, priority=1)
+
+    def _sends_death_effect(self, serial: str) -> bool:
+        """No base death effect for a swapped player, who stays in the game (#1342).
+
+        The swap already set ``alive`` back to True (after the flash and the new team
+        colour); the base kill path reads this right after the impl returns. A player
+        still not alive (not swapped) gets the default death effect.
+        """
+        return not self.players[serial].alive
 
     async def _set_player_color(self, serial: str, color: tuple):
         """Set a player's controller LED color via stream."""
