@@ -6,6 +6,7 @@ docker test, which skips without it).
 """
 
 import asyncio
+import inspect
 import json
 import os
 import shutil
@@ -187,6 +188,33 @@ def test_flag_plane_rewrites_claude_variant_in_ci_copy(tmp_path):
     plane._rewrite_variants()
     flags = json.loads((plane.flag_dir / "agent.json").read_text())["flags"]
     assert flags["decision.claude.base_url"]["variants"]["fake"] == "http://127.0.0.1:9"
+
+
+def test_agent_flags_are_written_as_overlays_before_the_agent_starts(tmp_path, monkeypatch):
+    """``Composition.agent_flags`` become agent-set overlays (variant or value), next to the fake Claude's."""
+    from dataclasses import replace
+
+    from tests.integration import flag_service
+
+    puts = []
+
+    class RecordingFlagService:
+        def __init__(self, url):
+            pass
+
+        def put(self, flag_set, flag, **kwargs):
+            puts.append((flag_set, flag, kwargs))
+
+    monkeypatch.setattr(flag_service, "FlagService", RecordingFlagService)
+    composition = replace(AGENT, agent_flags={"enabled": {"variant": "on"}, "verdict_min_n": {"value": 1}})
+    ServiceStack(composition, tmp_path)._seed_agent_overlays()
+    assert puts == [
+        ("agent", "enabled", {"writer": "service-harness", "variant": "on"}),
+        ("agent", "verdict_min_n", {"writer": "service-harness", "value": 1}),
+    ]
+    # The agent starts after the overlays are written (the first tick reads them).
+    source = inspect.getsource(ServiceStack._start)
+    assert source.index("_seed_agent_overlays()") < source.index("self.agent.start()")
 
 
 def test_flag_plane_rewrites_only_declared_variants(tmp_path):

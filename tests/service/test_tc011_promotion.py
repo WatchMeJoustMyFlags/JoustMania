@@ -87,13 +87,24 @@ TUNING = {
     "experiment_max_games": 12,
     "experiment.max_game_seconds": 90,
 }
+# Served before the agent starts (Composition.agent_flags), so its first tick already reads them.
+SERVICE_COMPOSITION = replace(
+    SERVICE_COMPOSITION,
+    agent_flags={
+        "enabled": {"variant": "on"},
+        "experiments_enabled": {"variant": "on"},
+        "decision.backend": {"variant": "rules"},
+        **{key: {"value": value} for key, value in TUNING.items()},
+    },
+)
 # The experimental game runs this long before the test ends it; the control game ends
 # at once. With the baseline fitness.endurance.min_session_seconds (120 s, not an
 # overlay) that is a per-pair fitness gap of about 0.07, over three times
 # verdict_min_raw_effect (0.02). code_improvement.mode is the baseline ``issue``
 # (read-only on the flag service).
 EXPERIMENTAL_HOLD_SECONDS = 8.0
-DECLARE_TIMEOUT = 60.0
+# 90 s leaves room for one compiled 30 s first experiment tick before the live cadence.
+DECLARE_TIMEOUT = 90.0
 CONCLUDE_TIMEOUT = 240.0
 RUNNING_TIMEOUT = 20.0
 # Absence window after teardown: several experiment ticks (3 s each).
@@ -146,14 +157,9 @@ def promotion_stack(service_stack):
     """The module's stack with the agent, experiments, the bounded tuning and issue mode served."""
     client = FlagService.from_compose(service_stack)
     bind_flag_service(client)
-    client.put("agent", "enabled", variant="on")
-    client.put("agent", "experiments_enabled", variant="on")
-    client.put("agent", "decision.backend", variant="rules")
     # eliminate_player passes the coordinator's allow-list only under `full`.
     client.put("agent", "interventions_allowed", variant="full")
     client.put("agent", "experiment.mock_archetypes", variant="all")
-    for key, value in TUNING.items():
-        client.put("agent", key, value=value)
     try:
         yield service_stack, client
     finally:

@@ -93,6 +93,9 @@ class Composition:
     fake_github: bool = False
     # Extra env for the agent process, applied last (e.g. the experiment seed of TC-011).
     agent_env: Mapping[str, str] = field(default_factory=dict)
+    # Agent-set flag overlays served before the agent starts, so its first tick already reads
+    # them: ``{flag: {"variant": "on"}}`` or ``{flag: {"value": 3}}`` (kwargs of ``FlagService.put``).
+    agent_flags: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.fake_claude and not self.agent:
@@ -195,7 +198,7 @@ class ServiceStack:
             self.fake_github.start()
         plane = self.flag_plane
         plane.start()
-        self._seed_inference_overlay()
+        self._seed_agent_overlays()
         self._ports[("flag-service", FLAG_SERVICE_HTTP_PORT)] = plane.http_port
         self._ports[("flagd", 8013)] = plane.flagd_eval_port
         self._ports[("flagd", 8015)] = plane.flagd_sync_port
@@ -262,25 +265,30 @@ class ServiceStack:
         """The Jev decide backend's key: the fake's dummy key, or none (UC-044 A1)."""
         return {"JEV_API_KEY": FAKE_JEV_API_KEY} if self.fake_jev is not None else {}
 
-    def _seed_inference_overlay(self) -> None:
-        """Select the fake Claude as the text backend: the ``inference.backend=claude`` overlay.
+    def _seed_agent_overlays(self) -> None:
+        """Write the agent flag overlays: the fake Claude's ``inference.backend=claude`` plus ``agent_flags``.
 
         The flag wins over ``AGENT_INFERENCE_BACKEND`` (FR-151, #1810), so the env alone would
-        leave the agent on the flag's ``stub`` default. Written before the agent starts, so the
-        first game end already sees it. The key and base URL (the env ceilings) stay in the env.
+        leave the agent on the flag's ``stub`` default. Written after the flag plane is up and
+        before the agent starts, so the first tick and the first game end already see them.
+        The key and base URL (the env ceilings) stay in the env.
         """
-        if not self.composition.fake_claude:  # not AGENT_CLAUDE_DECIDE: its text backend stays the stub
+        overlays: dict[str, Mapping[str, object]] = {}
+        if self.composition.fake_claude:  # not AGENT_CLAUDE_DECIDE: its text backend stays the stub
+            overlays["inference.backend"] = {"variant": "claude"}
+        overlays.update(self.composition.agent_flags)
+        if not overlays:
             return
         from tests.integration.flag_service import FlagService
 
-        FlagService(self.flag_plane.flag_service_url).put(
-            "agent", "inference.backend", variant="claude", writer="service-harness"
-        )
+        client = FlagService(self.flag_plane.flag_service_url)
+        for flag, setting in overlays.items():
+            client.put("agent", flag, writer="service-harness", **setting)
 
     def _inference_env(self) -> dict[str, str]:
         """The agent's text backend ceilings (the fake Claude's key and URL), or none for the stub.
 
-        The backend itself is the ``inference.backend`` overlay (``_seed_inference_overlay``);
+        The backend itself is the ``inference.backend`` overlay (``_seed_agent_overlays``);
         ``AGENT_INFERENCE_BACKEND`` is kept as the deprecated fallback only.
         """
         if not self.composition.fake_claude:
