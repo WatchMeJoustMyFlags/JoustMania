@@ -73,6 +73,7 @@ async def test_kill_ends_with_the_base_death_effect(game_cls, sdk_tracer):
     ]
     assert mine, "the kill wrote nothing for the serial"
     last = mine[-1]
+    await game.cleanup()  # NonStop leaves a pending respawn task
     assert last.HasField("game_effect")
     assert last.game_effect.effect == controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH
     assert last.game_effect.trace_parent != ""

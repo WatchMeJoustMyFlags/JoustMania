@@ -1247,6 +1247,19 @@ class TestZombieLedAfterKill:
         zm.player_alive.labels.assert_called_with(serial=human, game_id=game.game_id)
         zm.player_alive.labels.return_value.set.assert_called_with(1)
 
+    @pytest.mark.uc("UC-023", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_conversion_after_force_end_does_not_recreate_the_gauge(self, game, monkeypatch):
+        async def end_game_during_sleep(_delay, *_args, **_kwargs):
+            game.running = False
+
+        monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", end_game_during_sleep)
+        human = game.human_serials[0]
+        with patch("services.game_coordinator.games.zombie.metrics") as zm:
+            await game._kill_player(human, 3.0)
+
+        zm.player_alive.labels.return_value.set.assert_not_called()
+
     @pytest.mark.uc("UC-023", flow="main", steps=[4])
     @pytest.mark.asyncio
     async def test_zombie_death_then_timer_respawn_ends_grey(self, game, monkeypatch):
@@ -1326,8 +1339,8 @@ class TestZombieLedAfterKill:
         first = asyncio.create_task(game.revive_player(zombie))
         await asyncio.wait_for(stream.blocked.wait(), timeout=1.0)
         # First revive is suspended on its grey write: a second revive and the timer path refuse.
-        assert await game.revive_player(zombie) is False
-        assert await game._respawn_player(zombie) is False
+        assert await asyncio.wait_for(game.revive_player(zombie), timeout=1.0) is False
+        assert await asyncio.wait_for(game._respawn_player(zombie), timeout=1.0) is False
         stream.gate.set()
         assert await first is True
 

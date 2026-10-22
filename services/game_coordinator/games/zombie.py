@@ -469,8 +469,10 @@ class ZombieGame(BaseGameMode):
             await self.gameplay_stream.write(base_color_cmd)
 
             # The base kill path set the per-player gauge to 0; the converted
-            # zombie is still in the game (#1342).
-            self._mark_alive_in_metrics(serial)
+            # zombie is still in the game (#1342). Skipped after a force end, which
+            # cleared the player analytics (no gauge series recreated).
+            if self.running:
+                self._mark_alive_in_metrics(serial)
 
             # Play conversion sound (use zombie death sound for conversion)
             await self._play_sound(Sound.VOX_ZOMBIE_DEATH, priority=2)
