@@ -106,6 +106,7 @@ func TestUC043_A1_KillSwitchRevertsFromFlagService(t *testing.T) {
 		svc := newPromotionService(t)
 		w := writerForTest(t, svc, t.TempDir())
 		blocking := &blockingRealDefault{inner: w, entered: make(chan struct{}), release: make(chan struct{})}
+		t.Cleanup(blocking.releaseNow) // never leave the blocked write hanging
 		p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, blocking, fakeWatcher{}, w)
 		ev, flag := killSwitchProposal()
 		prop := promoteProposal
@@ -119,7 +120,7 @@ func TestUC043_A1_KillSwitchRevertsFromFlagService(t *testing.T) {
 			defer wg.Done()
 			res = p.Promote(ctx, prop, promoteVerdict, on, ev)
 		}()
-		<-blocking.entered
+		awaitEntered(t, blocking.entered)
 		killDone := make(chan struct{})
 		wg.Add(1)
 		go func() {
@@ -133,7 +134,7 @@ func TestUC043_A1_KillSwitchRevertsFromFlagService(t *testing.T) {
 		case <-killDone:
 		case <-time.After(200 * time.Millisecond):
 		}
-		close(blocking.release)
+		blocking.releaseNow()
 		wg.Wait()
 
 		if _, ok := svc.RealValue("game", promotedFlag); ok {
@@ -160,7 +161,10 @@ type blockingRealDefault struct {
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
+	relOnce sync.Once
 }
+
+func (b *blockingRealDefault) releaseNow() { b.relOnce.Do(func() { close(b.release) }) }
 
 func (b *blockingRealDefault) SetRealDefault(ctx context.Context, flag string, value any) error {
 	b.once.Do(func() { close(b.entered) })
@@ -261,17 +265,27 @@ func (r *blockingListingReverter) revertCount() int {
 	return r.reverts
 }
 
+// awaitEntered fails the test instead of hanging when the blocked call is never reached.
+func awaitEntered(t *testing.T, entered <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("revert never reached the flag service")
+	}
+}
+
 // killSwitchDuringRevert runs revert in the background, starts a kill-switch tick
 // once the revert is inside the flag-service call, lets the revert finish only once
 // the tick has either finished (no serialisation: the bug) or had time to block on
 // it, and returns what the tick reported.
-func killSwitchDuringRevert(p *Promoter, rev *blockingListingReverter, revert func()) []KillSwitchRevert {
+func killSwitchDuringRevert(t *testing.T, p *Promoter, rev *blockingListingReverter, revert func()) []KillSwitchRevert {
 	revertDone := make(chan struct{})
 	go func() {
 		defer close(revertDone)
 		revert()
 	}()
-	<-rev.entered
+	awaitEntered(t, rev.entered)
 	var reported []KillSwitchRevert
 	killDone := make(chan struct{})
 	go func() {
@@ -297,7 +311,7 @@ func assertKillMuHeldWhileReverting(t *testing.T, p *Promoter, rev *blockingList
 		defer close(done)
 		revert()
 	}()
-	<-rev.entered
+	awaitEntered(t, rev.entered)
 	held := !p.killMu.TryLock()
 	if !held {
 		p.killMu.Unlock()
@@ -341,7 +355,7 @@ func TestUC043_A1_RewatchRevertSerialisedWithKillSwitch(t *testing.T) {
 		journal := &recordingRewatchJournal{}
 		p, rw := rewatchedPromotion(t, rev, journal)
 
-		reported := killSwitchDuringRevert(p, rev, func() { rw.revert(ctx) })
+		reported := killSwitchDuringRevert(t, p, rev, func() { rw.revert(ctx) })
 
 		if n := rev.revertCount(); n != 1 {
 			t.Fatalf("revert writes = %d, want 1 (the re-watch's only)", n)
@@ -361,7 +375,7 @@ func TestUC043_A1_RewatchRevertSerialisedWithKillSwitch(t *testing.T) {
 		journal := &recordingRewatchJournal{}
 		p, rw := rewatchedPromotion(t, rev, journal)
 
-		reported := killSwitchDuringRevert(p, rev, func() { rw.revert(ctx) })
+		reported := killSwitchDuringRevert(t, p, rev, func() { rw.revert(ctx) })
 
 		if n := rev.revertCount(); n != 2 {
 			t.Fatalf("revert attempts = %d, want 2 (one re-watch, one kill switch)", n)
