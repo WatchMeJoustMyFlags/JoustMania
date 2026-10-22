@@ -36,8 +36,6 @@ Environment variables (can be set in the `pairing-daemon` service of `docker-com
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `POLL_INTERVAL` | `10` | Seconds between USB polling |
-| `BT_MONITOR_INTERVAL` | `5` | Seconds between Bluetooth monitoring |
 | `DEBUG` | `0` | Deprecated fallback of the `debug` flag (flagd wins); `1` = tracebacks on errors |
 | `METRICS_PORT` | `8002` | Port of the health and unpair endpoints (no `/metrics`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP collector endpoint |

@@ -266,7 +266,6 @@ def test_api_level_context_uses_env_vars(mock_api, _mock_provider):
         {
             "OTEL_SERVICE_NAME": "test-service",
             "OTEL_SERVICE_NAMESPACE": "joustmania",
-            "ENVIRONMENT": "staging",
         },
     ):
         init_flag_domain("test_env")
@@ -277,7 +276,7 @@ def test_api_level_context_uses_env_vars(mock_api, _mock_provider):
     assert ctx.attributes["service_name"] == "test-service"
     assert ctx.attributes["service_namespace"] == "joustmania"
     assert ctx.attributes["language"] == "python"
-    assert ctx.attributes["environment"] == "staging"
+    assert "environment" not in ctx.attributes
     assert "hostname" in ctx.attributes
 
     # Cleanup

@@ -136,8 +136,6 @@ services:
       - /var/lib/bluetooth:/var/lib/bluetooth
       - /dev:/dev:rslave
     environment:
-      - POLL_INTERVAL=10
-      - BT_MONITOR_INTERVAL=5
       - METRICS_PORT=8002
       # Port 8002 (health + UC-005 unpair) binds on the host via network_mode:
       # host, only on loopback and the docker0 gateway (what host.docker.internal
