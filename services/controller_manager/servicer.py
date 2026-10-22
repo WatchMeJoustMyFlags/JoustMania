@@ -681,7 +681,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                     # A non-OK status tells the coordinator the stream failed (UC-030 BR-006, #1930);
                     # an OK end would read as a normal end of the game.
                     await context.abort(grpc.StatusCode.INTERNAL, f"gameplay stream frame error: {e}")
-                    break
 
         finally:
             # Cleanup: Cancel background task
