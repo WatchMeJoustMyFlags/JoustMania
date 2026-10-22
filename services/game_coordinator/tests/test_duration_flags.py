@@ -355,19 +355,24 @@ def test_count_tiers_resolver_fallbacks():
 
 
 def test_traitor_count_default_characterization():
-    """Default tiers reproduce the original 1/2/3/(//3) traitor counts."""
+    """Default tiers keep the 1/2/3/(//3) raw counts, capped at (n-1)//2 (#1346)."""
     game = _make_traitor()
 
     def original(n):
         if n <= 5:
-            return 1
-        if n <= 8:
-            return 2
-        if n <= 11:
-            return 3
-        return n // 3
+            raw = 1
+        elif n <= 8:
+            raw = 2
+        elif n <= 11:
+            raw = 3
+        else:
+            raw = n // 3
+        # #1346: loyal players must outnumber traitors; 0 below 3 players.
+        if n < 3:
+            return 0
+        return max(1, min(raw, (n - 1) // 2))
 
-    for n in (1, 4, 5, 6, 8, 9, 11, 12, 15, 30):
+    for n in (1, 2, 3, 4, 5, 6, 8, 9, 11, 12, 15, 30):
         assert game._get_traitor_count(n) == original(n)
 
 

@@ -169,13 +169,21 @@ class TraitorGame(TeamsGameBase):
         Args:
             num_players: Total number of players
 
+        The result is capped at ``(num_players - 1) // 2`` (0 below 3 players).
+
         Returns:
             Number of traitors to assign
         """
+        raw = num_players // self._count_fallback_divisor
         for tier in self._count_tiers:
             if num_players <= tier["max_players"]:
-                return tier["count"]
-        return num_players // self._count_fallback_divisor
+                raw = tier["count"]
+                break
+        # Loyal players must outnumber traitors (UC-022 step 1, #1346): a
+        # 2-player game has no traitor, from 3 players at least one.
+        if num_players < 3:
+            return 0
+        return max(1, min(raw, (num_players - 1) // 2))
 
     async def _initialize_players_impl(self, controllers: list):
         """
@@ -219,7 +227,7 @@ class TraitorGame(TeamsGameBase):
         # Select traitors from each team in rotation
         traitors_assigned = 0
         team_idx = 0
-        while traitors_assigned < num_traitors:
+        while traitors_assigned < num_traitors and any(available_by_team.values()):
             team_players = available_by_team[team_idx]
             if team_players:
                 # Pick a random player from this team to be a traitor
