@@ -266,7 +266,7 @@ hcitool -i hci0 rssi AA:BB:CC:DD:EE:FF
 
 ### Service Logs
 
-The monitor runs in the pairing daemon (set `DEBUG=1` for per-device detail; see
+The monitor runs in the pairing daemon (turn on the `debug` flag for per-device detail; see
 `services/pairing_daemon/README.md`):
 
 ```bash

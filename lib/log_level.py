@@ -2,7 +2,8 @@
 
 Resolution order, the flag always wins: the ``observability/log_level`` flag when flagd
 resolves it; only when it cannot be resolved (flagd unreachable, flag missing, no first
-sync yet, unknown value) the deprecated ``LOG_LEVEL`` env var when set; else INFO.
+sync yet, unknown value) the bootstrap-only ``LOG_LEVEL`` env var (the startup level until
+the flag resolves) when set; else INFO.
 
 The level is applied to the root logger and to every OTLP log handler registered with
 :func:`register_handler`. It is re-applied on the provider READY and configuration-changed
@@ -44,7 +45,7 @@ def parse_level(name: object) -> int | None:
 
 
 def env_level() -> int | None:
-    """The deprecated ``LOG_LEVEL`` env var as a level (INFO when unset), None when unknown."""
+    """The bootstrap-only ``LOG_LEVEL`` env var as a level (INFO when unset), None when unknown."""
     return parse_level(os.environ.get("LOG_LEVEL", "info"))
 
 

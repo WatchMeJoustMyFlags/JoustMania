@@ -53,27 +53,20 @@ def init_performance_flags() -> None:
         logger.warning(f"Could not initialize feature flags, using defaults: {e}")
 
 
-def env_debug() -> bool:
-    """The deprecated DEBUG env var ("1" = on); the fallback of the `debug` flag."""
-    return os.getenv("DEBUG", "0") == "1"
-
-
 def is_debug() -> bool:
     """Whether to attach tracebacks to logged errors (#1788, flags.md §15).
 
-    Read at use time. The `debug` flag wins when flagd resolves it; only when it
-    cannot be resolved (no client, flagd unreachable, flag missing) the deprecated
-    DEBUG env var is used (unset = off).
+    Read at use time from the `debug` flag; off when it cannot be resolved (no client,
+    flagd unreachable, flag missing). The former DEBUG env var is gone (#1907).
     """
-    env_value = env_debug()
     if _observability_client is None:
-        return env_value
+        return False
     try:
         from openfeature.evaluation_context import EvaluationContext
 
-        return _observability_client.get_boolean_value("debug", env_value, EvaluationContext())
+        return _observability_client.get_boolean_value("debug", False, EvaluationContext())
     except Exception:
-        return env_value
+        return False
 
 
 def get_poll_interval() -> int:

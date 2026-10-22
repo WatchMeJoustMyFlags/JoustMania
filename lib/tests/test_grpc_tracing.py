@@ -1,8 +1,8 @@
 """Tests for lib/grpc_tracing.py"""
 
 import asyncio
-import contextlib
 import gc
+import importlib
 import logging
 import sys
 import threading
@@ -28,7 +28,6 @@ from lib import grpc_tracing
 from lib.grpc_metrics import get_metrics_interceptors
 from lib.grpc_tracing import (
     _build_rpc_attributes,
-    _extract_method_name,
     _parse_method,
     _prepare_metadata,
     _rpc_spans_enabled,
@@ -37,26 +36,6 @@ from lib.grpc_tracing import (
     get_server_interceptors,
     get_sync_context_propagation_interceptors,
 )
-
-
-class TestExtractMethodName:
-    """Tests for _extract_method_name helper."""
-
-    def test_string_with_slash(self):
-        result = _extract_method_name("/package.Service/Method")
-        assert result == "package.Service/Method"
-
-    def test_string_without_slash(self):
-        result = _extract_method_name("Method")
-        assert result == "Method"
-
-    def test_bytes_input(self):
-        result = _extract_method_name(b"/pkg.Svc/Method")
-        assert result == "pkg.Svc/Method"
-
-    def test_bytes_without_slash(self):
-        result = _extract_method_name(b"Method")
-        assert result == "Method"
 
 
 class TestParseMethod:
@@ -831,42 +810,6 @@ class TestClientSpanStatusAtCallEnd:
         assert spans[0].status.status_code == StatusCode.UNSET
         assert _code(spans[0]) == grpc.StatusCode.CANCELLED.value[0]
 
-    @pytest.mark.parametrize(
-        ("method", "expected_status", "expected_code"),
-        [
-            ("StreamFail", StatusCode.ERROR, grpc.StatusCode.UNAVAILABLE),
-            ("StreamOk", StatusCode.OK, grpc.StatusCode.OK),
-            ("StreamForever", StatusCode.UNSET, grpc.StatusCode.CANCELLED),
-        ],
-    )
-    async def test_legacy_client_spans_stream_ends_at_rpc_end_with_status_code(
-        self, traced_channel, span_exporter, method, expected_status, expected_code
-    ):
-        """Legacy OTEL_GRPC_CLIENT_SPANS path: a stream span lasts the RPC and carries the final code;
-        a cancel by the caller leaves the status unset (#1879)."""
-        exporter, _ = span_exporter
-        with (
-            patch("lib.grpc_tracing._CREATE_CLIENT_SPANS", True),
-            patch.object(grpc_tracing._rpc_spans_enabled, "return_value", False),
-        ):
-            call = traced_channel.unary_stream(_PROBE + method)(b"x")
-            await call.read()
-            assert exporter.get_finished_spans() == (), "a stream span must not end at setup"
-            if method == "StreamForever":
-                call.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await call.read()
-            else:
-                with contextlib.suppress(grpc.aio.AioRpcError):
-                    async for _ in call:
-                        pass
-
-            (span,) = await _finished_spans(exporter)
-
-        assert span.name == _PROBE[1:] + method
-        assert span.status.status_code == expected_status
-        assert _code(span) == expected_code.value[0]
-
     async def test_long_stream_finishes_span_once_not_per_message(self, traced_channel, span_exporter):
         from lib.grpc_tracing import _ClientSpanFinisher
 
@@ -927,21 +870,26 @@ class TestClientSpanStatusAtCallEnd:
 
         await self._assert_stream_sends_client_span(exporter, provider, open_stream)
 
-    async def test_legacy_unary_traceparent_carries_client_span(self, traced_channel, span_exporter):
-        """Legacy OTEL_GRPC_CLIENT_SPANS spans nest the server span the same way (#1897)."""
+    async def test_removed_env_var_creates_no_client_span(self, span_exporter, monkeypatch):
+        """OTEL_GRPC_CLIENT_SPANS is gone (#1907): with the flag off no CLIENT span is created."""
         exporter, provider = span_exporter
-        with (
-            patch("lib.grpc_tracing._CREATE_CLIENT_SPANS", True),
-            patch.object(grpc_tracing._rpc_spans_enabled, "return_value", False),
-            provider.get_tracer("caller").start_as_current_span("caller") as outer,
-        ):
-            await traced_channel.unary_unary(_PROBE + "UnaryOk")(b"x")
+        monkeypatch.setenv("OTEL_GRPC_CLIENT_SPANS", "true")
+        importlib.reload(grpc_tracing)
+        try:
+            interceptor = grpc_tracing.ContextPropagationInterceptor("127.0.0.1", 1)
+            interceptor._tracer = provider.get_tracer("client")
+            finished_call = asyncio.get_running_loop().create_future()
+            finished_call.set_result(b"ok")
+            continuation = AsyncMock(return_value=finished_call)
+            details = grpc.aio.ClientCallDetails(_PROBE + "UnaryOk", None, None, None, None)
+            with patch.object(grpc_tracing, "_rpc_spans_enabled", autospec=True, return_value=False):
+                await interceptor.intercept_unary_unary(continuation, details, b"x")
+        finally:
+            monkeypatch.undo()
+            importlib.reload(grpc_tracing)
 
-        spans = {s.name: s for s in await _finished_spans(exporter, 2)}
-        client = spans[_PROBE[1:] + "UnaryOk"]
-        assert client.parent.span_id == outer.get_span_context().span_id
-        assert _sent_parent_id(_seen_metadata[0]) == client.context.span_id
-        assert _sent_trace_id(_seen_metadata[0]) == outer.get_span_context().trace_id
+        continuation.assert_awaited_once()
+        assert exporter.get_finished_spans() == ()
 
     async def test_no_span_when_flag_off(self, traced_channel, span_exporter):
         """Flag off: no CLIENT span, and the caller's span is sent as before (#1897)."""
