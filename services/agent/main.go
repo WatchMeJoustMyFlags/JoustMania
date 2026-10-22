@@ -70,24 +70,6 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// effectWindowFromEnv resolves the intervention-effect follow-up window (#918) from
-// AGENT_EFFECT_WINDOW_SECONDS (a float of seconds). An unset, unparseable, or
-// non-positive value falls back to decision.DefaultEffectWindow so the agent always
-// has a sane window.
-func effectWindowFromEnv() time.Duration {
-	raw := getEnv("AGENT_EFFECT_WINDOW_SECONDS", "")
-	if raw == "" {
-		return decision.DefaultEffectWindow
-	}
-	secs, err := strconv.ParseFloat(raw, 64)
-	if err != nil || secs <= 0 {
-		slog.Warn("AGENT_EFFECT_WINDOW_SECONDS invalid; using default (#918)",
-			"value", raw, "default", decision.DefaultEffectWindow)
-		return decision.DefaultEffectWindow
-	}
-	return time.Duration(secs * float64(time.Second))
-}
-
 // partitionSet turns the Multiplexer's partition id slice into a set for
 // LoopSet.Retain (#845 PR C).
 func partitionSet(ids []string) map[string]struct{} {
@@ -528,15 +510,15 @@ func main() {
 		slog.Info("LLM request budget ceiling set (#1788)", "max_per_minute", llmBudgetCap)
 	}
 	// Agent tuning (#1788, FR-150, FR-151): model, effort, timeout, effect window and
-	// promotion timers resolve at use time from the agent flags; the deprecated env
-	// vars are only the fallback when a flag cannot be resolved.
-	tuning := newAgentTuning(agentFlags, tuningDefaultsFromEnv(logger))
+	// promotion timers resolve at use time from the agent flags; the compiled defaults
+	// (equal to the flag defaults) apply while a flag cannot be resolved (#1907).
+	tuning := newAgentTuning(agentFlags, compiledTuningDefaults())
 	// Proposer/retro text backend (#1234): the direct Claude client, or nil for the
 	// stub default (the proposer proposes nothing, the retro is capture-only). It is
 	// NOT an in-game decision path: in-game LLM decisions go through the
 	// decision.backend registry below.
 	// The backend choice is the inference.backend flag, resolved per use (#1810,
-	// C-035); AGENT_INFERENCE_BACKEND is only the fallback while flagd cannot resolve it.
+	// C-035); with flagd unresolved it is the stub (#1907).
 	textBackends := newTextBackends(logger, tuning, agentFlags)
 	_, inferBackendName := textBackends.Select(ctx)
 	slog.Info("Proposer/retro inference backend selected (#1234, #1810)",
@@ -554,16 +536,10 @@ func main() {
 	// Intervention-effect follow-up window (#918): how long after a dispatched
 	// intervention the loop re-samples the game's fitness signals to measure the
 	// effect. Resolved at use time, per dispatched intervention, from the
-	// effect.window_seconds flag (#1788; AGENT_EFFECT_WINDOW_SECONDS only as fallback).
+	// effect.window_seconds flag (#1788; the compiled default while unresolved).
 	// Probe decisions (demo/verification, decision.probe_decisions, #1810): the flag
-	// is read per decision cycle through the snapshot; the deprecated
-	// AGENT_PROBE_DECISIONS env is only the fallback while flagd cannot resolve it.
-	probeEnvFallback := strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true")
-	agentFlags.SetProbeDefault(probeEnvFallback)
-	if probeEnvFallback {
-		slog.Warn("AGENT_PROBE_DECISIONS is deprecated; it is only the fallback for the decision.probe_decisions flag",
-			"interval", probeInterval)
-	}
+	// is read per decision cycle through the snapshot; off while flagd cannot resolve it.
+	agentFlags.SetProbeDefault(false)
 	// Forward-declared so the per-game loop factory can close over it to wire the
 	// async re-validation source: each loop re-fetches its game's CURRENT context
 	// from this Multiplexer when a remote decide answer lands. It is
@@ -769,7 +745,7 @@ func main() {
 	// game flag set through the flag service; the Proposer NEVER writes directly.
 	//
 	// The Backend is the inference seam (Backend.Infer): the Claude text backend when
-	// AGENT_INFERENCE_BACKEND=claude (#1234), else the proposeBackend stub, so every
+	// the inference.backend flag is claude (#1234), else the proposeBackend stub, so every
 	// propose cycle degrades to NO proposal, NO error. (code_improvement.engine,
 	// once recorded on the span, was retired in #1810, D-A10.)
 	// The vocab provider reads the experiment catalog from the flag service so the
@@ -1030,10 +1006,10 @@ func main() {
 }
 
 // errProposeBackendNotImplemented is the sentinel proposeBackend.Infer returns when
-// no text backend is configured (AGENT_INFERENCE_BACKEND=stub, the default, or
+// no text backend is configured (inference.backend=stub, the default, or
 // claude without ANTHROPIC_API_KEY). The Proposer treats this as "degrade to no
 // proposal this cycle" (recorded, no error).
-var errProposeBackendNotImplemented = errors.New("code_improvement: no propose backend configured (AGENT_INFERENCE_BACKEND=stub)")
+var errProposeBackendNotImplemented = errors.New("code_improvement: no propose backend configured (inference.backend=stub)")
 
 // proposeBackend is the inert propose-stage backend used when no text backend is
 // configured. It satisfies experiment.Backend structurally (Infer(ctx, llm.Prompt)

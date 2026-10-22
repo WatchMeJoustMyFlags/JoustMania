@@ -14,8 +14,8 @@ import (
 )
 
 // inference_backend_flag_test.go covers inference.backend (#1810, C-035, FR-150..152):
-// the flag wins over the deprecated AGENT_INFERENCE_BACKEND, which is only the
-// fallback while flagd cannot resolve it; the env ceilings (key, base URL) still
+// the flag decides, the stub applies while flagd cannot resolve it (the
+// AGENT_INFERENCE_BACKEND env is gone, #1907); the env ceilings (key, base URL) still
 // decide whether claude is usable; the choice is read per use.
 
 type lockedBuf struct {
@@ -36,29 +36,25 @@ func backendsOver(t *testing.T, ev *tuningEvaluator, logger *slog.Logger) *textB
 }
 
 // UC: UC-042 Pre-2
-func TestInferenceBackendFlag_FlagWinsOverEnv(t *testing.T) {
+func TestInferenceBackendFlag_Resolution(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 	t.Setenv("AGENT_INFERENCE_BASE_URL", "")
 	ctx := context.Background()
 
 	cases := []struct {
 		name       string
-		env        string
 		flag       string // "" = flag not set (resolution error)
 		down       bool
 		wantClaude bool
 	}{
-		{"UC-042/Pre-2 flag claude wins over env stub", "stub", "claude", false, true},
-		{"UC-042/Pre-2 flag stub wins over env claude", "claude", "stub", false, false},
-		{"UC-042/Pre-2 flagd down falls back to env claude", "claude", "stub", true, true},
-		{"UC-042/Pre-2 flagd down, no env is stub", "", "claude", true, false},
-		{"UC-042/Pre-2 flag missing falls back to env claude", "claude", "", false, true},
-		{"UC-042/Pre-2 flag missing, no env is stub", "", "", false, false},
-		{"UC-042/Pre-2 unknown flag value is stub", "claude", "gpt-9000", false, false},
+		{"UC-042/Pre-2 flag claude is claude", "claude", false, true},
+		{"UC-042/Pre-2 flag stub is stub", "stub", false, false},
+		{"UC-042/Pre-2 flagd down is stub", "claude", true, false},
+		{"UC-042/Pre-2 flag missing is stub", "", false, false},
+		{"UC-042/Pre-2 unknown flag value is stub", "gpt-9000", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("AGENT_INFERENCE_BACKEND", tc.env)
 			ev := newTuningEvaluator()
 			if tc.flag != "" {
 				ev.setString("inference.backend", tc.flag)
@@ -76,7 +72,6 @@ func TestInferenceBackendFlag_FlagWinsOverEnv(t *testing.T) {
 // is the stub, and the key is sent nowhere.
 // UC: UC-042 Pre-2
 func TestInferenceBackendFlag_CeilingsStillApply(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "")
 	ev := newTuningEvaluator()
 	ev.setString("inference.backend", "claude")
 
@@ -96,7 +91,6 @@ func TestInferenceBackendFlag_CeilingsStillApply(t *testing.T) {
 // degraded claude request is logged once per change.
 // UC: UC-042 Pre-2
 func TestInferenceBackendFlag_RuntimeFlipAndWarnOncePerChange(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("AGENT_INFERENCE_BASE_URL", "")
 	logs := &lockedBuf{}
@@ -143,7 +137,6 @@ func TestInferenceBackendFlag_RuntimeFlipAndWarnOncePerChange(t *testing.T) {
 // RetroBackend returns an untyped nil for the stub (a typed nil would look wired).
 // UC: UC-042 Pre-2
 func TestInferenceBackendFlag_RetroSourceNilForStub(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 	t.Setenv("AGENT_INFERENCE_BASE_URL", "")
 	ev := newTuningEvaluator()
@@ -164,7 +157,6 @@ func TestInferenceBackendFlag_RetroSourceNilForStub(t *testing.T) {
 // UC: UC-042 A7 BR-001
 // NFR: NFR-011
 func TestInferenceBackendFlag_ProposerStubAfterFlipNeverCharges(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 	t.Setenv("AGENT_INFERENCE_BASE_URL", "")
 	ev := newTuningEvaluator()
@@ -191,7 +183,6 @@ func TestInferenceBackendFlag_ProposerStubAfterFlipNeverCharges(t *testing.T) {
 // UC: UC-042 A7 BR-001
 // NFR: NFR-011
 func TestInferenceBackendFlag_ProposerClaudeChargesSharedBudget(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 	// A loopback port nothing listens on: the call fails fast after admission.
 	t.Setenv("AGENT_INFERENCE_BASE_URL", "http://127.0.0.1:1")
@@ -221,7 +212,6 @@ func TestInferenceBackendFlag_ProposerClaudeChargesSharedBudget(t *testing.T) {
 // UC: UC-042 A5 BR-002
 // NFR: NFR-011
 func TestInferenceBackendFlag_ClaudeWithProposerGateClosedNoProposalNoSpend(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 	t.Setenv("AGENT_INFERENCE_BASE_URL", "http://127.0.0.1:1")
 	ev := newTuningEvaluator()

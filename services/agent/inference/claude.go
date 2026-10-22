@@ -10,7 +10,7 @@
 //
 // The only real implementation is Claude, called directly through the official
 // Go SDK (no gateway, per docs/NORTHSTAR.md). main.go selects it with
-// AGENT_INFERENCE_BACKEND=claude; the default is the stub, so nothing needs a key.
+// the inference.backend flag (claude); the default is the stub, so nothing needs a key.
 //
 // GRACEFUL DEGRADATION: every failure (no key, HTTP error, timeout, refusal,
 // truncation, empty reply) is a clean error and never a panic. The proposer and

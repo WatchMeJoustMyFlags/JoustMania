@@ -371,16 +371,10 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `LOG_LEVEL` | `info` | yes | deprecated fallback of the `log_level` flag (flags.md §15, FR-151, #1788): the flag wins once flagd resolves it, the env level applies at startup and while the flag is unresolved |
 | `OTEL_SERVICE_NAME` / `OTEL_SERVICE_NAMESPACE` | `agent` / `infrastructure` | yes | self-telemetry identity; the name also drives the self-ingestion skip |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_RESOURCE_ATTRIBUTES`, `SERVICE_VERSION`, `DEPLOYMENT_ENVIRONMENT` | unset / unset / `0.0.0-dev` / `development` | first, second, third | self-telemetry export (no-op without an endpoint) and resource attributes |
-| `AGENT_INFERENCE_BACKEND` | `stub` | yes | deprecated fallback of the `inference.backend` flag (FR-151): used only while flagd cannot resolve the flag; the flag selects the text backend for the retro and proposer (`stub` or `claude`, per use); not used for in-game decisions ([decide-contract.md](decide-contract.md) 10.1) |
 | `ANTHROPIC_API_KEY` | empty | yes | Claude key: text backend and the `claude` decision backend; without it that backend is unavailable |
 | `DECISION_OPENAI_API_KEY`, `JEV_API_KEY` | empty | yes | keys of the `openai` and `jev` decision backends, read once at startup |
-| `AGENT_INFERENCE_MODEL` | `claude-opus-5-5` | yes (empty = default) | deprecated (#1788): fallback for the `inference.model` flag, used only while the flag cannot be resolved |
-| `AGENT_INFERENCE_EFFORT` | `medium` | yes (empty = default) | deprecated (#1788): fallback for `inference.effort` (`output_config.effort`, not sent to Haiku 4.5) |
-| `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | yes (empty = default) | deprecated (#1788): fallback for `inference.timeout_seconds` (per-call deadline of the text backend, also the retro deadline) |
 | `AGENT_INFERENCE_BASE_URL` | empty (= `https://api.anthropic.com`) | no | API root of the `claude` text backend, for the service-tier fake Claude (#1422 S10) or a proxy. `ANTHROPIC_API_KEY` is sent to it, so only an `https` URL is accepted (plain `http` only for a loopback host: `localhost` in any case, 127.0.0.0/8, `::1`, and IPv4-mapped 127.0.0.0/8 such as `[::ffff:127.0.0.1]`, which Go's `IsLoopback` counts as loopback; `localhost.`, `0.0.0.0` and DNS names that resolve to loopback are rejected), with a host and no credentials, query or fragment; anything else is rejected with an ERROR log and leaves the proposer and retro on the stub. A non-default host is logged at WARN. The text backend never follows an HTTP redirect (net/http would forward `x-api-key` to the target): a 3xx answer is a failed call. The in-game `claude` decision backend is unaffected |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | unset | yes | operator ceiling: the enforced cap is `min(env, llm.max_requests_per_minute)`; unset = no ceiling (#1788, C-034) |
-| `AGENT_PROBE_DECISIONS` | unset | yes | deprecated (#1810): fallback for the `decision.probe_decisions` flag, used only while the flag cannot be resolved; `true` emits a synthetic `noop` decision about every 5 s (demo and verification only) |
-| `AGENT_EFFECT_WINDOW_SECONDS` | `20` | no | deprecated (#1788): fallback for `effect.window_seconds` (float seconds, positive) |
 | `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | no | dwell between rollout expansions |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | yes | re-expansion cooldown after a rollback |
 | `AGENT_SHADOW_GAME` | unset | no | `true` runs one one-shot shadow game at startup; `SHADOW_GAME_MODE` (`JoustFFA`), `SHADOW_GAME_SENSITIVITY` (`2`, 0 to 4), `SHADOW_GAME_ARCHETYPE`, `SHADOW_GAME_SEED` tune it |
@@ -404,7 +398,6 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_LOCAL_REPO_DIR` | unset | no | repo directory for the local target; unset = no-op |
 | `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_BASE_BRANCH`, `GITHUB_API_URL` | unset, unset, `main`, `https://api.github.com` | no | GitHub target (`owner/repo`); misconfiguration, or a `GITHUB_API_URL` that is not key-safe (C-016: https, or http to loopback), falls back to an inert no-op |
 | `AGENT_AUTONOMOUS_ENABLED` | `false` | no | opt-in for the autonomous real-default path (needs `AGENT_CODE_IMPROVEMENT_ENABLED`) |
-| `AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS`, `_REWATCH_INTERVAL_SECONDS`, `_REWATCH_TIMEOUT_SECONDS` | `600`, `60`, `3600` | no | deprecated (#1788): fallbacks for `promotion.revert_cooldown_seconds`, `promotion.rewatch_interval_seconds`, `promotion.rewatch_timeout_seconds` |
 
 ### connect-proxy
 

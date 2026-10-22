@@ -32,7 +32,6 @@ from pathlib import Path
 from .agent import AgentProcess
 from .fake_audio import FakeAudio
 from .fakes.claude import API_KEY as FAKE_CLAUDE_API_KEY
-from .fakes.claude import MODEL as FAKE_CLAUDE_MODEL
 from .fakes.claude import FakeClaude
 from .fakes.github import FakeGitHub
 from .fakes.jev import API_KEY as FAKE_JEV_API_KEY
@@ -79,7 +78,7 @@ class Composition:
     # The Go agent (``stack.agent``) plus a fake OpenAI backend (``stack.fake_openai``).
     agent: bool = False
     # Also a fake Claude (``stack.fake_claude``) the agent's retro and proposer text backend is
-    # pointed at (AGENT_INFERENCE_BACKEND=claude + AGENT_INFERENCE_BASE_URL; needs ``agent``).
+    # pointed at (the inference.backend=claude overlay + AGENT_INFERENCE_BASE_URL; needs ``agent``).
     fake_claude: bool = False
     # Also a fake Claude behind the ``fake`` variant of ``decision.claude.base_url`` (the in-game
     # decide backend, #1900); the agent gets the fake's dummy ``ANTHROPIC_API_KEY`` and nothing
@@ -268,8 +267,8 @@ class ServiceStack:
     def _seed_agent_overlays(self) -> None:
         """Write the agent flag overlays: the fake Claude's ``inference.backend=claude`` plus ``agent_flags``.
 
-        The flag wins over ``AGENT_INFERENCE_BACKEND`` (FR-151, #1810), so the env alone would
-        leave the agent on the flag's ``stub`` default. Written after the flag plane is up and
+        The backend is only the flag (the ``AGENT_INFERENCE_BACKEND`` env was removed, #1907),
+        so without the overlay the agent stays on the flag's ``stub`` default. Written after the flag plane is up and
         before the agent starts, so the first tick and the first game end already see them.
         The key and base URL (the env ceilings) stay in the env.
         """
@@ -288,16 +287,14 @@ class ServiceStack:
     def _inference_env(self) -> dict[str, str]:
         """The agent's text backend ceilings (the fake Claude's key and URL), or none for the stub.
 
-        The backend itself is the ``inference.backend`` overlay (``_seed_agent_overlays``);
-        ``AGENT_INFERENCE_BACKEND`` is kept as the deprecated fallback only.
+        The backend itself is the ``inference.backend`` overlay (``_seed_agent_overlays``) and
+        the model is the ``inference.model`` flag; neither has an env var any more (#1907).
         """
         if not self.composition.fake_claude:
             return {}
         return {
-            "AGENT_INFERENCE_BACKEND": "claude",
             "ANTHROPIC_API_KEY": FAKE_CLAUDE_API_KEY,
             "AGENT_INFERENCE_BASE_URL": self.fake_claude.base_url,
-            "AGENT_INFERENCE_MODEL": FAKE_CLAUDE_MODEL,
             # Bootstrap default only: the live experiments_enabled flag decides (FR-066).
             "AGENT_EXPERIMENTS_ENABLED": "true",
             # The proposer gate's operator ceiling (#1810, C-034): the M7-4 proposer runs

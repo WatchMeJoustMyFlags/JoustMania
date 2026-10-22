@@ -39,7 +39,7 @@ import (
 // backstop.
 //
 // DEGRADES TO NOTHING WITHOUT A REAL BACKEND: main.go wires the direct Claude text
-// client (inference.Claude) when AGENT_INFERENCE_BACKEND=claude, else an inert stub.
+// client (inference.Claude) when inference.backend=claude, else an inert stub.
 // A backend error (the stub, a transport failure, a timeout) is recorded and
 // produces NO proposal and NO error to the caller — the agent simply does not
 // propose this cycle. (agent.code_improvement.engine, once recorded on the span,

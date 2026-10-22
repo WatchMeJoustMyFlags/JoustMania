@@ -5,7 +5,7 @@
 # The post-game retro records the prompt it sends to the analyst on an
 # `agent.llm.retro` span. This script feeds one captured prompt to the `claude`
 # CLI in headless mode so you can eyeball the reply against the RESPONSE CONTRACT
-# (services/agent/llm/retro.go), with or without AGENT_INFERENCE_BACKEND=claude.
+# (services/agent/llm/retro.go), with or without the inference.backend flag at claude.
 # (The in-game agent.llm.prompt capture it was written for was retired in #1234.)
 #
 # Usage:

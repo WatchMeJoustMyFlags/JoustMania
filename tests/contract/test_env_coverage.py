@@ -68,8 +68,6 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "LOG_LEVEL",
     ): "parseLevel falls back to info for an empty or unknown value",
     # ---- agent: tuning knobs with a built-in fallback ----
-    ("agent", "AGENT_EFFECT_WINDOW_SECONDS"): _TUNING
-    + " (decision.DefaultEffectWindow)",
     ("agent", "AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS"): _TUNING
     + " (fallback of the experiment_completed_grace_seconds flag, #1810)",
     (

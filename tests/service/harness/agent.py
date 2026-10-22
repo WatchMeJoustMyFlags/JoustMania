@@ -137,8 +137,6 @@ class AgentProcess(ManagedProcess):
             "MOCK_CONTROLLER_ADDR": f"127.0.0.1:{mock_control_port}",
             # The experiment journal (default /var/lib/joustmania/agent/experiments is not writable here).
             "AGENT_EXPERIMENT_DIR": str(workdir / "experiments"),
-            # Deprecated fallback only; the inference.backend flag (ci default stub) wins (#1810).
-            "AGENT_INFERENCE_BACKEND": "stub",
             "AGENT_EXPERIMENTS_ENABLED": "false",
             "DECISION_OPENAI_API_KEY": openai_api_key,
             "AGENT_LLM_MAX_REQUESTS_PER_MINUTE": LLM_MAX_REQUESTS_PER_MINUTE,

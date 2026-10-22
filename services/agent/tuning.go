@@ -8,16 +8,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/inference"
 	"github.com/joustmania/agent/promote"
 )
 
 // tuning.go wires the agent tuning settings migrated from env to flags (#1788,
-// FR-150, FR-151, flags.md §15). Every value is resolved at USE time through the
+// FR-150, flags.md §15). Every value is resolved at USE time through the
 // in-process flagd provider: the flag always wins; only when the flag cannot be
-// resolved (flagd unreachable, flag missing, no first sync) the deprecated env var
-// applies when set, else the compiled default. The env vars are read once at
-// startup (the process environment does not change); they only supply the fallback.
+// resolved (flagd unreachable, flag missing, no first sync) the compiled default
+// applies (#1907: the deprecated env fallbacks are removed).
 
 // tuningFlagSource is the slice of *flags.Flags the tuning reads. Each method
 // returns def when the flag cannot be resolved.
@@ -31,8 +31,8 @@ type tuningFlagSource interface {
 	RevertCooldown(ctx context.Context, def time.Duration) time.Duration
 }
 
-// tuningDefaults are the fallbacks used when a flag cannot be resolved: the
-// deprecated env var when set and valid, else the compiled default (FR-151).
+// tuningDefaults are the fallbacks used when a flag cannot be resolved: the compiled
+// defaults (compiledTuningDefaults).
 type tuningDefaults struct {
 	InferenceModel   string
 	InferenceEffort  string
@@ -43,38 +43,19 @@ type tuningDefaults struct {
 	RevertCooldown   time.Duration
 }
 
-// deprecatedTuningEnv lists the env vars FR-151 keeps as a fallback for one release.
-var deprecatedTuningEnv = []string{
-	"AGENT_INFERENCE_BACKEND",
-	"AGENT_INFERENCE_MODEL",
-	"AGENT_INFERENCE_EFFORT",
-	"AGENT_INFERENCE_TIMEOUT_SECONDS",
-	"AGENT_EFFECT_WINDOW_SECONDS",
-	"AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS",
-	"AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS",
-	"AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS",
-}
-
-// tuningDefaultsFromEnv resolves the fallbacks: each deprecated env var when set
-// and valid, else the compiled default. A set deprecated var is logged at WARN so
-// an operator sees that the flag overrides it once flagd answers.
-func tuningDefaultsFromEnv(logger *slog.Logger) tuningDefaults {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	for _, key := range deprecatedTuningEnv {
-		if strings.TrimSpace(os.Getenv(key)) != "" {
-			logger.Warn("deprecated env var set: used only when its agent flag cannot be resolved (#1788, FR-151)", "env", key)
-		}
-	}
+// compiledTuningDefaults returns the fallbacks used while a flag cannot be resolved
+// (flagd down, flag missing, no first sync). They are compile-time constants equal to
+// the flag defaults in services/flagd/agent.json (pinned by
+// TestCompiledDefaultsMatchFlagDefaults); no env var overrides them (#1907, C-035).
+func compiledTuningDefaults() tuningDefaults {
 	return tuningDefaults{
-		InferenceModel:   getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
-		InferenceEffort:  getEnv("AGENT_INFERENCE_EFFORT", inference.DefaultEffort),
-		InferenceTimeout: secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout),
-		EffectWindow:     effectWindowFromEnv(),
-		RewatchInterval:  secondsEnv("AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS", promote.DefaultRewatchInterval),
-		RewatchTimeout:   secondsEnv("AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS", promote.DefaultRewatchTimeout),
-		RevertCooldown:   secondsEnv("AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS", promote.DefaultRevertCooldown),
+		InferenceModel:   inference.DefaultModel,
+		InferenceEffort:  inference.DefaultEffort,
+		InferenceTimeout: inference.DefaultTimeout,
+		EffectWindow:     decision.DefaultEffectWindow,
+		RewatchInterval:  promote.DefaultRewatchInterval,
+		RewatchTimeout:   promote.DefaultRewatchTimeout,
+		RevertCooldown:   promote.DefaultRevertCooldown,
 	}
 }
 

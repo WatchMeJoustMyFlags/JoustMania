@@ -12,7 +12,7 @@ import (
 // "noop" decision at most once per interval, so the whole decide → permission →
 // act path and its audit trace can be exercised without any game effect
 // (UC-040 A23, the `probe` permission level). Enable via
-// AGENT_PROBE_DECISIONS=true; off by default and never meant for production
+// the decision.probe_decisions flag; off by default and never meant for production
 // sessions.
 type ProbeRules struct {
 	interval time.Duration

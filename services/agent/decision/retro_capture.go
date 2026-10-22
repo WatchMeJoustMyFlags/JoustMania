@@ -23,7 +23,7 @@ import (
 // (the gamecontext.Store fires its OnGameEnd hook on the GameActive true->false
 // transition), the RetroCoordinator builds the retrospective prompt for an offline
 // analyst and records it on a dedicated `agent.llm.retro` span, exactly once per
-// session. When a TextBackend is wired (AGENT_INFERENCE_BACKEND=claude, #1234) it
+// session. When a TextBackend is wired (inference.backend=claude, #1234) it
 // also calls the model asynchronously and stamps the decoded conclusion on the
 // same span; without one the span is capture-only.
 //

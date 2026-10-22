@@ -29,7 +29,7 @@ const (
 	keyRevertCooldownSeconds   = "promotion.revert_cooldown_seconds"
 )
 
-// InferenceBackend resolves inference.backend (was AGENT_INFERENCE_BACKEND): the
+// InferenceBackend resolves inference.backend: the
 // text backend of the post-game retro and the shadow-experiment proposer, "stub" or
 // "claude". The value is lower-cased and trimmed; a blank value falls back to def
 // (main.go passes the deprecated env value, else "stub"). Choosing a value that is
@@ -41,7 +41,7 @@ func (f *Flags) InferenceBackend(ctx context.Context, def string) string {
 	return def
 }
 
-// InferenceModel resolves inference.model (was AGENT_INFERENCE_MODEL). A blank
+// InferenceModel resolves inference.model. A blank
 // value falls back to def.
 func (f *Flags) InferenceModel(ctx context.Context, def string) string {
 	if v := strings.TrimSpace(f.stringFlag(ctx, keyInferenceModel, def)); v != "" {
@@ -50,7 +50,7 @@ func (f *Flags) InferenceModel(ctx context.Context, def string) string {
 	return def
 }
 
-// InferenceEffort resolves inference.effort (was AGENT_INFERENCE_EFFORT). A blank
+// InferenceEffort resolves inference.effort. A blank
 // value falls back to def; the inference client validates the level.
 func (f *Flags) InferenceEffort(ctx context.Context, def string) string {
 	if v := strings.TrimSpace(f.stringFlag(ctx, keyInferenceEffort, def)); v != "" {
@@ -59,32 +59,28 @@ func (f *Flags) InferenceEffort(ctx context.Context, def string) string {
 	return def
 }
 
-// InferenceTimeout resolves inference.timeout_seconds (was
-// AGENT_INFERENCE_TIMEOUT_SECONDS, int seconds).
+// InferenceTimeout resolves inference.timeout_seconds (int seconds).
 func (f *Flags) InferenceTimeout(ctx context.Context, def time.Duration) time.Duration {
 	return f.secondsFlag(ctx, keyInferenceTimeoutSeconds, def)
 }
 
-// EffectWindow resolves effect.window_seconds (was AGENT_EFFECT_WINDOW_SECONDS, a
+// EffectWindow resolves effect.window_seconds (a
 // float of seconds). A non-positive value falls back to def.
 func (f *Flags) EffectWindow(ctx context.Context, def time.Duration) time.Duration {
 	return f.durationFlag(ctx, keyEffectWindowSeconds, def.Seconds())
 }
 
-// RewatchInterval resolves promotion.rewatch_interval_seconds (was
-// AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS).
+// RewatchInterval resolves promotion.rewatch_interval_seconds.
 func (f *Flags) RewatchInterval(ctx context.Context, def time.Duration) time.Duration {
 	return f.secondsFlag(ctx, keyRewatchIntervalSeconds, def)
 }
 
-// RewatchTimeout resolves promotion.rewatch_timeout_seconds (was
-// AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS).
+// RewatchTimeout resolves promotion.rewatch_timeout_seconds.
 func (f *Flags) RewatchTimeout(ctx context.Context, def time.Duration) time.Duration {
 	return f.secondsFlag(ctx, keyRewatchTimeoutSeconds, def)
 }
 
-// RevertCooldown resolves promotion.revert_cooldown_seconds (was
-// AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS).
+// RevertCooldown resolves promotion.revert_cooldown_seconds.
 func (f *Flags) RevertCooldown(ctx context.Context, def time.Duration) time.Duration {
 	return f.secondsFlag(ctx, keyRevertCooldownSeconds, def)
 }
@@ -101,12 +97,12 @@ func (f *Flags) secondsFlag(ctx context.Context, key string, def time.Duration) 
 }
 
 // SetProbeDefault sets the fallback for decision.probe_decisions when flagd cannot
-// resolve it (flagd down, flag missing, no first sync): main.go passes the
-// deprecated AGENT_PROBE_DECISIONS env value (FR-151, C-035). The compiled default
-// is false. Call once at startup, before the first Evaluate.
+// resolve it (flagd down, flag missing, no first sync): main.go passes false (the
+// AGENT_PROBE_DECISIONS env fallback was removed, #1907). Call once at startup,
+// before the first Evaluate.
 func (f *Flags) SetProbeDefault(def bool) { f.probeDefault = def }
 
-// probeDecisions resolves decision.probe_decisions (was AGENT_PROBE_DECISIONS).
+// probeDecisions resolves decision.probe_decisions .
 // Read per Evaluate (per decision cycle), so a flip changes the NEXT cycle. The
 // probe only narrows the agent (noop only), so it is tuning and never fails closed.
 func (f *Flags) probeDecisions(ctx context.Context) bool {

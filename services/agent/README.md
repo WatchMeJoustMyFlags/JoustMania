@@ -737,7 +737,7 @@ When a game **ends** (the `GameActive` true→false transition fires the store's
 `OnGameEnd` hook with a pre-reset snapshot), the `decision.RetroCoordinator`
 builds the prompt for an **offline analyst** asking for tuning suggestions for
 the next game and records it on a dedicated **`agent.llm.retro`** span. With
-`inference.backend=claude` (the flag; `AGENT_INFERENCE_BACKEND` is its fallback; and `ANTHROPIC_API_KEY`) it also calls Claude
+`inference.backend=claude` (the flag; `stub` while flagd is unresolved; and `ANTHROPIC_API_KEY`) it also calls Claude
 directly, asynchronously, and stamps the decoded assessment / suggestions on the
 same span (#1179, #1234); with the stub default it is capture-only. It emits
 **exactly once per session** (dedup on `SessionID`) and is
@@ -816,7 +816,7 @@ fitness → rollback); the game path had nothing. #918 closes the **measurement*
    `decision.intervention_id` (also stamped on the `agent.decision` span, so a Jaeger
    query joins *what the agent did* to *what happened next*).
 2. **After a follow-up window** (`DefaultEffectWindow` = 20 s, the live
-   `effect.window_seconds` flag since #1788; `AGENT_EFFECT_WINDOW_SECONDS` only as fallback) a per-game sampler re-reads the **same** game's
+   `effect.window_seconds` flag since #1788; the compiled default while unresolved) a per-game sampler re-reads the **same** game's
    signals (through the same `ContextProvider` the #917 async path uses, so per-game
    isolation holds) and recomputes the **same** fitness functions with the
    dispatch-time thresholds.
@@ -895,7 +895,7 @@ The environment variable table (names, defaults, whether `docker-compose.yml` pa
 [docs/specs/services.md](../../docs/specs/services.md#6-per-service-notes) under `### agent`, so there is one
 table to keep in sync with the code. Live gates (`enabled`, `interventions_enabled`, `experiments_enabled`,
 `verdict_*`, `llm.*`) are flagd flags, documented in [flags.md](../../docs/specs/flags.md) and
-[feature-flags.md](../../docs/feature-flags.md). The text backend (`AGENT_INFERENCE_*`) is specified in
+[feature-flags.md](../../docs/feature-flags.md). The text backend (`inference.*` flags) is specified in
 [decide-contract.md 10.1](../../docs/specs/decide-contract.md#101-the-text-backend-post-game-retro-and-proposer).
 
 > **#1044 — runtime-tunable experiment knobs are now LIVE `agent.json` flags.**
@@ -1049,8 +1049,8 @@ change:
 
 ### Probe mode (`decision.probe_decisions`)
 
-The flag `decision.probe_decisions` (agent set, default off; `AGENT_PROBE_DECISIONS=true`
-is its deprecated fallback while flagd is unreachable) swaps the rules engine for
+The flag `decision.probe_decisions` (agent set, default off; off while
+flagd is unreachable; the env var was removed, #1907) swaps the rules engine for
 `ProbeRules` for the next decision cycle after a flip (no restart); pattern games
 always keep the real engine. `ProbeRules` emits
 one synthetic `noop` decision at most every 5 s. Its only purpose is to drive a

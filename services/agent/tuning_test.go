@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -20,11 +22,11 @@ import (
 	"github.com/joustmania/agent/promote"
 )
 
-// tuning_test.go covers the #1788 agent tuning wiring (FR-150, FR-151) through the
-// real flags.Flags over a settable evaluator: the flag wins over a set deprecated
-// env var; the env var applies only while the flag cannot be resolved (flagd down);
-// the compiled default applies when neither is there; and every value is read at
-// use time, so a flag change mid-run reaches the next use.
+// tuning_test.go covers the #1788 agent tuning wiring (FR-150) through the real
+// flags.Flags over a settable evaluator: the flag wins; the compiled default applies
+// while the flag cannot be resolved (flagd down; the env fallbacks were removed,
+// #1907); and every value is read at use time, so a flag change mid-run reaches the
+// next use.
 
 // tuningEvaluator is a flags.Evaluator whose values and reachability tests change
 // at runtime. down = every read fails (flagd unreachable / no first sync).
@@ -95,114 +97,100 @@ func (e *tuningEvaluator) ObjectValue(_ context.Context, _ string, d any, _ open
 	return d, nil
 }
 
-// clearTuningEnv unsets every deprecated tuning env var for the test.
-func clearTuningEnv(t *testing.T) {
-	t.Helper()
-	for _, k := range deprecatedTuningEnv {
-		t.Setenv(k, "")
-	}
-}
-
-// TestTuning_FlagEnvDefaultPerSetting: for every migrated setting, (a) the flag wins
-// over a set env var, (b) the env var applies while the flag cannot be resolved,
-// (c) the compiled default applies when neither is set, (e) a flag change is seen
-// on the next read.
-func TestTuning_FlagEnvDefaultPerSetting(t *testing.T) {
+// TestTuning_FlagDefaultPerSetting: for every migrated setting, (a) the flag wins,
+// (b) the compiled default applies while the flag cannot be resolved, (e) a flag
+// change is seen on the next read.
+func TestTuning_FlagDefaultPerSetting(t *testing.T) {
 	type setting struct {
-		name, env, envVal string
+		name              string
 		setFlag           func(e *tuningEvaluator, second bool)
 		read              func(t *agentTuning) any
 		flagVal, flag2Val any
-		envWant, defWant  any
+		defWant           any
 	}
 	settings := []setting{
 		{
-			name: "inference.model", env: "AGENT_INFERENCE_MODEL", envVal: "env-model",
+			name: "inference.model",
 			setFlag: func(e *tuningEvaluator, second bool) {
 				e.setString("inference.model", map[bool]string{false: "flag-model", true: "flag-model-2"}[second])
 			},
 			read:    func(t *agentTuning) any { return t.Inference(context.Background()).Model },
-			flagVal: "flag-model", flag2Val: "flag-model-2", envWant: "env-model", defWant: inference.DefaultModel,
+			flagVal: "flag-model", flag2Val: "flag-model-2", defWant: inference.DefaultModel,
 		},
 		{
-			name: "inference.effort", env: "AGENT_INFERENCE_EFFORT", envVal: "low",
+			name: "inference.effort",
 			setFlag: func(e *tuningEvaluator, second bool) {
 				e.setString("inference.effort", map[bool]string{false: "high", true: "max"}[second])
 			},
 			read:    func(t *agentTuning) any { return t.Inference(context.Background()).Effort },
-			flagVal: "high", flag2Val: "max", envWant: "low", defWant: inference.DefaultEffort,
+			flagVal: "high", flag2Val: "max", defWant: inference.DefaultEffort,
 		},
 		{
-			name: "inference.timeout_seconds", env: "AGENT_INFERENCE_TIMEOUT_SECONDS", envVal: "45",
+			name: "inference.timeout_seconds",
 			setFlag: func(e *tuningEvaluator, second bool) {
 				e.setInt("inference.timeout_seconds", map[bool]int64{false: 30, true: 90}[second])
 			},
 			read:    func(t *agentTuning) any { return t.InferenceTimeout() },
-			flagVal: 30 * time.Second, flag2Val: 90 * time.Second, envWant: 45 * time.Second, defWant: inference.DefaultTimeout,
+			flagVal: 30 * time.Second, flag2Val: 90 * time.Second, defWant: inference.DefaultTimeout,
 		},
 		{
-			name: "effect.window_seconds", env: "AGENT_EFFECT_WINDOW_SECONDS", envVal: "7.5",
+			name: "effect.window_seconds",
 			setFlag: func(e *tuningEvaluator, second bool) {
 				e.setFloat("effect.window_seconds", map[bool]float64{false: 10, true: 40}[second])
 			},
 			read:    func(t *agentTuning) any { return t.EffectWindow() },
-			flagVal: 10 * time.Second, flag2Val: 40 * time.Second, envWant: 7500 * time.Millisecond, defWant: decision.DefaultEffectWindow,
+			flagVal: 10 * time.Second, flag2Val: 40 * time.Second, defWant: decision.DefaultEffectWindow,
 		},
 		{
-			name: "promotion.rewatch_interval_seconds", env: "AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS", envVal: "5",
+			name: "promotion.rewatch_interval_seconds",
 			setFlag: func(e *tuningEvaluator, second bool) {
 				e.setInt("promotion.rewatch_interval_seconds", map[bool]int64{false: 20, true: 30}[second])
 			},
 			read:    func(t *agentTuning) any { return t.RewatchInterval() },
-			flagVal: 20 * time.Second, flag2Val: 30 * time.Second, envWant: 5 * time.Second, defWant: promote.DefaultRewatchInterval,
+			flagVal: 20 * time.Second, flag2Val: 30 * time.Second, defWant: promote.DefaultRewatchInterval,
 		},
 		{
-			name: "promotion.rewatch_timeout_seconds", env: "AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS", envVal: "600",
+			name: "promotion.rewatch_timeout_seconds",
 			setFlag: func(e *tuningEvaluator, second bool) {
 				e.setInt("promotion.rewatch_timeout_seconds", map[bool]int64{false: 1200, true: 1800}[second])
 			},
 			read:    func(t *agentTuning) any { return t.RewatchTimeout() },
-			flagVal: 1200 * time.Second, flag2Val: 1800 * time.Second, envWant: 600 * time.Second, defWant: promote.DefaultRewatchTimeout,
+			flagVal: 1200 * time.Second, flag2Val: 1800 * time.Second, defWant: promote.DefaultRewatchTimeout,
 		},
 		{
-			name: "promotion.revert_cooldown_seconds", env: "AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS", envVal: "90",
+			name: "promotion.revert_cooldown_seconds",
 			setFlag: func(e *tuningEvaluator, second bool) {
 				e.setInt("promotion.revert_cooldown_seconds", map[bool]int64{false: 300, true: 30}[second])
 			},
 			read:    func(t *agentTuning) any { return t.RevertCooldown() },
-			flagVal: 300 * time.Second, flag2Val: 30 * time.Second, envWant: 90 * time.Second, defWant: promote.DefaultRevertCooldown,
+			flagVal: 300 * time.Second, flag2Val: 30 * time.Second, defWant: promote.DefaultRevertCooldown,
 		},
 	}
 	for _, s := range settings {
 		t.Run(s.name, func(t *testing.T) {
-			clearTuningEnv(t)
-			t.Setenv(s.env, s.envVal)
 			ev := newTuningEvaluator()
 			s.setFlag(ev, false)
-			tuning := newAgentTuning(flags.New(ev, quietLogger()), tuningDefaultsFromEnv(quietLogger()))
+			tuning := newAgentTuning(flags.New(ev, quietLogger()), compiledTuningDefaults())
 
 			if got := s.read(tuning); got != s.flagVal {
-				t.Fatalf("(a) flag and env set: got %v, want the flag %v", got, s.flagVal)
+				t.Fatalf("(a) flag set: got %v, want the flag %v", got, s.flagVal)
 			}
 			s.setFlag(ev, true)
 			if got := s.read(tuning); got != s.flag2Val {
 				t.Fatalf("(e) flag changed mid-run: got %v, want %v on the next use", got, s.flag2Val)
 			}
 			ev.setDown(true)
-			if got := s.read(tuning); got != s.envWant {
-				t.Fatalf("(b) flagd unreachable: got %v, want the env value %v", got, s.envWant)
+			if got := s.read(tuning); got != s.defWant {
+				t.Fatalf("(b) flagd unreachable: got %v, want the compiled default %v", got, s.defWant)
 			}
 			ev.setDown(false)
 			if got := s.read(tuning); got != s.flag2Val {
 				t.Fatalf("flagd back: got %v, want the flag %v again", got, s.flag2Val)
 			}
 
-			clearTuningEnv(t)
-			down := newTuningEvaluator()
-			down.setDown(true)
-			bare := newAgentTuning(flags.New(down, quietLogger()), tuningDefaultsFromEnv(quietLogger()))
+			bare := newAgentTuning(nil, compiledTuningDefaults())
 			if got := s.read(bare); got != s.defWant {
-				t.Fatalf("(c) no flag, no env: got %v, want the compiled default %v", got, s.defWant)
+				t.Fatalf("(c) no flag source: got %v, want the compiled default %v", got, s.defWant)
 			}
 		})
 	}
@@ -210,8 +198,8 @@ func TestTuning_FlagEnvDefaultPerSetting(t *testing.T) {
 
 // TestTuning_InferenceClientReadsFlagPerCall drives the real Claude client built by
 // selectInferenceBackend against a fake Messages API: the model sent on each call
-// follows the inference.model flag at that moment, and the deprecated env var only
-// while the flag cannot be resolved.
+// follows the inference.model flag at that moment, and the compiled default while
+// the flag cannot be resolved (AGENT_INFERENCE_MODEL is ignored, #1907).
 func TestTuning_InferenceClientReadsFlagPerCall(t *testing.T) {
 	var mu sync.Mutex
 	var models []string
@@ -231,16 +219,13 @@ func TestTuning_InferenceClientReadsFlagPerCall(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	clearTuningEnv(t)
-	t.Setenv("AGENT_INFERENCE_BACKEND", "claude")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 	t.Setenv("AGENT_INFERENCE_BASE_URL", srv.URL)
-	t.Setenv("AGENT_INFERENCE_MODEL", "env-model")
 
 	ev := newTuningEvaluator()
 	ev.setString("inference.model", "flag-model")
-	tuning := newAgentTuning(flags.New(ev, quietLogger()), tuningDefaultsFromEnv(quietLogger()))
-	client, name := selectInferenceBackend(quietLogger(), tuning)
+	tuning := newAgentTuning(flags.New(ev, quietLogger()), compiledTuningDefaults())
+	client, name := selectInferenceBackend(quietLogger(), tuning, "claude")
 	if client == nil || name != inference.Name {
 		t.Fatalf("backend = (%v, %q), want the claude client", client != nil, name)
 	}
@@ -259,7 +244,7 @@ func TestTuning_InferenceClientReadsFlagPerCall(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{"flag-model", "flag-model-2", "env-model"}
+	want := []string{"flag-model", "flag-model-2", inference.DefaultModel}
 	if len(models) != len(want) {
 		t.Fatalf("requests = %v, want %v", models, want)
 	}
@@ -281,6 +266,95 @@ func TestLLMBudgetCeiling(t *testing.T) {
 		t.Setenv("AGENT_LLM_MAX_REQUESTS_PER_MINUTE", tc.val)
 		if got := llmBudgetCeiling(); got != tc.want {
 			t.Errorf("llmBudgetCeiling(%q) = %d, want %d", tc.val, got, tc.want)
+		}
+	}
+}
+
+// TestTuningDefaults_IgnoreEnv: the removed env vars (#1907) have no effect. With every
+// one set to a non-default value, the compiled defaults are unchanged, a text backend
+// whose flag cannot be resolved is the stub, and a Claude client built without a
+// flag-resolved tuning uses the inference constants.
+// UC: UC-042 BR-003
+func TestTuningDefaults_IgnoreEnv(t *testing.T) {
+	want := compiledTuningDefaults()
+	for k, v := range map[string]string{
+		"AGENT_INFERENCE_BACKEND":                   "claude",
+		"AGENT_INFERENCE_MODEL":                     "env-model",
+		"AGENT_INFERENCE_EFFORT":                    "max",
+		"AGENT_INFERENCE_TIMEOUT_SECONDS":           "7",
+		"AGENT_EFFECT_WINDOW_SECONDS":               "3.5",
+		"AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS": "5",
+		"AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS":  "77",
+		"AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS":  "9",
+		"AGENT_PROBE_DECISIONS":                     "true",
+		"ANTHROPIC_API_KEY":                         "sk-test",
+	} {
+		t.Setenv(k, v)
+	}
+	if got := compiledTuningDefaults(); got != want {
+		t.Fatalf("compiledTuningDefaults changed with env set: %+v, want %+v", got, want)
+	}
+	if want.InferenceModel != inference.DefaultModel || want.InferenceEffort != inference.DefaultEffort ||
+		want.InferenceTimeout != inference.DefaultTimeout || want.EffectWindow != decision.DefaultEffectWindow ||
+		want.RewatchInterval != promote.DefaultRewatchInterval || want.RewatchTimeout != promote.DefaultRewatchTimeout ||
+		want.RevertCooldown != promote.DefaultRevertCooldown {
+		t.Fatalf("compiledTuningDefaults = %+v, want the package constants", want)
+	}
+	down := newTuningEvaluator()
+	down.setDown(true)
+	tb := newTextBackends(quietLogger(), nil, flags.New(down, quietLogger()))
+	if client, name := tb.Select(context.Background()); client != nil || name != "stub" {
+		t.Fatalf("Select with flagd down = (%v, %q), want (nil, stub) despite AGENT_INFERENCE_BACKEND=claude", client != nil, name)
+	}
+	if got := flags.New(down, quietLogger()).Evaluate(context.Background()).ProbeDecisions; got {
+		t.Fatal("probe decisions on with flagd down: AGENT_PROBE_DECISIONS must be ignored")
+	}
+}
+
+// TestCompiledDefaultsMatchFlagDefaults pins every compiled fallback to the default
+// variant of its flag in services/flagd/agent.json and ci/agent.json: with the env
+// fallbacks gone (#1907), the compiled value is what runs while flagd cannot answer,
+// so it must equal what flagd serves once it can. Later #1907 PRs add their keys here.
+// UC: UC-042 Pre-2
+func TestCompiledDefaultsMatchFlagDefaults(t *testing.T) {
+	d := compiledTuningDefaults()
+	want := map[string]any{
+		"inference.backend":                  envFallback,
+		"inference.model":                    d.InferenceModel,
+		"inference.effort":                   d.InferenceEffort,
+		"inference.timeout_seconds":          d.InferenceTimeout.Seconds(),
+		"effect.window_seconds":              d.EffectWindow.Seconds(),
+		"promotion.rewatch_interval_seconds": d.RewatchInterval.Seconds(),
+		"promotion.rewatch_timeout_seconds":  d.RewatchTimeout.Seconds(),
+		"promotion.revert_cooldown_seconds":  d.RevertCooldown.Seconds(),
+		"decision.probe_decisions":           false, // main.go SetProbeDefault(false)
+	}
+	for _, path := range []string{
+		filepath.Join("..", "flagd", "agent.json"),
+		filepath.Join("..", "flagd", "ci", "agent.json"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Flags map[string]struct {
+				Variants       map[string]any `json:"variants"`
+				DefaultVariant string         `json:"defaultVariant"`
+			} `json:"flags"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		for key, w := range want {
+			f, ok := doc.Flags[key]
+			if !ok {
+				t.Errorf("%s: flag %q missing", path, key)
+				continue
+			}
+			if got := f.Variants[f.DefaultVariant]; got != w {
+				t.Errorf("%s: %s default variant = %v, compiled default = %v", path, key, got, w)
+			}
 		}
 	}
 }

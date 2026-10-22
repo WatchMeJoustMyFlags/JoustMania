@@ -10,17 +10,17 @@ import (
 	"github.com/joustmania/agent/inference"
 )
 
-// inference_select_test.go covers the #1234 env-driven backend selection for the
-// offline seams (proposer + retro): the stub default, fail-safe on unknown values
-// and on a missing key, and the claude path.
+// inference_select_test.go covers the backend selection for the offline seams
+// (proposer + retro): the stub default, fail-safe on unknown values and on a missing
+// key, and the claude path. The choice comes from a fixed inference.backend flag value
+// (the AGENT_INFERENCE_BACKEND env is removed, #1907).
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // UC: UC-042 Pre-2
 func TestSelectInferenceBackend_DefaultIsStub(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "") // unset/empty == stub
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-	backend, name := selectInferenceBackend(quietLogger(), nil)
+	backend, name := selectInferenceBackend(quietLogger(), nil, "") // unset/empty == stub
 	if backend != nil || name != "stub" {
 		t.Errorf("default = (%v, %q), want (nil, stub)", backend != nil, name)
 	}
@@ -29,9 +29,8 @@ func TestSelectInferenceBackend_DefaultIsStub(t *testing.T) {
 // UC: UC-042 Pre-2
 func TestSelectInferenceBackend_UnknownValueFailsSafeToStub(t *testing.T) {
 	for _, v := range []string{"gpt-9000", "openai"} { // openai was retired in #1234
-		t.Setenv("AGENT_INFERENCE_BACKEND", v)
 		t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-		backend, name := selectInferenceBackend(quietLogger(), nil)
+		backend, name := selectInferenceBackend(quietLogger(), nil, v)
 		if backend != nil || name != "stub" {
 			t.Errorf("%s = (%v, %q), want (nil, stub)", v, backend != nil, name)
 		}
@@ -40,9 +39,8 @@ func TestSelectInferenceBackend_UnknownValueFailsSafeToStub(t *testing.T) {
 
 // UC: UC-042 Pre-2
 func TestSelectInferenceBackend_ClaudeWithoutKeyIsStub(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "claude")
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	backend, name := selectInferenceBackend(quietLogger(), nil)
+	backend, name := selectInferenceBackend(quietLogger(), nil, "claude")
 	if backend != nil || name != "stub" {
 		t.Errorf("claude without key = (%v, %q), want (nil, stub)", backend != nil, name)
 	}
@@ -50,14 +48,12 @@ func TestSelectInferenceBackend_ClaudeWithoutKeyIsStub(t *testing.T) {
 
 // UC: UC-042 Pre-2
 func TestSelectInferenceBackend_ClaudeSelectsRealClient(t *testing.T) {
-	t.Setenv("AGENT_INFERENCE_BACKEND", "Claude") // case-insensitive
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-	t.Setenv("AGENT_INFERENCE_MODEL", "claude-sonnet-5-5")
-	backend, name := selectInferenceBackend(quietLogger(), nil)
+	backend, name := selectInferenceBackend(quietLogger(), nil, "Claude") // case-insensitive
 	if backend == nil || name != "claude" {
 		t.Fatalf("claude = (%v, %q), want a real client", backend != nil, name)
 	}
-	if !backend.Available() || backend.Model() != "claude-sonnet-5-5" {
+	if !backend.Available() || backend.Model() != inference.DefaultModel {
 		t.Errorf("client available=%v model=%q", backend.Available(), backend.Model())
 	}
 	var _ experiment.Backend = backend
@@ -97,10 +93,9 @@ func TestSelectInferenceBackend_BaseURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("AGENT_INFERENCE_BACKEND", "claude")
 			t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 			t.Setenv("AGENT_INFERENCE_BASE_URL", tc.url)
-			backend, name := selectInferenceBackend(quietLogger(), nil)
+			backend, name := selectInferenceBackend(quietLogger(), nil, "claude")
 			if tc.wantBase == "" {
 				if backend != nil || name != "stub" {
 					t.Fatalf("%q = (backend %v, %q), want rejected (nil, stub)", tc.url, backend != nil, name)
@@ -117,10 +112,14 @@ func TestSelectInferenceBackend_BaseURL(t *testing.T) {
 	}
 }
 
-// selectInferenceBackend is the env-only selection (no flag source): the fallback path
-// of textBackends, as used while flagd cannot resolve inference.backend.
-func selectInferenceBackend(logger *slog.Logger, tuning *agentTuning) (*inference.Claude, string) {
-	return newTextBackends(logger, tuning, nil).Select(context.Background())
+// fixedBackendFlag is an inference.backend flag source that always answers one value.
+type fixedBackendFlag string
+
+func (f fixedBackendFlag) InferenceBackend(context.Context, string) string { return string(f) }
+
+// selectInferenceBackend selects through a flag source fixed to backend.
+func selectInferenceBackend(logger *slog.Logger, tuning *agentTuning, backend string) (*inference.Claude, string) {
+	return newTextBackends(logger, tuning, fixedBackendFlag(backend)).Select(context.Background())
 }
 
 // sourceFor is a proposer backend source over a test delegate: nil = the stub
