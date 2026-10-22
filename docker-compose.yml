@@ -16,7 +16,8 @@
 #
 # Environment Variables (can be set in shell or .env file):
 # - IMAGE_TAG: Image tag to use [default: latest]
-# - LOG_LEVEL: Logging level for all services (DEBUG, INFO, WARNING, ERROR) [default: INFO]
+# - LOG_LEVEL: Logging level of the agent only (DEBUG, INFO, WARNING, ERROR) [default: INFO];
+#   the Python services take their level from the "log_level" flag (flags.md)
 # - JOUSTMANIA_HOST: Hostname for OTEL resource attributes (host.name) [default: joustmania]
 #
 # Controller backend: the "backend" flag in flagd (controller domain) selects which
@@ -431,7 +432,7 @@ services:
     expose:
       - "50053"  # gRPC service
     environment:
-      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME_GAME_COORDINATOR:-game-coordinator-service}
+      - OTEL_SERVICE_NAME=game-coordinator-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}

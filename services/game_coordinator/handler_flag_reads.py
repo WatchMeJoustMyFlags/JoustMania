@@ -6,7 +6,7 @@
 # A handler (and a revert handler and the agent cue) runs on the game's loop through
 # GameLoopDispatcher.run, which copies the contextvars of the servicer's MAIN loop. A
 # flag read there therefore sees the API-level attributes (service_name,
-# service_namespace, language, environment, hostname, game_kind=real) plus whatever the
+# service_namespace, language, hostname, game_kind=real) plus whatever the
 # read passes itself, and NOT the game's transaction context (targetingKey, game_mode,
 # controller_count, sensitivity, experiment_id, arm; flags.md section 1.2). Hence:
 #
