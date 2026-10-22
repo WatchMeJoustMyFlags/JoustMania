@@ -10,8 +10,8 @@ import (
 // tuning_test.go covers the #1788 tuning getters (FR-150, C-035): the flag wins
 // when it resolves; an evaluation error (flagd unreachable, flag missing, no first
 // sync) or an unusable value (blank string, non-positive number) yields the
-// caller's fallback, which main.go builds from the deprecated env var or the
-// compiled default.
+// caller's fallback, which main.go builds from the compiled default (equal to the flag
+// default, #1907).
 
 func TestTuning_FlagWinsOverFallback(t *testing.T) {
 	ev := stubEvaluator{

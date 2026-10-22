@@ -1835,8 +1835,8 @@ func (r *Registry) MaxGames() int {
 // Reconfigure live-updates the registry's runtime caps (#1044) so a hot-reload of
 // experiment_shadow_effective_concurrency / experiment_max_games / verdict_min_n
 // takes effect with NO restart. The experiment loop calls it each tick from the
-// live agent.json flags; the env-derived value is the bootstrap default the flag
-// falls back to, so a fresh agent.json reproduces byte-identical behavior.
+// live agent.json flags; the compiled default (equal to the flag default, #1907) is what the
+// flag falls back to, so a fresh agent.json reproduces byte-identical behavior.
 //
 // SAFETY (the #1044 hard-part-2 requirement): every field is updated UNDER r.mu,
 // the same lock that guards all capacity/lifecycle bookkeeping (spawnsInFlight,
@@ -1897,7 +1897,7 @@ func (r *Registry) Reconfigure(effectiveConcurrency, maxGames, minN, minPairs in
 // / verdict_sd_floor / verdict_anchor_margin takes effect on the NEXT verdict with no
 // restart — the float analog of the minN/minPairs mirroring in Reconfigure. The
 // experiment loop calls it each tick from the live agent.json flags, alongside
-// Reconfigure; the env-derived value is the bootstrap default the flag falls back to.
+// Reconfigure; the compiled default (equal to the flag default, #1907) is what the flag falls back to.
 // These knobs are verdict-only (the registry itself reads none of them), so unlike
 // minN this method only forwards to the verdict — it touches no registry state and
 // takes no registry lock. SetFloatThresholds ignores a non-positive value per knob, so

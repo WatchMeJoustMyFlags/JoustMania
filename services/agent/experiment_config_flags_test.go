@@ -15,11 +15,11 @@ import (
 
 // experiment_config_flags_test.go is the #1044 loop-level acceptance suite: the
 // migrated AGENT_EXPERIMENT_* knobs are now LIVE agent.json flags (read each tick)
-// with the env value as the bootstrap default. It proves the startup-gate inversion
+// with the compiled default (equal to the flag default, #1907) as the fallback. It proves the startup-gate inversion
 // (experiments_enabled off->on->off at runtime), the kill-switch precedence, and the
 // ownership invariant (the agent has NO write path to these agent.json flags). The
-// per-knob flag-overrides-env / fallback / live-reread behavior is covered in
-// flags/flags_test.go (TestExperiment_FlagOverridesEnvDefault), and the registry /
+// per-knob flag-overrides-default / fallback / live-reread behavior is covered in
+// flags/flags_test.go (TestExperiment_FlagOverridesCompiledDefault), and the registry /
 // verdict live-cap reconfigure in experiment/{registry,verdict}_test.go.
 
 // liveConfig is a goroutine-safe settable ExperimentConfig for the configOverride seam.

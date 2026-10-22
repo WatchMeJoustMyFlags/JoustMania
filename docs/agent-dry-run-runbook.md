@@ -181,9 +181,10 @@ be in its bounds; the flag service rejects anything else with HTTP 422
   `experiment_dynamic_enabled` (default off): run
   `scripts/flags.sh set agent experiment_dynamic_enabled on` (no restart), or
   re-seed with another flag as in "Seed another flag" above. The
-  `AGENT_EXPERIMENT_*` env vars only supply the fallback floor, except
-  `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT`, `AGENT_EXPERIMENT_MAX_GAMES` and
-  `AGENT_EXPERIMENT_PROPOSER_ENABLED`, which are ceilings (#1810, C-034).
+  `AGENT_EXPERIMENT_*` env vars: `_DYNAMIC_MAX_CONCURRENT`, `_MAX_GAMES` and
+  `_PROPOSER_ENABLED` are ceilings (#1810, C-034); the seed and dynamic list
+  vars are startup config (until #1907 4b/4c); no env var is a fallback for a
+  flag any more (#1907).
 - **Verdicts read `inconclusive`.** Expected on mock controllers: the
   scripted movement is not a real effect, so arms rarely separate. Do not treat
   `inconclusive` as a failure; the loop is working when declare, start,

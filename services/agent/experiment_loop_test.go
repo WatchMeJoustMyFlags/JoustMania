@@ -1139,8 +1139,8 @@ func TestExperimentLoop_ProposalSinkDeclaresWithinTheBudget(t *testing.T) {
 }
 
 // TestExperimentLoop_TickCadence: the loop spawns on the live
-// experiment_tick_seconds cadence; the shipped flag default and the env-less
-// bootstrap default are both 30 s, and a flag value replaces it on the next tick.
+// experiment_tick_seconds cadence; the shipped flag default and the compiled
+// default (equal to the flag default, #1907) are both 30 s, and a flag value replaces it on the next tick.
 //
 // UC: UC-043 main
 func TestExperimentLoop_TickCadence(t *testing.T) {

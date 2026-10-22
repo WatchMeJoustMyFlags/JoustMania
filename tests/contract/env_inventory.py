@@ -298,11 +298,15 @@ def go_reads(root: Path) -> list[EnvRead]:
         values = shared.get(name, set())
         return next(iter(values)) if len(values) == 1 else None
 
+    # Only a helper's own key parameter may stay unresolved (its inner
+    # os.Getenv(key)); any other unresolvable key is a loud error. A call whose
+    # earlier argument contains parentheses or commas is not matched by the
+    # per-index pattern below; that fails safe (test_agent_compose_env_is_read).
     helper_params = {
-        n
+        _go_param_names(m.group(2))[helpers[m.group(1)][0]]
         for p in files
         for m in _GO_FUNC.finditer(_go_source(p))
-        for n in _go_param_names(m.group(2))
+        if m.group(1) in helpers
     }
     # One call pattern per key position: the key is the (index+1)-th argument.
     by_index: dict[int, list[str]] = {0: ["os\\.Getenv", "os\\.LookupEnv"]}

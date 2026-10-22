@@ -325,6 +325,18 @@ def test_go_scanner_ignores_comments(tmp_path):
     assert [(r.var, r.line) for r in reads] == [("REAL", 5)]
 
 
+def test_go_scanner_rejects_unresolved_key_matching_a_non_key_param(tmp_path):
+    """Only a helper's key parameter may stay unresolved, not any param name (#1907)."""
+    (tmp_path / "main.go").write_text(
+        "package main\n"
+        "func ceiling(key string, name string) string {\n"
+        "\treturn os.Getenv(key)\n}\n"
+        'func g() string { name := "X"; return os.Getenv(name) }\n'
+    )
+    with pytest.raises(ValueError, match="cannot resolve env key 'name'"):
+        inv.go_reads(tmp_path)
+
+
 def test_go_scanner_follows_a_helper_key_in_any_position(tmp_path):
     """A helper whose key is not its first parameter still counts as a read (#1907)."""
     (tmp_path / "main.go").write_text(
