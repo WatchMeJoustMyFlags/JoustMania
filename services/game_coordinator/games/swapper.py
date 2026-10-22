@@ -289,11 +289,11 @@ class SwapperGame(TeamsGameBase):
         """Take a disconnected player out of the game (UC-024 A1).
 
         ``alive`` stays False, so the base kill path sends the death effect and the
-        aggregate drops the player. An elimination clears the last swap (BR-001, D2).
+        aggregate drops the player. The last swap is cleared at the mark
+        (``_handle_disconnect``), not here (BR-001).
         """
         player = self.players[serial]
         player.alive = False
-        self.last_death_serial = None
         if player.span:
             player.span.add_event("player_eliminated", attributes={"reason": "controller_disconnect"})
             player.span.set_status(Status(StatusCode.OK))
@@ -307,19 +307,36 @@ class SwapperGame(TeamsGameBase):
         The serial is marked BEFORE the base call: the base returns early for a player
         that is not alive, which is the case while its own swap sleeps, and drops the
         kill while another kill of the same player is in flight. The mark makes that
-        swap, or that kill, eliminate the player. Clearing the last swap here keeps the
-        win check right after the disconnect from excluding anyone (BR-001, D2).
+        swap, or that kill, eliminate the player.
+
+        The last swap is cleared only when this elimination removes the last swapped
+        player or completes the convergence itself (BR-001, D2). When the teams had
+        already converged by the last swap (an agent swap whose win check has not run
+        yet), that swap completed the convergence and its player stays excluded.
         """
         if serial in self.players and serial not in self._eliminated:
+            converged_before = len(self._get_alive_teams()) <= 1
             self._eliminated.add(serial)
-            self.last_death_serial = None
+            if serial == self.last_death_serial or not converged_before:
+                self.last_death_serial = None
         await super()._handle_disconnect(serial)
 
     def _excluded_serial(self) -> str | None:
-        """The last swapped player, excluded from the winners (BR-001); never an eliminated one."""
-        if self.last_death_serial in self._eliminated:
+        """The last swapped player, excluded from the winners (BR-001).
+
+        Never an eliminated player, and never the only player left on its team: the
+        winners list is never empty (D2).
+        """
+        last = self.last_death_serial
+        if last is None or last in self._eliminated or last not in self.players:
             return None
-        return self.last_death_serial
+        team = self.players[last].team
+        if not any(
+            player.team == team and serial not in self._eliminated and serial != last
+            for serial, player in self.players.items()
+        ):
+            return None
+        return last
 
     def _team_winners(self, team: int) -> list[str]:
         """Members of ``team`` who win: not eliminated, not the last swapped player."""

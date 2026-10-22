@@ -793,8 +793,8 @@ class TestSwapperDisconnect:
         ]
 
         game.gameplay_stream = RecordingGameplayStream()
-        with patch("services.game_coordinator.games.swapper.asyncio.sleep"):
-            await game._end_game_impl()
+        game.running = False  # the celebration loop ends before its first sleep
+        await game._end_game_impl()
         rainbow = [
             m.game_effect.serial
             for m in game.gameplay_stream.messages
@@ -805,7 +805,7 @@ class TestSwapperDisconnect:
         assert events.get_events_of_type("game_ended")[0]["winning_team"] == 0
         await game.cleanup()
 
-    @pytest.mark.uc("UC-024", flow="A1", br=["BR-001", "BR-004"])
+    @pytest.mark.uc("UC-024", flow="A1", br=["BR-001", "BR-002"])
     @pytest.mark.asyncio
     async def test_disconnect_during_eliminate_swap_pause_keeps_player_out(self):
         game, events = await self._game(2)
@@ -839,7 +839,7 @@ class TestSwapperDisconnect:
         assert writes[-1] == ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
         await game.cleanup()
 
-    @pytest.mark.uc("UC-024", flow="A1", br=["BR-004"])
+    @pytest.mark.uc("UC-024", flow="A1", br=["BR-002"])
     @pytest.mark.asyncio
     async def test_disconnect_during_eliminate_kill_sound_eliminates_instead_of_swapping(self):
         game, events = await self._game(2)
@@ -878,8 +878,8 @@ class TestSwapperDisconnect:
         assert await game._check_win_condition()
         assert events.get_events_of_type("swapper_winner") == []
 
-        with patch("services.game_coordinator.games.swapper.asyncio.sleep"):
-            await game._end_game_impl()
+        game.running = False  # the celebration loop ends before its first sleep
+        await game._end_game_impl()
         assert events.get_events_of_type("game_ended")[0]["winning_team"] == "none"
         assert not any(
             m.HasField("game_effect") and m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
@@ -918,4 +918,72 @@ class TestSwapperDisconnect:
 
         release.set()
         await asyncio.wait_for(asyncio.gather(*swaps), 2.0)
+        await game.cleanup()
+
+    @staticmethod
+    def _rainbow(stream):
+        return [
+            m.game_effect.serial
+            for m in stream.messages
+            if m.HasField("game_effect") and m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        ]
+
+    @pytest.mark.uc("UC-024", flow="A1", br=["BR-001"])
+    @pytest.mark.asyncio
+    async def test_eliminated_player_on_the_winning_team_never_wins(self):
+        # Teams: c0, c2 on team 0; c1 on team 1. c2 disconnects, then c1 swaps to team 0.
+        game, events = await self._game(3)
+        assert not await game._process_gameplay_update(
+            _frame("mock_controller_0", "mock_controller_1", disconnects=("mock_controller_2",))
+        )
+        assert game.players["mock_controller_2"].team == 0
+
+        await game._kill_player("mock_controller_1", 3.0)
+        assert await game._process_gameplay_update(_frame("mock_controller_0"))
+
+        winner = events.get_events_of_type("swapper_winner")
+        assert len(winner) == 1 and winner[0]["team"] == 0
+        assert winner[0]["winners"] == ["mock_controller_0"]
+        assert winner[0]["excluded_serial"] == "mock_controller_1"
+
+        game.gameplay_stream = RecordingGameplayStream()
+        game.running = False  # the celebration loop ends before its first sleep
+        await game._end_game_impl()
+        assert self._rainbow(game.gameplay_stream) == ["mock_controller_0"]
+        assert events.get_events_of_type("game_ended")[0]["winning_team"] == 0
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", flow="A1", br=["BR-001", "BR-002"])
+    @pytest.mark.asyncio
+    async def test_disconnect_after_a_converging_agent_swap_keeps_the_swapper_excluded(self):
+        # Teams: c0, c2 on team 0; c1 on team 1. The agent swaps c1 to team 0: converged.
+        game, events = await self._game(3)
+        await game._kill_player("mock_controller_1", 0.0, reason="agent_intervention")
+        assert game._get_alive_teams() == {0}
+        assert events.get_events_of_type("swapper_winner") == []
+
+        # The next update carries c2's disconnect before any win check ran.
+        assert await game._process_gameplay_update(_frame("mock_controller_0", disconnects=("mock_controller_2",)))
+
+        winner = events.get_events_of_type("swapper_winner")
+        assert len(winner) == 1 and winner[0]["team"] == 0
+        assert winner[0]["winners"] == ["mock_controller_0"]
+        assert winner[0]["excluded_serial"] == "mock_controller_1"
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", flow="A1", br=["BR-001", "BR-002"])
+    @pytest.mark.asyncio
+    async def test_converged_swapper_left_alone_on_its_team_wins(self):
+        # D2: the agent swaps c1 to team 0 (converged), then c0 disconnects: c1 is the
+        # only player left, so it is not excluded and the winners list is not empty.
+        game, events = await self._game(2)
+        await game._kill_player("mock_controller_1", 0.0, reason="agent_intervention")
+        assert game._get_alive_teams() == {0}
+
+        assert await game._process_gameplay_update(_frame("mock_controller_1", disconnects=("mock_controller_0",)))
+
+        winner = events.get_events_of_type("swapper_winner")
+        assert len(winner) == 1 and winner[0]["team"] == 0
+        assert winner[0]["winners"] == ["mock_controller_1"]
+        assert winner[0]["excluded_serial"] == ""
         await game.cleanup()
