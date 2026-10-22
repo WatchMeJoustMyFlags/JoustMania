@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -813,6 +814,7 @@ class TestZombieEndGame:
         await self._setup_game(game, mock_controller_manager)
 
         game.time_remaining = 0
+        assert await game._check_win_condition()
 
         await game._end_game_impl()
 
@@ -836,6 +838,7 @@ class TestZombieEndGame:
             player.alive = True
             game.zombie_serials.append(serial)
         game.human_serials.clear()
+        assert await game._check_win_condition()
 
         await game._end_game_impl()
 
@@ -868,6 +871,7 @@ class TestZombieEndGame:
         await self._setup_game(game, mock_controller_manager)
 
         game.time_remaining = 0
+        assert await game._check_win_condition()
 
         await game._end_game_impl()
 
@@ -892,12 +896,130 @@ class TestZombieEndGame:
             player.alive = True
             game.zombie_serials.append(serial)
         game.human_serials.clear()
+        assert await game._check_win_condition()
 
         await game._end_game_impl()
 
         calls = game._play_sound.call_args_list
         sound_args = [c[0][0] for c in calls]
         assert Sound.VOX_ZOMBIE_VICTORY in sound_args
+
+
+class TestZombieForceEndWinner:
+    """A force-end declares no winner; a winner latched earlier is kept (UC-023 BR-003, #1343)."""
+
+    @pytest_asyncio.fixture
+    async def setup(self):
+        from unittest.mock import AsyncMock
+
+        from services.game_coordinator.games.base import GameState
+
+        manager = MockControllerManagerService(num_controllers=4, death_schedule={}, max_duration=10.0)
+        events = EventCollector()
+        game = ZombieGame(
+            controller_manager_client=manager,
+            event_publisher=events.publish,
+            audio_client=None,
+            game_id="test_zombie_force_end",
+        )
+        await game._initialize_players_impl(manager.controllers)
+        game.state = GameState.RUNNING
+        game.start_time = 100.0
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+        game._wait_for_rainbow_effect = AsyncMock()
+        game.time_remaining = 100
+        return game, events
+
+    @staticmethod
+    def _rainbow_writes(game):
+        return [
+            m
+            for m in game.gameplay_stream.messages
+            if m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        ]
+
+    @staticmethod
+    def _convert_all_humans(game):
+        for serial in list(game.human_serials):
+            player = game.players[serial]
+            player.is_zombie = True
+            player.team = 1
+            player.alive = True
+            game.zombie_serials.append(serial)
+        game.human_serials.clear()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-023", br=["BR-003"])
+    async def test_force_end_while_running_declares_no_winner(self, setup):
+        game, events = setup
+        game.force_end("operator")
+        game._latch_game_outcome()  # the run() latches when the loop exits
+
+        await game._end_game_impl()
+
+        assert events.get_events_of_type("zombie_winner") == []
+        assert self._rainbow_writes(game) == []
+        sounds = [c[0][0] for c in game._play_sound.call_args_list]
+        assert Sound.VOX_HUMAN_VICTORY not in sounds
+        assert Sound.VOX_ZOMBIE_VICTORY not in sounds
+        game._wait_for_rainbow_effect.assert_not_called()
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == "none"
+        assert ended["outcome"] == "force_ended"
+        assert ended["reason"] == "operator"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-023", br=["BR-003"])
+    @pytest.mark.parametrize("side", ["zombies", "humans"])
+    async def test_force_end_after_win_keeps_the_winner(self, setup, side):
+        game, events = setup
+        if side == "zombies":
+            self._convert_all_humans(game)
+        else:
+            game.time_remaining = 0
+        assert await game._check_win_condition()
+        game._latch_game_outcome()  # the loop returns into its 1 s hold
+        game.force_end("late")
+
+        await game._end_game_impl()
+
+        (winner_event,) = events.get_events_of_type("zombie_winner")
+        assert winner_event["winner"] == side
+        assert self._rainbow_writes(game)
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == side
+        assert ended["outcome"] == "completed"
+        assert "reason" not in ended
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-023", br=["BR-003"])
+    async def test_win_is_latched_and_published_once(self, setup):
+        game, events = setup
+        self._convert_all_humans(game)
+        assert await game._check_win_condition()
+        game.time_remaining = 0  # a later time-up must not change or repeat the win
+        assert await game._check_win_condition()
+
+        assert len(events.get_events_of_type("zombie_winner")) == 1
+        assert game._winner_side == "zombies"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-023", br=["BR-003"])
+    async def test_stream_end_without_a_win_declares_no_winner(self, setup):
+        game, events = setup
+        game._latch_game_outcome()  # the loop returned (stream closed), no win
+
+        await game._end_game_impl()
+
+        assert self._rainbow_writes(game) == []
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == "none"
+        assert ended["outcome"] == "completed"
 
 
 class TestZombieCleanup:

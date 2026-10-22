@@ -125,6 +125,10 @@ class ZombieGame(BaseGameMode):
             rng_seed=rng_seed,
         )
 
+        # The side that won, latched once in _check_win_condition (UC-023 BR-003, #1343).
+        # None = no winner (force-ended before a win, or the stream ended without one).
+        self._winner_side: str | None = None
+
         # #766 F1: zombie threshold overrides promoted to ``game.zombie.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to ZOMBIE_THRESHOLDS.
         self.zombie_thresholds = resolve_mode_thresholds(
@@ -343,12 +347,17 @@ class ZombieGame(BaseGameMode):
         Zombies win if all humans are converted.
         Humans win if time expires with at least one human alive.
         """
+        # The win is latched once: later calls (the 1 s hold) do not republish it.
+        if self._winner_side is not None:
+            return True
+
         # Count alive humans (not counting converting players)
         alive_humans = [s for s in self.human_serials if self.players[s].alive and not self.players[s].is_zombie]
 
         # Check if all humans converted
         if len(alive_humans) == 0:
             logger.info("All humans converted! Zombies win!")
+            self._winner_side = "zombies"
             await self.event_publisher(
                 "zombie_winner",
                 {
@@ -361,6 +370,7 @@ class ZombieGame(BaseGameMode):
         # Check if time expired
         if self.time_remaining <= 0:
             logger.info(f"Time's up! Humans win with {len(alive_humans)} survivors!")
+            self._winner_side = "humans"
             await self.event_publisher(
                 "zombie_winner",
                 {
@@ -512,15 +522,17 @@ class ZombieGame(BaseGameMode):
         if self.timer_task and not self.timer_task.done():
             self.timer_task.cancel()
 
-        # Determine winner
-        alive_humans = [s for s in self.human_serials if self.players[s].alive]
-
-        if self.time_remaining <= 0 and len(alive_humans) > 0:
-            winner = "humans"
-            winner_serials = alive_humans
-        else:
-            winner = "zombies"
+        # The winner was latched when the win condition fired. A force-end declares
+        # no winner (UC-023 BR-003, #1343); a stream end without a win has none either.
+        force_ended = self.game_outcome() == "force_ended"
+        winner_side = None if force_ended else self._winner_side
+        winner = winner_side or "none"
+        if winner_side == "humans":
+            winner_serials = [s for s in self.human_serials if self.players[s].alive]
+        elif winner_side == "zombies":
             winner_serials = self.zombie_serials
+        else:
+            winner_serials = []
 
         # Show rainbow effect on winners
         if self.gameplay_stream:
@@ -536,13 +548,14 @@ class ZombieGame(BaseGameMode):
                     await self.gameplay_stream.write(effect_cmd)
 
         # Play victory sound (Zombie/vox/ directory)
-        if winner == "humans":
+        if winner_side == "humans":
             await self._play_sound(Sound.VOX_HUMAN_VICTORY, priority=2)
-        else:
+        elif winner_side == "zombies":
             await self._play_sound(Sound.VOX_ZOMBIE_VICTORY, priority=2)
 
         # Wait for rainbow effect to complete
-        await self._wait_for_rainbow_effect()
+        if winner_side is not None:
+            await self._wait_for_rainbow_effect()
 
         # End all player spans
         for serial, player in self.players.items():
@@ -561,15 +574,16 @@ class ZombieGame(BaseGameMode):
                 player.span.end()
 
         self.state = self.state.__class__.ENDED
-        await self.event_publisher(
-            "game_ended",
-            {
-                "game_id": self.game_id,
-                "duration": time.time() - self.start_time if self.start_time else 0,
-                "winner": winner,
-                "time_remaining": self.time_remaining,
-            },
-        )
+        ended_payload = {
+            "game_id": self.game_id,
+            "duration": time.time() - self.start_time if self.start_time else 0,
+            "winner": winner,
+            "time_remaining": self.time_remaining,
+            "outcome": self.game_outcome(),
+        }
+        if force_ended:
+            ended_payload["reason"] = self.force_end_reason
+        await self.event_publisher("game_ended", ended_payload)
 
         logger.info("Zombie game ended")
 
