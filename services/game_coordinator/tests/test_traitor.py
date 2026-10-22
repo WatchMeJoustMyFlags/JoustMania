@@ -8,9 +8,11 @@ Tests the core Traitor mechanics:
 - Player death handling
 """
 
+import asyncio
 import sys
 import time
 from pathlib import Path
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -23,8 +25,14 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService, async_noop
 
-from proto import controller_manager_pb2
+from lib.types import GameEvent
+from proto import controller_manager_pb2, game_coordinator_pb2
+from services.game_coordinator.games.base import GameState, Player
+from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.traitor import TraitorGame, TraitorPlayer
+from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
+from services.game_coordinator.tests.test_death_detection_uc030 import LETHAL, STILL, _frame
+from services.game_coordinator.tests.test_ffa_uc020 import RecordingAudio, RecordingControllerManager
 
 
 class MockGameplayStream:
@@ -57,6 +65,7 @@ class TestTraitorGameMode:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-022", flow="main", steps=[1])
     def test_get_traitor_count(self, traitor_game):
         """Test traitor count calculation based on player count."""
         game, _, _ = traitor_game
@@ -92,6 +101,7 @@ class TestTraitorGameMode:
         assert len(game.traitor_serials) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="main", steps=[2])
     async def test_traitor_has_different_secret_team(self, traitor_game):
         """Test that traitors have different secret team than visible team."""
         game, mock_controller_manager, _ = traitor_game
@@ -158,6 +168,7 @@ class TestTraitorGameMode:
         assert winner_events[0]["team"] == 0
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="main", steps=[4])
     async def test_traitor_wins_with_secret_team(self, traitor_game):
         """Test that traitors are counted with their secret team for win condition."""
         game, mock_controller_manager, event_collector = traitor_game
@@ -641,6 +652,7 @@ class TestTraitorEndGameImpl:
         assert ended_events[0]["winning_team"] == -1  # No winner
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", cond=["Post-S-1"])
     async def test_end_game_transitions_to_ended_state(self):
         """Test that _end_game_impl sets state to ENDED."""
         from services.game_coordinator.games.base import GameState
@@ -700,6 +712,7 @@ class TestTraitorInstantWin:
         assert len(winner_events[0]["winners"]) == 4
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="main", steps=[4])
     async def test_win_identifies_traitor_winners_vs_loyal(self):
         """Test that win event separates traitor winners from loyal winners."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
@@ -740,3 +753,143 @@ class TestTraitorInstantWin:
         for serial in event["loyal_winners"]:
             assert serial not in game.traitor_serials
             assert serial in event["winners"]
+
+
+# --------------------------------------------------------------------------- #
+# UC-022 gaps closed by #1361: main steps 3 and 4, Post-F-1
+# --------------------------------------------------------------------------- #
+def _uc022_players(count: int) -> list:
+    return [game_coordinator_pb2.Player(serial=f"mock_controller_{i}") for i in range(count)]
+
+
+class TestUC022Step3BaseThresholds:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="main", steps=[3])
+    async def test_traitor_and_loyal_die_at_the_base_thresholds(self):
+        """UC-022 step 3: Traitor adds no role threshold; a lethal sample kills a traitor and a loyal player alike."""
+        events = EventCollector()
+        manager = MockControllerManagerService(num_controllers=6)
+        game = TraitorGame(
+            controller_manager_client=manager,
+            event_publisher=events.publish,
+            audio_client=None,
+            game_id="uc022_step3",
+            initial_players=_uc022_players(6),
+            rng_seed=11,
+        )
+        await game._initialize_players()
+        game.gameplay_stream = MockGameplayStream()
+        game.running = True
+        game.start_time = time.time()
+        game.state = GameState.RUNNING
+        traitor = game.players[game.traitor_serials[0]]
+        loyal_serials = [s for s in game.players if s not in game.traitor_serials]
+        loyal = game.players[loyal_serials[0]]
+        assert traitor.is_traitor and not loyal.is_traitor
+
+        reference = FFAGame(
+            controller_manager_client=MockControllerManagerService(num_controllers=2),
+            event_publisher=EventCollector().publish,
+            game_id="uc022_step3_ffa",
+        )
+        base = reference._compute_effective_thresholds(Player(serial="x", team=0))
+        assert game._compute_effective_thresholds(traitor) == base
+        assert game._compute_effective_thresholds(loyal) == base
+
+        for _ in range(10):
+            await game._process_gameplay_update(_frame((traitor.serial, LETHAL), (loyal.serial, STILL)))
+            if not traitor.alive:
+                break
+        assert traitor.alive is False
+        assert loyal.alive is True
+
+        for _ in range(10):
+            await game._process_gameplay_update(_frame((loyal.serial, LETHAL)))
+            if not loyal.alive:
+                break
+        assert loyal.alive is False
+
+
+def _uc022_fast_config():
+    return GamePerformanceConfig(countdown_phase_duration_ms=50, winner_rainbow_duration_ms=200)
+
+
+class TestUC022Step4EndToEnd:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="main", steps=[4], cond=["Post-S-1"])
+    async def test_run_ends_with_traitor_winner_then_game_ended(self):
+        """UC-022 step 4: run() with deaths leaving one secret team publishes traitor_winner, then game_ended."""
+        seed = 5
+        # A throwaway game with the same seed shows which player sits on which secret team.
+        probe = TraitorGame(
+            controller_manager_client=MockControllerManagerService(num_controllers=4),
+            event_publisher=EventCollector().publish,
+            game_id="uc022_probe",
+            initial_players=_uc022_players(4),
+            rng_seed=seed,
+        )
+        await probe._initialize_players()
+        serials = [f"mock_controller_{i}" for i in range(4)]
+        winning_team = probe.players[serials[0]].secret_team
+        expected_winners = [s for s in serials if probe.players[s].secret_team == winning_team]
+        losers = [i for i, s in enumerate(serials) if s not in expected_winners]
+        assert losers, "the seed must leave a second secret team to eliminate"
+
+        manager = RecordingControllerManager(
+            num_controllers=4,
+            death_schedule={1.0 + 0.2 * n: idx for n, idx in enumerate(losers)},
+            max_duration=30.0,
+        )
+        events = EventCollector()
+        game = TraitorGame(
+            controller_manager_client=manager,
+            event_publisher=events.publish,
+            audio_client=create_autospec(RecordingAudio, instance=True),
+            game_id="uc022_step4",
+            initial_players=_uc022_players(4),
+            rng_seed=seed,
+        )
+        with (
+            patch.object(get_config_manager(), "get_config", return_value=_uc022_fast_config()),
+            patch.object(game, "_play_sound", autospec=True),
+        ):
+            await asyncio.wait_for(game.run(), timeout=40.0)
+
+        types = [t for t, _ in events.events]
+        winner = events.get_events_of_type("traitor_winner")
+        assert len(winner) == 1
+        assert winner[0]["team"] == winning_team
+        assert sorted(winner[0]["winners"]) == sorted(expected_winners)
+        assert sorted(winner[0]["traitor_winners"] + winner[0]["loyal_winners"]) == sorted(expected_winners)
+        assert winner[0]["traitor_winners"] == [s for s in expected_winners if s in game.traitor_serials]
+        assert types.index("traitor_winner") < types.index(GameEvent.GAME_ENDED)
+        assert types.count(GameEvent.GAME_ENDED) == 1
+        assert GameEvent.GAME_FORCE_ENDED not in types
+        assert game.state == GameState.ENDED
+
+
+class TestUC022PostF1:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", cond=["Post-F-1"])
+    async def test_traitor_init_failure_publishes_game_error_and_raises(self):
+        """UC-022 Post-F-1: a Traitor run() whose player initialisation raises publishes game_error and ends."""
+        events = EventCollector()
+        game = TraitorGame(
+            controller_manager_client=RecordingControllerManager(num_controllers=4, infinite=True),
+            event_publisher=events.publish,
+            audio_client=create_autospec(RecordingAudio, instance=True),
+            game_id="uc022_f1",
+            initial_players=_uc022_players(4),
+            rng_seed=3,
+        )
+        with (
+            patch.object(get_config_manager(), "get_config", return_value=_uc022_fast_config()),
+            patch.object(game, "_initialize_players_impl", autospec=True, side_effect=RuntimeError("init boom")),
+            pytest.raises(RuntimeError, match="init boom"),
+        ):
+            await asyncio.wait_for(game.run(), timeout=15.0)
+
+        assert events.get_events_of_type(GameEvent.GAME_ERROR) == [{"game_id": "uc022_f1", "error": "init boom"}]
+        types = [t for t, _ in events.events]
+        assert GameEvent.GAME_STARTED not in types
+        assert game.state == GameState.ENDED

@@ -268,6 +268,7 @@ class TestRegistry:
         assert pacing.value_kind == "string"
         assert pacing.none_value == "none"
 
+    @pytest.mark.uc("UC-022", br=["BR-002"])
     def test_mode_gates_inherited(self):
         # adjust_global_difficulty inherits the adjust_global_sensitivity deny
         # rows (role-threshold modes); set_pacing_profile inherits adjust_music_tempo
@@ -335,6 +336,7 @@ class TestEnforcement:
         assert game.global_difficulty_factor == pytest.approx(1.5)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", br=["BR-002"])
     async def test_mode_gate_blocks_difficulty_in_werewolf(self):
         game = make_game()
         game.get_game_name = lambda: "Werewolf"
@@ -346,6 +348,7 @@ class TestEnforcement:
         assert any(d["blocked"] == "true" and d["block_reason"] == "mode_unsupported" for _, d in events)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", br=["BR-002"])
     async def test_pacing_allowed_everywhere(self):
         game = make_game()
         game.get_game_name = lambda: "Werewolf"

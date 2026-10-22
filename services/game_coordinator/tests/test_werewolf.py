@@ -125,6 +125,7 @@ class TestWerewolfGameMode:
             assert player.revealed is False
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="A1", steps=[4])
     async def test_win_condition_humans_eliminated(self, werewolf_game):
         """Test that werewolves win when all humans are dead."""
         game, mock_controller_manager, event_collector = werewolf_game
@@ -147,6 +148,7 @@ class TestWerewolfGameMode:
         assert winner_events[0]["winner"] == "werewolves"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="A1", steps=[4])
     async def test_win_condition_werewolves_eliminated(self, werewolf_game):
         """Test that humans win when all werewolves are dead."""
         game, mock_controller_manager, event_collector = werewolf_game
@@ -432,6 +434,7 @@ class TestWerewolfEdgeCases:
     """Tests for edge cases in werewolf game."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="A1", steps=[1])
     async def test_larger_player_count_werewolf_ratio(self):
         """Test werewolf ratio with more players."""
         mock_controller_manager = MockControllerManagerService(num_controllers=9)
@@ -449,6 +452,7 @@ class TestWerewolfEdgeCases:
         assert werewolf_count == 3
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="A1", steps=[1])
     async def test_minimum_one_werewolf(self):
         """Even with 2 players, should have at least 1 werewolf."""
         mock_controller_manager = MockControllerManagerService(num_controllers=2)
@@ -556,6 +560,7 @@ class TestWerewolfRevealMechanics:
         return game, mock_controller_manager, event_collector
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="A1", steps=[2])
     async def test_reveal_sets_game_revealed_flag(self, werewolf_game):
         """After reveal, game.revealed should be True."""
         from unittest.mock import AsyncMock, patch
@@ -594,6 +599,7 @@ class TestWerewolfRevealMechanics:
                 assert player.revealed is True
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="A1", steps=[2])
     async def test_reveal_publishes_event(self, werewolf_game):
         """Reveal should publish werewolf_reveal event with serials."""
         from unittest.mock import AsyncMock, patch
@@ -743,6 +749,7 @@ class TestWerewolfIntroPhase:
             assert serial in color_serials
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", flow="A1", steps=[2])
     async def test_intro_rumbles_werewolves(self, werewolf_game):
         """Intro should send GAME_EFFECT_RUMBLE to each werewolf."""
         from unittest.mock import AsyncMock, patch
@@ -881,6 +888,7 @@ class TestWerewolfEndGame:
         game._wait_for_rainbow_effect = AsyncMock()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", cond=["Post-S-1"])
     async def test_end_game_werewolves_win(self, werewolf_game):
         """When all humans dead, werewolves should win."""
         game, mock_controller_manager, event_collector = werewolf_game
@@ -894,8 +902,12 @@ class TestWerewolfEndGame:
         ended_events = event_collector.get_events_of_type("game_ended")
         assert len(ended_events) == 1
         assert ended_events[0]["winner"] == "werewolves"
+        from services.game_coordinator.games.base import GameState
+
+        assert game.state == GameState.ENDED
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", cond=["Post-S-1"])
     async def test_end_game_humans_win(self, werewolf_game):
         """When all werewolves dead, humans should win."""
         game, mock_controller_manager, event_collector = werewolf_game
@@ -1061,3 +1073,41 @@ class TestWerewolfAdditionalPhases:
         phases = game._get_additional_phases()
         assert len(phases) == 1
         assert phases[0].name == "werewolf_intro"
+
+
+# --------------------------------------------------------------------------- #
+# UC-022 Post-F-1 (#1361)
+# --------------------------------------------------------------------------- #
+class TestUC022PostF1:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", cond=["Post-F-1"])
+    async def test_werewolf_run_error_ends_the_session_with_game_error(self):
+        """UC-022 Post-F-1: a Werewolf run() that raises makes the session publish game_error and end."""
+        from unittest.mock import patch
+
+        from proto import game_coordinator_pb2
+        from services.game_coordinator.tests.test_game_session import _make_session, _tracer_mock
+
+        session = _make_session()
+        session.game_running = True
+        game = WerewolfGame(
+            controller_manager_client=MockControllerManagerService(num_controllers=2),
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="game_abc123",
+            initial_players=session.players,
+            rng_seed=5,
+        )
+        with (
+            patch("services.game_coordinator.game_session.GameFactory") as factory,
+            patch("services.game_coordinator.game_session.tracer") as tracer_mod,
+            patch.object(game, "_initialize_players", autospec=True, side_effect=RuntimeError("werewolf boom")),
+        ):
+            tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+            factory.create_game.return_value = game
+            await session._run_game_loop_async()
+
+        errors = [c.args[1] for c in session.event_bus.publish.call_args_list if c.args[0] == "game_error"]
+        assert errors == [{"error": "werewolf boom"}]
+        assert session.game_running is False
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
