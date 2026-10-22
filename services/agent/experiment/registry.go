@@ -86,18 +86,15 @@ func (s Status) IsLive() bool {
 
 // DefaultMaxShadowGames is the fixed cap on concurrent shadow games across ALL
 // live experiments (epic #982 decision 2: a fixed configured cap, not dynamic
-// host-headroom). Override with AGENT_MAX_SHADOW_GAMES. 20 mirrors the issue's
+// host-headroom). Not configurable (the env override is gone, #1907). 20 mirrors the issue's
 // suggested default. Real games still preempt shadow at the coordinator (the
 // registry does not fight that — this cap bounds only the registry's own
 // in-flight shadow spawns).
 const DefaultMaxShadowGames = 20
 
-// maxShadowGamesEnv overrides DefaultMaxShadowGames.
-const maxShadowGamesEnv = "AGENT_MAX_SHADOW_GAMES"
-
 // DefaultEffectiveConcurrency is the default cap on the number of in-flight
 // shadow spawns the registry will hold at once — the EFFECTIVE concurrency, as
-// distinct from the registry's capacity bookkeeping (AGENT_MAX_SHADOW_GAMES).
+// distinct from the registry's capacity bookkeeping (DefaultMaxShadowGames).
 //
 // #1018 (option b) taught the game-coordinator to run CONCURRENT shadow games:
 // the single-game guard now applies to REAL games only, and shadow sessions run
@@ -108,7 +105,7 @@ const maxShadowGamesEnv = "AGENT_MAX_SHADOW_GAMES"
 // reservation activate (it needs effective concurrency >= 2 to reserve BOTH arms
 // in one tick → tighter CRN pairing). 4 is a deliberately conservative >1 value
 // for a single-interpreter coordinator on Pi 5-class hardware; it is well under
-// the AGENT_MAX_SHADOW_GAMES=20 registry ceiling and is clamped to it. An
+// the DefaultMaxShadowGames=20 registry ceiling and is clamped to it. An
 // operator raises/lowers it via the experiment_shadow_effective_concurrency flag
 // (this constant equals its flag default; the env fallback is gone, #1907). Backpressure
 // still applies: a coordinator-at-capacity rejection is release+retry next tick.
@@ -168,19 +165,6 @@ type Intent struct {
 // pre-mint an id (e.g. to correlate a span) before Declare.
 func MintExperimentID() string {
 	return "exp_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-}
-
-// MaxShadowGamesFromEnv resolves the fixed shadow-capacity cap from
-// AGENT_MAX_SHADOW_GAMES, falling back to DefaultMaxShadowGames on an unset,
-// empty, or non-positive value (a zero/negative cap would starve every
-// experiment, so it is treated as misconfiguration).
-func MaxShadowGamesFromEnv() int {
-	if v := strings.TrimSpace(os.Getenv(maxShadowGamesEnv)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return DefaultMaxShadowGames
 }
 
 // MaxGamesPerExperimentFromEnv resolves the per-experiment termination budget
@@ -291,7 +275,7 @@ type Registry struct {
 	// evict the experiment's linked shadow set (UC-042 BR-005). Set before serving.
 	onTerminal func(experimentID string)
 	// maxCap is the registry's capacity-bookkeeping cap on total in-flight shadow
-	// games across all experiments (AGENT_MAX_SHADOW_GAMES). It governs the fair
+	// games across all experiments (DefaultMaxShadowGames). It governs the fair
 	// per-experiment share split.
 	maxCap int
 	// effectiveCap bounds the number of in-flight spawns the registry actually
@@ -391,7 +375,7 @@ type RegistryConfig struct {
 	// t.TempDir in tests). Empty ⇒ journal.DefaultDir.
 	Root string
 	// MaxShadowGames is the fixed concurrent-shadow-game cap. Non-positive ⇒
-	// MaxShadowGamesFromEnv().
+	// DefaultMaxShadowGames.
 	MaxShadowGames int
 	// EffectiveConcurrency bounds the in-flight spawns the registry holds at once
 	// to the coordinator's REAL concurrency (#998). The game-coordinator runs one
@@ -447,7 +431,7 @@ type RegistryConfig struct {
 func NewRegistry(cfg RegistryConfig) *Registry {
 	maxCap := cfg.MaxShadowGames
 	if maxCap <= 0 {
-		maxCap = MaxShadowGamesFromEnv()
+		maxCap = DefaultMaxShadowGames
 	}
 	effectiveCap := cfg.EffectiveConcurrency
 	if effectiveCap <= 0 {
@@ -1815,7 +1799,7 @@ func (r *Registry) TotalInFlight() int {
 }
 
 // Capacity returns the configured fixed shadow-game cap (the capacity-bookkeeping
-// bound, AGENT_MAX_SHADOW_GAMES).
+// bound, DefaultMaxShadowGames).
 func (r *Registry) Capacity() int { return r.maxCap }
 
 // EffectiveCapacity returns the effective in-flight concurrency cap (#998) — the

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -1182,4 +1183,17 @@ func TestExperimentLoop_TickCadence(t *testing.T) {
 			t.Fatalf("tick with experiment_tick_seconds=10 = %s, want 10s", got)
 		}
 	})
+}
+
+// The retired AGENT_FITNESS_STORE_CAPACITY env must not size the ring: it holds
+// the compiled 512 samples (#1907).
+func TestNewFitnessStoreIgnoresCapacityEnv(t *testing.T) {
+	t.Setenv("AGENT_FITNESS_STORE_CAPACITY", "2")
+	s := newFitnessStore()
+	for i := 0; i < experiment.DefaultFitnessStoreCapacity+5; i++ {
+		s.Record(experiment.FitnessSample{GameID: fmt.Sprintf("g%d", i), Objective: "balanced", GameKind: experiment.GameKindReal})
+	}
+	if got := len(s.RecentReal("balanced", 10000)); got != experiment.DefaultFitnessStoreCapacity {
+		t.Fatalf("ring holds %d samples, want %d (env must be ignored)", got, experiment.DefaultFitnessStoreCapacity)
+	}
 }

@@ -94,7 +94,7 @@ def _max_concurrent_games() -> int:
 # #998's backpressure). This caps how many shadow sessions run concurrently,
 # independent of the REAL game's single-game guard. Default 4 is a sane >1 value
 # for a single-interpreter coordinator on Pi 5-class hardware (well under the
-# agent's AGENT_MAX_SHADOW_GAMES=20 registry ceiling); tune via
+# agent's compiled 20-game registry ceiling); tune via
 # GAME_MAX_SHADOW_GAMES. Always clamped to the total ceiling above.
 DEFAULT_MAX_SHADOW_GAMES = 4
 
