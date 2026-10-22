@@ -299,18 +299,23 @@ class TraitorGame(TeamsGameBase):
         # Show team colors to all players
         await self._set_team_colors(pulse_effect=True, duration_ms=TRAITOR_SIGNAL_DURATION * 1000)
 
-        # Rumble traitors to signal their role
+        # Rumble traitors to signal their role. A write error (the early stream
+        # already broke) is logged, not raised: the drain stop at the end of the
+        # phase reopens the stream, as for the team colours (UC-022 BR-003).
         if self.gameplay_stream:
-            for serial in self.traitor_serials:
-                rumble_cmd = controller_manager_pb2.GameplayStreamControl(
-                    game_effect=controller_manager_pb2.GameEffectCommand(
-                        serial=serial,
-                        effect=controller_manager_pb2.GAME_EFFECT_RUMBLE,
-                        duration_ms=2000,
-                        speed=5,
+            try:
+                for serial in self.traitor_serials:
+                    rumble_cmd = controller_manager_pb2.GameplayStreamControl(
+                        game_effect=controller_manager_pb2.GameEffectCommand(
+                            serial=serial,
+                            effect=controller_manager_pb2.GAME_EFFECT_RUMBLE,
+                            duration_ms=2000,
+                            speed=5,
+                        )
                     )
-                )
-                await self.gameplay_stream.write(rumble_cmd)
+                    await self.gameplay_stream.write(rumble_cmd)
+            except Exception as e:
+                logger.error(f"Failed to rumble traitors: {e}", exc_info=True)
 
         logger.info(f"Signaled {len(self.traitor_serials)} traitors with rumble")
 

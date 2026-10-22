@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import grpc
 import pytest
 
 test_dir = Path(__file__).parent
@@ -96,6 +97,64 @@ class QueueControllerManager(MockControllerManagerService):
 
     def StreamGameplayData(self):  # noqa: N802 - gRPC stub method name
         stream = QueueStream(self.log)
+        self.streams.append(stream)
+        return stream
+
+
+def _dead_stream_error() -> grpc.aio.AioRpcError:
+    return grpc.aio.AioRpcError(grpc.StatusCode.UNAVAILABLE, None, None, "stream broke")
+
+
+class DyingStream(QueueStream):
+    """Gameplay stream that breaks ``die_after`` seconds after its config write.
+
+    ``die_after=None`` breaks it at the config write itself, before any effect.
+    Once broken, reads and writes raise and ``done()`` is True.
+    """
+
+    def __init__(self, log: RecordingLog, die_after: float | None):
+        super().__init__(log)
+        self.die_after = die_after
+        self.dead = False
+
+    def done(self):
+        return self.dead
+
+    def cancel(self):
+        self.dead = True
+
+    async def write(self, message):
+        if self.dead:
+            raise _dead_stream_error()
+        await super().write(message)
+        if message.HasField("config"):
+            if self.die_after is None:
+                self._die()
+            else:
+                asyncio.get_running_loop().call_later(self.die_after, self._die)
+
+    def _die(self):
+        self.dead = True
+        self.queue.put_nowait(None)
+
+    async def __anext__(self):
+        if self.dead:
+            raise _dead_stream_error()
+        item = await self.queue.get()
+        if item is None:
+            raise _dead_stream_error()
+        return item
+
+
+class DyingFirstStreamControllerManager(QueueControllerManager):
+    """The first gameplay stream breaks; every reopened stream is healthy."""
+
+    def __init__(self, log, die_after: float | None):
+        super().__init__(log)
+        self.die_after = die_after
+
+    def StreamGameplayData(self):  # noqa: N802 - gRPC stub method name
+        stream = DyingStream(self.log, self.die_after) if not self.streams else QueueStream(self.log)
         self.streams.append(stream)
         return stream
 
@@ -225,3 +284,80 @@ async def test_frames_from_the_traitor_signal_never_reach_warmup_or_game_loop():
 
     assert marks["signal_end_seq"] > 50, "the signal phase produced frames"
     assert min(seen) >= marks["signal_end_seq"], "a signal-phase frame reached warmup or the game loop"
+
+
+def _event_types(log: RecordingLog) -> list:
+    return [value for kind, value in log.entries if kind == "event"]
+
+
+async def _run_until_countdown_with_dying_stream(die_after: float | None):
+    log = RecordingLog()
+    client = DyingFirstStreamControllerManager(log, die_after)
+    with patch.object(traitor_mod, "TRAITOR_SIGNAL_DURATION", 1):
+        game = _traitor(log, client)
+        task = asyncio.create_task(game.run())
+        try:
+            await _wait_for(lambda: log.events.count_events_of_type(GameEvent.COUNTDOWN_START) == 1 or task.done())
+        finally:
+            if not task.done():
+                await _stop(game, task, client)
+            for stream in client.streams:
+                if stream.producer:
+                    stream.producer.cancel()
+    return log, client, game
+
+
+def _assert_reopened_once_with_team_colours(log: RecordingLog, client, game):
+    types = _event_types(log)
+    assert GameEvent.GAME_ERROR not in types
+    assert GameEvent.COUNTDOWN_START in types
+    assert len(client.streams) == 2, "the broken stream is reopened once"
+    configs = [config for _, config in log.writes("config")]
+    assert len(configs) == 2
+    team_rgb = {s: game.team_colors[p.team]["rgb"] for s, p in game.players.items()}
+    assert {c.serial for c in configs[1].colors} == set(SERIALS)
+    for colour in configs[1].colors:
+        assert (colour.color.r, colour.color.g, colour.color.b) == team_rgb[colour.serial]
+
+
+@pytest.mark.uc("UC-022", flow="main", steps=[2], br=["BR-003"])
+@pytest.mark.asyncio
+async def test_stream_broken_before_the_rumble_reopens_instead_of_ending_the_game():
+    """The early stream is dead before the traitor rumble: the rumble write error
+    is logged, and the drain stop reopens the stream with the team colours."""
+    log, client, game = await _run_until_countdown_with_dying_stream(die_after=None)
+
+    assert log.events.count_events_of_type("traitor_signal_end") == 1
+    _assert_reopened_once_with_team_colours(log, client, game)
+
+
+@pytest.mark.uc("UC-022", flow="main", steps=[2], br=["BR-003"])
+@pytest.mark.parametrize("die_after", [0.0, 0.3])
+@pytest.mark.asyncio
+async def test_stream_drop_during_the_signal_reopens_once_with_team_colours(die_after):
+    log, client, game = await _run_until_countdown_with_dying_stream(die_after=die_after)
+
+    _assert_reopened_once_with_team_colours(log, client, game)
+
+
+@pytest.mark.uc("UC-022", flow="main", steps=[2], br=["BR-003"])
+@pytest.mark.asyncio
+async def test_force_end_during_the_signal_stops_without_reopen_or_countdown():
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    with patch.object(traitor_mod, "TRAITOR_SIGNAL_DURATION", 3):
+        game = _traitor(log, client)
+        task = asyncio.create_task(game.run())
+        await _wait_for(lambda: log.events.count_events_of_type("traitor_signal_start") == 1)
+        await asyncio.sleep(0.5)
+        game.force_end("test_force_end_during_signal")
+        await asyncio.wait_for(task, timeout=5)
+    for stream in client.streams:
+        if stream.producer:
+            stream.producer.cancel()
+
+    types = _event_types(log)
+    assert len(client.streams) == 1, "no reopen after a force end"
+    assert GameEvent.GAME_ERROR not in types
+    assert GameEvent.COUNTDOWN_START not in types
+    assert game._early_drain_task is None
