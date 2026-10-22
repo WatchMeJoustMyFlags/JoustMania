@@ -526,10 +526,10 @@ ANTHROPIC_API_KEY=<key> docker compose up -d agent
 | Seam | Used for | Selected by | Backends |
 |---|---|---|---|
 | Decision backend | in-game decisions (FFA) | `decision.backend` flag, live | `rules` (default), `jev`, `claude`, `openai` |
-| Text backend | post-game retro (`agent.llm.retro`), experiment proposer | `inference.backend` flag, per use (retro / propose cycle); env `AGENT_INFERENCE_BACKEND` only as the fallback | `stub` (default), `claude` (needs the key and a valid base URL) |
+| Text backend | post-game retro (`agent.llm.retro`), experiment proposer | `inference.backend` flag, per use (retro / propose cycle); `stub` while flagd is unresolved (no env fallback, #1907) | `stub` (default), `claude` (needs the key and a valid base URL) |
 
 The text backend takes a System + User prompt and returns raw text (`Infer(ctx, llm.Prompt) (string, error)`,
-`inference/claude.go`, official Anthropic Go SDK). Env vars (`AGENT_INFERENCE_*`, `ANTHROPIC_API_KEY`) are in the
+`inference/claude.go`, official Anthropic Go SDK). Env vars (`AGENT_INFERENCE_BASE_URL`, `ANTHROPIC_API_KEY`) are in the
 agent env table in [services.md](services.md) section 6. Keys live in the agent environment only (compose passes
 `ANTHROPIC_API_KEY`, `DECISION_OPENAI_API_KEY`, `JEV_API_KEY`); a backend without its key is unavailable and
 decisions fall back to rules (§7). Keep keys out of the tracked `.env`: export them or use the git-ignored

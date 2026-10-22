@@ -22,7 +22,7 @@ import (
 //
 // This is the #960 Proposer→Intents path made CONCRETE without an inference
 // backend: #960's LLM Proposer degrades to no-proposal unless a text backend is
-// configured (AGENT_INFERENCE_BACKEND=claude). The ThesisProposer is the
+// configured (inference.backend=claude). The ThesisProposer is the
 // deterministic counterpart — it needs no backend, so the loop closes NOW, the
 // same way the #995 dynamic declarer delivered autonomous declaration ahead of the
 // LLM proposer.

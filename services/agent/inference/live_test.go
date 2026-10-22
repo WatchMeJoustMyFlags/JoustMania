@@ -13,14 +13,14 @@ import (
 //
 //	AGENT_LIVE_CLAUDE=1 ANTHROPIC_API_KEY=... go test ./inference -run TestLiveClaude -v
 //
-// AGENT_INFERENCE_MODEL overrides the model.
+// AGENT_LIVE_CLAUDE_MODEL overrides the model.
 func TestLiveClaude(t *testing.T) {
 	if os.Getenv("AGENT_LIVE_CLAUDE") != "1" || os.Getenv("ANTHROPIC_API_KEY") == "" {
 		t.Skip("set AGENT_LIVE_CLAUDE=1 and ANTHROPIC_API_KEY to run the live Claude smoke test")
 	}
 	c := NewClaude(Config{
 		APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-		Model:  os.Getenv("AGENT_INFERENCE_MODEL"),
+		Model:  os.Getenv("AGENT_LIVE_CLAUDE_MODEL"),
 		Effort: DefaultEffort,
 	})
 	out, err := c.Infer(context.Background(), llm.Prompt{

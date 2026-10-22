@@ -18,10 +18,12 @@ import (
 //
 // The choice is the inference.backend flag ("stub" | "claude", tuning: the egress
 // ceilings below stay). The flag always wins; only when flagd cannot resolve it the
-// deprecated AGENT_INFERENCE_BACKEND env applies, else "stub". The ceilings stay
-// env-only: the Claude client exists only with ANTHROPIC_API_KEY set and a valid
+// backend is "stub" (#1907: the env fallback is removed). The ceilings stay env-only: the Claude client exists only with ANTHROPIC_API_KEY set and a valid
 // AGENT_INFERENCE_BASE_URL (a typo or a missing key fails safe to the stub, whatever
 // the flag says), and the model-call budget is min(env ceiling, llm flag).
+
+// envFallback is the backend while the inference.backend flag cannot be resolved.
+const envFallback = "stub"
 
 // inferenceBackendFlag is the slice of *flags.Flags the selection reads.
 type inferenceBackendFlag interface {
@@ -33,7 +35,6 @@ type inferenceBackendFlag interface {
 type textBackends struct {
 	claude      *inference.Claude // nil: no usable key / base URL, so only the stub
 	whyNoClaude string            // why claude is nil, for the WARN
-	envFallback string            // deprecated AGENT_INFERENCE_BACKEND, else "stub"
 	src         inferenceBackendFlag
 	logger      *slog.Logger
 
@@ -41,21 +42,16 @@ type textBackends struct {
 	last string // last logged "requested/effective", so a WARN is once per change
 }
 
-// newTextBackends (the deprecated-env WARN for AGENT_INFERENCE_BACKEND is logged by
-// tuningDefaultsFromEnv) reads the env ceilings once and builds the Claude client when the
+// newTextBackends reads the env ceilings once and builds the Claude client when the
 // key and the base URL are valid. tuning, when non-nil, resolves model / effort /
-// timeout on every Infer call (#1788); src nil = the env fallback only (tests).
+// timeout on every Infer call (#1788); src nil = the stub (tests).
 func newTextBackends(logger *slog.Logger, tuning *agentTuning, src inferenceBackendFlag) *textBackends {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	tb := &textBackends{
-		envFallback: normalizeInferenceBackend(getEnv("AGENT_INFERENCE_BACKEND", "")),
-		src:         src,
-		logger:      logger,
-	}
-	if tb.envFallback == "" {
-		tb.envFallback = "stub"
+		src:    src,
+		logger: logger,
 	}
 	key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
 	if key == "" {
@@ -70,9 +66,9 @@ func newTextBackends(logger *slog.Logger, tuning *agentTuning, src inferenceBack
 	cfg := inference.Config{
 		APIKey:  key,
 		BaseURL: baseURL,
-		Model:   getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
-		Effort:  getEnv("AGENT_INFERENCE_EFFORT", inference.DefaultEffort),
-		Timeout: secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout),
+		Model:   inference.DefaultModel,
+		Effort:  inference.DefaultEffort,
+		Timeout: inference.DefaultTimeout,
 	}
 	if tuning != nil {
 		cfg.Tuning = tuning.Inference
@@ -92,9 +88,9 @@ func normalizeInferenceBackend(v string) string {
 // the env ceilings do not allow (no key, bad base URL) is the stub. The WARN for a
 // degraded claude request is logged once per change of the choice, not per call.
 func (b *textBackends) Select(ctx context.Context) (*inference.Claude, string) {
-	requested := b.envFallback
+	requested := envFallback
 	if b.src != nil {
-		requested = b.src.InferenceBackend(ctx, b.envFallback)
+		requested = b.src.InferenceBackend(ctx, envFallback)
 	}
 	requested = normalizeInferenceBackend(requested)
 	effective := "stub"

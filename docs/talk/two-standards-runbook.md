@@ -106,7 +106,7 @@ ANTHROPIC_API_KEY=...                  # Claude: in-game backup AND the post-gam
 # AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30 # optional ceiling on the budget flag (can only lower it), see "Budget"
 ```
 
-The agent reads all of these **once at startup**. (The post-game summary backend is no longer here: it is the flag `inference.backend`, `claude` in the stage baseline, #1810; `AGENT_INFERENCE_BACKEND` is only its fallback while flagd is down.) Changing one means
+The agent reads all of these **once at startup**. (The post-game summary backend is no longer here: it is the flag `inference.backend`, `claude` in the stage baseline, #1810; with flagd down the agent runs the stub, #1907.) Changing one means
 recreating the agent:
 `./scripts/setup/joustmania-compose.sh up -d agent` (use the
 dry-run `-f` files and profiles on the rehearsal stack). With
@@ -590,8 +590,8 @@ both thresholds (`default` and Jev's `gate`), capture `on`, `min_interval_ms`
 present). It
 checks the budget (the flag's value ≥ 30, i.e. `stage`, and that a set env ceiling is not below 30),
 that `JEV_API_KEY` and `ANTHROPIC_API_KEY` are present (presence only) and that
-the stage baseline `inference.backend = claude` (FAIL otherwise: beat 8 shows a capture-only
-retro; the `AGENT_INFERENCE_BACKEND=claude` env is only a WARN fallback check). It FAILs when the resolved allow-list holds no perceptible
+the stage baseline `inference.backend = claude`, and the effective `inference.backend` flag again in the agent section (FAIL otherwise: beat 8 shows a capture-only
+retro; there is no env fallback any more, #1907). It FAILs when the resolved allow-list holds no perceptible
 intervention (`play_audio_cue`, `grant_shield`, `toughness_boost`,
 `adjust_music_tempo`, `ramp_tempo`, `eliminate_player`, `revive_player`,
 `end_game`) and when the agent's audio cue (`defaultAudioCue` in
@@ -638,7 +638,7 @@ first step above prevents that; the pre-flight WARN names the persisted backend.
 | Beat 8: no `agent.llm.retro` span at all | The budget was full at game end: the retro is gated before any span is created | `docker compose logs agent \| grep agent.llm.retro_gated` (`fallback_reason=llm_budget_exhausted`) | `setflag agent llm.max_requests_per_minute stage` (an env ceiling below 30 must be raised or unset first); show the summary of an earlier game or a captured trace |
 | Beat 8: `agent.llm.retro` with `inference.used=none` | `inference.fallback_reason`: `no_backend_available` = `inference.backend` not `claude` (or the key empty); `agent_disabled` = the kill switch was off when the game ended; `llm_not_eligible` = not a real game | the retro span tags; preflight `inference.backend` line | Flag: `./scripts/talk-stage.sh reset` (key missing: fix `.env.local`, recreate the agent, before the talk only). Otherwise show the summary of an earlier game |
 | Beat 8: `inference.used=claude` but `llm.retro.parse_ok=false` | The model call failed (timeout, HTTP error, refusal) or the reply did not decode | `llm.infer.error` / `error.type` on the span (status error); log `agent.llm.retro_failed` | Check the uplink (beat 7 option A restored?) and Anthropic credit; show the summary of an earlier game |
-| Beat 8: the summary takes too long | The retro model call is slow (default Opus, effort medium) | `llm.retro.latency_ms` from rehearsal | Show the summary of the game that ended earlier; for the next talk set the `inference.model` agent flag to a faster model through the flag service (#1788; the `AGENT_INFERENCE_MODEL` env var is only a fallback now) (**verify in rehearsal**) |
+| Beat 8: the summary takes too long | The retro model call is slow (default Opus, effort medium) | `llm.retro.latency_ms` from rehearsal | Show the summary of the game that ended earlier; for the next talk set the `inference.model` agent flag to a faster model through the flag service (#1788) (**verify in rehearsal**) |
 | Vendor budget / credit exhausted (HTTP 429 / 402) | Account limit | Jaeger: `fallback_reason=error`, `error.type` | Switch to the other backend (`backend.sh jev` / `claude`); the fallback itself is a talking point |
 | `fallback_reason=llm_not_eligible` | Game kind is not `real` (a shadow game, or eligibility flag changed) | `game.kind` on the span | Play a menu-started game; `setflag agent llm.eligible_game_kinds real_only` |
 | No new rows at all | No game running, kill switch off, or on `rules` and nothing to decide | Is a game running? `agent-killswitch.sh status` | Start a game; `agent-killswitch.sh on` |

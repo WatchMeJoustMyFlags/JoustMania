@@ -275,7 +275,7 @@ func TestProposeOnce_TypeMismatchBlockedByGate(t *testing.T) {
 // UC: UC-042 A7 A10
 func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
 	// The sentinel-stub case: Backend.Infer errors (no text backend configured,
-	// AGENT_INFERENCE_BACKEND=stub). The Proposer degrades to NO proposal, NO error,
+	// inference.backend=stub). The Proposer degrades to NO proposal, NO error,
 	// and the cycle uses up the cadence floor (UC-042 A7 step 3, A10).
 	t.Run("UC-042/A10 a failed call writes nothing, records no_backend and uses up the cadence floor", func(t *testing.T) {
 		backend := &fakeProposerBackend{err: errors.New("inference not implemented")}

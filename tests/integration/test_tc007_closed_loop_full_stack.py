@@ -123,9 +123,7 @@ def closed_loop_stack(docker_compose, request):
     global _FLAGS
     cwd = str(docker_compose.context)
     prefix = list(docker_compose.docker_compose_command())
-    env = dict(
-        os.environ, AGENT_INFERENCE_BACKEND="stub", AGENT_EXPERIMENTS_ENABLED="false"
-    )
+    env = dict(os.environ, AGENT_EXPERIMENTS_ENABLED="false")
     use_prebuilt = os.getenv("USE_PREBUILT_IMAGES", "false").lower() == "true"
     use_dev_mounts = os.getenv("USE_DEV_MOUNTS", "false").lower() == "true"
 

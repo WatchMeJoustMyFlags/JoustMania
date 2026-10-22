@@ -106,7 +106,7 @@ type effectSampler struct {
 func (l *Loop) SetEffectWindowSource(src func() time.Duration) { l.windowSource = src }
 
 // SetEffectWindow overrides the follow-up window (#918). A non-positive value leaves
-// DefaultEffectWindow in place. main.go reads AGENT_EFFECT_WINDOW_SECONDS and passes it
+// DefaultEffectWindow in place. main.go resolves the effect.window_seconds flag and passes it
 // here. Set at construction, before the loop serves; not safe to call concurrently with
 // OnEvaluate.
 func (l *Loop) SetEffectWindow(d time.Duration) {

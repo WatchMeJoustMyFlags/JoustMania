@@ -676,8 +676,6 @@ type Flags struct {
 	game     Evaluator
 	gameWarn gameReadWarn
 	log      *slog.Logger
-	// probeDefault is the decision.probe_decisions fallback (deprecated env).
-	probeDefault bool
 }
 
 // New builds a Flags wrapper over the given evaluator. log may be nil, in which

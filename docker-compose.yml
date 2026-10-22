@@ -711,12 +711,6 @@ services:
       # to the flag service (PUT/POST /interventions/<flag>). The gate is read per
       # Apply, fail-closed off, so a flagd outage never writes. No restart needed.
       - FLAG_SERVICE_URL=http://flag-service:8070
-      # Demo/verification only: emit a synthetic `noop` decision (full audit
-      # trace) every ~5s. Off by default; never for production sessions. With the
-      # default interventions_allowed variant probe decisions are blocked
-      # (not_allowed) — flip that flag to the `probe` variant to dispatch. See
-      # docs/agent-act-runbook.md.
-      - AGENT_PROBE_DECISIONS=${AGENT_PROBE_DECISIONS:-}
       # Progressive rollout expansion (#734/#1213): when the LIVE `rollout_enabled`
       # flag (agent.json) is on the agent advances the Bluetooth backend rollout
       # controller-by-controller with PUT /rollout/current_controller_count on the
@@ -734,14 +728,9 @@ services:
       # stub: the proposer proposes nothing and the retro is capture-only, so a
       # plain `up` needs no key. The inference.backend flag (#1810) selects claude, which
       # calls the Anthropic API directly with ANTHROPIC_API_KEY (no gateway); without
-      # a key it stays on the stub. AGENT_INFERENCE_BACKEND is only the deprecated
-      # fallback while flagd cannot resolve the flag.
-      - AGENT_INFERENCE_BACKEND=${AGENT_INFERENCE_BACKEND:-stub}
-      # Empty defaults = the agent's built-in defaults (claude-opus-5-5, effort
-      # medium, 120s per call).
-      - AGENT_INFERENCE_MODEL=${AGENT_INFERENCE_MODEL:-}
-      - AGENT_INFERENCE_EFFORT=${AGENT_INFERENCE_EFFORT:-}
-      - AGENT_INFERENCE_TIMEOUT_SECONDS=${AGENT_INFERENCE_TIMEOUT_SECONDS:-}
+      # a key it stays on the stub; with flagd unresolved it is the stub. Model, effort
+      # and timeout are the inference.model / inference.effort / inference.timeout_seconds
+      # flags (#1907: the env fallbacks are removed).
       # ---- Decision backends (#1244, epic #1225) ----
       # API keys for the remote in-game decision backends selected by the
       # decision.backend flag (claude / openai / jev; flip with
