@@ -1121,6 +1121,21 @@ async def _srv_bidi_abort(request_iterator, context):
         await context.abort(grpc.StatusCode.INTERNAL, "bidi broke")
 
 
+async def _srv_stream_context_write(_request, context):
+    await context.write(b"w1")
+    await context.write(b"w2")
+
+
+async def _srv_stream_context_write_abort(_request, context):
+    await context.write(b"w1")
+    await context.abort(grpc.StatusCode.UNAVAILABLE, "write then abort")
+
+
+async def _srv_bidi_context_rw(_request_iterator, context):
+    while (request := await context.read()) is not grpc.aio.EOF:
+        await context.write(request + b"!")
+
+
 async def _srv_unary_downstream(_request, _context):
     channel = grpc.aio.insecure_channel("127.0.0.1:1")  # nothing listens here
     try:
@@ -1158,6 +1173,9 @@ async def server_traced(span_exporter):
                     "StreamOk": grpc.unary_stream_rpc_method_handler(_srv_stream_ok),
                     "StreamForever": grpc.unary_stream_rpc_method_handler(_srv_stream_forever),
                     "BidiAbort": grpc.stream_stream_rpc_method_handler(_srv_bidi_abort),
+                    "StreamContextWrite": grpc.unary_stream_rpc_method_handler(_srv_stream_context_write),
+                    "StreamContextWriteAbort": grpc.unary_stream_rpc_method_handler(_srv_stream_context_write_abort),
+                    "BidiContextRw": grpc.stream_stream_rpc_method_handler(_srv_bidi_context_rw),
                 },
             ),
         )
@@ -1169,6 +1187,45 @@ async def server_traced(span_exporter):
         yield channel
     await channel.close()
     await server.stop(None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-035", flow="main", steps=[5])
+class TestServerContextWriteHandlers:
+    """Streaming handlers that use ``context.write`` / ``context.read`` work behind the interceptor (#1929)."""
+
+    async def test_unary_stream_context_write_delivers_and_records_ok(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        received = [m async for m in server_traced.unary_stream(_PROBE + "StreamContextWrite")(b"x")]
+        assert received == [b"w1", b"w2"]
+        spans = await _finished_spans(exporter)
+        assert len(spans) == 1
+        assert spans[0].status.status_code == StatusCode.OK
+        assert _code(spans[0]) == 0
+
+    async def test_unary_stream_context_write_abort_records_the_abort_code(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        call = server_traced.unary_stream(_PROBE + "StreamContextWriteAbort")(b"x")
+        with pytest.raises(grpc.aio.AioRpcError) as err:
+            async for _ in call:
+                pass
+        assert err.value.code() == grpc.StatusCode.UNAVAILABLE
+        spans = await _finished_spans(exporter)
+        assert spans[0].status.status_code == StatusCode.ERROR
+        assert _code(spans[0]) == grpc.StatusCode.UNAVAILABLE.value[0]
+
+    async def test_stream_stream_context_read_and_write(self, server_traced, span_exporter):
+        exporter, _ = span_exporter
+        call = server_traced.stream_stream(_PROBE + "BidiContextRw")()
+        await call.write(b"a")
+        assert await call.read() == b"a!"
+        await call.write(b"b")
+        assert await call.read() == b"b!"
+        await call.done_writing()
+        assert await call.read() == grpc.aio.EOF
+        spans = await _finished_spans(exporter)
+        assert spans[0].status.status_code == StatusCode.OK
+        assert _code(spans[0]) == 0
 
 
 @pytest.mark.asyncio
