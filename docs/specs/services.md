@@ -275,10 +275,10 @@ Verified against `lib/colors.py`, `services/menu/utils/led.py`, `services/menu/h
 | Swapper | Magenta (255,0,192) |
 | Werewolf | Green (0,255,0) |
 | Traitor, Tournament | Purple (96,0,255) |
-| Zombie | White40 (100,100,100) |
+| Zombies | White40 (100,100,100) |
 | Commander | Red (255,0,0) |
 | FightClub | Yellow (255,255,0) |
-| NonstopJoust | Pink (255,105,180) |
+| NonStop | Pink (255,105,180) |
 
 DISCONNECTED controllers show nothing. There is no dedicated "connection flash": a newly connected controller takes the dim lobby colour, and a reconnecting controller gets its last base colour back (`discovery_loop.py`).
 
