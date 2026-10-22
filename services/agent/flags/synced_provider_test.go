@@ -250,7 +250,7 @@ func TestSyncedProvider_RetriesThenFailsClosedWhileTheStreamIsLost(t *testing.T)
 		t.Fatalf("SetNamedProviderAndWait: %v", err)
 	}
 	t.Cleanup(p.Shutdown)
-	client := openfeature.GetApiInstance().GetNamedClient(domain)
+	client := openfeature.NewClient(domain)
 	read := func() bool {
 		v, _ := client.BooleanValue(context.Background(), keyEnabled, false, openfeature.EvaluationContext{})
 		return v

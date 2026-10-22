@@ -1119,7 +1119,7 @@ func TestRemote_RealCadenceFlag(t *testing.T) {
 	if err := openfeature.SetNamedProviderAndWait(domain, provider); err != nil {
 		t.Fatal(err)
 	}
-	real := flags.New(openfeature.GetApiInstance().GetNamedClient(domain), nil)
+	real := flags.New(openfeature.NewClient(domain), nil)
 	if got := real.Evaluate(context.Background()).Decision.MinInterval; got != 1500*time.Millisecond {
 		t.Fatalf("MinInterval = %v, want 1.5s from the flag", got)
 	}

@@ -51,7 +51,7 @@ func TestEvaluate_WithInMemoryProvider(t *testing.T) {
 	if err := openfeature.SetNamedProviderAndWait(domain, provider); err != nil {
 		t.Fatalf("SetNamedProviderAndWait: %v", err)
 	}
-	client := openfeature.GetApiInstance().GetNamedClient(domain)
+	client := openfeature.NewClient(domain)
 
 	f := New(client, nil)
 	got := f.Evaluate(context.Background())

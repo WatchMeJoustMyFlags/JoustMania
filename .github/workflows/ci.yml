@@ -693,13 +693,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version-file: services/agent/go.mod
           cache-dependency-path: services/agent/go.sum
 
       - name: Run tests
         working-directory: services/agent
         run: |
           go mod tidy
+          git diff --exit-code go.mod go.sum
           go test -v -race ./...
           go vet ./...
 
@@ -842,7 +843,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache-dependency-path: |
             services/flag-service/go.sum
             services/agent/go.sum
