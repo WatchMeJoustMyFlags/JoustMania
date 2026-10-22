@@ -17,13 +17,13 @@ import time
 from dataclasses import dataclass
 
 from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
 
 from lib.feature_flags import read_float_flag, read_object_flag
 from lib.types import GameEvent, Sound
 from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import (
     BaseGameMode,
+    GameState,
     Phase,
     Player,
     resolve_non_negative_duration,
@@ -41,6 +41,10 @@ SPAWN_PROTECTION_DURATION = 2.0  # seconds of invulnerability after spawn
 # Final-score formula: score = max(0, SCORE_BASE - deaths * SCORE_DEATH_PENALTY)
 SCORE_BASE = 100  # starting score with zero deaths
 SCORE_DEATH_PENALTY = 10  # points lost per death
+
+# The winner is shown for this long after a time-limit end (interruptible by force_end)
+WINNER_HOLD_SECONDS = 2.0
+WINNER_HOLD_TICK_SECONDS = 0.1
 
 
 def resolve_scoring(flag_value, default_base: int, default_penalty: int) -> tuple[int, int]:
@@ -137,6 +141,9 @@ class NonstopJoustGame(BaseGameMode):
         # Nonstop-specific settings - now passed via config
         self.time_limit = time_limit_seconds  # 0 = unlimited, otherwise seconds
         self.players: dict[str, NonstopPlayer] = {}  # Override type hint
+        # Set when the game loop detects the time limit (UC-026 BR-003): the only
+        # end that declares a winner.
+        self._time_limit_reached = False
 
         # #766 F2: respawn/spawn-protection durations and scoring weights promoted
         # to game flags. Read ONCE here (init-frozen); malformed values fall back
@@ -332,9 +339,7 @@ class NonstopJoustGame(BaseGameMode):
         try:
             from proto import controller_manager_pb2
 
-            # Create player spans (pass None to use current active span context)
-            self._create_player_spans(None)
-
+            # Player spans were created by the base _run_gameplay_phase (under "players").
             # Get runtime config (Phase 43: Dynamic Hz adjustment like base class)
             from services.game_coordinator.runtime_config import get_config_manager
 
@@ -369,6 +374,10 @@ class NonstopJoustGame(BaseGameMode):
 
             # Stream gameplay data and process game logic
             async for gameplay_update in self.gameplay_stream:
+                # The time limit runs from the first frame after the warm-up (UC-026 step 3)
+                if self.start_time is None:
+                    self.start_time = time.time()
+
                 if not self.running:
                     break
 
@@ -404,8 +413,11 @@ class NonstopJoustGame(BaseGameMode):
 
                     last_alive_serials = current_alive_serials
 
-                # Check win condition (time limit)
+                # Time limit: latch the outcome now, so a force-end after this point
+                # keeps the winner (UC-026 BR-003)
                 if await self._check_win_condition():
+                    self._time_limit_reached = True
+                    self._latch_game_outcome()
                     break
 
                 # Small sleep to maintain tick rate
@@ -414,9 +426,8 @@ class NonstopJoustGame(BaseGameMode):
         except Exception as e:
             logger.error(f"Game loop error: {e}", exc_info=True)
             raise
-        finally:
-            # Close the stream (UC-030 BR-006)
-            self._release_gameplay_stream()
+        # The stream stays open for the end-game step; run()'s teardown (natural end)
+        # or cleanup() (force-end, error) closes it (UC-030 BR-006, #1932).
 
     async def _update_respawn_timers(self):
         """Update respawn timers and respawn players (Nonstop-specific)."""
@@ -486,14 +497,25 @@ class NonstopJoustGame(BaseGameMode):
             )
             await self.gameplay_stream.write(base_color_cmd)
 
-    async def _respawn_player(self, serial: str):
+    async def _respawn_player(self, serial: str) -> bool:
         """
         Respawn a dead player (Nonstop-specific).
 
+        Refused once the game is no longer RUNNING, the outcome is latched or the
+        stream is closed (UC-026 BR-003, #1954): base ``revive_player`` propagates
+        the False, so a late agent revive changes nothing and writes nothing.
+
         Args:
             serial: Controller serial number
+
+        Returns:
+            True if the player respawned, False if refused.
         """
         from proto import controller_manager_pb2
+
+        if self.state != GameState.RUNNING or self._latched_outcome is not None or self.gameplay_stream is None:
+            logger.info(f"Respawn of {serial} refused: the game is over")
+            return False
 
         player = self.players[serial]
         player.alive = True
@@ -534,6 +556,7 @@ class NonstopJoustGame(BaseGameMode):
                 "score": player.score,
             },
         )
+        return True
 
     async def _set_unique_colors(self):
         """
@@ -569,28 +592,55 @@ class NonstopJoustGame(BaseGameMode):
         """
         return [Phase(name="color_assignment", execute=self._set_unique_colors)]
 
+    def _final_score(self, player: NonstopPlayer) -> int:
+        """Score = score_base - deaths * score_death_penalty, minimum 0 (UC-026 BR-001, #766 F2)."""
+        return max(0, self.score_base - (player.deaths * self.score_death_penalty))
+
+    def _close_all_player_spans(self):
+        """Add the ``final_score`` event to each player span, then close them (base).
+
+        The base closes the spans at the end of ``gameplay_phase``, before the
+        end-game step, so the score is computed here from the same formula.
+        """
+        for player in self.players.values():
+            if player.span:
+                final_attrs = {
+                    "score": self._final_score(player),
+                    "kills": player.kills,
+                    "deaths": player.deaths,
+                    "game_duration": time.time() - self.start_time if self.start_time else 0,
+                }
+                if player.analytics is not None:
+                    for key, value in player.analytics.get_summary().items():
+                        final_attrs[f"analytics.{key}"] = value
+                player.span.add_event("final_score", final_attrs)
+        super()._close_all_player_spans()
+
     async def _end_game_impl(self):
         """Handle game ending with scoring calculation."""
         from proto import controller_manager_pb2
         from services.game_coordinator import metrics
-        from services.game_coordinator.games.base import GameState
 
         logger.info("Ending game...")
         self.state = GameState.ENDING
 
         # Calculate final scores (inverse of deaths - fewer deaths = higher score)
-        # Score = score_base - (deaths * score_death_penalty), minimum 0 (#766 F2)
         for player in self.players.values():
-            player.score = max(0, self.score_base - (player.deaths * self.score_death_penalty))
+            player.score = self._final_score(player)
 
-        # Determine winner (highest score, tie-break by fewest deaths)
-        winner = max(self.players.values(), key=lambda p: (p.score, -p.deaths), default=None)
+        # A winner only when the time limit ended the game and the latched outcome is
+        # not force_ended; a force-end, A1 or an early stream end has none (UC-026 BR-003).
+        force_ended = self.game_outcome() == "force_ended"
+        winner = None
+        if self._time_limit_reached and not force_ended:
+            # Highest score, tie-break by fewest deaths
+            winner = max(self.players.values(), key=lambda p: (p.score, -p.deaths), default=None)
         winner_serial = winner.serial if winner else None
 
         if winner:
             logger.info(f"Winner: {winner.serial} with score {winner.score} (K:{winner.kills} D:{winner.deaths})")
 
-            # Show rainbow effect on winner's controller via game effect
+            # Show rainbow effect on winner's controller (the stream is open until teardown)
             if self.gameplay_stream:
                 effect_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
@@ -613,35 +663,14 @@ class NonstopJoustGame(BaseGameMode):
                 },
             )
 
-        # Show winner for a bit (interruptible by force_end)
-        for _ in range(20):  # 2 seconds in 0.1s increments
-            if not self.running:
-                logger.info("End game interrupted by force_end")
-                break
-            await asyncio.sleep(0.1)
+            # Show the winner for a bit (interruptible by force_end)
+            for _ in range(round(WINNER_HOLD_SECONDS / WINNER_HOLD_TICK_SECONDS)):
+                if not self.running:
+                    logger.info("End game interrupted by force_end")
+                    break
+                await asyncio.sleep(WINNER_HOLD_TICK_SECONDS)
 
-        # End all player lifecycle spans AFTER the celebration
-        # This ensures winner's span is longer than losers'
-        for serial, player in self.players.items():
-            if player.span:
-                # Build attributes including analytics summary if available
-                final_attrs = {
-                    "score": player.score,
-                    "kills": player.kills,
-                    "deaths": player.deaths,
-                    "game_duration": time.time() - self.start_time if self.start_time else 0,
-                }
-
-                # Add analytics summary to span
-                if player.analytics is not None:
-                    analytics_summary = player.analytics.get_summary()
-                    for key, value in analytics_summary.items():
-                        final_attrs[f"analytics.{key}"] = value
-
-                player.span.add_event("final_score", final_attrs)
-                player.span.set_status(Status(StatusCode.OK))
-                player.span.end()
-                logger.debug(f"Ended lifecycle span for player {serial}")
+        # The player spans (with final_score) were closed at the end of gameplay_phase.
 
         # Publish analytics summaries for all players
         for serial, player in self.players.items():
@@ -670,12 +699,14 @@ class NonstopJoustGame(BaseGameMode):
                 )
 
         self.state = GameState.ENDED
-        await self.event_publisher(
-            GameEvent.GAME_ENDED,
-            {
-                "game_id": self.game_id,
-                "duration": time.time() - self.start_time if self.start_time else 0,
-            },
-        )
+        ended_payload = {
+            "game_id": self.game_id,
+            "duration": time.time() - self.start_time if self.start_time else 0,
+            "outcome": self.game_outcome(),
+            "winner": winner_serial or "none",
+        }
+        if force_ended:
+            ended_payload["reason"] = self.force_end_reason
+        await self.event_publisher(GameEvent.GAME_ENDED, ended_payload)
 
         logger.info("Game ended")
