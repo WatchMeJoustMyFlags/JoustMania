@@ -339,6 +339,8 @@ async def test_force_end_during_the_intro_stops_the_drain_without_a_reopen():
     assert log.events.count_events_of_type(GameEvent.COUNTDOWN_START) == 0
     assert game.force_ended
     assert game._game_outcome_attributes()["game.outcome"] == "force_ended"
+    # run() returns early here (before teardown_phase): its finally drops the stream.
+    assert game.gameplay_stream is None, "the early-return path keeps the stream reference"
 
 
 @pytest.mark.uc("UC-022", flow="A1", steps=[2])
@@ -418,6 +420,11 @@ async def test_natural_end_runs_the_base_teardown_steps():
     _assert_teardown_reached(game, calls)
     assert calls.index("_end_shield_feedback") < calls.index("_end_game_impl"), calls
     assert calls.index("_end_game_impl") < calls.index("clear_analytics"), calls
+    # The winner rainbow must go out before the stream reference is dropped.
+    rainbow_serials = {
+        e.serial for _, e in log.writes("game_effect") if e.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+    }
+    assert rainbow_serials == set(game.werewolf_serials), rainbow_serials
     assert game._game_outcome_attributes()["game.outcome"] == "completed"
 
 
