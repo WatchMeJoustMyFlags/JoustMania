@@ -125,6 +125,15 @@ async def _iterate_in_context(stream: Any, ctx: otel_context.Context):
     hold a current span across a ``yield``. After the yield, spans the handler creates parent to
     ``ctx`` (the rpc span), not to the handler's own span. No current streaming handler does this.
     """
+    if inspect.isawaitable(stream) and not hasattr(stream, "__aiter__"):
+        # A coroutine handler that writes with ``await context.write(...)`` instead of ``yield`` (#1929):
+        # it produces no items itself, so just run it to completion inside ``ctx``.
+        token = otel_context.attach(ctx)
+        try:
+            await stream
+        finally:
+            otel_context.detach(token)
+        return
     iterator = stream.__aiter__()
     try:
         while True:
