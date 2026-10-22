@@ -927,8 +927,18 @@ class InterventionManager:
                     effect=effect_enum,
                 )
             )
+            # Re-read the stream per write: a reopen swaps in a new call and closes the
+            # old one, and a game end drops it (UC-030 BR-006, #1913).
+            stream = getattr(game, "gameplay_stream", None)
+            if stream is None:
+                logger.debug("controller_effect: the gameplay stream closed, stopping")
+                return
             try:
                 await stream.write(cmd)
+            except asyncio.InvalidStateError:
+                # grpc.aio: a write that starts after the call finished ("RPC already finished").
+                logger.debug("controller_effect: the gameplay stream had closed before the write, stopping")
+                return
             except asyncio.CancelledError:
                 # The game end cancels the call under a write in flight (UC-030 BR-006):
                 # that is a closed stream, not a cancel of this task, which still propagates.

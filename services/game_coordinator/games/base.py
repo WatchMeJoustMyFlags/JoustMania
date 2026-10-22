@@ -14,6 +14,7 @@ Phase 70: Added dynamic music tempo system.
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import math
 import random
@@ -25,6 +26,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+import grpc
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
@@ -1628,9 +1630,7 @@ class BaseGameMode(ABC):
         pending, self._early_drain_disconnects = self._early_drain_disconnects, {}
         self._warmup_disconnects.extend(pending)
         if reopen and self.running and (not stopped or self._gameplay_call_done()):
-            logger.warning("Early gameplay stream ended during the formation: reopening it")
-            self._cancel_gameplay_call()
-            await self._create_gameplay_stream()
+            await self._reopen_gameplay_stream("the early stream ended during the formation")
 
     def _gameplay_call_done(self) -> bool:
         """Whether the gameplay call has finished (test fakes without ``done()`` never do)."""
@@ -1642,6 +1642,39 @@ class BaseGameMode(ABC):
         cancel = getattr(self.gameplay_stream, "cancel", None)
         if callable(cancel):
             cancel()
+
+    async def _gameplay_call_failed(self) -> bool:
+        """Whether the gameplay call has finished with a non-OK gRPC status (UC-030 BR-006).
+
+        A call that ended with OK, a live call, and a test fake without
+        ``done()`` / ``code()`` are not failed.
+        """
+        if not self._gameplay_call_done():
+            return False
+        code = getattr(self.gameplay_stream, "code", None)
+        if not callable(code):
+            return False
+        status = code()
+        if inspect.isawaitable(status):
+            status = await status
+        return isinstance(status, grpc.StatusCode) and status != grpc.StatusCode.OK
+
+    async def _reopen_gameplay_stream(self, reason: str) -> None:
+        """Open a new gameplay call, then close the old one (UC-030 BR-006, #1913).
+
+        The new call is in ``self.gameplay_stream`` before the old one is
+        cancelled, so a concurrent effect write never sees a missing stream. A
+        failed open raises; the old call is closed either way.
+        """
+        logger.warning(f"Reopening the gameplay stream: {reason}")
+        metrics.gameplay_stream_reconnects_total.labels(game_mode=self.get_game_name()).inc()
+        old_stream = self.gameplay_stream
+        try:
+            await self._create_gameplay_stream()
+        finally:
+            cancel = getattr(old_stream, "cancel", None)
+            if old_stream is not self.gameplay_stream and callable(cancel):
+                cancel()
 
     def _release_gameplay_stream(self) -> None:
         """Close the gameplay call and drop it (UC-030 BR-006, #1914). Idempotent.
@@ -1665,12 +1698,33 @@ class BaseGameMode(ABC):
         Disconnect events are one-shot (controller-manager drains them once),
         so they are kept in ``_warmup_disconnects`` for ``_game_loop()`` to
         handle instead of being dropped with the frame (UC-020 A2, #1582).
+
+        A stream that ends, fails or stalls here is opened once more and the
+        warm-up repeats once (UC-030 BR-006, #1913); a second failure is left to
+        the game loop's reconnect.
         """
-        warmup_duration = 0.1  # 100ms — enough to drain buffer and get ~6 frames at 60Hz
+        if await self._read_warmup_frames():
+            return
+        if self.running and self._gameplay_call_done():
+            await self._reopen_gameplay_stream("the stream ended during the countdown or the EMA warm-up")
+            await self._read_warmup_frames()
+
+    _WARMUP_DURATION_S = 0.1  # enough to drain the buffer and get ~6 frames at 60 Hz
+    _WARMUP_STALL_TIMEOUT_S = 0.5
+
+    async def _read_warmup_frames(self) -> bool:
+        """Prime the EMA from the stream for ``_WARMUP_DURATION_S``.
+
+        Returns True only when it read for the full duration. A read that gets
+        no frame for ``_WARMUP_STALL_TIMEOUT_S`` is cancelled, which cancels the
+        gRPC call (the call is done afterwards).
+        """
         warmup_start = time.time()
         frames_consumed = 0
+        completed = False
 
-        try:
+        async def read() -> bool:
+            nonlocal frames_consumed
             async for gameplay_update in self.gameplay_stream:
                 self._warmup_disconnects.extend(d.serial for d in gameplay_update.disconnects)
                 for controller_data in gameplay_update.controllers:
@@ -1680,12 +1734,19 @@ class BaseGameMode(ABC):
                         self._update_ema(self.players[serial], accel_mag, self._ema_weight)
                 frames_consumed += 1
 
-                if time.time() - warmup_start >= warmup_duration:
-                    break
+                if time.time() - warmup_start >= self._WARMUP_DURATION_S:
+                    return True
+            return False
+
+        try:
+            completed = await asyncio.wait_for(read(), timeout=self._WARMUP_DURATION_S + self._WARMUP_STALL_TIMEOUT_S)
+        except TimeoutError:
+            logger.warning(f"EMA warmup got no frame in {self._WARMUP_STALL_TIMEOUT_S}s: cancelled the stream read")
         except Exception as e:
             logger.warning(f"EMA warmup interrupted: {e}")
 
         logger.info(f"EMA warmup complete: drained {frames_consumed} buffered frames")
+        return completed
 
     async def _process_gameplay_update(self, gameplay_update) -> bool:
         """
@@ -1854,15 +1915,16 @@ class BaseGameMode(ABC):
             logger.error(f"Gameplay stream failed after {max_attempts} reconnect attempts, ending game")
             raise error
 
-        backoff = attempt  # Linear backoff: 1s, 2s, 3s
+        backoff = attempt * self._RECONNECT_BACKOFF_S  # Linear backoff: 1s, 2s, 3s
         logger.warning(
             f"Gameplay stream error (attempt {attempt}/{max_attempts}): {error}. Reconnecting in {backoff}s..."
         )
-        metrics.gameplay_stream_reconnects_total.labels(game_mode=self.get_game_name()).inc()
         await asyncio.sleep(backoff)
 
-        await self._create_gameplay_stream()
+        await self._reopen_gameplay_stream(f"game loop reconnect {attempt}/{max_attempts}")
         return attempt
+
+    _RECONNECT_BACKOFF_S = 1.0
 
     async def _game_loop(self):
         """Main game loop - processes controller states and checks for deaths."""
@@ -1953,7 +2015,12 @@ class BaseGameMode(ABC):
 
                         last_iteration_time = iteration_end
 
-                    # Stream ended normally (server closed it) — exit loop
+                    # A call that ended with an error status is dead, not finished: an
+                    # exhausted grpc.aio reader ends the loop silently (UC-030 BR-006, #1913).
+                    if self.running and await self._gameplay_call_failed():
+                        raise RuntimeError("gameplay call ended with an error status")
+
+                    # Stream ended normally (server closed it with OK) — exit loop
                     break
 
                 except asyncio.CancelledError:
