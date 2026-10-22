@@ -559,14 +559,13 @@ func TestPromotion(t *testing.T) {
 	})
 }
 
-// TestExperiment_FlagOverridesEnvDefault is the #1044 acceptance: each migrated
+// TestExperiment_FlagOverridesCompiledDefault is the #1044 acceptance: each migrated
 // experiment knob takes the agent.json flag value when present and falls back to
-// the env-derived bootstrap default (ExperimentDefaults) when the flag is absent.
-func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
-	// The env-derived bootstrap defaults the loop hands in.
+// the compiled default (ExperimentDefaults) when the flag is absent; the two gates
+// fall back to false (#1907).
+func TestExperiment_FlagOverridesCompiledDefault(t *testing.T) {
+	// The compiled defaults the loop hands in.
 	def := ExperimentDefaults{
-		Enabled:                    false,
-		DynamicEnabled:             false,
 		Tick:                       30 * time.Second,
 		DynamicMaxConcurrent:       3,
 		VerdictMinN:                8,
@@ -580,7 +579,7 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 		VerdictAnchorMargin:    0.02,
 	}
 
-	t.Run("flags present override every env default", func(t *testing.T) {
+	t.Run("flags present override every default", func(t *testing.T) {
 		stub := stubEvaluator{
 			booleans: map[string]bool{
 				keyExperimentsEnabled:       true,
@@ -622,12 +621,12 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 		}
 	})
 
-	t.Run("flags absent fall back to the env bootstrap defaults", func(t *testing.T) {
+	t.Run("flags absent fall back to the compiled defaults, gates closed", func(t *testing.T) {
 		// An empty stub returns the passed default for every key (flag absent).
 		got := New(stubEvaluator{}, nil).Experiment(context.Background(), def)
 		want := ExperimentConfig{
-			Enabled:                    def.Enabled,
-			DynamicEnabled:             def.DynamicEnabled,
+			Enabled:                    false,
+			DynamicEnabled:             false,
 			Tick:                       def.Tick,
 			DynamicMaxConcurrent:       def.DynamicMaxConcurrent,
 			VerdictMinN:                def.VerdictMinN,
@@ -640,7 +639,7 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 			VerdictAnchorMargin:        def.VerdictAnchorMargin,
 		}
 		if got != want {
-			t.Fatalf("Experiment with flags absent = %+v, want env defaults %+v", got, want)
+			t.Fatalf("Experiment with flags absent = %+v, want compiled defaults %+v", got, want)
 		}
 	})
 
@@ -660,7 +659,7 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 		}
 	})
 
-	t.Run("flagd errors fall back to the env bootstrap defaults (fail-safe)", func(t *testing.T) {
+	t.Run("flagd errors fall back to the compiled defaults, gates closed (fail-safe)", func(t *testing.T) {
 		errAll := map[string]error{
 			keyExperimentsEnabled:          errors.New("down"),
 			keyExperimentDynamicEnabled:    errors.New("down"),
@@ -672,9 +671,9 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 			keyExperimentShadowConcurrency: errors.New("down"),
 		}
 		got := New(stubEvaluator{errs: errAll}, nil).Experiment(context.Background(), def)
-		if got.Enabled != def.Enabled || got.Tick != def.Tick || got.VerdictMinN != def.VerdictMinN ||
+		if got.Enabled || got.DynamicEnabled || got.Tick != def.Tick || got.VerdictMinN != def.VerdictMinN ||
 			got.MaxGames != def.MaxGames || got.ShadowEffectiveConcurrency != def.ShadowEffectiveConcurrency {
-			t.Fatalf("Experiment under flagd error did not fall back to env defaults: %+v", got)
+			t.Fatalf("Experiment under flagd error did not fall back to compiled defaults with gates closed: %+v", got)
 		}
 	})
 
@@ -767,22 +766,21 @@ func TestSafetyGateDefaultsAreFailClosed(t *testing.T) {
 }
 
 // TestProposerGateAccessors covers the narrow #1270 reads the post-game proposer
-// makes at each game end: `enabled` fails CLOSED on a flagd error, and
-// `experiments_enabled` falls back to the caller's env-derived default (the same
-// fallback the experiment loop uses).
+// makes at each game end: `enabled` and `experiments_enabled` both fail CLOSED on a
+// flagd error (#1907: no env fallback, the same fallback the experiment loop uses).
 // UC: UC-045 A3
 func TestProposerGateAccessors(t *testing.T) {
 	down := errors.New("flagd unreachable")
 	t.Run("flags on", func(t *testing.T) {
 		f := New(stubEvaluator{booleans: map[string]bool{keyEnabled: true, keyExperimentsEnabled: true}}, nil)
-		if !f.AgentEnabled(context.Background()) || !f.ExperimentsEnabled(context.Background(), false) {
+		if !f.AgentEnabled(context.Background()) || !f.ExperimentsEnabled(context.Background()) {
 			t.Fatal("want both gates on")
 		}
 	})
 	t.Run("flags off", func(t *testing.T) {
 		f := New(stubEvaluator{booleans: map[string]bool{keyEnabled: false, keyExperimentsEnabled: false}}, nil)
-		if f.AgentEnabled(context.Background()) || f.ExperimentsEnabled(context.Background(), true) {
-			t.Fatal("want both gates off (flag value beats the env default)")
+		if f.AgentEnabled(context.Background()) || f.ExperimentsEnabled(context.Background()) {
+			t.Fatal("want both gates off")
 		}
 	})
 	t.Run("flagd down", func(t *testing.T) {
@@ -790,11 +788,8 @@ func TestProposerGateAccessors(t *testing.T) {
 		if f.AgentEnabled(context.Background()) {
 			t.Fatal("SAFETY: kill switch must fail closed when flagd is unreachable")
 		}
-		if f.ExperimentsEnabled(context.Background(), false) {
-			t.Fatal("experiments_enabled must fall back to the env default (false)")
-		}
-		if !f.ExperimentsEnabled(context.Background(), true) {
-			t.Fatal("experiments_enabled must fall back to the env default (true)")
+		if f.ExperimentsEnabled(context.Background()) {
+			t.Fatal("SAFETY: experiments_enabled must fail closed when flagd is unreachable")
 		}
 	})
 }

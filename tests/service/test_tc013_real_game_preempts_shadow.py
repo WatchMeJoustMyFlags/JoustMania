@@ -51,15 +51,10 @@ SEED_VALUE = (
 SERVICE_COMPOSITION = replace(
     AGENT,
     agent_env={
-        "AGENT_EXPERIMENTS_ENABLED": "true",
         "AGENT_EXPERIMENT_SEED_FLAG": SEED_FLAG,
         "AGENT_EXPERIMENT_SEED_VALUE": SEED_VALUE,
         "AGENT_EXPERIMENT_SEED_OBJECTIVE": "balanced",
         "AGENT_EXPERIMENT_SEED_TARGET_N": "2",
-        "AGENT_EXPERIMENT_DYNAMIC_ENABLED": "false",
-        "AGENT_EXPERIMENT_TICK_SECONDS": "3",
-        "AGENT_VERDICT_MIN_N": "1",
-        "AGENT_VERDICT_MIN_PAIRS": "1",
     },
 )
 TUNING = {
@@ -81,7 +76,7 @@ SERVICE_COMPOSITION = replace(
 )
 PREEMPTED = "preempted_by_real_game"
 BLOCKED = "Shadow games blocked while a real game is running"
-# 90 s leaves room for one compiled 30 s first experiment tick before the live cadence.
+# The second experiment tick comes within 5 s of start (first-tick cap, #1907); 90 s is margin.
 ASSIGN_TIMEOUT = 90.0
 EVENT_TIMEOUT = 20.0
 # Spawn ticks are 3 s apart: a refused start shows within a few ticks.

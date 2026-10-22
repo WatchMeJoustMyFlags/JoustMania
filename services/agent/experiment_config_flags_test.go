@@ -65,7 +65,7 @@ func loopForConfigTest(t *testing.T, maxShadow int) (*experimentLoop, *recording
 		registry: reg,
 		log:      log,
 		expDefaults: flags.ExperimentDefaults{
-			Enabled: false, Tick: time.Hour, DynamicMaxConcurrent: defaultDynamicMaxConcurrent,
+			Tick: time.Hour, DynamicMaxConcurrent: defaultDynamicMaxConcurrent,
 		},
 		configOverride: lc.get,
 		// Kill-switch ON via the seam so experiments_enabled is the variable under test.
@@ -169,14 +169,14 @@ func TestExperimentsEnabled_KillSwitchStillWins(t *testing.T) {
 
 // TestExperimentsEnabled_DefaultSafeFreshConfig is the default-safe regression
 // (#1044): with NO live config override and a nil flags client (the "fresh
-// agent.json + no flag" shape), config() returns the env bootstrap defaults
-// verbatim — and the default bootstrap (env unset) keeps experiments OFF, so a fresh
-// deployment's behavior is byte-identical to the pre-#1044 disabled default.
+// agent.json + no flag" shape), config() returns the compiled defaults with both
+// gates closed, so a fresh deployment keeps experiments OFF (#1907: the removed
+// AGENT_EXPERIMENTS_ENABLED cannot open it).
 func TestExperimentsEnabled_DefaultSafeFreshConfig(t *testing.T) {
+	t.Setenv("AGENT_EXPERIMENTS_ENABLED", "true") // ignored since #1907
 	loop, spawner, _ := loopForConfigTest(t, 8)
-	loop.configOverride = nil // force the real config() path: nil flags -> expDefaults
+	loop.configOverride = nil // force the real config() path: nil flags -> compiled defaults
 	loop.flags = nil
-	// expDefaults from loopForConfigTest is Enabled:false (env unset = OFF).
 	cfg := loop.config(context.Background())
 	if cfg.Enabled {
 		t.Fatal("DEFAULT-SAFE VIOLATION: a fresh config enabled experiments")

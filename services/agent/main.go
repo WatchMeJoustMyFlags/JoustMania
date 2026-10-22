@@ -509,7 +509,7 @@ func main() {
 	if llmBudgetCap > 0 {
 		slog.Info("LLM request budget ceiling set (#1788)", "max_per_minute", llmBudgetCap)
 	}
-	// Agent tuning (#1788, FR-150, FR-151): model, effort, timeout, effect window and
+	// Agent tuning (#1788, FR-150, C-035): model, effort, timeout, effect window and
 	// promotion timers resolve at use time from the agent flags; the compiled defaults
 	// (equal to the flag defaults) apply while a flag cannot be resolved (#1907).
 	tuning := newAgentTuning(agentFlags, compiledTuningDefaults())
@@ -775,7 +775,7 @@ func main() {
 	// ceiling AND the live experiment_proposer_enabled flag, the same gate the
 	// retro-seeded thesis proposer obeys. A closed gate skips before any model call,
 	// so it spends no budget.
-	permitPropose := proposerPermit(agentFlags, experimentsEnabled(), proposerEnabled())
+	permitPropose := proposerPermit(agentFlags, proposerEnabled())
 	// Propose on each GAME END, behind the kill switch + experiments_enabled, the
 	// cadence floor (code_improvement.min_interval_seconds, read live) and, for a
 	// real backend, the shared LLM call gate: proposing is an expensive LLM call, so
@@ -847,8 +847,8 @@ func main() {
 	// constructs the experiment.Registry with the REAL seams (#976 spawner, #977
 	// targeting Gate/Writer, #979 verdict, #980/#961 promoter). #1044 startup-gate
 	// inversion: the loop is ALWAYS built + run now, and SELF-GATES each tick on the
-	// LIVE agent.json experiments_enabled flag (default off, env AGENT_EXPERIMENTS_ENABLED
-	// is the bootstrap default). When disabled — the default — the loop is BEHAVIORALLY
+	// LIVE agent.json experiments_enabled flag (default off, and off while unresolved;
+	// no env fallback since #1907). When disabled — the default — the loop is BEHAVIORALLY
 	// INERT: no rehydrate, no seed, no shadow spawn, no targeting write, no promotion —
 	// the only residual work is one ~30s no-op tick goroutine. An off→on flip at runtime
 	// starts it with no restart. The real-default promotion path stays
@@ -1034,26 +1034,25 @@ func (b inferBackend) Infer(ctx context.Context, prompt llm.Prompt) (string, err
 // reads (#1270). *flags.Flags satisfies it; tests supply a fake.
 type proposerGateFlags interface {
 	AgentEnabled(ctx context.Context) bool
-	ExperimentsEnabled(ctx context.Context, def bool) bool
+	ExperimentsEnabled(ctx context.Context) bool
 	ExperimentProposerEnabled(ctx context.Context) bool
 }
 
 // proposerPermit builds the experiment.ProposerConfig.Permit gate (#1270): a
 // proposal cycle may run only while the agent `enabled` kill switch AND the
 // `experiments_enabled` gate are both on — the same two gates the experiment loop
-// obeys (allocateIfEnabled). Both are read LIVE on every call. `enabled` fails
-// closed when flagd is unreachable; `experiments_enabled` falls back to
-// experimentsDefault (AGENT_EXPERIMENTS_ENABLED, default false), the same fallback
-// the experiment loop uses, so the two never disagree. The proposer gate (#1810,
+// obeys (allocateIfEnabled). Both are read LIVE on every call and both fail closed
+// when flagd is unreachable (#1907: no env fallback), the same fallback the
+// experiment loop uses, so the two never disagree. The proposer gate (#1810,
 // C-034, FR-152 d) is proposerCeiling (AGENT_EXPERIMENT_PROPOSER_ENABLED, read once
 // at startup) AND the live experiment_proposer_enabled flag (false when unresolved).
-func proposerPermit(src proposerGateFlags, experimentsDefault, proposerCeiling bool) func(ctx context.Context) (bool, string) {
+func proposerPermit(src proposerGateFlags, proposerCeiling bool) func(ctx context.Context) (bool, string) {
 	return func(ctx context.Context) (bool, string) {
 		// UC-045 BR-002: with the agent off the proposer makes no model call and writes nothing.
 		if !src.AgentEnabled(ctx) {
 			return false, experiment.SkipReasonAgentDisabled
 		}
-		if !src.ExperimentsEnabled(ctx, experimentsDefault) {
+		if !src.ExperimentsEnabled(ctx) {
 			return false, experiment.SkipReasonExperimentsDisabled
 		}
 		if !proposerCeiling || !src.ExperimentProposerEnabled(ctx) {

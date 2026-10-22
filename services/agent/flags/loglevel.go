@@ -15,7 +15,7 @@ import (
 // (services/flagd/observability.json), of which the agent reads only log_level (#1788).
 const ObservabilityDomain = "observability"
 
-// KeyLogLevel is the log level flag (flags.md §15, FR-150, FR-151).
+// KeyLogLevel is the log level flag (flags.md §15, FR-150, C-035).
 const KeyLogLevel = "log_level"
 
 // logLevelPollInterval is the safety net under the configuration-change handler.

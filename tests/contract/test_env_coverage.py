@@ -68,16 +68,11 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "LOG_LEVEL",
     ): "parseLevel falls back to info for an empty or unknown value",
     # ---- agent: tuning knobs with a built-in fallback ----
-    ("agent", "AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS"): _TUNING
-    + " (fallback of the experiment_completed_grace_seconds flag, #1810)",
     (
         "agent",
         "AGENT_EXPERIMENT_MAX_GAMES",
     ): "operator ceiling (C-034, #1810): unset = no ceiling, the experiment_max_games flag governs",
     ("agent", "AGENT_MAX_SHADOW_GAMES"): _TUNING,
-    ("agent", "AGENT_SHADOW_EFFECTIVE_CONCURRENCY"): _TUNING,
-    ("agent", "AGENT_VERDICT_MIN_N"): _TUNING,
-    ("agent", "AGENT_VERDICT_MIN_PAIRS"): _TUNING,
     (
         "agent",
         "AGENT_EXPERIMENT_DYNAMIC_OBJECTIVE",
@@ -189,6 +184,24 @@ def test_allowlist_entries_are_live():
             stale.append((service, var))
     assert not stale, (
         f"stale ALLOWLIST entries (var is set, defaulted or no longer read): {stale}"
+    )
+
+
+@pytest.mark.parametrize(
+    "stack", [s for s in STACKS if _stack_env("agent", s) is not None]
+)
+def test_agent_compose_env_is_read(stack):
+    """Every AGENT_* key the agent's compose environment sets is read by the agent (#1907).
+
+    Guards against compose drift: a removed env fallback whose passthrough stays in
+    compose would be silently ignored, hiding a host .env value that no longer acts.
+    """
+    env = _stack_env("agent", stack)
+    read = {r.var for r in inv.service_reads("agent")}
+    dead = sorted(k for k in env if k.startswith("AGENT_") and k not in read)
+    assert not dead, (
+        f"agent ({stack} stack) compose sets AGENT_* vars the agent never reads: {dead}. "
+        "Remove the passthrough (or the env read lost its helper detection in env_inventory)."
     )
 
 
@@ -310,3 +323,18 @@ def test_go_scanner_ignores_comments(tmp_path):
     )
     reads = inv.go_reads(tmp_path)
     assert [(r.var, r.line) for r in reads] == [("REAL", 5)]
+
+
+def test_go_scanner_follows_a_helper_key_in_any_position(tmp_path):
+    """A helper whose key is not its first parameter still counts as a read (#1907)."""
+    (tmp_path / "main.go").write_text(
+        "package main\n"
+        'const envCeiling = "PLANTED_CEILING"\n'
+        "func ceiling(logger *slog.Logger, key string, warn bool) int {\n"
+        "\tv := os.Getenv(key)\n\treturn len(v)\n}\n"
+        "func g() { _ = ceiling(logger, envCeiling, true) }\n"
+    )
+    reads = inv.go_reads(tmp_path)
+    assert [(r.var, r.line, r.has_default) for r in reads] == [
+        ("PLANTED_CEILING", 7, True)
+    ]

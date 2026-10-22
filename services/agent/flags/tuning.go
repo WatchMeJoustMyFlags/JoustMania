@@ -7,14 +7,14 @@ import (
 )
 
 // Agent tuning settings migrated from env to agent.json flags (#1788, FR-150,
-// FR-151, flags.md §15). Each is read at USE time (every Infer call, every
+// C-035, flags.md §15). Each is read at USE time (every Infer call, every
 // dispatched intervention, every promotion), so an operator write through the flag
 // service takes effect on the next use with no restart.
 //
-// Resolution (FR-151, "the flag always wins"): the flag value when flagd resolves
-// it; when it cannot be resolved (flagd unreachable, flag missing, no first sync:
-// the evaluator returns an error) the caller's def, which main.go builds from the
-// deprecated env var when set, else the compiled default. None of these limits
+// Resolution ("the flag always wins"): the flag value when flagd resolves it; when
+// it cannot be resolved (flagd unreachable, flag missing, no first sync: the
+// evaluator returns an error) the caller's def, the compiled default (the env
+// fallbacks were removed in #1907, FR-151 Obsolete). None of these limits
 // the agent (C-034), so none fails closed. The typed getters are used (never
 // ObjectValue: the #903 TYPE_MISMATCH class).
 const (

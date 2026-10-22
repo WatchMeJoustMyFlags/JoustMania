@@ -98,10 +98,9 @@ up-mock:
 # only source, so every agent write reaches the running flagd (epic #1407).
 #
 # Gating chain (all must be satisfied for the loop to ACT):
-#   1. flagd `experiments_enabled` flag = on  -> the LIVE gate post-#1044. It
-#      OVERRIDES the AGENT_EXPERIMENTS_ENABLED env, which is now dead config for
-#      this purpose. Fail-closed `off` by default; MANUAL opt-in via the enable
-#      step below.
+#   1. flagd `experiments_enabled` flag = on  -> the only experiment gate (the
+#      env gate was removed in #1907). Fail-closed `off` by default and when flagd
+#      cannot answer; MANUAL opt-in via the enable step below.
 #   2. agent `enabled` flag = on       -> master kill-switch, fail-closed `off`
 #      by default. Without it the loop self-aborts:
 #      `experiment.torn_down ... reason="kill-switch: agent disabled"`.
@@ -126,8 +125,8 @@ dry-run:
 	@echo "  Flags:         flag service (baseline services/flagd/ci, read-only); change: ./scripts/flags.sh"
 	@echo ""
 	@echo "  Experiment loop gating:"
-	@echo "    [!] flagd experiments_enabled flag is the LIVE gate (post-#1044) and"
-	@echo "        OVERRIDES AGENT_EXPERIMENTS_ENABLED env. Fail-closed off by default."
+	@echo "    [!] flagd experiments_enabled flag is the only gate (live since #1044)."
+	@echo "        Fail-closed off by default and while flagd cannot answer."
 	@echo "    [x] seeded experiment: windows = frantic music pacing (objective=balanced, N=8/arm)"
 	@echo "    [ ] ENABLE experiments  -> ONE step (flips enabled + experiments_enabled on):"
 	@echo "        ./scripts/agent-dryrun-enable.sh on   # flag service: enabled + experiments_enabled -> on"

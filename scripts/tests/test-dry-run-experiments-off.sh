@@ -8,8 +8,8 @@
 # 2. The dry-run override does not replace the flag baseline mount, so flagd and
 #    the flag service serve services/flagd/ci/.
 # 3. In that baseline the live gate experiments_enabled defaults to off with no
-#    targeting rule. It overrides AGENT_EXPERIMENTS_ENABLED=true of the override
-#    (post-#1044), so the experiment loop starts idle.
+#    targeting rule. It is the only gate (the env gate was removed in #1907), so
+#    the experiment loop starts idle.
 # Runs as part of `make lint` (needs bash, make, python3), or directly:
 #   ./scripts/tests/test-dry-run-experiments-off.sh
 # UC: UC-070 Pre-1

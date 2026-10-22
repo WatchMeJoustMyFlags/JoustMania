@@ -62,16 +62,10 @@ SERVICE_COMPOSITION = replace(
     AGENT,
     fake_github=True,
     agent_env={
-        "AGENT_EXPERIMENTS_ENABLED": "true",
         "AGENT_EXPERIMENT_SEED_FLAG": SEED_FLAG,
         "AGENT_EXPERIMENT_SEED_VALUE": json.dumps(SEED_VALUE),
         "AGENT_EXPERIMENT_SEED_OBJECTIVE": "endurance",
         "AGENT_EXPERIMENT_SEED_TARGET_N": "2",
-        "AGENT_EXPERIMENT_DYNAMIC_ENABLED": "false",
-        # Env defaults for the first tick, which can come before the overlays below are served.
-        "AGENT_EXPERIMENT_TICK_SECONDS": "3",
-        "AGENT_VERDICT_MIN_N": "2",
-        "AGENT_VERDICT_MIN_PAIRS": "2",
     },
 )
 
@@ -103,7 +97,7 @@ SERVICE_COMPOSITION = replace(
 # verdict_min_raw_effect (0.02). code_improvement.mode is the baseline ``issue``
 # (read-only on the flag service).
 EXPERIMENTAL_HOLD_SECONDS = 8.0
-# 90 s leaves room for one compiled 30 s first experiment tick before the live cadence.
+# The second experiment tick comes within 5 s of start (first-tick cap, #1907); 90 s is margin.
 DECLARE_TIMEOUT = 90.0
 CONCLUDE_TIMEOUT = 240.0
 RUNNING_TIMEOUT = 20.0

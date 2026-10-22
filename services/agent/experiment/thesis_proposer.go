@@ -37,8 +37,9 @@ import (
 // objective from the retro's emphasis where the analyst signalled a direction.
 //
 // GATING — default OFF. The caller only invokes Propose when the opt-in is on
-// (the loop gates it on AGENT_EXPERIMENT_PROPOSER_ENABLED, subordinate to
-// AGENT_EXPERIMENTS_ENABLED + the kill-switch), so it changes the autonomous
+// (the loop gates it on AGENT_EXPERIMENT_PROPOSER_ENABLED AND the
+// experiment_proposer_enabled flag, subordinate to the experiments_enabled flag +
+// the kill-switch), so it changes the autonomous
 // experiment cadence for NOBODY who has not opted in.
 //
 // DETERMINISM — pure given (recorded suggestions, selector output): no clock, no

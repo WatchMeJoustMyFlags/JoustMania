@@ -295,8 +295,6 @@ class ServiceStack:
         return {
             "ANTHROPIC_API_KEY": FAKE_CLAUDE_API_KEY,
             "AGENT_INFERENCE_BASE_URL": self.fake_claude.base_url,
-            # Bootstrap default only: the live experiments_enabled flag decides (FR-066).
-            "AGENT_EXPERIMENTS_ENABLED": "true",
             # The proposer gate's operator ceiling (#1810, C-034): the M7-4 proposer runs
             # only when it is true AND experiment_proposer_enabled is on (ci default on).
             "AGENT_EXPERIMENT_PROPOSER_ENABLED": "true",

@@ -253,7 +253,7 @@ func TestLiveFlip_AlreadyEvaluatedFlagsFollowTheFlagService(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("UC-043/Pre-1 UC-043/A1 experiments_enabled off, on, off", func(t *testing.T) {
-		read := func() bool { return p.flags.ExperimentsEnabled(ctx, false) }
+		read := func() bool { return p.flags.ExperimentsEnabled(ctx) }
 		p.put(t, keyExperimentsEnabled, "off")
 		readSettled(t, "experiments_enabled", read, false)
 		p.put(t, keyExperimentsEnabled, "on")

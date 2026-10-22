@@ -35,18 +35,13 @@ import (
 // of the unchanged declare path, not a new privilege.
 //
 // GATING — default-off, byte-identical for everyone who does not opt in. The
-// declarer only runs when AGENT_EXPERIMENT_DYNAMIC_ENABLED=true AND the rest of
-// the experiment loop's gates are satisfied (AGENT_EXPERIMENTS_ENABLED + the
+// declarer only runs when the experiment_dynamic_enabled flag is on AND the rest
+// of the experiment loop's gates are satisfied (experiments_enabled + the
 // agent.json kill-switch — the loop only invokes the declarer from
-// allocateIfEnabled, which already self-aborts when the kill-switch is off).
+// allocateIfEnabled, which already self-aborts when either is off). Both flags
+// fail closed when unresolved; there is no env fallback (#1907).
 
 const (
-	// envDynamicEnabled is the opt-in for the heuristic dynamic declarer (#995).
-	// Default false ⇒ the loop declares ONLY the static env seed (if any),
-	// byte-identical to pre-#995 behavior. Subordinate to AGENT_EXPERIMENTS_ENABLED
-	// and the kill-switch.
-	envDynamicEnabled = "AGENT_EXPERIMENT_DYNAMIC_ENABLED"
-
 	// envDynamicCandidates overrides the candidate game.json flag set the declarer
 	// rotates over: a comma-separated list of flag keys. Empty/unset ⇒ ALL tunable
 	// game.json flags (every flag with at least two variants). A key that is not
@@ -98,13 +93,6 @@ var defaultDynamicDenylist = map[string]struct{}{
 	// Ceremony timing around the game (countdown, winner animation).
 	"countdown_phase_duration_ms": {},
 	"winner_rainbow_duration_ms":  {},
-}
-
-// dynamicEnabled reports whether the heuristic dynamic declarer opt-in is on.
-// This is the distinct, default-off #995 gate — independent of (and subordinate
-// to) the experiment-loop opt-in and the kill-switch.
-func dynamicEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv(envDynamicEnabled)), "true")
 }
 
 // pressureFunc returns the current per-objective failing-fitness pressure
@@ -172,8 +160,7 @@ type dynamicDeclarer struct {
 // #1044: the declarer is ALWAYS built now — the on/off gate moved to the LIVE
 // experiment_dynamic_enabled flag, checked PER TICK by the loop
 // (declareDynamicIfEnabled), so an off→on flip at runtime starts dynamic
-// declaration with no restart. The env AGENT_EXPERIMENT_DYNAMIC_ENABLED is the
-// BOOTSTRAP DEFAULT that flag falls back to. The candidate-set + objective +
+// declaration with no restart; an unresolved flag reads false (#1907). The candidate-set + objective +
 // target-N + denylist remain env-configured (the candidate/denylist LISTS stay env
 // per the flagd list-flag trap; see flags.go), read once here at build.
 func newDynamicDeclarerFromEnv(gameFlags gameFlagReader, pressure pressureFunc) *dynamicDeclarer {

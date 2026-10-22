@@ -515,8 +515,8 @@ hosted inference is allowed, local inference is not a goal, rules are the offlin
 (#1049) and the `mode` / `model` / `prompt_variant` flags were removed in #1234.
 
 To enable the model-backed retro and proposer (the compose `agent` service has no profile, so a plain `up` starts it;
-the old `--profile agent` flag selects nothing): give the agent the key, then set the flag (the flag wins over the
-env, FR-151, #1810; the proposer additionally needs its gate, FR-152 d):
+the old `--profile agent` flag selects nothing): give the agent the key, then set the flag (the flag is the only
+switch, its env fallback was removed in #1907; the proposer additionally needs its gate, FR-152 d):
 
 ```bash
 ANTHROPIC_API_KEY=<key> docker compose up -d agent

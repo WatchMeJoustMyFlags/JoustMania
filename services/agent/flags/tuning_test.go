@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// tuning_test.go covers the #1788 tuning getters (FR-150, FR-151): the flag wins
+// tuning_test.go covers the #1788 tuning getters (FR-150, C-035): the flag wins
 // when it resolves; an evaluation error (flagd unreachable, flag missing, no first
 // sync) or an unusable value (blank string, non-positive number) yields the
 // caller's fallback, which main.go builds from the deprecated env var or the
@@ -117,7 +117,7 @@ func TestInferenceBackend_FlagWinsThenFallback(t *testing.T) {
 	}
 	f = New(stubEvaluator{strings: map[string]string{keyInferenceBackend: "stub"}}, nil)
 	if got := f.InferenceBackend(ctx, "claude"); got != "stub" {
-		t.Errorf("flag stub, env claude = %q, want stub (FR-151)", got)
+		t.Errorf("flag stub, env claude = %q, want stub (FR-150)", got)
 	}
 	// Unresolvable (flagd down / flag missing) -> the caller's fallback.
 	down := New(stubEvaluator{errs: map[string]error{keyInferenceBackend: errors.New("PROVIDER_NOT_READY")}}, nil)

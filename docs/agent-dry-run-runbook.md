@@ -28,11 +28,17 @@ restart or `down` also drops them; nothing is persisted.
 `make dry-run` prints the same steps and the observability URLs on completion.
 
 > **Why a manual step at all?** After #1044 the experiment config moved from env
-> vars to flagd flags. The `experiments_enabled` flag is now the LIVE gate and it
-> **overrides** the `AGENT_EXPERIMENTS_ENABLED=true` env that
-> `docker-compose.dry-run.yml` sets — so the env alone produces **zero**
-> experiment activity (#1077). The enable script is the single opt-in that turns
-> the loop on without changing any production fail-closed default.
+> vars to flagd flags. The `experiments_enabled` flag is the only gate (the
+> `AGENT_EXPERIMENTS_ENABLED` env var was removed in #1907; a host `.env` entry
+> for it is ignored), and it is `off` in the baseline (#1077). The enable script
+> is the single opt-in that turns the loop on without changing any production
+> fail-closed default.
+>
+> **Refill tick (#1907):** the dry-run used to set a 15 s tick by env
+> (`AGENT_EXPERIMENT_TICK_SECONDS=15`); that env var is gone, so the tick is the
+> `experiment_tick_seconds` flag, default 30 s (the first refill after start
+> still comes within 5 s). For a faster demo cadence:
+> `./scripts/flags.sh set agent experiment_tick_seconds fast` (10 s).
 
 ---
 
@@ -45,8 +51,8 @@ findings):
 |---|---------|---------|-------------------------|
 | 1 | `.env` pins `IMAGE_TAG=0.7.0` (release-please) | A plain `up` runs the last RELEASE images — they predate the experiment framework, so the loop never constructs (no `Experiment cohort loop` log) | `make dry-run` pins `IMAGE_TAG=latest` (override with `IMAGE_TAG=... make dry-run`, or add `BUILD=1` to build locally) |
 | 2 | Agent master kill-switch `agent.json` `enabled` = `off` (fail-closed) | Loop declares + writes targeting then self-aborts: `experiment.torn_down ... reason="kill-switch: agent disabled"` | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` (in-memory overlay in the running stack only; the baseline stays `off`) |
-| 3 | The agent compose env did not declare `AGENT_EXPERIMENTS_ENABLED` / `AGENT_EXPERIMENT_SEED_*` | A host `export` never reached the container (needed a custom override) | These vars are now declared (default-off) on the `agent` service in `docker-compose.yml`; the dry-run override turns them on |
-| 5 | **(#1044/#1077)** flagd `experiments_enabled` flag = `off` (fail-closed) **overrides** the `AGENT_EXPERIMENTS_ENABLED=true` env | The loop is constructed but `gated LIVE by agent.json experiments_enabled` — `env_enabled_default=true` is dead config; **zero** `experiment.*` activity | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` flips `experiments_enabled` (and `enabled`, row 2) as in-memory overlays; the baseline stays `off` |
+| 3 | The agent compose env did not declare `AGENT_EXPERIMENT_SEED_*` | A host `export` never reached the container (needed a custom override) | These vars are now declared (empty by default) on the `agent` service in `docker-compose.yml`; the dry-run override sets the seed. (The `AGENT_EXPERIMENTS_ENABLED` env gate was removed in #1907.) |
+| 5 | **(#1044/#1077)** flagd `experiments_enabled` flag = `off` (fail-closed) | The loop is constructed but `gated LIVE by agent.json experiments_enabled`; **zero** `experiment.*` activity | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` flips `experiments_enabled` (and `enabled`, row 2) as in-memory overlays; the baseline stays `off` |
 | 6 | **(#1225/#1234)** flagd `decision.backend` flag = `rules` | Decisions come from the rules engine; no model is called. Shadow games stay on rules even with a remote backend (`llm.eligible_game_kinds` defaults to `real`) | `./scripts/agent-backend.sh claude` (needs `ANTHROPIC_API_KEY` in the agent env); `rules` is the correct floor without a key |
 
 Row 4 (the agent writing a different flag dir than flagd served, a #822-class
@@ -64,11 +70,10 @@ intentionally separate so a dry run can spawn shadows without ever risking a
 real-default change.
 
 1. **Experiments opt-in** — flagd `experiments_enabled` flag = `on`.
-   Post-#1044 this **flagd flag is the LIVE gate** and **overrides** the
-   `AGENT_EXPERIMENTS_ENABLED=true` env (which `docker-compose.dry-run.yml` still
-   sets, but is now dead config for this purpose — the loop logs
-   `gated LIVE by agent.json experiments_enabled`). When `off` (the fail-closed
-   default) there are no shadow spawns, no experiment-arm writes, no promotions.
+   This **flagd flag is the only gate** (live since #1044; the env gate was
+   removed in #1907 — the loop logs `gated LIVE by agent.json experiments_enabled`).
+   When `off` (the fail-closed default, also while flagd cannot answer) there are
+   no shadow spawns, no experiment-arm writes, no promotions.
    *Manual opt-in via `./scripts/agent-dryrun-enable.sh on` — never default-on.*
 
 2. **Agent master kill-switch** — `agent.json` `enabled` flag = `on`.
@@ -129,7 +134,7 @@ docker compose \
 - `IMAGE_TAG=latest` — current code, not the `.env` release pin.
 - `docker-compose.ci.yml` — mock controllers (`backend=mock`), the `agent` /
   `dashboard` profiles gated behind `--profile`.
-- `docker-compose.dry-run.yml` — `AGENT_EXPERIMENTS_ENABLED=true`, one seeded
+- `docker-compose.dry-run.yml` — one seeded
   experiment (`windows` = the `frantic` pacing object, objective `balanced`,
   `N=8`/arm), and the flag service's own admin state file
   (`admin-dry-run.json`). The flag service loads the `services/flagd/ci/`

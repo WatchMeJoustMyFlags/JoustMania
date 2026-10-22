@@ -18,11 +18,14 @@
 #    dir flagd did not serve; it now writes through the flag service, which
 #    loads the CI baseline, so there is nothing to align.
 #
-# 2. Experiment framework opt-in. The base agent env now passes through the
-#    AGENT_EXPERIMENT* vars (default-off); this file turns ON the cohort loop and
-#    seeds ONE experiment so the declare->spawn->conclude->verdict loop has work.
-#    Override values still win, e.g.:
+# 2. Experiment framework. The loop is gated only by the experiments_enabled and
+#    `enabled` flags (the enable step `scripts/agent-dryrun-enable.sh on` flips
+#    both; #1907 removed the env gates). This file seeds ONE experiment so the
+#    declare->spawn->conclude->verdict loop has work once enabled. Override values
+#    still win, e.g.:
 #      AGENT_EXPERIMENT_SEED_FLAG=move_threshold make dry-run
+#    The refill tick is the experiment_tick_seconds flag (default 30 s; the former
+#    15 s env override is gone, #1907).
 #
 # The agent MASTER kill-switch (agent set `enabled`) still defaults to `off`
 # (fail-closed, unchanged). `make dry-run` prints the one-liner to switch it on
@@ -39,8 +42,6 @@ services:
     profiles:
       - agent
     environment:
-      # Master opt-in for the #982/#991 experiment cohort loop.
-      - AGENT_EXPERIMENTS_ENABLED=${AGENT_EXPERIMENTS_ENABLED:-true}
       # Seed ONE experiment at startup (simplest declaration trigger). The flag
       # key must EXIST in services/flagd/ci/game.json and the value's JSON kind
       # must match its existing variants (the Gate's type guard rejects a mistyped
@@ -61,13 +62,6 @@ services:
       - AGENT_EXPERIMENT_SEED_OBJECTIVE=${AGENT_EXPERIMENT_SEED_OBJECTIVE:-balanced}
       - AGENT_EXPERIMENT_SEED_TARGET_N=${AGENT_EXPERIMENT_SEED_TARGET_N:-8}
       - "AGENT_EXPERIMENT_SEED_HYPOTHESIS=${AGENT_EXPERIMENT_SEED_HYPOTHESIS:-M8 dry-run seed - frantic music pacing windows shorten and intensify FFA games}"
-      # Faster refill tick than the 30s default so shadow games spin up promptly
-      # during a demo.
-      - AGENT_EXPERIMENT_TICK_SECONDS=${AGENT_EXPERIMENT_TICK_SECONDS:-15}
-      # Heuristic dynamic declarer (#995/#1041): default-off; set true to have the
-      # agent autonomously pick which game.json flag to experiment on (alongside the
-      # seed). The other AGENT_EXPERIMENT_DYNAMIC_* knobs pass through from the base.
-      - AGENT_EXPERIMENT_DYNAMIC_ENABLED=${AGENT_EXPERIMENT_DYNAMIC_ENABLED:-false}
 
   # #1167: experiment-heavy collector envelope. The dry-run cohort loop runs ~4
   # paired shadow games/tick (~20 in flight), each emitting decision/action/effect

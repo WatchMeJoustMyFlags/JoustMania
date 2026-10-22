@@ -58,22 +58,6 @@ func newRecordingLogger() (*slog.Logger, *recordingHandler) {
 	return slog.New(h), h
 }
 
-// EffectiveConcurrencyFromEnv honors the env override and falls back safely.
-func TestEffectiveConcurrencyFromEnv(t *testing.T) {
-	t.Setenv(effectiveConcurrencyEnv, "3")
-	if got := EffectiveConcurrencyFromEnv(); got != 3 {
-		t.Fatalf("EffectiveConcurrencyFromEnv = %d, want 3", got)
-	}
-	t.Setenv(effectiveConcurrencyEnv, "0")
-	if got := EffectiveConcurrencyFromEnv(); got != DefaultEffectiveConcurrency {
-		t.Fatalf("EffectiveConcurrencyFromEnv(0) = %d, want default %d", got, DefaultEffectiveConcurrency)
-	}
-	t.Setenv(effectiveConcurrencyEnv, "garbage")
-	if got := EffectiveConcurrencyFromEnv(); got != DefaultEffectiveConcurrency {
-		t.Fatalf("EffectiveConcurrencyFromEnv(garbage) = %d, want default", got)
-	}
-}
-
 // #1018 (option b): the default effective concurrency is now >1 so the registry
 // actually spawns CONCURRENT shadow games (the coordinator runs them in
 // parallel) and #1003's same-tick atomic pair reservation activates (it needs

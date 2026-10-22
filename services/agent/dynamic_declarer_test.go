@@ -19,7 +19,7 @@ import (
 // experiment declarer:
 //   - it picks a valid, Gate-passing Intent from game.json flags (existing flag,
 //     type-compatible value, experimentable objective);
-//   - default-off: with AGENT_EXPERIMENT_DYNAMIC_ENABLED unset, NO dynamic
+//   - default-off: with experiment_dynamic_enabled off or unresolved, NO dynamic
 //     declaration happens (env-seed behavior byte-identical) — the regression guard;
 //   - capacity/dedup: it won't declare a second experiment on a flag that already
 //     has an active one, nor beyond the concurrent-experiment backstop;
@@ -137,7 +137,6 @@ func TestDynamicDeclarer_GatePassesObjectFlag(t *testing.T) {
 // a no-op — the env-seed path is byte-identical. It also asserts a nil declarer is
 // safe (the test/degraded wiring).
 func TestDynamicDeclarer_DisabledByDefault(t *testing.T) {
-	t.Setenv(envDynamicEnabled, "") // explicitly unset/empty
 	// The declarer is built regardless of the opt-in now (gating moved to the LIVE
 	// flag, checked per tick).
 	if d := newDynamicDeclarerFromEnv(nil, nil); d == nil {
@@ -152,16 +151,15 @@ func TestDynamicDeclarer_DisabledByDefault(t *testing.T) {
 	loop.declareDynamicIfEnabled(context.Background(), flags.ExperimentConfig{DynamicEnabled: false})
 }
 
-// TestDynamicDeclarer_EnabledFromEnv asserts the opt-in constructs a declarer and
-// honors the candidate / objective / target-N overrides.
-func TestDynamicDeclarer_EnabledFromEnv(t *testing.T) {
-	t.Setenv(envDynamicEnabled, "true")
+// TestDynamicDeclarer_ConfigFromEnv asserts the declarer honors the candidate /
+// objective / target-N env overrides (the on/off gate is the live flag only, #1907).
+func TestDynamicDeclarer_ConfigFromEnv(t *testing.T) {
 	t.Setenv(envDynamicCandidates, "sensitivity, num_teams ,")
 	t.Setenv(envDynamicObjective, "endurance")
 	t.Setenv(envDynamicTargetN, "5")
 	d := newDynamicDeclarerFromEnv(nil, nil)
 	if d == nil {
-		t.Fatal("declarer nil with opt-in ON")
+		t.Fatal("declarer nil")
 	}
 	if got := d.candidates; len(got) != 2 || got[0] != "sensitivity" || got[1] != "num_teams" {
 		t.Fatalf("candidates = %v, want [sensitivity num_teams]", got)
@@ -177,7 +175,6 @@ func TestDynamicDeclarer_EnabledFromEnv(t *testing.T) {
 // TestDynamicDeclarer_NonExperimentableObjectiveFallsBack: a chaos default
 // objective is non-experimentable, so it is replaced with balanced.
 func TestDynamicDeclarer_NonExperimentableObjectiveFallsBack(t *testing.T) {
-	t.Setenv(envDynamicEnabled, "true")
 	t.Setenv(envDynamicObjective, decision.ObjectiveChaos)
 	d := newDynamicDeclarerFromEnv(nil, nil)
 	if d.defaultObjective != decision.ObjectiveBalanced {
@@ -343,8 +340,6 @@ func loopWithRealRegistry(t *testing.T, maxShadow int) (*experimentLoop, *fake.S
 		// configOverride keeps the loop's gates ON so allocateIfEnabled-based tests
 		// exercise the declare path (per-test overrides may flip it).
 		expDefaults: flags.ExperimentDefaults{
-			Enabled:                    true,
-			DynamicEnabled:             true,
 			Tick:                       time.Hour,
 			DynamicMaxConcurrent:       defaultDynamicMaxConcurrent,
 			ShadowEffectiveConcurrency: 4,

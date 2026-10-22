@@ -99,7 +99,7 @@ func TestCap1MidPairTerminationNoDanglingFold(t *testing.T) {
 	if len(final.PendingPairs) != 1 {
 		t.Fatalf("parked half should linger after teardown (structurally unfoldable, not drained), PendingPairs=%+v", final.PendingPairs)
 	}
-	realVerdict := NewVerdictFromEnv()
+	realVerdict := NewDefaultVerdict()
 	v, ok := realVerdict.Evaluate(final)
 	if ok && v.Significant {
 		t.Fatalf("verdict on a dangling half must not be significant, got %+v", v)

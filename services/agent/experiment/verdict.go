@@ -3,9 +3,6 @@ package experiment
 import (
 	"fmt"
 	"math"
-	"os"
-	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/joustmania/agent/experiment/journal"
@@ -50,7 +47,8 @@ const (
 	// DefaultMinNPerArm is the minimum Count each arm must reach before a
 	// conclusive verdict. Below this for either arm ⇒ INCONCLUSIVE regardless of
 	// the observed delta (under-powered). 8 is a deliberately small floor for
-	// cheap headless shadow games; tune via AGENT_VERDICT_MIN_N.
+	// cheap headless shadow games; tune via the verdict_min_n flag (this constant
+	// equals its default).
 	DefaultMinNPerArm = 8
 
 	// DefaultEffectThreshold is the minimum |Cohen's d| (standardized mean
@@ -66,7 +64,8 @@ const (
 	// shared game variance inside each per-pair difference, far fewer pairs are needed
 	// for the same power than the two-arm path needs per arm, so this floor is smaller.
 	// Below it the paired path is under-powered and the verdict falls back / stays
-	// inconclusive. Tune via AGENT_VERDICT_MIN_PAIRS.
+	// inconclusive. Tune via the verdict_min_pairs flag (this constant equals its
+	// default).
 	DefaultMinPairs = 5
 
 	// DefaultMinRawEffect is the PRACTICAL-significance floor (#1042): the minimum RAW
@@ -99,19 +98,6 @@ const (
 	// Tune via the verdict_sd_floor agent.json flag (#1214); this is the fail-open
 	// fallback when flagd is undefined/unreachable.
 	DefaultSDFloor = 1e-4
-)
-
-const (
-	// minNEnv / minPairsEnv stay env-derived (the registry reads them via
-	// MinNFromEnv/MinPairsFromEnv as the BOOTSTRAP DEFAULT the live verdict_min_n /
-	// verdict_min_pairs agent.json flags fall back to, #1044). The other four verdict
-	// knobs (effect threshold, min raw effect, sd floor, anchor margin) were migrated
-	// fully to agent.json flags in #1214 — their env consts are GONE; the verdict's
-	// Default* constants are the fail-open fallback the flags resolve to, and the live
-	// values flow in via the registry's Reconfigure → SetThresholds (mirroring the
-	// min_n/min_pairs seam).
-	minNEnv     = "AGENT_VERDICT_MIN_N"
-	minPairsEnv = "AGENT_VERDICT_MIN_PAIRS"
 )
 
 // DefaultAnchorMargin is the recent-real regression margin (#992): a PROMOTE
@@ -196,7 +182,7 @@ func (g effectSizeGate) Effect(experimental, control journal.Welford) (float64, 
 }
 
 // Verdict is the default CohortVerdict implementation (the min-N + effect-size
-// gate). It is constructed via NewVerdict / NewVerdictFromEnv and injected into the
+// gate). It is constructed via NewVerdict / NewDefaultVerdict and injected into the
 // registry as the CohortVerdict seam. Higher fitness is better (the convention the
 // FitnessMeasurer and decision loop already use), so a positive effect means the
 // experimental arm beat control.
@@ -379,55 +365,20 @@ func NewVerdictWithFloors(minN, minPairs int, effectThreshold, minRawEffect, sdF
 	}
 }
 
-// MinNFromEnv resolves the verdict min-N-per-arm gate from AGENT_VERDICT_MIN_N,
-// falling back to DefaultMinNPerArm on an unset, empty, non-numeric, or
-// non-positive value. It is exported so the registry can mirror the SAME min-N
-// the verdict uses (for target_n reconciliation and the inconclusive-past-target
-// termination guard, #1001) without duplicating the parse or widening the
-// CohortVerdict seam.
-func MinNFromEnv() int {
-	if v := strings.TrimSpace(os.Getenv(minNEnv)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return DefaultMinNPerArm
-}
-
-// MinPairsFromEnv resolves the paired-verdict min-completed-pairs gate from
-// AGENT_VERDICT_MIN_PAIRS, falling back to DefaultMinPairs on an unset, empty,
-// non-numeric, or non-positive value. It mirrors MinNFromEnv for the paired path so
-// the registry could reconcile a paired target the same way (#1001) without widening
-// the seam.
-func MinPairsFromEnv() int {
-	if v := strings.TrimSpace(os.Getenv(minPairsEnv)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return DefaultMinPairs
-}
-
-// NewVerdictFromEnv builds the default Verdict for the experiment loop. The min-N /
-// min-pairs gates are seeded from AGENT_VERDICT_MIN_N / AGENT_VERDICT_MIN_PAIRS (the
-// registry's bootstrap defaults), and the four float knobs — effect threshold, min
-// raw effect, sd floor, anchor margin — are seeded from their Default* constants.
-//
-// Since #1214 those four floats are NO LONGER read from env: they are LIVE agent.json
-// flags (verdict_effect_threshold / verdict_min_raw_effect / verdict_sd_floor /
-// verdict_anchor_margin). The constants here are the FAIL-OPEN fallback (the value the
-// flag resolves to when flagd is undefined/unreachable); the live flag values are
-// applied on the first — and every — experiment tick via the registry's Reconfigure →
-// Verdict.SetThresholds / SetFloatThresholds, exactly the seam the min_n/min_pairs
-// siblings use. The anchor margin starts at DefaultAnchorMargin and is re-seeded by
-// WithRecentRealBaseline before the live flag takes over. The default Cohen's d
-// strategy is used for the two-arm fallback path.
-func NewVerdictFromEnv() *Verdict {
-	minN := MinNFromEnv()
-	minPairs := MinPairsFromEnv()
+// NewDefaultVerdict builds the default Verdict for the experiment loop from the
+// compiled Default* constants (#1907: the AGENT_VERDICT_MIN_N / _MIN_PAIRS env
+// fallbacks are gone). Every gate is a LIVE agent.json flag (verdict_min_n,
+// verdict_min_pairs, verdict_effect_threshold, verdict_min_raw_effect,
+// verdict_sd_floor, verdict_anchor_margin); the constants here equal the flag
+// defaults and are the value a gate holds until flagd answers. The live values are
+// applied on every enabled experiment tick via the registry's Reconfigure →
+// Verdict.SetThresholds / SetFloatThresholds. The anchor margin starts at
+// DefaultAnchorMargin and is re-seeded by WithRecentRealBaseline before the live flag
+// takes over. The default Cohen's d strategy is used for the two-arm fallback path.
+func NewDefaultVerdict() *Verdict {
 	// stat=nil so NewVerdictWithFloors builds the default gate WITH the default sdFloor;
 	// the live verdict_sd_floor flag is applied later via SetFloatThresholds.
-	return NewVerdictWithFloors(minN, minPairs, DefaultEffectThreshold, DefaultMinRawEffect, DefaultSDFloor, nil)
+	return NewVerdictWithFloors(DefaultMinNPerArm, DefaultMinPairs, DefaultEffectThreshold, DefaultMinRawEffect, DefaultSDFloor, nil)
 }
 
 // Evaluate computes the current verdict for an experiment from its rolling

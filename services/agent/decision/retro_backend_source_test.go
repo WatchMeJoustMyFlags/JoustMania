@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// retro_backend_source_test.go covers inference.backend for the retro (#1810, C-035,
-// FR-151): the backend is resolved once per retro, a flip changes the NEXT retro, and
+// retro_backend_source_test.go covers inference.backend for the retro (#1810,
+// C-035): the backend is resolved once per retro, a flip changes the NEXT retro, and
 // a stub retro never charges the shared budget.
 
 // UC: UC-042 Pre-2

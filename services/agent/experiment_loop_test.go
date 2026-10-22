@@ -209,25 +209,31 @@ func buildLoopForTestWithTracer(
 		Tracer:         tracer,
 	})
 
-	return &experimentLoop{
+	loop := &experimentLoop{
 		registry: reg,
 		log:      log,
 		fitness:  fitness,
-		// #1044: the loop self-gates each tick on the live ExperimentConfig. With a nil
-		// flags client these tests drive allocation explicitly, so prime the bootstrap
-		// defaults ENABLED (the loop's gate ON) and a long tick — preserving the
-		// pre-#1044 "the loop runs and allocates" behavior the conclusion/grace tests
-		// assert. config(ctx) with a nil flags client returns these defaults verbatim.
+		// #1044: the loop self-gates each tick on the live ExperimentConfig. These
+		// tests drive allocation explicitly with a long tick; the configOverride below
+		// opens experiments_enabled on top of these defaults, preserving the pre-#1044
+		// "the loop runs and allocates" behavior the conclusion/grace tests assert
+		// (#1907: with no flag the gate itself is closed).
 		expDefaults: flags.ExperimentDefaults{
-			Enabled:              true,
 			Tick:                 time.Hour, // tests drive allocation explicitly
 			DynamicMaxConcurrent: defaultDynamicMaxConcurrent,
 			// ShadowEffectiveConcurrency LEFT 0 on purpose: Reconfigure ignores a
 			// non-positive concurrency, so the loop's allocateIfEnabled does NOT clobber
 			// the registry's own EffectiveConcurrency (some tests pin concurrency=1 by
-			// swapping in their own registry). Production resolves a positive env/flag value.
+			// swapping in their own registry). Production resolves a positive flag value.
 		},
 	}
+	// Read expDefaults at call time so a test that retunes them still takes effect.
+	loop.configOverride = func(context.Context) flags.ExperimentConfig {
+		cfg := unresolvedConfig(loop.expDefaults)
+		cfg.Enabled = true
+		return cfg
+	}
+	return loop
 }
 
 // endBoundGame delivers both end signals of a bound experiment game in the
@@ -912,18 +918,18 @@ func newRegistryConcurrency1(t *testing.T, spawner experiment.ShadowSpawner, res
 // TestBuildExperimentLoop_DisabledByDefault is the disabled-default AC (#1044
 // startup-gate inversion). The loop is ALWAYS built now (so an off→on flag flip can
 // start it at runtime), but with the opt-in OFF (the default, env unset) it
-// SELF-GATES to a no-op: experiments_enabled defaults to false, so allocateIfEnabled
-// runs no rehydrate, no seed, no allocate — behaviorally inert (the only residual
-// work is the no-op tick). The env value is only the BOOTSTRAP DEFAULT.
+// SELF-GATES to a no-op: an unresolved experiments_enabled reads false, so
+// allocateIfEnabled runs no rehydrate, no seed, no allocate — behaviorally inert (the
+// only residual work is the no-op tick). Since #1907 the removed
+// AGENT_EXPERIMENTS_ENABLED env var cannot open it.
 func TestBuildExperimentLoop_DisabledByDefault(t *testing.T) {
-	// Ensure the opt-in env is unset (the default).
-	t.Setenv(envExperimentsEnabled, "")
+	t.Setenv("AGENT_EXPERIMENTS_ENABLED", "true") // ignored since #1907
 	loop := buildExperimentLoop(nil, nil, nil, gameServiceForDeclarer(t), nil, testLogger())
 	if loop == nil {
 		t.Fatalf("buildExperimentLoop must ALWAYS build the loop now (#1044); gating is the live flag, not a nil return")
 	}
-	if loop.expDefaults.Enabled {
-		t.Fatalf("with AGENT_EXPERIMENTS_ENABLED unset the bootstrap default must be disabled, got Enabled=true")
+	if loop.config(context.Background()).Enabled {
+		t.Fatalf("with no flag the experiments gate must be closed, got Enabled=true")
 	}
 	// The loop self-gates OFF: an allocate tick with the disabled default does no
 	// work (no live experiments declared).
@@ -933,13 +939,6 @@ func TestBuildExperimentLoop_DisabledByDefault(t *testing.T) {
 	}
 	if loop.startedOnce {
 		t.Fatalf("disabled-by-default loop ran its rehydrate+seed bootstrap; it must defer until enabled")
-	}
-
-	// Explicit "false" is also off.
-	t.Setenv(envExperimentsEnabled, "false")
-	loop2 := buildExperimentLoop(nil, nil, nil, gameServiceForDeclarer(t), nil, testLogger())
-	if loop2 == nil || loop2.expDefaults.Enabled {
-		t.Fatalf("AGENT_EXPERIMENTS_ENABLED=false must build a loop with the disabled bootstrap default")
 	}
 }
 
@@ -1167,13 +1166,12 @@ func TestExperimentLoop_TickCadence(t *testing.T) {
 			t.Fatalf("shipped experiment_tick_seconds default = %v, want 30", got)
 		}
 
-		t.Setenv(envExperimentTick, "")
-		if got := experimentTick(); got != 30*time.Second {
-			t.Fatalf("bootstrap tick = %s, want 30s", got)
+		if got := experimentDefaults().Tick; got != 30*time.Second {
+			t.Fatalf("compiled tick = %s, want 30s", got)
 		}
 		cfg := flags.ExperimentConfig{}
 		loop := &experimentLoop{
-			expDefaults:    flags.ExperimentDefaults{Tick: experimentTick()},
+			expDefaults:    experimentDefaults(),
 			configOverride: func(context.Context) flags.ExperimentConfig { return cfg },
 		}
 		if got := loop.tickInterval(context.Background()); got != 30*time.Second {

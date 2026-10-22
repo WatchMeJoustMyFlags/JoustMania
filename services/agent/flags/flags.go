@@ -85,9 +85,9 @@ const (
 	// are hot-reloadable / dashboard-controllable with no container restart, exactly
 	// like the kill-switch + llm.* gate flags. They are read LIVE each experiment
 	// tick (experiment_loop.go) — NOT cached — so a flag flip takes effect on the
-	// next tick. The ENV value (#1041/#1043 bootstrap passthrough) stays the
-	// DEFAULT each read falls back to when the flag is absent/unreadable: flag
-	// overrides, env is the floor (fail-safe, exactly the kill-switch pattern).
+	// next tick. Since #1907 the env fallbacks are gone (FR-151 Obsolete): an
+	// absent/unreadable flag falls back to its compiled default (equal to the flag
+	// default), and the two gates fall back to false (closed).
 	//
 	// The flagd numeric-flag gotcha applies: every numeric one MUST use the typed
 	// getter (a numeric flag read via ObjectValue silently TYPE_MISMATCHes to its
@@ -105,7 +105,7 @@ const (
 	keyExperimentMaxGames          = "experiment_max_games"
 	keyExperimentShadowConcurrency = "experiment_shadow_effective_concurrency"
 	// #1810 (C-035, flags.md §15): the completed-game grace window is tuning (flag,
-	// else env, else default; 0 = off). The proposer gate limits the agent (C-034,
+	// else compiled default; 0 = off). The proposer gate limits the agent (C-034,
 	// FR-152 d): the caller ANDs it with the AGENT_EXPERIMENT_PROPOSER_ENABLED
 	// ceiling, and an unresolved flag reads false (closed).
 	keyExperimentCompletedGrace  = "experiment_completed_grace_seconds"
@@ -114,7 +114,7 @@ const (
 	// Verdict-tuning float knobs migrated from env to agent.json flags (#1214),
 	// finishing the cluster verdict_min_n / verdict_min_pairs started in #1044. These
 	// were the AGENT_VERDICT_EFFECT_THRESHOLD / _MIN_RAW_EFFECT / _SD_FLOOR /
-	// _ANCHOR_MARGIN env knobs read ONCE at startup by experiment.NewVerdictFromEnv.
+	// _ANCHOR_MARGIN env knobs once read at startup by the verdict constructor.
 	// Migrating them makes each numeric verdict gate hot-reloadable — flip it in flagd
 	// and the NEXT verdict evaluation uses the new threshold with no restart, exactly
 	// like the min_n/min_pairs siblings (live-mirrored onto the Verdict via the
@@ -468,37 +468,33 @@ func (f *Flags) Promotion(ctx context.Context) PromotionConfig {
 	}
 }
 
-// ExperimentDefaults carries the BOOTSTRAP defaults for the experiment runtime
-// knobs (#1044): the values resolved ONCE at startup from the AGENT_EXPERIMENT_*
-// env vars (#1041/#1043). Each Experiment() read falls back to the matching field
-// here when its agent.json flag is absent/unreadable — so flag overrides, env is
-// the floor, and a fresh agent.json (no new flags) reproduces byte-identical
-// env-based behavior. The caller (experiment_loop.go) builds this from the env
-// resolvers it already owns and hands it in, keeping the flags package free of any
-// AGENT_EXPERIMENT_* env knowledge.
+// ExperimentDefaults carries the COMPILED defaults for the experiment runtime
+// knobs (#1044): each Experiment() read falls back to the matching field here when
+// its agent.json flag is absent/unreadable. Since #1907 no field is env-derived
+// (FR-151 Obsolete): every value equals its flag default in agent.json, pinned by
+// TestCompiledDefaultsMatchFlagDefaults. The two gates (experiments_enabled,
+// experiment_dynamic_enabled) have NO field here: they fall back to a literal false
+// in Experiment, so a lost sync closes them whatever the caller passes (C-034).
 type ExperimentDefaults struct {
-	// Enabled is AGENT_EXPERIMENTS_ENABLED (the loop opt-in).
-	Enabled bool
-	// DynamicEnabled is AGENT_EXPERIMENT_DYNAMIC_ENABLED (the #995 declarer opt-in).
-	DynamicEnabled bool
-	// Tick is AGENT_EXPERIMENT_TICK_SECONDS as a duration (the AllocateAndSpawn cadence).
+	// Tick is the AllocateAndSpawn cadence (experiment_tick_seconds default, 30 s).
 	Tick time.Duration
 	// DynamicMaxConcurrent is the compiled default of experiment_dynamic_max_concurrent
 	// (3). Since #1810 AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT is a ceiling the caller
 	// applies after the read (C-034, FR-152 e), never this fallback.
 	DynamicMaxConcurrent int
-	// VerdictMinN is AGENT_VERDICT_MIN_N.
+	// VerdictMinN is the verdict_min_n default (8).
 	VerdictMinN int
-	// VerdictMinPairs is AGENT_VERDICT_MIN_PAIRS.
+	// VerdictMinPairs is the verdict_min_pairs default (5).
 	VerdictMinPairs int
 	// MaxGames is the compiled default of experiment_max_games (50). Since #1810
 	// AGENT_EXPERIMENT_MAX_GAMES is a ceiling the caller applies after the read
 	// (C-034, FR-152 f), never this fallback.
 	MaxGames int
-	// ShadowEffectiveConcurrency is AGENT_SHADOW_EFFECTIVE_CONCURRENCY.
+	// ShadowEffectiveConcurrency is the experiment_shadow_effective_concurrency
+	// default (4).
 	ShadowEffectiveConcurrency int
-	// CompletedGrace is AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS, else 60 s: the
-	// fallback of experiment_completed_grace_seconds (#1810). 0 = off.
+	// CompletedGrace is the experiment_completed_grace_seconds default (60 s,
+	// #1810). 0 = off.
 	CompletedGrace time.Duration
 	// VerdictEffectThreshold is the verdict's standardized-effect gate
 	// (#1214; was AGENT_VERDICT_EFFECT_THRESHOLD, default 0.5).
@@ -516,8 +512,8 @@ type ExperimentDefaults struct {
 
 // ExperimentConfig is the LIVE-resolved experiment runtime configuration (#1044),
 // re-read each experiment tick so a flag flip takes effect with no restart. Every
-// field mirrors an ExperimentDefaults field, with the agent.json flag taking
-// precedence when present and the env-derived default applying otherwise.
+// field is the agent.json flag when it resolves; otherwise the matching
+// ExperimentDefaults field, or false for the two gates (#1907).
 type ExperimentConfig struct {
 	// Enabled gates the WHOLE experiment loop (experiments_enabled). When false the
 	// loop does nothing — no rehydrate-spawn, no seed, no allocate. Flipping it on
@@ -527,7 +523,7 @@ type ExperimentConfig struct {
 	// When false the loop declares only the static env seed (if any).
 	DynamicEnabled bool
 	// Tick is the AllocateAndSpawn cadence (experiment_tick_seconds). A non-positive
-	// flag value falls back to the env default (durationFlag guard).
+	// flag value falls back to the compiled default (durationFlag guard).
 	Tick time.Duration
 	// DynamicMaxConcurrent caps simultaneously-live dynamically-declared experiments
 	// (experiment_dynamic_max_concurrent).
@@ -566,16 +562,17 @@ type ExperimentConfig struct {
 
 // Experiment evaluates the migrated experiment runtime knobs (#1044, #1214) for one
 // experiment tick. Read LIVE (never cached) so a hot-reload of any knob takes
-// effect on the next tick. Each flag falls back to the matching ExperimentDefaults
-// field (the env-derived bootstrap default) on any evaluation error or flag
-// absence — so flag overrides, env is the floor, and a fresh agent.json reproduces
-// byte-identical env behavior. Numeric flags use the TYPED getters (the flagd
+// effect on the next tick. Each tuning flag falls back to the matching
+// ExperimentDefaults field (the compiled default, equal to the flag default) on any
+// evaluation error or flag absence. The two gates and the proposer gate fall back to
+// a literal false: an unresolved gate is closed, with no env fallback (#1907, FR-150,
+// C-034). Numeric flags use the TYPED getters (the flagd
 // numeric-flag gotcha — see llmGate); the duration uses durationFlag (which floors
 // a non-positive value at the default).
 func (f *Flags) Experiment(ctx context.Context, def ExperimentDefaults) ExperimentConfig {
 	return ExperimentConfig{
-		Enabled:                    f.boolFlag(ctx, keyExperimentsEnabled, def.Enabled),
-		DynamicEnabled:             f.boolFlag(ctx, keyExperimentDynamicEnabled, def.DynamicEnabled),
+		Enabled:                    f.boolFlag(ctx, keyExperimentsEnabled, false),
+		DynamicEnabled:             f.boolFlag(ctx, keyExperimentDynamicEnabled, false),
 		Tick:                       f.durationFlag(ctx, keyExperimentTickSeconds, def.Tick.Seconds()),
 		DynamicMaxConcurrent:       f.intFlag(ctx, keyExperimentDynamicMaxConcur, def.DynamicMaxConcurrent),
 		VerdictMinN:                f.intFlag(ctx, keyVerdictMinN, def.VerdictMinN),
@@ -583,15 +580,15 @@ func (f *Flags) Experiment(ctx context.Context, def ExperimentDefaults) Experime
 		MaxGames:                   f.intFlag(ctx, keyExperimentMaxGames, def.MaxGames),
 		ShadowEffectiveConcurrency: f.intFlag(ctx, keyExperimentShadowConcurrency, def.ShadowEffectiveConcurrency),
 		// Verdict-tuning float knobs (#1214). Typed float getter (the flagd numeric-flag
-		// gotcha — see llmGate); fail-OPEN to the env-derived default (the verdict's code
+		// gotcha — see llmGate); fail-OPEN to the compiled default (the verdict's code
 		// default) on any error/absence, exactly like the min_n/min_pairs siblings above.
 		VerdictEffectThreshold: f.floatFlag(ctx, keyVerdictEffectThreshold, def.VerdictEffectThreshold),
 		VerdictMinRawEffect:    f.floatFlag(ctx, keyVerdictMinRawEffect, def.VerdictMinRawEffect),
 		VerdictSDFloor:         f.floatFlag(ctx, keyVerdictSDFloor, def.VerdictSDFloor),
 		VerdictAnchorMargin:    f.floatFlag(ctx, keyVerdictAnchorMargin, def.VerdictAnchorMargin),
-		// #1810: grace is tuning (flag, else env, else 60 s; 0 = off, so not
-		// durationFlag, which floors a non-positive value). The proposer gate's def
-		// is false whatever the env says: a lost sync closes it (C-034).
+		// #1810: grace is tuning (flag, else 60 s; 0 = off, so not durationFlag,
+		// which floors a non-positive value). The proposer gate's def is false: a
+		// lost sync closes it (C-034).
 		CompletedGrace:  time.Duration(f.intFlag(ctx, keyExperimentCompletedGrace, int(def.CompletedGrace/time.Second))) * time.Second,
 		ProposerEnabled: f.boolFlag(ctx, keyExperimentProposerEnabled, false),
 	}
@@ -780,14 +777,12 @@ func (f *Flags) AgentEnabled(ctx context.Context) bool {
 	return f.enabled(ctx)
 }
 
-// ExperimentsEnabled resolves ONLY the `experiments_enabled` gate (#1270), with def
-// as the fallback when the flag is absent or flagd is unreachable. Callers pass the
-// same env-derived bootstrap default the experiment loop uses
-// (ExperimentDefaults.Enabled, AGENT_EXPERIMENTS_ENABLED, default false), so the
-// post-game proposer and the experiment loop always agree on whether experiments
-// are on.
-func (f *Flags) ExperimentsEnabled(ctx context.Context, def bool) bool {
-	return f.boolFlag(ctx, keyExperimentsEnabled, def)
+// ExperimentsEnabled resolves ONLY the `experiments_enabled` gate (#1270). It fails
+// CLOSED (false) when the flag is absent or flagd is unreachable, the same fallback
+// Experiment uses (#1907: no env fallback), so the post-game proposer and the
+// experiment loop always agree on whether experiments are on.
+func (f *Flags) ExperimentsEnabled(ctx context.Context) bool {
+	return f.boolFlag(ctx, keyExperimentsEnabled, false)
 }
 
 // stringFlag resolves a string flag, falling back to def on any error.

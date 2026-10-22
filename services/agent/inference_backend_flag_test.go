@@ -226,7 +226,7 @@ func TestInferenceBackendFlag_ClaudeWithProposerGateClosedNoProposalNoSpend(t *t
 		return tb.ProposerBackend(ctx)
 	}, nil, nil, decision.NewLLMAdmission(gate, budget, 0, "proposer", nil), nil)
 	src := &liveGateFlags{enabled: true, experiments: true, proposer: false}
-	cfg := experiment.ProposerConfig{Permit: proposerPermit(src, false, true), GameKind: "real"}
+	cfg := experiment.ProposerConfig{Permit: proposerPermit(src, true), GameKind: "real"}
 	res := p.ProposeOnce(context.Background(), experiment.Narrative{}, cfg)
 	if res.Outcome != experiment.ProposeDisabled || res.Reason != experiment.SkipReasonProposerDisabled {
 		t.Fatalf("outcome = (%q, %q), want (disabled, proposer_disabled)", res.Outcome, res.Reason)

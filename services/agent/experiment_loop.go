@@ -31,8 +31,8 @@ import (
 // verdict, and (gated) route a promote verdict to the #961 Promoter.
 //
 // OVERRIDING SAFETY (#991/#1044): the ENTIRE loop is gated behind the LIVE
-// experiments_enabled flag (env AGENT_EXPERIMENTS_ENABLED is the bootstrap default,
-// false) AND the agent kill-switch (agent.json `enabled`). Since #1044 the loop is
+// experiments_enabled flag (default off, and off while it cannot be resolved; no env
+// fallback since #1907) AND the agent kill-switch (agent.json `enabled`). Since #1044 the loop is
 // ALWAYS built + run (so an off→on flag flip starts it with no restart), but while
 // disabled — the default — it is BEHAVIORALLY INERT: no shadow game is spawned, no
 // targeting is written, no promotion is attempted, the rehydrate+seed bootstrap is
@@ -44,26 +44,6 @@ import (
 // concluded experiment to that already-gated Promoter; it adds no new privilege.
 
 const (
-	// envExperimentsEnabled is the distinct opt-in for the experiment LOOP itself
-	// (separate from #961's AGENT_CODE_IMPROVEMENT_ENABLED, which gates the
-	// real-default promotion action). Default false ⇒ the loop never runs.
-	envExperimentsEnabled = "AGENT_EXPERIMENTS_ENABLED"
-
-	// envExperimentTick is the deprecated fallback of the experiment_tick_seconds
-	// flag (the AllocateAndSpawn cadence, seconds; FR-151, #1810): used only while
-	// the flag cannot be resolved. The registry refills free shadow capacity on
-	// each tick.
-	envExperimentTick = "AGENT_EXPERIMENT_TICK_SECONDS"
-
-	// envCompletedGrace is the deprecated fallback of the
-	// experiment_completed_grace_seconds flag (#1810, FR-151): the bounded-grace
-	// backstop window (seconds) for a COMPLETED shadow game whose telemetry
-	// game_active=0 datapoint never arrives (#1020). After this grace elapses
-	// without ConcludeGame having folded the game, onGameTerminal releases its
-	// in-flight slot non-counting so the effective_concurrency=1 loop cannot
-	// deadlock on a dropped completed datapoint.
-	envCompletedGrace = "AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS"
-
 	// Seed-experiment env vars (the simplest env-gated declaration trigger; see
 	// the declaration-trigger note below). When envSeedFlag is set the loop
 	// Declares ONE experiment at startup so the cohort loop has something to run.
@@ -91,7 +71,7 @@ const (
 	// into candidate experiment theses, closing the game→retro→thesis→experiment loop.
 	// Default false ⇒ recorded retro suggestions are NEVER turned into experiments,
 	// byte-identical to pre-#1184 declaration behavior. Subordinate to
-	// AGENT_EXPERIMENTS_ENABLED + the agent.json kill-switch (it is only consulted from
+	// the experiments_enabled flag + the agent.json kill-switch (it is only consulted from
 	// allocateIfEnabled, which self-aborts when either is off) and, like the #995
 	// declarer, it reuses the SAME bounded flag selection + Gate + Registry caps — it
 	// adds ONLY the thesis provenance, never a new write surface.
@@ -127,6 +107,26 @@ const defaultDynamicMaxConcurrent = 3
 // are minutes-long, so a 30s refill tick is ample headroom over game duration.
 const defaultExperimentTick = 30 * time.Second
 
+// firstTickCap bounds the interval to the SECOND experiment tick (#1907). run()
+// takes its first interval before flagd has synced, so it would otherwise always be
+// the compiled 30 s default, even when experiment_tick_seconds is lower. Capping it
+// costs at most one extra gated tick (inert when a gate is closed); after that tick
+// the re-arm moves the ticker to the live cadence.
+const firstTickCap = 5 * time.Second
+
+// loopTicker is the ticker run() refills on; *time.Ticker satisfies it via
+// timeTicker.
+type loopTicker interface {
+	Chan() <-chan time.Time
+	Reset(d time.Duration)
+	Stop()
+}
+
+// timeTicker adapts *time.Ticker to loopTicker.
+type timeTicker struct{ *time.Ticker }
+
+func (t timeTicker) Chan() <-chan time.Time { return t.C }
+
 // defaultCompletedGrace is the bounded-grace window (#1020) for a COMPLETED game
 // whose telemetry game_active=0 datapoint may never arrive. It must COMFORTABLY
 // exceed the worst-case telemetry-arrival lag so a game that concludes slightly
@@ -135,7 +135,8 @@ const defaultExperimentTick = 30 * time.Second
 // game-end datapoint is emitted at session teardown and folded by onGameEnd within
 // a handful of seconds in practice; 60s is an order of magnitude over that typical
 // conclude latency yet still bounded — far short of leaking the slot "forever",
-// which is the failure this backstop removes. Tunable via envCompletedGrace.
+// which is the failure this backstop removes. Tunable via the
+// experiment_completed_grace_seconds flag (this constant is its default).
 const defaultCompletedGrace = 60 * time.Second
 
 // parkFloor is the shortest time a shadow game's telemetry end waits for the
@@ -152,12 +153,6 @@ const parkFloor = gamerunner.DefaultEndedGrace + gamerunner.DefaultRPCTimeout + 
 // neither the preemption nor the stale reason, so it counts against the pair's
 // 3-rerun budget (BR-015) like any other release.
 const releaseReasonNoOutcome = "game ended without usable fitness sample: no terminal outcome"
-
-// experimentsEnabled reports whether the experiment LOOP opt-in is on. This is the
-// distinct, default-off gate (#991) — separate from the code-improvement gate.
-func experimentsEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv(envExperimentsEnabled)), "true")
-}
 
 // experimentLoop owns the agent's experiment cohort machinery: the Registry, the
 // shadow spawner, the per-game-end conclusion hook, and the allocate/abort loop
@@ -184,11 +179,10 @@ type experimentLoop struct {
 	// (test wiring that does not exercise the fitness path).
 	fitnessStore *experiment.FitnessStore
 
-	// expDefaults are the BOOTSTRAP defaults for the migrated runtime knobs (#1044):
-	// the values resolved ONCE at startup from the AGENT_EXPERIMENT_* env vars. Each
-	// tick's live config(ctx) read falls back to these when the matching agent.json
-	// flag is absent/unreadable — so flag overrides, env is the floor, and a fresh
-	// agent.json reproduces byte-identical env behavior.
+	// expDefaults are the COMPILED defaults for the migrated runtime knobs (#1044,
+	// #1907): each tick's live config(ctx) read falls back to these when the matching
+	// agent.json flag is absent/unreadable. None is env-derived, and the two gates
+	// have no default here (they fall back to false).
 	expDefaults flags.ExperimentDefaults
 
 	// seed, when set, is the one experiment Declared+Started when the loop FIRST
@@ -260,6 +254,10 @@ type experimentLoop struct {
 	// tests inject a fake clock so the grace can fire without a real sleep.
 	afterFunc func(d time.Duration, f func()) (stop func() bool)
 
+	// newTicker builds run()'s refill ticker. nil ⇒ a time.Ticker; tests inject a
+	// fake so the first-tick cap and the re-arm are observable without real sleeps.
+	newTicker func(d time.Duration) loopTicker
+
 	// graceMu guards the set of pending completed-grace timers so run() can stop
 	// them on shutdown (no goroutine/timer leak past teardown).
 	graceMu     sync.Mutex
@@ -320,7 +318,7 @@ func patternEndChain(registryEnd gamerunner.PatternCallback, sink func(patternga
 // Seams wired (the #991 assembly):
 //   - TargetingWriter → experiment.NewGateTargetingWriter(gate, writer): Apply via
 //     the #977 Gate (invariant-checked write), Strip via the Writer (#977 teardown).
-//   - CohortVerdict   → experiment.NewVerdictFromEnv() (#979 min-N + effect-size).
+//   - CohortVerdict   → experiment.NewDefaultVerdict() (#979 min-N + effect-size).
 //   - Promoter        → promote.NewExperimentPromoter(promoter, resolver) (#980 over
 //     the #961 Promoter), resolver reading LIVE flags.Promotion + the kill-switch.
 //   - ShadowSpawner   → the real outbound game-coordinator client (shadowSpawner).
@@ -338,13 +336,11 @@ func buildExperimentLoop(
 	// the live flag (allocateIfEnabled / run): while disabled it does nothing —
 	// rehydrate+seed are deferred (startedOnce) and AllocateAndSpawn is skipped — so
 	// the disabled agent is behaviorally inert (it runs one no-op tick goroutine but
-	// spawns/writes/promotes nothing). The env AGENT_EXPERIMENTS_ENABLED becomes the
-	// BOOTSTRAP DEFAULT the flag falls back to.
-	expDefaults := experimentDefaultsFromEnv()
+	// spawns/writes/promotes nothing). An unresolved experiments_enabled reads false
+	// (#1907: no env fallback).
+	expDefaults := experimentDefaults()
 
 	logger.Info("Experiment cohort loop constructed (#991/#1044) — gated LIVE by agent.json experiments_enabled",
-		"env_enabled_default", expDefaults.Enabled,
-		"env_dynamic_default", expDefaults.DynamicEnabled,
 		"tick_default", expDefaults.Tick,
 		"completed_grace_default", expDefaults.CompletedGrace,
 		"max_shadow_games", experiment.MaxShadowGamesFromEnv(),
@@ -380,7 +376,7 @@ func buildExperimentLoop(
 	// RecentReal mean for the experiment's objective via a nil-safe accessor; it fails
 	// OPEN when no real-game baseline exists (the current mock/shadow-only reality), so
 	// it never blocks the shadow loop.
-	verdict := experiment.NewVerdictFromEnv().WithRecentRealBaseline(
+	verdict := experiment.NewDefaultVerdict().WithRecentRealBaseline(
 		recentRealBaselineAccessor(fitnessStore, anchorBaselineRecentN, anchorBaselineMinSamples),
 		experiment.DefaultAnchorMargin,
 	)
@@ -442,7 +438,6 @@ func buildExperimentLoop(
 		promoter.SetRewatchJournal(loop.journalRewatchRevert)
 	}
 	logger.Info("Dynamic experiment declarer constructed (#995/#1044) — gated LIVE by agent.json experiment_dynamic_enabled",
-		"env_dynamic_default", expDefaults.DynamicEnabled,
 		"candidates", os.Getenv(envDynamicCandidates))
 	// Wire the #1014 terminal-outcome backstop: each spawned game signals its
 	// terminal outcome here, and a non-concluding game releases its in-flight slot
@@ -501,11 +496,16 @@ func promotionConfigResolver(f *flags.Flags) promote.ConfigResolver {
 func (e *experimentLoop) run(ctx context.Context) {
 	// First action immediately so an already-enabled agent accrues games without
 	// waiting a full tick (and a disabled one tears down promptly), then refill on
-	// the live cadence.
-	interval := e.tickInterval(ctx)
+	// the live cadence. The first interval is read before flagd has synced, so it is
+	// capped at firstTickCap (#1907); the re-arm below then moves to the live value.
+	interval := min(e.tickInterval(ctx), firstTickCap)
 	e.allocateIfEnabled(ctx)
 
-	ticker := time.NewTicker(interval)
+	newTicker := e.newTicker
+	if newTicker == nil {
+		newTicker = func(d time.Duration) loopTicker { return timeTicker{time.NewTicker(d)} }
+	}
+	ticker := newTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -523,7 +523,7 @@ func (e *experimentLoop) run(ctx context.Context) {
 				e.log.Info("experiment: aborted live experiments on shutdown", "count", len(ids))
 			}
 			return
-		case <-ticker.C:
+		case <-ticker.Chan():
 			e.allocateIfEnabled(ctx)
 			// Re-arm the ticker if experiment_tick_seconds was hot-reloaded (#1044),
 			// mirroring the #927 eviction-ticker live-cadence pattern.
@@ -538,36 +538,42 @@ func (e *experimentLoop) run(ctx context.Context) {
 
 // config resolves the live ExperimentConfig for one tick (#1044): the configOverride
 // seam (tests) takes precedence, else the live agent.json flags read via
-// flags.Experiment with the env-derived bootstrap defaults as the fallback floor. A
-// nil flags client (test wiring only) yields the bootstrap defaults verbatim.
+// flags.Experiment with the compiled defaults as the fallback. A nil flags client
+// (test wiring only) yields the compiled defaults with both gates closed.
 func (e *experimentLoop) config(ctx context.Context) flags.ExperimentConfig {
 	if e.configOverride != nil {
 		return e.configOverride(ctx)
 	}
 	if e.flags == nil {
-		return flags.ExperimentConfig{
-			Enabled:                    e.expDefaults.Enabled,
-			DynamicEnabled:             e.expDefaults.DynamicEnabled,
-			Tick:                       e.expDefaults.Tick,
-			DynamicMaxConcurrent:       e.expDefaults.DynamicMaxConcurrent,
-			VerdictMinN:                e.expDefaults.VerdictMinN,
-			VerdictMinPairs:            e.expDefaults.VerdictMinPairs,
-			MaxGames:                   e.expDefaults.MaxGames,
-			ShadowEffectiveConcurrency: e.expDefaults.ShadowEffectiveConcurrency,
-			VerdictEffectThreshold:     e.expDefaults.VerdictEffectThreshold,
-			VerdictMinRawEffect:        e.expDefaults.VerdictMinRawEffect,
-			VerdictSDFloor:             e.expDefaults.VerdictSDFloor,
-			VerdictAnchorMargin:        e.expDefaults.VerdictAnchorMargin,
-			CompletedGrace:             e.expDefaults.CompletedGrace,
-			// No flagd: the proposer gate's flag half is unresolved, so closed (C-034).
-			ProposerEnabled: false,
-		}
+		return unresolvedConfig(e.expDefaults)
 	}
 	return e.flags.Experiment(ctx, e.expDefaults)
 }
 
+// unresolvedConfig is the ExperimentConfig when no flag resolves (#1907): every
+// tuning knob at its compiled default and every gate closed (experiments_enabled,
+// experiment_dynamic_enabled and the proposer flag half; C-034).
+func unresolvedConfig(def flags.ExperimentDefaults) flags.ExperimentConfig {
+	return flags.ExperimentConfig{
+		Enabled:                    false,
+		DynamicEnabled:             false,
+		Tick:                       def.Tick,
+		DynamicMaxConcurrent:       def.DynamicMaxConcurrent,
+		VerdictMinN:                def.VerdictMinN,
+		VerdictMinPairs:            def.VerdictMinPairs,
+		MaxGames:                   def.MaxGames,
+		ShadowEffectiveConcurrency: def.ShadowEffectiveConcurrency,
+		VerdictEffectThreshold:     def.VerdictEffectThreshold,
+		VerdictMinRawEffect:        def.VerdictMinRawEffect,
+		VerdictSDFloor:             def.VerdictSDFloor,
+		VerdictAnchorMargin:        def.VerdictAnchorMargin,
+		CompletedGrace:             def.CompletedGrace,
+		ProposerEnabled:            false,
+	}
+}
+
 // tickInterval resolves the live AllocateAndSpawn cadence (experiment_tick_seconds),
-// flooring a non-positive value at the env-derived default (durationFlag already
+// flooring a non-positive value at the compiled default (durationFlag already
 // guards this in the live path; the floor here covers the configOverride/test seam).
 func (e *experimentLoop) tickInterval(ctx context.Context) time.Duration {
 	d := e.config(ctx).Tick
@@ -607,13 +613,12 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 		}
 		return
 	}
-	// First enabled tick: run the deferred one-time rehydrate + seed declaration (the
-	// startup-gate inversion bootstrap, #1044).
-	e.ensureStarted(ctx)
-	// Apply the live runtime caps (#1044) before allocating so a hot-reloaded
-	// concurrency / games-budget / min-N takes effect on THIS tick's allocation +
-	// verdict evaluation. The games budget is capped by the operator's env ceiling
-	// (#1810, C-034, FR-152 f).
+	// Apply the live runtime caps (#1044) before the bootstrap and the allocation so
+	// a hot-reloaded concurrency / games-budget / min-N takes effect on THIS tick. It
+	// runs BEFORE ensureStarted (#1907): the first-tick seed Declare reconciles
+	// target_n against the registry's min-N, so the live verdict_min_n must be in
+	// place first, not the compiled default the registry was built with. The games
+	// budget is capped by the operator's env ceiling (#1810, C-034, FR-152 f).
 	e.registry.Reconfigure(cfg.ShadowEffectiveConcurrency, e.maxGamesBudget(cfg), cfg.VerdictMinN, cfg.VerdictMinPairs)
 	// #1214: mirror the four migrated FLOAT verdict knobs onto the verdict the same way,
 	// so a hot-reloaded verdict_effect_threshold / verdict_min_raw_effect /
@@ -621,6 +626,9 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	// evaluations. Verdict-only (the registry reads none of them), so it is a separate
 	// forward to the verdict alongside Reconfigure.
 	e.registry.ReconfigureVerdictFloats(cfg.VerdictEffectThreshold, cfg.VerdictMinRawEffect, cfg.VerdictSDFloor, cfg.VerdictAnchorMargin)
+	// First enabled tick: run the deferred one-time rehydrate + seed declaration (the
+	// startup-gate inversion bootstrap, #1044).
+	e.ensureStarted(ctx)
 	// Heuristic dynamic declaration (#995): both gates are on (checked above) and the
 	// declarer is opted-in (live experiment_dynamic_enabled, #1044), so let the agent
 	// CHOOSE a fresh experiment to declare — bounded by the LIVE concurrent-experiment
@@ -1663,63 +1671,29 @@ func timelinePhaseDuration(timeline []gamecontext.TimelineEvent) (float64, bool)
 	return d, true
 }
 
-// experimentDefaultsFromEnv resolves the BOOTSTRAP defaults for the eight migrated
-// runtime knobs (#1044) from the AGENT_EXPERIMENT_* env vars (#1041/#1043). These
-// become the per-tick fallback floor the live agent.json flags override: a fresh
-// agent.json (no new flags) reproduces byte-identical env behavior, and an
-// unreachable flagd falls back to exactly these values. It reuses the SAME env
-// resolvers the registry/verdict already own (no duplicate parsing), so the
-// bootstrap layer stays coherent with #1041/#1043.
-func experimentDefaultsFromEnv() flags.ExperimentDefaults {
+// experimentDefaults returns the COMPILED defaults for the migrated experiment
+// runtime knobs (#1044): the per-tick fallback each live agent.json flag resolves to
+// when it is absent or flagd cannot answer. Since #1907 (FR-151 Obsolete) none is
+// env-derived: each equals its flag default in agent.json (pinned by
+// TestCompiledDefaultsMatchFlagDefaults), and the two gates have no default here
+// because flags.Experiment falls back to a literal false for them.
+func experimentDefaults() flags.ExperimentDefaults {
 	return flags.ExperimentDefaults{
-		Enabled:        experimentsEnabled(),
-		DynamicEnabled: dynamicEnabled(),
-		Tick:           experimentTick(),
+		Tick: defaultExperimentTick,
 		// #1810: the two widening settings fall back to their COMPILED defaults; their
 		// env vars are ceilings (experimentCeilingsFromEnv), applied after the read.
 		DynamicMaxConcurrent:       defaultDynamicMaxConcurrent,
-		VerdictMinN:                experiment.MinNFromEnv(),
-		VerdictMinPairs:            experiment.MinPairsFromEnv(),
+		VerdictMinN:                experiment.DefaultMinNPerArm,
+		VerdictMinPairs:            experiment.DefaultMinPairs,
 		MaxGames:                   experiment.DefaultMaxGamesPerExperiment,
-		ShadowEffectiveConcurrency: experiment.EffectiveConcurrencyFromEnv(),
-		CompletedGrace:             completedGrace(),
-		// Verdict-tuning float knobs (#1214): the BOOTSTRAP default each live agent.json
-		// flag (verdict_effect_threshold / verdict_min_raw_effect / verdict_sd_floor /
-		// verdict_anchor_margin) falls back to. These four were migrated FULLY to flags
-		// (no AGENT_VERDICT_* env any more), so the bootstrap default is the verdict's own
-		// Default* constant — the same fail-open value the verdict was constructed with.
+		ShadowEffectiveConcurrency: experiment.DefaultEffectiveConcurrency,
+		CompletedGrace:             defaultCompletedGrace,
+		// Verdict-tuning float knobs (#1214): the verdict's own Default* constants.
 		VerdictEffectThreshold: experiment.DefaultEffectThreshold,
 		VerdictMinRawEffect:    experiment.DefaultMinRawEffect,
 		VerdictSDFloor:         experiment.DefaultSDFloor,
 		VerdictAnchorMargin:    experiment.DefaultAnchorMargin,
 	}
-}
-
-// experimentTick resolves the AllocateAndSpawn cadence from
-// AGENT_EXPERIMENT_TICK_SECONDS, falling back to defaultExperimentTick on an
-// unset/invalid/non-positive value.
-func experimentTick() time.Duration {
-	if v := strings.TrimSpace(os.Getenv(envExperimentTick)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return time.Duration(n) * time.Second
-		}
-	}
-	return defaultExperimentTick
-}
-
-// completedGrace resolves the FALLBACK of the experiment_completed_grace_seconds
-// flag (#1810, FR-151) from AGENT_EXPERIMENT_COMPLETED_GRACE_SECONDS, else
-// defaultCompletedGrace on an unset/invalid value. A value of 0 (or negative)
-// explicitly DISABLES the backstop — restoring the pre-#1020 trust-telemetry
-// behavior — which is why a non-positive override is honored verbatim rather than
-// coerced to the default (the flag's `off` variant is 0 for the same reason).
-func completedGrace() time.Duration {
-	if v := strings.TrimSpace(os.Getenv(envCompletedGrace)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return time.Duration(n) * time.Second
-		}
-	}
-	return defaultCompletedGrace
 }
 
 // experimentCeilings are the operator's env ceilings on the two widening

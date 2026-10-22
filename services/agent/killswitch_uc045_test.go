@@ -27,7 +27,7 @@ import (
 // killswitch_uc045_test.go covers the UC-045 (kill switch) flows the per-feature
 // suites leave open (#1653): the experiment loop aborting a RUNNING experiment when
 // `enabled` flips off (main step 5), the same abort when flagd becomes unreachable
-// and `enabled` falls back to off (A3), and the infrastructure loop that `enabled`
+// and both gates fall back to off (A3), and the infrastructure loop that `enabled`
 // does not govern (A4 step 1, Post-S-3).
 
 // switchableEvaluator is a flagd stand-in for the real flags client: it serves the
@@ -225,19 +225,18 @@ func TestKillSwitch_ForceEndsPatternGames(t *testing.T) {
 
 // TestKillSwitch_FlagdUnreachableStopsExperimentLoop drives the REAL flags client
 // (no enabledOverride / configOverride seam): with flagd reachable both gates are on
-// and the seed experiment runs; once flagd is unreachable `enabled` fails closed to
-// off while experiments_enabled falls back to AGENT_EXPERIMENTS_ENABLED (on here),
-// and the next tick still aborts the experiment because `enabled` is off.
+// and the seed experiment runs; once flagd is unreachable BOTH gates fail closed
+// (`enabled` and, since #1907, experiments_enabled, with no env fallback even when
+// the removed AGENT_EXPERIMENTS_ENABLED is set), so the next tick aborts the
+// experiment on either gate.
 // UC: UC-045 A3
 func TestKillSwitch_FlagdUnreachableStopsExperimentLoop(t *testing.T) {
+	t.Setenv("AGENT_EXPERIMENTS_ENABLED", "true") // ignored since #1907
 	loop, spawner, _ := loopForConfigTest(t, 8)
 	ev := &switchableEvaluator{booleans: map[string]bool{"enabled": true, "experiments_enabled": true}}
 	loop.flags = flags.New(ev, nil)
 	loop.configOverride = nil
 	loop.enabledOverride = nil
-	// The env bootstrap (AGENT_EXPERIMENTS_ENABLED=true): what experiments_enabled
-	// falls back to when flagd cannot answer.
-	loop.expDefaults.Enabled = true
 	loop.expDefaults.ShadowEffectiveConcurrency = 4
 	ctx := context.Background()
 
@@ -248,8 +247,8 @@ func TestKillSwitch_FlagdUnreachableStopsExperimentLoop(t *testing.T) {
 	spawner.drain()
 
 	ev.setUnreachable()
-	if !loop.config(ctx).Enabled {
-		t.Fatal("precondition: experiments_enabled must fall back to the env default (on) when flagd is unreachable")
+	if loop.config(ctx).Enabled {
+		t.Fatal("experiments_enabled must fail closed (off) when flagd is unreachable")
 	}
 	if loop.flags.Evaluate(ctx).Enabled {
 		t.Fatal("enabled must fail closed (off) when flagd is unreachable")

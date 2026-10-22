@@ -317,16 +317,28 @@ func TestTuningDefaults_IgnoreEnv(t *testing.T) {
 // UC: UC-042 Pre-2
 func TestCompiledDefaultsMatchFlagDefaults(t *testing.T) {
 	d := compiledTuningDefaults()
+	// #1907 PR 2b: the experiment knobs' fallback as the live read resolves it with
+	// flagd down (the gates fall back to a literal false inside flags.Experiment).
+	down := newTuningEvaluator()
+	down.setDown(true)
+	exp := flags.New(down, quietLogger()).Experiment(context.Background(), experimentDefaults())
 	want := map[string]any{
-		"inference.backend":                  envFallback,
-		"inference.model":                    d.InferenceModel,
-		"inference.effort":                   d.InferenceEffort,
-		"inference.timeout_seconds":          d.InferenceTimeout.Seconds(),
-		"effect.window_seconds":              d.EffectWindow.Seconds(),
-		"promotion.rewatch_interval_seconds": d.RewatchInterval.Seconds(),
-		"promotion.rewatch_timeout_seconds":  d.RewatchTimeout.Seconds(),
-		"promotion.revert_cooldown_seconds":  d.RevertCooldown.Seconds(),
-		"decision.probe_decisions":           false, // probeDecisions compiled fallback
+		"experiments_enabled":                     exp.Enabled,
+		"experiment_dynamic_enabled":              exp.DynamicEnabled,
+		"experiment_tick_seconds":                 exp.Tick.Seconds(),
+		"experiment_completed_grace_seconds":      exp.CompletedGrace.Seconds(),
+		"verdict_min_n":                           float64(exp.VerdictMinN),
+		"verdict_min_pairs":                       float64(exp.VerdictMinPairs),
+		"experiment_shadow_effective_concurrency": float64(exp.ShadowEffectiveConcurrency),
+		"inference.backend":                       envFallback,
+		"inference.model":                         d.InferenceModel,
+		"inference.effort":                        d.InferenceEffort,
+		"inference.timeout_seconds":               d.InferenceTimeout.Seconds(),
+		"effect.window_seconds":                   d.EffectWindow.Seconds(),
+		"promotion.rewatch_interval_seconds":      d.RewatchInterval.Seconds(),
+		"promotion.rewatch_timeout_seconds":       d.RewatchTimeout.Seconds(),
+		"promotion.revert_cooldown_seconds":       d.RevertCooldown.Seconds(),
+		"decision.probe_decisions":                false, // probeDecisions compiled fallback
 	}
 	for _, path := range []string{
 		filepath.Join("..", "flagd", "agent.json"),
