@@ -1356,14 +1356,14 @@ class TestGameplayStreamReopen:
     @pytest.mark.uc("UC-030", br=["BR-003", "BR-006"])
     @pytest.mark.asyncio
     async def test_game_loop_stream_failing_after_one_frame_ends_the_game(self, serve):
-        """#1931: a frame between failures does not reset the count; the fourth failure ends the game."""
+        """#1931: one frame short of the quota does not reset the count; the fourth failure ends the game."""
         frame_server, stub = await serve("abort", faulty_calls=10, frames_before_fault=1)
         game = self._ffa(stub)
         await game._initialize_players()
         game.running = True
         await game._start_gameplay_stream()
         game._RECONNECT_BACKOFF_S = 0.01
-        game._RECONNECT_HEALTHY_FRAMES = 3
+        game._RECONNECT_HEALTHY_FRAMES = 2
         processed = self._stop_after_frames(game, count=20)
 
         loop_error = await self._run_loop(game)
@@ -1376,14 +1376,14 @@ class TestGameplayStreamReopen:
     @pytest.mark.asyncio
     async def test_game_loop_healthy_stream_between_failures_resets_the_count(self, serve):
         """#1931: a reopened stream that delivers the healthy-frame quota starts the count again."""
-        frame_server, stub = await serve("abort", faulty_calls=5, frames_before_fault=4)
+        frame_server, stub = await serve("abort", faulty_calls=5, frames_before_fault=3)
         game = self._ffa(stub)
         await game._initialize_players()
         game.running = True
         await game._start_gameplay_stream()
         game._RECONNECT_BACKOFF_S = 0.01
-        game._RECONNECT_HEALTHY_FRAMES = 3
-        processed = self._stop_after_frames(game, count=5 * 4 + 3)
+        game._RECONNECT_HEALTHY_FRAMES = 3  # each reopened stream delivers exactly the quota
+        processed = self._stop_after_frames(game, count=5 * 3 + 3)
 
         with patch("services.game_coordinator.games.base.metrics.gameplay_stream_reconnects_total") as reconnects:
             loop_error = await self._run_loop(game)
@@ -1391,7 +1391,25 @@ class TestGameplayStreamReopen:
         assert loop_error is None, f"the game ended although each failure followed a healthy stream: {loop_error!r}"
         assert frame_server.calls == 6, "five failures with healthy streams in between ended the game"
         assert reconnects.labels.return_value.inc.call_count == 5
-        assert len(processed) == 5 * 4 + 3, "the game loop did not play the healthy call after the fifth reconnect"
+        assert len(processed) == 5 * 3 + 3, "the game loop did not play the healthy call after the fifth reconnect"
+
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    async def test_game_loop_default_quota_needs_more_than_a_few_frames(self, serve):
+        """#1931: with the default quota (60 frames, about 1 s) a stream failing after 5 frames ends the game."""
+        frame_server, stub = await serve("abort", faulty_calls=10, frames_before_fault=5)
+        game = self._ffa(stub)
+        await game._initialize_players()
+        game.running = True
+        await game._start_gameplay_stream()
+        game._RECONNECT_BACKOFF_S = 0.01
+        processed = self._stop_after_frames(game, count=100)
+
+        loop_error = await self._run_loop(game)
+
+        assert loop_error is not None, "five frames after a reconnect reset the count"
+        assert frame_server.calls == 4, "the game loop did not stop after three reconnects without a healthy stream"
+        assert len(processed) == 4 * 5
 
     @pytest.mark.uc("UC-030", br=["BR-006"])
     @pytest.mark.asyncio
