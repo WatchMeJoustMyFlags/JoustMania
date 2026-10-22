@@ -48,7 +48,7 @@ jobs:
           # The PR's own CI run may still be being created (PR opened with the label).
           for _ in $(seq 1 12); do
             run_id=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --event pull_request \
-                       --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+                       --limit 1 --json databaseId --jq '.[0].databaseId // empty') || run_id=""
             [ -n "$run_id" ] && break
             sleep 10
           done
