@@ -36,6 +36,9 @@ DEFAULT_TRAITOR_COUNT_TIERS = [
 ]
 DEFAULT_TRAITOR_FALLBACK_DIVISOR = 3
 
+# Length of the traitor_signal phase in seconds (UC-022 main step 2).
+TRAITOR_SIGNAL_DURATION = 5
+
 
 def resolve_count_tiers(flag_value, default_tiers: list, default_divisor: int) -> tuple[list, int]:
     """
@@ -271,6 +274,14 @@ class TraitorGame(TeamsGameBase):
 
         return [Phase(name="traitor_signal", execute=self._traitor_signal_phase)]
 
+    def _opens_stream_before_additional_phases(self) -> bool:
+        """The team pulse and the traitor rumble go over the gameplay stream (UC-022 BR-003, D-G10).
+
+        The stream config carries the initial white; the signal phase pulses the
+        team colours, then sets them as each controller's base colour.
+        """
+        return True
+
     async def _traitor_signal_phase(self):
         """
         Signal traitors with rumble during team color display.
@@ -286,20 +297,25 @@ class TraitorGame(TeamsGameBase):
         )
 
         # Show team colors to all players
-        await self._set_team_colors(pulse_effect=True, duration_ms=5000)
+        await self._set_team_colors(pulse_effect=True, duration_ms=TRAITOR_SIGNAL_DURATION * 1000)
 
-        # Rumble traitors to signal their role
+        # Rumble traitors to signal their role. A write error (the early stream
+        # already broke) is logged, not raised: the drain stop at the end of the
+        # phase reopens the stream, as for the team colours (UC-022 BR-003).
         if self.gameplay_stream:
-            for serial in self.traitor_serials:
-                rumble_cmd = controller_manager_pb2.GameplayStreamControl(
-                    game_effect=controller_manager_pb2.GameEffectCommand(
-                        serial=serial,
-                        effect=controller_manager_pb2.GAME_EFFECT_RUMBLE,
-                        duration_ms=2000,
-                        speed=5,
+            try:
+                for serial in self.traitor_serials:
+                    rumble_cmd = controller_manager_pb2.GameplayStreamControl(
+                        game_effect=controller_manager_pb2.GameEffectCommand(
+                            serial=serial,
+                            effect=controller_manager_pb2.GAME_EFFECT_RUMBLE,
+                            duration_ms=2000,
+                            speed=5,
+                        )
                     )
-                )
-                await self.gameplay_stream.write(rumble_cmd)
+                    await self.gameplay_stream.write(rumble_cmd)
+            except Exception as e:
+                logger.error(f"Failed to rumble traitors: {e}", exc_info=True)
 
         logger.info(f"Signaled {len(self.traitor_serials)} traitors with rumble")
 
@@ -307,7 +323,7 @@ class TraitorGame(TeamsGameBase):
         await self._play_sound(Sound.SFX_TRAITOR_INTRO, priority=2)
 
         # Wait for signal phase (interruptible)
-        for _ in range(50):  # 5 seconds
+        for _ in range(TRAITOR_SIGNAL_DURATION * 10):
             if not self.running:
                 logger.info("Traitor signal interrupted")
                 return

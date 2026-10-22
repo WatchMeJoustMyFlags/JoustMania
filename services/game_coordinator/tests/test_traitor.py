@@ -563,7 +563,12 @@ class TestTraitorSignalPhase:
 
     @pytest.mark.asyncio
     async def test_traitor_signal_sends_rumble_commands(self):
-        """Test that traitor signal sends rumble effects to traitor controllers."""
+        """Test that traitor signal sends rumble effects to traitor controllers.
+
+        The injected stream matches production: run() opens the gameplay stream
+        before the traitor_signal phase (UC-022 BR-003); the full-run check is in
+        test_traitor_signal_stream.py.
+        """
         mock_controller_manager = MockControllerManagerService(num_controllers=6)
 
         game = TraitorGame(

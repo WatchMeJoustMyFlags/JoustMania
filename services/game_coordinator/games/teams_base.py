@@ -194,9 +194,13 @@ class TeamsGameBase(BaseGameMode):
         from proto import controller_manager_pb2
 
         try:
+            # Store every team colour for the stream config first, so a write error
+            # part-way through still reopens the stream with all team colours.
+            for player in self.players.values():
+                player.color = self.team_colors[player.team]["rgb"]
+
             for serial, player in self.players.items():
-                team_color = self.team_colors[player.team]["rgb"]
-                player.color = team_color  # Phase XX: Store color for stream init
+                team_color = player.color
 
                 if pulse_effect and self.gameplay_stream:
                     # Use pulse effect for team announcement via stream
