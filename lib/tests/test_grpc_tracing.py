@@ -889,10 +889,10 @@ class TestClientSpanStatusAtCallEnd:
 class TestAioDoneCallbackOffLoop:
     """The aio done callback fired by GC off the loop thread still ends the span once (#1899 review)."""
 
-    def _finished_call(self):
+    def _finished_call(self, code=grpc.StatusCode.CANCELLED, details="Cancelled upon garbage collection!"):
         call = MagicMock()
-        call.code = AsyncMock(return_value=grpc.StatusCode.CANCELLED)
-        call.details = AsyncMock(return_value="Cancelled upon garbage collection!")
+        call.code = AsyncMock(return_value=code)
+        call.details = AsyncMock(return_value=details)
         return call
 
     def test_off_loop_callback_schedules_status_read_on_the_calls_loop(self, span_exporter):
@@ -902,16 +902,19 @@ class TestAioDoneCallbackOffLoop:
         loop = asyncio.new_event_loop()
         try:
             finisher = _ClientSpanFinisher(provider.get_tracer("t").start_span("P/F"), loop)
-            worker = threading.Thread(target=finisher.on_aio_call_done, args=(self._finished_call(),))
+            worker = threading.Thread(
+                target=finisher.on_aio_call_done, args=(self._finished_call(grpc.StatusCode.UNAVAILABLE, "down"),)
+            )
             worker.start()
             worker.join()
             loop.run_until_complete(asyncio.sleep(0.05))
         finally:
             loop.close()
 
+        # UNAVAILABLE is a code the fallback never records: only the call's own status read yields it.
         (span,) = exporter.get_finished_spans()
-        assert span.status.status_code == StatusCode.UNSET
-        assert _code(span) == grpc.StatusCode.CANCELLED.value[0]
+        assert span.status.status_code == StatusCode.ERROR
+        assert _code(span) == grpc.StatusCode.UNAVAILABLE.value[0]
 
     def test_closed_loop_records_cancelled_and_ends_once(self, span_exporter):
         from lib.grpc_tracing import _ClientSpanFinisher

@@ -294,6 +294,7 @@ class _ClientSpanFinisher:
             elif self._loop is not None and not self._loop.is_closed():
                 # Off the loop thread (GC on another thread): schedule the read on the call's loop.
                 self._loop.call_soon_threadsafe(self._schedule_aio_finish, call)
+                # A stopped-but-not-closed loop never runs this read: the span is not exported (accepted).
             else:
                 # No loop to read the status on: the call can only have been dropped (GC).
                 self.finish(grpc.StatusCode.CANCELLED, _GC_CANCEL_DETAILS)
