@@ -143,7 +143,10 @@ STATUS_FIELD = "**Status:**"
 RULES_HEADINGS = ("## Business Rules", "## Geschäftsregeln")
 TITLE_PREFIX = "# Use Case:"
 OBSOLETE = ("obsolete", "obsolet")
-INACTIVE_REQUIREMENT = ("rejected", "deferred", "abgelehnt", "zurückgestellt")
+# JoustMania patch: CLAUDE.md retires requirement ids as Rejected / Obsolete, so
+# an Obsolete FR needs no realizing use case, like a Rejected or Deferred one.
+INACTIVE_REQUIREMENT = ("rejected", "deferred", "obsolete", "obsolet",
+                        "abgelehnt", "zurückgestellt")
 
 # A requirement's progress follows the use cases that link it (docs/workflow.md,
 # Requirement status): Verified when every one is Tested or Done, Implemented
