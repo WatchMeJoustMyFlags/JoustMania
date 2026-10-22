@@ -214,6 +214,8 @@ func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, 
 	revert := func(rctx context.Context) {
 		rres := Result{Outcome: OutcomeApplied}
 		claim := pr.revertReal(rctx, p, entry, &rres, nil)
+		// Log and journal after revertReal released killMu: the journal sink takes
+		// the registry lock and must never run under killMu (#1893).
 		pr.log.Warn("autonomous re-watch confirmed degradation; reverted real default (#1065)",
 			"flag", p.FlagKey, "outcome", string(rres.Outcome), "reason", rres.Reason)
 		if claim == claimOwned {
@@ -279,7 +281,17 @@ func (pr *Promoter) clock() time.Time {
 // call claims it; when the kill switch already reverted it, nothing is written and
 // the result records the kill-switch revert. It returns the claim, so the
 // re-watch journals only a revert it owned (#1883).
+//
+// It holds killMu from the claim through the revert attempt and its retrack, so a
+// kill-switch tick never sees a claimed overlay before its revert has finished: it
+// finds either the retracked entry (with its experiment id) or no overlay (#1893).
+// The production writer already holds its own lock across the same flag-service
+// read and delete, so a tick waited for an in-flight revert before as well; the
+// lock adds no latency there. Never call revertReal while holding killMu
+// (writeTracked, RevertOnKillSwitch): Go mutexes are not re-entrant.
 func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry *appliedPromotion, res *Result, watchErr error) claimResult {
+	pr.killMu.Lock()
+	defer pr.killMu.Unlock()
 	claim := pr.claimApplied(entry)
 	switch claim {
 	case claimKilled:

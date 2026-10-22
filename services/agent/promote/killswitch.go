@@ -26,6 +26,12 @@ import (
 // runs after a write finds the overlay. So once a tick has run, no promotion that
 // predates it writes a real default again, and the tick's revert is the last
 // real-default write of every promotion it reverted.
+//
+// A watch or re-watch revert (revertReal) holds killMu too, from its claim through
+// the revert and the retrack, so a tick never reverts an overlay a second time
+// while that revert is in flight, nor logs it as untracked (#1893). The lock order
+// is killMu, then mu (or the writer's lock); nothing under killMu journals, and
+// nothing that holds killMu calls revertReal.
 
 // KillSwitchReason is the promotion reason a kill-switch revert journals.
 const KillSwitchReason = "kill_switch"
@@ -230,7 +236,8 @@ func (pr *Promoter) markKillFailReported(entry *appliedPromotion) (alreadyReport
 
 // claimApplied lets a watch or re-watch take ownership of entry's revert: it
 // removes entry when it is still the applied promotion of its flag. A nil entry
-// (no tracking) is always owned.
+// (no tracking) is always owned. The caller (revertReal) holds killMu, so the
+// claim and the revert it owns are one step for the kill switch (#1893).
 func (pr *Promoter) claimApplied(entry *appliedPromotion) claimResult {
 	if entry == nil {
 		return claimOwned

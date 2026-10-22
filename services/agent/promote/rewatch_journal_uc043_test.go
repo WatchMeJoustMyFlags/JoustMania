@@ -37,7 +37,7 @@ func (r *recordingRewatchJournal) snapshot() ([]string, []experiment.PromotionRe
 
 // rewatchedPromotion applies an autonomous promotion whose first watch has too
 // few real games, so a re-watch is scheduled; it returns the captured re-watch.
-func rewatchedPromotion(t *testing.T, rev *recordingReverter, journal *recordingRewatchJournal) (*Promoter, *capturingRewatcher) {
+func rewatchedPromotion(t *testing.T, rev RealDefaultReverter, journal *recordingRewatchJournal) (*Promoter, *capturingRewatcher) {
 	t.Helper()
 	watcher := &stepWatcher{verdicts: []WatchVerdict{VerdictInsufficient}}
 	p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, &recordingRealDefault{}, watcher, rev)
