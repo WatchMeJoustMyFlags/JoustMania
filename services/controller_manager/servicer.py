@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import contextlib
 
+import grpc
 from opentelemetry import trace
 
 from lib.controller_constants import ControllerInfoKey, normalize_serial
@@ -675,7 +676,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
                 except Exception as e:
                     logger.error(f"[{subscriber_id}] Gameplay stream error: {e}", exc_info=True)
-                    break
+                    span.record_exception(e)
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                    # A non-OK status tells the coordinator the stream failed (UC-030 BR-006, #1930);
+                    # an OK end would read as a normal end of the game.
+                    await context.abort(grpc.StatusCode.INTERNAL, f"gameplay stream frame error: {e}")
 
         finally:
             # Cleanup: Cancel background task
