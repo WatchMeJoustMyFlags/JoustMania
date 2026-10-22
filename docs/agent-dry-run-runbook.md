@@ -146,7 +146,9 @@ docker compose \
   observability surface at `http://localhost/`.
 
 Seed another flag instead: select another reviewed variant of `experiment_seed`
-(live, no restart; each distinct seed value is declared at most once per agent
+(live, no restart; the agent does not act on the value it acted on last again
+until it has read `off`: `agent-dryrun-enable.sh off`, wait one
+`experiment_tick_seconds`, then `on` re-runs the same seed in the same agent
 process):
 
 ```bash

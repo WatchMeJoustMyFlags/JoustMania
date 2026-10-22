@@ -34,7 +34,8 @@ SEED_VARIANT="windows_frantic"
 case "${1:-status}" in
   on)
     # The seed before the gates: an agent already polling sees the seed on its
-    # first enabled tick (each seed value is declared at most once per process).
+    # first enabled tick. `off` clears the seed, so off -> on declares it again
+    # (the agent must see `off` for one experiment tick).
     "${FLAGS}" set agent experiment_seed "${SEED_VARIANT}" >/dev/null
     echo "  experiment_seed -> ${SEED_VARIANT}"
     for flag in enabled experiments_enabled; do

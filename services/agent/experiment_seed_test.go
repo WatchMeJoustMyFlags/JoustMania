@@ -18,7 +18,7 @@ import (
 )
 
 // experiment_seed_test.go covers the experiment_seed object flag (#1907,
-// flags.md §3): its schema, the once-per-value latch (UC-070 BR-007, UC-043 A1),
+// flags.md §3): its schema, the last-value latch (UC-070 BR-007, UC-043 A1),
 // the declarer lock and its place in the tick, and the shipped variants.
 
 // lockedBuffer is a goroutine-safe log sink for counting agent log lines.
@@ -167,23 +167,76 @@ func TestMaybeDeclareSeed_Latch(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-043/A1 off and back to the same value does not re-declare; a new value does", func(t *testing.T) {
+	t.Run("UC-043/A1 a re-enable with the seed left on does not re-declare it", func(t *testing.T) {
 		s := newSeedLoop(t)
 		s.set(true, seedA)
 		s.allocateIfEnabled(ctx)
 		s.set(false, seedA) // experiments off: the seed experiment is aborted
 		s.allocateIfEnabled(ctx)
-		s.set(true, map[string]any{}) // the seed is switched off
+		s.set(true, seedA)
 		s.allocateIfEnabled(ctx)
-		s.set(true, seedA) // and back to the same value
-		s.allocateIfEnabled(ctx)
-		if got := s.registry.LiveCount(); got != 0 {
-			t.Fatalf("LiveCount = %d, want 0: a latched seed value is never declared again", got)
+		if got := s.registry.LiveCount(); got != 0 || s.logs.count(logSeedDeclared) != 1 {
+			t.Fatalf("LiveCount = %d, declared %d; want 0 and 1: the seed left on stays latched",
+				got, s.logs.count(logSeedDeclared))
 		}
-		s.set(true, seedB)
+	})
+
+	t.Run("UC-043/A1 off seen while the gates are off re-arms the same value", func(t *testing.T) {
+		s := newSeedLoop(t)
+		s.set(true, seedA)
 		s.allocateIfEnabled(ctx)
-		if got := s.registry.LiveCount(); got != 1 {
-			t.Fatalf("LiveCount = %d, want 1: a new seed value is declared", got)
+		s.set(false, seedA) // agent-dryrun-enable.sh off: gates first...
+		s.allocateIfEnabled(ctx)
+		s.set(false, map[string]any{}) // ...then the seed, seen on a disabled tick
+		s.allocateIfEnabled(ctx)
+		s.set(true, seedA) // agent-dryrun-enable.sh on
+		s.allocateIfEnabled(ctx)
+		if got := s.registry.LiveCount(); got != 1 || s.logs.count(logSeedDeclared) != 2 {
+			t.Fatalf("LiveCount = %d, declared %d; want 1 and 2: off -> on declares the seed again",
+				got, s.logs.count(logSeedDeclared))
+		}
+	})
+
+	t.Run("UC-070/BR-007 off -> on while the seed experiment is still live does not stack", func(t *testing.T) {
+		s := newSeedLoop(t)
+		s.set(true, seedA)
+		s.allocateIfEnabled(ctx)
+		s.set(true, map[string]any{}) // seed off, the experiment keeps running
+		s.allocateIfEnabled(ctx)
+		s.set(true, seedA)
+		s.allocateIfEnabled(ctx)
+		if got := s.registry.LiveCount(); got != 1 || s.logs.count(logSeedSatisfied) != 1 {
+			t.Fatalf("LiveCount = %d, satisfied %d; want 1 and 1: the re-armed seed is not stacked",
+				got, s.logs.count(logSeedSatisfied))
+		}
+	})
+
+	t.Run("UC-070/BR-007 A -> B -> A declares A again", func(t *testing.T) {
+		s := newSeedLoop(t)
+		for _, seed := range []map[string]any{seedA, seedB, seedA} {
+			s.set(true, seed)
+			s.allocateIfEnabled(ctx)
+			s.set(false, seed) // end the experiment so the next value is not deduped
+			s.allocateIfEnabled(ctx)
+		}
+		if n := s.logs.count(logSeedDeclared); n != 3 {
+			t.Fatalf("A -> B -> A declared %d times, want 3: the latch is the last value only", n)
+		}
+	})
+
+	t.Run("UC-070/BR-007 an eval error does not re-arm the seed", func(t *testing.T) {
+		s := newSeedLoop(t)
+		s.set(true, seedA)
+		s.allocateIfEnabled(ctx)
+		s.set(false, nil) // gates off and the flag unreadable
+		s.allocateIfEnabled(ctx)
+		s.set(true, nil)
+		s.allocateIfEnabled(ctx)
+		s.set(true, seedA)
+		s.allocateIfEnabled(ctx)
+		if got := s.registry.LiveCount(); got != 0 || s.logs.count(logSeedDeclared) != 1 {
+			t.Fatalf("LiveCount = %d, declared %d; want 0 and 1: an eval error never clears the latch",
+				got, s.logs.count(logSeedDeclared))
 		}
 	})
 
@@ -191,7 +244,7 @@ func TestMaybeDeclareSeed_Latch(t *testing.T) {
 		s := newSeedLoop(t)
 		s.set(true, nil)
 		s.allocateIfEnabled(ctx)
-		if len(s.seedLatched) != 0 || s.logs.count(logSeedMalformed) != 0 || s.registry.LiveCount() != 0 {
+		if s.seedLatched || s.logs.count(logSeedMalformed) != 0 || s.registry.LiveCount() != 0 {
 			t.Fatalf("eval error latched %v / warned %d / declared %d; want nothing",
 				s.seedLatched, s.logs.count(logSeedMalformed), s.registry.LiveCount())
 		}

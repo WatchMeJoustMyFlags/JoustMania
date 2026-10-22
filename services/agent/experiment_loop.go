@@ -175,10 +175,12 @@ type experimentLoop struct {
 	// have no default here (they fall back to false).
 	expDefaults flags.ExperimentDefaults
 
-	// seedLatched holds the canonical JSON of every experiment_seed value this
-	// process has acted on (declared, skipped as satisfied, refused or malformed;
-	// experiment_seed.go, #1907). Guarded by declarerLock().
-	seedLatched map[string]struct{}
+	// seedLast is the canonical JSON of the last experiment_seed value this
+	// process acted on (declared, skipped as satisfied, refused or malformed);
+	// seedLatched says whether it is set. Observing `off` clears both
+	// (experiment_seed.go, #1907). Guarded by declarerLock().
+	seedLast    string
+	seedLatched bool
 	// seedMu is declarerLock() when no dynamic declarer is wired (test wiring).
 	seedMu sync.Mutex
 
@@ -593,6 +595,9 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 		e.revertPromotionsOnKillSwitch(ctx)
 	}
 	cfg := e.config(ctx)
+	// #1907: an `off` experiment_seed re-arms the seed on ANY tick, so it is seen
+	// while the gates are off too (agent-dryrun-enable.sh off clears them first).
+	e.observeSeedOff(cfg)
 	if !cfg.Enabled {
 		if ids := e.registry.AbortAll(ctx, "experiments_enabled flag off"); len(ids) > 0 {
 			e.log.Warn("experiment: experiments_enabled flag off — aborted live experiments (#1044)", "count", len(ids))

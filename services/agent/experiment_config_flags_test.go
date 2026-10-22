@@ -93,9 +93,10 @@ func loopForConfigTest(t *testing.T, maxShadow int) (*experimentLoop, *recording
 // TestExperimentsEnabled_OffOnOff is the startup-gate-inversion AC (#1044): the loop
 // is always running, but a runtime off->on flip STARTS it (rehydrate+seed+allocate)
 // and an on->off flip STOPS it cleanly (AbortAll strips targeting + frees capacity),
-// all with no restart and no in-flight corruption. The final off->on->off->on cycle
-// pins the #1051 / #1907 seed latch: a seed value is declared EXACTLY ONCE
-// (on the first enable) and is NOT re-declared on a later re-enable.
+// all with no restart and no in-flight corruption. The off->on->off->on cycle pins
+// the #1051 / #1907 seed latch: a re-enable with the seed left on does NOT
+// re-declare it, but a full `agent-dryrun-enable.sh off` (gates off, then the
+// seed cleared to `off` while the gates are still off) followed by `on` does.
 // UC: UC-043 A1
 func TestExperimentsEnabled_OffOnOff(t *testing.T) {
 	loop, spawner, lc := loopForConfigTest(t, 8)
@@ -158,6 +159,23 @@ func TestExperimentsEnabled_OffOnOff(t *testing.T) {
 	}
 	if recs := spawner.drain(); len(recs) != 0 {
 		t.Fatalf("re-enable spawned shadow games off the one-shot seed: %d, want 0 (#1051)", len(recs))
+	}
+
+	// `agent-dryrun-enable.sh off`: the gates go off first, then the seed is
+	// cleared; the loop sees `off` on a DISABLED tick. Then `on`: the seed is set
+	// again before the gates, and the same value is declared again (#1907).
+	lc.set(flags.ExperimentConfig{Enabled: false})
+	loop.allocateIfEnabled(ctx)
+	lc.setSeed(map[string]any{})
+	loop.allocateIfEnabled(ctx)
+	lc.setSeed(testSeed("invincibility_seconds", 6.0, 50))
+	lc.set(flags.ExperimentConfig{Enabled: true, ShadowEffectiveConcurrency: 4})
+	loop.allocateIfEnabled(ctx)
+	if got := loop.registry.LiveCount(); got != 1 {
+		t.Fatalf("off (seed cleared while disabled) -> on did not re-declare the seed: LiveCount=%d, want 1 (#1907)", got)
+	}
+	if recs := spawner.drain(); len(recs) == 0 {
+		t.Fatal("re-declared seed spawned no shadow game")
 	}
 }
 

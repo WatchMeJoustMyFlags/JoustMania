@@ -19,13 +19,20 @@ import (
 // AGENT_EXPERIMENT_SEED_* env vars. It is a seeded experiment INTENT, not a
 // random-number seed (that is the shadow game's pair seed).
 //
-// The loop reads the flag on every enabled tick (flags.ExperimentConfig.Seed)
-// and acts on each distinct value at most once per process:
+// The loop reads the flag on every tick. It remembers the LAST value it acted
+// on (one canonical-JSON string, the latch) and acts on a value only when it
+// differs from the latch:
 //   - a declare, a skip because the seed's flag already has a live experiment
-//     (no stacking) and a refused or failed declare all LATCH the value;
-//   - an unresolved flag (eval error) and `off` ({}) latch nothing;
-//   - a malformed value declares nothing (never half-applied), latches and
-//     logs one WARN.
+//     (no stacking) and a refused or failed declare all set the latch;
+//   - a malformed value declares nothing (never half-applied), sets the latch
+//     and logs one WARN (again only after the value changed);
+//   - `off` ({}) observed on ANY tick, gates on or off, clears the latch
+//     (observeSeedOff), so `agent-dryrun-enable.sh off` then `on` declares the
+//     seed again; `off` must be visible for one experiment tick;
+//   - an unresolved flag (eval error) neither acts nor clears the latch, so a
+//     fail-closed flap never re-arms a seed.
+// A->B->A declares A again (the per-flag dedup still prevents stacking). A
+// kill-switch beat that leaves the seed on does not re-declare it.
 //
 // The latch key is the canonical JSON of the resolved object, so the same
 // value under another variant name is still the same seed.
@@ -120,7 +127,7 @@ func parseExperimentSeed(raw any) (experiment.Intent, seedKind, string) {
 func nonNegativeInt(v any) (int, bool) {
 	switch n := v.(type) {
 	case int:
-		return n, n >= 0
+		return n, n >= 0 && n <= math.MaxInt32
 	case int64:
 		return int(n), n >= 0 && n <= math.MaxInt32
 	case float64:
@@ -155,8 +162,8 @@ func (e *experimentLoop) declarerLock() *sync.Mutex {
 	return &e.seedMu
 }
 
-// maybeDeclareSeed declares the experiment seed of this tick's config, at most
-// once per distinct value (see the file comment). It runs under the declarer
+// maybeDeclareSeed declares the experiment seed of this tick's config when it
+// differs from the last value acted on (see the file comment). It runs under the declarer
 // lock so the latch check, the per-flag dedup, the Declare and the latch update
 // are one critical section: concurrent allocateIfEnabled callers (tick, game-end
 // nudges) and the other declarers can never stack a second experiment on the
@@ -173,13 +180,14 @@ func (e *experimentLoop) maybeDeclareSeed(ctx context.Context, cfg flags.Experim
 	defer mu.Unlock()
 
 	key := seedLatchKey(cfg.Seed)
-	if _, done := e.seedLatched[key]; done {
+	if e.seedLatched && e.seedLast == key {
 		return
 	}
 	intent, kind, reason := parseExperimentSeed(cfg.Seed)
 	switch kind {
 	case seedOff:
-		return // {}: no seed, nothing latched
+		e.clearSeedLatch() // {}: no seed; also cleared by observeSeedOff
+		return
 	case seedMalformed:
 		e.latchSeed(key)
 		e.log.Warn("experiment: experiment_seed is malformed, no seed declared (#1907)",
@@ -202,10 +210,34 @@ func (e *experimentLoop) maybeDeclareSeed(ctx context.Context, cfg flags.Experim
 		"objective", intent.Objective, "target_n", intent.TargetNPerArm)
 }
 
-// latchSeed records a seed value as acted on; the caller holds declarerLock.
+// latchSeed records a seed value as the last one acted on; the caller holds
+// declarerLock.
 func (e *experimentLoop) latchSeed(key string) {
-	if e.seedLatched == nil {
-		e.seedLatched = make(map[string]struct{})
+	e.seedLast = key
+	e.seedLatched = true
+}
+
+// clearSeedLatch forgets the last acted-on seed value; the caller holds
+// declarerLock.
+func (e *experimentLoop) clearSeedLatch() {
+	e.seedLast = ""
+	e.seedLatched = false
+}
+
+// observeSeedOff clears the latch when this tick's experiment_seed is `off`
+// ({}). allocateIfEnabled calls it on EVERY tick, before the gate checks, so an
+// `off` set while the gates are off (agent-dryrun-enable.sh off clears the
+// gates first) still re-arms the seed. An eval error (Seed == nil) and any other
+// value leave the latch alone.
+func (e *experimentLoop) observeSeedOff(cfg flags.ExperimentConfig) {
+	if cfg.Seed == nil {
+		return
 	}
-	e.seedLatched[key] = struct{}{}
+	if _, kind, _ := parseExperimentSeed(cfg.Seed); kind != seedOff {
+		return
+	}
+	mu := e.declarerLock()
+	mu.Lock()
+	defer mu.Unlock()
+	e.clearSeedLatch()
 }

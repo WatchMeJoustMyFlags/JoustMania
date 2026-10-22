@@ -526,8 +526,8 @@ func TestDeclareDynamic_KillSwitchOffDeclaresNothing(t *testing.T) {
 // TestDeclareDynamic_TalkFallbackKeepsAGameInProgress: in the talk's screen-only
 // fallback a game must always be in progress. The dynamic declarer keeps declaring
 // after the kill-switch beat or a `fallback off` aborted every experiment, while
-// the experiment seed (the experiment_seed flag) is declared at most once per
-// distinct value per agent process.
+// the experiment seed (the experiment_seed flag) left set is not declared again
+// (the latch keeps the last value until `off` is read).
 // UC: UC-070 A9 BR-007
 func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 	ctx := context.Background()
