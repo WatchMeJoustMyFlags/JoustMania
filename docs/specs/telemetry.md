@@ -4,7 +4,7 @@
 > Telemetry is the agent's only view of the game (C-001), so span names, attribute keys, metric names and the
 > log lines below are a **contract**: the agent, the dashboard SPA, Grafana and integration tests match
 > on them. Change a name here first.
-> **References.** Write a code reference as a full repo path: `path/file.go:Symbol` (survives edits) or `path/file.go:123` (allowed, but it drifts and the count may not grow). `make spec-refs-check` fails on a missing file, an out-of-range line, a missing symbol or a path that is not a full repo path (#1280). <!-- spec-refs: ignore -->
+> **References.** Write a code reference as a full repo path: `path/file.go:Symbol` (survives edits) or `path/file.go:123` (allowed, but it drifts and a growing count warns in CI). `make spec-refs-check` fails on a missing file, an out-of-range line, a missing symbol or a path that is not a full repo path (#1280). <!-- spec-refs: ignore -->
 
 ## 1. Pipeline
 
@@ -186,7 +186,7 @@ Decisions & Interventions dashboard shows latency, calls and tokens by `gen_ai_r
 
 ### 4.3 Decision attributes
 
-The `decide.*` attributes (`decide.backend`, `decide.backend.requested`, `decide.fallback_reason`, `decide.state.digest`, `decide.questions`, `decide.answers`, `decide.confidence`, `decide.confidence.min`, `decide.act_confidence_threshold`, `decide.act_confidence_threshold.source`, `decide.latency_ms`, `decide.outcome`, `decide.rationale`, `decide.invalid_reason`, `decide.discarded_reason`, `decide.response_format`, `decide.blocked`, `decide.block_reason` (`decide.act_confidence_threshold.source` since #1287, `decide.block_reason` since #1295) are specified in [decide-contract.md §12](decide-contract.md#12-telemetry).
+The `decide.*` attributes (`decide.backend`, `decide.backend.requested`, `decide.fallback_reason`, `decide.state.digest`, `decide.questions`, `decide.answers`, `decide.confidence`, `decide.confidence.min`, `decide.act_confidence_threshold`, `decide.act_confidence_threshold.source`, `decide.latency_ms`, `decide.outcome`, `decide.rationale`, `decide.invalid_reason`, `decide.discarded_reason`, `decide.response_format`, `decide.blocked`, `decide.block_reason`; `decide.act_confidence_threshold.source` since #1287, `decide.block_reason` since #1295) are specified in [decide-contract.md §12](decide-contract.md#12-telemetry).
 `decide.backend` and `decide.outcome` are also the dimensions of the collector's `span_metrics` connector (§1, §6), so
 renaming either attribute breaks the decide panels (`tests/contract/test_collector_spanmetrics.py`).
 The `decision.*` attributes: `decision.action`, `decision.reason`, `decision.objective_served`, `decision.blocked`, `decision.block_reason` (`not_allowed`, `battery_threshold`, `rate_limit`, and since #1837 `already_charged`; decide-contract §4.5), `decision.intervention_id`. Targeted player (#1295), on `agent.decision` and `agent.action` only when

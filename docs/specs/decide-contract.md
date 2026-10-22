@@ -4,7 +4,7 @@
 > in [requirements.md](../requirements.md) and [UC-040](../use_cases/UC-040.md),
 > [UC-044](../use_cases/UC-044.md), [UC-045](../use_cases/UC-045.md).
 > State: `main` @ 84c3ba15 (2026-10-16, includes PRs #1257, #1261, #1265, #1284, #1286 (the Jev gate and most-likely-level magnitude of #1281), #1288 (per-backend act threshold), #1297 (#1295 decision target), #1303 (#1298 no-interventions gate), #1306 (#1299), #1312 (#1301 feedback), #1315 (#1310/#1313) and #1308 (#1258 pattern games)). Code references use `file:Symbol` where practical, because line numbers rot. Planned or in-flight items carry their issue / PR number and are marked **Planned** / **In flight**.
-> **References.** Write a code reference as a full repo path: `path/file.go:Symbol` (survives edits) or `path/file.go:123` (allowed, but it drifts and the count may not grow). `make spec-refs-check` fails on a missing file, an out-of-range line, a missing symbol or a path that is not a full repo path (#1280). <!-- spec-refs: ignore -->
+> **References.** Write a code reference as a full repo path: `path/file.go:Symbol` (survives edits) or `path/file.go:123` (allowed, but it drifts and a growing count warns in CI). `make spec-refs-check` fails on a missing file, an out-of-range line, a missing symbol or a path that is not a full repo path (#1280). <!-- spec-refs: ignore -->
 
 The agent answers "should I intervene in this game, how, and on whom" through one
 contract, independent of who answers: the in-process **rules** engine or a remote

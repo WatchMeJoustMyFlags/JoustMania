@@ -8,12 +8,13 @@ Checks (docs/specs/*.md; generated/ and notes/ are skipped):
   REF_NOT_FULL_PATH  a `path:ref` whose path is not a repo-relative file path
   REF_NO_FILE        the file does not exist
   REF_LINE_OOB       a line number beyond the end of the file
-  REF_NO_SYMBOL      a `path:Symbol` whose symbol does not appear in the file
+  REF_NO_SYMBOL      a `path:Symbol` whose symbol (each dotted part) is not a word in the file
+                     (a word search, not a declaration check)
   ATTR_UNDOCUMENTED  a Go Span*/Attr* constant value that no spec mentions
                      (exact string; `ns.*` never documents a key)
 REF_* findings are never baselined. ATTR_UNDOCUMENTED findings may sit in
-docs/specs/notes/spec-refs-baseline.json; the baseline may only grow with the
-`spec-baseline-growth` label, and stale entries fail ("prune me").
+docs/specs/notes/spec-refs-baseline.json; a new baseline fingerprint needs the
+`spec-baseline-growth` label (PR context only), and stale entries fail ("prune me").
 Line refs may not grow versus --base (warning, with suggestions).
 
 Ignore an example with `<!-- spec-refs: ignore -->` on its line; fenced code
@@ -258,7 +259,7 @@ def check_attrs() -> list[Finding]:
     corpus = spec_corpus()
     findings = []
     for rel, value in go_telemetry_consts():
-        if not re.search(rf"(?<![\w.-]){re.escape(value)}(?![\w-])", corpus):
+        if not re.search(rf"(?<![\w.-]){re.escape(value)}(?![\w-]|\.\w)", corpus):
             findings.append(
                 Finding(
                     "ATTR_UNDOCUMENTED",
@@ -366,22 +367,22 @@ def growth_report(refs: list[Ref], base: str) -> tuple[list[str], list[str]]:
                 f"::warning title=Spec line refs grew::path:line refs grew by {grown} "
                 f"versus {base}; prefer path:Symbol:\n" + "\n".join(lines)
             )
-    old = load_baseline_text(
-        _git("show", f"{base}:{BASELINE.relative_to(REPO_ROOT).as_posix()}")
-    )
-    if (
-        old
-        or _git(
-            "cat-file", "-e", f"{base}:{BASELINE.relative_to(REPO_ROOT).as_posix()}"
-        )
-        is not None
-    ):
+    # Baseline growth is a PR-only check: the merge queue has no PR number or
+    # labels (the PR passed it with its label already).
+    if not (os.environ.get("PR_NUMBER") or "PR_LABELS" in os.environ):
+        return warnings, errors
+    rel = BASELINE.relative_to(REPO_ROOT).as_posix()
+    old = load_baseline_text(_git("show", f"{base}:{rel}"))
+    if old or _git("cat-file", "-e", f"{base}:{rel}") is not None:
         head = load_baseline_text(_read(BASELINE) if BASELINE.exists() else None)
-        if len(head) > len(old) and GROWTH_LABEL not in labels():
+        added = sorted(head.keys() - old.keys())
+        if added and GROWTH_LABEL not in labels():
+            names = ", ".join(repr(head[fp]["value"]) for fp in added)
             errors.append(
-                f"::error title=Spec refs baseline grew::{BASELINE.name} grows from "
-                f"{len(old)} to {len(head)} entries. Document the new names in "
-                f"docs/specs/telemetry.md, or add the '{GROWTH_LABEL}' label."
+                f"::error title=Spec refs baseline grew::{BASELINE.name} gained "
+                f"{len(added)} entr{'y' if len(added) == 1 else 'ies'} ({names}). "
+                f"Document the new names in docs/specs/telemetry.md, or add the "
+                f"'{GROWTH_LABEL}' label."
             )
     return warnings, errors
 

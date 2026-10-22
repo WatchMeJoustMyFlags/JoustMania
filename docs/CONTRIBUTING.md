@@ -222,7 +222,7 @@ Adding or removing `no-spec-change` or `spec-baseline-growth` re-runs the Spec G
 
 `make spec-refs-check` (Telemetry Contract job, #1280) checks every `path:line` and `path:Symbol` in `docs/specs/*.md` (not `generated/`, not `notes/`, not fenced code blocks):
 
-- the path must be a full repo path (`services/agent/decide/state.go:digest`, never `state.go:digest`) to an existing file; the line must be within the file; the symbol must occur in it. These fail every PR, including code-only ones that delete or rename what a spec cites. Fix the spec line; `scripts/spec_refs.py --suggest` prints a ready `path:Symbol` for every line ref, and the error for an out-of-range line names one.
+- the path must be a full repo path (`services/agent/decide/state.go:digest`, never `state.go:digest`) to an existing file; the line must be within the file; the symbol (each dotted part) must occur as a word somewhere in the file (a word search, not a declaration check). These fail every PR, including code-only ones that delete or rename what a spec cites. Fix the spec line; `scripts/spec_refs.py --suggest` prints a ready `path:Symbol` for every line ref, and the error for an out-of-range line names one.
 - prefer `path:Symbol`: it survives edits. New `path:line` refs are allowed but a growth in their total versus the base branch raises a `::warning` with suggestions.
 - every Go `Span*` / `Attr*` constant value must appear in `telemetry.md` as its exact key. Undocumented ones sit in `docs/specs/notes/spec-refs-baseline.json`; the baseline may only grow with the `spec-baseline-growth` label, and a stale entry (now documented or gone) fails: run `make spec-refs` to prune it.
 - an example that is not a real reference: put `<!-- spec-refs: ignore -->` on its line.

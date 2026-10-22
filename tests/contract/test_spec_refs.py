@@ -116,6 +116,14 @@ def test_attr_must_appear_exactly_and_wildcard_does_not_document(tmp_repo):
     assert sr.check_attrs() == []
 
 
+def test_prefix_of_a_documented_key_does_not_document_it(tmp_repo):
+    _go_const(tmp_repo, "agent.decide")
+    spec(tmp_repo, "`agent.decide.backend_misconfigured`\n", "telemetry.md")
+    assert [f.code for f in sr.check_attrs()] == ["ATTR_UNDOCUMENTED"]
+    spec(tmp_repo, "`agent.decide`, then `agent.decide.x`.\n", "telemetry.md")
+    assert sr.check_attrs() == []
+
+
 def test_baseline_suppresses_attr_but_never_refs(tmp_repo, capsys):
     _go_const(tmp_repo, "a.b")
     spec(tmp_repo, "`svc/gone.go:3`\n", "telemetry.md")
@@ -123,6 +131,32 @@ def test_baseline_suppresses_attr_but_never_refs(tmp_repo, capsys):
     assert sr.run_check(None) == 1
     out = capsys.readouterr().out
     assert "REF_NO_FILE" in out and "ATTR_UNDOCUMENTED" not in out
+
+
+def test_hand_built_ref_fingerprint_in_baseline_never_swallows_the_ref(
+    tmp_repo, capsys
+):
+    spec(tmp_repo, "`svc/gone.go:3`\n", "telemetry.md")
+    [ref_finding] = sr.check_refs(sr.scan_specs())
+    assert ref_finding.code == "REF_NO_FILE"
+    sr.BASELINE.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "findings": [
+                    {
+                        "code": ref_finding.code,
+                        "file": ref_finding.file,
+                        "value": ref_finding.value,
+                        "fingerprint": ref_finding.fingerprint,
+                    }
+                ],
+            }
+        )
+    )
+    assert sr.run_check(None) == 1
+    assert "REF_NO_FILE" in capsys.readouterr().out
+    assert json.loads(sr.render_baseline([ref_finding]))["findings"] == []
 
 
 def test_new_attr_fails_and_stale_baseline_entry_fails(tmp_repo, capsys):
@@ -173,6 +207,31 @@ def test_baseline_growth_needs_the_label(tmp_repo, monkeypatch):
     monkeypatch.setenv("PR_LABELS", "")
     assert len(sr.growth_report([], "HEAD")[1]) == 1
     monkeypatch.setenv("PR_LABELS", "x,spec-baseline-growth")
+    assert sr.growth_report([], "HEAD")[1] == []
+
+
+def test_baseline_growth_is_by_fingerprint_not_count(tmp_repo, monkeypatch):
+    _go_const(tmp_repo, "a.b")
+    sr.BASELINE.write_text(sr.render_baseline(sr.check_attrs()))
+    _commit_base(tmp_repo)
+    # one entry swapped for another: same count, a new fingerprint
+    _go_const(tmp_repo, "c.d")
+    sr.BASELINE.write_text(sr.render_baseline(sr.check_attrs()))
+    monkeypatch.setenv("PR_LABELS", "")
+    [err] = sr.growth_report([], "HEAD")[1]
+    assert "'c.d'" in err
+    monkeypatch.setenv("PR_LABELS", "spec-baseline-growth")
+    assert sr.growth_report([], "HEAD")[1] == []
+
+
+def test_baseline_growth_is_skipped_without_pr_context(tmp_repo, monkeypatch):
+    """merge_group has neither PR_NUMBER nor PR_LABELS: the PR already passed."""
+    sr.BASELINE.write_text(json.dumps({"version": 1, "findings": []}))
+    _commit_base(tmp_repo)
+    _go_const(tmp_repo, "a.b")
+    sr.BASELINE.write_text(sr.render_baseline(sr.check_attrs()))
+    monkeypatch.delenv("PR_LABELS", raising=False)
+    monkeypatch.setenv("PR_NUMBER", "")
     assert sr.growth_report([], "HEAD")[1] == []
 
 
